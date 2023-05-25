@@ -3,3 +3,5 @@
 /hrba.egg-info/
 /venv/
 *.pyc
+/htmlcov/
+/.coverage
