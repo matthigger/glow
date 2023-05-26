@@ -20,6 +20,7 @@ class VecStat:
         Args:
             x (np.array): (b, n) a set of (column) vectors
         """
+        assert x.ndim == 2, f'2d input required (passed {x.ndim}d array)'
         _, n = x.shape
 
         return cls(n=n, mu=x.mean(axis=1), mean_outer=x @ x.T / n)
