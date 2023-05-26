@@ -1,11 +1,12 @@
 import pathlib
 import re
+from collections import defaultdict
 from copy import copy
 
 import nibabel as nib
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
+from PIL import Image
 
 from hrba.extent import get_mask_idx
 
@@ -70,40 +71,53 @@ class Experiment:
                 # todo: check that duplicate file doesn't already exist
                 df.loc[sbj, y_feat] = file
 
+        assert df.size, 'no images found'
+
         # check if any subject is missing any imaging feature
         s_missing = df.isna().mean(axis=1)
         if s_missing.any():
             print('some sbj missing files:')
             print(df.loc[s_missing, :].notnull().astype('int'))
 
-        # build mask_idx, ensure affine & shape are consistent
-        file_first = df.values.flatten()[0]
-        img_first = nib.load(file_first)
-        vox_count = (img_first.get_fdata() != 0).astype(int)
+        # load images (check affine is consistent, if present)
+        affine = None
+        feat_sbj_img = defaultdict(dict)
+        for feat in df.columns:
+            for sbj in df.index:
+                file = df.loc[sbj, feat]
 
-        for file in tqdm(df.values.flatten()[1:],
-                         desc='checking consistent shape'):
-            # check shape
-            img = nib.load(file)
-            assert np.array_equal(img.affine, img_first.affine), \
-                f'affine mismatch: {file}, {img_first}'
-            assert np.array_equal(img.shape, img_first.shape), \
-                f'shape mismatch: {file}, {img_first}'
+                # load image
+                if '.nii' in str(file):
+                    # load img
+                    img = nib.load(file)
+                    if affine is None:
+                        affine = img.affine
+                    assert np.array_equal(img.affine,
+                                          affine), 'affine mismatch'
+                    feat_sbj_img[feat][sbj] = img.get_fdata()
+                else:
+                    x = np.array(Image.open(file))
+                    assert x.ndim == 2, 'only 2d non-nii supported'
+                    # todo: support for rgb split into 3 features here
+                    feat_sbj_img[feat][sbj] = x
 
-            # count voxels in image (all nonzero voxels)
-            vox_count += img.get_fdata() != 0
+        # count nonzero voxels per position (also check images have same shape)
+        vox_count = None
+        for feat, sbj_img in feat_sbj_img.items():
+            for sbj, img in sbj_img.items():
+                if vox_count is None:
+                    vox_count = np.zeros(img.shape)
+                vox_count += img != 0
 
         # build mask_idx
         mask = vox_count == df.size
         mask_idx = get_mask_idx(mask)
 
-        # load data
+        # mask into each image, store as y
         y = np.empty((len(df.columns), df.shape[0], mask.sum()))
-        for sbj_idx, sbj in tqdm(enumerate(sorted(df.index)),
-                                 desc='load per sbj'):
-            for feat_idx, y_feat in enumerate(sorted(df.columns)):
-                img = nib.load(df.loc[sbj, y_feat])
-                y[feat_idx, sbj_idx, :] = img.get_fdata()[mask]
+        for sbj_idx, sbj in enumerate(sorted(df.index)):
+            for feat_idx, feat in enumerate(sorted(df.columns)):
+                y[feat_idx, sbj_idx, :] = feat_sbj_img[feat][sbj][mask]
 
         return cls(y=y, y_names=df.columns, mask_idx=mask_idx, **kwargs)
 
