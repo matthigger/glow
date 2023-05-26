@@ -5,3 +5,5 @@
 *.pyc
 /htmlcov/
 /.coverage
+/test/data/
+*tmp*.py
