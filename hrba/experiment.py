@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from hrba.extent import get_mask_idx
+
 
 class Experiment:
     """ identifies regions which show some statistically significant effect
@@ -93,12 +95,10 @@ class Experiment:
 
         # build mask_idx
         mask = vox_count == df.size
-        mask_idx = np.full(mask.shape, fill_value=-1)
-        num_vox = mask.sum()
-        mask_idx[mask] = np.arange(num_vox)
+        mask_idx = get_mask_idx(mask)
 
         # load data
-        y = np.empty((len(df.columns), df.shape[0], num_vox))
+        y = np.empty((len(df.columns), df.shape[0], mask.sum()))
         for sbj_idx, sbj in tqdm(enumerate(sorted(df.index)),
                                  desc='load per sbj'):
             for feat_idx, y_feat in enumerate(sorted(df.columns)):
