@@ -1,4 +1,4 @@
-from hrba.extent import *
+from hrba.sample_effect.extent import *
 
 
 def test_get_mask_idx():
