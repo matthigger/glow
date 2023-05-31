@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from hrba.extent import get_mask_idx
+from hrba.sample_effect.extent import get_mask_idx
 
 
 class Experiment:
