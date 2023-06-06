@@ -2,7 +2,7 @@ import numpy as np
 from numpy.polynomial.polynomial import Polynomial
 from scipy.stats import f
 
-from .f_stat import get_tr_eps
+from hrba.f_stat import get_tr_eps
 
 
 def compute_offset(x, y, contrast, f_stat=None, p_val=None):

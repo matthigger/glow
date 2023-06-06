@@ -8,11 +8,11 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from hrba.sample_effect.extent import get_mask_idx
+from hrba.mask import get_mask_idx
 
 
 class Experiment:
-    """ identifies regions which show some statistically significant effect
+    """ contains source data to identify regions with some effect
 
     an effect is a linear mapping from x to y within some contiguous set of
     voxels:
@@ -54,9 +54,6 @@ class Experiment:
         Returns:
             experiment (Experiment): experiment generated from all images found
         """
-        # todo: support passing x as a csv, reconcile with files found and
-        #  error on missing
-
         # find all images
         folder = pathlib.Path(folder)
         df = pd.DataFrame()
@@ -137,7 +134,11 @@ class Experiment:
 
         raise NotImplementedError
 
-    def sample_x(self, a, seed=None):
+    def load_x(self):
+        """ loads a csv of real x data (as opposed to sampled x data) """
+        raise NotImplementedError
+
+    def sample_x(self, a=None, contrast=None, seed=None):
         """ generates (or replaces) x with an arbitrary std normal noise
 
         Args:
@@ -147,6 +148,16 @@ class Experiment:
         Returns:
             exp_out (Experiment): x has been replaced with noise from self
         """
+        assert (a is None) != (contrast is None), 'a xor contrast required'
+
+        if a is None:
+            # contrast specified, extract a from it
+            a = contrast.size
+        else:
+            # default contrast: all x of interest but bias term
+            contrast = np.ones(a, dtype=bool)
+            contrast[0] = False
+
         # sample x
         num_img = self.y.shape[1]
         rng = np.random.default_rng(seed=seed)
@@ -155,4 +166,28 @@ class Experiment:
         # build a new instance which "copies" self, replacing x
         d = copy(self.__dict__)
         d['x'] = x
+        d['contrast'] = contrast
         return type(self)(**d)
+
+    def impose_effect(self, reg_size, f_stat=None, p_val=None, seed=None):
+        """ builds experiment with effect imposed
+
+        Args:
+            reg_size (int): number of voxels in effect region
+            f_stat (float): f statistic of effect
+            p_val (float): p value of effect
+            seed: seed of random number generator
+
+        Returns:
+            exp (Experiment): an experiment
+            valid_case (ValidCase): ValidationCase
+        """
+        assert (f_stat is None) != (p_val is None), 'f_stat xor p_val required'
+
+        # sample effect space
+
+        # get offset which imposes desired effect
+
+        # impose effect
+
+        return type(self)(x=x, y=y, contrast=contrast, mask_idx=mask_idx)

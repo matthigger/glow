@@ -1,7 +1,7 @@
 from pytest import raises
 
 from helper import generate_dummy_data
-from hrba.sample_effect.f_stat import *
+from hrba.f_stat import *
 from hrba.sample_effect.offset import *
 
 

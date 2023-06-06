@@ -1,7 +1,7 @@
 from itertools import product
 
 import hrba
-from hrba.experiment import *
+from hrba.experiment.experiment import *
 
 data_folder = pathlib.Path(hrba.__file__).parents[2] / 'data'
 
