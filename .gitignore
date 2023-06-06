@@ -7,3 +7,4 @@
 /.coverage
 /test/data/
 *tmp*.py
+/data/

@@ -61,7 +61,7 @@ class TestExtenterSphere:
             assert np.allclose(mask, mask_expect)
 
 
-class TestExtenterSphere:
+class TestExtenterMinVar:
     def test_call(self):
         mask = np.array([[0., 0., 0., 0., 0., 0., 0.],
                          [0., 0., 0., 0., 0., 0., 0.],
