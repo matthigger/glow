@@ -2,7 +2,7 @@ import numpy as np
 from numpy.polynomial.polynomial import Polynomial
 from scipy.stats import f
 
-from hrba.f_stat import get_tr_eps
+from hrba.f_stat import get_tr_eps, get_f_degrees, get_f_const
 
 
 def compute_offset(x, y, contrast, f_stat=None, p_val=None):
@@ -57,9 +57,8 @@ def compute_offset(x, y, contrast, f_stat=None, p_val=None):
 
     if f_stat is None:
         # get target f_stat to impose given p_value
-        f_stat = f.ppf(p_val,
-                       dfn=num_img * reg_size - a[1],
-                       dfd=a[1] - a[0])
+        dfn, dfd = get_f_degrees(y, contrast)
+        f_stat = f.ppf(p_val, dfn=dfn, dfd=dfd)
 
     # compute tr_eps_init, vector of length two.  each entry is the trace of
     # residual covariance (reduced=0, full=1)
@@ -67,7 +66,7 @@ def compute_offset(x, y, contrast, f_stat=None, p_val=None):
 
     # if tr_eps[0] (reduced) and tr_eps[1] (full) have the ratio eps1_over_eps0
     # then the f_stat will be achieved
-    const = (reg_size * num_img - b * a[1]) / b * (a[1] - a[0])
+    const = get_f_const(y, contrast)
     eps1_over_eps0 = const / (const + f_stat)
     assert eps1_over_eps0 <= 1, 'eps0 > eps1'
 

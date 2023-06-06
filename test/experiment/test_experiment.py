@@ -1,7 +1,9 @@
 from itertools import product
 
 import hrba
+from helper import generate_dummy_data
 from hrba.experiment.experiment import *
+from hrba.sample_effect import ExtenterSphere
 
 data_folder = pathlib.Path(hrba.__file__).parents[2] / 'data'
 
@@ -29,6 +31,14 @@ for intensity, (img_idx, feat_idx) in enumerate(product(range(3),
     img_feat_intensity[img_idx][feat_idx] = intensity
 
 
+def get_experiment(**kwargs):
+    reg_size = 1000
+    mask_idx = np.arange(reg_size).reshape((10, 10, 10))
+
+    x, y, contrast = generate_dummy_data(reg_size=reg_size, **kwargs)
+    return Experiment(x=x, y=y, contrast=contrast, mask_idx=mask_idx)
+
+
 class TestExperiment:
     def test_from_search(self):
         # nii
@@ -47,3 +57,21 @@ class TestExperiment:
             for img_idx, feat_intense in img_feat_intensity.items():
                 for feat_idx, intense in feat_intense.items():
                     assert (exp.y[feat_idx, img_idx, :] == intense).all()
+
+    def test_impose_effect(self):
+        seed = 0
+        exp = get_experiment(seed=seed)
+        extenter = ExtenterSphere(radius=3)
+
+        for p_val in np.logspace(-3, -.0001, 4):
+            _exp, effect = exp.impose_effect(seed=seed, extenter=extenter,
+                                             p_val=p_val)
+
+            assert np.isclose(effect.p_val, p_val)
+
+    def test_sample_x(self):
+        seed = 0
+        exp = get_experiment(seed=seed)
+        exp.sample_x(a=exp.x.shape[0])
+        exp.sample_x(contrast=exp.contrast)
+        exp.sample_x(a=4)

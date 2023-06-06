@@ -9,6 +9,8 @@ import pandas as pd
 from PIL import Image
 
 from hrba.mask import get_mask_idx
+from hrba.sample_effect import compute_offset
+from .effect import Effect
 
 
 class Experiment:
@@ -169,25 +171,37 @@ class Experiment:
         d['contrast'] = contrast
         return type(self)(**d)
 
-    def impose_effect(self, reg_size, f_stat=None, p_val=None, seed=None):
+    def impose_effect(self, extenter, seed=None, **kwargs):
         """ builds experiment with effect imposed
 
         Args:
-            reg_size (int): number of voxels in effect region
-            f_stat (float): f statistic of effect
-            p_val (float): p value of effect
-            seed: seed of random number generator
+            extenter (ExtenterSphere or ExtenterMinVar): identifies volume to
+                impose effect on
+            seed: seed of random number generator (for extent)
+            **kwargs: passed to compute_offset(), either p_val or f_stat
 
         Returns:
             exp (Experiment): an experiment
-            valid_case (ValidCase): ValidationCase
+            effect (Effect): encapsulates
         """
-        assert (f_stat is None) != (p_val is None), 'f_stat xor p_val required'
-
         # sample effect space
+        mask = extenter(y=self.y, mask_idx=self.mask_idx, seed=seed)
 
-        # get offset which imposes desired effect
+        # get offset which imposes desired effect strength
+        effect_idx = self.mask_idx[mask]
+        y_effect = self.y[:, :, effect_idx]
+        offset, _ = compute_offset(x=self.x, y=y_effect,
+                                   contrast=self.contrast, **kwargs)
 
-        # impose effect
+        # impose effect on y, build new experiment
+        y = copy(self.y)
+        y[:, :, effect_idx] += offset[..., np.newaxis]
+        exp = type(self)(x=self.x, y=y, contrast=self.contrast,
+                         mask_idx=self.mask_idx)
 
-        return type(self)(x=x, y=y, contrast=contrast, mask_idx=mask_idx)
+        # store effect
+        y_effect = y[:, :, effect_idx]
+        effect = Effect.from_x_y_contrast(x=self.x, y=y_effect,
+                                          contrast=self.contrast,
+                                          mask=mask)
+        return exp, effect

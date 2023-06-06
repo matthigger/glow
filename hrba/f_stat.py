@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.stats import f
 
 
 def get_f_stat(x, y, contrast):
@@ -14,18 +15,11 @@ def get_f_stat(x, y, contrast):
     Returns:
         f_stat (float): f statistic of MMSE regression from x to y
     """
-
-    # prep
-    b, num_img, reg_size = y.shape
-    _x = x[~contrast, :]
-
     # compute tr_eps
+    _x = x[~contrast, :]
     tr_eps = get_tr_eps(_x, y), get_tr_eps(x, y)
 
-    a = (~contrast).sum(), contrast.size
-    const = (reg_size * num_img - b * a[1]) / b * (a[1] - a[0])
-
-    return (tr_eps[0] - tr_eps[1]) / tr_eps[1] * const
+    return (tr_eps[0] - tr_eps[1]) / tr_eps[1] * get_f_const(y, contrast)
 
 
 def get_tr_eps(x, y):
@@ -49,3 +43,23 @@ def get_tr_eps(x, y):
     tr_eps = ssy - reg_size * np.trace(y_mean @ h @ y_mean.T)
 
     return tr_eps / (num_img * reg_size)
+
+
+def get_f_degrees(y, contrast):
+    # prep
+    b, num_img, reg_size = y.shape
+    a = (~contrast).sum(), contrast.size
+
+    dfn = num_img * reg_size - a[1]
+    dfd = a[1] - a[0]
+
+    return dfn, dfd
+
+
+def get_f_const(y, contrast):
+    # prep
+    b, num_img, reg_size = y.shape
+    a = (~contrast).sum(), contrast.size
+
+    const = (reg_size * num_img - b * a[1]) / b * (a[1] - a[0])
+    return const
