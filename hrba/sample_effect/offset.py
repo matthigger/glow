@@ -48,7 +48,6 @@ def compute_offset(x, y, contrast, f_stat=None, p_val=None):
 
     # prep constants
     b, num_img, reg_size = y.shape
-    a = (~contrast).sum(), contrast.size
 
     # prep matrices
     x = x[~contrast, :], x
