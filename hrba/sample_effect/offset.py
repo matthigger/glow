@@ -1,8 +1,9 @@
 import numpy as np
 from numpy.polynomial.polynomial import Polynomial
+from scipy.optimize import minimize
 from scipy.stats import f
 
-from hrba.f_stat import get_tr_eps, get_f_degrees, get_f_const
+from hrba.f_stat import get_f_degrees, get_f_const
 
 
 def compute_offset(x, y, contrast, f_stat=None, p_val=None):
@@ -59,46 +60,71 @@ def compute_offset(x, y, contrast, f_stat=None, p_val=None):
         dfn, dfd = get_f_degrees(y, contrast)
         f_stat = f.ppf(p_val, dfn=dfn, dfd=dfd)
 
-    # compute tr_eps_init, vector of length two.  each entry is the trace of
-    # residual covariance (reduced=0, full=1)
-    tr_eps_init = np.array([get_tr_eps(_x, y) for _x in x])
-
     # if tr_eps[0] (reduced) and tr_eps[1] (full) have the ratio eps1_over_eps0
     # then the f_stat will be achieved
     const = get_f_const(y, contrast)
     eps1_over_eps0 = const / (const + f_stat)
     assert eps1_over_eps0 <= 1, 'eps0 > eps1'
 
-    # find closest eps0, eps1  which achieves f stat (project tr_eps into
-    # direction of u).  this may minimize the norm of the offset, needs
-    # further study ...
-    u = np.array([1, eps1_over_eps0])
-    u /= np.linalg.norm(u)
-    tr_eps_target = np.dot(u, tr_eps_init) * u
+    # offset directions are the average (per voxel) noise in each model.
+    # This direction has the advantage of allowing us to reduce the noise in
+    # a model to zero (not true of an arbitrary direction)
+    i = np.eye(num_img)
+    offset = y_mean @ (i - h[0]) @ h[1], y_mean @ (i - h[1])
+    offset = [off / np.linalg.norm(off.flatten()) for off in offset]
 
-    # check that tr_eps_target obeys minimum tr_eps (sbj-pooled, spatial cov of
-    # y is lower bound on error cov since we're adding constant offset within
-    # each image and estimates don't vary across voxels within image)
-    tr_eps_min = ((y - y_mean[..., np.newaxis]) ** 2).sum()
-    tr_eps_min /= num_img * reg_size
-    if (tr_eps_target < tr_eps_min).any():
-        # choose closest point which obeys minimum
-        # (eps0 >= eps1 since reduced model is contained in full)
-        tr_eps_target = np.array([tr_eps_min / eps1_over_eps0, tr_eps_min])
+    def constraint(c, offset=offset):
+        """ when this function output is zero, F-stat is achieved """
+        offset = c[0] * offset[0] + c[1] * offset[1]
 
-    # get offset to induce trp_eps_after[1]
-    offset1 = get_offset_to_tr_eps(x=x[1], y=y, tr_eps=tr_eps_target[1],
-                                   offset=y_mean @ (np.eye(num_img) - h[1]))
+        # tr_eps_poly[i] is a polynomial representing the tr_eps of the model as
+        # a function of the scale of the offset given above
+        tr_eps_poly = \
+            get_tr_eps_poly(x=x[0], y=y, offset=offset), \
+                get_tr_eps_poly(x=x[1], y=y, offset=offset)
 
-    # get offset to induce trp_eps_after[0] (error in direction below impacts
-    # only the reduced model)
-    offset = (y_mean + offset1) @ (np.eye(num_img) - h[0]) @ h[1]
-    offset0 = get_offset_to_tr_eps(x=x[0],
-                                   y=y + offset1[..., np.newaxis],
-                                   tr_eps=tr_eps_target[0],
-                                   offset=offset)
+        return tr_eps_poly[1](1) - tr_eps_poly[0](1) * eps1_over_eps0
 
-    return offset0 + offset1, tr_eps_target
+    def obj(c):
+        """ since offsets are orthonormal, smallest c -> smallest offset"""
+        return (c ** 2).sum()
+
+    # find scale of each offset which achieves F while being as close as
+    # possible to original problem
+    res = minimize(fun=obj, x0=np.array([1, 1]),
+                   constraints=[{'type': 'eq',
+                                 'fun': constraint}],
+                   options={'maxiter': 1000})
+    assert res.success, 'optimization failed'
+
+    offset = res.x[0] * offset[0] + res.x[1] * offset[1]
+
+    return offset
+
+
+def get_tr_eps_poly(x, y, offset):
+    """ builds cubic polynomial of tr_eps as a function of offset scale
+
+    Attributes:
+        x (np.array): (a, num_img) explanatory variables
+        y (np.array): (b, num_img, num_vox) image intensities
+        offset (np.array): (b, num_img) offset direction, if not passed then
+            tr_eps is achieved with minimum squared difference to original y
+    """
+    # prep
+    b, num_img, reg_size = y.shape
+    h = np.linalg.pinv(x) @ x
+    i_minus_h = np.eye(num_img) - h
+    y_mean = y.mean(axis=2)
+    yv_squared = (y ** 2).sum()
+
+    # build polynomial of trace of error covariance as a function of
+    # multiplier (minus target tr_eps so that roots are solutions)
+    poly = Polynomial([
+        yv_squared - reg_size * np.trace(y_mean @ h @ y_mean.T),
+        reg_size * 2 * np.trace(offset @ i_minus_h @ y_mean.T),
+        reg_size * np.trace(offset @ i_minus_h @ offset.T)])
+    return poly / (num_img * reg_size)
 
 
 def get_offset_to_tr_eps(x, y, tr_eps, offset=None):

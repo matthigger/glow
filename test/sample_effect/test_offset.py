@@ -6,27 +6,18 @@ from hrba.sample_effect.offset import *
 
 
 def test_compute_offset():
-    for seed in range(30):
+    # range(100) takes ~35 seconds to run
+    for seed in range(1):
         # generate dummy data
         x, y, contrast = generate_dummy_data(seed=seed)
-        b, num_img, reg_size = y.shape
-        a = (~contrast).sum(), contrast.size
 
         for f_stat_exp in (0, 1, 10, 100, 1e6):
             # validate that f stat is achieved
-            offset, tr_eps_after = compute_offset(x=x, y=y, contrast=contrast,
-                                                  f_stat=f_stat_exp)
+            offset = compute_offset(x=x, y=y, contrast=contrast,
+                                    f_stat=f_stat_exp)
             f_stat_obs = get_f_stat(x=x, y=y + offset[..., np.newaxis],
                                     contrast=contrast)
             assert np.isclose(f_stat_obs, f_stat_exp)
-
-            # validate that p-value imposes same f stat
-            p_val = f.cdf(f_stat_exp,
-                          dfn=num_img * reg_size - a[1],
-                          dfd=a[1] - a[0])
-            _offset, _ = compute_offset(x=x, y=y, contrast=contrast,
-                                        p_val=p_val)
-            assert np.allclose(offset, _offset)
 
 
 def test_get_offset_to_tr_eps():

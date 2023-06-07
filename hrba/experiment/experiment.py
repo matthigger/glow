@@ -190,8 +190,8 @@ class Experiment:
         # get offset which imposes desired effect strength
         effect_idx = self.mask_idx[mask]
         y_effect = self.y[:, :, effect_idx]
-        offset, _ = compute_offset(x=self.x, y=y_effect,
-                                   contrast=self.contrast, **kwargs)
+        offset = compute_offset(x=self.x, y=y_effect, contrast=self.contrast,
+                                **kwargs)
 
         # impose effect on y, build new experiment
         y = copy(self.y)
