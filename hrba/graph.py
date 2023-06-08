@@ -5,7 +5,7 @@ def node_sum(dendro, val_dict):
     """ given item per leaf in tree, sums leaf values and adds to dictionary
 
     Args:
-        dendro (np.array): (2, num_leaf) dendrogram arrays (equiv to
+        dendro (np.array): (num_leaf - 1, 2) dendrogram arrays (equiv to
             sklearn.cluster.Ward.children_)
         val_dict (dict): keys are leaf indices (0 to num_leaf), values
             are items to be summed
@@ -15,7 +15,7 @@ def node_sum(dendro, val_dict):
             nodes, not just leafs
     """
     num_leaf = len(val_dict)
-    for node_idx, (c0, c1) in enumerate(dendro.T):
+    for node_idx, (c0, c1) in enumerate(dendro):
         node_idx += num_leaf
         new_val = val_dict[c0] + val_dict[c1]
         val_dict[node_idx] = new_val
@@ -29,7 +29,8 @@ def get_hit_miss(mask, mask_idx, dendro):
     Args:
         mask (np.array): target mask (boolean, same shape as mask_idx)
         mask_idx (np.array):
-        dendro (np.array): dendrogram
+        dendro (np.array): (num_leaf - 1, 2) dendrogram arrays (equiv to
+            sklearn.cluster.Ward.children_)
 
     Returns:
         miss_hit_dict (dict): keys are node indices, values are (2) arrays
