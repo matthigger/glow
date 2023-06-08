@@ -32,3 +32,21 @@ def test_get_hit_miss():
     for node in miss_hit_dict.keys():
         assert np.allclose(miss_hit_dict[node],
                            miss_hit_dict_exp[node]), f'failure node: {node}'
+
+
+def test_topo_iter():
+    # complete tree
+    dendro = np.array([[0, 1],
+                       [2, 3],
+                       [4, 5]])
+
+    assert list(iter_topo(dendro, node_start=4)) == [0, 1, 4]
+    assert list(iter_topo(dendro, node_start=5)) == [2, 3, 5]
+    assert list(iter_topo(dendro)) == [0, 1, 4, 2, 3, 5, 6]
+
+    # incomplete tree
+    dendro = np.array([[0, 1],
+                       [2, 3]])
+
+    assert list(iter_topo(dendro, num_leaf=4, node_start=4)) == [0, 1, 4]
+    assert list(iter_topo(dendro, num_leaf=4, node_start=5)) == [2, 3, 5]

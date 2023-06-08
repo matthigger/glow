@@ -45,3 +45,32 @@ def get_hit_miss(mask, mask_idx, dendro):
     miss_hit_dict = dict(enumerate(np.vstack((miss, hit)).T))
 
     return node_sum(dendro=dendro, val_dict=miss_hit_dict)
+
+
+def iter_topo(dendro, num_leaf=None, node_start=None):
+    """ topological sort, leafs to root
+
+    Args:
+        dendro (np.array): (num_leaf - 1, 2) dendrogram arrays (equiv to
+            sklearn.cluster.Ward.children_)
+        num_leaf (int): number of leafs in tree
+        node_start (int): starting node, iterates over all nodes below
+
+    Yields:
+        node_idx (int): node idx
+    """
+    if num_leaf is None:
+        # assumes that dendrogram is complete
+        num_leaf = dendro.shape[0] + 1
+
+    if node_start is None:
+        # will search largest node (whole thing if dendrogram connected)
+        node_start = num_leaf + dendro.shape[0] - 1
+
+    if node_start >= num_leaf:
+        for child in dendro[node_start - num_leaf, :]:
+            yield from iter_topo(dendro, num_leaf=num_leaf, node_start=child)
+
+    yield node_start
+
+def
