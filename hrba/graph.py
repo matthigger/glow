@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 import numpy as np
 
 
@@ -73,4 +75,82 @@ def iter_topo(dendro, num_leaf=None, node_start=None):
 
     yield node_start
 
-def
+
+def iter_reg_stat_exp(dendro, exp, **kwargs):
+    yield from iter_reg_stat(dendro, x=exp.x, y=exp.y, contrast=exp.contrast,
+                             **kwargs)
+
+
+def iter_reg_stat(dendro, x, y, contrast, include_leaf=True):
+    """ iterates through region statistics of graph
+
+    Args:
+        dendro (np.array): (num_leaf - 1, 2) dendrogram arrays (equiv to
+            sklearn.cluster.Ward.children_)
+        x (np.array): (a, num_img) explanatory variables
+        y (np.array): (b, num_img, num_vox) image intensities
+        contrast (np.array): (a) True for each corresponding feature in x which
+            is "of interest" (other x features form the reduced model in
+            computing f statistic)
+        include_leaf (bool): toggles inclusion of leafs
+
+    Yields:
+        reg_idx (int): region index
+        size (int): number of voxels in region
+        f_stat (tuple): f statistic
+    """
+    # prep
+    num_leaf = dendro.shape[0] + 1
+    b, num_img, reg_size = y.shape
+    x = x[~contrast, :], x
+    h = tuple(np.linalg.pinv(_x) @ _x for _x in x)
+    a = (~contrast).sum(), contrast.size
+
+    # init mean of squared y
+    msy = (y ** 2).sum(axis=(0, 1)) / num_img
+    msy_dict = defaultdict(lambda: 0)
+    msy_dict.update(enumerate(msy))
+
+    # init size_dict & y_mean_dict
+    size_dict = dict()
+    y_mean_dict = defaultdict(lambda: 0)
+
+    def _compute_f_stat(msy, y_mean, reg_size):
+        const = (reg_size * num_img - b * a[1]) / b * (a[1] - a[0])
+        tr_eps = msy - np.trace(y_mean @ h[0] @ y_mean.T) / num_img, \
+                 msy - np.trace(y_mean @ h[1] @ y_mean.T) / num_img
+        return (tr_eps[0] - tr_eps[1]) / tr_eps[1] * const
+
+    for reg_idx in iter_topo(dendro):
+        if include_leaf and reg_idx < num_leaf:
+            # single voxel region (don't delete on lookup)
+            f_stat = _compute_f_stat(msy=msy_dict[reg_idx],
+                                     y_mean=y[:, :, reg_idx],
+                                     reg_size=1)
+            yield reg_idx, 1, f_stat
+        else:
+            # multiple voxel region
+
+            # compute reg_size & lam (% region from each child)
+            child = dendro[reg_idx - num_leaf, :]
+            size = tuple(size_dict.pop(c, 1) for c in child)
+            reg_size = sum(size)
+            size_dict[reg_idx] = reg_size
+            lam = tuple(s / reg_size for s in size)
+
+            # compute & store msy, y_mean
+            for c, l in zip(child, lam):
+                msy_dict[reg_idx] += msy_dict.pop(c) * l
+                if c < num_leaf:
+                    # child has 1 voxel, direct lookup
+                    y_mean_dict[reg_idx] += y[:, :, c] * l
+                else:
+                    # child has many voxels, pop
+                    y_mean_dict[reg_idx] += y_mean_dict.pop(c) * l
+
+            # compute f_stat
+            f_stat = _compute_f_stat(msy=msy_dict[reg_idx],
+                                     y_mean=y_mean_dict[reg_idx],
+                                     reg_size=reg_size)
+
+            yield reg_idx, reg_size, f_stat

@@ -35,9 +35,9 @@ for intensity, (img_idx, feat_idx) in enumerate(product(range(3),
     img_feat_intensity[img_idx][feat_idx] = intensity
 
 
-def get_rand_exp(**kwargs):
-    reg_size = 1000
-    mask_idx = np.arange(reg_size).reshape((10, 10, 10))
+def get_rand_exp(shape=(10, 10, 10), **kwargs):
+    reg_size = np.prod(shape)
+    mask_idx = np.arange(reg_size).reshape(shape)
 
     x, y, contrast = generate_dummy_data(reg_size=reg_size, **kwargs)
     return Experiment(x=x, y=y, contrast=contrast, mask_idx=mask_idx)

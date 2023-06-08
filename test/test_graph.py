@@ -1,3 +1,5 @@
+from experiment.test_experiment import get_rand_exp
+from hrba.f_stat import get_f_stat
 from hrba.graph import *
 
 
@@ -50,3 +52,20 @@ def test_topo_iter():
 
     assert list(iter_topo(dendro, num_leaf=4, node_start=4)) == [0, 1, 4]
     assert list(iter_topo(dendro, num_leaf=4, node_start=5)) == [2, 3, 5]
+
+
+def test_iter_reg_stat():
+    exp = get_rand_exp(shape=(10, 10), b=1)
+    num_vox = exp.y.shape[2]
+    dendro = np.arange((num_vox - 1) * 2).reshape((num_vox - 1), 2)
+
+    for reg_idx, size, f_stat in iter_reg_stat_exp(dendro, exp):
+        # compute size & f_stat (slowly)
+        voxel_tup = tuple(v for v in iter_topo(dendro, node_start=reg_idx)
+                          if v < num_vox)
+
+        assert len(voxel_tup) == size
+
+        y = exp.y[..., voxel_tup]
+        f_stat_obs = get_f_stat(x=exp.x, y=y, contrast=exp.contrast)
+        assert np.isclose(f_stat, f_stat_obs)
