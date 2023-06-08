@@ -1,16 +1,13 @@
 import pathlib
 import re
-from collections import defaultdict
 from copy import copy
 
-import nibabel as nib
 import numpy as np
 import pandas as pd
-from PIL import Image
 
-from hrba.mask import get_mask_idx
 from hrba.sample_effect import compute_offset
 from .effect import Effect
+from .load_image import load_image_color, load_image_nii
 
 
 class Experiment:
@@ -78,63 +75,54 @@ class Experiment:
             print('some sbj missing files:')
             print(df.loc[s_missing, :].notnull().astype('int'))
 
-        # load images (check affine is consistent, if present)
-        affine = None
-        feat_sbj_img = defaultdict(dict)
-        for feat in df.columns:
-            for sbj in df.index:
-                file = df.loc[sbj, feat]
-
-                # load image
-                if '.nii' in str(file):
-                    # load img
-                    img = nib.load(file)
-                    if affine is None:
-                        affine = img.affine
-                    assert np.array_equal(img.affine,
-                                          affine), 'affine mismatch'
-                    feat_sbj_img[feat][sbj] = img.get_fdata()
-                else:
-                    x = np.array(Image.open(file))
-                    assert x.ndim == 2, 'only 2d non-nii supported'
-                    # todo: support for rgb split into 3 features here
-                    feat_sbj_img[feat][sbj] = x
-
-        # count nonzero voxels per position (also check images have same shape)
-        vox_count = None
-        for feat, sbj_img in feat_sbj_img.items():
-            for sbj, img in sbj_img.items():
-                if vox_count is None:
-                    vox_count = np.zeros(img.shape)
-                vox_count += img != 0
-
-        # build mask_idx
-        mask = vox_count == df.size
-        mask_idx = get_mask_idx(mask)
+        nii_in_file = ['.nii' in str(file) for file in df.values.flatten()]
+        if all(nii_in_file):
+            feat_sbj_img, mask_idx = load_image_nii(df)
+        elif not any(nii_in_file):
+            feat_sbj_img, mask_idx = load_image_color(df)
+        else:
+            raise TypeError('may not mix nifti and color images in input')
 
         # mask into each image, store as y
-        y = np.empty((len(df.columns), df.shape[0], mask.sum()))
+        mask = mask_idx >= 0
+        y_names = sorted(feat_sbj_img.keys())
+        y = np.empty((len(y_names), df.shape[0], mask.sum()))
         for sbj_idx, sbj in enumerate(sorted(df.index)):
-            for feat_idx, feat in enumerate(sorted(df.columns)):
+            for feat_idx, feat in enumerate(y_names):
                 y[feat_idx, sbj_idx, :] = feat_sbj_img[feat][sbj][mask]
 
-        return cls(y=y, y_names=df.columns, mask_idx=mask_idx, **kwargs)
+        return cls(y=y, y_names=y_names, mask_idx=mask_idx, **kwargs)
 
-    def bootstrap_y(self, n, seed=None, snr=1):
+    def bootstrap_img(self, n, seed=None, noise_scale=1):
         """ returns a new Experiment which bootstrap resamples images
 
         Args:
             n (int): number of images in the resulting Experiment
             seed: used for random number generator
-            snr (float): signal-to-noise ratio, at a snr of 2 the noise std
-                deviation is twice the standard deviation of a y feature (
-                across all voxels and images)
+            noise_scale (float): scales noise std_dev.  noise is drawn
+                independently, per voxel, from a normal distribution whose
+                covariance is the (b, b) sample covariance of self.y
 
         Returns:
             exp_out (Experiment): y has been bootstrap resampled from self
         """
+        # bootstrap sample images
+        rng = np.random.default_rng(seed=seed)
+        b, num_img_init, num_vox = self.y.shape
+        img_idx = rng.choice(num_img_init, n, replace=True)
+        y = self.y[:, img_idx, :]
 
-        raise NotImplementedError
+        # add noise
+        assert noise_scale >= 0, 'snr cannot be negative'
+        if noise_scale > 0:
+            cov = np.cov(self.y.reshape((b, -1)))
+            noise = rng.multivariate_normal(mean=np.zeros(b),
+                                            cov=cov * (noise_scale ** 2),
+                                            size=num_vox * n)
+            y += noise.T.reshape((b, n, num_vox))
+
+        return type(self)(x=self.x, y=y, contrast=self.contrast,
+                          mask_idx=self.mask_idx)
 
     def load_x(self):
         """ loads a csv of real x data (as opposed to sampled x data) """
@@ -145,6 +133,9 @@ class Experiment:
 
         Args:
             a (int): number of x features in output
+            contrast (np.array): (a) True for each corresponding feature in x
+                which is "of interest" (other x features form the reduced
+                model in computing f statistic)
             seed: used for random number generator
 
         Returns:

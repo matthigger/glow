@@ -1,4 +1,8 @@
+from collections import defaultdict
 from itertools import product
+
+import nibabel as nib
+from PIL import Image
 
 import hrba
 from helper import generate_dummy_data
@@ -31,7 +35,7 @@ for intensity, (img_idx, feat_idx) in enumerate(product(range(3),
     img_feat_intensity[img_idx][feat_idx] = intensity
 
 
-def get_experiment(**kwargs):
+def get_rand_exp(**kwargs):
     reg_size = 1000
     mask_idx = np.arange(reg_size).reshape((10, 10, 10))
 
@@ -60,7 +64,7 @@ class TestExperiment:
 
     def test_impose_effect(self):
         seed = 0
-        exp = get_experiment(seed=seed)
+        exp = get_rand_exp(seed=seed)
         extenter = ExtenterSphere(radius=3)
 
         for p_val in np.logspace(-3, -.0001, 4):
@@ -71,7 +75,44 @@ class TestExperiment:
 
     def test_sample_x(self):
         seed = 0
-        exp = get_experiment(seed=seed)
+        exp = get_rand_exp(seed=seed)
         exp.sample_x(a=exp.x.shape[0])
         exp.sample_x(contrast=exp.contrast)
         exp.sample_x(a=4)
+
+    def test_bootstrap_y(self):
+        exp = Experiment.from_search(folder=pathlib.Path('.'),
+                                     sbj_regex='sbj\d',
+                                     img_glob_dict={'color': '*test.png'})
+
+        n = 100
+        _exp = exp.bootstrap_img(n=n, seed=0)
+        assert _exp.y.shape[1] == n
+
+        # should return fresh copy of y, even if only 1 image of population
+        # 1 sampled
+        _exp = exp.bootstrap_img(n=1, seed=0)
+        assert _exp.y is not exp.y
+
+        # validate reshaping (ensure cov compute is correct ... reshape)
+        exp.mask_idx = None
+        new_mean = 1e8 * np.array([-1, 0, 1])
+        diff = new_mean - exp.y.mean(axis=(1, 2))
+        exp.y += diff[:, np.newaxis, np.newaxis]
+        _exp = exp.bootstrap_img(n=10, seed=0)
+        assert np.linalg.norm(new_mean - _exp.y.mean(axis=(1, 2))) < 1
+
+        # validate reshaping test case: each y feature has very different
+        # average, first direction is constant
+        exp.mask_idx = None
+        new_mean = 1e8 * np.array([-1, 0, 1])
+        diff = new_mean - exp.y.mean(axis=(1, 2))
+        exp.y += diff[:, np.newaxis, np.newaxis]
+        exp.y[0, ...] = new_mean[0]
+
+        # ensure additive offset doesnt mix y features
+        _exp = exp.bootstrap_img(n=10, seed=0)
+        assert np.linalg.norm(new_mean - _exp.y.mean(axis=(1, 2))) < 1
+
+        # ensure covariance compute doesn't mix features
+        assert np.isclose(np.cov(_exp.y[0, ...].flatten()), 0)
