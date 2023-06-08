@@ -6,7 +6,7 @@ from PIL import Image
 
 import hrba
 from helper import generate_dummy_data
-from hrba.experiment.experiment import *
+from hrba.experiment.exper import *
 from hrba.sample_effect import ExtenterSphere
 
 data_folder = pathlib.Path(hrba.__file__).parents[2] / 'data'
