@@ -80,27 +80,22 @@ class TestExperiment:
         exp.sample_x(contrast=exp.contrast)
         exp.sample_x(a=4)
 
-    def test_bootstrap_y(self):
+    def test_bootstrap_img(self):
         exp = Experiment.from_search(folder=pathlib.Path('.'),
                                      sbj_regex='sbj\d',
                                      img_glob_dict={'color': '*test.png'})
 
         n = 100
-        _exp = exp.bootstrap_img(n=n, seed=0)
-        assert _exp.y.shape[1] == n
-
-        # should return fresh copy of y, even if only 1 image of population
-        # 1 sampled
-        _exp = exp.bootstrap_img(n=1, seed=0)
-        assert _exp.y is not exp.y
+        exp.bootstrap_img(n=n, seed=0)
+        assert exp.y.shape[1] == n
 
         # validate reshaping (ensure cov compute is correct ... reshape)
         exp.mask_idx = None
         new_mean = 1e8 * np.array([-1, 0, 1])
         diff = new_mean - exp.y.mean(axis=(1, 2))
         exp.y += diff[:, np.newaxis, np.newaxis]
-        _exp = exp.bootstrap_img(n=10, seed=0)
-        assert np.linalg.norm(new_mean - _exp.y.mean(axis=(1, 2))) < 1
+        exp.bootstrap_img(n=10, seed=0)
+        assert np.linalg.norm(new_mean - exp.y.mean(axis=(1, 2))) < 1
 
         # validate reshaping test case: each y feature has very different
         # average, first direction is constant
@@ -111,8 +106,8 @@ class TestExperiment:
         exp.y[0, ...] = new_mean[0]
 
         # ensure additive offset doesnt mix y features
-        _exp = exp.bootstrap_img(n=10, seed=0)
-        assert np.linalg.norm(new_mean - _exp.y.mean(axis=(1, 2))) < 1
+        exp.bootstrap_img(n=10, seed=0)
+        assert np.linalg.norm(new_mean - exp.y.mean(axis=(1, 2))) < 1
 
         # ensure covariance compute doesn't mix features
-        assert np.isclose(np.cov(_exp.y[0, ...].flatten()), 0)
+        assert np.isclose(np.cov(exp.y[0, ...].flatten()), 0)

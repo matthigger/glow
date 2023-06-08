@@ -110,7 +110,7 @@ class Experiment:
         rng = np.random.default_rng(seed=seed)
         b, num_img_init, num_vox = self.y.shape
         img_idx = rng.choice(num_img_init, n, replace=True)
-        y = self.y[:, img_idx, :]
+        self.y = self.y[:, img_idx, :]
 
         # add noise
         assert noise_scale >= 0, 'snr cannot be negative'
@@ -119,10 +119,7 @@ class Experiment:
             noise = rng.multivariate_normal(mean=np.zeros(b),
                                             cov=cov * (noise_scale ** 2),
                                             size=num_vox * n)
-            y += noise.T.reshape((b, n, num_vox))
-
-        return type(self)(x=self.x, y=y, contrast=self.contrast,
-                          mask_idx=self.mask_idx)
+            self.y += noise.T.reshape((b, n, num_vox))
 
     def load_x(self):
         """ loads a csv of real x data (as opposed to sampled x data) """
@@ -146,21 +143,16 @@ class Experiment:
         if a is None:
             # contrast specified, extract a from it
             a = contrast.size
+            self.contrast = contrast
         else:
             # default contrast: all x of interest but bias term
-            contrast = np.ones(a, dtype=bool)
-            contrast[0] = False
+            self.contrast = np.ones(a, dtype=bool)
+            self.contrast[0] = False
 
         # sample x
         num_img = self.y.shape[1]
         rng = np.random.default_rng(seed=seed)
-        x = rng.standard_normal(size=(a, num_img))
-
-        # build a new instance which "copies" self, replacing x
-        d = copy(self.__dict__)
-        d['x'] = x
-        d['contrast'] = contrast
-        return type(self)(**d)
+        self.x = rng.standard_normal(size=(a, num_img))
 
     def impose_effect(self, extenter, seed=None, **kwargs):
         """ builds experiment with effect imposed

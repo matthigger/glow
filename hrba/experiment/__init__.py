@@ -1,3 +1,3 @@
-from analysis import *
-from effect import *
-from exper import *
+from .analysis import *
+from .effect import *
+from .exper import *
