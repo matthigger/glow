@@ -14,7 +14,20 @@ def test_iter_node_sum():
     assert node_sum(dendro, val_dict) == val_dict_exp
 
 
-def test_get_hit_miss():
+def test_get_f1():
+    mask = np.array([0, 0, 1, 1])
+    mask_idx = np.arange(4)
+    dendro = np.array([[0, 1],
+                       [2, 3],
+                       [4, 5]])
+
+    f1_exp = np.array([0, 0, 2/3, 2/3, 0, 1, 2/3])
+    f1 = get_f1(mask=mask, mask_idx=mask_idx, dendro=dendro)
+
+    assert np.allclose(f1, f1_exp)
+
+
+def test_get_miss_hit():
     mask = np.array([0, 0, 1, 1])
     mask_idx = np.arange(4)
     dendro = np.array([[0, 1],

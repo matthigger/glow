@@ -25,6 +25,34 @@ def node_sum(dendro, val_dict):
     return val_dict
 
 
+def get_f1(mask, mask_idx, dendro):
+    """ computes f1 score per region
+
+    Args:
+        mask (np.array): target mask (boolean, same shape as mask_idx)
+        mask_idx (np.array):
+        dendro (np.array): (num_leaf - 1, 2) dendrogram arrays (equiv to
+            sklearn.cluster.Ward.children_)
+
+    Returns:
+        f1 (np.array): f1 score per region
+    """
+    # compute misses & hits per region
+    miss_hits = get_miss_hits(mask, mask_idx, dendro)
+    miss_hits = np.vstack(miss_hits[idx] for idx in range(len(miss_hits)))
+
+    # true positive: target voxels in estimated region
+    tp = miss_hits[:, 1]
+
+    # false positive: in estimated region but not in target mask
+    fp = miss_hits[:, 0]
+
+    # false negative: targets outside of estimated region
+    fn = mask.sum() - tp
+
+    return 2 * tp / (2 * tp + fp + fn)
+
+
 def get_miss_hits(mask, mask_idx, dendro):
     """ for each node, count how many voxels are in / out of effect
 
