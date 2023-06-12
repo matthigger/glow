@@ -1,5 +1,6 @@
 from hrba.experiment import *
 from hrba.graph import get_hit_miss
+from .make_test_image import folder_test_data
 
 
 class TestAnalysisHRBA:
@@ -8,7 +9,7 @@ class TestAnalysisHRBA:
         # segment based on color
 
         # load single image, bootstrap a few more (no noise), sample rand x
-        exp = Experiment.from_search(folder=pathlib.Path('.'),
+        exp = Experiment.from_search(folder=folder_test_data,
                                      sbj_regex='sbj\d',
                                      img_glob_dict={'color': '*test.png'})
         exp.bootstrap_img(n=10, noise_scale=0)

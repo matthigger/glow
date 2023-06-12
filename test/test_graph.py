@@ -1,4 +1,4 @@
-from experiment.test_experiment import get_rand_exp
+from .experiment.test_experiment import get_rand_exp
 from hrba.f_stat import get_f_stat
 from hrba.graph import *
 

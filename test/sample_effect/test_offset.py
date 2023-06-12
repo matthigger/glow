@@ -1,8 +1,8 @@
 from pytest import raises
 
-from helper import generate_dummy_data
 from hrba.f_stat import *
 from hrba.sample_effect.offset import *
+from ..helper import generate_dummy_data
 
 
 def test_compute_offset():
