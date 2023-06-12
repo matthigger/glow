@@ -25,7 +25,7 @@ def node_sum(dendro, val_dict):
     return val_dict
 
 
-def get_hit_miss(mask, mask_idx, dendro):
+def get_miss_hits(mask, mask_idx, dendro):
     """ for each node, count how many voxels are in / out of effect
 
     Args:

@@ -6,4 +6,4 @@
 /htmlcov/
 /.coverage
 /test/data/img*
-*tmp*.py
+*tmp*

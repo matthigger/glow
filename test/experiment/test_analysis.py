@@ -1,5 +1,6 @@
 from hrba.experiment import *
-from hrba.graph import get_hit_miss
+from hrba.graph import get_miss_hits
+from hrba.sample_effect import ExtenterMinVar
 from .make_test_image import folder_test_data
 
 
@@ -27,8 +28,8 @@ class TestAnalysisHRBA:
         for grey_val in set(y_sbj0_grey):
             mask = img_grey == grey_val
             dendro = ana_hrba.perm_dendro_dict[0]
-            miss_hit_dict = get_hit_miss(mask=mask, mask_idx=exp.mask_idx,
-                                         dendro=dendro)
+            miss_hit_dict = get_miss_hits(mask=mask, mask_idx=exp.mask_idx,
+                                          dendro=dendro)
             perfect_miss_hit = (0, mask.sum())
             for miss_hit in miss_hit_dict.values():
                 if perfect_miss_hit == tuple(miss_hit):

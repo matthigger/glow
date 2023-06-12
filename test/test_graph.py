@@ -1,4 +1,4 @@
-from .experiment.test_experiment import get_rand_exp
+from experiment.test_experiment import get_rand_exp
 from hrba.f_stat import get_f_stat
 from hrba.graph import *
 
@@ -28,7 +28,7 @@ def test_get_hit_miss():
                          4: np.array([2, 0]),
                          5: np.array([0, 2]),
                          6: np.array([2, 2])}
-    miss_hit_dict = get_hit_miss(mask=mask, mask_idx=mask_idx, dendro=dendro)
+    miss_hit_dict = get_miss_hits(mask=mask, mask_idx=mask_idx, dendro=dendro)
 
     assert miss_hit_dict.keys() == miss_hit_dict_exp.keys()
     for node in miss_hit_dict.keys():
