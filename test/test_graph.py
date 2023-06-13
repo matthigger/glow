@@ -1,6 +1,6 @@
-from experiment.test_experiment import get_rand_exp
 from hrba.f_stat import get_f_stat
 from hrba.graph import *
+from .experiment.test_experiment import get_rand_exp
 
 
 def test_iter_node_sum():
@@ -21,7 +21,7 @@ def test_get_f1():
                        [2, 3],
                        [4, 5]])
 
-    f1_exp = np.array([0, 0, 2/3, 2/3, 0, 1, 2/3])
+    f1_exp = np.array([0, 0, 2 / 3, 2 / 3, 0, 1, 2 / 3])
     f1 = get_f1(mask=mask, mask_idx=mask_idx, dendro=dendro)
 
     assert np.allclose(f1, f1_exp)
