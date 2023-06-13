@@ -5,6 +5,22 @@ from .make_test_image import folder_test_data
 
 
 class TestAnalysisHRBA:
+    def test_run(self):
+        # load single image, bootstrap a few more (no noise), sample rand x
+        exp = Experiment.from_search(folder=folder_test_data,
+                                     sbj_regex='sbj\d',
+                                     img_glob_dict={'color': '*test.png'})
+        exp.bootstrap_img(n=10, noise_scale=0)
+        exp.sample_x(a=2)
+
+        # impose obvious effect
+        exp, effect = exp.impose_effect(extenter=ExtenterMinVar(n=100),
+                                        seed=0, p_val=.99)
+
+        # run (should collect all areas of consistent color)
+        ana_hrba = AnalysisHRBA(exp=exp, n_permute=1)
+        ana_hrba.run()
+
     def test_cluster(self):
         # in a population of identical test images, clustering should
         # segment based on color

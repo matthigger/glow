@@ -3,6 +3,7 @@ from sklearn.cluster import AgglomerativeClustering
 from sklearn.feature_extraction import grid_to_graph
 from tqdm import tqdm
 
+from hrba.graph import iter_reg_stat_exp
 from .permute import get_perm_matrix
 
 
@@ -19,15 +20,27 @@ class AnalysisHRBA:
         self.n_permute = n_permute
         self.perm_dendro_dict = dict()
 
-    def run(self):
+    def run(self, verbose=True):
         """ runs analysis to find all significant regions in experiment
         """
         # ward per permuatation
-        self.cluster()
+        self.cluster(verbose=verbose)
 
         # compute f-stat per region in all permutations
 
-        #
+        num_vox = self.exp.y.shape[2]
+        shape = (self.n_permute + 1, 2 * num_vox - 1)
+        self.size = np.full(shape, fill_value=-1, dtype=int)
+        self.f_stat = np.full(shape, fill_value=-1, dtype=float)
+
+        tqdm_dict = dict(desc='compute stats per permutation',
+                         disable=not verbose)
+        for perm_idx, dendro in tqdm(self.perm_dendro_dict.items(),
+                                     **tqdm_dict):
+            for reg_idx, _size, _f_stat in iter_reg_stat_exp(dendro=dendro,
+                                                             exp=self.exp):
+                self.size[perm_idx, reg_idx] = _size
+                self.f_stat[perm_idx, reg_idx] = _f_stat
 
     def cluster(self, verbose=True):
         """ build perm_dendro_dict """
