@@ -1,78 +1,33 @@
-import numpy as np
-from sklearn.cluster import AgglomerativeClustering
-from sklearn.feature_extraction import grid_to_graph
-from tqdm import tqdm
-
-from hrba.graph import iter_reg_stat_exp
-from .permute import get_perm_matrix
+from .epoch import Epoch
 
 
 class AnalysisHRBA:
     """
     Attributes:
-        perm_dendro_dict (dict): keys are permutation indices, values are
-            (2, n) dendrogram arrays (equiv to sklearn.cluster.Ward.children_)
+        alpha (float): upper bound on family wise error rate
+        n_permute (int): number of permutations to run (note that the
+            unpermuted stats are assigned "permutation" index 0 so that
+            n_permute + 1 "permutations" are run)
+        epoch_list (list): Epoch of region discovery
     """
 
     def __init__(self, exp, alpha=.05, n_permute=100):
         self.exp = exp
         self.alpha = alpha
         self.n_permute = n_permute
-        self.perm_dendro_dict = dict()
+        self.epoch_list = list()
 
-    def run(self, verbose=True):
+    def run(self, **kwargs):
         """ runs analysis to find all significant regions in experiment
         """
-        # ward per permuatation
-        self.cluster(verbose=verbose)
+        while True:
+            # build new epoch
+            epoch = Epoch(exp=self.exp, n_permute=self.n_permute,
+                          alpha=self.alpha, **kwargs)
+            self.epoch_list.append(epoch)
 
-        # compute f-stat per region in all permutations
+            if not self.epoch_list[-1].discovered:
+                break
 
-        num_vox = self.exp.y.shape[2]
-        shape = (self.n_permute + 1, 2 * num_vox - 1)
-        self.size = np.full(shape, fill_value=-1, dtype=int)
-        self.f_stat = np.full(shape, fill_value=-1, dtype=float)
-
-        tqdm_dict = dict(desc='compute stats per permutation',
-                         disable=not verbose)
-        for perm_idx, dendro in tqdm(self.perm_dendro_dict.items(),
-                                     **tqdm_dict):
-            for reg_idx, _size, _f_stat in iter_reg_stat_exp(dendro=dendro,
-                                                             exp=self.exp):
-                self.size[perm_idx, reg_idx] = _size
-                self.f_stat[perm_idx, reg_idx] = _f_stat
-
-    def cluster(self, verbose=True):
-        """ build perm_dendro_dict """
-        # prep
-        b, num_img, num_vox = self.exp.y.shape
-        x = self.exp.x[~self.exp.contrast, :], self.exp.x
-        h = [np.linalg.pinv(_x) @ _x for _x in x]
-        h_diff = h[1] - h[0]
-        i = np.eye(num_img)
-
-        # get connectivity (ensures only neighboring voxels joined)
-        mask = self.exp.mask_idx >= 0
-        if mask.ndim == 3:
-            shape = mask.shape
-        elif mask.ndim == 2:
-            shape = (*mask.shape, 1)
-
-        # prep ward clustering object
-        connectivity = grid_to_graph(*shape, mask=mask)
-        ward = AgglomerativeClustering(connectivity=connectivity,
-                                       linkage='ward')
-        tqdm_dict = dict(desc='clustering per permutation',
-                         disable=not verbose)
-        for perm_idx in tqdm(range(self.n_permute + 1), **tqdm_dict):
-            # permute data residuals under reduced model (freedman lane)
-            p = get_perm_matrix(perm_idx, num_img)
-            freed_lane = (i - h[0]) @ p + h[0]
-
-            # prepare y
-            y = np.einsum('ijk,jm->imk', self.exp.y, freed_lane @ h_diff)
-            y = y.reshape((-1, num_vox))
-
-            # cluster & store
-            ward.fit(y.T)
-            self.perm_dendro_dict[perm_idx] = ward.children_
+            # build new experiment, adjust for previously discovered regions
+            raise NotImplementedError
