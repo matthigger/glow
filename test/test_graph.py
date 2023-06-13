@@ -82,3 +82,37 @@ def test_iter_reg_stat():
         y = exp.y[..., voxel_tup]
         f_stat_obs = get_f_stat(x=exp.x, y=y, contrast=exp.contrast)
         assert np.isclose(f_stat, f_stat_obs)
+
+
+def test_dendro_to_parent():
+    dendro = np.array([[0, 1],
+                       [2, 3],
+                       [4, 5]])
+    parent_exp = np.array([4, 4, 5, 5, 6, 6, np.nan])
+    parent = dendro_to_parent(dendro)
+    assert np.allclose(parent_exp, parent, equal_nan=True)
+
+    parent = dendro_to_parent(dendro, num_leaf=4)
+    assert np.allclose(parent_exp, parent, equal_nan=True)
+
+    parent = dendro_to_parent(dendro, num_leaf=4)
+    assert np.allclose(parent_exp, parent, equal_nan=True)
+
+    dendro = np.array([[0, 1],
+                       [2, 3]])
+    parent_exp = np.array([4, 4, 5, 5, np.nan, np.nan])
+    parent = dendro_to_parent(dendro, num_leaf=4)
+    assert np.allclose(parent_exp, parent, equal_nan=True)
+
+    parent = dendro_to_parent(dendro, num_leaf=4)
+    assert np.allclose(parent_exp, parent, equal_nan=True)
+
+
+def test_iter_ancestor():
+    parent = np.array([4, 4, 5, 5, 6, 6, np.nan])
+
+    assert list(iter_ancestor(parent, node=0)) == [0, 4, 6]
+    assert list(iter_ancestor(parent, node=0, include_self=False)) == [4, 6]
+    assert list(iter_ancestor(parent, node=1)) == [1, 4, 6]
+    assert list(iter_ancestor(parent, node=4)) == [4, 6]
+    assert list(iter_ancestor(parent, node=3)) == [3, 5, 6]

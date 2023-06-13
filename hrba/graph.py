@@ -182,3 +182,40 @@ def iter_reg_stat(dendro, x, y, contrast, include_leaf=True):
                                      reg_size=reg_size)
 
             yield reg_idx, reg_size, f_stat
+
+
+def dendro_to_parent(dendro, num_leaf=None):
+    """ dendro points parents to child, parent point child to parent
+
+    Args:
+        dendro (np.array): (num_leaf - 1, 2) dendrogram arrays (equiv to
+            sklearn.cluster.Ward.children_)
+
+    Returns:
+        parent (np.array): (num_reg) parent of every region
+    """
+    if num_leaf is None:
+        # assumes complete binary tree
+        num_leaf = dendro.shape[0] + 1
+
+    # init parent
+    num_reg = num_leaf + dendro.shape[0]
+    parent = np.ones(num_reg, dtype=int) * np.nan
+
+    # store parents
+    for idx, children in enumerate(dendro):
+        reg_idx = idx + num_leaf
+        parent[children] = reg_idx
+
+    return parent
+
+
+def iter_ancestor(parent, node, include_self=True):
+    if include_self:
+        yield node
+
+    while True:
+        node = parent[int(node)]
+        if np.isnan(node):
+            break
+        yield node
