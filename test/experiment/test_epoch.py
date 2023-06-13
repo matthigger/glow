@@ -1,6 +1,7 @@
 from hrba.experiment import *
 from hrba.graph import get_miss_hits
 from .make_test_image import folder_test_data
+from ..helper import generate_dummy_data
 
 
 class TestEpoch:
@@ -16,7 +17,7 @@ class TestEpoch:
         exp.sample_x(a=2)
 
         # cluster (should collect all areas of consistent color)
-        dendro = Epoch.cluster(exp=exp, n_permute=0)[0]
+        children = Epoch.cluster(exp=exp, n_permute=0)[0]
 
         # assumptions: test image has 1 color per greyscale value and each
         # color is contiguous
@@ -26,7 +27,7 @@ class TestEpoch:
         for grey_val in set(y_sbj0_grey):
             mask = img_grey == grey_val
             miss_hit_dict = get_miss_hits(mask=mask, mask_idx=exp.mask_idx,
-                                          dendro=dendro)
+                                          children=children)
             perfect_miss_hit = (0, mask.sum())
             for miss_hit in miss_hit_dict.values():
                 if perfect_miss_hit == tuple(miss_hit):

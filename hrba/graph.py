@@ -3,11 +3,11 @@ from collections import defaultdict
 import numpy as np
 
 
-def node_sum(dendro, val_dict):
-    """ given item per leaf in tree, sums leaf values and adds to dictionary
+def node_sum(children, val_dict):
+    """ given item per leaf in graph, sums leaf values and adds to dictionary
 
     Args:
-        dendro (np.array): (num_leaf - 1, 2) dendrogram arrays (equiv to
+        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
             sklearn.cluster.Ward.children_)
         val_dict (dict): keys are leaf indices (0 to num_leaf), values
             are items to be summed
@@ -17,7 +17,7 @@ def node_sum(dendro, val_dict):
             nodes, not just leafs
     """
     num_leaf = len(val_dict)
-    for node_idx, (c0, c1) in enumerate(dendro):
+    for node_idx, (c0, c1) in enumerate(children):
         node_idx += num_leaf
         new_val = val_dict[c0] + val_dict[c1]
         val_dict[node_idx] = new_val
@@ -25,20 +25,20 @@ def node_sum(dendro, val_dict):
     return val_dict
 
 
-def get_f1(mask, mask_idx, dendro):
+def get_f1(mask, mask_idx, children):
     """ computes f1 score per region
 
     Args:
         mask (np.array): target mask (boolean, same shape as mask_idx)
         mask_idx (np.array):
-        dendro (np.array): (num_leaf - 1, 2) dendrogram arrays (equiv to
+        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
             sklearn.cluster.Ward.children_)
 
     Returns:
         f1 (np.array): f1 score per region
     """
     # compute misses & hits per region
-    miss_hits = get_miss_hits(mask, mask_idx, dendro)
+    miss_hits = get_miss_hits(mask, mask_idx, children)
     miss_hits = np.vstack(miss_hits[idx] for idx in range(len(miss_hits)))
 
     # true positive: target voxels in estimated region
@@ -53,13 +53,13 @@ def get_f1(mask, mask_idx, dendro):
     return 2 * tp / (2 * tp + fp + fn)
 
 
-def get_miss_hits(mask, mask_idx, dendro):
+def get_miss_hits(mask, mask_idx, children):
     """ for each node, count how many voxels are in / out of effect
 
     Args:
         mask (np.array): target mask (boolean, same shape as mask_idx)
         mask_idx (np.array):
-        dendro (np.array): (num_leaf - 1, 2) dendrogram arrays (equiv to
+        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
             sklearn.cluster.Ward.children_)
 
     Returns:
@@ -74,46 +74,46 @@ def get_miss_hits(mask, mask_idx, dendro):
     miss = np.ones(num_vox) - hit
     miss_hit_dict = dict(enumerate(np.vstack((miss, hit)).T))
 
-    return node_sum(dendro=dendro, val_dict=miss_hit_dict)
+    return node_sum(children=children, val_dict=miss_hit_dict)
 
 
-def iter_topo(dendro, num_leaf=None, node_start=None):
+def iter_topo(children, num_leaf=None, node_start=None):
     """ topological sort, leafs to root
 
     Args:
-        dendro (np.array): (num_leaf - 1, 2) dendrogram arrays (equiv to
+        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
             sklearn.cluster.Ward.children_)
-        num_leaf (int): number of leafs in tree
+        num_leaf (int): number of leafs in graph
         node_start (int): starting node, iterates over all nodes below
 
     Yields:
         node_idx (int): node idx
     """
     if num_leaf is None:
-        # assumes that dendrogram is complete
-        num_leaf = dendro.shape[0] + 1
+        # assumes that graph is complete
+        num_leaf = children.shape[0] + 1
 
     if node_start is None:
-        # will search largest node (whole thing if dendrogram connected)
-        node_start = num_leaf + dendro.shape[0] - 1
+        # will search largest node (whole thing if graph connected)
+        node_start = num_leaf + children.shape[0] - 1
 
     if node_start >= num_leaf:
-        for child in dendro[node_start - num_leaf, :]:
-            yield from iter_topo(dendro, num_leaf=num_leaf, node_start=child)
+        for child in children[node_start - num_leaf, :]:
+            yield from iter_topo(children, num_leaf=num_leaf, node_start=child)
 
     yield node_start
 
 
-def iter_reg_stat_exp(dendro, exp, **kwargs):
-    yield from iter_reg_stat(dendro, x=exp.x, y=exp.y, contrast=exp.contrast,
+def iter_reg_stat_exp(children, exp, **kwargs):
+    yield from iter_reg_stat(children, x=exp.x, y=exp.y, contrast=exp.contrast,
                              **kwargs)
 
 
-def iter_reg_stat(dendro, x, y, contrast, include_leaf=True):
+def iter_reg_stat(children, x, y, contrast, include_leaf=True):
     """ iterates through region statistics of graph
 
     Args:
-        dendro (np.array): (num_leaf - 1, 2) dendrogram arrays (equiv to
+        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
             sklearn.cluster.Ward.children_)
         x (np.array): (a, num_img) explanatory variables
         y (np.array): (b, num_img, num_vox) image intensities
@@ -128,7 +128,7 @@ def iter_reg_stat(dendro, x, y, contrast, include_leaf=True):
         f_stat (tuple): f statistic
     """
     # prep
-    num_leaf = dendro.shape[0] + 1
+    num_leaf = children.shape[0] + 1
     b, num_img, reg_size = y.shape
     x = x[~contrast, :], x
     h = tuple(np.linalg.pinv(_x) @ _x for _x in x)
@@ -149,7 +149,7 @@ def iter_reg_stat(dendro, x, y, contrast, include_leaf=True):
                  msy - np.trace(y_mean @ h[1] @ y_mean.T) / num_img
         return (tr_eps[0] - tr_eps[1]) / tr_eps[1] * const
 
-    for reg_idx in iter_topo(dendro):
+    for reg_idx in iter_topo(children):
         if include_leaf and reg_idx < num_leaf:
             # single voxel region (don't delete on lookup)
             f_stat = _compute_f_stat(msy=msy_dict[reg_idx],
@@ -160,7 +160,7 @@ def iter_reg_stat(dendro, x, y, contrast, include_leaf=True):
             # multiple voxel region
 
             # compute reg_size & lam (% region from each child)
-            child = dendro[reg_idx - num_leaf, :]
+            child = children[reg_idx - num_leaf, :]
             size = tuple(size_dict.pop(c, 1) for c in child)
             reg_size = sum(size)
             size_dict[reg_idx] = reg_size
@@ -184,11 +184,11 @@ def iter_reg_stat(dendro, x, y, contrast, include_leaf=True):
             yield reg_idx, reg_size, f_stat
 
 
-def dendro_to_parent(dendro, num_leaf=None):
-    """ dendro points parents to child, parent point child to parent
+def child_to_parent(children, num_leaf=None):
+    """ children points parents to child, parent point child to parent
 
     Args:
-        dendro (np.array): (num_leaf - 1, 2) dendrogram arrays (equiv to
+        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
             sklearn.cluster.Ward.children_)
 
     Returns:
@@ -196,14 +196,14 @@ def dendro_to_parent(dendro, num_leaf=None):
     """
     if num_leaf is None:
         # assumes complete binary tree
-        num_leaf = dendro.shape[0] + 1
+        num_leaf = children.shape[0] + 1
 
     # init parent
-    num_reg = num_leaf + dendro.shape[0]
+    num_reg = num_leaf + children.shape[0]
     parent = np.ones(num_reg, dtype=int) * np.nan
 
     # store parents
-    for idx, children in enumerate(dendro):
+    for idx, children in enumerate(children):
         reg_idx = idx + num_leaf
         parent[children] = reg_idx
 

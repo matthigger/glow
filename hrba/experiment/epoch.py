@@ -6,7 +6,8 @@ from sklearn.feature_extraction import grid_to_graph
 from sklearn.linear_model import LinearRegression
 from tqdm import tqdm
 
-from hrba.graph import iter_reg_stat_exp
+from hrba.graph import iter_reg_stat_exp, iter_topo, child_to_parent, \
+    iter_ancestor
 from .permute import get_perm_matrix
 
 
@@ -15,8 +16,8 @@ class Epoch:
 
     Attributes:
         exp (Experiment): the source data to run experiment on
-        dendro_dict (dict): keys are permutation indices, values are
-            (2, n) dendrogram arrays (equiv to sklearn.cluster.Ward.children_)
+        child_dict (dict): keys are permutation indices, values are
+            (2, n) graph arrays (equiv to sklearn.cluster.Ward.children_)
         size (np.array): (n_permute + 1, num_reg) size of each region
         f_stat (np.array): (n_permute + 1, num_reg) raw f-stat of each region
         z_stat (np.array): (n_permute + 1, num_reg)  "z-score" of each f-stat
@@ -31,11 +32,11 @@ class Epoch:
         self.exp = exp
 
         # build hierarchy
-        self.dendro_dict = self.cluster(n_permute=n_permute, **kwargs)
+        self.child_dict = self.cluster(n_permute=n_permute, **kwargs)
 
         # compute f stat per every region in hierarchy (across all permutes)
         self.size, self.f_stat = self.get_f_stat(exp=exp,
-                                                 dendro_dict=self.dendro_dict)
+                                                 child_dict=self.child_dict)
 
         # model f mu & var as a function of region size
         self.model_f_mu, self.model_f_var, self.z_stat = \
@@ -46,7 +47,7 @@ class Epoch:
 
     @classmethod
     def cluster(cls, exp, n_permute, verbose=True):
-        """ build dendro_dict """
+        """ build child_dict """
         # prep
         b, num_img, num_vox = exp.y.shape
         x = exp.x[~exp.contrast, :], exp.x
@@ -62,7 +63,7 @@ class Epoch:
             shape = (*mask.shape, 1)
 
         # prep ward clustering object
-        dendro_dict = dict()
+        child_dict = dict()
         connectivity = grid_to_graph(*shape, mask=mask)
         ward = AgglomerativeClustering(connectivity=connectivity,
                                        linkage='ward')
@@ -79,24 +80,24 @@ class Epoch:
 
             # cluster & store
             ward.fit(y.T)
-            dendro_dict[perm_idx] = ward.children_
+            child_dict[perm_idx] = ward.children_
 
-        return dendro_dict
+        return child_dict
 
     @classmethod
-    def get_f_stat(cls, exp, dendro_dict, verbose=True):
+    def get_f_stat(cls, exp, child_dict, verbose=True):
         # compute f-stat per region in all permutations
         num_vox = exp.y.shape[2]
-        n_permute = len(dendro_dict)
+        n_permute = len(child_dict)
         shape = (n_permute + 1, 2 * num_vox - 1)
         size = np.full(shape, fill_value=-1, dtype=int)
         f_stat = np.full(shape, fill_value=-1, dtype=float)
 
         tqdm_dict = dict(desc='compute stats per permutation',
                          disable=not verbose)
-        for perm_idx, dendro in tqdm(dendro_dict.items(),
+        for perm_idx, children in tqdm(child_dict.items(),
                                      **tqdm_dict):
-            for reg_idx, _size, _f_stat in iter_reg_stat_exp(dendro=dendro,
+            for reg_idx, _size, _f_stat in iter_reg_stat_exp(children=children,
                                                              exp=exp):
                 size[perm_idx, reg_idx] = _size
                 f_stat[perm_idx, reg_idx] = _f_stat
