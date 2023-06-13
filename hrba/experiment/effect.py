@@ -5,18 +5,13 @@ from hrba.f_stat import get_f_stat, get_f_degrees, get_tr_eps
 
 
 class Effect:
-    """ stores an effect, methods to identify sensitivity & specificity
+    """ stores an effect
 
-    all attributes but mask for storage purposes only, to characterize the
-    effect
+    anything passed to constructor besides mask & beta are stored as
+    attribute (useful for storage, but won't impact use of object)
 
     Attributes:
         mask (np.array): True where effect, false otherwise
-        f_stat (float): f-statistic of effect
-        p_val (float): p-value of effect
-        tr_eps (tuple): (2) floats. trace of covariance of residual of reduced
-            and full models
-        reg_size (int): number of voxels/pixels in effect
         beta (tuple): two (a, b) arrays MMSE mapping from x to y,
             corresponding to reduced and full models respectively
     """
@@ -37,17 +32,15 @@ class Effect:
         y_mean = y.mean(axis=2)
         beta = tuple(y_mean @ np.linalg.pinv(_x) for _x in x)
 
-        return cls(f_stat=f_stat, p_val=p_val, tr_eps=tr_eps,
-                   reg_size=y.shape[2], beta=beta, **kwargs)
+        return cls(f_stat=f_stat, p_val=p_val, tr_eps=tr_eps, beta=beta,
+                   **kwargs)
 
-    def __init__(self, mask, f_stat=None, p_val=None, tr_eps=None,
-                 reg_size=None, beta=None):
+    def __init__(self, mask, beta=None, **kwargs):
         self.mask = mask
-        self.f_stat = f_stat
-        self.p_val = p_val
-        self.tr_eps = tr_eps
-        self.reg_size = reg_size
         self.beta = beta
+
+        # all other inputs are to be stored
+        self.__dict__.update(kwargs)
 
     def compute_sens_spec(self, mask_estimate):
         raise NotImplementedError
