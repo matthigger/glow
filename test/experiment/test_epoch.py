@@ -79,3 +79,34 @@ class TestEpoch:
 
         p_val = Epoch.get_pval(z_stat)
         assert np.allclose(p_val, p_val_exp)
+
+    def test_discover(self):
+        num_vox = 4
+        x, y, contrast = generate_dummy_data(reg_size=num_vox, seed=0)
+        mask_idx = np.arange(num_vox)
+        exp = Experiment(x=x, y=y, contrast=contrast, mask_idx=mask_idx)
+        children = np.array([[0, 1],
+                             [2, 3],
+                             [4, 5]])
+
+        # only 1 sig region
+        pval = np.array([.1, 1, 1, 1, 1, 1, 1])
+        eff_list = Epoch.discover(pval=pval, children=children, exp=exp,
+                                  alpha=.5)
+        assert len(eff_list) == 1
+        assert eff_list[0].reg_idx == 0
+
+        # 2 sig regions which intersect
+        pval = np.array([.1, 1, 1, 1, .2, 1, 1])
+        eff_list = Epoch.discover(pval=pval, children=children, exp=exp,
+                                  alpha=.5)
+        assert len(eff_list) == 1
+        assert eff_list[0].reg_idx == 0
+
+        # 2 sig regions which don't intersect
+        pval = np.array([.1, .2, 1, 1, 1, 1, 1])
+        eff_list = Epoch.discover(pval=pval, children=children, exp=exp,
+                                  alpha=.5)
+        assert len(eff_list) == 2
+        assert eff_list[0].reg_idx == 0
+        assert eff_list[1].reg_idx == 1

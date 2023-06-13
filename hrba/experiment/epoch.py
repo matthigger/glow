@@ -6,8 +6,8 @@ from sklearn.feature_extraction import grid_to_graph
 from sklearn.linear_model import LinearRegression
 from tqdm import tqdm
 
-from hrba.graph import iter_reg_stat_exp, iter_topo, child_to_parent, \
-    iter_ancestor
+from hrba.graph import iter_reg_stat_exp, iter_topo, child_to_parent
+from .effect import Effect
 from .permute import get_perm_matrix
 
 
@@ -96,7 +96,7 @@ class Epoch:
         tqdm_dict = dict(desc='compute stats per permutation',
                          disable=not verbose)
         for perm_idx, children in tqdm(child_dict.items(),
-                                     **tqdm_dict):
+                                       **tqdm_dict):
             for reg_idx, _size, _f_stat in iter_reg_stat_exp(children=children,
                                                              exp=exp):
                 size[perm_idx, reg_idx] = _size
@@ -133,6 +133,15 @@ class Epoch:
     @classmethod
     def get_pval(cls, z_stat):
         """ computes FWER adjusted pval (percentile within max per permute)
+
+        Args:
+            z_stat (np.array): (num_permute, num_reg) z statistics per region
+                (num std dev above or below expected f stat under null
+                hypothesis)
+
+        Returns:
+            pval (np.array): (num_reg) Family Wise Error Rate controlled
+                p-values
         """
         # max z_stat per permutation (sorted from low to high)
         z_stat_max = np.sort(z_stat.max(axis=1))
@@ -144,5 +153,60 @@ class Epoch:
 
         return pval
 
-    def discover(self, alpha):
-        raise NotImplementedError
+    @classmethod
+    def discover(cls, pval, children, exp, alpha=.05):
+        """ identifies most significant disjoint effects while FWER < alpha
+
+        Args:
+            pval (np.array): (num_reg) Family Wise Error Rate controlled
+                p-values
+            children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
+                sklearn.cluster.Ward.children_)
+            exp (Experiment): the source data to run experiment on
+            alpha (float): upper bound on FWER
+
+        Returns:
+            effect_list (list): list of disjoint Effect
+        """
+        # get set of all significant regions
+        bool_sig = pval <= alpha
+        pval = pval[bool_sig]
+        reg_idx = np.where(bool_sig)[0]
+        pval_reg_list = sorted(zip(pval, reg_idx))
+
+        # change direction of pointers in graph (to bigger regions)
+        parent = child_to_parent(children)
+
+        num_leaf = children.shape[0] + 1
+        vox_claimed = set()
+        effect_list = list()
+        for p_val, reg_idx in pval_reg_list:
+            # check if region intersects with others discovered (no shared
+            # ancestor)
+            vox_contained = set(iter_topo(children=children,
+                                          node_start=reg_idx,
+                                          only_leaf=True))
+            if vox_claimed.intersection(vox_contained):
+                # region intersects some claimed region already discovered
+                continue
+
+            # claim intersecting voxels
+            vox_claimed |= vox_contained
+
+            # build y corresponding to effect region
+            y = exp.y[..., list(vox_contained)]
+
+            # build mask corresponding to effect region
+            mask = np.zeros(exp.mask_idx.shape, dtype=bool)
+            for vox in vox_contained:
+                mask[exp.mask_idx == vox] = True
+
+            #  build effect & add to effect list
+            effect = Effect.from_x_y_contrast(mask=mask, x=exp.x, y=y,
+                                              contrast=exp.contrast,
+                                              p_val_fwer=p_val,
+                                              y_mean=y.mean(axis=2),
+                                              reg_idx=reg_idx)
+            effect_list.append(effect)
+
+        return effect_list
