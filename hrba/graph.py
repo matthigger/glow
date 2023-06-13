@@ -77,7 +77,7 @@ def get_miss_hits(mask, mask_idx, children):
     return node_sum(children=children, val_dict=miss_hit_dict)
 
 
-def iter_topo(children, num_leaf=None, node_start=None):
+def iter_topo(children, num_leaf=None, node_start=None, only_leaf=False):
     """ topological sort, leafs to root
 
     Args:
@@ -85,6 +85,7 @@ def iter_topo(children, num_leaf=None, node_start=None):
             sklearn.cluster.Ward.children_)
         num_leaf (int): number of leafs in graph
         node_start (int): starting node, iterates over all nodes below
+        only_leaf (bool): if True, only leaves are yielded
 
     Yields:
         node_idx (int): node idx
@@ -98,10 +99,12 @@ def iter_topo(children, num_leaf=None, node_start=None):
         node_start = num_leaf + children.shape[0] - 1
 
     if node_start >= num_leaf:
-        for child in children[node_start - num_leaf, :]:
-            yield from iter_topo(children, num_leaf=num_leaf, node_start=child)
+        for child in children[int(node_start - num_leaf), :]:
+            yield from iter_topo(children, num_leaf=num_leaf, node_start=child,
+                                 only_leaf=only_leaf)
 
-    yield node_start
+    if not only_leaf or node_start < num_leaf:
+        yield node_start
 
 
 def iter_reg_stat_exp(children, exp, **kwargs):
