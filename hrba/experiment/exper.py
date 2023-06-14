@@ -177,14 +177,54 @@ class Experiment:
                                 **kwargs)
 
         # impose effect on y, build new experiment
-        y = copy(self.y)
-        y[:, :, effect_idx] += offset[..., np.newaxis]
-        exp = type(self)(x=self.x, y=y, contrast=self.contrast,
-                         mask_idx=self.mask_idx)
+        exp = self.add_offset(offset, mask=mask)
 
-        # store effect
-        y_effect = y[:, :, effect_idx]
-        effect = Effect.from_x_y_contrast(x=self.x, y=y_effect,
-                                          contrast=self.contrast,
-                                          mask=mask)
+        effect = Effect.from_exp_mask(exp=exp, mask=mask)
+
         return exp, effect
+
+    def add_effect(self, effect, remove_flag=False):
+        """ builds a new experiment which has the effect added
+
+        Args:
+            effect (Effect): effect to add to experiment, note that adding
+
+        Returns:
+            exp_out (Experiment): experiment whose y features have had the
+                effect subtracted away
+        """
+        # compute portion of y estimated from explanatory features of
+        # interest (note we exclude nuisance explanatory features)
+        num_img = self.x.shape[1]
+        x = self.x[~self.contrast, :], self.x
+        h = tuple(np.linalg.pinv(_x) @ _x for _x in x)
+        offset = effect.y_mean @ h[1] @ (np.eye(num_img) - h[0])
+
+        if remove_flag:
+            offset *= -1
+
+        return self.add_offset(offset=offset, mask=effect.mask)
+
+    def add_offset(self, offset, mask=None, vox_idx=None):
+        """ returns new experiment with constant offset added to y
+
+        Args:
+            offset (np.array): (b, num_img) offset to apply to each voxel
+            mask (np.array): boolean area of locations to apply offset to
+            vox_idx (list): list of voxel index to apply effect to
+
+        Returns:
+            exp (Experiment): new experiment, with offset applied
+        """
+        assert (mask is None) != (vox_idx is None), \
+            'either mask xor vox_idx required'
+
+        if vox_idx is None:
+            vox_idx = self.mask_idx[mask]
+
+        # build new y
+        y = copy(self.y)
+        y[:, :, vox_idx] += offset[..., np.newaxis]
+
+        return type(self)(x=self.x, y=y, contrast=self.contrast,
+                          mask_idx=self.mask_idx)

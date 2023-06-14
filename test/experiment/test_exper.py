@@ -80,3 +80,17 @@ class TestExperiment:
 
         # ensure covariance compute doesn't mix features
         assert np.isclose(np.cov(exp.y[0, ...].flatten()), 0)
+
+    def test_add_effect(self):
+        # get arbitrary experiment & effect region (whole image)
+        shape = 10, 10
+        mask = np.ones(shape, dtype=bool)
+        exp = get_rand_exp(shape=shape, add_effect=True, seed=0)
+        eff = Effect.from_exp_mask(exp=exp, mask=mask)
+
+        # remove the effect
+        exp2 = exp.add_effect(effect=eff, remove_flag=True)
+
+        # validate that exp2 has f=0 for whole region
+        eff2 = Effect.from_exp_mask(exp=exp2, mask=mask)
+        assert np.isclose(eff2.f_stat, 0)
