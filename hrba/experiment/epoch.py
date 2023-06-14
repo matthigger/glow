@@ -28,15 +28,17 @@ class Epoch:
             of region size (log10 F_var = m * log10 num_vox + b)
     """
 
-    def __init__(self, exp, n_permute, **kwargs):
+    def __init__(self, exp, n_permute, alpha=.05, verbose=True):
         self.exp = exp
 
         # build hierarchy
-        self.child_dict = self.cluster(n_permute=n_permute, **kwargs)
+        self.child_dict = self.cluster(exp=exp, n_permute=n_permute,
+                                       verbose=verbose)
 
         # compute f stat per every region in hierarchy (across all permutes)
         self.size, self.f_stat = self.get_f_stat(exp=exp,
-                                                 child_dict=self.child_dict)
+                                                 child_dict=self.child_dict,
+                                                 verbose=verbose)
 
         # model f mu & var as a function of region size
         self.model_f_mu, self.model_f_var, self.z_stat = \
@@ -44,6 +46,10 @@ class Epoch:
 
         # compute p-values
         self.p_val = self.get_pval(self.z_stat)
+
+        # discover effects
+        self.effect_list = self.discover(pval=self.p_val, exp=exp, alpha=alpha,
+                                         children=self.child_dict[0])
 
     @classmethod
     def cluster(cls, exp, n_permute, verbose=True):
@@ -88,7 +94,7 @@ class Epoch:
     def get_f_stat(cls, exp, child_dict, verbose=True):
         # compute f-stat per region in all permutations
         num_vox = exp.y.shape[2]
-        n_permute = len(child_dict)
+        n_permute = len(child_dict) - 1
         shape = (n_permute + 1, 2 * num_vox - 1)
         size = np.full(shape, fill_value=-1, dtype=int)
         f_stat = np.full(shape, fill_value=-1, dtype=float)
@@ -103,10 +109,13 @@ class Epoch:
                 size[perm_idx, reg_idx] = _size
                 f_stat[perm_idx, reg_idx] = _f_stat
 
+                if _f_stat < 0:
+                    raise AttributeError('too few observations to compute f '
+                                         'stat (region too small)')
         return size, f_stat
 
     @classmethod
-    def model_adjust_f(cls, size, f_stat):
+    def model_adjust_f(cls, size, f_stat, min_f=.1):
         """ models f stats as function of region size
 
         motivation: we need a size agnostic stat per region (i.e. z-stat)
@@ -118,6 +127,11 @@ class Epoch:
         # fit model_f_mu
         log_size = np.log10(size).reshape(-1, 1)
         log_f = np.log10(f_stat).flatten()
+
+        # set
+        min_log_f = np.log10(min_f)
+        log_f[log_f < min_log_f] = min_log_f
+
         model_f_mu.fit(X=log_size, y=log_f)
 
         # fit model_f_var
@@ -157,6 +171,10 @@ class Epoch:
     @classmethod
     def discover(cls, pval, children, exp, alpha=.05):
         """ identifies most significant disjoint effects while FWER < alpha
+
+        by virtue of the hierarchical segmentation, significant regions may
+        intersect.  we "discover" a significant effect if it has minimal
+        p-value among all intersecting effects
 
         Args:
             pval (np.array): (num_reg) Family Wise Error Rate controlled

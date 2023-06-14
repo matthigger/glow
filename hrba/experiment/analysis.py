@@ -1,3 +1,6 @@
+from itertools import chain
+from warnings import warn
+
 from .epoch import Epoch
 
 
@@ -7,8 +10,9 @@ class AnalysisHRBA:
         alpha (float): upper bound on family wise error rate
         n_permute (int): number of permutations to run (note that the
             unpermuted stats are assigned "permutation" index 0 so that
-            n_permute + 1 "permutations" are run)
+            n_permute + 1 "permutations" are run in an epoch)
         epoch_list (list): Epoch of region discovery
+        epoch_tup (tuple): tuple of effects discovered
     """
 
     def __init__(self, exp, alpha=.05, n_permute=100):
@@ -16,18 +20,36 @@ class AnalysisHRBA:
         self.alpha = alpha
         self.n_permute = n_permute
         self.epoch_list = list()
+        self.epoch_tup = None
 
-    def run(self, **kwargs):
+    def run(self, verbose=True, max_epoch=1e8):
         """ runs analysis to find all significant regions in experiment
         """
-        while True:
-            # build new epoch
-            epoch = Epoch(exp=self.exp, n_permute=self.n_permute,
-                          alpha=self.alpha, **kwargs)
+        assert not self.epoch_list, 'Analysis may only be run once'
+
+        exp = self.exp
+        for epoch_idx in range(int(max_epoch)):
+            if verbose:
+                print(f'begin epoch {epoch_idx}')
+
+            # run & store new epoch
+            epoch = Epoch(exp=exp, n_permute=self.n_permute, alpha=self.alpha,
+                          verbose=verbose)
             self.epoch_list.append(epoch)
 
-            if not self.epoch_list[-1].discovered:
+            if verbose:
+                n = len(epoch.effect_list)
+                print(f'{n} significant regions discovered in this epoch')
+            if not len(epoch.effect_list):
+                # no new regions discovered, analysis complete
                 break
 
-            # build new experiment, adjust for previously discovered regions
-            raise NotImplementedError
+            for eff in epoch.effect_list:
+                # build new experiment which removes impact of this effect
+                exp = exp.add_effect(effect=eff, remove_flag=True)
+        else:
+            warn(f'stopping.  epoch limit reached: {max_epoch} epochs')
+
+        # collect all effects in one place
+        self.effect_tup = tuple(chain.from_iterable(e.effect_list for e in
+                                                    self.epoch_list))
