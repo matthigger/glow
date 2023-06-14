@@ -97,8 +97,9 @@ class Epoch:
                          disable=not verbose)
         for perm_idx, children in tqdm(child_dict.items(),
                                        **tqdm_dict):
+            _exp = exp.permute(perm_idx)
             for reg_idx, _size, _f_stat in iter_reg_stat_exp(children=children,
-                                                             exp=exp):
+                                                             exp=_exp):
                 size[perm_idx, reg_idx] = _size
                 f_stat[perm_idx, reg_idx] = _f_stat
 

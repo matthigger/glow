@@ -94,3 +94,22 @@ class TestExperiment:
         # validate that exp2 has f=0 for whole region
         eff2 = Effect.from_exp_mask(exp=exp2, mask=mask)
         assert np.isclose(eff2.f_stat, 0)
+
+    def test_permute(self):
+        shape = 10, 10
+        num_img = 5
+        exp = get_rand_exp(shape=shape, seed=0, num_img=num_img)
+
+        exp_permuted = exp.permute(perm_idx=1)
+
+        # prep
+        x = exp.x[~exp.contrast, :], exp.x
+        h = [np.linalg.pinv(_x) @ _x for _x in x]
+
+        # manually permute in a loop, check that einsum does the same
+        p = get_perm_matrix(seed=1, num_img=num_img)
+        freed_lane = (np.eye(num_img) - h[0]) @ p + h[0]
+
+        for vox_idx in range(np.prod(shape)):
+            y_permute_exp = exp.y[..., vox_idx] @ freed_lane
+            assert np.allclose(exp_permuted.y[..., vox_idx], y_permute_exp)

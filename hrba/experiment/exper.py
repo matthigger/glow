@@ -8,6 +8,7 @@ import pandas as pd
 from hrba.sample_effect import compute_offset
 from .effect import Effect
 from .load_image import load_image_color, load_image_nii
+from .permute import get_perm_matrix
 
 
 class Experiment:
@@ -227,4 +228,28 @@ class Experiment:
         y[:, :, vox_idx] += offset[..., np.newaxis]
 
         return type(self)(x=self.x, y=y, contrast=self.contrast,
+                          mask_idx=self.mask_idx)
+
+    def permute(self, perm_idx):
+        """ gets new experiment whose y features were permuted (freedman lane)
+
+        Args:
+            perm_idx (int): permutation index (0 is no permutation)
+
+        Returns:
+            exp (Experiment): new experiment whose y features have been
+                permuted
+        """
+        # prep
+        b, num_img, num_vox = self.y.shape
+        x = self.x[~self.contrast, :], self.x
+        h = [np.linalg.pinv(_x) @ _x for _x in x]
+
+        # permute data residuals under reduced model (freedman lane)
+        p = get_perm_matrix(seed=perm_idx, num_img=num_img)
+        freed_lane = (np.eye(num_img) - h[0]) @ p + h[0]
+
+        y = np.einsum('ijk,jm->imk', self.y, freed_lane)
+
+        return Experiment(x=self.x, y=y, contrast=self.contrast,
                           mask_idx=self.mask_idx)

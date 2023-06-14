@@ -1,7 +1,7 @@
 import numpy as np
 
 
-def get_perm_matrix(seed, num_sbj):
+def get_perm_matrix(seed, num_img):
     """ gets (n x n) permutation matrix
 
     Returns:
@@ -9,7 +9,7 @@ def get_perm_matrix(seed, num_sbj):
     """
     if seed == 0:
         # by convention, no permutation for seed=0
-        return np.eye(num_sbj)
+        return np.eye(num_img)
 
     rng = np.random.default_rng(seed)
-    return rng.permutation(np.eye(num_sbj))
+    return rng.permutation(np.eye(num_img))
