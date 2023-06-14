@@ -193,20 +193,14 @@ class Epoch:
             # claim intersecting voxels
             vox_claimed |= vox_contained
 
-            # build y corresponding to effect region
-            y = exp.y[..., list(vox_contained)]
-
             # build mask corresponding to effect region
             mask = np.zeros(exp.mask_idx.shape, dtype=bool)
             for vox in vox_contained:
                 mask[exp.mask_idx == vox] = True
 
             #  build effect & add to effect list
-            effect = Effect.from_x_y_contrast(mask=mask, x=exp.x, y=y,
-                                              contrast=exp.contrast,
-                                              p_val_fwer=p_val,
-                                              y_mean=y.mean(axis=2),
-                                              reg_idx=reg_idx)
+            effect = Effect.from_exp_mask(mask=mask, exp=exp, reg_idx=reg_idx,
+                                          p_val_fwer=p_val)
             effect_list.append(effect)
 
         return effect_list

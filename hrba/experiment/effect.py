@@ -12,9 +12,17 @@ class Effect:
 
     Attributes:
         mask (np.array): True where effect, false otherwise
-        beta (tuple): two (a, b) arrays MMSE mapping from x to y,
-            corresponding to reduced and full models respectively
+        y_mean (np.array): (b, num_img) mean imaging feature observed in region
     """
+
+    @classmethod
+    def from_exp_mask(cls, exp, mask, **kwargs):
+        # build y corresponding to effect region
+        vox_list = exp.mask_idx[mask]
+        y = exp.y[..., tuple(vox_list)]
+
+        return cls.from_x_y_contrast(x=exp.x, y=y, contrast=exp.contrast,
+                                     mask=mask, **kwargs)
 
     @classmethod
     def from_x_y_contrast(cls, x, y, contrast, **kwargs):
@@ -33,14 +41,11 @@ class Effect:
         beta = tuple(y_mean @ np.linalg.pinv(_x) for _x in x)
 
         return cls(f_stat=f_stat, p_val=p_val, tr_eps=tr_eps, beta=beta,
-                   **kwargs)
+                   y_mean=y_mean, **kwargs)
 
-    def __init__(self, mask, beta=None, **kwargs):
+    def __init__(self, mask, y_mean, **kwargs):
         self.mask = mask
-        self.beta = beta
+        self.y_mean = y_mean
 
         # all other inputs are to be stored
         self.__dict__.update(kwargs)
-
-    def compute_sens_spec(self, mask_estimate):
-        raise NotImplementedError
