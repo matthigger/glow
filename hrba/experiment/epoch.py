@@ -6,7 +6,7 @@ from sklearn.feature_extraction import grid_to_graph
 from sklearn.linear_model import LinearRegression
 from tqdm import tqdm
 
-from hrba.graph import iter_reg_stat_exp, iter_topo, child_to_parent
+from hrba.graph import iter_reg_stat_exp, iter_topo
 from .effect import Effect
 from .permute import get_perm_matrix
 
@@ -48,7 +48,8 @@ class Epoch:
         self.p_val = self.get_pval(self.z_stat)
 
         # discover effects
-        self.effect_list = self.discover(pval=self.p_val, exp=exp, alpha=alpha,
+        self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
+                                         stat=self.z_stat[0, :], exp=exp,
                                          children=self.child_dict[0])
 
     @classmethod
@@ -169,8 +170,8 @@ class Epoch:
         return pval
 
     @classmethod
-    def discover(cls, pval, children, exp, alpha=.05):
-        """ identifies most significant disjoint effects while FWER < alpha
+    def discover(cls, pval, stat, children, exp, alpha=.05):
+        """ identifies most compelling disjoint effects while FWER < alpha
 
         by virtue of the hierarchical segmentation, significant regions may
         intersect.  we "discover" a significant effect if it has minimal
@@ -179,6 +180,8 @@ class Epoch:
         Args:
             pval (np.array): (num_reg) Family Wise Error Rate controlled
                 p-values
+            stat (np.array): (num_reg) some statistic (higher indicates
+                more compelling effect associated with region)
             children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
                 sklearn.cluster.Ward.children_)
             exp (Experiment): the source data to run experiment on
@@ -189,17 +192,13 @@ class Epoch:
         """
         # get set of all significant regions
         bool_sig = pval <= alpha
-        pval = pval[bool_sig]
         reg_idx = np.where(bool_sig)[0]
-        pval_reg_list = sorted(zip(pval, reg_idx))
+        stat_pval_reg_list = zip(stat[bool_sig], pval[bool_sig], reg_idx)
+        stat_pval_reg_list = sorted(stat_pval_reg_list, reverse=True)
 
-        # change direction of pointers in graph (to bigger regions)
-        parent = child_to_parent(children)
-
-        num_leaf = children.shape[0] + 1
         vox_claimed = set()
         effect_list = list()
-        for p_val, reg_idx in pval_reg_list:
+        for stat, p_val, reg_idx in stat_pval_reg_list:
             # check if region intersects with others discovered (no shared
             # ancestor)
             vox_contained = set(iter_topo(children=children,

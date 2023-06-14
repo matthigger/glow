@@ -91,22 +91,22 @@ class TestEpoch:
 
         # only 1 sig region
         pval = np.array([.1, 1, 1, 1, 1, 1, 1])
-        eff_list = Epoch.discover(pval=pval, children=children, exp=exp,
-                                  alpha=.5)
+        eff_list = Epoch.discover(pval=pval, stat=-pval, children=children, \
+                                  exp=exp, alpha=.5)
         assert len(eff_list) == 1
         assert eff_list[0].reg_idx == 0
 
         # 2 sig regions which intersect
         pval = np.array([.1, 1, 1, 1, .2, 1, 1])
-        eff_list = Epoch.discover(pval=pval, children=children, exp=exp,
-                                  alpha=.5)
+        eff_list = Epoch.discover(pval=pval, stat=-pval, children=children, \
+                                  exp=exp, alpha=.5)
         assert len(eff_list) == 1
         assert eff_list[0].reg_idx == 0
 
         # 2 sig regions which don't intersect
         pval = np.array([.1, .2, 1, 1, 1, 1, 1])
-        eff_list = Epoch.discover(pval=pval, children=children, exp=exp,
-                                  alpha=.5)
+        eff_list = Epoch.discover(pval=pval, stat=-pval, children=children, \
+                                  exp=exp, alpha=.5)
         assert len(eff_list) == 2
         assert eff_list[0].reg_idx == 0
         assert eff_list[1].reg_idx == 1
