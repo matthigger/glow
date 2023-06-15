@@ -37,37 +37,30 @@ class TestEpoch:
 
     def test_model_adjust_f(self):
         # "right" answer: log10 f stat = log10 size * 1 + error
-        # where error has std_dev equal to region size
+        # where error has std_dev of 1
         n_size = 4
         n_perm = 3
         size = np.tile(np.arange(2, 2 + n_size), (n_perm, 1))
 
-        # build noise to be zero mean and scale with region size
+        # build noise to be zero mean and std dev 1
         rng = np.random.default_rng(seed=0)
         error = rng.standard_normal((n_perm, n_size))
-        for col_idx, _size in enumerate(size[0, :]):
-            # zero mean
-            error[:, col_idx] -= error[:, col_idx].mean()
-
-            # scale to var = log10(_size)
-            std = error[:, col_idx].std(ddof=0)
-            error[:, col_idx] *= np.log10(_size) ** .5 / std
+        for idx in range(n_size):
+            error[:, idx] -= error[:, idx].mean()
+            error[:, idx] *= 1 / error[:, idx].std()
 
         f_stat = 10 ** (np.log10(size) + error)
 
-        model_f_mu, model_f_var, z_stat = Epoch.model_adjust_f(size=size,
+        model_f_mu, model_f_std, z_stat = Epoch.model_adjust_f(size=size,
                                                                f_stat=f_stat)
 
         # model: log10 f = log10 size + eps
         assert np.isclose(model_f_mu.coef_, 1)
         assert np.isclose(model_f_mu.intercept_, 0)
-
-        # model: variance of eps = log10 size
-        assert np.isclose(model_f_var.coef_, 1)
-        assert np.isclose(model_f_var.intercept_, 0)
+        assert np.isclose(model_f_std, 1)
 
         # check z stat compute
-        z_stat_exp = (f_stat - np.log10(size)) / np.log10(size) ** .5
+        z_stat_exp = (np.log10(f_stat) - np.log10(size)) / model_f_std
         assert np.allclose(z_stat, z_stat_exp)
 
     def test_get_pval(self):

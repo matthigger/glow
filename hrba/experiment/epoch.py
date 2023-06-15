@@ -24,8 +24,7 @@ class Epoch:
         p_val (np.array): (n_permute + 1, num_reg) FWER controlled pval
         model_f_mu (LinearRegression): the mean f stat as a function of
             region size (log10 F = m * log10 num_vox + b)
-        model_f_var (LinearRegression): the var of f stat as a function
-            of region size (log10 F_var = m * log10 num_vox + b)
+        model_f_std (float): std deviation of model f (in log space)
     """
 
     def __init__(self, exp, n_permute, alpha=.05, verbose=True):
@@ -41,7 +40,7 @@ class Epoch:
                                                  verbose=verbose)
 
         # model f mu & var as a function of region size
-        self.model_f_mu, self.model_f_var, self.z_stat = \
+        self.model_f_mu, self.model_f_std, self.z_stat = \
             self.model_adjust_f(self.size, self.f_stat)
 
         # compute p-values
@@ -119,29 +118,27 @@ class Epoch:
         motivation: we need a size agnostic stat per region (i.e. z-stat)
         """
         # init
-        model_f_mu = LinearRegression(fit_intercept=True)
-        model_f_var = LinearRegression(fit_intercept=True)
 
-        # fit model_f_mu
-        log_size = np.log10(size).reshape(-1, 1)
-        log_f = np.log10(f_stat).flatten()
+        # prep
+        log_size = np.log10(size)
+        log_f = np.log10(f_stat)
 
-        # set
+        # apply min_f
         min_log_f = np.log10(min_f)
         log_f[log_f < min_log_f] = min_log_f
 
-        model_f_mu.fit(X=log_size, y=log_f)
-
-        # fit model_f_var
-        error = log_f - model_f_mu.predict(log_size)
-        model_f_var.fit(X=log_size, y=error ** 2)
+        # fit model_f_mu
+        model_f_mu = LinearRegression(fit_intercept=True)
+        model_f_mu.fit(X=log_size.reshape(-1, 1), y=log_f.flatten(),
+                       sample_weight=size.flatten())
 
         # adjust f stats per region size
-        mu = model_f_mu.predict(log_size).reshape(size.shape)
-        var = model_f_var.predict(log_size).reshape(size.shape)
-        z_stat = (f_stat - mu) / (var ** .5)
+        mu = model_f_mu.predict(log_size.reshape(-1, 1)).reshape(size.shape)
+        error = log_f - mu
+        model_f_std = error.flatten().std()
+        z_stat = (log_f - mu) / model_f_std
 
-        return model_f_mu, model_f_var, z_stat
+        return model_f_mu, model_f_std, z_stat
 
     @classmethod
     def get_pval(cls, z_stat):
