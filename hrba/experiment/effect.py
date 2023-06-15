@@ -31,7 +31,7 @@ class Effect:
 
         # compute p_val
         dfn, dfd = get_f_degrees(y, contrast)
-        p_val = f.cdf(f_stat, dfn=dfn, dfd=dfd)
+        p_val = 1 - f.cdf(f_stat, dfn=dfn, dfd=dfd)
 
         # compute tr_eps
         x = [x[~contrast, :], x]

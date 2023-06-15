@@ -58,7 +58,7 @@ def compute_offset(x, y, contrast, f_stat=None, p_val=None):
     if f_stat is None:
         # get target f_stat to impose given p_value
         dfn, dfd = get_f_degrees(y, contrast)
-        f_stat = f.ppf(p_val, dfn=dfn, dfd=dfd)
+        f_stat = f.ppf(1 - p_val, dfn=dfn, dfd=dfd)
 
     # if tr_eps[0] (reduced) and tr_eps[1] (full) have the ratio eps1_over_eps0
     # then the f_stat will be achieved
