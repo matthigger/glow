@@ -168,6 +168,8 @@ class Experiment:
             exp (Experiment): an experiment
             effect (Effect): encapsulates
         """
+        assert self.x is not None, 'x/contrast needed, call .sample_x()'
+
         # sample effect space
         mask = extenter(y=self.y, mask_idx=self.mask_idx, seed=seed)
 
