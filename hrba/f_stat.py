@@ -1,5 +1,4 @@
 import numpy as np
-from scipy.stats import f
 
 
 def get_f_stat(x, y, contrast):
@@ -62,4 +61,7 @@ def get_f_const(y, contrast):
     a = (~contrast).sum(), contrast.size
 
     const = (reg_size * num_img - b * a[1]) / b * (a[1] - a[0])
+
+    assert const >= 0, 'negative f stat constant: insufficient samples'
+
     return const

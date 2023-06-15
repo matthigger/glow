@@ -110,9 +110,6 @@ class Epoch:
                 size[perm_idx, reg_idx] = _size
                 f_stat[perm_idx, reg_idx] = _f_stat
 
-                if _f_stat < 0:
-                    raise AttributeError('too few observations to compute f '
-                                         'stat (region too small)')
         return size, f_stat
 
     @classmethod

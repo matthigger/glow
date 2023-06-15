@@ -82,7 +82,7 @@ class TestEpoch:
 
     def test_discover(self):
         num_vox = 4
-        x, y, contrast = generate_dummy_data(reg_size=num_vox, seed=0)
+        x, y, contrast = generate_dummy_data(b=1, reg_size=num_vox, seed=0)
         mask_idx = np.arange(num_vox)
         exp = Experiment(x=x, y=y, contrast=contrast, mask_idx=mask_idx)
         children = np.array([[0, 1],
