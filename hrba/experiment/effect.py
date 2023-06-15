@@ -30,7 +30,9 @@ class Effect:
         f_stat = get_f_stat(x, y, contrast)
 
         # compute p_val
-        dfn, dfd = get_f_degrees(y, contrast)
+        b, num_img, reg_size = y.shape
+        a = (~contrast).sum(), contrast.size
+        dfn, dfd = get_f_degrees(num_img, reg_size, a)
         p_val = 1 - f.cdf(f_stat, dfn=dfn, dfd=dfd)
 
         # compute tr_eps

@@ -44,11 +44,7 @@ def get_tr_eps(x, y):
     return tr_eps / (num_img * reg_size)
 
 
-def get_f_degrees(y, contrast):
-    # prep
-    b, num_img, reg_size = y.shape
-    a = (~contrast).sum(), contrast.size
-
+def get_f_degrees(num_img, reg_size, a):
     dfn = num_img * reg_size - a[1]
     dfd = a[1] - a[0]
 
