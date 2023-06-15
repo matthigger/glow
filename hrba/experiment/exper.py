@@ -116,7 +116,7 @@ class Experiment:
         # add noise
         assert noise_scale >= 0, 'snr cannot be negative'
         if noise_scale > 0:
-            cov = np.cov(self.y.reshape((b, -1)))
+            cov = np.atleast_2d(np.cov(self.y.reshape((b, -1))))
             noise = rng.multivariate_normal(mean=np.zeros(b),
                                             cov=cov * (noise_scale ** 2),
                                             size=num_vox * n)

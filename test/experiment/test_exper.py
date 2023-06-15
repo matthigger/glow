@@ -50,36 +50,24 @@ class TestExperiment:
         exp.sample_x(a=4)
 
     def test_bootstrap_img(self):
-        exp = Experiment.from_search(folder=folder_test_data,
-                                     sbj_regex='sbj\d',
-                                     img_glob_dict={'color': '*test.png'})
-
         n = 100
-        exp.bootstrap_img(n=n, seed=0)
-        assert exp.y.shape[1] == n
+        rng = np.random.default_rng(seed=0)
+        for str_test_glob in ('*test_bw.png', '*test.png'):
+            exp = Experiment.from_search(folder=folder_test_data,
+                                         sbj_regex='sbj\d',
+                                         img_glob_dict={'feat': str_test_glob})
 
-        # validate reshaping (ensure cov compute is correct ... reshape)
-        exp.mask_idx = None
-        new_mean = 1e8 * np.array([-1, 0, 1])
-        diff = new_mean - exp.y.mean(axis=(1, 2))
-        exp.y += diff[:, np.newaxis, np.newaxis]
-        exp.bootstrap_img(n=10, seed=0)
-        assert np.linalg.norm(new_mean - exp.y.mean(axis=(1, 2))) < 1
+            exp.bootstrap_img(n=n, seed=0)
+            b, num_img, num_vox = exp.y.shape
+            assert num_img == n
 
-        # validate reshaping test case: each y feature has very different
-        # average, first direction is constant
-        exp.mask_idx = None
-        new_mean = 1e8 * np.array([-1, 0, 1])
-        diff = new_mean - exp.y.mean(axis=(1, 2))
-        exp.y += diff[:, np.newaxis, np.newaxis]
-        exp.y[0, ...] = new_mean[0]
-
-        # ensure additive offset doesnt mix y features
-        exp.bootstrap_img(n=10, seed=0)
-        assert np.linalg.norm(new_mean - exp.y.mean(axis=(1, 2))) < 1
-
-        # ensure covariance compute doesn't mix features
-        assert np.isclose(np.cov(exp.y[0, ...].flatten()), 0)
+            # validate reshaping (ensure cov compute is correct and doesn't
+            # mix features, as reshape can do)
+            new_mean = rng.standard_normal(size=b) * 1e6
+            diff = new_mean - exp.y.mean(axis=(1, 2))
+            exp.y += diff[:, np.newaxis, np.newaxis]
+            exp.bootstrap_img(n=10, seed=0)
+            assert np.allclose(new_mean, exp.y.mean(axis=(1, 2)))
 
     def test_add_effect(self):
         # get arbitrary experiment & effect region (whole image)
