@@ -107,22 +107,22 @@ def iter_topo(children, num_leaf=None, node_start=None, only_leaf=False):
         yield node_start
 
 
-def iter_reg_stat_exp(children, exp, **kwargs):
-    yield from iter_reg_stat(children, x=exp.x, y=exp.y, contrast=exp.contrast,
-                             **kwargs)
+def iter_reg_stat_exp(*, exp, **kwargs):
+    yield from iter_reg_stat(x=exp.x, y=exp.y, contrast=exp.contrast, **kwargs)
 
 
-def iter_reg_stat(children, x, y, contrast, include_leaf=True):
+def iter_reg_stat(x, y, contrast, children=None, include_leaf=True):
     """ iterates through region statistics of graph
 
     Args:
-        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
-            sklearn.cluster.Ward.children_)
         x (np.array): (a, num_img) explanatory variables
         y (np.array): (b, num_img, num_vox) image intensities
         contrast (np.array): (a) True for each corresponding feature in x which
             is "of interest" (other x features form the reduced model in
             computing f statistic)
+        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
+            sklearn.cluster.Ward.children_).  defaults to None, where reg stats
+            are computed per voxel
         include_leaf (bool): toggles inclusion of leafs
 
     Yields:
@@ -131,8 +131,7 @@ def iter_reg_stat(children, x, y, contrast, include_leaf=True):
         f_stat (tuple): f statistic
     """
     # prep
-    num_leaf = children.shape[0] + 1
-    b, num_img, reg_size = y.shape
+    b, num_img, num_vox = y.shape
     x = x[~contrast, :], x
     h = tuple(np.linalg.pinv(_x) @ _x for _x in x)
     a = (~contrast).sum(), contrast.size
@@ -152,8 +151,15 @@ def iter_reg_stat(children, x, y, contrast, include_leaf=True):
                  msy - np.trace(y_mean @ h[1] @ y_mean.T) / num_img
         return (tr_eps[0] - tr_eps[1]) / tr_eps[1] * const
 
-    for reg_idx in iter_topo(children):
-        if include_leaf and reg_idx < num_leaf:
+    if children is None:
+        # no graph passed, iterate through each voxel
+        iter_reg_idx = range(num_vox)
+    else:
+        # graph passed, iterate through all regions
+        iter_reg_idx = iter_topo(children=children)
+
+    for reg_idx in iter_reg_idx:
+        if include_leaf and reg_idx < num_vox:
             # single voxel region (don't delete on lookup)
             f_stat = _compute_f_stat(msy=msy_dict[reg_idx],
                                      y_mean=y[:, :, reg_idx],
@@ -163,7 +169,7 @@ def iter_reg_stat(children, x, y, contrast, include_leaf=True):
             # multiple voxel region
 
             # compute reg_size & lam (% region from each child)
-            child = children[reg_idx - num_leaf, :]
+            child = children[reg_idx - num_vox, :]
             size = tuple(size_dict.pop(c, 1) for c in child)
             reg_size = sum(size)
             size_dict[reg_idx] = reg_size
@@ -172,7 +178,7 @@ def iter_reg_stat(children, x, y, contrast, include_leaf=True):
             # compute & store msy, y_mean
             for c, l in zip(child, lam):
                 msy_dict[reg_idx] += msy_dict.pop(c) * l
-                if c < num_leaf:
+                if c < num_vox:
                     # child has 1 voxel, direct lookup
                     y_mean_dict[reg_idx] += y[:, :, c] * l
                 else:

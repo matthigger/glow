@@ -76,16 +76,20 @@ def test_iter_reg_stat():
     num_vox = exp.y.shape[2]
     children = np.arange((num_vox - 1) * 2).reshape((num_vox - 1), 2)
 
-    for reg_idx, size, f_stat in iter_reg_stat_exp(children, exp):
-        # compute size & f_stat (slowly)
-        voxel_tup = tuple(v for v in iter_topo(children, node_start=reg_idx)
-                          if v < num_vox)
+    for it in (iter_reg_stat_exp(exp=exp, children=children),
+               iter_reg_stat_exp(exp=exp, children=None)):
 
-        assert len(voxel_tup) == size
+        for reg_idx, size, f_stat in it:
+            # compute size & f_stat (slowly)
+            voxel_tup = tuple(
+                v for v in iter_topo(children, node_start=reg_idx)
+                if v < num_vox)
 
-        y = exp.y[..., voxel_tup]
-        f_stat_obs = get_f_stat(x=exp.x, y=y, contrast=exp.contrast)
-        assert np.isclose(f_stat, f_stat_obs)
+            assert len(voxel_tup) == size
+
+            y = exp.y[..., voxel_tup]
+            f_stat_obs = get_f_stat(x=exp.x, y=y, contrast=exp.contrast)
+            assert np.isclose(f_stat, f_stat_obs)
 
 
 def test_children_to_parent():
