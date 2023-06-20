@@ -5,6 +5,18 @@ from ..helper import generate_dummy_data
 
 
 class TestEpoch:
+    def test_get_pval(self):
+        z_stat = np.array([[7, 3, 1, 0],
+                           [0, 0, 0, 0],
+                           [3, 3, 3, 3],
+                           [5, 5, 5, 5]])
+        p_val_exp = np.array([1, 3, 3, 4]) / 4
+
+        p_val = EpochHRBA.get_pval(z_stat)
+        assert np.allclose(p_val, p_val_exp)
+
+
+class TestEpochHRBA:
     def test_cluster(self):
         # in a population of identical test images, clustering should
         # segment based on color
@@ -62,16 +74,6 @@ class TestEpoch:
         # check z stat compute
         z_stat_exp = (np.log10(f_stat) - np.log10(size)) / model_f_std
         assert np.allclose(z_stat, z_stat_exp)
-
-    def test_get_pval(self):
-        z_stat = np.array([[7, 3, 1, 0],
-                           [0, 0, 0, 0],
-                           [3, 3, 3, 3],
-                           [5, 5, 5, 5]])
-        p_val_exp = np.array([1, 3, 3, 4]) / 4
-
-        p_val = EpochHRBA.get_pval(z_stat)
-        assert np.allclose(p_val, p_val_exp)
 
     def test_discover(self):
         num_vox = 4
