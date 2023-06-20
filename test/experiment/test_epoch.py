@@ -17,7 +17,7 @@ class TestEpoch:
         exp.sample_x(a=2)
 
         # cluster (should collect all areas of consistent color)
-        children = Epoch.cluster(exp=exp, n_permute=0)[0]
+        children = EpochHRBA.cluster(exp=exp, n_permute=0)[0]
 
         # assumptions: test image has 1 color per greyscale value and each
         # color is contiguous
@@ -51,8 +51,8 @@ class TestEpoch:
 
         f_stat = 10 ** (np.log10(size) + error)
 
-        model_f_mu, model_f_std, z_stat = Epoch.model_adjust_f(size=size,
-                                                               f_stat=f_stat)
+        model_f_mu, model_f_std, z_stat = EpochHRBA.model_adjust_f(size=size,
+                                                                   f_stat=f_stat)
 
         # model: log10 f = log10 size + eps
         assert np.isclose(model_f_mu.coef_, 1)
@@ -70,7 +70,7 @@ class TestEpoch:
                            [5, 5, 5, 5]])
         p_val_exp = np.array([1, 3, 3, 4]) / 4
 
-        p_val = Epoch.get_pval(z_stat)
+        p_val = EpochHRBA.get_pval(z_stat)
         assert np.allclose(p_val, p_val_exp)
 
     def test_discover(self):
@@ -84,22 +84,22 @@ class TestEpoch:
 
         # only 1 sig region
         pval = np.array([.1, 1, 1, 1, 1, 1, 1])
-        eff_list = Epoch.discover(pval=pval, stat=-pval, children=children, \
-                                  exp=exp, alpha=.5)
+        eff_list = EpochHRBA.discover(pval=pval, stat=-pval, children=children, \
+                                      exp=exp, alpha=.5)
         assert len(eff_list) == 1
         assert eff_list[0].reg_idx == 0
 
         # 2 sig regions which intersect
         pval = np.array([.1, 1, 1, 1, .2, 1, 1])
-        eff_list = Epoch.discover(pval=pval, stat=-pval, children=children, \
-                                  exp=exp, alpha=.5)
+        eff_list = EpochHRBA.discover(pval=pval, stat=-pval, children=children, \
+                                      exp=exp, alpha=.5)
         assert len(eff_list) == 1
         assert eff_list[0].reg_idx == 0
 
         # 2 sig regions which don't intersect
         pval = np.array([.1, .2, 1, 1, 1, 1, 1])
-        eff_list = Epoch.discover(pval=pval, stat=-pval, children=children, \
-                                  exp=exp, alpha=.5)
+        eff_list = EpochHRBA.discover(pval=pval, stat=-pval, children=children, \
+                                      exp=exp, alpha=.5)
         assert len(eff_list) == 2
         assert eff_list[0].reg_idx == 0
         assert eff_list[1].reg_idx == 1

@@ -11,8 +11,8 @@ from .effect import Effect
 from .permute import get_perm_matrix
 
 
-class Epoch:
-    """ a single round of region discovery in HRBA, computes FWER p-val
+class EpochHRBA:
+    """ a single round of region discovery, computes FWER p-val
 
     Attributes:
         exp (Experiment): the source data to run experiment on
