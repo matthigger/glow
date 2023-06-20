@@ -136,7 +136,7 @@ class Epoch:
         mu = model_f_mu.predict(log_size.reshape(-1, 1)).reshape(size.shape)
         error = log_f - mu
         model_f_std = error.flatten().std()
-        z_stat = (log_f - mu) / model_f_std
+        z_stat = (np.log10(f_stat) - mu) / model_f_std
 
         return model_f_mu, model_f_std, z_stat
 
