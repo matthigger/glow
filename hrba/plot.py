@@ -16,7 +16,8 @@ def scatter_size_vs_two(*args, **kwargs):
     return fig
 
 
-def scatter_size_vs_stat(epoch, mask=None, y_feat='f_stat', f_trend=False):
+def scatter_size_vs_stat(epoch, mask=None, y_feat='f_stat', f_trend=False,
+                         min_size=1):
     """ scatters size vs f_stat, colors by f1 score if mask is passed
 
      Args:
@@ -34,13 +35,20 @@ def scatter_size_vs_stat(epoch, mask=None, y_feat='f_stat', f_trend=False):
     else:
         f1 = None
 
-    x = epoch.size
+    x = epoch.size.astype(float)
     if y_feat == 'f_stat':
         y = epoch.f_stat
     elif y_feat == 'z_stat':
         y = epoch.z_stat
     else:
-        raise AttributeError(f'unrecognized y_feat: {y_feat}')
+        assert isinstance(y_feat, np.ndarray)
+        assert y_feat.shape == x.shape
+        y = y_feat
+
+    if min_size > 1:
+        b = epoch.size < min_size
+        x[b] = np.nan
+        y[b] = np.nan
 
     plt.scatter(x[1:, :], y[1:, :], alpha=.02, color='k',
                 linewidth=0, label='region (permuted)')
@@ -49,20 +57,25 @@ def scatter_size_vs_stat(epoch, mask=None, y_feat='f_stat', f_trend=False):
         assert y_feat == 'f_stat', 'f_trend only valid on f_stat scatter'
 
         # plot trend of f used in computing z stats
-        _x = np.log10(np.linspace(x.min(), x.max(), 101)).reshape(-1, 1)
+        low, high = np.nanmin(x), np.nanmax(x)
+        _x = np.log10(np.linspace(low, high, 101)).reshape(-1, 1)
         f_mean = 10 ** epoch.model_f_mu.predict(_x)
         _x = 10 ** _x.flatten()
         plt.plot(_x, f_mean, linewidth=2, color='g', label='f_mean(size)')
 
-    plt.scatter(x[0, :], y[0, :], c=f1.flatten(),
-                cmap='plasma', label='region', marker='s')
+    b = f1 > 0
+    # plt.scatter(x[0, :][~b], y[0, :][~b], label='region', marker='s',
+    #             color='k')
+    plt.scatter(x[0, :][b], y[0, :][b], c=f1.flatten()[b],
+                cmap='plasma', label='region w/ target', marker='s')
 
     if mask is not None:
         cbar = plt.colorbar()
         cbar.set_label('F1 score', rotation=90)
     plt.xlabel('size')
-    plt.ylabel(y_feat)
+    if isinstance(y_feat, str):
+        plt.ylabel(y_feat)
     plt.xscale('log')
-    if y_feat == 'f_stat':
+    if y_feat != 'z_stat':
         plt.yscale('log')
     plt.legend()
