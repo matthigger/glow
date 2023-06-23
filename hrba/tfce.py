@@ -8,12 +8,12 @@ from shutil import which
 import nibabel as nib
 import numpy as np
 
-fsl_path = pathlib.Path('/usr/local/fsl')
+fsl_path = pathlib.Path('/home/matt/fsl')
 fsl_conf_sh = fsl_path / 'etc/fslconf/fsl.sh'
 fslmaths_path = fsl_path / 'bin/fslmaths'
 
 if not which(str(fslmaths_path)):
-    warnings.warn('fslmaths not found')
+    warnings.warn(f'fslmaths not found at: {fslmaths_path}')
 
 
 def apply_tfce_x(x, mask_idx):
