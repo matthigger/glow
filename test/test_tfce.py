@@ -7,4 +7,4 @@ def test_apply_tfce():
     x = np.random.normal(size=(5, 5, 5))
 
     # run tfce
-    apply_tfce(x)
+    apply_tfce_img(x)

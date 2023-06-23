@@ -1,17 +1,138 @@
 from _bisect import bisect_left
 
 import numpy as np
+from scipy.ndimage import label
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.feature_extraction import grid_to_graph
 from sklearn.linear_model import LinearRegression
 from tqdm import tqdm
 
 from hrba.graph import iter_reg_stat_exp, iter_topo
+from hrba.tfce import apply_tfce_x
 from .effect import Effect
 from .permute import get_perm_matrix
 
 
-class EpochHRBA:
+class Epoch:
+    @classmethod
+    def get_f_stat(cls, exp, child_dict=None, n_permute=None, verbose=True):
+        assert (child_dict is None) != (n_permute is None), \
+            'either child_dict xor n_permute required'
+
+        # compute f-stat per region in all permutations
+        num_vox = exp.y.shape[2]
+        if child_dict is None:
+            shape = (n_permute + 1, num_vox)
+            perm_child_iter = ((perm_idx, None)
+                               for perm_idx in range(n_permute + 1))
+        else:
+            shape = (len(child_dict), 2 * num_vox - 1)
+            perm_child_iter = child_dict.items()
+        size = np.full(shape, fill_value=-1, dtype=int)
+        f_stat = np.full(shape, fill_value=-1, dtype=float)
+
+        tqdm_dict = dict(desc='compute stats per permutation',
+                         disable=not verbose)
+        for perm_idx, children in tqdm(perm_child_iter, **tqdm_dict):
+            _exp = exp.permute(perm_idx)
+            for reg_idx, _size, _f_stat in iter_reg_stat_exp(children=children,
+                                                             exp=_exp):
+                size[perm_idx, reg_idx] = _size
+                f_stat[perm_idx, reg_idx] = _f_stat
+
+        return size, f_stat
+
+    @classmethod
+    def get_pval(cls, stat):
+        """ computes FWER adjusted pval (percentile within max per permute)
+
+        Args:
+            stat (np.array): (num_permute, num_reg) statistics per region
+                (larger assumed more significant)
+
+        Returns:
+            pval (np.array): (num_reg) Family Wise Error Rate controlled
+                p-values
+        """
+        # max z_stat per permutation (sorted from low to high)
+        z_stat_max = np.sort(stat.max(axis=1))
+
+        num_perm, num_reg = stat.shape
+        pval = np.full(num_reg, fill_value=-1, dtype=float)
+        for reg_idx, z in enumerate(stat[0, :]):
+            pval[reg_idx] = 1 - bisect_left(z_stat_max, z) / num_perm
+
+        return pval
+
+
+class EpochTFCE(Epoch):
+    def __init__(self, exp, n_permute, alpha=.05, verbose=True):
+        self.exp = exp
+
+        # compute f stat per every region in hierarchy (across all permutes)
+        self.size, self.f_stat = self.get_f_stat(exp=exp,
+                                                 n_permute=n_permute + 1,
+                                                 verbose=verbose)
+
+        # apply TFCE per image
+        self.tfce_stat = self.apply_tfce(stat=self.f_stat,
+                                         mask_idx=exp.mask_idx,
+                                         verbose=verbose)
+
+        # compute p-values
+        self.p_val = self.get_pval(self.tfce_stat)
+
+        # discover effects
+        mask = (self.p_val <= alpha).reshape(exp.mask_idx.shape)
+        self.effect_list = self.discover_mask(mask=mask, exp=exp)
+
+    @classmethod
+    def apply_tfce(cls, stat, mask_idx, verbose=False):
+        """ writes images to nii, applies TFCE, loads and returns results
+
+         Args:
+            stat (np.array): (num_permute, num_vox) stats across all
+                permutations
+            mask_idx (np.array): same shape as image.  -1 where voxel not
+                included in analysis, otherwise contains voxel index
+            verbose (bool): toggles command line output
+
+        Returns
+            tfce (np.array): (num_permute, num_vox) tfce stats
+        """
+        # apply & store tfce
+        tqdm_dict = dict(desc='tfce per permutation',
+                         disable=not verbose)
+        tfce = np.full(shape=stat.shape, dtype=float, fill_value=-1)
+        for perm_idx, _stat in tqdm(enumerate(stat), **tqdm_dict):
+            tfce[perm_idx, :] = apply_tfce_x(_stat, mask_idx=mask_idx)
+
+        return tfce
+
+    @classmethod
+    def discover_mask(cls, mask, exp):
+        """ each connected component in mask yields an effect region
+
+        Args:
+            mask (np.array): boolean mask same size as exp.mask_idx
+            exp (Experiment):
+
+        Returns:
+            effect_list (list): list of effects (largest first)
+        """
+        # split discovered regions into disjoint effects
+        effect_mask, num_effect = label(mask.astype(bool))
+
+        effect_list = list()
+        for eff_idx in range(1, num_effect + 1):
+            # build effect for each contiguous effect found
+            _mask = effect_mask == eff_idx
+            effect_list.append(Effect.from_exp_mask(exp=exp, mask=_mask))
+
+        return effect_list
+
+
+class EpochHRBA(Epoch):
     """ a single round of region discovery, computes FWER p-val
 
     Attributes:
@@ -25,6 +146,7 @@ class EpochHRBA:
         model_f_mu (LinearRegression): the mean f stat as a function of
             region size (log10 F = m * log10 num_vox + b)
         model_f_std (float): std deviation of model f (in log space)
+        effect_list (list): list of effects discovered
     """
 
     def __init__(self, exp, n_permute, alpha=.05, verbose=True):
@@ -91,27 +213,6 @@ class EpochHRBA:
         return child_dict
 
     @classmethod
-    def get_f_stat(cls, exp, child_dict, verbose=True):
-        # compute f-stat per region in all permutations
-        num_vox = exp.y.shape[2]
-        n_permute = len(child_dict) - 1
-        shape = (n_permute + 1, 2 * num_vox - 1)
-        size = np.full(shape, fill_value=-1, dtype=int)
-        f_stat = np.full(shape, fill_value=-1, dtype=float)
-
-        tqdm_dict = dict(desc='compute stats per permutation',
-                         disable=not verbose)
-        for perm_idx, children in tqdm(child_dict.items(),
-                                       **tqdm_dict):
-            _exp = exp.permute(perm_idx)
-            for reg_idx, _size, _f_stat in iter_reg_stat_exp(children=children,
-                                                             exp=_exp):
-                size[perm_idx, reg_idx] = _size
-                f_stat[perm_idx, reg_idx] = _f_stat
-
-        return size, f_stat
-
-    @classmethod
     def model_adjust_f(cls, size, f_stat, min_f=.1):
         """ models f stats as function of region size
 
@@ -139,29 +240,6 @@ class EpochHRBA:
         z_stat = (np.log10(f_stat) - mu) / model_f_std
 
         return model_f_mu, model_f_std, z_stat
-
-    @classmethod
-    def get_pval(cls, z_stat):
-        """ computes FWER adjusted pval (percentile within max per permute)
-
-        Args:
-            z_stat (np.array): (num_permute, num_reg) z statistics per region
-                (num std dev above or below expected f stat under null
-                hypothesis)
-
-        Returns:
-            pval (np.array): (num_reg) Family Wise Error Rate controlled
-                p-values
-        """
-        # max z_stat per permutation (sorted from low to high)
-        z_stat_max = np.sort(z_stat.max(axis=1))
-
-        num_perm, num_reg = z_stat.shape
-        pval = np.full(num_reg, fill_value=-1, dtype=float)
-        for reg_idx, z in enumerate(z_stat[0, :]):
-            pval[reg_idx] = 1 - bisect_left(z_stat_max, z) / num_perm
-
-        return pval
 
     @classmethod
     def discover(cls, pval, stat, children, exp, alpha=.05):

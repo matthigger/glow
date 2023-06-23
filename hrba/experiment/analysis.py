@@ -1,7 +1,7 @@
 from itertools import chain
 from warnings import warn
 
-from .epoch import EpochHRBA
+from .epoch import EpochHRBA, EpochTFCE
 
 
 class Analysis:
@@ -56,9 +56,17 @@ class Analysis:
                                                     self.epoch_list))
 
 
-class AnalysisHRBA:
+class AnalysisHRBA(Analysis):
     Epoch = EpochHRBA
 
     def another_epoch_needed(self):
         # more epochs needed so long as effects are found
         return bool(self.epoch_list[-1].effect_list)
+
+
+class AnalysisTFCE(Analysis):
+    Epoch = EpochTFCE
+
+    def another_epoch_needed(self):
+        # tfce only needs a single epoch
+        return False
