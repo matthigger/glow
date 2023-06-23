@@ -3,7 +3,7 @@ from hrba.sample_effect import ExtenterSphere
 from .test_exper import get_rand_exp
 
 # build experiment with strong effect to be found (whole region)
-shape = 5, 5
+shape = 5, 5, 5
 exp = get_rand_exp(shape=shape, a=2, b=1, seed=0)
 exp, effect = exp.impose_effect(seed=0, extenter=ExtenterSphere(radius=2),
                                 p_val=.0001)
