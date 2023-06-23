@@ -1,5 +1,8 @@
+import pathlib
+import tempfile
 from _bisect import bisect_left
 
+import nibabel
 import numpy as np
 from scipy.ndimage import label
 from sklearn.cluster import AgglomerativeClustering
@@ -13,7 +16,65 @@ from .effect import Effect
 from .permute import get_perm_matrix
 
 
+def reshape(mask_idx, x=None, fill=0):
+    img = np.full(shape=mask_idx.shape, fill_value=fill, dtype=float)
+    if x is not None:
+        img[mask_idx > -1] = x
+    return img
+
+
 class Epoch:
+    """ a single round of region discovery (HRBA or TFCE) computes FWER p-val
+
+    Attributes:
+        exp (Experiment): the source data to run experiment on
+        size (np.array): (n_permute + 1, num_reg) size of each region
+        f_stat (np.array): (n_permute + 1, num_reg) raw f-stat of each region
+        p_val (np.array): (num_reg) FWER controlled pval
+        effect_list (list): list of effects discovered
+    """
+
+    def to_nii(self, folder=None, affine=np.eye(4), log=True):
+        """ writes nifti images for observation of completed analysis
+
+        Args:
+            folder (pathlib.Path): location to write niftis
+            affine (np.array): affine
+            log (bool): toggles log10 outputs
+
+        Returns:
+            folder (pathlib.Path): location to write niftis
+        """
+        # get folder
+        if folder is None:
+            folder = tempfile.TemporaryDirectory().name
+        folder = pathlib.Path(folder)
+        folder.mkdir(exist_ok=True, parents=True)
+
+        # get "estimate" which has idx of discovered region
+        estimate = reshape(mask_idx=self.exp.mask_idx)
+        for idx, eff in enumerate(self.effect_list):
+            estimate += eff.mask * (idx + 1)
+
+        num_vox = self.exp.y.shape[2]
+        f_stat = reshape(mask_idx=self.exp.mask_idx,
+                         x=self.f_stat[0, :num_vox])
+        p_val = reshape(mask_idx=self.exp.mask_idx, x=self.p_val[:num_vox])
+
+        array_dict = {'estimate': estimate,
+                      'f_stat_vox': f_stat,
+                      'p_val_vox': p_val}
+        if log:
+            array_dict['log10_f_stat_vox'] = np.log10(f_stat)
+            array_dict['log10_p_val_vox'] = np.log10(p_val)
+
+        for label, img in array_dict.items():
+            file = (folder / label).with_suffix('.nii.gz')
+            img = nibabel.Nifti1Image(img, affine=affine)
+            img.to_filename(file)
+
+        return folder
+
     @classmethod
     def get_f_stat(cls, exp, child_dict=None, n_permute=None, verbose=True):
         assert (child_dict is None) != (n_permute is None), \
@@ -86,6 +147,13 @@ class EpochTFCE(Epoch):
         mask = (self.p_val <= alpha).reshape(exp.mask_idx.shape)
         self.effect_list = self.discover_mask(mask=mask, exp=exp)
 
+    def to_nii(self, *args, log=True, **kwargs):
+        tfce = reshape(mask_idx=self.exp.mask_idx, x=self.tfce_stat[0, :])
+        array_dict = {'tfce': tfce}
+        if log:
+            array_dict['log10_tfce': np.log10(tfce)]
+        return super().to_nii(*args, log=log, array_dict=array_dict, **kwargs)
+
     @classmethod
     def apply_tfce(cls, stat, mask_idx, verbose=False):
         """ writes images to nii, applies TFCE, loads and returns results
@@ -136,17 +204,12 @@ class EpochHRBA(Epoch):
     """ a single round of region discovery, computes FWER p-val
 
     Attributes:
-        exp (Experiment): the source data to run experiment on
         child_dict (dict): keys are permutation indices, values are
             (2, n) graph arrays (equiv to sklearn.cluster.Ward.children_)
-        size (np.array): (n_permute + 1, num_reg) size of each region
-        f_stat (np.array): (n_permute + 1, num_reg) raw f-stat of each region
         z_stat (np.array): (n_permute + 1, num_reg)  "z-score" of each f-stat
-        p_val (np.array): (n_permute + 1, num_reg) FWER controlled pval
         model_f_mu (LinearRegression): the mean f stat as a function of
             region size (log10 F = m * log10 num_vox + b)
         model_f_std (float): std deviation of model f (in log space)
-        effect_list (list): list of effects discovered
     """
 
     def __init__(self, exp, n_permute, alpha=.05, verbose=True):
@@ -189,6 +252,8 @@ class EpochHRBA(Epoch):
             shape = mask.shape
         elif mask.ndim == 2:
             shape = (*mask.shape, 1)
+        else:
+            raise AttributeError('mask must be 2d or 3d')
 
         # prep ward clustering object
         child_dict = dict()

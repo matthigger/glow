@@ -1,11 +1,26 @@
+from shutil import rmtree
+
 from hrba.experiment.epoch import *
 from hrba.experiment.exper import Experiment
 from hrba.graph import get_miss_hits
 from .make_test_image import folder_test_data
 from ..helper import generate_dummy_data
 
+num_vox = 4
+n_permute = 3
+x, y, contrast = generate_dummy_data(b=1, reg_size=num_vox, seed=0)
+mask_idx = np.arange(num_vox).reshape((2, 2))
+exp = Experiment(x=x, y=y, contrast=contrast, mask_idx=mask_idx)
+children = np.arange(num_vox * 2 - 2).reshape((-1, 2))
+child_dict = {idx: children for idx in range(n_permute)}
+
 
 class TestEpoch:
+    def test_to_nii(self):
+        epoch = EpochHRBA(exp=exp, n_permute=0)
+        folder = epoch.to_nii()
+        rmtree(folder)
+
     def test_get_pval(self):
         z_stat = np.array([[7, 3, 1, 0],
                            [0, 0, 0, 0],
@@ -13,18 +28,10 @@ class TestEpoch:
                            [5, 5, 5, 5]])
         p_val_exp = np.array([1, 3, 3, 4]) / 4
 
-        p_val = EpochHRBA.get_pval(z_stat)
+        p_val = Epoch.get_pval(z_stat)
         assert np.allclose(p_val, p_val_exp)
 
     def test_get_f_stat(self):
-        num_vox = 4
-        n_permute = 3
-        x, y, contrast = generate_dummy_data(b=1, reg_size=num_vox, seed=0)
-        mask_idx = np.arange(num_vox)
-        exp = Experiment(x=x, y=y, contrast=contrast, mask_idx=mask_idx)
-        children = np.arange(num_vox * 2 - 2).reshape((-1, 2))
-        child_dict = {idx: children for idx in range(n_permute)}
-
         Epoch.get_f_stat(exp=exp, child_dict=child_dict)
         Epoch.get_f_stat(exp=exp, n_permute=n_permute)
 
