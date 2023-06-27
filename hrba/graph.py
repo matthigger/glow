@@ -136,19 +136,20 @@ def iter_reg_stat(x, y, contrast, children=None, include_leaf=True):
     h = tuple(np.linalg.pinv(_x) @ _x for _x in x)
     a = (~contrast).sum(), contrast.size
 
-    # init mean of squared y
-    msy = (y ** 2).sum(axis=(0, 1)) / num_img
-    msy_dict = defaultdict(lambda: 0)
-    msy_dict.update(enumerate(msy))
+    # init mean of y outer products
+    myo_dict = defaultdict(lambda: 0)
+    myo = np.einsum('ijk,ajk->iak', y, y) / num_img
+    myo_dict.update(enumerate(np.rollaxis(myo, 2, 0)))
 
     # init size_dict & y_mean_dict
     size_dict = dict()
     y_mean_dict = defaultdict(lambda: 0)
 
-    def _compute_f_stat(msy, y_mean, reg_size):
+    def _compute_f_stat(myo, y_mean, reg_size):
+        tr_myo = np.trace(myo)
         const = (reg_size * num_img - b * a[1]) / b * (a[1] - a[0])
-        tr_eps = msy - np.trace(y_mean @ h[0] @ y_mean.T) / num_img, \
-                 msy - np.trace(y_mean @ h[1] @ y_mean.T) / num_img
+        tr_eps = tr_myo - np.trace(y_mean @ h[0] @ y_mean.T) / num_img, \
+                 tr_myo - np.trace(y_mean @ h[1] @ y_mean.T) / num_img
         return (tr_eps[0] - tr_eps[1]) / tr_eps[1] * const
 
     if children is None:
@@ -161,7 +162,7 @@ def iter_reg_stat(x, y, contrast, children=None, include_leaf=True):
     for reg_idx in iter_reg_idx:
         if include_leaf and reg_idx < num_vox:
             # single voxel region (don't delete on lookup)
-            f_stat = _compute_f_stat(msy=msy_dict[reg_idx],
+            f_stat = _compute_f_stat(myo=myo_dict[reg_idx],
                                      y_mean=y[:, :, reg_idx],
                                      reg_size=1)
             yield reg_idx, 1, f_stat
@@ -175,9 +176,9 @@ def iter_reg_stat(x, y, contrast, children=None, include_leaf=True):
             size_dict[reg_idx] = reg_size
             lam = tuple(s / reg_size for s in size)
 
-            # compute & store msy, y_mean
+            # compute & store myo, y_mean
             for c, l in zip(child, lam):
-                msy_dict[reg_idx] += msy_dict.pop(c) * l
+                myo_dict[reg_idx] += myo_dict.pop(c) * l
                 if c < num_vox:
                     # child has 1 voxel, direct lookup
                     y_mean_dict[reg_idx] += y[:, :, c] * l
@@ -186,7 +187,7 @@ def iter_reg_stat(x, y, contrast, children=None, include_leaf=True):
                     y_mean_dict[reg_idx] += y_mean_dict.pop(c) * l
 
             # compute f_stat
-            f_stat = _compute_f_stat(msy=msy_dict[reg_idx],
+            f_stat = _compute_f_stat(myo=myo_dict[reg_idx],
                                      y_mean=y_mean_dict[reg_idx],
                                      reg_size=reg_size)
 
