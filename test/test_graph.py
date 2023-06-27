@@ -79,17 +79,17 @@ def test_iter_reg_stat():
     for it in (iter_reg_stat_exp(exp=exp, children=children),
                iter_reg_stat_exp(exp=exp, children=None)):
 
-        for reg_idx, size, f_stat in it:
+        for reg_idx, reg_stat in it:
             # compute size & f_stat (slowly)
             voxel_tup = tuple(
                 v for v in iter_topo(children, node_start=reg_idx)
                 if v < num_vox)
 
-            assert len(voxel_tup) == size
+            assert len(voxel_tup) == reg_stat.size
 
             y = exp.y[..., voxel_tup]
             f_stat_obs = get_f_stat(x=exp.x, y=y, contrast=exp.contrast)
-            assert np.isclose(f_stat, f_stat_obs)
+            assert np.isclose(reg_stat.f_stat, f_stat_obs)
 
 
 def test_children_to_parent():

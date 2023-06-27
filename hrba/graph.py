@@ -2,6 +2,8 @@ from collections import defaultdict
 
 import numpy as np
 
+from hrba.f_stat import RegStatComputer
+
 
 def node_sum(children, val_dict):
     """ given item per leaf in graph, sums leaf values and adds to dictionary
@@ -128,13 +130,12 @@ def iter_reg_stat(x, y, contrast, children=None, include_leaf=True):
     Yields:
         reg_idx (int): region index
         size (int): number of voxels in region
-        f_stat (tuple): f statistic
+
+    as well as all outputs of StatComputer (e.g. f_stat & log like ratio)
     """
     # prep
     b, num_img, num_vox = y.shape
-    x = x[~contrast, :], x
-    h = tuple(np.linalg.pinv(_x) @ _x for _x in x)
-    a = (~contrast).sum(), contrast.size
+    rs_computer = RegStatComputer(x=x, contrast=contrast)
 
     # init mean of y outer products
     myo_dict = defaultdict(lambda: 0)
@@ -144,13 +145,6 @@ def iter_reg_stat(x, y, contrast, children=None, include_leaf=True):
     # init size_dict & y_mean_dict
     size_dict = dict()
     y_mean_dict = defaultdict(lambda: 0)
-
-    def _compute_f_stat(myo, y_mean, reg_size):
-        tr_myo = np.trace(myo)
-        const = (reg_size * num_img - b * a[1]) / b * (a[1] - a[0])
-        tr_eps = tr_myo - np.trace(y_mean @ h[0] @ y_mean.T) / num_img, \
-                 tr_myo - np.trace(y_mean @ h[1] @ y_mean.T) / num_img
-        return (tr_eps[0] - tr_eps[1]) / tr_eps[1] * const
 
     if children is None:
         # no graph passed, iterate through each voxel
@@ -162,10 +156,9 @@ def iter_reg_stat(x, y, contrast, children=None, include_leaf=True):
     for reg_idx in iter_reg_idx:
         if include_leaf and reg_idx < num_vox:
             # single voxel region (don't delete on lookup)
-            f_stat = _compute_f_stat(myo=myo_dict[reg_idx],
-                                     y_mean=y[:, :, reg_idx],
-                                     reg_size=1)
-            yield reg_idx, 1, f_stat
+            y_mean = y[:, :, reg_idx]
+            reg_size = 1
+
         else:
             # multiple voxel region
 
@@ -178,20 +171,24 @@ def iter_reg_stat(x, y, contrast, children=None, include_leaf=True):
 
             # compute & store myo, y_mean
             for c, l in zip(child, lam):
-                myo_dict[reg_idx] += myo_dict.pop(c) * l
                 if c < num_vox:
                     # child has 1 voxel, direct lookup
-                    y_mean_dict[reg_idx] += y[:, :, c] * l
+                    _y_mean = y[:, :, c]
                 else:
                     # child has many voxels, pop
-                    y_mean_dict[reg_idx] += y_mean_dict.pop(c) * l
+                    _y_mean = y_mean_dict.pop(c)
 
-            # compute f_stat
-            f_stat = _compute_f_stat(myo=myo_dict[reg_idx],
-                                     y_mean=y_mean_dict[reg_idx],
-                                     reg_size=reg_size)
+                # update y_mean & myo
+                y_mean_dict[reg_idx] += _y_mean * l
+                myo_dict[reg_idx] += myo_dict.pop(c) * l
 
-            yield reg_idx, reg_size, f_stat
+            y_mean = y_mean_dict[reg_idx]
+
+        # compute & yield stats
+        reg_stat = rs_computer(reg_size=reg_size,
+                               y_mean=y_mean,
+                               myo=myo_dict[reg_idx])
+        yield reg_idx, reg_stat
 
 
 def child_to_parent(children, num_leaf=None):
