@@ -145,7 +145,7 @@ class RegStatComputer:
         log_p = np.array([np.log10(np.linalg.det(_eps_s)) * reg_size +
                           np.log10(np.linalg.det(_eps_r))
                           for _eps_s, _eps_r in zip(eps_s, eps_r)])
-        log_p *= - reg_size / 2
+        log_p *= - num_img / 2
         llr = log_p[1] - log_p[0]
 
         return RegStat(size=reg_size, y_mean=y_mean, myo=myo, f_stat=f_stat,
