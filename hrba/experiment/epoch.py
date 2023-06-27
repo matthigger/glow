@@ -29,7 +29,7 @@ class Epoch:
     Attributes:
         exp (Experiment): the source data to run experiment on
         size (np.array): (n_permute + 1, num_reg) size of each region
-        f_stat (np.array): (n_permute + 1, num_reg) raw f-stat of each region
+        llr (np.array): (n_permute + 1, num_reg) raw llr of each region
         p_val (np.array): (num_reg) FWER controlled pval
         effect_list (list): list of effects discovered
     """
@@ -57,15 +57,15 @@ class Epoch:
             estimate += eff.mask * (idx + 1)
 
         num_vox = self.exp.y.shape[2]
-        f_stat = reshape(mask_idx=self.exp.mask_idx,
-                         x=self.f_stat[0, :num_vox])
+        llr = reshape(mask_idx=self.exp.mask_idx,
+                         x=self.llr[0, :num_vox])
         p_val = reshape(mask_idx=self.exp.mask_idx, x=self.p_val[:num_vox])
 
         array_dict = {'estimate': estimate,
-                      'f_stat_vox': f_stat,
+                      'llr_vox': llr,
                       'p_val_vox': p_val}
         if log:
-            array_dict['log10_f_stat_vox'] = np.log10(f_stat)
+            array_dict['log10_llr_vox'] = np.log10(llr)
             array_dict['log10_p_val_vox'] = np.log10(p_val)
 
         for label, img in array_dict.items():
@@ -76,7 +76,7 @@ class Epoch:
         return folder
 
     @classmethod
-    def get_f_stat(cls, exp, child_dict=None, n_permute=None, verbose=True):
+    def get_llr(cls, exp, child_dict=None, n_permute=None, verbose=True):
         assert (child_dict is None) != (n_permute is None), \
             'either child_dict xor n_permute required'
 
@@ -90,7 +90,7 @@ class Epoch:
             shape = (len(child_dict), 2 * num_vox - 1)
             perm_child_iter = child_dict.items()
         size = np.full(shape, fill_value=-1, dtype=int)
-        f_stat = np.full(shape, fill_value=-1, dtype=float)
+        llr = np.full(shape, fill_value=-1, dtype=float)
 
         tqdm_dict = dict(desc='compute stats per permutation',
                          disable=not verbose)
@@ -99,9 +99,9 @@ class Epoch:
             for reg_idx, reg_stat in iter_reg_stat_exp(children=children,
                                                        exp=_exp):
                 size[perm_idx, reg_idx] = reg_stat.size
-                f_stat[perm_idx, reg_idx] = reg_stat.f_stat
+                llr[perm_idx, reg_idx] = reg_stat.llr
 
-        return size, f_stat
+        return size, llr
 
     @classmethod
     def get_pval(cls, stat):
@@ -131,12 +131,12 @@ class EpochTFCE(Epoch):
         self.exp = exp
 
         # compute f stat per every region in hierarchy (across all permutes)
-        self.size, self.f_stat = self.get_f_stat(exp=exp,
-                                                 n_permute=n_permute + 1,
-                                                 verbose=verbose)
+        self.size, self.llr = self.get_llr(exp=exp,
+                                           n_permute=n_permute + 1,
+                                           verbose=verbose)
 
         # apply TFCE per image
-        self.tfce_stat = self.apply_tfce(stat=self.f_stat,
+        self.tfce_stat = self.apply_tfce(stat=self.llr,
                                          mask_idx=exp.mask_idx,
                                          verbose=verbose)
 
@@ -220,20 +220,16 @@ class EpochHRBA(Epoch):
                                        verbose=verbose)
 
         # compute f stat per every region in hierarchy (across all permutes)
-        self.size, self.f_stat = self.get_f_stat(exp=exp,
-                                                 child_dict=self.child_dict,
-                                                 verbose=verbose)
-
-        # model f mu & var as a function of region size
-        self.model_f_mu, self.model_f_std, self.z_stat = \
-            self.model_adjust_f(self.size, self.f_stat)
+        self.size, self.llr = self.get_llr(exp=exp,
+                                           child_dict=self.child_dict,
+                                           verbose=verbose)
 
         # compute p-values
-        self.p_val = self.get_pval(self.z_stat)
+        self.p_val = self.get_pval(self.llr)
 
         # discover effects
         self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
-                                         stat=self.z_stat[0, :], exp=exp,
+                                         stat=self.llr[0, :], exp=exp,
                                          children=self.child_dict[0])
 
     @classmethod
@@ -276,35 +272,6 @@ class EpochHRBA(Epoch):
             child_dict[perm_idx] = ward.children_
 
         return child_dict
-
-    @classmethod
-    def model_adjust_f(cls, size, f_stat, min_f=.1):
-        """ models f stats as function of region size
-
-        motivation: we need a size agnostic stat per region (i.e. z-stat)
-        """
-        # init
-
-        # prep
-        log_size = np.log10(size)
-        log_f = np.log10(f_stat)
-
-        # apply min_f
-        min_log_f = np.log10(min_f)
-        log_f[log_f < min_log_f] = min_log_f
-
-        # fit model_f_mu
-        model_f_mu = LinearRegression(fit_intercept=True)
-        model_f_mu.fit(X=log_size.reshape(-1, 1), y=log_f.flatten(),
-                       sample_weight=size.flatten())
-
-        # adjust f stats per region size
-        mu = model_f_mu.predict(log_size.reshape(-1, 1)).reshape(size.shape)
-        error = log_f - mu
-        model_f_std = error.flatten().std()
-        z_stat = (np.log10(f_stat) - mu) / model_f_std
-
-        return model_f_mu, model_f_std, z_stat
 
     @classmethod
     def discover(cls, pval, stat, children, exp, alpha=.05):

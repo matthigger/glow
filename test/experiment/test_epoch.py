@@ -32,8 +32,8 @@ class TestEpoch:
         assert np.allclose(p_val, p_val_exp)
 
     def test_get_f_stat(self):
-        Epoch.get_f_stat(exp=exp, child_dict=child_dict)
-        Epoch.get_f_stat(exp=exp, n_permute=n_permute)
+        Epoch.get_llr(exp=exp, child_dict=child_dict)
+        Epoch.get_llr(exp=exp, n_permute=n_permute)
 
 
 class TestEpochHRBA:
@@ -66,34 +66,6 @@ class TestEpochHRBA:
                     break
             else:
                 raise AssertionError('some color not segmented perfectly')
-
-    def test_model_adjust_f(self):
-        # "right" answer: log10 f stat = log10 size * 1 + error
-        # where error has std_dev of 1
-        n_size = 4
-        n_perm = 3
-        size = np.tile(np.arange(2, 2 + n_size), (n_perm, 1))
-
-        # build noise to be zero mean and std dev 1
-        rng = np.random.default_rng(seed=0)
-        error = rng.standard_normal((n_perm, n_size))
-        for idx in range(n_size):
-            error[:, idx] -= error[:, idx].mean()
-            error[:, idx] *= 1 / error[:, idx].std()
-
-        f_stat = 10 ** (np.log10(size) + error)
-
-        model_f_mu, model_f_std, z_stat = EpochHRBA.model_adjust_f(size=size,
-                                                                   f_stat=f_stat)
-
-        # model: log10 f = log10 size + eps
-        assert np.isclose(model_f_mu.coef_, 1)
-        assert np.isclose(model_f_mu.intercept_, 0)
-        assert np.isclose(model_f_std, 1)
-
-        # check z stat compute
-        z_stat_exp = (np.log10(f_stat) - np.log10(size)) / model_f_std
-        assert np.allclose(z_stat, z_stat_exp)
 
     def test_discover(self):
         num_vox = 4

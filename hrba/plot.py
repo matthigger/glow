@@ -16,7 +16,7 @@ def scatter_size_vs_two(*args, **kwargs):
     return fig
 
 
-def scatter_size_vs_stat(epoch, mask=None, y_feat='f_stat', f_trend=False,
+def scatter_size_vs_stat(epoch, mask=None, y_feat='llr', f_trend=False,
                          min_size=1):
     """ scatters size vs f_stat, colors by f1 score if mask is passed
 
@@ -36,8 +36,8 @@ def scatter_size_vs_stat(epoch, mask=None, y_feat='f_stat', f_trend=False,
         f1 = None
 
     x = epoch.size.astype(float)
-    if y_feat == 'f_stat':
-        y = epoch.f_stat
+    if y_feat == 'llr':
+        y = epoch.llr
     elif y_feat == 'z_stat':
         y = epoch.z_stat
     else:
