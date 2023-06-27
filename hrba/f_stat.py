@@ -142,10 +142,17 @@ class RegStatComputer:
 
         # compute log-likelihood-ratio (note: log_p missing additive
         # constants, which cancel out in computing llr)
-        log_p = np.array([np.log10(np.linalg.det(_eps_s)) * reg_size +
-                          np.log10(np.linalg.det(_eps_r))
-                          for _eps_s, _eps_r in zip(eps_s, eps_r)])
-        log_p *= - num_img / 2
+        log_p = [0, 0]
+        for idx, (_eps_s, _eps_r) in enumerate(zip(eps_s, eps_r)):
+            det_eps_s = np.linalg.det(_eps_s)
+            det_eps_r = np.linalg.det(_eps_r)
+            # only add if determinant is positive (0 cov -> prob is 1)
+            if not np.isclose(det_eps_s, 0):
+                log_p[idx] += np.log10(det_eps_s) * reg_size
+            if not np.isclose(det_eps_r, 0):
+                log_p[idx] += np.log10(det_eps_r)
+
+        log_p = -np.array(log_p) * num_img / 2
         llr = log_p[1] - log_p[0]
 
         return RegStat(size=reg_size, y_mean=y_mean, myo=myo, f_stat=f_stat,
