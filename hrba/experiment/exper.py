@@ -5,6 +5,7 @@ from copy import copy
 import numpy as np
 import pandas as pd
 
+from hrba.mask import get_mask_idx
 from hrba.sample_effect import compute_offset
 from .effect import Effect
 from .load_image import load_image_color, load_image_nii
@@ -191,7 +192,7 @@ class Experiment:
 
         Args:
             effect (Effect): effect to add to experiment
-            
+
         Returns:
             exp_out (Experiment): experiment whose y features have had the
                 effect subtracted away
@@ -204,6 +205,26 @@ class Experiment:
         offset = -effect.y_mean @ h[1] @ (np.eye(num_img) - h[0])
 
         return self.add_offset(offset=offset, mask=effect.mask)
+
+    def apply_mask(self, mask):
+        """ applies boolean mask to experiment
+
+        Args:
+            mask (np.array): True where voxels included, false otherwise
+
+        Returns:
+            exp (Experiment): experiment corresponding to intersection of mask
+                and self
+        """
+        # apply mask to data
+        mask = np.logical_and(mask, self.mask_idx > -1)
+        assert mask.sum(), 'mask has no intersection with mask_idx'
+        mask_idx = get_mask_idx(mask)
+        y = self.y[:, :, self.mask_idx[mask]]
+        
+        return type(self)(x=self.x, y=y, mask_idx=mask_idx,
+                          contrast=self.contrast, x_names=self.x_names,
+                          y_names=self.y_names)
 
     def add_offset(self, offset, mask=None, vox_idx=None):
         """ returns new experiment with constant offset added to y
