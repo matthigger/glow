@@ -83,7 +83,7 @@ eps_s (tuple): spatial covariance, image pooled covariance of y across voxels
 eps_r (tuple): average error covariance, error from voxel averaged y
 """
 RegStat = namedtuple('RegStat', ['size', 'y_mean', 'myo', 'f_stat', 'llr',
-                                 'eps', 'eps_s', 'eps_r'])
+                                 'eps', 'eps_s', 'eps_r', 'llr_simple'])
 
 
 class RegStatComputer:
@@ -155,5 +155,9 @@ class RegStatComputer:
         log_p = -np.array(log_p) * num_img / 2
         llr = log_p[1] - log_p[0]
 
+        llr_simple = (np.linalg.det(eps[0]) -
+                      np.linalg.det(eps[1])) * num_img * reg_size
+
         return RegStat(size=reg_size, y_mean=y_mean, myo=myo, f_stat=f_stat,
-                       llr=llr, eps=eps, eps_r=eps_r, eps_s=eps_s)
+                       llr=llr, llr_simple=llr_simple, eps=eps, eps_r=eps_r,
+                       eps_s=eps_s)
