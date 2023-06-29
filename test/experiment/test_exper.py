@@ -77,7 +77,7 @@ class TestExperiment:
         eff = Effect.from_exp_mask(exp=exp, mask=mask)
 
         # remove the effect
-        exp2 = exp.add_effect(effect=eff, remove_flag=True)
+        exp2 = exp.rm_effect(effect=eff)
 
         # validate that exp2 has f=0 for whole region
         eff2 = Effect.from_exp_mask(exp=exp2, mask=mask)

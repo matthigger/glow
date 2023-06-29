@@ -186,12 +186,12 @@ class Experiment:
 
         return exp, effect
 
-    def add_effect(self, effect, remove_flag=False):
+    def rm_effect(self, effect):
         """ builds a new experiment which has the effect added
 
         Args:
-            effect (Effect): effect to add to experiment, note that adding
-
+            effect (Effect): effect to add to experiment
+            
         Returns:
             exp_out (Experiment): experiment whose y features have had the
                 effect subtracted away
@@ -201,10 +201,7 @@ class Experiment:
         num_img = self.x.shape[1]
         x = self.x[~self.contrast, :], self.x
         h = tuple(np.linalg.pinv(_x) @ _x for _x in x)
-        offset = effect.y_mean @ h[1] @ (np.eye(num_img) - h[0])
-
-        if remove_flag:
-            offset *= -1
+        offset = -effect.y_mean @ h[1] @ (np.eye(num_img) - h[0])
 
         return self.add_offset(offset=offset, mask=effect.mask)
 

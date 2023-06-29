@@ -45,9 +45,9 @@ class Analysis:
                 # no new regions discovered, analysis complete
                 break
 
-            for eff in epoch.effect_list:
+            for effect in epoch.effect_list:
                 # build new experiment which removes impact of this effect
-                exp = exp.add_effect(effect=eff, remove_flag=True)
+                exp = exp.rm_effect(effect)
         else:
             warn(f'stopping.  epoch limit reached: {max_epoch} epochs')
 
