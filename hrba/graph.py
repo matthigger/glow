@@ -113,7 +113,7 @@ def iter_reg_stat_exp(*, exp, **kwargs):
     yield from iter_reg_stat(x=exp.x, y=exp.y, contrast=exp.contrast, **kwargs)
 
 
-def iter_reg_stat(x, y, contrast, children=None, include_leaf=True):
+def iter_reg_stat(x, y, contrast, children=None, include_leaf=True, **kwargs):
     """ iterates through region statistics of graph
 
     Args:
@@ -135,7 +135,7 @@ def iter_reg_stat(x, y, contrast, children=None, include_leaf=True):
     """
     # prep
     b, num_img, num_vox = y.shape
-    rs_computer = RegStatComputer(x=x, contrast=contrast)
+    rs_computer = RegStatComputer(x=x, contrast=contrast, **kwargs)
 
     # init mean of y outer products
     myo_dict = defaultdict(lambda: 0)

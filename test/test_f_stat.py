@@ -4,7 +4,7 @@ from test.helper import generate_dummy_data
 
 def test_stat_computer():
     x, y, contrast = generate_dummy_data(seed=0)
-    stat_computer = RegStatComputer(x=x, contrast=contrast)
+    stat_computer = RegStatComputer(x=x, contrast=contrast, extra_flag=True)
 
     b, num_img, num_vox = y.shape
     myo = np.einsum('ijk,ajk->ia', y, y) / (num_img * num_vox)
@@ -13,7 +13,8 @@ def test_stat_computer():
 
     x = x[~contrast, :], x
 
-    for _x, _eps, _eps_r, _eps_s in zip(x, rs.eps, rs.eps_r, rs.eps_s):
+    for _x, _eps, _eps_r, _eps_s in zip(x, rs['eps'], rs['eps_r'],
+                                        rs['eps_s']):
         # compute eps the trustworthy / slow way
         h = np.linalg.pinv(_x) @ _x
         y_est = y_mean @ h

@@ -7,7 +7,6 @@ import numpy as np
 from scipy.ndimage import label
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.feature_extraction import grid_to_graph
-from sklearn.linear_model import LinearRegression
 from tqdm import tqdm
 
 from hrba.graph import iter_reg_stat_exp, iter_topo
@@ -58,7 +57,7 @@ class Epoch:
 
         num_vox = self.exp.y.shape[2]
         llr = reshape(mask_idx=self.exp.mask_idx,
-                         x=self.llr[0, :num_vox])
+                      x=self.llr[0, :num_vox])
         p_val = reshape(mask_idx=self.exp.mask_idx, x=self.p_val[:num_vox])
 
         array_dict = {'estimate': estimate,
@@ -91,7 +90,6 @@ class Epoch:
             perm_child_iter = child_dict.items()
         size = np.full(shape, fill_value=-1, dtype=int)
         llr = np.full(shape, fill_value=-1, dtype=float)
-        rs = np.empty(shape, dtype=object)
 
         tqdm_dict = dict(desc='compute stats per permutation',
                          disable=not verbose)
@@ -99,8 +97,8 @@ class Epoch:
             _exp = exp.permute(perm_idx)
             for reg_idx, reg_stat in iter_reg_stat_exp(children=children,
                                                        exp=_exp):
-                size[perm_idx, reg_idx] = reg_stat.size
-                llr[perm_idx, reg_idx] = reg_stat.llr
+                size[perm_idx, reg_idx] = reg_stat['size']
+                llr[perm_idx, reg_idx] = reg_stat['llr']
 
         return size, llr
 
@@ -207,10 +205,6 @@ class EpochHRBA(Epoch):
     Attributes:
         child_dict (dict): keys are permutation indices, values are
             (2, n) graph arrays (equiv to sklearn.cluster.Ward.children_)
-        z_stat (np.array): (n_permute + 1, num_reg)  "z-score" of each f-stat
-        model_f_mu (LinearRegression): the mean f stat as a function of
-            region size (log10 F = m * log10 num_vox + b)
-        model_f_std (float): std deviation of model f (in log space)
     """
 
     def __init__(self, exp, n_permute, alpha=.05, verbose=True):
@@ -226,7 +220,7 @@ class EpochHRBA(Epoch):
                                            verbose=verbose)
 
         # compute p-values
-        self.p_val = self.get_pval(self.llr)
+        self.p_val = self.get_pval(np.divide(self.llr, self.size))
 
         # discover effects
         self.effect_list = self.discover(pval=self.p_val, alpha=alpha,

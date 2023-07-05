@@ -1,5 +1,3 @@
-from collections import namedtuple
-
 import numpy as np
 
 
@@ -82,8 +80,6 @@ eps (tuple): total error covariance
 eps_s (tuple): spatial covariance, image pooled covariance of y across voxels
 eps_r (tuple): average error covariance, error from voxel averaged y
 """
-RegStat = namedtuple('RegStat', ['size', 'y_mean', 'myo', 'f_stat', 'llr',
-                                 'eps', 'eps_s', 'eps_r', 'llr_simple'])
 
 
 class RegStatComputer:
@@ -100,13 +96,14 @@ class RegStatComputer:
         a (tuple): (int) number of x features in model
     """
 
-    def __init__(self, x, contrast):
+    def __init__(self, x, contrast, extra_flag=False):
         # pre-compute
         num_img = x.shape[1]
         x = x[~contrast, :], x
         self.h = tuple(np.linalg.pinv(_x) @ _x for _x in x)
         self.i_minus_h = tuple(np.eye(num_img) - _h for _h in self.h)
         self.a = (~contrast).sum(), contrast.size
+        self.extra_flag = extra_flag
 
     def __call__(self, reg_size, y_mean, myo):
         """ computes statistics
@@ -126,6 +123,14 @@ class RegStatComputer:
         num_img = self.h[0].shape[0]
         eps = tuple(myo - y_mean @ _h @ y_mean.T / num_img
                     for _h in self.h)
+
+        llr = (np.log10(np.linalg.det(eps[0])) -
+               np.log10(np.linalg.det(eps[1]))) * num_img * reg_size / 2
+
+        if not self.extra_flag:
+            # simpler model, faster compute
+            return dict(size=reg_size, y_mean=y_mean, myo=myo, llr=llr,
+                        eps=eps)
 
         # compute f stat
         tr_eps = tuple(np.trace(_eps) for _eps in eps)
@@ -153,11 +158,8 @@ class RegStatComputer:
                 log_p[idx] += np.log10(det_eps_r)
 
         log_p = -np.array(log_p) * num_img / 2
-        llr = log_p[1] - log_p[0]
+        llr_hier_model = log_p[1] - log_p[0]
 
-        llr_simple = (np.linalg.det(eps[0]) -
-                      np.linalg.det(eps[1])) * num_img * reg_size
-
-        return RegStat(size=reg_size, y_mean=y_mean, myo=myo, f_stat=f_stat,
-                       llr=llr, llr_simple=llr_simple, eps=eps, eps_r=eps_r,
-                       eps_s=eps_s)
+        return dict(size=reg_size, y_mean=y_mean, myo=myo, f_stat=f_stat,
+                    llr_hier_model=llr_hier_model, llr_simple=llr, eps=eps,
+                    eps_r=eps_r, eps_s=eps_s)
