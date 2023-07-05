@@ -97,3 +97,33 @@ class TestEpochHRBA:
         assert len(eff_list) == 2
         assert eff_list[0].reg_idx == 0
         assert eff_list[1].reg_idx == 1
+
+    def test_adjust_by_size(self):
+        # "right" answer: log10 f stat = log10 size * 1 + error
+        # where error has std_dev of 1
+        n_size = 4
+        n_perm = 3
+        size = np.tile(np.arange(2, 2 + n_size), (n_perm, 1))
+
+        # build noise to be zero mean and std dev 1
+        rng = np.random.default_rng(seed=0)
+        error = rng.standard_normal((n_perm, n_size))
+        for idx in range(n_size):
+            error[:, idx] -= error[:, idx].mean()
+            error[:, idx] *= 1 / error[:, idx].std()
+
+        f_stat = 10 ** (np.log10(size) + error)
+
+        f_stat_adjust, lin_reg = EpochHRBA.adjust_by_size(size=size,
+                                                          stat=f_stat,
+                                                          ignore_row0=False)
+
+        # model: log10 f = log10 size + eps
+        assert np.isclose(lin_reg.coef_, 1)
+        assert np.isclose(lin_reg.intercept_, 0)
+
+        # check z stat compute
+        z_stat_exp = np.log10(f_stat) - np.log10(size)
+        z_stat_exp /= np.std(z_stat_exp)
+        assert np.allclose(f_stat_adjust, z_stat_exp)
+        assert np.isclose(np.std(f_stat_adjust), 1)
