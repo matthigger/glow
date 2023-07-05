@@ -57,7 +57,8 @@ class Epoch:
             estimate += eff.mask * (idx + 1)
 
         num_vox = self.exp.y.shape[2]
-        llr = reshape(mask_idx=self.exp.mask_idx, x=self.llr[0, :num_vox])
+        llr = reshape(mask_idx=self.exp.mask_idx,
+                         x=self.llr[0, :num_vox])
         p_val = reshape(mask_idx=self.exp.mask_idx, x=self.p_val[:num_vox])
 
         array_dict = {'estimate': estimate,
@@ -100,49 +101,8 @@ class Epoch:
                                                        exp=_exp):
                 size[perm_idx, reg_idx] = reg_stat.size
                 llr[perm_idx, reg_idx] = reg_stat.llr
-                rs[perm_idx, reg_idx] = reg_stat
 
-        return size, llr, rs
-
-    @classmethod
-    def adjust_by_size(cls, stat, size, ignore_row0=True, size_weighted=True):
-        """ subtracts mean stat per size, computed from
-
-        Args:
-            stat (np.array): statistic, per region
-            size (np.array): size of each region (in voxels)
-            ignore_row0 (np.array): if given
-            size_weighted (bool): if True (default) the stat vs size trend
-                weighs each observation by the size of the region
-                (counteracts oversampling of smaller regions)
-
-        Returns:
-            stat_adjust (np.array): statistic, adjusted for size
-            lin_reg (LinearRegression): model from log(size) to log(stat)
-        """
-
-        assert stat.shape == size.shape
-
-        if ignore_row0:
-            start_idx = stat.shape[1]
-        else:
-            start_idx = 0
-
-        if size_weighted:
-            weight = size.flatten()
-        else:
-            weight = np.ones(stat.size)
-
-        y = np.log10(stat).flatten()
-        x = np.log10(size).reshape((-1, 1))
-
-        lin_reg = LinearRegression(fit_intercept=True)
-        lin_reg.fit(x[:, start_idx:], y[start_idx:], sample_weight=weight)
-
-        stat_adjust = (y - lin_reg.predict(x)).reshape(stat.shape)
-        stat_adjust /= np.std(stat_adjust)
-
-        return stat_adjust, lin_reg
+        return size, llr
 
     @classmethod
     def get_pval(cls, stat):
@@ -172,9 +132,9 @@ class EpochTFCE(Epoch):
         self.exp = exp
 
         # compute f stat per every region in hierarchy (across all permutes)
-        self.size, self.llr, _ = self.get_llr(exp=exp,
-                                              n_permute=n_permute + 1,
-                                              verbose=verbose)
+        self.size, self.llr = self.get_llr(exp=exp,
+                                           n_permute=n_permute + 1,
+                                           verbose=verbose)
 
         # apply TFCE per image
         self.tfce_stat = self.apply_tfce(stat=self.llr,
@@ -261,19 +221,16 @@ class EpochHRBA(Epoch):
                                        verbose=verbose)
 
         # compute f stat per every region in hierarchy (across all permutes)
-        self.size, self.llr, self.rs = self.get_llr(exp=exp,
-                                                    child_dict=self.child_dict,
-                                                    verbose=verbose)
-
-        self.z_stat = self.adjust_by_size(stat=self.llr, size=self.size,
-                                              ignore_row0=True)
+        self.size, self.llr = self.get_llr(exp=exp,
+                                           child_dict=self.child_dict,
+                                           verbose=verbose)
 
         # compute p-values
-        self.p_val = self.get_pval(self.z_stat)
+        self.p_val = self.get_pval(self.llr)
 
         # discover effects
         self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
-                                         stat=self.z_stat[0, :], exp=exp,
+                                         stat=self.llr[0, :], exp=exp,
                                          children=self.child_dict[0])
 
     @classmethod
