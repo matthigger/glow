@@ -156,7 +156,7 @@ class Experiment:
         rng = np.random.default_rng(seed=seed)
         self.x = rng.standard_normal(size=(a, num_img))
 
-    def impose_effect(self, extenter, seed=None, **kwargs):
+    def impose_effect(self, extenter=None, mask=None, seed=None, **kwargs):
         """ builds experiment with effect imposed
 
         Args:
@@ -170,9 +170,12 @@ class Experiment:
             effect (Effect): encapsulates
         """
         assert self.x is not None, 'x/contrast needed, call .sample_x()'
+        assert (mask is None) != (extenter is None), \
+            'either mask xor extenter needed'
 
-        # sample effect space
-        mask = extenter(y=self.y, mask_idx=self.mask_idx, seed=seed)
+        if mask is None:
+            # sample effect space
+            mask = extenter(y=self.y, mask_idx=self.mask_idx, seed=seed)
 
         # get offset which imposes desired effect strength
         effect_idx = self.mask_idx[mask]
@@ -221,7 +224,7 @@ class Experiment:
         assert mask.sum(), 'mask has no intersection with mask_idx'
         mask_idx = get_mask_idx(mask)
         y = self.y[:, :, self.mask_idx[mask]]
-        
+
         return type(self)(x=self.x, y=y, mask_idx=mask_idx,
                           contrast=self.contrast, x_names=self.x_names,
                           y_names=self.y_names)
