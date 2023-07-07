@@ -7,3 +7,7 @@
 /.coverage
 /test/data/img*
 *tmp*
+/hrba/.ipynb_checkpoints/
+/hrba/__pycache__/
+/hrba/exp*/
+*.p
