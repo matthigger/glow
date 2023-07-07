@@ -143,7 +143,8 @@ class EpochTFCE(Epoch):
         self.p_val = self.get_pval(self.tfce_stat)
 
         # discover effects
-        mask = (self.p_val <= alpha).reshape(exp.mask_idx.shape)
+        mask = np.zeros(exp.mask_idx.shape, dtype=bool)
+        mask[exp.mask_idx > -1] = self.p_val <= alpha
         self.effect_list = self.discover_mask(mask=mask, exp=exp)
 
     def to_nii(self, *args, log=True, **kwargs):
