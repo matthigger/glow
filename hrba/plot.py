@@ -1,3 +1,5 @@
+from copy import copy
+
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
@@ -7,24 +9,26 @@ from hrba.graph import get_f1
 sns.set(font_scale=1.3)
 
 
-def scatter_size_vs_two(*args, **kwargs):
+def scatter_size_vs_two(*, epoch, **kwargs):
     fig, ax = plt.subplots(1, 2)
     plt.sca(ax[0])
-    scatter_size_vs_stat(*args, **kwargs, y_feat='f_stat', f_trend=True)
+    llr_over_size = epoch.llr / epoch.size
+    scatter_size_vs_stat(epoch=epoch, y_feat=llr_over_size, **kwargs, )
+    thresh = np.percentile(llr_over_size.max(axis=1), [95])
+    plt.axhline(thresh, color='r', linestyle='--')
     plt.sca(ax[1])
-    scatter_size_vs_stat(*args, **kwargs, y_feat='z_stat', f_trend=False)
+    scatter_size_vs_stat(epoch=epoch, y_feat=epoch.llr, **kwargs, )
     return fig
 
 
-def scatter_size_vs_stat(epoch, mask=None, y_feat='llr', f_trend=False,
-                         min_size=1):
+def scatter_size_vs_stat(epoch, mask=None, y_feat='llr', min_size=1):
     """ scatters size vs f_stat, colors by f1 score if mask is passed
 
      Args:
         epoch (Epoch):
+        y_feat (np.array): y feature to plot (same size as epoch.size)
         mask (np.array): target mask
-        y_feat (str): 'f_stat' or 'z_stat'
-        f_trend (bool): toggles graphing of f trends (for f to z adjustment)
+        min_size (int): smallest size to be plotted
      """
 
     # compute f1 score
@@ -36,46 +40,28 @@ def scatter_size_vs_stat(epoch, mask=None, y_feat='llr', f_trend=False,
         f1 = None
 
     x = epoch.size.astype(float)
-    if y_feat == 'llr':
-        y = epoch.llr
-    elif y_feat == 'z_stat':
-        y = epoch.z_stat
-    else:
-        assert isinstance(y_feat, np.ndarray)
-        assert y_feat.shape == x.shape
-        y = y_feat
+    assert isinstance(y_feat, np.ndarray)
+    assert y_feat.shape == x.shape
+    y = copy(y_feat)
 
     if min_size > 1:
         b = epoch.size < min_size
         x[b] = np.nan
         y[b] = np.nan
 
-    plt.scatter(x[1:, :], y[1:, :], alpha=.02, color='k',
-                linewidth=0, label='region (permuted)')
+    if mask is None:
+        raise NotImplementedError
+    else:
+        plt.scatter(x[1:, :], y[1:, :], alpha=.02, color='k',
+                    linewidth=0, label='region (permuted)')
 
-    if f_trend:
-        assert y_feat == 'f_stat', 'f_trend only valid on f_stat scatter'
-
-        # plot trend of f used in computing z stats
-        low, high = np.nanmin(x), np.nanmax(x)
-        _x = np.log10(np.linspace(low, high, 101)).reshape(-1, 1)
-        f_mean = 10 ** epoch.model_f_mu.predict(_x)
-        _x = 10 ** _x.flatten()
-        plt.plot(_x, f_mean, linewidth=2, color='g', label='f_mean(size)')
-
-    b = f1 > 0
-    # plt.scatter(x[0, :][~b], y[0, :][~b], label='region', marker='s',
-    #             color='k')
-    plt.scatter(x[0, :][b], y[0, :][b], c=f1.flatten()[b],
-                cmap='plasma', label='region w/ target', marker='s')
-
-    if mask is not None:
+        b = f1 > 0
+        plt.scatter(x[0, :][b], y[0, :][b], c=f1.flatten()[b],
+                    cmap='plasma', label='region w/ target', marker='s')
         cbar = plt.colorbar()
         cbar.set_label('F1 score', rotation=90)
+
     plt.xlabel('size')
-    if isinstance(y_feat, str):
-        plt.ylabel(y_feat)
     plt.xscale('log')
-    if y_feat != 'z_stat':
-        plt.yscale('log')
+    plt.yscale('log')
     plt.legend()
