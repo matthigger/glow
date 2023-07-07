@@ -41,7 +41,7 @@ def get_f1(mask, mask_idx, children):
     """
     # compute misses & hits per region
     miss_hits = get_miss_hits(mask, mask_idx, children)
-    miss_hits = np.vstack(miss_hits[idx] for idx in range(len(miss_hits)))
+    miss_hits = np.vstack([miss_hits[idx] for idx in range(len(miss_hits))])
 
     # true positive: target voxels in estimated region
     tp = miss_hits[:, 1]
