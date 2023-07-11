@@ -11,13 +11,17 @@ sns.set(font_scale=1.3)
 
 def scatter_size_vs_two(*, epoch, **kwargs):
     fig, ax = plt.subplots(1, 2)
+
     plt.sca(ax[0])
-    llr_over_size = epoch.llr / epoch.size
-    scatter_size_vs_stat(epoch=epoch, y_feat=llr_over_size, **kwargs, )
-    thresh = np.percentile(llr_over_size.max(axis=1), [95])
+    scatter_size_vs_stat(epoch=epoch, y_feat=epoch.z_stat, **kwargs, )
+    thresh = np.percentile(epoch.z_stat.max(axis=1), [95])
     plt.axhline(thresh, color='r', linestyle='--')
+    plt.ylabel('z-stat')
+    plt.yscale('linear')
+
     plt.sca(ax[1])
     scatter_size_vs_stat(epoch=epoch, y_feat=epoch.llr, **kwargs, )
+    plt.ylabel('llr')
     return fig
 
 

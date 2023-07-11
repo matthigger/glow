@@ -12,6 +12,7 @@ from tqdm import tqdm
 from hrba.graph import iter_reg_stat_exp, iter_topo
 from hrba.tfce import apply_tfce_x
 from .effect import Effect
+from .llr_model import LLRModel
 from .permute import get_perm_matrix
 
 
@@ -220,13 +221,48 @@ class EpochHRBA(Epoch):
                                            child_dict=self.child_dict,
                                            verbose=verbose)
 
+        self.z_stat, self.llr_model = self.adjust_llr(llr=self.llr,
+                                                      size=self.size)
+
         # compute p-values
-        self.p_val = self.get_pval(np.divide(self.llr, self.size))
+        self.p_val = self.get_pval(self.z_stat)
 
         # discover effects
         self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
                                          stat=self.llr[0, :], exp=exp,
                                          children=self.child_dict[0])
+
+    @classmethod
+    def adjust_llr(cls, llr, size):
+        """ adjusts log likelihood ratio for size
+
+        we fit a model theta = np.array([[m, b], [m', b']]) to maximize
+        likelihood and, for each llr, return its "z-score":
+
+            z = llr_i - llr_mu_model_i / llr_std_model_i
+        where:
+            llr_mu_model_i = size_i * m  + b
+            llr_std_model_i = size_i * m' + b'
+
+        Args:
+            llr (np.array): (n_permute, num_reg) log likelhiood ratios
+            size (np.array): (n_permute, num_reg) size of each region
+
+        Returns:
+            z_stat (np.array): z stat of each region
+            theta (np.array): np.array([[m, b], [m', b']]),
+                see EpochHRBA.adjust_llr() for detail
+        """
+        # exclude first row from fit as its unpermuted (not necessarily from
+        # null h`ypothesis)
+        llr_model = LLRModel()
+        llr_model.fit(llr=llr[1:, :], size=size[1:, :])
+
+        # compute z stats
+        mu, var = llr_model.predict(size=size)
+        z_stat = (llr - mu) / var ** .5
+
+        return z_stat, llr_model
 
     @classmethod
     def cluster(cls, exp, n_permute, verbose=True):
