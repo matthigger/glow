@@ -17,7 +17,7 @@ child_dict = {idx: children for idx in range(n_permute)}
 
 class TestEpoch:
     def test_to_nii(self):
-        epoch = EpochHRBA(exp=exp, n_permute=0)
+        epoch = EpochHRBA(exp=exp, n_permute=1)
         folder = epoch.to_nii()
         rmtree(folder)
 

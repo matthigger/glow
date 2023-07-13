@@ -9,5 +9,5 @@
 *tmp*
 /hrba/.ipynb_checkpoints/
 /hrba/__pycache__/
-/hrba/exp*/
+/hrba/exp_*/
 *.p
