@@ -16,9 +16,14 @@ def scatter_summary(*, epoch, **kwargs):
     plt.suptitle('modelling LLR vs size (H0)')
     scatter_size_vs_stat(epoch=epoch, y_feat=epoch.llr[1:, :],
                          size=epoch.size[1:, :])
-    size = epoch.size[1:, :].flatten()
+    # compute var
+    size = epoch.size[1:, :]
+    llr = epoch.llr[1:, :]
+    mu = epoch.llr_model.predict(np.log(size).reshape(-1, 1))
+    var = np.var(np.log(llr.flatten()) - mu)
+
     size = np.linspace(size.min(), size.max(), 101)
-    mu, var = epoch.llr_model.predict(size)
+    mu = epoch.llr_model.predict(np.log(size).reshape(-1, 1))
     plt.plot(size, mu, color='b', label='mean')
     plt.fill_between(size, mu + var ** .5, mu - var ** .5, color='b', alpha=.3,
                      label='+/- 1 std')
