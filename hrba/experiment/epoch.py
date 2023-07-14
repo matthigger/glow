@@ -260,7 +260,7 @@ class EpochHRBA(Epoch):
 
         # compute z stats
         mu, var = llr_model.predict(size=size)
-        z_stat = (llr - mu) / var ** .5
+        z_stat = (np.log(llr) - mu) / var ** .5
 
         return z_stat, llr_model
 

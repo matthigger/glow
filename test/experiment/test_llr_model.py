@@ -14,7 +14,7 @@ def test_llr_model():
     llr = size * m + b + error
 
     mod = LLRModel()
-    mod.fit(llr=llr, size=size)
+    mod.fit(llr=np.exp(llr), size=np.exp(size))
 
     assert np.allclose(np.array([m, b, mp, bp]),
                        np.array([mod.m, mod.b, mod.mp, mod.bp]),

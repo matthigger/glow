@@ -13,29 +13,32 @@ def scatter_summary(*, epoch, **kwargs):
     fig, ax = plt.subplots(3, 1)
 
     plt.sca(ax[0])
-    plt.suptitle('modelling LLR vs size (H0)')
-    scatter_size_vs_stat(epoch=epoch, y_feat=epoch.llr[1:, :],
-                         size=epoch.size[1:, :])
+    ax[0].title.set_text('modelling LLR vs size (H0)')
+    scatter_size_vs_stat(epoch=epoch, y_feat=np.log(epoch.llr[1:, :]),
+                         size=np.log(epoch.size[1:, :]))
     size = epoch.size[1:, :].flatten()
     size = np.linspace(size.min(), size.max(), 101)
     mu, var = epoch.llr_model.predict(size)
-    plt.plot(size, mu, color='b', label='mean')
-    plt.fill_between(size, mu + var ** .5, mu - var ** .5, color='b', alpha=.3,
-                     label='+/- 1 std')
+    plt.plot(np.log(size), mu, color='b', label='mean')
+    plt.fill_between(np.log(size), mu + var ** .5, mu - var ** .5,
+                     color='b', alpha=.3, label='+/- 1 std')
     plt.legend()
+    plt.xscale('linear')
+    plt.yscale('linear')
+    plt.xlabel('log_e size')
 
     plt.sca(ax[1])
-    plt.suptitle('Region Stat Signifigance')
-    scatter_size_vs_stat(epoch=epoch, y_feat=epoch.llr, **kwargs, )
-    plt.ylabel('llr')
-
-    plt.sca(ax[2])
-    plt.suptitle('Region Discovery')
+    ax[1].title.set_text('Region Stat Significance')
     scatter_size_vs_stat(epoch=epoch, y_feat=epoch.z_stat, **kwargs, )
     thresh = np.percentile(epoch.z_stat.max(axis=1), [95])
     plt.axhline(thresh, color='r', linestyle='--')
     plt.ylabel('z-stat')
     plt.yscale('linear')
+
+    plt.sca(ax[2])
+    ax[2].title.set_text('Region Discovery')
+    scatter_size_vs_stat(epoch=epoch, y_feat=epoch.llr, **kwargs, )
+    plt.ylabel('llr')
 
     return fig
 

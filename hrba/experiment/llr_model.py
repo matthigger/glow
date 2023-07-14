@@ -40,15 +40,15 @@ class LLRModel:
 
         error is consistent across observations so OLS works just fine for ML
         """
-        llr_rvec = ro.FloatVector(llr.flatten())
-        size_rvec = ro.FloatVector(size.flatten())
+        log_llr_rvec = ro.FloatVector(np.log(llr.flatten()))
+        log_size_rvec = ro.FloatVector(np.log(size.flatten()))
 
-        formula_mean = ro.Formula('llr~size')
-        formula_mean.environment['llr'] = llr_rvec
-        formula_mean.environment['size'] = size_rvec
+        formula_mean = ro.Formula('log_llr~log_size')
+        formula_mean.environment['log_llr'] = log_llr_rvec
+        formula_mean.environment['log_size'] = log_size_rvec
 
-        formula_disp = ro.Formula('~size')
-        formula_disp.environment['size'] = size_rvec
+        formula_disp = ro.Formula('~log_size')
+        formula_disp.environment['log_size'] = log_size_rvec
 
         dglm = ro.r['dglm']
         fit = dglm(formula_mean, dformula=formula_disp, dlink='log',
@@ -67,7 +67,8 @@ class LLRModel:
             mu (np.array): expected llr of each region under h0
             var (np.array): expected var of each region under h0
         """
-        mu = size * self.m + self.b
-        var = np.exp(size * self.mp + self.bp)
+        log_size = np.log(size)
+        mu = log_size * self.m + self.b
+        var = np.exp(log_size * self.mp + self.bp)
 
         return mu, var
