@@ -7,12 +7,12 @@ import numpy as np
 from scipy.ndimage import label
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.feature_extraction import grid_to_graph
-from sklearn.linear_model import LinearRegression
 from tqdm import tqdm
 
 from hrba.graph import iter_reg_stat_exp, iter_topo
 from hrba.tfce import apply_tfce_x
 from .effect import Effect
+from .llr_model import LLRModel
 from .permute import get_perm_matrix
 
 
@@ -253,16 +253,16 @@ class EpochHRBA(Epoch):
             theta (np.array): np.array([[m, b], [m', b']]),
                 see EpochHRBA.adjust_llr() for detail
         """
-        lin_reg = LinearRegression(fit_intercept=True)
-        lin_reg.fit(X=np.log(size)[1:, :].reshape(-1, 1),
-                    y=np.log(llr)[1:, :].flatten())
+        # exclude first row from fit as its unpermuted (not necessarily from
+        # null h`ypothesis)
+        llr_model = LLRModel()
+        llr_model.fit(llr=llr[1:, :], size=size[1:, :])
 
         # compute z stats
-        mu = lin_reg.predict(X=np.log(size).reshape(-1, 1)).reshape(size.shape)
-        var = np.var((np.log(llr) - mu).flatten())
+        mu, var = llr_model.predict(size=size)
         z_stat = (llr - mu) / var ** .5
 
-        return z_stat, lin_reg
+        return z_stat, llr_model
 
     @classmethod
     def cluster(cls, exp, n_permute, verbose=True):
