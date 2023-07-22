@@ -1,6 +1,7 @@
 import pathlib
 import tempfile
 from _bisect import bisect_left
+from copy import copy
 
 import nibabel
 import numpy as np
@@ -104,23 +105,38 @@ class Epoch:
         return size, llr
 
     @classmethod
-    def get_pval(cls, stat):
+    def get_pval(cls, stat, mask_exclude=None):
         """ computes FWER adjusted pval (percentile within max per permute)
 
         Args:
             stat (np.array): (num_permute, num_reg) statistics per region
                 (larger assumed more significant)
+            mask_exclude (np.array): (num_permute, num_reg) where True,
+                statistics are excluded (resulting pval is 1 and this region's
+                stats are counted among h0 permuted stats). defaults to all
+                stats included when set to None
 
         Returns:
             pval (np.array): (num_reg) Family Wise Error Rate controlled
                 p-values
         """
+        if mask_exclude is not None:
+            assert not np.all(mask_exclude, axis=1).any(), \
+                'may not exclude an entire permutation'
+
+            # set all excluded stats to the minimum observed
+            stat = copy(stat).astype(float)
+            stat[mask_exclude] = np.nan
+
         # max z_stat per permutation (sorted from low to high)
-        z_stat_max = np.sort(stat.max(axis=1))
+        z_stat_max = np.sort(np.nanmax(stat, axis=1))
 
         num_perm, num_reg = stat.shape
         pval = np.full(num_reg, fill_value=-1, dtype=float)
         for reg_idx, z in enumerate(stat[0, :]):
+            if np.isnan(z):
+                pval[reg_idx] = np.nan
+                continue
             pval[reg_idx] = 1 - bisect_left(z_stat_max, z) / num_perm
 
         return pval
@@ -207,10 +223,14 @@ class EpochHRBA(Epoch):
     Attributes:
         child_dict (dict): keys are permutation indices, values are
             (2, n) graph arrays (equiv to sklearn.cluster.Ward.children_)
+        min_reg_size (int): minimum size of region of interest (inclusive).
+            smaller regions are not considered for significance
     """
 
-    def __init__(self, exp, n_permute, alpha=.05, verbose=True):
+    def __init__(self, exp, n_permute, alpha=.05, verbose=True,
+                 min_reg_size=1):
         self.exp = exp
+        self.min_reg_size = min_reg_size
 
         # build hierarchy
         self.child_dict = self.cluster(exp=exp, n_permute=n_permute,
@@ -221,11 +241,13 @@ class EpochHRBA(Epoch):
                                            child_dict=self.child_dict,
                                            verbose=verbose)
 
+        # todo: need distinct fold of data to avoid overfitting (FWER control)
         self.z_stat, self.llr_model = self.adjust_llr(llr=self.llr,
                                                       size=self.size)
 
         # compute p-values
-        self.p_val = self.get_pval(self.z_stat)
+        self.p_val = self.get_pval(stat=self.z_stat,
+                                   mask_exclude=self.size < self.min_reg_size)
 
         # discover effects
         self.effect_list = self.discover(pval=self.p_val, alpha=alpha,

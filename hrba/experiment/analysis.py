@@ -22,6 +22,10 @@ class Analysis:
         self.epoch_list = list()
         self.effect_tup = None
 
+    def get_epoch(self, exp, **kwargs):
+        return self.Epoch(exp=exp, n_permute=self.n_permute,
+                          alpha=self.alpha, **kwargs)
+
     def run(self, verbose=True, max_epoch=1e8):
         """ runs analysis to find all significant regions in experiment
         """
@@ -33,9 +37,7 @@ class Analysis:
                 print(f'begin epoch {epoch_idx}')
 
             # run & store new epoch
-            epoch = self.Epoch(exp=exp, n_permute=self.n_permute,
-                               alpha=self.alpha,
-                               verbose=verbose)
+            epoch = self.get_epoch(exp=exp, verbose=verbose)
             self.epoch_list.append(epoch)
 
             if verbose:
@@ -58,6 +60,15 @@ class Analysis:
 
 class AnalysisHRBA(Analysis):
     Epoch = EpochHRBA
+
+    def __init__(self, *args, min_reg_size=1, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.min_reg_size = min_reg_size
+
+    def get_epoch(self, exp, **kwargs):
+        return self.Epoch(exp=exp, n_permute=self.n_permute,
+                          alpha=self.alpha, min_reg_size=self.min_reg_size,
+                          **kwargs)
 
     def another_epoch_needed(self):
         # more epochs needed so long as effects are found

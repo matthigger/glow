@@ -25,11 +25,19 @@ class TestEpoch:
         z_stat = np.array([[7, 3, 1, 0],
                            [0, 0, 0, 0],
                            [3, 3, 3, 3],
-                           [5, 5, 5, 5]])
+                           [2, 2, 2, 5]])
         p_val_exp = np.array([1, 3, 3, 4]) / 4
 
-        p_val = Epoch.get_pval(z_stat)
+        p_val = Epoch.get_pval(stat=z_stat)
         assert np.allclose(p_val, p_val_exp)
+
+        mask_exclude = np.array([[1, 0, 0, 0],
+                                 [0, 0, 0, 0],
+                                 [0, 0, 0, 0],
+                                 [0, 0, 0, 1]]).astype(bool)
+        p_val_exp = np.array([np.nan, 2, 3, 4]) / 4
+        p_val = Epoch.get_pval(stat=z_stat, mask_exclude=mask_exclude)
+        assert np.allclose(p_val, p_val_exp, equal_nan=True)
 
     def test_get_f_stat(self):
         Epoch.get_llr(exp=exp, child_dict=child_dict)
