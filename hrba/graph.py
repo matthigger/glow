@@ -129,7 +129,7 @@ def iter_reg_stat(x, y, contrast, children=None, include_leaf=True, **kwargs):
 
     Yields:
         reg_idx (int): region index
-        size (int): number of voxels in region
+        reg_stat (dict): keys are str, values are stats.  see RegStatComputer
 
     as well as all outputs of StatComputer (e.g. f_stat & log like ratio)
     """

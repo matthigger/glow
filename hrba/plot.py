@@ -26,6 +26,7 @@ def scatter_summary(*, epoch, **kwargs):
     plt.xscale('linear')
     plt.yscale('linear')
     plt.xlabel('log_e size')
+    plt.ylabel('log_e llr')
 
     plt.sca(ax[1])
     ax[1].title.set_text('Region Stat Significance')

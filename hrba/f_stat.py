@@ -161,5 +161,5 @@ class RegStatComputer:
         llr_hier_model = log_p[1] - log_p[0]
 
         return dict(size=reg_size, y_mean=y_mean, myo=myo, f_stat=f_stat,
-                    llr_hier_model=llr_hier_model, llr_simple=llr, eps=eps,
+                    llr_hier_model=llr_hier_model, llr=llr, eps=eps,
                     eps_r=eps_r, eps_s=eps_s)
