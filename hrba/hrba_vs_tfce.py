@@ -102,7 +102,11 @@ def run_one_exp(seed):
             # run analysis
             kwargs = analysis_kwargs[Ana.__name__]
             ana = Ana(exp=_exp, alpha=alpha, n_permute=n_permute, **kwargs)
-            ana.run(verbose=False)
+
+            try:
+                ana.run(verbose=False)
+            except Exception as e:
+                raise Exception(f'seed={seed}, p_val={p_val}') from e
 
             # score
             f1, sens, spec = get_score(ana, effect)
