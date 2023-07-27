@@ -8,13 +8,31 @@ from joblib import Parallel, delayed
 from hrba.experiment import *
 from hrba.sample_effect import *
 
-# build experiment with strong effect to be found (whole region)
-p_val_all = np.geomspace(.15, .03, 15)
-effect_perc = .2
-n_permute = 100
-alpha = .05
-radius = 7
+# number of effects to model
 n_repeat = 100
+
+# p_val describes severity of effect (assuming typical F test assumptions
+# ...not valid but still useful to quantify how difficult effect is)
+p_val_all = np.geomspace(.15, .03, 15)
+
+# to speed up analysis, random voxel is chosen and dilated to this radius.
+# only these voxels are included in the analysis
+radius = 5
+
+# effect size, as ratio to total voxels in experiment
+effect_perc = .2
+
+# number of permutations in permutation testing
+n_permute = 100
+
+# FWER control
+alpha = .05
+
+# parameters to be passed to Analysis constructor
+# min_reg_size=5 implies HRBA will not test the hypothesis that any region
+# smaller than 5 voxels contains an effect
+analysis_kwargs = {'AnalysisHRBA': {'min_reg_size': 10},
+                   'AnalysisTFCE': dict()}
 
 # prep folder_out
 timestamp = datetime.now().strftime('%y%b%d-%H%M')
@@ -26,7 +44,7 @@ if folder_out.exists():
     shutil.rmtree(folder_out)
 folder_out.mkdir()
 
-# store copy of script (to read hyperparams)
+# store copy of script (to read experiment params above)
 shutil.copy(__file__, folder_out / pathlib.Path(__file__).name)
 
 # input data
@@ -46,7 +64,10 @@ def run_one_exp(seed):
     exp = exp_hcp.apply_mask(mask_all)
 
     # sample effect space
-    extenter = ExtenterMinVar(n=exp.y.shape[2] * effect_perc)
+    n = exp.y.shape[2] * effect_perc
+    assert analysis_kwargs['AnalysisHRBA']['min_reg_size'] <= n, \
+        'min_reg_size larger than target effect'
+    extenter = ExtenterMinVar(n=n)
     mask_target = extenter(y=exp.y, mask_idx=exp.mask_idx, seed=seed)
 
     for p_val in p_val_all:
@@ -55,7 +76,8 @@ def run_one_exp(seed):
                                          p_val=p_val)
 
         for Ana in analysis_obj_tup:
-            ana = Ana(exp=_exp, alpha=alpha, n_permute=n_permute)
+            kwargs = analysis_kwargs[Ana.__name__]
+            ana = Ana(exp=_exp, alpha=alpha, n_permute=n_permute, **kwargs)
             ana.run(verbose=False)
 
             # dump
