@@ -1,9 +1,10 @@
+import pickle
 import shutil
 from datetime import datetime
 from uuid import uuid4
 
-import cloudpickle
 from joblib import Parallel, delayed
+from sklearn.metrics import f1_score, recall_score, confusion_matrix
 
 from hrba.experiment import *
 from hrba.sample_effect import *
@@ -57,6 +58,28 @@ exp_hcp.sample_x(a=2)
 analysis_obj_tup = (AnalysisTFCE, AnalysisHRBA)
 
 
+def get_score(ana, effect):
+    """ gets f1, sens, spec scores per analysis given ground truth effect
+    """
+    # build mask of predicted area (union of all effect masks)
+    mask_pred = np.zeros(ana.exp.mask_idx.shape, dtype=bool)
+    for _effect in ana.effect_tup:
+        mask_pred |= _effect.mask
+
+    # build y_true / y_pred in sklearn format
+    mask_active = ana.exp.mask_idx > -1
+    y_true = effect.mask[mask_active]
+    y_pred = mask_pred[mask_active]
+
+    # compute scores
+    f1 = f1_score(y_true=y_true, y_pred=y_pred, zero_division=0)
+    sens = recall_score(y_true=y_true, y_pred=y_pred, zero_division=0)
+    conf_mat = confusion_matrix(y_true=y_true, y_pred=y_pred)
+    spec = conf_mat[0, 0] / (conf_mat[0, 0] + conf_mat[1, 0])
+
+    return f1, sens, spec
+
+
 def run_one_exp(seed):
     # trim experiment to reasonable size (for speedup)
     extenter = ExtenterSphere(radius=radius)
@@ -76,15 +99,19 @@ def run_one_exp(seed):
                                          p_val=p_val)
 
         for Ana in analysis_obj_tup:
+            # run analysis
             kwargs = analysis_kwargs[Ana.__name__]
             ana = Ana(exp=_exp, alpha=alpha, n_permute=n_permute, **kwargs)
             ana.run(verbose=False)
 
+            # score
+            f1, sens, spec = get_score(ana, effect)
+
             # dump
-            file_out = folder_out / f'analysis_{str(uuid4())[:8]}.p'
+            file_out = folder_out / f'result_{str(uuid4())[:8]}.p'
             with open(file_out, 'wb') as file:
-                cloudpickle.dump((p_val, seed, Ana.__name__, ana, effect),
-                                 file=file)
+                pickle.dump((p_val, seed, Ana.__name__, f1, sens, spec),
+                            file=file)
 
 
 r = Parallel(n_jobs=-2, verbose=10)(
