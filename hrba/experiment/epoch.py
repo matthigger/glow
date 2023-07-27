@@ -225,66 +225,78 @@ class EpochHRBA(Epoch):
             (2, n) graph arrays (equiv to sklearn.cluster.Ward.children_)
         min_reg_size (int): minimum size of region of interest (inclusive).
             smaller regions are not considered for significance
+        n_permute_model (int): number of permutations to build size vs llr
+            model (see LLR Model).  we use distinct fold of permutations to
+            avoid overfitting model
     """
 
     def __init__(self, exp, n_permute, alpha=.05, verbose=True,
-                 min_reg_size=1):
+                 min_reg_size=1, n_permute_model=10):
         self.exp = exp
         self.min_reg_size = min_reg_size
 
-        # build hierarchy
-        self.child_dict = self.cluster(exp=exp, n_permute=n_permute,
+        # build hierarchy for all permutations (and unpermuted: perm_idx=0)
+        self.child_dict = self.cluster(exp=exp,
+                                       n_permute=n_permute + n_permute_model,
                                        verbose=verbose)
 
-        # compute f stat per every region in hierarchy (across all permutes)
+        # compute llr per every region in hierarchy (across all permutes)
         self.size, self.llr = self.get_llr(exp=exp,
                                            child_dict=self.child_dict,
                                            verbose=verbose)
 
-        # todo: need distinct fold of data to avoid overfitting (FWER control)
+        # train size vs llr model and produce z_stat for first n_permute
+        # permutations (excludes n_permute_model permutations)
         self.z_stat, self.llr_model = self.adjust_llr(llr=self.llr,
-                                                      size=self.size)
+                                                      size=self.size,
+                                                      n_train=n_permute_model)
 
-        # compute p-values
+        # compute p-values via max stat across permutation
+        mask_exclude = self.size[:-n_permute_model, :] < self.min_reg_size
         self.p_val = self.get_pval(stat=self.z_stat,
-                                   mask_exclude=self.size < self.min_reg_size)
+                                   mask_exclude=mask_exclude)
 
-        # discover effects
+        # discover effects with largest llr
         self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
                                          stat=self.llr[0, :], exp=exp,
                                          children=self.child_dict[0])
 
     @classmethod
-    def adjust_llr(cls, llr, size):
+    def adjust_llr(cls, llr, size, n_train):
         """ adjusts log likelihood ratio for size
 
         we fit a model theta = np.array([[m, b], [m', b']]) to maximize
         likelihood and, for each llr, return its "z-score":
 
-            z = llr_i - llr_mu_model_i / llr_std_model_i
+            z = (log_llr_i - log_llr_mu_model_i) / log_llr_std_model_i
         where:
-            llr_mu_model_i = size_i * m  + b
-            llr_std_model_i = size_i * m' + b'
+            log_llr_mu_model_i = size_i * m  + b
+            log_llr_std_model_i = size_i * m' + b'
 
         Args:
             llr (np.array): (n_permute, num_reg) log likelhiood ratios
             size (np.array): (n_permute, num_reg) size of each region
+            n_train (int): number of permutations to train model on.  (note: we
+                train on the last permutation indices so output z_stat
+                indices align with input llr & size arrays)
 
         Returns:
-            z_stat (np.array): z stat of each region
+            z_stat (np.array): z stat of each region, excludes training
+                permutations
             theta (np.array): np.array([[m, b], [m', b']]),
                 see EpochHRBA.adjust_llr() for detail
         """
         # exclude first row from fit as its unpermuted (not necessarily from
-        # null h`ypothesis)
+        # null hypothesis)
         llr_model = LLRModel()
-        llr_model.fit(llr=llr[1:, :], size=size[1:, :])
+        llr_model.fit(llr=llr[-n_train:, :], size=size[-n_train:, :])
 
         # compute z stats
         mu, var = llr_model.predict(size=size)
         z_stat = (np.log(llr) - mu) / var ** .5
 
-        return z_stat, llr_model
+        # trim away last n_train rows of z scores (they were used in training)
+        return z_stat[:-n_train, :], llr_model
 
     @classmethod
     def cluster(cls, exp, n_permute, verbose=True):
