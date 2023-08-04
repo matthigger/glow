@@ -23,26 +23,30 @@ def iter_edge(children, num_vox):
             yield c, parent_idx
 
 
-def node_sum(children, val_dict):
+def node_sum(x, children):
     """ given item per leaf in graph, sums leaf values and adds to dictionary
 
     Args:
+        x (np.array): value associated with each leaf (single voxel region)
         children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
             sklearn.cluster.Ward.children_)
-        val_dict (dict): keys are leaf indices (0 to num_leaf), values
-            are items to be summed
 
     Returns:
-        val_dict (dict): same structure as input, but now includes all
+        summed (np.array): same structure as input, but now includes all
             nodes, not just leafs
     """
-    num_leaf = len(val_dict)
+    # prep output array
+    num_leaf = x.size
+    num_reg = num_leaf + children.shape[0]
+    summed = np.empty(num_reg, dtype=x.dtype)
+    summed[:num_leaf] = x
+
+    # sum
     for node_idx, (c0, c1) in enumerate(children):
         node_idx += num_leaf
-        new_val = val_dict[c0] + val_dict[c1]
-        val_dict[node_idx] = new_val
+        summed[node_idx] = summed[c0] + summed[c1]
 
-    return val_dict
+    return summed
 
 
 def get_f1(mask, mask_idx, children):
@@ -58,14 +62,9 @@ def get_f1(mask, mask_idx, children):
         f1 (np.array): f1 score per region
     """
     # compute misses & hits per region
-    miss_hits = get_miss_hits(mask, mask_idx, children)
-    miss_hits = np.vstack([miss_hits[idx] for idx in range(len(miss_hits))])
-
     # true positive: target voxels in estimated region
-    tp = miss_hits[:, 1]
-
     # false positive: in estimated region but not in target mask
-    fp = miss_hits[:, 0]
+    fp, tp = get_miss_hits(mask, mask_idx, children)
 
     # false negative: targets outside of estimated region
     fn = mask.sum() - tp
@@ -83,18 +82,20 @@ def get_miss_hits(mask, mask_idx, children):
             sklearn.cluster.Ward.children_)
 
     Returns:
-        miss_hit_dict (dict): keys are node indices, values are (2) arrays
-            containing number of voxels misses (effect voxels not in
-            region) and hits (effect voxels in region)
+        miss (np.array): non-target voxels contained in node of segmentation
+        hit (np.array): target voxels contained in node of segmentation
     """
-    # build miss_hit_dict for leaf nodes
+    # build miss and hit for leaf nodes
     num_vox = (mask_idx >= 0).sum()
     hit = np.zeros(num_vox)
     hit[mask_idx[mask.astype(bool)]] = 1
     miss = np.ones(num_vox) - hit
-    miss_hit_dict = dict(enumerate(np.vstack((miss, hit)).T))
 
-    return node_sum(children=children, val_dict=miss_hit_dict)
+    # sum to all other regions
+    miss = node_sum(miss, children=children)
+    hit = node_sum(hit, children=children)
+
+    return miss, hit
 
 
 def iter_topo(children, num_leaf=None, node_start=None, only_leaf=False):

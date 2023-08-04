@@ -2,7 +2,7 @@ from shutil import rmtree
 
 from hrba.experiment.epoch import *
 from hrba.experiment.exper import Experiment
-from hrba.graph import get_miss_hits
+from hrba.graph import get_f1
 from .make_test_image import folder_test_data
 from ..helper import generate_dummy_data
 
@@ -66,14 +66,8 @@ class TestEpochHRBA:
         img_grey[exp.mask_idx >= 0] = y_sbj0_grey
         for grey_val in set(y_sbj0_grey):
             mask = img_grey == grey_val
-            miss_hit_dict = get_miss_hits(mask=mask, mask_idx=exp.mask_idx,
-                                          children=children)
-            perfect_miss_hit = (0, mask.sum())
-            for miss_hit in miss_hit_dict.values():
-                if perfect_miss_hit == tuple(miss_hit):
-                    break
-            else:
-                raise AssertionError('some color not segmented perfectly')
+            f1 = get_f1(mask=mask, mask_idx=exp.mask_idx, children=children)
+            assert np.isclose(max(f1), 1)
 
     def test_discover(self):
         num_vox = 4

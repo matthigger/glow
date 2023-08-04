@@ -19,14 +19,14 @@ def teste_iter_edge():
 
 
 def test_iter_node_sum():
-    val_dict = dict(enumerate(range(4)))
+    x = np.arange(4)
     children = np.array([[0, 1],
                          [2, 3],
                          [4, 5]])
 
     # each value is the sum of its children's values
-    val_dict_exp = {0: 0, 1: 1, 2: 2, 3: 3, 4: 1, 5: 5, 6: 6}
-    assert node_sum(children, val_dict) == val_dict_exp
+    exp = np.array([0, 1, 2, 3, 1, 5, 6])
+    assert np.allclose(node_sum(x, children), exp)
 
 
 def test_get_f1():
@@ -49,20 +49,12 @@ def test_get_miss_hit():
                          [2, 3],
                          [4, 5]])
 
-    miss_hit_dict_exp = {0: np.array([1, 0]),
-                         1: np.array([1, 0]),
-                         2: np.array([0, 1]),
-                         3: np.array([0, 1]),
-                         4: np.array([2, 0]),
-                         5: np.array([0, 2]),
-                         6: np.array([2, 2])}
-    miss_hit_dict = get_miss_hits(mask=mask, mask_idx=mask_idx,
-                                  children=children)
+    miss_exp = np.array([1, 1, 0, 0, 2, 0, 2])
+    hit_exp = np.array([0, 0, 1, 1, 0, 2, 2])
+    miss, hit = get_miss_hits(mask=mask, mask_idx=mask_idx, children=children)
 
-    assert miss_hit_dict.keys() == miss_hit_dict_exp.keys()
-    for node in miss_hit_dict.keys():
-        assert np.allclose(miss_hit_dict[node],
-                           miss_hit_dict_exp[node]), f'failure node: {node}'
+    assert np.allclose(miss, miss_exp)
+    assert np.allclose(hit, hit_exp)
 
 
 def test_topo_iter():
