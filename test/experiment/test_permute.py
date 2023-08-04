@@ -14,10 +14,8 @@ def test_permute_eps():
     children = np.arange((num_vox - 1) * 2).reshape(num_vox - 1, 2)
 
     # compute eps quick way
-    eps, myo_obs, last_term_obs = permute_eps(x=x, contrast=contrast,
-                                              y_mean=y_mean, children=children,
-                                              n_permute=n_permute)
-
+    eps = permute_eps(x=x, contrast=contrast, y=y_mean, children=children,
+                      n_permute=n_permute)
     x_both = x[~contrast, :], x
     h_list = [np.linalg.pinv(_x) @ _x for _x in x_both]
 
@@ -47,16 +45,7 @@ def test_permute_eps():
                 eps_exp = (myo_exp - last_term_exp) / num_img
 
                 eps_obs = eps[perm_idx, reg_idx, model_idx, ...]
-
-                # grab relevant data to debug
-                myo_obs0 = myo_obs[perm_idx, reg_idx, ...]
-                _reg_perm_model = reg_idx, perm_idx, model_idx
-                last_term_obs0 = \
-                    last_term_obs[perm_idx, reg_idx, model_idx, :, :]
-
-                assert np.allclose(myo_obs0, myo_exp)
-                assert np.allclose(last_term_obs0, last_term_exp)
-
+                
                 assert np.allclose(eps_exp, eps_obs)
 
 
