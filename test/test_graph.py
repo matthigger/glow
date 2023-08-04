@@ -3,6 +3,21 @@ from hrba.graph import *
 from .experiment.test_exper import get_rand_exp
 
 
+def teste_iter_edge():
+    children = np.array([[0, 1],
+                         [2, 3],
+                         [4, 5]])
+    num_vox = 4
+    edge_list = list(iter_edge(children=children, num_vox=num_vox))
+    edge_list_exp = [(0, 4),
+                     (1, 4),
+                     (2, 5),
+                     (3, 5),
+                     (4, 6),
+                     (5, 6)]
+    assert edge_list == edge_list_exp
+
+
 def test_iter_node_sum():
     val_dict = dict(enumerate(range(4)))
     children = np.array([[0, 1],

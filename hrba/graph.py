@@ -5,6 +5,24 @@ import numpy as np
 from hrba.f_stat import RegStatComputer
 
 
+def iter_edge(children, num_vox):
+    """ iterates through all edges
+
+    Args:
+        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
+            sklearn.cluster.Ward.children_)
+        num_vox (int): number of single voxel regions
+
+    Yields:
+        child_idx (int): child index
+        parent_idx (int): parent index
+    """
+    for idx, child_vec in enumerate(children):
+        parent_idx = num_vox + idx
+        for c in child_vec:
+            yield c, parent_idx
+
+
 def node_sum(children, val_dict):
     """ given item per leaf in graph, sums leaf values and adds to dictionary
 
