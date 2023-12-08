@@ -13,7 +13,6 @@ from tqdm import tqdm
 from hrba.graph import iter_reg_stat_exp, iter_topo, node_sum
 from hrba.tfce import apply_tfce_x
 from .effect import Effect
-from .llr_model import LLRModel
 from .permute import get_perm_matrix, permute_eps_from_exp
 
 
@@ -322,10 +321,7 @@ class EpochHRBA(Epoch):
             theta (np.array): np.array([[m, b], [m', b']]),
                 see EpochHRBA.adjust_llr() for detail
         """
-        # exclude first row from fit as its unpermuted (not necessarily from
-        # null hypothesis)
-        llr_model = LLRModel()
-        llr_model.fit(llr=llr[-n_train:, :], size=size[-n_train:, :])
+        raise NotImplementedError('llr model deprecated for naked z stats')
 
         # compute z stats
         mu, var = llr_model.predict(size=size)
