@@ -11,3 +11,7 @@
 /hrba/__pycache__/
 /hrba/exp_*/
 *.p
+/exp_*/
+*.whl
+/hrba.sublime-project
+/hrba.sublime-workspace
