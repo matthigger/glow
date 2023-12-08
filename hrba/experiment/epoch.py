@@ -10,11 +10,11 @@ from sklearn.cluster import AgglomerativeClustering
 from sklearn.feature_extraction import grid_to_graph
 from tqdm import tqdm
 
-from hrba.graph import iter_reg_stat_exp, iter_topo
+from hrba.graph import iter_reg_stat_exp, iter_topo, node_sum
 from hrba.tfce import apply_tfce_x
 from .effect import Effect
 from .llr_model import LLRModel
-from .permute import get_perm_matrix
+from .permute import get_perm_matrix, permute_eps_from_exp
 
 
 def reshape(mask_idx, x=None, fill=0):
@@ -225,10 +225,13 @@ class EpochHRBA(Epoch):
             (2, n) graph arrays (equiv to sklearn.cluster.Ward.children_)
         min_reg_size (int): minimum size of region of interest (inclusive).
             smaller regions are not considered for significance
-        n_permute_model (int): number of permutations to build size vs llr
-            model (see LLR Model).  we use distinct fold of permutations to
-            avoid overfitting model
+        llr_all (np.array): (n_permute, num_reg, num_permute_model) array of
+            log likelihood ratios log(p(full model) / p(reduced model))
     """
+
+    @property
+    def llr(self):
+        return self.llr_all[:, :, 0]
 
     def __init__(self, exp, n_permute, alpha=.05, verbose=True,
                  min_reg_size=1, n_permute_model=10):
@@ -237,29 +240,62 @@ class EpochHRBA(Epoch):
 
         # build hierarchy for all permutations (and unpermuted: perm_idx=0)
         self.child_dict = self.cluster(exp=exp,
-                                       n_permute=n_permute + n_permute_model,
+                                       n_permute=n_permute,
                                        verbose=verbose)
 
-        # compute llr per every region in hierarchy (across all permutes)
-        self.size, self.llr = self.get_llr(exp=exp,
-                                           child_dict=self.child_dict,
-                                           verbose=verbose)
+        # compute sizes of each region
+        b, num_img, num_vox = self.exp.y.shape
+        num_reg = num_vox * 2 - 1
+        self.size = np.empty((n_permute + 1, num_reg))
+        for perm_idx, children in self.child_dict.items():
+            self.size[perm_idx, :] = node_sum(x=np.ones(num_vox, dtype=int),
+                                              children=children)
 
-        # train size vs llr model and produce z_stat for first n_permute
-        # permutations (excludes n_permute_model permutations)
-        self.z_stat, self.llr_model = self.adjust_llr(llr=self.llr,
-                                                      size=self.size,
-                                                      n_train=n_permute_model)
+        # compute llr of every region (across all permutations) under new
+        # permutations
+        self.llr_all = self.get_llr_permute(exp=exp, size=self.size,
+                                            child_dict=self.child_dict,
+                                            n_permute=n_permute_model + 1,
+                                            verbose=verbose)
+
+        # compute z stat
+        mu = self.llr_all[:, :, 1:].mean(axis=2)
+        std = self.llr_all[:, :, 1:].std(axis=2)
+        self.z_stat = (self.llr_all[:, :, 0] - mu) / std
 
         # compute p-values via max stat across permutation
-        mask_exclude = self.size[:-n_permute_model, :] < self.min_reg_size
+        mask_exclude = self.size < self.min_reg_size
         self.p_val = self.get_pval(stat=self.z_stat,
                                    mask_exclude=mask_exclude)
 
         # discover effects with largest llr
         self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
-                                         stat=self.llr[0, :], exp=exp,
+                                         stat=self.llr_all[0, :, 0], exp=exp,
                                          children=self.child_dict[0])
+
+    @classmethod
+    def get_llr_permute(cls, exp, size, child_dict, n_permute, verbose=True):
+        """ gets llr of regions (of all regions) under new permutes
+        """
+        # total number of observations per region (need for llr compute)
+        b, num_img, num_vox = exp.y.shape
+        num_reg = 2 * num_vox - 1
+
+        # compute llr under all permutations (for each tree built above)
+        llr = np.empty((len(child_dict), num_reg, n_permute))
+        tqdm_dict = dict(disable=not verbose,
+                         desc='compute llr per segmentation',
+                         total=len(child_dict))
+        for permute_idx, children in tqdm(child_dict.items(), **tqdm_dict):
+            eps = permute_eps_from_exp(exp=exp, children=children,
+                                       n_permute=n_permute, negative_seed=True)
+            log_det_eps = np.log(np.linalg.det(eps))
+
+            scale = size[permute_idx, :] * (num_img / 2)
+            _llr = (log_det_eps[:, :, 0] - log_det_eps[:, :, 1]) * scale
+            llr[permute_idx, :, ] = _llr.T
+
+        return llr
 
     @classmethod
     def adjust_llr(cls, llr, size, n_train):

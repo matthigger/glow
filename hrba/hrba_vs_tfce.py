@@ -1,5 +1,6 @@
 import pickle
 import shutil
+import warnings
 from datetime import datetime
 from uuid import uuid4
 
@@ -14,7 +15,7 @@ n_repeat = 100
 
 # p_val describes severity of effect (assuming typical F test assumptions
 # ...not valid but still useful to quantify how difficult effect is)
-p_val_all = np.geomspace(.15, .03, 15)
+p_val_all = np.linspace(.15, .03, 7)
 
 # to speed up analysis, random voxel is chosen and dilated to this radius.
 # only these voxels are included in the analysis
@@ -23,23 +24,22 @@ radius = 5
 # effect size, as ratio to total voxels in experiment
 effect_perc = .2
 
-# number of permutations in permutation testing
-n_permute = 100
-
 # FWER control
 alpha = .05
 
 # parameters to be passed to Analysis constructor
 # min_reg_size=5 implies HRBA will not test the hypothesis that any region
 # smaller than 5 voxels contains an effect
-analysis_kwargs = {'AnalysisHRBA': {'min_reg_size': 10},
-                   'AnalysisTFCE': dict()}
+analysis_kwargs = {'AnalysisHRBA': {'min_reg_size': 10,
+                                    'n_permute': 100,
+                                    'n_permute_model': 30},
+                   'AnalysisTFCE': {'n_permute': 130}}
 
 # prep folder_out
 timestamp = datetime.now().strftime('%y%b%d-%H%M')
 folder_out = pathlib.Path(f'./exp_{timestamp}').resolve()
 if folder_out.exists():
-    choice = input('folder exists, delete? [y/n]:')
+    choice = input(f'folder exists: {folder_out}\ndelete? [y/n]:')
     if choice != 'y':
         raise Exception('quitting')
     shutil.rmtree(folder_out)
@@ -81,6 +81,10 @@ def get_score(ana, effect):
 
 
 def run_one_exp(seed):
+    # allows us to catch numpy's warnings
+    warnings.filterwarnings('error')
+    np.seterr(all='warn')
+
     # trim experiment to reasonable size (for speedup)
     extenter = ExtenterSphere(radius=radius)
     mask_all = extenter(mask_idx=exp_hcp.mask_idx, seed=seed)
@@ -88,7 +92,7 @@ def run_one_exp(seed):
 
     # sample effect space
     n = exp.y.shape[2] * effect_perc
-    assert analysis_kwargs['AnalysisHRBA']['min_reg_size'] <= n, \
+    assert analysis_kwargs['AnalysisHRBA']['min_reg_size'] < n, \
         'min_reg_size larger than target effect'
     extenter = ExtenterMinVar(n=n)
     mask_target = extenter(y=exp.y, mask_idx=exp.mask_idx, seed=seed)
@@ -101,12 +105,13 @@ def run_one_exp(seed):
         for Ana in analysis_obj_tup:
             # run analysis
             kwargs = analysis_kwargs[Ana.__name__]
-            ana = Ana(exp=_exp, alpha=alpha, n_permute=n_permute, **kwargs)
+            ana = Ana(exp=_exp, alpha=alpha, **kwargs)
 
             try:
                 ana.run(verbose=False)
             except Exception as e:
-                raise Exception(f'seed={seed}, p_val={p_val}') from e
+                msg = f'{Ana.__name__}: seed={seed}, p_val={p_val}'
+                raise type(e)(msg) from e
 
             # score
             f1, sens, spec = get_score(ana, effect)
@@ -118,5 +123,7 @@ def run_one_exp(seed):
                             file=file)
 
 
-r = Parallel(n_jobs=-2, verbose=10)(
-    delayed(run_one_exp)(seed) for seed in range(n_repeat))
+# r = Parallel(n_jobs=1, verbose=10)(
+#     delayed(run_one_exp)(seed) for seed in range(n_repeat))
+
+run_one_exp(0)
