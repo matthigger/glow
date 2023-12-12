@@ -7,50 +7,77 @@ class CholeskyRegress:
     goal: quickly compute sum of squared residuals from many regression
     problems which share a common design matrix x
 
-    let X (n, a) be a design matrix and Y (n, b) be observations of target
-    variable.  We represent each region with two values matrices:
-        - the dot product of each input / output feature pair:
-            r = X @ Y.T
-        - the sum of each y feature squared, across observation:
-            y2 = np.diag(Y @ Y.T)
+    let X (a, n) be a design matrix and Y (b, n) be observations of target
+    variable.
 
-    since x is common to all regions:
-        - min MSE mapping  = np.linalg.inv(X @ X.T) @ X @ Y.T
-                           = np.linalg.inv(X @ X.T) @ r
-        - ssr (sum of squared residuals) may be computed as
+    two observations (let us assume b=1 below):
+        (1) maindonald's cholesky ("statistical computation" 1984 ch 1)
+        observe the (a+1, n) matrix [X.T Y.T].T made from appending Y to the
+        bottom of X:
 
-            chol_last = r @ chol_factor
-            y2 - (chol_last ** 2).sum(axis=0)
+            ssr = cholesky([X.T, Y.T].T @ [X.T, Y.T])[-1, -1]
 
-            where chol_factor is the matrix equivalent to the row operations
-            which reduce X @ X.T to its cholesky factor (see __init__)
+        that is, its lower right entry is the squared sum of residuals.
+
+        note that regardless of what y is, we apply the same row operations to
+        yield the cholesky factor of the matrix X @ X.T (this matrix is all but
+        last row / col of the matrix we find cholesky factor of above).  That
+        is:
+
+            X.T @ X @ row_ops_to_chol = cholesky(X.T @ X)
+
+            so that:
+
+            row_ops_to_chol = inv(X.T @ X) @ cholesky(X.T @ X)
+
+        taking two results together, we are motivated to represent each region
+        by a region vector r = X @ Y.T and its sum of y squared
+        y2 = (Y ** 2).sum(axis=0)
+
+            ssr = Y @ Y.T - ((r @ row_ops_to_chol) ** 2).sum()
+
+        (2) note that any linear transform of the design matrix X yields a
+        regression problem whose ssr is unchanged.  Here, we choose to
+        transform x to an orthonormal basis with identical span.  the advantage
+        is that X.T @ X = I so that:
+
+        row_ops_to_chol = inv(X.T @ X) @ cholesky(X.T @ X)
+                        = I @ I = I
+
+        with our new basis, X_prime, we have a corresponding x_prime with:
+
+            ssr = y2 - (r_prime ** 2).sum()
 
     The representation via r & y2 has a few advantages:
         - they're small (memory & compute savings, doesn't scale with
             observations)
         - may be summed across regions (r0 + r1 is the r matrix of the union of
-            all voxels in region 0 and region 1)
-        - the resulting cholesky ssr removes variance due to each y feature
-            one by one.  if all "reduced model" covariates before "full model"
-            covariates then one small modification gets us rss for both models
-            (F-stat)
+            all voxels in region 0 and region 1, a big deal given how many of
+            our regions are made of others)
+        - r captures the variance due to each feature step by step (
+            gram-schmidt style).  if all the reduced models variables are first
+            (F-statistic) then we can subtract only these square sums to get
+            the ssr_reduced
 
     Attributes:
             x (np.array): (a, n) explanatory variables
-            x_xt (np.array): (a, a) X @ X.T.  dot product of each x with itself
-                across all n observations
-            x_xt_inv (np.array): (a, a) inverse of x_xt
-            chol_factor (np.array): (a, a) chol_factor @ r will yield the final
-                column in the cholesky decomposition of C above (useful to get
-                ssr)
+            x_prime (np.array): (a, n) orthonormal explanatory variables (same
+                span as original explanatory variables)
+            from_x_prime (np.array): (a, a) from_x_prime @ x_prime = x
+            to_x_prime (np.array): (a, a) to_x_prime @ x = x_prime
     """
 
     def __init__(self, x):
+        assert np.linalg.matrix_rank(x) == x.shape[0], \
+            'dependent x observations'
+
         self.x = x
-        self.x_xt = x @ x.T
-        assert np.linalg.det(self.x_xt) != 0, 'dependent x observations'
-        self.x_xt_inv = np.linalg.inv(self.x_xt)
-        self.chol_factor = self.x_xt_inv @ np.linalg.cholesky(self.x_xt)
+
+        # compute x_prime & transforms
+        x_prime, from_x_prime = np.linalg.qr(x.T, mode='reduced')
+        self.x_prime = x_prime.T
+        self.from_x_prime = from_x_prime.T
+        self.to_x_prime = np.linalg.inv(from_x_prime)
 
     def get_r_y2(self, y):
         """ computes r vector per region
@@ -69,16 +96,18 @@ class CholeskyRegress:
             raise AttributeError('y must be 2d or 3d')
         elif y.ndim == 2:
             y = y[:, :, np.newaxis]
+        assert y.ndim == 3
 
         # compute r
-        r = np.einsum('an,bnr->abr', self.x, y)
+        r = np.einsum('an,bnr->abr', self.x_prime, y)
 
         # compute y2
         y2 = (y ** 2).sum(axis=1)
 
         return r, y2
 
-    def get_ssr(self, r, y2):
+    @staticmethod
+    def get_ssr(r, y2):
         """ computes sum of squared residual
         Args:
             r (np.array): (a, b, num_reg) region arrays (see doc above)
@@ -87,8 +116,27 @@ class CholeskyRegress:
         Returns:
             ssr (np.array): (num_reg) sum of squared residual per region
         """
-        # get cholesky last columns
-        chol_col = np.einsum('ax,abr->xbr', self.chol_factor, r)
 
-        return y2 - (chol_col ** 2).sum(axis=0)
+        return y2 - (r ** 2).sum(axis=0)
 
+    def get_beta(self, r):
+        """ returns beta, the minimum MSE mapping from x to y
+
+        Args:
+            r (np.array): (a, b, num_reg) region arrays (see doc above)
+
+        Returns:
+            beta (np.array): (a, b, num_reg) min mse mapping (in original x
+                space, not using the orthonormal x within this object)
+        """
+        # add dimensions to r as needed
+        if r.ndim == 1:
+            raise AttributeError('r must be 2d or 3d')
+        elif r.ndim == 2:
+            r = r[:, :, np.newaxis]
+        assert r.ndim == 3
+
+        # compute r
+        beta = np.einsum('xa,abr->xbr', self.to_x_prime, r)
+
+        return beta
