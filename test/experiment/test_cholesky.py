@@ -11,24 +11,15 @@ y = np.array([[0, 2, 5, 3]])
 c = np.array([[4, 6, 10],
               [6, 58, 29],
               [10, 29, 38]])
-r = np.linalg.cholesky(c)[-1, :-1][:, np.newaxis, np.newaxis]
+r_exp = np.linalg.cholesky(c)[-1, :-1][:, np.newaxis, np.newaxis]
 
 # maindonald statistical computation page 6 (3 in bottom right entry
 # squared is 9, the sum of squared residuals)
 ssr = 9
-y2 = np.atleast_2d((y ** 2).sum())
+y2_exp = np.atleast_2d((y ** 2).sum())
 
 
 class TestCholeskyRegress:
-
-    def test_math_maindonald(self):
-        # not really a test of our object, but instructive math wise
-        chol_regr = CholeskyRegress(x=x)
-        r, y2 = chol_regr.get_r_y2(y=y)
-        chol_col = np.squeeze(r) @ chol_regr.chol_factor
-
-        assert isclose(ssr, y2 - (chol_col ** 2).sum())
-
     def test_init(self):
         chol_regr = CholeskyRegress(x=x)
 
@@ -43,20 +34,22 @@ class TestCholeskyRegress:
         np.testing.assert_array_almost_equal(chol_regr.x @ m,
                                              chol_regr.x_prime)
 
-    def test_get_r_y2(self):
+    def test_get_r(self):
         chol_regr = CholeskyRegress(x=x)
 
         # test varying dimensions of y
         y_tuple = y, y[:, :, np.newaxis]
         for _y in y_tuple:
-            r_obs, y2_obs = chol_regr.get_r_y2(y=y)
+            r = chol_regr.get_r(y=y)
+            r_obs = r[:-1, ...]
+            y2_obs = r[-1, ...]
             # note that we may swap sign in r matrix without changing its
             # meaning
-            np.testing.assert_array_almost_equal(np.abs(r), np.abs(r_obs))
-            np.testing.assert_array_almost_equal(y2, y2_obs)
+            np.testing.assert_array_almost_equal(np.abs(r_exp), np.abs(r_obs))
+            np.testing.assert_array_almost_equal(y2_exp, y2_obs)
 
-        with pytest.raises(AttributeError):
-            chol_regr.get_r_y2(y=np.squeeze(y))
+            with pytest.raises(AttributeError):
+                chol_regr.get_r(y=np.squeeze(y))
 
     def test_get_ssr_get_beta(self):
         # build example
@@ -70,17 +63,16 @@ class TestCholeskyRegress:
 
         # compute expected (reliable, kind of clunky)
         beta_exp = np.stack([(y[:, :, reg_idx] @ np.linalg.pinv(x)).T
-                          for reg_idx in range(num_reg)], axis=2)
+                             for reg_idx in range(num_reg)], axis=2)
         y_hat = np.stack([beta_exp[:, :, reg_idx].T @ x
                           for reg_idx in range(num_reg)], axis=2)
         ssr_exp = ((y - y_hat) ** 2).sum(axis=1)
 
         # compute observed
         chol_regr = CholeskyRegress(x=x)
-        r, y2 = chol_regr.get_r_y2(y)
+        r = chol_regr.get_r(y)
         beta_obs = chol_regr.get_beta(r)
-        ssr_obs = chol_regr.get_ssr(r, y2)
+        ssr_obs = chol_regr.get_ssr(r)
 
         np.testing.assert_array_almost_equal(ssr_exp, ssr_obs)
         np.testing.assert_array_almost_equal(beta_exp, beta_obs)
-

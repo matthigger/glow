@@ -13,7 +13,7 @@ class CholeskyRegress:
     two observations (let us assume b=1 below):
         (1) maindonald's cholesky ("statistical computation" 1984 ch 1)
         observe the (a+1, n) matrix [X.T Y.T].T made from appending Y to the
-        bottom of X:
+        bottom of X has:
 
             ssr = cholesky([X.T, Y.T].T @ [X.T, Y.T])[-1, -1]
 
@@ -36,10 +36,10 @@ class CholeskyRegress:
 
             ssr = Y @ Y.T - ((r @ row_ops_to_chol) ** 2).sum()
 
-        (2) note that any linear transform of the design matrix X yields a
+        (2) note that any invertible transform of the design matrix X yields a
         regression problem whose ssr is unchanged.  Here, we choose to
-        transform x to an orthonormal basis with identical span.  the advantage
-        is that X.T @ X = I so that:
+        transform x to an orthonormal basis with identical span (gram-schmidt).
+        the advantage is that X.T @ X = I so that:
 
         row_ops_to_chol = inv(X.T @ X) @ cholesky(X.T @ X)
                         = I @ I = I
@@ -58,6 +58,8 @@ class CholeskyRegress:
             gram-schmidt style).  if all the reduced models variables are first
             (F-statistic) then we can subtract only these square sums to get
             the ssr_reduced
+
+    In practice, we append y2 as a final row of r.
 
     Attributes:
             x (np.array): (a, n) explanatory variables
@@ -79,7 +81,7 @@ class CholeskyRegress:
         self.from_x_prime = from_x_prime.T
         self.to_x_prime = np.linalg.inv(from_x_prime)
 
-    def get_r_y2(self, y):
+    def get_r(self, y):
         """ computes r vector per region
 
         (Assumes all inputs are of the same size)
@@ -88,8 +90,8 @@ class CholeskyRegress:
             y (np.array): (b, n, num_reg) image intensities
 
         Returns:
-            r (np.array): (a, b, num_reg) region arrays (see doc above)
-            y2 (np.array): (b, num_reg) sum of squared intensities
+            r (np.array): (a + 1, b, num_reg) region arrays (see doc above),
+                note last row is the y2 array while remaining rows above are r
         """
         # add dimensions to y as needed
         if y.ndim == 1:
@@ -99,25 +101,28 @@ class CholeskyRegress:
         assert y.ndim == 3
 
         # compute r
-        r = np.einsum('an,bnr->abr', self.x_prime, y)
+        a = self.x.shape[0]
+        b, n, num_reg = y.shape
+        r = np.empty((a + 1, b, num_reg), dtype=y.dtype)
+        r[:-1, :, :] = np.einsum('an,bnr->abr', self.x_prime, y)
 
-        # compute y2
-        y2 = (y ** 2).sum(axis=1)
+        # compute y2, add as last row of r
+        r[-1, :, :] = (y ** 2).sum(axis=1)
 
-        return r, y2
+        return r
 
     @staticmethod
-    def get_ssr(r, y2):
+    def get_ssr(r):
         """ computes sum of squared residual
         Args:
-            r (np.array): (a, b, num_reg) region arrays (see doc above)
-            y2 (np.array): (b, num_reg) sum of squared intensities
+            r (np.array): (a + 1, b, num_reg) region arrays (see doc above),
+                note last row is the y2 array while remaining rows above are r
 
         Returns:
             ssr (np.array): (num_reg) sum of squared residual per region
         """
 
-        return y2 - (r ** 2).sum(axis=0)
+        return r[-1, ...] - (r[:-1, ...] ** 2).sum(axis=0)
 
     def get_beta(self, r):
         """ returns beta, the minimum MSE mapping from x to y
@@ -137,6 +142,6 @@ class CholeskyRegress:
         assert r.ndim == 3
 
         # compute r
-        beta = np.einsum('xa,abr->xbr', self.to_x_prime, r)
+        beta = np.einsum('xa,abr->xbr', self.to_x_prime, r[:-1, ...])
 
         return beta
