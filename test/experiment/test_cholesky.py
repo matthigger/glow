@@ -1,5 +1,3 @@
-from math import isclose
-
 import pytest
 
 from hrba.experiment import *
@@ -43,10 +41,17 @@ class TestCholeskyRegress:
             r = chol_regr.get_r(y=y)
             r_obs = r[:-1, ...]
             y2_obs = r[-1, ...]
+
             # note that we may swap sign in r matrix without changing its
             # meaning
             np.testing.assert_array_almost_equal(np.abs(r_exp), np.abs(r_obs))
             np.testing.assert_array_almost_equal(y2_exp, y2_obs)
+
+            # test to/from x prime
+            np.testing.assert_array_almost_equal(x,
+                                                 chol_regr.from_x_prime @ chol_regr.x_prime)
+            np.testing.assert_array_almost_equal(chol_regr.x_prime,
+                                                 chol_regr.to_x_prime @ x)
 
             with pytest.raises(AttributeError):
                 chol_regr.get_r(y=np.squeeze(y))

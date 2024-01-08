@@ -76,10 +76,11 @@ class CholeskyRegress:
         self.x = x
 
         # compute x_prime & transforms
-        x_prime, from_x_prime = np.linalg.qr(x.T, mode='reduced')
-        self.x_prime = x_prime.T
-        self.from_x_prime = from_x_prime.T
-        self.to_x_prime = np.linalg.inv(from_x_prime)
+        q, r = np.linalg.qr(x.T, mode='reduced')
+        self.x_prime = q.T
+        self.from_x_prime = r.T
+        self.to_x_prime = np.linalg.inv(r.T)
+
 
     def get_r(self, y):
         """ computes r vector per region
@@ -145,3 +146,38 @@ class CholeskyRegress:
         beta = np.einsum('xa,abr->xbr', self.to_x_prime, r[:-1, ...])
 
         return beta
+
+
+class CholeskyRegressCovariate(CholeskyRegress):
+    """ considers covariates (f stat computation via contrast vector)
+
+    this object will swap the order of x features so that all covariates come
+    first (necessary given cholesky iterative approach above)
+
+    Attributes:
+        n_covariate (int): number of covariates
+    """
+
+    def __init__(self, x, contrast):
+        """
+            Args:
+                contrast (np.array): (a) True for each corresponding feature in
+                x which is "of interest" (other x features form the reduced
+                model in computing f statistic)
+        """
+        # build matrix, which when left multiplied by x, produced x_sorted
+        # which shuffles rows so that all reduced features come first
+        n = x.shape[1]
+        x_sorted = np.eye(n)[:, np.argsort(contrast)]
+
+        super().__init__(x=x_sorted @ x)
+
+        self.n_covariate = contrast.size - contrast.sum()
+
+        # apply transforms back to original x (and replace stored x w/ orig)
+        self.x = x
+        self.to_x_prime = x_sorted @ self.to_x_prime
+        self.from_x_prime = x_sorted.T @ self.from_x_prime
+
+    def get_f_ratio(self, r, num_covariates):
+        pass
