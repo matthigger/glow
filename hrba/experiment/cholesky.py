@@ -70,8 +70,9 @@ class CholeskyRegress:
     """
 
     def __init__(self, x):
-        assert np.linalg.matrix_rank(x) == x.shape[0], \
-            'dependent x observations'
+        if x.shape[0]:
+            assert np.linalg.matrix_rank(x) == x.shape[0], \
+                'dependent x observations'
 
         self.x = x
 
@@ -80,7 +81,6 @@ class CholeskyRegress:
         self.x_prime = q.T
         self.from_x_prime = r.T
         self.to_x_prime = np.linalg.inv(r.T)
-
 
     def get_r(self, y):
         """ computes r vector per region
@@ -129,7 +129,7 @@ class CholeskyRegress:
         """ returns beta, the minimum MSE mapping from x to y
 
         Args:
-            r (np.array): (a, b, num_reg) region arrays (see doc above)
+            r (np.array): (a + 1, b, num_reg) region arrays (see doc above)
 
         Returns:
             beta (np.array): (a, b, num_reg) min mse mapping (in original x
@@ -143,7 +143,7 @@ class CholeskyRegress:
         assert r.ndim == 3
 
         # compute r
-        beta = np.einsum('xa,abr->xbr', self.to_x_prime, r[:-1, ...])
+        beta = np.einsum('abr,ax->xbr', r[:-1, ...], self.to_x_prime)
 
         return beta
 
@@ -167,17 +167,35 @@ class CholeskyRegressCovariate(CholeskyRegress):
         """
         # build matrix, which when left multiplied by x, produced x_sorted
         # which shuffles rows so that all reduced features come first
-        n = x.shape[1]
-        x_sorted = np.eye(n)[:, np.argsort(contrast)]
+        n = x.shape[0]
+        self.to_sorted = np.eye(n)[np.argsort(contrast), :]
 
-        super().__init__(x=x_sorted @ x)
+        super().__init__(x=self.to_sorted @ x)
 
         self.n_covariate = contrast.size - contrast.sum()
 
         # apply transforms back to original x (and replace stored x w/ orig)
         self.x = x
-        self.to_x_prime = x_sorted @ self.to_x_prime
-        self.from_x_prime = x_sorted.T @ self.from_x_prime
+        self.to_x_prime = self.to_x_prime @ self.to_sorted
+        self.from_x_prime = self.to_sorted.T @ self.from_x_prime
 
-    def get_f_ratio(self, r, num_covariates):
-        pass
+    def get_f_ratio(self, r):
+        """ f_ratio = (rss0 - rss1) / rss1 where rss0 is sum squares reduced
+
+        Args:
+            r (np.array): (a + 1, b, num_reg) region arrays (see doc above)
+
+        """
+        # add dimensions to r as needed
+        if r.ndim == 1:
+            raise AttributeError('r must be 2d or 3d')
+        elif r.ndim == 2:
+            r = r[:, :, np.newaxis]
+        assert r.ndim == 3
+
+        y2_sum = r[-1, :, :].sum(axis=0)
+
+        ss_explained0 = (r[:self.n_covariate, :, :] ** 2).sum(axis=(0, 1))
+        ss_explained1 = (r[self.n_covariate:-1, :, :] ** 2).sum(axis=(0, 1))
+
+        return ss_explained1 / (y2_sum - ss_explained0 - ss_explained1)

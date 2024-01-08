@@ -28,9 +28,10 @@ class TestCholeskyRegress:
 
         # test that x and x_prime have same span (there is a transform from one
         # to the other)
-        m = np.linalg.pinv(chol_regr.x) @ chol_regr.x_prime
-        np.testing.assert_array_almost_equal(chol_regr.x @ m,
-                                             chol_regr.x_prime)
+        np.testing.assert_array_almost_equal(x,
+                                             chol_regr.from_x_prime @ chol_regr.x_prime)
+        np.testing.assert_array_almost_equal(chol_regr.x_prime,
+                                             chol_regr.to_x_prime @ x)
 
     def test_get_r(self):
         chol_regr = CholeskyRegress(x=x)
@@ -47,12 +48,6 @@ class TestCholeskyRegress:
             np.testing.assert_array_almost_equal(np.abs(r_exp), np.abs(r_obs))
             np.testing.assert_array_almost_equal(y2_exp, y2_obs)
 
-            # test to/from x prime
-            np.testing.assert_array_almost_equal(x,
-                                                 chol_regr.from_x_prime @ chol_regr.x_prime)
-            np.testing.assert_array_almost_equal(chol_regr.x_prime,
-                                                 chol_regr.to_x_prime @ x)
-
             with pytest.raises(AttributeError):
                 chol_regr.get_r(y=np.squeeze(y))
 
@@ -60,24 +55,93 @@ class TestCholeskyRegress:
         # build example
         num_reg = 7
         n = 5
-        a = 2
+        rng = np.random.default_rng(seed=0)
         b = 3
+
+        for a in range(3):
+            x = rng.standard_normal((a, n))
+            y = rng.standard_normal((b, n, num_reg))
+
+            # compute expected (reliable, kind of clunky)
+            beta_exp = np.stack([(y[:, :, reg_idx] @ np.linalg.pinv(x)).T
+                                 for reg_idx in range(num_reg)], axis=2)
+            y_hat = np.stack([beta_exp[:, :, reg_idx].T @ x
+                              for reg_idx in range(num_reg)], axis=2)
+            ssr_exp = ((y - y_hat) ** 2).sum(axis=1)
+
+            # compute observed
+            chol_regr = CholeskyRegress(x=x)
+            r = chol_regr.get_r(y)
+            beta_obs = chol_regr.get_beta(r)
+            ssr_obs = chol_regr.get_ssr(r)
+
+            np.testing.assert_array_almost_equal(ssr_exp, ssr_obs)
+            np.testing.assert_array_almost_equal(beta_exp, beta_obs)
+
+
+class TestCholeskyRegressCovariate:
+    def test_init(self):
+        # build example
+        n = 100
+        a = 5
         rng = np.random.default_rng(seed=0)
         x = rng.standard_normal((a, n))
-        y = rng.standard_normal((b, n, num_reg))
 
-        # compute expected (reliable, kind of clunky)
-        beta_exp = np.stack([(y[:, :, reg_idx] @ np.linalg.pinv(x)).T
-                             for reg_idx in range(num_reg)], axis=2)
-        y_hat = np.stack([beta_exp[:, :, reg_idx].T @ x
-                          for reg_idx in range(num_reg)], axis=2)
-        ssr_exp = ((y - y_hat) ** 2).sum(axis=1)
+        for n_covariate in range(a - 1):
+            contrast = np.ones(a)
+            contrast[:n_covariate] = 0
 
-        # compute observed
-        chol_regr = CholeskyRegress(x=x)
-        r = chol_regr.get_r(y)
-        beta_obs = chol_regr.get_beta(r)
-        ssr_obs = chol_regr.get_ssr(r)
+            for shuffle_idx in range(4):
+                chol_regr = CholeskyRegressCovariate(x, contrast)
 
-        np.testing.assert_array_almost_equal(ssr_exp, ssr_obs)
-        np.testing.assert_array_almost_equal(beta_exp, beta_obs)
+                # check that to_sorted sorts as required (increasing contrast)
+                exp = chol_regr.to_sorted @ np.arange(a).reshape(
+                    (a, 1)).flatten()
+                np.testing.assert_array_almost_equal(np.argsort(contrast), exp)
+
+                # check to and from x_prime
+                np.testing.assert_array_almost_equal(x,
+                                                     chol_regr.from_x_prime @ chol_regr.x_prime)
+                np.testing.assert_array_almost_equal(chol_regr.x_prime,
+                                                     chol_regr.to_x_prime @ x)
+
+                assert chol_regr.n_covariate == n_covariate
+
+                # create new shuffling of contrast for second run (doing after
+                # allows us to ensure we test contrast already sorted)
+                rng.shuffle(contrast)
+
+    def test_get_f_ratio(self):
+        # build example
+        num_reg = 11
+        n = 10
+        b = 3
+        rng = np.random.default_rng(seed=0)
+
+        for a in range(3):
+            x = rng.standard_normal((a, n))
+            y = rng.standard_normal((b, n, num_reg))
+
+            for n_covariate in range(a - 1):
+                contrast = np.ones(a, dtype=bool)
+                contrast[:n_covariate] = 0
+
+                for shuffle_idx in range(4):
+                    # expected (build reduced & full model explicitly)
+                    chol_regr = (CholeskyRegress(x[~contrast, :]),
+                                 CholeskyRegress(x))
+                    ssr = [_chol_reg.get_ssr(r=_chol_reg.get_r(y)).sum(axis=0)
+                           for _chol_reg in chol_regr]
+                    f_ratio_exp = (ssr[0] - ssr[1]) / ssr[1]
+
+                    # observed
+                    chol_regr = CholeskyRegressCovariate(x, contrast)
+                    r = chol_regr.get_r(y)
+                    f_ratio_obs = chol_regr.get_f_ratio(r)
+
+                    np.testing.assert_array_almost_equal(f_ratio_obs,
+                                                         f_ratio_exp)
+
+                    # create new shuffling of contrast for second run (doing after
+                    # allows us to ensure we test contrast already sorted)
+                    rng.shuffle(contrast)
