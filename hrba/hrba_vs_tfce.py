@@ -53,7 +53,7 @@ folder = '/home/matt/Dropbox/pnl_hrba/data/hcp100_lowres/image'
 exp_hcp = Experiment.from_search(folder=folder,
                                  sbj_regex='[\d]{6}',
                                  img_glob_dict={'FA': '*_FA.nii.gz'})
-exp_hcp.sample_x(a=2)
+exp_hcp = exp_hcp.sample_x(a=2)
 
 analysis_obj_tup = (AnalysisTFCE, AnalysisHRBA)
 

@@ -1,7 +1,7 @@
 from shutil import rmtree
 
 from hrba.experiment.epoch import *
-from hrba.experiment.exper import Experiment
+from hrba.experiment.exper import *
 from hrba.graph import get_f1
 from .make_test_image import folder_test_data
 from ..helper import generate_dummy_data
@@ -50,11 +50,12 @@ class TestEpochHRBA:
         # segment based on color
 
         # load single image, bootstrap a few more (no noise), sample rand x
-        exp = Experiment.from_search(folder=folder_test_data,
-                                     sbj_regex='sbj\d',
-                                     img_glob_dict={'color': '*test.png'})
+        exp = ExperimentImageOnly.from_search(folder=folder_test_data,
+                                              sbj_regex='sbj\d',
+                                              img_glob_dict={
+                                                  'color': '*test.png'})
         exp.bootstrap_img(n=10, noise_scale=0)
-        exp.sample_x(a=2)
+        exp = exp.sample_x(a=2)
 
         # cluster (should collect all areas of consistent color)
         children = EpochHRBA.cluster(exp=exp, n_permute=0)[0]
