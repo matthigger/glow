@@ -13,7 +13,6 @@ from tqdm import tqdm
 from hrba.graph import iter_reg_stat_exp, iter_topo, node_sum
 from hrba.tfce import apply_tfce_x
 from .effect import Effect
-from .permute import get_perm_matrix, permute_eps_from_exp
 
 
 def reshape(mask_idx, x=None, fill=0):
@@ -45,6 +44,8 @@ class Epoch:
         Returns:
             folder (pathlib.Path): location to write niftis
         """
+        raise NotImplementedError('to nibabel nifti image might be more explicit')
+
         # get folder
         if folder is None:
             folder = tempfile.TemporaryDirectory().name
@@ -222,8 +223,6 @@ class EpochHRBA(Epoch):
     Attributes:
         child_dict (dict): keys are permutation indices, values are
             (2, n) graph arrays (equiv to sklearn.cluster.Ward.children_)
-        min_reg_size (int): minimum size of region of interest (inclusive).
-            smaller regions are not considered for significance
         llr_all (np.array): (n_permute, num_reg, num_permute_model) array of
             log likelihood ratios log(p(full model) / p(reduced model))
     """
@@ -233,9 +232,8 @@ class EpochHRBA(Epoch):
         return self.llr_all[:, :, 0]
 
     def __init__(self, exp, n_permute, alpha=.05, verbose=True,
-                 min_reg_size=1, n_permute_model=10):
+                 n_permute_model=10):
         self.exp = exp
-        self.min_reg_size = min_reg_size
 
         # build hierarchy for all permutations (and unpermuted: perm_idx=0)
         self.child_dict = self.cluster(exp=exp,
@@ -250,85 +248,59 @@ class EpochHRBA(Epoch):
             self.size[perm_idx, :] = node_sum(x=np.ones(num_vox, dtype=int),
                                               children=children)
 
-        # compute llr of every region (across all permutations) under new
-        # permutations
-        self.llr_all = self.get_llr_permute(exp=exp, size=self.size,
-                                            child_dict=self.child_dict,
-                                            n_permute=n_permute_model + 1,
-                                            verbose=verbose)
-
-        # compute z stat
-        mu = self.llr_all[:, :, 1:].mean(axis=2)
-        std = self.llr_all[:, :, 1:].std(axis=2)
-        self.z_stat = (self.llr_all[:, :, 0] - mu) / std
-
-        # compute p-values via max stat across permutation
-        mask_exclude = self.size < self.min_reg_size
-        self.p_val = self.get_pval(stat=self.z_stat,
-                                   mask_exclude=mask_exclude)
-
-        # discover effects with largest llr
-        self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
-                                         stat=self.llr_all[0, :, 0], exp=exp,
-                                         children=self.child_dict[0])
+        # raise NotImplementedError('get_z_score_perm')
+        #
+        # # compute z stat
+        # mu = self.llr_all[:, :, 1:].mean(axis=2)
+        # std = self.llr_all[:, :, 1:].std(axis=2)
+        # self.z_stat = (self.llr_all[:, :, 0] - mu) / std
+        #
+        # # compute p-values via max stat across permutation
+        # self.p_val = self.get_pval(stat=self.z_stat)
+        #
+        # # discover effects with largest llr
+        # self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
+        #                                  stat=self.llr_all[0, :, 0], exp=exp,
+        #                                  children=self.child_dict[0])
 
     @classmethod
-    def get_llr_permute(cls, exp, size, child_dict, n_permute, verbose=True):
-        """ gets llr of regions (of all regions) under new permutes
-        """
-        # total number of observations per region (need for llr compute)
-        b, num_img, num_vox = exp.y.shape
-        num_reg = 2 * num_vox - 1
+    def get_z_score_perm(cls, exp, child_dict, num_permute):
+        # compute & apply freed lane permutation matrix
 
-        # compute llr under all permutations (for each tree built above)
-        llr = np.empty((len(child_dict), num_reg, n_permute))
-        tqdm_dict = dict(disable=not verbose,
-                         desc='compute llr per segmentation',
-                         total=len(child_dict))
-        for permute_idx, children in tqdm(child_dict.items(), **tqdm_dict):
-            eps = permute_eps_from_exp(exp=exp, children=children,
-                                       n_permute=n_permute, negative_seed=True)
-            log_det_eps = np.log(np.linalg.det(eps))
+        # compute C_r per single voxel (we append y2 row to end).  store single
+        # voxel regions as the last segmentation
+        cr_reg = np.empty((a, b, num_vox - 1, num_segment + 1))
 
-            scale = size[permute_idx, :] * (num_img / 2)
-            _llr = (log_det_eps[:, :, 0] - log_det_eps[:, :, 1]) * scale
-            llr[permute_idx, :, ] = _llr.T
+        # compute cr per multiple voxel region
+        num_segment = len(child_dict)
+        for perm_idx, children in child_dict.items():
+            cr_reg = np.empty((a, b, num_vox - 1, num_segment))
 
-        return llr
+            def get_cr(reg_idx):
+                if reg_idx < num_vox:
+                    # single voxel region
+                    return cr_reg[:, :, reg_idx, -1]
+                else:
+                    return cr_reg[:, :, reg_idx - num_vox, perm_idx]
 
-    @classmethod
-    def adjust_llr(cls, llr, size, n_train):
-        """ adjusts log likelihood ratio for size
+            for reg_idx, (c0, c1) in enumerate(children):
+                # sum and replace
+                cr_reg[:, :, reg_idx, perm_idx] = get_cr(c0) + get_cr(c1)
 
-        we fit a model theta = np.array([[m, b], [m', b']]) to maximize
-        likelihood and, for each llr, return its "z-score":
+        # compute residuals (full & reduced)
+        explained0 = (cr_reg[:a_prime, ...] ** 2).sum(axis=(0, 1))
+        explained1 = (cr_reg[a_prime:-1, ...] ** 2).sum(axis=(0, 1))
+        y_squared = (cr_reg[-1, ...] ** 2).sum(axis=(0, 1))
 
-            z = (log_llr_i - log_llr_mu_model_i) / log_llr_std_model_i
-        where:
-            log_llr_mu_model_i = size_i * m  + b
-            log_llr_std_model_i = size_i * m' + b'
+        # compute un-normalized f stats
+        f_stat = explained1 / (y_squared - explained0 - explained1)
 
-        Args:
-            llr (np.array): (n_permute, num_reg) log likelhiood ratios
-            size (np.array): (n_permute, num_reg) size of each region
-            n_train (int): number of permutations to train model on.  (note: we
-                train on the last permutation indices so output z_stat
-                indices align with input llr & size arrays)
+        # z score
+        mu = f_stat.mean()
+        std = f_stat.std()
+        z_score = (f_stat - mu) / std
 
-        Returns:
-            z_stat (np.array): z stat of each region, excludes training
-                permutations
-            theta (np.array): np.array([[m, b], [m', b']]),
-                see EpochHRBA.adjust_llr() for detail
-        """
-        raise NotImplementedError('llr model deprecated for naked z stats')
-
-        # compute z stats
-        mu, var = llr_model.predict(size=size)
-        z_stat = (np.log(llr) - mu) / var ** .5
-
-        # trim away last n_train rows of z scores (they were used in training)
-        return z_stat[:-n_train, :], llr_model
+        return z_score
 
     @classmethod
     def cluster(cls, exp, n_permute, verbose=True):
@@ -357,13 +329,9 @@ class EpochHRBA(Epoch):
         tqdm_dict = dict(desc='clustering per permutation',
                          disable=not verbose)
         for perm_idx in tqdm(range(n_permute + 1), **tqdm_dict):
-            # permute data residuals under reduced model (freedman lane)
-            p = get_perm_matrix(perm_idx, num_img)
-            freed_lane = (i - h[0]) @ p + h[0]
-
-            # prepare y
-            y = np.einsum('ijk,jm->imk', exp.y, freed_lane @ h_diff)
-            y = y.reshape((-1, num_vox))
+            # freedman lane permutation
+            _exp = exp.permute(perm_idx)
+            y = _exp.y.reshape((-1, num_vox))
 
             # cluster & store
             ward.fit(y.T)
