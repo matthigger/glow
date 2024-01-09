@@ -16,11 +16,6 @@ child_dict = {idx: children for idx in range(n_permute)}
 
 
 class TestEpoch:
-    def test_to_nii(self):
-        epoch = EpochHRBA(exp=exp, n_permute=1)
-        folder = epoch.to_nii()
-        rmtree(folder)
-
     def test_get_pval(self):
         z_stat = np.array([[7, 3, 1, 0],
                            [0, 0, 0, 0],
@@ -38,10 +33,6 @@ class TestEpoch:
         p_val_exp = np.array([np.nan, 2, 3, 4]) / 4
         p_val = Epoch.get_pval(stat=z_stat, mask_exclude=mask_exclude)
         assert np.allclose(p_val, p_val_exp, equal_nan=True)
-
-    def test_get_f_stat(self):
-        Epoch.get_llr(exp=exp, child_dict=child_dict)
-        Epoch.get_llr(exp=exp, n_permute=n_permute)
 
 
 class TestEpochHRBA:

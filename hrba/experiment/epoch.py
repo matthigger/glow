@@ -10,7 +10,7 @@ from sklearn.cluster import AgglomerativeClustering
 from sklearn.feature_extraction import grid_to_graph
 from tqdm import tqdm
 
-from hrba.graph import iter_reg_stat_exp, iter_topo, node_sum
+from hrba.graph import iter_topo, node_sum
 from hrba.tfce import apply_tfce_x
 from .effect import Effect
 
@@ -27,82 +27,9 @@ class Epoch:
 
     Attributes:
         exp (Experiment): the source data to run experiment on
-        size (np.array): (n_permute + 1, num_reg) size of each region
-        llr (np.array): (n_permute + 1, num_reg) raw llr of each region
         p_val (np.array): (num_reg) FWER controlled pval
         effect_list (list): list of effects discovered
     """
-
-    def to_nii(self, folder=None, affine=np.eye(4), log=True):
-        """ writes nifti images for observation of completed analysis
-
-        Args:
-            folder (pathlib.Path): location to write niftis
-            affine (np.array): affine
-            log (bool): toggles log10 outputs
-
-        Returns:
-            folder (pathlib.Path): location to write niftis
-        """
-        raise NotImplementedError('to nibabel nifti image might be more explicit')
-
-        # get folder
-        if folder is None:
-            folder = tempfile.TemporaryDirectory().name
-        folder = pathlib.Path(folder)
-        folder.mkdir(exist_ok=True, parents=True)
-
-        # get "estimate" which has idx of discovered region
-        estimate = reshape(mask_idx=self.exp.mask_idx)
-        for idx, eff in enumerate(self.effect_list):
-            estimate += eff.mask * (idx + 1)
-
-        num_vox = self.exp.y.shape[2]
-        llr = reshape(mask_idx=self.exp.mask_idx,
-                      x=self.llr[0, :num_vox])
-        p_val = reshape(mask_idx=self.exp.mask_idx, x=self.p_val[:num_vox])
-
-        array_dict = {'estimate': estimate,
-                      'llr_vox': llr,
-                      'p_val_vox': p_val}
-        if log:
-            array_dict['log10_llr_vox'] = np.log10(llr)
-            array_dict['log10_p_val_vox'] = np.log10(p_val)
-
-        for label, img in array_dict.items():
-            file = (folder / label).with_suffix('.nii.gz')
-            img = nibabel.Nifti1Image(img, affine=affine)
-            img.to_filename(file)
-
-        return folder
-
-    @classmethod
-    def get_llr(cls, exp, child_dict=None, n_permute=None, verbose=True):
-        assert (child_dict is None) != (n_permute is None), \
-            'either child_dict xor n_permute required'
-
-        # compute f-stat per region in all permutations
-        num_vox = exp.y.shape[2]
-        if child_dict is None:
-            shape = (n_permute + 1, num_vox)
-            perm_child_iter = ((perm_idx, None)
-                               for perm_idx in range(n_permute + 1))
-        else:
-            shape = (len(child_dict), 2 * num_vox - 1)
-            perm_child_iter = child_dict.items()
-        size = np.full(shape, fill_value=-1, dtype=int)
-        llr = np.full(shape, fill_value=-1, dtype=float)
-
-        tqdm_dict = dict(desc='compute stats per permutation',
-                         disable=not verbose)
-        for perm_idx, children in tqdm(perm_child_iter, **tqdm_dict):
-            _exp = exp.permute(perm_idx)
-            for reg_idx, reg_stat in iter_reg_stat_exp(children=children,
-                                                       exp=_exp):
-                size[perm_idx, reg_idx] = reg_stat['size']
-                llr[perm_idx, reg_idx] = reg_stat['llr']
-
-        return size, llr
 
     @classmethod
     def get_pval(cls, stat, mask_exclude=None):
@@ -146,10 +73,7 @@ class EpochTFCE(Epoch):
     def __init__(self, exp, n_permute, alpha=.05, verbose=True):
         self.exp = exp
 
-        # compute f stat per every region in hierarchy (across all permutes)
-        self.size, self.llr = self.get_llr(exp=exp,
-                                           n_permute=n_permute + 1,
-                                           verbose=verbose)
+        raise NotImplementedError('need f stats')
 
         # apply TFCE per image
         self.tfce_stat = self.apply_tfce(stat=self.llr,
@@ -163,13 +87,6 @@ class EpochTFCE(Epoch):
         mask = np.zeros(exp.mask_idx.shape, dtype=bool)
         mask[exp.mask_idx > -1] = self.p_val <= alpha
         self.effect_list = self.discover_mask(mask=mask, exp=exp)
-
-    def to_nii(self, *args, log=True, **kwargs):
-        tfce = reshape(mask_idx=self.exp.mask_idx, x=self.tfce_stat[0, :])
-        array_dict = {'tfce': tfce}
-        if log:
-            array_dict['log10_tfce': np.log10(tfce)]
-        return super().to_nii(*args, log=log, array_dict=array_dict, **kwargs)
 
     @classmethod
     def apply_tfce(cls, stat, mask_idx, verbose=False):
@@ -223,13 +140,7 @@ class EpochHRBA(Epoch):
     Attributes:
         child_dict (dict): keys are permutation indices, values are
             (2, n) graph arrays (equiv to sklearn.cluster.Ward.children_)
-        llr_all (np.array): (n_permute, num_reg, num_permute_model) array of
-            log likelihood ratios log(p(full model) / p(reduced model))
     """
-
-    @property
-    def llr(self):
-        return self.llr_all[:, :, 0]
 
     def __init__(self, exp, n_permute, alpha=.05, verbose=True,
                  n_permute_model=10):
