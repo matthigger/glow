@@ -1,9 +1,6 @@
-import pathlib
-import tempfile
 from _bisect import bisect_left
 from copy import copy
 
-import nibabel
 import numpy as np
 from scipy.ndimage import label
 from sklearn.cluster import AgglomerativeClustering
@@ -12,6 +9,7 @@ from tqdm import tqdm
 
 from hrba.graph import iter_topo, node_sum
 from hrba.tfce import apply_tfce_x
+from .cholesky import CholeskyRegressCovariate
 from .effect import Effect
 
 
@@ -143,7 +141,7 @@ class EpochHRBA(Epoch):
     """
 
     def __init__(self, exp, n_permute, alpha=.05, verbose=True,
-                 n_permute_model=10):
+                 n_permute_z=100):
         self.exp = exp
 
         # build hierarchy for all permutations (and unpermuted: perm_idx=0)
@@ -159,59 +157,80 @@ class EpochHRBA(Epoch):
             self.size[perm_idx, :] = node_sum(x=np.ones(num_vox, dtype=int),
                                               children=children)
 
-        # raise NotImplementedError('get_z_score_perm')
-        #
-        # # compute z stat
-        # mu = self.llr_all[:, :, 1:].mean(axis=2)
-        # std = self.llr_all[:, :, 1:].std(axis=2)
-        # self.z_stat = (self.llr_all[:, :, 0] - mu) / std
-        #
-        # # compute p-values via max stat across permutation
-        # self.p_val = self.get_pval(stat=self.z_stat)
-        #
-        # # discover effects with largest llr
-        # self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
-        #                                  stat=self.llr_all[0, :, 0], exp=exp,
-        #                                  children=self.child_dict[0])
+        # compute z stat per region
+        self.z_stat = np.empty((n_permute + 1, num_reg))
+        for perm_idx, children in self.child_dict.items():
+            _, z_stat, _, _ = self.get_z_score(self.exp, children,
+                                               num_permute=n_permute_z,
+                                               seed_offset=n_permute)
+            self.z_stat[perm_idx, :] = z_stat
+
+        # compute p-values (max stat across space)
+        self.p_val = self.get_pval(stat=self.z_stat)
+
+        # discover effects with smallest p_val
+        self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
+                                         stat=-self.p_val, exp=exp,
+                                         children=self.child_dict[0])
 
     @classmethod
-    def get_z_score_perm(cls, exp, child_dict, num_permute):
-        # compute & apply freed lane permutation matrix
+    def get_z_score(cls, exp, children, num_permute, seed_offset=0):
+        """ computes z score of f stat (over permutations) per region
 
-        # compute C_r per single voxel (we append y2 row to end).  store single
-        # voxel regions as the last segmentation
-        cr_reg = np.empty((a, b, num_vox - 1, num_segment + 1))
+        Args:
+            exp (Experiment):
+            children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
+                sklearn.cluster.Ward.children_)
+            num_permute (int): number of permutations to use when computing
+                z-score adjustment
+            seed_offset (int): offsets seed used in permutation.  useful to
+                ensure permutations used in z score process here are distinct
+                from those used to generate segmentations elsewhere.
 
-        # compute cr per multiple voxel region
-        num_segment = len(child_dict)
-        for perm_idx, children in child_dict.items():
-            cr_reg = np.empty((a, b, num_vox - 1, num_segment))
+        Returns:
+            f (np.array): f statistic per region (unpermuted)
+            z (np.array): z score (of f stat) per region (unpermuted)
+            mu (np.array): mean f stat per region across permutations
+            std (np.array): std dev of f stat per region across permutations
+        """
+        # freed lane permutation matrix (for all permutations)
+        seed_list = list(range(seed_offset, seed_offset + num_permute - 1))
+        seed_list.insert(0, 0)
+        freed_lane = np.stack(list(map(exp.get_freed_lane, seed_list)))
 
-            def get_cr(reg_idx):
-                if reg_idx < num_vox:
-                    # single voxel region
-                    return cr_reg[:, :, reg_idx, -1]
-                else:
-                    return cr_reg[:, :, reg_idx - num_vox, perm_idx]
+        # computes f ratios
+        chol_regr = CholeskyRegressCovariate(x=exp.x, contrast=exp.contrast)
 
-            for reg_idx, (c0, c1) in enumerate(children):
-                # sum and replace
-                cr_reg[:, :, reg_idx, perm_idx] = get_cr(c0) + get_cr(c1)
+        # count regions & initialize output arrays (assume children merges
+        # until only a single region remains)
+        num_leaf = children.shape[0] + 1
+        num_reg = 2 * num_leaf - 1
+        f = np.empty(num_reg)
+        mu = np.empty(num_reg)
+        std = np.empty(num_reg)
 
-        # compute residuals (full & reduced)
-        explained0 = (cr_reg[:a_prime, ...] ** 2).sum(axis=(0, 1))
-        explained1 = (cr_reg[a_prime:-1, ...] ** 2).sum(axis=(0, 1))
-        y_squared = (cr_reg[-1, ...] ** 2).sum(axis=(0, 1))
+        r_dict = dict()
+        for reg_idx in iter_topo(children, num_leaf=num_leaf):
+            if reg_idx < num_leaf:
+                # single voxel region, permute y & compute r explicitly
+                y = np.einsum('bn,knm->bmk', exp.y[:, :, reg_idx], freed_lane)
+                r_dict[reg_idx] = chol_regr.get_r(y=y)
+            else:
+                # if multi voxel region, compute r via constituent regions
+                c0, c1 = children[int(reg_idx - num_leaf), :]
+                r_dict[reg_idx] = r_dict.pop(c0) + r_dict.pop(c1)
 
-        # compute un-normalized f stats
-        f_stat = explained1 / (y_squared - explained0 - explained1)
+            f_ratio = chol_regr.get_f_ratio(r=r_dict[reg_idx])
 
-        # z score
-        mu = f_stat.mean()
-        std = f_stat.std()
-        z_score = (f_stat - mu) / std
+            # store
+            f[reg_idx] = f_ratio[0]
+            mu[reg_idx] = f_ratio[1:].mean()
+            std[reg_idx] = f_ratio[1:].std(ddof=1)
 
-        return z_score
+        # compute z
+        z = (f - mu) / std
+
+        return f, z, mu, std
 
     @classmethod
     def cluster(cls, exp, n_permute, verbose=True):

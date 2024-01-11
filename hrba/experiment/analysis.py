@@ -61,14 +61,14 @@ class Analysis:
 class AnalysisHRBA(Analysis):
     Epoch = EpochHRBA
 
-    def __init__(self, *args, n_permute_model=10, **kwargs):
+    def __init__(self, *args, n_permute_z=10, **kwargs):
         super().__init__(*args, **kwargs)
-        self.n_permute_model = n_permute_model
+        self.n_permute_z = n_permute_z
 
     def get_epoch(self, exp, **kwargs):
         return self.Epoch(exp=exp, n_permute=self.n_permute,
                           alpha=self.alpha,
-                          n_permute_model=self.n_permute_model,
+                          n_permute_z=self.n_permute_z,
                           **kwargs)
 
     def another_epoch_needed(self):
