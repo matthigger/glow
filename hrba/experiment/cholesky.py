@@ -10,6 +10,7 @@ class CholeskyRegress:
     let X (a, n) be a design matrix and Y (b, n) be observations of target
     variable.
 
+    todo: doc needs update given removal of y**2 row funk
     two observations (let us assume b=1 below):
         (1) maindonald's cholesky ("statistical computation" 1984 ch 1)
         observe the (a+1, n) matrix [X.T Y.T].T made from appending Y to the
@@ -91,8 +92,7 @@ class CholeskyRegress:
             y (np.array): (b, n, num_reg) image intensities
 
         Returns:
-            r (np.array): (a + 1, b, num_reg) region arrays (see doc above),
-                note last row is the y2 array while remaining rows above are r
+            r (np.array): (a + 1, b, num_reg) region arrays (see doc above)
         """
         # add dimensions to y as needed
         if y.ndim == 1:
@@ -105,10 +105,10 @@ class CholeskyRegress:
         a = self.x.shape[0]
         b, n, num_reg = y.shape
         r = np.empty((a + 1, b, num_reg), dtype=y.dtype)
-        r[:-1, :, :] = np.einsum('an,bnr->abr', self.x_prime, y)
+        r[:-1, :, :] = np.einsum('an,bnr->abr', self.x_prime, y) ** 2
 
-        # compute y2, add as last row of r
-        r[-1, :, :] = (y ** 2).sum(axis=1)
+        # compute residual
+        r[-1, :, :] = (y ** 2).sum(axis=1) - r[:-1, :, :].sum(axis=0)
 
         return r
 
@@ -120,32 +120,18 @@ class CholeskyRegress:
                 note last row is the y2 array while remaining rows above are r
 
         Returns:
-            ssr (np.array): (num_reg) sum of squared residual per region
+            ssr (np.array): (a + 1, b, num_reg) sum of squared residual per region
+                ssr[i, j, k] is the sum of squared residuals after accounting
+                for covariates 0, 1, 2, 3, ..., i in imaging feature j for
+                region k.  the last row corresponds to no covariates accounted
+                for (y^2)
         """
 
-        return r[-1, ...] - (r[:-1, ...] ** 2).sum(axis=0)
+        ssr = np.empty_like(r)
+        ssr[-1, :, :] = r.sum(axis=0)
+        ssr[:-1, :, :] = ssr[-1, :, :] - r[:-1, :, :].cumsum(axis=0)
 
-    def get_beta(self, r):
-        """ returns beta, the minimum MSE mapping from x to y
-
-        Args:
-            r (np.array): (a + 1, b, num_reg) region arrays (see doc above)
-
-        Returns:
-            beta (np.array): (a, b, num_reg) min mse mapping (in original x
-                space, not using the orthonormal x within this object)
-        """
-        # add dimensions to r as needed
-        if r.ndim == 1:
-            raise AttributeError('r must be 2d or 3d')
-        elif r.ndim == 2:
-            r = r[:, :, np.newaxis]
-        assert r.ndim == 3
-
-        # compute r
-        beta = np.einsum('abr,ax->xbr', r[:-1, ...], self.to_x_prime)
-
-        return beta
+        return ssr
 
 
 class CholeskyRegressCovariate(CholeskyRegress):
@@ -185,7 +171,10 @@ class CholeskyRegressCovariate(CholeskyRegress):
         Args:
             r (np.array): (a + 1, b, num_reg) region arrays (see doc above)
 
+        Returns:
+            f_ratio (np.array): (num_reg) f ratio per region
         """
+
         # add dimensions to r as needed
         if r.ndim == 1:
             raise AttributeError('r must be 2d or 3d')
@@ -193,9 +182,11 @@ class CholeskyRegressCovariate(CholeskyRegress):
             r = r[:, :, np.newaxis]
         assert r.ndim == 3
 
-        y2_sum = r[-1, :, :].sum(axis=0)
+        ssr0 = r[self.n_covariate:, :, :].sum(axis=(0, 1))
+        ssr1 = r[-1, :, :].sum(axis=0)
 
-        ss_explained0 = (r[:self.n_covariate, :, :] ** 2).sum(axis=(0, 1))
-        ss_explained1 = (r[self.n_covariate:-1, :, :] ** 2).sum(axis=(0, 1))
+        f_ratio = (ssr0 - ssr1) / ssr1
 
-        return ss_explained1 / (y2_sum - ss_explained0 - ss_explained1)
+        assert (f_ratio >= 0).all(), 'negative f ratio'
+
+        return f_ratio
