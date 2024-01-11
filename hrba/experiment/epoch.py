@@ -142,20 +142,13 @@ class EpochHRBA(Epoch):
 
     def __init__(self, exp, n_permute, alpha=.05, verbose=True,
                  n_permute_z=100):
-        self.exp = exp
-
-        # build hierarchy for all permutations (and unpermuted: perm_idx=0)
-        self.child_dict = self.cluster(exp=exp,
-                                       n_permute=n_permute,
-                                       verbose=verbose)
-
-        # compute sizes of each region
         b, num_img, num_vox = self.exp.y.shape
         num_reg = num_vox * 2 - 1
-        self.size = np.empty((n_permute + 1, num_reg))
-        for perm_idx, children in self.child_dict.items():
-            self.size[perm_idx, :] = node_sum(x=np.ones(num_vox, dtype=int),
-                                              children=children)
+
+        # build hierarchy for all permutations (and unpermuted: perm_idx=0)
+        self.child_dict = self.cluster(exp=self.exp,
+                                       n_permute=n_permute,
+                                       verbose=verbose)
 
         # compute z stat per region
         self.z_stat = np.empty((n_permute + 1, num_reg))
@@ -165,12 +158,17 @@ class EpochHRBA(Epoch):
                                                seed_offset=n_permute)
             self.z_stat[perm_idx, :] = z_stat
 
+        # compute sizes of each region
+        self.size = np.empty((n_permute + 1, num_reg))
+        for perm_idx, children in self.child_dict.items():
+            self.size[perm_idx, :] = node_sum(x=np.ones(num_vox, dtype=int),
+                                              children=children)
         # compute p-values (max stat across space)
         self.p_val = self.get_pval(stat=self.z_stat)
 
         # discover effects with smallest p_val
         self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
-                                         stat=-self.p_val, exp=exp,
+                                         stat=-self.p_val, exp=self.exp,
                                          children=self.child_dict[0])
 
     @classmethod
@@ -233,14 +231,9 @@ class EpochHRBA(Epoch):
         return f, z, mu, std
 
     @classmethod
-    def cluster(cls, exp, n_permute, verbose=True):
+    def cluster(cls, exp):
         """ build child_dict """
-        # prep
         b, num_img, num_vox = exp.y.shape
-        x = exp.x[~exp.contrast, :], exp.x
-        h = [np.linalg.pinv(_x) @ _x for _x in x]
-        h_diff = h[1] - h[0]
-        i = np.eye(num_img)
 
         # get connectivity (ensures only neighboring voxels joined)
         mask = exp.mask_idx >= 0
@@ -252,22 +245,15 @@ class EpochHRBA(Epoch):
             raise AttributeError('mask must be 2d or 3d')
 
         # prep ward clustering object
-        child_dict = dict()
         connectivity = grid_to_graph(*shape, mask=mask)
         ward = AgglomerativeClustering(connectivity=connectivity,
                                        linkage='ward')
-        tqdm_dict = dict(desc='clustering per permutation',
-                         disable=not verbose)
-        for perm_idx in tqdm(range(n_permute + 1), **tqdm_dict):
-            # freedman lane permutation
-            _exp = exp.permute(perm_idx)
-            y = _exp.y.reshape((-1, num_vox))
 
-            # cluster & store
-            ward.fit(y.T)
-            child_dict[perm_idx] = ward.children_
+        # cluster
+        y = exp.y.reshape((-1, num_vox))
+        ward.fit(y.T)
 
-        return child_dict
+        return ward.children_
 
     @classmethod
     def discover(cls, pval, stat, children, exp, alpha=.05):

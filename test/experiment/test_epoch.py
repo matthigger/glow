@@ -49,7 +49,7 @@ class TestEpochHRBA:
         exp = exp.sample_x(a=2)
 
         # cluster (should collect all areas of consistent color)
-        children = EpochHRBA.cluster(exp=exp, n_permute=0)[0]
+        children = EpochHRBA.cluster(exp=exp)
 
         # assumptions: test image has 1 color per greyscale value and each
         # color is contiguous
