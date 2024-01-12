@@ -140,40 +140,48 @@ class EpochHRBA(Epoch):
             (2, n) graph arrays (equiv to sklearn.cluster.Ward.children_)
     """
 
-    def __init__(self, exp, n_permute, alpha=.05, verbose=True,
-                 n_permute_z=100):
-        b, num_img, num_vox = self.exp.y.shape
+    def __init__(self, exp, n_permute, n_permute_z=100, alpha=.05):
+        self.exp = exp
+
+        b, num_img, num_vox = exp.y.shape
         num_reg = num_vox * 2 - 1
 
-        # build hierarchy for all permutations (and unpermuted: perm_idx=0)
-        self.child_dict = self.cluster(exp=self.exp,
-                                       n_permute=n_permute,
-                                       verbose=verbose)
-
         # compute z stat per region
+        self.child_dict = dict()
         self.z_stat = np.empty((n_permute + 1, num_reg))
-        for perm_idx, children in self.child_dict.items():
-            _, z_stat, _, _ = self.get_z_score(self.exp, children,
+        for perm_idx in range(n_permute + 1):
+            _exp = exp.permute(perm_idx)
+            children = self.cluster(exp=_exp)
+            _, z_stat, _, _ = self.get_z_score(_exp, children,
                                                num_permute=n_permute_z,
                                                seed_offset=n_permute)
+
+            # store
+            self.child_dict[perm_idx] = children
             self.z_stat[perm_idx, :] = z_stat
 
-        # compute sizes of each region
+        # compute p-values (max stat across space)
+        self.p_val = self.get_pval(stat=self.z_stat)
+
+        # discover effects (greedily choose max z stat regions whose p_val is
+        # significant.  continue so long as disjoint significant effect remain)
+        self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
+                                         stat=self.z_stat[0, :], exp=exp,
+                                         children=self.child_dict[0])
+
+        # compute sizes of each region (not really necessary, but good to have)
         self.size = np.empty((n_permute + 1, num_reg))
         for perm_idx, children in self.child_dict.items():
             self.size[perm_idx, :] = node_sum(x=np.ones(num_vox, dtype=int),
                                               children=children)
-        # compute p-values (max stat across space)
-        self.p_val = self.get_pval(stat=self.z_stat)
-
-        # discover effects with smallest p_val
-        self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
-                                         stat=-self.p_val, exp=self.exp,
-                                         children=self.child_dict[0])
 
     @classmethod
     def get_z_score(cls, exp, children, num_permute, seed_offset=0):
         """ computes z score of f stat (over permutations) per region
+
+        voxels are aggregated with unique permutations.  (otherwise an effect's
+        incidental performance under some permutation is repeated across other
+        voxels).
 
         Args:
             exp (Experiment):
@@ -191,31 +199,39 @@ class EpochHRBA(Epoch):
             mu (np.array): mean f stat per region across permutations
             std (np.array): std dev of f stat per region across permutations
         """
-        # freed lane permutation matrix (for all permutations)
-        seed_list = list(range(seed_offset, seed_offset + num_permute - 1))
-        seed_list.insert(0, 0)
-        freed_lane = np.stack(list(map(exp.get_freed_lane, seed_list)))
+        b, num_img, num_vox = exp.y.shape
+        num_multi_vox = children.shape[0]
+        num_reg = num_vox + num_multi_vox
 
-        # computes f ratios
+        # freed lane permutation matrix (for all permutations)
+        perms_needed = num_permute + num_vox + children.shape[0]
+        seed_iter = range(seed_offset, perms_needed + seed_offset)
+        freed_lane = np.stack(list(map(exp.get_freed_lane, seed_iter)))
+
+        # prep regression object: to computes f ratios
         chol_regr = CholeskyRegressCovariate(x=exp.x, contrast=exp.contrast)
 
         # count regions & initialize output arrays (assume children merges
         # until only a single region remains)
-        num_leaf = children.shape[0] + 1
-        num_reg = 2 * num_leaf - 1
         f = np.empty(num_reg)
         mu = np.empty(num_reg)
         std = np.empty(num_reg)
 
         r_dict = dict()
-        for reg_idx in iter_topo(children, num_leaf=num_leaf):
-            if reg_idx < num_leaf:
+        for reg_idx in iter_topo(children, num_leaf=num_vox):
+            if reg_idx < num_vox:
                 # single voxel region, permute y & compute r explicitly
-                y = np.einsum('bn,knm->bmk', exp.y[:, :, reg_idx], freed_lane)
+                # note each voxel gets its own unique permutation matrix
+                y = np.empty((b, num_img, num_permute + 1))
+                y[:, :, 0] = exp.y[:, :, reg_idx]
+                y[:, :, 1:] = np.einsum(
+                    'bn,knm->bmk',
+                    exp.y[:, :, reg_idx],
+                    freed_lane[reg_idx: reg_idx + num_permute, :, :])
                 r_dict[reg_idx] = chol_regr.get_r(y=y)
             else:
                 # if multi voxel region, compute r via constituent regions
-                c0, c1 = children[int(reg_idx - num_leaf), :]
+                c0, c1 = children[int(reg_idx - num_vox), :]
                 r_dict[reg_idx] = r_dict.pop(c0) + r_dict.pop(c1)
 
             f_ratio = chol_regr.get_f_ratio(r=r_dict[reg_idx])

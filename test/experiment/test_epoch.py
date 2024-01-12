@@ -97,7 +97,7 @@ class TestBigEffect:
     """ given strong effect, discover it"""
     # build experiment with strong effect to be found (whole region)
     num_img = 100
-    shape = 5, 5, 5
+    shape = 5, 5
     a = 2
     b = 1
     exp = get_rand_exp(shape=shape, a=a, b=b, seed=0, num_img=num_img)
@@ -105,9 +105,20 @@ class TestBigEffect:
                                     p_val=.0001)
 
     def test_hrba(self):
-        epoch = EpochHRBA(TestBigEffect.exp, n_permute=100)
+        epoch = EpochHRBA(TestBigEffect.exp, n_permute=100, n_permute_z=100)
+
+        # check that target region segmented properly
+        f1 = get_f1(mask=TestBigEffect.effect.mask,
+                    mask_idx=epoch.exp.mask_idx,
+                    children=epoch.child_dict[0])
+        assert np.isclose(f1.max(), 1), 'target region not segmented'
+
+        # appropriate effect discovered as most significant effect
         np.testing.assert_allclose(epoch.effect_list[0].mask,
                                    TestBigEffect.effect.mask)
+
+        # no other effects discovered
+        assert len(epoch.effect_list) == 1, 'non-unique effect found'
 
     def test_tfce(self):
         epoch = EpochTFCE(TestBigEffect.exp, n_permute=100)
