@@ -71,10 +71,17 @@ class EpochTFCE(Epoch):
     def __init__(self, exp, n_permute, alpha=.05, verbose=True):
         self.exp = exp
 
-        raise NotImplementedError('need f stats')
+        # compute f_ratio
+        num_vox = exp.y.shape[2]
+        chol_regr = CholeskyRegressCovariate(exp.x, exp.contrast)
+        self.f_ratio = np.empty((n_permute + 1, num_vox))
+        for perm_idx in range(n_permute + 1):
+            _exp = exp.permute(perm_idx=perm_idx)
+            r = chol_regr.get_r(_exp.y)
+            self.f_ratio[perm_idx, :] = chol_regr.get_f_ratio(r)
 
         # apply TFCE per image
-        self.tfce_stat = self.apply_tfce(stat=self.llr,
+        self.tfce_stat = self.apply_tfce(stat=self.f_ratio,
                                          mask_idx=exp.mask_idx,
                                          verbose=verbose)
 

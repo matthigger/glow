@@ -119,6 +119,6 @@ class TestBigEffect:
                                    TestBigEffect.effect.mask)
 
     def test_tfce(self):
-        epoch = EpochTFCE(TestBigEffect.exp, n_permute=100)
+        epoch = EpochTFCE(TestBigEffect.exp, n_permute=10, alpha=.1)
         np.testing.assert_allclose(epoch.effect_list[0].mask,
                                    TestBigEffect.effect.mask)
