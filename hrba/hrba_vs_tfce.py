@@ -1,9 +1,11 @@
-import pickle
+import gzip
+import json
 import shutil
 import warnings
 from datetime import datetime
 from uuid import uuid4
 
+import cloudpickle as pickle
 from joblib import Parallel, delayed
 from sklearn.metrics import f1_score, recall_score, confusion_matrix
 
@@ -27,13 +29,17 @@ effect_perc = .2
 # FWER control
 alpha = .05
 
+# toggles parallel, 0 or 1 processes non-parallel (good for debug).  else this
+# is the number of threads to use.  (-1 for all of them)
+n_jobs = -1
+
 # parameters to be passed to Analysis constructor
-# min_reg_size=5 implies HRBA will not test the hypothesis that any region
-# smaller than 5 voxels contains an effect
-analysis_kwargs = {'AnalysisHRBA': {'min_reg_size': 10,
-                                    'n_permute': 100,
-                                    'n_permute_model': 30},
-                   'AnalysisTFCE': {'n_permute': 130}}
+analysis_kwargs = {'AnalysisHRBA': {'n_permute': 100,
+                                    'n_permute_z': 30},
+                   'AnalysisTFCE': {'n_permute': 100}}
+
+# saves output python objects (memory expensive)
+detail_save = True
 
 # prep folder_out
 timestamp = datetime.now().strftime('%y%b%d-%H%M')
@@ -47,12 +53,14 @@ folder_out.mkdir()
 
 # store copy of script (to read experiment params above)
 shutil.copy(__file__, folder_out / pathlib.Path(__file__).name)
+shutil.copy('hrba_vs_tfce_plot.ipynb', folder_out / 'hrba_vs_tfce_plot.ipynb')
 
 # input data
 folder = '/home/matt/Dropbox/pnl_hrba/data/hcp100_lowres/image'
-exp_hcp = Experiment.from_search(folder=folder,
-                                 sbj_regex='[\d]{6}',
-                                 img_glob_dict={'FA': '*_FA.nii.gz'})
+exp_hcp = ExperimentImageOnly.from_search(folder=folder,
+                                          sbj_regex='[\d]{6}',
+                                          img_glob_dict={'FA': '*_FA.nii.gz',
+                                                         'MD': '*_MD.nii.gz'})
 exp_hcp = exp_hcp.sample_x(a=2)
 
 analysis_obj_tup = (AnalysisTFCE, AnalysisHRBA)
@@ -75,7 +83,7 @@ def get_score(ana, effect):
     f1 = f1_score(y_true=y_true, y_pred=y_pred, zero_division=0)
     sens = recall_score(y_true=y_true, y_pred=y_pred, zero_division=0)
     conf_mat = confusion_matrix(y_true=y_true, y_pred=y_pred)
-    spec = conf_mat[0, 0] / (conf_mat[0, 0] + conf_mat[1, 0])
+    spec = conf_mat[0, 0] / (conf_mat[0, 0] + conf_mat[0, 1])
 
     return f1, sens, spec
 
@@ -92,11 +100,11 @@ def run_one_exp(seed):
 
     # sample effect space
     n = exp.y.shape[2] * effect_perc
-    assert analysis_kwargs['AnalysisHRBA']['min_reg_size'] < n, \
-        'min_reg_size larger than target effect'
     extenter = ExtenterMinVar(n=n)
     mask_target = extenter(y=exp.y, mask_idx=exp.mask_idx, seed=seed)
 
+    # shuffle p value order (better sampling across threads)
+    np.random.shuffle(p_val_all)
     for p_val in p_val_all:
         # impose effect
         _exp, effect = exp.impose_effect(seed=seed, mask=mask_target,
@@ -107,23 +115,35 @@ def run_one_exp(seed):
             kwargs = analysis_kwargs[Ana.__name__]
             ana = Ana(exp=_exp, alpha=alpha, **kwargs)
 
-            try:
-                ana.run(verbose=False)
-            except Exception as e:
-                msg = f'{Ana.__name__}: seed={seed}, p_val={p_val}'
-                raise type(e)(msg) from e
+            ana.run()
 
             # score
             f1, sens, spec = get_score(ana, effect)
 
-            # dump
-            file_out = folder_out / f'result_{str(uuid4())[:8]}.p'
-            with open(file_out, 'wb') as file:
-                pickle.dump((p_val, seed, Ana.__name__, f1, sens, spec),
-                            file=file)
+            # dump summary
+            uuid = str(uuid4())[:8]
+            file_out = folder_out / f'out_{uuid}.json'
+            d = {'p_val': p_val,
+                 'seed': seed,
+                 'Analysis': Ana.__name__,
+                 'f1': f1,
+                 'sens': sens,
+                 'spec': spec,
+                 'uuid': uuid}
+
+            with open(file_out, 'w') as f:
+                json.dump(d, f, sort_keys=True, indent=4)
+
+            if detail_save:
+                # dump detail
+                file_out = folder_out / f'out_{uuid}_detail.p.gz'
+                with gzip.open(file_out, 'wb') as f:
+                    pickle.dump((ana, effect), f)
 
 
-# r = Parallel(n_jobs=1, verbose=10)(
-#     delayed(run_one_exp)(seed) for seed in range(n_repeat))
-
-run_one_exp(0)
+if n_jobs:
+    r = Parallel(n_jobs=n_jobs, verbose=10)(
+        delayed(run_one_exp)(seed) for seed in range(n_repeat))
+else:
+    for seed in range(n_repeat):
+        run_one_exp(seed)

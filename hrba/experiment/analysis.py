@@ -37,7 +37,7 @@ class Analysis:
                 print(f'begin epoch {epoch_idx}')
 
             # run & store new epoch
-            epoch = self.get_epoch(exp=exp, verbose=verbose)
+            epoch = self.get_epoch(exp=exp)
             self.epoch_list.append(epoch)
 
             if verbose:
