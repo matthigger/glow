@@ -1,7 +1,7 @@
 import numpy as np
 
 
-def get_f_stat_qr(x, y, contrast):
+def get_f_stat(x, y, contrast):
     """ computes f statistic
 
     Args:
@@ -36,26 +36,6 @@ def get_f_stat_qr(x, y, contrast):
 
     return (f_const * np.linalg.norm(q1 @ y_mean.T) ** 2 /
             (np.trace(space_cov) + np.linalg.norm(q2 @ y_mean.T) ** 2))
-
-
-def get_f_stat(x, y, contrast):
-    """ computes f statistic
-
-    Args:
-        x (np.array): (a, num_img) explanatory variables
-        y (np.array): (b, num_img, num_vox) image intensities
-        contrast (np.array): (a) True for each corresponding feature in x which
-            is "of interest" (other x features form the reduced model in
-            computing f statistic)
-
-    Returns:
-        f_stat (float): f statistic of MMSE regression from x to y
-    """
-    # compute tr_eps
-    _x = x[~contrast, :]
-    tr_eps = get_tr_eps(_x, y), get_tr_eps(x, y)
-
-    return (tr_eps[0] - tr_eps[1]) / tr_eps[1] * get_f_const(y, contrast)
 
 
 def get_tr_eps(x, y):
