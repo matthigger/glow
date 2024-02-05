@@ -144,9 +144,42 @@ def case(a=3, b=3, num_reg=11, num_img=10, seed=0):
 
     x = rng.standard_normal((a, num_img))
     y = rng.standard_normal((b, num_img, num_reg))
-    pinv_x = np.linalg.pinv(x)
+
+    ssr, beta = get_ssr_beta(x, y)
+
+    return x, y, ssr, beta
+
+
+def case_multi_vox(*args, num_vox=2, **kwargs):
+    x, y, ssr, beta = case(*args, num_reg=num_vox, **kwargs)
+
+    # flatten x and y
+    xr = np.tile(x, (1, num_vox))
+    yr = y.reshape((y.shape[0], -1), order='F')
+    # validate yr reshaping
+    np.testing.assert_array_almost_equal(y[:, :, 0], yr[:, :y.shape[1]])
+
+    ssr, beta = get_ssr_beta(xr, yr)
+
+    return xr, yr, ssr, beta
+
+
+def get_ssr_beta(x, y):
+    """ slow and reliable computing of ssr and beta
+
+    returns:
+        ssr (np.array): (a + 1, b, num_reg) ssr[i, ...] gives the sum of
+            squared residuals if we use only i of the a total.  the final row
+            ssr[-1, ...] represents the sum of square of y (not a residual)
+        beta (np.array): (a, b, num_reg) the mmse mapping from x to y for each
+            region
+    """
+    a = x.shape[0]
+    y = np.atleast_3d(y)
+    b, num_img, num_reg = y.shape
 
     # compute beta (explicit, slow and reliable)
+    pinv_x = np.linalg.pinv(x)
     beta = np.empty((a, b, num_reg))
     for reg_idx in range(num_reg):
         _y = y[:, :, reg_idx]
@@ -160,6 +193,31 @@ def case(a=3, b=3, num_reg=11, num_img=10, seed=0):
         for reg_idx in range(num_reg):
             resid = y[:, :, reg_idx] @ resid_form
             ssr[a_idx, :, reg_idx] = np.diag(resid @ resid.T)
-    ssr[-1, :, :] = (y**2).sum(axis=1)
+    ssr[-1, :, :] = (y ** 2).sum(axis=1)
 
-    return x, y, ssr, beta
+    return ssr, beta
+
+
+def test_eqn():
+    num_vox = 3
+    kwargs = dict(a=2, b=4, num_img=10, seed=0)
+    # build case
+    x, y, ssr, beta = case(num_reg=num_vox, **kwargs)
+    # build multi-voxel case (corresponds to union of all regions above)
+    xr, yr, ssr_r, beta_r = case_multi_vox(num_vox=num_vox, **kwargs)
+
+    # build q
+    q, r = np.linalg.qr(x.T, mode='reduced')
+    q = q.T
+
+    for a_idx in range(kwargs['a']):
+        # reduce to only the first few features in x
+        _q = q[:a_idx + 1, :]
+
+        # compute ssr expected per formulation
+        # N|r| \Tr \mathcal{E} = ||Y_r||_F^2 - |r| ||Q \bar{Y}_r^T||_F^2
+        ssr_exp = (yr ** 2).sum()
+        ssr_exp -= num_vox * ((_q @ y.mean(axis=2).T) ** 2).sum()
+        assert np.isclose(ssr_exp, ssr_r[a_idx, :, 0].sum())
+
+    # build c_r by summing in paper
