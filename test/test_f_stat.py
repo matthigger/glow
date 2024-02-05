@@ -2,6 +2,15 @@ from hrba.f_stat import *
 from test.helper import generate_dummy_data
 
 
+def test_get_f_stat_qr():
+    for seed in range(10):
+        x, y, contrast = generate_dummy_data(seed=0)
+
+        f_stat_exp = get_f_stat(x, y, contrast)
+        f_stat_obs = get_f_stat_qr(x, y, contrast)
+        assert np.isclose(f_stat_exp, f_stat_obs)
+
+
 def test_stat_computer():
     x, y, contrast = generate_dummy_data(seed=0)
     stat_computer = RegStatComputer(x=x, contrast=contrast, extra_flag=True)

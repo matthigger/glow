@@ -1,6 +1,43 @@
 import numpy as np
 
 
+def get_f_stat_qr(x, y, contrast):
+    """ computes f statistic
+
+    Args:
+        x (np.array): (a, num_img) explanatory variables
+        y (np.array): (b, num_img, num_vox) image intensities
+        contrast (np.array): (a) True for each corresponding feature in x which
+            is "of interest" (other x features form the reduced model in
+            computing f statistic)
+
+    Returns:
+        f_stat (float): f statistic of MMSE regression from x to y
+    """
+    # constant
+    a = (~contrast).sum(), contrast.size
+    b, num_img, reg_size = y.shape
+
+    # qr decomposition of x
+    to_sorted = np.eye(a[1])[np.argsort(contrast), :]
+    q, r = np.linalg.qr((to_sorted @ x).T, mode='complete')
+    q = q.T
+    q1 = q[a[0]: a[1], :]
+    q2 = q[a[1]:, :]
+
+    # compute norm of spatial cov square of t
+    # |r| \Sigma_r & = \sum_{v \in r} (Y_v - \bar{Y}_r)(Y_v - \bar{Y}_r)^T
+    #              & = Y_r Y_r^T - |r| \bar{Y}_r \bar{Y}_r^T
+    y_mean = y.mean(axis=2)
+    yr = y.reshape((y.shape[0], -1), order='F')
+    space_cov = yr @ yr.T / reg_size - y_mean @ y_mean.T
+
+    f_const = get_f_const(y, contrast)
+
+    return (f_const * np.linalg.norm(q1 @ y_mean.T) ** 2 /
+            (np.trace(space_cov) + np.linalg.norm(q2 @ y_mean.T) ** 2))
+
+
 def get_f_stat(x, y, contrast):
     """ computes f statistic
 
