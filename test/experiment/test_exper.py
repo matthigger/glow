@@ -12,18 +12,20 @@ def get_rand_exp(shape=(10, 10, 10), **kwargs):
     return Experiment(x=x, y=y, contrast=contrast, mask_idx=mask_idx)
 
 
-class TestExperiment:
+class TestExperimentOnlyImage:
     def test_from_search(self):
         # nii
-        exp0 = Experiment.from_search(folder=folder_test_data,
-                                      sbj_regex='img\d',
-                                      img_glob_dict={'feat0': '*feat0.nii.gz',
-                                                     'feat1': '*feat1.nii.gz'})
+        exp0 = ExperimentImageOnly.from_search(folder=folder_test_data,
+                                               sbj_regex='img\d',
+                                               img_glob_dict={
+                                                   'feat0': '*feat0.nii.gz',
+                                                   'feat1': '*feat1.nii.gz'})
         # jpg
-        exp1 = Experiment.from_search(folder=folder_test_data,
-                                      sbj_regex='img\d',
-                                      img_glob_dict={'feat0': '*feat0.jpg',
-                                                     'feat1': '*feat1.jpg'})
+        exp1 = ExperimentImageOnly.from_search(folder=folder_test_data,
+                                               sbj_regex='img\d',
+                                               img_glob_dict={
+                                                   'feat0': '*feat0.jpg',
+                                                   'feat1': '*feat1.jpg'})
 
         for exp in (exp0, exp1):
             # ensure values arrived at their proper place in y
@@ -53,9 +55,10 @@ class TestExperiment:
         n = 100
         rng = np.random.default_rng(seed=0)
         for str_test_glob in ('*test_bw.png', '*test.png'):
-            exp = Experiment.from_search(folder=folder_test_data,
-                                         sbj_regex='sbj\d',
-                                         img_glob_dict={'feat': str_test_glob})
+            exp = ExperimentImageOnly.from_search(folder=folder_test_data,
+                                                  sbj_regex='sbj\d',
+                                                  img_glob_dict={
+                                                      'feat': str_test_glob})
 
             exp.bootstrap_img(n=n, seed=0)
             b, num_img, num_vox = exp.y.shape
@@ -82,6 +85,9 @@ class TestExperiment:
         # validate that exp2 has f=0 for whole region
         eff2 = Effect.from_exp_mask(exp=exp2, mask=mask)
         assert np.isclose(eff2.f_stat, 0)
+
+
+class TestExperiment:
 
     def test_permute(self):
         shape = 10, 10

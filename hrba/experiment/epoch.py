@@ -1,20 +1,16 @@
-import pathlib
-import tempfile
 from _bisect import bisect_left
 from copy import copy
 
-import nibabel
 import numpy as np
 from scipy.ndimage import label
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.feature_extraction import grid_to_graph
 from tqdm import tqdm
 
-from hrba.graph import iter_reg_stat_exp, iter_topo, node_sum
+from hrba.graph import iter_topo, node_sum
 from hrba.tfce import apply_tfce_x
+from .cholesky import CholeskyRegressCovariate
 from .effect import Effect
-from .llr_model import LLRModel
-from .permute import get_perm_matrix, permute_eps_from_exp
 
 
 def reshape(mask_idx, x=None, fill=0):
@@ -29,80 +25,9 @@ class Epoch:
 
     Attributes:
         exp (Experiment): the source data to run experiment on
-        size (np.array): (n_permute + 1, num_reg) size of each region
-        llr (np.array): (n_permute + 1, num_reg) raw llr of each region
         p_val (np.array): (num_reg) FWER controlled pval
         effect_list (list): list of effects discovered
     """
-
-    def to_nii(self, folder=None, affine=np.eye(4), log=True):
-        """ writes nifti images for observation of completed analysis
-
-        Args:
-            folder (pathlib.Path): location to write niftis
-            affine (np.array): affine
-            log (bool): toggles log10 outputs
-
-        Returns:
-            folder (pathlib.Path): location to write niftis
-        """
-        # get folder
-        if folder is None:
-            folder = tempfile.TemporaryDirectory().name
-        folder = pathlib.Path(folder)
-        folder.mkdir(exist_ok=True, parents=True)
-
-        # get "estimate" which has idx of discovered region
-        estimate = reshape(mask_idx=self.exp.mask_idx)
-        for idx, eff in enumerate(self.effect_list):
-            estimate += eff.mask * (idx + 1)
-
-        num_vox = self.exp.y.shape[2]
-        llr = reshape(mask_idx=self.exp.mask_idx,
-                      x=self.llr[0, :num_vox])
-        p_val = reshape(mask_idx=self.exp.mask_idx, x=self.p_val[:num_vox])
-
-        array_dict = {'estimate': estimate,
-                      'llr_vox': llr,
-                      'p_val_vox': p_val}
-        if log:
-            array_dict['log10_llr_vox'] = np.log10(llr)
-            array_dict['log10_p_val_vox'] = np.log10(p_val)
-
-        for label, img in array_dict.items():
-            file = (folder / label).with_suffix('.nii.gz')
-            img = nibabel.Nifti1Image(img, affine=affine)
-            img.to_filename(file)
-
-        return folder
-
-    @classmethod
-    def get_llr(cls, exp, child_dict=None, n_permute=None, verbose=True):
-        assert (child_dict is None) != (n_permute is None), \
-            'either child_dict xor n_permute required'
-
-        # compute f-stat per region in all permutations
-        num_vox = exp.y.shape[2]
-        if child_dict is None:
-            shape = (n_permute + 1, num_vox)
-            perm_child_iter = ((perm_idx, None)
-                               for perm_idx in range(n_permute + 1))
-        else:
-            shape = (len(child_dict), 2 * num_vox - 1)
-            perm_child_iter = child_dict.items()
-        size = np.full(shape, fill_value=-1, dtype=int)
-        llr = np.full(shape, fill_value=-1, dtype=float)
-
-        tqdm_dict = dict(desc='compute stats per permutation',
-                         disable=not verbose)
-        for perm_idx, children in tqdm(perm_child_iter, **tqdm_dict):
-            _exp = exp.permute(perm_idx)
-            for reg_idx, reg_stat in iter_reg_stat_exp(children=children,
-                                                       exp=_exp):
-                size[perm_idx, reg_idx] = reg_stat['size']
-                llr[perm_idx, reg_idx] = reg_stat['llr']
-
-        return size, llr
 
     @classmethod
     def get_pval(cls, stat, mask_exclude=None):
@@ -146,13 +71,17 @@ class EpochTFCE(Epoch):
     def __init__(self, exp, n_permute, alpha=.05, verbose=True):
         self.exp = exp
 
-        # compute f stat per every region in hierarchy (across all permutes)
-        self.size, self.llr = self.get_llr(exp=exp,
-                                           n_permute=n_permute + 1,
-                                           verbose=verbose)
+        # compute f_ratio
+        num_vox = exp.y.shape[2]
+        chol_regr = CholeskyRegressCovariate(exp.x, exp.contrast)
+        self.f_ratio = np.empty((n_permute + 1, num_vox))
+        for perm_idx in range(n_permute + 1):
+            _exp = exp.permute(perm_idx=perm_idx)
+            r = chol_regr.get_r(_exp.y)
+            self.f_ratio[perm_idx, :] = chol_regr.get_f_ratio(r)
 
         # apply TFCE per image
-        self.tfce_stat = self.apply_tfce(stat=self.llr,
+        self.tfce_stat = self.apply_tfce(stat=self.f_ratio,
                                          mask_idx=exp.mask_idx,
                                          verbose=verbose)
 
@@ -163,13 +92,6 @@ class EpochTFCE(Epoch):
         mask = np.zeros(exp.mask_idx.shape, dtype=bool)
         mask[exp.mask_idx > -1] = self.p_val <= alpha
         self.effect_list = self.discover_mask(mask=mask, exp=exp)
-
-    def to_nii(self, *args, log=True, **kwargs):
-        tfce = reshape(mask_idx=self.exp.mask_idx, x=self.tfce_stat[0, :])
-        array_dict = {'tfce': tfce}
-        if log:
-            array_dict['log10_tfce': np.log10(tfce)]
-        return super().to_nii(*args, log=log, array_dict=array_dict, **kwargs)
 
     @classmethod
     def apply_tfce(cls, stat, mask_idx, verbose=False):
@@ -223,126 +145,118 @@ class EpochHRBA(Epoch):
     Attributes:
         child_dict (dict): keys are permutation indices, values are
             (2, n) graph arrays (equiv to sklearn.cluster.Ward.children_)
-        min_reg_size (int): minimum size of region of interest (inclusive).
-            smaller regions are not considered for significance
-        llr_all (np.array): (n_permute, num_reg, num_permute_model) array of
-            log likelihood ratios log(p(full model) / p(reduced model))
     """
 
-    @property
-    def llr(self):
-        return self.llr_all[:, :, 0]
-
-    def __init__(self, exp, n_permute, alpha=.05, verbose=True,
-                 min_reg_size=1, n_permute_model=10):
+    def __init__(self, exp, n_permute, n_permute_z=100, alpha=.05):
         self.exp = exp
-        self.min_reg_size = min_reg_size
 
-        # build hierarchy for all permutations (and unpermuted: perm_idx=0)
-        self.child_dict = self.cluster(exp=exp,
-                                       n_permute=n_permute,
-                                       verbose=verbose)
-
-        # compute sizes of each region
-        b, num_img, num_vox = self.exp.y.shape
+        b, num_img, num_vox = exp.y.shape
         num_reg = num_vox * 2 - 1
+
+        # compute z stat per region
+        self.child_dict = dict()
+        self.z_stat = np.empty((n_permute + 1, num_reg))
+        for perm_idx in range(n_permute + 1):
+            _exp = exp.permute(perm_idx)
+            children = self.cluster(exp=_exp)
+            _, z_stat, _, _ = self.get_z_score(_exp, children,
+                                               num_permute=n_permute_z,
+                                               seed_offset=n_permute)
+
+            # store
+            self.child_dict[perm_idx] = children
+            self.z_stat[perm_idx, :] = z_stat
+
+        # compute p-values (max stat across space)
+        self.p_val = self.get_pval(stat=self.z_stat)
+
+        # discover effects (greedily choose max z stat regions whose p_val is
+        # significant.  continue so long as disjoint significant effect remain)
+        self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
+                                         stat=self.z_stat[0, :], exp=exp,
+                                         children=self.child_dict[0])
+
+        # compute sizes of each region (not really necessary, but good to have)
         self.size = np.empty((n_permute + 1, num_reg))
         for perm_idx, children in self.child_dict.items():
             self.size[perm_idx, :] = node_sum(x=np.ones(num_vox, dtype=int),
                                               children=children)
 
-        # compute llr of every region (across all permutations) under new
-        # permutations
-        self.llr_all = self.get_llr_permute(exp=exp, size=self.size,
-                                            child_dict=self.child_dict,
-                                            n_permute=n_permute_model + 1,
-                                            verbose=verbose)
-
-        # compute z stat
-        mu = self.llr_all[:, :, 1:].mean(axis=2)
-        std = self.llr_all[:, :, 1:].std(axis=2)
-        self.z_stat = (self.llr_all[:, :, 0] - mu) / std
-
-        # compute p-values via max stat across permutation
-        mask_exclude = self.size < self.min_reg_size
-        self.p_val = self.get_pval(stat=self.z_stat,
-                                   mask_exclude=mask_exclude)
-
-        # discover effects with largest llr
-        self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
-                                         stat=self.llr_all[0, :, 0], exp=exp,
-                                         children=self.child_dict[0])
-
     @classmethod
-    def get_llr_permute(cls, exp, size, child_dict, n_permute, verbose=True):
-        """ gets llr of regions (of all regions) under new permutes
-        """
-        # total number of observations per region (need for llr compute)
-        b, num_img, num_vox = exp.y.shape
-        num_reg = 2 * num_vox - 1
+    def get_z_score(cls, exp, children, num_permute, seed_offset=0):
+        """ computes z score of f stat (over permutations) per region
 
-        # compute llr under all permutations (for each tree built above)
-        llr = np.empty((len(child_dict), num_reg, n_permute))
-        tqdm_dict = dict(disable=not verbose,
-                         desc='compute llr per segmentation',
-                         total=len(child_dict))
-        for permute_idx, children in tqdm(child_dict.items(), **tqdm_dict):
-            eps = permute_eps_from_exp(exp=exp, children=children,
-                                       n_permute=n_permute, negative_seed=True)
-            log_det_eps = np.log(np.linalg.det(eps))
-
-            scale = size[permute_idx, :] * (num_img / 2)
-            _llr = (log_det_eps[:, :, 0] - log_det_eps[:, :, 1]) * scale
-            llr[permute_idx, :, ] = _llr.T
-
-        return llr
-
-    @classmethod
-    def adjust_llr(cls, llr, size, n_train):
-        """ adjusts log likelihood ratio for size
-
-        we fit a model theta = np.array([[m, b], [m', b']]) to maximize
-        likelihood and, for each llr, return its "z-score":
-
-            z = (log_llr_i - log_llr_mu_model_i) / log_llr_std_model_i
-        where:
-            log_llr_mu_model_i = size_i * m  + b
-            log_llr_std_model_i = size_i * m' + b'
+        voxels are aggregated with unique permutations.  (otherwise an effect's
+        incidental performance under some permutation is repeated across other
+        voxels).
 
         Args:
-            llr (np.array): (n_permute, num_reg) log likelhiood ratios
-            size (np.array): (n_permute, num_reg) size of each region
-            n_train (int): number of permutations to train model on.  (note: we
-                train on the last permutation indices so output z_stat
-                indices align with input llr & size arrays)
+            exp (Experiment):
+            children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
+                sklearn.cluster.Ward.children_)
+            num_permute (int): number of permutations to use when computing
+                z-score adjustment
+            seed_offset (int): offsets seed used in permutation.  useful to
+                ensure permutations used in z score process here are distinct
+                from those used to generate segmentations elsewhere.
 
         Returns:
-            z_stat (np.array): z stat of each region, excludes training
-                permutations
-            theta (np.array): np.array([[m, b], [m', b']]),
-                see EpochHRBA.adjust_llr() for detail
+            f (np.array): f statistic per region (unpermuted)
+            z (np.array): z score (of f stat) per region (unpermuted)
+            mu (np.array): mean f stat per region across permutations
+            std (np.array): std dev of f stat per region across permutations
         """
-        # exclude first row from fit as its unpermuted (not necessarily from
-        # null hypothesis)
-        llr_model = LLRModel()
-        llr_model.fit(llr=llr[-n_train:, :], size=size[-n_train:, :])
+        b, num_img, num_vox = exp.y.shape
+        num_multi_vox = children.shape[0]
+        num_reg = num_vox + num_multi_vox
 
-        # compute z stats
-        mu, var = llr_model.predict(size=size)
-        z_stat = (np.log(llr) - mu) / var ** .5
+        # freed lane permutation matrix (for all permutations)
+        perms_needed = num_permute + num_vox + children.shape[0]
+        seed_iter = range(seed_offset, perms_needed + seed_offset)
+        freed_lane = np.stack(list(map(exp.get_freed_lane, seed_iter)))
 
-        # trim away last n_train rows of z scores (they were used in training)
-        return z_stat[:-n_train, :], llr_model
+        # prep regression object: to computes f ratios
+        chol_regr = CholeskyRegressCovariate(x=exp.x, contrast=exp.contrast)
+
+        # count regions & initialize output arrays (assume children merges
+        # until only a single region remains)
+        f = np.empty(num_reg)
+        mu = np.empty(num_reg)
+        std = np.empty(num_reg)
+
+        r_dict = dict()
+        for reg_idx in iter_topo(children, num_leaf=num_vox):
+            if reg_idx < num_vox:
+                # single voxel region, permute y & compute r explicitly
+                # note each voxel gets its own unique permutation matrix
+                y = np.empty((b, num_img, num_permute + 1))
+                y[:, :, 0] = exp.y[:, :, reg_idx]
+                y[:, :, 1:] = np.einsum(
+                    'bn,knm->bmk',
+                    exp.y[:, :, reg_idx],
+                    freed_lane[reg_idx: reg_idx + num_permute, :, :])
+                r_dict[reg_idx] = chol_regr.get_r(y=y)
+            else:
+                # if multi voxel region, compute r via constituent regions
+                c0, c1 = children[int(reg_idx - num_vox), :]
+                r_dict[reg_idx] = r_dict.pop(c0) + r_dict.pop(c1)
+
+            f_ratio = chol_regr.get_f_ratio(r=r_dict[reg_idx])
+
+            # store
+            f[reg_idx] = f_ratio[0]
+            mu[reg_idx] = f_ratio[1:].mean()
+            std[reg_idx] = f_ratio[1:].std(ddof=1)
+
+        # compute z
+        z = (f - mu) / std
+
+        return f, z, mu, std
 
     @classmethod
-    def cluster(cls, exp, n_permute, verbose=True):
+    def cluster(cls, exp):
         """ build child_dict """
-        # prep
         b, num_img, num_vox = exp.y.shape
-        x = exp.x[~exp.contrast, :], exp.x
-        h = [np.linalg.pinv(_x) @ _x for _x in x]
-        h_diff = h[1] - h[0]
-        i = np.eye(num_img)
 
         # get connectivity (ensures only neighboring voxels joined)
         mask = exp.mask_idx >= 0
@@ -354,26 +268,15 @@ class EpochHRBA(Epoch):
             raise AttributeError('mask must be 2d or 3d')
 
         # prep ward clustering object
-        child_dict = dict()
         connectivity = grid_to_graph(*shape, mask=mask)
         ward = AgglomerativeClustering(connectivity=connectivity,
                                        linkage='ward')
-        tqdm_dict = dict(desc='clustering per permutation',
-                         disable=not verbose)
-        for perm_idx in tqdm(range(n_permute + 1), **tqdm_dict):
-            # permute data residuals under reduced model (freedman lane)
-            p = get_perm_matrix(perm_idx, num_img)
-            freed_lane = (i - h[0]) @ p + h[0]
 
-            # prepare y
-            y = np.einsum('ijk,jm->imk', exp.y, freed_lane @ h_diff)
-            y = y.reshape((-1, num_vox))
+        # cluster
+        y = exp.y.reshape((-1, num_vox))
+        ward.fit(y.T)
 
-            # cluster & store
-            ward.fit(y.T)
-            child_dict[perm_idx] = ward.children_
-
-        return child_dict
+        return ward.children_
 
     @classmethod
     def discover(cls, pval, stat, children, exp, alpha=.05):

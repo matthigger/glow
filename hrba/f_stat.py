@@ -14,11 +14,28 @@ def get_f_stat(x, y, contrast):
     Returns:
         f_stat (float): f statistic of MMSE regression from x to y
     """
-    # compute tr_eps
-    _x = x[~contrast, :]
-    tr_eps = get_tr_eps(_x, y), get_tr_eps(x, y)
+    # constant
+    a = (~contrast).sum(), contrast.size
+    b, num_img, reg_size = y.shape
 
-    return (tr_eps[0] - tr_eps[1]) / tr_eps[1] * get_f_const(y, contrast)
+    # qr decomposition of x
+    to_sorted = np.eye(a[1])[np.argsort(contrast), :]
+    q, r = np.linalg.qr((to_sorted @ x).T, mode='complete')
+    q = q.T
+    q1 = q[a[0]: a[1], :]
+    q2 = q[a[1]:, :]
+
+    # compute norm of spatial cov square of t
+    # |r| \Sigma_r & = \sum_{v \in r} (Y_v - \bar{Y}_r)(Y_v - \bar{Y}_r)^T
+    #              & = Y_r Y_r^T - |r| \bar{Y}_r \bar{Y}_r^T
+    y_mean = y.mean(axis=2)
+    yr = y.reshape((y.shape[0], -1), order='F')
+    space_cov = yr @ yr.T / reg_size - y_mean @ y_mean.T
+
+    f_const = get_f_const(y, contrast)
+
+    return (f_const * np.linalg.norm(q1 @ y_mean.T) ** 2 /
+            (np.trace(space_cov) + np.linalg.norm(q2 @ y_mean.T) ** 2))
 
 
 def get_tr_eps(x, y):

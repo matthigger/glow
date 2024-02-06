@@ -1,9 +1,9 @@
-from shutil import rmtree
-
+from hrba.experiment import *
 from hrba.experiment.epoch import *
-from hrba.experiment.exper import Experiment
 from hrba.graph import get_f1
+from hrba.sample_effect import ExtenterSphere
 from .make_test_image import folder_test_data
+from .test_exper import get_rand_exp
 from ..helper import generate_dummy_data
 
 num_vox = 4
@@ -16,11 +16,6 @@ child_dict = {idx: children for idx in range(n_permute)}
 
 
 class TestEpoch:
-    def test_to_nii(self):
-        epoch = EpochHRBA(exp=exp, n_permute=1)
-        folder = epoch.to_nii()
-        rmtree(folder)
-
     def test_get_pval(self):
         z_stat = np.array([[7, 3, 1, 0],
                            [0, 0, 0, 0],
@@ -39,10 +34,6 @@ class TestEpoch:
         p_val = Epoch.get_pval(stat=z_stat, mask_exclude=mask_exclude)
         assert np.allclose(p_val, p_val_exp, equal_nan=True)
 
-    def test_get_f_stat(self):
-        Epoch.get_llr(exp=exp, child_dict=child_dict)
-        Epoch.get_llr(exp=exp, n_permute=n_permute)
-
 
 class TestEpochHRBA:
     def test_cluster(self):
@@ -50,14 +41,15 @@ class TestEpochHRBA:
         # segment based on color
 
         # load single image, bootstrap a few more (no noise), sample rand x
-        exp = Experiment.from_search(folder=folder_test_data,
-                                     sbj_regex='sbj\d',
-                                     img_glob_dict={'color': '*test.png'})
+        exp = ExperimentImageOnly.from_search(folder=folder_test_data,
+                                              sbj_regex='sbj\d',
+                                              img_glob_dict={
+                                                  'color': '*test.png'})
         exp.bootstrap_img(n=10, noise_scale=0)
-        exp.sample_x(a=2)
+        exp = exp.sample_x(a=2)
 
         # cluster (should collect all areas of consistent color)
-        children = EpochHRBA.cluster(exp=exp, n_permute=0)[0]
+        children = EpochHRBA.cluster(exp=exp)
 
         # assumptions: test image has 1 color per greyscale value and each
         # color is contiguous
@@ -99,3 +91,34 @@ class TestEpochHRBA:
         assert len(eff_list) == 2
         assert eff_list[0].reg_idx == 0
         assert eff_list[1].reg_idx == 1
+
+
+class TestBigEffect:
+    """ given strong effect, discover it"""
+    # build experiment with strong effect to be found (whole region)
+    num_img = 100
+    shape = 5, 5
+    a = 2
+    b = 1
+    exp = get_rand_exp(shape=shape, a=a, b=b, seed=0, num_img=num_img)
+    exp, effect = exp.impose_effect(seed=0, extenter=ExtenterSphere(radius=1),
+                                    p_val=.0001)
+
+    def test_hrba(self):
+        epoch = EpochHRBA(TestBigEffect.exp, n_permute=10, n_permute_z=10,
+                          alpha=.1)
+
+        # check that target region segmented properly
+        f1 = get_f1(mask=TestBigEffect.effect.mask,
+                    mask_idx=epoch.exp.mask_idx,
+                    children=epoch.child_dict[0])
+        assert np.isclose(f1.max(), 1), 'target region not segmented'
+
+        # appropriate effect discovered as most significant effect
+        np.testing.assert_allclose(epoch.effect_list[0].mask,
+                                   TestBigEffect.effect.mask)
+
+    def test_tfce(self):
+        epoch = EpochTFCE(TestBigEffect.exp, n_permute=10, alpha=.1)
+        np.testing.assert_allclose(epoch.effect_list[0].mask,
+                                   TestBigEffect.effect.mask)

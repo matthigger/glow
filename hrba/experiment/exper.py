@@ -12,34 +12,18 @@ from .load_image import load_image_color, load_image_nii
 from .permute import get_perm_matrix
 
 
-class Experiment:
-    """ contains source data to identify regions with some effect
-
-    an effect is a linear mapping from x to y within some contiguous set of
-    voxels:
-
-    y = a_0 + a_1 x_1 + a_2 x_2 + ...
+class ExperimentImageOnly:
+    """ contains all imaging data of an experiment
 
     Attributes:
-        x (np.array): (a, num_img) explanatory variables
         y (np.array): (b, num_img, num_vox) image intensities
         mask_idx (np.array): same shape as image.  -1 where voxel not
             included in analysis, otherwise contains voxel index
-        contrast (np.array): (a) True for each corresponding feature in x which
-            is "of interest" (other x features form the reduced model in
-            computing f statistic)
-        x_names  (list): (a) names of each x feature (defaults to None)
-        y_names (list): (b) names of each y feature (defaults to None)
     """
 
-    def __init__(self, *, x=None, y, mask_idx, contrast=None, x_names=None,
-                 y_names=None):
-        self.x = x
+    def __init__(self, *, y, mask_idx, **kwargs):
         self.y = y
         self.mask_idx = mask_idx
-        self.contrast = contrast
-        self.x_names = x_names
-        self.y_names = y_names
 
     @classmethod
     def from_search(cls, folder, sbj_regex, img_glob_dict, **kwargs):
@@ -88,12 +72,12 @@ class Experiment:
         # mask into each image, store as y
         mask = mask_idx >= 0
         y_names = sorted(feat_sbj_img.keys())
-        y = np.empty((len(y_names), df.shape[0], mask.sum()))
+        y = np.empty((len(feat_sbj_img), df.shape[0], mask.sum()))
         for sbj_idx, sbj in enumerate(sorted(df.index)):
             for feat_idx, feat in enumerate(y_names):
                 y[feat_idx, sbj_idx, :] = feat_sbj_img[feat][sbj][mask]
 
-        return cls(y=y, y_names=y_names, mask_idx=mask_idx, **kwargs)
+        return cls(y=y, mask_idx=mask_idx, **kwargs)
 
     def bootstrap_img(self, n, seed=None, noise_scale=1):
         """ returns a new Experiment which bootstrap resamples images
@@ -123,11 +107,7 @@ class Experiment:
                                             size=num_vox * n)
             self.y += noise.T.reshape((b, n, num_vox))
 
-    def load_x(self):
-        """ loads a csv of real x data (as opposed to sampled x data) """
-        raise NotImplementedError
-
-    def sample_x(self, a=None, contrast=None, seed=None):
+    def sample_x(self, a=None, contrast=None, seed=None, add_bias=True):
         """ generates (or replaces) x with an arbitrary std normal noise
 
         Args:
@@ -136,6 +116,8 @@ class Experiment:
                 which is "of interest" (other x features form the reduced
                 model in computing f statistic)
             seed: used for random number generator
+            add_bias (bool): if True, first explanatory feature is bias term
+                (constant row of ones)
 
         Returns:
             exp_out (Experiment): x has been replaced with noise from self
@@ -145,16 +127,23 @@ class Experiment:
         if a is None:
             # contrast specified, extract a from it
             a = contrast.size
-            self.contrast = contrast
+            contrast = contrast
         else:
             # default contrast: all x of interest but bias term
-            self.contrast = np.ones(a, dtype=bool)
-            self.contrast[0] = False
+            contrast = np.ones(a, dtype=bool)
 
         # sample x
         num_img = self.y.shape[1]
         rng = np.random.default_rng(seed=seed)
-        self.x = rng.standard_normal(size=(a, num_img))
+        x = rng.standard_normal(size=(a, num_img))
+
+        if add_bias:
+            contrast[0] = False
+            x[0, :] = 1
+
+        return Experiment(x=x, contrast=contrast, y=self.y,
+                          mask_idx=self.mask_idx,
+                          add_bias=False)
 
     def impose_effect(self, extenter=None, mask=None, seed=None, **kwargs):
         """ builds experiment with effect imposed
@@ -190,25 +179,6 @@ class Experiment:
 
         return exp, effect
 
-    def rm_effect(self, effect):
-        """ builds a new experiment which has the effect added
-
-        Args:
-            effect (Effect): effect to add to experiment
-
-        Returns:
-            exp_out (Experiment): experiment whose y features have had the
-                effect subtracted away
-        """
-        # compute portion of y estimated from explanatory features of
-        # interest (note we exclude nuisance explanatory features)
-        num_img = self.x.shape[1]
-        x = self.x[~self.contrast, :], self.x
-        h = tuple(np.linalg.pinv(_x) @ _x for _x in x)
-        offset = -effect.y_mean @ h[1] @ (np.eye(num_img) - h[0])
-
-        return self.add_offset(offset=offset, mask=effect.mask)
-
     def apply_mask(self, mask):
         """ applies boolean mask to experiment
 
@@ -225,9 +195,12 @@ class Experiment:
         mask_idx = get_mask_idx(mask)
         y = self.y[:, :, self.mask_idx[mask]]
 
-        return type(self)(x=self.x, y=y, mask_idx=mask_idx,
-                          contrast=self.contrast, x_names=self.x_names,
-                          y_names=self.y_names)
+        # build new object identical as self (references where possible) but
+        # replace y & mask_idx with above
+        d = copy(self.__dict__)
+        d['mask_idx'] = mask_idx
+        d['y'] = y
+        return type(self)(**d)
 
     def add_offset(self, offset, mask=None, vox_idx=None):
         """ returns new experiment with constant offset added to y
@@ -250,8 +223,61 @@ class Experiment:
         y = copy(self.y)
         y[:, :, vox_idx] += offset[..., np.newaxis]
 
-        return type(self)(x=self.x, y=y, contrast=self.contrast,
-                          mask_idx=self.mask_idx)
+        # build new object identical as self (references where possible) but
+        # replace y with above
+        d = copy(self.__dict__)
+        d['y'] = y
+        return type(self)(**d)
+
+
+class Experiment(ExperimentImageOnly):
+    """ contains complete set of data needed to run an experiment
+
+    Attributes:
+        x (np.array): (a, num_img) explanatory variables
+        contrast (np.array): (a) True for each corresponding feature in x which
+            is "of interest" (other x features form the reduced model in
+            computing f statistic)
+    """
+
+    def __init__(self, *, x, contrast=None, add_bias=False, **kwargs):
+        super().__init__(**kwargs)
+
+        self.x = x
+        self.contrast = contrast
+
+        if add_bias:
+            # append row of ones (bias term) to x
+            num_img = x.shape[1]
+            self.x = np.vstack([np.ones(num_img), x])
+
+            # append leading False to contrast (its not of interest)
+            self.contrast = np.insert(self.contrast, 0, values=False)
+
+        # build residual forming arrays
+        x = self.x[~self.contrast, :], self.x
+        self.h = tuple(np.linalg.pinv(_x) @ _x for _x in x)
+
+    def rm_effect(self, effect):
+        """ builds a new experiment which has the effect removed
+
+        Args:
+            effect (Effect): effect to add to experiment
+
+        Returns:
+            exp_out (Experiment): experiment whose y features have had the
+                effect subtracted away
+        """
+        num_img = self.x.shape[1]
+        offset = -effect.y_mean @ self.h[1] @ (np.eye(num_img) - self.h[0])
+
+        return self.add_offset(offset=offset, mask=effect.mask)
+
+    def get_freed_lane(self, perm_idx):
+        # permute data residuals under reduced model (freedman lane)
+        num_img = self.x.shape[1]
+        p = get_perm_matrix(seed=perm_idx, num_img=num_img)
+        return (np.eye(num_img) - self.h[0]) @ p + self.h[0]
 
     def permute(self, perm_idx):
         """ gets new experiment whose y features were permuted (freedman lane)
@@ -263,15 +289,8 @@ class Experiment:
             exp (Experiment): new experiment whose y features have been
                 permuted
         """
-        # prep
-        b, num_img, num_vox = self.y.shape
-        x = self.x[~self.contrast, :], self.x
-        h = [np.linalg.pinv(_x) @ _x for _x in x]
-
-        # permute data residuals under reduced model (freedman lane)
-        p = get_perm_matrix(seed=perm_idx, num_img=num_img)
-        freed_lane = (np.eye(num_img) - h[0]) @ p + h[0]
-
+        # permute
+        freed_lane = self.get_freed_lane(perm_idx)
         y = np.einsum('ijk,jm->imk', self.y, freed_lane)
 
         return Experiment(x=self.x, y=y, contrast=self.contrast,
