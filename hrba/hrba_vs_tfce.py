@@ -12,6 +12,9 @@ from sklearn.metrics import f1_score, recall_score, confusion_matrix
 from hrba.experiment import *
 from hrba.sample_effect import *
 
+# where output results are stored (each run of script yields its own folder)
+folder_out = '/home/matt/Dropbox/pnl_hrba/results'
+
 # number of effects to model
 n_repeat = 100
 
@@ -21,7 +24,7 @@ p_val_all = np.linspace(.15, .03, 7)
 
 # to speed up analysis, random voxel is chosen and dilated to this radius.
 # only these voxels are included in the analysis
-radius = 5
+radius = 4
 
 # effect size, as ratio to total voxels in experiment
 effect_perc = .2
@@ -43,7 +46,9 @@ detail_save = True
 
 # prep folder_out
 timestamp = datetime.now().strftime('%y%b%d-%H%M')
-folder_out = pathlib.Path(f'./exp_{timestamp}').resolve()
+folder_out = pathlib.Path(folder_out)
+assert folder_out.exists()
+folder_out = pathlib.Path(folder_out) / f'./exp_{timestamp}'
 if folder_out.exists():
     choice = input(f'folder exists: {folder_out}\ndelete? [y/n]:')
     if choice != 'y':
