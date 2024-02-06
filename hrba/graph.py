@@ -98,7 +98,7 @@ def get_miss_hits(mask, mask_idx, children):
     return miss, hit
 
 
-def iter_topo(children, num_leaf=None, node_start=None, only_leaf=False):
+def iter_topo(children, num_leaf, node_start=None, only_leaf=False):
     """ topological sort, leafs to root
 
     Args:
@@ -111,10 +111,6 @@ def iter_topo(children, num_leaf=None, node_start=None, only_leaf=False):
     Yields:
         node_idx (int): node idx
     """
-    if num_leaf is None:
-        # assumes that graph is complete
-        num_leaf = children.shape[0] + 1
-
     if node_start is None:
         # will search largest node (whole thing if graph connected)
         node_start = num_leaf + children.shape[0] - 1
@@ -170,7 +166,7 @@ def iter_reg_stat(x, y, contrast, children=None, include_leaf=True, **kwargs):
         iter_reg_idx = range(num_vox)
     else:
         # graph passed, iterate through all regions
-        iter_reg_idx = iter_topo(children=children)
+        iter_reg_idx = iter_topo(children=children, num_leaf=num_vox)
 
     for reg_idx in iter_reg_idx:
         if include_leaf and reg_idx < num_vox:

@@ -63,10 +63,11 @@ def test_topo_iter():
                          [2, 3],
                          [4, 5]])
 
-    assert list(iter_topo(children, node_start=4)) == [0, 1, 4]
-    assert list(iter_topo(children, node_start=5)) == [2, 3, 5]
-    assert list(iter_topo(children)) == [0, 1, 4, 2, 3, 5, 6]
-    assert list(iter_topo(children, only_leaf=True)) == [0, 1, 2, 3]
+    assert list(iter_topo(children, num_leaf=4, node_start=4)) == [0, 1, 4]
+    assert list(iter_topo(children, num_leaf=4, node_start=5)) == [2, 3, 5]
+    assert list(iter_topo(children, num_leaf=4)) == [0, 1, 4, 2, 3, 5, 6]
+    assert list(iter_topo(children, num_leaf=4, only_leaf=True)) == [0, 1, 2,
+                                                                     3]
 
     # incomplete tree
     children = np.array([[0, 1],
@@ -88,9 +89,8 @@ def test_iter_reg_stat():
 
         for reg_idx, reg_stat in it:
             # compute size & f_stat (slowly)
-            voxel_tup = tuple(
-                v for v in iter_topo(children, node_start=reg_idx)
-                if v < num_vox)
+            iter = iter_topo(children, num_leaf=num_vox, node_start=reg_idx)
+            voxel_tup = tuple(v for v in iter if v < num_vox)
 
             assert len(voxel_tup) == reg_stat['size']
 

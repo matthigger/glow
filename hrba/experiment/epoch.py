@@ -311,6 +311,7 @@ class EpochHRBA(Epoch):
             # check if region intersects with others discovered (no shared
             # ancestor)
             vox_contained = set(iter_topo(children=children,
+                                          num_leaf=exp.y.shape[2],
                                           node_start=reg_idx,
                                           only_leaf=True))
             if vox_claimed.intersection(vox_contained):
