@@ -4,6 +4,7 @@ import shutil
 import warnings
 from datetime import datetime
 from uuid import uuid4
+import traceback
 
 import cloudpickle as pickle
 from joblib import Parallel, delayed
@@ -34,15 +35,19 @@ alpha = .05
 
 # toggles parallel, 0 or 1 processes non-parallel (good for debug).  else this
 # is the number of threads to use.  (-1 for all of them)
-n_jobs = -1
+n_jobs = 1
 
 # parameters to be passed to Analysis constructor
-analysis_kwargs = {'AnalysisHRBA': {'n_permute': 100,
-                                    'n_permute_z': 30},
-                   'AnalysisTFCE': {'n_permute': 100}}
+analysis_kwargs = {'AnalysisHRBA': {'n_permute': 10,
+                                    'n_permute_z': 10},
+                   'AnalysisTFCE': {'n_permute': 10}}
 
 # saves output python objects (memory expensive)
 detail_save = True
+
+# writes json with input state causing an errors in Analysis.run(),
+# continues to next experiment
+error_save = True
 
 # prep folder_out
 timestamp = datetime.now().strftime('%y%b%d-%H%M')
@@ -116,18 +121,35 @@ def run_one_exp(seed):
                                          p_val=p_val)
 
         for Ana in analysis_obj_tup:
-            # run analysis
+            # prep output file
+            uuid = str(uuid4())[:8]
+            file_out = folder_out / f'out_{uuid}.json'
+
+            # prep analysis
             kwargs = analysis_kwargs[Ana.__name__]
             ana = Ana(exp=_exp, alpha=alpha, **kwargs)
 
-            ana.run()
+            if error_save:
+                try:
+                    ana.run()
+                except Exception as e:
+                    d = {'error_msg': traceback.format_exc(),
+                         'method': Ana.__name__,
+                         'p_val': p_val,
+                         'seed': seed}
+                    print(f'error: {d}')
+                    file_out = str(file_out).replace('out', 'error')
+                    with open(file_out, 'w') as f:
+                        json.dump(d, f, sort_keys=True, indent=4)
+                    continue
+
+            else:
+                ana.run()
 
             # score
             f1, sens, spec = get_score(ana, effect)
 
             # dump summary
-            uuid = str(uuid4())[:8]
-            file_out = folder_out / f'out_{uuid}.json'
             d = {'p_val': p_val,
                  'seed': seed,
                  'Analysis': Ana.__name__,
@@ -135,7 +157,6 @@ def run_one_exp(seed):
                  'sens': sens,
                  'spec': spec,
                  'uuid': uuid}
-
             with open(file_out, 'w') as f:
                 json.dump(d, f, sort_keys=True, indent=4)
 
