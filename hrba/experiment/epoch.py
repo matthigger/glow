@@ -1,9 +1,10 @@
+import warnings
 from _bisect import bisect_left
 from copy import copy
 
 import numpy as np
 from scipy.ndimage import label
-from sklearn.cluster import AgglomerativeClustering
+from sklearn.cluster import ward_tree
 from sklearn.feature_extraction import grid_to_graph
 from tqdm import tqdm
 
@@ -256,27 +257,29 @@ class EpochHRBA(Epoch):
     @classmethod
     def cluster(cls, exp):
         """ build child_dict """
-        b, num_img, num_vox = exp.y.shape
-
         # get connectivity (ensures only neighboring voxels joined)
-        mask = exp.mask_idx >= 0
-        if mask.ndim == 3:
-            shape = mask.shape
-        elif mask.ndim == 2:
-            shape = (*mask.shape, 1)
-        else:
-            raise AttributeError('mask must be 2d or 3d')
+        assert exp.mask_idx.ndim in (2, 3), 'mask must be 2d or 3d'
 
-        # prep ward clustering object
-        connectivity = grid_to_graph(*shape, mask=mask)
-        ward = AgglomerativeClustering(connectivity=connectivity,
-                                       linkage='ward')
+        # # project into span of features of interest (todo: not validated yet,
+        #  see "cluster_obj.ipynb")
+        b, num_img, num_vox = exp.y.shape
+        # x = exp.x
+        # h = x.T @ np.linalg.inv(x @ x.T) @ x
+        # i_minus_h = np.eye(num_img) - h
+        # y_proj = np.einsum('bnr,ny->byr', exp.y, i_minus_h)
+        # y = np.concatenate((exp.y, y_proj), axis=0)
+        # y = y.reshape((-1, num_vox))
 
-        # cluster
+        # ward's clustering (standard version)
         y = exp.y.reshape((-1, num_vox))
-        ward.fit(y.T)
 
-        return ward.children_
+        # ward's clustering
+        mask = exp.mask_idx >= 0
+        connectivity = grid_to_graph(*mask.shape, mask=mask)
+        with warnings.catch_warnings(action="ignore"):
+            children = ward_tree(X=y.T, connectivity=connectivity)[0]
+
+        return children
 
     @classmethod
     def discover(cls, pval, stat, children, exp, alpha=.05):

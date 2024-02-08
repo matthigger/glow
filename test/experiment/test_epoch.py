@@ -1,3 +1,5 @@
+from scipy import ndimage
+
 from hrba.experiment import *
 from hrba.experiment.epoch import *
 from hrba.graph import get_f1
@@ -48,18 +50,34 @@ class TestEpochHRBA:
         exp.bootstrap_img(n=10, noise_scale=0)
         exp = exp.sample_x(a=2)
 
-        # cluster (should collect all areas of consistent color)
-        children = EpochHRBA.cluster(exp=exp)
+        # cleave mask into many pieces
+        mask = exp.mask_idx > -1
+        mask[:, mask.shape[1] // 2] = False
+        mask[mask.shape[0] // 2, :] = False
+        exp_cleave = exp.apply_mask(mask)
 
-        # assumptions: test image has 1 color per greyscale value and each
-        # color is contiguous
-        y_sbj0_grey = np.linalg.norm(exp.y[:, 0, :], axis=0)
-        img_grey = np.zeros(exp.mask_idx.shape)
-        img_grey[exp.mask_idx >= 0] = y_sbj0_grey
-        for grey_val in set(y_sbj0_grey):
-            mask = img_grey == grey_val
-            f1 = get_f1(mask=mask, mask_idx=exp.mask_idx, children=children)
-            assert np.isclose(max(f1), 1)
+        for _exp in (exp, exp_cleave):
+            # cluster (should collect all areas of consistent color)
+            children = EpochHRBA.cluster(exp=_exp)
+
+            f1_list = list()
+            unique_colors = np.unique(_exp.y[:, 0, :], axis=1)
+            for color in unique_colors.T:
+                # build img_color, True at every voxel which has each color
+                color_mask = np.all(_exp.y[:, 0, :].T == color, axis=1)
+                img_color = np.zeros(_exp.mask_idx.shape, dtype=bool)
+                for idx in np.where(color_mask)[0]:
+                    img_color[_exp.mask_idx == idx] = True
+
+                # ensure that each contiguous region which is uniformly some
+                # color shows up in the tree somewhere
+                label, n_regions = ndimage.label(img_color)
+                for idx in range(1, n_regions + 1):
+                    mask = label == idx
+                    f1 = get_f1(mask=mask, mask_idx=_exp.mask_idx,
+                                children=children)
+                    f1_list.append(max(f1))
+                    assert np.isclose(max(f1), 1)
 
     def test_discover(self):
         num_vox = 4

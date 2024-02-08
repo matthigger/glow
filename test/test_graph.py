@@ -51,8 +51,17 @@ def test_get_miss_hit():
 
     miss_exp = np.array([1, 1, 0, 0, 2, 0, 2])
     hit_exp = np.array([0, 0, 1, 1, 0, 2, 2])
-    miss, hit = get_miss_hits(mask=mask, mask_idx=mask_idx, children=children)
 
+    miss, hit = get_miss_hits(mask=mask, mask_idx=mask_idx, children=children)
+    assert np.allclose(miss, miss_exp)
+    assert np.allclose(hit, hit_exp)
+
+    # test incomplete tree
+    children = children[:-1, :]
+    miss_exp = miss_exp[:-1]
+    hit_exp = hit_exp[:-1]
+
+    miss, hit = get_miss_hits(mask=mask, mask_idx=mask_idx, children=children)
     assert np.allclose(miss, miss_exp)
     assert np.allclose(hit, hit_exp)
 
