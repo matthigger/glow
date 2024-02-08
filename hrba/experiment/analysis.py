@@ -14,33 +14,27 @@ from .cholesky import CholeskyRegressCovariate
 from .effect import Effect
 
 
-def reshape(mask_idx, x=None, fill=0):
-    img = np.full(shape=mask_idx.shape, fill_value=fill, dtype=float)
-    if x is not None:
-        img[mask_idx > -1] = x
-    return img
-
-
 class Analysis:
-    """ a single round of region discovery (HRBA or TFCE) computes FWER p-val
+    """ performs effect discovery (HRBA or TFCE) computes FWER p-val
 
     Attributes:
         exp (Experiment): the source data to run experiment on
         p_val (np.array): (num_reg) FWER controlled pval
-        effect_list (list): list of effects discovered
+        effect_list (list): list of Effect objects discovered
     """
 
     @classmethod
     def get_pval(cls, stat, mask_exclude=None):
-        """ computes FWER adjusted pval (percentile within max per permute)
+        """ computes FWER adjusted pval Westfall-Young Permutation
+
+        (percentile within max stat per permutation)
 
         Args:
             stat (np.array): (num_permute, num_reg) statistics per region
-                (larger assumed more significant)
             mask_exclude (np.array): (num_permute, num_reg) where True,
                 statistics are excluded (resulting pval is 1 and this region's
                 stats are counted among h0 permuted stats). defaults to all
-                stats included when set to None
+                stats included when set to None.
 
         Returns:
             pval (np.array): (num_reg) Family Wise Error Rate controlled
@@ -57,6 +51,8 @@ class Analysis:
         # max z_stat per permutation (sorted from low to high)
         z_stat_max = np.sort(np.nanmax(stat, axis=1))
 
+        # compute pvalues (what percentage of permuted, or unpermuted,
+        # stats were >= to observed value?)
         num_perm, num_reg = stat.shape
         pval = np.full(num_reg, fill_value=-1, dtype=float)
         for reg_idx, z in enumerate(stat[0, :]):
@@ -72,7 +68,7 @@ class AnalysisTFCE(Analysis):
     def __init__(self, exp, n_permute, alpha=.05, verbose=True):
         self.exp = exp
 
-        # compute f_ratio
+        # compute f_ratio per each voxel
         num_vox = exp.y.shape[2]
         chol_regr = CholeskyRegressCovariate(exp.x, exp.contrast)
         self.f_ratio = np.empty((n_permute + 1, num_vox))
@@ -128,7 +124,8 @@ class AnalysisTFCE(Analysis):
         Returns:
             effect_list (list): list of effects (largest first)
         """
-        # split discovered regions into disjoint effects
+        # split discovered regions into disjoint effects (all adjacent are
+        # same effect)
         effect_mask, num_effect = label(mask.astype(bool))
 
         effect_list = list()
@@ -141,15 +138,25 @@ class AnalysisTFCE(Analysis):
 
 
 class AnalysisHRBA(Analysis):
-    """ a single round of region discovery, computes FWER p-val
+    """ search a hierarchical segmentation for significant effects
 
     Attributes:
+        n_permute_z (int): number of permutations used to compute z score (
+            this is a distinct set of permuted Experiment objects from the
+            permutations which yielded distinct hierarchical segmentations)
         child_dict (dict): keys are permutation indices, values are
             (2, n) graph arrays (equiv to sklearn.cluster.Ward.children_)
+        z_stat (np.array): (n_permute + 1, num_reg) z scores of f stats (for
+            each region of all permutations).  first row corresponds to
+            unpermuted data
+        size (np.array): (n_permute + 1, num_reg) number of voxels in each
+            region (for all permutations).  first row corresponds to
+            unpermuted data
     """
 
     def __init__(self, exp, n_permute, n_permute_z=100, alpha=.05):
         self.exp = exp
+        self.n_permute_z = n_permute_z
 
         b, num_img, num_vox = exp.y.shape
         num_reg = num_vox * 2 - 1
@@ -160,9 +167,9 @@ class AnalysisHRBA(Analysis):
         for perm_idx in range(n_permute + 1):
             _exp = exp.permute(perm_idx)
             children = self.cluster(exp=_exp)
-            _, z_stat, _, _ = self.get_z_score(_exp, children,
-                                               num_permute=n_permute_z,
-                                               seed_offset=n_permute)
+            z_stat = self.get_z_score(_exp, children,
+                                      num_permute=n_permute_z,
+                                      seed_offset=n_permute)[1]
 
             # store
             self.child_dict[perm_idx] = children
@@ -193,8 +200,8 @@ class AnalysisHRBA(Analysis):
 
         Args:
             exp (Experiment):
-            children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
-                sklearn.cluster.Ward.children_)
+            children (np.array): (num_reg, 2) each col are index of child
+                regions
             num_permute (int): number of permutations to use when computing
                 z-score adjustment
             seed_offset (int): offsets seed used in permutation.  useful to
@@ -294,8 +301,8 @@ class AnalysisHRBA(Analysis):
                 p-values
             stat (np.array): (num_reg) some statistic (higher indicates
                 more compelling effect associated with region)
-            children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
-                sklearn.cluster.Ward.children_)
+            children (np.array): (num_reg, 2) each col are index of child
+                regions
             exp (Experiment): the source data to run experiment on
             alpha (float): upper bound on FWER
 
