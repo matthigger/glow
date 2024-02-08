@@ -13,7 +13,7 @@ b = 1
 
 def run_exp(seed):
     exp = get_rand_exp(shape=shape, a=a, b=b, seed=seed, num_img=num_img)
-    epoch = EpochHRBA(exp, n_permute=25, n_permute_z=20)
+    epoch = AnalysisHRBA(exp, n_permute=25, n_permute_z=20)
 
     return bool(epoch.effect_list)
 

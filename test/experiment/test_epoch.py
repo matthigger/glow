@@ -1,7 +1,7 @@
 from scipy import ndimage
 
 from hrba.experiment import *
-from hrba.experiment.epoch import *
+from hrba.experiment.analysis import *
 from hrba.graph import get_f1
 from hrba.sample_effect import ExtenterSphere
 from .make_test_image import folder_test_data
@@ -25,7 +25,7 @@ class TestEpoch:
                            [2, 2, 2, 5]])
         p_val_exp = np.array([1, 3, 3, 4]) / 4
 
-        p_val = Epoch.get_pval(stat=z_stat)
+        p_val = Analysis.get_pval(stat=z_stat)
         assert np.allclose(p_val, p_val_exp)
 
         mask_exclude = np.array([[1, 0, 0, 0],
@@ -33,7 +33,7 @@ class TestEpoch:
                                  [0, 0, 0, 0],
                                  [0, 0, 0, 1]]).astype(bool)
         p_val_exp = np.array([np.nan, 2, 3, 4]) / 4
-        p_val = Epoch.get_pval(stat=z_stat, mask_exclude=mask_exclude)
+        p_val = Analysis.get_pval(stat=z_stat, mask_exclude=mask_exclude)
         assert np.allclose(p_val, p_val_exp, equal_nan=True)
 
 
@@ -58,7 +58,7 @@ class TestEpochHRBA:
 
         for _exp in (exp, exp_cleave):
             # cluster (should collect all areas of consistent color)
-            children = EpochHRBA.cluster(exp=_exp)
+            children = AnalysisHRBA.cluster(exp=_exp)
 
             f1_list = list()
             unique_colors = np.unique(_exp.y[:, 0, :], axis=1)
@@ -90,22 +90,22 @@ class TestEpochHRBA:
 
         # only 1 sig region
         pval = np.array([.1, 1, 1, 1, 1, 1, 1])
-        eff_list = EpochHRBA.discover(pval=pval, stat=-pval, children=children, \
-                                      exp=exp, alpha=.5)
+        eff_list = AnalysisHRBA.discover(pval=pval, stat=-pval, children=children, \
+                                         exp=exp, alpha=.5)
         assert len(eff_list) == 1
         assert eff_list[0].reg_idx == 0
 
         # 2 sig regions which intersect
         pval = np.array([.1, 1, 1, 1, .2, 1, 1])
-        eff_list = EpochHRBA.discover(pval=pval, stat=-pval, children=children, \
-                                      exp=exp, alpha=.5)
+        eff_list = AnalysisHRBA.discover(pval=pval, stat=-pval, children=children, \
+                                         exp=exp, alpha=.5)
         assert len(eff_list) == 1
         assert eff_list[0].reg_idx == 0
 
         # 2 sig regions which don't intersect
         pval = np.array([.1, .2, 1, 1, 1, 1, 1])
-        eff_list = EpochHRBA.discover(pval=pval, stat=-pval, children=children, \
-                                      exp=exp, alpha=.5)
+        eff_list = AnalysisHRBA.discover(pval=pval, stat=-pval, children=children, \
+                                         exp=exp, alpha=.5)
         assert len(eff_list) == 2
         assert eff_list[0].reg_idx == 0
         assert eff_list[1].reg_idx == 1
@@ -123,8 +123,8 @@ class TestBigEffect:
                                     p_val=.0001)
 
     def test_hrba(self):
-        epoch = EpochHRBA(TestBigEffect.exp, n_permute=10, n_permute_z=10,
-                          alpha=.1)
+        epoch = AnalysisHRBA(TestBigEffect.exp, n_permute=10, n_permute_z=10,
+                             alpha=.1)
 
         # check that target region segmented properly
         f1 = get_f1(mask=TestBigEffect.effect.mask,
@@ -137,6 +137,6 @@ class TestBigEffect:
                                    TestBigEffect.effect.mask)
 
     def test_tfce(self):
-        epoch = EpochTFCE(TestBigEffect.exp, n_permute=10, alpha=.1)
+        epoch = AnalysisTFCE(TestBigEffect.exp, n_permute=10, alpha=.1)
         np.testing.assert_allclose(epoch.effect_list[0].mask,
                                    TestBigEffect.effect.mask)

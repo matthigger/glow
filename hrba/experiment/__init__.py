@@ -1,4 +1,4 @@
 from .analysis import *
-from .effect import *
 from .cholesky import *
+from .effect import *
 from .exper import *

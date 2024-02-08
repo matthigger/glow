@@ -1,10 +1,10 @@
 import gzip
 import json
 import shutil
+import traceback
 import warnings
 from datetime import datetime
 from uuid import uuid4
-import traceback
 
 import cloudpickle as pickle
 from joblib import Parallel, delayed
@@ -35,12 +35,12 @@ alpha = .05
 
 # toggles parallel, 0 or 1 processes non-parallel (good for debug).  else this
 # is the number of threads to use.  (-1 for all of them)
-n_jobs = 1
+n_jobs = -1
 
 # parameters to be passed to Analysis constructor
-analysis_kwargs = {'AnalysisHRBA': {'n_permute': 10,
-                                    'n_permute_z': 10},
-                   'AnalysisTFCE': {'n_permute': 10}}
+analysis_kwargs = {'AnalysisHRBA': {'n_permute': 100,
+                                    'n_permute_z': 50},
+                   'AnalysisTFCE': {'n_permute': 100}}
 
 # saves output python objects (memory expensive)
 detail_save = True
@@ -73,7 +73,7 @@ exp_hcp = ExperimentImageOnly.from_search(folder=folder,
                                                          'MD': '*_MD.nii.gz'})
 exp_hcp = exp_hcp.sample_x(a=2)
 
-analysis_obj_tup = (AnalysisTFCE, AnalysisHRBA)
+analysis_obj_tup = (AnalysisHRBA, AnalysisTFCE)
 
 
 def get_score(ana, effect):
@@ -81,7 +81,7 @@ def get_score(ana, effect):
     """
     # build mask of predicted area (union of all effect masks)
     mask_pred = np.zeros(ana.exp.mask_idx.shape, dtype=bool)
-    for _effect in ana.effect_tup:
+    for _effect in ana.effect_list:
         mask_pred |= _effect.mask
 
     # build y_true / y_pred in sklearn format
@@ -127,11 +127,10 @@ def run_one_exp(seed):
 
             # prep analysis
             kwargs = analysis_kwargs[Ana.__name__]
-            ana = Ana(exp=_exp, alpha=alpha, **kwargs)
 
             if error_save:
                 try:
-                    ana.run()
+                    ana = Ana(exp=_exp, alpha=alpha, **kwargs)
                 except Exception as e:
                     d = {'error_msg': traceback.format_exc(),
                          'method': Ana.__name__,
@@ -144,7 +143,7 @@ def run_one_exp(seed):
                     continue
 
             else:
-                ana.run()
+                ana = Ana(exp=_exp, alpha=alpha, **kwargs)
 
             # score
             f1, sens, spec = get_score(ana, effect)
