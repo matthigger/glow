@@ -4,71 +4,60 @@ import pytest
 
 from hrba.experiment import *
 
-# maindonald statistical computation page 1
+# maindonald "statistical computation" page 1
 x = np.array([[1, 1, 1, 1], [-2, -1, 2, 7]])
 y = np.array([[0, 2, 5, 3]])
 
-c = np.array([[4, 6, 10],
-              [6, 58, 29],
-              [10, 29, 38]])
-
-# (see first array on page 6 maindonald, we store square of last column)
-r_exp = np.array([[[25]],
-                  [[4]],
-                  [[9]]])
+# (see last column on bottom of page 6 maindonald)
+qyt_exp = np.array([5, 2])[:, np.newaxis, np.newaxis]
+y2_exp = np.array([38])
 
 
 class TestCholeskyRegress:
-    def test_init(self):
-        chol_regr = CholeskyRegress(x=x)
-
-        # test orthonormal
-        a = x.shape[0]
-        i_exp = chol_regr.x_prime @ chol_regr.x_prime.T
-        np.testing.assert_array_almost_equal(i_exp, np.eye(a))
-
-        # test that x and x_prime have same span (there is a transform from one
-        # to the other)
-        np.testing.assert_array_almost_equal(x,
-                                             chol_regr.from_x_prime @ chol_regr.x_prime)
-        np.testing.assert_array_almost_equal(chol_regr.x_prime,
-                                             chol_regr.to_x_prime @ x)
-
     def test_get_r_maindonald(self):
+        """ sanity check: example from maindonald"""
         chol_regr = CholeskyRegress(x=x)
 
         # test varying dimensions of y
-        y_tuple = y, y[:, :, np.newaxis]
-        for _y in y_tuple:
-            r_obs = chol_regr.get_r(y=y)
+        for _y in y, y[:, :, np.newaxis]:
+            qyt_obs, y2_obs = chol_regr.get_qyt_y2(y=y)
 
-            # note that we may swap sign in r matrix without changing its
-            # meaning
-            np.testing.assert_array_almost_equal(np.abs(r_exp), np.abs(r_obs))
+            np.testing.assert_array_almost_equal(np.abs(qyt_exp),
+                                                 np.abs(qyt_obs))
+            np.testing.assert_array_almost_equal(y2_obs, y2_exp)
 
             with pytest.raises(AttributeError):
-                chol_regr.get_r(y=np.squeeze(y))
+                chol_regr.get_qyt_y2(y=np.squeeze(y))
 
-    def test_get_r_beta_rand(self):
-        num_img = 11
-        for a, b, num_reg, seed in product(range(1, 3),
-                                           range(1, 3),
-                                           [1, 10],
-                                           range(4)):
-            x, y, ssr, beta = case(a=3, b=b, num_reg=num_reg, seed=seed,
-                                   num_img=num_img)
-
-            # test get_r
+    def test_get_qyt_y2_mse_beta_rand(self):
+        for x, y, mse, beta, mse_whole, beta_whole in case_iter():
+            # get qyt, y2
             chol_regr = CholeskyRegress(x=x)
-            r_obs = chol_regr.get_r(y)
+            qyt_obs, y2_obs = chol_regr.get_qyt_y2(y)
 
-            # test y2 term
-            y2 = (y ** 2).sum(axis=1)
-            np.testing.assert_array_almost_equal(y2, r_obs.sum(axis=0))
+            # test mse (each individual region)
+            a = x.shape[0]
+            for _a in range(1, a + 1):
+                mse_obs = chol_regr.get_mse(qyt_obs, y2_obs, a=_a)
+                np.testing.assert_allclose(mse_obs, mse[_a - 1, :], atol=1e-8)
 
-            # test ssr (remaining terms in r)
-            ssr_obs = chol_regr.get_ssr(r_obs)
-            np.testing.assert_array_almost_equal(ssr, ssr_obs)
+            # test beta (each individual region)
+            beta_obs = chol_regr.get_beta(qyt_obs)
+            np.testing.assert_allclose(beta_obs, beta)
+
+            # compute qyt & y2 for whole region
+            qyt_obs_whole = qyt_obs.mean(axis=2)
+            y2_obs_whole = y2_obs.mean()
+
+            # test mse_whole
+            for _a in range(1, a + 1):
+                mse_obs = chol_regr.get_mse(qyt_obs_whole, y2_obs_whole, a=_a)
+                np.testing.assert_allclose(mse_obs, mse_whole[_a - 1, :],
+                                           atol=1e-8)
+
+            # test beta_whole
+            beta_obs = chol_regr.get_beta(qyt_obs_whole)
+            np.testing.assert_allclose(beta_obs, beta_whole)
 
 
 class TestCholeskyRegressCovariate:
@@ -87,16 +76,13 @@ class TestCholeskyRegressCovariate:
                 chol_regr = CholeskyRegressCovariate(x, contrast)
 
                 # check that to_sorted sorts as required (increasing contrast)
-                exp = chol_regr.to_sorted @ np.arange(a).reshape(
-                    (a, 1)).flatten()
-                np.testing.assert_array_almost_equal(np.argsort(contrast), exp)
+                argsort = chol_regr.to_sorted @ np.arange(a).reshape((a, 1))
+                np.testing.assert_array_almost_equal(np.argsort(contrast),
+                                                     argsort.flatten())
 
-                # check to and from x_prime
+                # validate x = rq
                 np.testing.assert_array_almost_equal(x,
-                                                     chol_regr.from_x_prime @ chol_regr.x_prime)
-                np.testing.assert_array_almost_equal(chol_regr.x_prime,
-                                                     chol_regr.to_x_prime @ x)
-
+                                                     chol_regr.r @ chol_regr.q)
                 assert chol_regr.n_covariate == n_covariate
 
                 # create new shuffling of contrast for second run (doing after
@@ -105,14 +91,8 @@ class TestCholeskyRegressCovariate:
 
     def test_get_f_ratio(self):
         rng = np.random.default_rng(seed=0)
-        num_img = 11
-        for a, b, num_reg, seed in product(range(1, 3),
-                                           range(1, 3),
-                                           [1, 10],
-                                           range(4)):
-            x, y, ssr, beta = case(a=a, b=b, num_reg=num_reg, seed=seed,
-                                   num_img=num_img)
-
+        for x, y, mse, beta, mse_whole, beta_whole in case_iter():
+            a = x.shape[0]
             for n_covariate in range(a - 1):
                 # create "sorted" contrast (covariates up front)
                 contrast = np.ones(a, dtype=bool)
@@ -121,15 +101,15 @@ class TestCholeskyRegressCovariate:
                 for shuffle_idx in range(4):
                     # expected (build reduced & full model explicitly)
                     chol_regr = CholeskyRegress(x)
-                    ssr = chol_regr.get_ssr(chol_regr.get_r(y))
-                    ssr0 = ssr[n_covariate - 1, :, :].sum(axis=0)
-                    ssr1 = ssr[-2, :, :].sum(axis=0)
-                    f_ratio_exp = (ssr0 - ssr1) / ssr1
+                    qyt, y2 = chol_regr.get_qyt_y2(y)
+                    mse1 = chol_regr.get_mse(qyt, y2)
+                    mse0 = chol_regr.get_mse(qyt, y2, a=n_covariate)
+                    f_ratio_exp = (mse0 - mse1) / mse1
 
                     # observed
                     chol_regr = CholeskyRegressCovariate(x, contrast)
-                    r = chol_regr.get_r(y)
-                    f_ratio_obs = chol_regr.get_f_ratio(r)
+                    qyt, y2 = chol_regr.get_qyt_y2(y)
+                    f_ratio_obs = chol_regr.get_f_ratio(qyt, y2)
 
                     np.testing.assert_array_almost_equal(f_ratio_obs,
                                                          f_ratio_exp)
@@ -139,38 +119,37 @@ class TestCholeskyRegressCovariate:
                     rng.shuffle(contrast)
 
 
+def case_iter(a=range(1, 3), b=range(1, 3), num_reg=(1, 10), seed=range(4),
+              num_img=(11,)):
+    for _a, _b, _num_reg, _seed, _num_img in product(a, b, num_reg, seed,
+                                                     num_img):
+        yield case(a=_a, b=_b, num_reg=_num_reg, seed=_seed, num_img=_num_img)
+
+
 def case(a=3, b=3, num_reg=11, num_img=10, seed=0):
     rng = np.random.default_rng(seed=seed)
 
     x = rng.standard_normal((a, num_img))
     y = rng.standard_normal((b, num_img, num_reg))
 
-    ssr, beta = get_ssr_beta(x, y)
+    mse, beta = get_mse_beta(x, y)
 
-    return x, y, ssr, beta
-
-
-def case_multi_vox(*args, num_vox=2, **kwargs):
-    x, y, ssr, beta = case(*args, num_reg=num_vox, **kwargs)
-
-    # flatten x and y
-    xr = np.tile(x, (1, num_vox))
+    # flatten x and y (union of all regions)
+    xr = np.tile(x, (1, num_reg))
     yr = y.reshape((y.shape[0], -1), order='F')
     # validate yr reshaping
     np.testing.assert_array_almost_equal(y[:, :, 0], yr[:, :y.shape[1]])
+    mse_whole, beta_whole = get_mse_beta(xr, yr)
 
-    ssr, beta = get_ssr_beta(xr, yr)
-
-    return xr, yr, ssr, beta
+    return x, y, mse, beta, mse_whole, beta_whole
 
 
-def get_ssr_beta(x, y):
-    """ slow and reliable computing of ssr and beta
+def get_mse_beta(x, y):
+    """ slow and reliable computing of mse and beta
 
     returns:
-        ssr (np.array): (a + 1, b, num_reg) ssr[i, ...] gives the sum of
-            squared residuals if we use only i of the a total.  the final row
-            ssr[-1, ...] represents the sum of square of y (not a residual)
+        mse (np.array): (a, num_reg) mse[i, ...] gives the mean of
+            squared residuals if we use only i of the a total features.
         beta (np.array): (a, b, num_reg) the mmse mapping from x to y for each
             region
     """
@@ -186,38 +165,14 @@ def get_ssr_beta(x, y):
         beta[:, :, reg_idx] = (_y @ pinv_x).T
 
     # compute ssr (explicit, slow and reliable)
-    ssr = np.empty((a + 1, b, num_reg))
+    ssr = np.empty((a, num_reg))
     for a_idx in range(a):
         _x = x[:a_idx + 1, :]
         resid_form = np.eye(num_img) - np.linalg.pinv(_x) @ _x
         for reg_idx in range(num_reg):
             resid = y[:, :, reg_idx] @ resid_form
-            ssr[a_idx, :, reg_idx] = np.diag(resid @ resid.T)
-    ssr[-1, :, :] = (y ** 2).sum(axis=1)
+            ssr[a_idx, reg_idx] = (resid ** 2).sum()
 
-    return ssr, beta
+    mse = ssr / x.shape[1]
 
-
-def test_eqn():
-    num_vox = 3
-    kwargs = dict(a=2, b=4, num_img=10, seed=0)
-    # build case
-    x, y, ssr, beta = case(num_reg=num_vox, **kwargs)
-    # build multi-voxel case (corresponds to union of all regions above)
-    xr, yr, ssr_r, beta_r = case_multi_vox(num_vox=num_vox, **kwargs)
-
-    # build q
-    q, r = np.linalg.qr(x.T, mode='reduced')
-    q = q.T
-
-    for a_idx in range(kwargs['a']):
-        # reduce to only the first few features in x
-        _q = q[:a_idx + 1, :]
-
-        # compute ssr expected per formulation
-        # N|r| \Tr \mathcal{E} = ||Y_r||_F^2 - |r| ||Q \bar{Y}_r^T||_F^2
-        ssr_exp = (yr ** 2).sum()
-        ssr_exp -= num_vox * ((_q @ y.mean(axis=2).T) ** 2).sum()
-        assert np.isclose(ssr_exp, ssr_r[a_idx, :, 0].sum())
-
-    # build c_r by summing in paper
+    return mse, beta
