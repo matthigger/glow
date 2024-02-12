@@ -275,18 +275,14 @@ class AnalysisHRBA(Analysis):
         # get connectivity (ensures only neighboring voxels joined)
         assert exp.mask_idx.ndim in (2, 3), 'mask must be 2d or 3d'
 
-        # # project into span of features of interest (todo: not validated yet,
-        #  see "cluster_obj.ipynb")
+        # project into span of features of interest
         b, num_img, num_vox = exp.y.shape
-        # x = exp.x
-        # h = x.T @ np.linalg.inv(x @ x.T) @ x
-        # i_minus_h = np.eye(num_img) - h
-        # y_proj = np.einsum('bnr,ny->byr', exp.y, i_minus_h)
-        # y = np.concatenate((exp.y, y_proj), axis=0)
-        # y = y.reshape((-1, num_vox))
+        q, r = np.linalg.qr(exp.x.T)
+        q = q.T
+        y = np.einsum('bnr,na->bar', exp.y, q.T)
 
         # ward's clustering (standard version)
-        y = exp.y.reshape((-1, num_vox))
+        y = y.reshape((-1, num_vox))
 
         # ward's clustering
         mask = exp.mask_idx >= 0
