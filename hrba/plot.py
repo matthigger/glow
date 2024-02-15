@@ -8,7 +8,9 @@ from hrba.graph import get_f1
 
 sns.set(font_scale=1.3)
 
-def scatter_size_vs_stat_plotly(epoch, y_feat, size=None, mask=None, min_size=1):
+
+def scatter_size_vs_stat_plotly(epoch, y_feat, size=None, mask=None,
+                                min_size=1):
     """ scatters size vs f_stat, colors by f1 score if mask is passed
 
      Args:
@@ -55,7 +57,6 @@ def scatter_size_vs_stat_plotly(epoch, y_feat, size=None, mask=None, min_size=1)
     plt.xscale('log')
     plt.yscale('log')
     plt.legend()
-
 
 
 def scatter_size_vs_stat(epoch, y_feat, mask=None, min_size=1):
