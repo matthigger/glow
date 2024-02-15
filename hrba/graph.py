@@ -1,8 +1,4 @@
-from collections import defaultdict
-
 import numpy as np
-
-from hrba.f_stat import RegStatComputer
 
 
 def iter_edge(children, num_vox):
@@ -122,88 +118,6 @@ def iter_topo(children, num_leaf, node_start=None, only_leaf=False):
 
     if not only_leaf or node_start < num_leaf:
         yield node_start
-
-
-def iter_reg_stat_exp(*, exp, **kwargs):
-    yield from iter_reg_stat(x=exp.x, y=exp.y, contrast=exp.contrast, **kwargs)
-
-
-def iter_reg_stat(x, y, contrast, children=None, include_leaf=True, **kwargs):
-    """ iterates through region statistics of graph
-
-    Args:
-        x (np.array): (a, num_img) explanatory variables
-        y (np.array): (b, num_img, num_vox) image intensities
-        contrast (np.array): (a) True for each corresponding feature in x which
-            is "of interest" (other x features form the reduced model in
-            computing f statistic)
-        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
-            sklearn.cluster.Ward.children_).  defaults to None, where reg stats
-            are computed per voxel
-        include_leaf (bool): toggles inclusion of leafs
-
-    Yields:
-        reg_idx (int): region index
-        reg_stat (dict): keys are str, values are stats.  see RegStatComputer
-
-    as well as all outputs of StatComputer (e.g. f_stat & log like ratio)
-    """
-    # prep
-    b, num_img, num_vox = y.shape
-    rs_computer = RegStatComputer(x=x, contrast=contrast, **kwargs)
-
-    # init mean of y outer products
-    myo_dict = defaultdict(lambda: 0)
-    myo = np.einsum('ijk,ajk->iak', y, y) / num_img
-    myo_dict.update(enumerate(np.rollaxis(myo, 2, 0)))
-
-    # init size_dict & y_mean_dict
-    size_dict = dict()
-    y_mean_dict = defaultdict(lambda: 0)
-
-    if children is None:
-        # no graph passed, iterate through each voxel
-        iter_reg_idx = range(num_vox)
-    else:
-        # graph passed, iterate through all regions
-        iter_reg_idx = iter_topo(children=children, num_leaf=num_vox)
-
-    for reg_idx in iter_reg_idx:
-        if include_leaf and reg_idx < num_vox:
-            # single voxel region (don't delete on lookup)
-            y_mean = y[:, :, reg_idx]
-            reg_size = 1
-
-        else:
-            # multiple voxel region
-
-            # compute reg_size & lam (% region from each child)
-            child = children[reg_idx - num_vox, :]
-            size = tuple(size_dict.pop(c, 1) for c in child)
-            reg_size = sum(size)
-            size_dict[reg_idx] = reg_size
-            lam = tuple(s / reg_size for s in size)
-
-            # compute & store myo, y_mean
-            for c, l in zip(child, lam):
-                if c < num_vox:
-                    # child has 1 voxel, direct lookup
-                    _y_mean = y[:, :, c]
-                else:
-                    # child has many voxels, pop
-                    _y_mean = y_mean_dict.pop(c)
-
-                # update y_mean & myo
-                y_mean_dict[reg_idx] += _y_mean * l
-                myo_dict[reg_idx] += myo_dict.pop(c) * l
-
-            y_mean = y_mean_dict[reg_idx]
-
-        # compute & yield stats
-        reg_stat = rs_computer(reg_size=reg_size,
-                               y_mean=y_mean,
-                               myo=myo_dict[reg_idx])
-        yield reg_idx, reg_stat
 
 
 def child_to_parent(children, num_leaf=None):

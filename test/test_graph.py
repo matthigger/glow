@@ -1,6 +1,4 @@
-from hrba.f_stat import get_f_stat
 from hrba.graph import *
-from .experiment.test_exper import get_rand_exp
 
 
 def teste_iter_edge():
@@ -86,26 +84,6 @@ def test_topo_iter():
     assert list(iter_topo(children, num_leaf=4, node_start=5)) == [2, 3, 5]
     assert list(iter_topo(children, num_leaf=4, node_start=5,
                           only_leaf=True)) == [2, 3]
-
-
-def test_iter_reg_stat():
-    exp = get_rand_exp(shape=(10, 10), b=1)
-    num_vox = exp.y.shape[2]
-    children = np.arange((num_vox - 1) * 2).reshape((num_vox - 1), 2)
-
-    for it in (iter_reg_stat_exp(exp=exp, children=children, extra_flag=True),
-               iter_reg_stat_exp(exp=exp, children=None, extra_flag=True)):
-
-        for reg_idx, reg_stat in it:
-            # compute size & f_stat (slowly)
-            iter = iter_topo(children, num_leaf=num_vox, node_start=reg_idx)
-            voxel_tup = tuple(v for v in iter if v < num_vox)
-
-            assert len(voxel_tup) == reg_stat['size']
-
-            y = exp.y[..., voxel_tup]
-            f_stat_obs = get_f_stat(x=exp.x, y=y, contrast=exp.contrast)
-            assert np.isclose(reg_stat['f_stat'], f_stat_obs)
 
 
 def test_children_to_parent():
