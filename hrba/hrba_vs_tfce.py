@@ -11,7 +11,7 @@ from joblib import Parallel, delayed
 from sklearn.metrics import f1_score, recall_score, confusion_matrix
 
 from hrba.experiment import *
-from hrba.sample_effect import *
+from hrba.effect import *
 
 # where output results are stored (each run of script yields its own folder)
 folder_out = '/home/matt/Dropbox/pnl_hrba/results'

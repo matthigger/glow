@@ -3,7 +3,7 @@ from scipy import ndimage
 from hrba.experiment import *
 from hrba.experiment.analysis import *
 from hrba.graph import get_f1
-from hrba.sample_effect import ExtenterSphere
+from hrba.effect import ExtenterSphere
 from .make_test_image import folder_test_data
 from .test_exper import get_rand_exp
 from ..helper import generate_dummy_data

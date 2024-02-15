@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from hrba.graph import iter_topo, node_sum
 from hrba.tfce import apply_tfce_x
-from .effect import Effect
+from hrba.effect import Effect
 from .regress import QRRegressCovariate
 
 

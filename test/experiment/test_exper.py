@@ -1,5 +1,5 @@
 from hrba.experiment.exper import *
-from hrba.sample_effect import ExtenterSphere
+from hrba.effect import ExtenterSphere
 from .make_test_image import folder_test_data, img_feat_intensity
 from ..helper import generate_dummy_data
 

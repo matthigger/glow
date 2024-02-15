@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 
 from hrba.mask import get_mask_idx
-from hrba.sample_effect import compute_offset
-from .effect import Effect
+from hrba.effect import compute_offset
+from hrba.effect import Effect
 from .load_image import load_image_color, load_image_nii
 from .permute import get_perm_matrix
 
