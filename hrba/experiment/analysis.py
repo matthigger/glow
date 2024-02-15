@@ -161,12 +161,15 @@ class AnalysisHRBA(Analysis):
         b, num_img, num_vox = exp.y.shape
         num_reg = num_vox * 2 - 1
 
+        # pre-compute
+        chol_regr = CholeskyRegressCovariate(x=exp.x, contrast=exp.contrast)
+
         # compute z stat per region
         self.child_dict = dict()
         self.z_stat = np.empty((n_permute + 1, num_reg))
         for perm_idx in range(n_permute + 1):
             _exp = exp.permute(perm_idx)
-            children = self.cluster(exp=_exp)
+            children = self.cluster(exp=_exp, chol_regr=chol_regr)
             z_stat = self.get_z_score(_exp, children,
                                       num_permute=n_permute_z,
                                       seed_offset=n_permute)[1]
@@ -270,18 +273,42 @@ class AnalysisHRBA(Analysis):
         return f, z, mu, std
 
     @classmethod
-    def cluster(cls, exp):
-        """ build child_dict """
+    def cluster(cls, exp, mode='full', chol_regr=None):
+        """ build child_dict
+
+        Args:
+            exp (Experiment):
+            mode (str): 'ward', 'full' or 'diff'
+                'ward': reduces image-pooled spatial covariance
+                'full': reduces error in the full model
+                'diff': reduces error exclusively in full model (no credit
+                    given to error changes in the reduced model)
+        """
         # get connectivity (ensures only neighboring voxels joined)
         assert exp.mask_idx.ndim in (2, 3), 'mask must be 2d or 3d'
+        assert mode in ('ward', 'full', 'diff'), 'mode not recognized'
 
-        # project into span of features of interest
-        b, num_img, num_vox = exp.y.shape
-        q, r = np.linalg.qr(exp.x.T)
-        q = q.T
-        y = np.einsum('bnr,na->bar', exp.y, q.T)
+        if mode == 'ward':
+            y = exp.y
+        else:
+            if chol_regr is None:
+                # if chol_regr not pre-computed, compute it
+                chol_regr = CholeskyRegressCovariate(x=exp.x,
+                                                     contrast=exp.contrast)
+            else:
+                assert isinstance(chol_regr, CholeskyRegressCovariate)
 
-        # ward's clustering (standard version)
+            if mode == 'ward':
+                # rows with same span as x
+                q = chol_regr.q
+            else:
+                # mode == 'diff' only rows corresponding features of interest
+                q = chol_regr.q[chol_regr.n_covariate:, :]
+
+            y = np.einsum('bnr,na->bar', exp.y, q.T)
+
+        # reshape to vector
+        num_vox = y.shape[2]
         y = y.reshape((-1, num_vox))
 
         # ward's clustering
