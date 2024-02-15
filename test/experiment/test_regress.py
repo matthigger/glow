@@ -16,7 +16,7 @@ y2_exp = np.array([38])
 class TestCholeskyRegress:
     def test_get_r_maindonald(self):
         """ sanity check: example from maindonald"""
-        chol_regr = CholeskyRegress(x=x)
+        chol_regr = QRRegress(x=x)
 
         # test varying dimensions of y
         for _y in y, y[:, :, np.newaxis]:
@@ -32,7 +32,7 @@ class TestCholeskyRegress:
     def test_get_qyt_y2_mse_beta_rand(self):
         for x, y, mse, beta, mse_whole, beta_whole in case_iter():
             # get qyt, y2
-            chol_regr = CholeskyRegress(x=x)
+            chol_regr = QRRegress(x=x)
             qyt_obs, y2_obs = chol_regr.get_qyt_y2(y)
 
             # test mse (each individual region)
@@ -60,7 +60,7 @@ class TestCholeskyRegress:
             np.testing.assert_allclose(beta_obs, beta_whole)
 
 
-class TestCholeskyRegressCovariate:
+class TestQRRegressCovariate:
     def test_init(self):
         # build example
         n = 100
@@ -73,7 +73,7 @@ class TestCholeskyRegressCovariate:
             contrast[:n_covariate] = 0
 
             for shuffle_idx in range(4):
-                chol_regr = CholeskyRegressCovariate(x, contrast)
+                chol_regr = QRRegressCovariate(x, contrast)
 
                 # check that to_sorted sorts as required (increasing contrast)
                 argsort = chol_regr.to_sorted @ np.arange(a).reshape((a, 1))
@@ -100,14 +100,14 @@ class TestCholeskyRegressCovariate:
 
                 for shuffle_idx in range(4):
                     # expected (build reduced & full model explicitly)
-                    chol_regr = CholeskyRegress(x)
+                    chol_regr = QRRegress(x)
                     qyt, y2 = chol_regr.get_qyt_y2(y)
                     mse1 = chol_regr.get_mse(qyt, y2)
                     mse0 = chol_regr.get_mse(qyt, y2, a=n_covariate)
                     f_ratio_exp = (mse0 - mse1) / mse1
 
                     # observed
-                    chol_regr = CholeskyRegressCovariate(x, contrast)
+                    chol_regr = QRRegressCovariate(x, contrast)
                     qyt, y2 = chol_regr.get_qyt_y2(y)
                     f_ratio_obs = chol_regr.get_f_ratio(qyt, y2)
 

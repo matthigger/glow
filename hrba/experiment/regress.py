@@ -10,7 +10,7 @@ def to_3d(x):
     return x
 
 
-class CholeskyRegress:
+class QRRegress:
     """ computes sum of squared residuals from regressions with common x
 
     see paper for detail
@@ -90,7 +90,7 @@ class CholeskyRegress:
         return np.einsum('abr,an->nbr', qyt, self.r_inv)
 
 
-class CholeskyRegressCovariate(CholeskyRegress):
+class QRRegressCovariate(QRRegress):
     """ considers covariates (f stat computation via contrast vector)
 
     this object will swap the order of x features in qr decomposition so that

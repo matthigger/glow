@@ -10,8 +10,8 @@ from tqdm import tqdm
 
 from hrba.graph import iter_topo, node_sum
 from hrba.tfce import apply_tfce_x
-from .cholesky import CholeskyRegressCovariate
 from .effect import Effect
+from .regress import QRRegressCovariate
 
 
 class Analysis:
@@ -70,7 +70,7 @@ class AnalysisTFCE(Analysis):
 
         # compute f_ratio per each voxel
         num_vox = exp.y.shape[2]
-        chol_regr = CholeskyRegressCovariate(exp.x, exp.contrast)
+        chol_regr = QRRegressCovariate(exp.x, exp.contrast)
         self.f_ratio = np.empty((n_permute + 1, num_vox))
         for perm_idx in range(n_permute + 1):
             _exp = exp.permute(perm_idx=perm_idx)
@@ -162,7 +162,7 @@ class AnalysisHRBA(Analysis):
         num_reg = num_vox * 2 - 1
 
         # pre-compute
-        chol_regr = CholeskyRegressCovariate(x=exp.x, contrast=exp.contrast)
+        chol_regr = QRRegressCovariate(x=exp.x, contrast=exp.contrast)
 
         # compute z stat per region
         self.child_dict = dict()
@@ -227,7 +227,7 @@ class AnalysisHRBA(Analysis):
         freed_lane = np.stack(list(map(exp.get_freed_lane, seed_iter)))
 
         # prep regression object: to computes f ratios
-        chol_regr = CholeskyRegressCovariate(x=exp.x, contrast=exp.contrast)
+        chol_regr = QRRegressCovariate(x=exp.x, contrast=exp.contrast)
 
         # count regions & initialize output arrays (assume children merges
         # until only a single region remains)
@@ -293,10 +293,10 @@ class AnalysisHRBA(Analysis):
         else:
             if chol_regr is None:
                 # if chol_regr not pre-computed, compute it
-                chol_regr = CholeskyRegressCovariate(x=exp.x,
-                                                     contrast=exp.contrast)
+                chol_regr = QRRegressCovariate(x=exp.x,
+                                               contrast=exp.contrast)
             else:
-                assert isinstance(chol_regr, CholeskyRegressCovariate)
+                assert isinstance(chol_regr, QRRegressCovariate)
 
             if mode == 'ward':
                 # rows with same span as x
