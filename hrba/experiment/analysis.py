@@ -8,9 +8,9 @@ from sklearn.cluster import ward_tree
 from sklearn.feature_extraction import grid_to_graph
 from tqdm import tqdm
 
+from hrba.effect import Effect
 from hrba.graph import iter_topo, node_sum
 from hrba.tfce import apply_tfce_x
-from hrba.effect import Effect
 from .regress import QRRegressCovariate
 
 

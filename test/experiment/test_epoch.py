@@ -1,9 +1,9 @@
 from scipy import ndimage
 
+from hrba.effect import ExtenterSphere
 from hrba.experiment import *
 from hrba.experiment.analysis import *
 from hrba.graph import get_f1
-from hrba.effect import ExtenterSphere
 from .make_test_image import folder_test_data
 from .test_exper import get_rand_exp
 from ..helper import generate_dummy_data
@@ -90,21 +90,24 @@ class TestEpochHRBA:
 
         # only 1 sig region
         pval = np.array([.1, 1, 1, 1, 1, 1, 1])
-        eff_list = AnalysisHRBA.discover(pval=pval, stat=-pval, children=children, \
+        eff_list = AnalysisHRBA.discover(pval=pval, stat=-pval,
+                                         children=children, \
                                          exp=exp, alpha=.5)
         assert len(eff_list) == 1
         assert eff_list[0].reg_idx == 0
 
         # 2 sig regions which intersect
         pval = np.array([.1, 1, 1, 1, .2, 1, 1])
-        eff_list = AnalysisHRBA.discover(pval=pval, stat=-pval, children=children, \
+        eff_list = AnalysisHRBA.discover(pval=pval, stat=-pval,
+                                         children=children, \
                                          exp=exp, alpha=.5)
         assert len(eff_list) == 1
         assert eff_list[0].reg_idx == 0
 
         # 2 sig regions which don't intersect
         pval = np.array([.1, .2, 1, 1, 1, 1, 1])
-        eff_list = AnalysisHRBA.discover(pval=pval, stat=-pval, children=children, \
+        eff_list = AnalysisHRBA.discover(pval=pval, stat=-pval,
+                                         children=children, \
                                          exp=exp, alpha=.5)
         assert len(eff_list) == 2
         assert eff_list[0].reg_idx == 0

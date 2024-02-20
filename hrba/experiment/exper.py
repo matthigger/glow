@@ -79,8 +79,8 @@ class ExperimentImageOnly:
 
         return cls(y=y, mask_idx=mask_idx, **kwargs)
 
-    def bootstrap_img(self, n, seed=None, noise_scale=1):
-        """ returns a new Experiment which bootstrap resamples images
+    def bootstrap_img(self, n, seed=None, noise_scale=0):
+        """ bootstrap resamples images
 
         Args:
             n (int): number of images in the resulting Experiment
