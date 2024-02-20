@@ -298,7 +298,7 @@ class AnalysisHRBA(Analysis):
             else:
                 assert isinstance(chol_regr, QRRegressCovariate)
 
-            if mode == 'ward':
+            if mode == 'full':
                 # rows with same span as x
                 q = chol_regr.q
             else:
