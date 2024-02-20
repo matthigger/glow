@@ -17,7 +17,7 @@ children = np.arange(num_vox * 2 - 2).reshape((-1, 2))
 child_dict = {idx: children for idx in range(n_permute)}
 
 
-class TestEpoch:
+class TestAnalysis:
     def test_get_pval(self):
         z_stat = np.array([[7, 3, 1, 0],
                            [0, 0, 0, 0],
@@ -37,14 +37,14 @@ class TestEpoch:
         assert np.allclose(p_val, p_val_exp, equal_nan=True)
 
 
-class TestEpochHRBA:
+class TestAnalysisHRBA:
     def test_cluster(self):
         # in a population of identical test images, clustering should
         # segment based on color
 
         # load single image, bootstrap a few more (no noise), sample rand x
         exp = ExperimentImageOnly.from_search(folder=folder_test_data,
-                                              sbj_regex='sbj\d',
+                                              sbj_regex='squares',
                                               img_glob_dict={
                                                   'color': '*test.png'})
         exp.bootstrap_img(n=10, noise_scale=0)
@@ -126,20 +126,21 @@ class TestBigEffect:
                                     p_val=.0001)
 
     def test_hrba(self):
-        epoch = AnalysisHRBA(TestBigEffect.exp, n_permute=10, n_permute_z=10,
-                             alpha=.1)
+        analysis = AnalysisHRBA(TestBigEffect.exp, n_permute=10,
+                                n_permute_z=10,
+                                alpha=.1)
 
         # check that target region segmented properly
         f1 = get_f1(mask=TestBigEffect.effect.mask,
-                    mask_idx=epoch.exp.mask_idx,
-                    children=epoch.child_dict[0])
+                    mask_idx=analysis.exp.mask_idx,
+                    children=analysis.child_dict[0])
         assert np.isclose(f1.max(), 1), 'target region not segmented'
 
         # appropriate effect discovered as most significant effect
-        np.testing.assert_allclose(epoch.effect_list[0].mask,
+        np.testing.assert_allclose(analysis.effect_list[0].mask,
                                    TestBigEffect.effect.mask)
 
     def test_tfce(self):
-        epoch = AnalysisTFCE(TestBigEffect.exp, n_permute=10, alpha=.1)
-        np.testing.assert_allclose(epoch.effect_list[0].mask,
+        analysis = AnalysisTFCE(TestBigEffect.exp, n_permute=10, alpha=.1)
+        np.testing.assert_allclose(analysis.effect_list[0].mask,
                                    TestBigEffect.effect.mask)

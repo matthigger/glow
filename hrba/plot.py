@@ -123,34 +123,35 @@ def image_iter(children, mask_idx, num_vox):
             yield image, mask_idx_current, color_dict
 
 
-def scatter_size_vs_stat_plotly(epoch, y_feat, size=None, mask=None,
+def scatter_size_vs_stat_plotly(analysis, y_feat, size=None, mask=None,
                                 min_size=1):
     """ scatters size vs f_stat, colors by f1 score if mask is passed
 
      Args:
-        epoch (Epoch):
+        analysis (Analysis):
         y_feat (np.array): y feature to plot (same size as size)
-        size (np.array): size of each region to plot (defaults to epoch.size)
+        size (np.array): size of each region to plot (defaults to
+            analysis.size)
         mask (np.array): target mask
         min_size (int): smallest size to be plotted
      """
     # compute f1 score
     if mask is not None:
         f1 = get_f1(mask=mask,
-                    mask_idx=epoch.exp.mask_idx,
-                    children=epoch.child_dict[0])
+                    mask_idx=analysis.exp.mask_idx,
+                    children=analysis.child_dict[0])
     else:
         f1 = None
 
     if size is None:
-        size = epoch.size.astype(float)
+        size = analysis.size.astype(float)
 
     assert isinstance(y_feat, np.ndarray)
     assert y_feat.shape == size.shape
     y = copy(y_feat)
 
     if min_size > 1:
-        b = epoch.size < min_size
+        b = analysis.size < min_size
         size[b] = np.nan
         y[b] = np.nan
 
@@ -173,11 +174,11 @@ def scatter_size_vs_stat_plotly(epoch, y_feat, size=None, mask=None,
     plt.legend()
 
 
-def scatter_size_vs_stat(epoch, y_feat, mask=None, min_size=1):
+def scatter_size_vs_stat(analysis, y_feat, mask=None, min_size=1):
     """ scatters size vs f_stat, colors by f1 score if mask is passed
 
      Args:
-        epoch (Epoch):
+        analysis (Analysis):
         y_feat (np.array): y feature to plot (same size as size)
         mask (np.array): target mask
         min_size (int): smallest size to be plotted
@@ -186,19 +187,19 @@ def scatter_size_vs_stat(epoch, y_feat, mask=None, min_size=1):
     # compute f1 score
     if mask is not None:
         f1 = get_f1(mask=mask,
-                    mask_idx=epoch.exp.mask_idx,
-                    children=epoch.child_dict[0])
+                    mask_idx=analysis.exp.mask_idx,
+                    children=analysis.child_dict[0])
     else:
         f1 = None
 
-    size = epoch.size.astype(float)
+    size = analysis.size.astype(float)
 
     assert isinstance(y_feat, np.ndarray)
     assert y_feat.shape == size.shape
     y = copy(y_feat)
 
     if min_size > 1:
-        b = epoch.size < min_size
+        b = analysis.size < min_size
         size[b] = np.nan
         y[b] = np.nan
 
