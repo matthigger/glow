@@ -56,7 +56,7 @@ class TestExperimentOnlyImage:
         rng = np.random.default_rng(seed=0)
         for str_test_glob in ('*test_bw.png', '*test.png'):
             exp = ExperimentImageOnly.from_search(folder=folder_test_data,
-                                                  sbj_regex='sbj\d',
+                                                  sbj_regex='squares',
                                                   img_glob_dict={
                                                       'feat': str_test_glob})
 

@@ -1,10 +1,13 @@
-import pathlib
+import filecmp
+import os
+import tempfile
 from pprint import pformat
 
-import numpy as np
-
 from hrba import __file__ as hrba_file
+from hrba.experiment import *
+from hrba.experiment.analysis import *
 from hrba.plot import image_iter
+from hrba.plot import make_gif
 
 folder_hrba = pathlib.Path(hrba_file).resolve().parents[1]
 folder_test_data = folder_hrba / 'test' / 'data'
@@ -53,3 +56,24 @@ def test_image_iter():
             s_exp = f.read()
 
         assert s_obs == s_exp, f'case{idx}'
+
+
+def test_make_gif():
+    # load single image, bootstrap a few more (no noise), sample rand x
+    exp = ExperimentImageOnly.from_search(folder=folder_test_data,
+                                          sbj_regex='squares_test.png',
+                                          img_glob_dict={'color': '*test.png'})
+    exp.bootstrap_img(n=10, noise_scale=0, seed=0)
+    exp = exp.sample_x(a=2, seed=0)
+    children = AnalysisHRBA.cluster(exp=exp)
+
+    file_obs = tempfile.NamedTemporaryFile(suffix='.gif').name
+    file_exp = folder_test_data / 'squares_test_cluster.gif'
+
+    make_gif(file_out=file_obs,
+             n_list=30, min_n=5, duration=.33, mask_idx=exp.mask_idx,
+             children=children, num_vox=np.prod(exp.mask_idx.shape))
+
+    assert filecmp.cmp(file_obs, file_exp)
+
+    os.remove(file_obs)

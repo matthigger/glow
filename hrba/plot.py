@@ -1,5 +1,6 @@
 from copy import copy
 
+import imageio
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
@@ -7,6 +8,43 @@ import seaborn as sns
 from hrba.graph import get_f1
 
 sns.set(font_scale=1.3)
+
+
+def make_gif(file_out, n_list=30, duration=.33, mask_idx=None, min_n=1, **kwargs):
+    """
+
+    Args:
+        file_out (str): output file
+        n_list (int or iterable): defines how many unique regions are in each time
+            slice in output gif.  if integer n, then n logarithmically spaced
+            regions are chosen from 1 to the number of unique items in
+            mask_idx.  alternatively user can pass an iterable which gives
+            number of regions explicitly (must be decreasing)
+        duration (int): seconds between images
+        mask_idx (np.array): 2d mask index, may be a slice of the full 3d mask
+            index, we'll ignore any merge events outside of this slice
+        **kwargs: see image_iter
+    """
+    # prep n
+    if isinstance(n_list, int):
+        n_list = np.geomspace((mask_idx > -1).sum(), min_n, n_list).astype(int)
+
+    n_list = np.array(sorted(n_list, reverse=True)).astype(int)
+
+    # build a list of images
+    list_image = list()
+    idx = 0
+    for image, _, color_dict in image_iter(mask_idx=mask_idx, **kwargs):
+        if len(color_dict) == n_list[idx]:
+            # image of right number of regions found, store it
+            list_image.append(copy(image))
+            idx += 1
+
+        if idx >= len(n_list):
+            # all images found, quit
+            break
+
+    imageio.mimsave(file_out, list_image, duration=duration)
 
 
 def image_iter(children, mask_idx, num_vox):
