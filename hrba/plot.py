@@ -76,7 +76,7 @@ def image_iter(children, mask_idx, num_vox):
     # initialize image
     color_dict = {idx: sample_color(idx) for idx in mask_idx[mask_idx > -1]}
     mask_idx_current = copy(mask_idx)
-    image = np.empty(shape=(*mask_idx.shape, 3), dtype=np.uint8)
+    image = np.zeros(shape=(*mask_idx.shape, 3), dtype=np.uint8)
     for reg_idx, color in color_dict.items():
         for i, j in zip(*np.where(mask_idx_current == reg_idx)):
             image[i, j, :] = color
