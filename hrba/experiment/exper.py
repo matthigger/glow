@@ -5,9 +5,9 @@ from copy import copy
 import numpy as np
 import pandas as pd
 
-from hrba.mask import get_mask_idx
-from hrba.effect import compute_offset
 from hrba.effect import Effect
+from hrba.effect import compute_offset
+from hrba.mask import get_mask_idx
 from .load_image import load_image_color, load_image_nii
 from .permute import get_perm_matrix
 
@@ -68,6 +68,15 @@ class ExperimentImageOnly:
             feat_sbj_img, mask_idx = load_image_color(df)
         else:
             raise TypeError('may not mix nifti and color images in input')
+
+        # ensure all input has same data type
+        dtype = None
+        for _, sbj_img in feat_sbj_img.items():
+            for _, img in sbj_img.items():
+                if dtype is None:
+                    dtype = img.dtype
+                else:
+                    assert dtype == img.dtype, 'dtype mismatch'
 
         # mask into each image, store as y
         mask = mask_idx >= 0

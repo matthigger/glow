@@ -40,11 +40,14 @@ def load_image_nii(df):
 
 def load_image_color(df):
     shape = None
+    dtype = None
 
-    def check_shape(x, shape=None):
+    def check_shape_type(x, shape, dtype):
         if shape is not None and x.shape != shape:
             raise RuntimeError('images dont have consistent shapes')
-        return x.shape
+        if dtype is not None and x.dtype != dtype:
+            raise RuntimeError('images dont have same data type')
+        return x.shape, x.dtype
 
     feat_sbj_img = defaultdict(dict)
     for feat in df.columns:
@@ -57,7 +60,7 @@ def load_image_color(df):
                 feat_sbj_img[feat][sbj] = x
 
                 # ensure consistent shape
-                shape = check_shape(x, shape)
+                shape, dtype = check_shape_type(x, shape, dtype)
             elif x.ndim == 3:
                 # image has multiple features (e.g. RGB or RGBA)
                 for idx in range(x.shape[2]):
@@ -66,7 +69,7 @@ def load_image_color(df):
                     feat_sbj_img[_feat][sbj] = _x
 
                     # ensure consistent shape
-                    shape = check_shape(_x, shape)
+                    shape, dtype = check_shape_type(_x, shape, dtype)
             else:
                 msg = 'non nifti must be 2d / 3d (3rd is rgb color)'
                 raise RuntimeError(msg)
