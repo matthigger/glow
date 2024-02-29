@@ -311,11 +311,18 @@ class AnalysisHRBA(Analysis):
         num_vox = y.shape[2]
         y = y.reshape((-1, num_vox))
 
-        # ward's clustering
+        # build connectivity
         mask = exp.mask_idx >= 0
         connectivity = grid_to_graph(*mask.shape, mask=mask)
-        with warnings.catch_warnings(action="ignore"):
-            children = ward_tree(X=y.T, connectivity=connectivity)[0]
+
+        # ensure contiguous input
+        _, num_regions = label(mask)
+        if num_regions > 1:
+            raise NotImplementedError('non-contiguous inputs currently '
+                                      'unsupported')
+
+        # ward's clustering
+        children = ward_tree(X=y.T, connectivity=connectivity)[0]
 
         return children
 
