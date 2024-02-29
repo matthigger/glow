@@ -1,8 +1,6 @@
 import numpy as np
 from scipy.ndimage.morphology import binary_dilation
 
-from hrba.vec_stat import VecStat
-
 
 class ExtenterSphere:
     """ builds effect extent as a randomly placed sphere """
@@ -59,7 +57,7 @@ class ExtenterMinVar:
     """
 
     def __init__(self, n):
-        self.n = n
+        self.n = int(n)
 
     def __call__(self, y, mask_idx, seed=None, vox_init=None):
         """ returns a mask of extent
@@ -84,25 +82,35 @@ class ExtenterMinVar:
         mask = mask_idx == vox_init
         assert mask.sum(), 'vox_init not in mask_idx'
 
-        vec_stat = VecStat.from_array(y[:, :, vox_init])
-        while mask.sum() < self.n:
+        mu = y[:, :, vox_init]
+        y_norm_sq = (mu ** 2).sum()
+
+        for n in range(1, self.n):
             # init
             min_var = np.inf
             vox_idx_best = None
 
+            lam0 = n / (n + 1)
+            lam1 = 1 / (n + 1)
             for vox_idx in iter_vox_neighbor(mask=mask, mask_idx=mask_idx):
-                # compute variance of region (including new vox_idx)
-                _vec_stat = vec_stat | VecStat.from_array(y[:, :, vox_idx])
+                #
+                y_new = y[:, :, vox_idx]
+                _mu = lam0 * mu + lam1 * y_new
+                var = ((y_norm_sq + (y_new ** 2).sum()) / (n + 1) -
+                       (_mu ** 2).sum())
 
                 # store it if new vox idx minimizes variance from among choices
-                var = np.trace(_vec_stat.cov)
                 if var < min_var:
                     min_var = var
                     vox_idx_best = vox_idx
 
-            # add vox_idx_best to mask & update vec_stat
             assert vox_idx_best is not None
+
+
+            # add vox_idx_best to mask & update vec_stat
             mask[mask_idx == vox_idx_best] = True
-            vec_stat |= VecStat.from_array(y[:, :, vox_idx_best])
+            y_new = y[:, :, vox_idx_best]
+            mu = lam0 * mu + lam1 * y_new
+            y_norm_sq += (y_new ** 2).sum()
 
         return mask
