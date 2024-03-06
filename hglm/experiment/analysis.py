@@ -64,7 +64,7 @@ class Analysis:
 
 
 class AnalysisTFCE(Analysis):
-    def __init__(self, exp, n_permute, alpha=.05, verbose=True):
+    def __init__(self, exp, n_permute, alpha=.05, verbose=False):
         self.exp = exp
 
         # compute f_ratio per each voxel

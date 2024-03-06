@@ -12,6 +12,7 @@ from sklearn.metrics import f1_score, recall_score, confusion_matrix
 
 from hglm.experiment import *
 from hglm.effect import *
+import time
 
 # where output results are stored (each run of script yields its own folder)
 folder_out = '/home/matt/Dropbox/pnl_hglm/results'
@@ -128,6 +129,7 @@ def run_one_exp(seed):
             # prep analysis
             kwargs = analysis_kwargs[Ana.__name__]
 
+            start = time.time()
             if error_save:
                 try:
                     ana = Ana(exp=_exp, alpha=alpha, **kwargs)
@@ -144,6 +146,7 @@ def run_one_exp(seed):
 
             else:
                 ana = Ana(exp=_exp, alpha=alpha, **kwargs)
+            total_time_sec = time.time() - start
 
             # score
             f1, sens, spec = get_score(ana, effect)
@@ -155,7 +158,8 @@ def run_one_exp(seed):
                  'f1': f1,
                  'sens': sens,
                  'spec': spec,
-                 'uuid': uuid}
+                 'uuid': uuid,
+                 'time_sec': total_time_sec}
             with open(file_out, 'w') as f:
                 json.dump(d, f, sort_keys=True, indent=4)
 
