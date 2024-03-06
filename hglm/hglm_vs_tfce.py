@@ -10,11 +10,11 @@ import cloudpickle as pickle
 from joblib import Parallel, delayed
 from sklearn.metrics import f1_score, recall_score, confusion_matrix
 
-from hrba.experiment import *
-from hrba.effect import *
+from hglm.experiment import *
+from hglm.effect import *
 
 # where output results are stored (each run of script yields its own folder)
-folder_out = '/home/matt/Dropbox/pnl_hrba/results'
+folder_out = '/home/matt/Dropbox/pnl_hglm/results'
 
 # number of effects to model
 n_repeat = 100
@@ -38,7 +38,7 @@ alpha = .05
 n_jobs = -1
 
 # parameters to be passed to Analysis constructor
-analysis_kwargs = {'AnalysisHRBA': {'n_permute': 100,
+analysis_kwargs = {'AnalysisHGLM': {'n_permute': 100,
                                     'n_permute_z': 50},
                    'AnalysisTFCE': {'n_permute': 100}}
 
@@ -63,17 +63,17 @@ folder_out.mkdir()
 
 # store copy of script (to read experiment params above)
 shutil.copy(__file__, folder_out / pathlib.Path(__file__).name)
-shutil.copy('hrba_vs_tfce_plot.ipynb', folder_out / 'hrba_vs_tfce_plot.ipynb')
+shutil.copy('hglm_vs_tfce_plot.ipynb', folder_out / 'hglm_vs_tfce_plot.ipynb')
 
 # input data
-folder = '/home/matt/Dropbox/pnl_hrba/data/hcp100_lowres/image'
+folder = '/home/matt/Dropbox/pnl_hglm/data/hcp100_lowres/image'
 exp_hcp = ExperimentImageOnly.from_search(folder=folder,
                                           sbj_regex='[\d]{6}',
                                           img_glob_dict={'FA': '*_FA.nii.gz',
                                                          'MD': '*_MD.nii.gz'})
 exp_hcp = exp_hcp.sample_x(a=2)
 
-analysis_obj_tup = (AnalysisHRBA, AnalysisTFCE)
+analysis_obj_tup = (AnalysisHGLM, AnalysisTFCE)
 
 
 def get_score(ana, effect):

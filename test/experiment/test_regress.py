@@ -2,7 +2,7 @@ from itertools import product
 
 import pytest
 
-from hrba.experiment import *
+from hglm.experiment import *
 
 # maindonald "statistical computation" page 1
 x = np.array([[1, 1, 1, 1], [-2, -1, 2, 7]])

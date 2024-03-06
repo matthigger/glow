@@ -4,7 +4,7 @@ import nibabel as nib
 import numpy as np
 from PIL import Image
 
-from hrba.mask import get_mask_idx
+from hglm.mask import get_mask_idx
 
 
 def load_image_nii(df):

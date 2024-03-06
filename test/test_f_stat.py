@@ -1,4 +1,4 @@
-from hrba.f_stat import *
+from hglm.f_stat import *
 from test.helper import generate_dummy_data
 
 

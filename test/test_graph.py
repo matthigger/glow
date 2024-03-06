@@ -1,4 +1,4 @@
-from hrba.graph import *
+from hglm.graph import *
 
 
 def teste_iter_edge():

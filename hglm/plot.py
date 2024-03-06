@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 
-from hrba.graph import get_f1
+from hglm.graph import get_f1
 
 sns.set(font_scale=1.3)
 

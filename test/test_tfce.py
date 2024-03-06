@@ -1,4 +1,4 @@
-from hrba.tfce import *
+from hglm.tfce import *
 
 
 def test_apply_tfce():

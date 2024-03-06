@@ -1,7 +1,7 @@
 [tool.poetry]
-name = "hrba"
+name = "hglm"
 version = "0.1.0"
-description = "Hierarchical Region Based Analysis"
+description = "Hierarchical General Linear Model"
 authors = ["Matt Higger <mhigger@ccs.neu.edu>"]
 readme = "README.md"
 
@@ -18,6 +18,7 @@ scikit-learn = "^1.3.2"
 scipy = "^1.11.4"
 seaborn = "^0.13.0"
 tqdm = "^4.66.1"
+imageio = "^2.34.0"
 
 
 [build-system]
@@ -25,4 +26,4 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [project.urls]
-"Homepage" = "https://github.com/matthigger/hrba"
+"Homepage" = "https://github.com/matthigger/hglm"

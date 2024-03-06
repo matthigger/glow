@@ -1,4 +1,4 @@
-from hrba.effect.extent import *
+from hglm.effect.extent import *
 
 
 def test_iter_vox_neighbor():

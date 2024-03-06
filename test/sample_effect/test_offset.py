@@ -1,5 +1,5 @@
-from hrba.f_stat import *
-from hrba.effect.impose import *
+from hglm.f_stat import *
+from hglm.effect.impose import *
 from ..helper import generate_dummy_data
 
 

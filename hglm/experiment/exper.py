@@ -5,9 +5,9 @@ from copy import copy
 import numpy as np
 import pandas as pd
 
-from hrba.effect import Effect
-from hrba.effect import compute_offset
-from hrba.mask import get_mask_idx
+from hglm.effect import Effect
+from hglm.effect import compute_offset
+from hglm.mask import get_mask_idx
 from .load_image import load_image_color, load_image_nii
 from .permute import get_perm_matrix
 

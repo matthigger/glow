@@ -2,7 +2,7 @@ import numpy as np
 from scipy.optimize import minimize
 from scipy.stats import f
 
-from hrba.f_stat import get_f_degrees, get_f_const
+from hglm.f_stat import get_f_degrees, get_f_const
 
 
 def compute_offset(x, y, contrast, f_stat=None, p_val=None):

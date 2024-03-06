@@ -1,6 +1,6 @@
 from joblib import Parallel, delayed
 
-from hrba.experiment.epoch import *
+from hglm.experiment.epoch import *
 from test.experiment.test_exper import get_rand_exp
 
 num_experiments = 1000
@@ -13,7 +13,7 @@ b = 1
 
 def run_exp(seed):
     exp = get_rand_exp(shape=shape, a=a, b=b, seed=seed, num_img=num_img)
-    epoch = AnalysisHRBA(exp, n_permute=25, n_permute_z=20)
+    epoch = Analysishglm(exp, n_permute=25, n_permute_z=20)
 
     return bool(epoch.effect_list)
 

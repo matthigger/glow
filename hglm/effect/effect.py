@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.stats import f
 
-from hrba.f_stat import get_f_stat, get_f_degrees, get_tr_eps
+from hglm.f_stat import get_f_stat, get_f_degrees, get_tr_eps
 
 
 class Effect:

@@ -1,10 +1,10 @@
 import pytest
 from scipy import ndimage
 
-from hrba.effect import ExtenterSphere
-from hrba.experiment import *
-from hrba.experiment.analysis import *
-from hrba.graph import get_f1
+from hglm.effect import ExtenterSphere
+from hglm.experiment import *
+from hglm.experiment.analysis import *
+from hglm.graph import get_f1
 from .make_test_image import folder_test_data
 from .test_exper import get_rand_exp
 from ..helper import generate_dummy_data
@@ -38,7 +38,7 @@ class TestAnalysis:
         assert np.allclose(p_val, p_val_exp, equal_nan=True)
 
 
-class TestAnalysisHRBA:
+class TestAnalysishglm:
     def test_cluster(self):
         # in a population of identical test images, clustering should
         # segment based on color
@@ -59,11 +59,11 @@ class TestAnalysisHRBA:
         exp_cleave = exp.apply_mask(mask)
 
         with pytest.raises(NotImplementedError) as e:
-            AnalysisHRBA.cluster(exp=exp_cleave)
+            AnalysisHGLM.cluster(exp=exp_cleave)
 
         for _exp in (exp,):
             # cluster (should collect all areas of consistent color)
-            children = AnalysisHRBA.cluster(exp=_exp)
+            children = AnalysisHGLM.cluster(exp=_exp)
 
             f1_list = list()
             # cast to uint8 to avoid floating point precision comparison error
@@ -96,14 +96,14 @@ class TestAnalysisHRBA:
 
         # only 1 sig region
         pval = np.array([.1, 1, 1, 1, 1, 1, 1])
-        eff_list = AnalysisHRBA.discover(pval=pval, stat=-pval,
+        eff_list = AnalysisHGLM.discover(pval=pval, stat=-pval,
                                          children=children, exp=exp, alpha=.5)
         assert len(eff_list) == 1
         assert eff_list[0].reg_idx == 0
 
         # 2 sig regions which intersect
         pval = np.array([.1, 1, 1, 1, .2, 1, 1])
-        eff_list = AnalysisHRBA.discover(pval=pval, stat=-pval,
+        eff_list = AnalysisHGLM.discover(pval=pval, stat=-pval,
                                          children=children, \
                                          exp=exp, alpha=.5)
         assert len(eff_list) == 1
@@ -111,7 +111,7 @@ class TestAnalysisHRBA:
 
         # 2 sig regions which don't intersect
         pval = np.array([.1, .2, 1, 1, 1, 1, 1])
-        eff_list = AnalysisHRBA.discover(pval=pval, stat=-pval,
+        eff_list = AnalysisHGLM.discover(pval=pval, stat=-pval,
                                          children=children, \
                                          exp=exp, alpha=.5)
         assert len(eff_list) == 2
@@ -130,8 +130,8 @@ class TestBigEffect:
     exp, effect = exp.impose_effect(seed=0, extenter=ExtenterSphere(radius=1),
                                     p_val=.0001)
 
-    def test_hrba(self):
-        analysis = AnalysisHRBA(TestBigEffect.exp, n_permute=10,
+    def test_hglm(self):
+        analysis = AnalysisHGLM(TestBigEffect.exp, n_permute=10,
                                 n_permute_z=10,
                                 alpha=.1)
 

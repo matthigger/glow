@@ -7,14 +7,14 @@ from sklearn.cluster import ward_tree
 from sklearn.feature_extraction import grid_to_graph
 from tqdm import tqdm
 
-from hrba.effect import Effect
-from hrba.graph import iter_topo, node_sum
-from hrba.tfce import apply_tfce_x
+from hglm.effect import Effect
+from hglm.graph import iter_topo, node_sum
+from hglm.tfce import apply_tfce_x
 from .regress import QRRegressCovariate
 
 
 class Analysis:
-    """ performs effect discovery (HRBA or TFCE) computes FWER p-val
+    """ performs effect discovery (hglm or TFCE) computes FWER p-val
 
     Attributes:
         exp (Experiment): the source data to run experiment on
@@ -136,7 +136,7 @@ class AnalysisTFCE(Analysis):
         return effect_list
 
 
-class AnalysisHRBA(Analysis):
+class AnalysisHGLM(Analysis):
     """ search a hierarchical segmentation for significant effects
 
     Attributes:

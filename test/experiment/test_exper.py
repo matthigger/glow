@@ -1,7 +1,7 @@
-from hrba.experiment.exper import *
-from hrba.effect import ExtenterSphere
+from hglm.experiment.exper import *
+from hglm.effect import ExtenterSphere
 from .make_test_image import folder_test_data, img_feat_intensity
-from ..helper import generate_dummy_data
+from test.helper import generate_dummy_data
 
 
 def get_rand_exp(shape=(10, 10, 10), **kwargs):

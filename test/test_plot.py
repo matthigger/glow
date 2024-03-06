@@ -3,14 +3,14 @@ import os
 import tempfile
 from pprint import pformat
 
-from hrba import __file__ as hrba_file
-from hrba.experiment import *
-from hrba.experiment.analysis import *
-from hrba.plot import image_iter
-from hrba.plot import make_gif
+from hglm import __file__ as hglm_file
+from hglm.experiment import *
+from hglm.experiment.analysis import *
+from hglm.plot import image_iter
+from hglm.plot import make_gif
 
-folder_hrba = pathlib.Path(hrba_file).resolve().parents[1]
-folder_test_data = folder_hrba / 'test' / 'data'
+folder_hglm = pathlib.Path(hglm_file).resolve().parents[1]
+folder_test_data = folder_hglm / 'test' / 'data'
 
 case = dict(mask_idx=np.arange(4).reshape((2, 2)),
             children=np.arange(6).reshape((3, 2)),
@@ -65,13 +65,13 @@ def test_make_gif():
                                           img_glob_dict={'color': '*test.png'})
     exp.bootstrap_img(n=10, noise_scale=0, seed=0)
     exp = exp.sample_x(a=2, seed=0)
-    children = AnalysisHRBA.cluster(exp=exp)
+    children = AnalysisHGLM.cluster(exp=exp)
 
     file_obs = tempfile.NamedTemporaryFile(suffix='.gif').name
     file_exp = folder_test_data / 'squares_test_cluster.gif'
 
     make_gif(file_out=file_obs,
-             n_list=30, min_n=5, duration=.33, mask_idx=exp.mask_idx,
+             n_list=30, min_n=5, fps=10, mask_idx=exp.mask_idx,
              children=children, num_vox=np.prod(exp.mask_idx.shape))
 
     assert filecmp.cmp(file_obs, file_exp)

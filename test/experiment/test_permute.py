@@ -1,4 +1,4 @@
-from hrba.experiment.permute import *
+from hglm.experiment.permute import *
 
 
 def test_get_perm_matrix():
