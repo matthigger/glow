@@ -10,7 +10,8 @@ from hrba.graph import get_f1
 sns.set(font_scale=1.3)
 
 
-def make_gif(file_out, n_list=30, duration=.33, mask_idx=None, min_n=1, **kwargs):
+def make_gif(file_out, n_list=30, fps=10, mask_idx=None, min_n=1,
+             **kwargs):
     """
 
     Args:
@@ -20,7 +21,7 @@ def make_gif(file_out, n_list=30, duration=.33, mask_idx=None, min_n=1, **kwargs
             regions are chosen from 1 to the number of unique items in
             mask_idx.  alternatively user can pass an iterable which gives
             number of regions explicitly (must be decreasing)
-        duration (int): seconds between images
+        fps (int): frames per second
         mask_idx (np.array): 2d mask index, may be a slice of the full 3d mask
             index, we'll ignore any merge events outside of this slice
         **kwargs: see image_iter
@@ -44,7 +45,7 @@ def make_gif(file_out, n_list=30, duration=.33, mask_idx=None, min_n=1, **kwargs
             # all images found, quit
             break
 
-    imageio.mimsave(file_out, list_image, duration=duration)
+    imageio.mimsave(file_out, list_image, fps=fps, loop=0)
 
 
 def image_iter(children, mask_idx, num_vox):
