@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.ndimage.morphology import binary_dilation
+from tqdm import tqdm
 
 
 class ExtenterSphere:
@@ -59,7 +60,7 @@ class ExtenterMinVar:
     def __init__(self, n):
         self.n = int(n)
 
-    def __call__(self, y, mask_idx, seed=None, vox_init=None):
+    def __call__(self, y, mask_idx, seed=None, vox_init=None, verbose=False):
         """ returns a mask of extent
 
         Args:
@@ -85,7 +86,10 @@ class ExtenterMinVar:
         mu = y[:, :, vox_init]
         y_norm_sq = (mu ** 2).sum()
 
-        for n in range(1, self.n):
+        tqdm_dict = dict(total=self.n - 1,
+                         disable=not verbose,
+                         desc='finding min var extent')
+        for n in tqdm(range(1, self.n), **tqdm_dict):
             # init
             min_var = np.inf
             vox_idx_best = None
@@ -105,7 +109,6 @@ class ExtenterMinVar:
                     vox_idx_best = vox_idx
 
             assert vox_idx_best is not None
-
 
             # add vox_idx_best to mask & update vec_stat
             mask[mask_idx == vox_idx_best] = True

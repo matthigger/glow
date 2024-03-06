@@ -1,4 +1,3 @@
-import warnings
 from _bisect import bisect_left
 from copy import copy
 
@@ -154,7 +153,8 @@ class AnalysisHRBA(Analysis):
             unpermuted data
     """
 
-    def __init__(self, exp, n_permute, n_permute_z=100, alpha=.05):
+    def __init__(self, exp, n_permute, n_permute_z=100, alpha=.05,
+                 verbose=False):
         self.exp = exp
         self.n_permute_z = n_permute_z
 
@@ -167,7 +167,10 @@ class AnalysisHRBA(Analysis):
         # compute z stat per region
         self.child_dict = dict()
         self.z_stat = np.empty((n_permute + 1, num_reg))
-        for perm_idx in range(n_permute + 1):
+        tqdm_dict = dict(total=n_permute + 1,
+                         desc='permuting',
+                         disable=not verbose)
+        for perm_idx in tqdm(range(n_permute + 1), **tqdm_dict):
             _exp = exp.permute(perm_idx)
             children = self.cluster(exp=_exp, chol_regr=chol_regr)
             z_stat = self.get_z_score(_exp, children,
