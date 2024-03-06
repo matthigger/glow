@@ -1,6 +1,7 @@
 import gzip
 import json
 import shutil
+import time
 import traceback
 import warnings
 from datetime import datetime
@@ -10,9 +11,8 @@ import cloudpickle as pickle
 from joblib import Parallel, delayed
 from sklearn.metrics import f1_score, recall_score, confusion_matrix
 
-from hglm.experiment import *
 from hglm.effect import *
-import time
+from hglm.experiment import *
 
 # where output results are stored (each run of script yields its own folder)
 folder_out = '/home/matt/Dropbox/pnl_hglm/results'
@@ -105,9 +105,22 @@ def run_one_exp(seed):
     np.seterr(all='warn')
 
     # trim experiment to reasonable size (for speedup)
-    extenter = ExtenterSphere(radius=radius)
-    mask_all = extenter(mask_idx=exp_hcp.mask_idx, seed=seed)
-    exp = exp_hcp.apply_mask(mask_all)
+    # this trimming is re-done until a contiguous experiment is found
+    _seed_extenter = seed
+    while True:
+        extenter = ExtenterSphere(radius=radius)
+        mask_all = extenter(mask_idx=exp_hcp.mask_idx, seed=_seed_extenter)
+        exp = exp_hcp.apply_mask(mask_all)
+
+        _, n_components = label(exp.mask_idx >= 0)
+        if n_components == 1:
+            break
+
+        # get a new seed (from previous)
+        rng = np.random.default_rng(seed=_seed_extenter)
+        _seed_extenter = rng.integers(low=np.iinfo(_seed_extenter).min,
+                                      high=np.iinfo(_seed_extenter).max,
+                                      size=1)[0]
 
     # sample effect space
     n = exp.y.shape[2] * effect_perc
