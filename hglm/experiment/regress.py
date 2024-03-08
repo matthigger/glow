@@ -44,8 +44,8 @@ class QRRegress:
 
         Returns:
             qyt (np.array): (a, b, num_reg) alternate beta
-            y2 (np.array): (num_reg) sum of y^2, across all features and
-                images for a region
+            y2 (np.array): (num_reg) y^2, summed across all b features and
+                averaged across all voxels of a region
         """
         y = to_3d(y)
 
@@ -62,12 +62,12 @@ class QRRegress:
 
         Args:
             qyt (np.array): (a, b, num_reg) alternate beta
-            y2 (np.array): (b, num_reg) sum of y^2, across all observations in
-                regions
+            y2 (np.array): (b, num_reg) y^2, summed across all b features and
+                averaged across all voxels of a region
             a (int): considers only the first a features (default to all)
 
         Returns:
-            ssr (np.array): (num_reg) sum of squared residual per region
+            mse (np.array): (num_reg) mean squared error
         """
         qyt = to_3d(qyt)
 
@@ -127,8 +127,8 @@ class QRRegressCovariate(QRRegress):
 
         Args:
             qyt (np.array): (a, b, num_reg) alternate beta
-            y2 (np.array): (b, num_reg) sum of y^2, across all observations in
-                regions
+            y2 (np.array): (b, num_reg) y^2, summed across all b features and
+                averaged across all voxels of a region
         Returns:
             f_ratio (np.array): (num_reg) f ratio per region
         """
