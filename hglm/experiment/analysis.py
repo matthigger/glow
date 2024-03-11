@@ -73,8 +73,8 @@ class AnalysisTFCE(Analysis):
         self.f_ratio = np.empty((n_permute + 1, num_vox))
         for perm_idx in range(n_permute + 1):
             _exp = exp.permute(perm_idx=perm_idx)
-            qyt, y2 = chol_regr.get_qyt_y2(_exp.y)
-            self.f_ratio[perm_idx, :] = chol_regr.get_f_ratio(qyt, y2)
+            qyt, yout = chol_regr.get_qyt_yout(_exp.y)
+            self.f_ratio[perm_idx, :] = chol_regr.get_f_ratio(qyt, yout)
 
         # apply TFCE per image
         self.tfce_stat = self.apply_tfce(stat=self.f_ratio,
@@ -238,7 +238,7 @@ class AnalysisHGLM(Analysis):
         mu = np.empty(num_reg)
         std = np.empty(num_reg)
 
-        qyt_y2_size_dict = dict()
+        qyt_yout_size_dict = dict()
         for reg_idx in iter_topo(children, num_leaf=num_vox):
             if reg_idx < num_vox:
                 # single voxel region, permute y & compute r explicitly
@@ -249,21 +249,21 @@ class AnalysisHGLM(Analysis):
                     'bn,knm->bmk',
                     exp.y[:, :, reg_idx],
                     freed_lane[reg_idx: reg_idx + num_permute, :, :])
-                qyt, y2 = chol_regr.get_qyt_y2(y=y)
-                qyt_y2_size_dict[reg_idx] = qyt, y2, 1
+                qyt, yout = chol_regr.get_qyt_yout(y=y)
+                qyt_yout_size_dict[reg_idx] = qyt, yout, 1
             else:
                 # if multi voxel region, compute r via constituent regions
                 c0, c1 = children[int(reg_idx - num_vox), :]
-                qyt0, y20, size0 = qyt_y2_size_dict.pop(c0)
-                qyt1, y21, size1 = qyt_y2_size_dict.pop(c1)
+                qyt0, yout0, size0 = qyt_yout_size_dict.pop(c0)
+                qyt1, yout1, size1 = qyt_yout_size_dict.pop(c1)
 
                 size = size0 + size1
                 lam = size0 / size, size1 / size
                 qyt = qyt0 * lam[0] + qyt1 * lam[1]
-                y2 = y20 * lam[0] + y21 * lam[1]
-                qyt_y2_size_dict[reg_idx] = qyt, y2, size
+                yout = yout0 * lam[0] + yout1 * lam[1]
+                qyt_yout_size_dict[reg_idx] = qyt, yout, size
 
-            f_ratio = chol_regr.get_f_ratio(qyt, y2)
+            f_ratio = chol_regr.get_f_ratio(qyt, yout)
 
             # store
             f[reg_idx] = f_ratio[0]

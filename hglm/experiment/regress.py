@@ -36,7 +36,7 @@ class QRRegress:
         self.r = r.T
         self.r_inv = np.linalg.inv(self.r)
 
-    def get_qyt_y2(self, y):
+    def get_qyt_yout(self, y):
         """ computes qyt vector per region
 
         Args:
@@ -44,8 +44,10 @@ class QRRegress:
 
         Returns:
             qyt (np.array): (a, b, num_reg) alternate beta
-            y2 (np.array): (num_reg) y^2, summed across all b features and
-                averaged across all voxels of a region
+            yout (np.array): (b, b, num_reg) sum of outer product of all y
+                values for each image (n), but averaged across voxels in the
+                region (in this method, each region is 1 voxel so this isn't as
+                relevant here)
         """
         y = to_3d(y)
 
@@ -53,28 +55,44 @@ class QRRegress:
         qyt = np.einsum('an,bnr->abr', self.q, y)
 
         # compute residual
-        y2 = (y ** 2).sum(axis=(0, 1))
+        yout = np.einsum('abc,xbc->axc', y, y)
 
-        return qyt, y2
+        return qyt, yout
 
-    def get_mse(self, qyt, y2, a=None):
+    def get_eps(self, qyt, yout, a=None):
         """ computes sum of squared residual
 
         Args:
             qyt (np.array): (a, b, num_reg) alternate beta
-            y2 (np.array): (b, num_reg) y^2, summed across all b features and
-                averaged across all voxels of a region
+            yout (np.array): (b, b, num_reg) sum of outer product of all y
+                values for each image (n), but averaged across voxels in the
+                region
             a (int): considers only the first a features (default to all)
 
         Returns:
-            mse (np.array): (num_reg) mean squared error
+            eps (np.array): (b, b, num_reg) covariance matrix of error (
+                averaged over voxels in region and number of images n)
         """
         qyt = to_3d(qyt)
 
         if a is not None:
             qyt = qyt[:a, :, :]
 
-        return (y2 - (qyt ** 2).sum(axis=(0, 1))) / self.x.shape[1]
+        offset = np.einsum('abc,ayc->byc', qyt, qyt)
+
+        return (np.atleast_3d(yout) - offset) / self.x.shape[1]
+
+    def get_mse(self, *args, **kwargs):
+        """ gets mean squared error (diag sum of eps)
+
+        Args:
+            see get_eps()
+
+        Returns:
+            mse (np.array): (num_reg) mean squared error
+        """
+        eps = self.get_eps(*args, **kwargs)
+        return np.einsum('aab', eps)
 
     def get_beta(self, qyt):
         """ computes minimum mse beta
@@ -122,13 +140,14 @@ class QRRegressCovariate(QRRegress):
         self.r = np.linalg.inv(self.to_sorted) @ self.r
         self.r_inv = np.linalg.inv(self.r)
 
-    def get_f_ratio(self, qyt, y2):
+    def get_f_ratio(self, qyt, yout):
         """ (mse0 - mse1) / mse1 where mse0 is mean square error reduced model
 
         Args:
             qyt (np.array): (a, b, num_reg) alternate beta
-            y2 (np.array): (b, num_reg) y^2, summed across all b features and
-                averaged across all voxels of a region
+            yout (np.array): (b, b, num_reg) sum of outer product of all y
+                values for each image (n), but averaged across voxels in the
+                region
         Returns:
             f_ratio (np.array): (num_reg) f ratio per region
         """
@@ -139,6 +158,6 @@ class QRRegressCovariate(QRRegress):
         mse0_minus_mse1 /= self.x.shape[1]
 
         # compute denominator
-        mse1 = self.get_mse(qyt, y2)
+        mse1 = self.get_mse(qyt, yout)
 
         return mse0_minus_mse1 / mse1
