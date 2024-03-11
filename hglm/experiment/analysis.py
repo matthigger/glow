@@ -167,6 +167,7 @@ class AnalysisHGLM(Analysis):
         # compute z stat per region
         self.child_dict = dict()
         self.z_stat = np.empty((n_permute + 1, num_reg))
+        self.llr = np.empty((n_permute + 1, num_reg))
         tqdm_dict = dict(total=n_permute + 1,
                          desc='permuting',
                          disable=not verbose)
@@ -180,14 +181,16 @@ class AnalysisHGLM(Analysis):
             # store
             self.child_dict[perm_idx] = children
             self.z_stat[perm_idx, :] = z_stat
+            self.llr[perm_idx, :] = self.get_llr(_exp, children,
+                                                 seed_offset=n_permute)
 
         # compute p-values (max stat across space)
-        self.p_val = self.get_pval(stat=self.z_stat)
+        self.p_val = self.get_pval(stat=self.llr)
 
         # discover effects (greedily choose max z stat regions whose p_val is
         # significant.  continue so long as disjoint significant effect remain)
         self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
-                                         stat=self.z_stat[0, :], exp=exp,
+                                         stat=self.llr[0, :], exp=exp,
                                          children=self.child_dict[0])
 
         # compute sizes of each region (not really necessary, but good to have)
@@ -195,6 +198,41 @@ class AnalysisHGLM(Analysis):
         for perm_idx, children in self.child_dict.items():
             self.size[perm_idx, :] = node_sum(x=np.ones(num_vox, dtype=int),
                                               children=children)
+
+    @classmethod
+    def get_llr(cls, exp, children, num_permute=0, seed_offset=0):
+        """ computes log likelihood score (full over reduced) per region
+
+        Args:
+            exp (Experiment):
+            children (np.array): (num_reg, 2) each col are index of child
+                regions
+            num_permute (int): number of permutations to use when computing
+                z-score adjustment
+            seed_offset (int): offsets seed used in permutation.  useful to
+                ensure permutations used in z score process here are distinct
+                from those used to generate segmentations elsewhere.
+
+        Returns:
+            llr (np.array): (num_reg, ) log likelihood
+        """
+        b, num_img, num_vox = exp.y.shape
+        num_multi_vox = children.shape[0]
+        num_reg = num_vox + num_multi_vox
+
+        # count regions & initialize output arrays (assume children merges
+        # until only a single region remains)
+        llr = np.empty(num_reg)
+
+        chol_regr = QRRegressCovariate(x=exp.x, contrast=exp.contrast)
+
+        for reg_idx, qyt, yout, size in \
+                iter_qyt_yout_size(exp, chol_regr, children, num_permute,
+                                   seed_offset):
+            # compute f ratio
+            llr[reg_idx] = chol_regr.get_llr(qyt, yout, size)[0]
+
+        return llr
 
     @classmethod
     def get_z_score(cls, exp, children, num_permute, seed_offset=0):
@@ -224,45 +262,18 @@ class AnalysisHGLM(Analysis):
         num_multi_vox = children.shape[0]
         num_reg = num_vox + num_multi_vox
 
-        # freed lane permutation matrix (for all permutations)
-        perms_needed = num_permute + num_vox + children.shape[0]
-        seed_iter = range(seed_offset, perms_needed + seed_offset)
-        freed_lane = np.stack(list(map(exp.get_freed_lane, seed_iter)))
-
-        # prep regression object: to computes f ratios
-        chol_regr = QRRegressCovariate(x=exp.x, contrast=exp.contrast)
-
         # count regions & initialize output arrays (assume children merges
         # until only a single region remains)
         f = np.empty(num_reg)
         mu = np.empty(num_reg)
         std = np.empty(num_reg)
 
-        qyt_yout_size_dict = dict()
-        for reg_idx in iter_topo(children, num_leaf=num_vox):
-            if reg_idx < num_vox:
-                # single voxel region, permute y & compute r explicitly
-                # note each voxel gets its own unique permutation matrix
-                y = np.empty((b, num_img, num_permute + 1))
-                y[:, :, 0] = exp.y[:, :, reg_idx]
-                y[:, :, 1:] = np.einsum(
-                    'bn,knm->bmk',
-                    exp.y[:, :, reg_idx],
-                    freed_lane[reg_idx: reg_idx + num_permute, :, :])
-                qyt, yout = chol_regr.get_qyt_yout(y=y)
-                qyt_yout_size_dict[reg_idx] = qyt, yout, 1
-            else:
-                # if multi voxel region, compute r via constituent regions
-                c0, c1 = children[int(reg_idx - num_vox), :]
-                qyt0, yout0, size0 = qyt_yout_size_dict.pop(c0)
-                qyt1, yout1, size1 = qyt_yout_size_dict.pop(c1)
+        chol_regr = QRRegressCovariate(x=exp.x, contrast=exp.contrast)
 
-                size = size0 + size1
-                lam = size0 / size, size1 / size
-                qyt = qyt0 * lam[0] + qyt1 * lam[1]
-                yout = yout0 * lam[0] + yout1 * lam[1]
-                qyt_yout_size_dict[reg_idx] = qyt, yout, size
-
+        for reg_idx, qyt, yout, size in \
+                iter_qyt_yout_size(exp, chol_regr, children, num_permute,
+                                   seed_offset):
+            # compute f ratio
             f_ratio = chol_regr.get_f_ratio(qyt, yout)
 
             # store
@@ -383,3 +394,43 @@ class AnalysisHGLM(Analysis):
             effect_list.append(effect)
 
         return effect_list
+
+
+def iter_qyt_yout_size(exp, chol_regr, children, num_permute=0, seed_offset=0):
+    b, num_img, num_vox = exp.y.shape
+
+    # freed lane permutation matrix (for all permutations)
+    perms_needed = num_permute + num_vox
+    seed_iter = range(seed_offset, perms_needed + seed_offset)
+    freed_lane = np.stack(list(map(exp.get_freed_lane, seed_iter)))
+
+    qyt_yout_size_dict = dict()
+    for reg_idx in iter_topo(children, num_leaf=num_vox):
+        if reg_idx < num_vox:
+            # single voxel region, permute y via freedman lane
+            # note each voxel gets its own unique permutation matrix
+            y = np.empty((b, num_img, num_permute + 1))
+            y[:, :, 0] = exp.y[:, :, reg_idx]
+
+            if num_permute:
+                _freed_lane = freed_lane[reg_idx: reg_idx + num_permute, :, :]
+                y[:, :, 1:] = np.einsum('bn,knm->bmk',
+                                        exp.y[:, :, reg_idx],
+                                        _freed_lane)
+
+            qyt, yout = chol_regr.get_qyt_yout(y=y)
+            size = 1
+            qyt_yout_size_dict[reg_idx] = qyt, yout, size
+        else:
+            # if multi voxel region, compute r via constituent regions
+            c0, c1 = children[int(reg_idx - num_vox), :]
+            qyt0, yout0, size0 = qyt_yout_size_dict.pop(c0)
+            qyt1, yout1, size1 = qyt_yout_size_dict.pop(c1)
+
+            size = size0 + size1
+            lam = size0 / size, size1 / size
+            qyt = qyt0 * lam[0] + qyt1 * lam[1]
+            yout = yout0 * lam[0] + yout1 * lam[1]
+            qyt_yout_size_dict[reg_idx] = qyt, yout, size
+
+        yield reg_idx, qyt, yout, size

@@ -161,3 +161,26 @@ class QRRegressCovariate(QRRegress):
         mse1 = self.get_mse(qyt, yout)
 
         return mse0_minus_mse1 / mse1
+
+    def get_llr(self, qyt, yout, size):
+        """ log likelihood ratio
+
+        Args:
+            qyt (np.array): (a, b, num_reg) alternate beta
+            yout (np.array): (b, b, num_reg) sum of outer product of all y
+                values for each image (n), but averaged across voxels in the
+                region
+            size (np.array): (num_reg) size of region (in voxels)
+
+        Returns:
+            llr (np.array): (num_reg) log likelihood ratio per region
+        """
+        eps_full = self.get_eps(qyt, yout)
+        eps_reduced = self.get_eps(qyt, yout, a=self.n_covariate)
+
+        def log_det(eps):
+            # det operates on last 2 dims by default
+            eps = np.moveaxis(eps, -1, 0)
+            return np.log(np.linalg.det(eps))
+
+        return size / 2 * (log_det(eps_reduced) - log_det(eps_full))
