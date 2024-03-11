@@ -174,20 +174,56 @@ class AnalysisHGLM(Analysis):
             self.llr[perm_idx, :] = self.get_llr(_exp, children,
                                                  seed_offset=n_permute)
 
-        # compute p-values (max stat across space)
-        self.p_val = self.get_pval(stat=self.llr)
-
-        # discover effects (greedily choose max z stat regions whose p_val is
-        # significant.  continue so long as disjoint significant effect remain)
-        self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
-                                         stat=self.llr[0, :], exp=exp,
-                                         children=self.child_dict[0])
-
-        # compute sizes of each region (not really necessary, but good to have)
+        # compute sizes of each region
         self.size = np.empty((n_permute + 1, num_reg))
         for perm_idx, children in self.child_dict.items():
             self.size[perm_idx, :] = node_sum(x=np.ones(num_vox, dtype=int),
                                               children=children)
+
+        # adjust llr
+        self.llr_beta = self.llr_fit(self.size[1:, :], self.llr[1:, :])
+        llr_predict = self.llr_predict(self.llr_beta, self.size)
+        self.llr_adjust = 10 ** (np.log10(self.llr) -
+                                 np.log10(llr_predict))
+
+        # compute p-values (max stat across space)
+        self.p_val = self.get_pval(stat=self.llr_adjust)
+
+        # discover effects (greedily choose max z stat regions whose p_val is
+        # significant.  continue so long as disjoint significant effect remain)
+        self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
+                                         stat=self.llr_adjust[0, :], exp=exp,
+                                         children=self.child_dict[0])
+
+    @classmethod
+    def llr_fit(cls, size, llr):
+        """ build a model between size and llr
+
+        log size * beta[1] + beta[0] = log llr
+
+        Args:
+            size (np.array): size of each region
+            llr (np.array): log likelihood ratio of each region
+
+        Returns:
+            beta (np.array): (2) model params
+        """
+        x_size = np.vstack([np.ones(size.size), np.log10(size.flatten())])
+        y_llr = np.log10(llr.flatten())
+        return y_llr @ np.linalg.pinv(x_size)
+
+    @classmethod
+    def llr_predict(cls, beta, size):
+        """ predicts llr via model.  see llr_fit()
+
+        Args:
+            beta (np.array): (2) model params
+            size (np.array): size of each region
+
+        Returns:
+            beta (np.array): (2) model params
+        """
+        return 10 ** (beta[0] + beta[1] * np.log10(size))
 
     @classmethod
     def get_llr(cls, exp, children, num_permute=0, seed_offset=0):
