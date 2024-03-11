@@ -131,9 +131,7 @@ class TestBigEffect:
                                     p_val=.0001)
 
     def test_hglm(self):
-        analysis = AnalysisHGLM(TestBigEffect.exp, n_permute=10,
-                                n_permute_z=10,
-                                alpha=.1)
+        analysis = AnalysisHGLM(TestBigEffect.exp, n_permute=10, alpha=.1)
 
         # check that target region segmented properly
         f1 = get_f1(mask=TestBigEffect.effect.mask,

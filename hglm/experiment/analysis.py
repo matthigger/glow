@@ -140,9 +140,6 @@ class AnalysisHGLM(Analysis):
     """ search a hierarchical segmentation for significant effects
 
     Attributes:
-        n_permute_z (int): number of permutations used to compute z score (
-            this is a distinct set of permuted Experiment objects from the
-            permutations which yielded distinct hierarchical segmentations)
         child_dict (dict): keys are permutation indices, values are
             (2, n) graph arrays (equiv to sklearn.cluster.Ward.children_)
         z_stat (np.array): (n_permute + 1, num_reg) z scores of f stats (for
@@ -153,10 +150,8 @@ class AnalysisHGLM(Analysis):
             unpermuted data
     """
 
-    def __init__(self, exp, n_permute, n_permute_z=100, alpha=.05,
-                 verbose=False):
+    def __init__(self, exp, n_permute, alpha=.05, verbose=False):
         self.exp = exp
-        self.n_permute_z = n_permute_z
 
         b, num_img, num_vox = exp.y.shape
         num_reg = num_vox * 2 - 1
@@ -166,7 +161,6 @@ class AnalysisHGLM(Analysis):
 
         # compute z stat per region
         self.child_dict = dict()
-        self.z_stat = np.empty((n_permute + 1, num_reg))
         self.llr = np.empty((n_permute + 1, num_reg))
         tqdm_dict = dict(total=n_permute + 1,
                          desc='permuting',
@@ -174,13 +168,9 @@ class AnalysisHGLM(Analysis):
         for perm_idx in tqdm(range(n_permute + 1), **tqdm_dict):
             _exp = exp.permute(perm_idx)
             children = self.cluster(exp=_exp, chol_regr=chol_regr)
-            z_stat = self.get_z_score(_exp, children,
-                                      num_permute=n_permute_z,
-                                      seed_offset=n_permute)[1]
 
             # store
             self.child_dict[perm_idx] = children
-            self.z_stat[perm_idx, :] = z_stat
             self.llr[perm_idx, :] = self.get_llr(_exp, children,
                                                  seed_offset=n_permute)
 
@@ -233,58 +223,6 @@ class AnalysisHGLM(Analysis):
             llr[reg_idx] = chol_regr.get_llr(qyt, yout, size)[0]
 
         return llr
-
-    @classmethod
-    def get_z_score(cls, exp, children, num_permute, seed_offset=0):
-        """ computes z score of f stat (over permutations) per region
-
-        voxels are aggregated with unique permutations.  (otherwise an effect's
-        incidental performance under some permutation is repeated across other
-        voxels).
-
-        Args:
-            exp (Experiment):
-            children (np.array): (num_reg, 2) each col are index of child
-                regions
-            num_permute (int): number of permutations to use when computing
-                z-score adjustment
-            seed_offset (int): offsets seed used in permutation.  useful to
-                ensure permutations used in z score process here are distinct
-                from those used to generate segmentations elsewhere.
-
-        Returns:
-            f (np.array): f statistic per region (unpermuted)
-            z (np.array): z score (of f stat) per region (unpermuted)
-            mu (np.array): mean f stat per region across permutations
-            std (np.array): std dev of f stat per region across permutations
-        """
-        b, num_img, num_vox = exp.y.shape
-        num_multi_vox = children.shape[0]
-        num_reg = num_vox + num_multi_vox
-
-        # count regions & initialize output arrays (assume children merges
-        # until only a single region remains)
-        f = np.empty(num_reg)
-        mu = np.empty(num_reg)
-        std = np.empty(num_reg)
-
-        chol_regr = QRRegressCovariate(x=exp.x, contrast=exp.contrast)
-
-        for reg_idx, qyt, yout, size in \
-                iter_qyt_yout_size(exp, chol_regr, children, num_permute,
-                                   seed_offset):
-            # compute f ratio
-            f_ratio = chol_regr.get_f_ratio(qyt, yout)
-
-            # store
-            f[reg_idx] = f_ratio[0]
-            mu[reg_idx] = f_ratio[1:].mean()
-            std[reg_idx] = f_ratio[1:].std(ddof=1)
-
-        # compute z
-        z = (f - mu) / std
-
-        return f, z, mu, std
 
     @classmethod
     def cluster(cls, exp, mode='full', chol_regr=None):

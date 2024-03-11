@@ -39,8 +39,7 @@ alpha = .05
 n_jobs = -1
 
 # parameters to be passed to Analysis constructor
-analysis_kwargs = {'AnalysisHGLM': {'n_permute': 100,
-                                    'n_permute_z': 50},
+analysis_kwargs = {'AnalysisHGLM': {'n_permute': 100},
                    'AnalysisTFCE': {'n_permute': 100}}
 
 # saves output python objects (memory expensive)
