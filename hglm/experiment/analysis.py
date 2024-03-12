@@ -47,8 +47,8 @@ class Analysis:
             stat = copy(stat).astype(float)
             stat[mask_exclude] = np.nan
 
-        # max z_stat per permutation (sorted from low to high)
-        z_stat_max = np.sort(np.nanmax(stat, axis=1))
+        # max stat per permutation (sorted from low to high)
+        stat_max = np.sort(np.nanmax(stat, axis=1))
 
         # compute pvalues (what percentage of permuted, or unpermuted,
         # stats were >= to observed value?)
@@ -58,7 +58,7 @@ class Analysis:
             if np.isnan(z):
                 pval[reg_idx] = np.nan
                 continue
-            pval[reg_idx] = 1 - bisect_left(z_stat_max, z) / num_perm
+            pval[reg_idx] = 1 - bisect_left(stat_max, z) / num_perm
 
         return pval
 
@@ -149,7 +149,7 @@ class AnalysisHGLM(Analysis):
     """
 
     def __init__(self, exp, n_perm, n_perm_adj=10, alpha=.05,
-                 verbose=False):
+                 min_size_discover=1, verbose=False):
         self.exp = exp
 
         b, num_img, num_vox = exp.y.shape
@@ -189,7 +189,9 @@ class AnalysisHGLM(Analysis):
                                  np.log10(llr_predict))
 
         # compute p-values (max stat across space)
-        self.p_val = self.get_pval(stat=self.llr_adjust)
+        mask_exclude = self.size[:-n_perm_adj, :] < min_size_discover
+        self.p_val = self.get_pval(stat=self.llr_adjust,
+                                   mask_exclude=mask_exclude)
 
         # discover effects (greedily choose max z stat regions whose p_val is
         # significant.  continue so long as disjoint significant effect remain)

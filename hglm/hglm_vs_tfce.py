@@ -40,7 +40,8 @@ n_jobs = -1
 
 # parameters to be passed to Analysis constructor
 analysis_kwargs = {'AnalysisHGLM': dict(n_perm=100,
-                                        n_perm_adj=10),
+                                        n_perm_adj=10,
+                                        min_size_discover=1),
                    'AnalysisTFCE': dict(n_perm=100)}
 
 # saves output python objects (memory expensive)
