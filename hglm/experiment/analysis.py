@@ -64,14 +64,14 @@ class Analysis:
 
 
 class AnalysisTFCE(Analysis):
-    def __init__(self, exp, n_permute, alpha=.05, verbose=False):
+    def __init__(self, exp, n_perm, alpha=.05, verbose=False):
         self.exp = exp
 
         # compute f_ratio per each voxel
         num_vox = exp.y.shape[2]
         chol_regr = QRRegressCovariate(exp.x, exp.contrast)
-        self.f_ratio = np.empty((n_permute + 1, num_vox))
-        for perm_idx in range(n_permute + 1):
+        self.f_ratio = np.empty((n_perm + 1, num_vox))
+        for perm_idx in range(n_perm + 1):
             _exp = exp.permute(perm_idx=perm_idx)
             qyt, yout = chol_regr.get_qyt_yout(_exp.y)
             self.f_ratio[perm_idx, :] = chol_regr.get_f_ratio(qyt, yout)
@@ -142,15 +142,14 @@ class AnalysisHGLM(Analysis):
     Attributes:
         child_dict (dict): keys are permutation indices, values are
             (2, n) graph arrays (equiv to sklearn.cluster.Ward.children_)
-        z_stat (np.array): (n_permute + 1, num_reg) z scores of f stats (for
-            each region of all permutations).  first row corresponds to
-            unpermuted data
-        size (np.array): (n_permute + 1, num_reg) number of voxels in each
-            region (for all permutations).  first row corresponds to
+        llr (np.array): (n_perm + n_perm_adj + 1, num_reg)
+        size (np.array): (n_perm + n_perm_adj + 1, num_reg) number of voxels in
+            each region (for all permutations).  first row corresponds to
             unpermuted data
     """
 
-    def __init__(self, exp, n_permute, alpha=.05, verbose=False):
+    def __init__(self, exp, n_perm, n_perm_adj=10, alpha=.05,
+                 verbose=False):
         self.exp = exp
 
         b, num_img, num_vox = exp.y.shape
@@ -161,29 +160,32 @@ class AnalysisHGLM(Analysis):
 
         # compute z stat per region
         self.child_dict = dict()
-        self.llr = np.empty((n_permute + 1, num_reg))
-        tqdm_dict = dict(total=n_permute + 1,
+        self.llr = np.empty((n_perm + n_perm_adj + 1, num_reg))
+        tqdm_dict = dict(total=n_perm + 1,
                          desc='permuting',
                          disable=not verbose)
-        for perm_idx in tqdm(range(n_permute + 1), **tqdm_dict):
+        for perm_idx in tqdm(range(n_perm + n_perm_adj + 1),
+                             **tqdm_dict):
             _exp = exp.permute(perm_idx)
             children = self.cluster(exp=_exp, chol_regr=chol_regr)
 
             # store
             self.child_dict[perm_idx] = children
             self.llr[perm_idx, :] = self.get_llr(_exp, children,
-                                                 seed_offset=n_permute)
+                                                 seed_offset=n_perm)
 
         # compute sizes of each region
-        self.size = np.empty((n_permute + 1, num_reg))
+        self.size = np.empty((n_perm + n_perm_adj + 1, num_reg))
         for perm_idx, children in self.child_dict.items():
             self.size[perm_idx, :] = node_sum(x=np.ones(num_vox, dtype=int),
                                               children=children)
 
         # adjust llr
-        self.llr_beta = self.llr_fit(self.size[1:, :], self.llr[1:, :])
-        llr_predict = self.llr_predict(self.llr_beta, self.size)
-        self.llr_adjust = 10 ** (np.log10(self.llr) -
+        self.llr_beta = self.llr_fit(self.size[-n_perm_adj:, :],
+                                     self.llr[-n_perm_adj:, :])
+        llr_predict = self.llr_predict(self.llr_beta,
+                                       self.size[:-n_perm_adj, :])
+        self.llr_adjust = 10 ** (np.log10(self.llr[:-n_perm_adj, :]) -
                                  np.log10(llr_predict))
 
         # compute p-values (max stat across space)

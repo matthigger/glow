@@ -131,7 +131,7 @@ class TestBigEffect:
                                     p_val=.0001)
 
     def test_hglm(self):
-        analysis = AnalysisHGLM(TestBigEffect.exp, n_permute=10, alpha=.1)
+        analysis = AnalysisHGLM(TestBigEffect.exp, n_perm=10, alpha=.1)
 
         # check that target region segmented properly
         f1 = get_f1(mask=TestBigEffect.effect.mask,
@@ -144,6 +144,6 @@ class TestBigEffect:
                                    TestBigEffect.effect.mask)
 
     def test_tfce(self):
-        analysis = AnalysisTFCE(TestBigEffect.exp, n_permute=10, alpha=.1)
+        analysis = AnalysisTFCE(TestBigEffect.exp, n_perm=10, alpha=.1)
         np.testing.assert_allclose(analysis.effect_list[0].mask,
                                    TestBigEffect.effect.mask)
