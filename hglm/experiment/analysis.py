@@ -62,22 +62,51 @@ class Analysis:
 
         return pval
 
+    @classmethod
+    def get_llr(cls, exp, children=None, num_permute=0, seed_offset=0):
+        """ computes log likelihood score (full over reduced) per region
+
+        Args:
+            exp (Experiment):
+            children (np.array): (num_reg, 2) each col are index of child
+                regions, if none passed then iterates only through voxels
+            num_permute (int): number of permutations per region
+            seed_offset (int): offsets seed used in permutation.  useful to
+                ensure permutations used in z score process here are distinct
+                from those used to generate segmentations elsewhere.
+
+        Returns:
+            llr (np.array): (num_reg, ) log likelihood
+        """
+        b, num_img, num_vox = exp.y.shape
+        num_reg = num_vox
+        if children is not None:
+            num_reg += children.shape[0]
+
+        # count regions & initialize output arrays (assume children merges
+        # until only a single region remains)
+        llr = np.zeros((num_permute + 1, num_reg))
+
+        chol_regr = QRRegressCovariate(x=exp.x, contrast=exp.contrast)
+
+        for reg_idx, qyt, yout, size in \
+                iter_qyt_yout_size(exp, chol_regr, children, num_permute,
+                                   seed_offset):
+            # compute f ratio
+            llr[:, reg_idx] = chol_regr.get_llr(qyt, yout, size)
+
+        return llr
+
 
 class AnalysisTFCE(Analysis):
     def __init__(self, exp, n_perm, alpha=.05, verbose=False):
         self.exp = exp
 
-        # compute f_ratio per each voxel
-        num_vox = exp.y.shape[2]
-        chol_regr = QRRegressCovariate(exp.x, exp.contrast)
-        self.f_ratio = np.empty((n_perm + 1, num_vox))
-        for perm_idx in range(n_perm + 1):
-            _exp = exp.permute(perm_idx=perm_idx)
-            qyt, yout = chol_regr.get_qyt_yout(_exp.y)
-            self.f_ratio[perm_idx, :] = chol_regr.get_f_ratio(qyt, yout)
+        # compute llr per each voxel
+        self.llr = self.get_llr(exp, num_permute=n_perm)
 
         # apply TFCE per image
-        self.tfce_stat = self.apply_tfce(stat=self.f_ratio,
+        self.tfce_stat = self.apply_tfce(stat=self.llr,
                                          mask_idx=exp.mask_idx,
                                          verbose=verbose)
 
@@ -158,21 +187,22 @@ class AnalysisHGLM(Analysis):
         # pre-compute
         chol_regr = QRRegressCovariate(x=exp.x, contrast=exp.contrast)
 
-        # compute z stat per region
+        # permute, cluster & llr per region in hierarchy
         self.child_dict = dict()
-        self.llr = np.empty((n_perm + n_perm_adj + 1, num_reg))
+        self.llr = np.zeros((n_perm + n_perm_adj + 1, num_reg))
         tqdm_dict = dict(total=n_perm + 1,
                          desc='permuting',
                          disable=not verbose)
-        for perm_idx in tqdm(range(n_perm + n_perm_adj + 1),
-                             **tqdm_dict):
+        for perm_idx in tqdm(range(n_perm + n_perm_adj + 1), **tqdm_dict):
+            # permute data
             _exp = exp.permute(perm_idx)
-            children = self.cluster(exp=_exp, chol_regr=chol_regr)
 
-            # store
+            # build hierarchical segmentation
+            children = self.cluster(exp=_exp, chol_regr=chol_regr)
             self.child_dict[perm_idx] = children
-            self.llr[perm_idx, :] = self.get_llr(_exp, children,
-                                                 seed_offset=n_perm)
+
+            # compute llr per region in hierarchy
+            self.llr[perm_idx, :] = self.get_llr(_exp, children)
 
         # compute sizes of each region
         self.size = np.empty((n_perm + n_perm_adj + 1, num_reg))
@@ -228,41 +258,6 @@ class AnalysisHGLM(Analysis):
             beta (np.array): (2) model params
         """
         return 10 ** (beta[0] + beta[1] * np.log10(size))
-
-    @classmethod
-    def get_llr(cls, exp, children, num_permute=0, seed_offset=0):
-        """ computes log likelihood score (full over reduced) per region
-
-        Args:
-            exp (Experiment):
-            children (np.array): (num_reg, 2) each col are index of child
-                regions
-            num_permute (int): number of permutations to use when computing
-                z-score adjustment
-            seed_offset (int): offsets seed used in permutation.  useful to
-                ensure permutations used in z score process here are distinct
-                from those used to generate segmentations elsewhere.
-
-        Returns:
-            llr (np.array): (num_reg, ) log likelihood
-        """
-        b, num_img, num_vox = exp.y.shape
-        num_multi_vox = children.shape[0]
-        num_reg = num_vox + num_multi_vox
-
-        # count regions & initialize output arrays (assume children merges
-        # until only a single region remains)
-        llr = np.empty(num_reg)
-
-        chol_regr = QRRegressCovariate(x=exp.x, contrast=exp.contrast)
-
-        for reg_idx, qyt, yout, size in \
-                iter_qyt_yout_size(exp, chol_regr, children, num_permute,
-                                   seed_offset):
-            # compute f ratio
-            llr[reg_idx] = chol_regr.get_llr(qyt, yout, size)[0]
-
-        return llr
 
     @classmethod
     def cluster(cls, exp, mode='full', chol_regr=None):
