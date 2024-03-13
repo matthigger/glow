@@ -383,7 +383,7 @@ def iter_qyt_yout_size(exp, chol_regr, children, num_permute=0, seed_offset=0):
     freed_lane = np.stack(list(map(exp.get_freed_lane, seed_iter)))
 
     qyt_yout_size_dict = dict()
-    for reg_idx in iter_topo(children, num_leaf=num_vox):
+    for reg_idx in iter_topo(children=children, num_leaf=num_vox):
         if reg_idx < num_vox:
             # single voxel region, permute y via freedman lane
             # note each voxel gets its own unique permutation matrix

@@ -70,20 +70,36 @@ def test_topo_iter():
                          [2, 3],
                          [4, 5]])
 
-    assert list(iter_topo(children, num_leaf=4, node_start=4)) == [0, 1, 4]
-    assert list(iter_topo(children, num_leaf=4, node_start=5)) == [2, 3, 5]
-    assert list(iter_topo(children, num_leaf=4)) == [0, 1, 4, 2, 3, 5, 6]
-    assert list(iter_topo(children, num_leaf=4, only_leaf=True)) == [0, 1, 2,
+    assert list(iter_topo(children=children,
+                          num_leaf=4,
+                          node_start=4)) == [0, 1, 4]
+    assert list(iter_topo(children=children,
+                          num_leaf=4,
+                          node_start=5)) == [2, 3, 5]
+    assert list(iter_topo(children=children,
+                          num_leaf=4)) == [0, 1, 4, 2, 3, 5, 6]
+    assert list(iter_topo(children=children,
+                          num_leaf=4,
+                          only_leaf=True)) == [0, 1, 2,
                                                                      3]
 
     # incomplete tree
     children = np.array([[0, 1],
                          [2, 3]])
 
-    assert list(iter_topo(children, num_leaf=4, node_start=4)) == [0, 1, 4]
-    assert list(iter_topo(children, num_leaf=4, node_start=5)) == [2, 3, 5]
-    assert list(iter_topo(children, num_leaf=4, node_start=5,
+    assert list(iter_topo(children=children,
+                          num_leaf=4,
+                          node_start=4)) == [0, 1, 4]
+    assert list(iter_topo(children=children,
+                          num_leaf=4,
+                          node_start=5)) == [2, 3, 5]
+    assert list(iter_topo(children=children,
+                          num_leaf=4,
+                          node_start=5,
                           only_leaf=True)) == [2, 3]
+
+    # no graph passed (iterate through leafs one by one)
+    assert list(iter_topo(num_leaf=4)) == [0, 1, 2, 3]
 
 
 def test_children_to_parent():
