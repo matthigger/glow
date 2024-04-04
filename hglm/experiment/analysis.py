@@ -1,6 +1,5 @@
 from _bisect import bisect_left
 from copy import copy
-from warnings import warn
 
 import numpy as np
 from scipy.ndimage import label
@@ -26,7 +25,6 @@ class Analysis:
 
     def __init__(self, exp):
         if not isinstance(exp, ExperimentWhitened):
-            warn('pre-whitening data before analysis')
             exp = ExperimentWhitened.from_exp(exp)
         self.exp = exp
 
