@@ -1,5 +1,6 @@
 from _bisect import bisect_left
 from copy import copy
+from warnings import warn
 
 import numpy as np
 from scipy.ndimage import label
@@ -10,6 +11,7 @@ from tqdm import tqdm
 from hglm.effect import Effect
 from hglm.graph import iter_topo, node_sum
 from hglm.tfce import apply_tfce_x
+from .exper import ExperimentWhitened
 from .regress import QRRegressCovariate
 
 
@@ -21,6 +23,12 @@ class Analysis:
         p_val (np.array): (num_reg) FWER controlled pval
         effect_list (list): list of Effect objects discovered
     """
+
+    def __init__(self, exp):
+        if not isinstance(exp, ExperimentWhitened):
+            warn('pre-whitening data before analysis')
+            exp = ExperimentWhitened.from_exp(exp)
+        self.exp = exp
 
     @classmethod
     def get_pval(cls, stat, mask_exclude=None):
@@ -100,7 +108,7 @@ class Analysis:
 
 class AnalysisTFCE(Analysis):
     def __init__(self, exp, n_perm, alpha=.05, verbose=False):
-        self.exp = exp
+        super().__init__(exp)
 
         # compute llr per each voxel
         self.llr = self.get_llr(exp, num_permute=n_perm)
@@ -179,7 +187,7 @@ class AnalysisHGLM(Analysis):
 
     def __init__(self, exp, n_perm, n_perm_adj=10, alpha=.05,
                  min_size_discover=1, verbose=False):
-        self.exp = exp
+        super().__init__(exp)
 
         b, num_img, num_vox = exp.y.shape
         num_reg = num_vox * 2 - 1
@@ -190,7 +198,7 @@ class AnalysisHGLM(Analysis):
         # permute, cluster & llr per region in hierarchy
         self.child_dict = dict()
         self.llr = np.zeros((n_perm + n_perm_adj + 1, num_reg))
-        tqdm_dict = dict(total=n_perm + 1,
+        tqdm_dict = dict(total=n_perm + n_perm_adj + 1,
                          desc='permuting',
                          disable=not verbose)
         for perm_idx in tqdm(range(n_perm + n_perm_adj + 1), **tqdm_dict):

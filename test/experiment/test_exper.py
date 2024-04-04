@@ -1,7 +1,7 @@
-from hglm.experiment.exper import *
 from hglm.effect import ExtenterSphere
-from .make_test_image import folder_test_data, img_feat_intensity
+from hglm.experiment.exper import *
 from test.helper import generate_dummy_data
+from .make_test_image import folder_test_data, img_feat_intensity
 
 
 def get_rand_exp(shape=(10, 10, 10), **kwargs):
@@ -107,3 +107,16 @@ class TestExperiment:
         for vox_idx in range(np.prod(shape)):
             y_permute_exp = exp.y[..., vox_idx] @ freed_lane
             assert np.allclose(exp_permuted.y[..., vox_idx], y_permute_exp)
+
+
+class TestExperimentWhitened:
+    def test_init(self):
+        shape = 10, 10
+        num_img = 5
+        exp = get_rand_exp(shape=shape, seed=0, num_img=num_img)
+        exp_white = ExperimentWhitened.from_exp(exp)
+
+        # confirm desired covariance in exp_white
+        b = exp_white.y.shape[0]
+        y = exp_white.y.reshape((b, -1), order='F')
+        assert np.allclose(np.cov(y), np.eye(b))

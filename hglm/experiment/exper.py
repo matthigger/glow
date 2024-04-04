@@ -304,3 +304,35 @@ class Experiment(ExperimentImageOnly):
 
         return Experiment(x=self.x, y=y, contrast=self.contrast,
                           mask_idx=self.mask_idx)
+
+
+class ExperimentWhitened(Experiment):
+    """ imaging data whitened (ZCA)
+
+    Attributes:
+        to_white (np.array): (b, b) transform from original to white data
+        from_white (np.array): (b, b) from whitened back to original
+        y_orig (np.array): (b, num_img, num_vox) original imaging features
+    """
+
+    @classmethod
+    def from_exp(cls, exp):
+        return ExperimentWhitened(y=exp.y, mask_idx=exp.mask_idx, x=exp.x,
+                                  contrast=exp.contrast)
+
+    def __init__(self, y, mask_idx, **kwargs):
+        # computing zca whitening transform (and inverse)
+        _y = y.reshape((y.shape[0], -1), order='F')
+        cov = np.atleast_2d(np.cov(_y))
+        assert np.linalg.matrix_rank(cov) == cov.shape[0], \
+            'redundant imaging feature'
+        u, s, _ = np.linalg.svd(cov)
+        self.to_white = np.diag(s ** -.5) @ u.T
+        self.from_white = np.linalg.inv(self.to_white)
+
+        # store original
+        self.y_orig = y
+
+        # whiten & build experiment
+        y = np.einsum('ab,bnr->anr', self.to_white, y)
+        super().__init__(y=y, mask_idx=mask_idx, **kwargs)
