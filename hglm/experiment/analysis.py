@@ -2,6 +2,7 @@ from _bisect import bisect_left
 from copy import copy
 
 import numpy as np
+from joblib import Parallel, delayed
 from scipy.ndimage import label
 from sklearn.cluster import ward_tree
 from sklearn.feature_extraction import grid_to_graph
@@ -184,7 +185,7 @@ class AnalysisHGLM(Analysis):
     """
 
     def __init__(self, exp, n_perm, n_perm_adj=10, alpha=.05,
-                 min_size_discover=1, verbose=False):
+                 min_size_discover=1, verbose=False, n_jobs=0):
         super().__init__(exp)
 
         b, num_img, num_vox = exp.y.shape
@@ -199,16 +200,32 @@ class AnalysisHGLM(Analysis):
         tqdm_dict = dict(total=n_perm + n_perm_adj + 1,
                          desc='permuting',
                          disable=not verbose)
-        for perm_idx in tqdm(range(n_perm + n_perm_adj + 1), **tqdm_dict):
+
+        def cluster_llr(perm_idx):
             # permute data
             _exp = exp.permute(perm_idx)
 
             # build hierarchical segmentation
             children = self.cluster(exp=_exp, chol_regr=chol_regr)
-            self.child_dict[perm_idx] = children
 
-            # compute llr per region in hierarchy
-            self.llr[perm_idx, :] = self.get_llr(_exp, children)
+            # compute log likelihood ratio
+            llr = self.get_llr(_exp, children)
+            return children, llr
+
+        perm_iter = tqdm(range(n_perm + n_perm_adj + 1), **tqdm_dict)
+        if n_jobs not in (0, 1):
+            # parallel
+            r = Parallel(n_jobs=n_jobs)(delayed(cluster_llr)(perm)
+                                        for perm in perm_iter)
+
+            # store
+            for p_idx, (child, llr) in enumerate(r):
+                self.child_dict[p_idx] = child
+                self.llr[p_idx, :] = llr
+        else:
+            # serial
+            for p_idx in perm_iter:
+                self.child_dict[p_idx], self.llr[p_idx, :] = cluster_llr(p_idx)
 
         # compute sizes of each region
         self.size = np.empty((n_perm + n_perm_adj + 1, num_reg))
