@@ -145,7 +145,8 @@ def scatter_size_vs_stat(analysis, y_feat, mask=None, min_size=1):
     size = analysis.size.astype(float)
 
     assert isinstance(y_feat, np.ndarray)
-    assert y_feat.shape == size.shape
+    assert y_feat.shape[1] == size.shape[1]
+    size = size[:y_feat.shape[0], :]
     y = copy(y_feat)
 
     if min_size > 1:
