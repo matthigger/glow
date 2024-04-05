@@ -90,22 +90,31 @@ class TestExperimentOnlyImage:
 class TestExperiment:
 
     def test_permute(self):
+        perm_idx = 1
         shape = 10, 10
         num_img = 5
         exp = get_rand_exp(shape=shape, seed=0, num_img=num_img)
-
-        exp_permuted = exp.permute(perm_idx=1)
 
         # prep
         x = exp.x[~exp.contrast, :], exp.x
         h = [np.linalg.pinv(_x) @ _x for _x in x]
 
+        # test 1: block_exchange=True
         # manually permute in a loop, check that einsum does the same
-        p = get_perm_matrix(seed=1, num_img=num_img)
-        freed_lane = (np.eye(num_img) - h[0]) @ p + h[0]
+        exp_permuted = exp.permute(perm_idx=perm_idx, block_exchange=True)
 
+        freed_lane = exp.get_freed_lane(perm_idx)
         for vox_idx in range(np.prod(shape)):
             y_permute_exp = exp.y[..., vox_idx] @ freed_lane
+            assert np.allclose(exp_permuted.y[..., vox_idx], y_permute_exp)
+
+        # test 2: block_exchange=False
+        exp_permuted = exp.permute(perm_idx=perm_idx, block_exchange=False)
+
+        for vox_idx in range(np.prod(shape)):
+            freed_lane = exp.get_freed_lane(perm_idx + vox_idx)
+            y_permute_exp = exp.y[..., vox_idx] @ freed_lane
+
             assert np.allclose(exp_permuted.y[..., vox_idx], y_permute_exp)
 
 

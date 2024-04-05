@@ -288,19 +288,32 @@ class Experiment(ExperimentImageOnly):
         p = get_perm_matrix(seed=perm_idx, num_img=num_img)
         return (np.eye(num_img) - self.h[0]) @ p + self.h[0]
 
-    def permute(self, perm_idx):
+    def permute(self, perm_idx, block_exchange=True):
         """ gets new experiment whose y features were permuted (freedman lane)
 
         Args:
             perm_idx (int): permutation index (0 is no permutation)
+            block_exchange (bool): toggles block exchange permuting.  all
+                voxels are permuted with same permutation matrix (faster, but
+                resulting experiment may still contain shadows of effects in
+                original data).  setting to False will give each voxel its own
+                permutation matrix, more computationally expensive.
 
         Returns:
             exp (Experiment): new experiment whose y features have been
                 permuted
         """
-        # permute
-        freed_lane = self.get_freed_lane(perm_idx)
-        y = np.einsum('ijk,jm->imk', self.y, freed_lane)
+        if perm_idx == 0:
+            # perm_idx = 0 is reserved for unpermuted data
+            y = self.y
+        elif block_exchange:
+            freed_lane = self.get_freed_lane(perm_idx)
+            y = np.einsum('ijk,jm->imk', self.y, freed_lane)
+        else:
+            y = np.empty_like(self.y)
+            for vox_idx in range(y.shape[2]):
+                freed_lane = self.get_freed_lane(perm_idx + vox_idx)
+                y[:, :, vox_idx] = self.y[:, :, vox_idx] @ freed_lane
 
         return Experiment(x=self.x, y=y, contrast=self.contrast,
                           mask_idx=self.mask_idx)

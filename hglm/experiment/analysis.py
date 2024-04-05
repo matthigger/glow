@@ -203,7 +203,7 @@ class AnalysisHGLM(Analysis):
 
         def cluster_llr(perm_idx):
             # permute data
-            _exp = exp.permute(perm_idx)
+            _exp = exp.permute(perm_idx, block_exchange=False)
 
             # build hierarchical segmentation
             children = self.cluster(exp=_exp, chol_regr=chol_regr)
