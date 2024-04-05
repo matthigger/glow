@@ -155,10 +155,10 @@ def scatter_size_vs_stat(analysis, y_feat, mask=None, min_size=1):
         y[b] = np.nan
 
     if mask is None:
-        plt.scatter(size, y, alpha=.02, color='k',
+        plt.scatter(size, y, alpha=1, color='k',
                     linewidth=0, label='region')
     else:
-        plt.scatter(size[1:, :], y[1:, :], alpha=.02, color='k',
+        plt.scatter(size[1:, :], y[1:, :], alpha=1, color='k',
                     linewidth=0, label='region (permuted)')
 
         b = f1 > 0

@@ -8,7 +8,6 @@ from datetime import datetime
 from uuid import uuid4
 
 import cloudpickle as pickle
-from joblib import Parallel, delayed
 from sklearn.metrics import f1_score, recall_score, confusion_matrix
 
 from hglm.effect import *
@@ -18,11 +17,11 @@ from hglm.experiment import *
 folder_out = '/home/matt/Dropbox/pnl_hglm/results'
 
 # number of effects to model
-n_repeat = 100
+n_repeat = 32 * 3
 
 # p_val describes severity of effect (assuming typical F test assumptions
 # ...not valid but still useful to quantify how difficult effect is)
-p_val_all = np.linspace(.15, .03, 7)
+p_val_all = np.linspace(.25, .05, 9)
 
 # to speed up analysis, random voxel is chosen and dilated to this radius.
 # only these voxels are included in the analysis
@@ -40,7 +39,6 @@ n_jobs = -1
 
 # parameters to be passed to Analysis constructor
 analysis_kwargs = {'AnalysisHGLM': dict(n_perm=100,
-                                        n_perm_adj=10,
                                         min_size_discover=1),
                    'AnalysisTFCE': dict(n_perm=100)}
 
@@ -123,6 +121,9 @@ def run_one_exp(seed):
                                       high=np.iinfo(_seed_extenter).max,
                                       size=1)[0]
 
+    # pre-whiten exp
+    exp = ExperimentWhitened.from_exp(exp)
+
     # sample effect space
     n = exp.y.shape[2] * effect_perc
     extenter = ExtenterMinVar(n=n)
@@ -184,9 +185,9 @@ def run_one_exp(seed):
                     pickle.dump((ana, effect), f)
 
 
-if n_jobs:
+if n_jobs not in (0, 1):
     r = Parallel(n_jobs=n_jobs, verbose=10)(
-        delayed(run_one_exp)(seed) for seed in range(n_repeat))
+        delayed(run_one_exp)(seed) for seed in tqdm(range(n_repeat)))
 else:
-    for seed in range(n_repeat):
+    for seed in tqdm(range(n_repeat)):
         run_one_exp(seed)
