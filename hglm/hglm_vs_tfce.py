@@ -71,7 +71,7 @@ exp_hcp = ExperimentImageOnly.from_search(folder=folder,
                                           sbj_regex='[\d]{6}',
                                           img_glob_dict={'FA': '*_FA.nii.gz',
                                                          'MD': '*_MD.nii.gz'})
-exp_hcp = exp_hcp.sample_x(a=2)
+exp_hcp = exp_hcp.sample_x(a=2, seed=1)
 
 analysis_obj_tup = (AnalysisHGLM, AnalysisTFCE)
 
