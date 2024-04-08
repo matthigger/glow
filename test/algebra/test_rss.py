@@ -1,13 +1,15 @@
 import numpy as np
 from numpy.polynomial.polynomial import Polynomial
 
-from helper import generate_dummy_data
+from ..helper import generate_dummy_data
 
 
 def test_validate_eps():
     """ validate formula for residual sum of squares
 
     N|r| \mathcal{E} = \sum_v Y_v Y_v^T - |r| \bar{Y}_r H \bar{Y}^T
+
+    and H = Q @ Q.T
     """
     a, b, num_img, reg_size = 2, 3, 5, 10
 
@@ -19,6 +21,12 @@ def test_validate_eps():
             y_mean = y.mean(axis=2)
             h = np.linalg.pinv(x) @ x
             y_hat = y_mean @ h
+
+            # test h = q
+            q, r = np.linalg.qr(x.T, mode='reduced')
+            q = q.T
+            assert np.allclose(h, q.T  @ q)
+
             y_resid = y - y_hat[..., np.newaxis]
             eps_exp = np.cov(y_resid.reshape((b, -1)), ddof=0)
 
