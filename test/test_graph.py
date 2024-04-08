@@ -81,7 +81,7 @@ def test_topo_iter():
     assert list(iter_topo(children=children,
                           num_leaf=4,
                           only_leaf=True)) == [0, 1, 2,
-                                                                     3]
+                                               3]
 
     # incomplete tree
     children = np.array([[0, 1],
@@ -134,3 +134,25 @@ def test_iter_ancestor():
     assert list(iter_ancestor(parent, node=1)) == [1, 4, 6]
     assert list(iter_ancestor(parent, node=4)) == [4, 6]
     assert list(iter_ancestor(parent, node=3)) == [3, 5, 6]
+
+
+def test_iter_size_yout_ybar():
+    rng = np.random.default_rng(seed=0)
+    b, num_img, num_vox = 3, 4, 5
+    y = rng.standard_normal((b, num_img, num_vox))
+    children = np.arange(2 * num_vox - 2).reshape((-1, 2), order='C')
+
+    for reg_idx, size, yout, ybar in iter_size_yout_ybar(y, children):
+        # build reliable compute: get index of all voxels in region
+        vox = np.array(list(iter_topo(children=children,
+                                      num_leaf=num_vox,
+                                      node_start=reg_idx,
+                                      only_leaf=True)))
+        _y = y[:, :, vox]
+
+        assert vox.size == size
+        assert np.allclose(_y.mean(axis=2), ybar)
+
+        _y = _y.reshape((b, -1), order='F')
+        yout_exp = _y @ _y.T / size
+        assert np.allclose(yout_exp, yout)

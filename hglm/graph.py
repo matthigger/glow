@@ -1,6 +1,50 @@
 import numpy as np
 
 
+def iter_size_yout_ybar(y, children=None):
+    """ iterates through region stats, less-redundant compute via graph
+
+    Args:
+        y (np.array): (b, num_img, num_vox) imaging features
+        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
+            sklearn.cluster.Ward.children_).  If None is passed,
+            then iterates through stats per individual voxel region only
+
+    Yields:
+        reg_idx (int): region index
+        size (int): size, in voxels, of region
+        yout (np.array): (b, b) sum of yv @ yv.T across all voxels of region
+        ybar (np.array): (b, num_img) average, across voxels, of features
+    """
+    b, num_img, num_vox = y.shape
+
+    size_yout_ybar = dict()
+    for reg_idx in iter_topo(children=children, num_leaf=num_vox):
+        if reg_idx < num_vox:
+            # single voxel region
+            size = 1
+            yv = y[:, :, reg_idx]
+            yout = yv @ yv.T
+            ybar = yv
+
+            size_yout_ybar[reg_idx] = size, yout, ybar
+        else:
+            # multi voxel region
+            # look up stats of constituent regions
+            c0, c1 = children[int(reg_idx - num_vox), :]
+            size0, yout0, ybar0 = size_yout_ybar.pop(c0)
+            size1, yout1, ybar1 = size_yout_ybar.pop(c1)
+
+            # compute & store stats of their union
+            size = size0 + size1
+            lam = size0 / size, size1 / size
+            yout = yout0 * lam[0] + yout1 * lam[1]
+            ybar = ybar0 * lam[0] + ybar1 * lam[1]
+            size_yout_ybar[reg_idx] = size, yout, ybar
+
+        yield reg_idx, size, yout, ybar
+
+
 def iter_edge(children, num_vox):
     """ iterates through all edges
 
