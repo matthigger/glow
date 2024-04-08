@@ -37,8 +37,8 @@ def iter_size_yout_ybar(y, children=None):
 
             # compute & store stats of their union
             size = size0 + size1
+            yout = yout0 + yout1
             lam = size0 / size, size1 / size
-            yout = yout0 * lam[0] + yout1 * lam[1]
             ybar = ybar0 * lam[0] + ybar1 * lam[1]
             size_yout_ybar[reg_idx] = size, yout, ybar
 

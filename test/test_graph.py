@@ -154,5 +154,5 @@ def test_iter_size_yout_ybar():
         assert np.allclose(_y.mean(axis=2), ybar)
 
         _y = _y.reshape((b, -1), order='F')
-        yout_exp = _y @ _y.T / size
+        yout_exp = _y @ _y.T
         assert np.allclose(yout_exp, yout)
