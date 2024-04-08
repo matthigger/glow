@@ -9,7 +9,7 @@ from sklearn.feature_extraction import grid_to_graph
 from tqdm import tqdm
 
 from hglm.effect import Effect
-from hglm.graph import iter_topo, node_sum
+from hglm.graph import iter_topo, node_sum, iter_size_yout_ybar
 from hglm.tfce import apply_tfce_x
 from .exper import ExperimentWhitened
 from .regress import QRRegressCovariate
@@ -70,17 +70,13 @@ class Analysis:
         return pval
 
     @classmethod
-    def get_llr(cls, exp, children=None, num_permute=0, seed_offset=0):
+    def get_llr(cls, exp, children=None):
         """ computes log likelihood score (full over reduced) per region
 
         Args:
             exp (Experiment):
             children (np.array): (num_reg, 2) each col are index of child
                 regions, if none passed then iterates only through voxels
-            num_permute (int): number of permutations per region
-            seed_offset (int): offsets seed used in permutation.  useful to
-                ensure permutations used in z score process here are distinct
-                from those used to generate segmentations elsewhere.
 
         Returns:
             llr (np.array): (num_reg, ) log likelihood
@@ -90,17 +86,22 @@ class Analysis:
         if children is not None:
             num_reg += children.shape[0]
 
-        # count regions & initialize output arrays (assume children merges
-        # until only a single region remains)
-        llr = np.zeros((num_permute + 1, num_reg))
+        # prep hat matrices (maps ybar to estimate)
+        q, r = np.linalg.qr(exp.x.T, mode='reduced')
+        q = q.T
+        n_covariate = exp.contrast.size - exp.contrast.sum()
+        q = q[:n_covariate, :], q
+        h = tuple(_q.T @ _q for _q in q)
 
-        chol_regr = QRRegressCovariate(x=exp.x, contrast=exp.contrast)
+        def log_det(eps):
+            return np.log(np.linalg.det(eps))
 
-        for reg_idx, qyt, yout, size in \
-                iter_qyt_yout_size(exp, chol_regr, children, num_permute,
-                                   seed_offset):
-            # compute f ratio
-            llr[:, reg_idx] = chol_regr.get_llr(qyt, yout, size)
+        llr = np.zeros(num_reg)
+        for reg_idx, size, yout, ybar in \
+                iter_size_yout_ybar(y=exp.y, children=children):
+            eps = tuple((yout - size * ybar @ _h @ ybar.T) / (size * num_img)
+                        for _h in h)
+            llr[reg_idx] = size / 2 * (log_det(eps[0]) - log_det(eps[1]))
 
         return llr
 
@@ -109,8 +110,15 @@ class AnalysisTFCE(Analysis):
     def __init__(self, exp, n_perm, alpha=.05, verbose=False):
         super().__init__(exp)
 
-        # compute llr per each voxel
-        self.llr = self.get_llr(exp, num_permute=n_perm)
+        # compute llr per each voxel (for every permutation)
+        num_vox = exp.y.shape[2]
+        self.llr = np.zeros((n_perm + 1, num_vox))
+        tqdm_dict = dict(total=n_perm + 1,
+                         desc='permuting',
+                         disable=not verbose)
+        for perm_idx in tqdm(range(n_perm + 1), **tqdm_dict):
+            _exp = exp.permute(perm_idx, block_exchange=False)
+            self.llr[perm_idx, :] = self.get_llr(_exp, children=None)
 
         # apply TFCE per image
         self.tfce_stat = self.apply_tfce(stat=self.llr,
