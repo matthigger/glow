@@ -12,7 +12,6 @@ from hglm.effect import Effect
 from hglm.graph import iter_topo, node_sum, iter_size_yout_ybar
 from hglm.tfce import apply_tfce_x
 from .exper import ExperimentWhitened
-from .regress import QRRegressCovariate
 
 
 class Analysis:
@@ -199,9 +198,6 @@ class AnalysisHGLM(Analysis):
         b, num_img, num_vox = exp.y.shape
         num_reg = num_vox * 2 - 1
 
-        # pre-compute
-        chol_regr = QRRegressCovariate(x=exp.x, contrast=exp.contrast)
-
         # permute, cluster & llr per region in hierarchy
         self.child_dict = dict()
         self.llr = np.zeros((n_perm + 1, num_reg))
@@ -214,7 +210,7 @@ class AnalysisHGLM(Analysis):
             _exp = exp.permute(perm_idx, block_exchange=False)
 
             # build hierarchical segmentation
-            children = self.cluster(exp=_exp, chol_regr=chol_regr)
+            children = self.cluster(exp=_exp)
 
             # compute log likelihood ratio
             llr = self.get_llr(_exp, children)
@@ -253,7 +249,7 @@ class AnalysisHGLM(Analysis):
                                          children=self.child_dict[0])
 
     @classmethod
-    def cluster(cls, exp, mode='full', chol_regr=None):
+    def cluster(cls, exp, mode='full'):
         """ build child_dict
 
         Args:
@@ -261,30 +257,19 @@ class AnalysisHGLM(Analysis):
             mode (str): 'ward', 'full' or 'diff'
                 'ward': reduces image-pooled spatial covariance
                 'full': reduces error in the full model
-                'diff': reduces error exclusively in full model (no credit
-                    given to error changes in the reduced model)
         """
         # get connectivity (ensures only neighboring voxels joined)
         assert exp.mask_idx.ndim in (2, 3), 'mask must be 2d or 3d'
-        assert mode in ('ward', 'full', 'diff'), 'mode not recognized'
+        assert mode in ('ward', 'full'), 'mode not recognized'
 
         if mode == 'ward':
             y = exp.y
         else:
-            if chol_regr is None:
-                # if chol_regr not pre-computed, compute it
-                chol_regr = QRRegressCovariate(x=exp.x,
-                                               contrast=exp.contrast)
-            else:
-                assert isinstance(chol_regr, QRRegressCovariate)
+            # compute qr decomposition
+            q, r = np.linalg.qr(exp.x.T)
+            q = q.T
 
-            if mode == 'full':
-                # rows with same span as x
-                q = chol_regr.q
-            else:
-                # mode == 'diff' only rows corresponding features of interest
-                q = chol_regr.q[chol_regr.n_covariate:, :]
-
+            # map x into span of x
             y = np.einsum('bnr,na->bar', exp.y, q.T)
 
         # reshape to vector
@@ -360,43 +345,3 @@ class AnalysisHGLM(Analysis):
             effect_list.append(effect)
 
         return effect_list
-
-
-def iter_qyt_yout_size(exp, chol_regr, children, num_permute=0, seed_offset=0):
-    b, num_img, num_vox = exp.y.shape
-
-    # freed lane permutation matrix (for all permutations)
-    perms_needed = num_permute + num_vox
-    seed_iter = range(seed_offset, perms_needed + seed_offset)
-    freed_lane = np.stack(list(map(exp.get_freed_lane, seed_iter)))
-
-    qyt_yout_size_dict = dict()
-    for reg_idx in iter_topo(children=children, num_leaf=num_vox):
-        if reg_idx < num_vox:
-            # single voxel region, permute y via freedman lane
-            # note each voxel gets its own unique permutation matrix
-            y = np.empty((b, num_img, num_permute + 1))
-            y[:, :, 0] = exp.y[:, :, reg_idx]
-
-            if num_permute:
-                _freed_lane = freed_lane[reg_idx: reg_idx + num_permute, :, :]
-                y[:, :, 1:] = np.einsum('bn,knm->bmk',
-                                        exp.y[:, :, reg_idx],
-                                        _freed_lane)
-
-            qyt, yout = chol_regr.get_qyt_yout(y=y)
-            size = 1
-            qyt_yout_size_dict[reg_idx] = qyt, yout, size
-        else:
-            # if multi voxel region, compute r via constituent regions
-            c0, c1 = children[int(reg_idx - num_vox), :]
-            qyt0, yout0, size0 = qyt_yout_size_dict.pop(c0)
-            qyt1, yout1, size1 = qyt_yout_size_dict.pop(c1)
-
-            size = size0 + size1
-            lam = size0 / size, size1 / size
-            qyt = qyt0 * lam[0] + qyt1 * lam[1]
-            yout = yout0 * lam[0] + yout1 * lam[1]
-            qyt_yout_size_dict[reg_idx] = qyt, yout, size
-
-        yield reg_idx, qyt, yout, size
