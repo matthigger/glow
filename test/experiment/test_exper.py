@@ -8,7 +8,7 @@ def get_rand_exp(shape=(10, 10, 10), **kwargs):
     reg_size = np.prod(shape)
     mask_idx = np.arange(reg_size).reshape(shape)
 
-    x, y, contrast = generate_dummy_data(reg_size=reg_size, **kwargs)
+    x, y, contrast = generate_dummy_data(num_vox=reg_size, **kwargs)
     return Experiment(x=x, y=y, contrast=contrast, mask_idx=mask_idx)
 
 

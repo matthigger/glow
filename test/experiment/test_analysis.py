@@ -11,7 +11,7 @@ from ..helper import generate_dummy_data
 
 num_vox = 4
 n_permute = 3
-x, y, contrast = generate_dummy_data(b=1, reg_size=num_vox, seed=0)
+x, y, contrast = generate_dummy_data(b=1, num_vox=num_vox, seed=0)
 mask_idx = np.arange(num_vox).reshape((2, 2))
 exp = Experiment(x=x, y=y, contrast=contrast, mask_idx=mask_idx)
 children = np.arange(num_vox * 2 - 2).reshape((-1, 2))
@@ -87,7 +87,7 @@ class TestAnalysishglm:
 
     def test_discover(self):
         num_vox = 4
-        x, y, contrast = generate_dummy_data(b=1, reg_size=num_vox, seed=0)
+        x, y, contrast = generate_dummy_data(b=1, num_vox=num_vox, seed=0)
         mask_idx = np.arange(num_vox)
         exp = Experiment(x=x, y=y, contrast=contrast, mask_idx=mask_idx)
         children = np.array([[0, 1],
