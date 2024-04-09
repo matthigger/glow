@@ -305,7 +305,7 @@ class Experiment(ExperimentImageOnly):
         """
         if perm_idx == 0:
             # perm_idx = 0 is reserved for unpermuted data
-            y = self.y
+            y = copy(self.y)
         elif block_exchange:
             freed_lane = self.get_freed_lane(perm_idx)
             y = np.einsum('ijk,jm->imk', self.y, freed_lane)
