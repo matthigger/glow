@@ -12,6 +12,7 @@ from hglm.effect import Effect
 from hglm.graph import iter_topo, node_sum, iter_size_yout_ybar
 from hglm.tfce import apply_tfce_x
 from .exper import ExperimentWhitened
+from .regress import get_llr, prep_get_eps
 
 
 class Analysis:
@@ -69,7 +70,7 @@ class Analysis:
         return pval
 
     @classmethod
-    def get_llr(cls, *args, **kwargs):
+    def get_llr(cls, exp, children=None):
         """ computes log likelihood score (full over reduced) per region
 
         Args:
@@ -80,58 +81,21 @@ class Analysis:
         Returns:
             llr (np.array): (num_reg, ) log likelihood
         """
-        # compute error covariance & size per region
-        eps, size = cls.get_eps_size(*args, **kwargs)
+        # prepare the get_eps functions (eps0 is only features not-of-interest)
+        get_eps0 = prep_get_eps(exp.x[~exp.contrast, :])
+        get_eps1 = prep_get_eps(exp.x)
 
         # compute llr per region
-        num_reg = size.size
-        llr = np.zeros(num_reg)
-        for reg_idx, _size in enumerate(size):
-            log_det = (np.log(np.linalg.det(eps[:, :, reg_idx, 0])),
-                       np.log(np.linalg.det(eps[:, :, reg_idx, 1])))
-            llr[reg_idx] = (log_det[0] - log_det[1]) * _size
-
-        return llr
-
-    @classmethod
-    def get_eps_size(cls, exp, children=None):
-        """ computes log likelihood score (full over reduced) per region
-
-        Args:
-            exp (Experiment):
-            children (np.array): (num_reg, 2) each col are index of child
-                regions, if none passed then iterates only through voxels
-
-        Returns:
-            eps (): (num_reg, ) log likelihood
-            size (np.array): (num_reg) size of each region
-        """
-        b, num_img, num_vox = exp.y.shape
-        num_reg = num_vox
+        num_reg = exp.y.shape[2]
         if children is not None:
             num_reg += children.shape[0]
+        llr = np.zeros(num_reg)
+        for reg_idx, size, yout, ybar in iter_size_yout_ybar(exp.y, children):
+            eps0 = get_eps0(size, yout, ybar)
+            eps1 = get_eps1(size, yout, ybar)
+            llr[reg_idx] = get_llr(size, eps0, eps1)
 
-        # prep hat matrices (maps ybar to estimate)
-        q, r = np.linalg.qr(exp.x.T, mode='reduced')
-        q = q.T
-        n_covariate = exp.contrast.size - exp.contrast.sum()
-        q = q[:n_covariate, :], q
-        h = tuple(_q.T @ _q for _q in q)
-
-        eps = np.zeros((b, b, num_reg, 2))
-        size = np.zeros(num_reg)
-        for reg_idx, _size, yout, ybar in iter_size_yout_ybar(exp.y, children):
-            # store size
-            size[reg_idx] = _size
-
-            # compute proportional to eps for reduced (0) and full model (1)
-            for eps_idx, _h in enumerate(h):
-                eps[:, :, reg_idx, eps_idx] = yout - _size * ybar @ _h @ ybar.T
-
-            # normalize eps (per observation)
-            eps[:, :, reg_idx, :] /= _size * num_img
-
-        return eps, size
+        return llr
 
 
 class AnalysisTFCE(Analysis):
