@@ -3,11 +3,15 @@ from copy import copy
 import imageio
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import seaborn as sns
 
-from hglm.graph import get_f1
+from hglm.graph import get_f1, get_miss_hits
 
 sns.set(font_scale=1.3)
+
+import plotly.express as px
+import plotly.graph_objects as go
 
 
 def make_gif(file_out, n_list=30, fps=10, mask_idx=None, min_n=1,
@@ -124,6 +128,45 @@ def image_iter(children, mask_idx, num_vox):
             yield image, mask_idx_current, color_dict
 
 
+def prep_df(ana_hglm, mask_target=None, full_stats=False):
+    # compute f1 (dice) score with
+    if mask_target is not None:
+        f1 = get_f1(children=ana_hglm.child_dict[0],
+                    mask_idx=ana_hglm.exp.mask_idx,
+                    mask=mask_target)
+
+    df_list = list()
+    for perm_idx, (llr, size) in enumerate(zip(ana_hglm.llr, ana_hglm.size)):
+        children = ana_hglm.child_dict[perm_idx]
+        if full_stats:
+            # compute sigma & tr_eps
+            iter_stat = ana_hglm.iter_reg_stat(exp=ana_hglm.exp,
+                                               children=children)
+            for reg_idx, size, yout, ybar, eps0, eps1 in iter_stat:
+                # sigma & tr_eps & f stat
+                raise NotImplementedError
+
+        d = {'region idx': np.arange(size.size),
+             'LLR': llr,
+             'size (voxels)': size,
+             'permutation': perm_idx}
+
+        if not perm_idx:
+            # add stats specific to unpermuted data
+            d['p-val (FWER control)'] = ana_hglm.p_val
+
+            if mask_target is not None:
+                d['dice'] = f1 if not perm_idx else np.nan
+                miss, hits = get_miss_hits(children=children,
+                                           mask_idx=ana_hglm.exp.mask_idx,
+                                           mask=mask_target)
+                d['False-Pos (voxels)'] = miss
+                d['True-Pos (voxels)'] = hits
+        df_list.append(pd.DataFrame(d))
+
+    return pd.concat(df_list)
+
+
 def scatter_size_vs_stat(analysis, y_feat, mask=None, min_size=1):
     """ scatters size vs f_stat, colors by f1 score if mask is passed
 
@@ -171,3 +214,86 @@ def scatter_size_vs_stat(analysis, y_feat, mask=None, min_size=1):
     plt.xscale('log')
     plt.yscale('log')
     plt.legend()
+
+
+def scatter_plotly(ana_hglm, mask_target=None, x_feat='size (voxels)',
+                   y_feat='LLR', color_feat='dice', plot_permute=True,
+                   plot_tree=True):
+    """
+
+    todo:
+    - doesn't work without mask
+    - push unpermuted nodes back (and make them grey)
+    - line widths on tree a bit too thick
+    """
+
+    df = prep_df(ana_hglm, mask_target=mask_target)
+    df['hover_name'] = df['region idx'].map(lambda x: f'Region {x:.0f}')
+    idx0 = np.where((df['permutation'] != 0).values)[0]
+    idx1 = list(df.columns).index('hover_name')
+    df.iloc[idx0, idx1] = 'Permuted Region'
+
+    # trim to unpermuted
+    _df = df[df['permutation'] == 0].sort_values('region idx')
+    x = _df[x_feat].values
+    y = _df[y_feat].values
+
+    tree_x = list()
+    tree_y = list()
+    num_vox = ana_hglm.exp.y.shape[2]
+    for idx, child in enumerate(ana_hglm.child_dict[0]):
+        par = idx + num_vox
+        for c in child:
+            # plotly will only draw this line segment (not connected to next)
+            # given Nones
+            tree_x += [x[c], x[par], None]
+            tree_y += [y[c], y[par], None]
+
+    hover_data = {'size (voxels)': ':.0f',
+                  'LLR': ':.3e'}
+    hover_data_permuted = {'permutation': ':.0f',
+                            'region idx': ':.0f'}
+    hover_data_unpermuted = {'p-val (FWER control)': ':.2e',
+                             'dice': ':.3f',
+                             'False-Pos (voxels)': ':.0f',
+                             'True-Pos (voxels)': ':.0f'}
+
+    fig_list = list()
+
+    b = df['permutation'] == 0
+    if plot_permute:
+        # plot permuted regions
+        fig_list.append(px.scatter(df[~b],
+                                   x=x_feat,
+                                   y=y_feat,
+                                   hover_name='hover_name',
+                                   hover_data=hover_data | hover_data_permuted))
+
+    if plot_tree:
+        # tree connecting unpermuted data points to each other (hierarchical
+        # segmentation)
+        fig_list.append(px.line(x=tree_x,
+                                y=tree_y,
+                                color_discrete_sequence=('grey',)))
+
+    # plot unpermuted regions
+    fig_list.append(px.scatter(df[b],
+                               x=x_feat,
+                               y=y_feat,
+                               color=color_feat,
+                               hover_name='hover_name',
+                               hover_data=hover_data | hover_data_unpermuted))
+    fig_list[-1].update_traces(marker=dict(size=15))
+
+    data = fig_list[0].data
+    for fig in fig_list[1:]:
+        data += fig.data
+    fig = go.Figure(data=data)
+    fig.update_xaxes(type="log")
+    fig.update_yaxes(type="log")
+    fig.update_layout(height=600,
+                      xaxis_title=x_feat,
+                      yaxis_title=y_feat,
+                      coloraxis_colorbar=dict(title=color_feat),
+                      hoverlabel=dict(bgcolor='white'))
+    return fig, df

@@ -81,21 +81,37 @@ class Analysis:
         Returns:
             llr (np.array): (num_reg, ) log likelihood
         """
-        # prepare the get_eps functions (eps0 is only features not-of-interest)
-        get_eps0 = prep_get_eps(exp.x[~exp.contrast, :])
-        get_eps1 = prep_get_eps(exp.x)
-
         # compute llr per region
         num_reg = exp.y.shape[2]
         if children is not None:
             num_reg += children.shape[0]
         llr = np.zeros(num_reg)
-        for reg_idx, size, yout, ybar in iter_size_yout_ybar(exp.y, children):
-            eps0 = get_eps0(size, yout, ybar)
-            eps1 = get_eps1(size, yout, ybar)
+        for reg_idx, size, _, _, eps0, eps1 in cls.iter_reg_stat(exp,
+                                                                 children):
             llr[reg_idx] = get_llr(size, eps0, eps1)
 
         return llr
+
+    @classmethod
+    def iter_reg_stat(cls, exp, children=None):
+        """ computes log likelihood score (full over reduced) per region
+
+        Args:
+            exp (Experiment):
+            children (np.array): (num_reg, 2) each col are index of child
+                regions, if none passed then iterates only through voxels
+
+        Returns:
+            llr (np.array): (num_reg, ) log likelihood
+        """
+        # prepare the get_eps functions (eps0 is only features not-of-interest)
+        get_eps0 = prep_get_eps(exp.x[~exp.contrast, :])
+        get_eps1 = prep_get_eps(exp.x)
+
+        for reg_idx, size, yout, ybar in iter_size_yout_ybar(exp.y, children):
+            eps0 = get_eps0(size, yout, ybar)
+            eps1 = get_eps1(size, yout, ybar)
+            yield reg_idx, size, yout, ybar, eps0, eps1
 
 
 class AnalysisTFCE(Analysis):
