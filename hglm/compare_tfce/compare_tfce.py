@@ -61,9 +61,11 @@ if folder_out.exists():
     shutil.rmtree(folder_out)
 folder_out.mkdir()
 
-# store copy of script (to read experiment params above)
+# store copy of this script (to read experiment params above)
 shutil.copy(__file__, folder_out / pathlib.Path(__file__).name)
-shutil.copy('hglm_vs_tfce_plot.ipynb', folder_out / 'hglm_vs_tfce_plot.ipynb')
+folder = pathlib.Path(__file__).parent
+shutil.copy(folder / 'compare_tfce_plot.ipynb',
+            folder_out / 'compare_tfce_plot.ipynb')
 
 # input data
 folder = '/home/matt/Dropbox/pnl_hglm/data/hcp100_lowres/image'

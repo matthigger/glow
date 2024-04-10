@@ -164,7 +164,17 @@ def prep_df(ana_hglm, mask_target=None, full_stats=False):
                 d['True-Pos (voxels)'] = hits
         df_list.append(pd.DataFrame(d))
 
-    return pd.concat(df_list)
+    df = pd.concat(df_list)
+    df['discovered'] = False
+    df.reset_index(inplace=True)
+    for effect in ana_hglm.effect_list:
+        reg_idx = effect.reg_idx
+        b = (df['permutation'] == 0) & (df['region idx'] == reg_idx)
+        assert b.sum() == 1, 'unique discovered effect not found'
+        idx = b.index[b][0]
+        df.loc[idx, 'discovered'] = True
+
+    return df
 
 
 def scatter_size_vs_stat(analysis, y_feat, mask=None, min_size=1):
