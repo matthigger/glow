@@ -49,6 +49,16 @@ detail_save = True
 # continues to next experiment
 error_save = True
 
+# input data
+folder = '/home/matt/Dropbox/pnl_hglm/data/hcp100_lowres/image'
+exp_hcp = ExperimentImageOnly.from_search(folder=folder,
+                                          sbj_regex='[\d]{6}',
+                                          img_glob_dict={'FA': '*_FA.nii.gz',
+                                                         'MD': '*_MD.nii.gz'})
+exp_hcp = exp_hcp.sample_x(a=2, seed=1)
+
+analysis_obj_tup = (AnalysisHGLM, AnalysisTFCE)
+
 # prep folder_out
 timestamp = datetime.now().strftime('%y%b%d-%H%M')
 folder_out = pathlib.Path(folder_out)
@@ -66,16 +76,6 @@ shutil.copy(__file__, folder_out / pathlib.Path(__file__).name)
 folder = pathlib.Path(__file__).parent
 shutil.copy(folder / 'compare_tfce_plot.ipynb',
             folder_out / 'compare_tfce_plot.ipynb')
-
-# input data
-folder = '/home/matt/Dropbox/pnl_hglm/data/hcp100_lowres/image'
-exp_hcp = ExperimentImageOnly.from_search(folder=folder,
-                                          sbj_regex='[\d]{6}',
-                                          img_glob_dict={'FA': '*_FA.nii.gz',
-                                                         'MD': '*_MD.nii.gz'})
-exp_hcp = exp_hcp.sample_x(a=2, seed=1)
-
-analysis_obj_tup = (AnalysisHGLM, AnalysisTFCE)
 
 
 def get_score(ana, effect):
@@ -104,24 +104,11 @@ def run_one_exp(seed):
     # allows us to catch numpy's warnings
     warnings.filterwarnings('error')
     np.seterr(all='warn')
-
+    
     # trim experiment to reasonable size (for speedup)
-    # this trimming is re-done until a contiguous experiment is found
-    _seed_extenter = seed
-    while True:
-        extenter = ExtenterSphere(radius=radius)
-        mask_all = extenter(mask_idx=exp_hcp.mask_idx, seed=_seed_extenter)
-        exp = exp_hcp.apply_mask(mask_all)
-
-        _, n_components = label(exp.mask_idx >= 0)
-        if n_components == 1:
-            break
-
-        # get a new seed (from previous)
-        rng = np.random.default_rng(seed=_seed_extenter)
-        _seed_extenter = rng.integers(low=np.iinfo(_seed_extenter).min,
-                                      high=np.iinfo(_seed_extenter).max,
-                                      size=1)[0]
+    extenter = ExtenterSphere(radius=radius)
+    mask = extenter(mask_idx=exp_hcp.mask_idx, seed=seed, contiguous=True)
+    exp = exp_hcp.apply_mask(mask)
 
     # pre-whiten exp
     exp = ExperimentWhitened.from_exp(exp)

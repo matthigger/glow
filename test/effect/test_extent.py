@@ -1,4 +1,7 @@
+import pytest
+
 from hglm.effect.extent import *
+from hglm.mask import get_mask_idx
 
 
 def test_iter_vox_neighbor():
@@ -46,6 +49,24 @@ class TestExtenterSphere:
             mask = extenter(mask_idx=mask_idx, seed=0)
 
             assert np.allclose(mask, mask_expect)
+
+    def test_contiguous(self):
+        mask = np.array([[1, 1, 1],
+                         [0, 0, 0],
+                         [1, 1, 1]])
+        mask_idx = get_mask_idx(mask)
+
+        extenter = ExtenterSphere(radius=4)
+
+        with pytest.raises(ContiguousRegionNotFound):
+            # any voxel selected (from 6 below), dilated 4 times, and then masked
+            # again will not be contiguous
+            extenter(mask_idx=mask_idx, seed=0, contiguous=True)
+
+        # any region produced (there is only one really) would be contiguous
+        mask_idx = np.arange(9).reshape(3, 3)
+        mask = extenter(mask_idx=mask_idx, seed=0, contiguous=True)
+        assert np.allclose(np.ones((3, 3)), mask)
 
 
 class TestExtenterMinVar:
