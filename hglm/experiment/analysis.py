@@ -12,7 +12,7 @@ from hglm.effect import Effect
 from hglm.graph import iter_topo, node_sum, iter_size_yout_ybar
 from hglm.tfce import apply_tfce_x
 from .exper import ExperimentWhitened
-from .regress import get_llr, prep_get_eps
+from .regress import get_llr, ComputeRegress
 
 
 class Analysis:
@@ -82,36 +82,21 @@ class Analysis:
             llr (np.array): (num_reg, ) log likelihood
         """
         # compute llr per region
-        num_reg = exp.y.shape[2]
+        b, num_img, num_reg = exp.y.shape
         if children is not None:
             num_reg += children.shape[0]
         llr = np.zeros(num_reg)
-        for reg_idx, size, _, _, eps0, eps1 in cls.iter_reg_stat(exp,
-                                                                 children):
-            llr[reg_idx] = get_llr(size, eps0, eps1)
 
-        return llr
-
-    @classmethod
-    def iter_reg_stat(cls, exp, children=None):
-        """ computes log likelihood score (full over reduced) per region
-
-        Args:
-            exp (Experiment):
-            children (np.array): (num_reg, 2) each col are index of child
-                regions, if none passed then iterates only through voxels
-
-        Returns:
-            llr (np.array): (num_reg, ) log likelihood
-        """
         # prepare the get_eps functions (eps0 is only features not-of-interest)
-        get_eps0 = prep_get_eps(exp.x[~exp.contrast, :])
-        get_eps1 = prep_get_eps(exp.x)
+        comp_reg0 = ComputeRegress(exp.x[~exp.contrast, :])
+        comp_reg1 = ComputeRegress(exp.x)
 
         for reg_idx, size, yout, ybar in iter_size_yout_ybar(exp.y, children):
-            eps0 = get_eps0(size, yout, ybar)
-            eps1 = get_eps1(size, yout, ybar)
-            yield reg_idx, size, yout, ybar, eps0, eps1
+            eps0 = comp_reg0.get_eps(size, yout, ybar)
+            eps1 = comp_reg1.get_eps(size, yout, ybar)
+            llr[reg_idx] = get_llr(size=size, eps0=eps0, eps1=eps1)
+
+        return llr
 
 
 class AnalysisTFCE(Analysis):

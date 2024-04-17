@@ -3,7 +3,7 @@ from hglm.graph import iter_size_yout_ybar, iter_topo
 from test.helper import generate_dummy_data
 
 
-def test_eps_sigma():
+def test_all():
     """ test that regress stats computed properly for random data
 
     it is convenient here to test all region in an arbitrary hierarchy (
@@ -15,7 +15,7 @@ def test_eps_sigma():
     x, y, contrast = generate_dummy_data(b=b, num_vox=100)
     children = np.arange(2 * num_vox - 2).reshape((-1, 2))
 
-    get_eps = prep_get_eps(x)
+    get_eps = ComputeRegress(x).get_eps
     for reg_idx, size, yout, ybar in iter_size_yout_ybar(y, children):
         # build y corresponding to region
         vox_idx = list(iter_topo(children=children,
