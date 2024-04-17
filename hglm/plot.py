@@ -136,7 +136,9 @@ def prep_df(ana_hglm, mask_target=None, full_stats=False):
                     mask=mask_target)
 
     df_list = list()
-    for perm_idx, (llr, size) in enumerate(zip(ana_hglm.llr, ana_hglm.size)):
+    for perm_idx, (llr, llr_adjust, size) in enumerate(zip(ana_hglm.llr,
+                                                           ana_hglm.llr_adjust,
+                                                           ana_hglm.size)):
         children = ana_hglm.child_dict[perm_idx]
         if full_stats:
             # compute sigma & tr_eps
@@ -148,6 +150,7 @@ def prep_df(ana_hglm, mask_target=None, full_stats=False):
 
         d = {'region idx': np.arange(size.size),
              'LLR': llr,
+             'LLR (size adjusted)': llr_adjust,
              'size (voxels)': size,
              'permutation': perm_idx}
 
@@ -227,8 +230,8 @@ def scatter_size_vs_stat(analysis, y_feat, mask=None, min_size=1):
 
 
 def scatter_plotly(ana_hglm, mask_target=None, x_feat='size (voxels)',
-                   y_feat='LLR', color_feat='dice', plot_permute=True,
-                   plot_tree=True):
+                   y_feat='LLR (size adjusted)', color_feat='dice',
+                   plot_permute=True, plot_tree=True, log_x=True, log_y=True):
     """
 
     todo:
@@ -262,7 +265,7 @@ def scatter_plotly(ana_hglm, mask_target=None, x_feat='size (voxels)',
     hover_data = {'size (voxels)': ':.0f',
                   'LLR': ':.3e'}
     hover_data_permuted = {'permutation': ':.0f',
-                            'region idx': ':.0f'}
+                           'region idx': ':.0f'}
     hover_data_unpermuted = {'p-val (FWER control)': ':.2e',
                              'dice': ':.3f',
                              'False-Pos (voxels)': ':.0f',
@@ -299,8 +302,10 @@ def scatter_plotly(ana_hglm, mask_target=None, x_feat='size (voxels)',
     for fig in fig_list[1:]:
         data += fig.data
     fig = go.Figure(data=data)
-    fig.update_xaxes(type="log")
-    fig.update_yaxes(type="log")
+    if log_x:
+        fig.update_xaxes(type="log")
+    if log_y:
+        fig.update_yaxes(type="log")
     fig.update_layout(height=600,
                       xaxis_title=x_feat,
                       yaxis_title=y_feat,

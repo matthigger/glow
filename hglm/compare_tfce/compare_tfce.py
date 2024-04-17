@@ -39,6 +39,7 @@ n_jobs = -1
 
 # parameters to be passed to Analysis constructor
 analysis_kwargs = {'AnalysisHGLM': dict(n_perm=100,
+                                        n_perm_adj=10,
                                         min_size_discover=1),
                    'AnalysisTFCE': dict(n_perm=100)}
 
@@ -104,7 +105,7 @@ def run_one_exp(seed):
     # allows us to catch numpy's warnings
     warnings.filterwarnings('error')
     np.seterr(all='warn')
-    
+
     # trim experiment to reasonable size (for speedup)
     extenter = ExtenterSphere(radius=radius)
     mask = extenter(mask_idx=exp_hcp.mask_idx, seed=seed, contiguous=True)
