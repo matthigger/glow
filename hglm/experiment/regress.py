@@ -85,5 +85,25 @@ def get_llr(eps0, eps1, size=None):
     Returns:
         llr (float): log likelihood ratio
     """
-    return (np.log(np.linalg.det(np.atleast_2d(eps0))) -
-            np.log(np.linalg.det(np.atleast_2d(eps1)))) * size / 2
+    return (log_det(eps0) - log_det(eps1)) * size / 2
+
+
+def get_llr_hier(size, sigma, eps_mean0, eps_mean1):
+    """ computes log likelihood ratio between two models
+
+    Args:
+        size (int): size of region
+        sigma (np.array): (b, b) spatial  covariance matrix
+        eps_mean0 (np.array): (b, b) error covariance matrix, reduced model
+        eps_mean1 (np.array): (b, b) error covariance matrix, full model
+
+    Returns:
+        llr_hier (float): log likelihood ratio (hierarchical model)
+    """
+    eps_hier0 = eps_mean0 / size + sigma
+    eps_hier1 = eps_mean1 / size + sigma
+    return (log_det(eps_hier0) - log_det(eps_hier1)) / 2
+
+
+def log_det(x):
+    return np.log(np.linalg.det(np.atleast_2d(x)))
