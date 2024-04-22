@@ -1,7 +1,8 @@
 import numpy as np
 
 
-def iter_size_yout_ybar(y, children=None):
+def iter_size_yout_ybar(y, children=None, perm=None,
+                        block_exchange=False, **kwargs):
     """ iterates through region stats, less-redundant compute via graph
 
     Args:
@@ -9,6 +10,10 @@ def iter_size_yout_ybar(y, children=None):
         children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
             sklearn.cluster.Ward.children_).  If None is passed,
             then iterates through stats per individual voxel region only
+        perm (Permuter): if passed, operates on y
+        block_exchange (bool): toggles block exchange permuting. when True,
+            every voxel of a multi-voxel region utilizes same permutation
+            matrix.  when False, each voxel gets its own permutation matrix
 
     Yields:
         reg_idx (int): region index
@@ -24,8 +29,16 @@ def iter_size_yout_ybar(y, children=None):
             # single voxel region
             size = 1
             yv = y[:, :, reg_idx]
-            yout = yv @ yv.T
             ybar = yv
+
+            if perm is None:
+                # compute yout (no permutation needed)
+                yout = yv @ yv.T
+            else:
+                # permute & compute yout
+                perm_idx_min = 0 if block_exchange else reg_idx
+                ybar = perm(ybar, perm_idx_min=reg_idx, **kwargs)
+                yout = np.einsum('bnp,cnp->bcp', ybar, ybar)
 
             size_yout_ybar[reg_idx] = size, yout, ybar
         else:

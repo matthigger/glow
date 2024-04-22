@@ -1,3 +1,4 @@
+from hglm.experiment import Permuter
 from hglm.graph import *
 
 
@@ -138,21 +139,30 @@ def test_iter_ancestor():
 
 def test_iter_size_yout_ybar():
     rng = np.random.default_rng(seed=0)
-    b, num_img, num_vox = 3, 4, 5
+    a, b, num_img, num_vox = 2, 3, 4, 5
     y = rng.standard_normal((b, num_img, num_vox))
+    x = rng.standard_normal((a, num_img))
     children = np.arange(2 * num_vox - 2).reshape((-1, 2), order='C')
 
-    for reg_idx, size, yout, ybar in iter_size_yout_ybar(y, children):
-        # build reliable compute: get index of all voxels in region
-        vox = np.array(list(iter_topo(children=children,
-                                      num_leaf=num_vox,
-                                      node_start=reg_idx,
-                                      only_leaf=True)))
-        _y = y[:, :, vox]
+    for perm in (Permuter(x), None):
+        for reg_idx, size, yout, ybar in iter_size_yout_ybar(y, children,
+                                                             perm=perm,
+                                                             n_perm=10,
+                                                             keep_orig=True):
+            # to be consistent among testing permutation & not, we cast to 3d
+            ybar = np.atleast_3d(ybar)
+            yout = np.atleast_3d(yout)
 
-        assert vox.size == size
-        assert np.allclose(_y.mean(axis=2), ybar)
+            # build reliable compute: get index of all voxels in region
+            vox = np.array(list(iter_topo(children=children,
+                                          num_leaf=num_vox,
+                                          node_start=reg_idx,
+                                          only_leaf=True)))
+            _y = y[:, :, vox]
 
-        _y = _y.reshape((b, -1), order='F')
-        yout_exp = _y @ _y.T
-        assert np.allclose(yout_exp, yout)
+            assert vox.size == size
+            assert np.allclose(_y.mean(axis=2), ybar[:, :, 0])
+
+            _y = _y.reshape((b, -1), order='F')
+            yout_exp = _y @ _y.T
+            assert np.allclose(yout_exp, yout[:, :, 0])

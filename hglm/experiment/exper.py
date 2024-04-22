@@ -282,7 +282,7 @@ class Experiment(ExperimentImageOnly):
 
         return self.add_offset(offset=offset, mask=effect.mask)
 
-    def permute(self, perm_idx, block_exchange=True):
+    def permute(self, perm_idx, block_exchange=False):
         """ gets new experiment whose y features were permuted (freedman lane)
 
         Args:
