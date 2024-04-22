@@ -9,7 +9,7 @@ from hglm.effect import Effect
 from hglm.effect import compute_offset
 from hglm.mask import get_mask_idx
 from .load_image import load_image_color, load_image_nii
-from .permute import get_perm_matrix
+from .permute import Permuter
 
 
 class ExperimentImageOnly:
@@ -282,12 +282,6 @@ class Experiment(ExperimentImageOnly):
 
         return self.add_offset(offset=offset, mask=effect.mask)
 
-    def get_freed_lane(self, perm_idx):
-        # permute data residuals under reduced model (freedman lane)
-        num_img = self.x.shape[1]
-        p = get_perm_matrix(seed=perm_idx, num_img=num_img)
-        return (np.eye(num_img) - self.h[0]) @ p + self.h[0]
-
     def permute(self, perm_idx, block_exchange=True):
         """ gets new experiment whose y features were permuted (freedman lane)
 
@@ -303,17 +297,23 @@ class Experiment(ExperimentImageOnly):
             exp (Experiment): new experiment whose y features have been
                 permuted
         """
+        # build a permutation object
+        perm = Permuter(x=self.x[~self.contrast, :])
+
         if perm_idx == 0:
             # perm_idx = 0 is reserved for unpermuted data
             y = copy(self.y)
         elif block_exchange:
-            freed_lane = self.get_freed_lane(perm_idx)
-            y = np.einsum('ijk,jm->imk', self.y, freed_lane)
+            y = perm(self.y, n_perm=1, perm_idx_min=perm_idx, keep_orig=False)
+            y = y[:, :, :, 0]
         else:
             y = np.empty_like(self.y)
             for vox_idx in range(y.shape[2]):
-                freed_lane = self.get_freed_lane(perm_idx + vox_idx)
-                y[:, :, vox_idx] = self.y[:, :, vox_idx] @ freed_lane
+                # each voxel gets its own permutation index
+                y[:, :, vox_idx] = perm(self.y[:, :, vox_idx],
+                                        n_perm=1,
+                                        perm_idx_min=perm_idx + vox_idx,
+                                        keep_orig=False)[:, :, 0]
 
         return Experiment(x=self.x, y=y, contrast=self.contrast,
                           mask_idx=self.mask_idx)

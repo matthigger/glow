@@ -1,4 +1,5 @@
 from hglm.effect import ExtenterSphere
+from hglm.experiment import Permuter
 from hglm.experiment.exper import *
 from test.helper import generate_dummy_data
 from .make_test_image import folder_test_data, img_feat_intensity
@@ -103,7 +104,8 @@ class TestExperiment:
         # manually permute in a loop, check that einsum does the same
         exp_permuted = exp.permute(perm_idx=perm_idx, block_exchange=True)
 
-        freed_lane = exp.get_freed_lane(perm_idx)
+        perm = Permuter(x=exp.x[~exp.contrast, :])
+        freed_lane = perm.get_freed_lane(perm_idx)
         for vox_idx in range(np.prod(shape)):
             y_permute_exp = exp.y[..., vox_idx] @ freed_lane
             assert np.allclose(exp_permuted.y[..., vox_idx], y_permute_exp)
@@ -112,7 +114,7 @@ class TestExperiment:
         exp_permuted = exp.permute(perm_idx=perm_idx, block_exchange=False)
 
         for vox_idx in range(np.prod(shape)):
-            freed_lane = exp.get_freed_lane(perm_idx + vox_idx)
+            freed_lane = perm.get_freed_lane(perm_idx + vox_idx)
             y_permute_exp = exp.y[..., vox_idx] @ freed_lane
 
             assert np.allclose(exp_permuted.y[..., vox_idx], y_permute_exp)
