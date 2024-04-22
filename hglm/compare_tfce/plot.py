@@ -30,7 +30,8 @@ def plot_f1_sens_spec(pval_list, score_dict):
 
     # plot top row
     style_dict = {'AnalysisTFCE': {'color': 'r'},
-                  'AnalysisHGLM': {'color': 'b'}}
+                  'AnalysisHGLM': {'color': 'b'},
+                  'AnalysisHGLM-maxF1': {'color': 'g'}}
     style_single = {'linewidth': .5,
                     'zorder': 1,
                     'label': '_nolegend_'}
@@ -40,6 +41,8 @@ def plot_f1_sens_spec(pval_list, score_dict):
     for _ax, feat in zip(ax[0, :], ('f1', 'sens', 'spec')):
         plt.sca(_ax)
         for method, kwargs in style_dict.items():
+            if (method, feat) not in score_dict.keys():
+                continue
             plt.plot(pval_list, score_dict[method, feat].T, **kwargs,
                      **style_single)
             plt.plot(pval_list, np.nanmean(score_dict[method, feat], axis=0),

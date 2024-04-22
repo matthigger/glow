@@ -11,6 +11,7 @@ import cloudpickle as pickle
 
 from hglm.effect import *
 from hglm.experiment import *
+from hglm.graph import get_f1
 from hglm.mask import get_score
 
 # where output results are stored (each run of script yields its own folder)
@@ -21,7 +22,7 @@ n_repeat = 32 * 3
 
 # p_val describes severity of effect (assuming typical F test assumptions
 # ...not valid but still useful to quantify how difficult effect is)
-p_val_all = np.linspace(.25, .05, 9)
+p_val_all = np.geomspace(.25, .001, 9)
 
 # to speed up analysis, random voxel is chosen and dilated to this radius.
 # only these voxels are included in the analysis
@@ -50,6 +51,10 @@ detail_save = True
 # continues to next experiment
 error_save = True
 
+# if True, computes stats on max f1 region in HGLM analysis (allows us to
+# distinguish between segmentation & discovery errors)
+maxf1 = True
+
 # input data
 folder = '/home/matt/Dropbox/pnl_hglm/data/hcp100_lowres/image'
 exp_hcp = ExperimentImageOnly.from_search(folder=folder,
@@ -77,6 +82,26 @@ shutil.copy(__file__, folder_out / pathlib.Path(__file__).name)
 folder = pathlib.Path(__file__).parent
 shutil.copy(folder / 'compare_tfce_plot.ipynb',
             folder_out / 'compare_tfce_plot.ipynb')
+
+
+def get_max_f1(ana_hglm, mask_target):
+    # load detail, find region corresponding to max f1
+    f1 = get_f1(mask=mask_target,
+                mask_idx=ana_hglm.exp.mask_idx,
+                children=ana_hglm.child_dict[0])
+    reg_max_f1 = f1.argmax()
+
+    # compute scores
+    mask_pred = np.zeros_like(mask_target)
+    for vox in iter_topo(children=ana_hglm.child_dict[0],
+                         num_leaf=ana_hglm.exp.y.shape[2],
+                         node_start=reg_max_f1,
+                         only_leaf=True):
+        mask_pred[ana_hglm.exp.mask_idx == vox] = True
+    f1, sens, spec = get_score(mask_pred=mask_pred,
+                               mask_target=mask_target,
+                               mask_active=ana_hglm.exp.mask_idx > -1)
+    return dict(f1=f1, sens=sens, spec=spec, region=reg_max_f1)
 
 
 def run_one_exp(seed):
@@ -151,6 +176,16 @@ def run_one_exp(seed):
                  'time_sec': total_time_sec}
             with open(file_out, 'w') as f:
                 json.dump(d, f, sort_keys=True, indent=4)
+
+            if maxf1 and Ana == AnalysisHGLM:
+                # compute max f1 stats, store as a distinct output
+                # "analysis" (its not really)
+                d.update(get_max_f1(ana_hglm=ana, mask_target=effect.mask))
+                d['Analysis'] = 'AnalysisHGLM-maxF1'
+                d['time_sec'] = ''
+                d['region'] = float(d['region'])
+                with open(file_out.with_stem(f'out_{uuid}_maxf1'), 'w') as f:
+                    json.dump(d, f, sort_keys=True, indent=4)
 
             if detail_save:
                 # dump detail
