@@ -281,12 +281,12 @@ class AnalysisHGLM(Analysis):
         return 10 ** (beta[0] + beta[1] * np.log10(size))
 
     @classmethod
-    def cluster(cls, exp, mode='full', chol_regr=None):
+    def cluster(cls, exp, mode='full'):
         """ build child_dict
 
         Args:
             exp (Experiment):
-            mode (str): 'ward', 'full' or 'diff'
+            mode (str): 'ward', 'full'
                 'ward': reduces image-pooled spatial covariance
                 'full': reduces error in the full model
         """
