@@ -8,10 +8,10 @@ from datetime import datetime
 from uuid import uuid4
 
 import cloudpickle as pickle
-from sklearn.metrics import f1_score, recall_score, confusion_matrix
 
 from hglm.effect import *
 from hglm.experiment import *
+from hglm.mask import get_score
 
 # where output results are stored (each run of script yields its own folder)
 folder_out = '/home/matt/Dropbox/pnl_hglm/results'
@@ -79,28 +79,6 @@ shutil.copy(folder / 'compare_tfce_plot.ipynb',
             folder_out / 'compare_tfce_plot.ipynb')
 
 
-def get_score(ana, effect):
-    """ gets f1, sens, spec scores per analysis given ground truth effect
-    """
-    # build mask of predicted area (union of all effect masks)
-    mask_pred = np.zeros(ana.exp.mask_idx.shape, dtype=bool)
-    for _effect in ana.effect_list:
-        mask_pred |= _effect.mask
-
-    # build y_true / y_pred in sklearn format
-    mask_active = ana.exp.mask_idx > -1
-    y_true = effect.mask[mask_active]
-    y_pred = mask_pred[mask_active]
-
-    # compute scores
-    f1 = f1_score(y_true=y_true, y_pred=y_pred, zero_division=0)
-    sens = recall_score(y_true=y_true, y_pred=y_pred, zero_division=0)
-    conf_mat = confusion_matrix(y_true=y_true, y_pred=y_pred)
-    spec = conf_mat[0, 0] / (conf_mat[0, 0] + conf_mat[0, 1])
-
-    return f1, sens, spec
-
-
 def run_one_exp(seed):
     # allows us to catch numpy's warnings
     warnings.filterwarnings('error')
@@ -153,8 +131,14 @@ def run_one_exp(seed):
                 ana = Ana(exp=_exp, alpha=alpha, **kwargs)
             total_time_sec = time.time() - start
 
+            # build mask of predicted area (union of all effect masks)
+            mask_pred = np.zeros(ana.exp.mask_idx.shape, dtype=bool)
+            for _effect in ana.effect_list:
+                mask_pred |= _effect.mask
             # score
-            f1, sens, spec = get_score(ana, effect)
+            f1, sens, spec = get_score(mask_pred=mask_pred,
+                                       mask_target=effect.mask,
+                                       mask_active=exp.mask_idx > -1)
 
             # dump summary
             d = {'p_val': p_val,
