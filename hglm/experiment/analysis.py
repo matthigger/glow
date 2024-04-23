@@ -21,12 +21,13 @@ class Analysis:
 
     Attributes:
         exp (Experiment): the source data to run experiment on
-        p_val (np.array): (num_reg) FWER controlled pval
+        p_val (np.array): (num_reg) FWER controlled p value per region
         effect_list (list): list of Effect objects discovered
     """
 
     def __init__(self, exp):
         if not isinstance(exp, ExperimentWhitened):
+            # whiten if need be
             exp = ExperimentWhitened.from_exp(exp)
         self.exp = exp
 
@@ -91,8 +92,7 @@ class Analysis:
 
         # prepare the get_eps functions (eps0 is only features not-of-interest)
         x0 = exp.x[~exp.contrast, :]
-        comp_reg0 = ComputeRegress(x0)
-        comp_reg1 = ComputeRegress(exp.x)
+        comp_reg = ComputeRegress(x0), ComputeRegress(exp.x)
 
         # prep Permuter object (if needed)
         perm = None if n_perm is None else Permuter(x=x0)
@@ -102,16 +102,13 @@ class Analysis:
                                                              keep_orig=True):
             for perm_idx in range(n_perm):
                 # compute llr & store
-                eps0 = comp_reg0.get_eps(size,
+                eps = [_comp_reg.get_eps(size,
                                          yout[..., perm_idx],
                                          ybar[..., perm_idx])
-                eps1 = comp_reg1.get_eps(size,
-                                         yout[..., perm_idx],
-                                         ybar[..., perm_idx])
+                       for _comp_reg in comp_reg]
                 llr[perm_idx, reg_idx] = get_llr(size=size,
-                                                 eps0=eps0,
-                                                 eps1=eps1)
-
+                                                 eps0=eps[0],
+                                                 eps1=eps[1])
         return llr
 
 
@@ -120,7 +117,6 @@ class AnalysisTFCE(Analysis):
         super().__init__(exp)
 
         # compute llr per each voxel (for every permutation)
-        num_vox = exp.y.shape[2]
         self.llr = self.get_llr(exp, n_perm=n_perm + 1, children=None)
 
         # apply TFCE per image
@@ -153,7 +149,8 @@ class AnalysisTFCE(Analysis):
         # apply & store tfce
         tqdm_dict = dict(desc='tfce per permutation',
                          disable=not verbose)
-        tfce = np.full(shape=stat.shape, dtype=float, fill_value=-1)
+        tfce = np.full(shape=stat.shape, dtype=float,
+                       fill_value=np.nanmin(stat))
         for perm_idx, _stat in tqdm(enumerate(stat), **tqdm_dict):
             tfce[perm_idx, :] = apply_tfce_x(_stat, mask_idx=mask_idx)
 
@@ -199,6 +196,7 @@ class AnalysisHGLM(Analysis):
                  min_size_discover=1, verbose=False, n_jobs=0):
         super().__init__(exp)
 
+        # constants
         b, num_img, num_vox = exp.y.shape
         num_reg = num_vox * 2 - 1
 
@@ -208,24 +206,24 @@ class AnalysisHGLM(Analysis):
                          desc='permuting',
                          disable=not verbose)
 
-        def cluster_llr(perm_idx):
-            # permute data
+        def permute_cluster_llr(perm_idx):
+            # permute data (get one permutation of experiment)
             _exp = exp.permute(perm_idx, block_exchange=False)
 
             # build hierarchical segmentation
             children = self.cluster(exp=_exp)
 
-            # compute log likelihood ratio
+            # compute log likeratio (get n_perm_adj permutations per region)
             llr = self.get_llr(exp=_exp, children=children, n_perm=n_perm_adj)
+
             return children, llr
 
+        # run permute_cluster_llr (serial or parallel)
         perm_iter = tqdm(range(n_perm + 1), **tqdm_dict)
         if n_jobs not in (0, 1):
             # parallel
-            r = Parallel(n_jobs=n_jobs)(delayed(cluster_llr)(perm)
+            r = Parallel(n_jobs=n_jobs)(delayed(permute_cluster_llr)(perm)
                                         for perm in perm_iter)
-
-            # store
             llr_list = list()
             for p_idx, (child, llr) in enumerate(r):
                 self.child_dict[p_idx] = child
@@ -235,7 +233,7 @@ class AnalysisHGLM(Analysis):
             # serial
             self.llr = np.zeros((n_perm + 1, n_perm_adj, num_reg))
             for p_idx in perm_iter:
-                child, llr = cluster_llr(p_idx)
+                child, llr = permute_cluster_llr(p_idx)
                 self.child_dict[p_idx] = child
                 self.llr[p_idx, :, :] = llr
 
@@ -252,24 +250,27 @@ class AnalysisHGLM(Analysis):
 
         # compute p-values (max stat across space)
         mask_exclude = self.size < min_size_discover
-        self.p_val = self.get_pval(stat=self.z,
-                                   mask_exclude=mask_exclude)
+        self.p_val = self.get_pval(stat=self.z, mask_exclude=mask_exclude)
 
-        # discover effects (greedily choose max z stat regions whose p_val is
+        # discover effects (greedily choose max stat regions whose p_val is
         # significant.  continue so long as disjoint significant effect remain)
         self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
-                                         stat=self.z[0, :], exp=exp,
+                                         priority=self.z[0, :], exp=exp,
                                          children=self.child_dict[0])
 
     @classmethod
     def cluster(cls, exp, mode='full'):
-        """ build child_dict
+        """ hierarchical segmentation of image
 
         Args:
             exp (Experiment):
             mode (str): 'ward', 'full'
                 'ward': reduces image-pooled spatial covariance
                 'full': reduces error in the full model
+
+        Returns:
+            children (np.array): (num_reg, 2) each col are index of child
+                regions
         """
         # get connectivity (ensures only neighboring voxels joined)
         assert exp.mask_idx.ndim in (2, 3), 'mask must be 2d or 3d'
@@ -293,7 +294,7 @@ class AnalysisHGLM(Analysis):
         mask = exp.mask_idx >= 0
         connectivity = grid_to_graph(*mask.shape, mask=mask)
 
-        # ensure contiguous input
+        # ensure contiguous input (https://github.com/matthigger/hglm/issues/3)
         _, num_regions = label(mask)
         if num_regions > 1:
             raise NotImplementedError('non-contiguous inputs currently '
@@ -305,18 +306,14 @@ class AnalysisHGLM(Analysis):
         return children
 
     @classmethod
-    def discover(cls, pval, stat, children, exp, alpha=.05):
-        """ identifies most compelling disjoint effects while FWER < alpha
-
-        by virtue of the hierarchical segmentation, significant regions may
-        intersect.  we "discover" a significant effect if it has minimal
-        p-value among all intersecting effects
+    def discover(cls, pval, priority, children, exp, alpha=.05):
+        """ regions with highest priority are discovered first
 
         Args:
             pval (np.array): (num_reg) Family Wise Error Rate controlled
                 p-values
-            stat (np.array): (num_reg) some statistic (higher indicates
-                more compelling effect associated with region)
+            priority (np.array): (num_reg) priority value per region,
+                higher priority values are discovered first
             children (np.array): (num_reg, 2) each col are index of child
                 regions
             exp (Experiment): the source data to run experiment on
@@ -328,12 +325,12 @@ class AnalysisHGLM(Analysis):
         # get set of all significant regions
         bool_sig = pval <= alpha
         reg_idx = np.where(bool_sig)[0]
-        stat_pval_reg_list = zip(stat[bool_sig], pval[bool_sig], reg_idx)
+        stat_pval_reg_list = zip(priority[bool_sig], pval[bool_sig], reg_idx)
         stat_pval_reg_list = sorted(stat_pval_reg_list, reverse=True)
 
         vox_claimed = set()
         effect_list = list()
-        for stat, p_val, reg_idx in stat_pval_reg_list:
+        for priority, p_val, reg_idx in stat_pval_reg_list:
             # check if region intersects with others discovered (no shared
             # ancestor)
             vox_contained = set(iter_topo(children=children,

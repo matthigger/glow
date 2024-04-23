@@ -31,7 +31,7 @@ def load_image_nii(df):
                 vox_count = np.zeros(img.shape)
             vox_count += img != 0
 
-    # build mask_idx
+    # build mask_idx (exclude any voxel which any subject is missing)
     mask = vox_count == df.size
     mask_idx = get_mask_idx(mask)
 
@@ -57,6 +57,7 @@ def load_image_color(df):
             # load non nifti image
             x = np.array(Image.open(file))
             if x.ndim == 2:
+                # image has 1 feature (grayscale)
                 feat_sbj_img[feat][sbj] = x
 
                 # ensure consistent shape

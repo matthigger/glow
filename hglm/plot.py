@@ -49,11 +49,19 @@ def make_gif(file_out, n_list=30, fps=10, mask_idx=None, min_n=1,
             # all images found, quit
             break
 
-    imageio.mimsave(file_out, list_image, fps=fps, loop=0)
+    # pillow uses duration
+    duration = 1 / fps * 1000
+
+    imageio.mimsave(file_out, list_image, duration=duration, loop=0)
 
 
 def image_iter(children, mask_idx, num_vox):
-    """
+    """ yields array per step in hierarchical cluster (region has same color)
+
+    the first image has a unique color per voxel, the final image has the
+    same color for all voxels.  intermediate images show the regions which
+    are formed
+
     Args:
         children (np.array): (num_reg - 1, 2) graph arrays (equiv to
             sklearn.cluster.Ward.children_)
@@ -304,3 +312,15 @@ def scatter_plotly(ana_hglm, mask_target=None, x_feat='size (voxels)',
                       coloraxis_colorbar=dict(title=color_feat),
                       hoverlabel=dict(bgcolor='white'))
     return fig, df
+
+
+# tmp
+if __name__ == '__main__':
+    from compare_tfce.data import load_update_all, load
+
+    p_val, seed = 0.25, 15
+    folder = '/home/matt/Dropbox/pnl_hglm/results/exp_24Apr22-1533'
+    df = load_update_all(folder)
+    ana_hglm, effect = load(folder=folder, df=df, p_val=p_val, seed=seed,
+                            Analysis='AnalysisHGLM')
+    prep_df(ana_hglm, mask_target=effect.mask)

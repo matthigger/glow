@@ -2,7 +2,7 @@ from functools import wraps
 
 import numpy as np
 from scipy.ndimage import label
-from scipy.ndimage.morphology import binary_dilation
+from scipy.ndimage import binary_dilation
 from tqdm import tqdm
 
 
@@ -103,9 +103,9 @@ class ExtenterMinVar:
         """ returns a mask of extent
 
         Args:
+            y (np.array): (b, num_img, num_vox) image intensities
             mask_idx (np.array): same shape as image.  -1 where voxel not
                 included in analysis, otherwise contains voxel index
-            y (np.array): (b, num_img, num_vox) image intensities
             seed: initializes random number generator (given seed function is
                 deterministic)
             vox_init (int): seed voxel (if not passed, then randomly chosen)
@@ -149,7 +149,7 @@ class ExtenterMinVar:
 
             assert vox_idx_best is not None
 
-            # add vox_idx_best to mask & update vec_stat
+            # add vox_idx_best to mask & update mu & y_norm_sq
             mask[mask_idx == vox_idx_best] = True
             y_new = y[:, :, vox_idx_best]
             mu = lam0 * mu + lam1 * y_new

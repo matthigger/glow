@@ -96,14 +96,14 @@ class TestAnalysishglm:
 
         # only 1 sig region
         pval = np.array([.1, 1, 1, 1, 1, 1, 1])
-        eff_list = AnalysisHGLM.discover(pval=pval, stat=-pval,
+        eff_list = AnalysisHGLM.discover(pval=pval, priority=-pval,
                                          children=children, exp=exp, alpha=.5)
         assert len(eff_list) == 1
         assert eff_list[0].reg_idx == 0
 
         # 2 sig regions which intersect
         pval = np.array([.1, 1, 1, 1, .2, 1, 1])
-        eff_list = AnalysisHGLM.discover(pval=pval, stat=-pval,
+        eff_list = AnalysisHGLM.discover(pval=pval, priority=-pval,
                                          children=children, \
                                          exp=exp, alpha=.5)
         assert len(eff_list) == 1
@@ -111,7 +111,7 @@ class TestAnalysishglm:
 
         # 2 sig regions which don't intersect
         pval = np.array([.1, .2, 1, 1, 1, 1, 1])
-        eff_list = AnalysisHGLM.discover(pval=pval, stat=-pval,
+        eff_list = AnalysisHGLM.discover(pval=pval, priority=-pval,
                                          children=children, \
                                          exp=exp, alpha=.5)
         assert len(eff_list) == 2

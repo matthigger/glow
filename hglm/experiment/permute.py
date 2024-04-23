@@ -44,20 +44,20 @@ class Permuter:
         assert not (n_perm == 1 and keep_orig), 'invalid inputs, see doc'
         perm_iter = range(perm_idx_min, perm_idx_min + n_perm - keep_orig)
         if keep_orig:
-            # perm_idx = 0 is identity in self.get_freed_lane()
+            # perm_idx = 0 is identity, see get_perm_matrix()
             perm_iter = chain([0, ], perm_iter)
         freed_lane = np.stack([self.get_freed_lane(idx) for idx in perm_iter],
                               axis=2)
 
         two_dim_input = y.ndim == 2
         if two_dim_input:
-            # cast to 4d for consistency
+            # cast to 3d (temporarily)
             y = y[:, :, np.newaxis]
 
         y_perm = np.einsum('bnr,naz->barz', y, freed_lane)
 
         if two_dim_input:
-            # return without fourth dimension (input was originally two-dim)
+            # return without 3rd dimension (input was originally two-dim)
             y_perm = y_perm[:, :, 0, :]
 
         return y_perm

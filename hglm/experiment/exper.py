@@ -1,6 +1,6 @@
 import pathlib
 import re
-from copy import copy
+from copy import deepcopy
 
 import numpy as np
 import pandas as pd
@@ -50,10 +50,11 @@ class ExperimentImageOnly:
                     f'unique sbj not found in file: {file}'
                 sbj = sbj_list[0]
 
-                # todo: check that duplicate file doesn't already exist
                 df.loc[sbj, y_feat] = file
 
         assert df.size, 'no images found'
+        assert len(set(df.values.flatten())) == np.prod(df.shape), \
+            'file repeated for more than one subject-feature pair'
 
         # check if any subject is missing any imaging feature
         s_missing = df.isna().mean(axis=1)
@@ -147,6 +148,7 @@ class ExperimentImageOnly:
         x = rng.standard_normal(size=(a, num_img))
 
         if add_bias:
+            # bias term is not of interest
             contrast[0] = False
             x[0, :] = 1
 
@@ -160,6 +162,7 @@ class ExperimentImageOnly:
         Args:
             extenter (ExtenterSphere or ExtenterMinVar): identifies volume to
                 impose effect on
+            mask (np.array): is passed, will impose effect on
             seed: seed of random number generator (for extent)
             **kwargs: passed to compute_offset(), either p_val or f_stat
 
@@ -204,9 +207,8 @@ class ExperimentImageOnly:
         mask_idx = get_mask_idx(mask)
         y = self.y[:, :, self.mask_idx[mask]]
 
-        # build new object identical as self (references where possible) but
-        # replace y & mask_idx with above
-        d = copy(self.__dict__)
+        # build new object identical as self
+        d = deepcopy(self.__dict__)
         d['mask_idx'] = mask_idx
         d['y'] = y
         return type(self)(**d)
@@ -229,12 +231,11 @@ class ExperimentImageOnly:
             vox_idx = self.mask_idx[mask]
 
         # build new y
-        y = copy(self.y)
+        y = deepcopy(self.y)
         y[:, :, vox_idx] += offset[..., np.newaxis]
 
-        # build new object identical as self (references where possible) but
-        # replace y with above
-        d = copy(self.__dict__)
+        # build new object
+        d = deepcopy(self.__dict__)
         d['y'] = y
         return type(self)(**d)
 
@@ -302,7 +303,7 @@ class Experiment(ExperimentImageOnly):
 
         if perm_idx == 0:
             # perm_idx = 0 is reserved for unpermuted data
-            y = copy(self.y)
+            y = deepcopy(self.y)
         elif block_exchange:
             y = perm(self.y, n_perm=1, perm_idx_min=perm_idx, keep_orig=False)
             y = y[:, :, :, 0]
