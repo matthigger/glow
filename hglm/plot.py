@@ -128,54 +128,42 @@ def image_iter(children, mask_idx, num_vox):
             yield image, mask_idx_current, color_dict
 
 
-def prep_df(ana_hglm, mask_target=None, full_stats=False):
-    # compute f1 (dice) score with
-    if mask_target is not None:
-        f1 = get_f1(children=ana_hglm.child_dict[0],
-                    mask_idx=ana_hglm.exp.mask_idx,
-                    mask=mask_target)
-
+def prep_df(ana_hglm, mask_target=None):
     df_list = list()
-    for perm_idx, (llr, llr_adjust, size) in enumerate(zip(ana_hglm.llr,
-                                                           ana_hglm.llr_adjust,
-                                                           ana_hglm.size)):
+    for perm_idx, (llr, z, size) in enumerate(zip(ana_hglm.llr[:, 0, :],
+                                                  ana_hglm.z,
+                                                  ana_hglm.size)):
         children = ana_hglm.child_dict[perm_idx]
-        if full_stats:
-            # compute sigma & tr_eps
-            iter_stat = ana_hglm.iter_reg_stat(exp=ana_hglm.exp,
-                                               children=children)
-            for reg_idx, size, yout, ybar, eps0, eps1 in iter_stat:
-                # sigma & tr_eps & f stat
-                raise NotImplementedError
-
         d = {'region idx': np.arange(size.size),
              'LLR': llr,
-             'LLR (size adjusted)': llr_adjust,
+             'z-stat': z,
              'size (voxels)': size,
-             'permutation': perm_idx}
+             'permutation': perm_idx,
+             'discovered': np.zeros(z.shape, dtype=bool),
+             'LLR-std-h0': ana_hglm.llr[perm_idx, 1:, :].std(axis=0),
+             'LLR-mu-h0': ana_hglm.llr[perm_idx, 1:, :].mean(axis=0)}
 
         if not perm_idx:
             # add stats specific to unpermuted data
             d['p-val (FWER control)'] = ana_hglm.p_val
 
+            # compute f1 (dice) score with mask_target
             if mask_target is not None:
-                d['dice'] = f1 if not perm_idx else np.nan
+                d['dice'] = get_f1(children=ana_hglm.child_dict[0],
+                                   mask_idx=ana_hglm.exp.mask_idx,
+                                   mask=mask_target)
                 miss, hits = get_miss_hits(children=children,
                                            mask_idx=ana_hglm.exp.mask_idx,
                                            mask=mask_target)
                 d['False-Pos (voxels)'] = miss
                 d['True-Pos (voxels)'] = hits
+
+            # mark any regions as discovered
+            for effect in ana_hglm.effect_list:
+                d['discovered'][effect.reg_idx] = True
         df_list.append(pd.DataFrame(d))
 
     df = pd.concat(df_list)
-    df['discovered'] = False
-    df.reset_index(inplace=True)
-    for effect in ana_hglm.effect_list:
-        reg_idx = effect.reg_idx
-        b = (df['permutation'] == 0) & (df['region idx'] == reg_idx)
-        assert b.sum() == 1, 'unique discovered effect not found'
-        idx = b.index[b][0]
-        df.loc[idx, 'discovered'] = True
 
     return df
 
@@ -230,7 +218,7 @@ def scatter_size_vs_stat(analysis, y_feat, mask=None, min_size=1):
 
 
 def scatter_plotly(ana_hglm, mask_target=None, x_feat='size (voxels)',
-                   y_feat='LLR (size adjusted)', color_feat='dice',
+                   y_feat='z-stat', color_feat='dice',
                    plot_permute=True, plot_tree=True, log_x=True, log_y=True):
     """
 
@@ -238,6 +226,7 @@ def scatter_plotly(ana_hglm, mask_target=None, x_feat='size (voxels)',
     - doesn't work without mask
     - push unpermuted nodes back (and make them grey)
     - line widths on tree a bit too thick
+    - max number of scatter points (enforce a minimum size)
     """
 
     df = prep_df(ana_hglm, mask_target=mask_target)
@@ -263,7 +252,10 @@ def scatter_plotly(ana_hglm, mask_target=None, x_feat='size (voxels)',
             tree_y += [y[c], y[par], None]
 
     hover_data = {'size (voxels)': ':.0f',
-                  'LLR': ':.3e'}
+                  'z-stat': ':.3e',
+                  'LLR': ':.3e',
+                  'LLR-std-h0': ':.3e',
+                  'LLR-mu-h0': ':.3e'}
     hover_data_permuted = {'permutation': ':.0f',
                            'region idx': ':.0f'}
     hover_data_unpermuted = {'p-val (FWER control)': ':.2e',
