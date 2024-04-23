@@ -41,3 +41,20 @@ def test_all():
 
         sigma = get_sigma(size, yout, ybar)
         assert np.allclose(sigma_exp, sigma)
+
+
+def test_get_size_yout_ybar():
+    b, num_img, num_vox = 3, 10, 100
+    rng = np.random.default_rng(seed=0)
+    y = rng.standard_normal((b, num_img, num_vox))
+    size_obs, yout_obs, ybar_obs = get_size_yout_ybar(y)
+
+    yout_exp = 0
+    for vox_idx in range(num_vox):
+        _y = y[:, :, vox_idx]
+        yout_exp += _y @ _y.T
+    ybar_exp = y.mean(axis=2)
+
+    assert size_obs == num_vox
+    assert np.allclose(yout_obs, yout_exp)
+    assert np.allclose(ybar_obs, ybar_exp)

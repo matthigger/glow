@@ -53,6 +53,23 @@ class ComputeRegress:
         return (ybar @ (np.eye(num_img) - self.h) @ ybar.T) / num_img
 
 
+def get_size_yout_ybar(y):
+    """ compute size yout ybar directly from imaging features
+
+    Args:
+        y (np.array): (b, num_img, num_vox) imaging features
+
+    Returns:
+        size (int): size, in voxels, of region
+        yout (np.array): (b, b) sum of yv @ yv.T across all voxels of region
+        ybar (np.array): (b, num_img) average, across voxels, of features
+    """
+    size = y.shape[2]
+    yout = np.einsum('bnr,anr->ba', y, y)
+    ybar = y.mean(axis=2)
+    return size, yout, ybar
+
+
 def get_sigma(size, yout, ybar):
     """ sigma is spatial covariance across voxels, pooled across images
 
