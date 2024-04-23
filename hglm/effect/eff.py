@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.stats import f
 
-from hglm.f_stat import get_f_stat, get_f_degrees, get_tr_eps
+from hglm.f_stat import get_f_stat, get_f_degrees
 
 
 class Effect:
@@ -26,24 +26,29 @@ class Effect:
 
     @classmethod
     def from_x_y_contrast(cls, x, y, contrast, **kwargs):
-        # compute f stat
-        f_stat = get_f_stat(x, y, contrast)
+        # avoid circular dependency effect.eff & experiment.analysis
+        from hglm.experiment.regress import ComputeRegress, get_size_yout_ybar
 
-        # compute p_val
         b, num_img, reg_size = y.shape
+
+        # compute f stat & f's p-value
+        f_stat = get_f_stat(x, y, contrast)
         a = (~contrast).sum(), contrast.size
         dfn, dfd = get_f_degrees(num_img, reg_size, a)
         p_val = 1 - f.cdf(f_stat, dfn=dfn, dfd=dfd)
 
-        # compute tr_eps
-        x = [x[~contrast, :], x]
-        tr_eps = tuple(get_tr_eps(_x, y) for _x in x)
+        # compute eps
+        x = x[~contrast, :], x
+        comp_reg = tuple(ComputeRegress(_x) for _x in x)
+        args = get_size_yout_ybar(y)
+        eps = tuple(_comp_reg.get_eps(*args) for _comp_reg in comp_reg)
 
+        # compute y_mean & beta
         y_mean = y.mean(axis=2)
         beta = tuple(y_mean @ np.linalg.pinv(_x) for _x in x)
 
-        return cls(f_stat=f_stat, p_val=p_val, tr_eps=tr_eps, beta=beta,
-                   y_mean=y_mean, **kwargs)
+        return cls(f_stat=f_stat, f_stat_p_val=p_val, beta=beta, y_mean=y_mean,
+                   eps=eps, **kwargs)
 
     def __init__(self, mask, y_mean, **kwargs):
         self.mask = mask

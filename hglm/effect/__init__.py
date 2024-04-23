@@ -1,3 +1,3 @@
-from .effect import *
+from .eff import *
 from .extent import *
 from .impose import *

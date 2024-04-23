@@ -43,7 +43,7 @@ class TestExperimentOnlyImage:
             _exp, effect = exp.impose_effect(seed=seed, extenter=extenter,
                                              p_val=p_val)
 
-            assert np.isclose(effect.p_val, p_val)
+            assert np.isclose(effect.f_stat_p_val, p_val)
 
     def test_sample_x(self):
         seed = 0
