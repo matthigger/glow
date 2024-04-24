@@ -246,16 +246,16 @@ class AnalysisHGLM(Analysis):
         # adjust llr
         mu = self.llr[:, 1:, :].mean(axis=1)
         std = self.llr[:, 1:, :].std(axis=1)
-        self.z = (self.llr[:, 0, :] - mu) / std
+        self.z_stat = (self.llr[:, 0, :] - mu) / std
 
         # compute p-values (max stat across space)
         mask_exclude = self.size < min_size_discover
-        self.p_val = self.get_pval(stat=self.z, mask_exclude=mask_exclude)
+        self.p_val = self.get_pval(stat=self.z_stat, mask_exclude=mask_exclude)
 
         # discover effects (greedily choose max stat regions whose p_val is
         # significant.  continue so long as disjoint significant effect remain)
         self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
-                                         priority=self.z[0, :], exp=exp,
+                                         priority=self.z_stat[0, :], exp=exp,
                                          children=self.child_dict[0])
 
     @classmethod

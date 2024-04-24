@@ -139,7 +139,7 @@ def image_iter(children, mask_idx, num_vox):
 def prep_df(ana_hglm, mask_target=None):
     df_list = list()
     for perm_idx, (llr, z, size) in enumerate(zip(ana_hglm.llr[:, 0, :],
-                                                  ana_hglm.z,
+                                                  ana_hglm.z_stat,
                                                   ana_hglm.size)):
         children = ana_hglm.child_dict[perm_idx]
         d = {'region idx': np.arange(size.size),
