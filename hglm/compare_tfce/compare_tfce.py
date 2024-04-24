@@ -8,6 +8,7 @@ from datetime import datetime
 from uuid import uuid4
 
 import cloudpickle as pickle
+from sklearn.metrics import roc_auc_score
 
 from hglm.effect import *
 from hglm.experiment import *
@@ -160,10 +161,35 @@ def run_one_exp(seed):
             mask_pred = np.zeros(ana.exp.mask_idx.shape, dtype=bool)
             for _effect in ana.effect_list:
                 mask_pred |= _effect.mask
+
             # score
             f1, sens, spec = get_score(mask_pred=mask_pred,
                                        mask_target=effect.mask,
                                        mask_active=exp.mask_idx > -1)
+
+            # get stat for AUC compute
+            if isinstance(ana, AnalysisHGLM):
+                # setting alpha=2 makes all regions "significant", discover()
+                # produces a disjoint set of regions which cover the space
+                # of voxels, choosing to maximize z stat greedily (a bit of
+                # wasted compute here ... full Effect not needed)
+                effect_list = ana.discover(pval=ana.p_val, alpha=2,
+                                           priority=ana.z_stat[0, :],
+                                           children=ana.child_dict[0], exp=exp)
+
+                # build stat per voxel
+                x = np.zeros(exp.mask_idx.shape)
+                for eff in effect_list:
+                    x += ana.z_stat[0, eff.reg_idx] * eff.mask
+                y_score = x[exp.mask_idx > -1]
+
+            elif isinstance(ana, AnalysisTFCE):
+                y_score = ana.tfce_stat[0, :]
+            else:
+                raise RuntimeError(f'Analysis not recognized: {type(ana)}')
+
+            auc = roc_auc_score(y_score=y_score,
+                                y_true=effect.mask[exp.mask_idx > -1])
 
             # dump summary
             d = {'p_val': p_val,
@@ -172,6 +198,7 @@ def run_one_exp(seed):
                  'f1': f1,
                  'sens': sens,
                  'spec': spec,
+                 'auc': auc,
                  'uuid': uuid,
                  'time_sec': total_time_sec}
             with open(file_out, 'w') as f:
@@ -194,9 +221,10 @@ def run_one_exp(seed):
                     pickle.dump((ana, effect), f)
 
 
-if n_jobs not in (0, 1):
-    r = Parallel(n_jobs=n_jobs, verbose=10)(
-        delayed(run_one_exp)(seed) for seed in tqdm(range(n_repeat)))
-else:
-    for seed in tqdm(range(n_repeat)):
-        run_one_exp(seed)
+if __name__ == '__main__':
+    if n_jobs not in (0, 1):
+        r = Parallel(n_jobs=n_jobs, verbose=10)(
+            delayed(run_one_exp)(seed) for seed in tqdm(range(n_repeat)))
+    else:
+        for seed in tqdm(range(n_repeat)):
+            run_one_exp(seed)

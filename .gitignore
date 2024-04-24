@@ -7,13 +7,9 @@
 /.coverage
 /test/data/img*
 *tmp*
-/hglm/.ipynb_checkpoints/
-/hglm/__pycache__/
-/hglm/exp_*/
+/**/.ipynb_checkpoints/
+/**/__pycache__/
 *.p
-/exp_*/
 *.whl
-/hglm.sublime-project
-/hglm.sublime-workspace
 /hglm/demo/hglm_image_demo.gif
 *checkpoint.ipynb

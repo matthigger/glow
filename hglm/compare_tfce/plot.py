@@ -19,26 +19,31 @@ def extract(df):
         seed_idx = seed_list.index(row['seed'])
         pval_idx = pval_list.index(row['p_val'])
 
-        for feat in ('f1', 'sens', 'spec'):
+        for feat in ('f1', 'sens', 'spec', 'auc'):
             score_dict[row['Analysis'], feat][seed_idx, pval_idx] = row[feat]
 
     return pval_list, seed_list, score_dict
 
 
-def plot_f1_sens_spec(pval_list, score_dict):
-    fig, ax = plt.subplots(2, 3)
+def plot_feats(pval_list, score_dict, feat_list):
+    if len(feat_list) == 1:
+        fig, ax = plt.subplots(1, 2)
+        # reshape to allow for consistent indexing with multiple features
+        ax = ax.reshape(2, 1)
+    else:
+        fig, ax = plt.subplots(2, len(feat_list))
 
     # plot top row
     style_dict = {'AnalysisTFCE': {'color': 'r'},
-                  'AnalysisHGLM': {'color': 'b'},
-                  'AnalysisHGLM-maxF1': {'color': 'g'}}
+                  'AnalysisHGLM-maxF1': {'color': 'g'},
+                  'AnalysisHGLM': {'color': 'b'}, }
     style_single = {'linewidth': .5,
                     'zorder': 1,
                     'label': '_nolegend_'}
     style_mean = {'linewidth': 5,
                   'zorder': 2,
                   'label': '_nolegend_'}
-    for _ax, feat in zip(ax[0, :], ('f1', 'sens', 'spec')):
+    for _ax, feat in zip(ax[0, :], feat_list):
         plt.sca(_ax)
         for method, kwargs in style_dict.items():
             if (method, feat) not in score_dict.keys():
@@ -53,7 +58,7 @@ def plot_f1_sens_spec(pval_list, score_dict):
         plt.xscale('log')
 
     # plot bottom row
-    for _ax, feat in zip(ax[1, :], ('f1', 'sens', 'spec')):
+    for _ax, feat in zip(ax[1, :], feat_list):
         plt.sca(_ax)
         x = score_dict['AnalysisHGLM', feat] - score_dict['AnalysisTFCE', feat]
         plt.axhline([0], linewidth=2, color='k')
