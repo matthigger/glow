@@ -38,7 +38,7 @@ def iter_size_yout_ybar(y, children=None, perm=None,
                 # permute & compute yout
                 perm_idx_min = 0 if block_exchange else reg_idx
                 ybar = perm(ybar, perm_idx_min=reg_idx, **kwargs)
-                yout = np.einsum('bnp,cnp->bcp', ybar, ybar)
+                yout = np.einsum('bnp,cnp->bcp', ybar, ybar, optimize=True)
 
             size_yout_ybar[reg_idx] = size, yout, ybar
         else:

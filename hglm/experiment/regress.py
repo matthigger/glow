@@ -65,7 +65,7 @@ def get_size_yout_ybar(y):
         ybar (np.array): (b, num_img) average, across voxels, of features
     """
     size = y.shape[2]
-    yout = np.einsum('bnr,anr->ba', y, y)
+    yout = np.einsum('bnr,anr->ba', y, y, optimize=True)
     ybar = y.mean(axis=2)
     return size, yout, ybar
 

@@ -348,5 +348,5 @@ class ExperimentWhitened(Experiment):
         self.y_orig = y
 
         # whiten & build experiment
-        y = np.einsum('ab,bnr->anr', self.to_white, y)
+        y = np.einsum('ab,bnr->anr', self.to_white, y, optimize=True)
         super().__init__(y=y, mask_idx=mask_idx, **kwargs)

@@ -284,7 +284,7 @@ class AnalysisHGLM(Analysis):
             q = q.T
 
             # map x into span of x
-            y = np.einsum('bnr,na->bar', exp.y, q.T)
+            y = np.einsum('bnr,na->bar', exp.y, q.T, optimize=True)
 
         # reshape to vector
         num_vox = y.shape[2]

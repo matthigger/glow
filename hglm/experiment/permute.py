@@ -54,7 +54,7 @@ class Permuter:
             # cast to 3d (temporarily)
             y = y[:, :, np.newaxis]
 
-        y_perm = np.einsum('bnr,naz->barz', y, freed_lane)
+        y_perm = np.einsum('bnr,naz->barz', y, freed_lane, optimize=True)
 
         if two_dim_input:
             # return without 3rd dimension (input was originally two-dim)
