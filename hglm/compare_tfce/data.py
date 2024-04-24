@@ -7,6 +7,7 @@ import pandas as pd
 
 
 def load_update_all(folder='', verbose=True):
+    """ loads all experiments stats from csv, updates csv as needed """
     # load aggregated results
     folder = pathlib.Path(folder)
     assert folder.exists()
@@ -59,7 +60,7 @@ def get_uuid(df, **match_dict):
 
 
 def load(df, folder='', uuid=None, **kwargs):
-    """ loads detail file """
+    """ loads (Analysis, Effect) from file (detail_save must be True) """
     folder = pathlib.Path(folder)
     assert folder.exists()
     if uuid is None:
