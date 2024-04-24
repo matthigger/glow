@@ -316,7 +316,7 @@ def scatter_plotly(ana_hglm, mask_target=None, x_feat='size (voxels)',
 
 # tmp
 if __name__ == '__main__':
-    from compare_tfce.data import load_update_all, load
+    from compare_analyses.data import load_update_all, load
 
     p_val, seed = 0.25, 15
     folder = '/home/matt/Dropbox/pnl_hglm/results/exp_24Apr22-1533'

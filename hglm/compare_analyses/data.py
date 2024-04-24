@@ -1,9 +1,32 @@
 import gzip
 import json
 import pathlib
+import shutil
+from datetime import datetime
 
 import cloudpickle as pickle
 import pandas as pd
+
+
+def prep_folder_out(folder, files_to_copy=tuple()):
+    timestamp = datetime.now().strftime('%y%b%d-%H%M')
+    folder_out = pathlib.Path(folder)
+    assert folder_out.exists()
+    folder_out = pathlib.Path(folder_out) / f'./exp_{timestamp}'
+    if folder_out.exists():
+        choice = input(f'folder exists: {folder_out}\ndelete? [y/n]:')
+        if choice != 'y':
+            raise Exception('quitting')
+        shutil.rmtree(folder_out)
+
+    # make folder_out and its "out" subfolder
+    (folder_out / 'out').mkdir(exist_ok=True, parents=True)
+
+    # store copy of given file (stores parameters with results)
+    for file in files_to_copy:
+        shutil.copy(file, folder_out / pathlib.Path(file).name)
+
+    return folder_out
 
 
 def load_update_all(folder='', verbose=True):
@@ -20,7 +43,7 @@ def load_update_all(folder='', verbose=True):
     n_old = df.shape[0]
 
     # aggregate results into csv necessary
-    file_list = list(folder.glob('out*.json'))
+    file_list = list(folder.glob('result*.json'))
     dict_list = list()
     for file in file_list:
         with open(file, 'r') as f:
