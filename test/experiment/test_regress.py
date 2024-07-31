@@ -43,6 +43,33 @@ def test_all():
         assert np.allclose(sigma_exp, sigma)
 
 
+def test_scale_sigma():
+    b, num_img, num_vox = 3, 10, 100
+    rng = np.random.default_rng(seed=0)
+    y = rng.standard_normal((b, num_img, num_vox))
+
+    sigma_before = get_sigma_from_y(y)
+
+    # test 1: gain=10
+    gain_exp = 10
+    y1 = scale_sigma(y, gain=gain_exp)
+    sigma_after = get_sigma_from_y(y1)
+    gain_obs = np.trace(sigma_after) / np.trace(sigma_before)
+    assert np.isclose(gain_exp, gain_obs)
+
+    # output has same mean (per image) as input
+    assert np.allclose(y.mean(axis=2), y1.mean(axis=2))
+
+    # test 2: to desired tr_sigma
+    tr_sigma_exp = 10
+    y2 = scale_sigma(y, tr_sigma=tr_sigma_exp)
+    sigma_after = get_sigma_from_y(y2)
+    assert np.isclose(tr_sigma_exp, np.trace(sigma_after))
+
+    # output has same mean (per image) as input
+    assert np.allclose(y.mean(axis=2), y2.mean(axis=2))
+
+
 def test_get_size_yout_ybar():
     b, num_img, num_vox = 3, 10, 100
     rng = np.random.default_rng(seed=0)
