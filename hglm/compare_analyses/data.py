@@ -43,7 +43,8 @@ def load_update_all(folder='', verbose=True):
     n_old = df.shape[0]
 
     # aggregate results into csv necessary
-    file_list = list(folder.glob('result*.json'))
+    folder_out = folder / 'out'
+    file_list = list(folder_out.glob('*result.json'))
     dict_list = list()
     for file in file_list:
         with open(file, 'r') as f:
@@ -84,7 +85,7 @@ def get_uuid(df, **match_dict):
 
 def load(df, folder='', uuid=None, **kwargs):
     """ loads (Analysis, Effect) from file (detail_save must be True) """
-    folder = pathlib.Path(folder)
+    folder = pathlib.Path(folder) / 'out'
     assert folder.exists()
     if uuid is None:
         s_uuid = get_uuid(df=df, **kwargs)

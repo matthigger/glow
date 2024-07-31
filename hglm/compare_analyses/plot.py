@@ -35,7 +35,6 @@ def plot_feats(pval_list, score_dict, feat_list):
 
     # plot top row
     style_dict = {'AnalysisTFCE': {'color': 'r'},
-                  'AnalysisHGLM-maxF1': {'color': 'g'},
                   'AnalysisHGLM': {'color': 'b'}, }
     style_single = {'linewidth': .5,
                     'zorder': 1,

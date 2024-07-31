@@ -94,7 +94,7 @@ def run_one_exp(seed):
         for Ana in param.analysis_obj_tup:
             # prep output file
             uuid = str(uuid4())[:8]
-            file_out = folder_out / 'out' / f'result_{uuid}.json'
+            file_out = folder_out / 'out' / f'{uuid}_result.json'
 
             # run analysis
             kwargs = param.analysis_kwargs[Ana.__name__]
