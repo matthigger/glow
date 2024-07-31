@@ -182,7 +182,7 @@ class ExperimentImageOnly:
         effect_idx = self.mask_idx[mask]
         y_effect = self.y[:, :, effect_idx]
         offset = compute_offset(x=self.x, y=y_effect, contrast=self.contrast,
-                                **kwargs)
+                                **kwargs)[0]
 
         # impose effect on y, build new experiment
         exp = self.add_offset(offset, mask=mask)
