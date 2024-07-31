@@ -32,30 +32,18 @@ class Analysis:
         self.exp = exp
 
     @classmethod
-    def get_pval(cls, stat, mask_exclude=None):
+    def get_pval(cls, stat):
         """ computes FWER adjusted pval Westfall-Young Permutation
 
         (percentile within max stat per permutation)
 
         Args:
             stat (np.array): (num_permute, num_reg) statistics per region
-            mask_exclude (np.array): (num_permute, num_reg) where True,
-                statistics are excluded (resulting pval is 1 and this region's
-                stats are counted among h0 permuted stats). defaults to all
-                stats included when set to None.
 
         Returns:
             pval (np.array): (num_reg) Family Wise Error Rate controlled
                 p-values
         """
-        if mask_exclude is not None:
-            assert not np.all(mask_exclude, axis=1).any(), \
-                'may not exclude an entire permutation'
-
-            # set all excluded stats to nan
-            stat = copy(stat).astype(float)
-            stat[mask_exclude] = np.nan
-
         # max stat per permutation (sorted from low to high)
         stat_max = np.sort(np.nanmax(stat, axis=1))
 
@@ -249,12 +237,13 @@ class AnalysisHGLM(Analysis):
         self.z_stat = (self.llr[:, 0, :] - mu) / std
 
         # compute p-values (max stat across space)
-        mask_exclude = self.size < min_size_discover
-        self.p_val = self.get_pval(stat=self.z_stat, mask_exclude=mask_exclude)
+        self.p_val = self.get_pval(stat=self.z_stat)
 
         # discover effects (greedily choose max stat regions whose p_val is
         # significant.  continue so long as disjoint significant effect remain)
+        mask_exclude = self.size[0, :] < min_size_discover
         self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
+                                         mask_exclude=mask_exclude,
                                          priority=self.z_stat[0, :], exp=exp,
                                          children=self.child_dict[0])
 
@@ -306,7 +295,8 @@ class AnalysisHGLM(Analysis):
         return children
 
     @classmethod
-    def discover(cls, pval, priority, children, exp, alpha=.05):
+    def discover(cls, pval, priority, children, exp, alpha=.05,
+                 mask_exclude=None):
         """ regions with highest priority are discovered first
 
         Args:
@@ -324,6 +314,12 @@ class AnalysisHGLM(Analysis):
         """
         # get set of all significant regions
         bool_sig = pval <= alpha
+
+        # exclude regions as necessary
+        if mask_exclude is not None:
+            bool_sig &= np.logical_not(mask_exclude)
+
+        # build stat_pval_reg_list, list of tuples (stat, pval, reg_idx)
         reg_idx = np.where(bool_sig)[0]
         stat_pval_reg_list = zip(priority[bool_sig], pval[bool_sig], reg_idx)
         stat_pval_reg_list = sorted(stat_pval_reg_list, reverse=True)

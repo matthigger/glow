@@ -29,14 +29,6 @@ class TestAnalysis:
         p_val = Analysis.get_pval(stat=z_stat)
         assert np.allclose(p_val, p_val_exp)
 
-        mask_exclude = np.array([[1, 0, 0, 0],
-                                 [0, 0, 0, 0],
-                                 [0, 0, 0, 0],
-                                 [0, 0, 0, 1]]).astype(bool)
-        p_val_exp = np.array([np.nan, 2, 3, 4]) / 4
-        p_val = Analysis.get_pval(stat=z_stat, mask_exclude=mask_exclude)
-        assert np.allclose(p_val, p_val_exp, equal_nan=True)
-
 
 class TestAnalysishglm:
     def test_cluster(self):
@@ -117,6 +109,16 @@ class TestAnalysishglm:
         assert len(eff_list) == 2
         assert eff_list[0].reg_idx == 0
         assert eff_list[1].reg_idx == 1
+
+        # 2 sig regions which don't intersect, second is excluded
+        pval = np.array([.1, .2, 1, 1, 1, 1, 1])
+        mask_exclude = np.array([0, 1, 1, 1, 1, 1, 1])
+        eff_list = AnalysisHGLM.discover(pval=pval, priority=-pval,
+                                         children=children,
+                                         mask_exclude=mask_exclude,
+                                         exp=exp, alpha=.5)
+        assert len(eff_list) == 1
+        assert eff_list[0].reg_idx == 0
 
 
 class TestBigEffect:
