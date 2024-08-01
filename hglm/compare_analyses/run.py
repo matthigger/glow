@@ -87,9 +87,10 @@ def run_one_exp(seed):
     np.random.shuffle(param.p_val_all)
     for p_val in param.p_val_all:
         # impose effect
-        _exp, effect = exp_masked.impose_effect(seed=seed,
-                                                mask=mask_target,
-                                                p_val=p_val)
+        _exp, effect, rough = exp_masked.impose_effect(seed=seed,
+                                                       mask=mask_target,
+                                                       p_val=p_val,
+                                                       rough=param.rough)
 
         for Ana in param.analysis_obj_tup:
             # prep output file
@@ -134,6 +135,7 @@ def run_one_exp(seed):
             # dump summary
             d = {'p_val': p_val,
                  'seed': seed,
+                 'rough': rough,
                  'Analysis': Ana.__name__,
                  'f1': f1,
                  'sens': sens,

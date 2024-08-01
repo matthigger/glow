@@ -129,8 +129,9 @@ class TestBigEffect:
     a = 2
     b = 1
     exp = get_rand_exp(shape=shape, a=a, b=b, seed=0, num_img=num_img)
-    exp, effect = exp.impose_effect(seed=0, extenter=ExtenterSphere(radius=1),
-                                    p_val=.0001)
+    exp, effect, rough = exp.impose_effect(seed=0,
+                                           extenter=ExtenterSphere(radius=1),
+                                           p_val=.0001)
 
     def test_hglm(self):
         # test parallel & serial

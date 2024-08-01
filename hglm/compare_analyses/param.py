@@ -14,6 +14,11 @@ p_val_all = np.geomspace(.6, .08, 9)
 # only these voxels are included in the analysis
 radius = 4
 
+# roughness coefficient (how smooth our target region is within each single
+# image, rough=0 means image intensities are constant within target effect
+# region per each image)
+rough = 0
+
 # effect size, as ratio to total voxels in experiment
 effect_perc = .2
 

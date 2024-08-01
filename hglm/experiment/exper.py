@@ -10,6 +10,7 @@ from hglm.effect import compute_offset
 from hglm.mask import get_mask_idx
 from .load_image import load_image_color, load_image_nii
 from .permute import Permuter
+from .regress import scale_sigma
 
 
 class ExperimentImageOnly:
@@ -181,15 +182,16 @@ class ExperimentImageOnly:
         # get offset which imposes desired effect strength
         effect_idx = self.mask_idx[mask]
         y_effect = self.y[:, :, effect_idx]
-        offset = compute_offset(x=self.x, y=y_effect, contrast=self.contrast,
-                                **kwargs)[0]
+        offset, sigma_gain, rough = compute_offset(x=self.x, y=y_effect,
+                                                   contrast=self.contrast,
+                                                   **kwargs)
 
         # impose effect on y, build new experiment
-        exp = self.add_offset(offset, mask=mask)
+        exp = self.add_offset(offset, mask=mask, sigma_gain=sigma_gain)
 
         effect = Effect.from_exp_mask(exp=exp, mask=mask)
 
-        return exp, effect
+        return exp, effect, rough
 
     def apply_mask(self, mask):
         """ applies boolean mask to experiment
@@ -213,7 +215,7 @@ class ExperimentImageOnly:
         d['y'] = y
         return type(self)(**d)
 
-    def add_offset(self, offset, mask=None, vox_idx=None):
+    def add_offset(self, offset, mask=None, vox_idx=None, sigma_gain=None):
         """ returns new experiment with constant offset added to y
 
         Args:
@@ -233,6 +235,10 @@ class ExperimentImageOnly:
         # build new y
         y = deepcopy(self.y)
         y[:, :, vox_idx] += offset[..., np.newaxis]
+
+        if sigma_gain is not None:
+            # scale sigma within mask, if passed
+            y[:, :, vox_idx] = scale_sigma(y=y[:, :, vox_idx], gain=sigma_gain)
 
         # build new object
         d = deepcopy(self.__dict__)

@@ -27,9 +27,9 @@ def compute_offset(x, y, contrast, f_stat=None, p_val=None, rough=None):
     Returns:
         offset (np.array): (b, num_img) offset to apply to all images to
             produce desired f stat
-        rough (float): roughness coefficient achieved
         sigma_gain (float): spatial covariance scaling needed to achieve
             roughness coefficient, None if "rough" is not input.
+        rough (float): roughness coefficient achieved
     """
     assert (f_stat is None) != (p_val is None), 'f_stat xor p_val required'
 

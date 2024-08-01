@@ -1,5 +1,4 @@
 from hglm.effect import ExtenterSphere
-from hglm.experiment import Permuter
 from hglm.experiment.exper import *
 from test.helper import generate_dummy_data
 from .make_test_image import folder_test_data, img_feat_intensity
@@ -40,8 +39,8 @@ class TestExperimentOnlyImage:
         extenter = ExtenterSphere(radius=3)
 
         for p_val in np.logspace(-3, -.0001, 4):
-            _exp, effect = exp.impose_effect(seed=seed, extenter=extenter,
-                                             p_val=p_val)
+            _exp, effect, _ = exp.impose_effect(seed=seed, extenter=extenter,
+                                                p_val=p_val)
 
             assert np.isclose(effect.f_stat_p_val, p_val)
 
