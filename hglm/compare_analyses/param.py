@@ -8,16 +8,18 @@ n_repeat = 32 * 3
 
 # p_val describes severity of effect (assuming typical F test assumptions
 # ...not valid but still useful to quantify how difficult effect is)
-p_val_all = np.geomspace(.6, .08, 9)
+p_val_all = np.geomspace(.6, .08, 13)
+
+# roughness coefficient
+# rough=0: image intensities are constant within target per image
+# rough=1: sigma (spatial covariance) trace = trace reduced model resid cov
+# rough=None: no roughness is imposed on data (though one is computed / stored)
+# rough_all = np.linspace(0, 2, 9)
+rough_all = None,
 
 # to speed up analysis, random voxel is chosen and dilated to this radius.
 # only these voxels are included in the analysis
 radius = 4
-
-# roughness coefficient (how smooth our target region is within each single
-# image, rough=0 means image intensities are constant within target effect
-# region per each image)
-rough = 0
 
 # effect size, as ratio to total voxels in experiment
 effect_perc = .2
@@ -39,7 +41,7 @@ analysis_kwargs = {'AnalysisHGLM': dict(n_perm=100,
                    'AnalysisTFCE': dict(n_perm=100)}
 
 # saves output python objects (memory expensive)
-detail_save = True
+detail_save = False
 
 # writes json with input state causing an errors in Analysis.run(),
 # continues to next experiment
@@ -47,7 +49,7 @@ error_save = True
 
 # if True, computes stats on max f1 region in HGLM analysis (allows us to
 # distinguish between segmentation & discovery errors)
-maxf1 = True
+maxf1 = False
 
 source = 'awgn'
 match source:
