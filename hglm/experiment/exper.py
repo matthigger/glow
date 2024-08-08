@@ -170,6 +170,7 @@ class ExperimentImageOnly:
         Returns:
             exp (Experiment): an experiment
             effect (Effect): encapsulates
+            rough (float): roughness coefficient
         """
         assert self.x is not None, 'x/contrast needed, call .sample_x()'
         assert (mask is None) != (extenter is None), \

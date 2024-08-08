@@ -1,5 +1,5 @@
 from hglm.effect.impose import *
-from hglm.experiment import scale_sigma
+from hglm.experiment import scale_sigma, get_rough, get_sigma_from_y
 from hglm.f_stat import *
 from ..helper import generate_dummy_data
 
@@ -32,3 +32,7 @@ def test_compute_offset():
                 if rough_exp is not None:
                     # ensure desired roughness is achieved
                     assert np.isclose(rough_exp, rough)
+
+                # check that roughness is computed properly
+                _rough_exp = get_rough(x, _y)
+                assert np.isclose(_rough_exp, rough)

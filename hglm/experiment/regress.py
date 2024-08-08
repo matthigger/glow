@@ -39,19 +39,6 @@ class ComputeRegress:
         num_img = ybar.shape[1]
         return (yout / size - ybar @ self.h @ ybar.T) / num_img
 
-    def get_eps_mean(self, ybar):
-        """ computes epsilon, the b x b error covariance matrix
-
-        Args:
-            ybar (np.array): (b, num_img) average, across voxels, of features
-
-        Returns:
-            eps (np.array): (b, b) error covariance matrix, per sample:
-                (Y - \beta X) @ (Y - \beta X).T
-        """
-        num_img = ybar.shape[1]
-        return (ybar @ (np.eye(num_img) - self.h) @ ybar.T) / num_img
-
 
 def get_size_yout_ybar(y):
     """ compute size yout ybar directly from imaging features
@@ -91,6 +78,26 @@ def get_sigma(size, yout, ybar):
 def get_sigma_from_y(y):
     size, yout, ybar = get_size_yout_ybar(y)
     return get_sigma(size=size, yout=yout, ybar=ybar)
+
+
+def get_rough(x, y):
+    """ computes roughness coefficient
+
+    rough = num_img * tr_sigma / ||q2 y_mean ||^2
+
+
+    """
+    a, _ = x.shape
+    b, num_img, num_vox = y.shape
+    tr_sigma = np.trace(get_sigma_from_y(y))
+
+    q, r = np.linalg.qr(x.T, mode='complete')
+    q = q.T
+    q2 = q[a:, :]
+    y_mean = y.mean(axis=2)
+    yq2 = np.linalg.norm(y_mean @ q2.T) ** 2
+
+    return tr_sigma * num_img / yq2
 
 
 def scale_sigma(y, gain=None, tr_sigma=None):
