@@ -10,7 +10,7 @@ n_repeat = 32 * 3
 # ...not valid but still useful to quantify how difficult effect is)
 p_val_all = np.geomspace(.6, .08, 13)
 
-# roughness coefficient
+# roughness coefficient (see impose_rough_demo.ipynb for caveats!)
 # rough=0: image intensities are constant within target per image
 # rough=1: sigma (spatial covariance) trace = trace reduced model resid cov
 # rough=None: no roughness is imposed on data (though one is computed / stored)
