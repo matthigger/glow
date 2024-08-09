@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from hglm.graph import get_f1, get_miss_hits
+import hglm.graph
 
 sns.set(font_scale=1.3)
 
@@ -139,8 +139,8 @@ def image_iter(children, mask_idx, num_vox):
 def prep_df(ana_hglm, mask_target=None):
     df_list = list()
     for perm_idx, (fstat, z, size) in enumerate(zip(ana_hglm.fstat[:, 0, :],
-                                                  ana_hglm.z_stat,
-                                                  ana_hglm.size)):
+                                                    ana_hglm.z_stat,
+                                                    ana_hglm.size)):
         children = ana_hglm.child_dict[perm_idx]
         d = {'region idx': np.arange(size.size),
              'F-stat': fstat,
@@ -157,12 +157,12 @@ def prep_df(ana_hglm, mask_target=None):
 
             # compute f1 (dice) score with mask_target
             if mask_target is not None:
-                d['dice'] = get_f1(children=ana_hglm.child_dict[0],
-                                   mask_idx=ana_hglm.exp.mask_idx,
-                                   mask=mask_target)
-                miss, hits = get_miss_hits(children=children,
-                                           mask_idx=ana_hglm.exp.mask_idx,
-                                           mask=mask_target)
+                d['dice'] = hglm.graph.get_f1(children=ana_hglm.child_dict[0],
+                                              mask_idx=ana_hglm.exp.mask_idx,
+                                              mask=mask_target)
+                miss, hits = hglm.graph.get_miss_hits(children=children,
+                                                      mask_idx=ana_hglm.exp.mask_idx,
+                                                      mask=mask_target)
                 d['False-Pos (voxels)'] = miss
                 d['True-Pos (voxels)'] = hits
 
@@ -188,9 +188,9 @@ def scatter_size_vs_stat(analysis, y_feat, mask=None, min_size=1):
 
     # compute f1 score
     if mask is not None:
-        f1 = get_f1(mask=mask,
-                    mask_idx=analysis.exp.mask_idx,
-                    children=analysis.child_dict[0])
+        f1 = hglm.graph.get_f1(mask=mask,
+                               mask_idx=analysis.exp.mask_idx,
+                               children=analysis.child_dict[0])
     else:
         f1 = None
 

@@ -7,9 +7,9 @@ from sklearn.cluster import ward_tree
 from sklearn.feature_extraction import grid_to_graph
 from tqdm import tqdm
 
-from hglm.effect import Effect
-from hglm.graph import iter_topo, node_sum, iter_size_yout_ybar
-from hglm.tfce import apply_tfce_x
+import hglm.effect
+import hglm.graph
+import hglm.tfce
 from .exper import ExperimentScaled
 from .permute import Permuter
 from .regress import decompose, get_sigma
@@ -82,10 +82,11 @@ class Analysis:
         # prep Permuter object (if needed)
         x0 = exp.x[~exp.contrast, :]
         perm = None if n_perm is None else Permuter(x=x0)
-        for reg_idx, size, yout, ybar in iter_size_yout_ybar(exp.y, children,
-                                                             perm=perm,
-                                                             n_perm=n_perm,
-                                                             keep_orig=True):
+        for reg_idx, size, yout, ybar in hglm.graph.iter_size_yout_ybar(
+                exp.y, children,
+                perm=perm,
+                n_perm=n_perm,
+                keep_orig=True):
             # todo: replace whole thing with einsums below
             for p_idx in range(n_perm):
                 tr_sigma = np.trace(get_sigma(size,
@@ -93,7 +94,8 @@ class Analysis:
                                               ybar=ybar[..., p_idx]))
                 q1_norm = ((q[1] @ ybar[..., p_idx].T) ** 2).sum()
                 q2_norm = ((q[2] @ ybar[..., p_idx].T) ** 2).sum()
-                fstat[p_idx, reg_idx] = q1_norm / (num_img * tr_sigma + q2_norm)
+                fstat[p_idx, reg_idx] = q1_norm / (
+                        num_img * tr_sigma + q2_norm)
         return fstat
 
 
@@ -137,7 +139,8 @@ class AnalysisTFCE(Analysis):
         tfce = np.full(shape=stat.shape, dtype=float,
                        fill_value=np.nanmin(stat))
         for perm_idx, _stat in tqdm(enumerate(stat), **tqdm_dict):
-            tfce[perm_idx, :] = apply_tfce_x(_stat, mask_idx=mask_idx)
+            tfce[perm_idx, :] = hglm.tfce.apply_tfce_x(_stat,
+                                                       mask_idx=mask_idx)
 
         return tfce
 
@@ -160,7 +163,8 @@ class AnalysisTFCE(Analysis):
         for eff_idx in range(1, num_effect + 1):
             # build effect for each contiguous effect found
             _mask = effect_mask == eff_idx
-            effect_list.append(Effect.from_exp_mask(exp=exp, mask=_mask))
+            effect_list.append(
+                hglm.effect.Effect.from_exp_mask(exp=exp, mask=_mask))
 
         return effect_list
 
@@ -199,7 +203,8 @@ class AnalysisHGLM(Analysis):
             children = self.cluster(exp=_exp)
 
             # compute log likeratio (get n_perm_adj permutations per region)
-            fstat = self.get_fstat(exp=_exp, children=children, n_perm=n_perm_adj)
+            fstat = self.get_fstat(exp=_exp, children=children,
+                                   n_perm=n_perm_adj)
 
             return children, fstat
 
@@ -225,8 +230,9 @@ class AnalysisHGLM(Analysis):
         # compute sizes of each region
         self.size = np.empty((n_perm + 1, num_reg))
         for perm_idx, children in self.child_dict.items():
-            self.size[perm_idx, :] = node_sum(x=np.ones(num_vox, dtype=int),
-                                              children=children)
+            self.size[perm_idx, :] = hglm.graph.node_sum(x=np.ones(num_vox,
+                                                                   dtype=int),
+                                                         children=children)
 
         # adjust fstat
         mu = self.fstat[:, 1:, :].mean(axis=1)
@@ -326,10 +332,10 @@ class AnalysisHGLM(Analysis):
         for priority, p_val, reg_idx in stat_pval_reg_list:
             # check if region intersects with others discovered (no shared
             # ancestor)
-            vox_contained = set(iter_topo(children=children,
-                                          num_leaf=exp.y.shape[2],
-                                          node_start=reg_idx,
-                                          only_leaf=True))
+            vox_contained = set(hglm.graph.iter_topo(children=children,
+                                                     num_leaf=exp.y.shape[2],
+                                                     node_start=reg_idx,
+                                                     only_leaf=True))
             if vox_claimed.intersection(vox_contained):
                 # region intersects some claimed region already discovered
                 continue
@@ -343,8 +349,9 @@ class AnalysisHGLM(Analysis):
                 mask[exp.mask_idx == vox] = True
 
             #  build effect & add to effect list
-            effect = Effect.from_exp_mask(mask=mask, exp=exp, reg_idx=reg_idx,
-                                          p_val_fwer=p_val)
+            effect = hglm.effect.Effect.from_exp_mask(mask=mask, exp=exp,
+                                                      reg_idx=reg_idx,
+                                                      p_val_fwer=p_val)
             effect_list.append(effect)
 
         return effect_list

@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.stats import f
 
-from hglm.f_stat import get_f_stat, get_f_degrees
+import hglm.f_stat
 
 
 class Effect:
@@ -32,9 +32,9 @@ class Effect:
         b, num_img, reg_size = y.shape
 
         # compute f stat & f's p-value
-        f_stat = get_f_stat(x, y, contrast)
+        f_stat = hglm.f_stat.get_f_stat(x, y, contrast)
         a = (~contrast).sum(), contrast.size
-        dfn, dfd = get_f_degrees(num_img, reg_size, a)
+        dfn, dfd = hglm.f_stat.get_f_degrees(num_img, reg_size, a)
         p_val = 1 - f.cdf(f_stat, dfn=dfn, dfd=dfd)
 
         # compute eps

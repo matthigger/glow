@@ -1,4 +1,4 @@
-from hglm.effect import ExtenterSphere
+import hglm.effect
 from hglm.experiment.exper import *
 from test.helper import generate_dummy_data
 from .make_test_image import folder_test_data, img_feat_intensity
@@ -36,7 +36,7 @@ class TestExperimentOnlyImage:
     def test_impose_effect(self):
         seed = 0
         exp = get_rand_exp(seed=seed)
-        extenter = ExtenterSphere(radius=3)
+        extenter = hglm.effect.ExtenterSphere(radius=3)
 
         for p_val in np.logspace(-3, -.0001, 4):
             _exp, effect, _ = exp.impose_effect(seed=seed, extenter=extenter,
@@ -77,13 +77,13 @@ class TestExperimentOnlyImage:
         shape = 10, 10
         mask = np.ones(shape, dtype=bool)
         exp = get_rand_exp(shape=shape, add_effect=True, seed=0)
-        eff = Effect.from_exp_mask(exp=exp, mask=mask)
+        eff = hglm.effect.Effect.from_exp_mask(exp=exp, mask=mask)
 
         # remove the effect
         exp2 = exp.rm_effect(effect=eff)
 
         # validate that exp2 has f=0 for whole region
-        eff2 = Effect.from_exp_mask(exp=exp2, mask=mask)
+        eff2 = hglm.effect.Effect.from_exp_mask(exp=exp2, mask=mask)
         assert np.isclose(eff2.f_stat, 0)
 
 

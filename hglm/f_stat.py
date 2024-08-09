@@ -1,4 +1,5 @@
 import numpy as np
+import hglm.experiment
 
 
 def get_f_stat(x, y, contrast):
@@ -14,16 +15,8 @@ def get_f_stat(x, y, contrast):
     Returns:
         f_stat (float): f statistic of MMSE regression from x to y
     """
-    # constant
-    a = (~contrast).sum(), contrast.size
     b, num_img, reg_size = y.shape
-
-    # qr decomposition of x
-    to_sorted = np.eye(a[1])[np.argsort(contrast), :]
-    q, r = np.linalg.qr((to_sorted @ x).T, mode='complete')
-    q = q.T
-    q1 = q[a[0]: a[1], :]
-    q2 = q[a[1]:, :]
+    q = hglm.experiment.decompose(x, contrast)
 
     # compute norm of spatial cov square of t
     # |r| \Sigma_r & = \sum_{v \in r} (Y_v - \bar{Y}_r)(Y_v - \bar{Y}_r)^T
@@ -34,8 +27,8 @@ def get_f_stat(x, y, contrast):
 
     f_const = get_f_const(y, contrast)
 
-    return (f_const * np.linalg.norm(q1 @ y_mean.T) ** 2 /
-            (np.trace(space_cov) + np.linalg.norm(q2 @ y_mean.T) ** 2))
+    return (f_const * np.linalg.norm(q[1] @ y_mean.T) ** 2 /
+            (np.trace(space_cov) + np.linalg.norm(q[2] @ y_mean.T) ** 2))
 
 
 def get_tr_eps(x, y):

@@ -2,7 +2,8 @@ import numpy as np
 from scipy.optimize import minimize
 from scipy.stats import f
 
-from hglm.f_stat import get_f_degrees, get_f_const
+import hglm.experiment
+import hglm.f_stat
 
 
 def compute_offset(x, y, contrast, f_stat=None, p_val=None, rough=None):
@@ -42,20 +43,16 @@ def compute_offset(x, y, contrast, f_stat=None, p_val=None, rough=None):
 
     if f_stat is None:
         # get target f_stat to impose given p_value
-        dfn, dfd = get_f_degrees(num_img, reg_size, a)
+        dfn, dfd = hglm.f_stat.get_f_degrees(num_img, reg_size, a)
         f_stat = f.ppf(1 - p_val, dfn=dfn, dfd=dfd)
 
     # collect constants into k
-    k = f_stat / get_f_const(y, contrast)
+    k = f_stat / hglm.f_stat.get_f_const(y, contrast)
 
     # qr decomposition of x
-    to_sorted = np.eye(a[1])[np.argsort(contrast), :]
-    q, r = np.linalg.qr((to_sorted @ x).T, mode='complete')
-    q = q.T
-    q1 = q[a[0]: a[1], :]
-    q2 = q[a[1]:, :]
-    q1_norm2 = np.linalg.norm(q1 @ y_mean.T) ** 2
-    q2_norm2 = np.linalg.norm(q2 @ y_mean.T) ** 2
+    q = hglm.experiment.decompose(x, contrast)
+    q1_norm2 = np.linalg.norm(q[1] @ y_mean.T) ** 2
+    q2_norm2 = np.linalg.norm(q[2] @ y_mean.T) ** 2
 
     # compute norm of spatial cov square of t
     # |r| \Sigma_r & = \sum_{v \in r} (Y_v - \bar{Y}_r)(Y_v - \bar{Y}_r)^T
@@ -99,7 +96,7 @@ def compute_offset(x, y, contrast, f_stat=None, p_val=None, rough=None):
     assert res.success, 'optimization failed'
 
     a1, a2 = res.x
-    offset = a1 * y_mean @ q1.T @ q1 + a2 * y_mean @ q2.T @ q2
+    offset = a1 * y_mean @ q[1].T @ q[1] + a2 * y_mean @ q[2].T @ q[2]
 
     if rough is None:
         # compute roughness achieved (None was passed)

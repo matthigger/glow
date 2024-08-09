@@ -5,9 +5,8 @@ from copy import deepcopy
 import numpy as np
 import pandas as pd
 
-from hglm.effect import Effect
-from hglm.effect import compute_offset
-from hglm.mask import get_mask_idx
+import hglm.effect
+import hglm.mask
 from .load_image import load_image_color, load_image_nii
 from .permute import Permuter
 from .regress import scale_sigma
@@ -183,14 +182,15 @@ class ExperimentImageOnly:
         # get offset which imposes desired effect strength
         effect_idx = self.mask_idx[mask]
         y_effect = self.y[:, :, effect_idx]
-        offset, sigma_gain, rough = compute_offset(x=self.x, y=y_effect,
-                                                   contrast=self.contrast,
-                                                   **kwargs)
+        offset, sigma_gain, rough = hglm.effect.compute_offset(x=self.x,
+                                                               y=y_effect,
+                                                               contrast=self.contrast,
+                                                               **kwargs)
 
         # impose effect on y, build new experiment
         exp = self.add_offset(offset, mask=mask, sigma_gain=sigma_gain)
 
-        effect = Effect.from_exp_mask(exp=exp, mask=mask)
+        effect = hglm.effect.Effect.from_exp_mask(exp=exp, mask=mask)
 
         return exp, effect, rough
 
@@ -207,7 +207,7 @@ class ExperimentImageOnly:
         # apply mask to data
         mask = np.logical_and(mask, self.mask_idx > -1)
         assert mask.sum(), 'mask has no intersection with mask_idx'
-        mask_idx = get_mask_idx(mask)
+        mask_idx = hglm.mask.get_mask_idx(mask)
         y = self.y[:, :, self.mask_idx[mask]]
 
         # build new object identical as self
