@@ -45,6 +45,19 @@ class ComputeRegress:
         return ybar @ self.i_minus_h @ ybar.T
 
 
+def decompose(x, contrast):
+    """ decomposes x into orthonormal basis
+
+    Args:
+        x (np.array): (a, num_img) explanatory variables
+        contrast (np.array): (a) True for x features of interest
+    """
+    a = (~contrast).sum(), contrast.size
+    to_sorted = np.eye(a[1])[np.argsort(contrast), :]
+    q, r = np.linalg.qr((to_sorted @ x).T, mode='complete')
+    q = q.T
+    return q[:a[0], :], q[a[0]: a[1], :], q[a[1]:, :]
+
 
 def get_size_yout_ybar(y):
     """ compute size yout ybar directly from imaging features

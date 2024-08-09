@@ -12,7 +12,7 @@ from hglm.graph import iter_topo, node_sum, iter_size_yout_ybar
 from hglm.tfce import apply_tfce_x
 from .exper import ExperimentScaled
 from .permute import Permuter
-from .regress import get_llr, ComputeRegress
+from .regress import decompose, get_sigma
 
 
 class Analysis:
@@ -59,7 +59,7 @@ class Analysis:
         return pval
 
     @classmethod
-    def get_llr(cls, exp, n_perm, children=None):
+    def get_fstat(cls, exp, n_perm, children=None):
         """ computes log likelihood score (full over reduced) per region
 
         Args:
@@ -69,45 +69,43 @@ class Analysis:
                 regions, if none passed then iterates only through voxels
 
         Returns:
-            llr (np.array): (num_reg, n_perm) log likelihood
+            fstat (np.array): (num_reg, n_perm) log likelihood
         """
-        # compute llr per region
+        # compute fstat per region
         b, num_img, num_reg = exp.y.shape
         if children is not None:
             num_reg += children.shape[0]
-        llr = np.zeros((n_perm, num_reg))
+        fstat = np.zeros((n_perm, num_reg))
 
-        # prepare the get_eps functions (eps0 is only features not-of-interest)
-        x0 = exp.x[~exp.contrast, :]
-        comp_reg = ComputeRegress(x0), ComputeRegress(exp.x)
+        q = decompose(x=exp.x, contrast=exp.contrast)
 
         # prep Permuter object (if needed)
+        x0 = exp.x[~exp.contrast, :]
         perm = None if n_perm is None else Permuter(x=x0)
         for reg_idx, size, yout, ybar in iter_size_yout_ybar(exp.y, children,
                                                              perm=perm,
                                                              n_perm=n_perm,
                                                              keep_orig=True):
-            for perm_idx in range(n_perm):
-                # compute llr & store
-                eps = [_comp_reg.get_eps(size,
-                                         yout[..., perm_idx],
-                                         ybar[..., perm_idx])
-                       for _comp_reg in comp_reg]
-                llr[perm_idx, reg_idx] = get_llr(size=size,
-                                                 eps0=eps[0],
-                                                 eps1=eps[1])
-        return llr
+            # todo: replace whole thing with einsums below
+            for p_idx in range(n_perm):
+                tr_sigma = np.trace(get_sigma(size,
+                                              yout=yout[..., p_idx],
+                                              ybar=ybar[..., p_idx]))
+                q1_norm = ((q[1] @ ybar[..., p_idx].T) ** 2).sum()
+                q2_norm = ((q[2] @ ybar[..., p_idx].T) ** 2).sum()
+                fstat[p_idx, reg_idx] = q1_norm / (num_img * tr_sigma + q2_norm)
+        return fstat
 
 
 class AnalysisTFCE(Analysis):
     def __init__(self, exp, n_perm, alpha=.05, verbose=False):
         super().__init__(exp)
 
-        # compute llr per each voxel (for every permutation)
-        self.llr = self.get_llr(exp, n_perm=n_perm + 1, children=None)
+        # compute fstat per each voxel (for every permutation)
+        self.fstat = self.get_fstat(exp, n_perm=n_perm + 1, children=None)
 
         # apply TFCE per image
-        self.tfce_stat = self.apply_tfce(stat=self.llr,
+        self.tfce_stat = self.apply_tfce(stat=self.fstat,
                                          mask_idx=exp.mask_idx,
                                          verbose=verbose)
 
@@ -173,7 +171,7 @@ class AnalysisHGLM(Analysis):
     Attributes:
         child_dict (dict): keys are permutation indices, values are
             (2, n) graph arrays (equiv to sklearn.cluster.Ward.children_)
-        llr (np.array): (n_perm + 1, n_perm_adj, num_reg)
+        fstat (np.array): (n_perm + 1, n_perm_adj, num_reg)
         size (np.array): (n_perm + 1, num_reg) number of voxels in
             each region (for all permutations).  first row corresponds to
             unpermuted data
@@ -187,13 +185,13 @@ class AnalysisHGLM(Analysis):
         b, num_img, num_vox = exp.y.shape
         num_reg = num_vox * 2 - 1
 
-        # permute, cluster & llr per region in hierarchy
+        # permute, cluster & fstat per region in hierarchy
         self.child_dict = dict()
         tqdm_dict = dict(total=n_perm + 1,
                          desc='permuting',
                          disable=not verbose)
 
-        def permute_cluster_llr(perm_idx):
+        def permute_cluster_fstat(perm_idx):
             # permute data (get one permutation of experiment)
             _exp = exp.permute(perm_idx, block_exchange=False)
 
@@ -201,28 +199,28 @@ class AnalysisHGLM(Analysis):
             children = self.cluster(exp=_exp)
 
             # compute log likeratio (get n_perm_adj permutations per region)
-            llr = self.get_llr(exp=_exp, children=children, n_perm=n_perm_adj)
+            fstat = self.get_fstat(exp=_exp, children=children, n_perm=n_perm_adj)
 
-            return children, llr
+            return children, fstat
 
-        # run permute_cluster_llr (serial or parallel)
+        # run permute_cluster_fstat (serial or parallel)
         perm_iter = tqdm(range(n_perm + 1), **tqdm_dict)
         if n_jobs not in (0, 1):
             # parallel
-            r = Parallel(n_jobs=n_jobs)(delayed(permute_cluster_llr)(perm)
+            r = Parallel(n_jobs=n_jobs)(delayed(permute_cluster_fstat)(perm)
                                         for perm in perm_iter)
-            llr_list = list()
-            for p_idx, (child, llr) in enumerate(r):
+            fstat_list = list()
+            for p_idx, (child, fstat) in enumerate(r):
                 self.child_dict[p_idx] = child
-                llr_list.append(llr)
-            self.llr = np.stack(llr_list, axis=0)
+                fstat_list.append(fstat)
+            self.fstat = np.stack(fstat_list, axis=0)
         else:
             # serial
-            self.llr = np.zeros((n_perm + 1, n_perm_adj, num_reg))
+            self.fstat = np.zeros((n_perm + 1, n_perm_adj, num_reg))
             for p_idx in perm_iter:
-                child, llr = permute_cluster_llr(p_idx)
+                child, fstat = permute_cluster_fstat(p_idx)
                 self.child_dict[p_idx] = child
-                self.llr[p_idx, :, :] = llr
+                self.fstat[p_idx, :, :] = fstat
 
         # compute sizes of each region
         self.size = np.empty((n_perm + 1, num_reg))
@@ -230,10 +228,10 @@ class AnalysisHGLM(Analysis):
             self.size[perm_idx, :] = node_sum(x=np.ones(num_vox, dtype=int),
                                               children=children)
 
-        # adjust llr
-        mu = self.llr[:, 1:, :].mean(axis=1)
-        std = self.llr[:, 1:, :].std(axis=1)
-        self.z_stat = (self.llr[:, 0, :] - mu) / std
+        # adjust fstat
+        mu = self.fstat[:, 1:, :].mean(axis=1)
+        std = self.fstat[:, 1:, :].std(axis=1)
+        self.z_stat = (self.fstat[:, 0, :] - mu) / std
 
         # compute p-values (max stat across space)
         self.p_val = self.get_pval(stat=self.z_stat)
