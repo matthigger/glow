@@ -12,7 +12,7 @@ from sklearn.metrics import roc_auc_score
 
 import param
 from hglm.effect import ExtenterSphere, ExtenterMinVar
-from hglm.experiment import ExperimentWhitened, AnalysisHGLM, AnalysisTFCE
+from hglm.experiment import ExperimentScaled, AnalysisHGLM, AnalysisTFCE
 from hglm.graph import get_f1, iter_topo
 from hglm.mask import get_score
 
@@ -74,8 +74,9 @@ def run_one_exp(seed):
     mask = extenter(mask_idx=param.exp.mask_idx, seed=seed, contiguous=True)
     exp_masked = param.exp.apply_mask(mask)
 
-    # pre-whiten exp
-    exp_masked = ExperimentWhitened.from_exp(exp_masked)
+    # scale normalize before sampling minimum variance (each feature given
+    # equal weight in sampling extent)
+    exp_masked = ExperimentScaled.from_exp(exp_masked)
 
     # sample effect space
     n = exp_masked.y.shape[2] * param.effect_perc

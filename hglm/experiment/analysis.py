@@ -1,5 +1,4 @@
 from _bisect import bisect_left
-from copy import copy
 
 import numpy as np
 from joblib import Parallel, delayed
@@ -11,7 +10,7 @@ from tqdm import tqdm
 from hglm.effect import Effect
 from hglm.graph import iter_topo, node_sum, iter_size_yout_ybar
 from hglm.tfce import apply_tfce_x
-from .exper import ExperimentWhitened
+from .exper import ExperimentScaled
 from .permute import Permuter
 from .regress import get_llr, ComputeRegress
 
@@ -26,9 +25,9 @@ class Analysis:
     """
 
     def __init__(self, exp):
-        if not isinstance(exp, ExperimentWhitened):
-            # whiten if need be
-            exp = ExperimentWhitened.from_exp(exp)
+        if exp.y.shape[0] > 1 and not isinstance(exp, ExperimentScaled):
+            # scale if multiple features are given
+            exp = ExperimentScaled.from_exp(exp)
         self.exp = exp
 
     @classmethod

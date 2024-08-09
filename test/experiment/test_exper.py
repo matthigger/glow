@@ -119,14 +119,11 @@ class TestExperiment:
             assert np.allclose(exp_permuted.y[..., vox_idx], y_permute_exp)
 
 
-class TestExperimentWhitened:
+class TestExperimentScaled:
     def test_init(self):
         shape = 10, 10
         num_img = 5
         exp = get_rand_exp(shape=shape, seed=0, num_img=num_img)
-        exp_white = ExperimentWhitened.from_exp(exp)
+        exp_scale = ExperimentScaled.from_exp(exp)
 
-        # confirm desired covariance in exp_white
-        b = exp_white.y.shape[0]
-        y = exp_white.y.reshape((b, -1), order='F')
-        assert np.allclose(np.cov(y), np.eye(b))
+        assert np.allclose(np.var(exp_scale.y, axis=(1, 2)), 1)
