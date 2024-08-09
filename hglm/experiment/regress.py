@@ -21,8 +21,10 @@ class ComputeRegress:
 
     def __init__(self, x):
         # compute hat matrix
+        num_img = x.shape[1]
         q, r = np.linalg.qr(x.T, mode='reduced')
         self.h = q @ q.T
+        self.i_minus_h = np.eye(num_img) - self.h
 
     def get_eps(self, size, yout, ybar):
         """ computes epsilon, the b x b error covariance matrix
@@ -38,6 +40,10 @@ class ComputeRegress:
         """
         num_img = ybar.shape[1]
         return (yout / size - ybar @ self.h @ ybar.T) / num_img
+
+    def get_eps_mean(self, size, yout, ybar):
+        return ybar @ self.i_minus_h @ ybar.T
+
 
 
 def get_size_yout_ybar(y):
