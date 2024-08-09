@@ -226,7 +226,7 @@ def scatter_size_vs_stat(analysis, y_feat, mask=None, min_size=1):
 
 
 def scatter_plotly(ana_hglm, mask_target=None, x_feat='size (voxels)',
-                   y_feat='z-stat', color_feat='dice',
+                   y_feat='Z-stat', color_feat='dice',
                    plot_permute=True, plot_tree=True, log_x=True, log_y=True):
     """
 
