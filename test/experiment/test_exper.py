@@ -124,6 +124,10 @@ class TestExperimentScaled:
         shape = 10, 10
         num_img = 5
         exp = get_rand_exp(shape=shape, seed=0, num_img=num_img)
+
+        y_mu_before = exp.y.mean(axis=(1, 2))
+
         exp_scale = ExperimentScaled.from_exp(exp)
 
         assert np.allclose(np.var(exp_scale.y, axis=(1, 2)), 1)
+        assert np.allclose(y_mu_before, exp_scale.y.mean(axis=(1, 2)))

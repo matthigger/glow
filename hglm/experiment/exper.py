@@ -341,7 +341,14 @@ class ExperimentScaled(Experiment):
                    contrast=exp.contrast)
 
     def __init__(self, y, mask_idx, **kwargs):
-        self.var_orig = np.var(y, axis=(1, 2))
+        self.std_orig = np.var(y, axis=(1, 2)) ** .5
         self.y_orig = y
-        y = y / self.var_orig[:, np.newaxis, np.newaxis] ** .5
+        mu = self.y_orig.mean(axis=(1, 2))
+
+        # adding offset ensures mu is unchanged
+        offset = (self.std_orig - 1) / self.std_orig * mu
+
+        y /= self.std_orig[:, np.newaxis, np.newaxis]
+        y += offset[:, np.newaxis, np.newaxis]
+
         super().__init__(y=y, mask_idx=mask_idx, **kwargs)
