@@ -22,6 +22,10 @@ imageio = "^2.34.0"
 cloudpickle = "^3.0.0"
 
 
+[tool.poetry.group.dev.dependencies]
+dipy = "^1.9.0"
+antspyx = "^0.5.3"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

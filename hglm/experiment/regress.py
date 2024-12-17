@@ -103,8 +103,6 @@ def get_rough(x, y):
     """ computes roughness coefficient
 
     rough = num_img * tr_sigma / ||q2 y_mean ||^2
-
-
     """
     a, _ = x.shape
     b, num_img, num_vox = y.shape
