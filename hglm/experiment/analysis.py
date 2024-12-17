@@ -59,7 +59,7 @@ class Analysis:
         return pval
 
     @classmethod
-    def get_fstat(cls, exp, n_perm, children=None):
+    def get_fstat(cls, exp, n_perm, children=None, block_exchange=True):
         """ computes log likelihood score (full over reduced) per region
 
         Args:
@@ -86,7 +86,8 @@ class Analysis:
                 exp.y, children,
                 perm=perm,
                 n_perm=n_perm,
-                keep_orig=True):
+                keep_orig=True,
+                block_exchange=block_exchange):
             # todo: replace whole thing with einsums below
             for p_idx in range(n_perm):
                 tr_sigma = np.trace(get_sigma(size,
@@ -182,7 +183,8 @@ class AnalysisHGLM(Analysis):
     """
 
     def __init__(self, exp, n_perm, n_perm_adj=10, alpha=.05,
-                 min_size_discover=1, verbose=False, n_jobs=0):
+                 min_size_discover=1, verbose=False, n_jobs=0,
+                 block_exchange=True):
         super().__init__(exp)
 
         # constants
@@ -204,7 +206,7 @@ class AnalysisHGLM(Analysis):
 
             # compute log likeratio (get n_perm_adj permutations per region)
             fstat = self.get_fstat(exp=_exp, children=children,
-                                   n_perm=n_perm_adj)
+                                   n_perm=n_perm_adj, block_exchange=block_exchange)
 
             return children, fstat
 
