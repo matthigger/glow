@@ -9,7 +9,7 @@ import nibabel as nib
 import numpy as np
 
 # to be modified per installation
-fsl_path = pathlib.Path('/home/matt/fsl')
+fsl_path = pathlib.Path('/usr/local/fsl')
 
 fsl_conf_sh = fsl_path / 'etc/fslconf/fsl.sh'
 fslmaths_path = fsl_path / 'bin/fslmaths'
