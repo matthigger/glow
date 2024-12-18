@@ -1,8 +1,8 @@
 import numpy as np
 
 
-def iter_size_yout_ybar(y, children=None, perm=None, block_exchange=False,
-                        **kwargs):
+def iter_size_yout_ybar(y, children=None, perm=None,
+                        block_exchange=False, **kwargs):
     """ iterates through region stats, less-redundant compute via graph
 
     Args:
@@ -36,7 +36,7 @@ def iter_size_yout_ybar(y, children=None, perm=None, block_exchange=False,
                 yout = yv @ yv.T
             else:
                 # permute & compute yout
-                perm_idx_min = 1 if block_exchange else reg_idx
+                perm_idx_min = 1 if block_exchange else reg_idx + 2
                 ybar = perm(ybar, perm_idx_min=perm_idx_min, **kwargs)
                 yout = np.einsum('bnp,cnp->bcp', ybar, ybar, optimize=True)
 

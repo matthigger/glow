@@ -29,8 +29,6 @@ effect_perc = .2
 # FWER control
 alpha = .05
 
-block_exchange = True
-
 # toggles parallel, 0 or 1 processes non-parallel (good for debug).  else this
 # is the number of threads to use.  (-1 for all of them)
 n_jobs = -1
@@ -46,7 +44,7 @@ analysis_kwargs = {'AnalysisHGLM': dict(n_perm=100,
                    'AnalysisTFCE': dict(n_perm=100)}
 
 # saves output python objects (memory expensive)
-detail_save = True
+detail_save = False
 
 # writes json with input state causing an errors in Analysis.run(),
 # continues to next experiment
@@ -56,7 +54,7 @@ error_save = True
 # distinguish between segmentation & discovery errors)
 maxf1 = False
 
-source = 'hcp'
+source = 'awgn'
 match source:
     case 'hcp':
         # human connectome project data

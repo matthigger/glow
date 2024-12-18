@@ -42,6 +42,7 @@ class Permuter:
         """
         # build freedman lane permutation matrices
         assert not (n_perm == 1 and keep_orig), 'invalid inputs, see doc'
+        assert perm_idx_min > 0, 'invalid perm_idx_min (0 is for non-permuted)'
         perm_iter = range(perm_idx_min, perm_idx_min + n_perm - keep_orig)
         if keep_orig:
             # perm_idx = 0 is identity, see get_perm_matrix()
