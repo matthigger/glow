@@ -24,7 +24,6 @@ class ComputeRegress:
         num_img = x.shape[1]
         q, r = np.linalg.qr(x.T, mode='reduced')
         self.h = q @ q.T
-        self.i_minus_h = np.eye(num_img) - self.h
 
     def get_eps(self, size, yout, ybar):
         """ computes epsilon, the b x b error covariance matrix
@@ -40,9 +39,6 @@ class ComputeRegress:
         """
         num_img = ybar.shape[1]
         return (yout / size - ybar @ self.h @ ybar.T) / num_img
-
-    def get_eps_mean(self, size, yout, ybar):
-        return ybar @ self.i_minus_h @ ybar.T
 
 
 def decompose(x, contrast):
@@ -149,41 +145,3 @@ def scale_sigma(y, gain=None, tr_sigma=None):
 
     # re-mean
     return y_demean + mean[:, :, np.newaxis]
-
-
-def get_llr(eps0, eps1, size=None):
-    """ computes log likelihood ratio between two models
-
-    assumes that estimated error covariance has no error (covariance of samples
-    cancels with covariance of normal distribution)
-
-    Args:
-        size (int): size of region
-        eps0 (np.array): (b, b) error covariance matrix, reduced model
-        eps1 (np.array): (b, b) error covariance matrix, full model
-
-    Returns:
-        llr (float): log likelihood ratio
-    """
-    return (log_det(eps0) - log_det(eps1)) * size / 2
-
-
-def get_llr_hier(size, sigma, eps_mean0, eps_mean1):
-    """ computes log likelihood ratio between two models
-
-    Args:
-        size (int): size of region
-        sigma (np.array): (b, b) spatial  covariance matrix
-        eps_mean0 (np.array): (b, b) error covariance matrix, reduced model
-        eps_mean1 (np.array): (b, b) error covariance matrix, full model
-
-    Returns:
-        llr_hier (float): log likelihood ratio (hierarchical model)
-    """
-    eps_hier0 = eps_mean0 / size + sigma
-    eps_hier1 = eps_mean1 / size + sigma
-    return (log_det(eps_hier0) - log_det(eps_hier1)) / 2
-
-
-def log_det(x):
-    return np.log(np.linalg.det(np.atleast_2d(x)))

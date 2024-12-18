@@ -275,21 +275,6 @@ class Experiment(ExperimentImageOnly):
         x = self.x[~self.contrast, :], self.x
         self.h = tuple(np.linalg.pinv(_x) @ _x for _x in x)
 
-    def rm_effect(self, effect):
-        """ builds a new experiment which has the effect removed
-
-        Args:
-            effect (Effect): effect to add to experiment
-
-        Returns:
-            exp_out (Experiment): experiment whose y features have had the
-                effect subtracted away
-        """
-        num_img = self.x.shape[1]
-        offset = -effect.y_mean @ self.h[1] @ (np.eye(num_img) - self.h[0])
-
-        return self.add_offset(offset=offset, mask=effect.mask)
-
     def permute(self, perm_idx, block_exchange=False):
         """ gets new experiment whose y features were permuted (freedman lane)
 

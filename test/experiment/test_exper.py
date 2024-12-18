@@ -72,20 +72,6 @@ class TestExperimentOnlyImage:
             exp.bootstrap_img(n=10, seed=0)
             assert np.allclose(new_mean, exp.y.mean(axis=(1, 2)))
 
-    def test_add_effect(self):
-        # get arbitrary experiment & effect region (whole image)
-        shape = 10, 10
-        mask = np.ones(shape, dtype=bool)
-        exp = get_rand_exp(shape=shape, add_effect=True, seed=0)
-        eff = hglm.effect.Effect.from_exp_mask(exp=exp, mask=mask)
-
-        # remove the effect
-        exp2 = exp.rm_effect(effect=eff)
-
-        # validate that exp2 has f=0 for whole region
-        eff2 = hglm.effect.Effect.from_exp_mask(exp=exp2, mask=mask)
-        assert np.isclose(eff2.f_stat, 0)
-
 
 class TestExperiment:
 

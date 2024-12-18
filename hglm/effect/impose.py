@@ -79,7 +79,7 @@ def compute_offset(x, y, contrast, f_stat=None, p_val=None, rough=None):
                 (1 + a1) ** 2 * q1_norm2
 
     def obj(alpha):
-        """  ||\Delta||^2 = \sum_{i=1}^3 \alpha_i^2 ||Q_i \bar{Y}_r^T||^2
+        r"""  ||\Delta||^2 = \sum_{i=1}^3 \alpha_i^2 ||Q_i \bar{Y}_r^T||^2
 
         Args:
              alpha (tuple): a1, a2 (per equations)

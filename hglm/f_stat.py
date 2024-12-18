@@ -31,29 +31,6 @@ def get_f_stat(x, y, contrast):
             (np.trace(space_cov) + np.linalg.norm(q[2] @ y_mean.T) ** 2))
 
 
-def get_tr_eps(x, y):
-    """ compute mean trace of residual covariance
-
-    Attributes:
-        x (np.array): (a, num_img) explanatory variables
-        y (np.array): (b, num_img, num_vox) image intensities
-
-    Returns:
-        tr_eps (float): trace of residual covariance (error).  mean per
-            observation
-    """
-    b, num_img, reg_size = y.shape
-
-    h = np.linalg.pinv(x) @ x
-
-    y_mean = y.mean(axis=2)
-    ssy = (y ** 2).sum()
-
-    tr_eps = ssy - reg_size * np.trace(y_mean @ h @ y_mean.T)
-
-    return tr_eps / (num_img * reg_size)
-
-
 def get_f_degrees(num_img, reg_size, a):
     dfn = num_img * reg_size - a[1]
     dfd = a[1] - a[0]

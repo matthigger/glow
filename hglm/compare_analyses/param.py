@@ -63,7 +63,7 @@ match source:
         folder = '/home/matt/Dropbox/pnl_hglm/data/hcp100_lowres/image'
         exp_hcp = hglm.experiment.ExperimentImageOnly.from_search(
             folder=folder,
-            sbj_regex='[\d]{6}',
+            sbj_regex=r'[\d]{6}',
             img_glob_dict={
                 'FA': '*_FA.nii.gz',
                 'MD': '*_MD.nii.gz'})

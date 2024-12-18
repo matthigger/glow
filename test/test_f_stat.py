@@ -22,6 +22,29 @@ def get_f_stat_reliable(x, y, contrast):
     return (tr_eps[0] - tr_eps[1]) / tr_eps[1] * get_f_const(y, contrast)
 
 
+def get_tr_eps(x, y):
+    """ compute mean trace of residual covariance
+
+    Attributes:
+        x (np.array): (a, num_img) explanatory variables
+        y (np.array): (b, num_img, num_vox) image intensities
+
+    Returns:
+        tr_eps (float): trace of residual covariance (error).  mean per
+            observation
+    """
+    b, num_img, reg_size = y.shape
+
+    h = np.linalg.pinv(x) @ x
+
+    y_mean = y.mean(axis=2)
+    ssy = (y ** 2).sum()
+
+    tr_eps = ssy - reg_size * np.trace(y_mean @ h @ y_mean.T)
+
+    return tr_eps / (num_img * reg_size)
+
+
 def test_get_f_stat_qr():
     for seed in range(10):
         x, y, contrast = generate_dummy_data(seed=0)

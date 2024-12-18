@@ -58,24 +58,6 @@ def iter_size_yout_ybar(y, children=None, perm=None, block_exchange=False,
         yield reg_idx, size, yout, ybar
 
 
-def iter_edge(children, num_vox):
-    """ iterates through all edges
-
-    Args:
-        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
-            sklearn.cluster.Ward.children_)
-        num_vox (int): number of single voxel regions
-
-    Yields:
-        child_idx (int): child index
-        parent_idx (int): parent index
-    """
-    for idx, child_vec in enumerate(children):
-        parent_idx = num_vox + idx
-        for c in child_vec:
-            yield c, parent_idx
-
-
 def node_sum(x, children):
     """ given item per leaf in graph, sums leaf values and adds to dictionary
 
@@ -180,40 +162,3 @@ def iter_topo(*, children=None, num_leaf, node_start=None, only_leaf=False):
 
     if not only_leaf or node_start < num_leaf:
         yield node_start
-
-
-def child_to_parent(children, num_leaf=None):
-    """ children points parents to child, parent point child to parent
-
-    Args:
-        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
-            sklearn.cluster.Ward.children_)
-
-    Returns:
-        parent (np.array): (num_reg) parent of every region
-    """
-    if num_leaf is None:
-        # assumes complete binary tree
-        num_leaf = children.shape[0] + 1
-
-    # init parent
-    num_reg = num_leaf + children.shape[0]
-    parent = np.ones(num_reg, dtype=int) * np.nan
-
-    # store parents
-    for idx, children in enumerate(children):
-        reg_idx = idx + num_leaf
-        parent[children] = reg_idx
-
-    return parent
-
-
-def iter_ancestor(parent, node, include_self=True):
-    if include_self:
-        yield node
-
-    while True:
-        node = parent[int(node)]
-        if np.isnan(node):
-            break
-        yield node
