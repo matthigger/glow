@@ -25,8 +25,8 @@ class Analysis:
     """
 
     def __init__(self, exp):
-        if exp.y.shape[0] > 1 and not isinstance(exp, ExperimentScaled):
-            # scale if multiple features are given
+        if not isinstance(exp, ExperimentScaled):
+            # pre-process
             exp = ExperimentScaled.from_exp(exp)
         self.exp = exp
 

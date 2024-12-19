@@ -1,3 +1,5 @@
+import numpy as np
+
 import hglm.effect
 from hglm.experiment.exper import *
 from test.helper import generate_dummy_data
@@ -109,11 +111,28 @@ class TestExperimentScaled:
     def test_init(self):
         shape = 10, 10
         num_img = 5
-        exp = get_rand_exp(shape=shape, seed=0, num_img=num_img)
-
-        y_mu_before = exp.y.mean(axis=(1, 2))
+        b = 3
+        exp = get_rand_exp(shape=shape, seed=0, b=b, num_img=num_img)
 
         exp_scale = ExperimentScaled.from_exp(exp)
 
-        assert np.allclose(np.var(exp_scale.y, axis=(1, 2)), 1)
-        assert np.allclose(y_mu_before, exp_scale.y.mean(axis=(1, 2)))
+        assert np.allclose(exp_scale.y.mean(axis=(1, 2)), 0), 'non-zero mean'
+
+        cov_after = np.cov(exp_scale.y.reshape(b, -1))
+        off_diag = ~np.eye(b).astype(bool)
+        assert np.allclose(cov_after[off_diag], 0), 'non-zero correlation'
+
+        assert np.allclose(exp.y, exp_scale.prep_inv(exp_scale.y))
+
+        # ensure that each pca direction is transformed properly
+        cov = np.cov(exp.y.reshape(b, -1))
+        scale = np.diag(1 / np.diag(cov) ** .5)
+        cov_scale = scale @ cov @ scale.T
+        evals, evecs = np.linalg.eig(cov_scale)
+
+        for evec, e in zip(evecs.T, np.eye(b)):
+            e = e[:, np.newaxis, np.newaxis]
+            e_preimage = np.diag(1 / np.diag(scale)) @ evec
+            e_preimage = (e_preimage[:, np.newaxis, np.newaxis] +
+                          exp_scale.mean_orig)
+            assert np.allclose(exp_scale.prep(e_preimage), e)

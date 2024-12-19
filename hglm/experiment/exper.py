@@ -313,11 +313,14 @@ class Experiment(ExperimentImageOnly):
 
 
 class ExperimentScaled(Experiment):
-    """ ensures all y features have equal variance
+    """ pre-process (zero mean, scale_normalize, and pca, in that order)
+
+    y_out = pre_scale @ (y_in - mean_orig)
 
     Attributes:
-        var_orig (np.array): (b) original variance of data
-        y_orig (np.array): (b, num_img, num_vox) original imaging features
+        mean_orig (np.array): (b, 1, 1) original average y value (across vox &
+            image)
+        pre_scale (np.array): (b, b) left multiplies y to
     """
 
     @classmethod
@@ -325,15 +328,30 @@ class ExperimentScaled(Experiment):
         return cls(y=exp.y, mask_idx=exp.mask_idx, x=exp.x,
                    contrast=exp.contrast)
 
-    def __init__(self, y, mask_idx, **kwargs):
-        self.std_orig = np.var(y, axis=(1, 2)) ** .5
-        self.y_orig = y
-        mu = self.y_orig.mean(axis=(1, 2))
+    def prep(self, y):
+        return np.einsum('ij,jkl->ikl',
+                         self.pre_scale,
+                         y - self.mean_orig)
 
-        # adding offset ensures mu is unchanged
-        offset = (self.std_orig - 1) / self.std_orig * mu
+    def prep_inv(self, y):
+        return np.einsum('ij,jkl->ikl',
+                         np.linalg.inv(self.pre_scale),
+                         y) + self.mean_orig
 
-        y /= self.std_orig[:, np.newaxis, np.newaxis]
-        y += offset[:, np.newaxis, np.newaxis]
+    def __init__(self, y, *args, **kwargs):
+        # zero mean (and make new copy)
+        self.mean_orig = y.mean(axis=(1, 2))[:, np.newaxis, np.newaxis]
 
-        super().__init__(y=y, mask_idx=mask_idx, **kwargs)
+        # scale normalize
+        cov = np.cov(y.reshape(y.shape[0], -1))
+        cov = np.atleast_2d(cov)
+        self.pre_scale = np.diag(1 / np.diag(cov) ** .5)
+
+        cov_scale = self.pre_scale @ cov @ self.pre_scale.T
+        assert np.allclose(np.diag(cov_scale), 1)
+
+        # pca
+        evals, evecs = np.linalg.eig(cov_scale)
+        self.pre_scale = evecs.T @ self.pre_scale
+
+        super().__init__(y=self.prep(y), *args, **kwargs)
