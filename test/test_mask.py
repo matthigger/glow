@@ -1,4 +1,4 @@
-from hrba.mask import *
+from hglm.mask import *
 
 
 def test_get_mask_idx():
