@@ -162,3 +162,83 @@ def iter_topo(*, children=None, num_leaf, node_start=None, only_leaf=False):
 
     if not only_leaf or node_start < num_leaf:
         yield node_start
+
+
+def graph_merge(n_common, children_list):
+    """ combines many binary trees into a graph with common indexing
+
+    this assumes each children matrix in children_list is in topo order (comes
+    out of sklearn's Ward's this way)
+
+    Args:
+        n_common (int): we assume the first n_idx_common nodes represent
+            identical objects
+        children_list (list): (n) each is a (2, num_node_n) array
+            whose i-th col represents node n_idx_common + i's children
+
+    Returns:
+        map_to_new (list): (n) each is a (num_node_n) array whose
+            i-th item represents the new index (in children below)
+            of this input graph's n_idx_common + i-th node
+        children (num_node, 2): array whose i-th row represents
+            node-n_common+i's children.  this representation
+            contains a node for any node in all input graphs
+        size (num_node): number of items represented in each output node
+    """
+    # our first new node is n_common (smaller idx are common to all)
+    node_idx = n_common
+
+    # init outputs
+    map_to_new = list()
+    children = list()
+    size = [1] * n_common
+
+    # bijection from fset to node index
+    fset_to_node = dict()
+    node_to_fset = dict()
+
+    for _children in children_list:
+        # init new map_to_new vector
+        _map_to_new = np.full(_children.shape[0], -1, dtype=int)
+        map_to_new.append(_map_to_new)
+
+        for idx, (c0, c1) in enumerate(_children):
+            # convert c0, c1 to common index
+            # note: lookups assume topo ordering of inputs in _children,
+            # that c0 and c1 already have a common index
+            if c0 >= n_common:
+                c0 = _map_to_new[c0 - n_common]
+            if c1 >= n_common:
+                c1 = _map_to_new[c1 - n_common]
+
+            # build frozen set for current node
+            fset0 = node_to_fset.get(c0, frozenset((c0,)))
+            fset1 = node_to_fset.get(c1, frozenset((c1,)))
+            fset = fset0 | fset1
+
+            if fset in fset_to_node:
+                # repeated node: some previous graph has the same node
+                # store its name in map_to_new
+                _map_to_new[idx] = fset_to_node[fset]
+
+            else:
+                # record node's children & size
+                size.append(size[c0] + size[c1])
+                children.append(sorted((c0, c1)))
+
+                # store common index in map_to_new
+                _map_to_new[idx] = node_idx
+
+                # store fset (so we can lookup later if this node is
+                # another's child)
+                fset_to_node[fset] = node_idx
+                node_to_fset[node_idx] = fset
+
+                # increment
+                node_idx += 1
+
+    # cast lists to arrays (size & children)
+    size = np.array(size)
+    children = np.array(children)
+
+    return map_to_new, children, size
