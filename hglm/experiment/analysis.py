@@ -1,7 +1,6 @@
 from _bisect import bisect_left
 
 import numpy as np
-from joblib import Parallel, delayed
 from scipy.ndimage import label
 from sklearn.cluster import ward_tree
 from sklearn.feature_extraction import grid_to_graph
@@ -59,7 +58,7 @@ class Analysis:
         return pval
 
     @classmethod
-    def get_fstat(cls, exp, n_perm, children=None):
+    def get_fstat(cls, exp, n_perm=1, children=None):
         """ computes log likelihood score (full over reduced) per region
 
         Args:
@@ -81,21 +80,26 @@ class Analysis:
 
         # prep Permuter object (if needed)
         x0 = exp.x[~exp.contrast, :]
-        perm = None if n_perm is None else Permuter(x=x0)
+        perm = None if n_perm == 1 else Permuter(x=x0)
         for reg_idx, size, yout, ybar in hglm.graph.iter_size_yout_ybar(
                 exp.y, children,
                 perm=perm,
                 n_perm=n_perm,
                 keep_orig=True):
-            # todo: replace whole thing with einsums below
-            for p_idx in range(n_perm):
-                tr_sigma = np.trace(get_sigma(size,
-                                              yout=yout[..., p_idx],
-                                              ybar=ybar[..., p_idx]))
-                q1_norm = ((q[1] @ ybar[..., p_idx].T) ** 2).sum()
-                q2_norm = ((q[2] @ ybar[..., p_idx].T) ** 2).sum()
-                fstat[p_idx, reg_idx] = q1_norm / (
-                        num_img * tr_sigma + q2_norm)
+            if n_perm == 1:
+                q1_norm = ((q[1] @ ybar.T) ** 2).sum()
+                q2_norm = ((q[2] @ ybar.T) ** 2).sum()
+                fstat[0, reg_idx] = q1_norm / q2_norm
+            else:
+                # todo: replace whole thing with einsums below
+                for p_idx in range(n_perm):
+                    tr_sigma = np.trace(get_sigma(size,
+                                                  yout=yout[..., p_idx],
+                                                  ybar=ybar[..., p_idx]))
+                    q1_norm = ((q[1] @ ybar[..., p_idx].T) ** 2).sum()
+                    q2_norm = ((q[2] @ ybar[..., p_idx].T) ** 2).sum()
+                    fstat[p_idx, reg_idx] = q1_norm / (
+                            num_img * tr_sigma + q2_norm)
         return fstat
 
 
@@ -182,50 +186,58 @@ class AnalysisHGLM(Analysis):
     """
 
     def __init__(self, exp, n_perm, n_perm_adj=10, alpha=.05,
-                 min_size_discover=1, verbose=False, n_jobs=0):
+                 min_size_discover=1, verbose=False):
         super().__init__(exp)
 
         # constants
         b, num_img, num_vox = exp.y.shape
         num_reg = num_vox * 2 - 1
 
-        # permute, cluster & fstat per region in hierarchy
+        # build hierarchy per permutation, compute stat per region
         self.child_dict = dict()
         tqdm_dict = dict(total=n_perm + 1,
-                         desc='permuting',
+                         desc='clustering per permutation',
                          disable=not verbose)
 
-        def permute_cluster_fstat(perm_idx):
+        self.fstat = np.full((n_perm + 1, num_reg),
+                             fill_value=-1,
+                             dtype=float)
+        for perm_idx in tqdm(range(n_perm + 1), **tqdm_dict):
             # permute data (get one permutation of experiment)
             _exp = exp.permute(perm_idx, block_exchange=False)
 
             # build hierarchical segmentation
             children = self.cluster(exp=_exp)
+            self.child_dict[perm_idx] = children
 
-            # compute log likeratio (get n_perm_adj permutations per region)
-            fstat = self.get_fstat(exp=_exp, children=children,
+            # build stat for each region in hierarchy
+            self.fstat[perm_idx, :] = self.get_fstat(exp=_exp,
+                                                     children=children)
+
+        # merge all graphs (many nodes are repeated across permutations above,
+        # we adjust them all by same mu and std to minimize computation)
+        # todo: child_dict to child_list
+        map_to_new, children, _ = hglm.graph.graph_merge(
+            n_common=num_vox,
+            children_list=list(self.child_dict.values()))
+
+        # to ensure each of these permuted stats is new, we run one
+        # permutation ahead of time
+        _exp = exp.permute(1 << 31 - 1, block_exchange=False)
+        # compute permutation stat for each region in common graph
+        stat_perm = self.get_fstat(exp=_exp,
+                                   children=children,
                                    n_perm=n_perm_adj)
 
-            return children, fstat
-
-        # run permute_cluster_fstat (serial or parallel)
-        perm_iter = tqdm(range(n_perm + 1), **tqdm_dict)
-        if n_jobs not in (0, 1):
-            # parallel
-            r = Parallel(n_jobs=n_jobs)(delayed(permute_cluster_fstat)(perm)
-                                        for perm in perm_iter)
-            fstat_list = list()
-            for p_idx, (child, fstat) in enumerate(r):
-                self.child_dict[p_idx] = child
-                fstat_list.append(fstat)
-            self.fstat = np.stack(fstat_list, axis=0)
-        else:
-            # serial
-            self.fstat = np.zeros((n_perm + 1, n_perm_adj, num_reg))
-            for p_idx in perm_iter:
-                child, fstat = permute_cluster_fstat(p_idx)
-                self.child_dict[p_idx] = child
-                self.fstat[p_idx, :, :] = fstat
+        # adjust
+        self.z_stat = np.empty_like(self.fstat)
+        for perm_idx, _map_to_new in enumerate(map_to_new):
+            # look up stats per region in permutation perm_idx
+            _stat_perm = np.concatenate((stat_perm[:, :num_vox],
+                                         stat_perm[:, _map_to_new]), axis=1)
+            mu = _stat_perm.mean(axis=0)
+            std = _stat_perm.std(axis=0)
+            self.z_stat[perm_idx, :] = (self.fstat[perm_idx, :] - mu) / std
 
         # compute sizes of each region
         self.size = np.empty((n_perm + 1, num_reg))
@@ -233,11 +245,6 @@ class AnalysisHGLM(Analysis):
             self.size[perm_idx, :] = hglm.graph.node_sum(x=np.ones(num_vox,
                                                                    dtype=int),
                                                          children=children)
-
-        # adjust fstat
-        mu = self.fstat[:, 1:, :].mean(axis=1)
-        std = self.fstat[:, 1:, :].std(axis=1)
-        self.z_stat = (self.fstat[:, 0, :] - mu) / std
 
         # compute p-values (max stat across space)
         self.p_val = self.get_pval(stat=self.z_stat)

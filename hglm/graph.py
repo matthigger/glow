@@ -24,7 +24,9 @@ def iter_size_yout_ybar(y, children=None, perm=None,
     b, num_img, num_vox = y.shape
 
     size_yout_ybar = dict()
-    for reg_idx in iter_topo(children=children, num_leaf=num_vox):
+    max_reg = num_vox
+    max_reg += children.shape[0] if children is not None else 0
+    for reg_idx in range(max_reg):
         if reg_idx < num_vox:
             # single voxel region
             size = 1
@@ -45,8 +47,8 @@ def iter_size_yout_ybar(y, children=None, perm=None,
             # multi voxel region
             # look up stats of constituent regions
             c0, c1 = children[int(reg_idx - num_vox), :]
-            size0, yout0, ybar0 = size_yout_ybar.pop(c0)
-            size1, yout1, ybar1 = size_yout_ybar.pop(c1)
+            size0, yout0, ybar0 = size_yout_ybar.get(c0)
+            size1, yout1, ybar1 = size_yout_ybar.get(c1)
 
             # compute & store stats of their union
             size = size0 + size1

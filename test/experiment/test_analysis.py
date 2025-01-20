@@ -134,20 +134,17 @@ class TestBigEffect:
                                            p_val=.0001)
 
     def test_hglm(self):
-        # test parallel & serial
-        for n_jobs in (1, -1):
-            analysis = AnalysisHGLM(TestBigEffect.exp, n_perm=10, alpha=.1,
-                                    n_jobs=n_jobs)
+        analysis = AnalysisHGLM(TestBigEffect.exp, n_perm=10, alpha=.1)
 
-            # check that target region segmented properly
-            f1 = get_f1(mask=TestBigEffect.effect.mask,
-                        mask_idx=analysis.exp.mask_idx,
-                        children=analysis.child_dict[0])
-            assert np.isclose(f1.max(), 1), 'target region not segmented'
+        # check that target region segmented properly
+        f1 = get_f1(mask=TestBigEffect.effect.mask,
+                    mask_idx=analysis.exp.mask_idx,
+                    children=analysis.child_dict[0])
+        assert np.isclose(f1.max(), 1), 'target region not segmented'
 
-            # appropriate effect discovered as most significant effect
-            np.testing.assert_allclose(analysis.effect_list[0].mask,
-                                       TestBigEffect.effect.mask)
+        # appropriate effect discovered as most significant effect
+        np.testing.assert_allclose(analysis.effect_list[0].mask,
+                                   TestBigEffect.effect.mask)
 
     def test_tfce(self):
         analysis = AnalysisTFCE(TestBigEffect.exp, n_perm=10, alpha=.1)
