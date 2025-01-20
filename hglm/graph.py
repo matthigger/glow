@@ -1,5 +1,34 @@
 import numpy as np
 
+from hglm.experiment.regress import decompose
+
+
+def iter_size_e_h(*, x, contrast, **kwargs):
+    """  wraps iter_size_yout_ybar, provides e and h matrices of mancova
+
+    Args:
+        see iter_size_yout_ybar
+
+    Yields:
+        reg_idx (int): region index
+        size (int): size, in voxels, of region
+        yout (np.array): (b, b, num_perm) sum of yv @ yv.T across all voxels of
+            region
+        ybar (np.array): (b, num_img, num_perm) average, across voxels,
+            of features
+    """
+    # get projection matrices
+    q = decompose(x=x, contrast=contrast)
+    p1 = q[1].T @ q[1]
+    p01 = p1 + q[0].T @ q[0]
+
+    for reg_idx, size, yout, ybar in iter_size_yout_ybar(**kwargs):
+        h = np.einsum('xbn,bc,ycn->xyn', ybar, p1 * size, ybar)
+        e = yout - \
+            np.einsum('xbn,bc,ycn->xyn', ybar, p01 * size, ybar)
+
+        yield reg_idx, size, e, h
+
 
 def iter_size_yout_ybar(y, children=None, perm=None,
                         block_exchange=False, **kwargs):
@@ -18,8 +47,10 @@ def iter_size_yout_ybar(y, children=None, perm=None,
     Yields:
         reg_idx (int): region index
         size (int): size, in voxels, of region
-        yout (np.array): (b, b) sum of yv @ yv.T across all voxels of region
-        ybar (np.array): (b, num_img) average, across voxels, of features
+        yout (np.array): (b, b, num_perm) sum of yv @ yv.T across all voxels of
+            region
+        ybar (np.array): (b, num_img, num_perm) average, across voxels,
+            of features
     """
     b, num_img, num_vox = y.shape
 
@@ -36,6 +67,10 @@ def iter_size_yout_ybar(y, children=None, perm=None,
             if perm is None:
                 # compute yout (no permutation needed)
                 yout = yv @ yv.T
+
+                # add new axis (consistent with permutations)
+                yout = yout[:, :, np.newaxis]
+                ybar = ybar[:, :, np.newaxis]
             else:
                 # permute & compute yout
                 perm_idx_min = 1 if block_exchange else reg_idx + 2

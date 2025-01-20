@@ -17,6 +17,9 @@ def test_all():
 
     get_eps = ComputeRegress(x).get_eps
     for reg_idx, size, yout, ybar in iter_size_yout_ybar(y, children):
+        yout = yout[:, :, 0]
+        ybar = ybar[:, :, 0]
+
         # build y corresponding to region
         vox_idx = list(iter_topo(children=children,
                                  num_leaf=num_vox,

@@ -1,6 +1,6 @@
 import bisect
+from itertools import product
 
-from hglm.experiment import Permuter
 from hglm.graph import *
 
 
@@ -90,6 +90,49 @@ def test_topo_iter():
     assert list(iter_topo(num_leaf=4)) == [0, 1, 2, 3]
 
 
+def test_iter_size_e_h():
+    rng = np.random.default_rng(seed=0)
+    a, b, num_img, num_vox = 2, 3, 4, 5
+    y = rng.standard_normal((b, num_img, num_vox))
+    x = rng.standard_normal((a, num_img))
+    children = np.arange(2 * num_vox - 2).reshape((-1, 2), order='C')
+
+    for contrast in product([True, False], repeat=a):
+        contrast = np.array(contrast)
+        if not contrast.any():
+            # ensure there is at least 1 feature of interest
+            continue
+
+        for reg_idx, size, e, h in iter_size_e_h(y=y, children=children,
+                                                 x=x, contrast=contrast):
+            # build reliable compute: get index of all voxels in region
+            vox = np.array(list(iter_topo(children=children,
+                                          num_leaf=num_vox,
+                                          node_start=reg_idx,
+                                          only_leaf=True)))
+
+            # slow and steady compute of e and h
+            yr = np.concatenate([y[:, :, _vox] for _vox in vox], axis=1)
+            xr = np.concatenate([x for _vox in vox], axis=1)
+
+            if not contrast.all():
+                # project yr into nullspace of covariates
+                _xr = xr[~contrast, :]
+
+                p = np.eye(yr.shape[1]) - np.linalg.pinv(_xr) @ _xr
+                yr = yr @ p
+                xr = xr[contrast, :] @ p
+
+            hat = yr @ np.linalg.pinv(xr) @ xr
+            err = yr - hat
+
+            h_exp = hat @ hat.T
+            e_exp = err @ err.T
+
+            assert np.allclose(h, h_exp[:, :, np.newaxis])
+            assert np.allclose(e, e_exp[:, :, np.newaxis])
+
+
 def test_iter_size_yout_ybar():
     rng = np.random.default_rng(seed=0)
     a, b, num_img, num_vox = 2, 3, 4, 5
@@ -97,28 +140,20 @@ def test_iter_size_yout_ybar():
     x = rng.standard_normal((a, num_img))
     children = np.arange(2 * num_vox - 2).reshape((-1, 2), order='C')
 
-    for perm in (Permuter(x), None):
-        for reg_idx, size, yout, ybar in iter_size_yout_ybar(y, children,
-                                                             perm=perm,
-                                                             n_perm=10,
-                                                             keep_orig=True):
-            # to be consistent among testing permutation & not, we cast to 3d
-            ybar = np.atleast_3d(ybar)
-            yout = np.atleast_3d(yout)
+    for reg_idx, size, yout, ybar in iter_size_yout_ybar(y, children):
+        # build reliable compute: get index of all voxels in region
+        vox = np.array(list(iter_topo(children=children,
+                                      num_leaf=num_vox,
+                                      node_start=reg_idx,
+                                      only_leaf=True)))
+        _y = y[:, :, vox]
 
-            # build reliable compute: get index of all voxels in region
-            vox = np.array(list(iter_topo(children=children,
-                                          num_leaf=num_vox,
-                                          node_start=reg_idx,
-                                          only_leaf=True)))
-            _y = y[:, :, vox]
+        assert vox.size == size
+        assert np.allclose(_y.mean(axis=2), ybar[:, :, 0])
 
-            assert vox.size == size
-            assert np.allclose(_y.mean(axis=2), ybar[:, :, 0])
-
-            _y = _y.reshape((b, -1), order='F')
-            yout_exp = _y @ _y.T
-            assert np.allclose(yout_exp, yout[:, :, 0])
+        _y = _y.reshape((b, -1), order='F')
+        yout_exp = _y @ _y.T
+        assert np.allclose(yout_exp, yout[:, :, 0])
 
 
 def binary_tree(n_node=100, seed=0, merge_smallest=True):
