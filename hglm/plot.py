@@ -138,7 +138,7 @@ def image_iter(children, mask_idx, num_vox):
 
 def prep_df(ana_hglm, mask_target=None):
     df_list = list()
-    for perm_idx, (fstat, z, size) in enumerate(zip(ana_hglm.fstat[:, 0, :],
+    for perm_idx, (fstat, z, size) in enumerate(zip(ana_hglm.fstat,
                                                     ana_hglm.z_stat,
                                                     ana_hglm.size)):
         children = ana_hglm.child_dict[perm_idx]
@@ -147,9 +147,7 @@ def prep_df(ana_hglm, mask_target=None):
              'Z-stat': z,
              'size (voxels)': size,
              'permutation': perm_idx,
-             'discovered': np.zeros(z.shape, dtype=bool),
-             'F-std-h0': ana_hglm.fstat[perm_idx, 1:, :].std(axis=0),
-             'F-mu-h0': ana_hglm.fstat[perm_idx, 1:, :].mean(axis=0)}
+             'discovered': np.zeros(z.shape, dtype=bool)}
 
         if not perm_idx:
             # add stats specific to unpermuted data
@@ -261,9 +259,7 @@ def scatter_plotly(ana_hglm, mask_target=None, x_feat='size (voxels)',
 
     hover_data = {'size (voxels)': ':.0f',
                   'Z-stat': ':.3e',
-                  'F-stat': ':.3e',
-                  'F-std-h0': ':.3e',
-                  'F-mu-h0': ':.3e'}
+                  'F-stat': ':.3e'}
     hover_data_permuted = {'permutation': ':.0f',
                            'region idx': ':.0f'}
     hover_data_unpermuted = {'p-val (FWER control)': ':.2e',
