@@ -11,7 +11,6 @@ import hglm.graph
 import hglm.tfce
 from .exper import ExperimentScaled
 from .permute import Permuter
-from .regress import decompose, get_sigma
 
 
 class Analysis:
@@ -76,30 +75,19 @@ class Analysis:
             num_reg += children.shape[0]
         fstat = np.zeros((n_perm, num_reg))
 
-        q = decompose(x=exp.x, contrast=exp.contrast)
-
         # prep Permuter object (if needed)
         x0 = exp.x[~exp.contrast, :]
         perm = None if n_perm == 1 else Permuter(x=x0)
-        for reg_idx, size, yout, ybar in hglm.graph.iter_size_yout_ybar(
-                exp.y, children,
+        for reg_idx, size, e, h in hglm.graph.iter_size_e_h(
+                x=exp.x,
+                contrast=exp.contrast,
+                y=exp.y,
+                children=children,
                 perm=perm,
                 n_perm=n_perm,
                 keep_orig=True):
-            if n_perm == 1:
-                q1_norm = ((q[1] @ ybar.T) ** 2).sum()
-                q2_norm = ((q[2] @ ybar.T) ** 2).sum()
-                fstat[0, reg_idx] = q1_norm / q2_norm
-            else:
-                # todo: replace whole thing with einsums below
-                for p_idx in range(n_perm):
-                    tr_sigma = np.trace(get_sigma(size,
-                                                  yout=yout[..., p_idx],
-                                                  ybar=ybar[..., p_idx]))
-                    q1_norm = ((q[1] @ ybar[..., p_idx].T) ** 2).sum()
-                    q2_norm = ((q[2] @ ybar[..., p_idx].T) ** 2).sum()
-                    fstat[p_idx, reg_idx] = q1_norm / (
-                            num_img * tr_sigma + q2_norm)
+            # f stat (todo: redo for other stats too: wilk's lambda)
+            fstat[:, reg_idx] = h / e
         return fstat
 
 
