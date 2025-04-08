@@ -156,44 +156,6 @@ class ExperimentImageOnly:
                           mask_idx=self.mask_idx,
                           add_bias=False)
 
-    def impose_effect(self, extenter=None, mask=None, seed=None, **kwargs):
-        """ builds experiment with effect imposed
-
-        Args:
-            extenter (ExtenterSphere or ExtenterMinVar): identifies volume to
-                impose effect on
-            mask (np.array): is passed, will impose effect on
-            seed: seed of random number generator (for extent)
-            **kwargs: passed to compute_offset(), either pval or f_stat
-
-        Returns:
-            exp (Experiment): an experiment
-            effect (Effect): encapsulates
-            rough (float): roughness coefficient
-        """
-        assert self.x is not None, 'x/contrast needed, call .sample_x()'
-        assert (mask is None) != (extenter is None), \
-            'either mask xor extenter needed'
-
-        if mask is None:
-            # sample effect space
-            mask = extenter(y=self.y, mask_idx=self.mask_idx, seed=seed)
-
-        # get offset which imposes desired effect strength
-        effect_idx = self.mask_idx[mask]
-        y_effect = self.y[:, :, effect_idx]
-        offset = hglm.effect.compute_offset(x=self.x,
-                                            y=y_effect,
-                                            contrast=self.contrast,
-                                            **kwargs)
-
-        # impose effect on y, build new experiment
-        exp = self.add_offset(offset, mask=mask)
-
-        effect = hglm.effect.Effect.from_exp_mask(exp=exp, mask=mask)
-
-        return exp, effect
-
     def apply_mask(self, mask):
         """ applies boolean mask to experiment
 
@@ -274,6 +236,44 @@ class Experiment(ExperimentImageOnly):
         # build residual forming arrays
         x = self.x[~self.contrast, :], self.x
         self.h = tuple(np.linalg.pinv(_x) @ _x for _x in x)
+
+    def impose_effect(self, extenter=None, mask=None, seed=None, **kwargs):
+        """ builds experiment with effect imposed
+
+        Args:
+            extenter (ExtenterSphere or ExtenterMinVar): identifies volume to
+                impose effect on
+            mask (np.array): is passed, will impose effect on
+            seed: seed of random number generator (for extent)
+            **kwargs: passed to compute_offset(), either pval or f_stat
+
+        Returns:
+            exp (Experiment): an experiment
+            effect (Effect): encapsulates
+            **kwargs: passed to compute_offset()
+        """
+        assert self.x is not None, 'x/contrast needed, call .sample_x()'
+        assert (mask is None) != (extenter is None), \
+            'either mask xor extenter needed'
+
+        if mask is None:
+            # sample effect space
+            mask = extenter(y=self.y, mask_idx=self.mask_idx, seed=seed)
+
+        # get offset which imposes desired effect strength
+        effect_idx = self.mask_idx[mask]
+        y_effect = self.y[:, :, effect_idx]
+        offset = hglm.effect.compute_offset(x=self.x,
+                                            y=y_effect,
+                                            contrast=self.contrast,
+                                            **kwargs)
+
+        # impose effect on y, build new experiment
+        exp = self.add_offset(offset, mask=mask)
+
+        effect = hglm.effect.Effect.from_exp_mask(exp=exp, mask=mask)
+
+        return exp, effect
 
     def permute(self, perm_idx, block_exchange=False):
         """ gets new experiment whose y features were permuted (freedman lane)

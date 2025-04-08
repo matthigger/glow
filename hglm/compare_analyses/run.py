@@ -3,7 +3,6 @@ import json
 import time
 import traceback
 import warnings
-from itertools import product
 from uuid import uuid4
 
 import cloudpickle as pickle
@@ -86,14 +85,11 @@ def run_one_exp(seed):
                            seed=seed)
 
     # shuffle p value order (better sampling across threads)
-    pval_rough_list = list(product(param.pval_all, param.rough_all))
-    np.random.shuffle(pval_rough_list)
-    for pval, rough in pval_rough_list:
+    for pval in np.random.permutation(param.pval_all):
         # impose effect
         _exp, effect = exp_masked.impose_effect(seed=seed,
-                                                       mask=mask_target,
-                                                       pval=pval,
-                                                       rough=rough)
+                                                mask=mask_target,
+                                                pval=pval)
 
         for Ana in param.analysis_obj_tup:
             # prep output file
@@ -138,7 +134,6 @@ def run_one_exp(seed):
             # dump summary
             d = {'pval': pval,
                  'seed': seed,
-                 'rough': rough,
                  'Analysis': Ana.__name__,
                  'f1': f1,
                  'sens': sens,

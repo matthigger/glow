@@ -12,10 +12,8 @@ def iter_size_e_h(*, x, contrast, **kwargs):
     Yields:
         reg_idx (int): region index
         size (int): size, in voxels, of region
-        yout (np.array): (b, b, num_perm) sum of yv @ yv.T across all voxels of
-            region
-        ybar (np.array): (b, num_img, num_perm) average, across voxels,
-            of features
+        e (np.array): (b, b, num_perm) e of manova, for every permutation
+        h (np.array): (b, b, num_perm) h of manova, for every permutation
     """
     # get projection matrices
     q = decompose(x=x, contrast=contrast)

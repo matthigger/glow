@@ -16,14 +16,11 @@ def compute_offset(x, y, contrast, pval=None):
         contrast (np.array): (a) True for each corresponding feature in x which
             is "of interest" (other x features form the reduced model in
             computing f statistic)
-        pval (float): p-value may be passed in place of f stat
+        pval (float): severity of desired effect
 
     Returns:
         offset (np.array): (b, num_img) offset to apply to all images to
-            produce desired f stat
-        sigma_gain (float): spatial covariance scaling needed to achieve
-            roughness coefficient, None if "rough" is not input.
-        rough (float): roughness coefficient achieved
+            produce desired pval
     """
     # prep constants
     a0 = (~contrast).sum()
