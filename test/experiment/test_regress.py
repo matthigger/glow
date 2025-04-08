@@ -15,7 +15,6 @@ def test_all():
     x, y, contrast = generate_dummy_data(b=b, num_vox=100)
     children = np.arange(2 * num_vox - 2).reshape((-1, 2))
 
-    get_eps = ComputeRegress(x).get_eps
     for reg_idx, size, yout, ybar in iter_size_yout_ybar(y, children):
         yout = yout[:, :, 0]
         ybar = ybar[:, :, 0]
@@ -26,17 +25,6 @@ def test_all():
                                  node_start=reg_idx,
                                  only_leaf=True))
         _y = np.atleast_3d(y[:, :, vox_idx])
-
-        # compute eps (slow & reliable)
-        xr = np.tile(x, (1, len(vox_idx)))
-        yr = _y.reshape((b, -1), order='F')
-        yhat = yr @ np.linalg.pinv(xr) @ xr
-        error = yr - yhat
-        eps_exp = error @ error.T / error.shape[1]
-
-        # compute & validate eps
-        eps = get_eps(size, yout, ybar)
-        assert np.allclose(eps_exp, eps)
 
         # compute sigma (slow & reliable)
         _y_center = _y - _y.mean(axis=2)[:, :, np.newaxis]

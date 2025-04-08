@@ -1,7 +1,6 @@
-import numpy as np
-from scipy.stats import f
+import scipy.stats
 
-import hglm.f_stat
+from hglm.experiment import get_manova, wilks_to_chi2, get_wilks
 
 
 class Effect:
@@ -26,29 +25,16 @@ class Effect:
 
     @classmethod
     def from_x_y_contrast(cls, x, y, contrast, **kwargs):
-        # avoid circular dependency effect.eff & experiment.analysis
-        from hglm.experiment.regress import ComputeRegress, get_size_yout_ybar
+        b, num_img, num_vox = y.shape
 
-        b, num_img, reg_size = y.shape
+        # compute stats (to be stored)
+        e, h = get_manova(x, y, contrast)
+        wilks = get_wilks(e, h)
+        chi2, df = wilks_to_chi2(wilks, a=contrast.sum(), b=b, n=num_img)
+        pval = 1 - scipy.stats.chi2.cdf(chi2, df=df)
 
-        # compute f stat & f's p-value
-        f_stat = hglm.f_stat.get_f_stat(x, y, contrast)
-        a = (~contrast).sum(), contrast.size
-        dfn, dfd = hglm.f_stat.get_f_degrees(num_img, reg_size, a)
-        p_val = 1 - f.cdf(f_stat, dfn=dfn, dfd=dfd)
-
-        # compute eps
-        x = x[~contrast, :], x
-        comp_reg = tuple(ComputeRegress(_x) for _x in x)
-        args = get_size_yout_ybar(y)
-        eps = tuple(_comp_reg.get_eps(*args) for _comp_reg in comp_reg)
-
-        # compute y_mean & beta
-        y_mean = y.mean(axis=2)
-        beta = tuple(y_mean @ np.linalg.pinv(_x) for _x in x)
-
-        return cls(f_stat=f_stat, f_stat_p_val=p_val, beta=beta, y_mean=y_mean,
-                   eps=eps, **kwargs)
+        return cls(y_mean=y.mean(axis=2), e=e, h=h, wilks=wilks, chi2=chi2,
+                   pval=pval, **kwargs)
 
     def __init__(self, mask, y_mean, **kwargs):
         self.mask = mask

@@ -1,44 +1,22 @@
 import numpy as np
 
 
-class ComputeRegress:
-    """ regression computations eps, llr (hierarchical & flat model)
+def get_manova(x, y, contrast):
+    b, num_img, num_vox = y.shape
 
-    see hglm.graph.iter_size_yout_ybar(), which provides inputs efficiently
+    # compute sigma
+    y_mean = y.mean(axis=2)
+    yr = y.reshape((y.shape[0], -1), order='F')
+    sigma = yr @ yr.T / num_vox - y_mean @ y_mean.T
 
-    epsilon is the error covariance matrix (mean outer product of residuals)
+    # compute observed e and h
+    q = decompose(x, contrast)
+    yq1q1y = y_mean @ q[1].T @ q[1] @ y_mean.T
+    yq2q2y = y_mean @ q[2].T @ q[2] @ y_mean.T
+    h = yq1q1y / num_img
+    e = sigma + yq2q2y / num_img
 
-        num_img * num_vox * eps = sigma + eps_mean
-
-    where sigma is the image pooled spatial covariance and
-
-        eps_mean = ybar @ (I - q.T @ q) @ ybar.T / num_img
-
-    Attributes:
-        h (np.array): (num_img, num_img) hat matrix (multiply ybar to get
-            the estimate: "hat"
-    """
-
-    def __init__(self, x):
-        # compute hat matrix
-        num_img = x.shape[1]
-        q, r = np.linalg.qr(x.T, mode='reduced')
-        self.h = q @ q.T
-
-    def get_eps(self, size, yout, ybar):
-        """ computes epsilon, the b x b error covariance matrix
-
-        Args:
-            size (int): size, in voxels, of region
-            yout (np.array): (b, b) sum of yv @ yv.T across all voxels of region
-            ybar (np.array): (b, num_img) average, across voxels, of features
-
-        Returns:
-            eps (np.array): (b, b) error covariance matrix, per sample:
-                (Y - \beta X) @ (Y - \beta X).T
-        """
-        num_img = ybar.shape[1]
-        return (yout / size - ybar @ self.h @ ybar.T) / num_img
+    return e, h
 
 
 def decompose(x, contrast):
@@ -145,3 +123,18 @@ def scale_sigma(y, gain=None, tr_sigma=None):
 
     # re-mean
     return y_demean + mean[:, :, np.newaxis]
+
+
+def wilks_to_chi2(wilks, a, b, n):
+    df = a * b
+    chi2 = -(n - 0.5 * (a + b + 1)) * np.log(wilks)
+    return chi2, df
+
+
+def chi2_to_wilks(chi2, a, b, n):
+    scale = -(n - 0.5 * (a + b + 1))
+    return np.exp(chi2 / scale)
+
+
+def get_wilks(e, h):
+    return np.linalg.det(e) / np.linalg.det(e + h)
