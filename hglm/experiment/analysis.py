@@ -11,6 +11,7 @@ import hglm.graph
 import hglm.tfce
 from .exper import ExperimentScaled
 from .permute import Permuter
+from .regress import get_wilks, wilks_to_chi2
 
 
 class Analysis:
@@ -57,8 +58,8 @@ class Analysis:
         return pval
 
     @classmethod
-    def get_fstat(cls, exp, n_perm=1, children=None):
-        """ computes log likelihood score (full over reduced) per region
+    def get_stat(cls, exp, n_perm=1, children=None):
+        """ computes chi2
 
         Args:
             exp (Experiment):
@@ -67,13 +68,13 @@ class Analysis:
                 regions, if none passed then iterates only through voxels
 
         Returns:
-            fstat (np.array): (num_reg, n_perm) log likelihood
+            stat (np.array): (num_reg, n_perm) wilk's lambda
         """
-        # compute fstat per region
+        # compute wilks per region
         b, num_img, num_reg = exp.y.shape
         if children is not None:
             num_reg += children.shape[0]
-        fstat = np.zeros((n_perm, num_reg))
+        stat = np.zeros((n_perm, num_reg))
 
         # prep Permuter object (if needed)
         x0 = exp.x[~exp.contrast, :]
@@ -86,20 +87,25 @@ class Analysis:
                 perm=perm,
                 n_perm=n_perm,
                 keep_orig=True):
-            # f stat (todo: redo for other stats too: wilk's lambda)
-            fstat[:, reg_idx] = h / e
-        return fstat
+            for perm_idx in range(n_perm):
+                wilks = get_wilks(e=e[:, :, perm_idx],
+                                  h=h[:, :, perm_idx])
+                stat[perm_idx, reg_idx], _ = wilks_to_chi2(wilks,
+                                                           a=exp.contrast.sum(),
+                                                           b=b,
+                                                           n=num_img * size)
+        return stat
 
 
 class AnalysisTFCE(Analysis):
     def __init__(self, exp, n_perm, alpha=.05, verbose=False):
         super().__init__(exp)
 
-        # compute fstat per each voxel (for every permutation)
-        self.fstat = self.get_fstat(exp, n_perm=n_perm + 1, children=None)
+        # compute stat per each voxel (for every permutation)
+        self.stat = self.get_stat(exp, n_perm=n_perm + 1, children=None)
 
         # apply TFCE per image
-        self.tfce_stat = self.apply_tfce(stat=self.fstat,
+        self.tfce_stat = self.apply_tfce(stat=self.stat,
                                          mask_idx=exp.mask_idx,
                                          verbose=verbose)
 
@@ -167,7 +173,7 @@ class AnalysisHGLM(Analysis):
     Attributes:
         child_dict (dict): keys are permutation indices, values are
             (2, n) graph arrays (equiv to sklearn.cluster.Ward.children_)
-        fstat (np.array): (n_perm + 1, n_perm_adj, num_reg)
+        stat (np.array): (n_perm + 1, n_perm_adj, num_reg)
         size (np.array): (n_perm + 1, num_reg) number of voxels in
             each region (for all permutations).  first row corresponds to
             unpermuted data
@@ -187,9 +193,9 @@ class AnalysisHGLM(Analysis):
                          desc='clustering per permutation',
                          disable=not verbose)
 
-        self.fstat = np.full((n_perm + 1, num_reg),
-                             fill_value=-1,
-                             dtype=float)
+        self.stat = np.full((n_perm + 1, num_reg),
+                            fill_value=-1,
+                            dtype=float)
         for perm_idx in tqdm(range(n_perm + 1), **tqdm_dict):
             # permute data (get one permutation of experiment)
             _exp = exp.permute(perm_idx, block_exchange=False)
@@ -199,8 +205,8 @@ class AnalysisHGLM(Analysis):
             self.child_dict[perm_idx] = children
 
             # build stat for each region in hierarchy
-            self.fstat[perm_idx, :] = self.get_fstat(exp=_exp,
-                                                     children=children)
+            self.stat[perm_idx, :] = self.get_stat(exp=_exp,
+                                                   children=children)
 
         # merge all graphs (many nodes are repeated across permutations above,
         # we adjust them all by same mu and std to minimize computation)
@@ -213,19 +219,19 @@ class AnalysisHGLM(Analysis):
         # permutation ahead of time
         _exp = exp.permute(1 << 31 - 1, block_exchange=False)
         # compute permutation stat for each region in common graph
-        stat_perm = self.get_fstat(exp=_exp,
-                                   children=children,
-                                   n_perm=n_perm_adj)
+        stat_perm = self.get_stat(exp=_exp,
+                                  children=children,
+                                  n_perm=n_perm_adj)
 
         # adjust
-        self.z_stat = np.empty_like(self.fstat)
+        self.z_stat = np.empty_like(self.stat)
         for perm_idx, _map_to_new in enumerate(map_to_new):
             # look up stats per region in permutation perm_idx
             _stat_perm = np.concatenate((stat_perm[:, :num_vox],
                                          stat_perm[:, _map_to_new]), axis=1)
             mu = _stat_perm.mean(axis=0)
             std = _stat_perm.std(axis=0)
-            self.z_stat[perm_idx, :] = (self.fstat[perm_idx, :] - mu) / std
+            self.z_stat[perm_idx, :] = (self.stat[perm_idx, :] - mu) / std
 
         # compute sizes of each region
         self.size = np.empty((n_perm + 1, num_reg))
