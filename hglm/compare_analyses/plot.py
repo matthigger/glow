@@ -9,7 +9,7 @@ sns.set()
 
 def extract(df):
     # extract
-    pval_list = sorted(df['p_val'].unique())
+    pval_list = sorted(df['pval'].unique())
     seed_list = sorted(df['seed'].unique())
 
     shape = len(seed_list), len(pval_list)
@@ -17,7 +17,7 @@ def extract(df):
 
     for _, row in df.iterrows():
         seed_idx = seed_list.index(row['seed'])
-        pval_idx = pval_list.index(row['p_val'])
+        pval_idx = pval_list.index(row['pval'])
 
         for feat in ('f1', 'sens', 'spec', 'auc'):
             score_dict[row['Analysis'], feat][seed_idx, pval_idx] = row[feat]
@@ -52,7 +52,7 @@ def plot_feats(pval_list, score_dict, feat_list):
             plt.plot(pval_list, np.nanmean(score_dict[method, feat], axis=0),
                      **kwargs, **style_mean)
 
-        plt.xlabel('p_val')
+        plt.xlabel('pval')
         plt.ylabel(feat)
         plt.xscale('log')
 
@@ -64,7 +64,7 @@ def plot_feats(pval_list, score_dict, feat_list):
         plt.plot(pval_list, x.T, color='k', **style_single)
         plt.plot(pval_list, np.nanmean(x, axis=0), color='k', **style_mean)
 
-        plt.xlabel('p_val')
+        plt.xlabel('pval')
         plt.ylabel(f'{feat}: hglm - TFCE')
         plt.xscale('log')
 

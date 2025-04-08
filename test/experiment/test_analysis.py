@@ -24,10 +24,10 @@ class TestAnalysis:
                            [0, 0, 0, 0],
                            [3, 3, 3, 3],
                            [2, 2, 2, 5]])
-        p_val_exp = np.array([1, 3, 3, 4]) / 4
+        pval_exp = np.array([1, 3, 3, 4]) / 4
 
-        p_val = Analysis.get_pval(stat=z_stat)
-        assert np.allclose(p_val, p_val_exp)
+        pval = Analysis.get_pval(stat=z_stat)
+        assert np.allclose(pval, pval_exp)
 
 
 class TestAnalysishglm:

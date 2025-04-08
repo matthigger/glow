@@ -8,9 +8,9 @@ folder_out = '/home/matt/Dropbox/pnl_hglm/results'
 # number of effects to model
 n_repeat = 32 * 3
 
-# p_val describes severity of effect (assuming typical F test assumptions
+# pval describes severity of effect (assuming typical F test assumptions
 # ...not valid but still useful to quantify how difficult effect is)
-p_val_all = np.geomspace(.6, .08, 13)
+pval_all = np.geomspace(.6, .08, 13)
 
 # roughness coefficient (see impose_rough_demo.ipynb for caveats!)
 # rough=0: image intensities are constant within target per image

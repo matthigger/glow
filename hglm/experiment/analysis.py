@@ -18,7 +18,7 @@ class Analysis:
 
     Attributes:
         exp (Experiment): the source data to run experiment on
-        p_val (np.array): (num_reg) FWER controlled p value per region
+        pval (np.array): (num_reg) FWER controlled p value per region
         effect_list (list): list of Effect objects discovered
     """
 
@@ -104,11 +104,11 @@ class AnalysisTFCE(Analysis):
                                          verbose=verbose)
 
         # compute p-values
-        self.p_val = self.get_pval(self.tfce_stat)
+        self.pval = self.get_pval(self.tfce_stat)
 
         # discover effects
         mask = np.zeros(exp.mask_idx.shape, dtype=bool)
-        mask[exp.mask_idx > -1] = self.p_val <= alpha
+        mask[exp.mask_idx > -1] = self.pval <= alpha
         self.effect_list = self.discover_mask(mask=mask, exp=exp)
 
     @classmethod
@@ -235,12 +235,12 @@ class AnalysisHGLM(Analysis):
                                                          children=children)
 
         # compute p-values (max stat across space)
-        self.p_val = self.get_pval(stat=self.z_stat)
+        self.pval = self.get_pval(stat=self.z_stat)
 
-        # discover effects (greedily choose max stat regions whose p_val is
+        # discover effects (greedily choose max stat regions whose pval is
         # significant.  continue so long as disjoint significant effect remain)
         mask_exclude = self.size[0, :] < min_size_discover
-        self.effect_list = self.discover(pval=self.p_val, alpha=alpha,
+        self.effect_list = self.discover(pval=self.pval, alpha=alpha,
                                          mask_exclude=mask_exclude,
                                          priority=self.z_stat[0, :], exp=exp,
                                          children=self.child_dict[0])
@@ -324,7 +324,7 @@ class AnalysisHGLM(Analysis):
 
         vox_claimed = set()
         effect_list = list()
-        for priority, p_val, reg_idx in stat_pval_reg_list:
+        for priority, pval, reg_idx in stat_pval_reg_list:
             # check if region intersects with others discovered (no shared
             # ancestor)
             vox_contained = set(hglm.graph.iter_topo(children=children,
@@ -346,7 +346,7 @@ class AnalysisHGLM(Analysis):
             #  build effect & add to effect list
             effect = hglm.effect.Effect.from_exp_mask(mask=mask, exp=exp,
                                                       reg_idx=reg_idx,
-                                                      p_val_fwer=p_val)
+                                                      pval_fwer=pval)
             effect_list.append(effect)
 
         return effect_list

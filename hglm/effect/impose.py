@@ -33,7 +33,7 @@ def compute_offset(x, y, contrast, pval=None):
     # prep matrices
     y_mean = y.mean(axis=2)
 
-    # get target chi2 to impose given p_value
+    # get target chi2 to impose given pvalue
     df = a1 * b
     chi2_target = scipy.stats.chi2.ppf(1 - pval, df=df)
 

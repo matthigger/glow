@@ -164,7 +164,7 @@ class ExperimentImageOnly:
                 impose effect on
             mask (np.array): is passed, will impose effect on
             seed: seed of random number generator (for extent)
-            **kwargs: passed to compute_offset(), either p_val or f_stat
+            **kwargs: passed to compute_offset(), either pval or f_stat
 
         Returns:
             exp (Experiment): an experiment

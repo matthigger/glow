@@ -44,7 +44,7 @@ def get_auc(ana, mask_target):
         # produces a disjoint set of regions which cover the space
         # of voxels, choosing to maximize z stat greedily (a bit of
         # wasted compute here ... full Effect not needed)
-        effect_list = ana.discover(pval=ana.p_val, alpha=2,
+        effect_list = ana.discover(pval=ana.pval, alpha=2,
                                    priority=ana.z_stat[0, :],
                                    children=ana.child_dict[0],
                                    exp=ana.exp)
@@ -86,9 +86,9 @@ def run_one_exp(seed):
                            seed=seed)
 
     # shuffle p value order (better sampling across threads)
-    pval_rough_list = list(product(param.p_val_all, param.rough_all))
+    pval_rough_list = list(product(param.pval_all, param.rough_all))
     np.random.shuffle(pval_rough_list)
-    for p_val, rough in pval_rough_list:
+    for pval, rough in pval_rough_list:
         # impose effect
         _exp, effect = exp_masked.impose_effect(seed=seed,
                                                        mask=mask_target,
@@ -111,7 +111,7 @@ def run_one_exp(seed):
                 except Exception as e:
                     d = {'error_msg': traceback.format_exc(),
                          'method': Ana.__name__,
-                         'p_val': p_val,
+                         'pval': pval,
                          'seed': seed}
                     print(f'error: {d}')
                     file_out = str(file_out).replace('out', 'error')
@@ -136,7 +136,7 @@ def run_one_exp(seed):
             auc = get_auc(ana, mask_target=effect.mask)
 
             # dump summary
-            d = {'p_val': p_val,
+            d = {'pval': pval,
                  'seed': seed,
                  'rough': rough,
                  'Analysis': Ana.__name__,

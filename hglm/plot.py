@@ -151,7 +151,7 @@ def prep_df(ana_hglm, mask_target=None):
 
         if not perm_idx:
             # add stats specific to unpermuted data
-            d['p-val (FWER control)'] = ana_hglm.p_val
+            d['p-val (FWER control)'] = ana_hglm.pval
 
             # compute f1 (dice) score with mask_target
             if mask_target is not None:
@@ -314,9 +314,9 @@ def scatter_plotly(ana_hglm, mask_target=None, x_feat='size (voxels)',
 if __name__ == '__main__':
     from compare_analyses.data import load_update_all, load
 
-    p_val, seed = 0.25, 15
+    pval, seed = 0.25, 15
     folder = '/home/matt/Dropbox/pnl_hglm/results/exp_24Apr22-1533'
     df = load_update_all(folder)
-    ana_hglm, effect = load(folder=folder, df=df, p_val=p_val, seed=seed,
+    ana_hglm, effect = load(folder=folder, df=df, pval=pval, seed=seed,
                             Analysis='AnalysisHGLM')
     prep_df(ana_hglm, mask_target=effect.mask)
