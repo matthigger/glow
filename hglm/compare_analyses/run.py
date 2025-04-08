@@ -90,9 +90,9 @@ def run_one_exp(seed):
     np.random.shuffle(pval_rough_list)
     for p_val, rough in pval_rough_list:
         # impose effect
-        _exp, effect, rough = exp_masked.impose_effect(seed=seed,
+        _exp, effect = exp_masked.impose_effect(seed=seed,
                                                        mask=mask_target,
-                                                       p_val=p_val,
+                                                       pval=pval,
                                                        rough=rough)
 
         for Ana in param.analysis_obj_tup:

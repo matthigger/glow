@@ -4,24 +4,10 @@ from scipy.optimize import minimize
 
 import hglm.experiment
 import hglm.f_stat
+from hglm.experiment import wilks_to_chi2, get_wilks
 
 
-def wilks_to_chi2(wilks, a, b, n):
-    df = a * b
-    chi2 = -(n - 0.5 * (a + b + 1)) * np.log(wilks)
-    return chi2, df
-
-
-def chi2_to_wilks(chi2, a, b, n):
-    scale = -(n - 0.5 * (a + b + 1))
-    return np.exp(chi2 / scale)
-
-
-def get_wilks(e, h):
-    return np.linalg.det(e) / np.linalg.det(e + h)
-
-
-def compute_offset(x, y, contrast, pval=None, rough=None):
+def compute_offset(x, y, contrast, pval=None):
     """ get offset to y, constant across voxels, which imposes an f-stat
 
     Args:
@@ -31,13 +17,6 @@ def compute_offset(x, y, contrast, pval=None, rough=None):
             is "of interest" (other x features form the reduced model in
             computing f statistic)
         pval (float): p-value may be passed in place of f stat
-        rough (float): roughness coefficient desired.  a ratio of the spatial
-            covariance over the power of error in the reduced model
-
-            rough = sigma_tr * num_img / q2_norm2
-
-            q2_norm2 is average power of the residuals in the reduced model,
-            applied to the spatially averaged data
 
     Returns:
         offset (np.array): (b, num_img) offset to apply to all images to
@@ -70,9 +49,6 @@ def compute_offset(x, y, contrast, pval=None, rough=None):
     #              & = Y_r Y_r^T - |r| \bar{Y}_r \bar{Y}_r^T
     yr = y.reshape((y.shape[0], -1), order='F')
     sigma = yr @ yr.T / reg_size - y_mean @ y_mean.T
-
-    if rough is not None:
-        raise NotImplementedError
 
     def constraint(alpha):
         """ when this function output is zero, chi2_target achieved """

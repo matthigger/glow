@@ -1,5 +1,3 @@
-import numpy as np
-
 import hglm.effect
 from hglm.experiment.exper import *
 from test.helper import generate_dummy_data
@@ -40,11 +38,11 @@ class TestExperimentOnlyImage:
         exp = get_rand_exp(seed=seed)
         extenter = hglm.effect.ExtenterSphere(radius=3)
 
-        for p_val in np.logspace(-3, -.0001, 4):
-            _exp, effect, _ = exp.impose_effect(seed=seed, extenter=extenter,
-                                                p_val=p_val)
+        for pval in np.logspace(-3, -.0001, 4):
+            _exp, effect = exp.impose_effect(seed=seed, extenter=extenter,
+                                             pval=pval)
 
-            assert np.isclose(effect.f_stat_p_val, p_val)
+            assert np.isclose(effect.pval, pval)
 
     def test_sample_x(self):
         seed = 0
