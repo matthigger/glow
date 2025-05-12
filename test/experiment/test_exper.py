@@ -1,3 +1,5 @@
+from collections import namedtuple
+
 import hglm.effect
 from hglm.experiment.exper import *
 from test.helper import generate_dummy_data
@@ -13,6 +15,33 @@ def get_rand_exp(shape=(10, 10, 10), **kwargs):
 
 
 class TestExperimentOnlyImage:
+    def test_from_gauss(self):
+        Case = namedtuple('Case', ['b', 'mu', 'cov'])
+        _cov = np.array([[2, 3], [3, 10]])
+        case_list = [Case(b=None, mu=None, cov=None),
+                     Case(b=2, mu=None, cov=None),
+                     Case(b=None, mu=np.ones(3), cov=None),
+                     Case(b=None, mu=None, cov=_cov),
+                     Case(b=None, mu=np.ones(2), cov=_cov),
+                     ]
+
+        for case in case_list:
+            exp = ExperimentImageOnly.from_gauss(b=case.b,
+                                                 mu=case.mu,
+                                                 cov=case.cov)
+            b, num_img, num_vox = exp.y.shape
+            y = exp.y.reshape((b, -1))
+
+            if case.mu is None:
+                assert np.allclose(y.mean(axis=1), np.zeros(b))
+            else:
+                assert np.allclose(y.mean(axis=1), case.mu)
+
+            if case.cov is None:
+                assert np.allclose(np.cov(y), np.eye(b))
+            else:
+                assert np.allclose(np.cov(y), case.cov)
+
     def test_from_search(self):
         # nii
         exp0 = ExperimentImageOnly.from_search(folder=folder_test_data,

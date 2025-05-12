@@ -4,12 +4,14 @@ from copy import deepcopy
 
 import numpy as np
 import pandas as pd
+import scipy.linalg
 
 import hglm.effect
 import hglm.mask
 from .load_image import load_image_color, load_image_nii
 from .permute import Permuter
 from .regress import scale_sigma
+from ..mask import get_mask_idx
 
 
 class ExperimentImageOnly:
@@ -24,6 +26,55 @@ class ExperimentImageOnly:
     def __init__(self, *, y, mask_idx, **kwargs):
         self.y = y
         self.mask_idx = mask_idx
+
+    @classmethod
+    def from_gauss(cls, b=None, num_img=10, shape=(2, 3, 4), seed=None,
+                   mu=None, cov=None, **kwargs):
+        """ generates gaussian data, outputs sample mu & cov as given
+
+        Args:
+            b (int): dimension of imaging features (default b=1)
+            num_img (int): number of "images" to sample
+            shape (tuple): shape of images
+            seed (int): inits random number generator
+            mu (np.array): output sample mean (default to np.zeros(b))
+            cov (np.array): output sample cov, with bessel's (default to
+                np.eye(b))
+
+        Returns:
+            ExperimentImageOnly
+        """
+        if b is None:
+            if mu is not None:
+                b = mu.size
+            elif cov is not None:
+                b = cov.shape[0]
+            else:
+                b = 1
+
+        num_vox = np.prod(shape)
+        rng = np.random.default_rng(seed=seed)
+        y = rng.multivariate_normal(np.zeros(b), np.eye(b), num_img * num_vox)
+
+        # reshape, de-mean and impose identity current cov
+        y = y.reshape((b, num_img, num_vox))
+        y = y - y.mean(axis=(1, 2))[:, np.newaxis, np.newaxis]
+        y = y.reshape((b, -1))
+        _cov = y @ y.T / (num_img * num_vox - 1)
+
+        # project to proper covariance
+        p = np.linalg.inv(scipy.linalg.sqrtm(_cov))
+        if cov is not None:
+            p = scipy.linalg.sqrtm(cov) @ p
+        y = p @ y
+
+        # add to proper mean
+        if mu is not None:
+            y = y + mu[:, np.newaxis]
+
+        return cls(y=y.reshape((b, num_img, num_vox)),
+                   mask_idx=get_mask_idx(np.ones(shape)),
+                   **kwargs)
 
     @classmethod
     def from_search(cls, folder, sbj_regex, img_glob_dict, **kwargs):
