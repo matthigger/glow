@@ -38,3 +38,20 @@ def get_score(mask_pred, mask_target, mask_active=None):
     spec = conf_mat[0, 0] / (conf_mat[0, 0] + conf_mat[0, 1])
 
     return f1, sens, spec
+
+
+def trim_zeros_2d(x, to_trim=0):
+    """ trims rows / columns which are entirely zero
+
+     (of course, spoils affine but useful to "zoom" in jupyter demos)
+
+     """
+    # rows and cols where there is at least one non-zero element
+    non_zero_rows = np.any(x != to_trim, axis=1)
+    non_zero_cols = np.any(x != to_trim, axis=0)
+
+    # indices of the first and last True values
+    row_start, row_end = np.where(non_zero_rows)[0][[0, -1]]
+    col_start, col_end = np.where(non_zero_cols)[0][[0, -1]]
+
+    return x[row_start:row_end + 1, col_start:col_end + 1]

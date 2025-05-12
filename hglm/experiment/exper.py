@@ -233,10 +233,6 @@ class Experiment(ExperimentImageOnly):
             # append leading False to contrast (its not of interest)
             self.contrast = np.insert(self.contrast, 0, values=False)
 
-        # build residual forming arrays
-        x = self.x[~self.contrast, :], self.x
-        self.h = tuple(np.linalg.pinv(_x) @ _x for _x in x)
-
     def impose_effect(self, extenter=None, mask=None, seed=None, **kwargs):
         """ builds experiment with effect imposed
 
@@ -281,10 +277,8 @@ class Experiment(ExperimentImageOnly):
         Args:
             perm_idx (int): permutation index (0 is no permutation)
             block_exchange (bool): toggles block exchange permuting.  all
-                voxels are permuted with same permutation matrix (faster, but
-                resulting experiment may still contain shadows of effects in
-                original data).  setting to False will give each voxel its own
-                permutation matrix, more computationally expensive.
+                voxels are permuted with same permutation matrix.  setting
+                to False will give each voxel its own permutation matrix
 
         Returns:
             exp (Experiment): new experiment whose y features have been
