@@ -3,7 +3,6 @@ import scipy.stats
 from scipy.optimize import minimize
 
 import hglm.experiment
-import hglm.f_stat
 from hglm.experiment import wilks_to_chi2, get_wilks
 
 

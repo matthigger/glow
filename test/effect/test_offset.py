@@ -1,6 +1,5 @@
 from hglm.effect.impose import *
 from hglm.experiment import get_manova, wilks_to_chi2, get_wilks, Experiment
-from hglm.f_stat import *
 
 
 def test_compute_offset():
