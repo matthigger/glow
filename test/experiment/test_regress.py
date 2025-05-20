@@ -1,6 +1,6 @@
+from hglm.experiment import Experiment
 from hglm.experiment.regress import *
 from hglm.graph import iter_size_yout_ybar, iter_topo
-from test.helper import generate_dummy_data
 
 
 def test_all():
@@ -10,12 +10,11 @@ def test_all():
     allows us to use the iter_size_yout_ybar() generator), though these
     outputs generated another way would be just as valid
     """
-    b = 3
-    num_vox = 100
-    x, y, contrast = generate_dummy_data(b=b, num_vox=100)
+    exp = Experiment.from_gauss(b=3, shape=(10, 10), seed=0)
+    b, num_img, num_vox = exp.y.shape
     children = np.arange(2 * num_vox - 2).reshape((-1, 2))
 
-    for reg_idx, size, yout, ybar in iter_size_yout_ybar(y, children):
+    for reg_idx, size, yout, ybar in iter_size_yout_ybar(exp.y, children):
         yout = yout[:, :, 0]
         ybar = ybar[:, :, 0]
 
@@ -24,7 +23,7 @@ def test_all():
                                  num_leaf=num_vox,
                                  node_start=reg_idx,
                                  only_leaf=True))
-        _y = np.atleast_3d(y[:, :, vox_idx])
+        _y = np.atleast_3d(exp.y[:, :, vox_idx])
 
         # compute sigma (slow & reliable)
         _y_center = _y - _y.mean(axis=2)[:, :, np.newaxis]

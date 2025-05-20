@@ -6,15 +6,6 @@ from hglm.experiment import *
 from hglm.experiment.analysis import *
 from hglm.graph import get_f1
 from .make_test_image import folder_test_data
-from ..helper import generate_dummy_data
-
-num_vox = 4
-n_permute = 3
-x, y, contrast = generate_dummy_data(b=1, num_vox=num_vox, seed=0)
-mask_idx = np.arange(num_vox).reshape((2, 2))
-exp = Experiment(x=x, y=y, contrast=contrast, mask_idx=mask_idx)
-children = np.arange(num_vox * 2 - 2).reshape((-1, 2))
-child_dict = {idx: children for idx in range(n_permute)}
 
 
 class TestAnalysis:
@@ -77,10 +68,7 @@ class TestAnalysishglm:
                     f1_list.append(max(f1))
 
     def test_discover(self):
-        num_vox = 4
-        x, y, contrast = generate_dummy_data(b=1, num_vox=num_vox, seed=0)
-        mask_idx = np.arange(num_vox)
-        exp = Experiment(x=x, y=y, contrast=contrast, mask_idx=mask_idx)
+        exp = Experiment.from_gauss(b=1, shape=(2, 2), seed=0)
         children = np.array([[0, 1],
                              [2, 3],
                              [4, 5]])
