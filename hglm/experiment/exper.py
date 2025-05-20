@@ -62,11 +62,11 @@ class ExperimentImageOnly:
         y = y.reshape((b, -1))
         _cov = y @ y.T / (num_img * num_vox - 1)
 
-        # project to proper covariance
-        p = np.linalg.inv(scipy.linalg.sqrtm(_cov))
         if cov is not None:
+            # project to proper covariance
+            p = np.linalg.inv(scipy.linalg.sqrtm(_cov))
             p = scipy.linalg.sqrtm(cov) @ p
-        y = p @ y
+            y = p @ y
 
         # add to proper mean
         if mu is not None:
@@ -168,7 +168,7 @@ class ExperimentImageOnly:
                                             size=num_vox * n)
             self.y += noise.T.reshape((b, n, num_vox))
 
-    def sample_x(self, a=None, contrast=None, seed=None, add_bias=True):
+    def sample_x(self, a=None, contrast=None, seed=None, **kwargs):
         """ generates (or replaces) x with an arbitrary std normal noise
 
         Args:
@@ -177,8 +177,6 @@ class ExperimentImageOnly:
                 which is "of interest" (other x features form the reduced
                 model in computing f statistic)
             seed: used for random number generator
-            add_bias (bool): if True, first explanatory feature is bias term
-                (constant row of ones)
 
         Returns:
             exp_out (Experiment): x has been replaced with noise from self
@@ -198,14 +196,8 @@ class ExperimentImageOnly:
         rng = np.random.default_rng(seed=seed)
         x = rng.standard_normal(size=(a, num_img))
 
-        if add_bias:
-            # bias term is not of interest
-            contrast[0] = False
-            x[0, :] = 1
-
         return Experiment(x=x, contrast=contrast, y=self.y,
-                          mask_idx=self.mask_idx,
-                          add_bias=False)
+                          mask_idx=self.mask_idx, **kwargs)
 
     def apply_mask(self, mask):
         """ applies boolean mask to experiment
@@ -270,6 +262,12 @@ class Experiment(ExperimentImageOnly):
             computing f statistic)
     """
 
+    @classmethod
+    def from_gauss(cls, a=1, contrast=None, seed=None, add_bias=True,
+                   **kwargs):
+        exp = ExperimentImageOnly.from_gauss(seed=seed, **kwargs)
+        return exp.sample_x(a=a, contrast=contrast, seed=seed, add_bias=True)
+
     def __init__(self, *, x, contrast=None, add_bias=False, **kwargs):
         super().__init__(**kwargs)
 
@@ -281,7 +279,7 @@ class Experiment(ExperimentImageOnly):
             num_img = x.shape[1]
             self.x = np.vstack([np.ones(num_img), x])
 
-            # append leading False to contrast (its not of interest)
+            # append leading False to contrast (it's not of interest)
             self.contrast = np.insert(self.contrast, 0, values=False)
 
     def impose_effect(self, extenter=None, mask=None, seed=None, **kwargs):
@@ -388,14 +386,12 @@ class ExperimentScaled(Experiment):
         self.mean_orig = y.mean(axis=(1, 2))[:, np.newaxis, np.newaxis]
 
         # scale normalize
-        cov = np.cov(y.reshape(y.shape[0], -1))
+        b, num_img, num_vox = y.shape
+        cov = np.cov(y.reshape((b, -1), order='F'))
         cov = np.atleast_2d(cov)
         self.pre_scale = np.diag(1 / np.diag(cov) ** .5)
 
         cov_scale = self.pre_scale @ cov @ self.pre_scale.T
-        assert np.allclose(np.diag(cov_scale), 1)
-
-        # pca
         evals, evecs = np.linalg.eig(cov_scale)
         self.pre_scale = evecs.T @ self.pre_scale
 

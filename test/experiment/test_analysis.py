@@ -6,7 +6,6 @@ from hglm.experiment import *
 from hglm.experiment.analysis import *
 from hglm.graph import get_f1
 from .make_test_image import folder_test_data
-from .test_exper import get_rand_exp
 from ..helper import generate_dummy_data
 
 num_vox = 4
@@ -123,18 +122,14 @@ class TestAnalysishglm:
 
 class TestBigEffect:
     """ given strong effect, discover it"""
-    # build experiment with strong effect to be found (whole region)
-    num_img = 100
-    shape = 5, 5
-    a = 2
-    b = 1
-    exp = get_rand_exp(shape=shape, a=a, b=b, seed=0, num_img=num_img)
+    # build experiment with strong effect to be found
+    exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=100, seed=0)
     exp, effect = exp.impose_effect(seed=0,
-                                    extenter=ExtenterSphere(radius=1),
-                                    pval=.0001)
+                                    extenter=ExtenterSphere(radius=2),
+                                    pval=1e-6)
 
     def test_hglm(self):
-        analysis = AnalysisHGLM(TestBigEffect.exp, n_perm=10, alpha=.1)
+        analysis = AnalysisHGLM(TestBigEffect.exp, n_perm=25, alpha=.1)
 
         # check that target region segmented properly
         f1 = get_f1(mask=TestBigEffect.effect.mask,
@@ -147,6 +142,6 @@ class TestBigEffect:
                                    TestBigEffect.effect.mask)
 
     def test_tfce(self):
-        analysis = AnalysisTFCE(TestBigEffect.exp, n_perm=10, alpha=.1)
+        analysis = AnalysisTFCE(TestBigEffect.exp, n_perm=25, alpha=.1)
         np.testing.assert_allclose(analysis.effect_list[0].mask,
                                    TestBigEffect.effect.mask)

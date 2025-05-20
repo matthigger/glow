@@ -1,5 +1,5 @@
+from hglm.experiment.exper import Experiment
 from hglm.experiment.permute import *
-from .test_exper import get_rand_exp
 
 
 class TestPermuter:
@@ -20,7 +20,7 @@ class TestPermuter:
         perm_idx = 1
         shape = 10, 10
         num_img = 5
-        exp = get_rand_exp(shape=shape, seed=0, num_img=num_img)
+        exp = Experiment.from_gauss(shape=shape, seed=0, num_img=num_img)
 
         # prep
         perm = Permuter(x=exp.x[~exp.contrast, :])

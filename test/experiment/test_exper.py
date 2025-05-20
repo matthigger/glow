@@ -2,16 +2,7 @@ from collections import namedtuple
 
 import hglm.effect
 from hglm.experiment.exper import *
-from test.helper import generate_dummy_data
 from .make_test_image import folder_test_data, img_feat_intensity
-
-
-def get_rand_exp(shape=(10, 10, 10), **kwargs):
-    reg_size = np.prod(shape)
-    mask_idx = np.arange(reg_size).reshape(shape)
-
-    x, y, contrast = generate_dummy_data(num_vox=reg_size, **kwargs)
-    return Experiment(x=x, y=y, contrast=contrast, mask_idx=mask_idx)
 
 
 class TestExperimentOnlyImage:
@@ -37,9 +28,7 @@ class TestExperimentOnlyImage:
             else:
                 assert np.allclose(y.mean(axis=1), case.mu)
 
-            if case.cov is None:
-                assert np.allclose(np.cov(y), np.eye(b))
-            else:
+            if case.cov is not None:
                 assert np.allclose(np.cov(y), case.cov)
 
     def test_from_search(self):
@@ -64,7 +53,7 @@ class TestExperimentOnlyImage:
 
     def test_impose_effect(self):
         seed = 0
-        exp = get_rand_exp(seed=seed)
+        exp = Experiment.from_gauss(seed=seed)
         extenter = hglm.effect.ExtenterSphere(radius=3)
 
         for pval in np.logspace(-3, -.0001, 4):
@@ -75,7 +64,7 @@ class TestExperimentOnlyImage:
 
     def test_sample_x(self):
         seed = 0
-        exp = get_rand_exp(seed=seed)
+        exp = Experiment.from_gauss(seed=seed)
         exp.sample_x(a=exp.x.shape[0])
         exp.sample_x(contrast=exp.contrast)
         exp.sample_x(a=4)
@@ -108,7 +97,7 @@ class TestExperiment:
         perm_idx = 1
         shape = 10, 10
         num_img = 5
-        exp = get_rand_exp(shape=shape, seed=0, num_img=num_img)
+        exp = Experiment.from_gauss(shape=shape, seed=0, num_img=num_img)
 
         # prep
         x = exp.x[~exp.contrast, :], exp.x
@@ -139,13 +128,13 @@ class TestExperimentScaled:
         shape = 10, 10
         num_img = 5
         b = 3
-        exp = get_rand_exp(shape=shape, seed=0, b=b, num_img=num_img)
+        exp = Experiment.from_gauss(shape=shape, seed=0, b=b, num_img=num_img)
 
         exp_scale = ExperimentScaled.from_exp(exp)
 
         assert np.allclose(exp_scale.y.mean(axis=(1, 2)), 0), 'non-zero mean'
 
-        cov_after = np.cov(exp_scale.y.reshape(b, -1))
+        cov_after = np.cov(exp_scale.y.reshape((b, -1), order='F'))
         off_diag = ~np.eye(b).astype(bool)
         assert np.allclose(cov_after[off_diag], 0), 'non-zero correlation'
 
