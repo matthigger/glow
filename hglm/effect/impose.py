@@ -25,7 +25,7 @@ def compute_offset(x, y, contrast, pval=None):
     # prep constants
     a0 = (~contrast).sum()
     a1 = contrast.size - a0
-    b, num_img, reg_size = y.shape
+    b, num_img, num_vox = y.shape
 
     # prep matrices
     y_mean = y.mean(axis=2)
@@ -36,22 +36,22 @@ def compute_offset(x, y, contrast, pval=None):
 
     # qr decomposition of x
     q = hglm.experiment.decompose(x, contrast)
-    yq1q1y = y_mean @ q[1].T @ q[1] @ y_mean.T
-    yq2q2y = y_mean @ q[2].T @ q[2] @ y_mean.T
-    yq1_norm2 = np.linalg.norm(y_mean @ q[1].T) ** 2
-    yq2_norm2 = np.linalg.norm(y_mean @ q[2].T) ** 2
+    yq1 = y_mean @ q[1].T
+    yq2 = y_mean @ q[2].T
+    yq1_norm2 = (yq1 ** 2).sum()
+    yq2_norm2 = (yq2 ** 2).sum()
+    yq1q1y = yq1 @ yq1.T
+    yq2q2y = yq2 @ yq2.T
 
-    # compute norm of spatial cov square of t
-    # |r| \Sigma_r & = \sum_{v \in r} (Y_v - \bar{Y}_r)(Y_v - \bar{Y}_r)^T
-    #              & = Y_r Y_r^T - |r| \bar{Y}_r \bar{Y}_r^T
-    yr = y.reshape((y.shape[0], -1), order='F')
-    sigma = yr @ yr.T / reg_size - y_mean @ y_mean.T
+    # compute sigma_sum (non-normalized spatial covariance)
+    yr = y.reshape((b, -1), order='F')
+    sigma_sum = yr @ yr.T - y_mean @ y_mean.T * num_vox
 
     def constraint(alpha):
         """ when this function output is zero, chi2_target achieved """
         alpha1, alpha2 = alpha
-        h = (1 + alpha1) ** 2 / num_img * yq1q1y
-        e = sigma + (1 + alpha2) ** 2 / num_img * yq2q2y
+        h = (1 + alpha1) ** 2 * yq1q1y * num_vox
+        e = (1 + alpha2) ** 2 * yq2q2y * num_vox + sigma_sum
         wilks = get_wilks(e, h)
         chi2, _ = wilks_to_chi2(wilks, a=a1, b=b, n=num_img)
         return (chi2 - chi2_target) ** 2
