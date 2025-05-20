@@ -4,17 +4,17 @@ import numpy as np
 def get_manova(x, y, contrast):
     b, num_img, num_vox = y.shape
 
-    # compute sigma
+    # compute sigma_sum (non-normalized spatial covariance)
     y_mean = y.mean(axis=2)
-    yr = y.reshape((y.shape[0], -1), order='F')
-    sigma = yr @ yr.T / num_vox - y_mean @ y_mean.T
+    yr = y.reshape((b, -1), order='F')
+    sigma_sum = yr @ yr.T - y_mean @ y_mean.T * num_vox
 
     # compute observed e and h
     q = decompose(x, contrast)
-    yq1q1y = y_mean @ q[1].T @ q[1] @ y_mean.T
-    yq2q2y = y_mean @ q[2].T @ q[2] @ y_mean.T
-    h = yq1q1y / num_img
-    e = sigma + yq2q2y / num_img
+    yq1 = y_mean @ q[1].T
+    yq2 = y_mean @ q[2].T
+    h = num_vox * yq1 @ yq1.T
+    e = sigma_sum +  num_vox * yq2 @ yq2.T
 
     return e, h
 
