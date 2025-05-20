@@ -4,10 +4,10 @@ from hglm.experiment.regress import decompose
 
 
 def iter_size_e_h(*, x, contrast, **kwargs):
-    """  wraps iter_size_yout_ybar, provides e and h matrices of mancova
+    """  wraps iter_size_yout_ymean, provides e and h matrices of mancova
 
     Args:
-        see iter_size_yout_ybar
+        see iter_size_yout_ymean
 
     Yields:
         reg_idx (int): region index
@@ -20,15 +20,15 @@ def iter_size_e_h(*, x, contrast, **kwargs):
     p1 = q[1].T @ q[1]
     p01 = p1 + q[0].T @ q[0]
 
-    for reg_idx, size, yout, ybar in iter_size_yout_ybar(**kwargs):
-        h = np.einsum('xbn,bc,ycn->xyn', ybar, p1 * size, ybar)
+    for reg_idx, size, yout, ymean in iter_size_yout_ymean(**kwargs):
+        h = np.einsum('xbn,bc,ycn->xyn', ymean, p1 * size, ymean)
         e = yout - \
-            np.einsum('xbn,bc,ycn->xyn', ybar, p01 * size, ybar)
+            np.einsum('xbn,bc,ycn->xyn', ymean, p01 * size, ymean)
 
         yield reg_idx, size, e, h
 
 
-def iter_size_yout_ybar(y, children=None, perm=None,
+def iter_size_yout_ymean(y, children=None, perm=None,
                         block_exchange=False, **kwargs):
     """ iterates through region stats, less-redundant compute via graph
 
@@ -47,12 +47,12 @@ def iter_size_yout_ybar(y, children=None, perm=None,
         size (int): size, in voxels, of region
         yout (np.array): (b, b, num_perm) sum of yv @ yv.T across all voxels of
             region
-        ybar (np.array): (b, num_img, num_perm) average, across voxels,
+        ymean (np.array): (b, num_img, num_perm) average, across voxels,
             of features
     """
     b, num_img, num_vox = y.shape
 
-    size_yout_ybar = dict()
+    size_yout_ymean = dict()
     max_reg = num_vox
     max_reg += children.shape[0] if children is not None else 0
     for reg_idx in range(max_reg):
@@ -60,7 +60,7 @@ def iter_size_yout_ybar(y, children=None, perm=None,
             # single voxel region
             size = 1
             yv = y[:, :, reg_idx]
-            ybar = yv
+            ymean = yv
 
             if perm is None:
                 # compute yout (no permutation needed)
@@ -68,29 +68,29 @@ def iter_size_yout_ybar(y, children=None, perm=None,
 
                 # add new axis (consistent with permutations)
                 yout = yout[:, :, np.newaxis]
-                ybar = ybar[:, :, np.newaxis]
+                ymean = ymean[:, :, np.newaxis]
             else:
                 # permute & compute yout
                 perm_idx_min = 1 if block_exchange else reg_idx + 2
-                ybar = perm(ybar, perm_idx_min=perm_idx_min, **kwargs)
-                yout = np.einsum('bnp,cnp->bcp', ybar, ybar, optimize=True)
+                ymean = perm(ymean, perm_idx_min=perm_idx_min, **kwargs)
+                yout = np.einsum('bnp,cnp->bcp', ymean, ymean, optimize=True)
 
-            size_yout_ybar[reg_idx] = size, yout, ybar
+            size_yout_ymean[reg_idx] = size, yout, ymean
         else:
             # multi voxel region
             # look up stats of constituent regions
             c0, c1 = children[int(reg_idx - num_vox), :]
-            size0, yout0, ybar0 = size_yout_ybar.get(c0)
-            size1, yout1, ybar1 = size_yout_ybar.get(c1)
+            size0, yout0, ymean0 = size_yout_ymean.get(c0)
+            size1, yout1, ymean1 = size_yout_ymean.get(c1)
 
             # compute & store stats of their union
             size = size0 + size1
             yout = yout0 + yout1
             lam = size0 / size, size1 / size
-            ybar = ybar0 * lam[0] + ybar1 * lam[1]
-            size_yout_ybar[reg_idx] = size, yout, ybar
+            ymean = ymean0 * lam[0] + ymean1 * lam[1]
+            size_yout_ymean[reg_idx] = size, yout, ymean
 
-        yield reg_idx, size, yout, ybar
+        yield reg_idx, size, yout, ymean
 
 
 def node_sum(x, children):

@@ -1,22 +1,22 @@
 from hglm.experiment import Experiment
 from hglm.experiment.regress import *
-from hglm.graph import iter_size_yout_ybar, iter_topo
+from hglm.graph import iter_size_yout_ymean, iter_topo
 
 
 def test_all():
     """ test that regress stats computed properly for random data
 
     it is convenient here to test all region in an arbitrary hierarchy (
-    allows us to use the iter_size_yout_ybar() generator), though these
+    allows us to use the iter_size_yout_ymean() generator), though these
     outputs generated another way would be just as valid
     """
     exp = Experiment.from_gauss(b=3, shape=(10, 10), seed=0)
     b, num_img, num_vox = exp.y.shape
     children = np.arange(2 * num_vox - 2).reshape((-1, 2))
 
-    for reg_idx, size, yout, ybar in iter_size_yout_ybar(exp.y, children):
+    for reg_idx, size, yout, ymean in iter_size_yout_ymean(exp.y, children):
         yout = yout[:, :, 0]
-        ybar = ybar[:, :, 0]
+        ymean = ymean[:, :, 0]
 
         # build y corresponding to region
         vox_idx = list(iter_topo(children=children,
@@ -29,7 +29,7 @@ def test_all():
         _y_center = _y - _y.mean(axis=2)[:, :, np.newaxis]
         sigma_exp = np.cov(_y_center.reshape((b, -1), order='F'), bias=True)
 
-        sigma = get_sigma(size, yout, ybar)
+        sigma = get_sigma(size, yout, ymean)
         assert np.allclose(sigma_exp, sigma)
 
 
@@ -60,18 +60,18 @@ def test_scale_sigma():
     assert np.allclose(y.mean(axis=2), y2.mean(axis=2))
 
 
-def test_get_size_yout_ybar():
+def test_get_size_yout_ymean():
     b, num_img, num_vox = 3, 10, 100
     rng = np.random.default_rng(seed=0)
     y = rng.standard_normal((b, num_img, num_vox))
-    size_obs, yout_obs, ybar_obs = get_size_yout_ybar(y)
+    size_obs, yout_obs, ymean_obs = get_size_yout_ymean(y)
 
     yout_exp = 0
     for vox_idx in range(num_vox):
         _y = y[:, :, vox_idx]
         yout_exp += _y @ _y.T
-    ybar_exp = y.mean(axis=2)
+    ymean_exp = y.mean(axis=2)
 
     assert size_obs == num_vox
     assert np.allclose(yout_obs, yout_exp)
-    assert np.allclose(ybar_obs, ybar_exp)
+    assert np.allclose(ymean_obs, ymean_exp)

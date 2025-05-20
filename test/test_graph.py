@@ -133,14 +133,14 @@ def test_iter_size_e_h():
             assert np.allclose(e, e_exp[:, :, np.newaxis])
 
 
-def test_iter_size_yout_ybar():
+def test_iter_size_yout_ymean():
     rng = np.random.default_rng(seed=0)
     a, b, num_img, num_vox = 2, 3, 4, 5
     y = rng.standard_normal((b, num_img, num_vox))
     x = rng.standard_normal((a, num_img))
     children = np.arange(2 * num_vox - 2).reshape((-1, 2), order='C')
 
-    for reg_idx, size, yout, ybar in iter_size_yout_ybar(y, children):
+    for reg_idx, size, yout, ymean in iter_size_yout_ymean(y, children):
         # build reliable compute: get index of all voxels in region
         vox = np.array(list(iter_topo(children=children,
                                       num_leaf=num_vox,
@@ -149,7 +149,7 @@ def test_iter_size_yout_ybar():
         _y = y[:, :, vox]
 
         assert vox.size == size
-        assert np.allclose(_y.mean(axis=2), ybar[:, :, 0])
+        assert np.allclose(_y.mean(axis=2), ymean[:, :, 0])
 
         _y = _y.reshape((b, -1), order='F')
         yout_exp = _y @ _y.T

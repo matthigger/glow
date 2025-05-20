@@ -33,8 +33,8 @@ def decompose(x, contrast):
     return q[:a[0], :], q[a[0]: a[1], :], q[a[1]:, :]
 
 
-def get_size_yout_ybar(y):
-    """ compute size yout ybar directly from imaging features
+def get_size_yout_ymean(y):
+    """ compute size yout ymean directly from imaging features
 
     Args:
         y (np.array): (b, num_img, num_vox) imaging features
@@ -42,35 +42,35 @@ def get_size_yout_ybar(y):
     Returns:
         size (int): size, in voxels, of region
         yout (np.array): (b, b) sum of yv @ yv.T across all voxels of region
-        ybar (np.array): (b, num_img) average, across voxels, of features
+        ymean (np.array): (b, num_img) average, across voxels, of features
     """
     size = y.shape[2]
     yout = np.einsum('bnr,anr->ba', y, y, optimize=True)
-    ybar = y.mean(axis=2)
-    return size, yout, ybar
+    ymean = y.mean(axis=2)
+    return size, yout, ymean
 
 
-def get_sigma(size, yout, ybar):
+def get_sigma(size, yout, ymean):
     """ sigma is spatial covariance across voxels, pooled across images
 
     inputs efficiently computed for hierarchical regions, see
-    hglm.graph.iter_size_yout_ybar()
+    hglm.graph.iter_size_yout_ymean()
 
     Args:
         size (int): size, in voxels, of region
         yout (np.array): (b, b) sum of yv @ yv.T across all voxels of region
-        ybar (np.array): (b, num_img) average, across voxels, of features
+        ymean (np.array): (b, num_img) average, across voxels, of features
 
     Returns:
         sigma (np.array): (b, b) spatial covariance, pooled across images
     """
-    num_img = ybar.shape[1]
-    return (yout / size - ybar @ ybar.T) / num_img
+    num_img = ymean.shape[1]
+    return (yout / size - ymean @ ymean.T) / num_img
 
 
 def get_sigma_from_y(y):
-    size, yout, ybar = get_size_yout_ybar(y)
-    return get_sigma(size=size, yout=yout, ybar=ybar)
+    size, yout, ymean = get_size_yout_ymean(y)
+    return get_sigma(size=size, yout=yout, ymean=ymean)
 
 
 def get_rough(x, y):
