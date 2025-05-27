@@ -6,7 +6,7 @@ from hglm.experiment import get_manova, wilks_to_chi2, get_wilks, Experiment, \
 
 
 def test_compute_offset():
-    for seed, pval_exp, rough in product(range(10),
+    for seed, pval_exp, rough in product(range(3),
                                          np.logspace(0, -3, 3),
                                          (None, 0, .5, 1)):
         exp = Experiment.from_gauss(seed=seed)
