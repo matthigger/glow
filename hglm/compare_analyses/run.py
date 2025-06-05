@@ -63,7 +63,7 @@ def get_auc(ana, mask_target):
                          y_true=mask_target[ana.exp.mask_idx > -1])
 
 
-def run_one_exp(seed):
+def run_one_exp(seed, pval, rough=None):
     # allows us to catch numpy's warnings
     warnings.filterwarnings('error')
     np.seterr(all='warn')
@@ -84,95 +84,98 @@ def run_one_exp(seed):
                            mask_idx=exp_masked.mask_idx,
                            seed=seed)
 
-    # shuffle p value order (better sampling across threads)
-    for pval in np.random.permutation(param.pval_all):
-        # impose effect
-        _exp, effect = exp_masked.impose_effect(seed=seed,
-                                                mask=mask_target,
-                                                pval=pval)
+    # impose effect
+    _exp, effect = exp_masked.impose_effect(mask=mask_target,
+                                            seed=seed, pval=pval, rough=rough)
 
-        for Ana in param.analysis_obj_tup:
-            # prep output file
-            uuid = str(uuid4())[:8]
-            file_out = folder_out / 'out' / f'{uuid}_result.json'
+    for Ana in param.analysis_obj_tup:
+        # prep output file
+        uuid = str(uuid4())[:8]
+        file_out = folder_out / 'out' / f'{uuid}_result.json'
 
-            # run analysis
-            kwargs = param.analysis_kwargs[Ana.__name__]
-            start = time.time()
-            if param.error_save:
-                # catch errors and dump to json if any occur (allows us to
-                # continue with experiment in event of errors)
-                try:
-                    ana = Ana(exp=_exp, alpha=param.alpha, **kwargs)
-                except Exception as e:
-                    d = {'error_msg': traceback.format_exc(),
-                         'method': Ana.__name__,
-                         'pval': pval,
-                         'seed': seed}
-                    print(f'error: {d}')
-                    file_out = str(file_out).replace('out', 'error')
-                    with open(file_out, 'w') as f:
-                        json.dump(d, f, sort_keys=True, indent=4)
-                    continue
-
-            else:
-                # no error catching, will stop all experiments if any error
+        # run analysis
+        kwargs = param.analysis_kwargs[Ana.__name__]
+        start = time.time()
+        if param.error_save:
+            # catch errors and dump to json if any occur (allows us to
+            # continue with experiment in event of errors)
+            try:
                 ana = Ana(exp=_exp, alpha=param.alpha, **kwargs)
-            total_time_sec = time.time() - start
+            except Exception as e:
+                d = {'error_msg': traceback.format_exc(),
+                     'method': Ana.__name__,
+                     'pval': pval,
+                     'seed': seed}
+                print(f'error: {d}')
+                file_out = str(file_out).replace('out', 'error')
+                with open(file_out, 'w') as f:
+                    json.dump(d, f, sort_keys=True, indent=4)
+                continue
 
-            # build mask of predicted area (union of all effect masks)
-            mask_pred = np.zeros(ana.exp.mask_idx.shape, dtype=bool)
-            for _effect in ana.effect_list:
-                mask_pred |= _effect.mask
+        else:
+            # no error catching, will stop all experiments if any error
+            ana = Ana(exp=_exp, alpha=param.alpha, **kwargs)
+        total_time_sec = time.time() - start
 
-            # compute scores
-            f1, sens, spec = get_score(mask_pred=mask_pred,
-                                       mask_target=effect.mask,
-                                       mask_active=exp_masked.mask_idx > -1)
-            auc = get_auc(ana, mask_target=effect.mask)
+        # build mask of predicted area (union of all effect masks)
+        mask_pred = np.zeros(ana.exp.mask_idx.shape, dtype=bool)
+        for _effect in ana.effect_list:
+            mask_pred |= _effect.mask
 
-            # dump summary
-            d = {'pval': pval,
-                 'seed': seed,
-                 'Analysis': Ana.__name__,
-                 'f1': f1,
-                 'sens': sens,
-                 'spec': spec,
-                 'auc': auc,
-                 'uuid': uuid,
-                 'time_sec': total_time_sec}
-            with open(file_out, 'w') as f:
+        # compute scores
+        f1, sens, spec = get_score(mask_pred=mask_pred,
+                                   mask_target=effect.mask,
+                                   mask_active=exp_masked.mask_idx > -1)
+        auc = get_auc(ana, mask_target=effect.mask)
+
+        # dump summary
+        d = {'pval': pval,
+             'seed': seed,
+             'rough': effect.rough,
+             'Analysis': Ana.__name__,
+             'f1': f1,
+             'sens': sens,
+             'spec': spec,
+             'auc': auc,
+             'uuid': uuid,
+             'time_sec': total_time_sec}
+        with open(file_out, 'w') as f:
+            json.dump(d, f, sort_keys=True, indent=4)
+
+        if param.maxf1 and Ana == AnalysisHGLM:
+            # compute max f1 stats, store as a distinct output
+            # "analysis" (its not really)
+            d.update(get_max_f1(ana_hglm=ana, mask_target=effect.mask))
+            d['Analysis'] = 'AnalysisHGLM-maxF1'
+            d['time_sec'] = ''
+            d['region'] = float(d['region'])
+            with open(file_out.with_stem(f'{uuid}_maxf1'), 'w') as f:
                 json.dump(d, f, sort_keys=True, indent=4)
 
-            if param.maxf1 and Ana == AnalysisHGLM:
-                # compute max f1 stats, store as a distinct output
-                # "analysis" (its not really)
-                d.update(get_max_f1(ana_hglm=ana, mask_target=effect.mask))
-                d['Analysis'] = 'AnalysisHGLM-maxF1'
-                d['time_sec'] = ''
-                d['region'] = float(d['region'])
-                with open(file_out.with_stem(f'{uuid}_maxf1'), 'w') as f:
-                    json.dump(d, f, sort_keys=True, indent=4)
-
-            if param.detail_save:
-                # dump detail
-                file_out = folder_out / 'out' / f'{uuid}_detail.p.gz'
-                with gzip.open(file_out, 'wb') as f:
-                    pickle.dump((ana, effect), f)
+        if param.detail_save:
+            # dump detail
+            file_out = folder_out / 'out' / f'{uuid}_detail.p.gz'
+            with gzip.open(file_out, 'wb') as f:
+                pickle.dump((ana, effect), f)
 
 
 if __name__ == '__main__':
     from data import prep_folder_out
     from tqdm import tqdm
     from joblib import Parallel, delayed
+    from itertools import product
+    from param import seed_all, pval_all, rough_all
 
     # prep folder_out
     folder_out = prep_folder_out(param.folder_out,
                                  files_to_copy=(param.__file__,))
 
+    kwargs_list = [dict(seed=s, pval=p, rough=r)
+                   for s, p, r in product(seed_all, pval_all, rough_all)]
+
     if param.n_jobs not in (0, 1):
         r = Parallel(n_jobs=param.n_jobs, verbose=10)(
-            delayed(run_one_exp)(seed) for seed in tqdm(range(param.n_repeat)))
+            delayed(run_one_exp)(**kwargs) for kwargs in tqdm(kwargs_list))
     else:
-        for seed in tqdm(range(param.n_repeat)):
-            run_one_exp(seed)
+        for kwargs in tqdm(kwargs_list):
+            run_one_exp(**kwargs)

@@ -1,3 +1,5 @@
+from itertools import product
+
 import numpy as np
 
 import hglm
@@ -5,12 +7,17 @@ import hglm
 # where output results are stored (each run of script yields its own folder)
 folder_out = '/home/matt/Dropbox/pnl_hglm/results'
 
-# number of effects to model
-n_repeat = 32 * 3
+# controls number of repetitions
+seed_all = 0,
 
-# pval describes severity of effect (assuming typical F test assumptions
-# ...not valid but still useful to quantify how difficult effect is)
+# pval describes severity of effect
 pval_all = np.geomspace(.8, .001, 13)
+
+# roughness (0 to 1 inclusive) characterizes whether regression error is
+# entirely across space within each image (roughness=1) or if each image is
+# constant and all regression error is due to image spatial averages lying
+# outside of span of x (roughness=0)
+rough_all = None,
 
 # to speed up analysis, random voxel is chosen and dilated to this radius.
 # only these voxels are included in the analysis
@@ -24,7 +31,7 @@ alpha = .05
 
 # toggles parallel, 0 or 1 processes non-parallel (good for debug).  else this
 # is the number of threads to use.  (-1 for all of them)
-n_jobs = 20
+n_jobs = 0
 
 # analyses to run
 analysis_obj_tup = (hglm.experiment.AnalysisHGLM,
@@ -47,7 +54,7 @@ error_save = True
 # distinguish between segmentation & discovery errors)
 maxf1 = False
 
-source = 'hcp'
+source = 'awgn'
 match source:
     case 'hcp':
         # human connectome project data
@@ -58,7 +65,7 @@ match source:
             img_glob_dict={
                 'FA': '*_FA.nii.gz',
                 'MD': '*_MD.nii.gz'})
-        exp = exp_hcp.sample_x(a=2, seed=1)
+        exp = exp_hcp.sample_x(a=2, seed=1, add_bias=True)
     case 'awgn':
         # additive white gaussian noise
         seed = 0
@@ -76,7 +83,7 @@ match source:
 
         mask_idx = hglm.mask.get_mask_idx(np.ones(shape))
         exp_awgn = hglm.experiment.ExperimentImageOnly(y=y, mask_idx=mask_idx)
-        exp_awgn = exp_awgn.sample_x(a=a, seed=seed)
+        exp_awgn = exp_awgn.sample_x(a=a, seed=seed, add_bias=True)
 
         exp = exp_awgn
     case _:
