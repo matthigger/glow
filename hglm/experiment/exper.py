@@ -1,5 +1,6 @@
 import pathlib
 import re
+import warnings
 from copy import deepcopy
 
 import numpy as np
@@ -282,6 +283,10 @@ class Experiment(ExperimentImageOnly):
             # append leading False to contrast (it's not of interest)
             self.contrast = np.insert(self.contrast, 0, values=False)
 
+        if not np.any(np.all(self.x == 1, axis=1)):
+            warnings.warn('no bias term: regression constrained to '
+                          'origin (consider add_bias=True)')
+
     def impose_effect(self, extenter=None, mask=None, seed=None, **kwargs):
         """ builds experiment with effect imposed
 
@@ -308,15 +313,16 @@ class Experiment(ExperimentImageOnly):
         # get offset which imposes desired effect strength
         effect_idx = self.mask_idx[mask]
         y_effect = self.y[:, :, effect_idx]
-        offset, sigma_gain, _ = hglm.effect.compute_offset(x=self.x,
-                                                           y=y_effect,
-                                                           contrast=self.contrast,
-                                                           **kwargs)
+        offset, sigma_gain, rough = hglm.effect.compute_offset(x=self.x,
+                                                               y=y_effect,
+                                                               contrast=self.contrast,
+                                                               **kwargs)
 
         # impose effect on y, build new experiment
         exp = self.add_offset(offset, mask=mask, sigma_gain=sigma_gain)
 
-        effect = hglm.effect.Effect.from_exp_mask(exp=exp, mask=mask)
+        effect = hglm.effect.Effect.from_exp_mask(exp=exp, mask=mask,
+                                                  rough=rough)
 
         return exp, effect
 
