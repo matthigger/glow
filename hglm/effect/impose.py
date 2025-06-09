@@ -67,7 +67,7 @@ def compute_offset(x, y, contrast, pval=None, rough=None):
         """ when this function output is zero, chi2_target achieved """
         e, h, _ = get_e_h_sigma(alpha)
         wilks = get_wilks(e, h)
-        chi2, _ = wilks_to_chi2(wilks, a=a1, b=b, n=num_img)
+        chi2, _ = wilks_to_chi2(wilks, contrast=contrast, b=b, n=num_img)
         return chi2 - chi2_target
 
     def constraint_rough(alpha):

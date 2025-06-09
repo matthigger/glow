@@ -91,7 +91,7 @@ class Analysis:
                 wilks = get_wilks(e=e[:, :, perm_idx],
                                   h=h[:, :, perm_idx])
                 stat[perm_idx, reg_idx], _ = wilks_to_chi2(wilks,
-                                                           a=exp.contrast.sum(),
+                                                           contrast=exp.contrast,
                                                            b=b,
                                                            n=num_img * size)
         return stat

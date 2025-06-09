@@ -31,7 +31,7 @@ def test_compute_offset():
         # ensure proper pval achieved
         e, h = get_manova(x, _y, contrast)
         wilks = get_wilks(e, h)
-        chi2, df = wilks_to_chi2(wilks, a=contrast.sum(), b=b, n=num_img)
+        chi2, df = wilks_to_chi2(wilks, contrast=contrast, b=b, n=num_img)
         pval = 1 - scipy.stats.chi2.cdf(chi2, df=df)
 
         assert np.isclose(pval, pval_exp, atol=1e-4)

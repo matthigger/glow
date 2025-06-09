@@ -30,7 +30,7 @@ class Effect:
         # compute stats (to be stored)
         e, h = get_manova(x, y, contrast)
         wilks = get_wilks(e, h)
-        chi2, df = wilks_to_chi2(wilks, a=contrast.sum(), b=b, n=num_img)
+        chi2, df = wilks_to_chi2(wilks, contrast=contrast, b=b, n=num_img)
         pval = 1 - scipy.stats.chi2.cdf(chi2, df=df)
 
         return cls(y_mean=y.mean(axis=2), e=e, h=h, wilks=wilks, chi2=chi2,
