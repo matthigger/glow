@@ -1,6 +1,5 @@
 import numpy as np
 
-
 def get_manova(x, y, contrast):
     b, num_img, num_vox = y.shape
 
@@ -132,12 +131,20 @@ def wilks_to_chi2(wilks, b, n, contrast=None, a=None):
         a = contrast.sum()
 
     df = a * b
-    scale = n - 1 - 0.5 * (b + a + 1)
+    scale = n - 1 - 0.5 * (b - a + 1)
     chi2 = - scale * np.log(wilks)
     return chi2, df
 
 
 def get_wilks(e, h):
-    sign1, loge = np.linalg.slogdet(e)
-    sign2, logeh = np.linalg.slogdet(e + h)
-    return np.exp(loge - logeh)
+    sign_e, logdet_e = np.linalg.slogdet(e)
+    sign_t, logdet_t = np.linalg.slogdet(e + h)
+
+    return np.exp(logdet_e - logdet_t)
+
+
+def get_f_ratio(e, h):
+    sign_e, logdet_e = np.linalg.slogdet(e)
+    sign_h, logdet_h = np.linalg.slogdet(h)
+
+    return np.exp(logdet_h - logdet_e)

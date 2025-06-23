@@ -14,10 +14,10 @@ def test_compute_offset():
         b, num_img, num_vox = y.shape
 
         # compute offset and space_cov_scale needed to achieve f stat
-        offset, sigma_gain, _rough = compute_offset(x=x, y=y,
-                                                    contrast=contrast,
-                                                    pval=pval_exp,
-                                                    rough=rough)
+        offset, sigma_gain, _rough, _ = compute_offset(x=x, y=y,
+                                                       contrast=contrast,
+                                                       pval=pval_exp,
+                                                       rough=rough)
 
         if rough is not None:
             assert np.isclose(_rough, rough, atol=1e-6), \

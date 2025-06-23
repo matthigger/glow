@@ -1,11 +1,53 @@
+import warnings
+
 import numpy as np
 import scipy.stats
-from scipy.optimize import minimize
+from scipy.optimize import minimize, root_scalar
+from sklearn.model_selection import GridSearchCV
+from sklearn.neighbors import KernelDensity
 
-from hglm.experiment import wilks_to_chi2, get_wilks, decompose
+from hglm.experiment import decompose, get_manova, Permuter, \
+    get_f_ratio
 
 
-def compute_offset(x, y, contrast, pval=None, rough=None):
+def estimate_stat_target(x, y, contrast, pval, n_perm=1000, seed=0):
+    rng = np.random.default_rng(seed=seed)
+    perm = Permuter(x=x[~contrast, :])
+    perm_idx_min = rng.integers(np.iinfo(np.int64).min,
+                                np.iinfo(np.int64).max,
+                                dtype=np.int64)
+    y_perm = perm(y, n_perm=n_perm, perm_idx_min=perm_idx_min, keep_orig=True)
+
+    stat = list()
+    for perm_idx in range(n_perm):
+        # compute / record wilks
+        e, h = get_manova(x=x, y=y_perm[..., perm_idx], contrast=contrast)
+        stat.append(get_f_ratio(e, h))
+
+    # sklearn: estimate distribution (kde of gaussians, grid search bandwidth)
+    stat = np.array(stat).reshape(-1, 1)
+    scott_bw = np.std(stat, ddof=1) * n_perm ** (-1 / 5)
+    bw = np.logspace(-0.7, 0.7, 21) * scott_bw
+    grid = GridSearchCV(KernelDensity(kernel='gaussian'),
+                        {'bandwidth': bw}, cv=5)
+    grid.fit(stat)
+    kde = grid.best_estimator_
+
+    # scipy: find wilks value which gives proper cdf
+    bw_factor = kde.bandwidth / np.std(stat)
+    kde = scipy.stats.gaussian_kde(stat.flatten(), bw_method=bw_factor)
+    cdf = lambda z: kde.integrate_box_1d(-np.inf, z)
+    cdf0 = cdf(0)
+    cdf_clip = lambda z: max((cdf(z) - cdf0) / (1 - cdf0), 0)
+    obj = lambda z: cdf_clip(z) - (1 - pval)
+    res = root_scalar(obj, xtol=1e-6, method='brentq',
+                      bracket=[0, 10 * stat.max()])
+    assert res.converged, 'optimization failed: target_wilks'
+
+    return res.root, stat, kde
+
+
+def compute_offset(x, y, contrast, pval=None, rough=None, **kwargs):
     """ get offset to y, constant across voxels, which imposes an f-stat
 
     Args:
@@ -24,6 +66,7 @@ def compute_offset(x, y, contrast, pval=None, rough=None):
         sigma_gain (float): spatial covariance scaling needed to achieve
             roughness coefficient, None if "rough" is not input.
         rough (float): roughness coefficient achieved
+        f_ratio (float): statistic achieved (see estimate_stat_target())
     """
     if rough is not None:
         assert 0 <= rough <= 1, 'invalid rough given'
@@ -33,8 +76,8 @@ def compute_offset(x, y, contrast, pval=None, rough=None):
     b, num_img, num_vox = y.shape
     y_mean = y.mean(axis=2)
 
-    # get target chi2 to impose given pvalue
-    chi2_target = scipy.stats.chi2.ppf(1 - pval, df=a1 * b)
+    # get target stat to impose given pvalue
+    f_ratio, _, _ = estimate_stat_target(x, y, contrast, pval)
 
     # qr decomposition of x
     q = decompose(x, contrast)
@@ -63,12 +106,11 @@ def compute_offset(x, y, contrast, pval=None, rough=None):
         e = (1 + alpha2) ** 2 * yq2q2y * num_vox + sigma_sum
         return e, h, sigma_sum
 
-    def constraint_chi(alpha):
+    def constraint_wilks(alpha):
         """ when this function output is zero, chi2_target achieved """
         e, h, _ = get_e_h_sigma(alpha)
-        wilks = get_wilks(e, h)
-        chi2, _ = wilks_to_chi2(wilks, contrast=contrast, b=b, n=num_img)
-        return chi2 - chi2_target
+        _f_ratio = get_f_ratio(e, h)
+        return _f_ratio - f_ratio
 
     def constraint_rough(alpha):
         e, h, sigma_sum = get_e_h_sigma(alpha)
@@ -94,16 +136,18 @@ def compute_offset(x, y, contrast, pval=None, rough=None):
 
     # setup starting point & constraints (assuming no rough constraint)
     x0 = np.zeros(2)
-    constraints = [dict(type='eq', fun=constraint_chi)]
+    constraints = [dict(type='eq', fun=constraint_wilks)]
     if rough is not None:
         # add rough constraint
         constraints.append(dict(type='eq', fun=constraint_rough))
         x0 = np.array([0, 0, 1])
 
     # optimize
-    res = minimize(fun=obj, x0=x0, constraints=constraints,
-                   method='trust-constr',
-                   options=dict(maxiter=10000))
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', message='delta_grad == 0.0')
+        res = minimize(fun=obj, x0=x0, constraints=constraints,
+                       method='trust-constr',
+                       options=dict(maxiter=10000))
     assert res.success, 'optimization failed'
 
     # compute offset
@@ -122,4 +166,4 @@ def compute_offset(x, y, contrast, pval=None, rough=None):
     e, h, sigma_sum = get_e_h_sigma(res.x)
     rough = np.trace(sigma_sum) / np.trace(e)
 
-    return offset, sigma_gain, rough
+    return offset, sigma_gain, rough, f_ratio

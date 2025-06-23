@@ -313,16 +313,18 @@ class Experiment(ExperimentImageOnly):
         # get offset which imposes desired effect strength
         effect_idx = self.mask_idx[mask]
         y_effect = self.y[:, :, effect_idx]
-        offset, sigma_gain, rough = hglm.effect.compute_offset(x=self.x,
-                                                               y=y_effect,
-                                                               contrast=self.contrast,
-                                                               **kwargs)
+        offset, sigma_gain, rough, f_ratio = \
+            hglm.effect.compute_offset(x=self.x,
+                                       y=y_effect,
+                                       contrast=self.contrast,
+                                       **kwargs)
 
         # impose effect on y, build new experiment
         exp = self.add_offset(offset, mask=mask, sigma_gain=sigma_gain)
 
         effect = hglm.effect.Effect.from_exp_mask(exp=exp, mask=mask,
-                                                  rough=rough)
+                                                  rough=rough,
+                                                  f_ratio=f_ratio)
 
         return exp, effect
 
