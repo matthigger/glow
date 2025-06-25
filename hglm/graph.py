@@ -29,7 +29,7 @@ def iter_size_e_h(*, x, contrast, **kwargs):
 
 
 def iter_size_yout_ymean(y, children=None, perm=None,
-                        block_exchange=False, **kwargs):
+                        block_exchange=True, **kwargs):
     """ iterates through region stats, less-redundant compute via graph
 
     Args:

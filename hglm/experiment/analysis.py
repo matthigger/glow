@@ -198,7 +198,7 @@ class AnalysisHGLM(Analysis):
                             dtype=float)
         for perm_idx in tqdm(range(n_perm + 1), **tqdm_dict):
             # permute data (get one permutation of experiment)
-            _exp = exp.permute(perm_idx, block_exchange=False)
+            _exp = exp.permute(perm_idx, block_exchange=True)
 
             # build hierarchical segmentation
             children = self.cluster(exp=_exp)
@@ -217,7 +217,7 @@ class AnalysisHGLM(Analysis):
 
         # to ensure each of these permuted stats is new, we run one
         # permutation ahead of time
-        _exp = exp.permute(1 << 31 - 1, block_exchange=False)
+        _exp = exp.permute(1 << 31 - 1, block_exchange=True)
         # compute permutation stat for each region in common graph
         stat_perm = self.get_stat(exp=_exp,
                                   children=children,

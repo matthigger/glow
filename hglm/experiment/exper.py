@@ -328,7 +328,7 @@ class Experiment(ExperimentImageOnly):
 
         return exp, effect
 
-    def permute(self, perm_idx, block_exchange=False):
+    def permute(self, perm_idx, block_exchange=True):
         """ gets new experiment whose y features were permuted (freedman lane)
 
         Args:
