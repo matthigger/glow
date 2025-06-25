@@ -13,9 +13,9 @@ from hglm.experiment import decompose, get_manova, Permuter, \
 def estimate_stat_target(x, y, contrast, pval, n_perm=1000, seed=0):
     rng = np.random.default_rng(seed=seed)
     perm = Permuter(x=x[~contrast, :])
-    perm_idx_min = rng.integers(np.iinfo(np.int64).min,
-                                np.iinfo(np.int64).max,
-                                dtype=np.int64)
+    perm_idx_min = rng.integers(1,
+                                np.iinfo(np.uint32).max,
+                                dtype=np.uint32)
     y_perm = perm(y, n_perm=n_perm, perm_idx_min=perm_idx_min, keep_orig=True)
 
     stat = list()
@@ -72,7 +72,6 @@ def compute_offset(x, y, contrast, pval=None, rough=None, **kwargs):
         assert 0 <= rough <= 1, 'invalid rough given'
 
     # prep constants
-    a1 = contrast.sum()
     b, num_img, num_vox = y.shape
     y_mean = y.mean(axis=2)
 
