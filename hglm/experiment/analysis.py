@@ -210,7 +210,6 @@ class AnalysisHGLM(Analysis):
 
         # merge all graphs (many nodes are repeated across permutations above,
         # we adjust them all by same mu and std to minimize computation)
-        # todo: child_dict to child_list
         map_to_new, children, _ = hglm.graph.graph_merge(
             n_common=num_vox,
             children_list=list(self.child_dict.values()))
