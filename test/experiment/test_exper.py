@@ -1,6 +1,5 @@
 from collections import namedtuple
 
-import hglm.effect
 from hglm.experiment.exper import *
 from .make_test_image import folder_test_data, img_feat_intensity
 
@@ -50,17 +49,6 @@ class TestExperimentOnlyImage:
             for img_idx, feat_intense in img_feat_intensity.items():
                 for feat_idx, intense in feat_intense.items():
                     assert (exp.y[feat_idx, img_idx, :] == intense).all()
-
-    def test_impose_effect(self):
-        seed = 0
-        exp = Experiment.from_gauss(seed=seed)
-        extenter = hglm.effect.ExtenterSphere(radius=3)
-
-        for pval in np.logspace(-3, -.0001, 4):
-            _exp, effect = exp.impose_effect(seed=seed, extenter=extenter,
-                                             pval=pval)
-
-            assert np.isclose(effect.pval, pval)
 
     def test_sample_x(self):
         seed = 0

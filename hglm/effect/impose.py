@@ -56,23 +56,16 @@ def compute_offset(x, y, contrast, pval=None, rough=None, **kwargs):
         contrast (np.array): (a) True for each corresponding feature in x which
             is "of interest" (other x features form the reduced model in
             computing f statistic)
-        pval (float): p-value may be passed in place of f stat
-        rough (float): roughness coefficient desired.  a ratio of the spatial
-            covariance over total error (bounded between 0 and 1, inclusive)
+        pval (float): severity of desired effect
 
     Returns:
         offset (np.array): (b, num_img) offset to apply to all images to
-            produce desired f stat
-        sigma_gain (float): spatial covariance scaling needed to achieve
-            roughness coefficient, None if "rough" is not input.
-        rough (float): roughness coefficient achieved
-        f_ratio (float): statistic achieved (see estimate_stat_target())
+            produce desired pval
     """
-    if rough is not None:
-        assert 0 <= rough <= 1, 'invalid rough given'
-
     # prep constants
     b, num_img, num_vox = y.shape
+
+    # prep matrices
     y_mean = y.mean(axis=2)
 
     # get target stat to impose given pvalue
@@ -87,35 +80,21 @@ def compute_offset(x, y, contrast, pval=None, rough=None, **kwargs):
 
     # compute sigma_sum (non-normalized spatial covariance)
     yr = y.reshape((b, -1), order='F')
-    sigma_sum_orig = yr @ yr.T - y_mean @ y_mean.T * num_vox
+    sigma_sum = yr @ yr.T - y_mean @ y_mean.T * num_vox
 
     def get_e_h_sigma(alpha):
         """" computes e, h, sigma_sum under a given alpha
         """
-        if len(alpha) == 2:
-            # don't optimize roughness
-            alpha1, alpha2 = alpha
-            sigma_sum = sigma_sum_orig
-        else:
-            # optimize roughness too
-            alpha1, alpha2, sigma_gain_sqrt = alpha
-            sigma_sum = (sigma_gain_sqrt ** 2) * sigma_sum_orig
-
+        alpha1, alpha2 = alpha
         h = (1 + alpha1) ** 2 * yq1q1y * num_vox
         e = (1 + alpha2) ** 2 * yq2q2y * num_vox + sigma_sum
         return e, h, sigma_sum
 
-    def constraint_wilks(alpha):
+    def constraint(alpha):
         """ when this function output is zero, chi2_target achieved """
         e, h, _ = get_e_h_sigma(alpha)
         _f_ratio = get_f_ratio(e, h)
         return _f_ratio - f_ratio
-
-    def constraint_rough(alpha):
-        e, h, sigma_sum = get_e_h_sigma(alpha)
-        _rough = np.trace(sigma_sum) / np.trace(e)
-
-        return _rough - rough
 
     def obj(alpha):
         r"""  ||\Delta||^2 = \sum_{i=1}^3 \alpha_i^2 ||Q_i \bar{Y}_r^T||^2
@@ -123,23 +102,12 @@ def compute_offset(x, y, contrast, pval=None, rough=None, **kwargs):
         Args:
              alpha (tuple): a1, a2 (per equations)
         """
-
-        _obj = alpha[0] ** 2 * yq1_norm2 + alpha[1] ** 2 * yq2_norm2
-
-        if len(alpha) == 3:
-            # scaling spatial covariance too (to achieve given roughness)
-            sigma_gain_sqrt = alpha[2]
-            _obj += (1 - sigma_gain_sqrt) ** 2 * np.trace(sigma_sum_orig)
-
-        return _obj
+        a1, a2 = alpha
+        return a1 ** 2 * yq1_norm2 + a2 ** 2 * yq2_norm2
 
     # setup starting point & constraints (assuming no rough constraint)
     x0 = np.zeros(2)
-    constraints = [dict(type='eq', fun=constraint_wilks)]
-    if rough is not None:
-        # add rough constraint
-        constraints.append(dict(type='eq', fun=constraint_rough))
-        x0 = np.array([0, 0, 1])
+    constraints = [dict(type='eq', fun=constraint)]
 
     # optimize
     with warnings.catch_warnings():
@@ -150,19 +118,8 @@ def compute_offset(x, y, contrast, pval=None, rough=None, **kwargs):
     assert res.success, 'optimization failed'
 
     # compute offset
-    alpha1, alpha2 = res.x[0], res.x[1]
+    alpha1, alpha2 = res.x
     offset = alpha1 * y_mean @ q[1].T @ q[1] + \
              alpha2 * y_mean @ q[2].T @ q[2]
 
-    # get sigma_gain
-    if rough is None:
-        # no roughness constraint given
-        sigma_gain = None
-    else:
-        sigma_gain = res.x[2] ** 2
-
-    # compute roughness achieved
-    e, h, sigma_sum = get_e_h_sigma(res.x)
-    rough = np.trace(sigma_sum) / np.trace(e)
-
-    return offset, sigma_gain, rough, f_ratio
+    return offset
