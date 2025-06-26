@@ -10,7 +10,7 @@ from hglm.experiment import decompose, get_manova, Permuter, \
     get_f_ratio
 
 
-def estimate_stat_target(x, y, contrast, pval, n_perm=1000, seed=0):
+def estimate_f_kde(x, y, contrast, n_perm=1000, seed=0):
     rng = np.random.default_rng(seed=seed)
     perm = Permuter(x=x[~contrast, :])
     perm_idx_min = rng.integers(1,
@@ -35,19 +35,27 @@ def estimate_stat_target(x, y, contrast, pval, n_perm=1000, seed=0):
 
     # scipy: find wilks value which gives proper cdf
     bw_factor = kde.bandwidth / np.std(stat)
-    kde = scipy.stats.gaussian_kde(stat.flatten(), bw_method=bw_factor)
-    cdf = lambda z: kde.integrate_box_1d(-np.inf, z)
+    return scipy.stats.gaussian_kde(stat.flatten(), bw_method=bw_factor)
+
+
+def pval_to_f_ratio(f_kde, pval):
+    assert 0 <= pval < 1, 'invalid p-value given'
+
+    # clip cdf: re-normalize so cdf starts at 0
+    cdf = lambda z: f_kde.integrate_box_1d(-np.inf, z)
     cdf0 = cdf(0)
     cdf_clip = lambda z: max((cdf(z) - cdf0) / (1 - cdf0), 0)
+
+    # find root
     obj = lambda z: cdf_clip(z) - (1 - pval)
     res = root_scalar(obj, xtol=1e-6, method='brentq',
-                      bracket=[0, 10 * stat.max()])
+                      bracket=[0, 10 * f_kde.dataset.max()])
     assert res.converged, 'optimization failed: target_wilks'
 
-    return res.root, stat, kde
+    return res.root
 
 
-def compute_offset(x, y, contrast, pval=None, rough=None, **kwargs):
+def compute_offset(x, y, contrast, f_ratio):
     """ get offset to y, constant across voxels, which imposes an f-stat
 
     Args:
@@ -56,7 +64,7 @@ def compute_offset(x, y, contrast, pval=None, rough=None, **kwargs):
         contrast (np.array): (a) True for each corresponding feature in x which
             is "of interest" (other x features form the reduced model in
             computing f statistic)
-        pval (float): severity of desired effect
+        f_ratio (float): f_ratio to be achieved by offset
 
     Returns:
         offset (np.array): (b, num_img) offset to apply to all images to
@@ -67,9 +75,6 @@ def compute_offset(x, y, contrast, pval=None, rough=None, **kwargs):
 
     # prep matrices
     y_mean = y.mean(axis=2)
-
-    # get target stat to impose given pvalue
-    f_ratio, _, _ = estimate_stat_target(x, y, contrast, pval)
 
     # qr decomposition of x
     q = decompose(x, contrast)

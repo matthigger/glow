@@ -287,10 +287,12 @@ class Experiment(ExperimentImageOnly):
             warnings.warn('no bias term: regression constrained to '
                           'origin (consider add_bias=True)')
 
-    def impose_effect(self, extenter=None, mask=None, seed=None, **kwargs):
+    def impose_effect(self, pval=None, extenter=None, mask=None, seed=None,
+                      **kwargs):
         """ builds experiment with effect imposed
 
         Args:
+            pval (float): pvalue to achieve
             extenter (ExtenterSphere or ExtenterMinVar): identifies volume to
                 impose effect on
             mask (np.array): is passed, will impose effect on
@@ -310,13 +312,19 @@ class Experiment(ExperimentImageOnly):
             # sample effect space
             mask = extenter(y=self.y, mask_idx=self.mask_idx, seed=seed)
 
-        # get offset which imposes desired effect strength
+        # extract y of effect region (before effect applied)
         effect_idx = self.mask_idx[mask]
-        y_effect = self.y[:, :, effect_idx]
-        offset = hglm.effect.compute_offset(x=self.x,
-                                            y=y_effect,
+        y = self.y[:, :, effect_idx]
+
+        # estimate kde of f_ratio and find value which achieves given pval
+        f_kde = hglm.effect.estimate_f_kde(x=self.x, y=y,
+                                           contrast=self.contrast, **kwargs)
+        f_ratio = hglm.effect.pval_to_f_ratio(f_kde, pval)
+
+        # get offset which imposes desired effect strength
+        offset = hglm.effect.compute_offset(x=self.x, y=y,
                                             contrast=self.contrast,
-                                            **kwargs)
+                                            f_ratio=f_ratio)
 
         # impose effect on y, build new experiment
         exp = self.add_offset(offset, mask=mask)
