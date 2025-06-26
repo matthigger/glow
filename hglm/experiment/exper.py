@@ -11,7 +11,7 @@ import hglm.effect
 import hglm.mask
 from .load_image import load_image_color, load_image_nii
 from .permute import Permuter
-from .regress import scale_sigma
+from .regress import scale_sigma, get_rough
 from ..mask import get_mask_idx
 
 
@@ -288,7 +288,7 @@ class Experiment(ExperimentImageOnly):
                           'origin (consider add_bias=True)')
 
     def impose_effect(self, pval=None, extenter=None, mask=None, seed=None,
-                      **kwargs):
+                      rough=None, **kwargs):
         """ builds experiment with effect imposed
 
         Args:
@@ -297,6 +297,8 @@ class Experiment(ExperimentImageOnly):
                 impose effect on
             mask (np.array): is passed, will impose effect on
             seed: seed of random number generator (for extent)
+            rough (float): roughness parameter of region, as compared to
+                rest of image
             **kwargs: passed to compute_offset(), either pval or f_stat
 
         Returns:
@@ -316,6 +318,15 @@ class Experiment(ExperimentImageOnly):
         effect_idx = self.mask_idx[mask]
         y = self.y[:, :, effect_idx]
 
+        if rough is None:
+            # no roughness imposed
+            sigma_gain = None
+        else:
+            # impose roughness (compute_offset won't change it later)
+            rough_init = get_rough(y=self.y, mask=mask, mask_idx=self.mask_idx)
+            sigma_gain = rough / rough_init
+            y = scale_sigma(y, gain=sigma_gain)
+
         # estimate kde of f_ratio and find value which achieves given pval
         f_kde = hglm.effect.estimate_f_kde(x=self.x, y=y,
                                            contrast=self.contrast, **kwargs)
@@ -327,9 +338,11 @@ class Experiment(ExperimentImageOnly):
                                             f_ratio=f_ratio)
 
         # impose effect on y, build new experiment
-        exp = self.add_offset(offset, mask=mask)
+        exp = self.add_offset(offset, mask=mask, sigma_gain=sigma_gain)
 
-        effect = hglm.effect.Effect.from_exp_mask(exp=exp, mask=mask)
+        _rough = get_rough(y=exp.y, mask=mask, mask_idx=exp.mask_idx)
+        effect = hglm.effect.Effect.from_exp_mask(exp=exp, mask=mask,
+                                                  rough=_rough)
 
         return exp, effect
 

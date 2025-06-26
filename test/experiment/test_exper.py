@@ -1,3 +1,4 @@
+import itertools
 from collections import namedtuple
 
 from hglm.experiment.exper import *
@@ -49,6 +50,19 @@ class TestExperimentOnlyImage:
             for img_idx, feat_intense in img_feat_intensity.items():
                 for feat_idx, intense in feat_intense.items():
                     assert (exp.y[feat_idx, img_idx, :] == intense).all()
+
+    def test_impose_effect(self):
+        seed = 0
+        exp = Experiment.from_gauss(seed=seed)
+        extenter = hglm.effect.ExtenterSphere(radius=3)
+
+        for pval, rough in itertools.product(np.logspace(-3, -.01, 2),
+                                             [0, 2]):
+            _exp, effect = exp.impose_effect(seed=seed, extenter=extenter,
+                                             pval=pval, rough=rough)
+
+            if rough is not None:
+                assert np.isclose(effect.rough, rough)
 
     def test_sample_x(self):
         seed = 0
