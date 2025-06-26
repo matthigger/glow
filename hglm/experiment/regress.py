@@ -72,24 +72,6 @@ def get_sigma_from_y(y):
     return get_sigma(size=size, yout=yout, ymean=ymean)
 
 
-def get_rough(x, y):
-    """ computes roughness coefficient
-
-    rough = num_img * tr_sigma / ||q2 y_mean ||^2
-    """
-    a, _ = x.shape
-    b, num_img, num_vox = y.shape
-    tr_sigma = np.trace(get_sigma_from_y(y))
-
-    q, r = np.linalg.qr(x.T, mode='complete')
-    q = q.T
-    q2 = q[a:, :]
-    y_mean = y.mean(axis=2)
-    yq2 = np.linalg.norm(y_mean @ q2.T) ** 2
-
-    return tr_sigma * num_img / yq2
-
-
 def scale_sigma(y, gain=None, tr_sigma=None):
     """ change space cov in y: multiply by gain or impose given tr_cov
 
