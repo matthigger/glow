@@ -11,7 +11,7 @@ import hglm.graph
 import hglm.tfce
 from .exper import ExperimentScaled
 from .permute import Permuter
-from .regress import get_wilks, wilks_to_chi2
+from .regress import get_f_ratio
 
 
 class Analysis:
@@ -88,12 +88,8 @@ class Analysis:
                 n_perm=n_perm,
                 keep_orig=True):
             for perm_idx in range(n_perm):
-                wilks = get_wilks(e=e[:, :, perm_idx],
-                                  h=h[:, :, perm_idx])
-                stat[perm_idx, reg_idx], _ = wilks_to_chi2(wilks,
-                                                           contrast=exp.contrast,
-                                                           b=b,
-                                                           n=num_img * size)
+                stat[perm_idx, reg_idx] = get_f_ratio(e=e[:, :, perm_idx],
+                                                      h=h[:, :, perm_idx])
         return stat
 
 
