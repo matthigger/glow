@@ -114,7 +114,7 @@ class TestBigEffect:
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=100, seed=0)
     exp, effect = exp.impose_effect(seed=0,
                                     extenter=ExtenterSphere(radius=2),
-                                    pval=1e-6)
+                                    f_ratio=2, rough=.2)
 
     def test_hglm(self):
         analysis = AnalysisHGLM(TestBigEffect.exp, n_perm=25, alpha=.1)
@@ -126,10 +126,12 @@ class TestBigEffect:
         assert np.isclose(f1.max(), 1), 'target region not segmented'
 
         # appropriate effect discovered as most significant effect
-        np.testing.assert_allclose(analysis.effect_list[0].mask,
+        mask_all = sum(eff.mask for eff in analysis.effect_list)
+        np.testing.assert_allclose(mask_all,
                                    TestBigEffect.effect.mask)
 
     def test_tfce(self):
         analysis = AnalysisTFCE(TestBigEffect.exp, n_perm=25, alpha=.1)
-        np.testing.assert_allclose(analysis.effect_list[0].mask,
+        mask_all = sum(eff.mask for eff in analysis.effect_list)
+        np.testing.assert_allclose(mask_all,
                                    TestBigEffect.effect.mask)

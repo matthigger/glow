@@ -287,12 +287,12 @@ class Experiment(ExperimentImageOnly):
             warnings.warn('no bias term: regression constrained to '
                           'origin (consider add_bias=True)')
 
-    def impose_effect(self, pval=None, extenter=None, mask=None, seed=None,
+    def impose_effect(self, f_ratio, extenter=None, mask=None, seed=None,
                       rough=None, **kwargs):
         """ builds experiment with effect imposed
 
         Args:
-            pval (float): pvalue to achieve
+            f_ratio (float): ratio of variance explained to unexplained
             extenter (ExtenterSphere or ExtenterMinVar): identifies volume to
                 impose effect on
             mask (np.array): is passed, will impose effect on
@@ -327,11 +327,6 @@ class Experiment(ExperimentImageOnly):
             sigma_gain = rough / rough_init
             y = scale_sigma(y, gain=sigma_gain)
 
-        # estimate kde of f_ratio and find value which achieves given pval
-        f_kde = hglm.effect.estimate_f_kde(x=self.x, y=y,
-                                           contrast=self.contrast, **kwargs)
-        f_ratio = hglm.effect.pval_to_f_ratio(f_kde, pval)
-
         # get offset which imposes desired effect strength
         offset = hglm.effect.compute_offset(x=self.x, y=y,
                                             contrast=self.contrast,
@@ -342,7 +337,8 @@ class Experiment(ExperimentImageOnly):
 
         _rough = get_rough(y=exp.y, mask=mask, mask_idx=exp.mask_idx)
         effect = hglm.effect.Effect.from_exp_mask(exp=exp, mask=mask,
-                                                  rough=_rough)
+                                                  rough=_rough,
+                                                  f_ratio=f_ratio)
 
         return exp, effect
 

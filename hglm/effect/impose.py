@@ -1,58 +1,9 @@
 import warnings
 
 import numpy as np
-import scipy.stats
-from scipy.optimize import minimize, root_scalar
-from sklearn.model_selection import GridSearchCV
-from sklearn.neighbors import KernelDensity
+from scipy.optimize import minimize
 
-from hglm.experiment import decompose, get_manova, Permuter, \
-    get_f_ratio
-
-
-def estimate_f_kde(x, y, contrast, n_perm=1000, seed=0):
-    rng = np.random.default_rng(seed=seed)
-    perm = Permuter(x=x[~contrast, :])
-    perm_idx_min = rng.integers(1,
-                                np.iinfo(np.uint32).max,
-                                dtype=np.uint32)
-    y_perm = perm(y, n_perm=n_perm, perm_idx_min=perm_idx_min, keep_orig=True)
-
-    stat = list()
-    for perm_idx in range(n_perm):
-        # compute / record wilks
-        e, h = get_manova(x=x, y=y_perm[..., perm_idx], contrast=contrast)
-        stat.append(get_f_ratio(e, h))
-
-    # sklearn: estimate distribution (kde of gaussians, grid search bandwidth)
-    stat = np.array(stat).reshape(-1, 1)
-    scott_bw = np.std(stat, ddof=1) * n_perm ** (-1 / 5)
-    bw = np.logspace(-0.7, 0.7, 21) * scott_bw
-    grid = GridSearchCV(KernelDensity(kernel='gaussian'),
-                        {'bandwidth': bw}, cv=5)
-    grid.fit(stat)
-    kde = grid.best_estimator_
-
-    # scipy: find wilks value which gives proper cdf
-    bw_factor = kde.bandwidth / np.std(stat)
-    return scipy.stats.gaussian_kde(stat.flatten(), bw_method=bw_factor)
-
-
-def pval_to_f_ratio(f_kde, pval):
-    assert 0 <= pval < 1, 'invalid p-value given'
-
-    # clip cdf: re-normalize so cdf starts at 0
-    cdf = lambda z: f_kde.integrate_box_1d(-np.inf, z)
-    cdf0 = cdf(0)
-    cdf_clip = lambda z: max((cdf(z) - cdf0) / (1 - cdf0), 0)
-
-    # find root
-    obj = lambda z: cdf_clip(z) - (1 - pval)
-    res = root_scalar(obj, xtol=1e-6, method='brentq',
-                      bracket=[0, 10 * f_kde.dataset.max()])
-    assert res.converged, 'optimization failed: target_wilks'
-
-    return res.root
+from hglm.experiment import decompose, get_f_ratio
 
 
 def compute_offset(x, y, contrast, f_ratio):

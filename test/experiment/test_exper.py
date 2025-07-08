@@ -56,10 +56,9 @@ class TestExperimentOnlyImage:
         exp = Experiment.from_gauss(seed=seed)
         extenter = hglm.effect.ExtenterSphere(radius=3)
 
-        for pval, rough in itertools.product(np.logspace(-3, -.01, 2),
-                                             [0, 2]):
+        for f_ratio, rough in itertools.product([0, 1, 100], [0, 2]):
             _exp, effect = exp.impose_effect(seed=seed, extenter=extenter,
-                                             pval=pval, rough=rough)
+                                             f_ratio=f_ratio, rough=rough)
 
             if rough is not None:
                 assert np.isclose(effect.rough, rough)
