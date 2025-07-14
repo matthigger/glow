@@ -63,7 +63,7 @@ def get_auc(ana, mask_target):
                          y_true=mask_target[ana.exp.mask_idx > -1])
 
 
-def run_one_exp(seed, pval, rough=None):
+def run_one_exp(seed, f_ratio, rough=None):
     # allows us to catch numpy's warnings
     warnings.filterwarnings('error')
     np.seterr(all='warn')
@@ -86,7 +86,8 @@ def run_one_exp(seed, pval, rough=None):
 
     # impose effect
     _exp, effect = exp_masked.impose_effect(mask=mask_target,
-                                            seed=seed, pval=pval, rough=rough)
+                                            seed=seed, f_ratio=f_ratio,
+                                            rough=rough)
 
     for Ana in param.analysis_obj_tup:
         # prep output file
@@ -104,7 +105,7 @@ def run_one_exp(seed, pval, rough=None):
             except Exception as e:
                 d = {'error_msg': traceback.format_exc(),
                      'method': Ana.__name__,
-                     'pval': pval,
+                     'f_ratio': f_ratio,
                      'seed': seed}
                 print(f'error: {d}')
                 file_out = str(file_out).replace('out', 'error')
@@ -129,8 +130,8 @@ def run_one_exp(seed, pval, rough=None):
         auc = get_auc(ana, mask_target=effect.mask)
 
         # dump summary
-        d = {'pval': pval,
-             'seed': seed,
+        d = {'f_ratio': f_ratio,
+             'seed': int(seed),
              'rough': effect.rough,
              'Analysis': Ana.__name__,
              'f1': f1,
@@ -164,14 +165,14 @@ if __name__ == '__main__':
     from tqdm import tqdm
     from joblib import Parallel, delayed
     from itertools import product
-    from param import seed_all, pval_all, rough_all
+    from param import seed_all, f_all, rough_all
 
     # prep folder_out
     folder_out = prep_folder_out(param.folder_out,
                                  files_to_copy=(param.__file__,))
 
-    kwargs_list = [dict(seed=s, pval=p, rough=r)
-                   for s, p, r in product(seed_all, pval_all, rough_all)]
+    kwargs_list = [dict(seed=s, f_ratio=f, rough=r)
+                   for s, f, r in product(seed_all, f_all, rough_all)]
 
     if param.n_jobs not in (0, 1):
         r = Parallel(n_jobs=param.n_jobs, verbose=10)(

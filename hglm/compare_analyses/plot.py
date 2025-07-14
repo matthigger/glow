@@ -9,23 +9,23 @@ sns.set()
 
 def extract(df):
     # extract
-    pval_list = sorted(df['pval'].unique())
+    f_list = sorted(df['f_ratio'].unique())
     seed_list = sorted(df['seed'].unique())
 
-    shape = len(seed_list), len(pval_list)
+    shape = len(seed_list), len(f_list)
     score_dict = defaultdict(lambda: np.full(shape=shape, fill_value=np.nan))
 
     for _, row in df.iterrows():
         seed_idx = seed_list.index(row['seed'])
-        pval_idx = pval_list.index(row['pval'])
+        f_idx = f_list.index(row['f_ratio'])
 
         for feat in ('f1', 'sens', 'spec', 'auc'):
-            score_dict[row['Analysis'], feat][seed_idx, pval_idx] = row[feat]
+            score_dict[row['Analysis'], feat][seed_idx, f_idx] = row[feat]
 
-    return pval_list, seed_list, score_dict
+    return f_list, seed_list, score_dict
 
 
-def plot_feats(pval_list, score_dict, feat_list):
+def plot_feats(f_list, score_dict, feat_list):
     if len(feat_list) == 1:
         fig, ax = plt.subplots(1, 2)
         # reshape to allow for consistent indexing with multiple features
@@ -47,26 +47,24 @@ def plot_feats(pval_list, score_dict, feat_list):
         for method, kwargs in style_dict.items():
             if (method, feat) not in score_dict.keys():
                 continue
-            plt.plot(pval_list, score_dict[method, feat].T, **kwargs,
+            plt.plot(f_list, score_dict[method, feat].T, **kwargs,
                      **style_single)
-            plt.plot(pval_list, np.nanmean(score_dict[method, feat], axis=0),
+            plt.plot(f_list, np.nanmean(score_dict[method, feat], axis=0),
                      **kwargs, **style_mean)
 
-        plt.xlabel('pval')
+        plt.xlabel('f_ratio')
         plt.ylabel(feat)
-        plt.xscale('log')
 
     # plot bottom row
     for _ax, feat in zip(ax[1, :], feat_list):
         plt.sca(_ax)
         x = score_dict['AnalysisHGLM', feat] - score_dict['AnalysisTFCE', feat]
         plt.axhline([0], linewidth=2, color='k')
-        plt.plot(pval_list, x.T, color='k', **style_single)
-        plt.plot(pval_list, np.nanmean(x, axis=0), color='k', **style_mean)
+        plt.plot(f_list, x.T, color='k', **style_single)
+        plt.plot(f_list, np.nanmean(x, axis=0), color='k', **style_mean)
 
-        plt.xlabel('pval')
+        plt.xlabel('f ratio')
         plt.ylabel(f'{feat}: hglm - TFCE')
-        plt.xscale('log')
 
     # add legend in last plot of top row
     plt.sca(ax[0, -1])

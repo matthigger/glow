@@ -53,12 +53,12 @@ def load_update_all(folder='', verbose=True):
     # add in existing result
     df = pd.concat((df, pd.DataFrame(dict_list)))
 
-    # round pvalue to 14 decimal places (avoids floating point comparison failure)
-    df['pval'] = df['pval'].round(14)
+    # round f_ratio to 14 decimal places (avoids floating point comparison failure)
+    df['f_ratio'] = df['f_ratio'].round(14)
 
     # drop duplicates & check for conflicting results
     df.drop_duplicates(inplace=True)
-    assert (df.value_counts(subset=['pval', 'seed', 'Analysis']).max() == 1)
+    assert (df.value_counts(subset=['f_ratio', 'seed', 'Analysis']).max() == 1)
 
     # overwrite csv with latest / greatest
     df.to_csv(f_csv, index=False)

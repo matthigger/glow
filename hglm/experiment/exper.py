@@ -57,20 +57,20 @@ class ExperimentImageOnly:
         rng = np.random.default_rng(seed=seed)
         y = rng.multivariate_normal(np.zeros(b), np.eye(b), num_img * num_vox)
 
-        # reshape, de-mean and impose identity current cov
+        # reshape, de-mean, reshape
         y = y.reshape((b, num_img, num_vox))
         y = y - y.mean(axis=(1, 2))[:, np.newaxis, np.newaxis]
         y = y.reshape((b, -1))
-        _cov = y @ y.T / (num_img * num_vox - 1)
 
         if cov is not None:
             # project to proper covariance
+            _cov = y @ y.T / (num_img * num_vox - 1)
             p = np.linalg.inv(scipy.linalg.sqrtm(_cov))
             p = scipy.linalg.sqrtm(cov) @ p
             y = p @ y
 
-        # add to proper mean
         if mu is not None:
+            # add to proper mean
             y = y + mu[:, np.newaxis]
 
         return cls(y=y.reshape((b, num_img, num_vox)),
