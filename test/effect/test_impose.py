@@ -15,7 +15,7 @@ def test_compute_offset():
 
             # apply offset & compute f_ratio
             _y = y + offset[..., np.newaxis]
-            e, h = get_manova(x, _y, contrast)
+            e, h = get_manova(x=x, y=_y, contrast=contrast)
             f_ratio_obs = get_f_ratio(e, h)
 
             assert np.isclose(f_ratio_exp, f_ratio_obs)

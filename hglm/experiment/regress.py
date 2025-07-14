@@ -2,7 +2,12 @@ import numpy as np
 from scipy.ndimage import binary_dilation
 
 
-def get_manova(x, y, contrast):
+def get_manova(*, x=None, y, contrast=None, q_tup=None):
+    assert (x is None) != (q_tup is None), 'x xor q required'
+    if q_tup is None:
+        assert contrast is not None
+        q_tup = decompose(x, contrast)
+
     b, num_img, num_vox = y.shape
 
     # compute sigma_sum (non-normalized spatial covariance)
@@ -11,9 +16,8 @@ def get_manova(x, y, contrast):
     sigma_sum = yr @ yr.T - y_mean @ y_mean.T * num_vox
 
     # compute observed e and h
-    q = decompose(x, contrast)
-    yq1 = y_mean @ q[1].T
-    yq2 = y_mean @ q[2].T
+    yq1 = y_mean @ q_tup[1].T
+    yq2 = y_mean @ q_tup[2].T
     h = num_vox * yq1 @ yq1.T
     e = sigma_sum + num_vox * yq2 @ yq2.T
 

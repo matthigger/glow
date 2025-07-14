@@ -28,7 +28,7 @@ class Effect:
         b, num_img, num_vox = y.shape
 
         # compute stats (to be stored)
-        e, h = get_manova(x, y, contrast)
+        e, h = get_manova(x=x, y=y, contrast=contrast)
         wilks = get_wilks(e, h)
         chi2, df = wilks_to_chi2(wilks, contrast=contrast, b=b, n=num_img)
         pval = 1 - scipy.stats.chi2.cdf(chi2, df=df)
