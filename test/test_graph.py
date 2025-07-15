@@ -90,6 +90,13 @@ def test_topo_iter():
     assert list(iter_topo(num_leaf=4)) == [0, 1, 2, 3]
 
 
+def test_get_parent():
+    parent = get_parent(children=np.array([[0, 1],
+                                           [2, 3]]), num_leaf=4)
+
+    assert np.allclose(parent, [4, 4, 5, 5, -1, -1])
+
+
 def test_iter_size_e_h():
     rng = np.random.default_rng(seed=0)
     a, b, num_img, num_vox = 2, 3, 4, 5

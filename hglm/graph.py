@@ -198,6 +198,23 @@ def iter_topo(*, children=None, num_leaf, node_start=None, only_leaf=False):
     if not only_leaf or node_start < num_leaf:
         yield node_start
 
+def get_parent(children, num_leaf):
+    """ gets parent lookup array for a binary tree
+
+    Args:
+        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
+            sklearn.cluster.Ward.children_)
+        num_leaf (int): number of leafs in graph
+
+    Returns:
+        parent (np.array): parent[idx] gives the parent of node idx.
+    """
+    num_nodes = num_leaf + children.shape[0]
+    parent = np.full(num_nodes, -1, dtype=int)
+    for i, (c0, c1) in enumerate(children):
+        parent[c0] = parent[c1] = num_leaf + i
+
+    return parent
 
 def graph_merge(n_common, children_list):
     """ combines many binary trees into a graph with common indexing
