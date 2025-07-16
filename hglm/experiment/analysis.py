@@ -240,14 +240,13 @@ class AnalysisHGLM(Analysis):
         # compute p-values (max stat across space)
         self.pval = self.get_pval(stat=self.z_stat)
 
-        # discover effects (greedily choose max stat regions whose pval is
-        # significant.  continue so long as disjoint significant effect remain)
-        mask_exclude = self.size[0, :] < min_size_discover
-        self.effect_list = self.discover(pval=self.pval, alpha_fwer=alpha_fwer,
-                                         alpha_prune=alpha_prune,
-                                         mask_exclude=mask_exclude,
-                                         exp=exp,
-                                         children=self.child_dict[0])
+        # prune significant regions
+        sig_reg_list = np.where(self.pval <= alpha_fwer)[0]
+        effect_dict = self.prune(sig_reg_list=sig_reg_list,
+                                 alpha_prune=alpha_prune,
+                                 exp=exp,
+                                 children=self.child_dict[0])
+        self.effect_list = list(effect_dict.values())
 
     @classmethod
     def cluster(cls, exp, mode='full'):
@@ -297,27 +296,24 @@ class AnalysisHGLM(Analysis):
         return children
 
     @classmethod
-    def discover(cls, pval, children, exp, alpha_fwer, alpha_prune,
-                 mask_exclude=None):
+    def prune(cls, sig_reg_list, children, exp, alpha_prune):
         """ attempts to prune regions to all, and only, a single effects voxels
 
         Args:
-            pval (np.array): (num_reg) Family Wise Error Rate controlled
-                p-values
+            sig_reg_list (list): list of regions declared significant
             children (np.array): (num_reg, 2) each col are index of child
                 regions
             exp (Experiment): the source data to run experiment on
-            alpha_fwer (float): upper bound on FWER
             alpha_prune (float): threshold at which a prune event happens (a
                 significant region and all its ancestors are discarded).
 
         Returns:
-            effect_list (list): list of disjoint Effect
+            effect_dict (dict): each item corresponds to a single input
+                significant region (pruned to avoid intersections &
+                heterogeneity). keys region index, values are Effect
+
         """
-        # get set of all significant regions
-        bool_sig = pval <= alpha_fwer
-        if mask_exclude is not None:
-            bool_sig &= np.logical_not(mask_exclude)
+        sig_reg_list = list(np.sort(sig_reg_list))
 
         # build parent representation of graph
         num_vox = exp.y.shape[2]
@@ -346,7 +342,6 @@ class AnalysisHGLM(Analysis):
         # e.g., if region 1 ⊂ region 2 ⊂ region 3, and all are significant,
         # then region 2 is considered a significant child of reg 3 — not reg 1
         sig_kid_dict = defaultdict(list)
-        sig_reg_list = list(np.sort(np.where(bool_sig)[0]))
         for reg_idx in sig_reg_list:
             _parent = get_sig_parent(reg_idx)
             if _parent is not None:
@@ -383,11 +378,11 @@ class AnalysisHGLM(Analysis):
                 effect_reg_set -= set(kid_list)
                 effect_reg_set.add(parent)
 
+        # build / return effects
         def get_effect(reg_idx):
             return hglm.effect.Effect.from_exp_mask(mask=get_mask(reg_idx),
                                                     exp=exp,
                                                     reg_idx=reg_idx,
                                                     pval_fwer=pval)
 
-        # build output effects
-        return [get_effect(reg_idx) for reg_idx in sorted(effect_reg_set)]
+        return {reg_idx: get_effect(reg_idx) for reg_idx in effect_reg_set}

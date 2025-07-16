@@ -78,24 +78,18 @@ class TestAnalysishglm:
                              [8, 9],
                              [10, 11],
                              [12, 13]])
-
-        #                0  1  2  3  4  5  6  7  8  9 10 11 12 13 14
-        pval = np.array([1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0])
+        sig_reg_list = [5, 6, 7, 8, 9 , 10, 11, 12, 14]
         exp = Experiment.from_gauss(shape=(8,), num_img=100)
 
         # ensure region 0, 1, 2, 3 have sufficiently different stats
         exp.y[:, :, :4] += 100
 
-        effect_list = AnalysisHGLM.discover(pval=pval, children=children,
-                                            exp=exp,
-                                            alpha_fwer=.05, alpha_prune=.05)
+        effect_dict = AnalysisHGLM.prune(sig_reg_list=sig_reg_list,
+                                         children=children,
+                                         exp=exp,
+                                         alpha_prune=.05)
 
-        mask_set_obs = set(tuple(e.mask) for e in effect_list)
-        # region 4, 2, 3 are discovered
-        mask_set_exp = {(1, 1, 1, 1, 0, 0, 0, 0),
-                        (0, 0, 0, 0, 1, 1, 0, 0),
-                        (0, 0, 0, 0, 0, 0, 1, 1)}
-        assert mask_set_obs == mask_set_exp
+        assert set(effect_dict.keys()) == {10, 11, 12}
 
 
 class TestBigEffect:
