@@ -392,10 +392,13 @@ class AnalysisHGLM(Analysis):
         # start with leaf nodes & apply all merge operations
         effect_reg_set = set(sig_reg_list) - set(sig_kid_dict.keys())
         for parent, pval in sorted(homo_pval_dict.items()):
-            if pval >= alpha_prune:
+            kid_list = sig_kid_dict[parent]
+            if effect_reg_set.issuperset(kid_list) and (pval >= alpha_prune):
+                # effect_reg_set.issuperset(kid_list) ensures that no children
+                # have been found to be heterogenous (each has pval >=
+                # alpha_prune)
+
                 # merge (remove kids, add parent)
-                kid_list = sig_kid_dict[parent]
-                assert effect_reg_set.issuperset(kid_list)
                 effect_reg_set -= set(kid_list)
                 effect_reg_set.add(parent)
 
