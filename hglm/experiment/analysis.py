@@ -110,7 +110,7 @@ class Analysis:
 
 
 class AnalysisTFCE(Analysis):
-    def __init__(self, exp, n_perm, alpha=.05, verbose=False):
+    def __init__(self, exp, n_perm, alpha_fwer=.05, verbose=False):
         super().__init__(exp)
 
         # compute stat per each voxel (for every permutation)
@@ -126,7 +126,7 @@ class AnalysisTFCE(Analysis):
 
         # discover effects
         mask = np.zeros(exp.mask_idx.shape, dtype=bool)
-        mask[exp.mask_idx > -1] = self.pval <= alpha
+        mask[exp.mask_idx > -1] = self.pval <= alpha_fwer
         self.effect_list = self.discover_mask(mask=mask, exp=exp)
 
     @classmethod
