@@ -8,6 +8,7 @@ from uuid import uuid4
 import cloudpickle as pickle
 import numpy as np
 
+import pathlib
 import param
 from hglm.effect import ExtenterSphere, ExtenterMinVar
 from hglm.experiment import ExperimentScaled, AnalysisHGLM
@@ -78,9 +79,12 @@ def run_one_exp(seed, f_ratio, rough=None):
                 d = {'error_msg': traceback.format_exc(),
                      'method': Ana.__name__,
                      'f_ratio': f_ratio,
-                     'seed': seed}
+                     'seed': int(seed)}
                 print(f'error: {d}')
                 file_out = str(file_out).replace('out', 'error')
+
+                file_out = pathlib.Path(file_out)
+                file_out.parent.mkdir(exist_ok=True, parents=True)
                 with open(file_out, 'w') as f:
                     json.dump(d, f, sort_keys=True, indent=4)
                 continue
