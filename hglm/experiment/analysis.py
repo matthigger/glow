@@ -32,20 +32,31 @@ class Analysis:
         self.exp = exp
 
     @classmethod
-    def get_pval(cls, stat):
+    def get_pval(cls, stat, reg_active=None):
         """ computes FWER adjusted pval Westfall-Young Permutation
 
         (percentile within max stat per permutation)
 
         Args:
             stat (np.array): (num_permute, num_reg) statistics per region
+            reg_active (np.array): (num_reg) indexes into 2nd dimension
+                above (bool).  only active regions have a pvalue
+                computed for them, otherwise np.nan is returned for inactive
+                regions.  (use case: discarding regions which are too small
+                a priori we needn't consider their stats in building our
+                comparison set for H0 which controls for FWER ... more stat
+                power is preserved for the larger regions of interest).
+                default behavior is all regions are included in analysis
 
         Returns:
             pval (np.array): (num_reg) Family Wise Error Rate controlled
                 p-values
         """
+        if reg_active is None:
+            reg_active = np.ones(stat.shape[1], dtype=bool)
+
         # max stat per permutation (sorted from low to high)
-        stat_max = np.sort(np.nanmax(stat, axis=1))
+        stat_max = np.sort(np.nanmax(stat[:, reg_active], axis=1))
 
         # compute pvalues (what percentage of permuted, or unpermuted,
         # stats were >= to observed value?)
@@ -56,6 +67,9 @@ class Analysis:
                 pval[reg_idx] = np.nan
                 continue
             pval[reg_idx] = 1 - bisect_left(stat_max, z) / num_perm
+
+        # inactive regions get no pvalue (otherwise we don't control FWER!)
+        pval[~reg_active] = np.nan
 
         return pval
 
@@ -178,7 +192,7 @@ class AnalysisHGLM(Analysis):
     """
 
     def __init__(self, exp, n_perm, n_perm_adj=10, alpha_fwer=.05,
-                 alpha_prune=.01, min_size_discover=1, verbose=False):
+                 alpha_prune=.01, min_size=1, verbose=False):
         super().__init__(exp)
 
         # constants
@@ -238,7 +252,8 @@ class AnalysisHGLM(Analysis):
                                                          children=children)
 
         # compute p-values (max stat across space)
-        self.pval = self.get_pval(stat=self.z_stat)
+        self.pval = self.get_pval(stat=self.z_stat,
+                                  reg_active=self.size[0, :] >= min_size)
 
         # prune significant regions
         sig_reg_list = np.where(self.pval <= alpha_fwer)[0]
