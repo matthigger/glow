@@ -87,7 +87,8 @@ class TestAnalysishglm:
         effect_dict = AnalysisHGLM.prune(sig_reg_list=sig_reg_list,
                                          children=children,
                                          exp=exp,
-                                         alpha_prune=.05)
+                                         alpha_prune=.05,
+                                         n_perm=100)
 
         assert set(effect_dict.keys()) == {10, 11, 12}
 
@@ -114,7 +115,7 @@ class TestBigEffect:
                                    TestBigEffect.effect.mask)
 
     def test_tfce(self):
-        analysis = AnalysisTFCE(TestBigEffect.exp, n_perm=25, alpha=.1)
+        analysis = AnalysisTFCE(TestBigEffect.exp, n_perm=25, alpha_fwer=.1)
         mask_all = sum(eff.mask for eff in analysis.effect_list)
         np.testing.assert_allclose(mask_all,
                                    TestBigEffect.effect.mask)

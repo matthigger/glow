@@ -19,7 +19,7 @@ def extract(df):
         seed_idx = seed_list.index(row['seed'])
         f_idx = f_list.index(row['f_ratio'])
 
-        for feat in ('f1', 'sens', 'spec', 'auc'):
+        for feat in ('f1', 'sens', 'spec'):
             score_dict[row['Analysis'], feat][seed_idx, f_idx] = row[feat]
 
     return f_list, seed_list, score_dict

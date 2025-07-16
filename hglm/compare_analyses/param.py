@@ -11,10 +11,7 @@ seed_all = np.arange(10)
 # f_ratio describes severity of effect
 f_all = np.linspace(0, .1, 9)
 
-# roughness (0 to 1 inclusive) characterizes whether regression error is
-# entirely across space within each image (roughness=1) or if each image is
-# constant and all regression error is due to image spatial averages lying
-# outside of span of x (roughness=0)
+# roughness (0 to 1 inclusive)
 rough_all = None,
 
 # to speed up analysis, random voxel is chosen and dilated to this radius.
@@ -25,11 +22,11 @@ radius = 5
 effect_perc = .2
 
 # FWER control
-alpha = .05
+alpha_fwer = .05
 
 # toggles parallel, 0 or 1 processes non-parallel (good for debug).  else this
 # is the number of threads to use.  (-1 for all of them)
-n_jobs = 0
+n_jobs = -1
 
 # analyses to run
 analysis_obj_tup = (hglm.experiment.AnalysisHGLM,
@@ -38,7 +35,9 @@ analysis_obj_tup = (hglm.experiment.AnalysisHGLM,
 # parameters to be passed to Analysis constructor
 analysis_kwargs = {'AnalysisHGLM': dict(n_perm=100,
                                         n_perm_adj=10,
-                                        min_size_discover=1),
+                                        n_perm_prune=300,
+                                        min_size=1,
+                                        alpha_prune=.05),
                    'AnalysisTFCE': dict(n_perm=100)}
 
 # saves output python objects (memory expensive)

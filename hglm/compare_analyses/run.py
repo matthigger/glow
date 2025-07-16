@@ -74,7 +74,7 @@ def run_one_exp(seed, f_ratio, rough=None):
             # catch errors and dump to json if any occur (allows us to
             # continue with experiment in event of errors)
             try:
-                ana = Ana(exp=_exp, alpha=param.alpha, **kwargs)
+                ana = Ana(exp=_exp, alpha_fwer=param.alpha_fwer, **kwargs)
             except Exception as e:
                 d = {'error_msg': traceback.format_exc(),
                      'method': Ana.__name__,
@@ -91,7 +91,7 @@ def run_one_exp(seed, f_ratio, rough=None):
 
         else:
             # no error catching, will stop all experiments if any error
-            ana = Ana(exp=_exp, alpha=param.alpha, **kwargs)
+            ana = Ana(exp=_exp, alpha_fwer=param.alpha_fwer, **kwargs)
         total_time_sec = time.time() - start
 
         # build mask of predicted area (union of all effect masks)

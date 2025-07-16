@@ -191,9 +191,12 @@ class AnalysisHGLM(Analysis):
             unpermuted data
     """
 
-    def __init__(self, exp, n_perm, n_perm_adj=10, alpha_fwer=.05,
-                 alpha_prune=.01, min_size=1, verbose=False):
+    def __init__(self, exp, n_perm, n_perm_adj=10, n_perm_prune=100,
+                 alpha_fwer=.05, alpha_prune=.05, min_size=1, verbose=False):
         super().__init__(exp)
+
+        assert 1 / n_perm_prune < alpha_prune, \
+            'inconsistent n_perm_prune & alpha_prune: all merge no prune'
 
         # constants
         b, num_img, num_vox = exp.y.shape
@@ -259,6 +262,7 @@ class AnalysisHGLM(Analysis):
         sig_reg_list = np.where(self.pval <= alpha_fwer)[0]
         effect_dict = self.prune(sig_reg_list=sig_reg_list,
                                  alpha_prune=alpha_prune,
+                                 n_perm=n_perm_prune,
                                  exp=exp,
                                  children=self.child_dict[0])
         self.effect_list = list(effect_dict.values())
@@ -311,7 +315,7 @@ class AnalysisHGLM(Analysis):
         return children
 
     @classmethod
-    def prune(cls, sig_reg_list, children, exp, alpha_prune):
+    def prune(cls, sig_reg_list, children, exp, alpha_prune, n_perm):
         """ attempts to prune regions to all, and only, a single effects voxels
 
         Args:
@@ -320,7 +324,8 @@ class AnalysisHGLM(Analysis):
                 regions
             exp (Experiment): the source data to run experiment on
             alpha_prune (float): threshold at which a prune event happens (a
-                significant region and all its ancestors are discarded).
+                significant region and all its ancestors are discarded)
+            n_perm (int): number of permutations to perform
 
         Returns:
             effect_dict (dict): each item corresponds to a single input
@@ -380,7 +385,8 @@ class AnalysisHGLM(Analysis):
             _b = exp.mask_idx[b]
             llr_list = permute_llr_partition(x=exp.x,
                                              y=exp.y[:, :, _b],
-                                             partition=mask[b])
+                                             partition=mask[b],
+                                             n_perm=n_perm)
             homo_pval_dict[parent] = (llr_list[0] >= llr_list).mean()
 
         # start with leaf nodes & apply all merge operations
