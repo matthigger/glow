@@ -1,4 +1,5 @@
 from _bisect import bisect_left
+from collections import defaultdict
 
 import numpy as np
 from scipy.ndimage import label
@@ -11,6 +12,7 @@ import hglm.graph
 import hglm.tfce
 from .exper import ExperimentScaled
 from .permute import Permuter
+from .prune import permute_llr_partition
 from .regress import get_f_ratio
 
 
@@ -175,8 +177,8 @@ class AnalysisHGLM(Analysis):
             unpermuted data
     """
 
-    def __init__(self, exp, n_perm, n_perm_adj=10, alpha=.05,
-                 min_size_discover=1, verbose=False):
+    def __init__(self, exp, n_perm, n_perm_adj=10, alpha_fwer=.05,
+                 alpha_prune=.01, min_size_discover=1, verbose=False):
         super().__init__(exp)
 
         # constants
@@ -241,9 +243,10 @@ class AnalysisHGLM(Analysis):
         # discover effects (greedily choose max stat regions whose pval is
         # significant.  continue so long as disjoint significant effect remain)
         mask_exclude = self.size[0, :] < min_size_discover
-        self.effect_list = self.discover(pval=self.pval, alpha=alpha,
+        self.effect_list = self.discover(pval=self.pval, alpha_fwer=alpha_fwer,
+                                         alpha_prune=alpha_prune,
                                          mask_exclude=mask_exclude,
-                                         priority=self.z_stat[0, :], exp=exp,
+                                         exp=exp,
                                          children=self.child_dict[0])
 
     @classmethod
@@ -294,60 +297,97 @@ class AnalysisHGLM(Analysis):
         return children
 
     @classmethod
-    def discover(cls, pval, priority, children, exp, alpha=.05,
+    def discover(cls, pval, children, exp, alpha_fwer, alpha_prune,
                  mask_exclude=None):
-        """ regions with highest priority are discovered first
+        """ attempts to prune regions to all, and only, a single effects voxels
 
         Args:
             pval (np.array): (num_reg) Family Wise Error Rate controlled
                 p-values
-            priority (np.array): (num_reg) priority value per region,
-                higher priority values are discovered first
             children (np.array): (num_reg, 2) each col are index of child
                 regions
             exp (Experiment): the source data to run experiment on
-            alpha (float): upper bound on FWER
+            alpha_fwer (float): upper bound on FWER
+            alpha_prune (float): threshold at which a prune event happens (a
+                significant region and all its ancestors are discarded).
 
         Returns:
             effect_list (list): list of disjoint Effect
         """
         # get set of all significant regions
-        bool_sig = pval <= alpha
-
-        # exclude regions as necessary
+        bool_sig = pval <= alpha_fwer
         if mask_exclude is not None:
             bool_sig &= np.logical_not(mask_exclude)
 
-        # build stat_pval_reg_list, list of tuples (stat, pval, reg_idx)
-        reg_idx = np.where(bool_sig)[0]
-        stat_pval_reg_list = zip(priority[bool_sig], pval[bool_sig], reg_idx)
-        stat_pval_reg_list = sorted(stat_pval_reg_list, reverse=True)
+        # build parent representation of graph
+        num_vox = exp.y.shape[2]
+        parent_all = hglm.graph.get_parent(children, num_leaf=num_vox)
 
-        vox_claimed = set()
-        effect_list = list()
-        for priority, pval, reg_idx in stat_pval_reg_list:
-            # check if region intersects with others discovered (no shared
-            # ancestor)
-            vox_contained = set(hglm.graph.iter_topo(children=children,
-                                                     num_leaf=exp.y.shape[2],
-                                                     node_start=reg_idx,
-                                                     only_leaf=True))
-            if vox_claimed.intersection(vox_contained):
-                # region intersects some claimed region already discovered
-                continue
+        def get_sig_parent(reg_idx):
+            """Yield parent nodes of reg_idx, stopping at -1"""
+            while True:
+                reg_idx = parent_all[reg_idx]
+                if reg_idx == -1:
+                    return None
+                elif reg_idx in sig_reg_list:
+                    return reg_idx
 
-            # claim intersecting voxels
-            vox_claimed |= vox_contained
-
-            # build mask corresponding to effect region
+        def get_mask(reg_idx):
             mask = np.zeros(exp.mask_idx.shape, dtype=bool)
-            for vox in vox_contained:
+            for vox in hglm.graph.iter_topo(children=children,
+                                            num_leaf=num_vox,
+                                            node_start=reg_idx,
+                                            only_leaf=True):
                 mask[exp.mask_idx == vox] = True
+            return mask
 
-            #  build effect & add to effect list
-            effect = hglm.effect.Effect.from_exp_mask(mask=mask, exp=exp,
-                                                      reg_idx=reg_idx,
-                                                      pval_fwer=pval)
-            effect_list.append(effect)
+        # List of all significant immediate descendants of a significant node.
+        # "Immediate" means the largest nested region directly below it:
+        # e.g., if region 1 ⊂ region 2 ⊂ region 3, and all are significant,
+        # then region 2 is considered a significant child of reg 3 — not reg 1
+        sig_kid_dict = defaultdict(list)
+        sig_reg_list = list(np.sort(np.where(bool_sig)[0]))
+        for reg_idx in sig_reg_list:
+            _parent = get_sig_parent(reg_idx)
+            if _parent is not None:
+                sig_kid_dict[_parent].append(reg_idx)
 
-        return effect_list
+        # build merge_dict, keys are region index and values are true / false
+        # if the region's constituents should be merged in the output
+        homo_pval_dict = dict()
+        for parent, kid_list in sorted(sig_kid_dict.items()):
+            # mask is zero for not included voxels or constituent region
+            # index for corresponding voxels.  voxels in the parent but
+            # not in any significant kid have value of parent
+            mask = get_mask(parent) * parent
+            for reg_idx in kid_list:
+                # replace voxels in mask with constituent regions
+                _mask = get_mask(reg_idx)
+                mask[_mask] = reg_idx
+
+            # permutation test: is the parent homogenous?
+            b = mask.astype(bool)
+            _b = exp.mask_idx[b]
+            llr_list = permute_llr_partition(x=exp.x,
+                                             y=exp.y[:, :, _b],
+                                             partition=mask[b])
+            homo_pval_dict[parent] = (llr_list[0] >= llr_list).mean()
+
+        # start with leaf nodes & apply all merge operations
+        effect_reg_set = set(sig_reg_list) - set(sig_kid_dict.keys())
+        for parent, pval in sorted(homo_pval_dict.items()):
+            if pval >= alpha_prune:
+                # merge (remove kids, add parent)
+                kid_list = sig_kid_dict[parent]
+                assert effect_reg_set.issuperset(kid_list)
+                effect_reg_set -= set(kid_list)
+                effect_reg_set.add(parent)
+
+        def get_effect(reg_idx):
+            return hglm.effect.Effect.from_exp_mask(mask=get_mask(reg_idx),
+                                                    exp=exp,
+                                                    reg_idx=reg_idx,
+                                                    pval_fwer=pval)
+
+        # build output effects
+        return [get_effect(reg_idx) for reg_idx in sorted(effect_reg_set)]

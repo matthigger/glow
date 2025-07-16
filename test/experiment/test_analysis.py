@@ -68,44 +68,34 @@ class TestAnalysishglm:
                     f1_list.append(max(f1))
 
     def test_discover(self):
-        exp = Experiment.from_gauss(b=1, shape=(2, 2), seed=0)
+        # region 12 (covering regions 0, 1, 2, 3) is one effect
+        # region 10 and 11 are identical effects, but we force region 13,
+        # their union to be insignificant here to avoid their being merged
         children = np.array([[0, 1],
                              [2, 3],
-                             [4, 5]])
+                             [4, 5],
+                             [6, 7],
+                             [8, 9],
+                             [10, 11],
+                             [12, 13]])
 
-        # only 1 sig region
-        pval = np.array([.1, 1, 1, 1, 1, 1, 1])
-        eff_list = AnalysisHGLM.discover(pval=pval, priority=-pval,
-                                         children=children, exp=exp, alpha=.5)
-        assert len(eff_list) == 1
-        assert eff_list[0].reg_idx == 0
+        #                0  1  2  3  4  5  6  7  8  9 10 11 12 13 14
+        pval = np.array([1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0])
+        exp = Experiment.from_gauss(shape=(8,), num_img=100)
 
-        # 2 sig regions which intersect
-        pval = np.array([.1, 1, 1, 1, .2, 1, 1])
-        eff_list = AnalysisHGLM.discover(pval=pval, priority=-pval,
-                                         children=children, \
-                                         exp=exp, alpha=.5)
-        assert len(eff_list) == 1
-        assert eff_list[0].reg_idx == 0
+        # ensure region 0, 1, 2, 3 have sufficiently different stats
+        exp.y[:, :, :4] += 100
 
-        # 2 sig regions which don't intersect
-        pval = np.array([.1, .2, 1, 1, 1, 1, 1])
-        eff_list = AnalysisHGLM.discover(pval=pval, priority=-pval,
-                                         children=children, \
-                                         exp=exp, alpha=.5)
-        assert len(eff_list) == 2
-        assert eff_list[0].reg_idx == 0
-        assert eff_list[1].reg_idx == 1
+        effect_list = AnalysisHGLM.discover(pval=pval, children=children,
+                                            exp=exp,
+                                            alpha_fwer=.05, alpha_prune=.05)
 
-        # 2 sig regions which don't intersect, second is excluded
-        pval = np.array([.1, .2, 1, 1, 1, 1, 1])
-        mask_exclude = np.array([0, 1, 1, 1, 1, 1, 1])
-        eff_list = AnalysisHGLM.discover(pval=pval, priority=-pval,
-                                         children=children,
-                                         mask_exclude=mask_exclude,
-                                         exp=exp, alpha=.5)
-        assert len(eff_list) == 1
-        assert eff_list[0].reg_idx == 0
+        mask_set_obs = set(tuple(e.mask) for e in effect_list)
+        # region 4, 2, 3 are discovered
+        mask_set_exp = {(1, 1, 1, 1, 0, 0, 0, 0),
+                        (0, 0, 0, 0, 1, 1, 0, 0),
+                        (0, 0, 0, 0, 0, 0, 1, 1)}
+        assert mask_set_obs == mask_set_exp
 
 
 class TestBigEffect:
@@ -117,7 +107,7 @@ class TestBigEffect:
                                     f_ratio=2, rough=.2)
 
     def test_hglm(self):
-        analysis = AnalysisHGLM(TestBigEffect.exp, n_perm=25, alpha=.1)
+        analysis = AnalysisHGLM(TestBigEffect.exp, n_perm=25, alpha_fwer=.1)
 
         # check that target region segmented properly
         f1 = get_f1(mask=TestBigEffect.effect.mask,
@@ -126,8 +116,7 @@ class TestBigEffect:
         assert np.isclose(f1.max(), 1), 'target region not segmented'
 
         # appropriate effect discovered as most significant effect
-        mask_all = sum(eff.mask for eff in analysis.effect_list)
-        np.testing.assert_allclose(mask_all,
+        np.testing.assert_allclose(analysis.effect_list[0].mask,
                                    TestBigEffect.effect.mask)
 
     def test_tfce(self):
