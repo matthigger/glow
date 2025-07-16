@@ -7,11 +7,10 @@ from uuid import uuid4
 
 import cloudpickle as pickle
 import numpy as np
-from sklearn.metrics import roc_auc_score
 
 import param
 from hglm.effect import ExtenterSphere, ExtenterMinVar
-from hglm.experiment import ExperimentScaled, AnalysisHGLM, AnalysisTFCE
+from hglm.experiment import ExperimentScaled, AnalysisHGLM
 from hglm.graph import get_f1, iter_topo
 from hglm.mask import get_score
 
@@ -34,33 +33,6 @@ def get_max_f1(ana_hglm, mask_target):
                                mask_target=mask_target,
                                mask_active=ana_hglm.exp.mask_idx > -1)
     return dict(f1=f1, sens=sens, spec=spec, region=reg_max_f1)
-
-
-def get_auc(ana, mask_target):
-    # get stat for AUC compute
-    if isinstance(ana, AnalysisHGLM):
-        # setting alpha=2 makes all regions "significant", discover()
-        # produces a disjoint set of regions which cover the space
-        # of voxels, choosing to maximize z stat greedily (a bit of
-        # wasted compute here ... full Effect not needed)
-        effect_list = ana.discover(pval=ana.pval, alpha=2,
-                                   priority=ana.z_stat[0, :],
-                                   children=ana.child_dict[0],
-                                   exp=ana.exp)
-
-        # build stat per voxel
-        x = np.zeros(ana.exp.mask_idx.shape)
-        for eff in effect_list:
-            x += ana.z_stat[0, eff.reg_idx] * eff.mask
-        y_score = x[ana.exp.mask_idx > -1]
-
-    elif isinstance(ana, AnalysisTFCE):
-        y_score = ana.tfce_stat[0, :]
-    else:
-        raise RuntimeError(f'Analysis not recognized: {type(ana)}')
-
-    return roc_auc_score(y_score=y_score,
-                         y_true=mask_target[ana.exp.mask_idx > -1])
 
 
 def run_one_exp(seed, f_ratio, rough=None):
@@ -127,7 +99,6 @@ def run_one_exp(seed, f_ratio, rough=None):
         f1, sens, spec = get_score(mask_pred=mask_pred,
                                    mask_target=effect.mask,
                                    mask_active=exp_masked.mask_idx > -1)
-        auc = get_auc(ana, mask_target=effect.mask)
 
         # dump summary
         d = {'f_ratio': f_ratio,
@@ -137,7 +108,6 @@ def run_one_exp(seed, f_ratio, rough=None):
              'f1': f1,
              'sens': sens,
              'spec': spec,
-             'auc': auc,
              'uuid': uuid,
              'time_sec': total_time_sec}
         with open(file_out, 'w') as f:
