@@ -29,7 +29,7 @@ def iter_size_e_h(*, x, contrast, **kwargs):
 
 
 def iter_size_yout_ymean(y, children=None, perm=None,
-                        block_exchange=True, **kwargs):
+                         block_exchange=True, **kwargs):
     """ iterates through region stats, less-redundant compute via graph
 
     Args:
@@ -198,6 +198,7 @@ def iter_topo(*, children=None, num_leaf, node_start=None, only_leaf=False):
     if not only_leaf or node_start < num_leaf:
         yield node_start
 
+
 def get_parent(children, num_leaf):
     """ gets parent lookup array for a binary tree
 
@@ -215,6 +216,18 @@ def get_parent(children, num_leaf):
         parent[c0] = parent[c1] = num_leaf + i
 
     return parent
+
+
+def get_mask(reg_idx, mask_idx, children):
+    num_vox = (mask_idx > -1).sum()
+    mask = np.zeros(mask_idx.shape, dtype=bool)
+    for vox in iter_topo(children=children,
+                         num_leaf=num_vox,
+                         node_start=reg_idx,
+                         only_leaf=True):
+        mask[mask_idx == vox] = True
+    return mask
+
 
 def graph_merge(n_common, children_list):
     """ combines many binary trees into a graph with common indexing

@@ -78,19 +78,19 @@ class TestAnalysishglm:
                              [8, 9],
                              [10, 11],
                              [12, 13]])
-        sig_reg_list = [5, 6, 7, 8, 9 , 10, 11, 12, 14]
+        sig_reg_list = [5, 6, 7, 8, 9, 10, 11, 12, 14]
         exp = Experiment.from_gauss(shape=(8,), num_img=100)
 
         # ensure region 0, 1, 2, 3 have sufficiently different stats
         exp.y[:, :, :4] += 100
 
-        effect_dict = AnalysisHGLM.prune(sig_reg_list=sig_reg_list,
-                                         children=children,
-                                         exp=exp,
-                                         alpha_prune=.05,
-                                         n_perm=100)
+        reg_prune_list = AnalysisHGLM.prune(sig_reg_list=sig_reg_list,
+                                            children=children,
+                                            exp=exp,
+                                            alpha_prune=.05,
+                                            n_perm=100)
 
-        assert set(effect_dict.keys()) == {10, 11, 12}
+        assert reg_prune_list == [10, 11, 12]
 
 
 class TestBigEffect:

@@ -260,12 +260,24 @@ class AnalysisHGLM(Analysis):
 
         # prune significant regions
         sig_reg_list = np.where(self.pval <= alpha_fwer)[0]
-        effect_dict = self.prune(sig_reg_list=sig_reg_list,
-                                 alpha_prune=alpha_prune,
-                                 n_perm=n_perm_prune,
-                                 exp=exp,
-                                 children=self.child_dict[0])
-        self.effect_list = list(effect_dict.values())
+        reg_prune_list = self.prune(sig_reg_list=sig_reg_list,
+                                    alpha_prune=alpha_prune,
+                                    n_perm=n_perm_prune,
+                                    exp=exp,
+                                    children=self.child_dict[0])
+
+        # build effects
+        self.effect_list = list()
+        for reg_idx in reg_prune_list:
+            mask = hglm.graph.get_mask(reg_idx=reg_idx,
+                                       mask_idx=exp.mask_idx,
+                                       children=self.child_dict[0])
+            pval_fwer = self.pval[reg_idx]
+            eff = hglm.effect.Effect.from_exp_mask(mask=mask,
+                                                   exp=exp,
+                                                   reg_idx=reg_idx,
+                                                   pval_fwer=pval_fwer)
+            self.effect_list.append(eff)
 
     @classmethod
     def cluster(cls, exp, mode='full'):
@@ -328,10 +340,7 @@ class AnalysisHGLM(Analysis):
             n_perm (int): number of permutations to perform
 
         Returns:
-            effect_dict (dict): each item corresponds to a single input
-                significant region (pruned to avoid intersections &
-                heterogeneity). keys region index, values are Effect
-
+            reg_prune_list (list): index of prune regions
         """
         sig_reg_list = list(np.sort(sig_reg_list))
 
@@ -347,15 +356,6 @@ class AnalysisHGLM(Analysis):
                     return None
                 elif reg_idx in sig_reg_list:
                     return reg_idx
-
-        def get_mask(reg_idx):
-            mask = np.zeros(exp.mask_idx.shape, dtype=bool)
-            for vox in hglm.graph.iter_topo(children=children,
-                                            num_leaf=num_vox,
-                                            node_start=reg_idx,
-                                            only_leaf=True):
-                mask[exp.mask_idx == vox] = True
-            return mask
 
         # List of all significant immediate descendants of a significant node.
         # "Immediate" means the largest nested region directly below it:
@@ -374,10 +374,14 @@ class AnalysisHGLM(Analysis):
             # mask is zero for not included voxels or constituent region
             # index for corresponding voxels.  voxels in the parent but
             # not in any significant kid have value of parent
-            mask = get_mask(parent) * parent
+            mask = hglm.graph.get_mask(reg_idx=parent,
+                                       mask_idx=exp.mask_idx,
+                                       children=children) * parent
             for reg_idx in kid_list:
                 # replace voxels in mask with constituent regions
-                _mask = get_mask(reg_idx)
+                _mask = hglm.graph.get_mask(reg_idx=reg_idx,
+                                            mask_idx=exp.mask_idx,
+                                            children=children)
                 mask[_mask] = reg_idx
 
             # permutation test: is the parent homogenous?
@@ -390,23 +394,16 @@ class AnalysisHGLM(Analysis):
             homo_pval_dict[parent] = (llr_list[0] >= llr_list).mean()
 
         # start with leaf nodes & apply all merge operations
-        effect_reg_set = set(sig_reg_list) - set(sig_kid_dict.keys())
+        reg_prune_set = set(sig_reg_list) - set(sig_kid_dict.keys())
         for parent, pval in sorted(homo_pval_dict.items()):
             kid_list = sig_kid_dict[parent]
-            if effect_reg_set.issuperset(kid_list) and (pval >= alpha_prune):
+            if reg_prune_set.issuperset(kid_list) and (pval >= alpha_prune):
                 # effect_reg_set.issuperset(kid_list) ensures that no children
                 # have been found to be heterogenous (each has pval >=
                 # alpha_prune)
 
                 # merge (remove kids, add parent)
-                effect_reg_set -= set(kid_list)
-                effect_reg_set.add(parent)
+                reg_prune_set -= set(kid_list)
+                reg_prune_set.add(parent)
 
-        # build / return effects
-        def get_effect(reg_idx):
-            return hglm.effect.Effect.from_exp_mask(mask=get_mask(reg_idx),
-                                                    exp=exp,
-                                                    reg_idx=reg_idx,
-                                                    pval_fwer=pval)
-
-        return {reg_idx: get_effect(reg_idx) for reg_idx in effect_reg_set}
+        return sorted(reg_prune_set)

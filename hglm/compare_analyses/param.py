@@ -6,17 +6,17 @@ import hglm
 folder_out = '/home/matt/Dropbox/pnl_hglm/results'
 
 # controls number of repetitions
-seed_all = np.arange(10)
+seed_all = np.arange(100)
 
 # f_ratio describes severity of effect
-f_all = np.linspace(0, .1, 9)
+f_all = np.logspace(np.log10(.001), np.log10(.05), 9)
 
 # roughness (0 to 1 inclusive)
 rough_all = None,
 
 # to speed up analysis, random voxel is chosen and dilated to this radius.
 # only these voxels are included in the analysis
-radius = 5
+radius = 4
 
 # effect size, as ratio to total voxels in experiment
 effect_perc = .2
