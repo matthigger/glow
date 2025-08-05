@@ -1,0 +1,131 @@
+from collections import namedtuple
+
+import numpy as np
+
+from hglm.experiment import scale_sigma, get_rough
+from hglm.experiment.sigma import get_sigma_from_y, get_size_yout_ymean
+from hglm.mask import get_mask_idx
+
+
+def test_scale_sigma():
+    b, num_img, num_vox = 3, 10, 100
+    rng = np.random.default_rng(seed=0)
+    y = rng.standard_normal((b, num_img, num_vox))
+
+    sigma_before = get_sigma_from_y(y)
+
+    # test 1: gain=10
+    gain_exp = 10
+    y1 = scale_sigma(y, gain=gain_exp)
+    sigma_after = get_sigma_from_y(y1)
+    gain_obs = np.trace(sigma_after) / np.trace(sigma_before)
+    assert np.isclose(gain_exp, gain_obs)
+
+    # output has same mean (per image) as input
+    assert np.allclose(y.mean(axis=2), y1.mean(axis=2))
+
+    # test 2: to desired tr_sigma
+    tr_sigma_exp = 10
+    y2 = scale_sigma(y, tr_sigma=tr_sigma_exp)
+    sigma_after = get_sigma_from_y(y2)
+    assert np.isclose(tr_sigma_exp, np.trace(sigma_after))
+
+    # output has same mean (per image) as input
+    assert np.allclose(y.mean(axis=2), y2.mean(axis=2))
+
+
+def test_get_size_yout_ymean():
+    b, num_img, num_vox = 3, 10, 100
+    rng = np.random.default_rng(seed=0)
+    y = rng.standard_normal((b, num_img, num_vox))
+    size_obs, yout_obs, ymean_obs = get_size_yout_ymean(y)
+
+    yout_exp = 0
+    for vox_idx in range(num_vox):
+        _y = y[:, :, vox_idx]
+        yout_exp += _y @ _y.T
+    ymean_exp = y.mean(axis=2)
+
+    assert size_obs == num_vox
+    assert np.allclose(yout_obs, yout_exp)
+    assert np.allclose(ymean_obs, ymean_exp)
+
+
+def test_get_rough():
+    # generate dummy data
+    mask = np.array([[1, 1, 1, 1],
+                     [1, 1, 1, 1],
+                     [1, 1, 1, 1],
+                     [1, 1, 1, 0]]).astype(bool)
+    mask_idx = get_mask_idx(mask)
+    b, num_img, num_vox = 3, 10, mask.sum()
+    rng = np.random.default_rng(seed=0)
+    y = rng.standard_normal((b, num_img, num_vox))
+
+    Case = namedtuple('Case', ['mask', 'mask_other', 'n_shell'])
+    cases = (
+        # Case0: n_shell=None
+        Case(mask=np.array([
+            [1, 1, 1, 0],
+            [1, 1, 1, 0],
+            [0, 0, 0, 0],
+            [0, 0, 0, 0]
+        ], dtype=bool),
+            mask_other=np.array([
+                [0, 0, 0, 1],
+                [0, 0, 0, 1],
+                [1, 1, 1, 1],
+                [1, 1, 1, 0]
+            ], dtype=bool),
+            n_shell=None
+        ),
+
+        # case1: n_shell = 1
+        Case(
+            mask=np.array([
+                [0, 1, 1, 0],
+                [0, 1, 1, 0],
+                [0, 1, 1, 0],
+                [0, 0, 0, 0]
+            ], dtype=bool),
+            mask_other=np.array([
+                [1, 0, 0, 1],
+                [1, 0, 0, 1],
+                [1, 0, 0, 1],
+                [0, 1, 1, 0]
+            ], dtype=bool),
+            n_shell=1
+        ),
+
+        # case2: n_shell=2
+        Case(
+            mask=np.array([
+                [0, 1, 0, 0],
+                [0, 1, 0, 0],
+                [0, 0, 0, 0],
+                [0, 0, 0, 0]
+            ], dtype=bool),
+            mask_other=np.array([
+                [1, 0, 1, 1],
+                [1, 0, 1, 1],
+                [1, 1, 1, 0],
+                [0, 1, 0, 0]
+            ], dtype=bool),  # will be generated
+            n_shell=2
+        ),
+    )
+
+    for idx, case in enumerate(cases):
+        # observed
+        rough_obs = get_rough(y, case.mask, mask_idx, n_shell=case.n_shell)
+
+        # expected
+        reg_idx = mask_idx[case.mask]
+        other_idx = mask_idx[case.mask_other]
+
+        sigma_reg = get_sigma_from_y(y[:, :, reg_idx])
+        sigma_other = get_sigma_from_y(y[:, :, other_idx])
+
+        rough_exp = np.trace(sigma_reg) / np.trace(sigma_other)
+
+        assert np.isclose(rough_obs, rough_exp, atol=1e-6), f'case{idx}'

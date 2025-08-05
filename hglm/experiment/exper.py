@@ -11,7 +11,7 @@ import hglm.effect
 import hglm.mask
 from .load_image import load_image_color, load_image_nii
 from .permute import Permuter
-from .regress import scale_sigma, get_rough
+from .sigma import get_rough, scale_sigma
 from ..mask import get_mask_idx
 
 
