@@ -19,7 +19,7 @@ def get_perm_matrix(seed, num_img):
 
 class Permuter:
     def __init__(self, x):
-        # ensure input x is from reduced model
+        # ensure input x is only from reduced model
         self.h = np.linalg.pinv(x) @ x
 
     def __call__(self, y, n_perm, perm_idx_min=0, keep_orig=False):
@@ -67,4 +67,4 @@ class Permuter:
         # permute data residuals under reduced model (freedman lane)
         num_img = self.h.shape[1]
         p = get_perm_matrix(seed=perm_idx, num_img=num_img)
-        return (np.eye(num_img) - self.h[0]) @ p + self.h[0]
+        return (np.eye(num_img) - self.h) @ p + self.h
