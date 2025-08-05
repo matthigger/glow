@@ -13,3 +13,4 @@
 *.whl
 /hglm/demo/hglm_image_demo.gif
 *checkpoint.ipynb
+*.pdf
