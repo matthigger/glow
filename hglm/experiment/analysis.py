@@ -11,9 +11,9 @@ import hglm.effect
 import hglm.graph
 import hglm.tfce
 from .exper import ExperimentScaled
+from .mancova import get_f_ratio_det
 from .permute import Permuter
 from .prune import permute_llr_partition
-from .mancova import get_f_ratio
 
 
 class Analysis:
@@ -21,15 +21,16 @@ class Analysis:
 
     Attributes:
         exp (Experiment): the source data to run experiment on
-        pval (np.array): (num_reg) FWER controlled p value per region
-        effect_list (list): list of Effect objects discovered
+        get_stat (fnc): accepts e, h and returns a scalar statistic (see
+            mancova.py)
     """
 
-    def __init__(self, exp):
+    def __init__(self, exp, get_stat=get_f_ratio_det):
         if not isinstance(exp, ExperimentScaled):
             # pre-process
             exp = ExperimentScaled.from_exp(exp)
         self.exp = exp
+        self.get_stat = get_stat
 
     @classmethod
     def get_pval(cls, stat, reg_active=None):
@@ -73,9 +74,8 @@ class Analysis:
 
         return pval
 
-    @classmethod
-    def get_stat(cls, exp, n_perm=1, children=None):
-        """ computes chi2
+    def get_stat_perm(self, exp, n_perm=1, children=None):
+        """ computes stats for each region (fixed) under different permutations
 
         Args:
             exp (Experiment):
@@ -84,7 +84,8 @@ class Analysis:
                 regions, if none passed then iterates only through voxels
 
         Returns:
-            stat (np.array): (num_reg, n_perm) wilk's lambda
+            stat (np.array): (num_reg, n_perm) statistic (see self.get_stat
+                attribute)
         """
         # compute wilks per region
         b, num_img, num_reg = exp.y.shape
@@ -104,17 +105,17 @@ class Analysis:
                 n_perm=n_perm,
                 keep_orig=True):
             for perm_idx in range(n_perm):
-                stat[perm_idx, reg_idx] = get_f_ratio(e=e[:, :, perm_idx],
-                                                      h=h[:, :, perm_idx])
+                stat[perm_idx, reg_idx] = self.get_stat(e=e[:, :, perm_idx],
+                                                        h=h[:, :, perm_idx])
         return stat
 
 
 class AnalysisTFCE(Analysis):
-    def __init__(self, exp, n_perm, alpha_fwer=.05, verbose=False):
-        super().__init__(exp)
+    def __init__(self, exp, n_perm, alpha_fwer=.05, verbose=False, **kwargs):
+        super().__init__(exp, **kwargs)
 
         # compute stat per each voxel (for every permutation)
-        self.stat = self.get_stat(exp, n_perm=n_perm + 1, children=None)
+        self.stat = self.get_stat_perm(exp, n_perm=n_perm + 1, children=None)
 
         # apply TFCE per image
         self.tfce_stat = self.apply_tfce(stat=self.stat,
@@ -192,8 +193,9 @@ class AnalysisHGLM(Analysis):
     """
 
     def __init__(self, exp, n_perm, n_perm_adj=10, n_perm_prune=100,
-                 alpha_fwer=.05, alpha_prune=.05, min_size=1, verbose=False):
-        super().__init__(exp)
+                 alpha_fwer=.05, alpha_prune=.05, min_size=1, verbose=False,
+                 **kwargs):
+        super().__init__(exp, **kwargs)
 
         assert 1 / n_perm_prune < alpha_prune, \
             'inconsistent n_perm_prune & alpha_prune: all merge no prune'
@@ -220,8 +222,8 @@ class AnalysisHGLM(Analysis):
             self.child_dict[perm_idx] = children
 
             # build stat for each region in hierarchy
-            self.stat[perm_idx, :] = self.get_stat(exp=_exp,
-                                                   children=children)
+            self.stat[perm_idx, :] = self.get_stat_perm(exp=_exp,
+                                                        children=children)
 
         # merge all graphs (many nodes are repeated across permutations above,
         # we adjust them all by same mu and std to minimize computation)
@@ -233,9 +235,9 @@ class AnalysisHGLM(Analysis):
         # permutation ahead of time
         _exp = exp.permute(1 << 31 - 1, block_exchange=True)
         # compute permutation stat for each region in common graph
-        stat_perm = self.get_stat(exp=_exp,
-                                  children=children,
-                                  n_perm=n_perm_adj)
+        stat_perm = self.get_stat_perm(exp=_exp,
+                                       children=children,
+                                       n_perm=n_perm_adj)
 
         # adjust
         self.z_stat = np.empty_like(self.stat)

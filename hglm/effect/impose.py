@@ -3,7 +3,7 @@ import warnings
 import numpy as np
 from scipy.optimize import minimize
 
-from hglm.experiment import decompose, get_f_ratio
+from hglm.experiment import decompose, get_f_ratio_det
 
 
 def compute_offset(x, y, contrast, f_ratio):
@@ -49,7 +49,7 @@ def compute_offset(x, y, contrast, f_ratio):
     def constraint(alpha):
         """ when this function output is zero, chi2_target achieved """
         e, h, _ = get_e_h_sigma(alpha)
-        _f_ratio = get_f_ratio(e, h)
+        _f_ratio = get_f_ratio_det(e, h)
         return _f_ratio - f_ratio
 
     def obj(alpha):
