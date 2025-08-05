@@ -1,5 +1,6 @@
 import gzip
 import json
+import pathlib
 import time
 import traceback
 import warnings
@@ -8,7 +9,6 @@ from uuid import uuid4
 import cloudpickle as pickle
 import numpy as np
 
-import pathlib
 import param
 from hglm.effect import ExtenterSphere, ExtenterMinVar
 from hglm.experiment import ExperimentScaled, AnalysisHGLM
@@ -62,13 +62,12 @@ def run_one_exp(seed, f_ratio, rough=None):
                                             seed=seed, f_ratio=f_ratio,
                                             rough=rough)
 
-    for Ana in param.analysis_obj_tup:
+    for Ana, kwargs in param.ana_kwargs_tup:
         # prep output file
         uuid = str(uuid4())[:8]
         file_out = folder_out / 'out' / f'{uuid}_result.json'
 
         # run analysis
-        kwargs = param.analysis_kwargs[Ana.__name__]
         start = time.time()
         if param.error_save:
             # catch errors and dump to json if any occur (allows us to

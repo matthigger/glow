@@ -28,17 +28,17 @@ alpha_fwer = .05
 # is the number of threads to use.  (-1 for all of them)
 n_jobs = -1
 
-# analyses to run
-analysis_obj_tup = (hglm.experiment.AnalysisHGLM,
-                    hglm.experiment.AnalysisTFCE)
-
 # parameters to be passed to Analysis constructor
-analysis_kwargs = {'AnalysisHGLM': dict(n_perm=100,
-                                        n_perm_adj=10,
-                                        n_perm_prune=300,
-                                        min_size=1,
-                                        alpha_prune=.05),
-                   'AnalysisTFCE': dict(n_perm=100)}
+kwargs_hglm = dict(n_perm=100,
+                   n_perm_adj=10,
+                   n_perm_prune=300,
+                   min_size=1,
+                   alpha_prune=.05)
+kwargs_tfce = dict(n_perm=100)
+
+# analyses to run
+ana_kwargs_tup = ((hglm.experiment.AnalysisHGLM, kwargs_hglm),
+                  (hglm.experiment.AnalysisTFCE, kwargs_tfce))
 
 # saves output python objects (memory expensive)
 detail_save = True
