@@ -1,6 +1,6 @@
 import numpy as np
 
-from .regress import decompose, get_manova
+from .mancova import decompose, get_manova
 
 
 def permute_llr_partition(x, y, partition, n_perm=200):

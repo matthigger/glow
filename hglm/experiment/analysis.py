@@ -13,7 +13,7 @@ import hglm.tfce
 from .exper import ExperimentScaled
 from .permute import Permuter
 from .prune import permute_llr_partition
-from .regress import get_f_ratio
+from .mancova import get_f_ratio
 
 
 class Analysis:

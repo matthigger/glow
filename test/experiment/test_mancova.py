@@ -1,5 +1,5 @@
 from hglm.experiment import Experiment
-from hglm.experiment.regress import *
+from hglm.experiment.mancova import *
 from hglm.experiment.sigma import get_sigma
 from hglm.graph import iter_size_yout_ymean, iter_topo
 
