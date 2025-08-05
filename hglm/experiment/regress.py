@@ -157,19 +157,6 @@ def scale_sigma(y, gain=None, tr_sigma=None):
     # re-mean
     return y_demean + mean[:, :, np.newaxis]
 
-
-def wilks_to_chi2(wilks, b, n, contrast=None, a=None):
-    assert (contrast is None) != (a is None), 'contrast xor a required'
-
-    if a is None:
-        a = contrast.sum()
-
-    df = a * b
-    scale = n - 1 - 0.5 * (b - a + 1)
-    chi2 = - scale * np.log(wilks)
-    return chi2, df
-
-
 def get_wilks(e, h):
     sign_e, logdet_e = np.linalg.slogdet(e)
     sign_t, logdet_t = np.linalg.slogdet(e + h)
