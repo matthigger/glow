@@ -262,11 +262,11 @@ class AnalysisHGLM(Analysis):
 
         # prune significant regions
         sig_reg_list = np.where(self.pval <= alpha_fwer)[0]
-        reg_prune_list = self.prune(sig_reg_list=sig_reg_list,
-                                    alpha_prune=alpha_prune,
-                                    n_perm=n_perm_prune,
-                                    exp=exp,
-                                    children=self.child_dict[0])
+        reg_prune_list = self.tailor(sig_reg_list=sig_reg_list,
+                                     alpha_prune=alpha_prune,
+                                     n_perm=n_perm_prune,
+                                     exp=exp,
+                                     children=self.child_dict[0])
 
         # build effects
         self.effect_list = list()
@@ -306,7 +306,7 @@ class AnalysisHGLM(Analysis):
             q, r = np.linalg.qr(exp.x.T)
             q = q.T
 
-            # map x into span of x
+            # map y into span of x
             y = np.einsum('bnr,na->bar', exp.y, q.T, optimize=True)
 
         # reshape to vector
@@ -329,7 +329,7 @@ class AnalysisHGLM(Analysis):
         return children
 
     @classmethod
-    def prune(cls, sig_reg_list, children, exp, alpha_prune, n_perm):
+    def tailor(cls, sig_reg_list, children, exp, alpha_prune, n_perm):
         """ attempts to prune regions to all, and only, a single effects voxels
 
         Args:

@@ -84,11 +84,11 @@ class TestAnalysishglm:
         # ensure region 0, 1, 2, 3 have sufficiently different stats
         exp.y[:, :, :4] += 100
 
-        reg_prune_list = AnalysisHGLM.prune(sig_reg_list=sig_reg_list,
-                                            children=children,
-                                            exp=exp,
-                                            alpha_prune=.05,
-                                            n_perm=100)
+        reg_prune_list = AnalysisHGLM.tailor(sig_reg_list=sig_reg_list,
+                                             children=children,
+                                             exp=exp,
+                                             alpha_prune=.05,
+                                             n_perm=100)
 
         assert reg_prune_list == [10, 11, 12]
 
