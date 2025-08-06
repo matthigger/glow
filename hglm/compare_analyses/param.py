@@ -6,7 +6,7 @@ import hglm
 folder_out = '/home/matt/Dropbox/pnl_hglm/results'
 
 # controls number of repetitions
-seed_all = np.arange(100)
+seed_all = np.arange(5)
 
 # f_ratio describes severity of effect
 f_all = np.logspace(np.log10(.001), np.log10(.05), 9)
@@ -24,21 +24,27 @@ effect_perc = .2
 # FWER control
 alpha_fwer = .05
 
-# toggles parallel, 0 or 1 processes non-parallel (good for debug).  else this
-# is the number of threads to use.  (-1 for all of them)
-n_jobs = -1
+# toggles parallel, 0 or 1 processes serial (good for debug).  else this is the
+# number of threads to use.  (-1 for all of them)
+n_jobs = -2
 
 # parameters to be passed to Analysis constructor
 kwargs_hglm = dict(n_perm=100,
                    n_perm_adj=10,
-                   n_perm_prune=300,
+                   n_perm_prune=100,
                    min_size=1,
                    alpha_prune=.05)
 kwargs_tfce = dict(n_perm=100)
 
-# analyses to run
-ana_kwargs_tup = ((hglm.experiment.AnalysisHGLM, kwargs_hglm),
-                  (hglm.experiment.AnalysisTFCE, kwargs_tfce))
+# # analyses to run
+# ana_kwargs_list = ((hglm.experiment.AnalysisHGLM, kwargs_hglm),
+#                    (hglm.experiment.AnalysisTFCE, kwargs_tfce))
+
+# compare all stats
+ana_kwargs_list = list()
+for get_stat in hglm.experiment.mancova.stat_dict.values():
+    kwargs = kwargs_hglm | dict(get_stat=get_stat)
+    ana_kwargs_list.append((hglm.experiment.AnalysisHGLM, kwargs))
 
 # saves output python objects (memory expensive)
 detail_save = True
@@ -62,7 +68,7 @@ match source:
             sbj_regex=r'[\d]{6}',
             img_glob_dict={'FA': '*_FA.nii.gz',
                            'MD': '*_MD.nii.gz'})
-        exp = exp_hcp.sample_x(a=2, seed=1, add_bias=True)
+        exp = exp_hcp.sample_x(a=2, seed=0, add_bias=True)
     case 'awgn':
         # additive white gaussian noise
         exp = hglm.experiment.Experiment.from_gauss(seed=0,

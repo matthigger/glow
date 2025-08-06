@@ -53,16 +53,13 @@ def run_one_exp(seed, f_ratio, rough=None):
     # sample effect space
     n = exp_masked.y.shape[2] * param.effect_perc
     extenter = ExtenterMinVar(n=n)
-    mask_target = extenter(y=exp_masked.y,
-                           mask_idx=exp_masked.mask_idx,
-                           seed=seed)
 
     # impose effect
-    _exp, effect = exp_masked.impose_effect(mask=mask_target,
+    _exp, effect = exp_masked.impose_effect(extenter=extenter,
                                             seed=seed, f_ratio=f_ratio,
                                             rough=rough)
 
-    for Ana, kwargs in param.ana_kwargs_tup:
+    for Ana, kwargs in param.ana_kwargs_list:
         # prep output file
         uuid = str(uuid4())[:8]
         file_out = folder_out / 'out' / f'{uuid}_result.json'
@@ -103,10 +100,13 @@ def run_one_exp(seed, f_ratio, rough=None):
                                    mask_target=effect.mask,
                                    mask_active=exp_masked.mask_idx > -1)
 
+        stat_name = ana.get_stat.__name__.replace('get_', '')
+
         # dump summary
         d = {'f_ratio': f_ratio,
              'seed': int(seed),
              'rough': effect.rough,
+             'stat': stat_name,
              'Analysis': Ana.__name__,
              'f1': f1,
              'sens': sens,

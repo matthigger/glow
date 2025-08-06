@@ -58,7 +58,8 @@ def load_update_all(folder='', verbose=True):
 
     # drop duplicates & check for conflicting results
     df.drop_duplicates(inplace=True)
-    assert (df.value_counts(subset=['f_ratio', 'seed', 'Analysis']).max() == 1)
+    subset = ['f_ratio', 'seed', 'Analysis', 'stat']
+    assert (df.value_counts(subset=subset).max() == 1)
 
     # overwrite csv with latest / greatest
     df.to_csv(f_csv, index=False)
