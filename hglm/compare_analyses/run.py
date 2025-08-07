@@ -142,8 +142,7 @@ if __name__ == '__main__':
     from param import seed_all, hotel_tr_all, rough_all
 
     # prep folder_out
-    folder_out = prep_folder_out(param.folder_out,
-                                 files_to_copy=(param.__file__,))
+    folder_out = prep_folder_out(files_to_copy=(param.__file__,))
 
     kwargs_list = [dict(seed=s, hotel_tr=h, rough=r)
                    for s, h, r in product(seed_all, hotel_tr_all, rough_all)]

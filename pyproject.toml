@@ -21,6 +21,7 @@ tqdm = "^4.66.1"
 imageio = "^2.34.0"
 cloudpickle = "^3.0.0"
 plotly = "^5.24.1"
+appdirs = "^1.4.4"
 
 
 [tool.poetry.group.dev.dependencies]

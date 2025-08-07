@@ -2,14 +2,11 @@ import numpy as np
 
 import hglm
 
-# where output results are stored (each run of script yields its own folder)
-folder_out = '/home/matt/Dropbox/pnl_hglm/results'
-
 # controls number of repetitions
-seed_all = np.arange(100)
+seed_all = np.arange(4)
 
 # hotelling's trace [0, inf) describes severity of effect
-hotel_tr_all = np.logspace(np.log10(.001), np.log10(.05), 9)
+hotel_tr_all = np.logspace(np.log10(.01), np.log10(1), 15)
 
 # roughness (0 to 1 inclusive)
 rough_all = None,
@@ -62,9 +59,10 @@ source = 'hcp'
 match source:
     case 'hcp':
         # human connectome project data
-        folder = '/home/matt/Dropbox/pnl_hglm/data/hcp100_lowres/image'
+        hcp_path = '/home/matt/Dropbox/pnl_hglm/data/hcp100_lowres/image'
+
         exp_hcp = hglm.experiment.ExperimentImageOnly.from_search(
-            folder=folder,
+            folder=hcp_path,
             sbj_regex=r'[\d]{6}',
             img_glob_dict={'FA': '*_FA.nii.gz',
                            'MD': '*_MD.nii.gz'})

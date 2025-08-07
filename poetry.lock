@@ -36,6 +36,17 @@ statsmodels = "*"
 webcolors = "*"
 
 [[package]]
+name = "appdirs"
+version = "1.4.4"
+description = "A small Python module for determining appropriate platform-specific dirs, e.g. a \"user data dir\"."
+optional = false
+python-versions = "*"
+files = [
+    {file = "appdirs-1.4.4-py2.py3-none-any.whl", hash = "sha256:a841dacd6b99318a741b166adb07e19ee71a274450e68237b4650ca1055ab128"},
+    {file = "appdirs-1.4.4.tar.gz", hash = "sha256:7d5d0167b2b1ba821647616af46a749d1c653740dd0d2415100fe26e27afdf41"},
+]
+
+[[package]]
 name = "certifi"
 version = "2024.8.30"
 description = "Python package for providing Mozilla's CA Bundle."
@@ -1403,4 +1414,4 @@ tests = ["coverage[toml]"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "7078449446b918c329e1e9c92ca0a2e6b48c51c9de699db5ae2117f6aad4cb91"
+content-hash = "c4edca8bc6d4007f780c17f62b80d7af84ecfad9eecec3b1243b99a14a5e48cb"

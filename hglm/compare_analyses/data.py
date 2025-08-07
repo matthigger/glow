@@ -6,13 +6,20 @@ from datetime import datetime
 
 import cloudpickle as pickle
 import pandas as pd
+from appdirs import user_data_dir
 
 
-def prep_folder_out(folder, files_to_copy=tuple()):
-    timestamp = datetime.now().strftime('%y%b%d-%H%M')
-    folder_out = pathlib.Path(folder)
-    assert folder_out.exists()
-    folder_out = pathlib.Path(folder_out) / f'./exp_{timestamp}'
+def get_path_result():
+    path_result = (pathlib.Path(user_data_dir('hglm', 'hglm_author')) /
+                   'results')
+    path_result.mkdir(parents=True, exist_ok=True)
+    return path_result
+
+def prep_folder_out(files_to_copy=tuple()):
+    path_result = get_path_result()
+    timestamp = datetime.now().strftime('%y-%m-%d_%H%M')
+    folder_out = pathlib.Path(path_result) / f'./exp_{timestamp}'
+
     if folder_out.exists():
         choice = input(f'folder exists: {folder_out}\ndelete? [y/n]:')
         if choice != 'y':
@@ -29,8 +36,14 @@ def prep_folder_out(folder, files_to_copy=tuple()):
     return folder_out
 
 
-def load_update_all(folder='', verbose=True):
+def load_update_all(folder=None, verbose=True):
     """ loads all experiments stats from csv, updates csv as needed """
+    if folder is None:
+        # use latest folder (if none given)
+        path_result = get_path_result()
+        folder = sorted(path_result.glob('exp_*'))[-1]
+        print(f'using latest folder: {folder}')
+
     # load aggregated results
     folder = pathlib.Path(folder)
     assert folder.exists()
@@ -101,3 +114,6 @@ def load(df, folder='', uuid=None, **kwargs):
         x = pickle.load(f)
 
     return x
+
+if __name__ == '__main__':
+    print(f'path result is: {get_path_result()}')

@@ -308,15 +308,3 @@ def scatter_plotly(ana_hglm, mask_target=None, x_feat='size (voxels)',
                       coloraxis_colorbar=dict(title=color_feat),
                       hoverlabel=dict(bgcolor='white'))
     return fig, df
-
-
-# tmp
-if __name__ == '__main__':
-    from compare_analyses.data import load_update_all, load
-
-    pval, seed = 0.25, 15
-    folder = '/home/matt/Dropbox/pnl_hglm/results/exp_24Apr22-1533'
-    df = load_update_all(folder)
-    ana_hglm, effect = load(folder=folder, df=df, pval=pval, seed=seed,
-                            Analysis='AnalysisHGLM')
-    prep_df(ana_hglm, mask_target=effect.mask)
