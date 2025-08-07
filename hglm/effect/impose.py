@@ -3,19 +3,18 @@ import warnings
 import numpy as np
 from scipy.optimize import minimize
 
-from hglm.experiment import decompose, get_f_ratio_det
+from hglm.experiment import decompose, get_hotel_tr
 
 
-def compute_offset(x, y, contrast, f_ratio):
-    """ get offset to y, constant across voxels, which imposes an f-stat
+def compute_offset(x, y, contrast, hotel_tr):
+    """ get offset to y, constant across voxels, which imposes hotel_tr
 
     Args:
         x (np.array): (a, num_img) explanatory variables
         y (np.array): (b, num_img, num_vox) image intensities
         contrast (np.array): (a) True for each corresponding feature in x which
-            is "of interest" (other x features form the reduced model in
-            computing f statistic)
-        f_ratio (float): f_ratio to be achieved by offset
+            is "of interest"
+        hotel_tr (float): hotelling's trace to be achieved by offset
 
     Returns:
         offset (np.array): (b, num_img) offset to apply to all images to
@@ -49,8 +48,8 @@ def compute_offset(x, y, contrast, f_ratio):
     def constraint(alpha):
         """ when this function output is zero, chi2_target achieved """
         e, h, _ = get_e_h_sigma(alpha)
-        _f_ratio = get_f_ratio_det(e, h)
-        return _f_ratio - f_ratio
+        _hotel_tr = get_hotel_tr(e, h)
+        return _hotel_tr - hotel_tr
 
     def obj(alpha):
         r"""  ||\Delta||^2 = \sum_{i=1}^3 \alpha_i^2 ||Q_i \bar{Y}_r^T||^2

@@ -53,12 +53,12 @@ def load_update_all(folder='', verbose=True):
     # add in existing result
     df = pd.concat((df, pd.DataFrame(dict_list)))
 
-    # round f_ratio to 14 decimal places (avoids floating point comparison failure)
-    df['f_ratio'] = df['f_ratio'].round(14)
+    # round hotel_tr to 14 decimal places (avoids floating point comparison failure)
+    df['hotel_tr'] = df['hotel_tr'].round(14)
 
     # drop duplicates & check for conflicting results
     df.drop_duplicates(inplace=True)
-    subset = ['f_ratio', 'seed', 'Analysis', 'stat']
+    subset = ['hotel_tr', 'seed', 'Analysis', 'stat']
     assert (df.value_counts(subset=subset).max() == 1)
 
     # overwrite csv with latest / greatest

@@ -36,7 +36,7 @@ def get_max_f1(ana_hglm, mask_target):
     return dict(f1=f1, sens=sens, spec=spec, region=reg_max_f1)
 
 
-def run_one_exp(seed, f_ratio, rough=None):
+def run_one_exp(seed, hotel_tr, rough=None):
     # allows us to catch numpy's warnings
     warnings.filterwarnings('error')
     np.seterr(all='warn')
@@ -56,7 +56,8 @@ def run_one_exp(seed, f_ratio, rough=None):
 
     # impose effect
     _exp, effect = exp_masked.impose_effect(extenter=extenter,
-                                            seed=seed, f_ratio=f_ratio,
+                                            seed=seed,
+                                            hotel_tr=hotel_tr,
                                             rough=rough)
 
     for Ana, kwargs in param.ana_kwargs_list:
@@ -74,7 +75,7 @@ def run_one_exp(seed, f_ratio, rough=None):
             except Exception as e:
                 d = {'error_msg': traceback.format_exc(),
                      'method': Ana.__name__,
-                     'f_ratio': f_ratio,
+                     'hotel_tr': hotel_tr,
                      'seed': int(seed)}
                 print(f'error: {d}')
                 file_out = str(file_out).replace('out', 'error')
@@ -103,7 +104,7 @@ def run_one_exp(seed, f_ratio, rough=None):
         stat_name = ana.get_stat.__name__.replace('get_', '')
 
         # dump summary
-        d = {'f_ratio': f_ratio,
+        d = {'hotel_tr': hotel_tr,
              'seed': int(seed),
              'rough': effect.rough,
              'stat': stat_name,
@@ -138,14 +139,14 @@ if __name__ == '__main__':
     from tqdm import tqdm
     from joblib import Parallel, delayed
     from itertools import product
-    from param import seed_all, f_all, rough_all
+    from param import seed_all, hotel_tr_all, rough_all
 
     # prep folder_out
     folder_out = prep_folder_out(param.folder_out,
                                  files_to_copy=(param.__file__,))
 
-    kwargs_list = [dict(seed=s, f_ratio=f, rough=r)
-                   for s, f, r in product(seed_all, f_all, rough_all)]
+    kwargs_list = [dict(seed=s, hotel_tr=h, rough=r)
+                   for s, h, r in product(seed_all, hotel_tr_all, rough_all)]
 
     if param.n_jobs not in (0, 1):
         r = Parallel(n_jobs=param.n_jobs, verbose=10)(

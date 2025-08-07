@@ -9,7 +9,7 @@ sns.set()
 
 def extract(df):
     # extract
-    f_list = sorted(df['f_ratio'].unique())
+    f_list = sorted(df['hotel_tr'].unique())
     seed_list = sorted(df['seed'].unique())
 
     shape = len(seed_list), len(f_list)
@@ -17,7 +17,7 @@ def extract(df):
 
     for _, row in df.iterrows():
         seed_idx = seed_list.index(row['seed'])
-        f_idx = f_list.index(row['f_ratio'])
+        f_idx = f_list.index(row['hotel_tr'])
 
         for feat in ('f1', 'sens', 'spec'):
             score_dict[row['Analysis'], feat][seed_idx, f_idx] = row[feat]
@@ -52,7 +52,7 @@ def plot_feats(f_list, score_dict, feat_list):
             plt.plot(f_list, np.nanmean(score_dict[method, feat], axis=0),
                      **kwargs, **style_mean)
 
-        plt.xlabel('f_ratio')
+        plt.xlabel('hotel_tr')
         plt.ylabel(feat)
 
     # plot bottom row
@@ -63,7 +63,7 @@ def plot_feats(f_list, score_dict, feat_list):
         plt.plot(f_list, x.T, color='k', **style_single)
         plt.plot(f_list, np.nanmean(x, axis=0), color='k', **style_mean)
 
-        plt.xlabel('f ratio')
+        plt.xlabel('hotel_tr')
         plt.ylabel(f'{feat}: hglm - TFCE')
 
     # add legend in last plot of top row

@@ -52,7 +52,7 @@ def get_pillai(e, h):
     return np.trace(mat)
 
 
-def get_hotelling(e, h):
+def get_hotel_tr(e, h):
     inv_e = np.linalg.inv(e)
     mat = inv_e @ h
     return np.trace(mat)
@@ -65,21 +65,7 @@ def get_roys_root(e, h):
     return np.max(np.real(eigvals))
 
 
-# 2 invented f_ratio statistics, extensions of f statistic to multi dimensions
-def get_f_ratio_det(e, h):
-    sign_e, logdet_e = np.linalg.slogdet(e)
-    sign_h, logdet_h = np.linalg.slogdet(h)
-
-    return np.exp(logdet_h - logdet_e)
-
-
-def get_f_ratio_tr(e, h):
-    return np.trace(h) / np.trace(e)
-
-
 stat_dict = {'neg_wilks': get_neg_wilks,
              'pillai': get_pillai,
-             'hotelling': get_hotelling,
-             'roys_root': get_roys_root,
-             'f_ratio_det': get_f_ratio_det,
-             'f_ratio_tr': get_f_ratio_tr}
+             'hotelling': get_hotel_tr,
+             'roys_root': get_roys_root}

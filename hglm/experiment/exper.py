@@ -175,8 +175,7 @@ class ExperimentImageOnly:
         Args:
             a (int): number of x features in output
             contrast (np.array): (a) True for each corresponding feature in x
-                which is "of interest" (other x features form the reduced
-                model in computing f statistic)
+                which is "of interest"
             seed: used for random number generator
 
         Returns:
@@ -287,12 +286,12 @@ class Experiment(ExperimentImageOnly):
             warnings.warn('no bias term: regression constrained to '
                           'origin (consider add_bias=True)')
 
-    def impose_effect(self, f_ratio, extenter=None, mask=None, seed=None,
+    def impose_effect(self, hotel_tr, extenter=None, mask=None, seed=None,
                       rough=None, **kwargs):
         """ builds experiment with effect imposed
 
         Args:
-            f_ratio (float): ratio of variance explained to unexplained
+            hotel_tr (float): hotelling's trace
             extenter (ExtenterSphere or ExtenterMinVar): identifies volume to
                 impose effect on
             mask (np.array): is passed, will impose effect on
@@ -330,7 +329,7 @@ class Experiment(ExperimentImageOnly):
         # get offset which imposes desired effect strength
         offset = hglm.effect.compute_offset(x=self.x, y=y,
                                             contrast=self.contrast,
-                                            f_ratio=f_ratio)
+                                            hotel_tr=hotel_tr)
 
         # impose effect on y, build new experiment
         exp = self.add_offset(offset, mask=mask, sigma_gain=sigma_gain)
@@ -338,7 +337,7 @@ class Experiment(ExperimentImageOnly):
         _rough = get_rough(y=exp.y, mask=mask, mask_idx=exp.mask_idx)
         effect = hglm.effect.Effect.from_exp_mask(exp=exp, mask=mask,
                                                   rough=_rough,
-                                                  f_ratio=f_ratio)
+                                                  hotel_tr=hotel_tr)
 
         return exp, effect
 

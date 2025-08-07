@@ -6,10 +6,10 @@ import hglm
 folder_out = '/home/matt/Dropbox/pnl_hglm/results'
 
 # controls number of repetitions
-seed_all = np.arange(5)
+seed_all = np.arange(100)
 
-# f_ratio describes severity of effect
-f_all = np.logspace(np.log10(.001), np.log10(.05), 9)
+# hotelling's trace [0, inf) describes severity of effect
+hotel_tr_all = np.logspace(np.log10(.001), np.log10(.05), 9)
 
 # roughness (0 to 1 inclusive)
 rough_all = None,
@@ -26,14 +26,14 @@ alpha_fwer = .05
 
 # toggles parallel, 0 or 1 processes serial (good for debug).  else this is the
 # number of threads to use.  (-1 for all of them)
-n_jobs = -2
+n_jobs = -1
 
 # parameters to be passed to Analysis constructor
 kwargs_hglm = dict(n_perm=100,
                    n_perm_adj=10,
-                   n_perm_prune=100,
+                   n_perm_tailor=100,
                    min_size=1,
-                   alpha_prune=.05)
+                   alpha_tailor=.05)
 kwargs_tfce = dict(n_perm=100)
 
 # # analyses to run
@@ -47,7 +47,7 @@ for get_stat in hglm.experiment.mancova.stat_dict.values():
     ana_kwargs_list.append((hglm.experiment.AnalysisHGLM, kwargs))
 
 # saves output python objects (memory expensive)
-detail_save = True
+detail_save = False
 
 # writes json with input state causing an errors in Analysis.run(),
 # continues to next experiment

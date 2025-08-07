@@ -11,7 +11,7 @@ import hglm.effect
 import hglm.graph
 import hglm.tfce
 from .exper import ExperimentScaled
-from .mancova import get_f_ratio_det
+from .mancova import get_hotel_tr
 from .permute import Permuter
 from .tailor import permute_llr_partition
 
@@ -25,7 +25,7 @@ class Analysis:
             mancova.py)
     """
 
-    def __init__(self, exp, get_stat=get_f_ratio_det):
+    def __init__(self, exp, get_stat=get_hotel_tr):
         if not isinstance(exp, ExperimentScaled):
             # pre-process
             exp = ExperimentScaled.from_exp(exp)
