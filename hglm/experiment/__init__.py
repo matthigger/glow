@@ -1,4 +1,4 @@
 from .analysis import *
 from .exper import *
-from .prune import *
+from .tailor import *
 from .mancova import *

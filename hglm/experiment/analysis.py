@@ -13,7 +13,7 @@ import hglm.tfce
 from .exper import ExperimentScaled
 from .mancova import get_f_ratio_det
 from .permute import Permuter
-from .prune import permute_llr_partition
+from .tailor import permute_llr_partition
 
 
 class Analysis:
@@ -192,13 +192,13 @@ class AnalysisHGLM(Analysis):
             unpermuted data
     """
 
-    def __init__(self, exp, n_perm, n_perm_adj=10, n_perm_prune=100,
-                 alpha_fwer=.05, alpha_prune=.05, min_size=1, verbose=False,
+    def __init__(self, exp, n_perm, n_perm_adj=10, n_perm_tailor=100,
+                 alpha_fwer=.05, alpha_tailor=.05, min_size=1, verbose=False,
                  **kwargs):
         super().__init__(exp, **kwargs)
 
-        assert 1 / n_perm_prune < alpha_prune, \
-            'inconsistent n_perm_prune & alpha_prune: all merge no prune'
+        assert 1 / n_perm_tailor < alpha_tailor, \
+            'inconsistent n_perm_tailor & alpha_tailor: all merge no prune'
 
         # constants
         b, num_img, num_vox = exp.y.shape
@@ -260,17 +260,17 @@ class AnalysisHGLM(Analysis):
         self.pval = self.get_pval(stat=self.z_stat,
                                   reg_active=self.size[0, :] >= min_size)
 
-        # prune significant regions
+        # tailor significant regions (discard to make disjoint set)
         sig_reg_list = np.where(self.pval <= alpha_fwer)[0]
-        reg_prune_list = self.tailor(sig_reg_list=sig_reg_list,
-                                     alpha_prune=alpha_prune,
-                                     n_perm=n_perm_prune,
-                                     exp=exp,
-                                     children=self.child_dict[0])
+        reg_out_list = self.tailor(sig_reg_list=sig_reg_list,
+                                   alpha_tailor=alpha_tailor,
+                                   n_perm=n_perm_tailor,
+                                   exp=exp,
+                                   children=self.child_dict[0])
 
         # build effects
         self.effect_list = list()
-        for reg_idx in reg_prune_list:
+        for reg_idx in reg_out_list:
             mask = hglm.graph.get_mask(reg_idx=reg_idx,
                                        mask_idx=exp.mask_idx,
                                        children=self.child_dict[0])
@@ -329,20 +329,20 @@ class AnalysisHGLM(Analysis):
         return children
 
     @classmethod
-    def tailor(cls, sig_reg_list, children, exp, alpha_prune, n_perm):
-        """ attempts to prune regions to all, and only, a single effects voxels
+    def tailor(cls, sig_reg_list, children, exp, alpha_tailor, n_perm):
+        """ attempts to tailor to all, and only, a single effects voxels
 
         Args:
             sig_reg_list (list): list of regions declared significant
             children (np.array): (num_reg, 2) each col are index of child
                 regions
             exp (Experiment): the source data to run experiment on
-            alpha_prune (float): threshold at which a prune event happens (a
+            alpha_tailor (float): threshold at which a prune event happens (a
                 significant region and all its ancestors are discarded)
             n_perm (int): number of permutations to perform
 
         Returns:
-            reg_prune_list (list): index of prune regions
+            reg_out_list (list): index of prune regions
         """
         sig_reg_list = list(np.sort(sig_reg_list))
 
@@ -369,8 +369,8 @@ class AnalysisHGLM(Analysis):
             if _parent is not None:
                 sig_kid_dict[_parent].append(reg_idx)
 
-        # build merge_dict, keys are region index and values are true / false
-        # if the region's constituents should be merged in the output
+        # build homo_pval_dict, keys are region index and values are pvals
+        # for homogeneity test (small pval = hetero)
         homo_pval_dict = dict()
         for parent, kid_list in sorted(sig_kid_dict.items()):
             # mask is zero for not included voxels or constituent region
@@ -396,16 +396,16 @@ class AnalysisHGLM(Analysis):
             homo_pval_dict[parent] = (llr_list[0] >= llr_list).mean()
 
         # start with leaf nodes & apply all merge operations
-        reg_prune_set = set(sig_reg_list) - set(sig_kid_dict.keys())
+        reg_out_set = set(sig_reg_list) - set(sig_kid_dict.keys())
         for parent, pval in sorted(homo_pval_dict.items()):
             kid_list = sig_kid_dict[parent]
-            if reg_prune_set.issuperset(kid_list) and (pval >= alpha_prune):
+            if reg_out_set.issuperset(kid_list) and (pval >= alpha_tailor):
                 # effect_reg_set.issuperset(kid_list) ensures that no children
                 # have been found to be heterogenous (each has pval >=
-                # alpha_prune)
+                # alpha_tailor)
 
                 # merge (remove kids, add parent)
-                reg_prune_set -= set(kid_list)
-                reg_prune_set.add(parent)
+                reg_out_set -= set(kid_list)
+                reg_out_set.add(parent)
 
-        return sorted(reg_prune_set)
+        return sorted(reg_out_set)
