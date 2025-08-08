@@ -155,9 +155,12 @@ def prep_df(ana_hglm, mask_target=None):
 
             # compute f1 (dice) score with mask_target
             if mask_target is not None:
-                d['dice'] = hglm.graph.get_f1(children=ana_hglm.child_dict[0],
-                                              mask_idx=ana_hglm.exp.mask_idx,
-                                              mask=mask_target)
+                d['f1'], d['sens'], d['spec'] = \
+                    hglm.graph.get_f1_sens_spec(
+                        children=ana_hglm.child_dict[0],
+                        mask_idx=ana_hglm.exp.mask_idx,
+                        mask=mask_target)
+
                 miss, hits = hglm.graph.get_miss_hits(children=children,
                                                       mask_idx=ana_hglm.exp.mask_idx,
                                                       mask=mask_target)
@@ -186,9 +189,9 @@ def scatter_size_vs_stat(analysis, y_feat, mask=None, min_size=1):
 
     # compute f1 score
     if mask is not None:
-        f1 = hglm.graph.get_f1(mask=mask,
-                               mask_idx=analysis.exp.mask_idx,
-                               children=analysis.child_dict[0])
+        f1 = hglm.graph.get_f1_sens_spec(mask=mask,
+                                         mask_idx=analysis.exp.mask_idx,
+                                         children=analysis.child_dict[0])[0]
     else:
         f1 = None
 

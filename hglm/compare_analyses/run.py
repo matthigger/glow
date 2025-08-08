@@ -11,29 +11,8 @@ import numpy as np
 
 import param
 from hglm.effect import ExtenterSphere, ExtenterMinVar
-from hglm.experiment import ExperimentScaled, AnalysisHGLM
-from hglm.graph import get_f1, iter_topo
+from hglm.experiment import ExperimentScaled
 from hglm.mask import get_score
-
-
-def get_max_f1(ana_hglm, mask_target):
-    # load detail, find region corresponding to max f1
-    f1 = get_f1(mask=mask_target,
-                mask_idx=ana_hglm.exp.mask_idx,
-                children=ana_hglm.child_dict[0])
-    reg_max_f1 = f1.argmax()
-
-    # compute scores
-    mask_pred = np.zeros_like(mask_target)
-    for vox in iter_topo(children=ana_hglm.child_dict[0],
-                         num_leaf=ana_hglm.exp.y.shape[2],
-                         node_start=reg_max_f1,
-                         only_leaf=True):
-        mask_pred[ana_hglm.exp.mask_idx == vox] = True
-    f1, sens, spec = get_score(mask_pred=mask_pred,
-                               mask_target=mask_target,
-                               mask_active=ana_hglm.exp.mask_idx > -1)
-    return dict(f1=f1, sens=sens, spec=spec, region=reg_max_f1)
 
 
 def run_one_exp(seed, hotel_tr, rough=None):
@@ -116,16 +95,6 @@ def run_one_exp(seed, hotel_tr, rough=None):
              'time_sec': total_time_sec}
         with open(file_out, 'w') as f:
             json.dump(d, f, sort_keys=True, indent=4)
-
-        if param.maxf1 and Ana == AnalysisHGLM:
-            # compute max f1 stats, store as a distinct output
-            # "analysis" (its not really)
-            d.update(get_max_f1(ana_hglm=ana, mask_target=effect.mask))
-            d['Analysis'] = 'AnalysisHGLM-maxF1'
-            d['time_sec'] = ''
-            d['region'] = float(d['region'])
-            with open(file_out.with_stem(f'{uuid}_maxf1'), 'w') as f:
-                json.dump(d, f, sort_keys=True, indent=4)
 
         if param.detail_save:
             # dump detail

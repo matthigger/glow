@@ -119,8 +119,9 @@ def node_sum(x, children):
     return summed
 
 
-def get_f1(mask, mask_idx, children):
-    """ computes f1 score per region
+
+def get_f1_sens_spec(mask, mask_idx, children):
+    """Computes F1, sensitivity (recall/TPR), and specificity (TNR) per region.
 
     Args:
         mask (np.array): target mask (boolean, same shape as mask_idx)
@@ -130,6 +131,8 @@ def get_f1(mask, mask_idx, children):
 
     Returns:
         f1 (np.array): f1 score per region
+        sens (np.array):  TP / (TP + FN) per region
+        spec (np.array): TN / (TN + FP) per region
     """
     # compute misses & hits per region
     # true positive: target voxels in estimated region
@@ -139,7 +142,21 @@ def get_f1(mask, mask_idx, children):
     # false negative: targets outside of estimated region
     fn = mask.sum() - tp
 
-    return 2 * tp / (2 * tp + fp + fn)
+    # true negative: everything else
+    total = float(mask.size)
+    tn = total - tp - fp - fn
+
+    # metrics with safe division (0 where undefined)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        f1 = 2 * tp / (2 * tp + fp + fn)
+        sens = tp / (tp + fn)
+        spec = tn / (tn + fp)
+
+    f1 = np.nan_to_num(f1, nan=0)
+    sens = np.nan_to_num(sens, nan=0)
+    spec = np.nan_to_num(spec, nan=1)
+
+    return f1, sens, spec
 
 
 def get_miss_hits(mask, mask_idx, children):

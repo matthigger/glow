@@ -4,7 +4,7 @@ from scipy import ndimage
 from hglm.effect import ExtenterSphere
 from hglm.experiment import *
 from hglm.experiment.analysis import *
-from hglm.graph import get_f1
+from hglm.graph import get_f1_sens_spec
 from .make_test_image import folder_test_data
 
 
@@ -63,8 +63,8 @@ class TestAnalysishglm:
                 label, n_regions = ndimage.label(img_color)
                 for idx in range(1, n_regions + 1):
                     mask = label == idx
-                    f1 = get_f1(mask=mask, mask_idx=_exp.mask_idx,
-                                children=children)
+                    f1 = get_f1_sens_spec(mask=mask, mask_idx=_exp.mask_idx,
+                                          children=children)[0]
                     f1_list.append(max(f1))
 
     def test_discover(self):
@@ -105,9 +105,9 @@ class TestBigEffect:
         analysis = AnalysisHGLM(TestBigEffect.exp, n_perm=25, alpha_fwer=.1)
 
         # check that target region segmented properly
-        f1 = get_f1(mask=TestBigEffect.effect.mask,
-                    mask_idx=analysis.exp.mask_idx,
-                    children=analysis.child_dict[0])
+        f1 = get_f1_sens_spec(mask=TestBigEffect.effect.mask,
+                              mask_idx=analysis.exp.mask_idx,
+                              children=analysis.child_dict[0])[0]
         assert np.isclose(f1.max(), 1), 'target region not segmented'
 
         # appropriate effect discovered as most significant effect

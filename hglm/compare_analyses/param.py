@@ -50,10 +50,6 @@ detail_save = False
 # continues to next experiment
 error_save = True
 
-# if True, computes stats on max f1 region in HGLM analysis (allows us to
-# distinguish between segmentation & discovery errors)
-maxf1 = True
-
 source = 'hcp'
 
 match source:

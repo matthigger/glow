@@ -15,17 +15,24 @@ def test_iter_node_sum():
     assert np.allclose(node_sum(x, children), exp)
 
 
-def test_get_f1():
+def test_get_f1_sens_spec():
     mask = np.array([0, 0, 1, 1])
     mask_idx = np.arange(4)
     children = np.array([[0, 1],
                          [2, 3],
                          [4, 5]])
 
-    f1_exp = np.array([0, 0, 2 / 3, 2 / 3, 0, 1, 2 / 3])
-    f1 = get_f1(mask=mask, mask_idx=mask_idx, children=children)
+    # Expected per region: leaves 0..3, then internal nodes 4..6
+    f1_exp = np.array([0.0, 0.0, 2 / 3, 2 / 3, 0.0, 1.0, 2 / 3])
+    sens_exp = np.array([0.0, 0.0, 0.5, 0.5, 0.0, 1.0, 1.0])
+    spec_exp = np.array([0.5, 0.5, 1.0, 1.0, 0.0, 1.0, 0.0])
+
+    f1, sens, spec = get_f1_sens_spec(mask=mask, mask_idx=mask_idx,
+                                      children=children)
 
     assert np.allclose(f1, f1_exp)
+    assert np.allclose(sens, sens_exp)
+    assert np.allclose(spec, spec_exp)
 
 
 def test_get_miss_hit():

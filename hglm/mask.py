@@ -31,11 +31,15 @@ def get_score(mask_pred, mask_target, mask_active=None):
         y_true = mask_target[mask_active]
         y_pred = mask_pred[mask_active]
 
-    # compute scores
+    # compute scores (default to zero)
     f1 = f1_score(y_true=y_true, y_pred=y_pred, zero_division=0)
     sens = recall_score(y_true=y_true, y_pred=y_pred, zero_division=0)
-    conf_mat = confusion_matrix(y_true=y_true, y_pred=y_pred)
-    spec = conf_mat[0, 0] / (conf_mat[0, 0] + conf_mat[0, 1])
+
+    # specificity with safe division (defaults to 1)
+    cm = confusion_matrix(y_true=y_true, y_pred=y_pred, labels=[0, 1])
+    tn, fp = cm[0, 0], cm[0, 1]
+    denom = tn + fp
+    spec = 1 if denom == 0 else tn / denom
 
     return f1, sens, spec
 
