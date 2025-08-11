@@ -282,14 +282,14 @@ class AnalysisHGLM(Analysis):
             self.effect_list.append(eff)
 
     @classmethod
-    def cluster(cls, exp, mode='full'):
+    def cluster(cls, exp, mode='ward-proj'):
         """ hierarchical segmentation of image
 
         Args:
             exp (Experiment):
-            mode (str): 'ward', 'full'
-                'ward': reduces image-pooled spatial covariance
-                'full': reduces error in the full model
+            mode (str): 'ward', 'proj'
+                'ward-full': reduces image-pooled spatial covariance
+                'ward-proj': removes error
 
         Returns:
             children (np.array): (num_reg, 2) each col are index of child
@@ -297,9 +297,9 @@ class AnalysisHGLM(Analysis):
         """
         # get connectivity (ensures only neighboring voxels joined)
         assert exp.mask_idx.ndim in (2, 3), 'mask must be 2d or 3d'
-        assert mode in ('ward', 'full'), 'mode not recognized'
+        assert mode in ('ward-full', 'ward-proj'), 'mode not recognized'
 
-        if mode == 'ward':
+        if mode == 'ward-full':
             y = exp.y
         else:
             # compute qr decomposition
