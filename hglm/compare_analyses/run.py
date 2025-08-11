@@ -21,23 +21,27 @@ def run_one_exp(seed, hotel_tr, rough=None):
     np.seterr(all='warn')
 
     # trim experiment to reasonable size (for speedup)
-    extenter = ExtenterSphere(radius=param.radius)
-    mask = extenter(mask_idx=param.exp.mask_idx, seed=seed, contiguous=True)
-    exp_masked = param.exp.apply_mask(mask)
+    if param.radius is None:
+        exp = param.exp
+    else:
+        extenter = ExtenterSphere(radius=param.radius)
+        mask = extenter(mask_idx=param.exp.mask_idx, seed=seed,
+                        contiguous=True)
+        exp = param.exp.apply_mask(mask)
 
     # scale normalize before sampling minimum variance (each feature given
     # equal weight in sampling extent)
-    exp_masked = ExperimentScaled.from_exp(exp_masked)
+    exp = ExperimentScaled.from_exp(exp)
 
     # sample effect space
-    n = exp_masked.y.shape[2] * param.effect_perc
+    n = exp.y.shape[2] * param.effect_perc
     extenter = ExtenterMinVar(n=n)
 
     # impose effect
-    _exp, effect = exp_masked.impose_effect(extenter=extenter,
-                                            seed=seed,
-                                            hotel_tr=hotel_tr,
-                                            rough=rough)
+    _exp, effect = exp.impose_effect(extenter=extenter,
+                                     seed=seed,
+                                     hotel_tr=hotel_tr,
+                                     rough=rough)
 
     for Ana, kwargs in param.ana_kwargs_list:
         # prep output file
@@ -78,7 +82,7 @@ def run_one_exp(seed, hotel_tr, rough=None):
         # compute scores
         f1, sens, spec = get_score(mask_pred=mask_pred,
                                    mask_target=effect.mask,
-                                   mask_active=exp_masked.mask_idx > -1)
+                                   mask_active=exp.mask_idx > -1)
 
         stat_name = ana.get_stat.__name__.replace('get_', '')
 
