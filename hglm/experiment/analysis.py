@@ -1,5 +1,6 @@
 from _bisect import bisect_left
 from collections import defaultdict
+from collections import deque
 
 import numpy as np
 from scipy.ndimage import label
@@ -197,9 +198,6 @@ class AnalysisHGLM(Analysis):
                  **kwargs):
         super().__init__(exp, **kwargs)
 
-        assert 1 / n_perm_tailor < alpha_tailor, \
-            'inconsistent n_perm_tailor & alpha_tailor: all merge no prune'
-
         # constants
         b, num_img, num_vox = exp.y.shape
         num_reg = num_vox * 2 - 1
@@ -261,12 +259,13 @@ class AnalysisHGLM(Analysis):
                                   reg_active=self.size[0, :] >= min_size)
 
         # tailor significant regions (discard to make disjoint set)
-        sig_reg_list = np.where(self.pval <= alpha_fwer)[0]
-        reg_out_list = self.tailor(sig_reg_list=sig_reg_list,
-                                   alpha_tailor=alpha_tailor,
-                                   n_perm=n_perm_tailor,
-                                   exp=exp,
-                                   children=self.child_dict[0])
+        self.sig_reg_list = np.where(self.pval <= alpha_fwer)[0]
+        reg_out_list, self.homo_pval_dict = self.tailor(
+            sig_reg_list=self.sig_reg_list,
+            alpha_tailor=alpha_tailor,
+            n_perm=n_perm_tailor,
+            exp=exp,
+            children=self.child_dict[0])
 
         # build effects
         self.effect_list = list()
@@ -330,7 +329,7 @@ class AnalysisHGLM(Analysis):
 
     @classmethod
     def tailor(cls, sig_reg_list, children, exp, alpha_tailor, n_perm):
-        """ attempts to tailor to all, and only, a single effects voxels
+        """ attempts to tailor to regions with all, and only, one effect
 
         Args:
             sig_reg_list (list): list of regions declared significant
@@ -344,6 +343,9 @@ class AnalysisHGLM(Analysis):
         Returns:
             reg_out_list (list): index of prune regions
         """
+        assert 1 / n_perm <= alpha_tailor, \
+            'inconsistent n_perm_tailor & alpha_tailor: all merge no prune'
+
         sig_reg_list = list(np.sort(sig_reg_list))
 
         # build parent representation of graph
@@ -364,15 +366,16 @@ class AnalysisHGLM(Analysis):
         # e.g., if region 1 ⊂ region 2 ⊂ region 3, and all are significant,
         # then region 2 is considered a significant child of reg 3 — not reg 1
         sig_kid_dict = defaultdict(list)
+        sig_root_list = list()
         for reg_idx in sig_reg_list:
             _parent = get_sig_parent(reg_idx)
-            if _parent is not None:
+            if _parent is None:
+                sig_root_list.append(reg_idx)
+            else:
                 sig_kid_dict[_parent].append(reg_idx)
 
-        # build homo_pval_dict, keys are region index and values are pvals
-        # for homogeneity test (small pval = hetero)
-        homo_pval_dict = dict()
-        for parent, kid_list in sorted(sig_kid_dict.items()):
+        def get_pval(parent, kid_list):
+            """ run homogeneity test (small pval = hetero) """
             # mask is zero for not included voxels or constituent region
             # index for corresponding voxels.  voxels in the parent but
             # not in any significant kid have value of parent
@@ -393,19 +396,28 @@ class AnalysisHGLM(Analysis):
                                              y=exp.y[:, :, _b],
                                              partition=mask[b],
                                              n_perm=n_perm)
-            homo_pval_dict[parent] = (llr_list[0] >= llr_list).mean()
+            return (llr_list[0] >= llr_list).mean()
 
-        # start with leaf nodes & apply all merge operations
-        reg_out_set = set(sig_reg_list) - set(sig_kid_dict.keys())
-        for parent, pval in sorted(homo_pval_dict.items()):
-            kid_list = sig_kid_dict[parent]
-            if reg_out_set.issuperset(kid_list) and (pval >= alpha_tailor):
-                # effect_reg_set.issuperset(kid_list) ensures that no children
-                # have been found to be heterogenous (each has pval >=
-                # alpha_tailor)
+        # top-down: start from significant roots and split while heterogeneous
+        reg_out_set = set()
+        pval_dict = dict()
+        queue = deque(sig_root_list)
+        while queue:
+            reg_idx = queue.pop()
 
-                # merge (remove kids, add parent)
-                reg_out_set -= set(kid_list)
-                reg_out_set.add(parent)
+            kid_list = sig_kid_dict.get(reg_idx, None)
+            if kid_list is None:
+                # significant region has no kids, output it (its disjoint)
+                reg_out_set.add(reg_idx)
+                continue
 
-        return sorted(reg_out_set)
+            pval_dict[reg_idx] = get_pval(parent=reg_idx, kid_list=kid_list)
+
+            if pval_dict[reg_idx] > alpha_tailor:
+                # homogeneous, ready for output
+                reg_out_set.add(reg_idx)
+            else:
+                # heterogeneous -> descend into its significant children
+                queue.extend(kid_list)
+
+        return sorted(reg_out_set), pval_dict
