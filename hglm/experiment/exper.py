@@ -327,7 +327,8 @@ class Experiment(ExperimentImageOnly):
             y = scale_sigma(y, gain=sigma_gain)
 
         # get offset which imposes desired effect strength
-        offset = hglm.effect.compute_offset(x=self.x, y=y,
+        offset = hglm.effect.compute_offset(x=self.x,
+                                            y=y,
                                             contrast=self.contrast,
                                             hotel_tr=hotel_tr)
 
@@ -335,7 +336,9 @@ class Experiment(ExperimentImageOnly):
         exp = self.add_offset(offset, mask=mask, sigma_gain=sigma_gain)
 
         _rough = get_rough(y=exp.y, mask=mask, mask_idx=exp.mask_idx)
-        effect = hglm.effect.Effect.from_exp_mask(exp=exp, mask=mask,
+        effect = hglm.effect.Effect.from_exp_mask(exp=exp,
+                                                  mask=mask,
+                                                  seed=seed,
                                                   rough=_rough,
                                                   hotel_tr=hotel_tr)
 
