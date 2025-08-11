@@ -21,9 +21,11 @@ def iter_size_e_h(*, x, contrast, **kwargs):
     p01 = p1 + q[0].T @ q[0]
 
     for reg_idx, size, yout, ymean in iter_size_yout_ymean(**kwargs):
-        h = np.einsum('xbn,bc,ycn->xyn', ymean, p1 * size, ymean)
+        h = np.einsum('xbn,bc,ycn->xyn', ymean, p1 * size, ymean,
+                      optimize=True)
         e = yout - \
-            np.einsum('xbn,bc,ycn->xyn', ymean, p01 * size, ymean)
+            np.einsum('xbn,bc,ycn->xyn', ymean, p01 * size, ymean,
+                      optimize=True)
 
         yield reg_idx, size, e, h
 
@@ -117,7 +119,6 @@ def node_sum(x, children):
         summed[node_idx] = summed[c0] + summed[c1]
 
     return summed
-
 
 
 def get_f1_sens_spec(mask, mask_idx, children):
