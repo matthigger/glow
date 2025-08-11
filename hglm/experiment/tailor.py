@@ -42,7 +42,7 @@ def permute_llr_partition(x, y, partition, n_perm=200):
         s, ll = np.linalg.slogdet(sig)
         assert s != -1, 'error covariance not positive semi-definite'
 
-        return num_vox * ll
+        return ll
 
     labels = np.unique(partition)
     ll_whole = get_ll(y) * num_vox
