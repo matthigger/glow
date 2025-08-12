@@ -1,6 +1,6 @@
 import numpy as np
 
-from .mancova import decompose, get_manova
+from .mancova import decompose, get_mancova
 
 
 def permute_llr_partition(x, y, partition, n_perm=200):
@@ -11,7 +11,7 @@ def permute_llr_partition(x, y, partition, n_perm=200):
 
     log p(model0) / p(model1) = - n * det(e) + \sum_i n_i det(e_i)
 
-    where e is the error covariance (see get_manova()) of all voxels,
+    where e is the error covariance (see get_mancova()) of all voxels,
     n is the total number of voxels and e_i and n_i are the values
     for subset i
 
@@ -38,7 +38,7 @@ def permute_llr_partition(x, y, partition, n_perm=200):
 
     def get_ll(y):
         """ computes log likelihood of model """
-        e = get_manova(q_tup=q_tup, y=y)[0]
+        e = get_mancova(q_tup=q_tup, y=y)[0]
         s, ll = np.linalg.slogdet(e)
         assert s != -1, 'error covariance not positive semi-definite'
 

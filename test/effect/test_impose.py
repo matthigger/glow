@@ -1,6 +1,6 @@
 from hglm.effect.impose import *
 from hglm.experiment import Experiment
-from hglm.experiment import get_manova
+from hglm.experiment import get_mancova
 
 
 def test_compute_offset():
@@ -15,7 +15,7 @@ def test_compute_offset():
 
             # apply offset & compute hotel_tr
             _y = y + offset[..., np.newaxis]
-            e, h, _ = get_manova(x=x, y=_y, contrast=contrast)
+            e, h, _ = get_mancova(x=x, y=_y, contrast=contrast)
             hotel_tr_obs = get_hotel_tr(e, h)
 
             assert np.isclose(hotel_tr_exp, hotel_tr_obs)

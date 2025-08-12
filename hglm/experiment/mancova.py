@@ -1,7 +1,7 @@
 import numpy as np
 
 
-def get_manova(*, x=None, y, contrast=None, q_tup=None):
+def get_mancova(*, x=None, y, contrast=None, q_tup=None):
     assert (x is None) != (q_tup is None), 'x xor q required'
     if q_tup is None:
         assert contrast is not None

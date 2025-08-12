@@ -12,8 +12,8 @@ def iter_size_e_h(*, x, contrast, **kwargs):
     Yields:
         reg_idx (int): region index
         size (int): size, in voxels, of region
-        e (np.array): (b, b, num_perm) e of manova, for every permutation
-        h (np.array): (b, b, num_perm) h of manova, for every permutation
+        e (np.array): (b, b, num_perm) e of mancova, for every permutation
+        h (np.array): (b, b, num_perm) h of mancova, for every permutation
     """
     # get projection matrices
     q = decompose(x=x, contrast=contrast)
