@@ -12,15 +12,15 @@ def get_manova(*, x=None, y, contrast=None, q_tup=None):
     # compute sigma_sum (non-normalized spatial covariance)
     y_mean = y.mean(axis=2)
     yr = y.reshape((b, -1), order='F')
-    sigma_sum = yr @ yr.T - y_mean @ y_mean.T * num_vox
+    sigma = yr @ yr.T - y_mean @ y_mean.T * num_vox
 
     # compute observed e and h
     yq1 = y_mean @ q_tup[1].T
     yq2 = y_mean @ q_tup[2].T
     h = num_vox * yq1 @ yq1.T
-    e = sigma_sum + num_vox * yq2 @ yq2.T
+    e = sigma + num_vox * yq2 @ yq2.T
 
-    return e, h
+    return e, h, sigma
 
 
 def decompose(x, contrast):

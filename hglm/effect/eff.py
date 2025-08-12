@@ -23,7 +23,7 @@ class Effect:
 
     @classmethod
     def from_x_y_contrast(cls, x, y, contrast, **kwargs):
-        e, h = get_manova(x=x, y=y, contrast=contrast)
+        e, h, _ = get_manova(x=x, y=y, contrast=contrast)
         return cls(y_mean=y.mean(axis=2), e=e, h=h, **kwargs)
 
     def __init__(self, mask, y_mean, **kwargs):

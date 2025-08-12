@@ -38,8 +38,8 @@ def permute_llr_partition(x, y, partition, n_perm=200):
 
     def get_ll(y):
         """ computes log likelihood of model """
-        sig, _ = get_manova(q_tup=q_tup, y=y)
-        s, ll = np.linalg.slogdet(sig)
+        e = get_manova(q_tup=q_tup, y=y)[0]
+        s, ll = np.linalg.slogdet(e)
         assert s != -1, 'error covariance not positive semi-definite'
 
         return ll
