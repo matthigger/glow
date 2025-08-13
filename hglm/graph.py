@@ -21,11 +21,20 @@ def iter_size_e_h(*, x, contrast, **kwargs):
     p01 = p1 + q[0].T @ q[0]
 
     for reg_idx, size, yout, ymean in iter_size_yout_ymean(**kwargs):
-        h = np.einsum('xbn,bc,ycn->xyn', ymean, p1 * size, ymean,
-                      optimize=True)
-        e = yout - \
-            np.einsum('xbn,bc,ycn->xyn', ymean, p01 * size, ymean,
-                      optimize=True)
+        # move N up front to batch over it
+        Y = np.transpose(ymean, (2, 0, 1))  # (N, X, B)
+
+        # h = size * (Y @ p1) @ Y^T  for each n
+        Yp1 = np.matmul(Y, p1)  # (N, X, B)
+        H = size * np.matmul(Yp1, np.transpose(Y, (0, 2, 1)))  # (N, X, X)
+        h = np.transpose(H, (1, 2, 0))  # (X, X, N)
+
+        # proj = size * (Y @ p01) @ Y^T
+        Yp01 = np.matmul(Y, p01)  # (N, X, B)
+        PROJ = size * np.matmul(Yp01, np.transpose(Y, (0, 2, 1)))  # (N, X, X)
+        proj = np.transpose(PROJ, (1, 2, 0))  # (X, X, N)
+
+        e = yout - proj
 
         yield reg_idx, size, e, h
 
