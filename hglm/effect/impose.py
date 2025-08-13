@@ -72,8 +72,17 @@ def compute_offset(x, y, contrast, hotel_tr):
                        options=dict(maxiter=10000))
     assert res.success, 'optimization failed'
 
+    # flip signs on alpha to ensure that 1 + alpha_i is not negative
+    x_opt = res.x
+    for idx, alpha_i in enumerate(x_opt[:2]):
+        # post-hoc fix so 1+alpha_i >= 0 for i=0,1
+        if 1 + alpha_i < 0:
+            x_opt[idx] = -2 - alpha_i
+    assert np.isclose(obj(res.x), obj(x_opt)), 'alpha sign flip failure'
+
+
     # compute offset
-    alpha1, alpha2 = res.x
+    alpha1, alpha2 = x_opt
     offset = alpha1 * y_mean @ q[1].T @ q[1] + \
              alpha2 * y_mean @ q[2].T @ q[2]
 
