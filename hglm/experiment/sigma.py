@@ -24,35 +24,23 @@ def get_sigma_from_y(y):
     return get_sigma(size=size, yout=yout, ymean=ymean)
 
 
-def scale_sigma(y, gain=None, tr_sigma=None):
-    """ change space cov in y: multiply by gain or impose given tr_cov
+def stretch_sigma(y, scale=None):
+    """ scale spatial cov in y
 
     Args:
         y (np.array): (b, num_img, num_vox) image intensities
-        gain (float): non-negative scaling factor
-            space_cov_tr_out / space_cov_tr_in
-        tr_sigma (float): desired spatial covariance trace
+        scale (float): scaling factor
 
     Returns:
         y (np.array): (b, num_img, num_vox) image intensity, with scaling
             applied
     """
-    assert (gain is None) != (tr_sigma is None), 'gain xor tr_cov required'
-
-    b, num_img, num_vox = y.shape
-
     # de-mean
     mean = y.mean(axis=2)
     y_demean = y - mean[:, :, np.newaxis]
 
-    if gain is None:
-        # compute gain (if needed)
-        _y = y_demean.reshape((b, -1))
-        tr_sigma_in = np.trace(_y @ _y.T) / (num_img * num_vox)
-        gain = tr_sigma / tr_sigma_in
-
     # apply gain
-    y_demean *= np.sqrt(gain)
+    y_demean *= scale
 
     # re-mean
     return y_demean + mean[:, :, np.newaxis]

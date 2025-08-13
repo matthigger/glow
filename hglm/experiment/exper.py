@@ -11,7 +11,7 @@ import hglm.effect
 import hglm.mask
 from .load_image import load_image_color, load_image_nii
 from .permute import Permuter
-from .sigma import scale_sigma
+from .sigma import stretch_sigma
 from ..mask import get_mask_idx
 
 
@@ -221,13 +221,14 @@ class ExperimentImageOnly:
         d['y'] = y
         return type(self)(**d)
 
-    def add_offset(self, offset, mask=None, vox_idx=None, sigma_gain=None):
+    def add_offset(self, offset, mask=None, vox_idx=None, sigma_scale=None):
         """ returns new experiment with constant offset added to y
 
         Args:
             offset (np.array): (b, num_img) offset to apply to each voxel
             mask (np.array): boolean area of locations to apply offset to
             vox_idx (list): list of voxel index to apply effect to
+            sigma_scale (float): sigma scaling fator (see stretch_sigma())
 
         Returns:
             exp (Experiment): new experiment, with offset applied
@@ -242,9 +243,10 @@ class ExperimentImageOnly:
         y = deepcopy(self.y)
         y[:, :, vox_idx] += offset[..., np.newaxis]
 
-        if sigma_gain is not None:
+        if sigma_scale is not None:
             # scale sigma within mask, if passed
-            y[:, :, vox_idx] = scale_sigma(y=y[:, :, vox_idx], gain=sigma_gain)
+            y[:, :, vox_idx] = stretch_sigma(y=y[:, :, vox_idx],
+                                             scale=sigma_scale)
 
         # build new object
         d = deepcopy(self.__dict__)
