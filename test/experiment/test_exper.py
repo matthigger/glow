@@ -1,4 +1,3 @@
-import itertools
 from collections import namedtuple
 
 from hglm.experiment.exper import *
@@ -56,12 +55,10 @@ class TestExperimentOnlyImage:
         exp = Experiment.from_gauss(seed=seed)
         extenter = hglm.effect.ExtenterSphere(radius=3)
 
-        for hotel_tr, rough in itertools.product([0, 1, 100], [0, 2]):
+        for hotel_tr in [0, 1, 100]:
             _exp, effect = exp.impose_effect(seed=seed, extenter=extenter,
-                                             hotel_tr=hotel_tr, rough=rough)
-
-            if rough is not None:
-                assert np.isclose(effect.rough, rough)
+                                             hotel_tr=hotel_tr)
+            assert np.isclose(effect.hotel_tr, hotel_tr)
 
     def test_sample_x(self):
         seed = 0

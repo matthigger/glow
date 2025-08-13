@@ -100,7 +100,7 @@ class TestBigEffect:
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=100, seed=0)
     exp, effect = exp.impose_effect(seed=0,
                                     extenter=ExtenterSphere(radius=2),
-                                    hotel_tr=2, rough=.2)
+                                    hotel_tr=2)
 
     def test_hglm(self):
         analysis = AnalysisHGLM(TestBigEffect.exp, n_perm=25, alpha_fwer=.1)

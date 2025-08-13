@@ -60,7 +60,7 @@ def compute_offset(x, y, contrast, hotel_tr):
         a1, a2 = alpha
         return a1 ** 2 * yq1_norm2 + a2 ** 2 * yq2_norm2
 
-    # setup starting point & constraints (assuming no rough constraint)
+    # setup starting point & constraints
     x0 = np.zeros(2)
     constraints = [dict(type='eq', fun=constraint)]
 

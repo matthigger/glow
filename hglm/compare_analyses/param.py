@@ -9,10 +9,6 @@ seed_all = np.arange(10)
 # hotel_tr_all = np.logspace(np.log10(.03), np.log10(1), 15)
 hotel_tr_all = .15,
 
-# roughness (0 to 1 inclusive)
-rough_all = None,
-rough_all = np.linspace(0, 1, 15)
-
 # effect size, as ratio to total voxels in experiment
 effect_perc = .2
 

@@ -11,7 +11,7 @@ import hglm.effect
 import hglm.mask
 from .load_image import load_image_color, load_image_nii
 from .permute import Permuter
-from .sigma import get_rough, scale_sigma
+from .sigma import scale_sigma
 from ..mask import get_mask_idx
 
 
@@ -287,7 +287,7 @@ class Experiment(ExperimentImageOnly):
                           'origin (consider add_bias=True)')
 
     def impose_effect(self, hotel_tr, extenter=None, mask=None, seed=None,
-                      rough=None, **kwargs):
+                      **kwargs):
         """ builds experiment with effect imposed
 
         Args:
@@ -296,8 +296,6 @@ class Experiment(ExperimentImageOnly):
                 impose effect on
             mask (np.array): is passed, will impose effect on
             seed: seed of random number generator (for extent)
-            rough (float): roughness parameter of region, as compared to
-                rest of image
             **kwargs: passed to compute_offset(), either pval or f_stat
 
         Returns:
@@ -317,15 +315,6 @@ class Experiment(ExperimentImageOnly):
         effect_idx = self.mask_idx[mask]
         y = self.y[:, :, effect_idx]
 
-        if rough is None:
-            # no roughness imposed
-            sigma_gain = None
-        else:
-            # impose roughness (compute_offset won't change it later)
-            rough_init = get_rough(y=self.y, mask=mask, mask_idx=self.mask_idx)
-            sigma_gain = rough / rough_init
-            y = scale_sigma(y, gain=sigma_gain)
-
         # get offset which imposes desired effect strength
         offset = hglm.effect.compute_offset(x=self.x,
                                             y=y,
@@ -333,13 +322,11 @@ class Experiment(ExperimentImageOnly):
                                             hotel_tr=hotel_tr)
 
         # impose effect on y, build new experiment
-        exp = self.add_offset(offset, mask=mask, sigma_gain=sigma_gain)
+        exp = self.add_offset(offset, mask=mask)
 
-        _rough = get_rough(y=exp.y, mask=mask, mask_idx=exp.mask_idx)
         effect = hglm.effect.Effect.from_exp_mask(exp=exp,
                                                   mask=mask,
                                                   seed=seed,
-                                                  rough=_rough,
                                                   hotel_tr=hotel_tr)
 
         return exp, effect

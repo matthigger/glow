@@ -15,7 +15,7 @@ from hglm.experiment import ExperimentScaled
 from hglm.mask import get_score
 
 
-def run_one_exp(seed, hotel_tr, rough=None):
+def run_one_exp(seed, hotel_tr):
     # allows us to catch numpy's warnings
     warnings.filterwarnings('error')
     np.seterr(all='warn')
@@ -40,8 +40,7 @@ def run_one_exp(seed, hotel_tr, rough=None):
     # impose effect
     _exp, effect = exp.impose_effect(extenter=extenter,
                                      seed=seed,
-                                     hotel_tr=hotel_tr,
-                                     rough=rough)
+                                     hotel_tr=hotel_tr)
 
     for Ana, kwargs in param.ana_kwargs_list:
         # prep output file
@@ -89,7 +88,6 @@ def run_one_exp(seed, hotel_tr, rough=None):
         # dump summary
         d = {'hotel_tr': hotel_tr,
              'seed': int(seed),
-             'rough': effect.rough,
              'stat': stat_name,
              'Analysis': Ana.__name__,
              'f1': f1,
@@ -112,13 +110,13 @@ if __name__ == '__main__':
     from tqdm import tqdm
     from joblib import Parallel, delayed
     from itertools import product
-    from param import seed_all, hotel_tr_all, rough_all
+    from param import seed_all, hotel_tr_all
 
     # prep folder_out
     folder_out = prep_folder_out(files_to_copy=(param.__file__,))
 
-    kwargs_list = [dict(seed=s, hotel_tr=h, rough=r)
-                   for s, h, r in product(seed_all, hotel_tr_all, rough_all)]
+    kwargs_list = [dict(seed=s, hotel_tr=h)
+                   for s, h in product(seed_all, hotel_tr_all)]
 
     if param.n_jobs not in (0, 1):
         r = Parallel(n_jobs=param.n_jobs, verbose=10)(

@@ -71,7 +71,7 @@ def load_update_all(folder=None, verbose=True):
 
     # drop duplicates & check for conflicting results
     df.drop_duplicates(inplace=True)
-    subset = ['hotel_tr', 'seed', 'Analysis', 'stat', 'rough']
+    subset = ['hotel_tr', 'seed', 'Analysis', 'stat']
     assert (df.value_counts(subset=subset).max() == 1)
 
     # overwrite csv with latest / greatest
