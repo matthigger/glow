@@ -1,6 +1,5 @@
 from _bisect import bisect_left
 from collections import defaultdict
-from collections import deque
 
 import numpy as np
 from scipy.ndimage import label
@@ -342,6 +341,8 @@ class AnalysisHGLM(Analysis):
 
         Returns:
             reg_out_list (list): index of prune regions
+            pval_homo_dict (dict): keys are region index, values are the pval
+                of that region being homogenous (small=hetero)
         """
         assert 1 / n_perm <= alpha_tailor, \
             'inconsistent n_perm_tailor & alpha_tailor: all merge no prune'
@@ -366,12 +367,9 @@ class AnalysisHGLM(Analysis):
         # e.g., if region 1 ⊂ region 2 ⊂ region 3, and all are significant,
         # then region 2 is considered a significant child of reg 3 — not reg 1
         sig_kid_dict = defaultdict(list)
-        sig_root_list = list()
         for reg_idx in sig_reg_list:
             _parent = get_sig_parent(reg_idx)
-            if _parent is None:
-                sig_root_list.append(reg_idx)
-            else:
+            if _parent is not None:
                 sig_kid_dict[_parent].append(reg_idx)
 
         def get_pval(parent, kid_list):
@@ -398,26 +396,18 @@ class AnalysisHGLM(Analysis):
                                              n_perm=n_perm)
             return (llr_list[0] >= llr_list).mean()
 
-        # top-down: start from significant roots and split while heterogeneous
-        reg_out_set = set()
+        # start with leaf nodes & apply all necessary merge operations
         pval_dict = dict()
-        queue = deque(sig_root_list)
-        while queue:
-            reg_idx = queue.pop()
-
-            kid_list = sig_kid_dict.get(reg_idx, None)
-            if kid_list is None:
-                # significant region has no kids, output it (its disjoint)
-                reg_out_set.add(reg_idx)
+        reg_out_set = set(sig_reg_list) - set(sig_kid_dict.keys())
+        for parent, kid_list in sorted(sig_kid_dict.items()):
+            if not reg_out_set.issuperset(kid_list):
+                # some child deemed heterogeneous, parent pruned as a result
                 continue
 
-            pval_dict[reg_idx] = get_pval(parent=reg_idx, kid_list=kid_list)
-
-            if pval_dict[reg_idx] > alpha_tailor:
-                # homogeneous, ready for output
-                reg_out_set.add(reg_idx)
-            else:
-                # heterogeneous -> descend into its significant children
-                queue.extend(kid_list)
+            pval_dict[parent] = get_pval(parent, kid_list)
+            if pval_dict[parent] >= alpha_tailor:
+                # region is homogenous: merge (remove kids, add parent)
+                reg_out_set -= set(kid_list)
+                reg_out_set.add(parent)
 
         return sorted(reg_out_set), pval_dict
