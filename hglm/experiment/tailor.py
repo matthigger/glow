@@ -9,7 +9,7 @@ def permute_llr_partition(x, y, partition, n_perm=200):
     model0: all voxels follow same beta
     model1: each subset of partition has its own beta
 
-    log p(model0) / p(model1) = - n * det(e) + \sum_i n_i det(e_i)
+    log p(model0) / p(model1) = - det(e) + \sum_i det(e_i)
 
     where e is the error covariance (see get_mancova()) of all voxels,
     n is the total number of voxels and e_i and n_i are the values
@@ -45,7 +45,7 @@ def permute_llr_partition(x, y, partition, n_perm=200):
         return ll
 
     labels = np.unique(partition)
-    ll_whole = get_ll(y) * num_vox
+    ll_whole = get_ll(y)
     rng = np.random.default_rng(seed=0)
     llr_list = list()
     for perm_idx in range(n_perm):
@@ -57,7 +57,7 @@ def permute_llr_partition(x, y, partition, n_perm=200):
         term_sum = 0
         for label in labels:
             b = partition == label
-            term_sum += get_ll(y[:, :, b]) * b.sum()
+            term_sum += get_ll(y[:, :, b])
 
         llr_list.append(term_sum - ll_whole)
 
