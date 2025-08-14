@@ -42,7 +42,7 @@ def run_one_exp(seed, hotel_tr):
                                      seed=seed,
                                      hotel_tr=hotel_tr)
 
-    for Ana, kwargs in param.ana_kwargs_list:
+    for label, (Ana, kwargs) in param.ana_kwargs_dict.items():
         # prep output file
         uuid = str(uuid4())[:8]
         file_out = folder_out / 'out' / f'{uuid}_result.json'
@@ -56,6 +56,7 @@ def run_one_exp(seed, hotel_tr):
                 ana = Ana(exp=_exp, alpha_fwer=param.alpha_fwer, **kwargs)
             except Exception as e:
                 d = {'error_msg': traceback.format_exc(),
+                     'label': label,
                      'method': Ana.__name__,
                      'hotel_tr': hotel_tr,
                      'seed': int(seed)}
@@ -89,11 +90,14 @@ def run_one_exp(seed, hotel_tr):
         d = {'hotel_tr': hotel_tr,
              'seed': int(seed),
              'stat': stat_name,
+             'label': label,
              'Analysis': Ana.__name__,
              'f1': f1,
              'sens': sens,
              'spec': spec,
              'uuid': uuid,
+             'vox_total': int(ana.exp.y.shape[2]),
+             'vox_effect': int(effect.mask.sum()),
              'time_sec': total_time_sec}
         with open(file_out, 'w') as f:
             json.dump(d, f, sort_keys=True, indent=4)

@@ -65,7 +65,7 @@ def get_roys_root(e, h):
     return np.max(np.real(eigvals))
 
 
-stat_dict = {'neg_wilks': get_neg_wilks,
-             'pillai': get_pillai,
-             'hotelling': get_hotel_tr,
-             'roys_root': get_roys_root}
+stat_dict = {'Wilks': get_neg_wilks,
+             'Pillai': get_pillai,
+             'Hotelling Tr': get_hotel_tr,
+             'Roy Root': get_roys_root}

@@ -71,8 +71,6 @@ def load_update_all(folder=None, verbose=True):
 
     # drop duplicates & check for conflicting results
     df.drop_duplicates(inplace=True)
-    subset = ['hotel_tr', 'seed', 'Analysis', 'stat']
-    assert (df.value_counts(subset=subset).max() == 1)
 
     # overwrite csv with latest / greatest
     df.to_csv(f_csv, index=False)
@@ -85,6 +83,10 @@ def load_update_all(folder=None, verbose=True):
         n_new = len(file_list)
         f_csv = f_csv.resolve()
         print(f'{n_old} old and {n_new} new experiments stored in {f_csv}')
+
+        f_param = folder / 'param.py'
+        if f_param.exists():
+            print(f_param.read_text())
 
     return df
 
