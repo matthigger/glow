@@ -316,3 +316,35 @@ def test_graph_merge():
             assert n_node_twin.min() >= 1, 'common node not in any subgraph'
             assert all((_x == -1).all() for _x in map_to_new), \
                 'subgraph node not represented'
+
+
+def test_get_node_desc_dict_cases():
+    kwargs_all = dict(children=np.array([[0, 1],
+                                         [2, 3],
+                                         [4, 5]]),
+                      num_leaf=4)
+
+    case_list = [
+        # Case 1: Single internal region (4) -> no descendants
+        (dict(reg_idx_list=[4]), {4: []}),
+
+        # Case 2: Parent 4 with a leaf child (0) in reg_idx_list -> 0 is descendant of 4
+        (dict(reg_idx_list=[0, 4]), {0: [], 4: [0]}),
+
+        # Case 3: Chain 6->4->0, all in reg_idx_list -> 4 is descendant of 6, 0 of 4
+        (dict(reg_idx_list=[0, 4, 6]), {0: [], 4: [0], 6: [4]}),
+
+        # Case 4: Chain 6->4->0, only 0 and 6 in reg_idx_list -> 0 is immediate descendant of 6
+        (dict(reg_idx_list=[0, 6]), {0: [], 6: [0]}),
+
+        # Case 5: Two branches from 6 (4 and 5) both in reg_idx_list -> both immediate descendants
+        (dict(reg_idx_list=[4, 5, 6]), {4: [], 5: [], 6: [4, 5]}),
+
+        # Case 6: Mixed leaves and internal nodes
+        (dict(reg_idx_list=[6, 4, 1, 2]), {1: [], 2: [], 4: [1], 6: [2, 4]}),
+    ]
+
+    for case_kwargs, expected in case_list:
+        kwargs = case_kwargs | kwargs_all
+        out = get_node_desc_dict(**kwargs)
+        assert out == expected, f'Failed for kwargs={kwargs}'

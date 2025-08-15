@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 import numpy as np
 
 from hglm.experiment.mancova import decompose
@@ -364,3 +366,41 @@ def graph_merge(n_common, children_list):
     children = np.array(children)
 
     return map_to_new, children, size
+
+
+def get_node_desc_dict(reg_idx_list, children, num_leaf):
+    """ builds dict of first descendant of each region given
+
+    we say that a descendant is "first" if there is no other closer
+    descendant along the path from descendant to original region
+
+    Args:
+        reg_idx_list (list): list of region idx
+        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
+            sklearn.cluster.Ward.children_)
+        num_leaf (int): number of leafs in graph
+
+    Returns:
+        reg_desc_dict (dict): keys are reg_idx given, values are lists of
+            "first" descendant of the reg_idx which are in reg_idx_list
+    """
+    # build parent representation of graph
+    parent_all = get_parent(children, num_leaf=num_leaf)
+
+    reg_idx_list = set(reg_idx_list)
+    def _get_first_ancestor(reg_idx):
+        while True:
+            reg_idx = parent_all[reg_idx]
+            if reg_idx == -1:
+                return None
+            elif reg_idx in reg_idx_list:
+                return reg_idx
+
+    # build reg_desc_dict
+    reg_desc_dict = {reg_idx: list() for reg_idx in reg_idx_list}
+    for reg_idx in reg_idx_list:
+        first_ancestor = _get_first_ancestor(reg_idx)
+        if first_ancestor is not None:
+            reg_desc_dict[first_ancestor].append(reg_idx)
+
+    return {k: sorted(v) for k, v in reg_desc_dict.items()}

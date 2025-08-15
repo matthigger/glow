@@ -1,9 +1,8 @@
-from collections import defaultdict
-
 import numpy as np
 
 import hglm.graph
 from .mancova import decompose, get_mancova
+from ..graph import get_node_desc_dict
 
 
 def get_ll(y, **kwargs):
@@ -88,29 +87,6 @@ def tailor(sig_reg_list, children, exp, alpha_tailor, n_perm, _pval_dict=None):
 
     sig_reg_list = list(np.sort(sig_reg_list))
 
-    # build parent representation of graph
-    num_vox = exp.y.shape[2]
-    parent_all = hglm.graph.get_parent(children, num_leaf=num_vox)
-
-    def get_sig_parent(reg_idx):
-        """Yield parent nodes of reg_idx, stopping at -1"""
-        while True:
-            reg_idx = parent_all[reg_idx]
-            if reg_idx == -1:
-                return None
-            elif reg_idx in sig_reg_list:
-                return reg_idx
-
-    # List of all significant immediate descendants of a significant node.
-    # "Immediate" means the largest nested region directly below it:
-    # e.g., if region 1 ⊂ region 2 ⊂ region 3, and all are significant,
-    # then region 2 is considered a significant child of reg 3 — not reg 1
-    sig_kid_dict = defaultdict(list)
-    for reg_idx in sig_reg_list:
-        _parent = get_sig_parent(reg_idx)
-        if _parent is not None:
-            sig_kid_dict[_parent].append(reg_idx)
-
     def get_pval(parent, kid_list):
         """ run homogeneity test (small pval = hetero) """
         # build label map of partition of parent
@@ -126,6 +102,11 @@ def tailor(sig_reg_list, children, exp, alpha_tailor, n_perm, _pval_dict=None):
                                          partition=label_map[mask],
                                          n_perm=n_perm)
         return (llr_list[0] >= llr_list).mean()
+
+    # build parent representation of graph
+    sig_kid_dict = get_node_desc_dict(reg_idx_list=sig_reg_list,
+                                      children=children,
+                                      num_leaf=exp.y.shape[2])
 
     # start with leaf nodes & apply all necessary merge operations
     if _pval_dict is None:
