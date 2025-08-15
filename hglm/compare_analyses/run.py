@@ -12,7 +12,7 @@ import pandas as pd
 
 import param
 from hglm.effect import ExtenterSphere, ExtenterMinVar
-from hglm.experiment import ExperimentScaled
+from hglm.experiment import ExperimentScaled, tailor
 from hglm.graph import get_label_map
 from hglm.mask import get_score
 
@@ -32,17 +32,17 @@ def re_tailor(ana, alpha_tailor_all, mask_target, **kwargs):
     _pval_dict = ana.homo_pval_dict
     for _alpha_tailor in alpha_tailor_all:
         # re-tailor
-        reg_out_list, _pval_dict = ana.tailor(sig_reg_list=ana.sig_reg_list,
-                                              alpha_tailor=_alpha_tailor,
-                                              exp=ana.exp,
-                                              children=children,
-                                              _pval_dict=_pval_dict,
-                                              **kwargs)
+        reg_out_list, _pval_dict = tailor(sig_reg_list=ana.sig_reg_list,
+                                          alpha_tailor=_alpha_tailor,
+                                          exp=ana.exp,
+                                          children=children,
+                                          _pval_dict=_pval_dict,
+                                          **kwargs)
 
         # compute scores
         label_map = get_label_map(reg_out_list,
-                             mask_idx=ana.exp.mask_idx,
-                             children=children)
+                                  mask_idx=ana.exp.mask_idx,
+                                  children=children)
         f1, sens, spec = get_score(mask_pred=label_map > -1,
                                    mask_target=mask_target,
                                    mask_active=ana.exp.mask_idx > -1)
