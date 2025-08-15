@@ -1,6 +1,8 @@
 import bisect
 from itertools import product
 
+import pytest
+
 from hglm.graph import *
 
 
@@ -220,6 +222,34 @@ def binary_tree(n_node=100, seed=0, merge_smallest=True):
     assert list_size_node[0][0] == n_node
 
     return np.array(children)
+
+
+def test_get_mask_cases():
+    children = np.array([[0, 1],
+                         [2, 3],
+                         [4, 5]])
+    mask_idx = np.arange(4)  # constant for most cases
+    base_kwargs = dict(children=children, mask_idx=mask_idx)
+
+    case_list = [
+        # 1) Single internal region 4 -> covers leaves {0,1}
+        (dict(reg_idx_list=[4]), np.array([4, 4, -1, -1])),
+
+        # 2) Two disjoint regions 4->{0,1}, 5->{2,3}
+        (dict(reg_idx_list=[4, 5]), np.array([4, 4, 5, 5])),
+
+        # 3) Overlap: 4 and 1 overlap on leaf 1 -> smallest reg_idx wins
+        (dict(reg_idx_list=[1, 4]), np.array([4, 1, -1, -1]))
+    ]
+    for idx, (kwargs, expected) in enumerate(case_list):
+        out = get_label_map(**(kwargs | base_kwargs))
+        msg = f'Failed for case {idx} kwargs={kwargs}'
+        assert np.array_equal(out, expected), msg
+
+    # Error case: overlap with check_disjoint=True
+    with pytest.raises(RegIntersectError) as e:
+        get_label_map(reg_idx_list=[1, 4], **base_kwargs, check_disjoint=True)
+        assert str(e.value) == '1 intersects [4]'
 
 
 def test_graph_merge():

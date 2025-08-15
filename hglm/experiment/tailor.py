@@ -6,6 +6,15 @@ import hglm.graph
 from .mancova import decompose, get_mancova
 
 
+def get_ll(y, **kwargs):
+    """ computes log likelihood of model """
+    e = get_mancova(y=y, **kwargs)[0]
+    s, ll = np.linalg.slogdet(e)
+    assert s != -1, 'error covariance not positive semi-definite'
+
+    return ll
+
+
 def permute_llr_partition(x, y, partition, n_perm=200):
     r""" llr under permutation test: n regions share same beta
 
@@ -37,16 +46,8 @@ def permute_llr_partition(x, y, partition, n_perm=200):
     contrast = np.zeros(x.shape[0], dtype=bool)
     q_tup = decompose(x, contrast)
 
-    def get_ll(y):
-        """ computes log likelihood of model """
-        e = get_mancova(q_tup=q_tup, y=y)[0]
-        s, ll = np.linalg.slogdet(e)
-        assert s != -1, 'error covariance not positive semi-definite'
-
-        return ll
-
     labels = np.unique(partition)
-    ll_whole = get_ll(y)
+    ll_whole = get_ll(y, q_tup=q_tup)
     rng = np.random.default_rng(seed=0)
     llr_list = list()
     for perm_idx in range(n_perm):
@@ -58,7 +59,7 @@ def permute_llr_partition(x, y, partition, n_perm=200):
         term_sum = 0
         for label in labels:
             b = partition == label
-            term_sum += get_ll(y[:, :, b])
+            term_sum += get_ll(y[:, :, b], q_tup=q_tup)
 
         llr_list.append(term_sum - ll_whole)
 
@@ -112,25 +113,17 @@ def tailor(sig_reg_list, children, exp, alpha_tailor, n_perm, _pval_dict=None):
 
     def get_pval(parent, kid_list):
         """ run homogeneity test (small pval = hetero) """
-        # mask is zero for not included voxels or constituent region
-        # index for corresponding voxels.  voxels in the parent but
-        # not in any significant kid have value of parent
-        mask = hglm.graph.get_mask(reg_idx=parent,
-                                   mask_idx=exp.mask_idx,
-                                   children=children) * parent
-        for reg_idx in kid_list:
-            # replace voxels in mask with constituent regions
-            _mask = hglm.graph.get_mask(reg_idx=reg_idx,
-                                        mask_idx=exp.mask_idx,
-                                        children=children)
-            mask[_mask] = reg_idx
+        # build label map of partition of parent
+        label_map = hglm.graph.get_label_map(reg_idx_list=[parent] + kid_list,
+                                             mask_idx=exp.mask_idx,
+                                             children=children)
 
         # permutation test: is the parent homogenous?
-        b = mask.astype(bool)
-        _b = exp.mask_idx[b]
+        mask = label_map > -1
+        idx = exp.mask_idx[mask]
         llr_list = permute_llr_partition(x=exp.x,
-                                         y=exp.y[:, :, _b],
-                                         partition=mask[b],
+                                         y=exp.y[:, :, idx],
+                                         partition=label_map[mask],
                                          n_perm=n_perm)
         return (llr_list[0] >= llr_list).mean()
 

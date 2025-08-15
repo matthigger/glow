@@ -245,15 +245,45 @@ def get_parent(children, num_leaf):
     return parent
 
 
-def get_mask(reg_idx, mask_idx, children):
+class RegIntersectError(Exception):
+    pass
+
+
+def get_label_map(reg_idx_list, mask_idx, children, check_disjoint=False):
+    """Builds a mask_idx array from a list of region indices.
+
+    Args:
+        reg_idx_list (list[int]): list of region indices to include
+        mask_idx (np.array): -1 outside of label_map, otherwise contains smallest
+            reg_idx which contains this voxel in reg_idx_list
+        children (num_node, 2): array whose i-th row represents
+            node-n_common+i's children.  this representation contains a node
+            for any node in all input graphs
+        check_disjoint (bool): if True, ensure no regions intersect
+
+    Returns:
+        label_map (np.array): same shape as mask_idx, -1 outside regions,
+            reg_idx where voxel belongs to that region (smallest reg_idx if
+            intersections)
+    """
+    reg_idx_list = sorted(reg_idx_list, reverse=True)
+
     num_vox = (mask_idx > -1).sum()
-    mask = np.zeros(mask_idx.shape, dtype=bool)
-    for vox in iter_topo(children=children,
-                         num_leaf=num_vox,
-                         node_start=reg_idx,
-                         only_leaf=True):
-        mask[mask_idx == vox] = True
-    return mask
+    label_map = np.full(mask_idx.shape, -1, dtype=int)
+
+    for reg_idx in reg_idx_list:
+        for vox in iter_topo(children=children,
+                             num_leaf=num_vox,
+                             node_start=reg_idx,
+                             only_leaf=True):
+            target_voxels = (mask_idx == vox)
+            if check_disjoint and np.any(label_map[target_voxels] != -1):
+                reg_idx_list = np.unique(label_map[target_voxels])
+                raise RegIntersectError(f'{reg_idx} intersects {reg_idx_list}')
+
+            label_map[target_voxels] = reg_idx
+
+    return label_map
 
 
 def graph_merge(n_common, children_list):

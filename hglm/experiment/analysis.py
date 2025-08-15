@@ -268,11 +268,11 @@ class AnalysisHGLM(Analysis):
         # build effects
         self.effect_list = list()
         for reg_idx in reg_out_list:
-            mask = hglm.graph.get_mask(reg_idx=reg_idx,
-                                       mask_idx=exp.mask_idx,
-                                       children=self.child_dict[0])
+            label_map = hglm.graph.get_label_map(reg_idx_list=[reg_idx, ],
+                                                 mask_idx=exp.mask_idx,
+                                                 children=self.child_dict[0])
             pval_fwer = self.pval[reg_idx]
-            eff = hglm.effect.Effect.from_exp_mask(mask=mask,
+            eff = hglm.effect.Effect.from_exp_mask(mask=label_map > -1,
                                                    exp=exp,
                                                    reg_idx=reg_idx,
                                                    pval_fwer=pval_fwer)
