@@ -19,6 +19,26 @@ def get_mask_idx(mask):
     return mask_idx
 
 
+def get_entropy(mask_idx):
+    """ computes the entropy of a label map, ignoring labels < 0
+
+    Args:
+        mask_idx (np.array): -1 where voxels not to be analyzed, all other
+            voxels get a unique integer (voxel index)
+
+    Returns:
+        entropy (float): entropy in bits
+    """
+    valid_labels = mask_idx[mask_idx >= 0]
+    if valid_labels.size == 0:
+        return 0.0
+
+    value, count = np.unique(valid_labels, return_counts=True)
+    prob = count / count.sum()
+    entropy = -np.sum(prob * np.log2(prob))
+    return float(entropy)
+
+
 def get_score(mask_pred, mask_target, mask_active=None):
     """ gets f1, sens, spec scores per analysis given ground truth effect
     """
