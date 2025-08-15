@@ -2,12 +2,15 @@ import numpy as np
 
 import hglm
 
+# hcp or wgn
+source = 'hcp'
+
 # controls number of repetitions
-seed_all = np.arange(10)
+seed_all = np.arange(100)
 
 # hotelling's trace [0, inf) describes severity of effect
-# hotel_tr_all = np.logspace(np.log10(.03), np.log10(1), 15)
-hotel_tr_all = .15,
+hotel_tr_all = np.logspace(np.log10(.03), np.log10(1), 15)
+# hotel_tr_all = .15,
 
 # effect size, as ratio to total voxels in experiment
 effect_perc = .2
@@ -21,30 +24,39 @@ n_jobs = -1
 
 # parameters to be passed to Analysis constructor
 kwargs_hglm = dict(n_perm=100,
-                   n_perm_adj=10,
-                   n_perm_tailor=100,
+                   n_perm_adj=100,
+                   n_perm_tailor=1000,
                    min_size=1,
                    alpha_tailor=.05)
 kwargs_tfce = dict(n_perm=100)
 
-# analyses to run (use plot_result.ipynb to view result)
-ana_kwargs_list = ((hglm.experiment.AnalysisHGLM, kwargs_hglm),
-                   (hglm.experiment.AnalysisTFCE, kwargs_tfce))
+# analyses to run
+# compare HGLM and TFCE
+ana_kwargs_dict = {'HGLM': (hglm.experiment.AnalysisHGLM, kwargs_hglm)}
 
-# # compare all stats (use plot_result_stat.ipynb to view result)
-# ana_kwargs_list = list()
-# for get_stat in hglm.experiment.mancova.stat_dict.values():
+# 'TFCE': (hglm.experiment.AnalysisTFCE, kwargs_tfce)
+
+# # compare mancova stats
+# ana_kwargs_dict = dict()
+# for label, get_stat in hglm.experiment.mancova.stat_dict.items():
 #     kwargs = kwargs_hglm | dict(get_stat=get_stat)
-#     ana_kwargs_list.append((hglm.experiment.AnalysisHGLM, kwargs))
+#     ana_kwargs_dict[label] = hglm.experiment.AnalysisHGLM, kwargs
+
+# # compare different minimum region size for HGLM
+# ana_kwargs_dict = dict()
+# for min_size in [2 ** idx for idx in range(5)]:
+#     label = f'min_size{min_size}'
+#     kwargs = kwargs_hglm | dict(min_size=min_size)
+#     ana_kwargs_dict[label] = hglm.experiment.AnalysisHGLM, kwargs
+
+alpha_tailor_all = np.linspace(0, 1, 101)[1:]
 
 # saves output python objects (memory expensive)
-detail_save = False
+detail_save = True
 
 # writes json with input state causing an errors in Analysis.run(),
 # continues to next experiment
 error_save = True
-
-source = 'hcp'
 
 match source:
     case 'hcp':

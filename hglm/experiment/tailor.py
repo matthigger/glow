@@ -34,8 +34,6 @@ def permute_llr_partition(x, y, partition, n_perm=200):
     contrast = np.zeros(x.shape[0], dtype=bool)
     q_tup = decompose(x, contrast)
 
-    num_vox = y.shape[2]
-
     def get_ll(y):
         """ computes log likelihood of model """
         e = get_mancova(q_tup=q_tup, y=y)[0]

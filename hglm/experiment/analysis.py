@@ -258,7 +258,7 @@ class AnalysisHGLM(Analysis):
                                   reg_active=self.size[0, :] >= min_size)
 
         # tailor significant regions (discard to make disjoint set)
-        self.sig_reg_list = np.where(self.pval <= alpha_fwer)[0]
+        self.sig_reg_list = list(np.where(self.pval <= alpha_fwer)[0])
         reg_out_list, self.homo_pval_dict = self.tailor(
             sig_reg_list=self.sig_reg_list,
             alpha_tailor=alpha_tailor,
@@ -327,7 +327,8 @@ class AnalysisHGLM(Analysis):
         return children
 
     @classmethod
-    def tailor(cls, sig_reg_list, children, exp, alpha_tailor, n_perm):
+    def tailor(cls, sig_reg_list, children, exp, alpha_tailor, n_perm,
+               _pval_dict=None):
         """ attempts to tailor to regions with all, and only, one effect
 
         Args:
@@ -397,17 +398,20 @@ class AnalysisHGLM(Analysis):
             return (llr_list[0] >= llr_list).mean()
 
         # start with leaf nodes & apply all necessary merge operations
-        pval_dict = dict()
+        if _pval_dict is None:
+            _pval_dict = dict()
         reg_out_set = set(sig_reg_list) - set(sig_kid_dict.keys())
         for parent, kid_list in sorted(sig_kid_dict.items()):
             if not reg_out_set.issuperset(kid_list):
                 # some child deemed heterogeneous, parent pruned as a result
                 continue
 
-            pval_dict[parent] = get_pval(parent, kid_list)
-            if pval_dict[parent] >= alpha_tailor:
+            if parent not in _pval_dict:
+                _pval_dict[parent] = get_pval(parent, kid_list)
+
+            if _pval_dict[parent] >= alpha_tailor:
                 # region is homogenous: merge (remove kids, add parent)
                 reg_out_set -= set(kid_list)
                 reg_out_set.add(parent)
 
-        return sorted(reg_out_set), pval_dict
+        return sorted(reg_out_set), _pval_dict

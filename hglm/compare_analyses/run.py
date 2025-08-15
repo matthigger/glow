@@ -8,11 +8,47 @@ from uuid import uuid4
 
 import cloudpickle as pickle
 import numpy as np
+import pandas as pd
 
 import param
 from hglm.effect import ExtenterSphere, ExtenterMinVar
 from hglm.experiment import ExperimentScaled
+from hglm.graph import get_mask
 from hglm.mask import get_score
+
+
+def re_tailor(ana, alpha_tailor_all, mask_target, **kwargs):
+    """ re-runs tailor, returns dataframe of scores at every alpha_tailor
+
+    Args:
+        alpha_tailor_all (np.array): all alpha_tailor values to run
+        mask_target (mask): effect mask (target)
+
+    Returns:
+        df (pd.DataFrame):
+    """
+    rows = list()
+    children = ana.child_dict[0]
+    _pval_dict = ana.homo_pval_dict
+    for _alpha_tailor in alpha_tailor_all:
+        # re-tailor
+        reg_out_list, _pval_dict = ana.tailor(sig_reg_list=ana.sig_reg_list,
+                                              alpha_tailor=_alpha_tailor,
+                                              exp=ana.exp,
+                                              children=children,
+                                              _pval_dict=_pval_dict,
+                                              **kwargs)
+
+        # compute scores
+        mask = sum([get_mask(reg_idx,
+                             mask_idx=ana.exp.mask_idx,
+                             children=children)
+                    for reg_idx in reg_out_list])
+        f1, sens, spec = get_score(mask_pred=mask, mask_target=mask_target)
+        rows.append(dict(alpha_tailor=_alpha_tailor, f1=f1, sens=sens,
+                         spec=spec))
+
+    return pd.DataFrame(rows)
 
 
 def run_one_exp(seed, hotel_tr):
@@ -107,6 +143,14 @@ def run_one_exp(seed, hotel_tr):
             file_out = folder_out / 'out' / f'{uuid}_detail.p.gz'
             with gzip.open(file_out, 'wb') as f:
                 pickle.dump((ana, effect), f)
+
+        if param.alpha_tailor_all is not None and ana.sig_reg_list:
+            df = re_tailor(ana, param.alpha_tailor_all,
+                           mask_target=effect.mask,
+                           n_perm=param.kwargs_hglm['n_perm_tailor'])
+            df['seed'] = int(seed)
+            df['hotel_tr'] = hotel_tr
+            df.to_csv(folder_out / 'out' / f'{uuid}_alpha_tailor.csv')
 
 
 if __name__ == '__main__':
