@@ -1,5 +1,4 @@
 from _bisect import bisect_left
-from collections import defaultdict
 
 import numpy as np
 from scipy.ndimage import label
@@ -13,7 +12,7 @@ import hglm.tfce
 from .exper import ExperimentScaled
 from .mancova import get_hotel_tr
 from .permute import Permuter
-from .tailor import permute_llr_partition
+from .tailor import tailor
 
 
 class Analysis:
@@ -259,7 +258,7 @@ class AnalysisHGLM(Analysis):
 
         # tailor significant regions (discard to make disjoint set)
         self.sig_reg_list = list(np.where(self.pval <= alpha_fwer)[0])
-        reg_out_list, self.homo_pval_dict = self.tailor(
+        reg_out_list, self.homo_pval_dict = tailor(
             sig_reg_list=self.sig_reg_list,
             alpha_tailor=alpha_tailor,
             n_perm=n_perm_tailor,
@@ -325,93 +324,3 @@ class AnalysisHGLM(Analysis):
         children = ward_tree(X=y.T, connectivity=connectivity)[0]
 
         return children
-
-    @classmethod
-    def tailor(cls, sig_reg_list, children, exp, alpha_tailor, n_perm,
-               _pval_dict=None):
-        """ attempts to tailor to regions with all, and only, one effect
-
-        Args:
-            sig_reg_list (list): list of regions declared significant
-            children (np.array): (num_reg, 2) each col are index of child
-                regions
-            exp (Experiment): the source data to run experiment on
-            alpha_tailor (float): threshold at which a prune event happens (a
-                significant region and all its ancestors are discarded)
-            n_perm (int): number of permutations to perform
-
-        Returns:
-            reg_out_list (list): index of prune regions
-            pval_homo_dict (dict): keys are region index, values are the pval
-                of that region being homogenous (small=hetero)
-        """
-        assert 1 / n_perm <= alpha_tailor, \
-            'inconsistent n_perm_tailor & alpha_tailor: all merge no prune'
-
-        sig_reg_list = list(np.sort(sig_reg_list))
-
-        # build parent representation of graph
-        num_vox = exp.y.shape[2]
-        parent_all = hglm.graph.get_parent(children, num_leaf=num_vox)
-
-        def get_sig_parent(reg_idx):
-            """Yield parent nodes of reg_idx, stopping at -1"""
-            while True:
-                reg_idx = parent_all[reg_idx]
-                if reg_idx == -1:
-                    return None
-                elif reg_idx in sig_reg_list:
-                    return reg_idx
-
-        # List of all significant immediate descendants of a significant node.
-        # "Immediate" means the largest nested region directly below it:
-        # e.g., if region 1 ⊂ region 2 ⊂ region 3, and all are significant,
-        # then region 2 is considered a significant child of reg 3 — not reg 1
-        sig_kid_dict = defaultdict(list)
-        for reg_idx in sig_reg_list:
-            _parent = get_sig_parent(reg_idx)
-            if _parent is not None:
-                sig_kid_dict[_parent].append(reg_idx)
-
-        def get_pval(parent, kid_list):
-            """ run homogeneity test (small pval = hetero) """
-            # mask is zero for not included voxels or constituent region
-            # index for corresponding voxels.  voxels in the parent but
-            # not in any significant kid have value of parent
-            mask = hglm.graph.get_mask(reg_idx=parent,
-                                       mask_idx=exp.mask_idx,
-                                       children=children) * parent
-            for reg_idx in kid_list:
-                # replace voxels in mask with constituent regions
-                _mask = hglm.graph.get_mask(reg_idx=reg_idx,
-                                            mask_idx=exp.mask_idx,
-                                            children=children)
-                mask[_mask] = reg_idx
-
-            # permutation test: is the parent homogenous?
-            b = mask.astype(bool)
-            _b = exp.mask_idx[b]
-            llr_list = permute_llr_partition(x=exp.x,
-                                             y=exp.y[:, :, _b],
-                                             partition=mask[b],
-                                             n_perm=n_perm)
-            return (llr_list[0] >= llr_list).mean()
-
-        # start with leaf nodes & apply all necessary merge operations
-        if _pval_dict is None:
-            _pval_dict = dict()
-        reg_out_set = set(sig_reg_list) - set(sig_kid_dict.keys())
-        for parent, kid_list in sorted(sig_kid_dict.items()):
-            if not reg_out_set.issuperset(kid_list):
-                # some child deemed heterogeneous, parent pruned as a result
-                continue
-
-            if parent not in _pval_dict:
-                _pval_dict[parent] = get_pval(parent, kid_list)
-
-            if _pval_dict[parent] >= alpha_tailor:
-                # region is homogenous: merge (remove kids, add parent)
-                reg_out_set -= set(kid_list)
-                reg_out_set.add(parent)
-
-        return sorted(reg_out_set), _pval_dict
