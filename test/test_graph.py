@@ -318,34 +318,51 @@ def test_graph_merge():
                 'subgraph node not represented'
 
 
-def test_get_node_desc_dict_cases():
-    parent = get_parent(children=np.array([[0, 1],
-                                           [2, 3],
-                                           [4, 5]]),
-                        num_leaf=4)
-    kwargs_all = dict(parent=parent)
+SE = SUBGRAPH_EXCLUDE
 
-    case_list = [
-        # Case 1: Single internal region (4) -> no descendants
-        (dict(reg_idx_list=[4]), {4: []}),
 
-        # Case 2: Parent 4 with a leaf child (0) in reg_idx_list -> 0 is descendant of 4
-        (dict(reg_idx_list=[0, 4]), {0: [], 4: [0]}),
+class TestSubgraph:
+    def test_line(self):
+        # init
+        parent = [1, 2, 3, -1]
+        g = Subgraph(parent=parent)
+        assert np.allclose(g.included, [1, 1, 1, 1])
+        assert np.allclose(g.parent, parent)
+        assert g.children == {0: [], 1: [0], 2: [1], 3: [2]}
 
-        # Case 3: Chain 6->4->0, all in reg_idx_list -> 4 is descendant of 6, 0 of 4
-        (dict(reg_idx_list=[0, 4, 6]), {0: [], 4: [0], 6: [4]}),
+        # rm node 0
+        g.modify(nodes_rm=[0])
+        assert np.allclose(g.included, [0, 1, 1, 1])
+        assert np.allclose(g.parent, [SE, 2, 3, SE])
+        assert g.children == {1: [], 2: [1], 3: [2]}
 
-        # Case 4: Chain 6->4->0, only 0 and 6 in reg_idx_list -> 0 is immediate descendant of 6
-        (dict(reg_idx_list=[0, 6]), {0: [], 6: [0]}),
+        # add node 0 back in, rm node 2
+        g.modify(nodes_add=[0], nodes_rm=[2])
+        assert np.allclose(g.included, [1, 1, 0, 1])
+        assert np.allclose(g.parent, [1, 3, SE, SE])
+        assert g.children == {0: [], 1: [0], 3: [1]}
 
-        # Case 5: Two branches from 6 (4 and 5) both in reg_idx_list -> both immediate descendants
-        (dict(reg_idx_list=[4, 5, 6]), {4: [], 5: [], 6: [4, 5]}),
+    def test_tree(self):
+        # [4, 4, 5, 5, 6, 6, -1]
+        parent = get_parent(children=np.array([[0, 1],
+                                               [2, 3],
+                                               [4, 5]]), num_leaf=4)
+        g = Subgraph(parent=parent)
+        assert np.allclose(g.included, [1, 1, 1, 1, 1, 1, 1])
+        assert np.allclose(g.parent, parent)
+        assert g.children == {0: [], 1: [], 2: [], 3: [],
+                              4: [0, 1], 5: [2, 3], 6: [4, 5]}
 
-        # Case 6: Mixed leaves and internal nodes
-        (dict(reg_idx_list=[6, 4, 1, 2]), {1: [], 2: [], 4: [1], 6: [2, 4]}),
-    ]
+        # rm node 0
+        g.modify(nodes_rm=[0])
+        assert np.allclose(g.included, [0, 1, 1, 1, 1, 1, 1])
+        assert np.allclose(g.parent, [SE, 4, 5, 5, 6, 6, SE])
+        assert g.children == {1: [], 2: [], 3: [],
+                              4: [1], 5: [2, 3], 6: [4, 5]}
 
-    for case_kwargs, expected in case_list:
-        kwargs = case_kwargs | kwargs_all
-        out = get_node_fdesc_dict(**kwargs)
-        assert out == expected, f'Failed for kwargs={kwargs}'
+        # add node 0 back in, rm node 2 and 4
+        g.modify(nodes_add=[0], nodes_rm=[2, 4])
+        assert np.allclose(g.included, [1, 1, 0, 1, 0, 1, 1])
+        assert np.allclose(g.parent, [6, 6, SE, 5, SE, 6, SE])
+        assert g.children == {0: [], 1: [], 3: [],
+                              5: [3], 6: [0, 1, 5]}

@@ -1,5 +1,3 @@
-from collections import defaultdict
-
 import numpy as np
 
 from hglm.experiment.mancova import decompose
@@ -368,34 +366,63 @@ def graph_merge(n_common, children_list):
     return map_to_new, children, size
 
 
-def get_node_fdesc_dict(reg_idx_list, parent):
-    """ builds dict of first descendant of each region given
+SUBGRAPH_EXCLUDE = -1
 
-    we say that a descendant is "first" if there is no other closer
-    descendant along the path from descendant to original region
 
-    Args:
-        reg_idx_list (list): list of region idx
-        parent (np.array): parent[idx] gives the parent of node idx.
+class Subgraph:
+    """ a subgraph which "short-circuits" parent and child relations
 
-    Returns:
-        reg_fdesc_dict (dict): keys are reg_idx given, values are lists of
-            "first" descendant of the reg_idx which are in reg_idx_list
+    short-circuit behavior: suppose A is a child of B which is a child of C in
+    the full graph.  if only A and C are in the subgraph (not B) then: A is
+    a "child" of C, and C is a "parent" of A
+
+    Attributes:
+        _parent_full (np.array): (num_vox) parent of the full graph
+        included (np.array): (num_vox) boolean, true if node in subgraph
+        parent (np.array): (num_vox) parent[idx] is "parent" of node idx
+            (or SUBGRAPH_EXCLUDE if idx is not in the graph)
+        children (dict): children[idx] is a sorted list of the children of
+            node idx (nodes without children are empty lists, nodes excluded
+            are not keys of this dictionary)
     """
-    reg_idx_list = set(reg_idx_list)
-    def _get_first_ancestor(reg_idx):
-        while True:
-            reg_idx = parent[reg_idx]
-            if reg_idx == -1:
-                return None
-            elif reg_idx in reg_idx_list:
-                return reg_idx
 
-    # build reg_fdesc_dict
-    reg_fdesc_dict = {reg_idx: list() for reg_idx in reg_idx_list}
-    for reg_idx in reg_idx_list:
-        first_ancestor = _get_first_ancestor(reg_idx)
-        if first_ancestor is not None:
-            reg_fdesc_dict[first_ancestor].append(reg_idx)
+    def __init__(self, parent, included=None):
+        if included is None:
+            # all nodes included in subgraph
+            included = np.ones(len(parent), dtype=bool)
 
-    return {k: sorted(v) for k, v in reg_fdesc_dict.items()}
+        self._parent_full = parent.copy()
+        self.included = included.copy()
+        self._rebuild()
+
+    def modify(self, nodes_add=tuple(), nodes_rm=tuple()):
+        for node in nodes_add:
+            self.included[node] = True
+        for node in nodes_rm:
+            self.included[node] = False
+        self._rebuild()
+
+    def _rebuild(self):
+        """ rebuild children dict with short-circuited relationships """
+
+        def _get_ss_parent(node):
+            # short-circuit parent
+            while True:
+                node = self._parent_full[node]
+                if node == SUBGRAPH_EXCLUDE:
+                    return None
+                elif self.included[node]:
+                    return node
+
+        node_list = np.where(self.included)[0]
+        self.children = {node: [] for node in node_list}
+        self.parent = np.full_like(self._parent_full,
+                                   fill_value=SUBGRAPH_EXCLUDE)
+        for kid in node_list:
+            par = _get_ss_parent(kid)
+            if par is not None:
+                self.children[par].append(kid)
+                self.parent[kid] = par
+
+        # sort kids
+        self.children = {k: sorted(v) for k, v in self.children.items()}
