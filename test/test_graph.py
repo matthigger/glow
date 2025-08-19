@@ -319,10 +319,11 @@ def test_graph_merge():
 
 
 def test_get_node_desc_dict_cases():
-    kwargs_all = dict(children=np.array([[0, 1],
-                                         [2, 3],
-                                         [4, 5]]),
-                      num_leaf=4)
+    parent = get_parent(children=np.array([[0, 1],
+                                           [2, 3],
+                                           [4, 5]]),
+                        num_leaf=4)
+    kwargs_all = dict(parent=parent)
 
     case_list = [
         # Case 1: Single internal region (4) -> no descendants
@@ -346,5 +347,5 @@ def test_get_node_desc_dict_cases():
 
     for case_kwargs, expected in case_list:
         kwargs = case_kwargs | kwargs_all
-        out = get_node_desc_dict(**kwargs)
+        out = get_node_fdesc_dict(**kwargs)
         assert out == expected, f'Failed for kwargs={kwargs}'
