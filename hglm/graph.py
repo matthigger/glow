@@ -426,3 +426,24 @@ class Subgraph:
 
         # sort kids
         self.children = {k: sorted(v) for k, v in self.children.items()}
+
+    def iter_desc(self, node, incl_self=False):
+        assert self.included[node]
+
+        # gets all descendants of a given region
+        if incl_self:
+            yield node
+
+        for _node in self.children[node]:
+            yield from self.iter_desc(_node, incl_self=True)
+
+    def iter_ancest(self, node, incl_self=False):
+        assert self.included[node]
+
+        # gets all ancestors of given region
+        if incl_self:
+            yield node
+
+        while self.parent[node] != SUBGRAPH_EXCLUDE:
+            node = self.parent[node]
+            yield node
