@@ -48,9 +48,6 @@ ana_kwargs_dict = {'HGLM': (hglm.experiment.AnalysisHGLM, kwargs_hglm),
 #     kwargs = kwargs_hglm | dict(min_size=min_size)
 #     ana_kwargs_dict[label] = hglm.experiment.AnalysisHGLM, kwargs
 
-# alpha_tailor_all = np.linspace(0, 1, 101)[1:]
-alpha_tailor_all = None
-
 # saves output python objects (memory expensive)
 detail_save = True
 

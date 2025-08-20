@@ -108,14 +108,6 @@ def run_one_exp(seed, hotel_tr):
             with gzip.open(file_out, 'wb') as f:
                 pickle.dump((ana, effect), f)
 
-        if param.alpha_tailor_all is not None and ana.sig_reg_list:
-            df = re_tailor(ana, param.alpha_tailor_all,
-                           mask_target=effect.mask,
-                           n_perm=param.kwargs_hglm['n_perm_tailor'])
-            df['seed'] = int(seed)
-            df['hotel_tr'] = hotel_tr
-            df.to_csv(folder_out / 'out' / f'{uuid}_alpha_tailor.csv')
-
 
 if __name__ == '__main__':
     from data import prep_folder_out

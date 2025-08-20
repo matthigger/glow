@@ -15,7 +15,7 @@ def get_path_result():
     path_result.mkdir(parents=True, exist_ok=True)
     return path_result
 
-def prep_folder_out(files_to_copy=tuple()):
+def prep_folder_out(files_to_copy=tuple(), verbose=True):
     path_result = get_path_result()
     timestamp = datetime.now().strftime('%y-%m-%d_%H%M')
     folder_out = pathlib.Path(path_result) / f'./exp_{timestamp}'
@@ -32,6 +32,9 @@ def prep_folder_out(files_to_copy=tuple()):
     # store copy of given file (stores parameters with results)
     for file in files_to_copy:
         shutil.copy(file, folder_out / pathlib.Path(file).name)
+
+    if verbose:
+        print(f'prepared: {folder_out}')
 
     return folder_out
 
