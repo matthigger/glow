@@ -1,5 +1,8 @@
+import warnings
+
 import numpy as np
 
+from hglm.experiment.permute import NotEnoughPermutations
 from .mancova import decompose, get_mancova
 from .permute import get_perm_iter
 from ..graph import get_label_map, SCGraph, GRAPH_EXCLUDE
@@ -88,10 +91,12 @@ def get_homo_pval(label_map, exp, n_perm):
 
     # compute llr
     llr = list()
-    perm_iter = get_perm_iter(partition=partition, n_perm=n_perm, seed=0)
-    for perm_idx, partition in enumerate(perm_iter):
-        label_map[mask] = partition
-        llr.append(get_llr(label_map, exp, _q_tup=_q_tup, _skip_homo=True))
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=NotEnoughPermutations)
+        perm_iter = get_perm_iter(partition=partition, n_perm=n_perm, seed=0)
+        for perm_idx, partition in enumerate(perm_iter):
+            label_map[mask] = partition
+            llr.append(get_llr(label_map, exp, _q_tup=_q_tup, _skip_homo=True))
 
     # compute p_value
     llr = np.array(llr)

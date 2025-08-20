@@ -1,10 +1,10 @@
-from collections import Counter
 from itertools import permutations
 from math import factorial
 
+import pytest
+
 from hglm.experiment import Experiment
 from hglm.experiment.permute import *
-from hglm.experiment.permute import get_n_perm_possible, get_perm_iter_all
 
 
 class TestPermuter:
@@ -66,6 +66,7 @@ def test_get_perm_iter():
     assert len(part_list) == 3
 
     # if there aren't sufficient permutations, go through the list exhaustively
-    part_list = [tuple(p) for p in get_perm_iter(partition, n_perm=1e6)]
-    assert part_list[0] == partition
-    assert len(set(part_list)) == len(part_list)
+    with pytest.warns(NotEnoughPermutations):
+        part_list = [tuple(p) for p in get_perm_iter(partition, n_perm=1e6)]
+        assert part_list[0] == partition
+        assert len(set(part_list)) == len(part_list)
