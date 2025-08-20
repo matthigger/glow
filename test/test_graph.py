@@ -318,7 +318,7 @@ def test_graph_merge():
                 'subgraph node not represented'
 
 
-SE = SUBGRAPH_EXCLUDE
+SE = GRAPH_EXCLUDE
 
 
 class TestSubgraph:
@@ -330,7 +330,7 @@ class TestSubgraph:
     def test_line(self):
         # init
         parent = [1, 2, 3, -1]
-        g = Subgraph(parent=parent)
+        g = SCGraph(parent=parent)
         assert np.allclose(g.included, [1, 1, 1, 1])
         assert np.allclose(g.parent, parent)
         assert g.children == {0: [], 1: [0], 2: [1], 3: [2]}
@@ -348,7 +348,7 @@ class TestSubgraph:
         assert g.children == {0: [], 1: [0], 3: [1]}
 
     def test_tree(self):
-        g = Subgraph(parent=self.parent_tree)
+        g = SCGraph(parent=self.parent_tree)
         assert np.allclose(g.included, [1, 1, 1, 1, 1, 1, 1])
         assert np.allclose(g.parent, self.parent_tree)
         assert g.children == {0: [], 1: [], 2: [], 3: [],
@@ -369,7 +369,7 @@ class TestSubgraph:
                               5: [3], 6: [0, 1, 5]}
 
     def test_iter_desc_full_tree(self):
-        g = Subgraph(self.parent_tree)
+        g = SCGraph(self.parent_tree)
 
         # root sees everything in DFS order
         assert list(g.iter_desc(6)) == [4, 0, 1, 5, 2, 3]
@@ -384,7 +384,7 @@ class TestSubgraph:
         assert list(g.iter_desc(0, incl_self=True)) == [0]
 
     def test_iter_ancest_full_tree(self):
-        g = Subgraph(self.parent_tree)
+        g = SCGraph(self.parent_tree)
 
         assert list(g.iter_ancest(0)) == [4, 6]
         assert list(g.iter_ancest(0, incl_self=True)) == [0, 4, 6]
@@ -395,7 +395,7 @@ class TestSubgraph:
         assert list(g.iter_ancest(6, incl_self=True)) == [6]
 
     def test_iter_desc_full_tree(self):
-        g = Subgraph(self.parent_tree)
+        g = SCGraph(self.parent_tree)
 
         assert list(g.iter_desc(0)) == []
         assert list(g.iter_desc(0, incl_self=True)) == [0]
@@ -407,7 +407,7 @@ class TestSubgraph:
         assert list(g.iter_desc(6, incl_self=True)) == [6, 4, 0, 1, 5, 2, 3]
 
     def test_iter_desc_with_removals(self):
-        g = Subgraph(self.parent_tree)
+        g = SCGraph(self.parent_tree)
         g.modify(nodes_rm=[4])
 
         # root no longer has child 4 directly, 0 and 1 should short-circuit
@@ -418,7 +418,7 @@ class TestSubgraph:
         assert list(g.iter_ancest(1)) == [6]
 
     def test_iter_ancest_with_removals(self):
-        g = Subgraph(self.parent_tree)
+        g = SCGraph(self.parent_tree)
         g.modify(nodes_rm=[0, 2, 4])
 
         # 2 and 3 should now attach directly to 6

@@ -366,19 +366,22 @@ def graph_merge(n_common, children_list):
     return map_to_new, children, size
 
 
-SUBGRAPH_EXCLUDE = -1
+GRAPH_EXCLUDE = -1
 
 
-class Subgraph:
-    """ a subgraph which "short-circuits" parent and child relations
+class SCGraph:
+    """ a graph which "short-circuits" parent and child relations
 
     short-circuit behavior: suppose A is a child of B which is a child of C in
-    the full graph.  if only A and C are in the subgraph (not B) then: A is
+    the full graph.  if only A and C are in the "subgraph" (not B) then: A is
     a "child" of C, and C is a "parent" of A
+
+    subgraph is in scare quotes as our SCGraph isn't a proper subgraph: it
+    contains edges not in the original
 
     Attributes:
         _parent_full (np.array): (num_vox) parent of the full graph
-        included (np.array): (num_vox) boolean, true if node in subgraph
+        included (np.array): (num_vox) boolean, true if node in "subgraph"
         parent (np.array): (num_vox) parent[idx] is "parent" of node idx
             (or SUBGRAPH_EXCLUDE if idx is not in the graph)
         children (dict): children[idx] is a sorted list of the children of
@@ -386,10 +389,17 @@ class Subgraph:
             are not keys of this dictionary)
     """
 
-    def __init__(self, parent, included=None):
-        if included is None:
-            # all nodes included in subgraph
+    @classmethod
+    def from_children(cls, children, num_leaf, **kwargs):
+        parent = get_parent(children, num_leaf)
+        return cls(parent, **kwargs)
+
+    def __init__(self, parent, subset=None):
+        if subset is None:
             included = np.ones(len(parent), dtype=bool)
+        else:
+            included = np.zeros(len(parent), dtype=bool)
+            included[subset] = True
 
         self._parent_full = parent.copy()
         self.included = included.copy()
@@ -409,7 +419,7 @@ class Subgraph:
             # short-circuit parent
             while True:
                 node = self._parent_full[node]
-                if node == SUBGRAPH_EXCLUDE:
+                if node == GRAPH_EXCLUDE:
                     return None
                 elif self.included[node]:
                     return node
@@ -417,7 +427,7 @@ class Subgraph:
         node_list = np.where(self.included)[0]
         self.children = {node: [] for node in node_list}
         self.parent = np.full_like(self._parent_full,
-                                   fill_value=SUBGRAPH_EXCLUDE)
+                                   fill_value=GRAPH_EXCLUDE)
         for kid in node_list:
             par = _get_ss_parent(kid)
             if par is not None:
@@ -444,6 +454,6 @@ class Subgraph:
         if incl_self:
             yield node
 
-        while self.parent[node] != SUBGRAPH_EXCLUDE:
+        while self.parent[node] != GRAPH_EXCLUDE:
             node = self.parent[node]
             yield node
