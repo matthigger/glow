@@ -19,10 +19,10 @@ def test_tailor():
     # ensure region 0, 1, 2, 3 have sufficiently different stats
     exp.y[:, :, :4] += 100
 
-    reg_out_list, homo_pval_dict = tailor(sig_reg_list=sig_reg_list,
-                                          children=children,
-                                          exp=exp,
-                                          alpha_tailor=.05,
-                                          n_perm=100)
+    reg_out, homo_pval_dict = tailor(sig_reg_list=sig_reg_list,
+                                     children=children,
+                                     exp=exp,
+                                     alpha_tailor=.05,
+                                     n_perm=100)
 
-    assert reg_out_list == [10, 11, 12]
+    assert np.allclose(reg_out, [10, 11, 12])
