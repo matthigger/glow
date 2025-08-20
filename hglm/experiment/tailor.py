@@ -83,13 +83,18 @@ def get_homo_pval(label_map, exp, n_perm):
     contrast = np.zeros(exp.x.shape[0], dtype=bool)
     _q_tup = decompose(exp.x, contrast)
 
+    # split into mask (defines volume) and partition (vox to region mapping)
+    mask = label_map > -1
+    partition = label_map[mask]
+
     # compute llr
     rng = np.random.default_rng(seed=0)
     llr = np.empty(n_perm + 1)
-    for perm_idx in range(n_perm):
+    for perm_idx in range(llr.size):
         if perm_idx:
             # perm_idx == 0 is original data
-            label_map = rng.permutation(label_map)
+            partition = rng.permutation(partition)
+            label_map[mask] = partition
 
         llr[perm_idx] = get_llr(label_map, exp, _q_tup=_q_tup, _skip_homo=True)
 
