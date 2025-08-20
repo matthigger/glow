@@ -1,3 +1,7 @@
+import warnings
+from collections import Counter
+from math import gamma
+
 import numpy as np
 
 from .mancova import decompose, get_mancova
@@ -59,6 +63,87 @@ def get_llr(label_map, exp, _q_tup=None, _skip_homo=False):
     return ll
 
 
+class NotEnoughPermutations(Warning):
+    pass
+
+
+def get_n_perm_possible(partition):
+    """ counts permutations possible (gamma faster than factorial)
+
+    Args:
+        partition (iter): partition (e.g. [0, 0, 0, 1, 2])
+    """
+    n = len(partition)
+    counts = Counter(partition).values()
+    return gamma(n + 1) / np.prod([gamma(c + 1) for c in counts])
+
+
+def get_perm_iter(partition, n_perm, seed=0):
+    """ gets permutations of partition, swaps between exhaustive or sampling
+
+    in the case the n_perm < n_perm_possible then we'll save compute and do
+    a better estimate to just go through all perms exhaustively
+    (see get_perm_iter_all())
+
+    Args:
+        partition (iter): partition (e.g. [0, 0, 0, 1, 2])
+        n_perm (int): number of permutations requested (in addition to
+            giving the original permutation which is yielded first)
+        seed (int): for RNG
+
+    Yields:
+        partition (iter): partition
+    """
+    # first iteration is always the original partition
+    partition = np.array(partition).astype(int)
+    partition_init = partition
+    yield partition_init
+
+    rng = np.random.default_rng(seed)
+    n_perm_poss = get_n_perm_possible(partition)
+    if n_perm_poss >= n_perm:
+        # enough permutations exist, draw samples (repeats possible)
+        for n_perm in range(n_perm):
+            yield partition[rng.permutation(partition.size)]
+    else:
+        # use all available permutations, warn caller
+        warnings.warn(f'using only {n_perm_poss} of {n_perm} requested',
+                      NotEnoughPermutations, stacklevel=2)
+        for partition in get_perm_iter_all(partition):
+            if not np.array_equal(partition, partition_init):
+                # avoid sending original partition again
+                yield partition
+
+
+def get_perm_iter_all(partition):
+    """ backtracks through all permutations of partition possible
+
+    Args:
+        partition (iter): partition (e.g. [0, 0, 0, 1, 2])
+
+    Yields:
+        partition (iter): partition
+    """
+    symbol_count = Counter(partition)
+    n = len(partition)
+    path = list()
+    symbol_list = sorted(symbol_count.keys())
+
+    def backtrack():
+        if len(path) == n:
+            yield np.array(path)
+            return
+        for x in symbol_list:
+            if symbol_count[x] > 0:
+                symbol_count[x] -= 1
+                path.append(x)
+                yield from backtrack()
+                path.pop()
+                symbol_count[x] += 1
+
+    yield from backtrack()
+
+
 def get_homo_pval(label_map, exp, n_perm):
     """ run llr homogeneity test
 
@@ -88,17 +173,14 @@ def get_homo_pval(label_map, exp, n_perm):
     partition = label_map[mask]
 
     # compute llr
-    rng = np.random.default_rng(seed=0)
-    llr = np.empty(n_perm + 1)
-    for perm_idx in range(llr.size):
-        if perm_idx:
-            # perm_idx == 0 is original data
-            partition = rng.permutation(partition)
-            label_map[mask] = partition
-
-        llr[perm_idx] = get_llr(label_map, exp, _q_tup=_q_tup, _skip_homo=True)
+    llr = list()
+    perm_iter = get_perm_iter(partition=partition, n_perm=n_perm, seed=0)
+    for perm_idx, partition in enumerate(perm_iter):
+        label_map[mask] = partition
+        llr.append(get_llr(label_map, exp, _q_tup=_q_tup, _skip_homo=True))
 
     # compute p_value
+    llr = np.array(llr)
     return (llr[0] >= llr).mean()
 
 
@@ -134,6 +216,7 @@ def tailor(sig_reg_list, children, exp, n_perm=300, alpha_tailor=.05):
     for par, kid_list in subgraph.children.items():
         if not kid_list:
             # "parent" is a leaf, no partitioning to test
+
             continue
         label_map = get_label_map(reg_idx_list=[par] + kid_list,
                                   mask_idx=exp.mask_idx,
