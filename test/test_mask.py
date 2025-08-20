@@ -35,8 +35,8 @@ def test_get_entropy():
          -(3 / 4 * np.log2(3 / 4) + 1 / 4 * np.log2(1 / 4))),
     ]
 
-    for mask_idx, h_exp in case_list:
-        assert np.isclose(get_entropy(mask_idx), h_exp)
+    for label_map, h_exp in case_list:
+        assert np.isclose(get_entropy(label_map), h_exp)
 
 def test_get_score():
     Case = namedtuple('Case', ['y_true', 'y_pred', 'f1', 'sens', 'spec',
