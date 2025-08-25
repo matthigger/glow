@@ -82,27 +82,25 @@ def optimize_cluster_thresh(mask_est, mask_true, mask_active=None):
 
     Returns:
         thresh_size (int): cluster volume threshold (in voxels) that maximizes
-            the F1 score.
-        mask_est_prune (np.array): binary mask where regions smaller
-            than the best threshold are zeroed out
+            the F1 score
         f1 (float): f1 score achieved
     """
     # cast type / copy (mask_est may be written on)
-    _mask_est = mask_est.copy()
     mask_true = mask_true.astype(bool)
     assert mask_est.shape == mask_true.shape
 
     if mask_active is not None:
         # apply active mask
         assert mask_active.shape == mask_est.shape
-        _mask_est = mask_est[mask_active]
+        mask_active = np.array(mask_active.astype(bool))
+        mask_est = mask_est[mask_active]
         mask_true = mask_true[mask_active]
     else:
-        _mask_est = mask_est.flatten()
+        mask_est = mask_est.flatten()
         mask_true = mask_true.flatten()
 
     # count size of each region
-    reg_size = Counter(_mask_est)
+    reg_size = Counter(mask_est)
     if 0 in reg_size.keys():
         # background
         del reg_size[0]
@@ -116,34 +114,19 @@ def optimize_cluster_thresh(mask_est, mask_true, mask_active=None):
         else:
             # size already seen, process reg with reg_rep
             reg_rep = reg_size_inv[size]
-            _mask_est[_mask_est == reg] = reg_rep
+            mask_est[mask_est == reg] = reg_rep
             del reg_size[reg]
 
-            # modify mask_true too (needed to produce final output)
-            mask_true[_mask_est == reg] = reg_rep
-
-    # add regions (from smallest to largest)
+    # add regions (from largest to smallest)
     thresh_size = np.inf
     f1 = 0
-    mask_est_prune = np.zeros(_mask_est.shape, dtype=bool)
+    mask_est_prune = np.zeros(mask_est.shape, dtype=bool)
     for reg_idx in sorted(reg_size, key=reg_size.get, reverse=True):
-        mask_est_prune[_mask_est == reg_idx] = True
+        mask_est_prune[mask_est == reg_idx] = True
         _f1 = f1_score(y_true=mask_true, y_pred=mask_est_prune)
 
         if _f1 > f1:
             f1 = _f1
             thresh_size = reg_size[reg_idx]
 
-    # build mask_est_prune
-    # (we build a fresh copy of reg_size here as the one above was modified
-    # for duplicates)
-    mask_est_prune = np.zeros(mask_est.shape, dtype=bool)
-    for reg, size in Counter(mask_est.flatten()).items():
-        if reg == 0:
-            continue
-        if size >= thresh_size:
-            mask_est_prune[mask_est == reg] = True
-    if mask_active is not None:
-        mask_est_prune[~mask_active] = False
-
-    return thresh_size, mask_est_prune, f1
+    return thresh_size, f1
