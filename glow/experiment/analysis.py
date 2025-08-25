@@ -7,11 +7,12 @@ from tqdm import tqdm
 import glow.effect
 import glow.graph
 import glow.tfce
+from .cluster import cluster
 from .exper import ExperimentScaled
 from .mancova import get_hotel_tr
 from .permute import Permuter
 from .tailor import tailor
-from .cluster import cluster
+
 
 class Analysis:
     """ performs effect discovery (glow or TFCE) computes FWER p-val
@@ -107,20 +108,24 @@ class Analysis:
         return stat
 
 
-class AnalysisTFCE(Analysis):
-    def __init__(self, exp, n_perm, alpha_fwer=.05, verbose=False, **kwargs):
+class AnalysisVBA(Analysis):
+    def __init__(self, exp, n_perm, alpha_fwer=.05, verbose=False,
+                 tfce_flag=False, **kwargs):
         super().__init__(exp, **kwargs)
+        self.tfce_flag = tfce_flag
 
         # compute stat per each voxel (for every permutation)
         self.stat = self.get_stat_perm(exp, n_perm=n_perm + 1, children=None)
 
         # apply TFCE per image
-        self.tfce_stat = self.apply_tfce(stat=self.stat,
-                                         mask_idx=exp.mask_idx,
-                                         verbose=verbose)
+
+        if self.tfce_flag:
+            self.stat = self.apply_tfce(stat=self.stat,
+                                        mask_idx=exp.mask_idx,
+                                        verbose=verbose)
 
         # compute p-values
-        self.pval = self.get_pval(self.tfce_stat)
+        self.pval = self.get_pval(self.stat)
 
         # discover effects
         mask = np.zeros(exp.mask_idx.shape, dtype=bool)

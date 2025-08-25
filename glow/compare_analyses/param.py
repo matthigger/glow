@@ -28,12 +28,14 @@ kwargs_glow = dict(n_perm=100,
                    n_perm_tailor=1000,
                    min_size=1,
                    alpha_tailor=.15)
-kwargs_tfce = dict(n_perm=100)
+kwargs_tfce = dict(n_perm=100, tfce_flag=True)
+kwargs_vba = kwargs_tfce | dict(tfce_flag=False)
 
 # analyses to run
 # compare HGLM and TFCE
 ana_kwargs_dict = {'HGLM': (glow.experiment.AnalysisGLOW, kwargs_glow),
-                   'TFCE': (glow.experiment.AnalysisTFCE, kwargs_tfce)}
+                   'VBA': (glow.experiment.AnalysisVBA, kwargs_vba),
+                   'TFCE': (glow.experiment.AnalysisVBA, kwargs_tfce)}
 
 # # compare mancova stats
 # ana_kwargs_dict = dict()

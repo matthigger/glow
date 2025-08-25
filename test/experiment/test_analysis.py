@@ -38,7 +38,10 @@ class TestBigEffect:
                                    TestBigEffect.effect.mask)
 
     def test_tfce(self):
-        analysis = AnalysisTFCE(TestBigEffect.exp, n_perm=25, alpha_fwer=.1)
-        mask_all = sum(eff.mask for eff in analysis.effect_list)
-        np.testing.assert_allclose(mask_all,
-                                   TestBigEffect.effect.mask)
+        for tfce_flag in (0, 1):
+            analysis = AnalysisVBA(TestBigEffect.exp, n_perm=25,
+                                   alpha_fwer=.1,
+                                   tfce_flag=tfce_flag)
+            mask_all = sum(eff.mask for eff in analysis.effect_list)
+            np.testing.assert_allclose(mask_all,
+                                       TestBigEffect.effect.mask)
