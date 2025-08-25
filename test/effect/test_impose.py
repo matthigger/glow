@@ -1,6 +1,6 @@
-from hglm.effect.impose import *
-from hglm.experiment import Experiment
-from hglm.experiment import get_mancova
+from glow.effect.impose import *
+from glow.experiment import Experiment
+from glow.experiment import get_mancova
 
 
 def test_compute_offset():

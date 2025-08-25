@@ -1,6 +1,6 @@
 from collections import namedtuple
 
-from hglm.experiment.exper import *
+from glow.experiment.exper import *
 from .make_test_image import folder_test_data, img_feat_intensity
 
 
@@ -53,7 +53,7 @@ class TestExperimentOnlyImage:
     def test_impose_effect(self):
         seed = 0
         exp = Experiment.from_gauss(seed=seed)
-        extenter = hglm.effect.ExtenterSphere(radius=3)
+        extenter = glow.effect.ExtenterSphere(radius=3)
 
         for hotel_tr in [0, 1, 100]:
             _exp, effect = exp.impose_effect(seed=seed, extenter=extenter,

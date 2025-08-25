@@ -1,6 +1,6 @@
 import numpy as np
 
-import hglm
+import glow
 
 # hcp or wgn
 source = 'hcp'
@@ -23,30 +23,30 @@ alpha_fwer = .05
 n_jobs = -1
 
 # parameters to be passed to Analysis constructor
-kwargs_hglm = dict(n_perm=100,
+kwargs_glow = dict(n_perm=100,
                    n_perm_adj=100,
                    n_perm_tailor=1000,
                    min_size=1,
-                   alpha_tailor=.05)
+                   alpha_tailor=.15)
 kwargs_tfce = dict(n_perm=100)
 
 # analyses to run
 # compare HGLM and TFCE
-ana_kwargs_dict = {'HGLM': (hglm.experiment.AnalysisHGLM, kwargs_hglm),
-                   'TFCE': (hglm.experiment.AnalysisTFCE, kwargs_tfce)}
+ana_kwargs_dict = {'HGLM': (glow.experiment.AnalysisGLOW, kwargs_glow),
+                   'TFCE': (glow.experiment.AnalysisTFCE, kwargs_tfce)}
 
 # # compare mancova stats
 # ana_kwargs_dict = dict()
-# for label, get_stat in hglm.experiment.mancova.stat_dict.items():
-#     kwargs = kwargs_hglm | dict(get_stat=get_stat)
-#     ana_kwargs_dict[label] = hglm.experiment.AnalysisHGLM, kwargs
+# for label, get_stat in glow.experiment.mancova.stat_dict.items():
+#     kwargs = kwargs_glow | dict(get_stat=get_stat)
+#     ana_kwargs_dict[label] = glow.experiment.AnalysisHGLM, kwargs
 
 # # compare different minimum region size for HGLM
 # ana_kwargs_dict = dict()
 # for min_size in [2 ** idx for idx in range(5)]:
 #     label = f'min_size{min_size}'
-#     kwargs = kwargs_hglm | dict(min_size=min_size)
-#     ana_kwargs_dict[label] = hglm.experiment.AnalysisHGLM, kwargs
+#     kwargs = kwargs_glow | dict(min_size=min_size)
+#     ana_kwargs_dict[label] = glow.experiment.AnalysisHGLM, kwargs
 
 # saves output python objects (memory expensive)
 detail_save = True
@@ -60,7 +60,7 @@ match source:
         # human connectome project data
         hcp_path = '/home/matt/Dropbox/pnl_hglm/data/hcp100_lowres/image'
 
-        exp_hcp = hglm.experiment.ExperimentImageOnly.from_search(
+        exp_hcp = glow.experiment.ExperimentImageOnly.from_search(
             folder=hcp_path,
             sbj_regex=r'[\d]{6}',
             img_glob_dict={'FA': '*_FA.nii.gz',
@@ -72,7 +72,7 @@ match source:
         radius = 4
     case 'wgn':
         # additive white gaussian noise
-        exp = hglm.experiment.Experiment.from_gauss(seed=0,
+        exp = glow.experiment.Experiment.from_gauss(seed=0,
                                                     shape=(5, 5, 5),
                                                     a=2,
                                                     b=2,

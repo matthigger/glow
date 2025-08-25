@@ -1,4 +1,4 @@
-from hglm.tfce import *
+from glow.tfce import *
 
 
 def test_apply_tfce():

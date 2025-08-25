@@ -11,7 +11,7 @@
 /**/__pycache__/
 *.p
 *.whl
-/hglm/demo/hglm_image_demo.gif
+/glow/demo/hglm_image_demo.gif
 *checkpoint.ipynb
 *.pdf
 /test/profile.py.lprof

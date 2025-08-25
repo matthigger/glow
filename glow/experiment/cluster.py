@@ -39,7 +39,7 @@ def cluster(exp, mode='ward-proj'):
     mask = exp.mask_idx >= 0
     connectivity = grid_to_graph(*mask.shape, mask=mask)
 
-    # ensure contiguous input (https://github.com/matthigger/hglm/issues/3)
+    # ensure contiguous input (https://github.com/matthigger/glow/issues/3)
     _, num_regions = label(mask)
     if num_regions > 1:
         raise NotImplementedError('non-contiguous inputs currently '

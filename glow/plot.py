@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-import hglm.graph
+import glow.graph
 
 sns.set(font_scale=1.3)
 
@@ -136,12 +136,12 @@ def image_iter(children, mask_idx, num_vox):
             yield image, mask_idx_current, color_dict
 
 
-def prep_df(ana_hglm, mask_target=None):
+def prep_df(ana_glow, mask_target=None):
     df_list = list()
-    for perm_idx, (hotel_tr, z, size) in enumerate(zip(ana_hglm.stat,
-                                                       ana_hglm.z_stat,
-                                                       ana_hglm.size)):
-        children = ana_hglm.child_dict[perm_idx]
+    for perm_idx, (hotel_tr, z, size) in enumerate(zip(ana_glow.stat,
+                                                       ana_glow.z_stat,
+                                                       ana_glow.size)):
+        children = ana_glow.child_dict[perm_idx]
         d = {'region idx': np.arange(size.size),
              'hotel_tr': hotel_tr,
              'Z-stat': z,
@@ -151,24 +151,24 @@ def prep_df(ana_hglm, mask_target=None):
 
         if not perm_idx:
             # add stats specific to unpermuted data
-            d['p-val (FWER control)'] = ana_hglm.pval
+            d['p-val (FWER control)'] = ana_glow.pval
 
             # compute f1 (dice) score with mask_target
             if mask_target is not None:
                 d['f1'], d['sens'], d['spec'] = \
-                    hglm.graph.get_f1_sens_spec(
-                        children=ana_hglm.child_dict[0],
-                        mask_idx=ana_hglm.exp.mask_idx,
+                    glow.graph.get_f1_sens_spec(
+                        children=ana_glow.child_dict[0],
+                        mask_idx=ana_glow.exp.mask_idx,
                         mask=mask_target)
 
-                miss, hits = hglm.graph.get_miss_hits(children=children,
-                                                      mask_idx=ana_hglm.exp.mask_idx,
+                miss, hits = glow.graph.get_miss_hits(children=children,
+                                                      mask_idx=ana_glow.exp.mask_idx,
                                                       mask=mask_target)
                 d['False-Pos (voxels)'] = miss
                 d['True-Pos (voxels)'] = hits
 
             # mark any regions as discovered
-            for effect in ana_hglm.effect_list:
+            for effect in ana_glow.effect_list:
                 d['discovered'][effect.reg_idx] = True
         df_list.append(pd.DataFrame(d))
 
@@ -189,7 +189,7 @@ def scatter_size_vs_stat(analysis, y_feat, mask=None, min_size=1):
 
     # compute f1 score
     if mask is not None:
-        f1 = hglm.graph.get_f1_sens_spec(mask=mask,
+        f1 = glow.graph.get_f1_sens_spec(mask=mask,
                                          mask_idx=analysis.exp.mask_idx,
                                          children=analysis.child_dict[0])[0]
     else:
@@ -226,7 +226,7 @@ def scatter_size_vs_stat(analysis, y_feat, mask=None, min_size=1):
     plt.legend()
 
 
-def scatter_plotly(ana_hglm, mask_target=None, x_feat='size (voxels)',
+def scatter_plotly(ana_glow, mask_target=None, x_feat='size (voxels)',
                    y_feat='Z-stat', color_feat='dice',
                    plot_permute=True, plot_tree=True, log_x=True, log_y=True):
     """
@@ -238,7 +238,7 @@ def scatter_plotly(ana_hglm, mask_target=None, x_feat='size (voxels)',
     - max number of scatter points (enforce a minimum size)
     """
 
-    df = prep_df(ana_hglm, mask_target=mask_target)
+    df = prep_df(ana_glow, mask_target=mask_target)
     df['hover_name'] = df['region idx'].map(lambda x: f'Region {x:.0f}')
     idx0 = np.where((df['permutation'] != 0).values)[0]
     idx1 = list(df.columns).index('hover_name')
@@ -251,8 +251,8 @@ def scatter_plotly(ana_hglm, mask_target=None, x_feat='size (voxels)',
 
     tree_x = list()
     tree_y = list()
-    num_vox = ana_hglm.exp.y.shape[2]
-    for idx, child in enumerate(ana_hglm.child_dict[0]):
+    num_vox = ana_glow.exp.y.shape[2]
+    for idx, child in enumerate(ana_glow.child_dict[0]):
         par = idx + num_vox
         for c in child:
             # plotly will only draw this line segment (not connected to next)

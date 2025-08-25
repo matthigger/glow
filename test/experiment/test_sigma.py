@@ -1,7 +1,7 @@
 import numpy as np
 
-from hglm.experiment import stretch_sigma
-from hglm.experiment.sigma import get_sigma_from_y, get_size_yout_ymean
+from glow.experiment import stretch_sigma
+from glow.experiment.sigma import get_sigma_from_y, get_size_yout_ymean
 
 
 def test_scale_sigma():

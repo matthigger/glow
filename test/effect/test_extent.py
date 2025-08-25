@@ -1,7 +1,7 @@
 import pytest
 
-from hglm.effect.extent import *
-from hglm.mask import get_mask_idx
+from glow.effect.extent import *
+from glow.mask import get_mask_idx
 
 
 def test_iter_vox_neighbor():

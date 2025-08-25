@@ -1,7 +1,7 @@
-from hglm.experiment import Experiment
-from hglm.experiment.mancova import *
-from hglm.experiment.sigma import get_sigma
-from hglm.graph import iter_size_yout_ymean, iter_topo
+from glow.experiment import Experiment
+from glow.experiment.mancova import *
+from glow.experiment.sigma import get_sigma
+from glow.graph import iter_size_yout_ymean, iter_topo
 
 
 def test_all():

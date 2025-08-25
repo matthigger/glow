@@ -10,7 +10,7 @@ from dipy.reconst.dti import TensorModel, fractional_anisotropy, \
 dti_fnc_dict = {'fa': fractional_anisotropy,
                 'md': mean_diffusivity}
 
-folder = pathlib.Path('/home/matt/Dropbox/pnl_hglm/data/HCP_100unrelated')
+folder = pathlib.Path('/home/matt/Dropbox/pnl_glow/data/HCP_100unrelated')
 for file in tqdm(folder.glob('**/data.nii.gz'), desc='DTI per img'):
 
     _folder = file.parent

@@ -10,9 +10,9 @@ import cloudpickle as pickle
 import numpy as np
 
 import param
-from hglm.effect import ExtenterSphere, ExtenterMinVar
-from hglm.experiment import ExperimentScaled
-from hglm.mask import get_score
+from glow.effect import ExtenterSphere, ExtenterMinVar
+from glow.experiment import ExperimentScaled
+from glow.mask import get_score
 
 
 def run_one_exp(seed, hotel_tr):

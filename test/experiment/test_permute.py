@@ -3,8 +3,8 @@ from math import factorial
 
 import pytest
 
-from hglm.experiment import Experiment
-from hglm.experiment.permute import *
+from glow.experiment import Experiment
+from glow.experiment.permute import *
 
 
 class TestPermuter:

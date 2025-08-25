@@ -3,7 +3,7 @@ import warnings
 import numpy as np
 from scipy.optimize import minimize
 
-from hglm.experiment import decompose, get_hotel_tr
+from glow.experiment import decompose, get_hotel_tr
 
 
 def compute_offset(x, y, contrast, hotel_tr):

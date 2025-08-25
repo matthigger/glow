@@ -1,12 +1,12 @@
-import hglm
+import glow
 
-exp = hglm.experiment.Experiment.from_gauss(seed=0,
+exp = glow.experiment.Experiment.from_gauss(seed=0,
                                             shape=(5, 5, 5),
                                             a=2,
                                             b=2,
                                             num_img=100)
 
-hglm.experiment.AnalysisHGLM(exp,
+glow.experiment.AnalysisGLOW(exp,
                              n_perm=20,
                              n_perm_adj=10,
                              n_perm_tailor=20,

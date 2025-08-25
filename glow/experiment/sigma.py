@@ -5,7 +5,7 @@ def get_sigma(size, yout, ymean):
     """ sigma is spatial covariance across voxels, pooled across images
 
     inputs efficiently computed for hierarchical regions, see
-    hglm.graph.iter_size_yout_ymean()
+    glow.graph.iter_size_yout_ymean()
 
     Args:
         size (int): size, in voxels, of region

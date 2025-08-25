@@ -3,7 +3,7 @@ from itertools import product
 
 import pytest
 
-from hglm.graph import *
+from glow.graph import *
 
 
 def test_iter_node_sum():

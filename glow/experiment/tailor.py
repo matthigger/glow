@@ -2,7 +2,7 @@ import warnings
 
 import numpy as np
 
-from hglm.experiment.permute import NotEnoughPermutations
+from glow.experiment.permute import NotEnoughPermutations
 from .mancova import decompose, get_mancova
 from .permute import get_perm_iter
 from ..graph import get_label_map, SCGraph, GRAPH_EXCLUDE

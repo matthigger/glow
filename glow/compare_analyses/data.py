@@ -10,7 +10,7 @@ from appdirs import user_data_dir
 
 
 def get_path_result():
-    path_result = (pathlib.Path(user_data_dir('hglm', 'hglm_author')) /
+    path_result = (pathlib.Path(user_data_dir('glow', 'glow_author')) /
                    'results')
     path_result.mkdir(parents=True, exist_ok=True)
     return path_result

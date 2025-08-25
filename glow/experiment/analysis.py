@@ -4,9 +4,9 @@ import numpy as np
 from scipy.ndimage import label
 from tqdm import tqdm
 
-import hglm.effect
-import hglm.graph
-import hglm.tfce
+import glow.effect
+import glow.graph
+import glow.tfce
 from .exper import ExperimentScaled
 from .mancova import get_hotel_tr
 from .permute import Permuter
@@ -14,7 +14,7 @@ from .tailor import tailor
 from .cluster import cluster
 
 class Analysis:
-    """ performs effect discovery (hglm or TFCE) computes FWER p-val
+    """ performs effect discovery (glow or TFCE) computes FWER p-val
 
     Attributes:
         exp (Experiment): the source data to run experiment on
@@ -93,7 +93,7 @@ class Analysis:
         # prep Permuter object (if needed)
         x0 = exp.x[~exp.contrast, :]
         perm = None if n_perm == 1 else Permuter(x=x0)
-        for reg_idx, size, e, h in hglm.graph.iter_size_e_h(
+        for reg_idx, size, e, h in glow.graph.iter_size_e_h(
                 x=exp.x,
                 contrast=exp.contrast,
                 y=exp.y,
@@ -147,7 +147,7 @@ class AnalysisTFCE(Analysis):
         tfce = np.full(shape=stat.shape, dtype=float,
                        fill_value=np.nanmin(stat))
         for perm_idx, _stat in tqdm(enumerate(stat), **tqdm_dict):
-            tfce[perm_idx, :] = hglm.tfce.apply_tfce_x(_stat,
+            tfce[perm_idx, :] = glow.tfce.apply_tfce_x(_stat,
                                                        mask_idx=mask_idx)
 
         return tfce
@@ -172,12 +172,12 @@ class AnalysisTFCE(Analysis):
             # build effect for each contiguous effect found
             _mask = effect_mask == eff_idx
             effect_list.append(
-                hglm.effect.Effect.from_exp_mask(exp=exp, mask=_mask))
+                glow.effect.Effect.from_exp_mask(exp=exp, mask=_mask))
 
         return effect_list
 
 
-class AnalysisHGLM(Analysis):
+class AnalysisGLOW(Analysis):
     """ search a hierarchical segmentation for significant effects
 
     Attributes:
@@ -221,7 +221,7 @@ class AnalysisHGLM(Analysis):
 
         # merge all graphs (many nodes are repeated across permutations above,
         # we adjust them all by same mu and std to minimize computation)
-        map_to_new, children, _ = hglm.graph.graph_merge(
+        map_to_new, children, _ = glow.graph.graph_merge(
             n_common=num_vox,
             children_list=list(self.child_dict.values()))
 
@@ -246,7 +246,7 @@ class AnalysisHGLM(Analysis):
         # compute sizes of each region
         self.size = np.empty((n_perm + 1, num_reg))
         for perm_idx, children in self.child_dict.items():
-            self.size[perm_idx, :] = hglm.graph.node_sum(x=np.ones(num_vox,
+            self.size[perm_idx, :] = glow.graph.node_sum(x=np.ones(num_vox,
                                                                    dtype=int),
                                                          children=children)
 
@@ -266,11 +266,11 @@ class AnalysisHGLM(Analysis):
         # build effects
         self.effect_list = list()
         for reg_idx in reg_out_list:
-            label_map = hglm.graph.get_label_map(reg_idx_list=[reg_idx, ],
+            label_map = glow.graph.get_label_map(reg_idx_list=[reg_idx, ],
                                                  mask_idx=exp.mask_idx,
                                                  children=self.child_dict[0])
             pval_fwer = self.pval[reg_idx]
-            eff = hglm.effect.Effect.from_exp_mask(mask=label_map > -1,
+            eff = glow.effect.Effect.from_exp_mask(mask=label_map > -1,
                                                    exp=exp,
                                                    reg_idx=reg_idx,
                                                    pval_fwer=pval_fwer)

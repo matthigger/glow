@@ -1,5 +1,5 @@
-from hglm.experiment import Experiment
-from hglm.experiment.tailor import *
+from glow.experiment import Experiment
+from glow.experiment.tailor import *
 
 
 def test_tailor():

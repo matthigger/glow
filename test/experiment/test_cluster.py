@@ -1,9 +1,9 @@
 import pytest
 from scipy.ndimage import label
 
-from hglm.experiment import *
-from hglm.experiment.cluster import *
-from hglm.graph import get_f1_sens_spec
+from glow.experiment import *
+from glow.experiment.cluster import *
+from glow.graph import get_f1_sens_spec
 from .make_test_image import folder_test_data
 
 

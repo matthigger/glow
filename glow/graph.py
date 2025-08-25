@@ -1,6 +1,6 @@
 import numpy as np
 
-from hglm.experiment.mancova import decompose
+from glow.experiment.mancova import decompose
 
 
 def iter_size_e_h(*, x, contrast, **kwargs):

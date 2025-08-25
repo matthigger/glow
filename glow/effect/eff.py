@@ -1,4 +1,4 @@
-from hglm.experiment import get_mancova
+from glow.experiment import get_mancova
 
 
 class Effect:

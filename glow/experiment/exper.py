@@ -7,8 +7,8 @@ import numpy as np
 import pandas as pd
 import scipy.linalg
 
-import hglm.effect
-import hglm.mask
+import glow.effect
+import glow.mask
 from .load_image import load_image_color, load_image_nii
 from .permute import Permuter
 from .sigma import stretch_sigma
@@ -212,7 +212,7 @@ class ExperimentImageOnly:
         # apply mask to data
         mask = np.logical_and(mask, self.mask_idx > -1)
         assert mask.sum(), 'mask has no intersection with mask_idx'
-        mask_idx = hglm.mask.get_mask_idx(mask)
+        mask_idx = glow.mask.get_mask_idx(mask)
         y = self.y[:, :, self.mask_idx[mask]]
 
         # build new object identical as self
@@ -318,7 +318,7 @@ class Experiment(ExperimentImageOnly):
         y = self.y[:, :, effect_idx]
 
         # get offset which imposes desired effect strength
-        offset = hglm.effect.compute_offset(x=self.x,
+        offset = glow.effect.compute_offset(x=self.x,
                                             y=y,
                                             contrast=self.contrast,
                                             hotel_tr=hotel_tr)
@@ -326,7 +326,7 @@ class Experiment(ExperimentImageOnly):
         # impose effect on y, build new experiment
         exp = self.add_offset(offset, mask=mask)
 
-        effect = hglm.effect.Effect.from_exp_mask(exp=exp,
+        effect = glow.effect.Effect.from_exp_mask(exp=exp,
                                                   mask=mask,
                                                   seed=seed,
                                                   hotel_tr=hotel_tr)

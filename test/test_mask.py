@@ -1,6 +1,6 @@
 from collections import namedtuple
 
-from hglm.mask import *
+from glow.mask import *
 
 
 def test_get_mask_idx():

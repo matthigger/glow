@@ -4,8 +4,8 @@ import nibabel as nib
 import numpy as np
 from PIL import Image
 
-import hglm.mask
-from hglm.mask import get_mask_idx
+import glow.mask
+from glow.mask import get_mask_idx
 
 
 def load_image_nii(df):
@@ -34,7 +34,7 @@ def load_image_nii(df):
 
     # build mask_idx (exclude any voxel which any subject is missing)
     mask = vox_count == df.size
-    mask_idx = hglm.mask.get_mask_idx(mask)
+    mask_idx = glow.mask.get_mask_idx(mask)
 
     return feat_sbj_img, mask_idx
 

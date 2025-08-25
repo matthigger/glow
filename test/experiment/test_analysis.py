@@ -1,7 +1,7 @@
-from hglm.effect import ExtenterSphere
-from hglm.experiment import *
-from hglm.experiment.analysis import *
-from hglm.graph import get_f1_sens_spec
+from glow.effect import ExtenterSphere
+from glow.experiment import *
+from glow.experiment.analysis import *
+from glow.graph import get_f1_sens_spec
 
 
 class TestAnalysis:
@@ -24,8 +24,8 @@ class TestBigEffect:
                                     extenter=ExtenterSphere(radius=2),
                                     hotel_tr=2)
 
-    def test_hglm(self):
-        analysis = AnalysisHGLM(TestBigEffect.exp, n_perm=25, alpha_fwer=.1)
+    def test_glow(self):
+        analysis = AnalysisGLOW(TestBigEffect.exp, n_perm=25, alpha_fwer=.1)
 
         # check that target region segmented properly
         f1 = get_f1_sens_spec(mask=TestBigEffect.effect.mask,
