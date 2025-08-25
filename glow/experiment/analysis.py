@@ -6,7 +6,7 @@ from tqdm import tqdm
 
 import glow.effect
 import glow.graph
-import glow.tfce
+import glow.vba
 from .cluster import cluster
 from .exper import ExperimentScaled
 from .mancova import get_hotel_tr
@@ -118,7 +118,6 @@ class AnalysisVBA(Analysis):
         self.stat = self.get_stat_perm(exp, n_perm=n_perm + 1, children=None)
 
         # apply TFCE per image
-
         if self.tfce_flag:
             self.stat = self.apply_tfce(stat=self.stat,
                                         mask_idx=exp.mask_idx,
@@ -170,14 +169,14 @@ class AnalysisVBA(Analysis):
         """
         # split discovered regions into disjoint effects (all adjacent are
         # same effect)
-        effect_mask, num_effect = label(mask.astype(bool))
+        est_mask, num_effect = label(mask.astype(bool))
 
         effect_list = list()
         for eff_idx in range(1, num_effect + 1):
             # build effect for each contiguous effect found
-            _mask = effect_mask == eff_idx
-            effect_list.append(
-                glow.effect.Effect.from_exp_mask(exp=exp, mask=_mask))
+            _mask = est_mask == eff_idx
+            eff = glow.effect.Effect.from_exp_mask(exp=exp, mask=_mask)
+            effect_list.append(eff)
 
         return effect_list
 
