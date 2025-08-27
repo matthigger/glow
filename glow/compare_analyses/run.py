@@ -43,6 +43,11 @@ def run_one_exp(seed, hotel_tr):
                                      hotel_tr=hotel_tr)
 
     for label, (Ana, kwargs) in param.ana_kwargs_dict.items():
+        # cluster extent thresholding "peeks", its results should be
+        # considered as an upper bound as this isn't feasible in practice
+        if kwargs.get('cet_flag', False):
+            kwargs['mask_eff'] = effect.mask
+
         # prep output file
         uuid = str(uuid4())[:8]
         file_out = folder_out / 'out' / f'{uuid}_result.json'

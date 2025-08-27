@@ -110,9 +110,10 @@ class Analysis:
 
 class AnalysisVBA(Analysis):
     def __init__(self, exp, n_perm, alpha_fwer=.05, verbose=False,
-                 tfce_flag=False, **kwargs):
+                 tfce_flag=False, cet_flag=False, mask_eff=None, **kwargs):
         super().__init__(exp, **kwargs)
         self.tfce_flag = tfce_flag
+        self.cet_flag = cet_flag
 
         # compute stat per each voxel (for every permutation)
         self.stat = self.get_stat_perm(exp, n_perm=n_perm + 1, children=None)
@@ -129,7 +130,9 @@ class AnalysisVBA(Analysis):
         # discover effects
         mask = np.zeros(exp.mask_idx.shape, dtype=bool)
         mask[exp.mask_idx > -1] = self.pval <= alpha_fwer
-        self.effect_list = self.discover_mask(mask=mask, exp=exp)
+        self.effect_list = self.discover_mask(mask=mask, exp=exp,
+                                              cet_flag=cet_flag,
+                                              mask_eff=mask_eff)
 
     @classmethod
     def apply_tfce(cls, stat, mask_idx, verbose=False):
@@ -151,32 +154,46 @@ class AnalysisVBA(Analysis):
         tfce = np.full(shape=stat.shape, dtype=float,
                        fill_value=np.nanmin(stat))
         for perm_idx, _stat in tqdm(enumerate(stat), **tqdm_dict):
-            tfce[perm_idx, :] = glow.tfce.apply_tfce_x(_stat,
-                                                       mask_idx=mask_idx)
+            tfce[perm_idx, :] = glow.vba.apply_tfce_x(_stat,
+                                                      mask_idx=mask_idx)
 
         return tfce
 
     @classmethod
-    def discover_mask(cls, mask, exp):
+    def discover_mask(cls, mask, exp, cet_flag=False, mask_eff=None):
         """ each connected component in mask yields an effect region
 
         Args:
             mask (np.array): boolean mask same size as exp.mask_idx
             exp (Experiment):
+            cet_flag (bool): toggles cluster extent thresholding flag, if True
+                uses the ground truth mask (eff_mask) to get the cluster
+                extent threshold which maxmizes f1 score
+            mask_eff (np.array):
 
         Returns:
             effect_list (list): list of effects (largest first)
         """
         # split discovered regions into disjoint effects (all adjacent are
         # same effect)
-        est_mask, num_effect = label(mask.astype(bool))
+        mask_est, num_effect = label(mask.astype(bool))
+
+        if cet_flag:
+            thresh_size, f1 = glow.vba.optimize_cluster_thresh(
+                mask_est=mask_est,
+                mask_true=mask_eff,
+                mask_active=exp.mask_idx)
+        else:
+            thresh_size = 0
 
         effect_list = list()
         for eff_idx in range(1, num_effect + 1):
             # build effect for each contiguous effect found
-            _mask = est_mask == eff_idx
-            eff = glow.effect.Effect.from_exp_mask(exp=exp, mask=_mask)
-            effect_list.append(eff)
+            _mask = mask_est == eff_idx
+
+            if _mask.sum() >= thresh_size:
+                eff = glow.effect.Effect.from_exp_mask(exp=exp, mask=_mask)
+                effect_list.append(eff)
 
         return effect_list
 
