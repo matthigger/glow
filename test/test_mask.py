@@ -15,6 +15,7 @@ def test_get_mask_idx():
 
     assert np.array_equal(mask_idx, mask_idx_expect)
 
+
 def test_get_entropy():
     case_list = [
         # all negatives -> no valid voxels -> entropy = 0
@@ -37,6 +38,7 @@ def test_get_entropy():
 
     for label_map, h_exp in case_list:
         assert np.isclose(get_entropy(label_map), h_exp)
+
 
 def test_get_score():
     Case = namedtuple('Case', ['y_true', 'y_pred', 'f1', 'sens', 'spec',
@@ -90,3 +92,82 @@ def test_get_score():
         assert np.isclose(f1, case.f1), f'Case {i} failed F1'
         assert np.isclose(sens, case.sens), f'Case {i} failed Sensitivity'
         assert np.isclose(spec, case.spec), f'Case {i} failed Specificity'
+
+
+Case = namedtuple("Case", ["conn", "not_reflexive", "offset_exp"])
+
+
+def test_get_neighbor_offsets():
+    case_list = [
+        Case(conn=np.array([1, 1, 1]),
+             not_reflexive=False,
+             offset_exp=np.array([[-1],
+                                  [0],
+                                  [1]])),
+        Case(conn=np.array([1, 1, 1]),
+             not_reflexive=True,
+             offset_exp=np.array([[-1],
+                                  [1]])),
+        Case(conn=np.array([[0, 1, 0],
+                            [1, 1, 1],
+                            [0, 1, 0]]),
+             not_reflexive=True,
+             offset_exp=np.array([[-1, 0],
+                                  [1, 0],
+                                  [0, -1],
+                                  [0, 1]])),
+        Case(conn=np.array([[1, 1, 1],
+                            [1, 1, 1],
+                            [1, 1, 1]]),
+             not_reflexive=True,
+             offset_exp=np.array([[-1, -1],
+                                  [-1, 0],
+                                  [-1, 1],
+                                  [0, -1],
+                                  [0, 1],
+                                  [1, -1],
+                                  [1, 0],
+                                  [1, 1]])),
+        Case(conn=6,
+             not_reflexive=True,
+             offset_exp=np.array([[0, 0, -1],
+                                  [0, 0, 1],
+                                  [0, -1, 0],
+                                  [0, 1, 0],
+                                  [-1, 0, 0],
+                                  [1, 0, 0]])),
+        Case(conn=18,
+             not_reflexive=True,
+             offset_exp=np.array([[0, 0, -1],
+                                  [0, 0, 1],
+                                  [0, -1, 0],
+                                  [0, 1, 0],
+                                  [-1, 0, 0],
+                                  [1, 0, 0],
+                                  [0, -1, -1],
+                                  [0, -1, 1],
+                                  [0, 1, -1],
+                                  [0, 1, 1],
+                                  [-1, 0, -1],
+                                  [-1, 0, 1],
+                                  [1, 0, -1],
+                                  [1, 0, 1],
+                                  [-1, -1, 0],
+                                  [-1, 1, 0],
+                                  [1, -1, 0],
+                                  [1, 1, 0]])),
+        Case(conn=26,
+             not_reflexive=True,
+             offset_exp=np.array([[x, y, z]
+                                  for x in (-1, 0, 1)
+                                  for y in (-1, 0, 1)
+                                  for z in (-1, 0, 1)
+                                  if not (x == y == z == 0)]))
+    ]
+
+    for idx, case in enumerate(case_list):
+        offset = get_neighbor_offsets(case.conn,
+                                      not_reflexive=case.not_reflexive)
+        offset_set = set(tuple(ijk) for ijk in offset)
+        offset_exp_set = set(tuple(ijk) for ijk in case.offset_exp)
+        assert offset_set == offset_exp_set, f'case: {idx}'

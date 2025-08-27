@@ -1,6 +1,34 @@
 import numpy as np
 from sklearn.metrics import f1_score, recall_score, confusion_matrix
 
+conn_dict = {6: np.array([[[0, 0, 0],
+                           [0, 1, 0],
+                           [0, 0, 0]],
+                          [[0, 1, 0],
+                           [1, 1, 1],
+                           [0, 1, 0]],
+                          [[0, 0, 0],
+                           [0, 1, 0],
+                           [0, 0, 0]]]),
+             18: np.array([[[0, 1, 0],
+                            [1, 1, 1],
+                            [0, 1, 0]],
+                           [[1, 1, 1],
+                            [1, 1, 1],
+                            [1, 1, 1]],
+                           [[0, 1, 0],
+                            [1, 1, 1],
+                            [0, 1, 0]]]),
+             26: np.array([[[1, 1, 1],
+                            [1, 1, 1],
+                            [1, 1, 1]],
+                           [[1, 1, 1],
+                            [1, 0, 1],
+                            [1, 1, 1]],
+                           [[1, 1, 1],
+                            [1, 1, 1],
+                            [1, 1, 1]]])}
+
 
 def get_mask_idx(mask):
     """ builds mask_idx from mask
@@ -79,3 +107,47 @@ def trim_zeros_2d(x, to_trim=0):
     col_start, col_end = np.where(non_zero_cols)[0][[0, -1]]
 
     return x[row_start:row_end + 1, col_start:col_end + 1]
+
+
+def get_neighbor_offsets(conn, not_reflexive=True):
+    """ get neighbor index offsets from a connectivity mask
+
+    expected usage:
+
+    offset = get_neighbor_offsets(conn=26)
+
+    # get a list of neighbor voxel coordinates of ijk
+    ijk_list = [tuple(_ijk) for _ijk in ijk + offset]
+
+    # pop them into the array as
+    array[*ijk_list[0]]
+
+    Args:
+        conn (int or array_like): Either:
+            - An integer key (e.g., 6, 18, or 26) referring to a predefined
+              3D connectivity mask in `conn_dict`, or
+            - An N-dimensional array (with odd size along each axis) where
+              nonzero entries define neighbors relative to the center.
+        not_reflexive (bool, optional): If True, the central voxel (offset = 0
+            along all axes) is excluded from the returned offsets. Default is False.
+
+    Returns:
+        numpy.ndarray: An array of shape (nconn, ndim) where:
+            - `nconn` is the number of neighbors,
+            - `ndim` is the dimensionality of the mask (`conn.ndim`).
+          Each row is an offset vector relative to the center voxel.
+    """
+    if type(conn) is int:
+        conn = conn_dict[conn]
+    else:
+        conn = np.array(conn)
+
+    center = tuple(s // 2 for s in conn.shape)
+    coords = np.argwhere(conn)
+    offsets = coords - center
+
+    if not_reflexive:
+        # ensure that voxel is not its own neighbor
+        offsets = offsets[~np.all(offsets == 0, axis=1)]
+
+    return offsets
