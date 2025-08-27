@@ -179,10 +179,7 @@ class AnalysisVBA(Analysis):
         mask_est, num_effect = label(mask.astype(bool))
 
         if cet_flag:
-            thresh_size, f1 = glow.vba.optimize_cluster_thresh(
-                mask_est=mask_est,
-                mask_true=mask_eff,
-                mask_active=exp.mask_idx)
+            raise NotImplementedError
         else:
             thresh_size = 0
 

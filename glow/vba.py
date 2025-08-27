@@ -3,12 +3,10 @@ import pathlib
 import subprocess
 import tempfile
 import warnings
-from collections import Counter
 from shutil import which
 
 import nibabel as nib
 import numpy as np
-from sklearn.metrics import f1_score
 
 # to be modified per installation
 fsl_path = pathlib.Path('/usr/local/fsl')
@@ -64,69 +62,3 @@ def apply_tfce_img(x):
     os.remove(f_x_in)
 
     return x_tfce
-
-
-def optimize_cluster_thresh(mask_est, mask_true, mask_active=None):
-    """ optimizes a cluster volume threshold to maximize F1 score
-
-    note: this shouldn't ever be used in practice (no access to ground
-    truth!) but its a useful upper bound of cluster extent thresholding for
-    analysis
-
-    Args:
-        mask_est (np.array): output of scipy.ndimage.label of estimated regions
-        mask_true (np.array): ground-truth binary mask (0 = no effect, 1 = true
-            effect region)
-        mask_active (np.array): voxels outside of mask_active excluded from
-            analysis
-
-    Returns:
-        thresh_size (int): cluster volume threshold (in voxels) that maximizes
-            the F1 score
-        f1 (float): f1 score achieved
-    """
-    # cast type / copy (mask_est may be written on)
-    mask_true = mask_true.astype(bool)
-    assert mask_est.shape == mask_true.shape
-
-    if mask_active is not None:
-        # apply active mask
-        assert mask_active.shape == mask_est.shape
-        mask_active = np.array(mask_active.astype(bool))
-        mask_est = mask_est[mask_active]
-        mask_true = mask_true[mask_active]
-    else:
-        mask_est = mask_est.flatten()
-        mask_true = mask_true.flatten()
-
-    # count size of each region
-    reg_size = Counter(mask_est)
-    if 0 in reg_size.keys():
-        # background
-        del reg_size[0]
-
-    # if regions have same size, they should be processed together
-    reg_size_inv = dict()
-    for reg, size in list(reg_size.items()):
-        if size not in reg_size_inv:
-            # unique size: just record it
-            reg_size_inv[size] = reg
-        else:
-            # size already seen, process reg with reg_rep
-            reg_rep = reg_size_inv[size]
-            mask_est[mask_est == reg] = reg_rep
-            del reg_size[reg]
-
-    # add regions (from largest to smallest)
-    thresh_size = np.inf
-    f1 = 0
-    mask_est_prune = np.zeros(mask_est.shape, dtype=bool)
-    for reg_idx in sorted(reg_size, key=reg_size.get, reverse=True):
-        mask_est_prune[mask_est == reg_idx] = True
-        _f1 = f1_score(y_true=mask_true, y_pred=mask_est_prune)
-
-        if _f1 > f1:
-            f1 = _f1
-            thresh_size = reg_size[reg_idx]
-
-    return thresh_size, f1
