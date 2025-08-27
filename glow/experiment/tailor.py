@@ -33,10 +33,11 @@ def get_llr(label_map, exp, _q_tup=None, _skip_homo=False):
     def _get_ll_one_reg(y, **kwargs):
         """ computes log likelihood of model """
         e = get_mancova(y=y, **kwargs)[0]
-        s, ll = np.linalg.slogdet(e)
+        num_vox = y.shape[2]
+        s, ll = np.linalg.slogdet(e / num_vox)
         assert s != -1, 'error covariance not positive semi-definite'
 
-        return ll
+        return ll * num_vox
 
     if _q_tup is None:
         # decompose x into orthogonal spaces (full model)
