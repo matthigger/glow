@@ -6,7 +6,10 @@ from datetime import datetime
 
 import cloudpickle as pickle
 import pandas as pd
-from appdirs import user_data_dir
+from platformdirs import user_data_dir
+
+OUT = 'out'
+ERROR = 'error'
 
 
 def get_path_result():
@@ -14,6 +17,7 @@ def get_path_result():
                    'results')
     path_result.mkdir(parents=True, exist_ok=True)
     return path_result
+
 
 def prep_folder_out(files_to_copy=tuple(), verbose=True):
     path_result = get_path_result()
@@ -119,6 +123,7 @@ def load(df, folder='', uuid=None, **kwargs):
         x = pickle.load(f)
 
     return x
+
 
 if __name__ == '__main__':
     print(f'path result is: {get_path_result()}')
