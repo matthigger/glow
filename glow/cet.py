@@ -53,7 +53,7 @@ def optimize_cluster_thresh(stat, mask_true, mask_idx, alpha_fwer=.05,
 
     # iterate through unpermuted data
     best_f1 = 0
-    best_mask_est = None
+    best_mask_est = np.zeros(mask_idx.shape, dtype=bool)
     img = np.zeros(mask_idx.shape)
     img[mask_active] = stat[0, :]
     for ijk, label_map, reg_size in iter_label_map_thresh(img=img,
