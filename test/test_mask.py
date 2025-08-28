@@ -1,5 +1,7 @@
 from collections import namedtuple
 
+from scipy.ndimage import convolve
+
 from glow.mask import *
 
 
@@ -171,3 +173,26 @@ def test_get_neighbor_offsets():
         offset_set = set(tuple(ijk) for ijk in offset)
         offset_exp_set = set(tuple(ijk) for ijk in case.offset_exp)
         assert offset_set == offset_exp_set, f'case: {idx}'
+
+
+def test_iter_neighbor():
+    conn2d = np.array([[1, 1, 1],
+                       [1, 0, 1],
+                       [1, 1, 1]])
+    conn3d = np.ones((3, 3, 3))
+    conn3d[1, 1, 1] = 0
+    case_list = [(np.arange(12).reshape(3, 4), conn2d),
+                 (np.arange(24).reshape(2, 3, 4), conn3d)]
+
+    for a, conn in case_list:
+        for ijk in np.ndindex(a.shape):
+            # expected
+            mask = np.zeros(a.shape, dtype=bool)
+            mask[*ijk] = True
+            mask = convolve(mask, conn, mode='constant', cval=False)
+            neigh_set_exp = set(a[mask])
+
+            # observed
+            neigh_set_obs = set(iter_neighbor(ijk=ijk, a=a, conn=conn))
+
+            assert neigh_set_exp == neigh_set_obs

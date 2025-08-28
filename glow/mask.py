@@ -110,7 +110,7 @@ def trim_zeros_2d(x, to_trim=0):
 
 
 def get_neighbor_offsets(conn, not_reflexive=True):
-    """ get neighbor index offsets from a connectivity mask
+    """ get neighbor index offset from a connectivity mask
 
     expected usage:
 
@@ -129,7 +129,7 @@ def get_neighbor_offsets(conn, not_reflexive=True):
             - An N-dimensional array (with odd size along each axis) where
               nonzero entries define neighbors relative to the center.
         not_reflexive (bool, optional): If True, the central voxel (offset = 0
-            along all axes) is excluded from the returned offsets. Default is False.
+            along all axes) is excluded from the returned offset. Default is False.
 
     Returns:
         numpy.ndarray: An array of shape (nconn, ndim) where:
@@ -144,10 +144,27 @@ def get_neighbor_offsets(conn, not_reflexive=True):
 
     center = tuple(s // 2 for s in conn.shape)
     coords = np.argwhere(conn)
-    offsets = coords - center
+    offset = coords - center
 
     if not_reflexive:
         # ensure that voxel is not its own neighbor
-        offsets = offsets[~np.all(offsets == 0, axis=1)]
+        offset = offset[~np.all(offset == 0, axis=1)]
 
-    return offsets
+    return offset
+
+
+def iter_neighbor(a, ijk, conn=None, offset=None, **kwargs):
+    assert (offset is None) != (conn is None), 'offset xor conn required'
+
+    if offset is None:
+        offset = get_neighbor_offsets(conn, **kwargs)
+
+    top = np.array(a.shape)
+    btm = np.zeros(len(a.shape))
+
+    for _offset in offset:
+        _ijk = ijk + _offset
+        if (_ijk < btm).any() or (_ijk >= top).any():
+            # new _ijk is out of bounds
+            continue
+        yield a[*tuple(_ijk)]
