@@ -12,6 +12,7 @@ from .exper import ExperimentScaled
 from .mancova import get_hotel_tr
 from .permute import Permuter
 from .tailor import tailor
+from ..cet import optimize_cluster_thresh
 
 
 class Analysis:
@@ -110,7 +111,8 @@ class Analysis:
 
 class AnalysisVBA(Analysis):
     def __init__(self, exp, n_perm, alpha_fwer=.05, verbose=False,
-                 tfce_flag=False, cet_flag=False, mask_eff=None, **kwargs):
+                 tfce_flag=False, cet_flag=False, mask_eff=None,
+                 conn=None, **kwargs):
         super().__init__(exp, **kwargs)
         self.tfce_flag = tfce_flag
         self.cet_flag = cet_flag
@@ -124,15 +126,25 @@ class AnalysisVBA(Analysis):
                                         mask_idx=exp.mask_idx,
                                         verbose=verbose)
 
-        # compute p-values
-        self.pval = self.get_pval(self.stat)
+        if cet_flag:
+            # get estimate of upper bound f1 for cluster extent thresholding
+            mask, f1 = optimize_cluster_thresh(self.stat,
+                                               mask_true=mask_eff,
+                                               mask_idx=exp.mask_idx,
+                                               alpha_fwer=alpha_fwer,
+                                               conn=conn)
 
-        # discover effects
-        mask = np.zeros(exp.mask_idx.shape, dtype=bool)
-        mask[exp.mask_idx > -1] = self.pval <= alpha_fwer
-        self.effect_list = self.discover_mask(mask=mask, exp=exp,
-                                              cet_flag=cet_flag,
-                                              mask_eff=mask_eff)
+            # no per-voxel pvalue is available here
+            self.pval = None
+        else:
+            # compute p-values
+            self.pval = self.get_pval(self.stat)
+
+            # discover effects
+            mask = np.zeros(exp.mask_idx.shape, dtype=bool)
+            mask[exp.mask_idx > -1] = self.pval <= alpha_fwer
+
+        self.effect_list = self.discover_mask(mask=mask, exp=exp)
 
     @classmethod
     def apply_tfce(cls, stat, mask_idx, verbose=False):
@@ -160,16 +172,12 @@ class AnalysisVBA(Analysis):
         return tfce
 
     @classmethod
-    def discover_mask(cls, mask, exp, cet_flag=False, mask_eff=None):
+    def discover_mask(cls, mask, exp):
         """ each connected component in mask yields an effect region
 
         Args:
             mask (np.array): boolean mask same size as exp.mask_idx
             exp (Experiment):
-            cet_flag (bool): toggles cluster extent thresholding flag, if True
-                uses the ground truth mask (eff_mask) to get the cluster
-                extent threshold which maxmizes f1 score
-            mask_eff (np.array):
 
         Returns:
             effect_list (list): list of effects (largest first)
@@ -178,19 +186,12 @@ class AnalysisVBA(Analysis):
         # same effect)
         mask_est, num_effect = label(mask.astype(bool))
 
-        if cet_flag:
-            raise NotImplementedError
-        else:
-            thresh_size = 0
-
         effect_list = list()
         for eff_idx in range(1, num_effect + 1):
             # build effect for each contiguous effect found
             _mask = mask_est == eff_idx
-
-            if _mask.sum() >= thresh_size:
-                eff = glow.effect.Effect.from_exp_mask(exp=exp, mask=_mask)
-                effect_list.append(eff)
+            eff = glow.effect.Effect.from_exp_mask(exp=exp, mask=_mask)
+            effect_list.append(eff)
 
         return effect_list
 
