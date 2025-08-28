@@ -2,7 +2,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from itertools import product
 from pathlib import Path
-from typing import Literal, Optional, Tuple
+from typing import Literal, Optional, Tuple, List
 
 import numpy as np
 import yaml
@@ -44,9 +44,6 @@ class Config:
     # the percentage of total volume which the effect occupies
     effect_perc: float = 0.2
 
-    # fwer bound
-    alpha_fwer: float = 0.05
-
     # number of jobs (each runs another effect).  1 is serial, -1 runs as many
     # as the computer has threads
     n_jobs: int = 1
@@ -58,6 +55,7 @@ class Config:
     # -------- source-specific --------
     # HCP
     hcp_path: str = '/home/matt/Dropbox/pnl_hglm/data/hcp100_lowres/image'
+    hcp_feats: List[str] = field(default_factory=lambda: ['FA', 'MD'])
 
     # WGN
     wgn_shape: Tuple = (5, 5, 5)
@@ -71,11 +69,12 @@ class Config:
 
     def build_experiment(self):
         if self.source == 'hcp':
+            img_glob_dict = {feat: f'*_{feat}.nii.gz' for feat in self.hcp_feats}
             exp = glow.experiment.ExperimentImageOnly.from_search(
                 folder=self.hcp_path,
                 sbj_regex=r'[\d]{6}',
-                img_glob_dict={'FA': '*_FA.nii.gz', 'MD': '*_MD.nii.gz'})
-            exp.sample_x(a=2, seed=self.exp_seed, add_bias=True)
+                img_glob_dict=img_glob_dict)
+            exp = exp.sample_x(a=2, seed=self.exp_seed, add_bias=True)
         elif self.source == 'wgn':
             exp = glow.experiment.Experiment.from_gauss(
                 seed=self.exp_seed,

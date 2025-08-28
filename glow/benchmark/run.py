@@ -71,7 +71,7 @@ def run(seed, hotel_tr, config):
 
         else:
             # no error catching, will stop all experiments if any error
-            ana = Ana(exp=_exp, alpha_fwer=config.alpha_fwer, **kwargs)
+            ana = Ana(exp=_exp, **kwargs)
         total_time_sec = time.time() - start
 
         # build mask of predicted area (union of all effect masks)
