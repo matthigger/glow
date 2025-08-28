@@ -5,7 +5,7 @@ conn_dict = {6: np.array([[[0, 0, 0],
                            [0, 1, 0],
                            [0, 0, 0]],
                           [[0, 1, 0],
-                           [1, 1, 1],
+                           [1, 0, 1],
                            [0, 1, 0]],
                           [[0, 0, 0],
                            [0, 1, 0],
@@ -14,7 +14,7 @@ conn_dict = {6: np.array([[[0, 0, 0],
                             [1, 1, 1],
                             [0, 1, 0]],
                            [[1, 1, 1],
-                            [1, 1, 1],
+                            [1, 0, 1],
                             [1, 1, 1]],
                            [[0, 1, 0],
                             [1, 1, 1],
@@ -153,7 +153,7 @@ def get_neighbor_offsets(conn, not_reflexive=True):
     return offset
 
 
-def iter_neighbor(a, ijk, conn=None, offset=None, **kwargs):
+def iter_neighbor(a, ijk, conn=None, offset=None, mask_active=None, **kwargs):
     assert (offset is None) != (conn is None), 'offset xor conn required'
 
     if offset is None:
@@ -167,4 +167,10 @@ def iter_neighbor(a, ijk, conn=None, offset=None, **kwargs):
         if (_ijk < btm).any() or (_ijk >= top).any():
             # new _ijk is out of bounds
             continue
-        yield a[*tuple(_ijk)]
+
+        _ijk = tuple(_ijk)
+        if (mask_active is not None) and not mask_active[*_ijk]:
+            # _ijk is not in mask_active, its not a neighbor
+            continue
+
+        yield a[*_ijk]

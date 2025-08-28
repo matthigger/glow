@@ -176,23 +176,31 @@ def test_get_neighbor_offsets():
 
 
 def test_iter_neighbor():
+    Case = namedtuple('Case', ['shape', 'seed', 'p_mask', 'conn'])
     conn2d = np.array([[1, 1, 1],
                        [1, 0, 1],
                        [1, 1, 1]])
-    conn3d = np.ones((3, 3, 3))
-    conn3d[1, 1, 1] = 0
-    case_list = [(np.arange(12).reshape(3, 4), conn2d),
-                 (np.arange(24).reshape(2, 3, 4), conn3d)]
+    conn3d = conn_dict[26]
+    case_list = [Case(seed=0, shape=(3, 3), p_mask=1, conn=conn2d),
+                 Case(seed=0, shape=(3, 3), p_mask=.6, conn=conn2d),
+                 Case(seed=0, shape=(5, 5, 5), p_mask=1, conn=conn3d),
+                 Case(seed=0, shape=(5, 5, 5), p_mask=.6, conn=conn3d)]
 
-    for a, conn in case_list:
-        for ijk in np.ndindex(a.shape):
+    for case in case_list:
+        a = np.arange(np.prod(case.shape)).reshape(case.shape)
+        rng = np.random.default_rng(seed=case.seed)
+        mask_active = rng.random(size=case.shape) <= case.p_mask
+
+        for ijk in np.ndindex(case.shape):
             # expected
-            mask = np.zeros(a.shape, dtype=bool)
+            mask = np.zeros(case.shape, dtype=bool)
             mask[*ijk] = True
-            mask = convolve(mask, conn, mode='constant', cval=False)
+            mask = convolve(mask, case.conn, mode='constant', cval=False)
+            mask[~mask_active] = False
             neigh_set_exp = set(a[mask])
 
             # observed
-            neigh_set_obs = set(iter_neighbor(ijk=ijk, a=a, conn=conn))
+            neigh_set_obs = set(iter_neighbor(ijk=ijk, a=a, conn=case.conn,
+                                              mask_active=mask_active))
 
             assert neigh_set_exp == neigh_set_obs
