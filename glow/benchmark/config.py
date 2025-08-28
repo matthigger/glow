@@ -11,7 +11,7 @@ from platformdirs import user_data_dir
 from tqdm import tqdm
 
 import glow
-from glow.compare_analyses.run import run
+from glow.benchmark.run import run
 
 base = Path(user_data_dir('glow', 'glow_author'))
 path_result = base / 'results'

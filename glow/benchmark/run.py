@@ -9,7 +9,7 @@ import cloudpickle as pickle
 import numpy as np
 
 import glow
-from glow.compare_analyses.file import OUT, ERROR
+from glow.benchmark.file import OUT, ERROR
 
 
 def run(seed, hotel_tr, config):
@@ -108,7 +108,7 @@ def run(seed, hotel_tr, config):
 
 
 if __name__ == '__main__':
-    from glow.compare_analyses.config import Config
+    from glow.benchmark.config import Config
 
     # quick test
     ana_kwargs_dict = {'GLOW': (glow.experiment.AnalysisGLOW,
