@@ -1,7 +1,7 @@
+import math
 import warnings
 from collections import Counter
 from itertools import chain
-from math import gamma
 
 import numpy as np
 
@@ -77,15 +77,27 @@ class NotEnoughPermutations(Warning):
     pass
 
 
-def get_n_perm_possible(partition):
-    """ counts permutations possible (gamma faster than factorial)
+def perms_at_least(partition, thresh):
+    """ computes number of permutations (if exceed n_perm, quits early)
 
-    Args:
-        partition (iter): partition (e.g. [0, 0, 0, 1, 2])
+    Returns:
+        enough_perms (bool): True if there are at least thresh permutations
+        num_perms (int): exact number of permutations (only computed if
+            not enough permutations, else its None)
     """
+    if thresh <= 1:
+        return True, None
     n = len(partition)
-    counts = Counter(partition).values()
-    return gamma(n + 1) / np.prod([gamma(c + 1) for c in counts])
+    counts = list(Counter(partition).values())
+
+    total = 1
+    remaining = n
+    for c in counts[:-1]:
+        total *= math.comb(remaining, c)
+        if total >= thresh:
+            return True, None
+        remaining -= c
+    return total >= thresh, total
 
 
 def get_perm_iter(partition, n_perm, seed=0):
@@ -110,8 +122,10 @@ def get_perm_iter(partition, n_perm, seed=0):
     yield partition_init
 
     rng = np.random.default_rng(seed)
-    n_perm_poss = get_n_perm_possible(partition)
-    if n_perm_poss >= n_perm:
+
+    enough_perms, n_perm_poss = perms_at_least(partition, thresh=n_perm)
+
+    if enough_perms:
         # enough permutations exist, draw samples (repeats possible)
         for n_perm in range(n_perm):
             yield partition[rng.permutation(partition.size)]

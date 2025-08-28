@@ -40,15 +40,15 @@ def get_n_perm_possible_slow(partition):
 case_list = ([0],
              [0, 1],
              [0, 0, 0, 1, 1, 1, 1],
-             [0, 1, 2, 3, 3, 3])
+             [0, 1, 2, 3, 3, 3],)
 
 
-def test_get_n_perm_possible():
+def test_perms_at_least():
     for partition in case_list:
-        exp = get_n_perm_possible_slow(partition)
-        obs = get_n_perm_possible(partition)
-        assert exp == obs
-
+        # given large threshold, its never enough (must compute all)
+        enough, n_perm_obs = perms_at_least(partition, thresh=np.inf)
+        assert not enough
+        assert n_perm_obs == get_n_perm_possible_slow(partition)
 
 def test_iter_perms():
     for partition in case_list:
