@@ -108,7 +108,7 @@ def run(seed, hotel_tr, config):
 
 
 if __name__ == '__main__':
-    from glow.compare_analyses.param import Config
+    from glow.compare_analyses.config import Config
 
     # quick test
     ana_kwargs_dict = {'GLOW': (glow.experiment.AnalysisGLOW,

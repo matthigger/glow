@@ -1,8 +1,6 @@
 import gzip
 import json
 import pathlib
-import shutil
-from datetime import datetime
 
 import cloudpickle as pickle
 import pandas as pd
@@ -17,30 +15,6 @@ def get_path_result():
                    'results')
     path_result.mkdir(parents=True, exist_ok=True)
     return path_result
-
-
-def prep_folder_out(files_to_copy=tuple(), verbose=True):
-    path_result = get_path_result()
-    timestamp = datetime.now().strftime('%y-%m-%d_%H%M')
-    folder_out = pathlib.Path(path_result) / f'./exp_{timestamp}'
-
-    if folder_out.exists():
-        choice = input(f'folder exists: {folder_out}\ndelete? [y/n]:')
-        if choice != 'y':
-            raise Exception('quitting')
-        shutil.rmtree(folder_out)
-
-    # make folder_out and its "out" subfolder
-    (folder_out / 'out').mkdir(exist_ok=True, parents=True)
-
-    # store copy of given file (stores parameters with results)
-    for file in files_to_copy:
-        shutil.copy(file, folder_out / pathlib.Path(file).name)
-
-    if verbose:
-        print(f'prepared: {folder_out}')
-
-    return folder_out
 
 
 def load_update_all(folder=None, verbose=True):
@@ -91,7 +65,7 @@ def load_update_all(folder=None, verbose=True):
         f_csv = f_csv.resolve()
         print(f'{n_old} old and {n_new} new experiments stored in {f_csv}')
 
-        f_param = folder / 'param.py'
+        f_param = folder / 'config.py'
         if f_param.exists():
             print(f_param.read_text())
 
