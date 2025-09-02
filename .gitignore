@@ -16,3 +16,4 @@
 *.pdf
 /test/profile.py.lprof
 profile*
+/glow/benchmark/move_plot.py

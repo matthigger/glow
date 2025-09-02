@@ -104,8 +104,7 @@ class Config:
                 return {k: convert(v) for k, v in obj.items()}
             if isinstance(obj, (list, tuple)):
                 return [convert(v) for v in obj]
-            if isinstance(obj, type):
-                # classes like AnalysisGLOW
+            if hasattr(obj, '__name__'):
                 return obj.__name__
             return obj
 

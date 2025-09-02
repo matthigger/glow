@@ -17,16 +17,21 @@ def get_path_result():
     return path_result
 
 
-def load_update_all(folder=None, verbose=True):
+def load_update_all(label, time=None, verbose=True):
     """ loads all experiments stats from csv, updates csv as needed """
-    if folder is None:
-        # use latest folder (if none given)
-        path_result = get_path_result()
-        folder = sorted(path_result.glob('exp_*'))[-1]
-        print(f'using latest folder: {folder}')
+    # use latest folder (if none given)
+    folder = get_path_result() / label
+    assert folder.exists(), f'label not found: {folder}'
+
+    if time is None or not time:
+        if verbose:
+            print(f'selecting latest folder')
+        folder = sorted(folder.glob('*'))[-1]
+    else:
+        folder = folder / time
+    assert folder.exists(), f'time not found: {folder}'
 
     # load aggregated results
-    folder = pathlib.Path(folder)
     assert folder.exists()
     f_csv = folder / 'results.csv'
     if f_csv.exists():
@@ -47,6 +52,9 @@ def load_update_all(folder=None, verbose=True):
     # add in existing result
     df = pd.concat((df, pd.DataFrame(dict_list)))
 
+    if df.empty:
+        return df, folder, 0
+
     # round hotel_tr to 14 decimal places (avoids floating point comparison failure)
     df['hotel_tr'] = df['hotel_tr'].round(14)
 
@@ -60,16 +68,12 @@ def load_update_all(folder=None, verbose=True):
     for file in file_list:
         file.unlink()
 
+    n_new = len(file_list)
     if verbose:
-        n_new = len(file_list)
         f_csv = f_csv.resolve()
         print(f'{n_old} old and {n_new} new experiments stored in {f_csv}')
 
-        f_param = folder / 'config.py'
-        if f_param.exists():
-            print(f_param.read_text())
-
-    return df
+    return df, folder, n_new
 
 
 def get_uuid(df, **match_dict):
@@ -100,4 +104,4 @@ def load(df, folder='', uuid=None, **kwargs):
 
 
 if __name__ == '__main__':
-    print(f'path result is: {get_path_result()}')
+    df = load_update_all('vba_hcp')
