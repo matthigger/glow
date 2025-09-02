@@ -26,8 +26,9 @@ def plot_compute_time(df):
                 hue='label')
 
 
+
 def plot_x_vs_metrics(df, x_param='hotel_tr', metrics=['f1', 'sens', 'spec'],
-                      one_vs_rest=False, one_label='GLOW', alpha=.5):
+                      one_vs_rest=False, one_label='GLOW', alpha=.5, ci=90):
     # ensure numeric x + metrics (prevents lexicographic sorts)
     df2 = df.copy()
     df2[x_param] = pd.to_numeric(df2[x_param], errors='coerce')
@@ -46,29 +47,55 @@ def plot_x_vs_metrics(df, x_param='hotel_tr', metrics=['f1', 'sens', 'spec'],
     color_map = get_cmap_dict(labels_sorted)
 
     nrows = 2 if one_vs_rest else 1
-    fig, axes = plt.subplots(nrows, 3,
-                             figsize=(14, 5.5 if one_vs_rest else 3.0),
-                             sharex='col')
+    fig, axes = plt.subplots(
+        nrows, len(metrics),
+        figsize=(14, 5.5 if one_vs_rest else 3.0),
+        sharex='col'
+    )
     if nrows == 1:
         axes = np.atleast_2d(axes)
+
+    # percentiles for shading
+    lower_q = (100 - ci) / 2
+    upper_q = 100 - lower_q
 
     for j, metric in enumerate(metrics):
         ax_top = axes[0, j]
 
-        # top: per-seed lines + bold mean
+        # top: per-seed lines + bold mean + percentile shading
         for label, sub in df_agg.groupby('label'):
             color = color_map[label]
+
+            # thin per-seed lines
             for seed, g in sub.groupby('seed', sort=False):
                 g = g.sort_values(x_param)
-                ax_top.plot(g[x_param], g[metric], lw=.5, alpha=alpha,
-                            color=color)
-            mean_curve = (
-                sub.groupby(x_param, as_index=False)[metric]
-                .mean()
+                ax_top.plot(
+                    g[x_param], g[metric],
+                    lw=.5, alpha=alpha, color=color
+                )
+
+            # aggregate stats: mean + quantiles
+            g_stats = (
+                sub.groupby(x_param)[metric]
+                .agg(['mean',
+                      lambda s: np.percentile(s, lower_q),
+                      lambda s: np.percentile(s, upper_q)])
+                .reset_index()
                 .sort_values(x_param)
             )
-            ax_top.plot(mean_curve[x_param], mean_curve[metric], lw=3,
-                        color=color, label=label)
+            g_stats.columns = [x_param, 'mean', 'q_low', 'q_high']
+
+            # mean curve
+            ax_top.plot(
+                g_stats[x_param], g_stats['mean'],
+                lw=3, color=color, label=label
+            )
+
+            # shaded band (only on top plots)
+            ax_top.fill_between(
+                g_stats[x_param], g_stats['q_low'], g_stats['q_high'],
+                color=color, alpha=0.2
+            )
 
         if j == 0:
             ax_top.legend(frameon=False)
@@ -77,21 +104,20 @@ def plot_x_vs_metrics(df, x_param='hotel_tr', metrics=['f1', 'sens', 'spec'],
         if nrows == 1:
             ax_top.set_xlabel(x_param)
 
-        # bottom: GLOW - best(other) if possible for this metric
+        # bottom: GLOW - best(other), no shading
         if nrows == 2:
             ax_bot = axes[1, j]
 
-            # pivot to wide: columns per label
             pivot = (
-                df_agg.pivot_table(index=['seed', x_param], columns='label',
-                                   values=metric)
+                df_agg.pivot_table(
+                    index=['seed', x_param], columns='label', values=metric
+                )
                 .reset_index()
             )
 
-            others = [c for c in pivot.columns if
-                      c not in {'seed', x_param, one_label}]
+            others = [c for c in pivot.columns
+                      if c not in {'seed', x_param, one_label}]
             if (one_label in pivot.columns) and len(others) > 0:
-                # require glow present and at least one other present on each row
                 valid = pivot[one_label].notna()
                 if others:
                     valid &= pivot[others].notna().any(axis=1)
@@ -100,20 +126,25 @@ def plot_x_vs_metrics(df, x_param='hotel_tr', metrics=['f1', 'sens', 'spec'],
                     pv['best_other'] = pv[others].max(axis=1, skipna=True)
                     pv['diff'] = pv[one_label] - pv['best_other']
 
-                    # per-seed thin lines
+                    # per-seed thin lines (light grey for visibility)
                     for seed, g in pv.groupby('seed', sort=False):
                         g = g.sort_values(x_param)
-                        ax_bot.plot(g[x_param], g['diff'], lw=.5, alpha=alpha,
-                                    color='black')
+                        ax_bot.plot(
+                            g[x_param], g['diff'],
+                            lw=.5, alpha=0.7, color='lightgrey'
+                        )
 
-                    # bold mean diff
+                    # mean diff (bold black line, no shading)
                     diff_mean = (
-                        pv.groupby(x_param, as_index=False)['diff']
+                        pv.groupby(x_param)['diff']
                         .mean()
+                        .reset_index()
                         .sort_values(x_param)
                     )
-                    ax_bot.plot(diff_mean[x_param], diff_mean['diff'], lw=3,
-                                color='black')
+                    ax_bot.plot(
+                        diff_mean[x_param], diff_mean['diff'],
+                        lw=3, color='black'
+                    )
 
                     ax_bot.set_ylabel(f'{one_label} - best vba')
                     ax_bot.axhline(0, lw=.5, color='black', alpha=alpha)
@@ -134,8 +165,9 @@ def plot_x_vs_metrics(df, x_param='hotel_tr', metrics=['f1', 'sens', 'spec'],
     axes[0, 0].set_ylabel('score')
     plt.tight_layout()
 
-
 if __name__ == '__main__':
+    force_replot = False
+
     import glow.benchmark
 
     path_result = glow.benchmark.get_path_result()
@@ -150,14 +182,15 @@ if __name__ == '__main__':
                 continue
 
             path = _folder / 'time.pdf'
-            if n_new or not path.exists():
+            if force_replot or n_new or not path.exists():
                 print(f'creating: {path}')
                 plot_compute_time(df)
                 plt.gcf().savefig(path, bbox_inches='tight')
-                plt.close(plt.gcf())
+                plt.close('all')
 
             path = _folder / 'score.pdf'
-            if n_new or not path.exists():
+            if force_replot or n_new or not path.exists():
                 print(f'creating: {path}')
                 plot_x_vs_metrics(df, one_vs_rest='vba' in label.stem)
                 plt.gcf().savefig(path, bbox_inches='tight')
+                plt.close('all')

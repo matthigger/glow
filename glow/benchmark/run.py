@@ -12,30 +12,45 @@ import glow
 from glow.benchmark.file import OUT, ERROR
 
 
-def run(seed, hotel_tr, config):
-    """ runs a single experiment (one hotel_tr & seed) """
+def run_segment(config, **kwargs):
+    """ runs wards & """
+    # build a particular effect
+    exp, effect = config.get_exp_eff(**kwargs)
 
-    # trim experiment to reasonable size (for speedup)
-    if config.radius is None:
-        exp = config.exp
-    else:
-        extenter = glow.effect.ExtenterSphere(radius=config.radius)
-        mask = extenter(mask_idx=config.exp.mask_idx, seed=seed,
-                        contiguous=True)
-        exp = config.exp.apply_mask(mask)
+    for mode in ('ward-naive', 'ward-glm'):
+        # cluster
+        start = time.time()
+        children = glow.experiment.cluster(exp, mode=mode)
+        total_time_sec = time.time() - start
 
-    # scale normalize before sampling minimum variance (each feature given
-    # equal weight in sampling extent)
-    exp = glow.experiment.ExperimentScaled.from_exp(exp)
+        # find best (f1) region
+        f1, sens, spec = glow.graph.get_f1_sens_spec(mask=effect.mask,
+                                                     mask_idx=exp.mask_idx,
+                                                     children=children)
+        idx = np.argmax(f1)
 
-    # sample effect space
-    n = exp.y.shape[2] * config.effect_perc
-    extenter = glow.effect.ExtenterMinVar(n=n)
+        # dump summary
+        uuid = str(uuid4())[:8]
+        file_out = config.folder / OUT / f'{uuid}_result.json'
+        d = {'hotel_tr': effect.hotel_tr,
+             'seed': int(effect.seed),
+             'f1': f1[idx],
+             'label': mode,
+             'sens': sens[idx],
+             'spec': spec[idx],
+             'uuid': uuid,
+             'vox_total': int(exp.y.shape[2]),
+             'vox_effect': int(effect.mask.sum()),
+             'time_sec': total_time_sec}
+        file_out.parent.mkdir(exist_ok=True, parents=True)
+        with open(file_out, 'w') as f:
+            json.dump(d, f, sort_keys=True, indent=4)
 
-    # impose effect
-    _exp, effect = exp.impose_effect(extenter=extenter,
-                                     seed=seed,
-                                     hotel_tr=hotel_tr)
+
+def run_ana(config, **kwargs):
+    """ runs all the analyses in config """
+    # build a particular effect
+    exp, effect = config.get_exp_eff(**kwargs)
 
     for label, (Ana, kwargs) in config.ana_kwargs_dict.items():
         # cluster extent thresholding "peeks", its results should be
@@ -53,13 +68,13 @@ def run(seed, hotel_tr, config):
             # catch errors and dump to json if any occur (allows us to
             # continue with experiment in event of errors)
             try:
-                ana = Ana(exp=_exp, alpha_fwer=config.alpha_fwer, **kwargs)
+                ana = Ana(exp=exp, alpha_fwer=config.alpha_fwer, **kwargs)
             except Exception as e:
                 d = {'error_msg': traceback.format_exc(),
                      'label': label,
                      'method': Ana.__name__,
-                     'hotel_tr': hotel_tr,
-                     'seed': int(seed)}
+                     'hotel_tr': effect.hotel_tr,
+                     'seed': int(effect.seed)}
                 print(f'error: {d}')
 
                 file_out = str(file_out).replace(OUT, ERROR)
@@ -71,7 +86,7 @@ def run(seed, hotel_tr, config):
 
         else:
             # no error catching, will stop all experiments if any error
-            ana = Ana(exp=_exp, **kwargs)
+            ana = Ana(exp=exp, **kwargs)
         total_time_sec = time.time() - start
 
         # build mask of predicted area (union of all effect masks)
@@ -84,8 +99,8 @@ def run(seed, hotel_tr, config):
                                              mask_target=effect.mask,
                                              mask_active=exp.mask_idx > -1)
         # dump summary
-        d = {'hotel_tr': hotel_tr,
-             'seed': int(seed),
+        d = {'hotel_tr': effect.hotel_tr,
+             'seed': int(effect.seed),
              'stat': ana.get_stat.__name__.replace('get_', ''),
              'label': label,
              'Analysis': Ana.__name__,
@@ -117,4 +132,4 @@ if __name__ == '__main__':
     config = Config(label='quick_test', source='wgn', n_seed=3,
                     hotel_tr_all=[0, 1], wgn_shape=(3, 3),
                     ana_kwargs_dict=ana_kwargs_dict)
-    config.run_all()
+    config.run_all(run_fnc=run_ana)

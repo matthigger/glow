@@ -7,7 +7,7 @@ from glow.benchmark.config import Config
 common_dict = dict(n_seed=100,
                    hotel_tr_all=np.logspace(np.log10(0.03), np.log10(1.0), 16),
                    effect_perc=.2,
-                   n_jobs=8,
+                   n_jobs=-1,
                    detail_save=False,
                    error_save=False)
 
@@ -92,7 +92,9 @@ config_list.append(Config(label='alpha_tailor',
 
 
 if __name__ == '__main__':
+    from glow.benchmark.run import run_ana
+
     # run benchmarks
     for config in config_list:
         print(f'begin: {config.label}')
-        config.run_all(verbose=True)
+        config.run_all(run_fnc=run_ana, verbose=True)

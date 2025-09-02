@@ -11,7 +11,6 @@ from platformdirs import user_data_dir
 from tqdm import tqdm
 
 import glow
-from glow.benchmark.run import run
 
 base = Path(user_data_dir('glow', 'glow_author'))
 path_result = base / 'results'
@@ -26,7 +25,7 @@ class Config:
     # a dictionary, keys are labels of each analysis, values are tuples of
     # Analysis objects (AnalysisGLOW or AnalysisVBA) and kwargs to be sent
     # to their constructor
-    ana_kwargs_dict: dict
+    ana_kwargs_dict: dict = None
 
     # -------- image set selection --------
     source: Literal['wgn', 'hcp'] = 'wgn'
@@ -67,23 +66,58 @@ class Config:
     # region restriction
     radius: Optional[int] = None
 
-    def build_experiment(self):
+    def __post_init__(self):
+        self.exp_orig = None
+        self.folder = None
+
+    def prep_exp_orig(self):
         if self.source == 'hcp':
-            img_glob_dict = {feat: f'*_{feat}.nii.gz' for feat in self.hcp_feats}
+            img_glob_dict = {feat: f'*_{feat}.nii.gz' for feat in
+                             self.hcp_feats}
             exp = glow.experiment.ExperimentImageOnly.from_search(
                 folder=self.hcp_path,
                 sbj_regex=r'[\d]{6}',
                 img_glob_dict=img_glob_dict)
-            exp = exp.sample_x(a=2, seed=self.exp_seed, add_bias=True)
+            self.exp_orig = exp.sample_x(a=2, seed=self.exp_seed,
+                                         add_bias=True)
         elif self.source == 'wgn':
-            exp = glow.experiment.Experiment.from_gauss(
+            self.exp_orig = glow.experiment.Experiment.from_gauss(
                 seed=self.exp_seed,
                 shape=self.wgn_shape,
                 a=self.wgn_a,
                 b=self.wgn_b,
                 num_img=self.wgn_num_img)
 
-        return exp
+    def get_exp_eff(self, seed, hotel_tr):
+        if self.exp_orig is None:
+            self.prep_exp_orig()
+
+        # trim experiment to reasonable size (for speedup)
+        if self.radius is None:
+            exp = self.exp_orig
+        else:
+            extenter = glow.effect.ExtenterSphere(radius=self.radius)
+            mask = extenter(mask_idx=self.exp_orig.mask_idx, seed=seed,
+                            contiguous=True)
+            exp = self.exp_orig.apply_mask(mask)
+
+        # scale normalize before sampling minimum variance (each feature given
+        # equal weight in sampling extent)
+        exp = glow.experiment.ExperimentScaled.from_exp(exp)
+
+        # sample effect space
+        n = exp.y.shape[2] * self.effect_perc
+        extenter = glow.effect.ExtenterMinVar(n=n)
+
+        # impose effect
+        return exp.impose_effect(extenter=extenter,
+                                 seed=seed,
+                                 hotel_tr=hotel_tr)
+
+    def iter_kwargs(self):
+        """ iterates through all inputs to get_exp_eff"""
+        for s, h in product(np.arange(self.n_seed), self.hotel_tr_all):
+            yield dict(seed=s, hotel_tr=h)
 
     def prep_folder(self):
         ts = datetime.now().strftime('%y-%m-%d_%H:%M:%S')
@@ -118,7 +152,7 @@ class Config:
             yaml.safe_dump(self._as_serializable(), f, sort_keys=True)
         return path
 
-    def run_all(self, verbose=True):
+    def run_all(self, run_fnc, verbose=True):
         self.prep_folder()
         path_config = self.folder / 'config.yaml'
         self.save_config(path=path_config)
@@ -128,15 +162,12 @@ class Config:
             with open(path_config, 'r') as f:
                 print(f.read())
 
-        self.exp = self.build_experiment()
-
-        kwargs_list = [dict(seed=s, hotel_tr=h) for s, h in
-                       product(np.arange(self.n_seed), self.hotel_tr_all)]
+        kwargs_list = list(self.iter_kwargs())
 
         if self.n_jobs not in (0, 1):
             Parallel(n_jobs=self.n_jobs, verbose=10)(
-                delayed(run)(config=self, **kwargs)
+                delayed(run_fnc)(config=self, **kwargs)
                 for kwargs in tqdm(kwargs_list))
         else:
             for kwargs in tqdm(kwargs_list):
-                run(config=self, **kwargs)
+                run_fnc(config=self, **kwargs)
