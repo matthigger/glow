@@ -1,7 +1,7 @@
 [tool.poetry]
-name = "hglm"
+name = "glow"
 version = "0.1.0"
-description = "Hierarchical General Linear Model"
+description = "General Linear model Optimized with Ward's"
 authors = ["Matt Higger <mhigger@ccs.neu.edu>"]
 readme = "README.md"
 
@@ -34,4 +34,4 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [project.urls]
-"Homepage" = "https://github.com/matthigger/hglm"
+"Homepage" = "https://github.com/matthigger/glow"
