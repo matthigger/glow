@@ -1,18 +1,10 @@
-import pathlib
-from tqdm import tqdm
-
 import nibabel as nib
 from dipy.core.gradients import gradient_table
 from dipy.io.gradients import read_bvals_bvecs
-from dipy.reconst.dti import TensorModel, fractional_anisotropy, \
-    mean_diffusivity
+from dipy.reconst.dti import TensorModel
 
-dti_fnc_dict = {'fa': fractional_anisotropy,
-                'md': mean_diffusivity}
 
-folder = pathlib.Path('/home/matt/Dropbox/pnl_glow/data/HCP_100unrelated')
-for file in tqdm(folder.glob('**/data.nii.gz'), desc='DTI per img'):
-
+def process_dti(file, dti_fnc_dict):
     _folder = file.parent
     for label in dti_fnc_dict.keys():
         _file = _folder / f'{label}.nii.gz'
@@ -22,7 +14,7 @@ for file in tqdm(folder.glob('**/data.nii.gz'), desc='DTI per img'):
     else:
         # all outputs already made, skip this one
         print(f'already processed, skipping: {file}')
-        continue
+        return
 
     # load
     dwi_img = nib.load(str(file))
@@ -39,4 +31,28 @@ for file in tqdm(folder.glob('**/data.nii.gz'), desc='DTI per img'):
     for label, fnc in dti_fnc_dict.items():
         img = nib.Nifti1Image(fnc(dti_fit.evals),
                               dwi_img.affine)
-        nib.save(img, _folder / f'{label}.nii.gz')
+        path_out = _folder / f'{label}.nii.gz'
+        nib.save(img, path_out)
+        print(f'created: {path_out}')
+
+
+if __name__ == '__main__':
+    from joblib import Parallel, delayed
+    import tqdm
+    import pathlib
+    from dipy.reconst.dti import fractional_anisotropy, mean_diffusivity
+
+    n_jobs = 4
+    folder = pathlib.Path('/home/matt/data/hcp100_aug25')
+    dti_fnc_dict = {
+        'fa': fractional_anisotropy,
+        'md': mean_diffusivity,
+    }
+
+    files = list(folder.glob('**/data.nii.gz'))
+
+    # Parallel processing with a progress bar
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(process_dti)(f, dti_fnc_dict)
+        for f in tqdm.tqdm(files, desc='DTI per img')
+    )
