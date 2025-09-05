@@ -53,8 +53,9 @@ class Config:
 
     # -------- source-specific --------
     # HCP
-    hcp_path: str = '/home/matt/Dropbox/pnl_hglm/data/hcp100_lowres/image'
+    hcp_path: str = '/home/matt/data/hcp100_lowres_old/image'
     hcp_feats: List[str] = field(default_factory=lambda: ['FA', 'MD'])
+    hcp_sbj_regex: str = r'[\d]{6}'
 
     # WGN
     wgn_shape: Tuple = (5, 5, 5)
@@ -76,7 +77,7 @@ class Config:
                              self.hcp_feats}
             exp = glow.experiment.ExperimentImageOnly.from_search(
                 folder=self.hcp_path,
-                sbj_regex=r'[\d]{6}',
+                sbj_regex=self.hcp_sbj_regex,
                 img_glob_dict=img_glob_dict)
             self.exp_orig = exp.sample_x(a=2, seed=self.exp_seed,
                                          add_bias=True)
