@@ -51,11 +51,9 @@ def get_pillai(e, h):
     mat = h @ inv_term
     return np.trace(mat)
 
-
 def get_hotel_tr(e, h):
-    inv_e = np.linalg.inv(e)
-    mat = inv_e @ h
-    return np.trace(mat)
+    # Avoid explicit inverse: solve E X = H, then tr(X)
+    return float(np.trace(np.linalg.solve(e, h)))
 
 
 def get_roys_root(e, h):

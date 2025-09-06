@@ -32,3 +32,20 @@ def test_all():
 
         sigma = get_sigma(size, yout, ymean)
         assert np.allclose(sigma_exp, sigma)
+
+
+def test_get_hotel_tr():
+    def get_hotel_tr_trusted(e, h):
+        inv_e = np.linalg.inv(e)
+        mat = inv_e @ h
+        return np.trace(mat)
+
+    rng = np.random.default_rng(0)
+    b = 3
+    for _ in range(10):
+        e = rng.standard_normal((b, b))
+        h = rng.standard_normal((b, b))
+
+        exp = get_hotel_tr_trusted(e, h)
+        obs = get_hotel_tr(e, h)
+        assert np.isclose(exp, obs)
