@@ -10,7 +10,6 @@ import glow.vba
 from .cluster import cluster
 from .exper import ExperimentScaled
 from .mancova import get_hotel_tr
-from .permute import Permuter
 from .tailor import tailor
 from ..cet import optimize_cluster_thresh
 

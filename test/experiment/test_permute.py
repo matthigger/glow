@@ -3,32 +3,34 @@ from math import factorial
 
 import pytest
 
-from glow.experiment import Experiment
+from glow.experiment import ExperimentImageOnly
 from glow.experiment.permute import *
 
 
-class TestPermuter:
-    def test_get_perm_matrix(self):
-        perm = get_perm_matrix(num_img=5, seed=0)
-        np.testing.assert_array_almost_equal(perm, np.eye(5))
+def test_get_freed_lane():
+    exp = ExperimentImageOnly.from_gauss(seed=0)
+    exp = exp.sample_x(a=2, add_bias=True)
 
-        perm = get_perm_matrix(num_img=5, seed=1)
-        perm_expect = np.array([[0., 0., 0., 0., 1.],
-                                [1., 0., 0., 0., 0.],
-                                [0., 1., 0., 0., 0.],
-                                [0., 0., 1., 0., 0.],
-                                [0., 0., 0., 1., 0.]])
+    # projections preserve the q0 directions but change data otherwise
+    perm_idx = 1
+    freed_lane = get_freed_lane(x=exp.x, contrast=exp.contrast, perm_idx=perm_idx)
 
-        np.testing.assert_array_almost_equal(perm, perm_expect)
+    y0 = exp.y[:, :, 0]
+    y0_perm = y0 @ freed_lane
 
-    def test_call(self):
-        perm_idx = 1
-        shape = 10, 10
-        num_img = 5
-        exp = Experiment.from_gauss(shape=shape, seed=0, num_img=num_img)
+    # zero direction (covariates) is unchanged by freed_lane
+    q = decompose(x=exp.x, contrast=exp.contrast)
+    p0 = q[0].T @ q[0]
+    assert np.allclose(y0 @ p0, y0_perm @ p0)
 
-        # prep
-        perm = Permuter(x=exp.x[~exp.contrast, :])
+    # residuals are just shuffled
+    num_img = exp.y.shape[1]
+    rng = np.random.default_rng(seed=perm_idx)
+    new_idx = rng.permutation(num_img)
+    to_resid = np.eye(num_img) - p0
+    resid_before = y0 @ to_resid
+    resid_after = y0_perm @ to_resid
+    assert np.allclose(resid_before[:, new_idx], resid_after)
 
 
 def get_n_perm_possible_slow(partition):
@@ -49,6 +51,7 @@ def test_perms_at_least():
         enough, n_perm_obs = perms_at_least(partition, thresh=np.inf)
         assert not enough
         assert n_perm_obs == get_n_perm_possible_slow(partition)
+
 
 def test_iter_perms():
     for partition in case_list:

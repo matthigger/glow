@@ -100,8 +100,7 @@ class TestExperiment:
         # manually permute in a loop, check that einsum does the same
         exp_permuted = exp.permute(perm_idx=perm_idx)
 
-        perm = Permuter(x=exp.x[~exp.contrast, :])
-        freed_lane = perm.get_freed_lane(perm_idx)
+        freed_lane = get_freed_lane(x=exp.x, contrast=exp.contrast, perm_idx=perm_idx)
         for vox_idx in range(np.prod(shape)):
             y_permute_exp = exp.y[..., vox_idx] @ freed_lane
             assert np.allclose(exp_permuted.y[..., vox_idx], y_permute_exp)

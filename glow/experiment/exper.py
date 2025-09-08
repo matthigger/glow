@@ -10,7 +10,7 @@ import scipy.linalg
 import glow.effect
 import glow.mask
 from .load_image import load_image_color, load_image_nii
-from .permute import Permuter
+from .permute import get_freed_lane
 from .sigma import stretch_sigma
 from ..mask import get_mask_idx
 
@@ -343,15 +343,12 @@ class Experiment(ExperimentImageOnly):
             exp (Experiment): new experiment whose y features have been
                 permuted
         """
-        # build a permutation object
-        perm = Permuter(x=self.x[~self.contrast, :])
-
         if perm_idx == 0:
             # perm_idx = 0 is reserved for unpermuted data
             y = deepcopy(self.y)
         else:
-            y = perm(self.y, n_perm=1, perm_idx_min=perm_idx, keep_orig=False)
-            y = y[:, :, :, 0]
+            freed_lane = get_freed_lane(self.x, self.contrast, perm_idx)
+            y = np.einsum('abc,bd->adc', self.y, freed_lane, optimize=True)
 
         return Experiment(x=self.x, y=y, contrast=self.contrast,
                           mask_idx=self.mask_idx)
