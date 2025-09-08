@@ -333,14 +333,11 @@ class Experiment(ExperimentImageOnly):
 
         return exp, effect
 
-    def permute(self, perm_idx, block_exchange=True):
+    def permute(self, perm_idx):
         """ gets new experiment whose y features were permuted (freedman lane)
 
         Args:
             perm_idx (int): permutation index (0 is no permutation)
-            block_exchange (bool): toggles block exchange permuting.  all
-                voxels are permuted with same permutation matrix.  setting
-                to False will give each voxel its own permutation matrix
 
         Returns:
             exp (Experiment): new experiment whose y features have been
@@ -352,17 +349,9 @@ class Experiment(ExperimentImageOnly):
         if perm_idx == 0:
             # perm_idx = 0 is reserved for unpermuted data
             y = deepcopy(self.y)
-        elif block_exchange:
+        else:
             y = perm(self.y, n_perm=1, perm_idx_min=perm_idx, keep_orig=False)
             y = y[:, :, :, 0]
-        else:
-            y = np.empty_like(self.y)
-            for vox_idx in range(y.shape[2]):
-                # each voxel gets its own permutation index
-                y[:, :, vox_idx] = perm(self.y[:, :, vox_idx],
-                                        n_perm=1,
-                                        perm_idx_min=perm_idx + vox_idx,
-                                        keep_orig=False)[:, :, 0]
 
         return Experiment(x=self.x, y=y, contrast=self.contrast,
                           mask_idx=self.mask_idx)

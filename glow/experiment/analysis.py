@@ -92,12 +92,8 @@ class Analysis:
             num_reg += children.shape[0]
         stat = np.zeros((n_perm, num_reg))
 
-        # prep Permuter object (if needed)
-        x0 = exp.x[~exp.contrast, :]
-        perm = None if n_perm == 1 else Permuter(x=x0)
         for reg_idx, size, e, h in glow.graph.iter_stat(exp=exp,
                                                         children=children,
-                                                        perm=perm,
                                                         n_perm=n_perm,
                                                         keep_orig=True):
             for perm_idx in range(n_perm):
@@ -225,7 +221,7 @@ class AnalysisGLOW(Analysis):
                             dtype=float)
         for perm_idx in tqdm(range(n_perm + 1), **tqdm_dict):
             # permute data (get one permutation of experiment)
-            _exp = exp.permute(perm_idx, block_exchange=True)
+            _exp = exp.permute(perm_idx)
 
             # build hierarchical segmentation
             children = cluster(exp=_exp)
@@ -243,7 +239,7 @@ class AnalysisGLOW(Analysis):
 
         # to ensure each of these permuted stats is new, we run one
         # permutation ahead of time
-        _exp = exp.permute(1 << 31 - 1, block_exchange=True)
+        _exp = exp.permute(1 << 31 - 1)
         # compute permutation stat for each region in common graph
         stat_perm = self.get_stat_perm(exp=_exp,
                                        children=children,

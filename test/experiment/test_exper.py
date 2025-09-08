@@ -97,27 +97,13 @@ class TestExperiment:
         num_img = 5
         exp = Experiment.from_gauss(shape=shape, seed=0, num_img=num_img)
 
-        # prep
-        x = exp.x[~exp.contrast, :], exp.x
-        h = [np.linalg.pinv(_x) @ _x for _x in x]
-
-        # test 1: block_exchange=True
         # manually permute in a loop, check that einsum does the same
-        exp_permuted = exp.permute(perm_idx=perm_idx, block_exchange=True)
+        exp_permuted = exp.permute(perm_idx=perm_idx)
 
         perm = Permuter(x=exp.x[~exp.contrast, :])
         freed_lane = perm.get_freed_lane(perm_idx)
         for vox_idx in range(np.prod(shape)):
             y_permute_exp = exp.y[..., vox_idx] @ freed_lane
-            assert np.allclose(exp_permuted.y[..., vox_idx], y_permute_exp)
-
-        # test 2: block_exchange=False
-        exp_permuted = exp.permute(perm_idx=perm_idx, block_exchange=False)
-
-        for vox_idx in range(np.prod(shape)):
-            freed_lane = perm.get_freed_lane(perm_idx + vox_idx)
-            y_permute_exp = exp.y[..., vox_idx] @ freed_lane
-
             assert np.allclose(exp_permuted.y[..., vox_idx], y_permute_exp)
 
 
