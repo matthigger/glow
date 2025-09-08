@@ -95,14 +95,11 @@ class Analysis:
         # prep Permuter object (if needed)
         x0 = exp.x[~exp.contrast, :]
         perm = None if n_perm == 1 else Permuter(x=x0)
-        for reg_idx, size, e, h in glow.graph.iter_size_e_h(
-                x=exp.x,
-                contrast=exp.contrast,
-                y=exp.y,
-                children=children,
-                perm=perm,
-                n_perm=n_perm,
-                keep_orig=True):
+        for reg_idx, size, e, h in glow.graph.iter_stat(exp=exp,
+                                                        children=children,
+                                                        perm=perm,
+                                                        n_perm=n_perm,
+                                                        keep_orig=True):
             for perm_idx in range(n_perm):
                 stat[perm_idx, reg_idx] = self.get_stat(e=e[:, :, perm_idx],
                                                         h=h[:, :, perm_idx])

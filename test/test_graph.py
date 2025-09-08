@@ -1,8 +1,10 @@
 import bisect
 from itertools import product
 
+from glow.experiment import get_mancova
 import pytest
 
+from glow.experiment import ExperimentImageOnly
 from glow.graph import *
 
 
@@ -105,71 +107,55 @@ def test_get_parent():
 
     assert np.allclose(parent, [4, 4, 5, 5, -1, -1])
 
-
-def test_iter_size_e_h():
-    rng = np.random.default_rng(seed=0)
-    a, b, num_img, num_vox = 2, 3, 4, 5
-    y = rng.standard_normal((b, num_img, num_vox))
-    x = rng.standard_normal((a, num_img))
+def test_iter_size_ysum_yout():
+    seed = 0
+    b = 3
+    num_vox = 5
+    exp = ExperimentImageOnly.from_gauss(seed=seed, b=b, num_img=4, shape=(num_vox, ))
     children = np.arange(2 * num_vox - 2).reshape((-1, 2), order='C')
 
-    for contrast in product([True, False], repeat=a):
-        contrast = np.array(contrast)
-        if not contrast.any():
-            # ensure there is at least 1 feature of interest
-            continue
-
-        for reg_idx, size, e, h in iter_size_e_h(y=y, children=children,
-                                                 x=x, contrast=contrast):
-            # build reliable compute: get index of all voxels in region
-            vox = np.array(list(iter_topo(children=children,
-                                          num_leaf=num_vox,
-                                          node_start=reg_idx,
-                                          only_leaf=True)))
-
-            # slow and steady compute of e and h
-            yr = np.concatenate([y[:, :, _vox] for _vox in vox], axis=1)
-            xr = np.concatenate([x for _vox in vox], axis=1)
-
-            if not contrast.all():
-                # project yr into nullspace of covariates
-                _xr = xr[~contrast, :]
-
-                p = np.eye(yr.shape[1]) - np.linalg.pinv(_xr) @ _xr
-                yr = yr @ p
-                xr = xr[contrast, :] @ p
-
-            hat = yr @ np.linalg.pinv(xr) @ xr
-            err = yr - hat
-
-            h_exp = hat @ hat.T
-            e_exp = err @ err.T
-
-            assert np.allclose(h, h_exp[:, :, np.newaxis])
-            assert np.allclose(e, e_exp[:, :, np.newaxis])
-
-
-def test_iter_size_yout_ymean():
-    rng = np.random.default_rng(seed=0)
-    a, b, num_img, num_vox = 2, 3, 4, 5
-    y = rng.standard_normal((b, num_img, num_vox))
-    x = rng.standard_normal((a, num_img))
-    children = np.arange(2 * num_vox - 2).reshape((-1, 2), order='C')
-
-    for reg_idx, size, yout, ymean in iter_size_yout_ymean(y, children):
+    for reg_idx, size, ysum, yout in iter_size_ysum_yout(exp.y, children=children):
         # build reliable compute: get index of all voxels in region
         vox = np.array(list(iter_topo(children=children,
                                       num_leaf=num_vox,
                                       node_start=reg_idx,
                                       only_leaf=True)))
-        _y = y[:, :, vox]
+        _y = exp.y[:, :, vox]
 
-        assert vox.size == size
-        assert np.allclose(_y.mean(axis=2), ymean[:, :, 0])
+        # test basic stats
+        assert size == vox.size
+        assert np.allclose(ysum, _y.sum(axis=2))
 
-        _y = _y.reshape((b, -1), order='F')
-        yout_exp = _y @ _y.T
-        assert np.allclose(yout_exp, yout[:, :, 0])
+        y_flat = _y.reshape((b, -1), order='F')
+        yout_exp = y_flat @ y_flat.T
+        assert np.allclose(yout_exp, yout)
+
+
+def test_iter_stat():
+    seed = 0
+    a = 2
+    b = 3
+    num_vox = 5
+    exp = ExperimentImageOnly.from_gauss(seed=seed, b=b, num_img=4, shape=(num_vox, ))
+    children = np.arange(2 * num_vox - 2).reshape((-1, 2), order='C')
+
+    for add_bias in range(2):
+        exp = exp.sample_x(a=a, seed=seed, add_bias=add_bias)
+
+        for reg_idx, size, ysum, yout, e, h, t in iter_stat(exp, children=children):
+            # build reliable compute: get index of all voxels in region
+            vox = np.array(list(iter_topo(children=children,
+                                          num_leaf=num_vox,
+                                          node_start=reg_idx,
+                                          only_leaf=True)))
+            _y = exp.y[:, :, vox]
+
+            e_exp, h_exp, _ = get_mancova(x=exp.x, y=_y, contrast=exp.contrast)
+
+            # test mancova stats
+            assert np.allclose(t, h_exp + e_exp)
+            assert np.allclose(h, h_exp)
+            assert np.allclose(e, e_exp)
 
 
 def binary_tree(n_node=100, seed=0, merge_smallest=True):

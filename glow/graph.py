@@ -2,106 +2,85 @@ import numpy as np
 
 from glow.experiment.mancova import decompose
 
+from collections import Counter
 
-def iter_size_e_h(*, x, contrast, **kwargs):
-    """  wraps iter_size_yout_ymean, provides e and h matrices of mancova
-
-    Args:
-        see iter_size_yout_ymean
-
-    Yields:
-        reg_idx (int): region index
-        size (int): size, in voxels, of region
-        e (np.array): (b, b, num_perm) e of mancova, for every permutation
-        h (np.array): (b, b, num_perm) h of mancova, for every permutation
-    """
-    # get projection matrices
-    q = decompose(x=x, contrast=contrast)
-    p1 = q[1].T @ q[1]
-    p01 = p1 + q[0].T @ q[0]
-
-    for reg_idx, size, yout, ymean in iter_size_yout_ymean(**kwargs):
-        # move N up front to batch over it
-        Y = np.transpose(ymean, (2, 0, 1))  # (N, X, B)
-
-        # h = size * (Y @ p1) @ Y^T  for each n
-        Yp1 = np.matmul(Y, p1)  # (N, X, B)
-        H = size * np.matmul(Yp1, np.transpose(Y, (0, 2, 1)))  # (N, X, X)
-        h = np.transpose(H, (1, 2, 0))  # (X, X, N)
-
-        # proj = size * (Y @ p01) @ Y^T
-        Yp01 = np.matmul(Y, p01)  # (N, X, B)
-        PROJ = size * np.matmul(Yp01, np.transpose(Y, (0, 2, 1)))  # (N, X, X)
-        proj = np.transpose(PROJ, (1, 2, 0))  # (X, X, N)
-
-        e = yout - proj
-
-        yield reg_idx, size, e, h
-
-
-def iter_size_yout_ymean(y, children=None, perm=None,
-                         block_exchange=True, **kwargs):
-    """ iterates through region stats, less-redundant compute via graph
+def iter_size_ysum_yout(y, children=None):
+    """ iterates through region stats, less redundant compute via graph
 
     Args:
         y (np.array): (b, num_img, num_vox) imaging features
         children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
             sklearn.cluster.Ward.children_).  If None is passed,
             then iterates through stats per individual voxel region only
-        perm (Permuter): if passed, operates on y
-        block_exchange (bool): toggles block exchange permuting. when True,
-            every voxel of a multi-voxel region utilizes same permutation
-            matrix.  when False, each voxel gets its own permutation matrix
 
     Yields:
         reg_idx (int): region index
         size (int): size, in voxels, of region
-        yout (np.array): (b, b, num_perm) sum of yv @ yv.T across all voxels of
-            region
-        ymean (np.array): (b, num_img, num_perm) average, across voxels,
-            of features
+        ysum (np.array): (b, num_img) sum of features across voxels
+        yout (np.array): (b, b) sum of yv @ yv.T across all voxels
     """
     b, num_img, num_vox = y.shape
 
-    size_yout_ymean = dict()
-    max_reg = num_vox
-    max_reg += children.shape[0] if children is not None else 0
-    for reg_idx in range(max_reg):
+    if children is None:
+        iter_reg = range(num_vox)
+    else:
+        iter_reg = iter_topo(children=children, num_leaf=num_vox)
+        ref_count = Counter(children.flatten())
+
+    out_dict = dict()
+    for reg_idx in iter_reg:
         if reg_idx < num_vox:
             # single voxel region
+            ysum = y[:, :, reg_idx]
+            yout = ysum @ ysum.T
             size = 1
-            yv = y[:, :, reg_idx]
-            ymean = yv
-
-            if perm is None:
-                # compute yout (no permutation needed)
-                yout = yv @ yv.T
-
-                # add new axis (consistent with permutations)
-                yout = yout[:, :, np.newaxis]
-                ymean = ymean[:, :, np.newaxis]
-            else:
-                # permute & compute yout
-                perm_idx_min = 1 if block_exchange else reg_idx + 2
-                ymean = perm(ymean, perm_idx_min=perm_idx_min, **kwargs)
-                yout = np.einsum('bnp,cnp->bcp', ymean, ymean, optimize=True)
-
-            size_yout_ymean[reg_idx] = size, yout, ymean
         else:
-            # multi voxel region
-            # look up stats of constituent regions
+            # multi voxel region (sum of constituent regions)
             c0, c1 = children[int(reg_idx - num_vox), :]
-            size0, yout0, ymean0 = size_yout_ymean.get(c0)
-            size1, yout1, ymean1 = size_yout_ymean.get(c1)
+            size0, ysum0, yout0 = out_dict.get(c0)
+            size1, ysum1, yout1 = out_dict.get(c1)
 
-            # compute & store stats of their union
+            # clean up intermediates (if no longer needed)
+            for c in (c0, c1):
+                ref_count[c] -= 1
+                if not ref_count[c]:
+                    del out_dict[c]
+
+            # compute stats of union
             size = size0 + size1
+            ysum = ysum0 + ysum1
             yout = yout0 + yout1
-            lam = size0 / size, size1 / size
-            ymean = ymean0 * lam[0] + ymean1 * lam[1]
-            size_yout_ymean[reg_idx] = size, yout, ymean
 
-        yield reg_idx, size, yout, ymean
+        # store and yield
+        out_dict[reg_idx] = size, ysum, yout
+        yield reg_idx, size, ysum, yout
+
+def iter_stat(exp, **kwargs):
+    """ iterates through region stats, append mancova stats
+
+    Args:
+        exp (Experiment):
+
+    Yields:
+        reg_idx (int): region index
+        e (np.array): (b, b, num_perm) e of mancova, for every permutation
+        h (np.array): (b, b, num_perm) h of mancova, for every permutation
+    """
+    # todo: support perms
+
+    # get projection matrices
+    q = decompose(x=exp.x, contrast=exp.contrast)
+
+    for reg_idx, size, ysum, yout in iter_size_ysum_yout(exp.y, **kwargs):
+        # compute mancova stats
+        a = ysum @ q[0].T
+        t = yout - a @ a.T / size
+
+        a = ysum @ q[1].T
+        h = a @ a.T / size
+        e = t - h
+
+        yield reg_idx, size, ysum, yout, e, h, t
 
 
 def node_sum(x, children):
