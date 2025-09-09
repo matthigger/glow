@@ -1,10 +1,10 @@
 import bisect
 from itertools import product
 
-from glow.experiment import get_mancova
 import pytest
 
 from glow.experiment import ExperimentImageOnly
+from glow.experiment import get_mancova
 from glow.graph import *
 
 
@@ -107,13 +107,19 @@ def test_get_parent():
 
     assert np.allclose(parent, [4, 4, 5, 5, -1, -1])
 
-def test_iter_size_ysum_yout():
-    seed = 0
-    b = 3
-    num_vox = 5
-    exp = ExperimentImageOnly.from_gauss(seed=seed, b=b, num_img=4, shape=(num_vox, ))
-    children = np.arange(2 * num_vox - 2).reshape((-1, 2), order='C')
 
+@pytest.fixture
+def exp():
+    return ExperimentImageOnly.from_gauss(seed=0, b=3, num_img=20, shape=(5,))
+
+
+@pytest.fixture
+def children():
+    return np.arange(2 * 5 - 2).reshape((-1, 2), order='C')
+
+
+def test_iter_size_ysum_yout(exp, children):
+    b, num_img, num_vox = exp.y.shape
     for reg_idx, size, ysum, yout in iter_size_ysum_yout(exp.y, children=children):
         # build reliable compute: get index of all voxels in region
         vox = np.array(list(iter_topo(children=children,
@@ -131,31 +137,29 @@ def test_iter_size_ysum_yout():
         assert np.allclose(yout_exp, yout)
 
 
-def test_iter_stat():
-    seed = 0
+def test_iter_stat(exp, children):
     a = 2
-    b = 3
-    num_vox = 5
-    exp = ExperimentImageOnly.from_gauss(seed=seed, b=b, num_img=4, shape=(num_vox, ))
-    children = np.arange(2 * num_vox - 2).reshape((-1, 2), order='C')
+    b, num_img, num_vox = exp.y.shape
+    for add_bias, n_perm in product(range(2), [None, 10]):
+        exp = exp.sample_x(a=a, seed=0, add_bias=add_bias)
 
-    for add_bias in range(2):
-        exp = exp.sample_x(a=a, seed=seed, add_bias=add_bias)
-
-        for reg_idx, size, ysum, yout, e, h, t in iter_stat(exp, children=children):
+        for reg_idx, e, h in iter_stat(exp, children=children, n_perm=n_perm):
             # build reliable compute: get index of all voxels in region
             vox = np.array(list(iter_topo(children=children,
                                           num_leaf=num_vox,
                                           node_start=reg_idx,
                                           only_leaf=True)))
-            _y = exp.y[:, :, vox]
 
-            e_exp, h_exp, _ = get_mancova(x=exp.x, y=_y, contrast=exp.contrast)
+            for perm_idx in range(e.shape[2]):
+                # permute (reliable via get_freed_lane())
+                _exp = exp.permute(perm_idx)
+                e_exp, h_exp, _ = get_mancova(x=_exp.x,
+                                              y=_exp.y[:, :, vox],
+                                              contrast=_exp.contrast)
 
-            # test mancova stats
-            assert np.allclose(t, h_exp + e_exp)
-            assert np.allclose(h, h_exp)
-            assert np.allclose(e, e_exp)
+                # test mancova stats
+                assert np.allclose(h[:, :, perm_idx], h_exp)
+                assert np.allclose(e[:, :, perm_idx], e_exp)
 
 
 def binary_tree(n_node=100, seed=0, merge_smallest=True):

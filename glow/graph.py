@@ -24,7 +24,7 @@ def iter_size_ysum_yout(y, children=None):
     if children is None:
         iter_reg = range(num_vox)
     else:
-        iter_reg = iter_topo(children=children, num_leaf=num_vox)
+        iter_reg = range(num_vox + children.shape[0])
         ref_count = Counter(children.flatten())
 
     out_dict = dict()
@@ -55,32 +55,46 @@ def iter_size_ysum_yout(y, children=None):
         out_dict[reg_idx] = size, ysum, yout
         yield reg_idx, size, ysum, yout
 
-def iter_stat(exp, **kwargs):
+def iter_stat(exp, n_perm=None, **kwargs):
     """ iterates through region stats, append mancova stats
 
     Args:
         exp (Experiment):
+        n_perm (int): number of permutations to compute (not including
+            unpermuted data)
 
     Yields:
         reg_idx (int): region index
-        e (np.array): (b, b, num_perm) e of mancova, for every permutation
-        h (np.array): (b, b, num_perm) h of mancova, for every permutation
+        e (np.array): (b, b) or (b, b, num_perm) e of mancova
+        h (np.array): (b, b) or (b, b, num_perm) h of mancova
     """
-    # todo: support perms
 
     # get projection matrices
     q = decompose(x=exp.x, contrast=exp.contrast)
 
     for reg_idx, size, ysum, yout in iter_size_ysum_yout(exp.y, **kwargs):
-        # compute mancova stats
+        # compute t (constant under permutations)
         a = ysum @ q[0].T
         t = yout - a @ a.T / size
 
+        # compute h (unpermuted)
         a = ysum @ q[1].T
-        h = a @ a.T / size
-        e = t - h
+        h_list = [a @ a.T / size, ]
 
-        yield reg_idx, size, ysum, yout, e, h, t
+        if n_perm is not None:
+            # compute h per permutation
+            num_img = exp.y.shape[1]
+            for perm_idx in range(1, n_perm + 1):
+                rng = np.random.default_rng(perm_idx)
+                img_idx = rng.permutation(num_img)
+                a = ysum[:, img_idx] @ q[1].T
+                h_list.append(a @ a.T / size)
+
+        # compute e (remainder)
+        h = np.stack(h_list, axis=2)
+        e = t[:, :, np.newaxis] - h
+
+        yield reg_idx, e, h
 
 
 def node_sum(x, children):

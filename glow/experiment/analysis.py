@@ -72,7 +72,7 @@ class Analysis:
 
         return pval
 
-    def get_stat_perm(self, exp, n_perm=1, children=None):
+    def get_stat_perm(self, exp, n_perm=None, children=None):
         """ computes stats for each region (fixed) under different permutations
 
         Args:
@@ -89,13 +89,13 @@ class Analysis:
         b, num_img, num_reg = exp.y.shape
         if children is not None:
             num_reg += children.shape[0]
-        stat = np.zeros((n_perm, num_reg))
 
-        for reg_idx, size, e, h in glow.graph.iter_stat(exp=exp,
-                                                        children=children,
-                                                        n_perm=n_perm,
-                                                        keep_orig=True):
-            for perm_idx in range(n_perm):
+        n_rows = 1 if n_perm is None else n_perm + 1
+        stat = np.full((n_rows, num_reg), fill_value=np.nan)
+        for reg_idx, e, h in glow.graph.iter_stat(exp=exp,
+                                                  children=children,
+                                                  n_perm=n_perm):
+            for perm_idx in range(n_rows):
                 stat[perm_idx, reg_idx] = self.get_stat(e=e[:, :, perm_idx],
                                                         h=h[:, :, perm_idx])
         return stat
@@ -110,7 +110,7 @@ class AnalysisVBA(Analysis):
         self.cet_flag = cet_flag
 
         # compute stat per each voxel (for every permutation)
-        self.stat = self.get_stat_perm(exp, n_perm=n_perm + 1, children=None)
+        self.stat = self.get_stat_perm(exp, n_perm=n_perm, children=None)
 
         # apply TFCE per image
         if self.tfce_flag:

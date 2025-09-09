@@ -1,6 +1,6 @@
 from glow.experiment import ExperimentImageOnly
 from glow.experiment.mancova import *
-from glow.graph import iter_stat, iter_topo
+from glow.graph import iter_topo
 
 
 def test_get_mancova():
