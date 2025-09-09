@@ -1,7 +1,7 @@
 import glow
 
 exp = glow.experiment.Experiment.from_gauss(seed=0,
-                                            shape=(5, 5, 5),
+                                            shape=(100, 100),
                                             a=2,
                                             b=2,
                                             num_img=100)

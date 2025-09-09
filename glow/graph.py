@@ -1,8 +1,9 @@
+from collections import Counter
+
 import numpy as np
 
 from glow.experiment.mancova import decompose
 
-from collections import Counter
 
 def iter_size_ysum_yout(y, children=None):
     """ iterates through region stats, less redundant compute via graph
@@ -55,6 +56,7 @@ def iter_size_ysum_yout(y, children=None):
         out_dict[reg_idx] = size, ysum, yout
         yield reg_idx, size, ysum, yout
 
+
 def iter_stat(exp, n_perm=None, **kwargs):
     """ iterates through region stats, append mancova stats
 
@@ -72,6 +74,11 @@ def iter_stat(exp, n_perm=None, **kwargs):
     # get projection matrices
     q = decompose(x=exp.x, contrast=exp.contrast)
 
+    if n_perm is not None:
+        # pre compute permutations
+        num_img = exp.y.shape[1]
+        img_idx_dict = {idx: np.random.default_rng(idx).permutation(num_img)
+                        for idx in range(1, n_perm + 1)}
     for reg_idx, size, ysum, yout in iter_size_ysum_yout(exp.y, **kwargs):
         # compute t (constant under permutations)
         a = ysum @ q[0].T
@@ -83,11 +90,8 @@ def iter_stat(exp, n_perm=None, **kwargs):
 
         if n_perm is not None:
             # compute h per permutation
-            num_img = exp.y.shape[1]
             for perm_idx in range(1, n_perm + 1):
-                rng = np.random.default_rng(perm_idx)
-                img_idx = rng.permutation(num_img)
-                a = ysum[:, img_idx] @ q[1].T
+                a = ysum[:, img_idx_dict[perm_idx]] @ q[1].T
                 h_list.append(a @ a.T / size)
 
         # compute e (remainder)
