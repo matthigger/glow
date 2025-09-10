@@ -67,15 +67,19 @@ def iter_stat(exp, n_perm=None, **kwargs):
 
     Yields:
         reg_idx (int): region index
-        e (np.array): (b, b) or (b, b, num_perm) e of mancova
-        h (np.array): (b, b) or (b, b, num_perm) h of mancova
+        e (np.array): (b, b, num_perm) e of mancova
+        h (np.array): (b, b, num_perm) h of mancova
     """
 
     # get projection matrices
     q = decompose(x=exp.x, contrast=exp.contrast)
 
-    if n_perm is not None:
+    b = exp.y.shape[0]
+    if n_perm is None:
+        h = np.empty((b, b, 1))
+    else:
         # pre compute permutations
+        h = np.empty((b, b, 1 + n_perm))
         num_img = exp.y.shape[1]
         img_idx_dict = {idx: np.random.default_rng(idx).permutation(num_img)
                         for idx in range(1, n_perm + 1)}
@@ -86,16 +90,15 @@ def iter_stat(exp, n_perm=None, **kwargs):
 
         # compute h (unpermuted)
         a = ysum @ q[1].T
-        h_list = [a @ a.T / size, ]
+        h[:, :, 0] = a @ a.T / size
 
         if n_perm is not None:
             # compute h per permutation
             for perm_idx in range(1, n_perm + 1):
                 a = ysum[:, img_idx_dict[perm_idx]] @ q[1].T
-                h_list.append(a @ a.T / size)
+                h[:, :, perm_idx] = a @ a.T / size
 
         # compute e (remainder)
-        h = np.stack(h_list, axis=2)
         e = t[:, :, np.newaxis] - h
 
         yield reg_idx, e, h
