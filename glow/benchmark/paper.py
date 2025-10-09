@@ -19,7 +19,7 @@ wgn_dict = dict(wgn_shape=(8, 8, 8),
                 exp_seed=0)
 
 # hcp params
-hcp_dict = dict(hcp_feats=['FA', 'MD'],
+hcp_dict = dict(hcp_feats=['fa', 'md'],
                 radius=8)
 
 # Analysis params

@@ -53,8 +53,9 @@ class Config:
 
     # -------- source-specific --------
     # HCP
-    hcp_path: str = '/home/matt/data/hcp100_lowres_old/image'
-    hcp_feats: List[str] = field(default_factory=lambda: ['FA', 'MD'])
+    hcp_path: str = '/home/matt/data/hcp100_aug25_registered'
+    hcp_old_path: str = '/home/matt/data/hcp100_lowres_old/image'
+    hcp_feats: List[str] = field(default_factory=lambda: ['fa', 'md'])
     hcp_sbj_regex: str = r'[\d]{6}'
 
     # WGN
@@ -72,11 +73,15 @@ class Config:
         self.folder = None
 
     def prep_exp_orig(self):
-        if self.source == 'hcp':
+        if 'hcp' in self.source:
+            if self.source == 'hcp':
+                path = self.hcp_path
+            elif self.source == 'hcp_old':
+                path = self.hcp_old_path
             img_glob_dict = {feat: f'*_{feat}.nii.gz' for feat in
                              self.hcp_feats}
             exp = glow.experiment.ExperimentImageOnly.from_search(
-                folder=self.hcp_path,
+                folder=path,
                 sbj_regex=self.hcp_sbj_regex,
                 img_glob_dict=img_glob_dict)
             self.exp_orig = exp.sample_x(a=2, seed=self.exp_seed,
