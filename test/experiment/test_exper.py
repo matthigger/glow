@@ -63,9 +63,9 @@ class TestExperimentOnlyImage:
     def test_sample_x(self):
         seed = 0
         exp = Experiment.from_gauss(seed=seed)
-        exp.sample_x(a=exp.x.shape[0])
-        exp.sample_x(contrast=exp.contrast)
-        exp.sample_x(a=4)
+        exp.sample_x(a=exp.x.shape[0], add_bias=True)
+        exp.sample_x(contrast=exp.contrast, add_bias=True)
+        exp.sample_x(a=4, add_bias=True)
 
     def test_bootstrap_img(self):
         n = 100

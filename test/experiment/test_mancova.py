@@ -1,4 +1,7 @@
+import warnings
+
 from glow.experiment import ExperimentImageOnly
+from glow.experiment.exper import NoBiasTermWarning
 from glow.experiment.mancova import *
 from glow.graph import iter_topo
 
@@ -12,7 +15,9 @@ def test_get_mancova():
     children = np.arange(2 * num_vox - 2).reshape((-1, 2), order='C')
 
     for add_bias in range(2):
-        exp = exp.sample_x(a=a, seed=seed, add_bias=add_bias)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', NoBiasTermWarning)
+            exp = exp.sample_x(a=a, seed=seed, add_bias=add_bias)
 
         for reg_idx in iter_topo(children=children, num_leaf=num_vox):
             vox = np.array(list(iter_topo(children=children,

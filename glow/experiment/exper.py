@@ -15,6 +15,11 @@ from .sigma import stretch_sigma
 from ..mask import get_mask_idx
 
 
+class NoBiasTermWarning(UserWarning):
+    """Warning raised when regression is constrained to origin without bias term."""
+    pass
+
+
 class ExperimentImageOnly:
     """ contains all imaging data of an experiment
 
@@ -286,7 +291,8 @@ class Experiment(ExperimentImageOnly):
 
         if not np.any(np.all(self.x == 1, axis=1)):
             warnings.warn('no bias term: regression constrained to '
-                          'origin (consider add_bias=True)')
+                          'origin (consider add_bias=True)',
+                          NoBiasTermWarning)
 
     def impose_effect(self, hotel_tr, extenter=None, mask=None, seed=None,
                       **kwargs):

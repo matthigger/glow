@@ -17,7 +17,7 @@ def test_cluster():
                                           img_glob_dict={'color': '*test.png'})
 
     exp.bootstrap_img(n=10, noise_scale=0)
-    exp = exp.sample_x(a=2)
+    exp = exp.sample_x(a=2, add_bias=True)
 
     # cleave mask into many pieces (test case not supported)
     mask = exp.mask_idx > -1

@@ -1,10 +1,12 @@
 import bisect
+import warnings
 from itertools import product
 
 import pytest
 
 from glow.experiment import ExperimentImageOnly
 from glow.experiment import get_mancova
+from glow.experiment.exper import NoBiasTermWarning
 from glow.graph import *
 
 
@@ -140,26 +142,28 @@ def test_iter_size_ysum_yout(exp, children):
 def test_iter_stat(exp, children):
     a = 2
     b, num_img, num_vox = exp.y.shape
-    for add_bias, n_perm in product(range(2), [None, 10]):
-        exp = exp.sample_x(a=a, seed=0, add_bias=add_bias)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', NoBiasTermWarning)
+        for add_bias, n_perm in product(range(2), [None, 10]):
+            exp = exp.sample_x(a=a, seed=0, add_bias=add_bias)
 
-        for reg_idx, e, h in iter_stat(exp, children=children, n_perm=n_perm):
-            # build reliable compute: get index of all voxels in region
-            vox = np.array(list(iter_topo(children=children,
-                                          num_leaf=num_vox,
-                                          node_start=reg_idx,
-                                          only_leaf=True)))
+            for reg_idx, e, h in iter_stat(exp, children=children, n_perm=n_perm):
+                # build reliable compute: get index of all voxels in region
+                vox = np.array(list(iter_topo(children=children,
+                                              num_leaf=num_vox,
+                                              node_start=reg_idx,
+                                              only_leaf=True)))
 
-            for perm_idx in range(e.shape[2]):
-                # permute (reliable via get_freed_lane())
-                _exp = exp.permute(perm_idx)
-                e_exp, h_exp, _ = get_mancova(x=_exp.x,
-                                              y=_exp.y[:, :, vox],
-                                              contrast=_exp.contrast)
+                for perm_idx in range(e.shape[2]):
+                    # permute (reliable via get_freed_lane())
+                    _exp = exp.permute(perm_idx)
+                    e_exp, h_exp, _ = get_mancova(x=_exp.x,
+                                                  y=_exp.y[:, :, vox],
+                                                  contrast=_exp.contrast)
 
-                # test mancova stats
-                assert np.allclose(h[:, :, perm_idx], h_exp)
-                assert np.allclose(e[:, :, perm_idx], e_exp)
+                    # test mancova stats
+                    assert np.allclose(h[:, :, perm_idx], h_exp)
+                    assert np.allclose(e[:, :, perm_idx], e_exp)
 
 
 def binary_tree(n_node=100, seed=0, merge_smallest=True):
