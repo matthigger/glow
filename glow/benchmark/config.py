@@ -68,18 +68,37 @@ class Config:
     # region restriction
     radius: Optional[int] = None
 
+    # -------- experiment iteration specification --------
+    # Declarative way to specify what to iterate over
+    # iter_params: dict mapping parameter names to lists of values to iterate over
+    #   Default: {'seed': range(n_seed), 'hotel_tr': hotel_tr_all}
+    #   Example: {'seed': range(10), 'radius': [2, 5, 10, None]}
+    #   Example: {'seed': range(10), 'wgn_b': [1, 2]}
+    iter_params: Optional[dict] = None
+    
+    # fixed_params: dict mapping parameter names to fixed values
+    #   These override default values when iterating
+    #   Example: {'hotel_tr': 0.1}  # Use fixed hotel_tr when iterating over other params
+    fixed_params: Optional[dict] = None
+
     def __post_init__(self):
         self.exp_orig = None
         self.folder = None
 
-    def prep_exp_orig(self):
+    def prep_exp_orig(self, hcp_feats=None, wgn_b=None):
+        """Prepare the original experiment.
+        
+        Args:
+            hcp_feats: Override hcp_feats if provided (for dataset experiment)
+            wgn_b: Override wgn_b if provided (for dataset experiment)
+        """
         if 'hcp' in self.source:
             if self.source == 'hcp':
                 path = self.hcp_path
             elif self.source == 'hcp_old':
                 path = self.hcp_old_path
-            img_glob_dict = {feat: f'*_{feat}.nii.gz' for feat in
-                             self.hcp_feats}
+            feats = hcp_feats if hcp_feats is not None else self.hcp_feats
+            img_glob_dict = {feat: f'*_{feat}.nii.gz' for feat in feats}
             exp = glow.experiment.ExperimentImageOnly.from_search(
                 folder=path,
                 sbj_regex=self.hcp_sbj_regex,
@@ -87,22 +106,47 @@ class Config:
             self.exp_orig = exp.sample_x(a=2, seed=self.exp_seed,
                                          add_bias=True)
         elif self.source == 'wgn':
+            b = wgn_b if wgn_b is not None else self.wgn_b
             self.exp_orig = glow.experiment.Experiment.from_gauss(
                 seed=self.exp_seed,
                 shape=self.wgn_shape,
                 a=self.wgn_a,
-                b=self.wgn_b,
+                b=b,
                 num_img=self.wgn_num_img)
 
-    def get_exp_eff(self, seed, hotel_tr):
-        if self.exp_orig is None:
-            self.prep_exp_orig()
+    def get_exp_eff(self, seed, hotel_tr, radius=None, hcp_feats=None, wgn_b=None):
+        """Get experiment with effect imposed.
+        
+        Args:
+            seed: Random seed
+            hotel_tr: Hotelling's trace (effect strength)
+            radius: Override radius if provided (for runtime experiment)
+            hcp_feats: Override hcp_feats if provided (for dataset experiment)
+            wgn_b: Override wgn_b if provided (for dataset experiment)
+        """
+        # Re-prepare exp_orig if dataset parameters changed or if not yet created
+        # For dataset experiments, we need to recreate exp_orig each time
+        needs_recreate = (
+            self.exp_orig is None or
+            (hcp_feats is not None and hcp_feats != getattr(self, '_last_hcp_feats', None)) or
+            (wgn_b is not None and wgn_b != getattr(self, '_last_wgn_b', None))
+        )
+        
+        if needs_recreate:
+            self.prep_exp_orig(hcp_feats=hcp_feats, wgn_b=wgn_b)
+            # Cache the parameters used
+            if hcp_feats is not None:
+                self._last_hcp_feats = hcp_feats
+            if wgn_b is not None:
+                self._last_wgn_b = wgn_b
 
         # trim experiment to reasonable size (for speedup)
-        if self.radius is None:
+        # Use provided radius or fall back to self.radius
+        radius_to_use = radius if radius is not None else self.radius
+        if radius_to_use is None:
             exp = self.exp_orig
         else:
-            extenter = glow.effect.ExtenterSphere(radius=self.radius)
+            extenter = glow.effect.ExtenterSphere(radius=radius_to_use)
             mask = extenter(mask_idx=self.exp_orig.mask_idx, seed=seed,
                             contiguous=True)
             exp = self.exp_orig.apply_mask(mask)
@@ -121,9 +165,47 @@ class Config:
                                  hotel_tr=hotel_tr)
 
     def iter_kwargs(self):
-        """ iterates through all inputs to get_exp_eff"""
-        for s, h in product(np.arange(self.n_seed), self.hotel_tr_all):
-            yield dict(seed=s, hotel_tr=h)
+        """Iterates through all inputs to get_exp_eff.
+        
+        Uses a declarative approach:
+        - iter_params: dict of {param_name: [values]} to iterate over
+        - fixed_params: dict of {param_name: value} for fixed values
+        
+        Default behavior (if iter_params is None):
+        - Iterate over seed (0 to n_seed-1) and hotel_tr_all
+        
+        Example custom iterations:
+        - {'iter_params': {'seed': range(10), 'radius': [2, 5, 10]}, 
+           'fixed_params': {'hotel_tr': 0.1}}
+        - {'iter_params': {'seed': range(10), 'wgn_b': [1, 2]}, 
+           'fixed_params': {'hotel_tr': 0.1}}
+        """
+        # Build iteration specification
+        if self.iter_params is None:
+            # Default: iterate over seed and hotel_tr
+            iter_spec = {
+                'seed': np.arange(self.n_seed),
+                'hotel_tr': self.hotel_tr_all
+            }
+        else:
+            iter_spec = self.iter_params.copy()
+            # Ensure seed is always included if not specified
+            if 'seed' not in iter_spec:
+                iter_spec['seed'] = np.arange(self.n_seed)
+        
+        # Build fixed parameters
+        fixed = self.fixed_params.copy() if self.fixed_params is not None else {}
+        
+        # Get parameter names and value lists for iteration
+        param_names = list(iter_spec.keys())
+        param_values = [iter_spec[name] for name in param_names]
+        
+        # Iterate over all combinations
+        for values in product(*param_values):
+            kwargs = dict(zip(param_names, values))
+            # Add fixed parameters (these override any iterated values if there's a conflict)
+            kwargs.update(fixed)
+            yield kwargs
 
     def prep_folder(self):
         ts = datetime.now().strftime('%y-%m-%d_%H:%M:%S')

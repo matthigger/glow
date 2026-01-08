@@ -82,12 +82,31 @@ config_list.append(Config(label='alpha_tailor',
                           ana_kwargs_dict=ana_kwargs_dict_alpha_tailor,
                           **(common_dict | hcp_dict)))
 
-# todo: needs config update (varies only hotel_tr & seed ...)
 # runtime experiment, how does it vary with region size?
-# radius_all = list(np.linspace(2, 70, 31).astype(int)) + [None]
+radius_all = list(np.arange(2, 7).astype(int)) + [None]
+config_list.append(Config(label='runtime_radius',
+                          source='hcp',
+                          ana_kwargs_dict=ana_kwargs_dict_vba,
+                          iter_params={'seed': np.arange(10), 'radius': radius_all},
+                          fixed_params={'hotel_tr': 0.1},
+                          **(common_dict | hcp_dict)))
 
-# dataset experiment, how does it vary with b? (wgn with b=1 and HCP with
-# just FA vs FA&MD
+# how does it vary with b? (wgn with b=1, b=2)
+# WGN: vary b
+config_list.append(Config(label='dataset_wgn_b',
+                          source='wgn',
+                          ana_kwargs_dict=ana_kwargs_dict_vba,
+                          iter_params={'seed': np.arange(10), 'wgn_b': [1, 2]},
+                          fixed_params={'hotel_tr': 0.1},
+                          **(common_dict | wgn_dict)))
+
+# HCP: vary features
+config_list.append(Config(label='dataset_hcp_feats',
+                          source='hcp',
+                          ana_kwargs_dict=ana_kwargs_dict_vba,
+                          iter_params={'seed': np.arange(10), 'hcp_feats': [['fa'], ['fa', 'md']]},
+                          fixed_params={'hotel_tr': 0.1},
+                          **(common_dict | hcp_dict)))
 
 
 
