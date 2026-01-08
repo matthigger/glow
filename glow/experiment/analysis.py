@@ -229,6 +229,9 @@ class AnalysisGLOW(Analysis):
             # build stat for each region in hierarchy
             self.stat[perm_idx, :] = self.get_stat_perm(exp=_exp,
                                                         children=children)
+            
+            # free memory immediately
+            del _exp
 
         # merge all graphs (many nodes are repeated across permutations above,
         # we adjust them all by same mu and std to minimize computation)
@@ -243,6 +246,7 @@ class AnalysisGLOW(Analysis):
         stat_perm = self.get_stat_perm(exp=_exp,
                                        children=children,
                                        n_perm=n_perm_adj)
+        del _exp
 
         # adjust
         self.z_stat = np.empty_like(self.stat)
