@@ -9,7 +9,7 @@ from ..graph import get_label_map, SCGraph, GRAPH_EXCLUDE
 
 
 def get_llr(label_map, exp, _q_tup=None, _skip_homo=False):
-    """ gets log likelihood of homogenous vs heterogenous models
+    r""" gets log likelihood of homogenous vs heterogenous models
 
     model0 (homo): all voxels follow same beta
     model1 (hetero): each subset has its own beta
@@ -104,11 +104,11 @@ def get_homo_pval(label_map, exp, n_perm):
     return (llr[0] >= llr).mean()
 
 
-def tailor(sig_reg_list, children, exp, n_perm=300, alpha_tailor=.05):
-    """ attempts to tailor to regions with all, and only, one effect
+def prune(sig_reg_list, children, exp, n_perm=300, alpha_prune=.05):
+    """ attempts to prune to regions with all, and only, one effect
 
     we discard the most heterogenous (and all ancestor) nodes until none are
-    classified as heterogenous (i.e. each has pval > alpha_tailor).
+    classified as heterogenous (i.e. each has pval > alpha_prune).
     reg_out greedily selects the largest remaining regions such that the
     output is disjoint (merging all the homogenous effects)
 
@@ -146,7 +146,7 @@ def tailor(sig_reg_list, children, exp, n_perm=300, alpha_tailor=.05):
     # sort homo_pval_dict small pvals to large
     nodes_rm = set()
     for reg_idx in sorted(homo_pval_dict.keys(), key=homo_pval_dict.get):
-        if homo_pval_dict[reg_idx] > alpha_tailor:
+        if homo_pval_dict[reg_idx] > alpha_prune:
             break
         nodes_rm |= set(subgraph.iter_ancest(node=reg_idx, incl_self=True))
     subgraph.modify(nodes_rm=nodes_rm)

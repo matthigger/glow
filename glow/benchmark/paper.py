@@ -31,9 +31,9 @@ n_jobs_perm=-1
 
 kwargs_glow = dict(n_perm=n_perm,
                    n_perm_adj=50,
-                   n_perm_tailor=200,
+                   n_perm_prune=200,
                    min_size=1,
-                   alpha_tailor=.05,
+                   alpha_prune=.05,
                    alpha_fwer=alpha_fwer,
                    n_jobs_perm=n_jobs_perm) 
 kwargs_vba = dict(n_perm=n_perm,
@@ -75,16 +75,16 @@ config_list.append(Config(label='mancova_stat_wgn',
                           ana_kwargs_dict=ana_kwargs_dict_mancova_stat,
                           **(common_dict | wgn_dict)))
 
-# alpha_tailor experiment: vary alpha_tailor, which offers reasonable
+# alpha_prune experiment: vary alpha_prune, which offers reasonable
 # performance / speed tradeoff point?
-ana_kwargs_dict_alpha_tailor = dict()
-for _alpha_tailor in [.05, .15, .5]:
-    _kwargs_glow = kwargs_glow | dict(alpha_tailor=_alpha_tailor)
-    ana_kwargs_dict_alpha_tailor[f'alpha_tailor={_alpha_tailor}'] = (
+ana_kwargs_dict_alpha_prune = dict()
+for _alpha_prune in [.05, .15, .5]:
+    _kwargs_glow = kwargs_glow | dict(alpha_prune=_alpha_prune)
+    ana_kwargs_dict_alpha_prune[f'alpha_prune={_alpha_prune}'] = (
         glow.experiment.AnalysisGLOW, _kwargs_glow)
-config_list.append(Config(label='alpha_tailor',
+config_list.append(Config(label='alpha_prune',
                           source='hcp',
-                          ana_kwargs_dict=ana_kwargs_dict_alpha_tailor,
+                          ana_kwargs_dict=ana_kwargs_dict_alpha_prune,
                           **(common_dict | hcp_dict)))
 
 # runtime experiment, how does it vary with region size?

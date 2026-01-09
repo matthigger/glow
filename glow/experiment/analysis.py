@@ -11,7 +11,7 @@ import glow.vba
 from .cluster import cluster
 from .exper import ExperimentScaled
 from .mancova import get_hotel_tr
-from .tailor import tailor
+from .prune import prune
 from ..cet import optimize_cluster_thresh
 
 
@@ -232,17 +232,17 @@ class AnalysisGLOW(Analysis):
             unpermuted data
     """
 
-    def __init__(self, exp, n_perm, n_perm_adj=10, n_perm_tailor=100,
-                 alpha_fwer=.05, alpha_tailor=.05, min_size=1, verbose=False,
+    def __init__(self, exp, n_perm, n_perm_adj=10, n_perm_prune=100,
+                 alpha_fwer=.05, alpha_prune=.05, min_size=1, verbose=False,
                  n_jobs_perm=1, **kwargs):
         """
         Args:
             exp: Experiment to analyze
             n_perm: Number of permutations
             n_perm_adj: Number of adjustment permutations
-            n_perm_tailor: Number of tailoring permutations
+            n_perm_prune: Number of pruning permutations
             alpha_fwer: Family-wise error rate
-            alpha_tailor: Tailoring alpha
+            alpha_prune: Pruning alpha
             min_size: Minimum region size
             verbose: Print progress
             n_jobs_perm: Number of parallel jobs for permutations (1=serial, -1=all cores)
@@ -333,12 +333,12 @@ class AnalysisGLOW(Analysis):
         self.pval = self.get_pval(stat=self.z_stat,
                                   reg_active=self.size[0, :] >= min_size)
 
-        # tailor significant regions (discard to make disjoint set)
+        # prune significant regions (discard to make disjoint set)
         self.sig_reg_list = list(np.where(self.pval <= alpha_fwer)[0])
-        reg_out_list, self.homo_pval_dict = tailor(
+        reg_out_list, self.homo_pval_dict = prune(
             sig_reg_list=self.sig_reg_list,
-            alpha_tailor=alpha_tailor,
-            n_perm=n_perm_tailor,
+            alpha_prune=alpha_prune,
+            n_perm=n_perm_prune,
             exp=exp,
             children=self.child_dict[0])
 
