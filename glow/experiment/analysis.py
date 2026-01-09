@@ -1,6 +1,7 @@
 from _bisect import bisect_left
 
 import numpy as np
+from joblib import Parallel, delayed
 from scipy.ndimage import label
 from tqdm import tqdm
 
@@ -23,12 +24,13 @@ class Analysis:
             mancova.py)
     """
 
-    def __init__(self, exp, get_stat=get_hotel_tr):
+    def __init__(self, exp, get_stat=get_hotel_tr, n_jobs_perm=1):
         if not isinstance(exp, ExperimentScaled):
             # pre-process
             exp = ExperimentScaled.from_exp(exp)
         self.exp = exp
         self.get_stat = get_stat
+        self.n_jobs_perm = n_jobs_perm
 
     @classmethod
     def get_pval(cls, stat, reg_active=None):
@@ -104,8 +106,20 @@ class Analysis:
 class AnalysisVBA(Analysis):
     def __init__(self, exp, n_perm, alpha_fwer=.05, verbose=False,
                  tfce_flag=False, cet_flag=False, mask_eff=None,
-                 conn=None, **kwargs):
-        super().__init__(exp, **kwargs)
+                 conn=None, n_jobs_perm=1, **kwargs):
+        """
+        Args:
+            exp: Experiment to analyze
+            n_perm: Number of permutations
+            alpha_fwer: Family-wise error rate
+            verbose: Print progress
+            tfce_flag: Apply TFCE enhancement
+            cet_flag: Use cluster extent thresholding
+            mask_eff: Effect mask (for cet_flag)
+            conn: Connectivity for clustering
+            n_jobs_perm: Number of parallel jobs for permutations (1=serial, -1=all cores)
+        """
+        super().__init__(exp, n_jobs_perm=n_jobs_perm, **kwargs)
         self.tfce_flag = tfce_flag
         self.cet_flag = cet_flag
 
@@ -116,7 +130,8 @@ class AnalysisVBA(Analysis):
         if self.tfce_flag:
             self.stat = self.apply_tfce(stat=self.stat,
                                         mask_idx=exp.mask_idx,
-                                        verbose=verbose)
+                                        verbose=verbose,
+                                        n_jobs_perm=self.n_jobs_perm)
 
         if cet_flag:
             # get estimate of upper bound f1 for cluster extent thresholding
@@ -139,7 +154,7 @@ class AnalysisVBA(Analysis):
         self.effect_list = self.discover_mask(mask=mask, exp=exp)
 
     @classmethod
-    def apply_tfce(cls, stat, mask_idx, verbose=False):
+    def apply_tfce(cls, stat, mask_idx, verbose=False, n_jobs_perm=1):
         """ writes images to nii, applies TFCE, loads and returns results
 
          Args:
@@ -148,6 +163,7 @@ class AnalysisVBA(Analysis):
             mask_idx (np.array): same shape as image.  -1 where voxel not
                 included in analysis, otherwise contains voxel index
             verbose (bool): toggles command line output
+            n_jobs_perm (int): number of parallel jobs for TFCE per image
 
         Returns
             tfce (np.array): (num_permute, num_vox) tfce stats
@@ -157,9 +173,25 @@ class AnalysisVBA(Analysis):
                          disable=not verbose)
         tfce = np.full(shape=stat.shape, dtype=float,
                        fill_value=np.nanmin(stat))
-        for perm_idx, _stat in tqdm(enumerate(stat), **tqdm_dict):
-            tfce[perm_idx, :] = glow.vba.apply_tfce_x(_stat,
-                                                      mask_idx=mask_idx)
+        
+        # helper function for parallel processing
+        def process_tfce_permutation(perm_idx_local):
+            return glow.vba.apply_tfce_x(stat[perm_idx_local, :],
+                                        mask_idx=mask_idx)
+        
+        if n_jobs_perm not in (0, 1):
+            # parallel execution
+            results = Parallel(n_jobs=n_jobs_perm, verbose=0)(
+                delayed(process_tfce_permutation)(perm_idx)
+                for perm_idx in tqdm(range(stat.shape[0]), **tqdm_dict)
+            )
+            for perm_idx, tfce_result in enumerate(results):
+                tfce[perm_idx, :] = tfce_result
+        else:
+            # serial execution
+            for perm_idx, _stat in tqdm(enumerate(stat), **tqdm_dict):
+                tfce[perm_idx, :] = glow.vba.apply_tfce_x(_stat,
+                                                          mask_idx=mask_idx)
 
         return tfce
 
@@ -202,7 +234,19 @@ class AnalysisGLOW(Analysis):
 
     def __init__(self, exp, n_perm, n_perm_adj=10, n_perm_tailor=100,
                  alpha_fwer=.05, alpha_tailor=.05, min_size=1, verbose=False,
-                 **kwargs):
+                 n_jobs_perm=1, **kwargs):
+        """
+        Args:
+            exp: Experiment to analyze
+            n_perm: Number of permutations
+            n_perm_adj: Number of adjustment permutations
+            n_perm_tailor: Number of tailoring permutations
+            alpha_fwer: Family-wise error rate
+            alpha_tailor: Tailoring alpha
+            min_size: Minimum region size
+            verbose: Print progress
+            n_jobs_perm: Number of parallel jobs for permutations (1=serial, -1=all cores)
+        """
         super().__init__(exp, **kwargs)
 
         # constants
@@ -211,27 +255,47 @@ class AnalysisGLOW(Analysis):
 
         # build hierarchy per permutation, compute stat per region
         self.child_dict = dict()
-        tqdm_dict = dict(total=n_perm + 1,
-                         desc='clustering per permutation',
-                         disable=not verbose)
-
         self.stat = np.full((n_perm + 1, num_reg),
                             fill_value=-1,
                             dtype=float)
-        for perm_idx in tqdm(range(n_perm + 1), **tqdm_dict):
+        
+        # helper function for single permutation (for parallelization)
+        def process_permutation(perm_idx):
+            """Process one permutation: cluster and compute stats."""
             # permute data (get one permutation of experiment)
             _exp = exp.permute(perm_idx)
-
+            
             # build hierarchical segmentation
             children = cluster(exp=_exp)
-            self.child_dict[perm_idx] = children
-
+            
             # build stat for each region in hierarchy
-            self.stat[perm_idx, :] = self.get_stat_perm(exp=_exp,
-                                                        children=children)
+            stat_row = self.get_stat_perm(exp=_exp, children=children)
             
             # free memory immediately
             del _exp
+            
+            return perm_idx, children, stat_row
+        
+        # run permutations (parallel or serial)
+        if n_jobs_perm not in (0, 1):
+            # parallel execution
+            results = Parallel(n_jobs=n_jobs_perm, verbose=10 if verbose else 0)(
+                delayed(process_permutation)(perm_idx)
+                for perm_idx in range(n_perm + 1)
+            )
+            # collect results
+            for perm_idx, children, stat_row in results:
+                self.child_dict[perm_idx] = children
+                self.stat[perm_idx, :] = stat_row
+        else:
+            # serial execution with progress bar
+            tqdm_dict = dict(total=n_perm + 1,
+                           desc='clustering per permutation',
+                           disable=not verbose)
+            for perm_idx in tqdm(range(n_perm + 1), **tqdm_dict):
+                perm_idx, children, stat_row = process_permutation(perm_idx)
+                self.child_dict[perm_idx] = children
+                self.stat[perm_idx, :] = stat_row
 
         # merge all graphs (many nodes are repeated across permutations above,
         # we adjust them all by same mu and std to minimize computation)

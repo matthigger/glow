@@ -4,10 +4,12 @@ import glow
 from glow.benchmark.config import Config
 
 # common params
-common_dict = dict(n_seed=100,
+# run experiments serially (n_jobs=1) but parallelize permutations
+# within each experiment (n_jobs_perm=-1) to avoid memory explosion
+common_dict = dict(n_seed=16,
                    hotel_tr_all=np.logspace(np.log10(0.03), np.log10(1.0), 16),
                    effect_perc=.2,
-                   n_jobs=-1,
+                   n_jobs=2,
                    detail_save=False,
                    error_save=False)
 
@@ -25,17 +27,20 @@ hcp_dict = dict(hcp_feats=['fa', 'md'],
 # Analysis params
 n_perm = 100
 alpha_fwer = .05
+n_jobs_perm=-1
 
 kwargs_glow = dict(n_perm=n_perm,
                    n_perm_adj=50,
                    n_perm_tailor=200,
                    min_size=1,
                    alpha_tailor=.05,
-                   alpha_fwer=alpha_fwer)
+                   alpha_fwer=alpha_fwer,
+                   n_jobs_perm=n_jobs_perm) 
 kwargs_vba = dict(n_perm=n_perm,
                   tfce_flag=False,
                   cet_flag=False,
-                  alpha_fwer=alpha_fwer)
+                  alpha_fwer=alpha_fwer,
+                  n_jobs_perm=n_jobs_perm)
 kwargs_tfce = kwargs_vba | dict(tfce_flag=True)
 
 # build configs of experiments
