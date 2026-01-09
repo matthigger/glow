@@ -3,6 +3,7 @@ from datetime import datetime
 from itertools import product
 from pathlib import Path
 from typing import Literal, Optional, Tuple, List
+import json
 
 import numpy as np
 import yaml
@@ -84,6 +85,7 @@ class Config:
     def __post_init__(self):
         self.exp_orig = None
         self.folder = None
+        self._completed_seeds = None  # cache for completed seeds
 
     def prep_exp_orig(self, hcp_feats=None, wgn_b=None):
         """Prepare the original experiment.
@@ -164,8 +166,11 @@ class Config:
                                  seed=seed,
                                  hotel_tr=hotel_tr)
 
-    def iter_kwargs(self):
+    def iter_kwargs(self, skip_completed=False):
         """Iterates through all inputs to get_exp_eff.
+        
+        Args:
+            skip_completed: if True, skip seeds that have already been completed
         
         Uses a declarative approach:
         - iter_params: dict of {param_name: [values]} to iterate over
@@ -180,6 +185,9 @@ class Config:
         - {'iter_params': {'seed': range(10), 'wgn_b': [1, 2]}, 
            'fixed_params': {'hotel_tr': 0.1}}
         """
+        # get completed seeds if skipping
+        completed_seeds = self.get_completed_seeds(verbose=False) if skip_completed else set()
+        
         # Build iteration specification
         if self.iter_params is None:
             # Default: iterate over seed and hotel_tr
@@ -205,6 +213,11 @@ class Config:
             kwargs = dict(zip(param_names, values))
             # Add fixed parameters (these override any iterated values if there's a conflict)
             kwargs.update(fixed)
+            
+            # skip if completed
+            if skip_completed and 'seed' in kwargs and kwargs['seed'] in completed_seeds:
+                continue
+            
             yield kwargs
 
     def prep_folder(self):
@@ -240,17 +253,133 @@ class Config:
             yaml.safe_dump(self._as_serializable(), f, sort_keys=True)
         return path
 
-    def run_all(self, run_fnc, verbose=True):
-        self.prep_folder()
-        path_config = self.folder / 'config.yaml'
-        self.save_config(path=path_config)
+    @classmethod
+    def load_from_folder(cls, folder):
+        """load config from existing results folder
+        
+        Args:
+            folder: path to results folder (contains config.yaml)
+        
+        Returns:
+            config: loaded Config object with folder set to existing folder
+        """
+        folder = Path(folder)
+        config_path = folder / 'config.yaml'
+        
+        if not config_path.exists():
+            raise FileNotFoundError(f'config not found: {config_path}')
+        
+        with config_path.open('r') as f:
+            config_dict = yaml.safe_load(f)
+        
+        # convert lists back to numpy arrays where needed
+        if 'hotel_tr_all' in config_dict and isinstance(config_dict['hotel_tr_all'], list):
+            config_dict['hotel_tr_all'] = np.array(config_dict['hotel_tr_all'])
+        
+        # reconstruct ana_kwargs_dict from saved format
+        if 'ana_kwargs_dict' in config_dict:
+            ana_dict_raw = config_dict['ana_kwargs_dict']
+            ana_kwargs_dict = {}
+            for key, value in ana_dict_raw.items():
+                # saved format is {key: {'Analysis': 'AnalysisGLOW', ...}}
+                # need to reconstruct as {key: (AnalysisClass, kwargs)}
+                if isinstance(value, dict):
+                    analysis_name = value.get('Analysis', 'AnalysisGLOW')
+                    # get analysis class
+                    if hasattr(glow.experiment, analysis_name):
+                        ana_class = getattr(glow.experiment, analysis_name)
+                    else:
+                        # fallback
+                        ana_class = glow.experiment.AnalysisGLOW
+                    
+                    # extract kwargs (everything except 'Analysis' key)
+                    kwargs = {k: v for k, v in value.items() if k != 'Analysis'}
+                    ana_kwargs_dict[key] = (ana_class, kwargs)
+            config_dict['ana_kwargs_dict'] = ana_kwargs_dict
+        
+        # create config instance
+        config = cls(**config_dict)
+        
+        # set folder to existing folder (don't create new one)
+        config.folder = folder
+        
+        return config
+    
+    def get_completed_seeds(self, verbose=True):
+        """get set of seeds that have already been completed
+        
+        Returns:
+            set of completed seeds based on result files in folder
+        """
+        if self.folder is None:
+            return set()
+        
+        # check cache first
+        if self._completed_seeds is not None:
+            return self._completed_seeds
+        
+        completed_seeds = set()
+        
+        # check results.csv if it exists
+        csv_path = self.folder / 'results.csv'
+        if csv_path.exists():
+            import pandas as pd
+            df = pd.read_csv(csv_path)
+            if 'seed' in df.columns:
+                completed_seeds.update(df['seed'].unique())
+                if verbose:
+                    print(f'found {len(completed_seeds)} completed seeds in results.csv')
+        
+        # also check json files in out/ folder
+        out_folder = self.folder / 'out'
+        if out_folder.exists():
+            json_files = list(out_folder.glob('*result.json'))
+            for json_file in json_files:
+                try:
+                    with open(json_file, 'r') as f:
+                        data = json.load(f)
+                        if 'seed' in data:
+                            completed_seeds.add(int(data['seed']))
+                except Exception:
+                    continue
+        
+        # cache for future calls
+        self._completed_seeds = completed_seeds
+        
+        if verbose and completed_seeds:
+            print(f'total completed seeds: {sorted(completed_seeds)}')
+        
+        return completed_seeds
+
+    def run_all(self, run_fnc, verbose=True, skip_completed=False):
+        """run all experiments
+        
+        Args:
+            run_fnc: function to run for each experiment
+            verbose: print progress
+            skip_completed: if True, skip seeds that have already been completed
+        """
+        # only prep folder if not continuing
+        if self.folder is None or not skip_completed:
+            self.prep_folder()
+            path_config = self.folder / 'config.yaml'
+            self.save_config(path=path_config)
 
         if verbose:
             print(f'outputs stored in: {self.folder}')
-            with open(path_config, 'r') as f:
-                print(f.read())
+            if skip_completed:
+                completed = self.get_completed_seeds(verbose=True)
+                print(f'skipping {len(completed)} completed seeds')
+            
+            path_config = self.folder / 'config.yaml'
+            if path_config.exists():
+                with open(path_config, 'r') as f:
+                    print(f.read())
 
-        kwargs_list = list(self.iter_kwargs())
+        kwargs_list = list(self.iter_kwargs(skip_completed=skip_completed))
+        
+        if verbose:
+            print(f'running {len(kwargs_list)} experiments')
 
         if self.n_jobs not in (0, 1):
             Parallel(n_jobs=self.n_jobs, verbose=10)(
@@ -259,3 +388,46 @@ class Config:
         else:
             for kwargs in tqdm(kwargs_list):
                 run_fnc(config=self, **kwargs)
+    
+    @classmethod
+    def continue_run(cls, folder, n_seed_new=None, run_fnc=None, verbose=True):
+        """continue a previous run with more seeds
+        
+        Args:
+            folder: path to existing results folder
+            n_seed_new: new total number of seeds (must be > original n_seed)
+            run_fnc: function to run for each experiment
+            verbose: print progress
+        
+        Returns:
+            config: loaded and updated Config object
+        """
+        # load existing config
+        config = cls.load_from_folder(folder)
+        
+        if verbose:
+            print(f'loaded config from: {folder}')
+            print(f'original n_seed: {config.n_seed}')
+        
+        # update n_seed if requested
+        if n_seed_new is not None:
+            if n_seed_new <= config.n_seed:
+                print(f'warning: n_seed_new ({n_seed_new}) <= original n_seed ({config.n_seed})')
+                print('no new seeds to run')
+                return config
+            
+            config.n_seed = n_seed_new
+            if verbose:
+                print(f'updated n_seed to: {config.n_seed}')
+            
+            # update config file
+            path_config = config.folder / 'config.yaml'
+            config.save_config(path=path_config)
+            if verbose:
+                print(f'updated config saved to: {path_config}')
+        
+        # run only new seeds
+        if run_fnc is not None:
+            config.run_all(run_fnc=run_fnc, verbose=verbose, skip_completed=True)
+        
+        return config
