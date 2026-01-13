@@ -95,3 +95,43 @@ class TestExtenterMinVar:
         y = y + rng.standard_normal(y.shape) / 10
         mask_obs = extenter_min_var(y=y, mask_idx=mask_idx, vox_init=17)
         np.testing.assert_equal(mask_obs, mask)
+
+
+class TestExtenterMinVarRandomInit:
+    """test ExtenterMinVar with random initial voxel selection"""
+    
+    def test_minvar_without_vox_init(self):
+        """test that ExtenterMinVar works without specifying vox_init"""
+        mask_idx = np.arange(64).reshape((8, 8))
+        
+        # create extenter that grows to size 10
+        extenter = ExtenterMinVar(n=10)
+        
+        # create simple y data (1 feature, 1 image, 64 voxels)
+        y = np.random.standard_normal((1, 1, 64))
+        
+        # call without vox_init (should select random voxel internally, lines 119-121)
+        mask = extenter(mask_idx=mask_idx, y=y, seed=42)
+        
+        # verify mask has correct size
+        assert mask.sum() == 10
+        
+        # verify mask is within bounds
+        assert mask.shape == mask_idx.shape
+    
+    def test_minvar_with_different_seeds(self):
+        """test that different seeds produce different results"""
+        mask_idx = np.arange(64).reshape((8, 8))
+        extenter = ExtenterMinVar(n=10)
+        
+        y = np.random.standard_normal((1, 1, 64))
+        
+        mask1 = extenter(mask_idx=mask_idx, y=y, seed=0)
+        mask2 = extenter(mask_idx=mask_idx, y=y, seed=1)
+        
+        # different seeds should produce different masks
+        assert not np.array_equal(mask1, mask2)
+        
+        # but both should have correct size
+        assert mask1.sum() == 10
+        assert mask2.sum() == 10

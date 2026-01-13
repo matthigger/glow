@@ -142,9 +142,9 @@ def test_iter_size_ysum_yout(exp, children):
 def test_iter_stat(exp, children):
     a = 2
     b, num_img, num_vox = exp.y.shape
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', NoBiasTermWarning)
-        for add_bias, n_perm in product(range(2), [None, 10]):
+    for add_bias, n_perm in product(range(2), [None, 10]):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', NoBiasTermWarning)
             exp = exp.sample_x(a=a, seed=0, add_bias=add_bias)
 
             for reg_idx, e, h in iter_stat(exp, children=children, n_perm=n_perm):

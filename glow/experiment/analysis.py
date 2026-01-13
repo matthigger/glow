@@ -277,10 +277,10 @@ class AnalysisGLOW(Analysis):
             """Process one permutation: cluster and compute stats."""
             # permute data (get one permutation of experiment)
             _exp = exp.permute(perm_idx)
-            
+
             # build hierarchical segmentation
             children = cluster(exp=_exp)
-            
+
             # build stat for each region in hierarchy
             stat_row = self.get_stat_perm(exp=_exp, children=children)
             
@@ -334,7 +334,7 @@ class AnalysisGLOW(Analysis):
         """
         b, num_img, num_vox = exp.y.shape
         num_reg = num_vox * 2 - 1
-        
+
         # merge all graphs (many nodes are repeated across permutations above,
         # we adjust them all by same mu and std to minimize computation)
         map_to_new, children, _ = glow.graph.graph_merge(

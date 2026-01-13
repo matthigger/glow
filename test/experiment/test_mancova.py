@@ -19,35 +19,35 @@ def test_get_mancova():
             warnings.simplefilter('ignore', NoBiasTermWarning)
             exp = exp.sample_x(a=a, seed=seed, add_bias=add_bias)
 
-        for reg_idx in iter_topo(children=children, num_leaf=num_vox):
-            vox = np.array(list(iter_topo(children=children,
-                                          num_leaf=num_vox,
-                                          node_start=reg_idx,
-                                          only_leaf=True)))
-            _y = exp.y[:, :, vox]
+            for reg_idx in iter_topo(children=children, num_leaf=num_vox):
+                vox = np.array(list(iter_topo(children=children,
+                                              num_leaf=num_vox,
+                                              node_start=reg_idx,
+                                              only_leaf=True)))
+                _y = exp.y[:, :, vox]
 
-            e_obs, h_obs, sigma = get_mancova(x=exp.x, y=_y, contrast=exp.contrast)
+                e_obs, h_obs, sigma = get_mancova(x=exp.x, y=_y, contrast=exp.contrast)
 
-            # slow and steady compute of e and h
-            yr = np.concatenate([exp.y[:, :, _vox] for _vox in vox], axis=1)
-            xr = np.concatenate([exp.x for _vox in vox], axis=1)
+                # slow and steady compute of e and h
+                yr = np.concatenate([exp.y[:, :, _vox] for _vox in vox], axis=1)
+                xr = np.concatenate([exp.x for _vox in vox], axis=1)
 
-            if not exp.contrast.all():
-                # project yr into nullspace of covariates
-                _xr = xr[~exp.contrast, :]
-                p = np.eye(yr.shape[1]) - np.linalg.pinv(_xr) @ _xr
-                yr = yr @ p
-                xr = xr[exp.contrast, :] @ p
+                if not exp.contrast.all():
+                    # project yr into nullspace of covariates
+                    _xr = xr[~exp.contrast, :]
+                    p = np.eye(yr.shape[1]) - np.linalg.pinv(_xr) @ _xr
+                    yr = yr @ p
+                    xr = xr[exp.contrast, :] @ p
 
-            hat = yr @ np.linalg.pinv(xr) @ xr
-            err = yr - hat
+                hat = yr @ np.linalg.pinv(xr) @ xr
+                err = yr - hat
 
-            h_exp = hat @ hat.T
-            e_exp = err @ err.T
+                h_exp = hat @ hat.T
+                e_exp = err @ err.T
 
-            # test mancova stats
-            assert np.allclose(h_obs, h_exp)
-            assert np.allclose(e_obs, e_exp)
+                # test mancova stats
+                assert np.allclose(h_obs, h_exp)
+                assert np.allclose(e_obs, e_exp)
 
 
 def test_get_hotel_tr():

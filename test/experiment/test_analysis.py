@@ -160,3 +160,56 @@ class TestAnalysisEdgeCases:
         
         # lenient should find same or more effects
         assert len(analysis_lenient.effect_list) >= len(analysis_strict.effect_list)
+
+
+class TestParallelExecution:
+    """test parallel execution paths"""
+    
+    def test_glow_parallel_permutations(self):
+        """test parallel permutation execution in AnalysisGLOW"""
+        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
+        exp, _ = exp.impose_effect(seed=0,
+                                   extenter=ExtenterSphere(radius=1),
+                                   hotel_tr=1.5)
+        
+        # run with parallel execution
+        analysis_parallel = AnalysisGLOW(
+            exp,
+            n_perm=10,
+            alpha_fwer=.1,
+            n_jobs_perm=2  # parallel execution
+        )
+        
+        # run with serial execution
+        analysis_serial = AnalysisGLOW(
+            exp,
+            n_perm=10,
+            alpha_fwer=.1,
+            n_jobs_perm=0  # serial execution
+        )
+        
+        # results should be identical
+        assert np.allclose(analysis_parallel.pval, analysis_serial.pval)
+        assert len(analysis_parallel.effect_list) == len(analysis_serial.effect_list)
+    
+
+
+class TestNaNHandling:
+    """test handling of NaN statistics"""
+    
+    def test_get_pval_with_nan_stats(self):
+        """test get_pval handles NaN stats correctly"""
+        # create stat array with some NaN values
+        z_stat = np.array([[7.0, np.nan, 3.0, 1.0],
+                           [5.0, np.nan, 2.0, 0.0],
+                           [6.0, np.nan, 4.0, 2.0]])
+        
+        pval = Analysis.get_pval(stat=z_stat)
+        
+        # second region should have NaN pval
+        assert np.isnan(pval[1])
+        
+        # other regions should have valid pvals
+        assert not np.isnan(pval[0])
+        assert not np.isnan(pval[2])
+        assert not np.isnan(pval[3])

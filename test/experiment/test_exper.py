@@ -135,3 +135,25 @@ class TestExperimentScaled:
             e_preimage = (e_preimage[:, np.newaxis, np.newaxis] +
                           exp_scale.mean_orig)
             assert np.allclose(exp_scale.prep(e_preimage), e)
+
+
+class TestImposeEffectWithNoise:
+    """test impose_effect with noise_scale parameter"""
+    
+    def test_impose_effect_with_noise(self):
+        """test that noise_scale > 0 code path executes """
+        seed = 0
+        exp = Experiment.from_gauss(seed=seed, shape=(5, 5), num_img=20)
+        extenter = glow.effect.ExtenterSphere(radius=2)
+        
+        # impose effect with noise (should not raise error)
+        exp_with_noise, effect_with_noise = exp.impose_effect(
+            seed=seed,
+            extenter=extenter,
+            hotel_tr=2.0,
+            noise_scale=0.5  # triggers lines 171-175
+        )
+        
+        # should complete successfully
+        assert effect_with_noise.mask.sum() > 0
+        assert effect_with_noise.hotel_tr > 0

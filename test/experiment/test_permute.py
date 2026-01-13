@@ -73,3 +73,24 @@ def test_get_perm_iter():
         part_list = [tuple(p) for p in get_perm_iter(partition, n_perm=1e6)]
         assert part_list[0] == partition
         assert len(set(part_list)) == len(part_list)
+
+
+def test_perms_at_least_trivial_threshold():
+    """test perms_at_least with thresh <= 1 (early return case)"""
+    partition = [0, 0, 1, 1, 2, 2]
+    
+    # with thresh <= 1, should return True immediately with None
+    enough, n_perm = perms_at_least(partition, thresh=1)
+    assert enough is True
+    assert n_perm is None
+    
+    # also test with thresh < 1
+    enough, n_perm = perms_at_least(partition, thresh=0.5)
+    assert enough is True
+    assert n_perm is None
+    
+    # verify this is different from thresh > 1 behavior
+    enough_high, n_perm_high = perms_at_least(partition, thresh=100)
+    assert enough_high is False
+    assert n_perm_high is not None
+    assert n_perm_high > 1
