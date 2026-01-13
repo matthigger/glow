@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 import glow.effect
 import glow.graph
-import glow.vba
+# glow.vba imported lazily when needed (requires FSL for TFCE)
 from .cluster import cluster
 from .exper import ExperimentScaled
 from .mancova import get_hotel_tr
@@ -168,6 +168,7 @@ class AnalysisVBA(Analysis):
         Returns
             tfce (np.array): (num_permute, num_vox) tfce stats
         """
+        import glow.vba  # lazy import (requires FSL)
         # apply & store tfce
         tqdm_dict = dict(desc='tfce per permutation',
                          disable=not verbose)
@@ -234,7 +235,7 @@ class AnalysisGLOW(Analysis):
 
     def __init__(self, exp, n_perm, n_perm_adj=10, n_perm_prune=100,
                  alpha_fwer=.05, alpha_prune=.05, min_size=1, verbose=False,
-                 n_jobs_perm=1, **kwargs):
+                 n_jobs_perm=1, cloud_config=None, **kwargs):
         """
         Args:
             exp: Experiment to analyze
@@ -246,8 +247,16 @@ class AnalysisGLOW(Analysis):
             min_size: Minimum region size
             verbose: Print progress
             n_jobs_perm: Number of parallel jobs for permutations (1=serial, -1=all cores)
+            cloud_config: CloudConfig for AWS execution (if None, runs locally)
         """
         super().__init__(exp, **kwargs)
+        
+        # check if running on cloud
+        if cloud_config is not None:
+            self._run_on_cloud(exp, n_perm, n_perm_adj, n_perm_prune,
+                              alpha_fwer, alpha_prune, min_size, verbose,
+                              cloud_config, **kwargs)
+            return
 
         # constants
         b, num_img, num_vox = exp.y.shape
@@ -297,6 +306,31 @@ class AnalysisGLOW(Analysis):
                 self.child_dict[perm_idx] = children
                 self.stat[perm_idx, :] = stat_row
 
+        # finalize analysis (common to local and cloud execution)
+        self._finalize_analysis(exp, n_perm, n_perm_adj, n_perm_prune,
+                               alpha_fwer, alpha_prune, min_size)
+    
+    
+    def _finalize_analysis(self, exp, n_perm, n_perm_adj, n_perm_prune,
+                          alpha_fwer, alpha_prune, min_size):
+        """complete analysis given child_dict and stat arrays
+        
+        this method performs post-processing after permutations are computed
+        (either locally or on cloud). assumes self.child_dict and self.stat
+        are already populated.
+        
+        Args:
+            exp: experiment object
+            n_perm: number of permutations
+            n_perm_adj: number of adjustment permutations
+            n_perm_prune: number of pruning permutations
+            alpha_fwer: family-wise error rate
+            alpha_prune: pruning alpha
+            min_size: minimum region size
+        """
+        b, num_img, num_vox = exp.y.shape
+        num_reg = num_vox * 2 - 1
+        
         # merge all graphs (many nodes are repeated across permutations above,
         # we adjust them all by same mu and std to minimize computation)
         map_to_new, children, _ = glow.graph.graph_merge(
@@ -354,3 +388,85 @@ class AnalysisGLOW(Analysis):
                                                    reg_idx=reg_idx,
                                                    pval_fwer=pval_fwer)
             self.effect_list.append(eff)
+    def _run_on_cloud(self, exp, n_perm, n_perm_adj, n_perm_prune,
+                     alpha_fwer, alpha_prune, min_size, verbose,
+                     cloud_config, **kwargs):
+        """execute analysis on AWS cloud
+        
+        This method runs the expensive permutation processing on AWS Batch,
+        then downloads results and completes the analysis locally.
+        """
+        from glow.aws import AWSBatchRunner
+        import uuid
+        
+        print('running analysis on AWS cloud...')
+        
+        # generate experiment ID
+        experiment_id = f'glow_{uuid.uuid4().hex[:8]}'
+        
+        # prepare analysis kwargs (without cloud_config)
+        ana_kwargs = {
+            'get_stat': self.get_stat,
+            'n_perm_adj': n_perm_adj,
+            'n_perm_prune': n_perm_prune,
+            'alpha_fwer': alpha_fwer,
+            'alpha_prune': alpha_prune,
+            'min_size': min_size
+        }
+        ana_kwargs.update(kwargs)
+        
+        # initialize runner
+        runner = AWSBatchRunner(cloud_config)
+        
+        # upload experiment
+        print('uploading experiment data...')
+        runner.upload_experiment(exp, ana_kwargs, experiment_id)
+        
+        # submit jobs
+        print('submitting permutation jobs...')
+        submission = runner.submit_jobs(
+            experiment_id=experiment_id,
+            n_perm=n_perm,
+            skip_completed=True,
+            dry_run=False
+        )
+        
+        if submission.get('cancelled') or submission.get('dry_run'):
+            raise RuntimeError('job submission cancelled or dry run')
+        
+        # monitor progress
+        if verbose:
+            runner.monitor_jobs(submission['job_ids'])
+        else:
+            print(f'submitted {submission["n_jobs"]} jobs')
+            print('use runner.monitor_jobs(job_ids) to track progress')
+        
+        # download results
+        print('downloading results...')
+        from pathlib import Path
+        import tempfile
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = runner.download_results(
+                experiment_id=experiment_id,
+                n_perm=n_perm,
+                output_dir=Path(tmpdir)
+            )
+            
+            # reconstruct analysis state from results
+            b, num_img, num_vox = exp.y.shape
+            num_reg = num_vox * 2 - 1
+            
+            self.child_dict = {}
+            self.stat = np.full((n_perm + 1, num_reg), fill_value=-1, dtype=float)
+            
+            for perm_idx, result in results.items():
+                self.child_dict[perm_idx] = result['children']
+                self.stat[perm_idx, :] = result['stat']
+        
+        # complete analysis locally using shared finalization method
+        print('completing analysis locally...')
+        self._finalize_analysis(exp, n_perm, n_perm_adj, n_perm_prune,
+                               alpha_fwer, alpha_prune, min_size)
+        
+        print(f'cloud analysis complete: found {len(self.effect_list)} effects')

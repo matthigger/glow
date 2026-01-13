@@ -1,3 +1,5 @@
+import numpy as np
+
 from glow.experiment import get_mancova
 
 
@@ -32,3 +34,28 @@ class Effect:
 
         # all other inputs are to be stored
         self.__dict__.update(kwargs)
+
+    def is_close(self, other, rtol=1e-5, atol=1e-8):
+        """compare two effects for approximate equality
+        
+        Args:
+            other (Effect): effect to compare to
+            rtol (float): relative tolerance for numerical comparison
+            atol (float): absolute tolerance for numerical comparison
+            
+        Returns:
+            bool: True if effects are approximately equal
+        """
+        # check mask shape and values
+        if self.mask.shape != other.mask.shape:
+            return False
+        if not np.array_equal(self.mask, other.mask):
+            return False
+        
+        # check y_mean shape and values
+        if self.y_mean.shape != other.y_mean.shape:
+            return False
+        if not np.allclose(self.y_mean, other.y_mean, rtol=rtol, atol=atol):
+            return False
+        
+        return True

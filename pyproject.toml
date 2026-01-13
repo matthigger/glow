@@ -1,3 +1,14 @@
+[project]
+name = "glow"
+version = "0.1.0"
+description = "General Linear Models Optimized with Ward's Method"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [
+    {name = "matt higger", email = "mhigger@ccs.neu.edu"}
+]
+
 [tool.poetry]
 name = "glow"
 version = "0.1.0"
