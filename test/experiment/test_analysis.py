@@ -51,3 +51,112 @@ class TestBigEffect:
         mask_all = sum(eff.mask for eff in analysis.effect_list)
         np.testing.assert_allclose(mask_all,
                                    TestBigEffect.effect.mask)
+    
+    def test_glow_with_prune(self):
+        """test GLOW with pruning enabled"""
+        analysis = AnalysisGLOW(
+            TestBigEffect.exp, 
+            n_perm=10, 
+            n_perm_prune=15,
+            alpha_fwer=.1,
+            alpha_prune=.05
+        )
+        
+        # should still find the effect
+        assert len(analysis.effect_list) > 0
+    
+    def test_glow_with_adjustment(self):
+        """test GLOW with adjustment permutations"""
+        analysis = AnalysisGLOW(
+            TestBigEffect.exp, 
+            n_perm=10,
+            n_perm_adj=15,
+            alpha_fwer=.1
+        )
+        
+        # should have both regular and adjustment permutations
+        assert len(analysis.child_dict) >= 10
+    
+    def test_analysis_get_stat(self):
+        """test custom get_stat function"""
+        from glow.experiment.mancova import get_pillai
+        
+        # use pillai instead of default hotelling
+        analysis = AnalysisGLOW(
+            TestBigEffect.exp,
+            n_perm=5,
+            alpha_fwer=.1,
+            get_stat=get_pillai
+        )
+        
+        # should still work
+        assert hasattr(analysis, 'effect_list')
+        assert hasattr(analysis, 'stat')
+
+
+class TestAnalysisEdgeCases:
+    """test edge cases and error handling"""
+    
+    def test_all_regions_too_small(self):
+        """test when all regions are filtered out by min_size"""
+        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
+        exp, _ = exp.impose_effect(seed=0,
+                                   extenter=ExtenterSphere(radius=1),
+                                   hotel_tr=1.5)
+        
+        # set min_size so large that all regions are filtered
+        analysis = AnalysisGLOW(
+            exp,
+            n_perm=5,
+            alpha_fwer=.1,
+            min_size=1000000  # impossibly large
+        )
+        
+        # should run without error
+        assert hasattr(analysis, 'pval')
+        assert hasattr(analysis, 'effect_list')
+        
+        # all pvals should be nan
+        assert np.all(np.isnan(analysis.pval))
+        
+        # no effects should be found
+        assert len(analysis.effect_list) == 0
+    
+    def test_small_experiment(self):
+        """test with minimal experiment size"""
+        exp = Experiment.from_gauss(a=2, b=1, shape=(3, 3), num_img=10, seed=0)
+        
+        analysis = AnalysisGLOW(
+            exp,
+            n_perm=3,
+            alpha_fwer=.5,  # lenient for small sample
+            min_size=1
+        )
+        
+        # should run without error even with small size
+        assert hasattr(analysis, 'pval')
+        assert analysis.pval.shape[0] > 0
+    
+    def test_different_alpha_values(self):
+        """test with different alpha thresholds"""
+        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
+        exp, _ = exp.impose_effect(seed=0,
+                                   extenter=ExtenterSphere(radius=1),
+                                   hotel_tr=1.5)
+        
+        # strict alpha
+        analysis_strict = AnalysisGLOW(
+            exp,
+            n_perm=5,
+            alpha_fwer=.01
+        )
+        
+        # lenient alpha
+        analysis_lenient = AnalysisGLOW(
+            exp,
+            n_perm=5,
+            alpha_fwer=.5
+        )
+        
+        # lenient should find same or more effects
+        assert len(analysis_lenient.effect_list) >= len(analysis_strict.effect_list)

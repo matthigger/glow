@@ -55,6 +55,10 @@ class Analysis:
         """
         if reg_active is None:
             reg_active = np.ones(stat.shape[1], dtype=bool)
+        elif not reg_active.any():
+            # no active regions, return all nan
+            num_reg = stat.shape[1]
+            return np.full(num_reg, fill_value=np.nan, dtype=float)
 
         # max stat per permutation (sorted from low to high)
         stat_max = np.sort(np.nanmax(stat[:, reg_active], axis=1))
