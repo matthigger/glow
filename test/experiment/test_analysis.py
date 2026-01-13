@@ -38,13 +38,8 @@ class TestBigEffect:
                                    TestBigEffect.effect.mask)
 
     def test_vba(self):
-        conn = np.array([[1, 1, 1],
-                         [1, 0, 1],
-                         [1, 1, 1]])
-        kwargs_list = [dict(tfce_flag=False, cet_flag=False),
-                       dict(tfce_flag=True, cet_flag=False),
-                       dict(tfce_flag=False, cet_flag=True, conn=conn,
-                            mask_eff=TestBigEffect.effect.mask)]
+        kwargs_list = [dict(tfce_flag=False),
+                       dict(tfce_flag=True)]
         for kwargs in kwargs_list:
             analysis = AnalysisVBA(TestBigEffect.exp, n_perm=25,
                                    alpha_fwer=.1, **kwargs)

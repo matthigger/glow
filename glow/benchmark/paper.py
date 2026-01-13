@@ -38,7 +38,6 @@ kwargs_glow = dict(n_perm=n_perm,
                    n_jobs_perm=n_jobs_perm) 
 kwargs_vba = dict(n_perm=n_perm,
                   tfce_flag=False,
-                  cet_flag=False,
                   alpha_fwer=alpha_fwer,
                   n_jobs_perm=n_jobs_perm)
 kwargs_tfce = kwargs_vba | dict(tfce_flag=True)

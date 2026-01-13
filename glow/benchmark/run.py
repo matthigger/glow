@@ -53,11 +53,6 @@ def run_ana(config, **kwargs):
     exp, effect = config.get_exp_eff(**kwargs)
 
     for label, (Ana, kwargs) in config.ana_kwargs_dict.items():
-        # cluster extent thresholding "peeks", its results should be
-        # considered as an upper bound as this isn't feasible in practice
-        if kwargs.get('cet_flag', False):
-            kwargs['mask_eff'] = effect.mask
-
         # prep output file
         uuid = str(uuid4())[:8]
         file_out = config.folder / OUT / f'{uuid}_result.json'

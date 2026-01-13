@@ -12,7 +12,6 @@ from .cluster import cluster
 from .exper import ExperimentScaled
 from .mancova import get_hotel_tr
 from .prune import prune
-from ..cet import optimize_cluster_thresh
 
 
 class Analysis:
@@ -109,8 +108,7 @@ class Analysis:
 
 class AnalysisVBA(Analysis):
     def __init__(self, exp, n_perm, alpha_fwer=.05, verbose=False,
-                 tfce_flag=False, cet_flag=False, mask_eff=None,
-                 conn=None, n_jobs_perm=1, **kwargs):
+                 tfce_flag=False, conn=None, n_jobs_perm=1, **kwargs):
         """
         Args:
             exp: Experiment to analyze
@@ -118,14 +116,11 @@ class AnalysisVBA(Analysis):
             alpha_fwer: Family-wise error rate
             verbose: Print progress
             tfce_flag: Apply TFCE enhancement
-            cet_flag: Use cluster extent thresholding
-            mask_eff: Effect mask (for cet_flag)
             conn: Connectivity for clustering
             n_jobs_perm: Number of parallel jobs for permutations (1=serial, -1=all cores)
         """
         super().__init__(exp, n_jobs_perm=n_jobs_perm, **kwargs)
         self.tfce_flag = tfce_flag
-        self.cet_flag = cet_flag
 
         # compute stat per each voxel (for every permutation)
         self.stat = self.get_stat_perm(exp, n_perm=n_perm, children=None)
@@ -137,23 +132,12 @@ class AnalysisVBA(Analysis):
                                         verbose=verbose,
                                         n_jobs_perm=self.n_jobs_perm)
 
-        if cet_flag:
-            # get estimate of upper bound f1 for cluster extent thresholding
-            mask, f1 = optimize_cluster_thresh(self.stat,
-                                               mask_true=mask_eff,
-                                               mask_idx=exp.mask_idx,
-                                               alpha_fwer=alpha_fwer,
-                                               conn=conn)
+        # compute p-values
+        self.pval = self.get_pval(self.stat)
 
-            # no per-voxel pvalue is available here
-            self.pval = None
-        else:
-            # compute p-values
-            self.pval = self.get_pval(self.stat)
-
-            # discover effects
-            mask = np.zeros(exp.mask_idx.shape, dtype=bool)
-            mask[exp.mask_idx > -1] = self.pval <= alpha_fwer
+        # discover effects
+        mask = np.zeros(exp.mask_idx.shape, dtype=bool)
+        mask[exp.mask_idx > -1] = self.pval <= alpha_fwer
 
         self.effect_list = self.discover_mask(mask=mask, exp=exp)
 
