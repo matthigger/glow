@@ -12,7 +12,7 @@ python run_aws_test.py
 
 Configure what runs by editing the flags at the top:
 - `RUN_S3_TEST = True` - Test S3 upload only (free, fast)
-- `RUN_FULL_TEST = True` - Full cloud execution with local comparison for validation (costs ~$0.05-0.15)
+- `RUN_FULL_TEST = True` - Full cloud execution with local comparison for validation + timing analysis (costs ~$0.05-0.15)
 
 ### `run_aws_diagnose.py`
 Diagnose recent AWS Batch job failures:

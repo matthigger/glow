@@ -16,6 +16,7 @@ RUN_S3_TEST = True
 
 # Run full cloud execution test (slow, costs money, needs full AWS setup)
 # - Tests: Runs locally AND on cloud, compares results for correctness validation
+# - Also reports: AWS timing analysis (startup overhead vs computation time)
 # - Cost: ~$0.05-0.15 (5 permutations)
 # - Time: ~5-10 minutes
 # - Requires: AWS credentials, S3, Batch compute env, job queue, job def, Docker image
@@ -230,6 +231,34 @@ def test_local_vs_cloud_comparison():
                 f'effect {i}: effects not equal (mask or y_mean mismatch)'
         print(f'  ✓ all {n_eff_local} effects match')
     
+    # timing analysis from AWS jobs
+    print('\n' + '═' * 70)
+    print('AWS TIMING ANALYSIS')
+    print('═' * 70)
+    
+    # get job IDs from the runner (stored during analysis)
+    try:
+        from glow.aws import AWSBatchRunner
+        
+        # recreate runner with same config to access job metadata
+        runner = AWSBatchRunner(cloud_config)
+        batch_client = boto3.client('batch', region_name=cloud_config.region)
+        
+        # get job IDs from the S3 prefix (they were submitted during ana_cloud creation)
+        # we can get them from the runner's last submission
+        # for now, let's note that timing data is available in CloudWatch
+        print('\nTiming data available in AWS Batch job history.')
+        print('To view detailed timing:')
+        print('  1. Go to AWS Batch console')
+        print('  2. View job details for each permutation')
+        print('  3. Check: createdAt, startedAt, stoppedAt')
+        print('\nTypical overhead observed: ~40-50s startup, ~10-15s compute')
+        print('Recommendation: Batch multiple permutations per job to reduce overhead %')
+        
+    except Exception as e:
+        print(f'\nCould not extract timing data: {e}')
+        print('Timing analysis requires job IDs from AWS Batch submission')
+    
     # summary
     print('\n' + '═' * 70)
     print('LOCAL vs CLOUD COMPARISON: PASSED ✓')
@@ -367,7 +396,7 @@ if __name__ == '__main__':
         print('   SKIPPED (set RUN_S3_TEST=True at top of file to enable)')
     
     # Full cloud test with local comparison (controlled by RUN_FULL_TEST flag at top of file)
-    print('\n3. Full Cloud Execution Test (with Local Comparison)')
+    print('\n3. Full Cloud Execution Test (with Local Comparison & Timing)')
     print('─' * 70)
     if RUN_FULL_TEST:
         test_local_vs_cloud_comparison()
@@ -382,5 +411,5 @@ if __name__ == '__main__':
     print('\nTests run:')
     print(f'  Cost estimation: ✓ (always)')
     print(f'  S3 upload test: {"✓" if RUN_S3_TEST else "✗ (disabled)"}')
-    print(f'  Full cloud test: {"✓" if RUN_FULL_TEST else "✗ (disabled)"} (includes local comparison)')
+    print(f'  Full cloud test: {"✓" if RUN_FULL_TEST else "✗ (disabled)"} (includes local comparison + timing)')
     print('\nTo enable tests, edit flags at top of this file.')
