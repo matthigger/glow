@@ -2,6 +2,7 @@ import numpy as np
 
 import glow
 from glow.benchmark.config import Config
+from glow.benchmark.run import run_ana, run_segment
 
 # common params
 # run experiments serially (n_jobs=1) but parallelize permutations
@@ -52,10 +53,12 @@ ana_kwargs_dict_vba = {'GLOW': (glow.experiment.AnalysisGLOW, kwargs_glow),
 
 config_list.append(Config(label='vba_hcp',
                           source='hcp',
+                          run_fnc=run_ana,
                           ana_kwargs_dict=ana_kwargs_dict_vba,
                           **(common_dict | hcp_dict)))
 config_list.append(Config(label='vba_wgn',
                           source='wgn',
+                          run_fnc=run_ana,
                           ana_kwargs_dict=ana_kwargs_dict_vba,
                           **(common_dict | wgn_dict)))
 
@@ -67,10 +70,12 @@ for label, get_stat in glow.experiment.mancova.stat_dict.items():
 
 config_list.append(Config(label='mancova_stat_hcp',
                           source='hcp',
+                          run_fnc=run_ana,
                           ana_kwargs_dict=ana_kwargs_dict_mancova_stat,
                           **(common_dict | hcp_dict)))
 config_list.append(Config(label='mancova_stat_wgn',
                           source='wgn',
+                          run_fnc=run_ana,
                           ana_kwargs_dict=ana_kwargs_dict_mancova_stat,
                           **(common_dict | wgn_dict)))
 
@@ -83,6 +88,7 @@ for _alpha_prune in [.05, .15, .5]:
         glow.experiment.AnalysisGLOW, _kwargs_glow)
 config_list.append(Config(label='alpha_prune',
                           source='hcp',
+                          run_fnc=run_ana,
                           ana_kwargs_dict=ana_kwargs_dict_alpha_prune,
                           **(common_dict | hcp_dict)))
 
@@ -90,6 +96,7 @@ config_list.append(Config(label='alpha_prune',
 radius_all = list(np.arange(2, 7).astype(int)) + [None]
 config_list.append(Config(label='runtime_radius',
                           source='hcp',
+                          run_fnc=run_ana,
                           ana_kwargs_dict=ana_kwargs_dict_vba,
                           iter_params={'seed': np.arange(10), 'radius': radius_all},
                           fixed_params={'hotel_tr': 0.1},
@@ -99,6 +106,7 @@ config_list.append(Config(label='runtime_radius',
 # WGN: vary b
 config_list.append(Config(label='dataset_wgn_b',
                           source='wgn',
+                          run_fnc=run_ana,
                           ana_kwargs_dict=ana_kwargs_dict_vba,
                           iter_params={'seed': np.arange(10), 'wgn_b': [1, 2]},
                           fixed_params={'hotel_tr': 0.1},
@@ -107,17 +115,25 @@ config_list.append(Config(label='dataset_wgn_b',
 # HCP: vary features
 config_list.append(Config(label='dataset_hcp_feats',
                           source='hcp',
+                          run_fnc=run_ana,
                           ana_kwargs_dict=ana_kwargs_dict_vba,
                           iter_params={'seed': np.arange(10), 'hcp_feats': [['fa'], ['fa', 'md']]},
                           fixed_params={'hotel_tr': 0.1},
                           **(common_dict | hcp_dict)))
 
+# segmentation configs
+config_list.append(Config(label='segment_hcp',
+                          source='hcp',
+                          run_fnc=run_segment,
+                          **(common_dict | hcp_dict)))
+config_list.append(Config(label='segment_wgn',
+                          source='wgn',
+                          run_fnc=run_segment,
+                          **(common_dict | wgn_dict)))
 
 
 if __name__ == '__main__':
-    from glow.benchmark.run import run_ana
-
-    # run benchmarks
+    # run all benchmarks
     for config in config_list:
         print(f'begin: {config.label}')
-        config.run_all(run_fnc=run_ana, verbose=True)
+        config.run_all(verbose=True)

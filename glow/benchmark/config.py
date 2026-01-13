@@ -22,6 +22,10 @@ path_result.mkdir(parents=True, exist_ok=True)
 class Config:
     label: str
 
+    # -------- run function --------
+    # function to run for this config (e.g., run_ana or run_segment)
+    run_fnc: callable = None
+
     # -------- analysis kwargs --------
     # a dictionary, keys are labels of each analysis, values are tuples of
     # Analysis objects (AnalysisGLOW or AnalysisVBA) and kwargs to be sent
@@ -242,11 +246,10 @@ class Config:
             yaml.safe_dump(self._as_serializable(), f, sort_keys=True)
         return path
 
-    def run_all(self, run_fnc, verbose=True):
+    def run_all(self, verbose=True):
         """run all experiments
         
         Args:
-            run_fnc: function to run for each experiment
             verbose: print progress
         """
         # prep folder and save config
@@ -269,8 +272,8 @@ class Config:
 
         if self.n_jobs not in (0, 1):
             Parallel(n_jobs=self.n_jobs, verbose=10)(
-                delayed(run_fnc)(config=self, **kwargs)
+                delayed(self.run_fnc)(config=self, **kwargs)
                 for kwargs in tqdm(kwargs_list))
         else:
             for kwargs in tqdm(kwargs_list):
-                run_fnc(config=self, **kwargs)
+                self.run_fnc(config=self, **kwargs)
