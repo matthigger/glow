@@ -371,25 +371,3 @@ fi
 # cleanup temp files
 rm -f "$BUDGET_TMP" "$NOTIFICATIONS_TMP"
 echo ""
-
-# ============================================================================
-# Summary
-# ============================================================================
-echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}✓ AWS Batch setup complete!${NC}"
-echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
-echo ""
-echo -e "${BLUE}Configuration Summary:${NC}"
-echo "  S3 Bucket: ${S3_BUCKET}"
-echo "  Job Queue: ${JOB_QUEUE_NAME}"
-echo "  Job Definition: ${JOB_DEFINITION_NAME}:${JOB_DEF_REVISION}"
-echo "  Max vCPUs: ${MAX_VCPUS}"
-echo "  vCPUs per job: ${VCPUS_PER_JOB}"
-echo "  Max concurrent jobs: $((MAX_VCPUS / VCPUS_PER_JOB))"
-echo ""
-echo -e "${YELLOW}Next steps:${NC}"
-echo "  1. Test: python test/run_aws_test.py"
-echo "  2. Deploy code changes: ./glow/aws/deploy_docker.sh"
-echo "  3. Run experiments: python glow/benchmark/paper.py"
-echo ""
-echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
