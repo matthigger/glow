@@ -57,7 +57,7 @@ class Analysis:
         elif not reg_active.any():
             # no active regions, return all nan
             num_reg = stat.shape[1]
-            return np.full(num_reg, fill_value=np.nan, dtype=float)
+            return np.full(num_reg, fill_value=np.nan, dtype=np.float32)
 
         # max stat per permutation (sorted from low to high)
         stat_max = np.sort(np.nanmax(stat[:, reg_active], axis=1))
@@ -65,7 +65,7 @@ class Analysis:
         # compute pvalues (what percentage of permuted, or unpermuted,
         # stats were >= to observed value?)
         num_perm, num_reg = stat.shape
-        pval = np.full(num_reg, fill_value=-1, dtype=float)
+        pval = np.full(num_reg, fill_value=-1, dtype=np.float32)
         for reg_idx, z in enumerate(stat[0, :]):
             if np.isnan(z):
                 pval[reg_idx] = np.nan
@@ -96,7 +96,7 @@ class Analysis:
             num_reg += children.shape[0]
 
         n_rows = 1 if n_perm is None else n_perm + 1
-        stat = np.full((n_rows, num_reg), fill_value=np.nan)
+        stat = np.full((n_rows, num_reg), fill_value=np.nan, dtype=np.float32)
         for reg_idx, e, h in glow.graph.iter_stat(exp=exp,
                                                   children=children,
                                                   n_perm=n_perm):
@@ -160,7 +160,7 @@ class AnalysisVBA(Analysis):
         # apply & store tfce
         tqdm_dict = dict(desc='tfce per permutation',
                          disable=not verbose)
-        tfce = np.full(shape=stat.shape, dtype=float,
+        tfce = np.full(shape=stat.shape, dtype=np.float32,
                        fill_value=np.nanmin(stat))
         
         # helper function for parallel processing
@@ -254,7 +254,7 @@ class AnalysisGLOW(Analysis):
         self.child_dict = dict()
         self.stat = np.full((n_perm + 1, num_reg),
                             fill_value=-1,
-                            dtype=float)
+                            dtype=np.float32)
         
         # helper function for single permutation (for parallelization)
         def process_permutation(perm_idx):
@@ -335,7 +335,7 @@ class AnalysisGLOW(Analysis):
         del _exp
 
         # adjust
-        self.z_stat = np.empty_like(self.stat)
+        self.z_stat = np.empty_like(self.stat, dtype=np.float32)
         for perm_idx, _map_to_new in enumerate(map_to_new):
             # look up stats per region in permutation perm_idx
             _stat_perm = np.concatenate((stat_perm[:, :num_vox],
@@ -345,7 +345,7 @@ class AnalysisGLOW(Analysis):
             self.z_stat[perm_idx, :] = (self.stat[perm_idx, :] - mu) / std
 
         # compute sizes of each region
-        self.size = np.empty((n_perm + 1, num_reg))
+        self.size = np.empty((n_perm + 1, num_reg), dtype=np.float32)
         for perm_idx, children in self.child_dict.items():
             self.size[perm_idx, :] = glow.graph.node_sum(x=np.ones(num_vox,
                                                                    dtype=int),
@@ -446,7 +446,7 @@ class AnalysisGLOW(Analysis):
             num_reg = num_vox * 2 - 1
             
             self.child_dict = {}
-            self.stat = np.full((n_perm + 1, num_reg), fill_value=-1, dtype=float)
+            self.stat = np.full((n_perm + 1, num_reg), fill_value=-1, dtype=np.float32)
             
             for perm_idx, result in results.items():
                 self.child_dict[perm_idx] = result['children']

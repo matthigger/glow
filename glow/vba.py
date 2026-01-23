@@ -29,7 +29,7 @@ def apply_tfce_img(x, H=2.0, E=0.5, connectivity=6, n_steps=100):
     Returns:
         tfce enhanced image (same shape as input)
     """
-    x = np.asarray(x, dtype=np.float64)
+    x = np.asarray(x, dtype=np.float32)
 
     # connectivity structure for scipy.ndimage.label
     if connectivity == 6:
@@ -48,7 +48,7 @@ def apply_tfce_img(x, H=2.0, E=0.5, connectivity=6, n_steps=100):
     dh = img_max / n_steps
     thresholds = np.linspace(dh, img_max, n_steps)
 
-    tfce = np.zeros_like(x, dtype=np.float64)
+    tfce = np.zeros_like(x, dtype=np.float32)
 
     for h in thresholds:
         # threshold image

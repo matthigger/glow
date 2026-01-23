@@ -161,9 +161,9 @@ def test_iter_stat(exp, children):
                                                   y=_exp.y[:, :, vox],
                                                   contrast=_exp.contrast)
 
-                    # test mancova stats
-                    assert np.allclose(h[:, :, perm_idx], h_exp)
-                    assert np.allclose(e[:, :, perm_idx], e_exp)
+                    # test mancova stats (use float32 tolerance)
+                    assert np.allclose(h[:, :, perm_idx], h_exp, rtol=1e-5, atol=1e-5)
+                    assert np.allclose(e[:, :, perm_idx], e_exp, rtol=1e-5, atol=1e-5)
 
 
 def binary_tree(n_node=100, seed=0, merge_smallest=True):

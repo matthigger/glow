@@ -60,7 +60,7 @@ class ExperimentImageOnly:
 
         num_vox = np.prod(shape)
         rng = np.random.default_rng(seed=seed)
-        y = rng.multivariate_normal(np.zeros(b), np.eye(b), num_img * num_vox)
+        y = rng.multivariate_normal(np.zeros(b), np.eye(b), num_img * num_vox).astype(np.float32)
 
         # reshape, de-mean, reshape
         y = y.reshape((b, num_img, num_vox))
@@ -139,7 +139,7 @@ class ExperimentImageOnly:
         # mask into each image, store as y
         mask = mask_idx >= 0
         y_names = sorted(feat_sbj_img.keys())
-        y = np.empty((len(feat_sbj_img), df.shape[0], mask.sum()))
+        y = np.empty((len(feat_sbj_img), df.shape[0], mask.sum()), dtype=np.float32)
         for sbj_idx, sbj in enumerate(sorted(df.index)):
             for feat_idx, feat in enumerate(y_names):
                 y[feat_idx, sbj_idx, :] = feat_sbj_img[feat][sbj][mask]

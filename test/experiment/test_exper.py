@@ -23,23 +23,23 @@ class TestExperimentOnlyImage:
             y = exp.y.reshape((b, -1))
 
             if case.mu is None:
-                assert np.allclose(y.mean(axis=1), np.zeros(b))
+                assert np.allclose(y.mean(axis=1), np.zeros(b), rtol=1e-5, atol=1e-5)
             else:
-                assert np.allclose(y.mean(axis=1), case.mu)
+                assert np.allclose(y.mean(axis=1), case.mu, rtol=1e-5, atol=1e-5)
 
             if case.cov is not None:
-                assert np.allclose(np.cov(y), case.cov)
+                assert np.allclose(np.cov(y), case.cov, rtol=1e-5, atol=1e-5)
 
     def test_from_search(self):
         # nii
         exp0 = ExperimentImageOnly.from_search(folder=folder_test_data,
-                                               sbj_regex='img\d',
+                                               sbj_regex=r'img\d',
                                                img_glob_dict={
                                                    'feat0': '*feat0.nii.gz',
                                                    'feat1': '*feat1.nii.gz'})
         # jpg
         exp1 = ExperimentImageOnly.from_search(folder=folder_test_data,
-                                               sbj_regex='img\d',
+                                               sbj_regex=r'img\d',
                                                img_glob_dict={
                                                    'feat0': '*feat0.jpg',
                                                    'feat1': '*feat1.jpg'})

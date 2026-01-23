@@ -41,7 +41,7 @@ class CloudConfig:
     max_cost_per_hour: float = 10.0  # USD
     use_spot: bool = True
     timeout_minutes: int = 60
-    memory_mb: int = 4096
+    memory_mb: int = 1024
     vcpus: int = 2
     retry_attempts: int = 3
     
@@ -51,7 +51,7 @@ class CloudConfig:
 
 def estimate_cost(n_jobs: int, 
                   runtime_minutes: float,
-                  memory_mb: int = 4096,
+                  memory_mb: int = 1024,
                   vcpus: int = 2,
                   use_spot: bool = True) -> Dict[str, float]:
     """estimate cost for running jobs on AWS
