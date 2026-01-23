@@ -16,7 +16,6 @@ REGION="us-east-1"
 FORCE=false
 CLEAR_QUEUE=""
 CLEAR_S3=""
-CLEAR_HCP_DATA=""
 S3_PREFIX=""
 PROMPT_USER=true
 
@@ -53,10 +52,6 @@ while [[ $# -gt 0 ]]; do
             PROMPT_USER=false
             shift
             ;;
-        --include-hcp-data)
-            CLEAR_HCP_DATA=true
-            shift
-            ;;
         --force)
             FORCE=true
             shift
@@ -74,7 +69,6 @@ while [[ $# -gt 0 ]]; do
             echo "  --s3-only          Only clear S3 storage"
             echo "  --both             Clear both queue and S3"
             echo "                     (if none specified, will prompt interactively)"
-            echo "  --include-hcp-data Also delete HCP imaging data from S3"
             echo "  --force            Skip confirmation prompt"
             echo "  -h, --help         Show this help message"
             exit 0
@@ -105,16 +99,8 @@ if [ "$PROMPT_USER" = true ]; then
     read -p "Clear S3 storage for experiment results? (yes/no): " -r
     if [[ $REPLY =~ ^[Yy][Ee][Ss]$ ]]; then
         CLEAR_S3=true
-        echo ""
-        read -p "Also delete HCP imaging data from S3? (yes/no): " -r
-        if [[ $REPLY =~ ^[Yy][Ee][Ss]$ ]]; then
-            CLEAR_HCP_DATA=true
-        else
-            CLEAR_HCP_DATA=false
-        fi
     else
         CLEAR_S3=false
-        CLEAR_HCP_DATA=false
     fi
     echo ""
     
@@ -506,75 +492,6 @@ EOF
     fi
 fi
 
-# clear HCP data from S3
-if [ "$CLEAR_HCP_DATA" = true ] && [ -n "$S3_BUCKET" ]; then
-    echo -e "${YELLOW}Checking HCP data in S3...${NC}"
-    
-    python3 << EOF
-import boto3
-import sys
-
-try:
-    s3 = boto3.client('s3', region_name='${REGION}')
-    
-    # HCP data is stored under {prefix}/hcp_data/
-    hcp_prefix = '${S3_PREFIX}/hcp_data/'
-    bucket = '${S3_BUCKET}'
-    
-    # count objects
-    paginator = s3.get_paginator('list_objects_v2')
-    total_size = 0
-    total_count = 0
-    
-    for page in paginator.paginate(Bucket=bucket, Prefix=hcp_prefix):
-        if 'Contents' in page:
-            for obj in page['Contents']:
-                total_size += obj['Size']
-                total_count += 1
-    
-    if total_count == 0:
-        print(f'  ✓ No HCP data found in S3')
-        sys.exit(2)
-    
-    size_mb = total_size / (1024**2)
-    print(f'  Found {total_count} HCP files, {size_mb:.1f} MB')
-    
-    # delete objects
-    deleted = 0
-    for page in paginator.paginate(Bucket=bucket, Prefix=hcp_prefix):
-        if 'Contents' in page:
-            objects = [{'Key': obj['Key']} for obj in page['Contents']]
-            if objects:
-                try:
-                    s3.delete_objects(
-                        Bucket=bucket,
-                        Delete={'Objects': objects}
-                    )
-                    deleted += len(objects)
-                    print(f'  Progress: {deleted} objects deleted...', end='\r')
-                    sys.stdout.flush()
-                except Exception as e:
-                    print(f'\n  ✗ Failed to delete batch: {e}')
-    
-    print()
-    print(f'  ✓ Deleted: {deleted} HCP files')
-
-except Exception as e:
-    print(f'Error: {e}', file=sys.stderr)
-    sys.exit(1)
-EOF
-    
-    EXIT_CODE=$?
-    if [ $EXIT_CODE -eq 2 ]; then
-        echo ""
-        echo -e "${GREEN}✓ No HCP data to delete${NC}"
-    elif [ $EXIT_CODE -ne 0 ]; then
-        echo ""
-        echo -e "${RED}✗ HCP data cleanup failed${NC}"
-        exit 1
-    fi
-fi
-
 # final summary
 echo ""
 echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
@@ -589,11 +506,6 @@ fi
 
 if [ "$CLEAR_S3" = true ]; then
     echo -e "${YELLOW}Note: S3 experiment results have been permanently deleted${NC}"
-fi
-
-if [ "$CLEAR_HCP_DATA" = true ]; then
-    echo -e "${YELLOW}Note: HCP imaging data has been permanently deleted from S3${NC}"
-    echo -e "${YELLOW}      Re-upload required before running HCP experiments${NC}"
 fi
 
 echo ""

@@ -51,11 +51,11 @@ ana_kwargs_dict_vba = {'GLOW': (glow.experiment.AnalysisGLOW, kwargs_glow),
                         'VBA': (glow.experiment.AnalysisVBA, kwargs_vba),
                         'VBA-TFCE': (glow.experiment.AnalysisVBA, kwargs_tfce)}
 
-# config_list.append(Config(label='vba_hcp',
-#                           source='hcp',
-#                           run_fnc=run_ana,
-#                           ana_kwargs_dict=ana_kwargs_dict_vba,
-#                           **(common_dict | hcp_dict)))
+config_list.append(Config(label='vba_hcp',
+                          source='hcp',
+                          run_fnc=run_ana,
+                          ana_kwargs_dict=ana_kwargs_dict_vba,
+                          **(common_dict | hcp_dict)))
 config_list.append(Config(label='vba_wgn',
                           source='wgn',
                           run_fnc=run_ana,
@@ -68,11 +68,11 @@ for label, get_stat in glow.experiment.mancova.stat_dict.items():
     kwargs = kwargs_glow | dict(get_stat=get_stat)
     ana_kwargs_dict_mancova_stat[label] = glow.experiment.AnalysisGLOW, kwargs
 
-# config_list.append(Config(label='mancova_stat_hcp',
-#                           source='hcp',
-#                           run_fnc=run_ana,
-#                           ana_kwargs_dict=ana_kwargs_dict_mancova_stat,
-#                           **(common_dict | hcp_dict)))
+config_list.append(Config(label='mancova_stat_hcp',
+                          source='hcp',
+                          run_fnc=run_ana,
+                          ana_kwargs_dict=ana_kwargs_dict_mancova_stat,
+                          **(common_dict | hcp_dict)))
 config_list.append(Config(label='mancova_stat_wgn',
                           source='wgn',
                           run_fnc=run_ana,
@@ -86,22 +86,22 @@ for _alpha_prune in [.05, .15, .5]:
     _kwargs_glow = kwargs_glow | dict(alpha_prune=_alpha_prune)
     ana_kwargs_dict_alpha_prune[f'alpha_prune={_alpha_prune}'] = (
         glow.experiment.AnalysisGLOW, _kwargs_glow)
-# config_list.append(Config(label='alpha_prune',
-#                           source='hcp',
-#                           run_fnc=run_ana,
-#                           ana_kwargs_dict=ana_kwargs_dict_alpha_prune,
-#                           **(common_dict | hcp_dict)))
+config_list.append(Config(label='alpha_prune',
+                          source='hcp',
+                          run_fnc=run_ana,
+                          ana_kwargs_dict=ana_kwargs_dict_alpha_prune,
+                          **(common_dict | hcp_dict)))
 
 # runtime experiment, how does it vary with region size?
 # reduced from 10 seeds × 6 radii (60 jobs) to 5 seeds × 4 radii (20 jobs)
-# radius_all = [3, 5]
-# config_list.append(Config(label='runtime_radius',
-#                           source='hcp',
-#                           run_fnc=run_ana,
-#                           ana_kwargs_dict=ana_kwargs_dict_vba,
-#                           iter_params={'seed': np.arange(5), 'radius': radius_all},
-#                           fixed_params={'hotel_tr': 0.1},
-#                           **(common_dict | hcp_dict)))
+radius_all = [3, 5]
+config_list.append(Config(label='runtime_radius',
+                          source='hcp',
+                          run_fnc=run_ana,
+                          ana_kwargs_dict=ana_kwargs_dict_vba,
+                          iter_params={'seed': np.arange(5), 'radius': radius_all},
+                          fixed_params={'hotel_tr': 0.1},
+                          **(common_dict | hcp_dict)))
 
 # how does it vary with b? (wgn with b=1, b=2)
 # WGN: vary b
@@ -114,19 +114,19 @@ config_list.append(Config(label='dataset_wgn_b',
                           **(common_dict | wgn_dict)))
 
 # HCP: vary features
-# config_list.append(Config(label='dataset_hcp_feats',
-#                           source='hcp',
-#                           run_fnc=run_ana,
-#                           ana_kwargs_dict=ana_kwargs_dict_vba,
-#                           iter_params={'seed': np.arange(5), 'hcp_feats': [['fa'], ['fa', 'md']]},  # reduced from 10 to 5
-#                           fixed_params={'hotel_tr': 0.1},
-#                           **(common_dict | hcp_dict)))
+config_list.append(Config(label='dataset_hcp_feats',
+                          source='hcp',
+                          run_fnc=run_ana,
+                          ana_kwargs_dict=ana_kwargs_dict_vba,
+                          iter_params={'seed': np.arange(5), 'hcp_feats': [['fa'], ['fa', 'md']]},  # reduced from 10 to 5
+                          fixed_params={'hotel_tr': 0.1},
+                          **(common_dict | hcp_dict)))
 
 # segmentation configs
-# config_list.append(Config(label='segment_hcp',
-#                           source='hcp',
-#                           run_fnc=run_segment,
-#                           **(common_dict | hcp_dict)))
+config_list.append(Config(label='segment_hcp',
+                          source='hcp',
+                          run_fnc=run_segment,
+                          **(common_dict | hcp_dict)))
 config_list.append(Config(label='segment_wgn',
                           source='wgn',
                           run_fnc=run_segment,
@@ -139,7 +139,7 @@ if __name__ == '__main__':
     if USE_CLOUD:
         import configparser
         from pathlib import Path
-        from glow.aws.aws_batch import CloudConfig, upload_hcp_data, check_hcp_data_exists
+        from glow.aws.aws_batch import CloudConfig
         
         # load AWS config
         config_file = Path.home() / '.glow_aws_config'
@@ -171,35 +171,6 @@ if __name__ == '__main__':
         print('=' * 60)
         print('Cloud execution enabled - parallel submission mode')
         print('=' * 60)
-        
-        # check if any HCP configs are in the list
-        has_hcp_configs = any('hcp' in c.source for c in config_list)
-        
-        # upload HCP data if needed
-        if has_hcp_configs:
-            print('\n[PRE-FLIGHT] Checking HCP data...')
-            hcp_path = hcp_dict.get('hcp_path', '/home/matt/data/hcp100_aug25_registered')
-            # use the first hcp config's path if available
-            for c in config_list:
-                if 'hcp' in c.source:
-                    hcp_path = c.hcp_path
-                    break
-            
-            if Path(hcp_path).exists():
-                print(f'  Local HCP data found at {hcp_path}')
-                if not check_hcp_data_exists(s3_bucket, s3_prefix, region):
-                    print('  Uploading HCP data to S3 (one-time operation)...')
-                    upload_hcp_data(s3_bucket, s3_prefix, hcp_path, region)
-                else:
-                    print('  ✓ HCP data already in S3')
-            else:
-                if check_hcp_data_exists(s3_bucket, s3_prefix, region):
-                    print(f'  ✓ HCP data already in S3 (local not found at {hcp_path})')
-                else:
-                    print(f'  ⚠ WARNING: HCP data not found locally ({hcp_path})')
-                    print(f'  ⚠ HCP data not found in S3 either')
-                    print(f'  ⚠ HCP experiments will FAIL until data is uploaded')
-                    print(f'  ⚠ Upload with: upload_hcp_data("{s3_bucket}", "{s3_prefix}", "/path/to/hcp_data")')
         
         # submit all jobs from all configs first
         all_job_info = []

@@ -306,6 +306,12 @@ class Config:
         path_config = self.folder / 'config.yaml'
         self.save_config(path=path_config)
         
+        # prepare experiment data for cloud upload (load exp_orig so it's included in pickled Config)
+        if self.exp_orig is None:
+            if verbose:
+                print('  Preparing experiment data for cloud upload...')
+            self.prep_exp_orig()
+        
         # initialize runner
         runner = AWSBatchRunner(self.cloud_config)
         
@@ -314,7 +320,7 @@ class Config:
         if verbose:
             print(f'  Run ID: {run_id}')
         
-        # upload config to S3 (workers will download this)
+        # upload config to S3 (workers will download this, including exp_orig)
         runner.upload_config(self, run_id)
         
         # submit one job per experiment

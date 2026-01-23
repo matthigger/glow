@@ -640,7 +640,7 @@ def test_hcp_cloud():
     """
     try:
         import boto3
-        from glow.aws.aws_batch import CloudConfig, upload_hcp_data, check_hcp_data_exists
+        from glow.aws.aws_batch import CloudConfig
     except ImportError:
         print('skipping HCP test: boto3 not installed')
         print('install with: pip install boto3')
@@ -672,24 +672,6 @@ def test_hcp_cloud():
     # hcp data path (default location)
     hcp_path = '/home/matt/data/hcp100_aug25_registered'
     
-    # check and upload HCP data if needed
-    print('\n[PRE-FLIGHT] Checking HCP data...')
-    if Path(hcp_path).exists():
-        print(f'  Local HCP data found at {hcp_path}')
-        if not check_hcp_data_exists(s3_bucket, s3_prefix, region):
-            print('  Uploading HCP data to S3 (one-time operation)...')
-            upload_hcp_data(s3_bucket, s3_prefix, hcp_path, region)
-        else:
-            print('  ✓ HCP data already in S3')
-    else:
-        if check_hcp_data_exists(s3_bucket, s3_prefix, region):
-            print(f'  ✓ HCP data already in S3 (local not found at {hcp_path})')
-        else:
-            print(f'  ✗ HCP data not found locally ({hcp_path})')
-            print(f'  ✗ HCP data not found in S3 either')
-            print(f'  Skipping HCP test - upload data first with:')
-            print(f'    upload_hcp_data("{s3_bucket}", "{s3_prefix}", "/path/to/hcp_data")')
-            return
     
     # minimal glow analysis config (lighter than VBA)
     ana_kwargs_dict = {

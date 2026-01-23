@@ -127,56 +127,6 @@ def run_permutation_mode(args):
         sys.exit(1)
 
 
-def download_hcp_data(s3_bucket, s3_prefix, region='us-east-1'):
-    """download HCP data from S3 to local temp directory
-    
-    Args:
-        s3_bucket: S3 bucket name
-        s3_prefix: S3 prefix (e.g., 'glow-paper-benchmarks')
-        region: AWS region
-    
-    Returns:
-        local path to downloaded HCP data
-    """
-    s3 = boto3.client('s3', region_name=region)
-    s3_hcp_prefix = f'{s3_prefix}/hcp_data'
-    local_hcp_path = Path('/tmp/hcp_data')
-    
-    # check if already downloaded
-    if local_hcp_path.exists():
-        existing_files = list(local_hcp_path.glob('*.nii.gz'))
-        if existing_files:
-            print(f'  ✓ HCP data already downloaded ({len(existing_files)} files)')
-            return str(local_hcp_path)
-    
-    local_hcp_path.mkdir(parents=True, exist_ok=True)
-    
-    # list and download files
-    print(f'  Downloading HCP data from s3://{s3_bucket}/{s3_hcp_prefix}/')
-    paginator = s3.get_paginator('list_objects_v2')
-    downloaded = 0
-    
-    for page in paginator.paginate(Bucket=s3_bucket, Prefix=s3_hcp_prefix):
-        if 'Contents' not in page:
-            continue
-        
-        for obj in page['Contents']:
-            key = obj['Key']
-            filename = key.split('/')[-1]
-            if not filename.endswith('.nii.gz'):
-                continue
-            
-            local_file = local_hcp_path / filename
-            s3.download_file(s3_bucket, key, str(local_file))
-            downloaded += 1
-    
-    if downloaded == 0:
-        raise FileNotFoundError(f'No HCP data found at s3://{s3_bucket}/{s3_hcp_prefix}/')
-    
-    print(f'  ✓ Downloaded {downloaded} HCP files')
-    return str(local_hcp_path)
-
-
 def run_experiment_mode(args):
     """run full experiment with all permutations (for many small experiments)"""
     print(f'=' * 60)
@@ -202,20 +152,6 @@ def run_experiment_mode(args):
     except ClientError as e:
         print(f'  ✗ Error: {e}')
         sys.exit(1)
-    
-    # download HCP data if needed
-    if 'hcp' in config.source:
-        print(f'\nDownloading HCP data for {config.source} experiment...')
-        try:
-            local_hcp_path = download_hcp_data(args.s3_bucket, args.s3_prefix)
-            config.hcp_path = local_hcp_path
-            config.hcp_old_path = local_hcp_path  # in case old path is used
-            print(f'  ✓ Updated hcp_path to {local_hcp_path}')
-        except FileNotFoundError as e:
-            print(f'  ✗ Error: {e}')
-            print(f'  ✗ HCP data must be uploaded to S3 before running HCP experiments')
-            print(f'  ✗ Run: python -c "from glow.aws.aws_batch import upload_hcp_data; upload_hcp_data(...)"')
-            sys.exit(1)
     
     # set up temp folder
     temp_folder = Path('/tmp/glow_output') / args.run_id / str(args.exp_idx)
