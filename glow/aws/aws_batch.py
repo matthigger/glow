@@ -432,8 +432,16 @@ class AWSBatchRunner:
                     pbar.update(done - previous_done)
                     previous_done = done
                 
+                # calculate pending (all non-terminal states)
+                pending = (statuses['SUBMITTED'] + statuses['PENDING'] + 
+                          statuses['RUNNABLE'] + statuses['STARTING'])
+                running = statuses['RUNNING']
+                completed = statuses['SUCCEEDED']
+                failed = statuses['FAILED']
+                
                 # estimate remaining time and update postfix
                 current_time = time.time()
+                eta_str = '?'
                 if done > last_done_count:
                     elapsed = current_time - last_done_time
                     rate = (done - last_done_count) / elapsed if elapsed > 0 else 0
@@ -441,14 +449,32 @@ class AWSBatchRunner:
                     if rate > 0:
                         eta_seconds = remaining / rate
                         eta_str = f'{eta_seconds/60:.1f}m' if eta_seconds > 60 else f'{eta_seconds:.0f}s'
-                    else:
-                        eta_str = '?'
-                    
-                    postfix_str = f'downloaded={len(downloaded_jobs)}, running={statuses["RUNNING"]}, eta={eta_str}'
-                    pbar.set_postfix_str(postfix_str)
                     
                     last_done_count = done
                     last_done_time = current_time
+                elif done > 0:
+                    # reuse previous ETA calculation if no new completions
+                    elapsed = current_time - last_done_time
+                    rate = done / elapsed if elapsed > 0 else 0
+                    remaining = total - done
+                    if rate > 0:
+                        eta_seconds = remaining / rate
+                        eta_str = f'{eta_seconds/60:.1f}m' if eta_seconds > 60 else f'{eta_seconds:.0f}s'
+                
+                # update postfix with state breakdown
+                postfix_parts = []
+                if pending > 0:
+                    postfix_parts.append(f'pending={pending}')
+                if running > 0:
+                    postfix_parts.append(f'running={running}')
+                if completed > 0:
+                    postfix_parts.append(f'completed={completed}')
+                if failed > 0:
+                    postfix_parts.append(f'failed={failed}')
+                postfix_parts.append(f'eta={eta_str}')
+                
+                postfix_str = ', '.join(postfix_parts)
+                pbar.set_postfix_str(postfix_str)
                 
                 # check if all done
                 if done == total:

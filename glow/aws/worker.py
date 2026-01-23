@@ -163,6 +163,11 @@ def run_experiment_mode(args):
         except ClientError as e:
             print(f'  ✗ Error loading shared experiment data: {e}')
             sys.exit(1)
+    elif config.source == 'hcp' and config.exp_orig is None:
+        # HCP should have exp_orig loaded (either from shared cache or included in config)
+        print(f'\n✗ Error: exp_orig is None for HCP source')
+        print(f'  Expected either _shared_exp_s3_key or exp_orig in config')
+        sys.exit(1)
     
     # set up temp folder
     temp_folder = Path('/tmp/glow_output') / args.run_id / str(args.exp_idx)

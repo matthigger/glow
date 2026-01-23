@@ -712,9 +712,16 @@ def test_hcp_cloud():
         error_save=False
     )
     
-    config.run_all(verbose=True)
+    # Use submit_cloud_jobs to test the actual cloud execution path (including shared cache)
+    job_info = config.submit_cloud_jobs(verbose=True)
     
-    results = list((config.folder / 'out').glob('*_result.json'))
+    # Wait for jobs and download results
+    from glow.aws.aws_batch import AWSBatchRunner
+    runner = AWSBatchRunner(cloud_config)
+    runner.monitor_jobs(job_info['job_ids'])
+    runner.download_experiment_results(job_info['run_id'], job_info['folder'])
+    
+    results = list((job_info['folder'] / 'out').glob('*_result.json'))
     print(f'✓ HCP cloud test passed ({len(results)} results)')
 
 

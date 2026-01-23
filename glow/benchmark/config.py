@@ -171,6 +171,7 @@ class Config:
         """
         # Re-prepare exp_orig if dataset parameters changed or if not yet created
         # For dataset experiments, we need to recreate exp_orig each time
+        # Note: On cloud workers, exp_orig should already be loaded from shared cache
         needs_recreate = (
             self.exp_orig is None or
             (hcp_feats is not None and hcp_feats != getattr(self, '_last_hcp_feats', None)) or
@@ -178,6 +179,13 @@ class Config:
         )
         
         if needs_recreate:
+            # On cloud workers, if exp_orig is None and we have a shared cache reference,
+            # this means the worker failed to load it - raise an error
+            if hasattr(self, '_shared_exp_s3_key') and self._shared_exp_s3_key and self.exp_orig is None:
+                raise RuntimeError(
+                    f'exp_orig is None but shared cache reference exists. '
+                    f'Worker should have loaded from: {self._shared_exp_s3_key}'
+                )
             self.prep_exp_orig(hcp_feats=hcp_feats, wgn_b=wgn_b)
             # Cache the parameters used
             if hcp_feats is not None:
