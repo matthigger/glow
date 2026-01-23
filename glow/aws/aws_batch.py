@@ -4,13 +4,14 @@ import json
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple, List, Tuple
 import warnings
 
 import boto3
 import cloudpickle as pickle
 import numpy as np
 from botocore.exceptions import ClientError
+from tqdm import tqdm
 
 
 @dataclass
@@ -276,93 +277,174 @@ class AWSBatchRunner:
             'skipped': list(completed)
         }
     
-    def monitor_jobs(self, job_ids: list, poll_interval: int = 30):
-        """monitor job progress
+    def monitor_jobs(self, job_ids: list, poll_interval: int = 30,
+                    job_info_map: Optional[Dict[str, Dict]] = None):
+        """monitor job progress and download results incrementally
         
         Args:
             job_ids: list of AWS Batch job IDs
             poll_interval: seconds between status checks
+            job_info_map: optional dict mapping job_id -> {'run_id': str, 'exp_idx': int, 'output_folder': Path}
+                         if None, will extract from job names
         """
         if not job_ids:
             print('no jobs to monitor')
             return
         
-        print(f'monitoring {len(job_ids)} jobs from this run (not all queue jobs)...')
+        print(f'monitoring {len(job_ids)} jobs...')
         
-        failed_jobs = []  # track failed jobs for detailed reporting
-        first_check = True
-        
-        while True:
-            # get job statuses
-            statuses = {'SUBMITTED': 0, 'PENDING': 0, 'RUNNABLE': 0,
-                       'STARTING': 0, 'RUNNING': 0, 'SUCCEEDED': 0,
-                       'FAILED': 0}
-            
-            jobs_found = 0
-            
-            # batch describe in chunks of 100
+        # build job_info_map from job names if not provided
+        if job_info_map is None:
+            job_info_map = {}
             for i in range(0, len(job_ids), 100):
                 chunk = job_ids[i:i+100]
                 try:
                     response = self.batch.describe_jobs(jobs=chunk)
-                    jobs_found += len(response['jobs'])
                     for job in response['jobs']:
-                        status = job['status']
-                        statuses[status] = statuses.get(status, 0) + 1
-                        
-                        # track failed jobs with details
-                        if status == 'FAILED' and job['jobId'] not in [f['jobId'] for f in failed_jobs]:
-                            failed_jobs.append({
-                                'jobId': job['jobId'],
-                                'jobName': job['jobName'],
-                                'statusReason': job.get('statusReason', 'Unknown'),
-                                'container': job.get('container', {})
-                            })
-                except ClientError as e:
-                    print(f'error checking jobs: {e}')
-                    continue
-            
-            # verify we got responses for all requested jobs
-            if first_check and jobs_found != len(job_ids):
-                print(f'\n⚠ Warning: Requested {len(job_ids)} jobs, AWS returned {jobs_found}')
-                first_check = False
-            
-            # print status (only counts jobs from this run's job_ids)
-            total = len(job_ids)
-            done = statuses['SUCCEEDED'] + statuses['FAILED']
-            print(f'\n[{time.strftime("%H:%M:%S")}] Job Status (THIS RUN ONLY):')
-            print(f'  completed: {statuses["SUCCEEDED"]}/{total}')
-            print(f'  failed: {statuses["FAILED"]} (from this run only)')
-            print(f'  running: {statuses["RUNNING"]}')
-            print(f'  pending: {statuses["PENDING"] + statuses["RUNNABLE"] + statuses["STARTING"]}')
-            print(f'  progress: {done/total*100:.1f}%')
-            
-            # check if all done
-            if done == total:
-                print(f'\nall jobs complete!')
-                print(f'  succeeded: {statuses["SUCCEEDED"]}')
-                print(f'  failed: {statuses["FAILED"]}')
+                        # extract run_id and exp_idx from job name: glow_{run_id}_exp{exp_idx:06d}
+                        job_name = job['jobName']
+                        if job_name.startswith('glow_') and '_exp' in job_name:
+                            parts = job_name.replace('glow_', '').split('_exp')
+                            if len(parts) == 2:
+                                run_id = parts[0]
+                                try:
+                                    exp_idx = int(parts[1])
+                                    job_info_map[job['jobId']] = {
+                                        'run_id': run_id,
+                                        'exp_idx': exp_idx,
+                                        'output_folder': None  # will be set by caller
+                                    }
+                                except ValueError:
+                                    pass
+                except ClientError:
+                    pass
+        
+        failed_jobs = []  # track failed jobs for detailed reporting
+        first_check = True
+        downloaded_jobs = set()  # track which jobs have been downloaded
+        start_time = time.time()
+        last_done_count = 0
+        last_done_time = start_time
+        previous_done = 0
+        
+        # create progress bar
+        pbar = tqdm(total=len(job_ids), desc='Jobs', unit='job', 
+                   bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
+        
+        try:
+            while True:
+                # get job statuses
+                statuses = {'SUBMITTED': 0, 'PENDING': 0, 'RUNNABLE': 0,
+                           'STARTING': 0, 'RUNNING': 0, 'SUCCEEDED': 0,
+                           'FAILED': 0}
                 
-                # print detailed failure reasons
-                if failed_jobs:
-                    print(f'\n{"="*60}')
-                    print('FAILURE DETAILS:')
-                    print(f'{"="*60}')
-                    for i, job in enumerate(failed_jobs, 1):
-                        print(f'\n{i}. Job: {job["jobName"]} ({job["jobId"]})')
-                        print(f'   Reason: {job["statusReason"]}')
-                        container = job.get('container', {})
-                        if 'reason' in container:
-                            print(f'   Container: {container["reason"]}')
-                        if 'exitCode' in container:
-                            print(f'   Exit Code: {container["exitCode"]}')
-                        if 'logStreamName' in container:
-                            log_stream = container["logStreamName"]
-                            print(f'   Logs: aws logs get-log-events --log-group-name /aws/batch/job --log-stream-name {log_stream} --limit 50 --output text | tail -30')
+                jobs_found = 0
+                completed_jobs = []  # jobs that just completed
                 
-                break
-            
-            time.sleep(poll_interval)
+                # batch describe in chunks of 100
+                for i in range(0, len(job_ids), 100):
+                    chunk = job_ids[i:i+100]
+                    try:
+                        response = self.batch.describe_jobs(jobs=chunk)
+                        jobs_found += len(response['jobs'])
+                        for job in response['jobs']:
+                            status = job['status']
+                            statuses[status] = statuses.get(status, 0) + 1
+                            
+                            # track newly completed jobs
+                            if status == 'SUCCEEDED' and job['jobId'] not in downloaded_jobs:
+                                completed_jobs.append(job)
+                            
+                            # track failed jobs with details
+                            if status == 'FAILED' and job['jobId'] not in [f['jobId'] for f in failed_jobs]:
+                                failed_jobs.append({
+                                    'jobId': job['jobId'],
+                                    'jobName': job['jobName'],
+                                    'statusReason': job.get('statusReason', 'Unknown'),
+                                    'container': job.get('container', {})
+                                })
+                    except ClientError as e:
+                        print(f'error checking jobs: {e}')
+                        continue
+                
+                # verify we got responses for all requested jobs
+                if first_check and jobs_found != len(job_ids):
+                    print(f'\n⚠ Warning: Requested {len(job_ids)} jobs, AWS returned {jobs_found}')
+                    first_check = False
+                
+                # download results for newly completed jobs
+                for job in completed_jobs:
+                    job_id = job['jobId']
+                    if job_id in job_info_map:
+                        info = job_info_map[job_id]
+                        if info.get('output_folder'):
+                            try:
+                                self._download_single_experiment_result(
+                                    info['run_id'], info['exp_idx'], info['output_folder']
+                                )
+                                downloaded_jobs.add(job_id)
+                            except Exception as e:
+                                print(f'\n⚠ Error downloading results for {job["jobName"]}: {e}')
+                
+                # update progress bar
+                total = len(job_ids)
+                done = statuses['SUCCEEDED'] + statuses['FAILED']
+                
+                # update progress using proper tqdm API
+                if done > previous_done:
+                    pbar.update(done - previous_done)
+                    previous_done = done
+                
+                # estimate remaining time and update postfix
+                current_time = time.time()
+                if done > last_done_count:
+                    elapsed = current_time - last_done_time
+                    rate = (done - last_done_count) / elapsed if elapsed > 0 else 0
+                    remaining = total - done
+                    if rate > 0:
+                        eta_seconds = remaining / rate
+                        eta_str = f'{eta_seconds/60:.1f}m' if eta_seconds > 60 else f'{eta_seconds:.0f}s'
+                    else:
+                        eta_str = '?'
+                    
+                    postfix_str = f'downloaded={len(downloaded_jobs)}, running={statuses["RUNNING"]}, eta={eta_str}'
+                    pbar.set_postfix_str(postfix_str)
+                    
+                    last_done_count = done
+                    last_done_time = current_time
+                
+                # check if all done
+                if done == total:
+                    pbar.close()
+                    print(f'\nall jobs complete!')
+                    print(f'  succeeded: {statuses["SUCCEEDED"]}')
+                    print(f'  failed: {statuses["FAILED"]}')
+                    print(f'  results downloaded: {len(downloaded_jobs)}/{statuses["SUCCEEDED"]}')
+                    
+                    # print detailed failure reasons
+                    if failed_jobs:
+                        print(f'\n{"="*60}')
+                        print('FAILURE DETAILS:')
+                        print(f'{"="*60}')
+                        for i, job in enumerate(failed_jobs, 1):
+                            print(f'\n{i}. Job: {job["jobName"]} ({job["jobId"]})')
+                            print(f'   Reason: {job["statusReason"]}')
+                            container = job.get('container', {})
+                            if 'reason' in container:
+                                print(f'   Container: {container["reason"]}')
+                            if 'exitCode' in container:
+                                print(f'   Exit Code: {container["exitCode"]}')
+                            if 'logStreamName' in container:
+                                log_stream = container["logStreamName"]
+                                print(f'   Logs: aws logs get-log-events --log-group-name /aws/batch/job --log-stream-name {log_stream} --limit 50 --output text | tail -30')
+                    
+                    break
+                
+                time.sleep(poll_interval)
+        except KeyboardInterrupt:
+            pbar.close()
+            print('\n\nMonitoring interrupted by user')
+            raise
     
     def get_failure_details(self, job_ids: list):
         """get detailed failure information for failed jobs
@@ -548,6 +630,66 @@ class AWSBatchRunner:
         except ClientError as e:
             raise RuntimeError(f'failed to submit job: {e}')
     
+    def _download_single_experiment_result(self, run_id: str, exp_idx: int, output_folder: Path):
+        """download results for a single experiment and delete from S3
+        
+        Args:
+            run_id: unique run identifier
+            exp_idx: experiment index
+            output_folder: local folder to save results
+        """
+        result_prefix = f'{self.config.s3_prefix}/{run_id}/results/{exp_idx:06d}/'
+        
+        # list objects for this experiment
+        try:
+            paginator = self.s3.get_paginator('list_objects_v2')
+            pages = paginator.paginate(
+                Bucket=self.config.s3_bucket,
+                Prefix=result_prefix
+            )
+            
+            s3_keys_to_delete = []
+            file_count = 0
+            
+            for page in pages:
+                if 'Contents' not in page:
+                    continue
+                
+                for obj in page['Contents']:
+                    s3_key = obj['Key']
+                    relative_path = s3_key[len(result_prefix):]
+                    local_path = output_folder / relative_path
+                    
+                    # create parent dirs
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # download file
+                    self.s3.download_file(
+                        self.config.s3_bucket,
+                        s3_key,
+                        str(local_path)
+                    )
+                    file_count += 1
+                    s3_keys_to_delete.append(s3_key)
+            
+            # delete from S3 after successful download
+            if s3_keys_to_delete:
+                # delete in batches of 1000 (S3 limit)
+                for i in range(0, len(s3_keys_to_delete), 1000):
+                    batch = s3_keys_to_delete[i:i+1000]
+                    delete_objects = [{'Key': key} for key in batch]
+                    try:
+                        self.s3.delete_objects(
+                            Bucket=self.config.s3_bucket,
+                            Delete={'Objects': delete_objects}
+                        )
+                    except ClientError as e:
+                        # log but don't fail - results are already downloaded
+                        print(f'  ⚠ Warning: Could not delete some S3 objects: {e}')
+            
+        except ClientError as e:
+            raise RuntimeError(f'failed to download results: {e}')
+    
     def download_experiment_results(self, run_id: str, output_folder: Path):
         """download all experiment results from S3 to local folder
         
@@ -568,6 +710,8 @@ class AWSBatchRunner:
             )
             
             file_count = 0
+            s3_keys_to_delete = []
+            
             for page in pages:
                 if 'Contents' not in page:
                     continue
@@ -587,6 +731,22 @@ class AWSBatchRunner:
                         str(local_path)
                     )
                     file_count += 1
+                    s3_keys_to_delete.append(s3_key)
+            
+            # delete from S3 after successful download
+            if s3_keys_to_delete:
+                # delete in batches of 1000 (S3 limit)
+                for i in range(0, len(s3_keys_to_delete), 1000):
+                    batch = s3_keys_to_delete[i:i+1000]
+                    delete_objects = [{'Key': key} for key in batch]
+                    try:
+                        self.s3.delete_objects(
+                            Bucket=self.config.s3_bucket,
+                            Delete={'Objects': delete_objects}
+                        )
+                    except ClientError as e:
+                        # log but don't fail - results are already downloaded
+                        print(f'  ⚠ Warning: Could not delete some S3 objects: {e}')
             
             print(f'  downloaded {file_count} files to {output_folder}')
         except ClientError as e:

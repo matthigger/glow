@@ -184,30 +184,84 @@ if __name__ == '__main__':
         print(f'[PHASE 2] Monitoring all jobs from {len(all_job_info)} configs')
         print('=' * 60)
         
-        # collect all job IDs
+        # collect all job IDs and build job_info_map for incremental downloads
         all_job_ids = []
+        job_info_map = {}  # maps job_id -> {'run_id': str, 'exp_idx': int, 'output_folder': Path}
+        
         for job_info in all_job_info:
-            all_job_ids.extend(job_info['job_ids'])
+            run_id = job_info['run_id']
+            output_folder = job_info['folder']
+            
+            # get exp_idx from job names (we need to query AWS to get job names)
+            # but we can build a partial map from the job submission pattern
+            # For now, we'll let monitor_jobs extract from job names
+            for job_id in job_info['job_ids']:
+                all_job_ids.append(job_id)
+                # We'll populate exp_idx when we query jobs in monitor_jobs
         
         print(f'\nTotal jobs submitted in this run: {len(all_job_ids)}')
         if all_job_ids:
             print(f'Job IDs tracked: {all_job_ids[0][:8]}... through {all_job_ids[-1][:8]}...')
-        print('Note: Monitoring ONLY jobs from this run (ignoring other queue jobs)')
         
-        # monitor all jobs together
+        # build job_info_map by querying job names and matching to run_ids
+        if all_job_ids:
+            runner = all_job_info[0]['runner']
+            
+            # create mapping from run_id to output_folder
+            run_id_to_folder = {info['run_id']: info['folder'] for info in all_job_info}
+            
+            # query jobs to get names and build map
+            for i in range(0, len(all_job_ids), 100):
+                chunk = all_job_ids[i:i+100]
+                try:
+                    response = runner.batch.describe_jobs(jobs=chunk)
+                    for job in response['jobs']:
+                        job_name = job['jobName']
+                        # extract run_id and exp_idx from job name: glow_{run_id}_exp{exp_idx:06d}
+                        if job_name.startswith('glow_') and '_exp' in job_name:
+                            parts = job_name.replace('glow_', '').split('_exp')
+                            if len(parts) == 2:
+                                run_id = parts[0]
+                                try:
+                                    exp_idx = int(parts[1])
+                                    if run_id in run_id_to_folder:
+                                        job_info_map[job['jobId']] = {
+                                            'run_id': run_id,
+                                            'exp_idx': exp_idx,
+                                            'output_folder': run_id_to_folder[run_id]
+                                        }
+                                except ValueError:
+                                    pass
+                except Exception:
+                    pass
+        
+        # monitor all jobs together and download incrementally
         if all_job_ids:
             runner = all_job_info[0]['runner']  # any runner works (same cloud_config)
-            runner.monitor_jobs(all_job_ids)
+            runner.monitor_jobs(all_job_ids, job_info_map=job_info_map)
         
-        # download results for each config
+        # download any remaining results (in case some weren't downloaded incrementally)
         print('\n' + '=' * 60)
-        print('[PHASE 3] Downloading results...')
+        print('[PHASE 3] Downloading any remaining results...')
         print('=' * 60)
         for config, job_info in zip(config_list, all_job_info):
-            print(f'\nDownloading {job_info["label"]}...')
             runner = job_info['runner']
-            runner.download_experiment_results(job_info['run_id'], job_info['folder'])
-            print(f'  ✓ {job_info["folder"]}')
+            # check if results still exist in S3
+            result_prefix = f'{runner.config.s3_prefix}/{job_info["run_id"]}/results/'
+            try:
+                paginator = runner.s3.get_paginator('list_objects_v2')
+                has_results = False
+                for page in paginator.paginate(Bucket=runner.config.s3_bucket, Prefix=result_prefix, MaxKeys=1):
+                    if 'Contents' in page and len(page['Contents']) > 0:
+                        has_results = True
+                        break
+                
+                if has_results:
+                    print(f'\nDownloading remaining results for {job_info["label"]}...')
+                    runner.download_experiment_results(job_info['run_id'], job_info['folder'])
+                    print(f'  ✓ {job_info["folder"]}')
+            except Exception as e:
+                print(f'  ⚠ Could not check/download remaining results: {e}')
         
         print('\n' + '=' * 60)
         print('✓ All benchmarks complete')
