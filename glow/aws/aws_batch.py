@@ -340,6 +340,7 @@ class AWSBatchRunner:
                 
                 jobs_found = 0
                 completed_jobs = []  # jobs that just completed
+                newly_failed_jobs = []  # jobs that just failed
                 
                 # batch describe in chunks of 100
                 for i in range(0, len(job_ids), 100):
@@ -355,24 +356,39 @@ class AWSBatchRunner:
                             if status == 'SUCCEEDED' and job['jobId'] not in downloaded_jobs:
                                 completed_jobs.append(job)
                             
-                            # track failed jobs with details
+                            # track failed jobs with details and print immediately
                             if status == 'FAILED' and job['jobId'] not in [f['jobId'] for f in failed_jobs]:
-                                failed_jobs.append({
+                                job_failure = {
                                     'jobId': job['jobId'],
                                     'jobName': job['jobName'],
                                     'statusReason': job.get('statusReason', 'Unknown'),
                                     'container': job.get('container', {})
-                                })
+                                }
+                                failed_jobs.append(job_failure)
+                                newly_failed_jobs.append(job_failure)
                     except ClientError as e:
                         print(f'error checking jobs: {e}')
                         continue
+                
+                # print failed jobs immediately
+                for job in newly_failed_jobs:
+                    print(f'\n✗ FAILED: {job["jobName"]} ({job["jobId"][:8]}...)')
+                    print(f'  Reason: {job["statusReason"]}')
+                    container = job.get('container', {})
+                    if 'reason' in container:
+                        print(f'  Container: {container["reason"]}')
+                    if 'exitCode' in container:
+                        print(f'  Exit Code: {container["exitCode"]}')
+                    if 'logStreamName' in container:
+                        log_stream = container["logStreamName"]
+                        print(f'  Logs: aws logs get-log-events --log-group-name /aws/batch/job --log-stream-name {log_stream} --limit 50 --output text | tail -30')
                 
                 # verify we got responses for all requested jobs
                 if first_check and jobs_found != len(job_ids):
                     print(f'\n⚠ Warning: Requested {len(job_ids)} jobs, AWS returned {jobs_found}')
                     first_check = False
                 
-                # download results for newly completed jobs
+                # download results for newly completed jobs and print immediately
                 for job in completed_jobs:
                     job_id = job['jobId']
                     if job_id in job_info_map:
@@ -383,6 +399,24 @@ class AWSBatchRunner:
                                     info['run_id'], info['exp_idx'], info['output_folder']
                                 )
                                 downloaded_jobs.add(job_id)
+                                
+                                # print completion message with download path
+                                output_folder = Path(info['output_folder'])
+                                # count files in the output folder to decide what to print
+                                if output_folder.exists():
+                                    files = list(output_folder.rglob('*'))
+                                    file_count = sum(1 for f in files if f.is_file())
+                                    if file_count > 1:
+                                        print(f'\n✓ Completed: {job["jobName"]} → {output_folder}')
+                                    else:
+                                        # if single file, show the file path
+                                        if file_count == 1:
+                                            file_path = next(f for f in files if f.is_file())
+                                            print(f'\n✓ Completed: {job["jobName"]} → {file_path}')
+                                        else:
+                                            print(f'\n✓ Completed: {job["jobName"]} → {output_folder}')
+                                else:
+                                    print(f'\n✓ Completed: {job["jobName"]} → {output_folder}')
                             except Exception as e:
                                 print(f'\n⚠ Error downloading results for {job["jobName"]}: {e}')
                 
