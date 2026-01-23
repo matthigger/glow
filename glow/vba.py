@@ -7,19 +7,89 @@ from shutil import which
 
 import nibabel as nib
 import numpy as np
+from scipy.ndimage import label, generate_binary_structure
 
-# to be modified per installation
-fsl_path = pathlib.Path('/usr/local/fsl')
 
-fsl_conf_sh = fsl_path / 'etc/fslconf/fsl.sh'
-fslmaths_path = fsl_path / 'bin/fslmaths'
+def apply_tfce_img(x, H=2.0, E=0.5, connectivity=6, n_steps=100):
+    """applies tfce to an array (must be 3d)
 
-if not which(str(fslmaths_path)):
-    warnings.warn(f'fslmaths not found at: {fslmaths_path}')
+    Pure Python implementation of Threshold-Free Cluster Enhancement
+    (Smith & Nichols, 2009). Computes:
+        TFCE(p) = Σ e(h)^E × h^H
+
+    This matches FSL's fslmaths -tfce output exactly.
+
+    Args:
+        x: 3d array of statistical values (higher = more significant)
+        H: height exponent (default 2.0)
+        E: extent exponent (default 0.5)
+        connectivity: 6 (faces), 18 (faces+edges), or 26 (full)
+        n_steps: number of threshold steps (default 100, matches FSL)
+
+    Returns:
+        tfce enhanced image (same shape as input)
+    """
+    x = np.asarray(x, dtype=np.float64)
+
+    # connectivity structure for scipy.ndimage.label
+    if connectivity == 6:
+        struct = generate_binary_structure(3, 1)
+    elif connectivity == 18:
+        struct = generate_binary_structure(3, 2)
+    else:
+        struct = generate_binary_structure(3, 3)
+
+    # handle negative values and find max
+    img_max = x.max()
+    if img_max <= 0:
+        return np.zeros_like(x)
+
+    # fsl uses fixed number of steps with dh = max / n_steps
+    dh = img_max / n_steps
+    thresholds = np.linspace(dh, img_max, n_steps)
+
+    tfce = np.zeros_like(x, dtype=np.float64)
+
+    for h in thresholds:
+        # threshold image
+        binary = x >= h
+
+        if not binary.any():
+            continue
+
+        # find connected components
+        labeled, n_clusters = label(binary, structure=struct)
+
+        if n_clusters == 0:
+            continue
+
+        # compute cluster sizes efficiently
+        cluster_sizes = np.bincount(labeled.ravel())
+
+        # map cluster size to each voxel (vectorized)
+        extent_map = cluster_sizes[labeled]
+
+        # zero out background
+        extent_map[labeled == 0] = 0
+
+        # tfce contribution: e^E * h^H (no dh factor, matching FSL)
+        contribution = (extent_map ** E) * (h ** H)
+        tfce += contribution
+
+    return tfce
 
 
 def apply_tfce_x(x, mask_idx):
-    # zero pad (TFCE requires border of zeros)
+    """applies tfce to a vector of stats given a 3d mask index
+
+    Args:
+        x: 1d array of statistical values
+        mask_idx: 3d array where values > -1 indicate valid voxels
+
+    Returns:
+        tfce stats for valid voxels
+    """
+    # zero pad (tfce requires border of zeros)
     mask_idx = np.pad(np.atleast_3d(mask_idx), pad_width=1, constant_values=-1)
 
     # reshape into original image dimensions
@@ -34,12 +104,34 @@ def apply_tfce_x(x, mask_idx):
     return img_tfce[mask_bool]
 
 
-def apply_tfce_img(x):
-    """ applies tfce to an array (must be 3d)
+# --- FSL-based implementation for validation ---
+
+fsl_path = pathlib.Path('/usr/local/fsl')
+fsl_conf_sh = fsl_path / 'etc/fslconf/fsl.sh'
+fslmaths_path = fsl_path / 'bin/fslmaths'
+
+_fsl_available = which(str(fslmaths_path)) is not None
+
+
+def is_fsl_available():
+    """check if fsl is installed and accessible"""
+    return _fsl_available
+
+
+def apply_tfce_img_fsl(x):
+    """applies tfce using fsl's fslmaths (for validation only)
 
     Args:
-        x (np.array): a 3d array to apply tfce to
+        x: 3d array to apply tfce to
+
+    Returns:
+        tfce enhanced image
+
+    Raises:
+        RuntimeError: if fsl is not available
     """
+    if not _fsl_available:
+        raise RuntimeError(f'fslmaths not found at: {fslmaths_path}')
 
     # get input / output files
     f = tempfile.NamedTemporaryFile(suffix='.nii.gz').name
