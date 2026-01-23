@@ -10,41 +10,28 @@ named run_aws_test.py so pytest won't auto-run it
 # TEST CONFIGURATION - Set these to control what runs
 # ═══════════════════════════════════════════════════════════════════════
 
-# Cost estimation (always runs, free)
-RUN_COST_ESTIMATION = True
-
-# S3 connectivity test (fast, free)
+# S3 connectivity test
 # - Tests: S3 upload/download
-# - Cost: $0
-# - Time: ~5 seconds
 RUN_S3_TEST = True
 
 # Permutation-level architecture test (parallel permutations)
 # - Architecture: AnalysisGLOW(cloud_config=X)
 # - Best for: 1 large experiment
-# - Cost: ~$0.01 (5 permutations)
-# - Time: ~5-10 minutes
 RUN_PERMUTATION_LEVEL_TEST = True
 
 # Experiment-level architecture test (serial permutations)
 # - Architecture: Config(cloud_config=X)
 # - Best for: many small experiments
-# - Cost: ~$0.01 (2 experiments × 5 perms)
-# - Time: ~5-10 minutes
 RUN_EXPERIMENT_LEVEL_TEST = True
 
 # TFCE analysis test (tests pure Python TFCE on cloud)
 # - Architecture: Config(cloud_config=X) with AnalysisVBA(tfce_flag=True)
 # - Tests: TFCE integration on cloud workers
-# - Cost: ~$0.01 (1 experiment × 5 perms)
-# - Time: ~5-10 minutes
 RUN_TFCE_TEST = True
 
 # HCP data test (tests loading real imaging data from S3)
 # - Architecture: Config(cloud_config=X) with source='hcp'
 # - Tests: HCP data upload to S3, download on worker, experiment execution
-# - Cost: ~$0.01 (1 experiment × 5 perms)
-# - Time: ~5-10 minutes (plus HCP upload time if first run)
 # - Requires: local HCP data or existing HCP data on S3
 RUN_HCP_TEST = True  # disabled by default (requires HCP data)
 
@@ -296,7 +283,6 @@ def test_local_vs_cloud_comparison():
         s3_prefix='test/comparison_test',
         job_queue=job_queue,
         job_definition=job_definition,
-        max_cost_per_hour=1.0,
         max_concurrent_jobs=10,
         vcpus=2,
         memory_mb=4096,
@@ -750,36 +736,6 @@ def test_hcp_cloud():
     print(f'✓ HCP cloud test passed ({len(results)} results)')
 
 
-def estimate_cost_example():
-    """example of estimating costs before running"""
-    try:
-        from glow.aws import estimate_cost
-    except ImportError:
-        print('skipping cost estimation: boto3 not installed')
-        print('install with: pip install boto3')
-        return 0.0
-    
-    # example: 100 permutations, 5 minutes each
-    cost_info = estimate_cost(
-        n_jobs=101,  # n_perm + 1
-        runtime_minutes=5,
-        vcpus=2,
-        memory_mb=4096,
-        use_spot=True
-    )
-    
-    print('\ncost estimation example:')
-    print(f'  n_jobs: 101 (100 permutations + 1 original)')
-    print(f'  duration: 5 minutes each')
-    print(f'  instance: 2 vCPU, 4 GB RAM')
-    print(f'  spot instances: yes')
-    print(f'  estimated cost: ${cost_info["total_cost"]:.2f}')
-    print(f'  cost per job: ${cost_info["cost_per_job"]:.4f}')
-    print(f'  cost per hour: ${cost_info["cost_per_hour"]:.4f}')
-    
-    return cost_info["total_cost"]
-
-
 if __name__ == '__main__':
     print('=' * 70)
     print('GLOW AWS Cloud Test Suite')
@@ -790,12 +746,6 @@ if __name__ == '__main__':
     
     results = {}
     test_num = 1
-    
-    if RUN_COST_ESTIMATION:
-        print(f'\n[{test_num}] Cost Estimation')
-        estimate_cost_example()
-        results['cost_estimation'] = True
-        test_num += 1
     
     if RUN_S3_TEST:
         print(f'\n[{test_num}] S3 Connectivity')

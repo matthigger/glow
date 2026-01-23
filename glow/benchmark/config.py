@@ -377,11 +377,6 @@ class Config:
     def _run_all_on_cloud(self, verbose=True):
         """submit all experiments to AWS Batch (one job per experiment)
         
-        Each job runs a full experiment with all permutations serially on AWS.
-        This amortizes container overhead across 100+ permutations, resulting in:
-        - ~34x cost reduction vs permutation-level parallelization
-        - ~48x speedup (avoids queue wait per permutation)
-        
         Args:
             verbose: print progress and monitor jobs
         """

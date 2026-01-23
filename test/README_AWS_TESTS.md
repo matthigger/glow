@@ -1,6 +1,6 @@
 # AWS Test Scripts
 
-These scripts are **not** run by pytest automatically (they require AWS credentials and cost money).
+These scripts are **not** run by pytest automatically (they require AWS credentials).
 
 ## Scripts
 
@@ -11,8 +11,8 @@ python run_aws_test.py
 ```
 
 Configure what runs by editing the flags at the top:
-- `RUN_S3_TEST = True` - Test S3 upload only (free, fast)
-- `RUN_FULL_TEST = True` - Full cloud execution with local comparison for validation + timing analysis (costs ~$0.05-0.15)
+- `RUN_S3_TEST = True` - Test S3 upload only (fast)
+- `RUN_FULL_TEST = True` - Full cloud execution with local comparison for validation + timing analysis
 
 ### `run_aws_diagnose.py`
 Diagnose recent AWS Batch job failures:
@@ -31,7 +31,6 @@ View CloudWatch logs from a failed job:
 
 These files are named `run_*.py` instead of `test_*.py` to prevent pytest from discovering and running them automatically. AWS tests:
 - Require manual setup (credentials, infrastructure)
-- Cost money to run
 - Take several minutes
 - Should be opt-in, not automatic
 

@@ -15,6 +15,9 @@ MAX_VCPUS=2048              # max vCPUs for compute environment
 VCPUS_PER_JOB=1             # vCPUs per job (1 = max concurrency)
 MEMORY_PER_JOB=4096         # memory (MB) per job
 
+# budget alert configuration
+BUDGET_LIMIT_USD=${GLOW_BUDGET_LIMIT:-50}  # monthly budget limit in USD (default: $50)
+
 # ═══════════════════════════════════════════════════════════════
 
 # colors for output
@@ -35,6 +38,7 @@ echo "  Max vCPUs: $MAX_VCPUS"
 echo "  vCPUs per job: $VCPUS_PER_JOB"
 echo "  Memory per job: ${MEMORY_PER_JOB} MB"
 echo "  Max concurrent jobs: $((MAX_VCPUS / VCPUS_PER_JOB))"
+echo "  Budget limit: \$${BUDGET_LIMIT_USD}/month"
 echo ""
 
 # get AWS account ID
@@ -266,7 +270,7 @@ echo ""
 # ============================================================================
 # STEP 7: Save Configuration
 # ============================================================================
-echo -e "${BLUE}[7/7] Saving configuration...${NC}"
+echo -e "${BLUE}[7/8] Saving configuration...${NC}"
 CONFIG_FILE=".glow_aws_config"
 cat > $CONFIG_FILE << CONFIGEOF
 # GLOW AWS Configuration
@@ -283,6 +287,89 @@ vcpus_per_job = ${VCPUS_PER_JOB}
 max_concurrent_jobs = $((MAX_VCPUS / VCPUS_PER_JOB))
 CONFIGEOF
 echo -e "${GREEN}✓ Configuration saved to ${CONFIG_FILE}${NC}"
+echo ""
+
+# ============================================================================
+# STEP 8: Set Up Budget Alert (Optional)
+# ============================================================================
+echo -e "${BLUE}[8/8] Setting up budget alert...${NC}"
+
+BUDGET_NAME="GLOW-Monthly"
+BUDGET_TMP=$(mktemp)
+NOTIFICATIONS_TMP=$(mktemp)
+
+# create budget JSON file
+cat > "$BUDGET_TMP" <<EOF
+{
+    "BudgetName": "${BUDGET_NAME}",
+    "BudgetLimit": {
+        "Amount": "${BUDGET_LIMIT_USD}",
+        "Unit": "USD"
+    },
+    "TimeUnit": "MONTHLY",
+    "BudgetType": "COST"
+}
+EOF
+
+# create notifications JSON file
+cat > "$NOTIFICATIONS_TMP" <<EOF
+[
+    {
+        "Notification": {
+            "NotificationType": "ACTUAL",
+            "ComparisonOperator": "GREATER_THAN",
+            "Threshold": 80,
+            "ThresholdType": "PERCENTAGE"
+        },
+        "Subscribers": [
+            {
+                "SubscriptionType": "EMAIL",
+                "Address": "user@example.com"
+            }
+        ]
+    },
+    {
+        "Notification": {
+            "NotificationType": "ACTUAL",
+            "ComparisonOperator": "GREATER_THAN",
+            "Threshold": 100,
+            "ThresholdType": "PERCENTAGE"
+        },
+        "Subscribers": [
+            {
+                "SubscriptionType": "EMAIL",
+                "Address": "user@example.com"
+            }
+        ]
+    }
+]
+EOF
+
+# check if budgets service is available and budget doesn't exist
+if aws budgets describe-budgets --account-id $ACCOUNT_ID --region $REGION &>/dev/null 2>&1; then
+    if aws budgets describe-budgets --account-id $ACCOUNT_ID --region $REGION \
+        --query "Budgets[?BudgetName=='${BUDGET_NAME}']" --output text 2>/dev/null | grep -q "$BUDGET_NAME"; then
+        echo -e "${YELLOW}  Budget '${BUDGET_NAME}' already exists, skipping creation${NC}"
+    else
+        # create budget
+        if aws budgets create-budget \
+            --account-id $ACCOUNT_ID \
+            --budget file://"$BUDGET_TMP" \
+            --notifications-with-subscribers file://"$NOTIFICATIONS_TMP" 2>/dev/null; then
+            echo -e "${GREEN}✓ Budget alert created: \$${BUDGET_LIMIT_USD}/month${NC}"
+            echo -e "${YELLOW}  Note: Update email address in AWS Budgets console${NC}"
+        else
+            echo -e "${YELLOW}  ⚠ Could not create budget (may require additional permissions)${NC}"
+            echo -e "${YELLOW}  You can create it manually in AWS Budgets console${NC}"
+        fi
+    fi
+else
+    echo -e "${YELLOW}  ⚠ Budgets service not available or insufficient permissions${NC}"
+    echo -e "${YELLOW}  You can set up budget alerts manually in AWS Budgets console${NC}"
+fi
+
+# cleanup temp files
+rm -f "$BUDGET_TMP" "$NOTIFICATIONS_TMP"
 echo ""
 
 # ============================================================================
