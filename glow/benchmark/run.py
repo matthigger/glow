@@ -63,7 +63,7 @@ def run_ana(config, **kwargs):
             # catch errors and dump to json if any occur (allows us to
             # continue with experiment in event of errors)
             try:
-                ana = Ana(exp=exp, alpha_fwer=config.alpha_fwer, **kwargs)
+                ana = Ana(exp=exp, **kwargs)
             except Exception as e:
                 d = {'error_msg': traceback.format_exc(),
                      'label': label,

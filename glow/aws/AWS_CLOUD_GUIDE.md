@@ -278,7 +278,7 @@ aws logs tail /aws/batch/job --follow
 Common causes:
 - Out of memory → increase `memory_mb`
 - Timeout → increase `timeout_minutes`
-- Missing dependencies → rebuild Docker image
+- Missing dependencies → rebuild and deploy Docker image (`./glow/aws/deploy_docker.sh`)
 
 ### "Cost estimate too high"
 
@@ -382,7 +382,7 @@ Match resources to data size:
 ## Next Steps
 
 1. Set up AWS resources (see `AWS_SETUP.md`)
-2. Build Docker image (see `Dockerfile`)
+2. Build Docker image (see `glow/aws/Dockerfile`)
 3. Run test analysis
 4. Scale to production workloads
 

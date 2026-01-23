@@ -29,6 +29,7 @@ class CloudConfig:
         timeout_minutes: timeout per job in minutes
         memory_mb: memory allocation per job in MB
         vcpus: number of vCPUs per job
+        retry_attempts: number of retry attempts for failed jobs (1 = no retries)
     """
     s3_bucket: str
     s3_prefix: str
@@ -41,6 +42,7 @@ class CloudConfig:
     timeout_minutes: int = 60
     memory_mb: int = 4096
     vcpus: int = 2
+    retry_attempts: int = 3
     
     def to_dict(self):
         return asdict(self)
@@ -91,6 +93,96 @@ def estimate_cost(n_jobs: int,
         'vcpus': vcpus,
         'memory_gb': memory_gb
     }
+
+
+def upload_hcp_data(s3_bucket: str, s3_prefix: str, hcp_path: str, 
+                    region: str = 'us-east-1') -> str:
+    """upload HCP imaging data to S3 for cloud experiments
+    
+    Args:
+        s3_bucket: S3 bucket name
+        s3_prefix: S3 prefix (e.g., 'glow-paper-benchmarks')
+        hcp_path: local path to HCP data directory
+        region: AWS region
+    
+    Returns:
+        S3 URI where data was uploaded (s3://bucket/prefix/hcp_data/)
+    """
+    import os
+    from pathlib import Path
+    from tqdm import tqdm
+    
+    s3 = boto3.client('s3', region_name=region)
+    hcp_path = Path(hcp_path)
+    s3_hcp_prefix = f'{s3_prefix}/hcp_data'
+    
+    if not hcp_path.exists():
+        raise FileNotFoundError(f'HCP data not found at {hcp_path}')
+    
+    # list all NIfTI files
+    nii_files = list(hcp_path.glob('*.nii.gz'))
+    if not nii_files:
+        raise FileNotFoundError(f'No .nii.gz files found in {hcp_path}')
+    
+    print(f'Uploading {len(nii_files)} HCP files to s3://{s3_bucket}/{s3_hcp_prefix}/')
+    
+    # check if already uploaded (quick check for first file)
+    first_key = f'{s3_hcp_prefix}/{nii_files[0].name}'
+    try:
+        s3.head_object(Bucket=s3_bucket, Key=first_key)
+        # check file count matches
+        paginator = s3.get_paginator('list_objects_v2')
+        existing_count = 0
+        for page in paginator.paginate(Bucket=s3_bucket, Prefix=s3_hcp_prefix):
+            if 'Contents' in page:
+                existing_count += len(page['Contents'])
+        
+        if existing_count == len(nii_files):
+            print(f'  ✓ HCP data already uploaded ({existing_count} files)')
+            return f's3://{s3_bucket}/{s3_hcp_prefix}'
+        else:
+            print(f'  Partial upload detected ({existing_count}/{len(nii_files)}), re-uploading...')
+    except ClientError:
+        pass  # not uploaded yet
+    
+    # upload files
+    uploaded = 0
+    for nii_file in tqdm(nii_files, desc='  Uploading'):
+        s3_key = f'{s3_hcp_prefix}/{nii_file.name}'
+        try:
+            s3.upload_file(str(nii_file), s3_bucket, s3_key)
+            uploaded += 1
+        except ClientError as e:
+            print(f'\n  ✗ Error uploading {nii_file.name}: {e}')
+            raise
+    
+    print(f'  ✓ Uploaded {uploaded} files')
+    return f's3://{s3_bucket}/{s3_hcp_prefix}'
+
+
+def check_hcp_data_exists(s3_bucket: str, s3_prefix: str, 
+                          region: str = 'us-east-1') -> bool:
+    """check if HCP data exists in S3
+    
+    Args:
+        s3_bucket: S3 bucket name
+        s3_prefix: S3 prefix (e.g., 'glow-paper-benchmarks')
+        region: AWS region
+    
+    Returns:
+        True if HCP data exists in S3
+    """
+    s3 = boto3.client('s3', region_name=region)
+    s3_hcp_prefix = f'{s3_prefix}/hcp_data'
+    
+    try:
+        paginator = s3.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=s3_bucket, Prefix=s3_hcp_prefix, MaxKeys=1):
+            if 'Contents' in page and len(page['Contents']) > 0:
+                return True
+        return False
+    except ClientError:
+        return False
 
 
 class AWSBatchRunner:
@@ -214,51 +306,21 @@ class AWSBatchRunner:
             print('all permutations already completed')
             return {'n_jobs': 0, 'job_ids': [], 'skipped': list(completed)}
         
-        # estimate costs
-        cost_est = estimate_cost(
-            n_jobs=n_jobs,
-            runtime_minutes=self.config.timeout_minutes,
-            memory_mb=self.config.memory_mb,
-            vcpus=self.config.vcpus,
-            use_spot=self.config.use_spot
-        )
-        
         print(f'\n{"="*60}')
         print('AWS BATCH JOB SUBMISSION')
         print(f'{"="*60}')
         print(f'experiment: {experiment_id}')
         print(f'jobs to submit: {n_jobs}')
         print(f'skipped (completed): {len(completed)}')
-        print(f'\nCOST ESTIMATE:')
-        print(f'  per job: ${cost_est["cost_per_job"]:.4f}')
-        print(f'  total: ${cost_est["total_cost"]:.2f}')
-        print(f'  compute hours: {cost_est["total_runtime_hours"]:.1f}')
-        print(f'  using spot instances: {self.config.use_spot}')
-        print(f'\nRESOURCES PER JOB:')
-        print(f'  vCPUs: {self.config.vcpus}')
-        print(f'  memory: {self.config.memory_mb} MB')
-        print(f'  timeout: {self.config.timeout_minutes} min')
+        print(f'timeout: {self.config.timeout_minutes} min per job')
         print(f'{"="*60}\n')
-        
-        # check cost limits
-        if cost_est['total_cost'] > self.config.max_cost_per_hour:
-            warnings.warn(
-                f'estimated cost ${cost_est["total_cost"]:.2f} exceeds '
-                f'max ${self.config.max_cost_per_hour:.2f}. '
-                f'set dry_run=False to proceed anyway.'
-            )
-            if not dry_run:
-                response = input('proceed anyway? (yes/no): ')
-                if response.lower() != 'yes':
-                    return {'cancelled': True, 'cost_estimate': cost_est}
         
         if dry_run:
             print('DRY RUN - not submitting jobs')
             return {
                 'dry_run': True,
                 'n_jobs': n_jobs,
-                'perm_indices': perm_indices,
-                'cost_estimate': cost_est
+                'perm_indices': perm_indices
             }
         
         # submit jobs
@@ -269,21 +331,26 @@ class AWSBatchRunner:
             job_name = f'{experiment_id}_perm_{perm_idx}'
             
             try:
+                # build container overrides
+                # note: vcpus/memory are NOT included for EC2 job definitions
+                # they are set in the job definition itself
+                # for fargate, use resourceRequirements instead
+                overrides = {
+                    'command': [
+                        '--data-path', data_path,
+                        '--perm-idx', str(perm_idx),
+                        '--s3-bucket', self.config.s3_bucket,
+                        '--s3-prefix', self.config.s3_prefix,
+                        '--experiment-id', experiment_id
+                    ]
+                }
+                
                 response = self.batch.submit_job(
                     jobName=job_name,
                     jobQueue=self.config.job_queue,
                     jobDefinition=self.config.job_definition,
-                    containerOverrides={
-                        'vcpus': self.config.vcpus,
-                        'memory': self.config.memory_mb,
-                        'command': [
-                            '--data-path', data_path,
-                            '--perm-idx', str(perm_idx),
-                            '--s3-bucket', self.config.s3_bucket,
-                            '--s3-prefix', self.config.s3_prefix,
-                            '--experiment-id', experiment_id
-                        ]
-                    },
+                    containerOverrides=overrides,
+                    retryStrategy={'attempts': self.config.retry_attempts},
                     timeout={'attemptDurationSeconds': self.config.timeout_minutes * 60}
                 )
                 job_ids.append(response['jobId'])
@@ -296,7 +363,6 @@ class AWSBatchRunner:
             'n_jobs': n_jobs,
             'job_ids': job_ids,
             'perm_indices': perm_indices,
-            'cost_estimate': cost_est,
             'skipped': list(completed)
         }
     
@@ -311,9 +377,10 @@ class AWSBatchRunner:
             print('no jobs to monitor')
             return
         
-        print(f'monitoring {len(job_ids)} jobs...')
+        print(f'monitoring {len(job_ids)} jobs from this run (not all queue jobs)...')
         
         failed_jobs = []  # track failed jobs for detailed reporting
+        first_check = True
         
         while True:
             # get job statuses
@@ -321,11 +388,14 @@ class AWSBatchRunner:
                        'STARTING': 0, 'RUNNING': 0, 'SUCCEEDED': 0,
                        'FAILED': 0}
             
+            jobs_found = 0
+            
             # batch describe in chunks of 100
             for i in range(0, len(job_ids), 100):
                 chunk = job_ids[i:i+100]
                 try:
                     response = self.batch.describe_jobs(jobs=chunk)
+                    jobs_found += len(response['jobs'])
                     for job in response['jobs']:
                         status = job['status']
                         statuses[status] = statuses.get(status, 0) + 1
@@ -342,14 +412,19 @@ class AWSBatchRunner:
                     print(f'error checking jobs: {e}')
                     continue
             
-            # print status
+            # verify we got responses for all requested jobs
+            if first_check and jobs_found != len(job_ids):
+                print(f'\n⚠ Warning: Requested {len(job_ids)} jobs, AWS returned {jobs_found}')
+                first_check = False
+            
+            # print status (only counts jobs from this run's job_ids)
             total = len(job_ids)
             done = statuses['SUCCEEDED'] + statuses['FAILED']
-            print(f'\n[{time.strftime("%H:%M:%S")}] Job Status:')
+            print(f'\n[{time.strftime("%H:%M:%S")}] Job Status (THIS RUN ONLY):')
             print(f'  completed: {statuses["SUCCEEDED"]}/{total}')
-            print(f'  failed: {statuses["FAILED"]}')
+            print(f'  failed: {statuses["FAILED"]} (from this run only)')
             print(f'  running: {statuses["RUNNING"]}')
-            print(f'  pending: {statuses["PENDING"] + statuses["RUNNABLE"]}')
+            print(f'  pending: {statuses["PENDING"] + statuses["RUNNABLE"] + statuses["STARTING"]}')
             print(f'  progress: {done/total*100:.1f}%')
             
             # check if all done
@@ -489,3 +564,120 @@ class AWSBatchRunner:
             print(f'warning: missing results for permutations: {sorted(missing)}')
         
         return results
+    
+    # experiment-level execution methods (new architecture)
+    
+    def upload_config(self, config, run_id: str):
+        """upload config object to S3 for experiment-level execution
+        
+        Args:
+            config: Config object to upload
+            run_id: unique run identifier
+        """
+        config_key = f'{self.config.s3_prefix}/{run_id}/config.pkl'
+        config_bytes = pickle.dumps(config)
+        
+        try:
+            self.s3.put_object(
+                Bucket=self.config.s3_bucket,
+                Key=config_key,
+                Body=config_bytes
+            )
+            print(f'  uploaded config to s3://{self.config.s3_bucket}/{config_key}')
+        except ClientError as e:
+            raise RuntimeError(f'failed to upload config: {e}')
+    
+    def submit_experiment_job(self, run_id: str, exp_idx: int, kwargs: Dict[str, Any]) -> str:
+        """submit a single experiment job to AWS Batch
+        
+        Each job runs a full experiment with all permutations serially.
+        This amortizes container overhead across all permutations.
+        
+        Args:
+            run_id: unique run identifier
+            exp_idx: experiment index
+            kwargs: experiment kwargs dict (seed, hotel_tr, etc.)
+        
+        Returns:
+            job_id: AWS Batch job ID
+        """
+        # upload kwargs
+        kwargs_key = f'{self.config.s3_prefix}/{run_id}/kwargs/{exp_idx:06d}.pkl'
+        kwargs_bytes = pickle.dumps(kwargs)
+        
+        try:
+            self.s3.put_object(
+                Bucket=self.config.s3_bucket,
+                Key=kwargs_key,
+                Body=kwargs_bytes
+            )
+        except ClientError as e:
+            raise RuntimeError(f'failed to upload kwargs: {e}')
+        
+        # submit job
+        job_name = f'glow_{run_id}_exp{exp_idx:06d}'
+        
+        try:
+            response = self.batch.submit_job(
+                jobName=job_name,
+                jobQueue=self.config.job_queue,
+                jobDefinition=self.config.job_definition,
+                timeout={'attemptDurationSeconds': self.config.timeout_minutes * 60},
+                retryStrategy={'attempts': self.config.retry_attempts},
+                containerOverrides={
+                    'command': [
+                        '--s3-bucket', self.config.s3_bucket,
+                        '--s3-prefix', self.config.s3_prefix,
+                        '--run-id', run_id,
+                        '--exp-idx', str(exp_idx)
+                    ]
+                }
+            )
+            
+            return response['jobId']
+        except ClientError as e:
+            raise RuntimeError(f'failed to submit job: {e}')
+    
+    def download_experiment_results(self, run_id: str, output_folder: Path):
+        """download all experiment results from S3 to local folder
+        
+        Args:
+            run_id: unique run identifier
+            output_folder: local folder to save results
+        """
+        result_prefix = f'{self.config.s3_prefix}/{run_id}/results/'
+        
+        print(f'downloading results from s3://{self.config.s3_bucket}/{result_prefix}')
+        
+        # list all objects
+        try:
+            paginator = self.s3.get_paginator('list_objects_v2')
+            pages = paginator.paginate(
+                Bucket=self.config.s3_bucket,
+                Prefix=result_prefix
+            )
+            
+            file_count = 0
+            for page in pages:
+                if 'Contents' not in page:
+                    continue
+                
+                for obj in page['Contents']:
+                    s3_key = obj['Key']
+                    relative_path = s3_key[len(result_prefix):]
+                    local_path = output_folder / relative_path
+                    
+                    # create parent dirs
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # download file
+                    self.s3.download_file(
+                        self.config.s3_bucket,
+                        s3_key,
+                        str(local_path)
+                    )
+                    file_count += 1
+            
+            print(f'  downloaded {file_count} files to {output_folder}')
+        except ClientError as e:
+            raise RuntimeError(f'failed to download results: {e}')

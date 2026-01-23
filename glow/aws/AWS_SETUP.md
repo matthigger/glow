@@ -41,58 +41,62 @@ aws configure
 # Default output format: json
 ```
 
-#### 4. Create ECR Repository and Build/Push Docker Image
+#### 4. Create ECR Repository
 ```bash
 # Create ECR repository
 aws ecr create-repository --repository-name glow-worker --region us-east-1
-
-# Get your account ID
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-
-# Login to ECR
-aws ecr get-login-password --region us-east-1 | \
-    docker login --username AWS --password-stdin \
-    ${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com
-
-# Build Docker image
-cd /path/to/glow/src
-docker build -t glow-worker .
-
-# Tag image
-docker tag glow-worker:latest \
-    ${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/glow-worker:latest
-
-# Push to ECR
-docker push ${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/glow-worker:latest
 ```
 
 ---
 
-### Automated Setup (Run This Script)
+### Automated Setup (Run These Scripts)
 
-After completing the manual prerequisites above, run the automated setup script:
+After completing the manual prerequisites above, run these two scripts:
+
+#### Step 1: Build and Deploy Docker Image
 
 ```bash
-# Make script executable
-chmod +x setup_aws_batch.sh
-
-# Run setup
-./setup_aws_batch.sh
-
-# Optional: specify custom S3 bucket name
-GLOW_S3_BUCKET=my-custom-bucket ./setup_aws_batch.sh
+cd /path/to/glow/src
+./glow/aws/deploy_docker.sh
 ```
 
-**What the script does:**
-- ✓ Creates S3 bucket
-- ✓ Creates all IAM roles (5 roles)
+**What it does:**
+- ✓ Builds Docker image (with validation)
+- ✓ Verifies boto3 and worker module are installed
+- ✓ Pushes to ECR
+- ✓ Validates ECR image matches local build
+
+**Time:** ~3-5 minutes (depending on build cache)
+
+#### Step 2: Setup AWS Infrastructure
+
+```bash
+# Run with defaults (1024 max concurrent jobs)
+./glow/aws/setup_aws_batch.sh
+
+# Or customize concurrency (edit glow/aws/setup_aws_batch.sh first):
+# MAX_VCPUS=2048      # Max vCPUs for compute environment
+# VCPUS_PER_JOB=1     # vCPUs per job
+# MEMORY_PER_JOB=4096 # MB per job
+```
+
+**What it does:**
+- ✓ Creates S3 bucket (idempotent)
+- ✓ Creates all IAM roles (5 roles, idempotent)
 - ✓ Gets VPC/subnet/security group info
-- ✓ Creates Batch compute environment
+- ✓ Creates Batch compute environment (configurable concurrency)
 - ✓ Creates job queue
 - ✓ Registers job definition
-- ✓ Outputs configuration for Python
+- ✓ Saves configuration to `.glow_aws_config`
+
+**Configuration (default):**
+- Max vCPUs: 1024
+- vCPUs per job: 1  
+- Max concurrent jobs: 1024
 
 **Time:** ~2-3 minutes
+
+**Note:** The script is **fully idempotent** - you can run it multiple times safely. If you change `MAX_VCPUS` or `VCPUS_PER_JOB` at the top of `glow/aws/setup_aws_batch.sh` and rerun, it will update your configuration
 
 ---
 
@@ -150,7 +154,7 @@ aws ecr get-login-password --region us-east-1 | \
 
 # Build image
 cd /home/matt/Dropbox/glow/src
-docker build -t glow-worker .
+docker build -f glow/aws/Dockerfile -t glow-worker .
 
 # Tag image
 docker tag glow-worker:latest \
@@ -564,20 +568,64 @@ aws s3 rm s3://my-glow-experiments --recursive
 aws s3 rb s3://my-glow-experiments
 ```
 
+---
+
+## Utility Scripts
+
+### Clear Job Queue
+
+Cancel all active jobs in the queue (useful for cleanup or stopping runs):
+
+```bash
+# Interactive mode (asks for confirmation)
+./glow/aws/clear_queue.sh
+
+# Force mode (no confirmation)
+./glow/aws/clear_queue.sh --force
+
+# Custom queue/region
+./glow/aws/clear_queue.sh --queue my-queue --region us-west-2
+
+# Help
+./glow/aws/clear_queue.sh --help
+```
+
+**What it does:**
+- Lists all active jobs (SUBMITTED, PENDING, RUNNABLE, STARTING, RUNNING)
+- Shows job counts and sample job names
+- Asks for confirmation (unless `--force` is used)
+- Cancels all jobs with reason "Queue cleanup via clear_queue.sh"
+- Reports success/failure counts
+
+**Note:** 
+- Failed jobs remain in history for 7 days (AWS auto-purges them)
+- Jobs may take a few seconds to fully terminate
+- This will cancel ALL jobs, including any running experiments!
+
+### Other Available Scripts
+
+All scripts are located in `glow/aws/`:
+
+- `setup_aws_batch.sh` - Set up AWS Batch infrastructure (idempotent)
+- `deploy_docker.sh` - Build, push, and validate Docker image
+- `clear_queue.sh` - Cancel all active jobs in the queue
+
+---
+
 ## Troubleshooting
 
 ### Docker Build Issues
 
 #### "FileNotFoundError: Readme path `/app/README.md` does not exist"
 
-The Dockerfile needs to copy README.md. Verify line 15 of Dockerfile:
+The Dockerfile needs to copy README.md. Verify line 13 of `glow/aws/Dockerfile`:
 ```dockerfile
-COPY README.md /app/
+COPY pyproject.toml poetry.lock README.md ./
 ```
 
 #### "Package 'glow' requires a different Python: 3.10.x not in '>=3.12'"
 
-Update Dockerfile line 2 to use Python 3.12:
+Update `glow/aws/Dockerfile` line 1 to use Python 3.12:
 ```dockerfile
 FROM python:3.12-slim
 ```
