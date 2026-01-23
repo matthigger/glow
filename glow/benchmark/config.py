@@ -3,6 +3,7 @@ from datetime import datetime
 from itertools import product
 from pathlib import Path
 from typing import Literal, Optional, Tuple, List
+import hashlib
 import json
 
 import numpy as np
@@ -10,6 +11,8 @@ import yaml
 from joblib import Parallel, delayed
 from platformdirs import user_data_dir
 from tqdm import tqdm
+from botocore.exceptions import ClientError
+import cloudpickle as pickle
 
 import glow
 
@@ -93,6 +96,39 @@ class Config:
     def __post_init__(self):
         self.exp_orig = None
         self.folder = None
+        self._shared_exp_s3_key = None  # S3 key for shared experiment data
+
+    def _get_exp_orig_signature(self):
+        """Generate signature for exp_orig based on source and parameters
+        
+        Returns:
+            str: hex digest signature, or None if source not supported
+        """
+        if self.source == 'hcp':
+            sig_data = {
+                'source': self.source,
+                'path': self.hcp_path if self.source == 'hcp' else self.hcp_old_path,
+                'feats': sorted(self.hcp_feats),  # sorted for consistency
+                'seed': self.exp_seed,
+                'sbj_regex': self.hcp_sbj_regex,
+                'a': 2,  # from sample_x call in prep_exp_orig
+                'add_bias': True
+            }
+        elif self.source == 'wgn':
+            sig_data = {
+                'source': self.source,
+                'shape': tuple(self.wgn_shape),
+                'a': self.wgn_a,
+                'b': self.wgn_b,
+                'num_img': self.wgn_num_img,
+                'seed': self.exp_seed
+            }
+        else:
+            return None
+        
+        # Create hash from sorted JSON
+        sig_str = json.dumps(sig_data, sort_keys=True)
+        return hashlib.sha256(sig_str.encode()).hexdigest()[:16]
 
     def prep_exp_orig(self, hcp_feats=None, wgn_b=None):
         """Prepare the original experiment.
@@ -306,7 +342,7 @@ class Config:
         path_config = self.folder / 'config.yaml'
         self.save_config(path=path_config)
         
-        # prepare experiment data for cloud upload (load exp_orig so it's included in pickled Config)
+        # prepare experiment data for cloud upload
         if self.exp_orig is None:
             if verbose:
                 print('  Preparing experiment data for cloud upload...')
@@ -315,12 +351,52 @@ class Config:
         # initialize runner
         runner = AWSBatchRunner(self.cloud_config)
         
+        # Check if this source should use shared exp_orig cache
+        if (hasattr(self.cloud_config, 'shared_exp_sources') and
+            self.source in self.cloud_config.shared_exp_sources and
+            self.exp_orig is not None):
+            
+            if verbose:
+                print('  Checking for shared experiment data on S3...')
+            
+            # Generate signature
+            exp_sig = self._get_exp_orig_signature()
+            if exp_sig:
+                shared_data_key = f'{self.cloud_config.s3_prefix}/shared_exp_data/{exp_sig}.pkl'
+                
+                try:
+                    # Check if exists
+                    runner.s3.head_object(
+                        Bucket=self.cloud_config.s3_bucket,
+                        Key=shared_data_key
+                    )
+                    if verbose:
+                        print(f'  ✓ Found shared experiment data: {exp_sig[:8]}...')
+                    # Store reference instead of data
+                    self._shared_exp_s3_key = shared_data_key
+                    self.exp_orig = None  # Don't include in pickled config
+                except ClientError:
+                    # Doesn't exist, upload it
+                    if verbose:
+                        print(f'  Uploading shared experiment data: {exp_sig[:8]}...')
+                    exp_bytes = pickle.dumps(self.exp_orig)
+                    runner.s3.put_object(
+                        Bucket=self.cloud_config.s3_bucket,
+                        Key=shared_data_key,
+                        Body=exp_bytes
+                    )
+                    if verbose:
+                        print(f'  ✓ Uploaded ({len(exp_bytes) / 1024**2:.1f} MB)')
+                    # Store reference
+                    self._shared_exp_s3_key = shared_data_key
+                    self.exp_orig = None  # Don't include in pickled config
+        
         # generate unique run ID
         run_id = f'{self.label}_{uuid.uuid4().hex[:8]}'
         if verbose:
             print(f'  Run ID: {run_id}')
         
-        # upload config to S3 (workers will download this, including exp_orig)
+        # upload config to S3 (workers will download this, exp_orig may be None if using shared cache)
         runner.upload_config(self, run_id)
         
         # submit one job per experiment

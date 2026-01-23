@@ -153,6 +153,17 @@ def run_experiment_mode(args):
         print(f'  ✗ Error: {e}')
         sys.exit(1)
     
+    # Download shared experiment data if referenced
+    if hasattr(config, '_shared_exp_s3_key') and config._shared_exp_s3_key:
+        print(f'\nDownloading shared experiment data from s3://{args.s3_bucket}/{config._shared_exp_s3_key}')
+        try:
+            response = s3.get_object(Bucket=args.s3_bucket, Key=config._shared_exp_s3_key)
+            config.exp_orig = pickle.loads(response['Body'].read())
+            print(f'  ✓ Loaded shared experiment data')
+        except ClientError as e:
+            print(f'  ✗ Error loading shared experiment data: {e}')
+            sys.exit(1)
+    
     # set up temp folder
     temp_folder = Path('/tmp/glow_output') / args.run_id / str(args.exp_idx)
     temp_folder.mkdir(parents=True, exist_ok=True)

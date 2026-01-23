@@ -2,9 +2,9 @@
 
 import json
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple
 import warnings
 
 import boto3
@@ -31,6 +31,8 @@ class CloudConfig:
         memory_mb: memory allocation per job in MB
         vcpus: number of vCPUs per job
         retry_attempts: number of retry attempts for failed jobs (1 = no retries)
+        shared_exp_sources: list of source types that should use shared exp_orig cache
+                          (e.g., ['hcp']). WGN excluded since it's cheaper to generate on cloud.
     """
     s3_bucket: str
     s3_prefix: str
@@ -44,6 +46,7 @@ class CloudConfig:
     memory_mb: int = 1024
     vcpus: int = 2
     retry_attempts: int = 3
+    shared_exp_sources: List[str] = field(default_factory=lambda: ['hcp'])
     
     def to_dict(self):
         return asdict(self)
