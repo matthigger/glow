@@ -111,7 +111,7 @@ class Config:
                 'feats': sorted(self.hcp_feats),  # sorted for consistency
                 'seed': self.exp_seed,
                 'sbj_regex': self.hcp_sbj_regex,
-                'a': 2,  # from sample_x call in prep_exp_orig
+                'a': 2,
                 'add_bias': True
             }
         elif self.source == 'wgn':
@@ -350,41 +350,38 @@ class Config:
         path_config = self.folder / 'config.yaml'
         self.save_config(path=path_config)
         
-        # prepare experiment data for cloud upload
-        if self.exp_orig is None:
-            if verbose:
-                print('  Preparing experiment data for cloud upload...')
-            self.prep_exp_orig()
-        
         # initialize runner
         runner = AWSBatchRunner(self.cloud_config)
         
-        # Check if this source should use shared exp_orig cache
+        # For shared cache sources, check S3 first to avoid loading data locally
         if (hasattr(self.cloud_config, 'shared_exp_sources') and
             self.source in self.cloud_config.shared_exp_sources and
-            self.exp_orig is not None):
+            self.exp_orig is None):
             
             if verbose:
                 print('  Checking for shared experiment data on S3...')
             
-            # Generate signature
+            # Generate signature without loading data
             exp_sig = self._get_exp_orig_signature()
             if exp_sig:
                 shared_data_key = f'{self.cloud_config.s3_prefix}/shared_exp_data/{exp_sig}.pkl'
                 
                 try:
-                    # Check if exists
+                    # Check if exists on S3
                     runner.s3.head_object(
                         Bucket=self.cloud_config.s3_bucket,
                         Key=shared_data_key
                     )
                     if verbose:
                         print(f'  ✓ Found shared experiment data: {exp_sig[:8]}...')
-                    # Store reference instead of data
+                    # Store reference, skip local loading
                     self._shared_exp_s3_key = shared_data_key
-                    self.exp_orig = None  # Don't include in pickled config
+                    # exp_orig remains None, will be loaded by worker
                 except ClientError:
-                    # Doesn't exist, upload it
+                    # Doesn't exist, need to load locally and upload
+                    if verbose:
+                        print('  Preparing experiment data for cloud upload...')
+                    self.prep_exp_orig()
                     if verbose:
                         print(f'  Uploading shared experiment data: {exp_sig[:8]}...')
                     exp_bytes = pickle.dumps(self.exp_orig)
@@ -398,6 +395,12 @@ class Config:
                     # Store reference
                     self._shared_exp_s3_key = shared_data_key
                     self.exp_orig = None  # Don't include in pickled config
+        else:
+            # Not using shared cache, or exp_orig already loaded
+            if self.exp_orig is None:
+                if verbose:
+                    print('  Preparing experiment data for cloud upload...')
+                self.prep_exp_orig()
         
         # generate unique run ID
         run_id = f'{self.label}_{uuid.uuid4().hex[:8]}'
