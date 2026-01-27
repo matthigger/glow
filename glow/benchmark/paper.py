@@ -8,7 +8,7 @@ from glow.benchmark.run import run_ana, run_segment
 # run experiments serially (n_jobs=1) but parallelize permutations
 # within each experiment (n_jobs_perm=-1) to avoid memory explosion
 common_dict = dict(n_seed=2, 
-                   hotel_tr_all=np.logspace(np.log10(0.03), np.log10(1.0), 2),
+                   hotel_tr_all=np.logspace(np.log10(0.03), np.log10(1.0), 3),
                    effect_perc=.2,
                    n_jobs=1,
                    detail_save=False,
@@ -23,12 +23,12 @@ wgn_dict = dict(wgn_shape=(8, 8, 8),
 
 # hcp params
 hcp_dict = dict(hcp_feats=['fa', 'md'],
-                radius=8)
+                radius=5)
 
 # Analysis params
 n_perm = 100
 alpha_fwer = .05
-n_jobs_perm=-1
+n_jobs_perm=1
 
 kwargs_glow = dict(n_perm=n_perm,
                    n_perm_adj=50,
@@ -113,14 +113,6 @@ config_list.append(Config(label='dataset_wgn_b',
                           fixed_params={'hotel_tr': 0.1},
                           **(common_dict | wgn_dict)))
 
-# HCP: vary features
-config_list.append(Config(label='dataset_hcp_feats',
-                          source='hcp',
-                          run_fnc=run_ana,
-                          ana_kwargs_dict=ana_kwargs_dict_vba,
-                          iter_params={'seed': np.arange(5), 'hcp_feats': [['fa'], ['fa', 'md']]},  # reduced from 10 to 5
-                          fixed_params={'hotel_tr': 0.1},
-                          **(common_dict | hcp_dict)))
 
 # segmentation configs
 config_list.append(Config(label='segment_hcp',
