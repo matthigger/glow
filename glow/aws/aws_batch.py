@@ -475,7 +475,7 @@ class AWSBatchRunner:
                 
                 postfix_str = ', '.join(postfix_parts)
                 pbar.set_postfix_str(postfix_str)
-                
+            
                 # check if all done
                 if done == total:
                     pbar.close()
@@ -502,8 +502,8 @@ class AWSBatchRunner:
                                 print(f'   Logs: aws logs get-log-events --log-group-name /aws/batch/job --log-stream-name {log_stream} --limit 50 --output text | tail -30')
                     
                     break
-                
-                time.sleep(poll_interval)
+            
+            time.sleep(poll_interval)
         except KeyboardInterrupt:
             pbar.close()
             print('\n\nMonitoring interrupted by user')

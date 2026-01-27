@@ -15,11 +15,177 @@ Mode is determined by which argument is provided (--perm-idx or --exp-idx)
 
 import argparse
 import sys
+import os
+import gc
 from pathlib import Path
+from collections import defaultdict
 
 import boto3
 import cloudpickle as pickle
 from botocore.exceptions import ClientError
+import numpy as np
+import psutil
+import tracemalloc
+
+
+def get_array_info(obj, prefix='', visited=None, max_depth=5, depth=0):
+    """Recursively find all numpy arrays in an object and return their info
+    
+    Args:
+        obj: Object to inspect
+        prefix: Prefix for attribute names
+        visited: Set of visited object IDs to prevent cycles
+        max_depth: Maximum recursion depth
+        depth: Current recursion depth
+        
+    Returns:
+        list of dicts with array information
+    """
+    if visited is None:
+        visited = set()
+    
+    if depth > max_depth:
+        return []
+    
+    # Prevent cycles
+    obj_id = id(obj)
+    if obj_id in visited:
+        return []
+    visited.add(obj_id)
+    
+    arrays = []
+    
+    try:
+        if isinstance(obj, np.ndarray):
+            size_mb = obj.nbytes / 1024 / 1024
+            arrays.append({
+                'name': prefix or 'root',
+                'shape': obj.shape,
+                'dtype': str(obj.dtype),
+                'size_mb': size_mb
+            })
+        elif isinstance(obj, (dict, list, tuple)):
+            # Iterate through containers
+            if isinstance(obj, dict):
+                items = obj.items()
+            else:
+                items = enumerate(obj)
+            
+            for key, value in items:
+                new_prefix = f"{prefix}.{key}" if prefix else str(key)
+                arrays.extend(get_array_info(value, new_prefix, visited, max_depth, depth + 1))
+        elif hasattr(obj, '__dict__'):
+            # Inspect object attributes
+            try:
+                for attr_name in dir(obj):
+                    if attr_name.startswith('__') and attr_name != '__dict__':
+                        continue
+                    try:
+                        attr = getattr(obj, attr_name, None)
+                        if attr is obj:  # Skip self-references
+                            continue
+                        new_prefix = f"{prefix}.{attr_name}" if prefix else attr_name
+                        arrays.extend(get_array_info(attr, new_prefix, visited, max_depth, depth + 1))
+                    except:
+                        pass
+            except:
+                pass
+    except:
+        pass
+    finally:
+        visited.discard(obj_id)  # Remove from visited when done with this branch
+    
+    return arrays
+
+
+def get_memory_profile(config=None, exp=None, ana=None):
+    """Get detailed memory profile showing what's using memory
+    
+    Args:
+        config: Config object to inspect (optional)
+        exp: Experiment object to inspect (optional)
+        ana: Analysis object to inspect (optional)
+    
+    Returns:
+        dict with memory statistics and array information
+    """
+    # Get process memory
+    process = psutil.Process(os.getpid())
+    process_memory_mb = process.memory_info().rss / 1024 / 1024
+    
+    # Get tracemalloc stats if available
+    tracemalloc_stats = None
+    if tracemalloc.is_tracing():
+        snapshot = tracemalloc.take_snapshot()
+        top_stats = snapshot.statistics('lineno')
+        tracemalloc_stats = []
+        for stat in top_stats[:20]:  # Top 20
+            tracemalloc_stats.append({
+                'filename': stat.traceback[0].filename if stat.traceback else 'unknown',
+                'lineno': stat.traceback[0].lineno if stat.traceback else 0,
+                'size_mb': stat.size / 1024 / 1024,
+                'count': stat.count
+            })
+    
+    # Find numpy arrays in key objects
+    arrays_info = []
+    
+    if config is not None:
+        arrays_info.extend(get_array_info(config, 'config'))
+    
+    if exp is not None:
+        arrays_info.extend(get_array_info(exp, 'exp'))
+    
+    if ana is not None:
+        arrays_info.extend(get_array_info(ana, 'ana'))
+    
+    # Sort arrays by size
+    arrays_info.sort(key=lambda x: x['size_mb'], reverse=True)
+    total_array_memory = sum(a['size_mb'] for a in arrays_info)
+    
+    return {
+        'process_memory_mb': process_memory_mb,
+        'total_array_memory_mb': total_array_memory,
+        'arrays': arrays_info[:50],  # Top 50 arrays
+        'tracemalloc_stats': tracemalloc_stats
+    }
+
+
+def print_memory_profile(config=None, exp=None, ana=None):
+    """Print detailed memory profile to stdout
+    
+    Args:
+        config: Config object to inspect (optional)
+        exp: Experiment object to inspect (optional)
+        ana: Analysis object to inspect (optional)
+    """
+    print('\n' + '=' * 60)
+    print('MEMORY PROFILE (on error)')
+    print('=' * 60)
+    
+    profile = get_memory_profile(config=config, exp=exp, ana=ana)
+    
+    print(f'\nProcess Memory: {profile["process_memory_mb"]:.1f} MB')
+    print(f'Total NumPy Array Memory (in inspected objects): {profile["total_array_memory_mb"]:.1f} MB')
+    
+    if profile['arrays']:
+        print(f'\nTop NumPy Arrays (by size):')
+        print(f'{"Name":<40} {"Shape":<30} {"Dtype":<12} {"Size (MB)":<12}')
+        print('-' * 100)
+        for arr in profile['arrays']:
+            shape_str = str(arr['shape'])[:29]
+            name_str = arr['name'][:39]
+            print(f"{name_str:<40} {shape_str:<30} {arr['dtype']:<12} {arr['size_mb']:<12.2f}")
+    
+    if profile['tracemalloc_stats']:
+        print(f'\nTop Memory Allocations (tracemalloc):')
+        print(f'{"File":<40} {"Line":<8} {"Size (MB)":<12} {"Count":<10}')
+        print('-' * 75)
+        for stat in profile['tracemalloc_stats']:
+            filename = stat['filename'].split('/')[-1][:39]
+            print(f"{filename:<40} {stat['lineno']:<8} {stat['size_mb']:<12.2f} {stat['count']:<10}")
+    
+    print('=' * 60)
 
 
 def process_permutation(exp, ana_kwargs, perm_idx):
@@ -192,12 +358,31 @@ def run_experiment_mode(args):
                 ana_kwargs['n_jobs_perm'] = 1
                 print(f'  Setting n_jobs_perm=1 for {label}')
     
-    # run experiment
+    # run experiment with memory profiling on error
     try:
+        # Start tracemalloc for memory tracking
+        tracemalloc.start()
         config.run_fnc(config=config, **kwargs)
+        tracemalloc.stop()
         print(f'  ✓ Completed')
+    except MemoryError as e:
+        print(f'  ✗ Memory Error: {e}')
+        # Try to get exp from config if available
+        exp_captured = None
+        if hasattr(config, 'exp_orig'):
+            exp_captured = config.exp_orig
+        print_memory_profile(config=config, exp=exp_captured, ana=None)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
     except Exception as e:
         print(f'  ✗ Error: {e}')
+        # Check if it might be memory-related
+        if 'memory' in str(e).lower() or 'MemoryError' in str(type(e)):
+            exp_captured = None
+            if hasattr(config, 'exp_orig'):
+                exp_captured = config.exp_orig
+            print_memory_profile(config=config, exp=exp_captured, ana=None)
         import traceback
         traceback.print_exc()
         sys.exit(1)
