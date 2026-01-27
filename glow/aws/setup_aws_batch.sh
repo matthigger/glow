@@ -13,7 +13,7 @@ JOB_DEFINITION_NAME="glow-job-definition"
 # concurrency configuration
 MAX_VCPUS=2048              # max vCPUs for compute environment
 VCPUS_PER_JOB=1             # vCPUs per job (1 = max concurrency)
-MEMORY_PER_JOB=1024         # memory (MB) per job
+MEMORY_PER_JOB=1650         # memory (MB) per job (compute optimized has ratio 1.67GB / vCPU)
 
 # budget alert configuration
 BUDGET_LIMIT_USD=${GLOW_BUDGET_LIMIT:-50}  # monthly budget limit in USD (default: $50)
