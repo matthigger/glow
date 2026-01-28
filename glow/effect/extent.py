@@ -2,8 +2,12 @@ from functools import wraps
 
 import numpy as np
 from scipy.ndimage import label
-from scipy.ndimage import binary_dilation
+from scipy.ndimage import binary_dilation, generate_binary_structure
 from tqdm import tqdm
+
+# Connectivity: 6-connectivity (face neighbors only) for 3D, matching Ward clustering
+# This ensures effects grow and clustering merges using the same neighbor definition
+CONNECTIVITY_3D = generate_binary_structure(3, 1)  # 6-connectivity (faces only)
 
 
 class ContiguousRegionNotFound(RuntimeError):
@@ -25,7 +29,9 @@ def resample_to_contiguous(fnc):
                 return mask
 
             # ensure mask, when applied, yields contiguous region
-            _, n_components = label((mask_idx >= 0) & mask)
+            # Use 6-connectivity (face neighbors) to match clustering and effect growth
+            structure = CONNECTIVITY_3D if (mask_idx.ndim == 3) else generate_binary_structure(2, 1)
+            _, n_components = label((mask_idx >= 0) & mask, structure=structure)
             if n_components == 1:
                 return mask
 
@@ -65,9 +71,10 @@ class ExtenterSphere:
             mask_bool = mask_idx > -1
             vox_init = rng.choice(mask_idx[mask_bool])
 
-        # dilate to full extent
+        # dilate to full extent using 6-connectivity (face neighbors) for 3D
         mask = mask_idx == vox_init
-        mask = binary_dilation(mask, iterations=self.radius)
+        structure = CONNECTIVITY_3D if (mask_idx.ndim == 3) else generate_binary_structure(2, 1)
+        mask = binary_dilation(mask, structure=structure, iterations=self.radius)
 
         # ensure extent doesn't exceed original mask
         return np.logical_and(mask, mask_bool)
@@ -75,6 +82,9 @@ class ExtenterSphere:
 
 def iter_vox_neighbor(mask, mask_idx):
     """ iterates through voxel idx of all neighbors of mask
+    
+    Uses 6-connectivity (face neighbors) for 3D, matching Ward clustering.
+    This ensures effect growth considers the same neighbors as clustering.
 
         Args:
             mask (np.array): same shape as image, boolean
@@ -85,7 +95,9 @@ def iter_vox_neighbor(mask, mask_idx):
             vox_idx (int): voxel index (in mask_idx) corresponding which
                 neighbors the mask (neighbor not reflexive)
     """
-    mask_neighbor = binary_dilation(mask) & np.logical_not(mask)
+    # Use 6-connectivity (face neighbors) for 3D, matching clustering connectivity
+    structure = CONNECTIVITY_3D if (mask_idx.ndim == 3) else generate_binary_structure(2, 1)
+    mask_neighbor = binary_dilation(mask, structure=structure) & np.logical_not(mask)
     for vox_idx in mask_idx[mask_neighbor]:
         if vox_idx > -1:
             yield vox_idx
