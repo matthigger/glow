@@ -3,9 +3,11 @@
 import json
 import time
 from dataclasses import dataclass, asdict, field
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 import warnings
+from contextlib import contextmanager
 
 import boto3
 import cloudpickle as pickle
@@ -115,6 +117,8 @@ class AWSBatchRunner:
         self.config = config
         self.s3 = boto3.client('s3', region_name=config.region)
         self.batch = boto3.client('batch', region_name=config.region)
+        self.ecs = boto3.client('ecs', region_name=config.region)
+        self.ec2 = boto3.client('ec2', region_name=config.region)
         self._uploaded_data = set()  # track uploaded files
     
     def upload_experiment(self, exp, ana_kwargs: Dict[str, Any], 
@@ -281,7 +285,8 @@ class AWSBatchRunner:
         }
     
     def monitor_jobs(self, job_ids: list, poll_interval: int = 30,
-                    job_info_map: Optional[Dict[str, Dict]] = None):
+                    job_info_map: Optional[Dict[str, Dict]] = None,
+                    cancel_on_error: bool = True):
         """monitor job progress and download results incrementally
         
         Args:
@@ -294,7 +299,7 @@ class AWSBatchRunner:
             print('no jobs to monitor')
             return
         
-        print(f'monitoring {len(job_ids)} jobs...')
+        print(f'monitoring {len(job_ids)} jobs...\n')
         
         # build job_info_map from job names if not provided
         if job_info_map is None:
@@ -323,20 +328,35 @@ class AWSBatchRunner:
                     pass
         
         failed_jobs = []  # track failed jobs for detailed reporting
-        first_check = True
+        first_check = True  # track if this is the first instance type check
+        had_running_jobs = False  # track if we've seen running jobs (for immediate check)
         downloaded_jobs = set()  # track which jobs have been downloaded
         start_time = time.time()
         last_done_count = 0
         last_done_time = start_time
         previous_done = 0
+        last_status_print = 0  # track when we last printed status
+        status_print_interval = 30  # print status every 30 seconds or on significant changes
+        
+        # track job timestamps for vCPU-hours calculation
+        # maps job_id -> {'started_at': timestamp, 'stopped_at': timestamp or None}
+        job_timestamps = {}
+        
+        # track instance types currently in use
+        # maps instance_type -> count of running jobs on that type
+        instance_check_interval = 30  # check instance types every 30 seconds
+        instance_type_counts = {}
+        instance_type_error = None
+        last_instance_check = -instance_check_interval  # initialize to allow immediate first check
         
         # create progress bar
         pbar = tqdm(total=len(job_ids), desc='Jobs', unit='job', 
-                   bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
+                   bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+                   leave=True)
         
         try:
             while True:
-                # get job statuses
+                # get job statuses and timestamps
                 statuses = {'SUBMITTED': 0, 'PENDING': 0, 'RUNNABLE': 0,
                            'STARTING': 0, 'RUNNING': 0, 'SUCCEEDED': 0,
                            'FAILED': 0}
@@ -344,6 +364,7 @@ class AWSBatchRunner:
                 jobs_found = 0
                 completed_jobs = []  # jobs that just completed
                 newly_failed_jobs = []  # jobs that just failed
+                current_time = time.time()
                 
                 # batch describe in chunks of 100
                 for i in range(0, len(job_ids), 100):
@@ -352,17 +373,50 @@ class AWSBatchRunner:
                         response = self.batch.describe_jobs(jobs=chunk)
                         jobs_found += len(response['jobs'])
                         for job in response['jobs']:
+                            job_id = job['jobId']
                             status = job['status']
                             statuses[status] = statuses.get(status, 0) + 1
                             
+                            # track timestamps for vCPU-hours calculation
+                            if job_id not in job_timestamps:
+                                job_timestamps[job_id] = {}
+                            
+                            # track when job started
+                            if 'startedAt' in job and job['startedAt']:
+                                started_at_val = job['startedAt']
+                                # Handle both datetime objects and Unix timestamps (int/float)
+                                if hasattr(started_at_val, 'timestamp'):
+                                    started_at = started_at_val.timestamp()
+                                elif isinstance(started_at_val, (int, float)):
+                                    started_at = float(started_at_val) / 1000 if started_at_val > 1e10 else float(started_at_val)
+                                else:
+                                    started_at = None
+                                
+                                if started_at is not None and 'started_at' not in job_timestamps[job_id]:
+                                    job_timestamps[job_id]['started_at'] = started_at
+                            
+                            # track when job stopped
+                            if 'stoppedAt' in job and job['stoppedAt']:
+                                stopped_at_val = job['stoppedAt']
+                                # Handle both datetime objects and Unix timestamps (int/float)
+                                if hasattr(stopped_at_val, 'timestamp'):
+                                    stopped_at = stopped_at_val.timestamp()
+                                elif isinstance(stopped_at_val, (int, float)):
+                                    stopped_at = float(stopped_at_val) / 1000 if stopped_at_val > 1e10 else float(stopped_at_val)
+                                else:
+                                    stopped_at = None
+                                
+                                if stopped_at is not None and 'stopped_at' not in job_timestamps[job_id]:
+                                    job_timestamps[job_id]['stopped_at'] = stopped_at
+                            
                             # track newly completed jobs
-                            if status == 'SUCCEEDED' and job['jobId'] not in downloaded_jobs:
+                            if status == 'SUCCEEDED' and job_id not in downloaded_jobs:
                                 completed_jobs.append(job)
                             
                             # track failed jobs with details and print immediately
-                            if status == 'FAILED' and job['jobId'] not in [f['jobId'] for f in failed_jobs]:
+                            if status == 'FAILED' and job_id not in [f['jobId'] for f in failed_jobs]:
                                 job_failure = {
-                                    'jobId': job['jobId'],
+                                    'jobId': job_id,
                                     'jobName': job['jobName'],
                                     'statusReason': job.get('statusReason', 'Unknown'),
                                     'container': job.get('container', {})
@@ -373,7 +427,225 @@ class AWSBatchRunner:
                         print(f'error checking jobs: {e}')
                         continue
                 
-                # print failed jobs immediately
+                # get instance types for running jobs (periodically, to avoid too many API calls)
+                # Check immediately on first iteration if there are running jobs, then every interval
+                # Also check if we just transitioned from 0 to >0 running jobs
+                just_started_running = (statuses['RUNNING'] > 0 and not had_running_jobs)
+                should_check_instances = ((current_time - last_instance_check >= instance_check_interval or just_started_running) and 
+                                         statuses['RUNNING'] > 0)
+                
+                # Track if we've seen running jobs
+                if statuses['RUNNING'] > 0:
+                    had_running_jobs = True
+                
+                if should_check_instances:
+                    try:
+                        # get compute environment name from job queue
+                        queue_info = self.batch.describe_job_queues(
+                            jobQueues=[self.config.job_queue]
+                        )
+                        if not queue_info.get('jobQueues'):
+                            if first_check:
+                                print(f'  Note: Could not find job queue: {self.config.job_queue}')
+                            raise ValueError("Job queue not found")
+                            
+                        compute_envs = queue_info['jobQueues'][0].get('computeEnvironmentOrder', [])
+                        if not compute_envs:
+                            if first_check:
+                                print(f'  Note: Job queue has no compute environments')
+                            raise ValueError("No compute environments")
+                            
+                        compute_env_name = compute_envs[0].get('computeEnvironment')
+                        
+                        # get ECS cluster name from compute environment
+                        env_info = self.batch.describe_compute_environments(
+                            computeEnvironments=[compute_env_name]
+                        )
+                        if not env_info.get('computeEnvironments'):
+                            if first_check:
+                                print(f'  Note: Could not find compute environment: {compute_env_name}')
+                            raise ValueError("Compute environment not found")
+                            
+                        ecs_cluster_arn = env_info['computeEnvironments'][0].get('ecsClusterArn', '')
+                        if not ecs_cluster_arn:
+                            if first_check:
+                                print(f'  Note: Compute environment has no ECS cluster')
+                            raise ValueError("No ECS cluster")
+                            
+                        ecs_cluster = ecs_cluster_arn.split('/')[-1]
+                        
+                        # get container instances from ECS cluster
+                        new_instance_type_counts = {}
+                        paginator = self.ecs.get_paginator('list_container_instances')
+                        found_instances = False
+                        for page in paginator.paginate(cluster=ecs_cluster):
+                            if not page.get('containerInstanceArns'):
+                                continue
+                            
+                            found_instances = True
+                            # describe container instances to get EC2 instance IDs
+                            container_instances = self.ecs.describe_container_instances(
+                                cluster=ecs_cluster,
+                                containerInstances=page['containerInstanceArns']
+                            )
+                            
+                            # get EC2 instance IDs
+                            ec2_instance_ids = []
+                            for ci in container_instances.get('containerInstances', []):
+                                ec2_instance_id = ci.get('ec2InstanceId')
+                                if ec2_instance_id:
+                                    ec2_instance_ids.append(ec2_instance_id)
+                            
+                            # describe EC2 instances to get instance types
+                            if ec2_instance_ids:
+                                ec2_instances = self.ec2.describe_instances(
+                                    InstanceIds=ec2_instance_ids
+                                )
+                                for reservation in ec2_instances.get('Reservations', []):
+                                    for instance in reservation.get('Instances', []):
+                                        if instance.get('State', {}).get('Name') == 'running':
+                                            instance_type = instance.get('InstanceType', 'unknown')
+                                            # count instances of each type
+                                            new_instance_type_counts[instance_type] = new_instance_type_counts.get(instance_type, 0) + 1
+                        
+                        if not found_instances and first_check:
+                            print(f'  Note: No container instances found in ECS cluster (jobs may not have started yet)')
+                        
+                        # update outer scope variable
+                        instance_type_counts = new_instance_type_counts
+                    except Exception as e:
+                        # Log error but don't fail - instance type display is optional
+                        if instance_type_error is None:
+                            if isinstance(e, ClientError):
+                                error_code = e.response.get('Error', {}).get('Code', '')
+                                if error_code in ['UnauthorizedOperation', 'AccessDenied', 'AccessDeniedException']:
+                                    instance_type_error = (
+                                        'missing permission: ec2:DescribeInstances '
+                                        '(ask to add this to the IAM user/role)'
+                                    )
+                            if instance_type_error is None:
+                                instance_type_error = f'{type(e).__name__}: {e}'
+                        if first_check:  # Only print on first failure to avoid spam
+                            print(f'  Note: Could not fetch instance types: {instance_type_error}')
+                            print('  (This is optional - jobs will still run normally)')
+                    
+                    last_instance_check = current_time
+                    first_check = False  # Mark that we've attempted the first check
+                
+                # calculate vCPU-hours
+                vcpu_hours = 0.0
+                vcpus = self.config.vcpus
+                for job_id, timestamps in job_timestamps.items():
+                    if 'started_at' in timestamps:
+                        if 'stopped_at' in timestamps:
+                            # completed job: use stopped_at - started_at
+                            runtime_hours = (timestamps['stopped_at'] - timestamps['started_at']) / 3600
+                        else:
+                            # running job: use current_time - started_at
+                            runtime_hours = (current_time - timestamps['started_at']) / 3600
+                        vcpu_hours += runtime_hours * vcpus
+                
+                # calculate status counts
+                total = len(job_ids)
+                done = statuses['SUCCEEDED'] + statuses['FAILED']
+                pending = (statuses['SUBMITTED'] + statuses['PENDING'] + 
+                          statuses['RUNNABLE'] + statuses['STARTING'])
+                running = statuses['RUNNING']
+                completed = statuses['SUCCEEDED']
+                failed = statuses['FAILED']
+                submitted = statuses['SUBMITTED']
+                starting = statuses['STARTING']
+                
+                # estimate remaining time
+                eta_str = '?'
+                if done > last_done_count:
+                    elapsed = current_time - last_done_time
+                    rate = (done - last_done_count) / elapsed if elapsed > 0 else 0
+                    remaining = total - done
+                    if rate > 0:
+                        eta_seconds = remaining / rate
+                        eta_str = f'{eta_seconds/60:.1f}m' if eta_seconds > 60 else f'{eta_seconds:.0f}s'
+                    
+                    last_done_count = done
+                    last_done_time = current_time
+                elif done > 0:
+                    # reuse previous ETA calculation if no new completions
+                    elapsed = current_time - last_done_time
+                    rate = done / elapsed if elapsed > 0 else 0
+                    remaining = total - done
+                    if rate > 0:
+                        eta_seconds = remaining / rate
+                        eta_str = f'{eta_seconds/60:.1f}m' if eta_seconds > 60 else f'{eta_seconds:.0f}s'
+                
+                # print status update in log style (simple, no overwriting)
+                # only print if significant change or enough time has passed
+                should_print = (current_time - last_status_print >= status_print_interval or 
+                               done > last_done_count or 
+                               len(newly_failed_jobs) > 0 or
+                               len(completed_jobs) > 0)
+                
+                if should_print:
+                    timestamp_str = datetime.now().strftime('%H:%M:%S')
+                    
+                    # build state string on one line
+                    state_parts = []
+                    if submitted > 0:
+                        state_parts.append(f'Submitted: {submitted}')
+                    if pending > 0:
+                        state_parts.append(f'Pending: {pending}')
+                    if statuses["RUNNABLE"] > 0:
+                        state_parts.append(f'Runnable: {statuses["RUNNABLE"]}')
+                    if starting > 0:
+                        state_parts.append(f'Starting: {starting}')
+                    if running > 0:
+                        state_parts.append(f'Running: {running}')
+                    if completed > 0:
+                        state_parts.append(f'Succeeded: {completed}')
+                    if failed > 0:
+                        state_parts.append(f'Failed: {failed}')
+                    
+                    state_str = ', '.join(state_parts) if state_parts else 'All done'
+                    
+                    # print status update with newlines (log style)
+                    print(f'\n[{timestamp_str}] Job States: {state_str}')
+                    print(f'  vCPU-hours (spent so far): {vcpu_hours:.3f}')
+                    
+                    # show instance types (always print a line)
+                    if instance_type_counts:
+                        instance_str = ', '.join([f'{itype}: {count}' for itype, count in sorted(instance_type_counts.items())])
+                        print(f'  Instance types: {instance_str}')
+                    elif instance_type_error:
+                        print(f'  Instance types: unavailable ({instance_type_error})')
+                    elif running > 0:
+                        # Jobs are running but instance info is not yet available
+                        print(f'  Instance types: checking... (running={running})')
+                    else:
+                        # No running jobs yet, so instance types are not available
+                        print('  Instance types: waiting for RUNNING jobs')
+                    
+                    last_status_print = current_time
+                
+                # update progress bar
+                if done > previous_done:
+                    pbar.update(done - previous_done)
+                    previous_done = done
+                
+                # update progress bar postfix
+                postfix_parts = []
+                if pending > 0:
+                    postfix_parts.append(f'pending={pending}')
+                if running > 0:
+                    postfix_parts.append(f'running={running}')
+                if completed > 0:
+                    postfix_parts.append(f'completed={completed}')
+                if failed > 0:
+                    postfix_parts.append(f'failed={failed}')
+                postfix_parts.append(f'eta={eta_str}')
+                
+                postfix_str = ', '.join(postfix_parts)
+                pbar.set_postfix_str(postfix_str)
+                
+                # print failed jobs immediately (below status display)
                 for job in newly_failed_jobs:
                     print(f'\n✗ FAILED: {job["jobName"]} ({job["jobId"][:8]}...)')
                     print(f'  Reason: {job["statusReason"]}')
@@ -398,83 +670,23 @@ class AWSBatchRunner:
                         info = job_info_map[job_id]
                         if info.get('output_folder'):
                             try:
+                                output_folder = Path(info['output_folder'])
+                                print(f'\n[Downloading] {job["jobName"]} → {output_folder}')
+                                
                                 self._download_single_experiment_result(
                                     info['run_id'], info['exp_idx'], info['output_folder']
                                 )
                                 downloaded_jobs.add(job_id)
                                 
                                 # print completion message with download path
-                                output_folder = Path(info['output_folder'])
-                                # count files in the output folder to decide what to print
                                 if output_folder.exists():
                                     files = list(output_folder.rglob('*'))
                                     file_count = sum(1 for f in files if f.is_file())
-                                    if file_count > 1:
-                                        print(f'\n✓ Completed: {job["jobName"]} → {output_folder}')
-                                    else:
-                                        # if single file, show the file path
-                                        if file_count == 1:
-                                            file_path = next(f for f in files if f.is_file())
-                                            print(f'\n✓ Completed: {job["jobName"]} → {file_path}')
-                                        else:
-                                            print(f'\n✓ Completed: {job["jobName"]} → {output_folder}')
+                                    print(f'  ✓ Downloaded {file_count} file(s) to: {output_folder}')
                                 else:
-                                    print(f'\n✓ Completed: {job["jobName"]} → {output_folder}')
+                                    print(f'  ✓ Downloaded to: {output_folder}')
                             except Exception as e:
                                 print(f'\n⚠ Error downloading results for {job["jobName"]}: {e}')
-                
-                # update progress bar
-                total = len(job_ids)
-                done = statuses['SUCCEEDED'] + statuses['FAILED']
-                
-                # update progress using proper tqdm API
-                if done > previous_done:
-                    pbar.update(done - previous_done)
-                    previous_done = done
-                
-                # calculate pending (all non-terminal states)
-                pending = (statuses['SUBMITTED'] + statuses['PENDING'] + 
-                          statuses['RUNNABLE'] + statuses['STARTING'])
-                running = statuses['RUNNING']
-                completed = statuses['SUCCEEDED']
-                failed = statuses['FAILED']
-                
-                # estimate remaining time and update postfix
-                current_time = time.time()
-                eta_str = '?'
-                if done > last_done_count:
-                    elapsed = current_time - last_done_time
-                    rate = (done - last_done_count) / elapsed if elapsed > 0 else 0
-                    remaining = total - done
-                    if rate > 0:
-                        eta_seconds = remaining / rate
-                        eta_str = f'{eta_seconds/60:.1f}m' if eta_seconds > 60 else f'{eta_seconds:.0f}s'
-                    
-                    last_done_count = done
-                    last_done_time = current_time
-                elif done > 0:
-                    # reuse previous ETA calculation if no new completions
-                    elapsed = current_time - last_done_time
-                    rate = done / elapsed if elapsed > 0 else 0
-                    remaining = total - done
-                    if rate > 0:
-                        eta_seconds = remaining / rate
-                        eta_str = f'{eta_seconds/60:.1f}m' if eta_seconds > 60 else f'{eta_seconds:.0f}s'
-                
-                # update postfix with state breakdown
-                postfix_parts = []
-                if pending > 0:
-                    postfix_parts.append(f'pending={pending}')
-                if running > 0:
-                    postfix_parts.append(f'running={running}')
-                if completed > 0:
-                    postfix_parts.append(f'completed={completed}')
-                if failed > 0:
-                    postfix_parts.append(f'failed={failed}')
-                postfix_parts.append(f'eta={eta_str}')
-                
-                postfix_str = ', '.join(postfix_parts)
-                pbar.set_postfix_str(postfix_str)
             
                 # check if all done
                 if done == total:
@@ -483,6 +695,7 @@ class AWSBatchRunner:
                     print(f'  succeeded: {statuses["SUCCEEDED"]}')
                     print(f'  failed: {statuses["FAILED"]}')
                     print(f'  results downloaded: {len(downloaded_jobs)}/{statuses["SUCCEEDED"]}')
+                    print(f'  total vCPU-hours: {vcpu_hours:.2f}')
                     
                     # print detailed failure reasons
                     if failed_jobs:
@@ -503,10 +716,90 @@ class AWSBatchRunner:
                     
                     break
             
-            time.sleep(poll_interval)
+                time.sleep(poll_interval)
         except KeyboardInterrupt:
             pbar.close()
             print('\n\nMonitoring interrupted by user')
+            print('cancelling AWS jobs')
+            cancel_summary = self.cancel_jobs(job_ids, reason='Monitoring interrupted by user')
+            if cancel_summary['failed'] == 0:
+                print(f'✓ Canceled: {cancel_summary["canceled"]}')
+            else:
+                print(f'✓ Canceled: {cancel_summary["canceled"]}')
+                print(f'✗ Failed to cancel: {cancel_summary["failed"]}')
+            raise
+        except Exception as e:
+            pbar.close()
+            if cancel_on_error:
+                print('\n\nMonitoring failed; cancelling AWS jobs')
+                cancel_summary = self.cancel_jobs(job_ids, reason='Monitoring error')
+                if cancel_summary['failed'] == 0:
+                    print(f'✓ Canceled: {cancel_summary["canceled"]}')
+                else:
+                    print(f'✓ Canceled: {cancel_summary["canceled"]}')
+                    print(f'✗ Failed to cancel: {cancel_summary["failed"]}')
+            raise
+
+    def cancel_jobs(self, job_ids: list, reason: str = 'Canceled by user') -> Dict[str, int]:
+        """cancel (terminate) AWS Batch jobs by ID
+
+        Returns:
+            dict with counts: canceled, failed, skipped
+        """
+        if not job_ids:
+            return {'canceled': 0, 'failed': 0, 'skipped': 0}
+
+        canceled = 0
+        failed = 0
+        skipped = 0
+
+        # describe in chunks of 100 (AWS limit)
+        for i in range(0, len(job_ids), 100):
+            chunk = job_ids[i:i+100]
+            try:
+                response = self.batch.describe_jobs(jobs=chunk)
+                jobs = response.get('jobs', [])
+            except Exception:
+                jobs = []
+
+            # map jobId -> status if we can
+            status_map = {job.get('jobId'): job.get('status') for job in jobs}
+
+            for job_id in chunk:
+                status = status_map.get(job_id)
+                if status in ['SUCCEEDED', 'FAILED']:
+                    skipped += 1
+                    continue
+                try:
+                    self.batch.terminate_job(jobId=job_id, reason=reason)
+                    canceled += 1
+                except Exception:
+                    failed += 1
+
+        return {'canceled': canceled, 'failed': failed, 'skipped': skipped}
+
+    @contextmanager
+    def cancel_on_exit(self, job_ids: list, reason: str = 'Canceled on exit'):
+        """context manager to cancel jobs on exit"""
+        try:
+            yield
+        except KeyboardInterrupt:
+            print('\n\nMonitoring interrupted by user')
+            print('cancelling AWS jobs')
+            summary = self.cancel_jobs(job_ids, reason=reason)
+            if summary['failed'] == 0:
+                print(f'✓ Canceled: {summary["canceled"]}')
+            else:
+                print(f'✓ Canceled: {summary["canceled"]}')
+                print(f'✗ Failed to cancel: {summary["failed"]}')
+            raise
+        except Exception:
+            summary = self.cancel_jobs(job_ids, reason=reason)
+            if summary['failed'] == 0:
+                print(f'✓ Canceled: {summary["canceled"]}')
+            else:
+                print(f'✓ Canceled: {summary["canceled"]}')
+                print(f'✗ Failed to cancel: {summary["failed"]}')
             raise
     
     def get_failure_details(self, job_ids: list):

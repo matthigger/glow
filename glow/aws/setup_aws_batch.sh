@@ -15,9 +15,6 @@ MAX_VCPUS=2048              # max vCPUs for compute environment
 VCPUS_PER_JOB=1             # vCPUs per job (1 = max concurrency)
 MEMORY_PER_JOB=1650         # memory (MB) per job (compute optimized has ratio 1.67GB / vCPU)
 
-# budget alert configuration
-BUDGET_LIMIT_USD=${GLOW_BUDGET_LIMIT:-50}  # monthly budget limit in USD (default: $50)
-
 # ═══════════════════════════════════════════════════════════════
 
 # colors for output
@@ -38,13 +35,20 @@ echo "  Max vCPUs: $MAX_VCPUS"
 echo "  vCPUs per job: $VCPUS_PER_JOB"
 echo "  Memory per job: ${MEMORY_PER_JOB} MB"
 echo "  Max concurrent jobs: $((MAX_VCPUS / VCPUS_PER_JOB))"
-echo "  Budget limit: \$${BUDGET_LIMIT_USD}/month"
 echo ""
 
-# get AWS account ID
+# get AWS account ID and current user info
 echo -e "${YELLOW}Getting AWS account information...${NC}"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text)
 echo -e "${GREEN}✓ Account ID: ${ACCOUNT_ID}${NC}"
+
+# Try to extract username from ARN (format: arn:aws:iam::ACCOUNT:user/USERNAME)
+CURRENT_USER_NAME=""
+if echo "$CALLER_ARN" | grep -q ":user/"; then
+    CURRENT_USER_NAME=$(echo "$CALLER_ARN" | sed 's/.*:user\///')
+    echo -e "${GREEN}✓ Current IAM user: ${CURRENT_USER_NAME}${NC}"
+fi
 echo ""
 
 # check if Docker image exists in ECR
@@ -125,6 +129,58 @@ aws iam put-role-policy \
     --policy-name GlowS3Access \
     --policy-document "$S3_POLICY" 2>/dev/null || true
 
+# create IAM policy for monitoring (EC2 describe instances for instance type tracking)
+echo -e "${YELLOW}  Creating IAM policy for monitoring (instance type tracking)...${NC}"
+MONITORING_POLICY_NAME="GlowMonitoringPolicy"
+MONITORING_POLICY="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"ec2:DescribeInstances\",\"ec2:DescribeInstanceTypes\",\"batch:DescribeJobQueues\",\"batch:DescribeComputeEnvironments\",\"ecs:ListContainerInstances\",\"ecs:DescribeContainerInstances\"],\"Resource\":\"*\"}]}"
+
+# Check if policy exists
+if aws iam get-policy --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${MONITORING_POLICY_NAME}" &>/dev/null; then
+    # Policy exists, update it
+    POLICY_VERSION=$(aws iam create-policy-version \
+        --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${MONITORING_POLICY_NAME}" \
+        --policy-document "$MONITORING_POLICY" \
+        --set-as-default \
+        --query 'PolicyVersion.VersionId' \
+        --output text 2>/dev/null || echo "")
+    if [ -n "$POLICY_VERSION" ]; then
+        echo -e "${GREEN}  ✓ Updated ${MONITORING_POLICY_NAME}${NC}"
+    else
+        echo -e "${GREEN}  ✓ ${MONITORING_POLICY_NAME} already exists${NC}"
+    fi
+else
+    # Create new policy
+    aws iam create-policy \
+        --policy-name "$MONITORING_POLICY_NAME" \
+        --policy-document "$MONITORING_POLICY" \
+        --description "Policy for GLOW monitoring (instance type tracking)" \
+        --query 'Policy.Arn' \
+        --output text > /dev/null
+    echo -e "${GREEN}  ✓ Created ${MONITORING_POLICY_NAME}${NC}"
+fi
+
+# Try to attach policy to current user if we detected a username
+if [ -n "$CURRENT_USER_NAME" ]; then
+    POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${MONITORING_POLICY_NAME}"
+    # Check if policy is already attached
+    if aws iam list-attached-user-policies --user-name "$CURRENT_USER_NAME" --query "AttachedPolicies[?PolicyArn=='${POLICY_ARN}'].PolicyArn" --output text | grep -q "$POLICY_ARN"; then
+        echo -e "${GREEN}  ✓ Policy already attached to user ${CURRENT_USER_NAME}${NC}"
+    else
+        # Try to attach (may fail if user doesn't have permission)
+        if aws iam attach-user-policy --user-name "$CURRENT_USER_NAME" --policy-arn "$POLICY_ARN" 2>/dev/null; then
+            echo -e "${GREEN}  ✓ Attached policy to user ${CURRENT_USER_NAME}${NC}"
+        else
+            echo -e "${YELLOW}  ⚠ Could not automatically attach policy to user (may need admin permissions)${NC}"
+            echo -e "${YELLOW}    Policy ARN: ${POLICY_ARN}${NC}"
+            echo -e "${YELLOW}    Manual command: aws iam attach-user-policy --user-name ${CURRENT_USER_NAME} --policy-arn ${POLICY_ARN}${NC}"
+        fi
+    fi
+else
+    echo -e "${YELLOW}  Note: To use instance type tracking, attach this policy to your IAM user/role:${NC}"
+    echo -e "${YELLOW}    Policy ARN: arn:aws:iam::${ACCOUNT_ID}:policy/${MONITORING_POLICY_NAME}${NC}"
+    echo -e "${YELLOW}    Command: aws iam attach-user-policy --user-name YOUR_USER_NAME --policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/${MONITORING_POLICY_NAME}${NC}"
+fi
+
 # ec2 instance role
 EC2_TRUST_POLICY='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
 create_or_update_role "ecsInstanceRole" "$EC2_TRUST_POLICY" \
@@ -172,8 +228,20 @@ echo -e "${BLUE}[4/7] Setting up compute environment...${NC}"
 if aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].computeEnvironmentName" --output text 2>/dev/null | grep -q "$COMPUTE_ENV_NAME"; then
     STATUS=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].status" --output text)
     CURRENT_MAX_VCPUS=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].computeResources.maxvCpus" --output text)
+    CURRENT_INSTANCE_TYPES=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].computeResources.instanceTypes" --output json 2>/dev/null || echo "[]")
     
     echo -e "${YELLOW}  Compute environment exists (status: $STATUS, maxvCpus: $CURRENT_MAX_VCPUS)${NC}"
+    
+    # Check if instance types are compute-optimized (start with 'c')
+    if echo "$CURRENT_INSTANCE_TYPES" | grep -q '"optimal"'; then
+        echo -e "${YELLOW}  ⚠ Warning: Compute environment uses 'optimal' instance types (may include m/r families)${NC}"
+        echo -e "${YELLOW}  To use only compute-optimized instances, delete and recreate the compute environment${NC}"
+        echo -e "${YELLOW}  Visit: https://console.aws.amazon.com/batch/home?region=${REGION}#/compute-environments${NC}"
+        echo -e "${YELLOW}  After deletion, re-run this script${NC}"
+    elif ! echo "$CURRENT_INSTANCE_TYPES" | grep -qE '"c[0-9]'; then
+        echo -e "${YELLOW}  ⚠ Warning: Compute environment may not be using compute-optimized instances${NC}"
+        echo -e "${YELLOW}  Current instance types: $CURRENT_INSTANCE_TYPES${NC}"
+    fi
     
     if [ "$CURRENT_MAX_VCPUS" != "$MAX_VCPUS" ]; then
         echo -e "${YELLOW}  Updating maxvCpus from $CURRENT_MAX_VCPUS to $MAX_VCPUS...${NC}"
@@ -200,7 +268,14 @@ else
             \"minvCpus\": 0,
             \"maxvCpus\": $MAX_VCPUS,
             \"desiredvCpus\": 0,
-            \"instanceTypes\": [\"optimal\"],
+            \"instanceTypes\": [
+                \"c4.xlarge\", \"c4.2xlarge\", \"c4.4xlarge\", \"c4.8xlarge\",
+                \"c5.xlarge\", \"c5.2xlarge\", \"c5.4xlarge\", \"c5.9xlarge\", \"c5.12xlarge\", \"c5.18xlarge\", \"c5.24xlarge\",
+                \"c5a.xlarge\", \"c5a.2xlarge\", \"c5a.4xlarge\", \"c5a.8xlarge\", \"c5a.12xlarge\", \"c5a.16xlarge\", \"c5a.24xlarge\",
+                \"c6i.xlarge\", \"c6i.2xlarge\", \"c6i.4xlarge\", \"c6i.8xlarge\", \"c6i.12xlarge\", \"c6i.16xlarge\", \"c6i.24xlarge\", \"c6i.32xlarge\",
+                \"c6a.xlarge\", \"c6a.2xlarge\", \"c6a.4xlarge\", \"c6a.8xlarge\", \"c6a.12xlarge\", \"c6a.16xlarge\", \"c6a.24xlarge\", \"c6a.32xlarge\",
+                \"c7i.xlarge\", \"c7i.2xlarge\", \"c7i.4xlarge\", \"c7i.8xlarge\", \"c7i.12xlarge\", \"c7i.16xlarge\", \"c7i.24xlarge\", \"c7i.48xlarge\"
+            ],
             \"subnets\": [\"${SUBNET_ID}\"],
             \"securityGroupIds\": [\"${SG_ID}\"],
             \"instanceRole\": \"arn:aws:iam::${ACCOUNT_ID}:instance-profile/ecsInstanceRole\",
@@ -270,7 +345,7 @@ echo ""
 # ============================================================================
 # STEP 7: Save Configuration
 # ============================================================================
-echo -e "${BLUE}[7/8] Saving configuration...${NC}"
+echo -e "${BLUE}[7/7] Saving configuration...${NC}"
 CONFIG_FILE=".glow_aws_config"
 cat > $CONFIG_FILE << CONFIGEOF
 # GLOW AWS Configuration
@@ -287,87 +362,4 @@ vcpus_per_job = ${VCPUS_PER_JOB}
 max_concurrent_jobs = $((MAX_VCPUS / VCPUS_PER_JOB))
 CONFIGEOF
 echo -e "${GREEN}✓ Configuration saved to ${CONFIG_FILE}${NC}"
-echo ""
-
-# ============================================================================
-# STEP 8: Set Up Budget Alert (Optional)
-# ============================================================================
-echo -e "${BLUE}[8/8] Setting up budget alert...${NC}"
-
-BUDGET_NAME="GLOW-Monthly"
-BUDGET_TMP=$(mktemp)
-NOTIFICATIONS_TMP=$(mktemp)
-
-# create budget JSON file
-cat > "$BUDGET_TMP" <<EOF
-{
-    "BudgetName": "${BUDGET_NAME}",
-    "BudgetLimit": {
-        "Amount": "${BUDGET_LIMIT_USD}",
-        "Unit": "USD"
-    },
-    "TimeUnit": "MONTHLY",
-    "BudgetType": "COST"
-}
-EOF
-
-# create notifications JSON file
-cat > "$NOTIFICATIONS_TMP" <<EOF
-[
-    {
-        "Notification": {
-            "NotificationType": "ACTUAL",
-            "ComparisonOperator": "GREATER_THAN",
-            "Threshold": 80,
-            "ThresholdType": "PERCENTAGE"
-        },
-        "Subscribers": [
-            {
-                "SubscriptionType": "EMAIL",
-                "Address": "user@example.com"
-            }
-        ]
-    },
-    {
-        "Notification": {
-            "NotificationType": "ACTUAL",
-            "ComparisonOperator": "GREATER_THAN",
-            "Threshold": 100,
-            "ThresholdType": "PERCENTAGE"
-        },
-        "Subscribers": [
-            {
-                "SubscriptionType": "EMAIL",
-                "Address": "user@example.com"
-            }
-        ]
-    }
-]
-EOF
-
-# check if budgets service is available and budget doesn't exist
-if aws budgets describe-budgets --account-id $ACCOUNT_ID --region $REGION &>/dev/null 2>&1; then
-    if aws budgets describe-budgets --account-id $ACCOUNT_ID --region $REGION \
-        --query "Budgets[?BudgetName=='${BUDGET_NAME}']" --output text 2>/dev/null | grep -q "$BUDGET_NAME"; then
-        echo -e "${YELLOW}  Budget '${BUDGET_NAME}' already exists, skipping creation${NC}"
-    else
-        # create budget
-        if aws budgets create-budget \
-            --account-id $ACCOUNT_ID \
-            --budget file://"$BUDGET_TMP" \
-            --notifications-with-subscribers file://"$NOTIFICATIONS_TMP" 2>/dev/null; then
-            echo -e "${GREEN}✓ Budget alert created: \$${BUDGET_LIMIT_USD}/month${NC}"
-            echo -e "${YELLOW}  Note: Update email address in AWS Budgets console${NC}"
-        else
-            echo -e "${YELLOW}  ⚠ Could not create budget (may require additional permissions)${NC}"
-            echo -e "${YELLOW}  You can create it manually in AWS Budgets console${NC}"
-        fi
-    fi
-else
-    echo -e "${YELLOW}  ⚠ Budgets service not available or insufficient permissions${NC}"
-    echo -e "${YELLOW}  You can set up budget alerts manually in AWS Budgets console${NC}"
-fi
-
-# cleanup temp files
-rm -f "$BUDGET_TMP" "$NOTIFICATIONS_TMP"
 echo ""
