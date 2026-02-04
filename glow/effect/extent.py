@@ -47,8 +47,14 @@ def resample_to_contiguous(fnc):
 class ExtenterSphere:
     """ builds effect extent as a randomly placed sphere """
 
-    def __init__(self, radius):
+    def __init__(self, radius=None, n_vox=None, connected=False):
+        if radius is None and n_vox is None:
+            raise ValueError('radius or n_vox required')
+        if radius is not None and n_vox is not None:
+            raise ValueError('specify radius or n_vox, not both')
         self.radius = radius
+        self.n_vox = n_vox
+        self.connected = connected
 
     @resample_to_contiguous
     def __call__(self, mask_idx, y=None, seed=None, vox_init=None):
@@ -66,18 +72,65 @@ class ExtenterSphere:
             mask (np.array): same shape as image.  boolean, True within extent
         """
         # choose a random initial voxel
-        if vox_init is None:
-            rng = np.random.default_rng(seed=seed)
-            mask_bool = mask_idx > -1
-            vox_init = rng.choice(mask_idx[mask_bool])
+        rng = np.random.default_rng(seed=seed)
+        mask_bool = mask_idx > -1
+        structure = CONNECTIVITY_3D if (mask_idx.ndim == 3) else generate_binary_structure(2, 1)
+        if self.connected:
+            comp_idx, num_comp = label(mask_bool, structure=structure)
+            if num_comp == 0:
+                raise ValueError('no voxels available in mask')
+            comp_sizes = np.bincount(comp_idx.ravel())
+            comp_sizes[0] = 0
+            if self.n_vox is not None:
+                eligible = np.flatnonzero(comp_sizes >= self.n_vox)
+                if eligible.size == 0:
+                    raise ValueError('no connected component has >= n_vox voxels')
+            else:
+                eligible = np.flatnonzero(comp_sizes > 0)
+
+            if vox_init is None:
+                comp_id = rng.choice(eligible)
+                mask_bool = comp_idx == comp_id
+                vox_init = rng.choice(mask_idx[mask_bool])
+            else:
+                comp_id = comp_idx[mask_idx == vox_init]
+                if comp_id.size == 0 or comp_id[0] == 0:
+                    raise ValueError('vox_init not in mask')
+                comp_id = comp_id[0]
+                if self.n_vox is not None and comp_sizes[comp_id] < self.n_vox:
+                    raise ValueError('vox_init component has fewer voxels than n_vox')
+                mask_bool = comp_idx == comp_id
+        else:
+            if vox_init is None:
+                vox_init = rng.choice(mask_idx[mask_bool])
 
         # dilate to full extent using 6-connectivity (face neighbors) for 3D
         mask = mask_idx == vox_init
-        structure = CONNECTIVITY_3D if (mask_idx.ndim == 3) else generate_binary_structure(2, 1)
-        mask = binary_dilation(mask, structure=structure, iterations=self.radius)
+        mask = np.logical_and(mask, mask_bool)
 
-        # ensure extent doesn't exceed original mask
-        return np.logical_and(mask, mask_bool)
+        if self.n_vox is None:
+            mask = binary_dilation(mask, structure=structure, iterations=self.radius)
+            # ensure extent doesn't exceed original mask
+            return np.logical_and(mask, mask_bool)
+
+        # grow until reaching desired voxel count
+        count = int(mask.sum())
+        while count < self.n_vox:
+            prev_mask = mask
+            mask = binary_dilation(mask, structure=structure, iterations=1)
+            mask = np.logical_and(mask, mask_bool)
+            count = int(mask.sum())
+
+        # trim excess from outer shell
+        excess = count - self.n_vox
+        if excess > 0:
+            shell = np.logical_and(mask, np.logical_not(prev_mask))
+            shell_idx = np.flatnonzero(shell)
+            if shell_idx.size >= excess:
+                mask_flat = mask.ravel()
+                mask_flat[shell_idx[:excess]] = False
+                mask = mask_flat.reshape(mask.shape)
+        return mask
 
 
 def iter_vox_neighbor(mask, mask_idx):

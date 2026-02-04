@@ -68,6 +68,39 @@ class TestExtenterSphere:
         mask = extenter(mask_idx=mask_idx, seed=0, contiguous=True)
         assert np.allclose(np.ones((3, 3)), mask)
 
+    def test_n_vox(self):
+        mask_idx = np.arange(25).reshape((5, 5))
+        extenter = ExtenterSphere(n_vox=7)
+        mask = extenter(mask_idx=mask_idx, vox_init=12)
+        assert mask.sum() == 7
+        assert mask.shape == mask_idx.shape
+
+    def test_connected_component_restrict(self):
+        mask = np.array([[1, 1, 1, 1, 1],
+                         [0, 0, 0, 0, 0],
+                         [1, 1, 1, 1, 1],
+                         [0, 0, 0, 0, 0],
+                         [1, 1, 1, 1, 1]])
+        mask_idx = get_mask_idx(mask)
+        extenter = ExtenterSphere(n_vox=5, connected=True)
+        vox_init = mask_idx[0, 0]
+        mask_obs = extenter(mask_idx=mask_idx, vox_init=vox_init)
+
+        comp_mask = np.zeros_like(mask, dtype=bool)
+        comp_mask[0, :] = True
+        assert mask_obs.sum() == 5
+        assert np.all(mask_obs[~comp_mask] == 0)
+
+    def test_connected_component_size_error(self):
+        mask = np.array([[1, 1, 0, 0],
+                         [1, 1, 0, 0],
+                         [0, 0, 1, 1],
+                         [0, 0, 1, 1]])
+        mask_idx = get_mask_idx(mask)
+        extenter = ExtenterSphere(n_vox=5, connected=True)
+        with pytest.raises(ValueError):
+            extenter(mask_idx=mask_idx, seed=0)
+
 
 class TestExtenterMinVar:
     def test_call(self):
