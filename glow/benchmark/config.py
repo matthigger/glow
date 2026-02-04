@@ -324,13 +324,11 @@ class Config:
         if verbose:
             print(f'running {len(kwargs_list)} experiments')
 
-        if self.n_jobs not in (0, 1):
-            Parallel(n_jobs=self.n_jobs, verbose=10)(
-                delayed(self.run_fnc)(config=self, **kwargs)
-                for kwargs in tqdm(kwargs_list))
-        else:
-            for kwargs in tqdm(kwargs_list):
-                self.run_fnc(config=self, **kwargs)
+        n_jobs = self.n_jobs if self.n_jobs not in (0, 1) else 1
+        Parallel(n_jobs=n_jobs, verbose=10)(
+            delayed(self.run_fnc)(config=self, **kwargs)
+            for kwargs in tqdm(kwargs_list)
+        )
     
     def submit_cloud_jobs(self, verbose=True):
         """submit experiments to AWS Batch without waiting
