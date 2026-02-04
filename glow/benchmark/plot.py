@@ -166,19 +166,25 @@ def plot_x_vs_metrics(df, x_param='hotel_tr', metrics=['f1', 'sens', 'spec'],
     plt.tight_layout()
 
 if __name__ == '__main__':
-    force_replot = False
+    force_replot = True
 
     import glow.benchmark
 
     path_result = glow.benchmark.get_path_result()
-    for label in path_result.iterdir():
-        folder = path_result / label
-        for timestamp in folder.iterdir():
+    for label_path in path_result.iterdir():
+        if not label_path.is_dir():
+            continue
+        label = label_path.stem
+        for timestamp_path in label_path.iterdir():
+            if not timestamp_path.is_dir():
+                continue
+            timestamp = timestamp_path.stem
             df, _folder, n_new = glow.benchmark.load_update_all(label,
-                                                                timestamp.stem,
+                                                                timestamp,
                                                                 verbose=False)
 
             if df.empty:
+                print(f'skipping {label}/{timestamp}: no data')
                 continue
 
             path = _folder / 'time.pdf'
@@ -187,10 +193,14 @@ if __name__ == '__main__':
                 plot_compute_time(df)
                 plt.gcf().savefig(path, bbox_inches='tight')
                 plt.close('all')
+            else:
+                print(f'skipping: {path} (already exists, no new data)')
 
             path = _folder / 'score.pdf'
             if force_replot or n_new or not path.exists():
                 print(f'creating: {path}')
-                plot_x_vs_metrics(df, one_vs_rest='vba' in label.stem)
+                plot_x_vs_metrics(df, one_vs_rest='vba' in label)
                 plt.gcf().savefig(path, bbox_inches='tight')
                 plt.close('all')
+            else:
+                print(f'skipping: {path} (already exists, no new data)')
