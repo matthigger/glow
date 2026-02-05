@@ -22,7 +22,7 @@ def load_image_nii(df):
                 affine = img.affine
             assert np.array_equal(img.affine,
                                   affine), 'affine mismatch'
-            feat_sbj_img[feat][sbj] = img.get_fdata().astype(np.float32)
+            feat_sbj_img[feat][sbj] = img.get_fdata()
 
     # count nonzero voxels per position (also check images have same shape)
     vox_count = None
