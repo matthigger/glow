@@ -136,18 +136,13 @@ S3_BUCKET=""
 if [ "$CLEAR_S3" = true ]; then
     echo -e "${YELLOW}Loading AWS config...${NC}"
     
-    # find config file: check home first, then project root
-    CONFIG_FILE="$HOME/.glow_aws_config"
-    if [ ! -f "$CONFIG_FILE" ]; then
-        # script is at glow/aws/cleanup_aws.sh, so go up 2 levels to project root
-        SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-        PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-        CONFIG_FILE="$PROJECT_ROOT/.glow_aws_config"
-    fi
+    # config file is stored in project root
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+    CONFIG_FILE="$PROJECT_ROOT/.glow_aws_config"
     
     if [ ! -f "$CONFIG_FILE" ]; then
         echo -e "${RED}✗ AWS config file not found${NC}"
-        echo -e "${RED}  Checked: $HOME/.glow_aws_config${NC}"
         echo -e "${RED}  Checked: $CONFIG_FILE${NC}"
         echo -e "${RED}  Cannot determine S3 bucket/prefix${NC}"
         echo ""

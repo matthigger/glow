@@ -8,9 +8,7 @@ def load_cloud_config():
     from pathlib import Path
     from glow.aws.aws_batch import CloudConfig
 
-    config_file = Path.home() / '.glow_aws_config'
-    if not config_file.exists():
-        config_file = Path(__file__).parent.parent.parent / '.glow_aws_config'
+    config_file = Path(__file__).parent.parent.parent / '.glow_aws_config'
 
     parser = configparser.ConfigParser()
     parser.read(config_file)
