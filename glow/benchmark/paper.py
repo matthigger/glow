@@ -24,7 +24,7 @@ def load_cloud_config():
         job_definition=parser['aws']['job_definition'],
         region=region,
         timeout_minutes=180,  # 3 hours per experiment
-        retry_attempts=1
+        retry_attempts=1,
     )
 
 

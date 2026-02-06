@@ -13,7 +13,7 @@ JOB_DEFINITION_NAME="glow-job-definition"
 # concurrency configuration
 MAX_VCPUS=2048              # max vCPUs for compute environment
 VCPUS_PER_JOB=1             # vCPUs per job (1 = max concurrency)
-MEMORY_PER_JOB=1650         # memory (MB) per job (compute optimized has ratio 1.67GB / vCPU)
+MEMORY_PER_JOB=2000         # memory (MB) per job
 
 # ═══════════════════════════════════════════════════════════════
 

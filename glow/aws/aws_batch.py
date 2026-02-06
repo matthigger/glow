@@ -35,6 +35,9 @@ class CloudConfig:
         retry_attempts: number of retry attempts for failed jobs (1 = no retries)
         shared_exp_sources: list of source types that should use shared exp_orig cache
                           (e.g., ['hcp']). WGN excluded since it's cheaper to generate on cloud.
+        oom_memory_mb_tiers: memory (MB) per OOM retry tier. First value = initial (job definition
+            should match). On OOM, jobs are resubmitted to the same queue with the next tier's
+            memory via container overrides. E.g. [2000, 4000, 8000, 16000] = 2–16 GB (decimal).
     """
     s3_bucket: str
     s3_prefix: str
@@ -49,6 +52,9 @@ class CloudConfig:
     vcpus: int = 2
     retry_attempts: int = 3
     shared_exp_sources: List[str] = field(default_factory=lambda: ['hcp'])
+    oom_memory_mb_tiers: List[int] = field(
+        default_factory=lambda: [2000, 4000, 8000, 16000]
+    )  # 2 -> 4 -> 8 -> 16 GB (decimal) on OOM
     
     def to_dict(self):
         return asdict(self)
@@ -120,6 +126,86 @@ class AWSBatchRunner:
         self.ecs = boto3.client('ecs', region_name=config.region)
         self.ec2 = boto3.client('ec2', region_name=config.region)
         self._uploaded_data = set()  # track uploaded files
+        self._job_retry_counts = {}
+        self._job_memory_tier_index = {}
+
+    @staticmethod
+    def _base_job_name(job_name: str) -> str:
+        if job_name.endswith(')'):
+            return job_name
+        return job_name.rsplit('_retry', 1)[0]
+
+    @staticmethod
+    def _is_oom_failure(job_failure: Dict[str, Any]) -> bool:
+        status_reason = (job_failure.get('statusReason') or '').lower()
+        container = job_failure.get('container', {}) or {}
+        container_reason = (container.get('reason') or '').lower()
+        exit_code = container.get('exitCode')
+        if exit_code in (137, 134):
+            return True
+        for text in (status_reason, container_reason):
+            if any(key in text for key in ('outofmemory', 'oom', 'memory')):
+                return True
+        return False
+
+    def _resubmit_failed_jobs(self, failed_jobs: List[Dict[str, Any]],
+                              job_info_map: Dict[str, Dict[str, Any]]) -> List[str]:
+        """Resubmit OOM-failed jobs with more memory (next tier).
+
+        Uses oom_memory_mb_tiers to progressively increase memory on each OOM.
+        Requires at least 2 tiers to be configured.
+        """
+        tiers = self.config.oom_memory_mb_tiers or []
+        if len(tiers) < 2:
+            return []
+
+        resubmitted = []
+        for job in failed_jobs:
+            if not self._is_oom_failure(job):
+                continue
+
+            base_name = self._base_job_name(job['jobName'])
+            current_idx = self._job_memory_tier_index.get(base_name, 0)
+            next_idx = current_idx + 1
+
+            if next_idx >= len(tiers):
+                continue
+            memory_mb = tiers[next_idx]
+
+            container = job.get('container', {}) or {}
+            command = container.get('command')
+            if not command:
+                print(f'  ⚠ Cannot resubmit {job["jobName"]}: missing command')
+                continue
+
+            retry_name = f'{base_name}_retry{next_idx}'
+            overrides: Dict[str, Any] = {
+                'command': command,
+                'resourceRequirements': [
+                    {'type': 'VCPU', 'value': str(self.config.vcpus)},
+                    {'type': 'MEMORY', 'value': str(memory_mb)},
+                ],
+            }
+
+            try:
+                response = self.batch.submit_job(
+                    jobName=retry_name,
+                    jobQueue=self.config.job_queue,
+                    jobDefinition=self.config.job_definition,
+                    containerOverrides=overrides,
+                    retryStrategy={'attempts': self.config.retry_attempts},
+                    timeout={'attemptDurationSeconds': self.config.timeout_minutes * 60}
+                )
+                new_job_id = response['jobId']
+                self._job_memory_tier_index[base_name] = next_idx
+                resubmitted.append(new_job_id)
+                if job['jobId'] in job_info_map:
+                    job_info_map[new_job_id] = job_info_map[job['jobId']]
+                print(f'  ↻ Resubmitted {job["jobName"]} with {memory_mb} MB as {retry_name}')
+            except ClientError as e:
+                print(f'  ✗ Failed to resubmit {job["jobName"]}: {e}')
+
+        return resubmitted
     
     def upload_experiment(self, exp, ana_kwargs: Dict[str, Any], 
                          experiment_id: str) -> str:
@@ -419,7 +505,8 @@ class AWSBatchRunner:
                                     'jobId': job_id,
                                     'jobName': job['jobName'],
                                     'statusReason': job.get('statusReason', 'Unknown'),
-                                    'container': job.get('container', {})
+                                    'container': job.get('container', {}),
+                                    'jobDefinition': job.get('jobDefinition', '')
                                 }
                                 failed_jobs.append(job_failure)
                                 newly_failed_jobs.append(job_failure)
@@ -713,7 +800,17 @@ class AWSBatchRunner:
                             if 'logStreamName' in container:
                                 log_stream = container["logStreamName"]
                                 print(f'   Logs: aws logs get-log-events --log-group-name /aws/batch/job --log-stream-name {log_stream} --limit 50 --output text | tail -30')
-                    
+
+                    # resubmit OOM failures to fallback queues if configured
+                    resubmitted = self._resubmit_failed_jobs(failed_jobs, job_info_map)
+                    if resubmitted:
+                        print(f'\nRetrying {len(resubmitted)} OOM job(s) on larger queues...')
+                        self.monitor_jobs(
+                            resubmitted,
+                            poll_interval=poll_interval,
+                            job_info_map=job_info_map,
+                            cancel_on_error=cancel_on_error
+                        )
                     break
             
                 time.sleep(poll_interval)

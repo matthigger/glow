@@ -43,7 +43,8 @@ This creates:
 - IAM roles for ECS/Batch
 - Compute environment + job queue
 - Job definition
-- `.glow_aws_config`
+- `.glow_aws_config` (saved in the project root)
+  - **OOM retries**: Jobs that run out of memory are automatically resubmitted on the same queue with more memory: 2 → 4 → 8 → 16 GB (decimal; see `CloudConfig.oom_memory_mb_tiers`).
 
 It also creates a monitoring policy for instance-type tracking and attempts to attach it to your current IAM user.
 
