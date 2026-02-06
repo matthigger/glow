@@ -630,6 +630,16 @@ class AWSBatchRunner:
                         log_stream = container["logStreamName"]
                         print(f'  Logs: aws logs get-log-events --log-group-name /aws/batch/job --log-stream-name {log_stream} --limit 50 --output text | tail -30')
                 
+                # immediately resubmit OOM failures at the next memory tier
+                if newly_failed_jobs:
+                    resubmitted = self._resubmit_failed_jobs(
+                        newly_failed_jobs, job_info_map)
+                    if resubmitted:
+                        job_ids.extend(resubmitted)
+                        total = len(job_ids)
+                        pbar.total = total
+                        pbar.refresh()
+
                 # verify we got responses for all requested jobs
                 if first_check and jobs_found != len(job_ids):
                     print(f'\n⚠ Warning: Requested {len(job_ids)} jobs, AWS returned {jobs_found}')
@@ -686,16 +696,6 @@ class AWSBatchRunner:
                                 log_stream = container["logStreamName"]
                                 print(f'   Logs: aws logs get-log-events --log-group-name /aws/batch/job --log-stream-name {log_stream} --limit 50 --output text | tail -30')
 
-                    # resubmit OOM failures to fallback queues if configured
-                    resubmitted = self._resubmit_failed_jobs(failed_jobs, job_info_map)
-                    if resubmitted:
-                        print(f'\nRetrying {len(resubmitted)} OOM job(s) on larger queues...')
-                        self.monitor_jobs(
-                            resubmitted,
-                            poll_interval=poll_interval,
-                            job_info_map=job_info_map,
-                            cancel_on_error=cancel_on_error
-                        )
                     break
             
                 time.sleep(poll_interval)
