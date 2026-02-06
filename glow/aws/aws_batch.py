@@ -65,12 +65,18 @@ class AWSBatchRunner:
         return False
 
     def _resubmit_failed_jobs(self, failed_jobs, job_info_map):
-        """resubmit OOM-failed jobs at the next memory tier."""
+        """resubmit OOM-failed jobs at the next memory tier.
+
+        Returns:
+            resubmitted (list): new job IDs
+            resubmitted_src_ids (set): original job IDs that were resubmitted
+        """
         tiers = self.config.oom_memory_mb_tiers or []
         if len(tiers) < 2:
-            return []
+            return [], set()
 
         resubmitted = []
+        resubmitted_src_ids = set()
         for job in failed_jobs:
             if not self._is_oom_failure(job):
                 continue
@@ -110,13 +116,14 @@ class AWSBatchRunner:
                 new_job_id = response['jobId']
                 self._job_memory_tier_index[base_name] = next_idx
                 resubmitted.append(new_job_id)
+                resubmitted_src_ids.add(job['jobId'])
                 if job['jobId'] in job_info_map:
                     job_info_map[new_job_id] = job_info_map[job['jobId']]
-                print(f'  ↻ Resubmitted {job["jobName"]} with {memory_mb} MB as {retry_name}')
+                print(f'  ↻ {job["jobName"]} → {memory_mb} MB ({retry_name})')
             except ClientError as e:
                 print(f'  ✗ Failed to resubmit {job["jobName"]}: {e}')
 
-        return resubmitted
+        return resubmitted, resubmitted_src_ids
     
     def upload_experiment(self, exp, ana_kwargs: Dict[str, Any], 
                          experiment_id: str) -> str:
@@ -617,28 +624,34 @@ class AWSBatchRunner:
                 postfix_str = ', '.join(postfix_parts)
                 pbar.set_postfix_str(postfix_str)
                 
-                # print failed jobs immediately (below status display)
-                for job in newly_failed_jobs:
-                    print(f'\n✗ FAILED: {job["jobName"]} ({job["jobId"][:8]}...)')
-                    print(f'  Reason: {job["statusReason"]}')
-                    container = job.get('container', {})
-                    if 'reason' in container:
-                        print(f'  Container: {container["reason"]}')
-                    if 'exitCode' in container:
-                        print(f'  Exit Code: {container["exitCode"]}')
-                    if 'logStreamName' in container:
-                        log_stream = container["logStreamName"]
-                        print(f'  Logs: aws logs get-log-events --log-group-name /aws/batch/job --log-stream-name {log_stream} --limit 50 --output text | tail -30')
-                
                 # immediately resubmit OOM failures at the next memory tier
+                resubmitted_src_ids = set()
                 if newly_failed_jobs:
-                    resubmitted = self._resubmit_failed_jobs(
-                        newly_failed_jobs, job_info_map)
+                    resubmitted, resubmitted_src_ids = \
+                        self._resubmit_failed_jobs(
+                            newly_failed_jobs, job_info_map)
                     if resubmitted:
                         job_ids.extend(resubmitted)
                         total = len(job_ids)
                         pbar.total = total
                         pbar.refresh()
+
+                # print failed jobs (OOM retries get a softer message)
+                for job in newly_failed_jobs:
+                    job_id = job['jobId']
+                    if job_id in resubmitted_src_ids:
+                        print(f'\n⟳ OOM: {job["jobName"]} — resubmitting with more memory')
+                    else:
+                        print(f'\n✗ FAILED: {job["jobName"]} ({job_id[:8]}...)')
+                        print(f'  Reason: {job["statusReason"]}')
+                        container = job.get('container', {})
+                        if 'reason' in container:
+                            print(f'  Container: {container["reason"]}')
+                        if 'exitCode' in container:
+                            print(f'  Exit Code: {container["exitCode"]}')
+                        if 'logStreamName' in container:
+                            log_stream = container["logStreamName"]
+                            print(f'  Logs: aws logs get-log-events --log-group-name /aws/batch/job --log-stream-name {log_stream} --limit 50 --output text | tail -30')
 
                 # verify we got responses for all requested jobs
                 if first_check and jobs_found != len(job_ids):
