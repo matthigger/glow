@@ -270,7 +270,7 @@ class AWSBatchRunner:
             'skipped': list(completed)
         }
     
-    def monitor_jobs(self, job_ids, poll_interval=30,
+    def monitor_jobs(self, job_ids, poll_interval=10,
                     job_info_map=None, cancel_on_error=True):
         """poll AWS Batch until all jobs finish, downloading results as they complete."""
         if not job_ids:
@@ -315,7 +315,6 @@ class AWSBatchRunner:
         previous_done = 0
         resubmitted_total = 0
         last_status_print = 0  # track when we last printed status
-        status_print_interval = 30  # print status every 30 seconds or on significant changes
         
         # track job timestamps for vCPU-hours calculation
         # maps job_id -> {'started_at': timestamp, 'stopped_at': timestamp or None}
@@ -559,7 +558,7 @@ class AWSBatchRunner:
                 
                 # print status update in log style (simple, no overwriting)
                 # only print if significant change or enough time has passed
-                should_print = (current_time - last_status_print >= status_print_interval or 
+                should_print = (current_time - last_status_print >= poll_interval or 
                                done > last_done_count or 
                                len(newly_failed_jobs) > 0 or
                                len(completed_jobs) > 0)
