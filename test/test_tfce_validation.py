@@ -1,9 +1,62 @@
-"""validates pure python tfce against fsl implementation"""
+"""validates pure python tfce against fsl implementation
 
+FSL is only needed for the validation tests (TestTFCEValidationAgainstFSL).
+Install FSL: https://fsl.fmrib.ox.ac.uk/fsl/docs/install/index.html
+"""
+
+import os
+import subprocess
+import tempfile
+from shutil import which
+
+import nibabel as nib
 import numpy as np
 import pytest
-from glow.vba import apply_tfce_img, apply_tfce_img_fsl, is_fsl_available
+from glow.vba import apply_tfce_img
 
+# --- FSL detection (finds fslmaths on $PATH) ---
+
+_FSL_INSTALL_URL = 'https://fsl.fmrib.ox.ac.uk/fsl/docs/install/index.html'
+
+_fslmaths = which('fslmaths')
+
+
+def _apply_tfce_img_fsl(x):
+    """applies tfce using fsl's fslmaths (for validation only)
+
+    Raises:
+        RuntimeError: if fslmaths is not on $PATH
+    """
+    if _fslmaths is None:
+        raise RuntimeError(
+            f'fslmaths not found on $PATH. '
+            f'Install FSL: {_FSL_INSTALL_URL}'
+        )
+
+    # get input / output files
+    f = tempfile.NamedTemporaryFile(suffix='.nii.gz').name
+    f_x_in = f.replace('.nii', '_x.nii')
+    f_out = f.replace('.nii', '_x_tfce.nii')
+
+    # write input to disk
+    img = nib.Nifti1Image(x, affine=np.eye(4))
+    img.to_filename(f_x_in)
+
+    cmd = f'{_fslmaths} {f_x_in} -tfce 2 .5 6 {f_out}'
+    proc = subprocess.run(cmd, shell=True, capture_output=True,
+                          executable='/bin/bash')
+    assert not proc.returncode, proc.stderr
+
+    x_tfce = nib.load(f_out).get_fdata()
+
+    # cleanup
+    os.remove(f_out)
+    os.remove(f_x_in)
+
+    return x_tfce
+
+
+# --- helpers ---
 
 def correlation(a, b):
     """compute pearson correlation between two arrays"""
@@ -19,6 +72,8 @@ def relative_error(a, b):
         return 0.0
     return np.mean(np.abs(a[mask] - b[mask]) / np.abs(b[mask]))
 
+
+# --- pure python tests (no FSL needed) ---
 
 class TestTFCEPurePython:
     """tests for pure python tfce implementation"""
@@ -79,7 +134,11 @@ class TestTFCEPurePython:
         assert tfce2 > tfce1
 
 
-@pytest.mark.skipif(not is_fsl_available(), reason='FSL not installed')
+# --- FSL validation tests (skipped if fslmaths not on $PATH) ---
+
+@pytest.mark.skipif(
+    _fslmaths is None,
+    reason=f'FSL not installed (install: {_FSL_INSTALL_URL})')
 class TestTFCEValidationAgainstFSL:
     """compares pure python tfce to fsl implementation
 
@@ -96,7 +155,7 @@ class TestTFCEValidationAgainstFSL:
         x = np.pad(x_core, pad_width=1, constant_values=0)
 
         tfce_python = apply_tfce_img(x)
-        tfce_fsl = apply_tfce_img_fsl(x)
+        tfce_fsl = _apply_tfce_img_fsl(x)
 
         # compare interior only (fsl zeros edges)
         py_int = tfce_python[1:-1, 1:-1, 1:-1]
@@ -117,7 +176,7 @@ class TestTFCEValidationAgainstFSL:
         blob = np.pad(blob_core, pad_width=1, constant_values=0)
 
         tfce_python = apply_tfce_img(blob)
-        tfce_fsl = apply_tfce_img_fsl(blob)
+        tfce_fsl = _apply_tfce_img_fsl(blob)
 
         py_int = tfce_python[1:-1, 1:-1, 1:-1]
         fsl_int = tfce_fsl[1:-1, 1:-1, 1:-1]
@@ -137,7 +196,7 @@ class TestTFCEValidationAgainstFSL:
         x = np.pad(x, pad_width=1, constant_values=0)
 
         tfce_python = apply_tfce_img(x)
-        tfce_fsl = apply_tfce_img_fsl(x)
+        tfce_fsl = _apply_tfce_img_fsl(x)
 
         py_int = tfce_python[1:-1, 1:-1, 1:-1]
         fsl_int = tfce_fsl[1:-1, 1:-1, 1:-1]
@@ -152,7 +211,7 @@ class TestTFCEValidationAgainstFSL:
         x[3:6, 3:6, 3:6] = 1.0  # centered 3x3x3 cube
 
         tfce_python = apply_tfce_img(x)
-        tfce_fsl = apply_tfce_img_fsl(x)
+        tfce_fsl = _apply_tfce_img_fsl(x)
 
         # center should match exactly
         py_center = tfce_python[4, 4, 4]
@@ -165,8 +224,8 @@ class TestTFCEValidationAgainstFSL:
 
 def run_visual_comparison():
     """run a visual comparison (for debugging)"""
-    if not is_fsl_available():
-        print('FSL not available, skipping visual comparison')
+    if _fslmaths is None:
+        print(f'FSL not available. Install: {_FSL_INSTALL_URL}')
         return
 
     np.random.seed(42)
@@ -176,7 +235,7 @@ def run_visual_comparison():
     x = np.pad(x_core, pad_width=1, constant_values=0)
 
     tfce_python = apply_tfce_img(x)
-    tfce_fsl = apply_tfce_img_fsl(x)
+    tfce_fsl = _apply_tfce_img_fsl(x)
 
     # compare interior only (fsl zeros edges)
     py_int = tfce_python[1:-1, 1:-1, 1:-1]
@@ -193,7 +252,7 @@ def run_visual_comparison():
     print(f'Correlation: {correlation(py_int, fsl_int):.6f}')
     print(f'Max absolute diff: {np.abs(py_int - fsl_int).max():.6f}')
     print()
-    print('✓ Pure Python TFCE matches FSL output!')
+    print('Pure Python TFCE matches FSL output!')
 
 
 if __name__ == '__main__':

@@ -1,11 +1,3 @@
-import os
-import pathlib
-import subprocess
-import tempfile
-import warnings
-from shutil import which
-
-import nibabel as nib
 import numpy as np
 from scipy.ndimage import label, generate_binary_structure
 
@@ -99,55 +91,3 @@ def apply_tfce_x(x, mask_idx):
 
     # extract tfce stats
     return img_tfce[mask_bool]
-
-
-# --- FSL-based implementation for validation ---
-
-fsl_path = pathlib.Path('/usr/local/fsl')
-fsl_conf_sh = fsl_path / 'etc/fslconf/fsl.sh'
-fslmaths_path = fsl_path / 'bin/fslmaths'
-
-_fsl_available = which(str(fslmaths_path)) is not None
-
-
-def is_fsl_available():
-    """check if fsl is installed and accessible"""
-    return _fsl_available
-
-
-def apply_tfce_img_fsl(x):
-    """applies tfce using fsl's fslmaths (for validation only)
-
-    Args:
-        x: 3d array to apply tfce to
-
-    Returns:
-        tfce enhanced image
-
-    Raises:
-        RuntimeError: if fsl is not available
-    """
-    if not _fsl_available:
-        raise RuntimeError(f'fslmaths not found at: {fslmaths_path}')
-
-    # get input / output files
-    f = tempfile.NamedTemporaryFile(suffix='.nii.gz').name
-    f_x_in = f.replace('.nii', '_x.nii')
-    f_out = f.replace('.nii', '_x_tfce.nii')
-
-    # write input to disk
-    img = nib.Nifti1Image(x, affine=np.eye(4))
-    img.to_filename(f_x_in)
-
-    cmd = f'source {fsl_conf_sh} && {fslmaths_path} {f_x_in} -tfce 2 .5 6 {f_out}'
-    proc = subprocess.run(cmd, shell=True, capture_output=True,
-                          executable='/bin/bash')
-    assert not proc.returncode, proc.stderr
-
-    x_tfce = nib.load(f_out).get_fdata()
-
-    # cleanup
-    os.remove(f_out)
-    os.remove(f_x_in)
-
-    return x_tfce
