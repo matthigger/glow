@@ -397,7 +397,7 @@ class ExperimentScaled(Experiment):
         self.pre_scale = np.diag(1 / np.diag(cov) ** .5)
 
         cov_scale = self.pre_scale @ cov @ self.pre_scale.T
-        evals, evecs = np.linalg.eig(cov_scale)
+        evals, evecs = np.linalg.eigh(cov_scale)
         self.pre_scale = evecs.T @ self.pre_scale
 
         super().__init__(y=self.prep(y), *args, **kwargs)

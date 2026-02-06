@@ -127,7 +127,7 @@ class TestExperimentScaled:
         cov = np.cov(exp.y.reshape(b, -1))
         scale = np.diag(1 / np.diag(cov) ** .5)
         cov_scale = scale @ cov @ scale.T
-        evals, evecs = np.linalg.eig(cov_scale)
+        evals, evecs = np.linalg.eigh(cov_scale)
 
         for evec, e in zip(evecs.T, np.eye(b)):
             e = e[:, np.newaxis, np.newaxis]
