@@ -195,7 +195,6 @@ class ExperimentImageOnly:
         if a is None:
             # contrast specified, extract a from it
             a = contrast.size
-            contrast = contrast
         else:
             # default contrast: all x of interest but bias term
             contrast = np.ones(a, dtype=bool)

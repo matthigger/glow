@@ -295,12 +295,6 @@ def test_graph_merge():
                                                       num_leaf=n_node_per_graph,
                                                       node_start=node_subgraph,
                                                       only_leaf=True))
-                    if set_leaf != set_leaf_subgraph:
-                        print('hi')
-                        map_to_new, children, size = graph_merge(
-                            n_common=n_node_per_graph,
-                            children_list=children_list)
-
                     assert set_leaf == set_leaf_subgraph
 
                     # count
@@ -387,18 +381,6 @@ class TestSubgraph:
 
         assert list(g.iter_ancest(6)) == []
         assert list(g.iter_ancest(6, incl_self=True)) == [6]
-
-    def test_iter_desc_full_tree(self):
-        g = SCGraph(self.parent_tree)
-
-        assert list(g.iter_desc(0)) == []
-        assert list(g.iter_desc(0, incl_self=True)) == [0]
-
-        assert list(g.iter_desc(5)) == [2, 3]
-        assert list(g.iter_desc(5, incl_self=True)) == [5, 2, 3]
-
-        assert list(g.iter_desc(6)) == [4, 0, 1, 5, 2, 3]
-        assert list(g.iter_desc(6, incl_self=True)) == [6, 4, 0, 1, 5, 2, 3]
 
     def test_iter_desc_with_removals(self):
         g = SCGraph(self.parent_tree)

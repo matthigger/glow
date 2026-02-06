@@ -156,7 +156,7 @@ def measure_memory(target_vox):
         config = build_config(temp_folder)
         config.prep_exp_orig()
         ana_kwargs = config.ana_kwargs_dict['GLOW'][1]
-        exp, radius, num_vox, total_vox = select_hcp_exp(config, target_vox, seed=0)
+        exp, _, num_vox, total_vox = select_hcp_exp(config, target_vox, seed=0)
 
         input_arrays = []
         input_arrays.extend(get_array_info(exp, 'exp'))

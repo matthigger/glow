@@ -313,8 +313,6 @@ class Config:
 
         if verbose:
             print(f'outputs stored in: {self.folder}')
-            
-            path_config = self.folder / 'config.yaml'
             if path_config.exists():
                 with open(path_config, 'r') as f:
                     print(f.read())

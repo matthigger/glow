@@ -80,7 +80,7 @@ def measure_cpu_time(target_vox):
         config.prep_exp_orig()
         ana_kwargs = config.ana_kwargs_dict['GLOW'][1]
 
-        exp, radius, num_vox, total_vox = select_hcp_exp(config, target_vox, seed=0)
+        exp, _, num_vox, total_vox = select_hcp_exp(config, target_vox, seed=0)
         start_time = time.perf_counter()
         process_permutation(exp, ana_kwargs, perm_idx=0)
         elapsed_sec = time.perf_counter() - start_time

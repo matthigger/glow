@@ -16,9 +16,7 @@ Mode is determined by which argument is provided (--perm-idx or --exp-idx)
 import argparse
 import sys
 import os
-import gc
 from pathlib import Path
-from collections import defaultdict
 
 import boto3
 import cloudpickle as pickle

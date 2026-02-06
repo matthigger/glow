@@ -60,9 +60,6 @@ def apply_tfce_img(x, H=2.0, E=0.5, connectivity=6, n_steps=100):
         # find connected components
         labeled, n_clusters = label(binary, structure=struct)
 
-        if n_clusters == 0:
-            continue
-
         # compute cluster sizes efficiently
         cluster_sizes = np.bincount(labeled.ravel())
 

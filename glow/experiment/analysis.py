@@ -1,4 +1,4 @@
-from _bisect import bisect_left
+from bisect import bisect_left
 
 import numpy as np
 from joblib import Parallel, delayed
@@ -290,7 +290,7 @@ class AnalysisGLOW(Analysis):
                            desc='clustering per permutation',
                            disable=not verbose)
             for perm_idx in tqdm(range(n_perm + 1), **tqdm_dict):
-                perm_idx, children, stat_row = process_permutation(perm_idx)
+                _, children, stat_row = process_permutation(perm_idx)
                 self.child_dict[perm_idx] = children
                 self.stat[perm_idx, :] = stat_row
 

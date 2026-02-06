@@ -1,17 +1,14 @@
 """AWS Batch integration for parallel permutation processing"""
 
-import json
 import time
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
-import warnings
 from contextlib import contextmanager
 
 import boto3
 import cloudpickle as pickle
-import numpy as np
 from botocore.exceptions import ClientError
 from tqdm import tqdm
 
@@ -74,14 +71,10 @@ class AWSBatchRunner:
         self.batch = boto3.client('batch', region_name=config.region)
         self.ecs = boto3.client('ecs', region_name=config.region)
         self.ec2 = boto3.client('ec2', region_name=config.region)
-        self._uploaded_data = set()  # track uploaded files
-        self._job_retry_counts = {}
         self._job_memory_tier_index = {}
 
     @staticmethod
     def _base_job_name(job_name: str) -> str:
-        if job_name.endswith(')'):
-            return job_name
         return job_name.rsplit('_retry', 1)[0]
 
     @staticmethod
@@ -187,7 +180,6 @@ class AWSBatchRunner:
                 Key=s3_key,
                 Body=data_bytes
             )
-            self._uploaded_data.add(experiment_id)
             return f's3://{self.config.s3_bucket}/{s3_key}'
         except ClientError as e:
             raise RuntimeError(f'failed to upload experiment: {e}')
@@ -758,10 +750,8 @@ class AWSBatchRunner:
             print('\n\nMonitoring interrupted by user')
             print('cancelling AWS jobs')
             cancel_summary = self.cancel_jobs(job_ids, reason='Monitoring interrupted by user')
-            if cancel_summary['failed'] == 0:
-                print(f'✓ Canceled: {cancel_summary["canceled"]}')
-            else:
-                print(f'✓ Canceled: {cancel_summary["canceled"]}')
+            print(f'✓ Canceled: {cancel_summary["canceled"]}')
+            if cancel_summary['failed']:
                 print(f'✗ Failed to cancel: {cancel_summary["failed"]}')
             raise
         except Exception as e:
@@ -769,10 +759,8 @@ class AWSBatchRunner:
             if cancel_on_error:
                 print('\n\nMonitoring failed; cancelling AWS jobs')
                 cancel_summary = self.cancel_jobs(job_ids, reason='Monitoring error')
-                if cancel_summary['failed'] == 0:
-                    print(f'✓ Canceled: {cancel_summary["canceled"]}')
-                else:
-                    print(f'✓ Canceled: {cancel_summary["canceled"]}')
+                print(f'✓ Canceled: {cancel_summary["canceled"]}')
+                if cancel_summary['failed']:
                     print(f'✗ Failed to cancel: {cancel_summary["failed"]}')
             raise
 
@@ -823,18 +811,14 @@ class AWSBatchRunner:
             print('\n\nMonitoring interrupted by user')
             print('cancelling AWS jobs')
             summary = self.cancel_jobs(job_ids, reason=reason)
-            if summary['failed'] == 0:
-                print(f'✓ Canceled: {summary["canceled"]}')
-            else:
-                print(f'✓ Canceled: {summary["canceled"]}')
+            print(f'✓ Canceled: {summary["canceled"]}')
+            if summary['failed']:
                 print(f'✗ Failed to cancel: {summary["failed"]}')
             raise
         except Exception:
             summary = self.cancel_jobs(job_ids, reason=reason)
-            if summary['failed'] == 0:
-                print(f'✓ Canceled: {summary["canceled"]}')
-            else:
-                print(f'✓ Canceled: {summary["canceled"]}')
+            print(f'✓ Canceled: {summary["canceled"]}')
+            if summary['failed']:
                 print(f'✗ Failed to cancel: {summary["failed"]}')
             raise
     

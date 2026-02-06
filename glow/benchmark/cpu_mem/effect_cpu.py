@@ -105,7 +105,6 @@ if __name__ == '__main__':
     try:
         config = build_config(temp_folder)
         config.prep_exp_orig()
-        max_comp_vox = get_max_component_vox(config)
     finally:
         shutil.rmtree(temp_folder, ignore_errors=True)
 
