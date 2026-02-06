@@ -396,12 +396,11 @@ def run_experiment_mode(args):
                 rel_path = local_file.relative_to(temp_folder)
                 s3_key = f'{result_prefix}/{rel_path}'
                 
-                with open(local_file, 'rb') as f:
-                    s3.put_object(
-                        Bucket=args.s3_bucket,
-                        Key=s3_key,
-                        Body=f.read()
-                    )
+                s3.upload_file(
+                    Filename=str(local_file),
+                    Bucket=args.s3_bucket,
+                    Key=s3_key
+                )
                 print(f'  uploaded {rel_path}')
                 uploaded += 1
         
