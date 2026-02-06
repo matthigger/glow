@@ -8,18 +8,31 @@ from .mancova import decompose
 
 
 def get_freed_lane(x, contrast, perm_idx):
+    """build Freedman-Lane permutation matrix
+
+    Uses index-based row selection instead of constructing a dense
+    (num_img, num_img) permutation matrix P, avoiding O(num_img^3)
+    matrix multiply.
+
+    Args:
+        x (np.array): (a, num_img) explanatory variables
+        contrast (np.array): (a) boolean, True for features of interest
+        perm_idx (int): permutation seed (0 reserved for unpermuted)
+
+    Returns:
+        freed_lane (np.array): (num_img, num_img) permutation matrix
+    """
     assert perm_idx, 'perm_idx = 0 reserved for unpermuted data'
 
     q = decompose(x, contrast)
+    q0 = q[0].T @ q[0]  # (num_img, num_img) projection
 
-    # build permutation matrix
     num_img = x.shape[1]
     rng = np.random.default_rng(perm_idx)
-    p = rng.permutation(np.eye(num_img)).T
+    perm = np.argsort(rng.permutation(num_img))
 
-    # build freed_lane
-    q0 = q[0].T @ q[0]
-    return p @ (np.eye(num_img) - q0) + q0
+    # freed_lane = P @ (I - Q0) + Q0, where P @ M = M[perm_inv, :]
+    return (np.eye(num_img) - q0)[perm, :] + q0
 
 
 class NotEnoughPermutations(Warning):
