@@ -524,9 +524,10 @@ class AWSBatchRunner:
                             runtime_hours = (current_time - timestamps['started_at']) / 3600
                         vcpu_hours += runtime_hours * vcpus
                 
-                # calculate status counts
-                total = len(job_ids)
-                done = statuses['SUCCEEDED'] + statuses['FAILED']
+                # calculate status counts (don't count resubmitted OOM jobs
+                # as done — they are being retried, not finished)
+                total = len(job_ids) - resubmitted_total
+                done = statuses['SUCCEEDED'] + statuses['FAILED'] - resubmitted_total
                 pending = (statuses['SUBMITTED'] + statuses['PENDING'] + 
                           statuses['RUNNABLE'] + statuses['STARTING'])
                 running = statuses['RUNNING']
@@ -639,9 +640,6 @@ class AWSBatchRunner:
                     resubmitted_total += len(resubmitted_src_ids)
                     if resubmitted:
                         job_ids.extend(resubmitted)
-                        total = len(job_ids)
-                        pbar.total = total
-                        pbar.refresh()
 
                 # print failed jobs (OOM retries get a softer message)
                 for job in newly_failed_jobs:
