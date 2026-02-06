@@ -328,7 +328,7 @@ class AnalysisGLOW(Analysis):
 
         # to ensure each of these permuted stats is new, we run one
         # permutation ahead of time
-        _exp = exp.permute(1 << 31 - 1)
+        _exp = exp.permute((1 << 31) - 1)
         # compute permutation stat for each region in common graph
         stat_perm = self.get_stat_perm(exp=_exp,
                                        children=children,

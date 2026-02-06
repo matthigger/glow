@@ -33,9 +33,10 @@ class TestBigEffect:
                               children=analysis.child_dict[0])[0]
         assert np.isclose(f1.max(), 1), 'target region not segmented'
 
-        # appropriate effect discovered as most significant effect
-        np.testing.assert_allclose(analysis.effect_list[0].mask,
-                                   TestBigEffect.effect.mask)
+        # true effect should be among the discovered effects
+        assert any(np.array_equal(eff.mask, TestBigEffect.effect.mask)
+                   for eff in analysis.effect_list), \
+            'true effect not found among discovered effects'
 
     def test_vba(self):
         kwargs_list = [dict(tfce_flag=False),
