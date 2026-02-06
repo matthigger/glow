@@ -35,6 +35,11 @@ RUN_TFCE_TEST = True
 # - Requires: local HCP data or existing HCP data on S3
 RUN_HCP_TEST = True  # disabled by default (requires HCP data)
 
+# OOM resubmit test (unit tests, runs locally without AWS)
+# - Tests: OOM detection, job name parsing, queue fallback, resubmission logic
+# - Requires: nothing (all mocked)
+RUN_OOM_RESUBMIT_TEST = True
+
 
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -197,206 +202,6 @@ def load_aws_config():
     return None
 
 
-def test_local_vs_cloud_comparison():
-    """run same experiment locally and on cloud, compare results for equality"""
-    # check if boto3 is available
-    try:
-        from glow.aws import CloudConfig
-        import boto3
-        import numpy as np
-    except ImportError:
-        print('skipping comparison test: boto3 not installed')
-        print('install with: pip install boto3')
-        return
-    
-    # check if AWS credentials are configured
-    try:
-        boto3.client('sts').get_caller_identity()
-    except Exception:
-        print('skipping comparison test: AWS credentials not configured')
-        print('run: aws configure')
-        return
-    
-    # load AWS config
-    aws_config = load_aws_config()
-    if not aws_config or not all([aws_config['s3_bucket'], 
-                                   aws_config['job_queue'], 
-                                   aws_config['job_definition']]):
-        print('skipping comparison test: AWS resources not configured')
-        print('run: ./glow/aws/setup_aws_batch.sh')
-        return
-    
-    s3_bucket = aws_config['s3_bucket']
-    job_queue = aws_config['job_queue']
-    job_definition = aws_config['job_definition']
-    
-    # create experiment with effect
-    print('creating test experiment with effect...')
-    exp_orig = glow.experiment.Experiment.from_gauss(
-        seed=42,
-        shape=(20, 20),  # small 20x20 image
-        a=2,
-        b=2,
-        num_img=20
-    )
-    
-    # create circular mask for effect
-    mask = np.zeros(exp_orig.mask_idx.shape, dtype=bool)
-    center = (10, 10)
-    radius = 5
-    for i in range(mask.shape[0]):
-        for j in range(mask.shape[1]):
-            if (i - center[0])**2 + (j - center[1])**2 <= radius**2:
-                mask[i, j] = True
-    # ensure mask intersects with valid voxels
-    mask = np.logical_and(mask, exp_orig.mask_idx > -1)
-    
-    # impose effect
-    exp, eff = exp_orig.impose_effect(mask=mask, hotel_tr=10.0, seed=42)
-    
-    # shared analysis parameters
-    ana_kwargs = {
-        'n_perm': 5,
-        'n_perm_adj': 5,
-        'n_perm_prune': 10,
-        'alpha_fwer': 0.05,
-        'alpha_prune': 0.05,
-        'min_size': 1,
-        'verbose': True
-    }
-    
-    # run locally
-    print('\n' + '─' * 70)
-    print('running GLOW analysis LOCALLY...')
-    print('─' * 70)
-    ana_local = glow.experiment.AnalysisGLOW(
-        exp,
-        **ana_kwargs
-    )
-    
-    # run on cloud
-    print('\n' + '─' * 70)
-    print('running GLOW analysis on AWS CLOUD...')
-    print('─' * 70)
-    cloud_config = CloudConfig(
-        s3_bucket=s3_bucket,
-        s3_prefix='test/comparison_test',
-        job_queue=job_queue,
-        job_definition=job_definition,
-        max_concurrent_jobs=10,
-        vcpus=2,
-        memory_mb=4096,
-        timeout_minutes=30
-    )
-    
-    ana_cloud = glow.experiment.AnalysisGLOW(
-        exp,
-        cloud_config=cloud_config,
-        **ana_kwargs
-    )
-    
-    # compare results
-    print('\n' + '─' * 70)
-    print('comparing LOCAL vs CLOUD results...')
-    print('─' * 70)
-    
-    # check basic shapes
-    print('\nchecking shapes...')
-    assert ana_local.pval.shape == ana_cloud.pval.shape, 'pval shape mismatch'
-    assert ana_local.z_stat.shape == ana_cloud.z_stat.shape, 'z_stat shape mismatch'
-    assert ana_local.size.shape == ana_cloud.size.shape, 'size shape mismatch'
-    assert ana_local.stat.shape == ana_cloud.stat.shape, 'stat shape mismatch'
-    print('  ✓ shapes match')
-    
-    # check number of effects
-    print('\nchecking effect counts...')
-    n_eff_local = len(ana_local.effect_list)
-    n_eff_cloud = len(ana_cloud.effect_list)
-    print(f'  local: {n_eff_local} effects')
-    print(f'  cloud: {n_eff_cloud} effects')
-    assert n_eff_local == n_eff_cloud, f'effect count mismatch: {n_eff_local} != {n_eff_cloud}'
-    print('  ✓ effect counts match')
-    
-    # check numerical values (with tolerance for floating point)
-    print('\nchecking numerical values...')
-    tol = 1e-10
-    
-    # pval comparison
-    pval_diff = np.abs(ana_local.pval - ana_cloud.pval)
-    max_pval_diff = np.max(pval_diff)
-    print(f'  pval max difference: {max_pval_diff:.2e}')
-    assert max_pval_diff < tol, f'pval mismatch: max diff {max_pval_diff:.2e} > {tol}'
-    
-    # z_stat comparison
-    z_diff = np.abs(ana_local.z_stat - ana_cloud.z_stat)
-    max_z_diff = np.max(z_diff)
-    print(f'  z_stat max difference: {max_z_diff:.2e}')
-    assert max_z_diff < tol, f'z_stat mismatch: max diff {max_z_diff:.2e} > {tol}'
-    
-    # stat comparison
-    stat_diff = np.abs(ana_local.stat - ana_cloud.stat)
-    max_stat_diff = np.max(stat_diff)
-    print(f'  stat max difference: {max_stat_diff:.2e}')
-    assert max_stat_diff < tol, f'stat mismatch: max diff {max_stat_diff:.2e} > {tol}'
-    
-    # size comparison
-    size_diff = np.abs(ana_local.size - ana_cloud.size)
-    max_size_diff = np.max(size_diff)
-    print(f'  size max difference: {max_size_diff:.2e}')
-    assert max_size_diff < tol, f'size mismatch: max diff {max_size_diff:.2e} > {tol}'
-    
-    print('  ✓ all numerical values match within tolerance')
-    
-    # check effect properties
-    if n_eff_local > 0:
-        print('\nchecking effect properties...')
-        for i, (eff_local, eff_cloud) in enumerate(zip(ana_local.effect_list, ana_cloud.effect_list)):
-            # use the is_close method for comprehensive comparison
-            assert eff_local.is_close(eff_cloud, rtol=1e-10, atol=1e-10), \
-                f'effect {i}: effects not equal (mask or y_mean mismatch)'
-        print(f'  ✓ all {n_eff_local} effects match')
-    
-    # timing analysis from AWS jobs
-    print('\n' + '═' * 70)
-    print('AWS TIMING ANALYSIS')
-    print('═' * 70)
-    
-    # get job IDs from the runner (stored during analysis)
-    try:
-        from glow.aws import AWSBatchRunner
-        
-        # recreate runner with same config to access job metadata
-        runner = AWSBatchRunner(cloud_config)
-        batch_client = boto3.client('batch', region_name=cloud_config.region)
-        
-        # get job IDs from the S3 prefix (they were submitted during ana_cloud creation)
-        # we can get them from the runner's last submission
-        # for now, let's note that timing data is available in CloudWatch
-        print('\nTiming data available in AWS Batch job history.')
-        print('To view detailed timing:')
-        print('  1. Go to AWS Batch console')
-        print('  2. View job details for each permutation')
-        print('  3. Check: createdAt, startedAt, stoppedAt')
-        print('\nTypical overhead observed: ~40-50s startup, ~10-15s compute')
-        print('Recommendation: Batch multiple permutations per job to reduce overhead %')
-        
-    except Exception as e:
-        print(f'\nCould not extract timing data: {e}')
-        print('Timing analysis requires job IDs from AWS Batch submission')
-    
-    # summary
-    print('\n' + '═' * 70)
-    print('LOCAL vs CLOUD COMPARISON: PASSED ✓')
-    print('═' * 70)
-    print('\nSummary:')
-    print(f'  Effects found: {n_eff_local}')
-    print(f'  Max pval diff: {max_pval_diff:.2e}')
-    print(f'  Max z_stat diff: {max_z_diff:.2e}')
-    print(f'  Max stat diff: {max_stat_diff:.2e}')
-    print(f'  Max size diff: {max_size_diff:.2e}')
-    print('\n✓ Cloud execution produces identical results to local execution!')
-
-
 def test_aws_runner_methods():
     """test AWSBatchRunner methods without running jobs"""
     # check if boto3 is available
@@ -472,321 +277,631 @@ def test_aws_runner_methods():
         raise
 
 
-def test_experiment_level_architecture():
-    """test experiment-level architecture (Config.cloud_config)
-    
-    Architecture: Each experiment runs in one AWS worker (serial perms)
-    Use case: Many small experiments (benchmarking like paper.py)
+def test_oom_resubmit():
+    """unit tests for OOM detection and resubmission logic (no AWS needed)
+
+    Tests:
+    1. _is_oom_failure: detects OOM by exit code (137, 134) and keywords
+    2. _base_job_name: strips _retryN suffix, preserves parenthesized names
+    3. _resubmit_failed_jobs: resubmits OOM failures with escalating memory tiers
     """
-    try:
-        import boto3
-        from glow.aws.aws_batch import CloudConfig
-    except ImportError:
-        print('skipping experiment-level test: boto3 not installed')
-        print('install with: pip install boto3')
-        return
-    
-    # check credentials
+    from unittest.mock import MagicMock, patch
+    from glow.aws.aws_batch import AWSBatchRunner, CloudConfig
+
+    passed = 0
+    total = 0
+
+    def check(condition, label):
+        nonlocal passed, total
+        total += 1
+        if condition:
+            passed += 1
+            print(f'  ✓ {label}')
+        else:
+            print(f'  ✗ {label}')
+
+    # ── 1. _is_oom_failure ───────────────────────────────────────────────
+
+    print('\n[1] _is_oom_failure')
+
+    # exit code 137 (killed by OOM killer)
+    check(AWSBatchRunner._is_oom_failure({
+        'container': {'exitCode': 137}
+    }), 'exit code 137 → OOM')
+
+    # exit code 134 (SIGABRT, common OOM symptom)
+    check(AWSBatchRunner._is_oom_failure({
+        'container': {'exitCode': 134}
+    }), 'exit code 134 → OOM')
+
+    # "OutOfMemoryError" in statusReason
+    check(AWSBatchRunner._is_oom_failure({
+        'statusReason': 'OutOfMemoryError: Container killed',
+        'container': {}
+    }), '"OutOfMemoryError" in statusReason → OOM')
+
+    # "oom" in container reason
+    check(AWSBatchRunner._is_oom_failure({
+        'container': {'reason': 'OOM: killed process'}
+    }), '"oom" in container reason → OOM')
+
+    # "memory" in container reason
+    check(AWSBatchRunner._is_oom_failure({
+        'container': {'reason': 'Insufficient memory'}
+    }), '"memory" in container reason → OOM')
+
+    # "memory" in statusReason
+    check(AWSBatchRunner._is_oom_failure({
+        'statusReason': 'Container ran out of memory',
+        'container': {}
+    }), '"memory" in statusReason → OOM')
+
+    # normal failure (exit code 1) → not OOM
+    check(not AWSBatchRunner._is_oom_failure({
+        'statusReason': 'Essential container exited',
+        'container': {'exitCode': 1, 'reason': 'task failed'}
+    }), 'exit code 1 with normal reason → not OOM')
+
+    # normal failure (exit code 0 somehow) → not OOM
+    check(not AWSBatchRunner._is_oom_failure({
+        'container': {'exitCode': 0}
+    }), 'exit code 0 → not OOM')
+
+    # empty/missing fields → not OOM
+    check(not AWSBatchRunner._is_oom_failure({}),
+          'empty dict → not OOM')
+
+    check(not AWSBatchRunner._is_oom_failure({
+        'container': None
+    }), 'container=None → not OOM')
+
+    check(not AWSBatchRunner._is_oom_failure({
+        'statusReason': None, 'container': {'exitCode': 2}
+    }), 'statusReason=None, exit code 2 → not OOM')
+
+    # ── 2. _base_job_name ────────────────────────────────────────────────
+
+    print('\n[2] _base_job_name')
+
+    check(AWSBatchRunner._base_job_name('glow_abc_exp000001_retry1') == 'glow_abc_exp000001',
+          'strips _retry1 suffix')
+
+    check(AWSBatchRunner._base_job_name('glow_abc_exp000001_retry2') == 'glow_abc_exp000001',
+          'strips _retry2 suffix')
+
+    check(AWSBatchRunner._base_job_name('glow_abc_exp000001') == 'glow_abc_exp000001',
+          'no retry suffix → unchanged')
+
+    check(AWSBatchRunner._base_job_name('job_with_parens(perm)') == 'job_with_parens(perm)',
+          'name ending with ) → unchanged (parenthesized names)')
+
+    # ── 3. _resubmit_failed_jobs ─────────────────────────────────────────
+
+    print('\n[3] _resubmit_failed_jobs')
+
+    def make_runner(job_queue, oom_memory_tiers=None):
+        """create AWSBatchRunner with mocked boto3 clients"""
+        config = CloudConfig(
+            s3_bucket='test-bucket',
+            s3_prefix='test',
+            job_queue=job_queue,
+            job_definition='test-def',
+            oom_memory_mb_tiers=oom_memory_tiers if oom_memory_tiers is not None else [2000, 4000, 8000, 16000]
+        )
+        with patch('boto3.client'):
+            runner = AWSBatchRunner(config)
+        return runner
+
+    # 3a. no memory tiers configured → nothing resubmitted
+    runner = make_runner('queue-gp', oom_memory_tiers=[])
+    result = runner._resubmit_failed_jobs(
+        [{'jobId': 'j1', 'jobName': 'glow_run_exp000001',
+          'container': {'exitCode': 137, 'command': ['--test']}}],
+        {}
+    )
+    check(result == [], 'no memory tiers → empty list')
+
+    # 3b. non-OOM failure → skipped
+    runner = make_runner('queue-gp')
+    runner.batch = MagicMock()
+    result = runner._resubmit_failed_jobs(
+        [{'jobId': 'j1', 'jobName': 'glow_run_exp000001',
+          'statusReason': 'Essential container exited',
+          'container': {'exitCode': 1, 'reason': 'task failed',
+                        'command': ['--test']}}],
+        {}
+    )
+    check(result == [], 'non-OOM failure → skipped')
+    runner.batch.submit_job.assert_not_called()
+
+    # 3c. OOM failure → resubmits with next memory tier
+    runner = make_runner('queue-gp')
+    runner.batch = MagicMock()
+    runner.batch.submit_job.return_value = {'jobId': 'new-j1'}
+
+    job_info_map = {'j1': {'run_id': 'run1', 'exp_idx': 0}}
+    result = runner._resubmit_failed_jobs(
+        [{'jobId': 'j1', 'jobName': 'glow_run_exp000001',
+          'container': {'exitCode': 137, 'command': ['--s3-bucket', 'b', '--exp-idx', '0']}}],
+        job_info_map
+    )
+    check(result == ['new-j1'], 'OOM failure → resubmitted (returns new job ID)')
+    runner.batch.submit_job.assert_called_once()
+    call_kwargs = runner.batch.submit_job.call_args
+    check(call_kwargs.kwargs['jobQueue'] == 'queue-gp',
+          'resubmitted to same queue')
+    check(call_kwargs.kwargs['jobName'] == 'glow_run_exp000001_retry1',
+          'retry job name has _retry1 suffix')
+    check(
+        call_kwargs.kwargs['containerOverrides']['resourceRequirements'] == [
+            {'type': 'VCPU', 'value': '2'},
+            {'type': 'MEMORY', 'value': '4000'},
+        ],
+        'first resubmit uses 4000 MB (4 GB)')
+    check('new-j1' in job_info_map,
+          'job_info_map updated with new job ID')
+    check(job_info_map['new-j1'] == {'run_id': 'run1', 'exp_idx': 0},
+          'job_info_map entry copied from original job')
+
+    # 3d. missing command → skipped with warning
+    runner = make_runner('queue-gp')
+    runner.batch = MagicMock()
+    result = runner._resubmit_failed_jobs(
+        [{'jobId': 'j3', 'jobName': 'glow_run_exp000003',
+          'container': {'exitCode': 137}}],
+        {}
+    )
+    check(result == [], 'missing command → skipped')
+    runner.batch.submit_job.assert_not_called()
+
+    # 3e. multiple jobs: mix of OOM and non-OOM
+    runner = make_runner('queue-gp')
+    runner.batch = MagicMock()
+    runner.batch.submit_job.return_value = {'jobId': 'new-j4'}
+
+    failed_jobs = [
+        # OOM job → should be resubmitted
+        {'jobId': 'j4', 'jobName': 'glow_run_exp000004',
+         'container': {'exitCode': 137, 'command': ['--test', '4']}},
+        # non-OOM job → should be skipped
+        {'jobId': 'j5', 'jobName': 'glow_run_exp000005',
+         'statusReason': 'timeout',
+         'container': {'exitCode': 1, 'command': ['--test', '5']}},
+    ]
+    result = runner._resubmit_failed_jobs(failed_jobs, {})
+    check(len(result) == 1, 'mixed batch: only OOM job resubmitted (1 of 2)')
+    check(result == ['new-j4'], 'mixed batch: correct job ID returned')
+
+    # 3f. tier tracking across multiple resubmissions (2 GB → 4 GB → 8 GB → exhausted)
+    runner = make_runner('queue-gp')
+    runner.batch = MagicMock()
+    runner.batch.submit_job.return_value = {'jobId': 'new-pass1'}
+
+    # first OOM: 2 GB → 4 GB
+    runner._resubmit_failed_jobs(
+        [{'jobId': 'j6', 'jobName': 'glow_run_exp000006',
+          'container': {'exitCode': 137, 'command': ['--test']}}],
+        {}
+    )
+    check(runner._job_memory_tier_index.get('glow_run_exp000006') == 1,
+          'after first resubmit: tier index = 1 (4 GB)')
+
+    # second OOM: 4 GB → 8 GB
+    runner.batch.submit_job.return_value = {'jobId': 'new-pass2'}
+    runner._resubmit_failed_jobs(
+        [{'jobId': 'new-pass1', 'jobName': 'glow_run_exp000006_retry1',
+          'container': {'exitCode': 137, 'command': ['--test']}}],
+        {}
+    )
+    check(runner._job_memory_tier_index.get('glow_run_exp000006') == 2,
+          'after second resubmit: tier index = 2 (8 GB)')
+    call_kwargs = runner.batch.submit_job.call_args
+    check(
+        call_kwargs.kwargs['containerOverrides']['resourceRequirements'] == [
+            {'type': 'VCPU', 'value': '2'},
+            {'type': 'MEMORY', 'value': '8000'},
+        ],
+        'second resubmit uses 8000 MB (8 GB)')
+
+    # third OOM: 8 GB → 16 GB
+    runner.batch.submit_job.return_value = {'jobId': 'new-pass3'}
+    runner._resubmit_failed_jobs(
+        [{'jobId': 'new-pass2', 'jobName': 'glow_run_exp000006_retry2',
+          'container': {'exitCode': 137, 'command': ['--test']}}],
+        {}
+    )
+    check(runner._job_memory_tier_index.get('glow_run_exp000006') == 3,
+          'after third resubmit: tier index = 3 (16 GB)')
+
+    # fourth OOM: already at 16 GB (last tier) → skipped
+    runner.batch.submit_job.reset_mock()
+    result = runner._resubmit_failed_jobs(
+        [{'jobId': 'new-pass3', 'jobName': 'glow_run_exp000006_retry3',
+          'container': {'exitCode': 137, 'command': ['--test']}}],
+        {}
+    )
+    check(result == [], 'exhausted all tiers → skipped')
+    runner.batch.submit_job.assert_not_called()
+
+    # ── summary ──────────────────────────────────────────────────────────
+
+    print(f'\n{passed}/{total} checks passed')
+    if passed == total:
+        print('✓ OOM resubmit tests PASSED')
+    else:
+        raise AssertionError(f'{total - passed} check(s) failed')
+
+
+
+
+def run_batched_cloud_tests():
+    """submit all enabled cloud tests in one wave, monitor once, then assert per test
+
+    This avoids repeated spot-instance ramp-ups by keeping the queue full.
+
+    Returns:
+        dict of test_name -> True/False
+    """
+    import uuid
+    import tempfile
+    import boto3
+    from glow.aws.aws_batch import CloudConfig, AWSBatchRunner
+    from glow.experiment.mancova import get_hotel_tr
+
+    # ── check AWS prerequisites once ──────────────────────────────────
     try:
         boto3.client('sts').get_caller_identity()
     except Exception:
-        print('skipping experiment-level test: AWS credentials not configured')
-        print('run: aws configure')
-        return
-    
-    # load config
+        print('skipping cloud tests: AWS credentials not configured')
+        return {}
+
     aws_config = load_aws_config()
-    if not aws_config or not all([aws_config['s3_bucket'], 
-                                   aws_config['job_queue'], 
+    if not aws_config or not all([aws_config['s3_bucket'],
+                                   aws_config['job_queue'],
                                    aws_config['job_definition']]):
-        print('skipping experiment-level test: AWS config incomplete')
-        print('run: ./glow/aws/setup_aws_batch.sh')
-        return
-    
-    print('testing experiment-level architecture (2 exp × 5 perms, 2 AWS jobs)...')
-    
-    # shared analysis config
-    ana_kwargs_dict = {
-        'GLOW': (glow.experiment.AnalysisGLOW,
-                 dict(n_perm=5,
-                      n_perm_adj=5,
-                      n_perm_prune=10,
-                      alpha_fwer=0.05,
-                      alpha_prune=0.05,
-                      min_size=1,
-                      n_jobs_perm=1))  # serial within each job
-    }
-    
-    cloud_config = CloudConfig(
-        s3_bucket=aws_config['s3_bucket'],
-        s3_prefix='test/experiment_level',
-        job_queue=aws_config['job_queue'],
-        job_definition=aws_config['job_definition'],
-        region=aws_config.get('region', 'us-east-1'),
-        timeout_minutes=30,
-        retry_attempts=1
-    )
-    
-    config = Config(
-        label='test_experiment_level',
-        source='wgn',
-        run_fnc=run_ana,
-        cloud_config=cloud_config,  # experiment-level!
-        ana_kwargs_dict=ana_kwargs_dict,
-        n_seed=2,
-        hotel_tr_all=np.array([0.5]),
-        wgn_shape=(5, 5, 5),
-        wgn_a=2,
-        wgn_b=2,
-        wgn_num_img=20,
-        exp_seed=42,
-        effect_perc=0.2,
-        n_jobs=1,
-        detail_save=False,
-        error_save=False
-    )
-    
-    config.run_all(verbose=True)
-    
-    results = list((config.folder / 'out').glob('*_result.json'))
-    print(f'✓ experiment-level test passed ({len(results)} results)')
+        print('skipping cloud tests: AWS config incomplete')
+        return {}
 
-
-def test_tfce_cloud():
-    """test TFCE analysis on cloud (pure Python implementation)
-    
-    Minimal test: 1 experiment with AnalysisVBA(tfce_flag=True)
-    Validates that our pure Python TFCE runs correctly on cloud workers.
-    """
-    try:
-        import boto3
-        from glow.aws.aws_batch import CloudConfig
-    except ImportError:
-        print('skipping TFCE test: boto3 not installed')
-        print('install with: pip install boto3')
-        return
-    
-    # check credentials
-    try:
-        boto3.client('sts').get_caller_identity()
-    except Exception:
-        print('skipping TFCE test: AWS credentials not configured')
-        print('run: aws configure')
-        return
-    
-    # load config
-    aws_config = load_aws_config()
-    if not aws_config or not all([aws_config['s3_bucket'], 
-                                   aws_config['job_queue'], 
-                                   aws_config['job_definition']]):
-        print('skipping TFCE test: AWS config incomplete')
-        print('run: ./glow/aws/setup_aws_batch.sh')
-        return
-    
-    print('testing TFCE on cloud (1 exp × 5 perms with tfce_flag=True)...')
-    
-    # tfce analysis config
-    ana_kwargs_dict = {
-        'VBA-TFCE': (glow.experiment.AnalysisVBA,
-                     dict(n_perm=5,
-                          tfce_flag=True,
-                          alpha_fwer=0.05,
-                          n_jobs_perm=1))
-    }
-    
-    cloud_config = CloudConfig(
-        s3_bucket=aws_config['s3_bucket'],
-        s3_prefix='test/tfce',
-        job_queue=aws_config['job_queue'],
-        job_definition=aws_config['job_definition'],
-        region=aws_config.get('region', 'us-east-1'),
-        timeout_minutes=30,
-        retry_attempts=1
-    )
-    
-    config = Config(
-        label='test_tfce',
-        source='wgn',
-        run_fnc=run_ana,
-        cloud_config=cloud_config,
-        ana_kwargs_dict=ana_kwargs_dict,
-        n_seed=1,
-        hotel_tr_all=np.array([0.5]),
-        wgn_shape=(5, 5, 5),
-        wgn_a=2,
-        wgn_b=2,
-        wgn_num_img=20,
-        exp_seed=42,
-        effect_perc=0.2,
-        n_jobs=1,
-        detail_save=False,
-        error_save=False
-    )
-    
-    config.run_all(verbose=True)
-    
-    results = list((config.folder / 'out').glob('*_result.json'))
-    print(f'✓ TFCE cloud test passed ({len(results)} results)')
-
-
-def test_hcp_cloud():
-    """test HCP data loading on cloud
-    
-    Minimal test: 1 experiment with HCP data (fa feature only).
-    Tests the full HCP pipeline:
-    1. Upload HCP data to S3 (if not already there)
-    2. Worker downloads HCP data from S3
-    3. Experiment runs with real imaging data
-    """
-    try:
-        import boto3
-        from glow.aws.aws_batch import CloudConfig
-    except ImportError:
-        print('skipping HCP test: boto3 not installed')
-        print('install with: pip install boto3')
-        return
-    
-    # check credentials
-    try:
-        boto3.client('sts').get_caller_identity()
-    except Exception:
-        print('skipping HCP test: AWS credentials not configured')
-        print('run: aws configure')
-        return
-    
-    # load config
-    aws_config = load_aws_config()
-    if not aws_config or not all([aws_config['s3_bucket'], 
-                                   aws_config['job_queue'], 
-                                   aws_config['job_definition']]):
-        print('skipping HCP test: AWS config incomplete')
-        print('run: ./glow/aws/setup_aws_batch.sh')
-        return
-    
-    print('testing HCP data loading on cloud (1 exp × 5 perms with source=hcp)...')
-    
     s3_bucket = aws_config['s3_bucket']
-    s3_prefix = 'test/hcp'
+    job_queue = aws_config['job_queue']
+    job_definition = aws_config['job_definition']
     region = aws_config.get('region', 'us-east-1')
-    
-    # hcp data path (default location)
-    hcp_path = '/home/matt/data/hcp100_aug25_registered'
-    
-    
-    # minimal glow analysis config (lighter than VBA)
-    ana_kwargs_dict = {
-        'GLOW': (glow.experiment.AnalysisGLOW,
-                 dict(n_perm=5,
-                      n_perm_adj=5,
-                      n_perm_prune=10,
-                      alpha_fwer=0.05,
-                      alpha_prune=0.05,
-                      min_size=1,
-                      n_jobs_perm=1))
-    }
-    
-    cloud_config = CloudConfig(
-        s3_bucket=s3_bucket,
-        s3_prefix=s3_prefix,
-        job_queue=aws_config['job_queue'],
-        job_definition=aws_config['job_definition'],
-        region=region,
-        timeout_minutes=60,  # hcp may take longer
-        retry_attempts=1
-    )
-    
-    config = Config(
-        label='test_hcp',
-        source='hcp',
-        run_fnc=run_ana,
-        cloud_config=cloud_config,
-        ana_kwargs_dict=ana_kwargs_dict,
-        n_seed=1,
-        hotel_tr_all=np.array([0.5]),
-        hcp_path=hcp_path,
-        hcp_feats=['fa'],  # single feature for speed
-        radius=5,  # small region for speed
-        effect_perc=0.2,
-        n_jobs=1,
-        detail_save=False,
-        error_save=False
-    )
-    
-    # Use submit_cloud_jobs to test the actual cloud execution path (including shared cache)
-    job_info = config.submit_cloud_jobs(verbose=True)
-    
-    # Wait for jobs and download results
-    from glow.aws.aws_batch import AWSBatchRunner
-    runner = AWSBatchRunner(cloud_config)
-    runner.monitor_jobs(job_info['job_ids'])
-    runner.download_experiment_results(job_info['run_id'], job_info['folder'])
-    
-    results = list((job_info['folder'] / 'out').glob('*_result.json'))
-    print(f'✓ HCP cloud test passed ({len(results)} results)')
+
+    all_job_ids = []
+    test_meta = {}  # test_name -> dict with per-test data
+    results = {}
+
+    # ══════════════════════════════════════════════════════════════════
+    # PHASE 1: Prepare + submit all jobs
+    # ══════════════════════════════════════════════════════════════════
+
+    # ── Permutation-level ─────────────────────────────────────────────
+    if RUN_PERMUTATION_LEVEL_TEST:
+        print('\n[Prepare] Permutation-level test')
+
+        # create experiment with effect
+        exp_orig = glow.experiment.Experiment.from_gauss(
+            seed=42, shape=(20, 20), a=2, b=2, num_img=20)
+        mask = np.zeros(exp_orig.mask_idx.shape, dtype=bool)
+        center, radius = (10, 10), 5
+        for i in range(mask.shape[0]):
+            for j in range(mask.shape[1]):
+                if (i - center[0])**2 + (j - center[1])**2 <= radius**2:
+                    mask[i, j] = True
+        mask = np.logical_and(mask, exp_orig.mask_idx > -1)
+        exp, _ = exp_orig.impose_effect(mask=mask, hotel_tr=10.0, seed=42)
+
+        n_perm = 5
+        ana_kwargs = dict(n_perm=n_perm, n_perm_adj=5, n_perm_prune=10,
+                          alpha_fwer=0.05, alpha_prune=0.05, min_size=1,
+                          verbose=True)
+
+        # run local analysis (fast, needed for comparison)
+        print('  running local analysis...')
+        ana_local = glow.experiment.AnalysisGLOW(exp, **ana_kwargs)
+
+        # upload + submit cloud jobs
+        cloud_config = CloudConfig(
+            s3_bucket=s3_bucket, s3_prefix='test/comparison_test',
+            job_queue=job_queue, job_definition=job_definition,
+            max_concurrent_jobs=10, vcpus=2, memory_mb=4096,
+            timeout_minutes=30)
+        runner = AWSBatchRunner(cloud_config)
+        experiment_id = f'glow_{uuid.uuid4().hex[:8]}'
+
+        cloud_ana_kwargs = {
+            'get_stat': get_hotel_tr,
+            'n_perm_adj': 5, 'n_perm_prune': 10,
+            'alpha_fwer': 0.05, 'alpha_prune': 0.05, 'min_size': 1,
+        }
+        runner.upload_experiment(exp, cloud_ana_kwargs, experiment_id)
+        submission = runner.submit_jobs(
+            experiment_id=experiment_id, n_perm=n_perm,
+            skip_completed=True, dry_run=False)
+
+        perm_job_ids = submission['job_ids']
+        all_job_ids.extend(perm_job_ids)
+        test_meta['permutation_level'] = {
+            'runner': runner, 'experiment_id': experiment_id,
+            'n_perm': n_perm, 'exp': exp,
+            'ana_local': ana_local, 'ana_kwargs': ana_kwargs,
+            'job_ids': perm_job_ids,
+        }
+        print(f'  submitted {len(perm_job_ids)} permutation jobs')
+
+    # ── Experiment-level ──────────────────────────────────────────────
+    if RUN_EXPERIMENT_LEVEL_TEST:
+        print('\n[Prepare] Experiment-level test')
+        ana_kwargs_dict = {
+            'GLOW': (glow.experiment.AnalysisGLOW,
+                     dict(n_perm=5, n_perm_adj=5, n_perm_prune=10,
+                          alpha_fwer=0.05, alpha_prune=0.05, min_size=1,
+                          n_jobs_perm=1))
+        }
+        cloud_config = CloudConfig(
+            s3_bucket=s3_bucket, s3_prefix='test/experiment_level',
+            job_queue=job_queue, job_definition=job_definition,
+            region=region, timeout_minutes=30, retry_attempts=1)
+        config_el = Config(
+            label='test_experiment_level', source='wgn', run_fnc=run_ana,
+            cloud_config=cloud_config, ana_kwargs_dict=ana_kwargs_dict,
+            n_seed=2, hotel_tr_all=np.array([0.5]),
+            wgn_shape=(5, 5, 5), wgn_a=2, wgn_b=2, wgn_num_img=20,
+            exp_seed=42, effect_perc=0.2, n_jobs=1,
+            detail_save=False, error_save=False)
+        job_info_el = config_el.submit_cloud_jobs(verbose=True)
+
+        all_job_ids.extend(job_info_el['job_ids'])
+        test_meta['experiment_level'] = {
+            'job_info': job_info_el, 'config': config_el,
+        }
+
+    # ── TFCE ──────────────────────────────────────────────────────────
+    if RUN_TFCE_TEST:
+        print('\n[Prepare] TFCE test')
+        ana_kwargs_dict = {
+            'VBA-TFCE': (glow.experiment.AnalysisVBA,
+                         dict(n_perm=5, tfce_flag=True, alpha_fwer=0.05,
+                              n_jobs_perm=1))
+        }
+        cloud_config = CloudConfig(
+            s3_bucket=s3_bucket, s3_prefix='test/tfce',
+            job_queue=job_queue, job_definition=job_definition,
+            region=region, timeout_minutes=30, retry_attempts=1)
+        config_tfce = Config(
+            label='test_tfce', source='wgn', run_fnc=run_ana,
+            cloud_config=cloud_config, ana_kwargs_dict=ana_kwargs_dict,
+            n_seed=1, hotel_tr_all=np.array([0.5]),
+            wgn_shape=(5, 5, 5), wgn_a=2, wgn_b=2, wgn_num_img=20,
+            exp_seed=42, effect_perc=0.2, n_jobs=1,
+            detail_save=False, error_save=False)
+        job_info_tfce = config_tfce.submit_cloud_jobs(verbose=True)
+
+        all_job_ids.extend(job_info_tfce['job_ids'])
+        test_meta['tfce'] = {
+            'job_info': job_info_tfce, 'config': config_tfce,
+        }
+
+    # ── HCP ───────────────────────────────────────────────────────────
+    if RUN_HCP_TEST:
+        print('\n[Prepare] HCP test')
+        hcp_path = '/home/matt/data/hcp100_aug25_registered'
+        ana_kwargs_dict = {
+            'GLOW': (glow.experiment.AnalysisGLOW,
+                     dict(n_perm=5, n_perm_adj=5, n_perm_prune=10,
+                          alpha_fwer=0.05, alpha_prune=0.05, min_size=1,
+                          n_jobs_perm=1))
+        }
+        cloud_config = CloudConfig(
+            s3_bucket=s3_bucket, s3_prefix='test/hcp',
+            job_queue=job_queue, job_definition=job_definition,
+            region=region, timeout_minutes=60, retry_attempts=1)
+        config_hcp = Config(
+            label='test_hcp', source='hcp', run_fnc=run_ana,
+            cloud_config=cloud_config, ana_kwargs_dict=ana_kwargs_dict,
+            n_seed=1, hotel_tr_all=np.array([0.5]),
+            hcp_path=hcp_path, hcp_feats=['fa'], radius=5,
+            effect_perc=0.2, n_jobs=1,
+            detail_save=False, error_save=False)
+        job_info_hcp = config_hcp.submit_cloud_jobs(verbose=True)
+
+        all_job_ids.extend(job_info_hcp['job_ids'])
+        test_meta['hcp'] = {
+            'job_info': job_info_hcp, 'config': config_hcp,
+        }
+
+    # ══════════════════════════════════════════════════════════════════
+    # PHASE 2: Monitor all jobs once
+    # ══════════════════════════════════════════════════════════════════
+    if not all_job_ids:
+        print('\nno cloud tests enabled')
+        return {}
+
+    print(f'\n{"="*70}')
+    print(f'MONITORING ALL {len(all_job_ids)} JOBS')
+    print(f'{"="*70}')
+
+    # single runner for monitoring (no auto-download; we do it per-test below)
+    monitor_config = CloudConfig(
+        s3_bucket=s3_bucket, s3_prefix='test',
+        job_queue=job_queue, job_definition=job_definition,
+        region=region)
+    monitor_runner = AWSBatchRunner(monitor_config)
+    monitor_runner.monitor_jobs(all_job_ids, job_info_map={})
+
+    # ══════════════════════════════════════════════════════════════════
+    # PHASE 3: Download results + assert per test
+    # ══════════════════════════════════════════════════════════════════
+
+    # ── Permutation-level: download, reconstruct, compare ─────────────
+    if 'permutation_level' in test_meta:
+        print(f'\n{"─"*70}')
+        print('[Assert] Permutation-level: local vs cloud comparison')
+        print(f'{"─"*70}')
+        try:
+            m = test_meta['permutation_level']
+            runner = m['runner']
+            exp = m['exp']
+            n_perm = m['n_perm']
+            ana_local = m['ana_local']
+            ana_kwargs = m['ana_kwargs']
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                dl = runner.download_results(
+                    m['experiment_id'], n_perm, Path(tmpdir))
+
+                # reconstruct cloud analysis from downloaded permutations
+                b, num_img, num_vox = exp.y.shape
+                num_reg = num_vox * 2 - 1
+
+                ana_cloud = object.__new__(glow.experiment.AnalysisGLOW)
+                ana_cloud.exp = exp  # keep original (unscaled) exp, same as cloud path
+                ana_cloud.get_stat = get_hotel_tr
+                ana_cloud.n_jobs_perm = 1
+                ana_cloud.child_dict = {}
+                ana_cloud.stat = np.full((n_perm + 1, num_reg), fill_value=-1.0)
+                for perm_idx, result in dl.items():
+                    ana_cloud.child_dict[perm_idx] = result['children']
+                    ana_cloud.stat[perm_idx, :] = result['stat']
+
+                ana_cloud._finalize_analysis(
+                    exp, n_perm,  # must pass original (unscaled) exp, same as worker uses
+                    n_perm_adj=ana_kwargs['n_perm_adj'],
+                    n_perm_prune=ana_kwargs['n_perm_prune'],
+                    alpha_fwer=ana_kwargs['alpha_fwer'],
+                    alpha_prune=ana_kwargs['alpha_prune'],
+                    min_size=ana_kwargs['min_size'])
+
+            # compare local vs cloud
+            tol = 1e-10
+            assert ana_local.pval.shape == ana_cloud.pval.shape, 'pval shape mismatch'
+            assert ana_local.z_stat.shape == ana_cloud.z_stat.shape, 'z_stat shape mismatch'
+
+            max_pval_diff = np.max(np.abs(ana_local.pval - ana_cloud.pval))
+            max_z_diff = np.max(np.abs(ana_local.z_stat - ana_cloud.z_stat))
+            max_stat_diff = np.max(np.abs(ana_local.stat - ana_cloud.stat))
+            max_size_diff = np.max(np.abs(ana_local.size - ana_cloud.size))
+
+            print(f'  pval max diff:  {max_pval_diff:.2e}')
+            print(f'  z_stat max diff: {max_z_diff:.2e}')
+            print(f'  stat max diff:  {max_stat_diff:.2e}')
+            print(f'  size max diff:  {max_size_diff:.2e}')
+
+            assert max_pval_diff < tol, f'pval mismatch: {max_pval_diff:.2e}'
+            assert max_z_diff < tol, f'z_stat mismatch: {max_z_diff:.2e}'
+            assert max_stat_diff < tol, f'stat mismatch: {max_stat_diff:.2e}'
+            assert max_size_diff < tol, f'size mismatch: {max_size_diff:.2e}'
+
+            n_eff_local = len(ana_local.effect_list)
+            n_eff_cloud = len(ana_cloud.effect_list)
+            assert n_eff_local == n_eff_cloud, \
+                f'effect count mismatch: {n_eff_local} != {n_eff_cloud}'
+
+            if n_eff_local > 0:
+                for i, (el, ec) in enumerate(
+                        zip(ana_local.effect_list, ana_cloud.effect_list)):
+                    assert el.is_close(ec, rtol=1e-10, atol=1e-10), \
+                        f'effect {i} mismatch'
+
+            print('  ✓ permutation-level test passed')
+            results['permutation_level'] = True
+        except Exception as e:
+            print(f'  ✗ failed: {e}')
+            results['permutation_level'] = False
+
+    # ── Experiment-level: download + check ────────────────────────────
+    if 'experiment_level' in test_meta:
+        print(f'\n{"─"*70}')
+        print('[Assert] Experiment-level')
+        print(f'{"─"*70}')
+        try:
+            m = test_meta['experiment_level']
+            ji = m['job_info']
+            ji['runner'].download_experiment_results(
+                ji['run_id'], ji['folder'])
+            result_files = list((ji['folder'] / 'out').glob('*_result.json'))
+            print(f'  ✓ experiment-level test passed ({len(result_files)} results)')
+            results['experiment_level'] = True
+        except Exception as e:
+            print(f'  ✗ failed: {e}')
+            results['experiment_level'] = False
+
+    # ── TFCE: download + check ────────────────────────────────────────
+    if 'tfce' in test_meta:
+        print(f'\n{"─"*70}')
+        print('[Assert] TFCE')
+        print(f'{"─"*70}')
+        try:
+            m = test_meta['tfce']
+            ji = m['job_info']
+            ji['runner'].download_experiment_results(
+                ji['run_id'], ji['folder'])
+            result_files = list((ji['folder'] / 'out').glob('*_result.json'))
+            print(f'  ✓ TFCE test passed ({len(result_files)} results)')
+            results['tfce'] = True
+        except Exception as e:
+            print(f'  ✗ failed: {e}')
+            results['tfce'] = False
+
+    # ── HCP: download + check ─────────────────────────────────────────
+    if 'hcp' in test_meta:
+        print(f'\n{"─"*70}')
+        print('[Assert] HCP')
+        print(f'{"─"*70}')
+        try:
+            m = test_meta['hcp']
+            ji = m['job_info']
+            ji['runner'].download_experiment_results(
+                ji['run_id'], ji['folder'])
+            result_files = list((ji['folder'] / 'out').glob('*_result.json'))
+            print(f'  ✓ HCP test passed ({len(result_files)} results)')
+            results['hcp'] = True
+        except Exception as e:
+            print(f'  ✗ failed: {e}')
+            results['hcp'] = False
+
+    return results
 
 
 if __name__ == '__main__':
     print('=' * 70)
     print('GLOW AWS Cloud Test Suite')
     print('=' * 70)
-    
-    # print debug/version info first
+
     print_debug_info()
-    
+
     results = {}
-    test_num = 1
-    
+
+    # ── local tests (no AWS jobs) ─────────────────────────────────────
     if RUN_S3_TEST:
-        print(f'\n[{test_num}] S3 Connectivity')
+        print('\n[1] S3 Connectivity')
         try:
             test_aws_runner_methods()
             results['s3'] = True
         except Exception as e:
             print(f'✗ failed: {e}')
             results['s3'] = False
-        test_num += 1
-    
-    if RUN_PERMUTATION_LEVEL_TEST:
-        print(f'\n[{test_num}] Permutation-Level (AnalysisGLOW.cloud_config)')
+
+    if RUN_OOM_RESUBMIT_TEST:
+        print('\n[2] OOM Resubmit (unit tests, local)')
         try:
-            test_local_vs_cloud_comparison()
-            results['permutation_level'] = True
+            test_oom_resubmit()
+            results['oom_resubmit'] = True
         except Exception as e:
             print(f'✗ failed: {e}')
-            results['permutation_level'] = False
-        test_num += 1
-    
-    if RUN_EXPERIMENT_LEVEL_TEST:
-        print(f'\n[{test_num}] Experiment-Level (Config.cloud_config)')
-        try:
-            test_experiment_level_architecture()
-            results['experiment_level'] = True
-        except Exception as e:
-            print(f'✗ failed: {e}')
-            results['experiment_level'] = False
-        test_num += 1
-    
-    if RUN_TFCE_TEST:
-        print(f'\n[{test_num}] TFCE Cloud (AnalysisVBA with tfce_flag=True)')
-        try:
-            test_tfce_cloud()
-            results['tfce'] = True
-        except Exception as e:
-            print(f'✗ failed: {e}')
-            results['tfce'] = False
-        test_num += 1
-    
-    if RUN_HCP_TEST:
-        print(f'\n[{test_num}] HCP Data (source=hcp from S3)')
-        try:
-            test_hcp_cloud()
-            results['hcp'] = True
-        except Exception as e:
-            print(f'✗ failed: {e}')
-            results['hcp'] = False
-        test_num += 1
-    
-    # summary
+            results['oom_resubmit'] = False
+
+    # ── cloud tests (batched: one submit wave, one monitor) ───────────
+    any_cloud = (RUN_PERMUTATION_LEVEL_TEST or RUN_EXPERIMENT_LEVEL_TEST or
+                 RUN_TFCE_TEST or RUN_HCP_TEST)
+    if any_cloud:
+        print(f'\n{"="*70}')
+        print('BATCHED CLOUD TESTS')
+        print(f'{"="*70}')
+        cloud_results = run_batched_cloud_tests()
+        results.update(cloud_results)
+
+    # ── summary ───────────────────────────────────────────────────────
     print('\n' + '=' * 70)
     print('TEST SUMMARY')
     print('=' * 70)
@@ -794,19 +909,13 @@ if __name__ == '__main__':
         for test_name, passed in results.items():
             status = '✓' if passed else '✗'
             print(f'{status} {test_name}')
-        
+
         print()
         if all(results.values()):
             print('✓ ALL TESTS PASSED')
-            print('\nBoth architectures verified:')
-            if 'permutation_level' in results:
-                print('  • Permutation-level: parallel perms (1 large experiment)')
-            if 'experiment_level' in results:
-                print('  • Experiment-level: serial perms (many small experiments)')
         else:
-            print('⚠ SOME TESTS FAILED')
             failed = [name for name, passed in results.items() if not passed]
-            print(f'\nFailed: {", ".join(failed)}')
+            print(f'⚠ SOME TESTS FAILED: {", ".join(failed)}')
     else:
         print('⚠ NO TESTS RUN')
         print('Edit flags at top of file to enable tests')
