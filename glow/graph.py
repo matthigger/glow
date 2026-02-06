@@ -292,6 +292,12 @@ def graph_merge(n_common, children_list):
     this assumes each children matrix in children_list is in topo order (comes
     out of sklearn's Ward's this way)
 
+    Regions are identified by a 128-bit XOR hash of their leaf labels.
+    Each leaf gets a deterministic random 128-bit value; each parent's hash
+    is the XOR of its children's hashes.  Identical leaf sets produce
+    identical hashes regardless of tree structure.  Collision probability
+    is ~n^2 / 2^129 (negligible).
+
     Args:
         n_common (int): we assume the first n_idx_common nodes represent
             identical objects
@@ -307,6 +313,14 @@ def graph_merge(n_common, children_list):
             contains a node for any node in all input graphs
         size (num_node): number of items represented in each output node
     """
+    # assign each leaf a deterministic random 128-bit label (two 64-bit halves)
+    rng = np.random.default_rng(seed=0)
+    leaf_hash = {}
+    for i in range(n_common):
+        hi = int(rng.integers(0, 2**63)) << 64
+        lo = int(rng.integers(0, 2**63))
+        leaf_hash[i] = hi | lo
+
     # our first new node is n_common (smaller idx are common to all)
     node_idx = n_common
 
@@ -315,9 +329,9 @@ def graph_merge(n_common, children_list):
     children = list()
     size = [1] * n_common
 
-    # bijection from fset to node index
-    fset_to_node = dict()
-    node_to_fset = dict()
+    # hash → node index (detect duplicate regions across permutations)
+    hash_to_node = dict()
+    node_to_hash = leaf_hash.copy()
 
     for _children in children_list:
         # init new map_to_new vector
@@ -333,15 +347,13 @@ def graph_merge(n_common, children_list):
             if c1 >= n_common:
                 c1 = _map_to_new[c1 - n_common]
 
-            # build frozen set for current node
-            fset0 = node_to_fset.get(c0, frozenset((c0,)))
-            fset1 = node_to_fset.get(c1, frozenset((c1,)))
-            fset = fset0 | fset1
+            # XOR children hashes → parent hash (same leaf set = same hash)
+            h = node_to_hash[c0] ^ node_to_hash[c1]
 
-            if fset in fset_to_node:
+            if h in hash_to_node:
                 # repeated node: some previous graph has the same node
                 # store its name in map_to_new
-                _map_to_new[idx] = fset_to_node[fset]
+                _map_to_new[idx] = hash_to_node[h]
 
             else:
                 # record node's children & size
@@ -351,10 +363,9 @@ def graph_merge(n_common, children_list):
                 # store common index in map_to_new
                 _map_to_new[idx] = node_idx
 
-                # store fset (so we can lookup later if this node is
-                # another's child)
-                fset_to_node[fset] = node_idx
-                node_to_fset[node_idx] = fset
+                # store hash lookup
+                hash_to_node[h] = node_idx
+                node_to_hash[node_idx] = h
 
                 # increment
                 node_idx += 1
