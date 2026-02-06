@@ -84,11 +84,11 @@ def get_array_info(obj, prefix='', visited=None, max_depth=5, depth=0):
                             continue
                         new_prefix = f"{prefix}.{attr_name}" if prefix else attr_name
                         arrays.extend(get_array_info(attr, new_prefix, visited, max_depth, depth + 1))
-                    except:
+                    except Exception:
                         pass
-            except:
+            except Exception:
                 pass
-    except:
+    except Exception:
         pass
     finally:
         visited.discard(obj_id)  # Remove from visited when done with this branch
