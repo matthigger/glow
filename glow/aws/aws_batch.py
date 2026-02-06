@@ -313,6 +313,7 @@ class AWSBatchRunner:
         last_done_count = 0
         last_done_time = start_time
         previous_done = 0
+        resubmitted_total = 0
         last_status_print = 0  # track when we last printed status
         status_print_interval = 30  # print status every 30 seconds or on significant changes
         
@@ -580,8 +581,11 @@ class AWSBatchRunner:
                         state_parts.append(f'Running: {running}')
                     if completed > 0:
                         state_parts.append(f'Succeeded: {completed}')
-                    if failed > 0:
-                        state_parts.append(f'Failed: {failed}')
+                    actual_failed = failed - resubmitted_total
+                    if resubmitted_total > 0:
+                        state_parts.append(f'Resubmitted: {resubmitted_total}')
+                    if actual_failed > 0:
+                        state_parts.append(f'Failed: {actual_failed}')
                     
                     state_str = ', '.join(state_parts) if state_parts else 'All done'
                     
@@ -617,8 +621,11 @@ class AWSBatchRunner:
                     postfix_parts.append(f'running={running}')
                 if completed > 0:
                     postfix_parts.append(f'completed={completed}')
-                if failed > 0:
-                    postfix_parts.append(f'failed={failed}')
+                actual_failed = failed - resubmitted_total
+                if resubmitted_total > 0:
+                    postfix_parts.append(f'resubmitted={resubmitted_total}')
+                if actual_failed > 0:
+                    postfix_parts.append(f'failed={actual_failed}')
                 postfix_parts.append(f'eta={eta_str}')
                 
                 postfix_str = ', '.join(postfix_parts)
@@ -630,6 +637,7 @@ class AWSBatchRunner:
                     resubmitted, resubmitted_src_ids = \
                         self._resubmit_failed_jobs(
                             newly_failed_jobs, job_info_map)
+                    resubmitted_total += len(resubmitted_src_ids)
                     if resubmitted:
                         job_ids.extend(resubmitted)
                         total = len(job_ids)
