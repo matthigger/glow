@@ -617,7 +617,7 @@ def run_batched_cloud_tests():
         runner.upload_experiment(exp, cloud_ana_kwargs, experiment_id)
         submission = runner.submit_jobs(
             experiment_id=experiment_id, n_perm=n_perm,
-            skip_completed=True, dry_run=False)
+            skip_completed=True)
 
         perm_job_ids = submission['job_ids']
         all_job_ids.extend(perm_job_ids)

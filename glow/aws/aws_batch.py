@@ -26,9 +26,7 @@ class CloudConfig:
         job_queue: AWS Batch job queue name
         job_definition: AWS Batch job definition ARN
         region: AWS region (e.g., 'us-east-1')
-        max_concurrent_jobs: maximum number of jobs to run simultaneously (cost control)
-        max_cost_per_hour: maximum estimated cost per hour (USD)
-        use_spot: use spot instances for cost savings
+        max_concurrent_jobs: maximum number of jobs to run simultaneously
         timeout_minutes: timeout per job in minutes
         memory_mb: memory allocation per job in MB
         vcpus: number of vCPUs per job
@@ -45,8 +43,6 @@ class CloudConfig:
     job_definition: str
     region: str = 'us-east-1'
     max_concurrent_jobs: int = 100
-    max_cost_per_hour: float = 10.0  # USD
-    use_spot: bool = True
     timeout_minutes: int = 60
     memory_mb: int = 1024
     vcpus: int = 2
@@ -60,52 +56,6 @@ class CloudConfig:
         return asdict(self)
 
 
-def estimate_cost(n_jobs: int, 
-                  runtime_minutes: float,
-                  memory_mb: int = 1024,
-                  vcpus: int = 2,
-                  use_spot: bool = True) -> Dict[str, float]:
-    """estimate cost for running jobs on AWS
-    
-    Args:
-        n_jobs: number of jobs to run
-        runtime_minutes: estimated runtime per job in minutes
-        memory_mb: memory per job in MB
-        vcpus: number of vCPUs per job
-        use_spot: use spot instances (cheaper but can be interrupted)
-    
-    Returns:
-        dict with cost estimates:
-            - cost_per_job: estimated cost per job (USD)
-            - total_cost: total estimated cost (USD)
-            - total_runtime_hours: total compute hours
-            - cost_per_hour: average cost per hour
-    """
-    # rough AWS pricing (as of 2024, subject to change)
-    # Fargate pricing: $0.04048 per vCPU per hour, $0.004445 per GB per hour
-    
-    # spot instances are ~70% cheaper
-    spot_discount = 0.7 if use_spot else 1.0
-    
-    vcpu_cost_per_hour = 0.04048 * vcpus * spot_discount
-    memory_gb = memory_mb / 1024
-    memory_cost_per_hour = 0.004445 * memory_gb * spot_discount
-    
-    cost_per_hour = vcpu_cost_per_hour + memory_cost_per_hour
-    cost_per_job = cost_per_hour * (runtime_minutes / 60)
-    total_cost = cost_per_job * n_jobs
-    total_runtime_hours = (runtime_minutes / 60) * n_jobs
-    
-    return {
-        'cost_per_job': cost_per_job,
-        'total_cost': total_cost,
-        'total_runtime_hours': total_runtime_hours,
-        'cost_per_hour': cost_per_hour,
-        'spot_discount': spot_discount,
-        'vcpus': vcpus,
-        'memory_gb': memory_gb
-    }
-
 
 class AWSBatchRunner:
     """manages AWS Batch execution for permutation processing
@@ -115,7 +65,6 @@ class AWSBatchRunner:
     - submits independent jobs for each permutation
     - handles retries automatically via AWS Batch
     - downloads results when complete
-    - supports spot instances for cost savings
     - idempotent: can re-run interrupted computations
     """
     
@@ -283,18 +232,16 @@ class AWSBatchRunner:
         return completed
     
     def submit_jobs(self, experiment_id: str, n_perm: int,
-                   skip_completed: bool = True,
-                   dry_run: bool = False) -> Dict[str, Any]:
+                   skip_completed: bool = True) -> Dict[str, Any]:
         """submit permutation jobs to AWS Batch
         
         Args:
             experiment_id: experiment identifier
             n_perm: number of permutations (0 to n_perm inclusive)
             skip_completed: skip permutations that already have results
-            dry_run: if True, only estimate costs without submitting
         
         Returns:
-            submission_info dict with job_ids, costs, etc.
+            submission_info dict with job_ids and metadata
         """
         # check which permutations are already done
         completed = set()
@@ -318,14 +265,6 @@ class AWSBatchRunner:
         print(f'skipped (completed): {len(completed)}')
         print(f'timeout: {self.config.timeout_minutes} min per job')
         print(f'{"="*60}\n')
-        
-        if dry_run:
-            print('DRY RUN - not submitting jobs')
-            return {
-                'dry_run': True,
-                'n_jobs': n_jobs,
-                'perm_indices': perm_indices
-            }
         
         # submit jobs
         job_ids = []

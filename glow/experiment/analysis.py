@@ -421,12 +421,11 @@ class AnalysisGLOW(Analysis):
         submission = runner.submit_jobs(
             experiment_id=experiment_id,
             n_perm=n_perm,
-            skip_completed=True,
-            dry_run=False
+            skip_completed=True
         )
         
-        if submission.get('cancelled') or submission.get('dry_run'):
-            raise RuntimeError('job submission cancelled or dry run')
+        if submission.get('cancelled'):
+            raise RuntimeError('job submission cancelled')
         
         # monitor progress
         if verbose:
