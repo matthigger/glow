@@ -9,6 +9,15 @@ from glow.mask import get_mask_idx
 
 
 def load_image_nii(df):
+    """load NIfTI images from a subject x feature dataframe.
+
+    Args:
+        df (pd.DataFrame): index=subject, columns=feature, values=file paths
+
+    Returns:
+        feat_sbj_img (dict): feat -> sbj -> np.array
+        mask_idx (np.array): voxel index array (-1 where any image is zero)
+    """
     # load images (check affine is consistent, if present)
     affine = None
     feat_sbj_img = defaultdict(dict)
@@ -40,6 +49,15 @@ def load_image_nii(df):
 
 
 def load_image_color(df):
+    """load non-NIfTI (e.g. PNG) images from a subject x feature dataframe.
+
+    Args:
+        df (pd.DataFrame): index=subject, columns=feature, values=file paths
+
+    Returns:
+        feat_sbj_img (dict): feat -> sbj -> np.array
+        mask_idx (np.array): voxel index array (all active)
+    """
     shape = None
     dtype = None
 

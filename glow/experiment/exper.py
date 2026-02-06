@@ -16,17 +16,16 @@ from ..mask import get_mask_idx
 
 
 class NoBiasTermWarning(UserWarning):
-    """Warning raised when regression is constrained to origin without bias term."""
+    """raised when regression is constrained to origin without bias term."""
     pass
 
 
 class ExperimentImageOnly:
-    """ contains all imaging data of an experiment
+    """imaging data for an experiment (no design matrix).
 
     Attributes:
         y (np.array): (b, num_img, num_vox) image intensities
-        mask_idx (np.array): same shape as image.  -1 where voxel not
-            included in analysis, otherwise contains voxel index
+        mask_idx (np.array): voxel index array (-1 outside analysis)
     """
 
     def __init__(self, *, y, mask_idx, **kwargs):
@@ -36,16 +35,15 @@ class ExperimentImageOnly:
     @classmethod
     def from_gauss(cls, b=None, num_img=10, shape=(2, 3, 4), seed=None,
                    mu=None, cov=None, **kwargs):
-        """ generates gaussian data, outputs sample mu & cov as given
+        """generate Gaussian imaging data with prescribed mean and covariance.
 
         Args:
-            b (int): dimension of imaging features (default b=1)
-            num_img (int): number of "images" to sample
-            shape (tuple): shape of images
-            seed (int): inits random number generator
-            mu (np.array): output sample mean (default to np.zeros(b))
-            cov (np.array): output sample cov, with bessel's (default to
-                np.eye(b))
+            b (int): number of imaging features (default 1)
+            num_img (int): number of images to sample
+            shape (tuple): spatial shape of each image
+            seed (int): random seed
+            mu (np.array): target sample mean (default zeros)
+            cov (np.array): target sample covariance (default identity)
 
         Returns:
             ExperimentImageOnly
@@ -84,17 +82,15 @@ class ExperimentImageOnly:
 
     @classmethod
     def from_search(cls, folder, sbj_regex, img_glob_dict, **kwargs):
-        """ searches path for matching image files
+        """search a folder for images and build an experiment.
 
         Args:
-            folder (str): folder to search (recursively) for image files
-            sbj_regex (str): regex string which matches on subject names,
-                must match once on each image's full path
-            img_glob_dict (dict): keys are str names of each image type
-                (e.g. 'FA', 'MD'), values are glob strs (e.g. '*_FA.nii.gz')
+            folder (str): root folder to search recursively
+            sbj_regex (str): regex extracting the subject id from file paths
+            img_glob_dict (dict): feature_name -> glob pattern
 
         Returns:
-            experiment (Experiment): experiment generated from all images found
+            Experiment built from discovered images
         """
         # find all images
         folder = pathlib.Path(folder)
@@ -147,17 +143,16 @@ class ExperimentImageOnly:
         return cls(y=y, mask_idx=mask_idx, **kwargs)
 
     def bootstrap_img(self, n, seed=None, noise_scale=0):
-        """ bootstrap resamples images
+        """return a new experiment with bootstrap-resampled images.
 
         Args:
-            n (int): number of images in the resulting Experiment
-            seed: used for random number generator
-            noise_scale (float): scales noise std_dev.  noise is drawn
-                independently, per voxel, from a normal distribution whose
-                covariance is the (b, b) sample covariance of self.y
+            n (int): number of images in the output
+            seed: random seed
+            noise_scale (float): std-dev multiplier for additive noise
+                (drawn per-voxel from the sample covariance)
 
         Returns:
-            ExperimentImageOnly: new object with bootstrap-resampled y
+            ExperimentImageOnly: new object with resampled y
         """
         # bootstrap sample images
         rng = np.random.default_rng(seed=seed)
@@ -179,16 +174,15 @@ class ExperimentImageOnly:
         return exp
 
     def sample_x(self, a=None, contrast=None, seed=None, **kwargs):
-        """ generates (or replaces) x with an arbitrary std normal noise
+        """return a new Experiment with random standard-normal design matrix.
 
         Args:
-            a (int): number of x features in output
-            contrast (np.array): (a) True for each corresponding feature in x
-                which is "of interest"
-            seed: used for random number generator
+            a (int): number of features (exactly one of a / contrast required)
+            contrast (np.array): (a,) boolean, True for features of interest
+            seed: random seed
 
         Returns:
-            exp_out (Experiment): x has been replaced with noise from self
+            Experiment with sampled x
         """
         assert (a is None) != (contrast is None), 'a xor contrast required'
 
@@ -208,14 +202,13 @@ class ExperimentImageOnly:
                           mask_idx=self.mask_idx, **kwargs)
 
     def apply_mask(self, mask):
-        """ applies boolean mask to experiment
+        """return a new experiment restricted to voxels where mask is True.
 
         Args:
-            mask (np.array): True where voxels included, false otherwise
+            mask (np.array): boolean mask, same shape as self.mask_idx
 
         Returns:
-            exp (Experiment): experiment corresponding to intersection of mask
-                and self
+            new experiment restricted to the intersection of mask and self
         """
         # apply mask to data
         mask = np.logical_and(mask, self.mask_idx > -1)
@@ -230,16 +223,16 @@ class ExperimentImageOnly:
         return type(self)(**d)
 
     def add_offset(self, offset, mask=None, vox_idx=None, sigma_scale=None):
-        """ returns new experiment with constant offset added to y
+        """return a new experiment with a constant offset added to y.
 
         Args:
-            offset (np.array): (b, num_img) offset to apply to each voxel
-            mask (np.array): boolean area of locations to apply offset to
-            vox_idx (list): list of voxel index to apply effect to
-            sigma_scale (float): sigma scaling fator (see stretch_sigma())
+            offset (np.array): (b, num_img) offset per voxel
+            mask (np.array): boolean region to apply offset (xor vox_idx)
+            vox_idx (list): voxel indices to apply offset (xor mask)
+            sigma_scale (float): optional sigma stretch factor
 
         Returns:
-            exp (Experiment): new experiment, with offset applied
+            new experiment with offset applied
         """
         assert (mask is None) != (vox_idx is None), \
             'either mask xor vox_idx required'
@@ -263,13 +256,11 @@ class ExperimentImageOnly:
 
 
 class Experiment(ExperimentImageOnly):
-    """ contains complete set of data needed to run an experiment
+    """imaging data plus design matrix and contrast.
 
     Attributes:
-        x (np.array): (a, num_img) explanatory variables
-        contrast (np.array): (a) True for each corresponding feature in x which
-            is "of interest" (other x features form the reduced model in
-            computing f statistic)
+        x (np.array): (a, num_img) design matrix
+        contrast (np.array): (a,) boolean, True for features of interest
     """
 
     @classmethod
@@ -299,20 +290,17 @@ class Experiment(ExperimentImageOnly):
 
     def impose_effect(self, hotel_tr, extenter=None, mask=None, seed=None,
                       **kwargs):
-        """ builds experiment with effect imposed
+        """return a new experiment with a synthetic effect imposed.
 
         Args:
-            hotel_tr (float): hotelling's trace
-            extenter (ExtenterSphere or ExtenterMinVar): identifies volume to
-                impose effect on
-            mask (np.array): is passed, will impose effect on
-            seed: seed of random number generator (for extent)
-            **kwargs: passed to compute_offset(), either pval or f_stat
+            hotel_tr (float): target Hotelling's trace
+            extenter: ExtenterSphere or ExtenterMinVar (xor mask)
+            mask (np.array): boolean effect region (xor extenter)
+            seed: random seed for extent sampling
 
         Returns:
-            exp (Experiment): an experiment
-            effect (Effect): encapsulates
-            **kwargs: passed to compute_offset()
+            exp (Experiment): experiment with effect
+            effect (Effect): the imposed effect
         """
         assert self.x is not None, 'x/contrast needed, call .sample_x()'
         assert (mask is None) != (extenter is None), \
@@ -343,14 +331,13 @@ class Experiment(ExperimentImageOnly):
         return exp, effect
 
     def permute(self, perm_idx):
-        """ gets new experiment whose y features were permuted (freedman lane)
+        """return a new experiment with Freedman-Lane permuted images.
 
         Args:
-            perm_idx (int): permutation index (0 is no permutation)
+            perm_idx (int): permutation index (0 = unpermuted)
 
         Returns:
-            exp (Experiment): new experiment whose y features have been
-                permuted
+            Experiment with permuted y
         """
         if perm_idx == 0:
             # perm_idx = 0 is reserved for unpermuted data
@@ -364,14 +351,13 @@ class Experiment(ExperimentImageOnly):
 
 
 class ExperimentScaled(Experiment):
-    """ pre-process (zero mean, scale_normalize, and pca, in that order)
+    """pre-processed experiment: zero-mean, variance-normalise, then PCA.
 
     y_out = pre_scale @ (y_in - mean_orig)
 
     Attributes:
-        mean_orig (np.array): (b, 1, 1) original average y value (across vox &
-            image)
-        pre_scale (np.array): (b, b) left multiplies y to
+        mean_orig (np.array): (b, 1, 1) original grand mean
+        pre_scale (np.array): (b, b) pre-processing matrix
     """
 
     @classmethod
@@ -380,11 +366,13 @@ class ExperimentScaled(Experiment):
                    contrast=exp.contrast)
 
     def prep(self, y):
+        """apply pre-processing: y_out = pre_scale @ (y - mean_orig)."""
         return np.einsum('ij,jkl->ikl',
                          self.pre_scale,
                          y - self.mean_orig)
 
     def prep_inv(self, y):
+        """invert pre-processing: y_out = pre_scale^-1 @ y + mean_orig."""
         return np.einsum('ij,jkl->ikl',
                          np.linalg.inv(self.pre_scale),
                          y) + self.mean_orig

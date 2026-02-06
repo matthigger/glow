@@ -1,4 +1,4 @@
-"""AWS Batch integration for parallel permutation processing"""
+"""AWS Batch integration for parallel permutation processing."""
 
 import time
 from dataclasses import dataclass, asdict, field
@@ -15,25 +15,7 @@ from tqdm import tqdm
 
 @dataclass
 class CloudConfig:
-    """configuration for AWS cloud computing
-    
-    Attributes:
-        s3_bucket: S3 bucket for storing data and results
-        s3_prefix: prefix path within bucket (e.g., 'glow-experiments/run1')
-        job_queue: AWS Batch job queue name
-        job_definition: AWS Batch job definition ARN
-        region: AWS region (e.g., 'us-east-1')
-        max_concurrent_jobs: maximum number of jobs to run simultaneously
-        timeout_minutes: timeout per job in minutes
-        memory_mb: memory allocation per job in MB
-        vcpus: number of vCPUs per job
-        retry_attempts: number of retry attempts for failed jobs (1 = no retries)
-        shared_exp_sources: list of source types that should use shared exp_orig cache
-                          (e.g., ['hcp']). WGN excluded since it's cheaper to generate on cloud.
-        oom_memory_mb_tiers: memory (MB) per OOM retry tier. First value = initial (job definition
-            should match). On OOM, jobs are resubmitted to the same queue with the next tier's
-            memory via container overrides. E.g. [2000, 4000, 8000, 16000] = 2–16 GB (decimal).
-    """
+    """configuration for AWS cloud execution."""
     s3_bucket: str
     s3_prefix: str
     job_queue: str
@@ -55,15 +37,7 @@ class CloudConfig:
 
 
 class AWSBatchRunner:
-    """manages AWS Batch execution for permutation processing
-    
-    Key features:
-    - uploads experiment data to S3 once
-    - submits independent jobs for each permutation
-    - handles retries automatically via AWS Batch
-    - downloads results when complete
-    - idempotent: can re-run interrupted computations
-    """
+    """manages AWS Batch execution for permutation processing."""
     
     def __init__(self, config: CloudConfig):
         self.config = config
@@ -90,13 +64,8 @@ class AWSBatchRunner:
                 return True
         return False
 
-    def _resubmit_failed_jobs(self, failed_jobs: List[Dict[str, Any]],
-                              job_info_map: Dict[str, Dict[str, Any]]) -> List[str]:
-        """Resubmit OOM-failed jobs with more memory (next tier).
-
-        Uses oom_memory_mb_tiers to progressively increase memory on each OOM.
-        Requires at least 2 tiers to be configured.
-        """
+    def _resubmit_failed_jobs(self, failed_jobs, job_info_map):
+        """resubmit OOM-failed jobs at the next memory tier."""
         tiers = self.config.oom_memory_mb_tiers or []
         if len(tiers) < 2:
             return []
@@ -184,17 +153,8 @@ class AWSBatchRunner:
         except ClientError as e:
             raise RuntimeError(f'failed to upload experiment: {e}')
     
-    def check_existing_results(self, experiment_id: str, 
-                               n_perm: int) -> set:
-        """check which permutations already have results
-        
-        Args:
-            experiment_id: experiment identifier
-            n_perm: total number of permutations
-        
-        Returns:
-            set of completed permutation indices
-        """
+    def check_existing_results(self, experiment_id, n_perm):
+        """return the set of permutation indices that already have results."""
         completed = set()
         prefix = f'{self.config.s3_prefix}/results/{experiment_id}/'
         
@@ -226,9 +186,8 @@ class AWSBatchRunner:
         
         return completed
     
-    def submit_jobs(self, experiment_id: str, n_perm: int,
-                   skip_completed: bool = True) -> Dict[str, Any]:
-        """submit permutation jobs to AWS Batch
+    def submit_jobs(self, experiment_id, n_perm, skip_completed=True):
+        """submit permutation jobs to AWS Batch.
         
         Args:
             experiment_id: experiment identifier
@@ -304,17 +263,9 @@ class AWSBatchRunner:
             'skipped': list(completed)
         }
     
-    def monitor_jobs(self, job_ids: list, poll_interval: int = 30,
-                    job_info_map: Optional[Dict[str, Dict]] = None,
-                    cancel_on_error: bool = True):
-        """monitor job progress and download results incrementally
-        
-        Args:
-            job_ids: list of AWS Batch job IDs
-            poll_interval: seconds between status checks
-            job_info_map: optional dict mapping job_id -> {'run_id': str, 'exp_idx': int, 'output_folder': Path}
-                         if None, will extract from job names
-        """
+    def monitor_jobs(self, job_ids, poll_interval=30,
+                    job_info_map=None, cancel_on_error=True):
+        """poll AWS Batch until all jobs finish, downloading results as they complete."""
         if not job_ids:
             print('no jobs to monitor')
             return
@@ -767,12 +718,8 @@ class AWSBatchRunner:
                     print(f'✗ Failed to cancel: {cancel_summary["failed"]}')
             raise
 
-    def cancel_jobs(self, job_ids: list, reason: str = 'Canceled by user') -> Dict[str, int]:
-        """cancel (terminate) AWS Batch jobs by ID
-
-        Returns:
-            dict with counts: canceled, failed, skipped
-        """
+    def cancel_jobs(self, job_ids, reason='Canceled by user'):
+        """cancel AWS Batch jobs, returning counts of canceled/failed/skipped."""
         if not job_ids:
             return {'canceled': 0, 'failed': 0, 'skipped': 0}
 
@@ -825,8 +772,8 @@ class AWSBatchRunner:
                 print(f'✗ Failed to cancel: {summary["failed"]}')
             raise
     
-    def get_failure_details(self, job_ids: list):
-        """get detailed failure information for failed jobs
+    def get_failure_details(self, job_ids):
+        """return detailed failure information for failed jobs.
         
         Args:
             job_ids: list of AWS Batch job IDs to check
@@ -876,18 +823,8 @@ class AWSBatchRunner:
         
         return failed_jobs
     
-    def download_results(self, experiment_id: str, n_perm: int,
-                        output_dir: Path) -> Dict[int, Any]:
-        """download results from S3
-        
-        Args:
-            experiment_id: experiment identifier
-            n_perm: total number of permutations
-            output_dir: local directory to save results
-        
-        Returns:
-            dict mapping perm_idx to result data
-        """
+    def download_results(self, experiment_id, n_perm, output_dir):
+        """download permutation results from S3 to a local directory."""
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         

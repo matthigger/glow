@@ -18,7 +18,7 @@ def get_path_result():
 
 
 def load_update_all(label, time=None, verbose=True):
-    """ loads all experiments stats from csv, updates csv as needed """
+    """load all experiment results from csv, updating from json if needed."""
     # use latest folder (if none given)
     folder = get_path_result() / label
     assert folder.exists(), f'label not found: {folder}'
@@ -77,7 +77,7 @@ def load_update_all(label, time=None, verbose=True):
 
 
 def get_uuid(df, **match_dict):
-    """ gets series of all uuid values matching the input dict """
+    """return UUIDs of rows matching all key-value pairs in match_dict."""
     s_bool = pd.Series(True, index=df.index)
     for col, val in match_dict.items():
         s_bool &= df[col] == val
@@ -85,7 +85,7 @@ def get_uuid(df, **match_dict):
 
 
 def load(df, folder='', uuid=None, **kwargs):
-    """ loads (Analysis, Effect) from file (detail_save must be True) """
+    """load (Analysis, Effect) from a saved result file."""
     folder = pathlib.Path(folder) / 'out'
     assert folder.exists()
     if uuid is None:

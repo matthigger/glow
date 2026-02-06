@@ -6,19 +6,18 @@ from glow.experiment.mancova import decompose
 
 
 def iter_size_ysum_yout(y, children=None):
-    """ iterates through region stats, less redundant compute via graph
+    """iterate region statistics, re-using partial sums via the graph.
 
     Args:
         y (np.array): (b, num_img, num_vox) imaging features
-        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
-            sklearn.cluster.Ward.children_).  If None is passed,
-            then iterates through stats per individual voxel region only
+        children (np.array): (num_leaf - 1, 2) child index pairs. if None,
+            iterates individual voxels only.
 
     Yields:
         reg_idx (int): region index
-        size (int): size, in voxels, of region
-        ysum (np.array): (b, num_img) sum of features across voxels
-        yout (np.array): (b, b) sum of yv @ yv.T across all voxels
+        size (int): number of voxels in region
+        ysum (np.array): (b, num_img) sum across voxels
+        yout (np.array): (b, b) sum of yv @ yv.T across voxels
     """
     b, num_img, num_vox = y.shape
 
@@ -58,17 +57,16 @@ def iter_size_ysum_yout(y, children=None):
 
 
 def iter_stat(exp, n_perm=None, **kwargs):
-    """ iterates through region stats, append mancova stats
+    """iterate region-level MANCOVA statistics (E, H) per permutation.
 
     Args:
-        exp (Experiment):
-        n_perm (int): number of permutations to compute (not including
-            unpermuted data)
+        exp (Experiment): experiment data
+        n_perm (int): number of permutations (excluding unpermuted)
 
     Yields:
         reg_idx (int): region index
-        e (np.array): (b, b, num_perm) e of mancova
-        h (np.array): (b, b, num_perm) h of mancova
+        e (np.array): (b, b, num_perm) error matrices
+        h (np.array): (b, b, num_perm) hypothesis matrices
     """
 
     # get projection matrices
@@ -105,16 +103,14 @@ def iter_stat(exp, n_perm=None, **kwargs):
 
 
 def node_sum(x, children):
-    """ given item per leaf in graph, sums leaf values and adds to dictionary
+    """sum leaf values up through the graph.
 
     Args:
-        x (np.array): value associated with each leaf (single voxel region)
-        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
-            sklearn.cluster.Ward.children_)
+        x (np.array): one value per leaf (single-voxel region)
+        children (np.array): (num_leaf - 1, 2) child index pairs
 
     Returns:
-        summed (np.array): same structure as input, but now includes all
-            nodes, not just leafs
+        summed (np.array): values for all nodes (leaves + internal)
     """
     # prep output array
     num_leaf = x.size
@@ -131,17 +127,17 @@ def node_sum(x, children):
 
 
 def get_f1_sens_spec(mask, mask_idx, children):
-    """Computes F1, sensitivity (recall/TPR), and specificity (TNR) per region.
+    """compute F1, sensitivity (recall/TPR), and specificity (TNR) per region.
 
     Args:
         mask (np.array): target mask (boolean, same shape as mask_idx)
-        mask_idx (np.array):
+        mask_idx (np.array): voxel index array (-1 outside analysis)
         children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
             sklearn.cluster.Ward.children_)
 
     Returns:
         f1 (np.array): f1 score per region
-        sens (np.array):  TP / (TP + FN) per region
+        sens (np.array): TP / (TP + FN) per region
         spec (np.array): TN / (TN + FP) per region
     """
     # compute misses & hits per region
@@ -170,17 +166,16 @@ def get_f1_sens_spec(mask, mask_idx, children):
 
 
 def get_miss_hits(mask, mask_idx, children):
-    """ for each node, count how many voxels are in / out of effect
+    """count target (hit) and non-target (miss) voxels per node.
 
     Args:
         mask (np.array): target mask (boolean, same shape as mask_idx)
-        mask_idx (np.array):
-        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
-            sklearn.cluster.Ward.children_)
+        mask_idx (np.array): voxel index array (-1 outside analysis)
+        children (np.array): (num_leaf - 1, 2) child index pairs
 
     Returns:
-        miss (np.array): non-target voxels contained in node of segmentation
-        hit (np.array): target voxels contained in node of segmentation
+        miss (np.array): non-target voxels per node
+        hit (np.array): target voxels per node
     """
     # build miss and hit for leaf nodes
     num_vox = (mask_idx >= 0).sum()
@@ -196,17 +191,16 @@ def get_miss_hits(mask, mask_idx, children):
 
 
 def iter_topo(*, children=None, num_leaf, node_start=None, only_leaf=False):
-    """ topological sort, leafs to root
+    """topological sort, leaves to root.
 
     Args:
-        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
-            sklearn.cluster.Ward.children_)
-        num_leaf (int): number of leafs in graph
-        node_start (int): starting node, iterates over all nodes below
-        only_leaf (bool): if True, only leaves are yielded
+        children (np.array): (num_leaf - 1, 2) child index pairs
+        num_leaf (int): number of leaves
+        node_start (int): subtree root (defaults to entire tree)
+        only_leaf (bool): if True, yield only leaves
 
     Yields:
-        node_idx (int): node idx
+        node_idx (int): node index
     """
     if children is None:
         # no graph passed, iterate through leaves
@@ -227,15 +221,14 @@ def iter_topo(*, children=None, num_leaf, node_start=None, only_leaf=False):
 
 
 def get_parent(children, num_leaf):
-    """ gets parent lookup array for a binary tree
+    """build parent lookup array for a binary tree.
 
     Args:
-        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
-            sklearn.cluster.Ward.children_)
-        num_leaf (int): number of leafs in graph
+        children (np.array): (num_leaf - 1, 2) child index pairs
+        num_leaf (int): number of leaves
 
     Returns:
-        parent (np.array): parent[idx] gives the parent of node idx.
+        parent (np.array): parent[idx] gives the parent of node idx
     """
     num_nodes = num_leaf + children.shape[0]
     parent = np.full(num_nodes, -1, dtype=int)
@@ -250,7 +243,7 @@ class RegIntersectError(Exception):
 
 
 def get_label_map(reg_idx_list, mask_idx, children, check_disjoint=False):
-    """Builds a mask_idx array from a list of region indices.
+    """build a mask_idx array from a list of region indices.
 
     Args:
         reg_idx_list (list[int]): list of region indices to include
@@ -287,31 +280,22 @@ def get_label_map(reg_idx_list, mask_idx, children, check_disjoint=False):
 
 
 def graph_merge(n_common, children_list):
-    """ combines many binary trees into a graph with common indexing
+    """merge many binary trees into a single graph with shared indexing.
 
-    this assumes each children matrix in children_list is in topo order (comes
-    out of sklearn's Ward's this way)
-
-    Regions are identified by a 128-bit XOR hash of their leaf labels.
-    Each leaf gets a deterministic random 128-bit value; each parent's hash
-    is the XOR of its children's hashes.  Identical leaf sets produce
-    identical hashes regardless of tree structure.  Collision probability
-    is ~n^2 / 2^129 (negligible).
+    regions are identified by a 128-bit XOR hash of their leaf labels,
+    so identical leaf sets produce identical nodes regardless of tree
+    structure.
 
     Args:
-        n_common (int): we assume the first n_idx_common nodes represent
-            identical objects
-        children_list (list): (n) each is a (2, num_node_n) array
-            whose i-th col represents node n_idx_common + i's children
+        n_common (int): number of shared leaf nodes
+        children_list (list): each element is a (num_node, 2) child
+            index array (assumes topological ordering)
 
     Returns:
-        map_to_new (list): (n) each is a (num_node_n) array whose
-            i-th item represents the new index (in children below)
-            of this input graph's n_idx_common + i-th node
-        children (num_node, 2): array whose i-th row represents
-            node-n_common+i's children.  this representation
-            contains a node for any node in all input graphs
-        size (num_node): number of items represented in each output node
+        map_to_new (list): per-tree arrays mapping old node indices to
+            the merged index space
+        children (np.array): (num_merged_nodes, 2) merged child pairs
+        size (np.array): voxel count per merged node
     """
     # assign each leaf a deterministic random 128-bit label (two 64-bit halves)
     rng = np.random.default_rng(seed=0)
@@ -381,23 +365,15 @@ GRAPH_EXCLUDE = -1
 
 
 class SCGraph:
-    """ a graph which "short-circuits" parent and child relations
+    """graph with short-circuited parent/child relations.
 
-    short-circuit behavior: suppose A is a child of B which is a child of C in
-    the full graph.  if only A and C are in the "subgraph" (not B) then: A is
-    a "child" of C, and C is a "parent" of A
-
-    subgraph is in scare quotes as our SCGraph isn't a proper subgraph: it
-    contains edges not in the original
+    if A -> B -> C in the full tree but B is excluded, SCGraph treats
+    A as a direct child of C.
 
     Attributes:
-        _parent_full (np.array): (num_vox) parent of the full graph
-        included (np.array): (num_vox) boolean, true if node in "subgraph"
-        parent (np.array): (num_vox) parent[idx] is "parent" of node idx
-            (or SUBGRAPH_EXCLUDE if idx is not in the graph)
-        children (dict): children[idx] is a sorted list of the children of
-            node idx (nodes without children are empty lists, nodes excluded
-            are not keys of this dictionary)
+        included (np.array): boolean, True if node is in the subgraph
+        parent (np.array): short-circuit parent (-1 if excluded/root)
+        children (dict): node -> sorted list of short-circuit children
     """
 
     @classmethod
@@ -417,6 +393,7 @@ class SCGraph:
         self._rebuild()
 
     def modify(self, nodes_add=tuple(), nodes_rm=tuple()):
+        """add or remove nodes and rebuild short-circuit relationships."""
         for node in nodes_add:
             self.included[node] = True
         for node in nodes_rm:
@@ -424,7 +401,7 @@ class SCGraph:
         self._rebuild()
 
     def _rebuild(self):
-        """ rebuild children dict with short-circuited relationships """
+        """rebuild children dict with short-circuited relationships."""
 
         def _get_ss_parent(node):
             # short-circuit parent
@@ -449,9 +426,8 @@ class SCGraph:
         self.children = {k: sorted(v) for k, v in self.children.items()}
 
     def iter_desc(self, node, incl_self=False):
+        """yield all descendants of node in the short-circuit subgraph."""
         assert self.included[node]
-
-        # gets all descendants of a given region
         if incl_self:
             yield node
 
@@ -459,9 +435,8 @@ class SCGraph:
             yield from self.iter_desc(_node, incl_self=True)
 
     def iter_ancest(self, node, incl_self=False):
+        """yield all ancestors of node in the short-circuit subgraph."""
         assert self.included[node]
-
-        # gets all ancestors of given region
         if incl_self:
             yield node
 

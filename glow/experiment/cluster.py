@@ -5,21 +5,15 @@ from sklearn.feature_extraction import grid_to_graph
 
 
 def cluster(exp, mode='ward-glm'):
-    """ hierarchical segmentation of image using Ward's method
-    
-    Uses 6-connectivity (face neighbors only) for 3D grids, matching effect growth.
-    This ensures clustering only merges face-adjacent regions, consistent with
-    how effects are grown in ExtenterMinVar and ExtenterSphere.
+    """hierarchical segmentation via Ward's method (6-connectivity in 3d).
 
     Args:
-        exp (Experiment):
-        mode (str): 'ward-naive', 'ward-glm'
-            'ward-naive': reduces image-pooled spatial covariance
-            'ward-glm': removes error
+        exp (Experiment): experiment providing y and mask_idx
+        mode (str): 'ward-naive' (pooled covariance) or 'ward-glm'
+            (residual after projecting onto x)
 
     Returns:
-        children (np.array): (num_reg, 2) each col are index of child
-            regions
+        children (np.array): (num_node, 2) child index pairs
     """
     # get connectivity (ensures only neighboring voxels joined)
     # grid_to_graph uses 6-connectivity (face neighbors) for 3D by default

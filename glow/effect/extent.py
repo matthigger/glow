@@ -15,7 +15,7 @@ class ContiguousRegionNotFound(RuntimeError):
 
 
 def resample_to_contiguous(fnc):
-    """ ensures mask, applied to experiment, yields contiguous region """
+    """decorator: re-sample until the mask yields a contiguous region."""
 
     @wraps(fnc)
     def wrapped(self, *, mask_idx, seed=None, contiguous=False,
@@ -45,7 +45,7 @@ def resample_to_contiguous(fnc):
 
 
 class ExtenterSphere:
-    """ builds effect extent as a randomly placed sphere """
+    """build effect extent as a randomly placed sphere."""
 
     def __init__(self, radius=None, n_vox=None, connected=False):
         if radius is None and n_vox is None:
@@ -58,18 +58,16 @@ class ExtenterSphere:
 
     @resample_to_contiguous
     def __call__(self, mask_idx, y=None, seed=None, vox_init=None):
-        """ returns a mask of extent
+        """return a boolean mask defining the sphere extent.
 
         Args:
-            mask_idx (np.array): same shape as image.  -1 where voxel not
-                included in analysis, otherwise contains voxel index
-            y (np.array): (b, num_img, num_vox) image intensities
-            seed: initializes random number generator (given seed function is
-                deterministic)
-            vox_init (int): seed voxel (if not passed, then randomly chosen)
+            mask_idx (np.array): voxel index array (-1 outside analysis)
+            y (np.array): (b, num_img, num_vox) image intensities (unused)
+            seed: random seed for reproducibility
+            vox_init (int): seed voxel (random if not passed)
 
         Returns:
-            mask (np.array): same shape as image.  boolean, True within extent
+            mask (np.array): boolean, True within extent
         """
         # choose a random initial voxel
         rng = np.random.default_rng(seed=seed)
@@ -134,19 +132,16 @@ class ExtenterSphere:
 
 
 def iter_vox_neighbor(mask, mask_idx):
-    """ iterates through voxel idx of all neighbors of mask
-    
-    Uses 6-connectivity (face neighbors) for 3D, matching Ward clustering.
-    This ensures effect growth considers the same neighbors as clustering.
+    """yield voxel indices of all face-neighbours of mask.
 
-        Args:
-            mask (np.array): same shape as image, boolean
-            mask_idx (np.array): same shape as image.  -1 where voxel not
-                included in analysis, otherwise contains voxel index
+    uses 6-connectivity for 3d, matching Ward clustering.
 
-        Yields:
-            vox_idx (int): voxel index (in mask_idx) corresponding which
-                neighbors the mask (neighbor not reflexive)
+    Args:
+        mask (np.array): boolean, same shape as image
+        mask_idx (np.array): voxel index array (-1 outside analysis)
+
+    Yields:
+        vox_idx (int): neighbour voxel index (non-reflexive)
     """
     # Use 6-connectivity (face neighbors) for 3D, matching clustering connectivity
     structure = CONNECTIVITY_3D if (mask_idx.ndim == 3) else generate_binary_structure(2, 1)
@@ -157,26 +152,23 @@ def iter_vox_neighbor(mask, mask_idx):
 
 
 class ExtenterMinVar:
-    """ grows effect extent from single voxel to greedily minimize var (trace)
-    """
+    """grow effect extent from a seed voxel to greedily minimise variance."""
 
     def __init__(self, n):
         self.n = int(n)
 
     @resample_to_contiguous
     def __call__(self, y, mask_idx, seed=None, vox_init=None, verbose=False):
-        """ returns a mask of extent
+        """return a boolean mask of n voxels with minimal pooled variance.
 
         Args:
             y (np.array): (b, num_img, num_vox) image intensities
-            mask_idx (np.array): same shape as image.  -1 where voxel not
-                included in analysis, otherwise contains voxel index
-            seed: initializes random number generator (given seed function is
-                deterministic)
-            vox_init (int): seed voxel (if not passed, then randomly chosen)
+            mask_idx (np.array): voxel index array (-1 outside analysis)
+            seed: random seed for reproducibility
+            vox_init (int): seed voxel (random if not passed)
 
         Returns:
-            mask (np.array): same shape as image.  boolean, True within extent
+            mask (np.array): boolean, True within extent
         """
 
         # choose a random initial voxel

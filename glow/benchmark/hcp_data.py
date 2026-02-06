@@ -1,9 +1,4 @@
-"""HCP data download and path management.
-
-Downloads the HCP-YA 100 unrelated subjects (DTI registered) dataset from
-Zenodo if not found locally.  Users must agree to the WU-Minn HCP Open Access
-Data Use Terms before the download begins.
-"""
+"""HCP data download and path management."""
 
 from pathlib import Path
 import shutil
@@ -26,11 +21,7 @@ _DATA_USE_TERMS_URL = 'https://balsa.wustl.edu/project?project=HCP_YA'
 
 
 def _prompt_data_use_terms():
-    """Ask the user to confirm they have agreed to the HCP data use terms.
-
-    Raises:
-        SystemExit: if the user does not confirm.
-    """
+    """prompt user to confirm agreement to HCP data use terms."""
     print()
     print('=' * 70)
     print('HCP DATA USE TERMS')
@@ -52,7 +43,7 @@ def _prompt_data_use_terms():
 
 
 def _download_progress(block_num, block_size, total_size):
-    """Callback for urllib.request.urlretrieve to show progress."""
+    """progress callback for urllib.request.urlretrieve."""
     downloaded = block_num * block_size
     if total_size > 0:
         pct = min(100, downloaded * 100 / total_size)
@@ -66,13 +57,13 @@ def _download_progress(block_num, block_size, total_size):
 
 
 def download_hcp_data(dest=None):
-    """Download and extract the HCP dataset.
+    """download and extract the HCP dataset from Zenodo.
 
     Args:
-        dest: Target directory.  Defaults to ``DEFAULT_HCP_PATH``.
+        dest: target directory (defaults to DEFAULT_HCP_PATH)
 
     Returns:
-        Path to the extracted dataset directory.
+        Path to the extracted dataset directory
     """
     if dest is None:
         dest = DEFAULT_HCP_PATH
@@ -114,17 +105,17 @@ def download_hcp_data(dest=None):
 
 
 def get_hcp_path(path=None):
-    """Return the HCP data path, downloading if necessary.
+    """return the HCP data path, downloading if necessary.
 
     Args:
-        path: Explicit path override.  If *None*, uses
-              ``DEFAULT_HCP_PATH`` and downloads when missing.
+        path: explicit path override. if None, uses DEFAULT_HCP_PATH
+            and downloads when missing.
 
     Returns:
-        Path to the HCP dataset directory.
+        Path to the HCP dataset directory
 
     Raises:
-        FileNotFoundError: if an explicit *path* is given but does not exist.
+        FileNotFoundError: if an explicit path does not exist
     """
     if path is not None:
         path = Path(path)

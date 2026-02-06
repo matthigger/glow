@@ -1,17 +1,4 @@
-"""AWS Batch worker for GLOW experiments
-
-Supports two modes:
-1. Permutation mode: Process a single permutation of one experiment
-   - For large single experiments (e.g. 1M voxels, 100+ permutations)
-   - Parallelize across permutations
-   
-2. Experiment mode: Process all permutations of one experiment
-   - For many small experiments (e.g. paper benchmarks with 163 configs)
-   - Parallelize across experiments, run permutations serially within each
-   - ~34x cheaper, ~48x faster by amortizing container overhead
-
-Mode is determined by which argument is provided (--perm-idx or --exp-idx)
-"""
+"""AWS Batch worker for GLOW experiments."""
 
 import argparse
 import sys
@@ -27,18 +14,7 @@ import tracemalloc
 
 
 def get_array_info(obj, prefix='', visited=None, max_depth=5, depth=0):
-    """Recursively find all numpy arrays in an object and return their info
-    
-    Args:
-        obj: Object to inspect
-        prefix: Prefix for attribute names
-        visited: Set of visited object IDs to prevent cycles
-        max_depth: Maximum recursion depth
-        depth: Current recursion depth
-        
-    Returns:
-        list of dicts with array information
-    """
+    """recursively find all numpy arrays in an object and return their info."""
     if visited is None:
         visited = set()
     
@@ -97,15 +73,7 @@ def get_array_info(obj, prefix='', visited=None, max_depth=5, depth=0):
 
 
 def get_memory_profile(config=None, exp=None, ana=None):
-    """Get detailed memory profile showing what's using memory
-    
-    Args:
-        config: Config object to inspect (optional)
-        exp: Experiment object to inspect (optional)
-        ana: Analysis object to inspect (optional)
-    
-    Returns:
-        dict with memory statistics and array information
+    """return a detailed memory profile dict.
     """
     # Get process memory
     process = psutil.Process(os.getpid())
@@ -150,13 +118,7 @@ def get_memory_profile(config=None, exp=None, ana=None):
 
 
 def print_memory_profile(config=None, exp=None, ana=None):
-    """Print detailed memory profile to stdout
-    
-    Args:
-        config: Config object to inspect (optional)
-        exp: Experiment object to inspect (optional)
-        ana: Analysis object to inspect (optional)
-    """
+    """print a detailed memory profile to stdout."""
     print('\n' + '=' * 60)
     print('MEMORY PROFILE (on error)')
     print('=' * 60)
@@ -187,15 +149,7 @@ def print_memory_profile(config=None, exp=None, ana=None):
 
 
 def process_permutation(exp, ana_kwargs, perm_idx):
-    """process a single permutation
-    
-    Args:
-        exp: experiment object
-        ana_kwargs: analysis kwargs
-        perm_idx: permutation index to process
-    
-    Returns:
-        result dict with children and stat
+    """process a single permutation and return children + stat.
     """
     from glow.experiment.cluster import cluster
     from glow.experiment.mancova import get_hotel_tr

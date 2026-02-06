@@ -7,18 +7,16 @@ from glow.experiment import decompose, get_hotel_tr
 
 
 def compute_offset(x, y, contrast, hotel_tr):
-    """ get offset to y, constant across voxels, which imposes hotel_tr
+    """find the smallest offset to y that imposes a given Hotelling's trace.
 
     Args:
-        x (np.array): (a, num_img) explanatory variables
+        x (np.array): (a, num_img) design matrix
         y (np.array): (b, num_img, num_vox) image intensities
-        contrast (np.array): (a) True for each corresponding feature in x which
-            is "of interest"
-        hotel_tr (float): hotelling's trace to be achieved by offset
+        contrast (np.array): (a,) boolean, True for features of interest
+        hotel_tr (float): target Hotelling's trace
 
     Returns:
-        offset (np.array): (b, num_img) offset to apply to all images to
-            produce desired pval
+        offset (np.array): (b, num_img) constant offset across voxels
     """
     # prep constants
     b, num_img, num_vox = y.shape
@@ -38,25 +36,20 @@ def compute_offset(x, y, contrast, hotel_tr):
     sigma_sum = yr @ yr.T - y_mean @ y_mean.T * num_vox
 
     def get_e_h_sigma(alpha):
-        """" computes e, h, sigma_sum under a given alpha
-        """
+        """compute e, h, sigma_sum under a given alpha."""
         alpha1, alpha2 = alpha
         h = (1 + alpha1) ** 2 * yq1q1y * num_vox
         e = (1 + alpha2) ** 2 * yq2q2y * num_vox + sigma_sum
         return e, h, sigma_sum
 
     def constraint(alpha):
-        """ when this function output is zero, chi2_target achieved """
+        """zero when target Hotelling's trace is achieved."""
         e, h, _ = get_e_h_sigma(alpha)
         _hotel_tr = get_hotel_tr(e, h)
         return _hotel_tr - hotel_tr
 
     def obj(alpha):
-        r"""  ||\Delta||^2 = \sum_{i=1}^3 \alpha_i^2 ||Q_i \bar{Y}_r^T||^2
-
-        Args:
-             alpha (tuple): a1, a2 (per equations)
-        """
+        r"""squared offset norm: \sum_i alpha_i^2 ||Q_i Y_bar^T||^2."""
         a1, a2 = alpha
         return a1 ** 2 * yq1_norm2 + a2 ** 2 * yq2_norm2
 

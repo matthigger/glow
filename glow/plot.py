@@ -56,7 +56,7 @@ def make_gif(file_out, n_list=30, fps=10, mask_idx=None, min_n=1,
 
 
 def image_iter(children, mask_idx, num_vox):
-    """ yields array per step in hierarchical cluster (region has same color)
+    """yield a colour-labelled array at each step of the hierarchy.
 
     the first image has a unique color per voxel, the final image has the
     same color for all voxels.  intermediate images show the regions which
@@ -178,7 +178,7 @@ def prep_df(ana_glow, mask_target=None):
 
 
 def scatter_size_vs_stat(analysis, y_feat, mask=None, min_size=1):
-    """ scatters size vs f_stat, colors by f1 score if mask is passed
+    """scatter plot of region size vs test statistic, coloured by F1.
 
      Args:
         analysis (Analysis):

@@ -15,12 +15,12 @@ from .prune import prune
 
 
 class Analysis:
-    """ performs effect discovery (glow or TFCE) computes FWER p-val
+    """performs effect discovery (glow or TFCE) and computes FWER p-values.
 
     Attributes:
-        exp (Experiment): the source data to run experiment on
-        get_stat (fnc): accepts e, h and returns a scalar statistic (see
-            mancova.py)
+        exp (Experiment): source data
+        get_stat (callable): accepts e, h and returns a scalar statistic
+            (see mancova.py)
     """
 
     def __init__(self, exp, get_stat=get_hotel_tr, n_jobs_perm=1):
@@ -33,24 +33,18 @@ class Analysis:
 
     @classmethod
     def get_pval(cls, stat, reg_active=None):
-        """ computes FWER adjusted pval Westfall-Young Permutation
-
-        (percentile within max stat per permutation)
+        """compute FWER-adjusted p-values via Westfall-Young permutation.
 
         Args:
             stat (np.array): (num_permute, num_reg) statistics per region
-            reg_active (np.array): (num_reg) indexes into 2nd dimension
-                above (bool).  only active regions have a pvalue
-                computed for them, otherwise np.nan is returned for inactive
-                regions.  (use case: discarding regions which are too small
-                a priori we needn't consider their stats in building our
-                comparison set for H0 which controls for FWER ... more stat
-                power is preserved for the larger regions of interest).
-                default behavior is all regions are included in analysis
+            reg_active (np.array): (num_reg) boolean mask. only active
+                regions have a p-value computed; inactive get np.nan.
+                discarding a-priori small regions from the comparison
+                set preserves power for larger regions. defaults to all
+                regions active.
 
         Returns:
-            pval (np.array): (num_reg) Family Wise Error Rate controlled
-                p-values
+            pval (np.array): (num_reg) FWER-controlled p-values
         """
         if reg_active is None:
             reg_active = np.ones(stat.shape[1], dtype=bool)
@@ -79,20 +73,20 @@ class Analysis:
         return pval
 
     def get_stat_perm(self, exp, n_perm=None, children=None):
-        """ computes stats for each region (fixed) under different permutations
+        """compute test statistic for each region under each permutation.
 
         Args:
-            exp (Experiment):
-            n_perm (int): number of permutations (includes unpermuted data)
-            children (np.array): (num_reg, 2) each col are index of child
-                regions, if none passed then iterates only through voxels
+            exp (Experiment): experiment to evaluate
+            n_perm (int): number of permutations (in addition to unpermuted)
+            children (np.array): (num_reg, 2) child index array. if None,
+                only iterates through individual voxels.
 
         Returns:
-            stat (np.array): (num_reg, n_perm) statistic (see self.get_stat
-                attribute)
+            stat (np.array): (n_perm + 1, num_reg) test statistics
         """
         # compute wilks per region
-        b, num_img, num_reg = exp.y.shape
+        b, num_img, num_vox = exp.y.shape
+        num_reg = num_vox
         if children is not None:
             num_reg += children.shape[0]
 
@@ -144,18 +138,16 @@ class AnalysisVBA(Analysis):
 
     @classmethod
     def apply_tfce(cls, stat, mask_idx, verbose=False, n_jobs_perm=1):
-        """ writes images to nii, applies TFCE, loads and returns results
+        """apply TFCE to every permutation image.
 
-         Args:
-            stat (np.array): (num_permute, num_vox) stats across all
-                permutations
-            mask_idx (np.array): same shape as image.  -1 where voxel not
-                included in analysis, otherwise contains voxel index
-            verbose (bool): toggles command line output
-            n_jobs_perm (int): number of parallel jobs for TFCE per image
+        Args:
+            stat (np.array): (num_permute, num_vox) statistics
+            mask_idx (np.array): 3d voxel index array (-1 outside analysis)
+            verbose (bool): print progress
+            n_jobs_perm (int): parallel jobs for TFCE (1=serial)
 
-        Returns
-            tfce (np.array): (num_permute, num_vox) tfce stats
+        Returns:
+            tfce (np.array): (num_permute, num_vox) TFCE-enhanced stats
         """
         import glow.vba  # lazy import (requires FSL)
         # apply & store tfce
@@ -187,14 +179,14 @@ class AnalysisVBA(Analysis):
 
     @classmethod
     def discover_mask(cls, mask, exp):
-        """ each connected component in mask yields an effect region
+        """split a boolean mask into connected-component effects.
 
         Args:
-            mask (np.array): boolean mask same size as exp.mask_idx
-            exp (Experiment):
+            mask (np.array): boolean mask, same shape as exp.mask_idx
+            exp (Experiment): experiment for constructing Effect objects
 
         Returns:
-            effect_list (list): list of effects (largest first)
+            effect_list (list): discovered Effect objects
         """
         # split discovered regions into disjoint effects (all adjacent are
         # same effect)
@@ -211,15 +203,12 @@ class AnalysisVBA(Analysis):
 
 
 class AnalysisGLOW(Analysis):
-    """ search a hierarchical segmentation for significant effects
+    """search a hierarchical segmentation for significant effects.
 
     Attributes:
-        child_dict (dict): keys are permutation indices, values are
-            (2, n) graph arrays (equiv to sklearn.cluster.Ward.children_)
-        stat (np.array): (n_perm + 1, n_perm_adj, num_reg)
-        size (np.array): (n_perm + 1, num_reg) number of voxels in
-            each region (for all permutations).  first row corresponds to
-            unpermuted data
+        child_dict (dict): perm_idx -> (num_node, 2) children array
+        stat (np.array): (n_perm + 1, num_reg) raw test statistics
+        size (np.array): (n_perm + 1, num_reg) voxel count per region
     """
 
     def __init__(self, exp, n_perm, n_perm_adj=10, n_perm_prune=100,
@@ -301,21 +290,7 @@ class AnalysisGLOW(Analysis):
     
     def _finalize_analysis(self, exp, n_perm, n_perm_adj, n_perm_prune,
                           alpha_fwer, alpha_prune, min_size):
-        """complete analysis given child_dict and stat arrays
-        
-        this method performs post-processing after permutations are computed
-        (either locally or on cloud). assumes self.child_dict and self.stat
-        are already populated.
-        
-        Args:
-            exp: experiment object
-            n_perm: number of permutations
-            n_perm_adj: number of adjustment permutations
-            n_perm_prune: number of pruning permutations
-            alpha_fwer: family-wise error rate
-            alpha_prune: pruning alpha
-            min_size: minimum region size
-        """
+        """post-process after permutations: merge graphs, z-normalise, prune."""
         b, num_img, num_vox = exp.y.shape
         num_reg = num_vox * 2 - 1
 
@@ -382,14 +357,11 @@ class AnalysisGLOW(Analysis):
                                                    reg_idx=reg_idx,
                                                    pval_fwer=pval_fwer)
             self.effect_list.append(eff)
+
     def _run_on_cloud(self, exp, n_perm, n_perm_adj, n_perm_prune,
                      alpha_fwer, alpha_prune, min_size, verbose,
                      cloud_config, **kwargs):
-        """execute analysis on AWS cloud
-        
-        This method runs the expensive permutation processing on AWS Batch,
-        then downloads results and completes the analysis locally.
-        """
+        """run permutation processing on AWS Batch and finish locally."""
         from glow.aws import AWSBatchRunner
         import uuid
         

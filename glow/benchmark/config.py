@@ -98,11 +98,7 @@ class Config:
         self._shared_exp_s3_key = None  # S3 key for shared experiment data
 
     def _get_exp_orig_signature(self):
-        """Generate signature for exp_orig based on source and parameters
-        
-        Returns:
-            str: hex digest signature, or None if source not supported
-        """
+        """generate a hash signature for exp_orig based on source parameters."""
         if self.source == 'hcp':
             sig_data = {
                 'source': self.source,
@@ -130,12 +126,7 @@ class Config:
         return hashlib.sha256(sig_str.encode()).hexdigest()[:16]
 
     def prep_exp_orig(self, hcp_feats=None, wgn_b=None):
-        """Prepare the original experiment.
-        
-        Args:
-            hcp_feats: Override hcp_feats if provided (for dataset experiment)
-            wgn_b: Override wgn_b if provided (for dataset experiment)
-        """
+        """prepare the base experiment (HCP or WGN)."""
         if self.source == 'hcp':
             path = get_hcp_path()
             feats = hcp_feats if hcp_feats is not None else self.hcp_feats
@@ -156,15 +147,7 @@ class Config:
                 num_img=self.wgn_num_img)
 
     def get_exp_eff(self, seed, hotel_tr, radius=None, hcp_feats=None, wgn_b=None):
-        """Get experiment with effect imposed.
-        
-        Args:
-            seed: Random seed
-            hotel_tr: Hotelling's trace (effect strength)
-            radius: Override radius if provided (for runtime experiment)
-            hcp_feats: Override hcp_feats if provided (for dataset experiment)
-            wgn_b: Override wgn_b if provided (for dataset experiment)
-        """
+        """return an experiment with a synthetic effect imposed."""
         # Re-prepare exp_orig if dataset parameters changed or if not yet created
         # For dataset experiments, we need to recreate exp_orig each time
         # Note: On cloud workers, exp_orig should already be loaded from shared cache
@@ -214,21 +197,7 @@ class Config:
                                  hotel_tr=hotel_tr)
 
     def iter_kwargs(self):
-        """Iterates through all inputs to get_exp_eff.
-        
-        Uses a declarative approach:
-        - iter_params: dict of {param_name: [values]} to iterate over
-        - fixed_params: dict of {param_name: value} for fixed values
-        
-        Default behavior (if iter_params is None):
-        - Iterate over seed (0 to n_seed-1) and hotel_tr_all
-        
-        Example custom iterations:
-        - {'iter_params': {'seed': range(10), 'radius': [2, 5, 10]}, 
-           'fixed_params': {'hotel_tr': 0.1}}
-        - {'iter_params': {'seed': range(10), 'wgn_b': [1, 2]}, 
-           'fixed_params': {'hotel_tr': 0.1}}
-        """
+        """yield kwarg dicts for each experiment (product of iter_params)."""
         # build iteration specification
         if self.iter_params is None:
             # default: iterate over seed and hotel_tr
@@ -291,11 +260,7 @@ class Config:
         return path
 
     def run_all(self, verbose=True):
-        """run all experiments (local or cloud)
-        
-        Args:
-            verbose: print progress
-        """
+        """run all experiments (local or cloud)."""
         # if cloud_config is set, submit experiments to AWS
         if self.cloud_config is not None:
             self._run_all_on_cloud(verbose=verbose)
@@ -325,10 +290,7 @@ class Config:
         )
     
     def submit_cloud_jobs(self, verbose=True):
-        """submit experiments to AWS Batch without waiting
-        
-        returns job info dict for later monitoring/downloading
-        """
+        """submit experiments to AWS Batch (returns job info dict)."""
         from glow.aws.aws_batch import AWSBatchRunner
         import uuid
         
@@ -434,12 +396,7 @@ class Config:
         }
     
     def wait_and_download_results(self, job_info, verbose=True):
-        """monitor jobs and download results
-        
-        args:
-            job_info: dict returned from submit_cloud_jobs()
-            verbose: print progress
-        """
+        """monitor jobs and download results when complete."""
         runner = job_info['runner']
         run_id = job_info['run_id']
         job_ids = job_info['job_ids']
@@ -460,11 +417,7 @@ class Config:
             print(f'✓ {label} complete: {folder}')
     
     def _run_all_on_cloud(self, verbose=True):
-        """submit all experiments to AWS Batch (one job per experiment)
-        
-        Args:
-            verbose: print progress and monitor jobs
-        """
+        """submit all experiments to AWS Batch and wait for results."""
         # submit jobs
         job_info = self.submit_cloud_jobs(verbose=verbose)
         

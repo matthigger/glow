@@ -13,7 +13,7 @@ from glow.benchmark.file import OUT, ERROR
 
 
 def run_segment(config, **kwargs):
-    """ runs wards & """
+    """run Ward's clustering and score against the imposed effect."""
     # build a particular effect
     exp, effect = config.get_exp_eff(**kwargs)
 
@@ -48,7 +48,7 @@ def run_segment(config, **kwargs):
 
 
 def run_ana(config, **kwargs):
-    """ runs all the analyses in config """
+    """run all analyses defined in config.ana_kwargs_dict."""
     # build a particular effect
     exp, effect = config.get_exp_eff(**kwargs)
 

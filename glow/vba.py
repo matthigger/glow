@@ -1,25 +1,28 @@
+"""Threshold-Free Cluster Enhancement (TFCE).
+
+Pure-Python implementation (Smith & Nichols, 2009) matching FSL's
+fslmaths -tfce output exactly.
+"""
+
 import numpy as np
 from scipy.ndimage import label, generate_binary_structure
 
 
 def apply_tfce_img(x, H=2.0, E=0.5, connectivity=6, n_steps=100):
-    """applies tfce to an array (must be 3d)
+    """apply TFCE to a 3d statistical image.
 
-    Pure Python implementation of Threshold-Free Cluster Enhancement
-    (Smith & Nichols, 2009). Computes:
-        TFCE(p) = Σ e(h)^E × h^H
-
-    This matches FSL's fslmaths -tfce output exactly.
+    computes TFCE(p) = sum_h e(h)^E * h^H where e(h) is the cluster
+    extent at threshold h.
 
     Args:
-        x: 3d array of statistical values (higher = more significant)
-        H: height exponent (default 2.0)
-        E: extent exponent (default 0.5)
-        connectivity: 6 (faces), 18 (faces+edges), or 26 (full)
-        n_steps: number of threshold steps (default 100, matches FSL)
+        x (np.array): 3d array of statistical values
+        H (float): height exponent
+        E (float): extent exponent
+        connectivity (int): 6 (faces), 18 (faces+edges), or 26 (full)
+        n_steps (int): number of threshold steps (100 matches FSL)
 
     Returns:
-        tfce enhanced image (same shape as input)
+        tfce (np.array): TFCE-enhanced image, same shape as x
     """
     x = np.asarray(x)
 
@@ -36,58 +39,49 @@ def apply_tfce_img(x, H=2.0, E=0.5, connectivity=6, n_steps=100):
     if img_max <= 0:
         return np.zeros_like(x)
 
-    # fsl uses fixed number of steps with dh = max / n_steps
+    # FSL uses fixed number of steps with dh = max / n_steps
     dh = img_max / n_steps
     thresholds = np.linspace(dh, img_max, n_steps)
 
     tfce = np.zeros_like(x)
 
     for h in thresholds:
-        # threshold image
         binary = x >= h
-
         if not binary.any():
             continue
 
-        # find connected components
         labeled, n_clusters = label(binary, structure=struct)
-
-        # compute cluster sizes efficiently
         cluster_sizes = np.bincount(labeled.ravel())
-
-        # map cluster size to each voxel (vectorized)
         extent_map = cluster_sizes[labeled]
-
-        # zero out background
         extent_map[labeled == 0] = 0
 
-        # tfce contribution: e^E * h^H (no dh factor, matching FSL)
-        contribution = (extent_map ** E) * (h ** H)
-        tfce += contribution
+        # TFCE contribution: e^E * h^H (no dh factor, matching FSL)
+        tfce += (extent_map ** E) * (h ** H)
 
     return tfce
 
 
 def apply_tfce_x(x, mask_idx):
-    """applies tfce to a vector of stats given a 3d mask index
+    """apply TFCE to a vector of stats given a 3d mask index.
+
+    pads the mask with a single-voxel border of zeros (TFCE requires
+    the image boundary to be zero).
 
     Args:
-        x: 1d array of statistical values
-        mask_idx: 3d array where values > -1 indicate valid voxels
+        x (np.array): 1d array of statistical values (one per active voxel)
+        mask_idx (np.array): 3d index array, -1 for inactive voxels,
+            otherwise the voxel index into x
 
     Returns:
-        tfce stats for valid voxels
+        tfce (np.array): TFCE stats for each active voxel
     """
-    # zero pad (tfce requires border of zeros)
-    mask_idx = np.pad(np.atleast_3d(mask_idx), pad_width=1, constant_values=-1)
+    # zero pad (TFCE requires border of zeros)
+    mask_idx = np.pad(np.atleast_3d(mask_idx), pad_width=1,
+                      constant_values=-1)
 
-    # reshape into original image dimensions
     mask_bool = mask_idx > -1
     img = np.zeros(mask_idx.shape)
     img[mask_bool] = x
 
-    # apply tfce
     img_tfce = apply_tfce_img(img)
-
-    # extract tfce stats
     return img_tfce[mask_bool]

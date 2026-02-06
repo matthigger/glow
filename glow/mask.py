@@ -31,14 +31,14 @@ conn_dict = {6: np.array([[[0, 0, 0],
 
 
 def get_mask_idx(mask):
-    """ builds mask_idx from mask
+    """build voxel-index array from a boolean mask.
 
     Args:
-        mask (np.array): boolean, False where voxels not to be analyzed
+        mask (np.array): boolean, False where voxels are excluded
 
     Returns:
-        mask_idx (np.array): -1 where voxels not to be analyzed, all other
-            voxels get a unique integer (voxel index)
+        mask_idx (np.array): -1 for excluded voxels, otherwise a unique
+            sequential integer index
     """
     mask = mask.astype(bool)
     mask_idx = np.full(mask.shape, fill_value=-1)
@@ -48,14 +48,13 @@ def get_mask_idx(mask):
 
 
 def get_entropy(mask_idx):
-    """ computes the entropy of a label map, ignoring labels < 0
+    """compute entropy of a label map (bits), ignoring labels < 0.
 
     Args:
-        mask_idx (np.array): -1 where voxels not to be analyzed, all other
-            voxels get a unique integer (voxel index)
+        mask_idx (np.array): integer label array (-1 for excluded voxels)
 
     Returns:
-        entropy (float): entropy in bits
+        entropy (float): Shannon entropy in bits
     """
     valid_labels = mask_idx[mask_idx >= 0]
     if valid_labels.size == 0:
@@ -68,8 +67,7 @@ def get_entropy(mask_idx):
 
 
 def get_score(mask_pred, mask_target, mask_active=None):
-    """ gets f1, sens, spec scores per analysis given ground truth effect
-    """
+    """compute F1, sensitivity, and specificity against ground truth."""
     if mask_active is None:
         # no mask_active passed, assume all voxels were analyzed
         y_true = mask_target.flatten()
@@ -93,11 +91,7 @@ def get_score(mask_pred, mask_target, mask_active=None):
 
 
 def trim_zeros_2d(x, to_trim=0):
-    """ trims rows / columns which are entirely zero
-
-     (of course, spoils affine but useful to "zoom" in jupyter demos)
-
-     """
+    """crop rows and columns that are entirely equal to to_trim."""
     # rows and cols where there is at least one non-zero element
     non_zero_rows = np.any(x != to_trim, axis=1)
     non_zero_cols = np.any(x != to_trim, axis=0)
@@ -110,32 +104,15 @@ def trim_zeros_2d(x, to_trim=0):
 
 
 def get_neighbor_offsets(conn, not_reflexive=True):
-    """ get neighbor index offset from a connectivity mask
-
-    expected usage:
-
-    offset = get_neighbor_offsets(conn=26)
-
-    # get a list of neighbor voxel coordinates of ijk
-    ijk_list = [tuple(_ijk) for _ijk in ijk + offset]
-
-    # pop them into the array as
-    array[*ijk_list[0]]
+    """compute neighbour index offsets from a connectivity mask.
 
     Args:
-        conn (int or array_like): Either:
-            - An integer key (e.g., 6, 18, or 26) referring to a predefined
-              3D connectivity mask in `conn_dict`, or
-            - An N-dimensional array (with odd size along each axis) where
-              nonzero entries define neighbors relative to the center.
-        not_reflexive (bool, optional): If True, the central voxel (offset = 0
-            along all axes) is excluded from the returned offset. Default is False.
+        conn (int or np.array): connectivity key (6, 18, 26) or an
+            explicit structuring element
+        not_reflexive (bool): exclude the zero-offset (self) entry
 
     Returns:
-        numpy.ndarray: An array of shape (nconn, ndim) where:
-            - `nconn` is the number of neighbors,
-            - `ndim` is the dimensionality of the mask (`conn.ndim`).
-          Each row is an offset vector relative to the center voxel.
+        offset (np.array): (n_neighbours, ndim) offset vectors
     """
     if type(conn) is int:
         conn = conn_dict[conn]
@@ -154,6 +131,7 @@ def get_neighbor_offsets(conn, not_reflexive=True):
 
 
 def iter_neighbor(a, ijk, conn=None, offset=None, mask_active=None, **kwargs):
+    """yield values of a at each neighbour of ijk."""
     assert (offset is None) != (conn is None), 'offset xor conn required'
 
     if offset is None:

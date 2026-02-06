@@ -9,29 +9,25 @@ from ..graph import get_label_map, SCGraph, GRAPH_EXCLUDE
 
 
 def get_llr(label_map, exp, _q_tup=None, _skip_homo=False):
-    r""" gets log likelihood of homogenous vs heterogenous models
+    r"""log-likelihood ratio of homogeneous vs heterogeneous models.
 
-    model0 (homo): all voxels follow same beta
-    model1 (hetero): each subset has its own beta
-
-    ll = log p(model0) / p(model1) = - det(e) + \sum_i det(e_i)
+    model0 (homo): all voxels share the same beta.
+    model1 (hetero): each subset has its own beta.
 
     Args:
-        label_map (np.array): has same shape as exp.mask_idx, defines
-            partitioning of the whole region into subsets.  -1 outside
-            of analysis
-        exp (Experiment):
-        _q_tup (tup): see regress.decompose()
-        _skip_homo (bool): when False (default), subtracts -det(e).  otherwise
-            ignores this (its constant across perms in get_homo_pval,
-            setting to False avoids some computation)
+        label_map (np.array): same shape as exp.mask_idx, partitioning
+            voxels into subsets (-1 outside analysis)
+        exp (Experiment): experiment data
+        _q_tup: pre-computed QR decomposition (see decompose())
+        _skip_homo (bool): skip the homogeneous term (constant across
+            permutations in get_homo_pval)
 
     Returns:
-        ll (float): log likelihood ratio
+        ll (float): log-likelihood ratio
     """
 
     def _get_ll_one_reg(y, **kwargs):
-        """ computes log likelihood of model """
+        """log-likelihood contribution of a single region."""
         e = get_mancova(y=y, **kwargs)[0]
         num_vox = y.shape[2]
         s, ll = np.linalg.slogdet(e / num_vox)
@@ -65,22 +61,19 @@ def get_llr(label_map, exp, _q_tup=None, _skip_homo=False):
 
 
 def get_homo_pval(label_map, exp, n_perm):
-    """ run llr homogeneity test
+    """permutation p-value for the homogeneity test.
 
-    where e is the error covariance (see get_mancova()) of all voxels,
-    and e_i are corresponding values for subset i
+    a low p-value suggests the region is heterogeneous (contains
+    more than one distinct effect).
 
     Args:
-        label_map (np.array): has same shape as exp.mask_idx, defines
-            partitioning of the whole region into subsets.  -1 outside
-            of analysis
-        exp (Experiment):
-        n_perm (int): number of permutations to perform (in addition
-            to the unpermuted data)
+        label_map (np.array): same shape as exp.mask_idx, partitioning
+            voxels into subsets (-1 outside analysis)
+        exp (Experiment): experiment data
+        n_perm (int): number of permutations (in addition to unpermuted)
 
     Returns:
-        pval (float): percentage of permutations (including self) which are
-            more likely homogenous (low value suggests hetero)
+        pval (float): fraction of permutations at least as extreme
     """
     # decompose x into orthogonal spaces (full model)
     contrast = np.zeros(exp.x.shape[0], dtype=bool)
@@ -105,22 +98,21 @@ def get_homo_pval(label_map, exp, n_perm):
 
 
 def prune(sig_reg_list, children, exp, n_perm=300, alpha_prune=.05):
-    """ attempts to prune to regions with all, and only, one effect
+    """prune significant regions to a disjoint, homogeneous set.
 
-    we discard the most heterogenous (and all ancestor) nodes until none are
-    classified as heterogenous (i.e. each has pval > alpha_prune).
-    reg_out greedily selects the largest remaining regions such that the
-    output is disjoint (merging all the homogenous effects)
+    discards heterogeneous nodes (and their ancestors) until every
+    remaining node passes the homogeneity test, then greedily selects
+    the largest disjoint regions.
 
     Args:
-        sig_reg_list (list): list of regions declared significant
-        children (np.array): (num_reg, 2) each col are index of child
-            regions
-        exp (Experiment): the source data to run experiment on
-        n_perm (int): number of permutations to perform (homo test per region)
+        sig_reg_list (list): regions declared significant
+        children (np.array): (num_node, 2) child index pairs
+        exp (Experiment): experiment data
+        n_perm (int): permutations for the homogeneity test
 
     Returns:
-        reg_out (np.array): index of output regions
+        reg_out_list (np.array): indices of output regions
+        homo_pval_dict (dict): reg_idx -> homogeneity p-value
     """
     # pre-compute: decompose x into orthogonal spaces (full model)
     contrast = np.zeros(exp.x.shape[0], dtype=bool)

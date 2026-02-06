@@ -1,3 +1,5 @@
+"""Permutation utilities for Freedman-Lane and partition enumeration."""
+
 import math
 import warnings
 from collections import Counter
@@ -8,16 +10,16 @@ from .mancova import decompose
 
 
 def get_freed_lane(x, contrast, perm_idx):
-    """build Freedman-Lane permutation matrix
+    """build Freedman-Lane permutation matrix.
 
-    Uses index-based row selection instead of constructing a dense
+    uses index-based row selection instead of constructing a dense
     (num_img, num_img) permutation matrix P, avoiding O(num_img^3)
     matrix multiply.
 
     Args:
-        x (np.array): (a, num_img) explanatory variables
-        contrast (np.array): (a) boolean, True for features of interest
-        perm_idx (int): permutation seed (0 reserved for unpermuted)
+        x (np.array): (a, num_img) design matrix
+        contrast (np.array): (a,) boolean, True for features of interest
+        perm_idx (int): permutation seed (0 reserved for unpermuted data)
 
     Returns:
         freed_lane (np.array): (num_img, num_img) permutation matrix
@@ -36,16 +38,20 @@ def get_freed_lane(x, contrast, perm_idx):
 
 
 class NotEnoughPermutations(Warning):
+    """issued when fewer permutations exist than were requested."""
     pass
 
 
 def perms_at_least(partition, thresh):
-    """ computes number of permutations (if exceed n_perm, quits early)
+    """check whether at least thresh permutations exist.
+
+    Args:
+        partition (iter): integer partition (e.g. [0, 0, 1, 1, 2])
+        thresh (float): minimum required number of permutations
 
     Returns:
-        enough_perms (bool): True if there are at least thresh permutations
-        num_perms (int): exact number of permutations (only computed if
-            not enough permutations, else its None)
+        enough (bool): True if at least thresh permutations exist
+        n_perms (int or None): exact count (only computed when not enough)
     """
     if thresh <= 1:
         return True, None
@@ -63,22 +69,21 @@ def perms_at_least(partition, thresh):
 
 
 def get_perm_iter(partition, n_perm, seed=0):
-    """ gets permutations of partition, swaps between exhaustive or sampling
+    """yield permutations of partition.
 
-    in the case the n_perm < n_perm_possible then we'll save compute and do
-    a better estimate to just go through all perms exhaustively
-    (see get_perm_iter_all())
+    automatically switches between random sampling (when the number of
+    possible permutations exceeds n_perm) and exhaustive enumeration.
 
     Args:
-        partition (iter): partition (e.g. [0, 0, 0, 1, 2])
+        partition (iter): integer partition (e.g. [0, 0, 1, 2])
         n_perm (int): number of permutations requested (in addition to
-            giving the original permutation which is yielded first)
-        seed (int): for RNG
+            the original, unpermuted partition which is always yielded
+            first)
+        seed (int): random seed for sampling
 
     Yields:
-        partition (iter): partition
+        partition (np.array): permuted partition
     """
-    # first iteration is always the original partition
     partition = np.array(partition).astype(int)
     partition_init = partition
     yield partition_init
@@ -88,31 +93,28 @@ def get_perm_iter(partition, n_perm, seed=0):
     enough_perms, n_perm_poss = perms_at_least(partition, thresh=n_perm)
 
     if enough_perms:
-        # enough permutations exist, draw samples (repeats possible)
         for _ in range(n_perm):
             yield partition[rng.permutation(partition.size)]
     else:
-        # use all available permutations, warn caller
         warnings.warn(f'using only {n_perm_poss} of {n_perm} requested',
                       NotEnoughPermutations, stacklevel=2)
         for partition in get_perm_iter_all(partition):
             if not np.array_equal(partition, partition_init):
-                # avoid sending original partition again
                 yield partition
 
 
 def get_perm_iter_all(partition):
-    """ backtracks through all permutations of partition possible
+    """enumerate every distinct permutation of partition via backtracking.
 
     Args:
-        partition (iter): partition (e.g. [0, 0, 0, 1, 2])
+        partition (iter): integer partition (e.g. [0, 0, 1, 2])
 
     Yields:
-        partition (iter): partition
+        partition (np.array): each distinct permutation
     """
     symbol_count = Counter(partition)
     n = len(partition)
-    path = list()
+    path = []
     symbol_list = sorted(symbol_count.keys())
 
     def backtrack():

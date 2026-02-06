@@ -4,19 +4,18 @@ from glow.experiment import get_mancova
 
 
 class Effect:
-    """ stores an effect
+    """stores an effect region.
 
-    anything passed to constructor besides mask & beta are stored as
-    attribute (useful for storage, but won't impact use of object)
+    extra kwargs passed to the constructor are stored as attributes.
 
     Attributes:
-        mask (np.array): True where effect, false otherwise
-        y_mean (np.array): (b, num_img) mean imaging feature observed in region
+        mask (np.array): boolean, True inside the effect
+        y_mean (np.array): (b, num_img) mean imaging feature in region
     """
 
     @classmethod
     def from_exp_mask(cls, exp, mask, **kwargs):
-        # build y corresponding to effect region
+        """build an Effect from an experiment and a boolean mask."""
         vox_list = exp.mask_idx[mask]
         y = exp.y[..., tuple(vox_list)]
 
@@ -25,6 +24,7 @@ class Effect:
 
     @classmethod
     def from_x_y_contrast(cls, x, y, contrast, **kwargs):
+        """build an Effect from raw design, image and contrast arrays."""
         e, h, _ = get_mancova(x=x, y=y, contrast=contrast)
         return cls(y_mean=y.mean(axis=2), e=e, h=h, **kwargs)
 
@@ -36,16 +36,7 @@ class Effect:
         self.__dict__.update(kwargs)
 
     def is_close(self, other, rtol=1e-5, atol=1e-8):
-        """compare two effects for approximate equality
-        
-        Args:
-            other (Effect): effect to compare to
-            rtol (float): relative tolerance for numerical comparison
-            atol (float): absolute tolerance for numerical comparison
-            
-        Returns:
-            bool: True if effects are approximately equal
-        """
+        """check approximate equality of two effects."""
         # check mask shape and values
         if self.mask.shape != other.mask.shape:
             return False

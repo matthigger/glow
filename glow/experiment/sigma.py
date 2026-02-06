@@ -1,16 +1,18 @@
+"""Spatial covariance helpers."""
+
 import numpy as np
 
 
 def get_sigma(size, yout, ymean):
-    """ sigma is spatial covariance across voxels, pooled across images
+    """compute pooled spatial covariance from pre-aggregated statistics.
 
-    inputs efficiently computed for hierarchical regions, see
-    glow.graph.iter_size_yout_ymean()
+    inputs are efficiently computed for hierarchical regions; see
+    glow.graph.iter_size_ysum_yout.
 
     Args:
-        size (int): size, in voxels, of region
-        yout (np.array): (b, b) sum of yv @ yv.T across all voxels of region
-        ymean (np.array): (b, num_img) average, across voxels, of features
+        size (int): number of voxels in the region
+        yout (np.array): (b, b) sum of yv @ yv.T across all voxels
+        ymean (np.array): (b, num_img) mean across voxels per feature
 
     Returns:
         sigma (np.array): (b, b) spatial covariance, pooled across images
@@ -24,38 +26,34 @@ def get_sigma_from_y(y):
     return get_sigma(size=size, yout=yout, ymean=ymean)
 
 
-def stretch_sigma(y, scale=None):
-    """ scale spatial cov in y
+def stretch_sigma(y, scale):
+    """scale spatial covariance of y by a constant factor.
+
+    de-means across voxels, multiplies by scale, then re-means.
 
     Args:
         y (np.array): (b, num_img, num_vox) image intensities
-        scale (float): scaling factor
+        scale (float): multiplicative factor applied to de-meaned signal
 
     Returns:
-        y (np.array): (b, num_img, num_vox) image intensity, with scaling
-            applied
+        y (np.array): (b, num_img, num_vox) with scaling applied
     """
-    # de-mean
     mean = y.mean(axis=2)
     y_demean = y - mean[:, :, np.newaxis]
-
-    # apply gain
     y_demean *= scale
-
-    # re-mean
     return y_demean + mean[:, :, np.newaxis]
 
 
 def get_size_yout_ymean(y):
-    """ compute size yout ymean directly from imaging features
+    """compute size, outer-product sum, and mean from image data.
 
     Args:
         y (np.array): (b, num_img, num_vox) imaging features
 
     Returns:
-        size (int): size, in voxels, of region
-        yout (np.array): (b, b) sum of yv @ yv.T across all voxels of region
-        ymean (np.array): (b, num_img) average, across voxels, of features
+        size (int): number of voxels
+        yout (np.array): (b, b) sum of yv @ yv.T across all voxels
+        ymean (np.array): (b, num_img) mean across voxels per feature
     """
     size = y.shape[2]
     yout = np.einsum('bnr,anr->ba', y, y, optimize=True)
