@@ -253,8 +253,7 @@ class AnalysisGLOW(Analysis):
         # build hierarchy per permutation, compute stat per region
         self.child_dict = dict()
         self.stat = np.full((n_perm + 1, num_reg),
-                            fill_value=-1,
-                            )
+                            fill_value=-1.0)
         
         # helper function for single permutation (for parallelization)
         def process_permutation(perm_idx):
@@ -321,9 +320,11 @@ class AnalysisGLOW(Analysis):
 
         # merge all graphs (many nodes are repeated across permutations above,
         # we adjust them all by same mu and std to minimize computation)
+        # use perm index order so local and cloud match (cloud fills child_dict in arbitrary S3 order)
+        children_list = [self.child_dict[i] for i in range(n_perm + 1)]
         map_to_new, children, _ = glow.graph.graph_merge(
             n_common=num_vox,
-            children_list=list(self.child_dict.values()))
+            children_list=children_list)
 
         # to ensure each of these permuted stats is new, we run one
         # permutation ahead of time
