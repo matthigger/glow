@@ -282,7 +282,7 @@ else
             \"maxvCpus\": $MAX_VCPUS,
             \"desiredvCpus\": 0,
             \"instanceTypes\": [
-                \"c5.large\", \"c5.xlarge\", \"c5.2xlarge\", \"c5.4xlarge\", \"c5.8xlarge\", \"c5.12xlarge\",
+                \"c5.large\", \"c5.xlarge\", \"c5.2xlarge\", \"c5.4xlarge\", \"c5.9xlarge\", \"c5.12xlarge\",
                 \"c5a.large\", \"c5a.xlarge\", \"c5a.2xlarge\", \"c5a.4xlarge\", \"c5a.8xlarge\", \"c5a.12xlarge\",
                 \"c6i.large\", \"c6i.xlarge\", \"c6i.2xlarge\", \"c6i.4xlarge\", \"c6i.8xlarge\", \"c6i.12xlarge\",
                 \"c6a.large\", \"c6a.xlarge\", \"c6a.2xlarge\", \"c6a.4xlarge\", \"c6a.8xlarge\", \"c6a.12xlarge\",
