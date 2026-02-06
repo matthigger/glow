@@ -394,7 +394,15 @@ class ExperimentScaled(Experiment):
         b, num_img, num_vox = y.shape
         cov = np.cov(y.reshape((b, -1), order='F'))
         cov = np.atleast_2d(cov)
-        self.pre_scale = np.diag(1 / np.diag(cov) ** .5)
+        variances = np.diag(cov)
+        if np.any(variances == 0):
+            zero_feats = np.where(variances == 0)[0]
+            raise ValueError(
+                f'zero-variance feature(s) at index {zero_feats.tolist()}. '
+                f'ExperimentScaled requires all features to have non-zero '
+                f'variance. Remove constant features before analysis.'
+            )
+        self.pre_scale = np.diag(1 / variances ** .5)
 
         cov_scale = self.pre_scale @ cov @ self.pre_scale.T
         evals, evecs = np.linalg.eigh(cov_scale)

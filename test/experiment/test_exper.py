@@ -157,3 +157,16 @@ class TestImposeEffectWithNoise:
         # should complete successfully
         assert effect_with_noise.mask.sum() > 0
         assert effect_with_noise.hotel_tr > 0
+
+
+class TestExperimentScaledZeroVariance:
+    """ExperimentScaled should raise on zero-variance features"""
+
+    def test_zero_variance_raises(self):
+        import pytest
+        exp = Experiment.from_gauss(a=2, b=2, shape=(5, 5), num_img=20, seed=0)
+        # zero out one feature entirely → zero variance
+        exp.y[1, :, :] = 0.0
+
+        with pytest.raises(ValueError, match='zero-variance'):
+            ExperimentScaled.from_exp(exp)
