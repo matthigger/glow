@@ -228,19 +228,32 @@ echo -e "${BLUE}[4/7] Setting up compute environment...${NC}"
 if aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].computeEnvironmentName" --output text 2>/dev/null | grep -q "$COMPUTE_ENV_NAME"; then
     STATUS=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].status" --output text)
     CURRENT_MAX_VCPUS=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].computeResources.maxvCpus" --output text)
+    CURRENT_ALLOC_STRATEGY=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].computeResources.allocationStrategy" --output text 2>/dev/null || echo "unknown")
     CURRENT_INSTANCE_TYPES=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].computeResources.instanceTypes" --output json 2>/dev/null || echo "[]")
     
-    echo -e "${YELLOW}  Compute environment exists (status: $STATUS, maxvCpus: $CURRENT_MAX_VCPUS)${NC}"
+    echo -e "${YELLOW}  Compute environment exists (status: $STATUS, maxvCpus: $CURRENT_MAX_VCPUS, strategy: $CURRENT_ALLOC_STRATEGY)${NC}"
     
-    # Check if instance types are compute-optimized (start with 'c')
-    if echo "$CURRENT_INSTANCE_TYPES" | grep -q '"optimal"'; then
-        echo -e "${YELLOW}  ⚠ Warning: Compute environment uses 'optimal' instance types (may include m/r families)${NC}"
-        echo -e "${YELLOW}  To use only compute-optimized instances, delete and recreate the compute environment${NC}"
-        echo -e "${YELLOW}  Visit: https://console.aws.amazon.com/batch/home?region=${REGION}#/compute-environments${NC}"
-        echo -e "${YELLOW}  After deletion, re-run this script${NC}"
-    elif ! echo "$CURRENT_INSTANCE_TYPES" | grep -qE '"c[0-9]'; then
-        echo -e "${YELLOW}  ⚠ Warning: Compute environment may not be using compute-optimized instances${NC}"
-        echo -e "${YELLOW}  Current instance types: $CURRENT_INSTANCE_TYPES${NC}"
+    NEEDS_RECREATE=false
+    
+    # Check allocation strategy (immutable after creation)
+    if [ "$CURRENT_ALLOC_STRATEGY" != "BEST_FIT_PROGRESSIVE" ]; then
+        echo -e "${YELLOW}  ⚠ Allocation strategy is '${CURRENT_ALLOC_STRATEGY}' (expected BEST_FIT_PROGRESSIVE)${NC}"
+        NEEDS_RECREATE=true
+    fi
+    
+    # Check that instance types include mixed families (c, m, r)
+    HAS_GENERAL=$(echo "$CURRENT_INSTANCE_TYPES" | grep -cE '"m[0-9]' || true)
+    HAS_MEMORY=$(echo "$CURRENT_INSTANCE_TYPES" | grep -cE '"r[0-9]' || true)
+    if [ "$HAS_GENERAL" -eq 0 ] || [ "$HAS_MEMORY" -eq 0 ]; then
+        echo -e "${YELLOW}  ⚠ Missing general-purpose (m) or memory-optimized (r) instance families${NC}"
+        NEEDS_RECREATE=true
+    fi
+    
+    if [ "$NEEDS_RECREATE" = true ]; then
+        echo -e "${YELLOW}  These settings are immutable after creation. To update:${NC}"
+        echo -e "${YELLOW}    1. Delete the compute environment in the AWS Console:${NC}"
+        echo -e "${YELLOW}       https://console.aws.amazon.com/batch/home?region=${REGION}#/compute-environments${NC}"
+        echo -e "${YELLOW}    2. Re-run this script to recreate with the correct configuration${NC}"
     fi
     
     if [ "$CURRENT_MAX_VCPUS" != "$MAX_VCPUS" ]; then
@@ -264,17 +277,29 @@ else
         --service-role "arn:aws:iam::${ACCOUNT_ID}:role/GlowBatchServiceRole" \
         --compute-resources "{
             \"type\": \"SPOT\",
-            \"allocationStrategy\": \"SPOT_CAPACITY_OPTIMIZED\",
+            \"allocationStrategy\": \"BEST_FIT_PROGRESSIVE\",
             \"minvCpus\": 0,
             \"maxvCpus\": $MAX_VCPUS,
             \"desiredvCpus\": 0,
             \"instanceTypes\": [
-                \"c4.xlarge\", \"c4.2xlarge\", \"c4.4xlarge\", \"c4.8xlarge\",
-                \"c5.xlarge\", \"c5.2xlarge\", \"c5.4xlarge\", \"c5.9xlarge\", \"c5.12xlarge\", \"c5.18xlarge\", \"c5.24xlarge\",
-                \"c5a.xlarge\", \"c5a.2xlarge\", \"c5a.4xlarge\", \"c5a.8xlarge\", \"c5a.12xlarge\", \"c5a.16xlarge\", \"c5a.24xlarge\",
-                \"c6i.xlarge\", \"c6i.2xlarge\", \"c6i.4xlarge\", \"c6i.8xlarge\", \"c6i.12xlarge\", \"c6i.16xlarge\", \"c6i.24xlarge\", \"c6i.32xlarge\",
-                \"c6a.xlarge\", \"c6a.2xlarge\", \"c6a.4xlarge\", \"c6a.8xlarge\", \"c6a.12xlarge\", \"c6a.16xlarge\", \"c6a.24xlarge\", \"c6a.32xlarge\",
-                \"c7i.xlarge\", \"c7i.2xlarge\", \"c7i.4xlarge\", \"c7i.8xlarge\", \"c7i.12xlarge\", \"c7i.16xlarge\", \"c7i.24xlarge\", \"c7i.48xlarge\"
+                \"c5.large\", \"c5.xlarge\", \"c5.2xlarge\", \"c5.4xlarge\", \"c5.8xlarge\", \"c5.12xlarge\",
+                \"c5a.large\", \"c5a.xlarge\", \"c5a.2xlarge\", \"c5a.4xlarge\", \"c5a.8xlarge\", \"c5a.12xlarge\",
+                \"c6i.large\", \"c6i.xlarge\", \"c6i.2xlarge\", \"c6i.4xlarge\", \"c6i.8xlarge\", \"c6i.12xlarge\",
+                \"c6a.large\", \"c6a.xlarge\", \"c6a.2xlarge\", \"c6a.4xlarge\", \"c6a.8xlarge\", \"c6a.12xlarge\",
+                \"c7i.large\", \"c7i.xlarge\", \"c7i.2xlarge\", \"c7i.4xlarge\", \"c7i.8xlarge\", \"c7i.12xlarge\",
+                \"c7a.large\", \"c7a.xlarge\", \"c7a.2xlarge\", \"c7a.4xlarge\", \"c7a.8xlarge\", \"c7a.12xlarge\",
+                \"m5.large\", \"m5.xlarge\", \"m5.2xlarge\", \"m5.4xlarge\", \"m5.8xlarge\",
+                \"m5a.large\", \"m5a.xlarge\", \"m5a.2xlarge\", \"m5a.4xlarge\", \"m5a.8xlarge\",
+                \"m6i.large\", \"m6i.xlarge\", \"m6i.2xlarge\", \"m6i.4xlarge\", \"m6i.8xlarge\",
+                \"m6a.large\", \"m6a.xlarge\", \"m6a.2xlarge\", \"m6a.4xlarge\", \"m6a.8xlarge\",
+                \"m7i.large\", \"m7i.xlarge\", \"m7i.2xlarge\", \"m7i.4xlarge\", \"m7i.8xlarge\",
+                \"m7a.large\", \"m7a.xlarge\", \"m7a.2xlarge\", \"m7a.4xlarge\", \"m7a.8xlarge\",
+                \"r5.large\", \"r5.xlarge\", \"r5.2xlarge\", \"r5.4xlarge\",
+                \"r5a.large\", \"r5a.xlarge\", \"r5a.2xlarge\", \"r5a.4xlarge\",
+                \"r6i.large\", \"r6i.xlarge\", \"r6i.2xlarge\", \"r6i.4xlarge\",
+                \"r6a.large\", \"r6a.xlarge\", \"r6a.2xlarge\", \"r6a.4xlarge\",
+                \"r7i.large\", \"r7i.xlarge\", \"r7i.2xlarge\", \"r7i.4xlarge\",
+                \"r7a.large\", \"r7a.xlarge\", \"r7a.2xlarge\", \"r7a.4xlarge\"
             ],
             \"subnets\": [\"${SUBNET_ID}\"],
             \"securityGroupIds\": [\"${SG_ID}\"],
