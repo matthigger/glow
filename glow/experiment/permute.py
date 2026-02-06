@@ -76,7 +76,7 @@ def get_perm_iter(partition, n_perm, seed=0):
 
     if enough_perms:
         # enough permutations exist, draw samples (repeats possible)
-        for n_perm in range(n_perm):
+        for _ in range(n_perm):
             yield partition[rng.permutation(partition.size)]
     else:
         # use all available permutations, warn caller
