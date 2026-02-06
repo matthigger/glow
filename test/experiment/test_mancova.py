@@ -132,3 +132,25 @@ def test_all_stat_functions():
     for name, stat_func in stat_dict.items():
         result = stat_func(e=e, h=h)
         assert isinstance(result, (float, np.floating))
+
+
+def test_singular_matrix_errors():
+    """stat functions raise LinAlgError with diagnostic message on singular input"""
+    import pytest
+
+    # singular E (rank 1) — affects hotel_tr and roys_root
+    e_singular = np.array([[1.0, 2.0], [2.0, 4.0]])
+    h = np.eye(2)
+
+    with pytest.raises(np.linalg.LinAlgError, match='num_img'):
+        get_hotel_tr(e_singular, h)
+
+    with pytest.raises(np.linalg.LinAlgError, match='num_img'):
+        get_roys_root(e_singular, h)
+
+    # singular H + E — affects pillai
+    e_zero = np.zeros((2, 2))
+    h_singular = np.array([[1.0, 0.0], [0.0, 0.0]])
+
+    with pytest.raises(np.linalg.LinAlgError, match='num_img'):
+        get_pillai(e_zero, h_singular)

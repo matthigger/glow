@@ -47,20 +47,38 @@ def get_neg_wilks(e, h):
 
 
 def get_pillai(e, h):
-    inv_term = np.linalg.inv(h + e)
-    mat = h @ inv_term
-    return np.trace(mat)
+    try:
+        return float(np.trace(np.linalg.solve(h + e, h)))
+    except np.linalg.LinAlgError:
+        raise np.linalg.LinAlgError(
+            f'singular (H + E) matrix (shape {e.shape}). '
+            f'This typically means num_img <= b (too few images for the '
+            f'number of features). Consider reducing b or adding more images.'
+        )
 
 def get_hotel_tr(e, h):
     # Avoid explicit inverse: solve E X = H, then tr(X)
-    return float(np.trace(np.linalg.solve(e, h)))
+    try:
+        return float(np.trace(np.linalg.solve(e, h)))
+    except np.linalg.LinAlgError:
+        raise np.linalg.LinAlgError(
+            f'singular error matrix E (shape {e.shape}). '
+            f'This typically means num_img <= b (too few images for the '
+            f'number of features). Consider reducing b or adding more images.'
+        )
 
 
 def get_roys_root(e, h):
-    inv_e = np.linalg.inv(e)
-    mat = inv_e @ h
-    eigvals = np.linalg.eigvals(mat)
-    return np.max(np.real(eigvals))
+    try:
+        x = np.linalg.solve(e, h)
+    except np.linalg.LinAlgError:
+        raise np.linalg.LinAlgError(
+            f'singular error matrix E (shape {e.shape}). '
+            f'This typically means num_img <= b (too few images for the '
+            f'number of features). Consider reducing b or adding more images.'
+        )
+    eigvals = np.linalg.eigvals(x)
+    return float(np.max(np.real(eigvals)))
 
 
 stat_dict = {'Wilks': get_neg_wilks,
