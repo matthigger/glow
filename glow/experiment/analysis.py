@@ -344,7 +344,11 @@ class AnalysisGLOW(Analysis):
                                          stat_perm[:, _map_to_new]), axis=1)
             mu = _stat_perm.mean(axis=0)
             std = _stat_perm.std(axis=0)
-            self.z_stat[perm_idx, :] = (self.stat[perm_idx, :] - mu) / std
+            with np.errstate(divide='ignore', invalid='ignore'):
+                self.z_stat[perm_idx, :] = np.where(
+                    std > 0,
+                    (self.stat[perm_idx, :] - mu) / std,
+                    0.0)
 
         # compute sizes of each region
         self.size = np.empty((n_perm + 1, num_reg))

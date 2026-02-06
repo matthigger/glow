@@ -211,6 +211,25 @@ class TestPvalFloor:
         assert pval[0] > 0, f'pval must never be exactly zero, got {pval[0]}'
 
 
+class TestZeroStdGuard:
+    """test z-normalization when adjustment permutations have zero variance"""
+
+    def test_constant_stat_region(self):
+        """regions with constant stat across adjustment perms should not produce inf/nan"""
+        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
+        exp, _ = exp.impose_effect(seed=0,
+                                   extenter=ExtenterSphere(radius=1),
+                                   hotel_tr=1.5)
+
+        analysis = AnalysisGLOW(exp, n_perm=5, alpha_fwer=0.05,
+                                n_perm_adj=3, min_size=1)
+
+        assert not np.any(np.isinf(analysis.z_stat)), \
+            'z_stat contains inf (likely zero-std division)'
+        assert not np.any(np.isnan(analysis.z_stat)), \
+            'z_stat contains nan (likely zero-std division)'
+
+
 class TestNaNHandling:
     """test handling of NaN statistics"""
     
