@@ -70,7 +70,8 @@ class Analysis:
             if np.isnan(z):
                 pval[reg_idx] = np.nan
                 continue
-            pval[reg_idx] = 1 - bisect_left(stat_max, z) / num_perm
+            pval[reg_idx] = max(1 - bisect_left(stat_max, z) / num_perm,
+                               1 / num_perm)
 
         # inactive regions get no pvalue (otherwise we don't control FWER!)
         pval[~reg_active] = np.nan

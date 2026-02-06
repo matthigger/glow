@@ -190,6 +190,27 @@ class TestParallelExecution:
     
 
 
+class TestPvalFloor:
+    """test that permutation p-values are floored at 1/num_perm"""
+
+    def test_pval_never_zero(self):
+        """observed stat equal to permutation max should not yield pval=0"""
+        # row 0 is unpermuted (observed), rows 1-4 are permutations
+        # region 0 has the global max in the observed row
+        z_stat = np.array([[10.0, 0.0],
+                           [1.0, 0.0],
+                           [2.0, 0.0],
+                           [3.0, 0.0],
+                           [4.0, 0.0]])
+        pval = Analysis.get_pval(stat=z_stat)
+
+        # p-value for region 0 must be >= 1/num_perm, never zero
+        num_perm = z_stat.shape[0]
+        assert pval[0] >= 1 / num_perm, \
+            f'pval should be >= {1/num_perm}, got {pval[0]}'
+        assert pval[0] > 0, f'pval must never be exactly zero, got {pval[0]}'
+
+
 class TestNaNHandling:
     """test handling of NaN statistics"""
     
