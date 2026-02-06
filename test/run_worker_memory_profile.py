@@ -18,7 +18,7 @@ from glow.benchmark.run import run_ana
 from glow.aws.worker import print_memory_profile, get_memory_profile
 
 
-def test_memory_profile():
+def bench_memory_profile():
     """Test memory profiling with a real config"""
     print("=" * 60)
     print("Testing Worker Memory Profiling")
@@ -108,4 +108,4 @@ def test_memory_profile():
 
 
 if __name__ == '__main__':
-    test_memory_profile()
+    bench_memory_profile()
