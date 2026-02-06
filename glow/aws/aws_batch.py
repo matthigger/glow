@@ -217,9 +217,12 @@ class AWSBatchRunner:
                                 completed.add(perm_idx)
                         except ValueError:
                             continue
-        except ClientError:
-            # bucket/prefix doesn't exist yet
-            pass
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            if error_code == 'NoSuchBucket' or error_code == 'NoSuchKey':
+                pass  # bucket/prefix doesn't exist yet
+            else:
+                raise
         
         return completed
     
