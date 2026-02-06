@@ -15,6 +15,7 @@ from botocore.exceptions import ClientError
 import cloudpickle as pickle
 
 import glow
+from glow.benchmark.hcp_data import DEFAULT_HCP_PATH, get_hcp_path
 
 base = Path(user_data_dir('glow', 'glow_author'))
 path_result = base / 'results'
@@ -65,8 +66,6 @@ class Config:
 
     # -------- source-specific --------
     # HCP
-    hcp_path: str = '/home/matt/data/hcp100_aug25_registered'
-    hcp_old_path: str = '/home/matt/data/hcp100_lowres_old/image'
     hcp_feats: List[str] = field(default_factory=lambda: ['fa', 'md'])
     hcp_sbj_regex: str = r'[\d]{6}'
 
@@ -107,7 +106,7 @@ class Config:
         if self.source == 'hcp':
             sig_data = {
                 'source': self.source,
-                'path': self.hcp_path if self.source == 'hcp' else self.hcp_old_path,
+                'path': str(DEFAULT_HCP_PATH),
                 'feats': sorted(self.hcp_feats),  # sorted for consistency
                 'seed': self.exp_seed,
                 'sbj_regex': self.hcp_sbj_regex,
@@ -137,11 +136,8 @@ class Config:
             hcp_feats: Override hcp_feats if provided (for dataset experiment)
             wgn_b: Override wgn_b if provided (for dataset experiment)
         """
-        if 'hcp' in self.source:
-            if self.source == 'hcp':
-                path = self.hcp_path
-            elif self.source == 'hcp_old':
-                path = self.hcp_old_path
+        if self.source == 'hcp':
+            path = get_hcp_path()
             feats = hcp_feats if hcp_feats is not None else self.hcp_feats
             img_glob_dict = {feat: f'*_{feat}.nii.gz' for feat in feats}
             exp = glow.experiment.ExperimentImageOnly.from_search(

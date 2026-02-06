@@ -685,7 +685,6 @@ def run_batched_cloud_tests():
     # ── HCP ───────────────────────────────────────────────────────────
     if RUN_HCP_TEST:
         print('\n[Prepare] HCP test')
-        hcp_path = '/home/matt/data/hcp100_aug25_registered'
         ana_kwargs_dict = {
             'GLOW': (glow.experiment.AnalysisGLOW,
                      dict(n_perm=5, n_perm_adj=5, n_perm_prune=10,
@@ -700,7 +699,7 @@ def run_batched_cloud_tests():
             label='test_hcp', source='hcp', run_fnc=run_ana,
             cloud_config=cloud_config, ana_kwargs_dict=ana_kwargs_dict,
             n_seed=1, hotel_tr_all=np.array([0.5]),
-            hcp_path=hcp_path, hcp_feats=['fa'], radius=5,
+            hcp_feats=['fa'], radius=5,
             effect_perc=0.2, n_jobs=1,
             detail_save=False, error_save=False)
         job_info_hcp = config_hcp.submit_cloud_jobs(verbose=True)
