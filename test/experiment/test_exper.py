@@ -76,7 +76,7 @@ class TestExperimentOnlyImage:
                                                   img_glob_dict={
                                                       'feat': str_test_glob})
 
-            exp.bootstrap_img(n=n, seed=0)
+            exp = exp.bootstrap_img(n=n, seed=0)
             b, num_img, num_vox = exp.y.shape
             assert num_img == n
 
@@ -85,7 +85,7 @@ class TestExperimentOnlyImage:
             new_mean = rng.standard_normal(size=b) * 1e6
             diff = new_mean - exp.y.mean(axis=(1, 2))
             exp.y += diff[:, np.newaxis, np.newaxis]
-            exp.bootstrap_img(n=10, seed=0)
+            exp = exp.bootstrap_img(n=10, seed=0)
             assert np.allclose(new_mean, exp.y.mean(axis=(1, 2)))
 
 

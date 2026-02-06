@@ -62,7 +62,7 @@ def test_make_gif():
     exp = ExperimentImageOnly.from_search(folder=folder_test_data,
                                           sbj_regex='squares_test.png',
                                           img_glob_dict={'color': '*test.png'})
-    exp.bootstrap_img(n=10, noise_scale=0, seed=0)
+    exp = exp.bootstrap_img(n=10, noise_scale=0, seed=0)
     exp = exp.sample_x(a=2, seed=0, add_bias=True)
     children = cluster(exp=exp)
 

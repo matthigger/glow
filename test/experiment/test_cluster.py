@@ -16,7 +16,7 @@ def test_cluster():
                                           sbj_regex='squares',
                                           img_glob_dict={'color': '*test.png'})
 
-    exp.bootstrap_img(n=10, noise_scale=0)
+    exp = exp.bootstrap_img(n=10, noise_scale=0)
     exp = exp.sample_x(a=2, add_bias=True)
 
     # cleave mask into many pieces (test case not supported)

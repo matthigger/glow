@@ -157,22 +157,26 @@ class ExperimentImageOnly:
                 covariance is the (b, b) sample covariance of self.y
 
         Returns:
-            exp_out (Experiment): y has been bootstrap resampled from self
+            ExperimentImageOnly: new object with bootstrap-resampled y
         """
         # bootstrap sample images
         rng = np.random.default_rng(seed=seed)
         b, num_img_init, num_vox = self.y.shape
         img_idx = rng.choice(num_img_init, n, replace=True)
-        self.y = self.y[:, img_idx, :]
+        y = self.y[:, img_idx, :].copy()
 
         # add noise
         assert noise_scale >= 0, 'snr cannot be negative'
         if noise_scale > 0:
-            cov = np.atleast_2d(np.cov(self.y.reshape((b, -1))))
+            cov = np.atleast_2d(np.cov(y.reshape((b, -1))))
             noise = rng.multivariate_normal(mean=np.zeros(b),
                                             cov=cov * (noise_scale ** 2),
                                             size=num_vox * n)
-            self.y += noise.T.reshape((b, n, num_vox))
+            y = y + noise.T.reshape((b, n, num_vox))
+
+        exp = deepcopy(self)
+        exp.y = y
+        return exp
 
     def sample_x(self, a=None, contrast=None, seed=None, **kwargs):
         """ generates (or replaces) x with an arbitrary std normal noise
