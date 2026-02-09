@@ -166,41 +166,52 @@ def plot_x_vs_metrics(df, x_param='hotel_tr', metrics=['f1', 'sens', 'spec'],
     plt.tight_layout()
 
 if __name__ == '__main__':
+    import shutil
+    import glow.benchmark
+    from glow.benchmark.paper_config import CONFIG_BY_LABEL
+
     force_replot = True
 
-    import glow.benchmark
-
     path_result = glow.benchmark.get_path_result()
+    paper_latest = path_result / 'paper_latest'
+    paper_latest.mkdir(exist_ok=True)
+
     for label_path in path_result.iterdir():
         if not label_path.is_dir():
             continue
         label = label_path.stem
-        for timestamp_path in label_path.iterdir():
-            if not timestamp_path.is_dir():
-                continue
-            timestamp = timestamp_path.stem
-            df, _folder, n_new = glow.benchmark.load_update_all(label,
-                                                                timestamp,
-                                                                verbose=False)
+        if label not in CONFIG_BY_LABEL:
+            continue
 
-            if df.empty:
-                print(f'skipping {label}/{timestamp}: no data')
-                continue
+        # find latest timestamp folder for this label
+        timestamp_dirs = sorted(
+            (d for d in label_path.iterdir() if d.is_dir()),
+            key=lambda d: d.name
+        )
+        if not timestamp_dirs:
+            continue
+        latest_dir = timestamp_dirs[-1]
+        timestamp = latest_dir.stem
 
-            path = _folder / 'time.pdf'
-            if force_replot or n_new or not path.exists():
-                print(f'creating: {path}')
-                plot_compute_time(df)
-                plt.gcf().savefig(path, bbox_inches='tight')
-                plt.close('all')
-            else:
-                print(f'skipping: {path} (already exists, no new data)')
+        df, _folder, n_new = glow.benchmark.load_update_all(label,
+                                                            timestamp,
+                                                            verbose=False)
+        if df.empty:
+            print(f'skipping {label}/{timestamp}: no data')
+            continue
 
-            path = _folder / 'score.pdf'
-            if force_replot or n_new or not path.exists():
-                print(f'creating: {path}')
-                plot_x_vs_metrics(df, one_vs_rest='vba' in label)
-                plt.gcf().savefig(path, bbox_inches='tight')
-                plt.close('all')
-            else:
-                print(f'skipping: {path} (already exists, no new data)')
+        # generate score plot
+        path = _folder / 'score.pdf'
+        if force_replot or n_new or not path.exists():
+            print(f'creating: {path}')
+            plot_x_vs_metrics(df, one_vs_rest='vba' in label)
+            plt.gcf().savefig(path, bbox_inches='tight')
+            plt.close('all')
+        else:
+            print(f'skipping: {path} (already exists, no new data)')
+
+        # copy latest score.pdf to paper_latest/
+        if path.exists():
+            dest = paper_latest / f'{label}_{timestamp}.pdf'
+            shutil.copy2(path, dest)
+            print(f'  -> {dest}')
