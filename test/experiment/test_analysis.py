@@ -1,3 +1,5 @@
+import copy
+
 from glow.effect import ExtenterSphere
 from glow.experiment import *
 from glow.experiment.analysis import *
@@ -249,3 +251,95 @@ class TestNaNHandling:
         assert not np.isnan(pval[0])
         assert not np.isnan(pval[2])
         assert not np.isnan(pval[3])
+
+
+# ---------------------------------------------------------------------------
+# In-memory checkpoint helper for testing (no S3 dependency)
+# ---------------------------------------------------------------------------
+
+class MemoryCheckpoint:
+    """Minimal checkpoint implementation backed by an in-memory dict."""
+
+    def __init__(self, state=None):
+        self._state = state
+        self.save_count = 0
+        self.delete_called = False
+
+    def load(self):
+        return copy.deepcopy(self._state)
+
+    def save(self, child_dict, stat, perm_idx):
+        self._state = {
+            'child_dict': copy.deepcopy(child_dict),
+            'stat': stat.copy(),
+            'last_perm_idx': perm_idx,
+        }
+        self.save_count += 1
+
+    def delete(self):
+        self.delete_called = True
+        self._state = None
+
+
+class TestCheckpoint:
+    """Test AnalysisGLOW checkpoint / resume behaviour."""
+
+    # shared small experiment
+    exp = Experiment.from_gauss(a=2, b=1, shape=(3, 3), num_img=20, seed=0)
+
+    def test_no_checkpoint_by_default(self):
+        """AnalysisGLOW works when checkpoint is None (the default)."""
+        analysis = AnalysisGLOW(self.exp, n_perm=5, alpha_fwer=.5)
+        assert hasattr(analysis, 'pval')
+        assert len(analysis.child_dict) == 6  # 0..5
+
+    def test_checkpoint_save_called(self):
+        """save() is called during the permutation loop."""
+        # use n_perm high enough to trigger at least one save
+        # _CHECKPOINT_INTERVAL is 25, so n_perm=50 gives 51 permutations
+        ckpt = MemoryCheckpoint()
+        analysis = AnalysisGLOW(
+            self.exp, n_perm=50, alpha_fwer=.5, checkpoint=ckpt)
+
+        assert ckpt.save_count >= 1, 'checkpoint.save() was never called'
+        assert ckpt.delete_called, 'checkpoint.delete() should be called on completion'
+
+    def test_checkpoint_delete_on_completion(self):
+        """delete() is called after all permutations finish."""
+        ckpt = MemoryCheckpoint()
+        AnalysisGLOW(self.exp, n_perm=5, alpha_fwer=.5, checkpoint=ckpt)
+        assert ckpt.delete_called
+
+    def test_checkpoint_resume(self):
+        """Resuming from a partial checkpoint produces the same result."""
+        n_perm = 10
+
+        # full run (no checkpoint) as reference
+        ref = AnalysisGLOW(self.exp, n_perm=n_perm, alpha_fwer=.5)
+
+        # build partial checkpoint from the first 5 permutations
+        partial_child_dict = {i: ref.child_dict[i] for i in range(5)}
+        b, num_img, num_vox = self.exp.y.shape
+        num_reg = num_vox * 2 - 1
+        partial_stat = np.full((n_perm + 1, num_reg), fill_value=-1.0)
+        for i in range(5):
+            partial_stat[i, :] = ref.stat[i, :]
+
+        resume_state = {
+            'child_dict': partial_child_dict,
+            'stat': partial_stat,
+            'last_perm_idx': 4,
+        }
+
+        ckpt = MemoryCheckpoint(state=resume_state)
+        resumed = AnalysisGLOW(
+            self.exp, n_perm=n_perm, alpha_fwer=.5, checkpoint=ckpt)
+
+        # child_dict should be complete
+        assert set(resumed.child_dict.keys()) == set(range(n_perm + 1))
+
+        # stat arrays should match
+        np.testing.assert_array_equal(resumed.stat, ref.stat)
+
+        # final p-values should match
+        np.testing.assert_array_equal(resumed.pval, ref.pval)
