@@ -41,13 +41,13 @@ cd /path/to/glow/src
 This creates:
 - S3 bucket
 - IAM roles for ECS/Batch
-- Compute environment (spot, `BEST_FIT_PROGRESSIVE`) with mixed instance families:
+- Compute environment (spot, `SPOT_CAPACITY_OPTIMIZED`) with mixed instance families:
   - **Compute-optimized** (c5/c5a/c6i/c6a/c7i/c7a, ~2 GB/vCPU) — for initial 2 GB jobs
   - **General-purpose** (m5/m5a/m6i/m6a/m7i/m7a, ~4 GB/vCPU) — for 4 GB OOM retries
   - **Memory-optimized** (r5/r5a/r6i/r6a/r7i/r7a, ~8 GB/vCPU) — for 8-16 GB OOM retries
 - Job queue + job definition
 - `.glow_aws_config` (saved in the project root)
-  - **OOM retries**: Jobs that run out of memory are automatically resubmitted with more memory: 2 → 4 → 8 → 16 GB (see `CloudConfig.oom_memory_mb_tiers`). `BEST_FIT_PROGRESSIVE` ensures each retry lands on an instance family matching its memory/vCPU ratio, avoiding wasted vCPUs.
+  - **OOM retries**: Jobs that run out of memory are automatically resubmitted with more memory: 2 → 4 → 8 → 16 GB (see `CloudConfig.oom_memory_mb_tiers`). `SPOT_CAPACITY_OPTIMIZED` ensures each retry lands on an instance family matching its memory/vCPU ratio, avoiding wasted vCPUs.
 
 It also creates a monitoring policy for instance-type tracking and attempts to attach it to your current IAM user.
 

@@ -5,7 +5,7 @@ set -e  # Exit on error
 # CONFIGURATION - Edit these to customize your setup
 # ═══════════════════════════════════════════════════════════════
 REGION=${AWS_REGION:-us-east-1}
-S3_BUCKET=${GLOW_S3_BUCKET:-glow-experiments-$(date +%s)}
+S3_BUCKET=${GLOW_S3_BUCKET:-glow-experiments}
 COMPUTE_ENV_NAME="glow-compute-env-spot"
 JOB_QUEUE_NAME="glow-job-queue"
 JOB_DEFINITION_NAME="glow-job-definition"
@@ -236,8 +236,8 @@ if aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_N
     NEEDS_RECREATE=false
     
     # Check allocation strategy (immutable after creation)
-    if [ "$CURRENT_ALLOC_STRATEGY" != "BEST_FIT_PROGRESSIVE" ]; then
-        echo -e "${YELLOW}  ⚠ Allocation strategy is '${CURRENT_ALLOC_STRATEGY}' (expected BEST_FIT_PROGRESSIVE)${NC}"
+    if [ "$CURRENT_ALLOC_STRATEGY" != "SPOT_CAPACITY_OPTIMIZED" ]; then
+        echo -e "${YELLOW}  ⚠ Allocation strategy is '${CURRENT_ALLOC_STRATEGY}' (expected SPOT_CAPACITY_OPTIMIZED)${NC}"
         NEEDS_RECREATE=true
     fi
     
@@ -277,7 +277,7 @@ else
         --service-role "arn:aws:iam::${ACCOUNT_ID}:role/GlowBatchServiceRole" \
         --compute-resources "{
             \"type\": \"SPOT\",
-            \"allocationStrategy\": \"BEST_FIT_PROGRESSIVE\",
+            \"allocationStrategy\": \"SPOT_CAPACITY_OPTIMIZED\",
             \"minvCpus\": 0,
             \"maxvCpus\": $MAX_VCPUS,
             \"desiredvCpus\": 0,
