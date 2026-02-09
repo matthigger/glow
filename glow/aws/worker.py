@@ -13,6 +13,46 @@ import psutil
 import tracemalloc
 
 
+class S3Checkpoint:
+    """Persist and resume partial AnalysisGLOW state via S3."""
+
+    def __init__(self, s3_client, bucket, key):
+        self._s3 = s3_client
+        self._bucket = bucket
+        self._key = key
+
+    def load(self):
+        """Return saved state dict or None if no checkpoint exists."""
+        try:
+            response = self._s3.get_object(Bucket=self._bucket, Key=self._key)
+            state = pickle.loads(response['Body'].read())
+            print(f'  checkpoint loaded: s3://{self._bucket}/{self._key}')
+            return state
+        except ClientError:
+            return None
+
+    def save(self, child_dict, stat, perm_idx):
+        """Upload current permutation state to S3."""
+        state = {
+            'child_dict': child_dict,
+            'stat': stat,
+            'last_perm_idx': perm_idx,
+        }
+        self._s3.put_object(
+            Bucket=self._bucket,
+            Key=self._key,
+            Body=pickle.dumps(state),
+        )
+        print(f'  checkpoint saved (perm {perm_idx})')
+
+    def delete(self):
+        """Remove checkpoint from S3 after successful completion."""
+        try:
+            self._s3.delete_object(Bucket=self._bucket, Key=self._key)
+        except ClientError:
+            pass
+
+
 def get_array_info(obj, prefix='', visited=None, max_depth=5, depth=0):
     """recursively find all numpy arrays in an object and return their info."""
     if visited is None:
@@ -305,10 +345,18 @@ def run_experiment_mode(args):
     print(f'  Analyses: {len(config.ana_kwargs_dict) if hasattr(config, "ana_kwargs_dict") and config.ana_kwargs_dict else "N/A"}')
     
     if hasattr(config, 'ana_kwargs_dict') and config.ana_kwargs_dict:
+        import glow.experiment
         for label, (Ana, ana_kwargs) in config.ana_kwargs_dict.items():
             if 'n_jobs_perm' in ana_kwargs:
                 ana_kwargs['n_jobs_perm'] = 1
                 print(f'  Setting n_jobs_perm=1 for {label}')
+            # inject S3 checkpoint for AnalysisGLOW analyses
+            if Ana is glow.experiment.AnalysisGLOW:
+                ckpt_key = (f'{args.s3_prefix}/{args.run_id}/checkpoints/'
+                            f'{args.exp_idx:06d}_{label}.pkl')
+                ana_kwargs['checkpoint'] = S3Checkpoint(s3, args.s3_bucket,
+                                                       ckpt_key)
+                print(f'  Checkpoint enabled for {label}')
     
     # run experiment with memory profiling on error
     try:

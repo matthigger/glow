@@ -30,6 +30,7 @@ class CloudConfig:
     oom_memory_mb_tiers: List[int] = field(
         default_factory=lambda: [2000, 4000, 8000, 16000]
     )  # 2 -> 4 -> 8 -> 16 GB (decimal) on OOM
+    max_spot_retries: int = 3  # max resubmissions per job due to spot reclamation
     
     def to_dict(self):
         return asdict(self)
@@ -46,10 +47,16 @@ class AWSBatchRunner:
         self.ecs = boto3.client('ecs', region_name=config.region)
         self.ec2 = boto3.client('ec2', region_name=config.region)
         self._job_memory_tier_index = {}
+        self._job_spot_retry_count = {}
 
     @staticmethod
     def _base_job_name(job_name: str) -> str:
         return job_name.rsplit('_retry', 1)[0]
+
+    @staticmethod
+    def _is_spot_termination(job_failure: Dict[str, Any]) -> bool:
+        status_reason = (job_failure.get('statusReason') or '').lower()
+        return 'host ec2' in status_reason and 'terminated' in status_reason
 
     @staticmethod
     def _is_oom_failure(job_failure: Dict[str, Any]) -> bool:
@@ -65,37 +72,51 @@ class AWSBatchRunner:
         return False
 
     def _resubmit_failed_jobs(self, failed_jobs, job_info_map):
-        """resubmit OOM-failed jobs at the next memory tier.
+        """resubmit OOM and spot-terminated jobs.
+
+        OOM jobs advance to the next memory tier.  Spot-terminated jobs are
+        resubmitted with the same resource requirements.
 
         Returns:
             resubmitted (list): new job IDs
-            resubmitted_src_ids (set): original job IDs that were resubmitted
+            resubmit_reasons (dict): maps source job ID -> 'oom' | 'spot'
         """
         tiers = self.config.oom_memory_mb_tiers or []
-        if len(tiers) < 2:
-            return [], set()
 
         resubmitted = []
-        resubmitted_src_ids = set()
+        resubmit_reasons = {}
         for job in failed_jobs:
-            if not self._is_oom_failure(job):
+            # determine failure type
+            is_oom = self._is_oom_failure(job)
+            is_spot = (not is_oom) and self._is_spot_termination(job)
+            if not (is_oom or is_spot):
                 continue
 
             base_name = self._base_job_name(job['jobName'])
-            current_idx = self._job_memory_tier_index.get(base_name, 0)
-            next_idx = current_idx + 1
-
-            if next_idx >= len(tiers):
-                continue
-            memory_mb = tiers[next_idx]
-
             container = job.get('container', {}) or {}
             command = container.get('command')
             if not command:
                 print(f'  ⚠ Cannot resubmit {job["jobName"]}: missing command')
                 continue
 
-            retry_name = f'{base_name}_retry{next_idx}'
+            if is_oom:
+                current_idx = self._job_memory_tier_index.get(base_name, 0)
+                next_idx = current_idx + 1
+                if next_idx >= len(tiers) or len(tiers) < 2:
+                    continue
+                memory_mb = tiers[next_idx]
+                retry_name = f'{base_name}_retry{next_idx}'
+                reason_tag = 'oom'
+            else:
+                # spot: resubmit with same memory
+                count = self._job_spot_retry_count.get(base_name, 0)
+                if count >= self.config.max_spot_retries:
+                    continue
+                current_idx = self._job_memory_tier_index.get(base_name, 0)
+                memory_mb = tiers[current_idx] if tiers else self.config.memory_mb
+                retry_name = f'{base_name}_spot{count + 1}'
+                reason_tag = 'spot'
+
             overrides: Dict[str, Any] = {
                 'command': command,
                 'resourceRequirements': [
@@ -114,16 +135,22 @@ class AWSBatchRunner:
                     timeout={'attemptDurationSeconds': self.config.timeout_minutes * 60}
                 )
                 new_job_id = response['jobId']
-                self._job_memory_tier_index[base_name] = next_idx
                 resubmitted.append(new_job_id)
-                resubmitted_src_ids.add(job['jobId'])
+                resubmit_reasons[job['jobId']] = reason_tag
                 if job['jobId'] in job_info_map:
                     job_info_map[new_job_id] = job_info_map[job['jobId']]
-                print(f'  ↻ {job["jobName"]} → {memory_mb} MB ({retry_name})')
+
+                if is_oom:
+                    self._job_memory_tier_index[base_name] = next_idx
+                    print(f'  ↻ {job["jobName"]} → {memory_mb} MB ({retry_name})')
+                else:
+                    self._job_spot_retry_count[base_name] = \
+                        self._job_spot_retry_count.get(base_name, 0) + 1
+                    print(f'  ↻ {job["jobName"]} → resubmitted ({retry_name})')
             except ClientError as e:
                 print(f'  ✗ Failed to resubmit {job["jobName"]}: {e}')
 
-        return resubmitted, resubmitted_src_ids
+        return resubmitted, resubmit_reasons
     
     def upload_experiment(self, exp, ana_kwargs: Dict[str, Any], 
                          experiment_id: str) -> str:
@@ -631,21 +658,24 @@ class AWSBatchRunner:
                 postfix_str = ', '.join(postfix_parts)
                 pbar.set_postfix_str(postfix_str)
                 
-                # immediately resubmit OOM failures at the next memory tier
-                resubmitted_src_ids = set()
+                # immediately resubmit OOM / spot failures
+                resubmit_reasons = {}
                 if newly_failed_jobs:
-                    resubmitted, resubmitted_src_ids = \
+                    resubmitted, resubmit_reasons = \
                         self._resubmit_failed_jobs(
                             newly_failed_jobs, job_info_map)
-                    resubmitted_total += len(resubmitted_src_ids)
+                    resubmitted_total += len(resubmit_reasons)
                     if resubmitted:
                         job_ids.extend(resubmitted)
 
-                # print failed jobs (OOM retries get a softer message)
+                # print failed jobs (resubmitted jobs get a softer message)
                 for job in newly_failed_jobs:
                     job_id = job['jobId']
-                    if job_id in resubmitted_src_ids:
+                    reason = resubmit_reasons.get(job_id)
+                    if reason == 'oom':
                         print(f'\n⟳ OOM: {job["jobName"]} — resubmitting with more memory')
+                    elif reason == 'spot':
+                        print(f'\n⟳ SPOT: {job["jobName"]} — resubmitting (instance reclaimed)')
                     else:
                         print(f'\n✗ FAILED: {job["jobName"]} ({job_id[:8]}...)')
                         print(f'  Reason: {job["statusReason"]}')

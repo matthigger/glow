@@ -211,9 +211,12 @@ class AnalysisGLOW(Analysis):
         size (np.array): (n_perm + 1, num_reg) voxel count per region
     """
 
+    # how often to persist a checkpoint (every N permutations)
+    _CHECKPOINT_INTERVAL = 25
+
     def __init__(self, exp, n_perm, n_perm_adj=10, n_perm_prune=100,
                  alpha_fwer=.05, alpha_prune=.05, min_size=1, verbose=False,
-                 n_jobs_perm=1, cloud_config=None, **kwargs):
+                 n_jobs_perm=1, cloud_config=None, checkpoint=None, **kwargs):
         """
         Args:
             exp: Experiment to analyze
@@ -226,6 +229,8 @@ class AnalysisGLOW(Analysis):
             verbose: Print progress
             n_jobs_perm: Number of parallel jobs for permutations (1=serial, -1=all cores)
             cloud_config: CloudConfig for AWS execution (if None, runs locally)
+            checkpoint: optional object with load/save/delete methods for
+                resuming interrupted runs. only used in the serial path.
         """
         super().__init__(exp, **kwargs)
         
@@ -244,6 +249,17 @@ class AnalysisGLOW(Analysis):
         self.child_dict = dict()
         self.stat = np.full((n_perm + 1, num_reg),
                             fill_value=-1.0)
+
+        # try to resume from checkpoint
+        start_perm = 0
+        if checkpoint is not None:
+            resume = checkpoint.load()
+            if resume is not None:
+                self.child_dict = resume['child_dict']
+                self.stat = resume['stat']
+                start_perm = resume['last_perm_idx'] + 1
+                if verbose:
+                    print(f'  resumed from checkpoint (perm {start_perm}/{n_perm + 1})')
         
         # helper function for single permutation (for parallelization)
         def process_permutation(perm_idx):
@@ -264,7 +280,7 @@ class AnalysisGLOW(Analysis):
         
         # run permutations (parallel or serial)
         if n_jobs_perm not in (0, 1):
-            # parallel execution
+            # parallel execution (no checkpointing support)
             results = Parallel(n_jobs=n_jobs_perm, verbose=10 if verbose else 0)(
                 delayed(process_permutation)(perm_idx)
                 for perm_idx in range(n_perm + 1)
@@ -275,13 +291,23 @@ class AnalysisGLOW(Analysis):
                 self.stat[perm_idx, :] = stat_row
         else:
             # serial execution with progress bar
-            tqdm_dict = dict(total=n_perm + 1,
+            remaining = n_perm + 1 - start_perm
+            tqdm_dict = dict(total=remaining,
                            desc='clustering per permutation',
                            disable=not verbose)
-            for perm_idx in tqdm(range(n_perm + 1), **tqdm_dict):
+            for perm_idx in tqdm(range(start_perm, n_perm + 1), **tqdm_dict):
                 _, children, stat_row = process_permutation(perm_idx)
                 self.child_dict[perm_idx] = children
                 self.stat[perm_idx, :] = stat_row
+
+                # periodic checkpoint
+                if (checkpoint is not None
+                        and (perm_idx + 1) % self._CHECKPOINT_INTERVAL == 0):
+                    checkpoint.save(self.child_dict, self.stat, perm_idx)
+
+        # clean up checkpoint now that all permutations are done
+        if checkpoint is not None:
+            checkpoint.delete()
 
         # finalize analysis (common to local and cloud execution)
         self._finalize_analysis(exp, n_perm, n_perm_adj, n_perm_prune,
