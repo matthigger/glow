@@ -297,7 +297,7 @@ class AWSBatchRunner:
             'skipped': list(completed)
         }
     
-    def monitor_jobs(self, job_ids, poll_interval=10,
+    def monitor_jobs(self, job_ids, poll_interval=30,
                     job_info_map=None, cancel_on_error=True):
         """poll AWS Batch until all jobs finish, downloading results as they complete."""
         if not job_ids:
@@ -554,7 +554,8 @@ class AWSBatchRunner:
                 # calculate status counts (don't count resubmitted OOM jobs
                 # as done — they are being retried, not finished)
                 total = len(job_ids) - resubmitted_total
-                done = statuses['SUCCEEDED'] + statuses['FAILED'] - resubmitted_total
+                done = statuses['SUCCEEDED']
+                all_terminal = statuses['SUCCEEDED'] + statuses['FAILED'] - resubmitted_total
                 pending = (statuses['SUBMITTED'] + statuses['PENDING'] + 
                           statuses['RUNNABLE'] + statuses['STARTING'])
                 running = statuses['RUNNING']
@@ -703,23 +704,16 @@ class AWSBatchRunner:
                                 output_folder = Path(info['output_folder'])
                                 print(f'\n[Downloading] {job["jobName"]} → {output_folder}')
                                 
-                                self._download_single_experiment_result(
+                                n_files = self._download_single_experiment_result(
                                     info['run_id'], info['exp_idx'], info['output_folder']
                                 )
                                 downloaded_jobs.add(job_id)
-                                
-                                # print completion message with download path
-                                if output_folder.exists():
-                                    files = list(output_folder.rglob('*'))
-                                    file_count = sum(1 for f in files if f.is_file())
-                                    print(f'  ✓ Downloaded {file_count} file(s) to: {output_folder}')
-                                else:
-                                    print(f'  ✓ Downloaded to: {output_folder}')
+                                print(f'  ✓ Downloaded {n_files} file(s)')
                             except Exception as e:
                                 print(f'\n⚠ Error downloading results for {job["jobName"]}: {e}')
             
-                # check if all done
-                if done == total:
+                # check if all jobs reached a terminal state
+                if all_terminal == total:
                     pbar.close()
                     print(f'\nall jobs complete!')
                     print(f'  succeeded: {statuses["SUCCEEDED"]}')
@@ -746,7 +740,12 @@ class AWSBatchRunner:
 
                     break
             
-                time.sleep(poll_interval)
+                # heartbeat: show a ticking timestamp while waiting
+                for _ in range(int(poll_interval)):
+                    print(f'\r{datetime.now().strftime("%H:%M:%S")}',
+                          end='', flush=True)
+                    time.sleep(1)
+                print('\r          \r', end='')  # clear heartbeat line
         except KeyboardInterrupt:
             pbar.close()
             print('\n\nMonitoring interrupted by user')
@@ -1053,6 +1052,8 @@ class AWSBatchRunner:
             
         except ClientError as e:
             raise RuntimeError(f'failed to download results: {e}')
+
+        return file_count
     
     def download_experiment_results(self, run_id: str, output_folder: Path):
         """download all experiment results from S3 to local folder
