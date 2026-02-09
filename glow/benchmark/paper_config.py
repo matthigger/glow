@@ -94,16 +94,6 @@ for _alpha_prune in [.05, .15, .5]:
         glow.experiment.AnalysisGLOW, _kwargs_glow)
 config_list.append(make_config('alpha_prune', 'hcp', run_ana, ana_kwargs_dict_alpha_prune))
 
-# wgn experiment: vary b
-config_list.append(make_config(
-    'dataset_wgn_b',
-    'wgn',
-    run_ana,
-    ana_kwargs_dict_vba,
-    iter_params={'seed': np.arange(5), 'wgn_b': [1, 2, 3, 4, 5]},
-    fixed_params={'hotel_tr': 0.1},
-))
-
 # segmentation configs
 config_list.append(make_config('segment_hcp', 'hcp', run_segment))
 config_list.append(make_config('segment_wgn', 'wgn', run_segment))
