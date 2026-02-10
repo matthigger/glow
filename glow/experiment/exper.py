@@ -32,6 +32,14 @@ class ExperimentImageOnly:
         self.y = y
         self.mask_idx = mask_idx
 
+    def _hash(self):
+        """rolling SHA-256 hash over data arrays (16-char hex digest)."""
+        import hashlib
+        h = hashlib.sha256()
+        for arr in (self.y, self.mask_idx):
+            h.update(np.ascontiguousarray(arr).tobytes())
+        return h.hexdigest()[:16]
+
     @classmethod
     def from_gauss(cls, b=None, num_img=10, shape=(2, 3, 4), seed=None,
                    mu=None, cov=None, **kwargs):
@@ -287,6 +295,14 @@ class Experiment(ExperimentImageOnly):
             warnings.warn('no bias term: regression constrained to '
                           'origin (consider add_bias=True)',
                           NoBiasTermWarning)
+
+    def _hash(self):
+        """rolling SHA-256 hash over all data arrays (16-char hex digest)."""
+        import hashlib
+        h = hashlib.sha256()
+        for arr in (self.y, self.mask_idx, self.x, self.contrast):
+            h.update(np.ascontiguousarray(arr).tobytes())
+        return h.hexdigest()[:16]
 
     def impose_effect(self, hotel_tr, extenter=None, mask=None, seed=None,
                       **kwargs):
