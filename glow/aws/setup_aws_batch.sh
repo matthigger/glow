@@ -129,31 +129,48 @@ aws iam put-role-policy \
     --policy-name GlowS3Access \
     --policy-document "$S3_POLICY" 2>/dev/null || true
 
-# create IAM policy for monitoring (EC2 describe instances for instance type tracking)
-echo -e "${YELLOW}  Creating IAM policy for monitoring (instance type tracking)...${NC}"
+# create IAM policy for monitoring (instance type tracking + cost/usage reporting)
+echo -e "${YELLOW}  Creating IAM policy for monitoring (instance types, cost explorer)...${NC}"
 MONITORING_POLICY_NAME="GlowMonitoringPolicy"
-MONITORING_POLICY="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"ec2:DescribeInstances\",\"ec2:DescribeInstanceTypes\",\"batch:DescribeJobQueues\",\"batch:DescribeComputeEnvironments\",\"ecs:ListContainerInstances\",\"ecs:DescribeContainerInstances\"],\"Resource\":\"*\"}]}"
+MONITORING_POLICY="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"ec2:DescribeInstances\",\"ec2:DescribeInstanceTypes\",\"batch:DescribeJobQueues\",\"batch:DescribeComputeEnvironments\",\"ecs:ListContainerInstances\",\"ecs:DescribeContainerInstances\",\"ce:GetCostAndUsage\"],\"Resource\":\"*\"}]}"
 
 # Check if policy exists
 if aws iam get-policy --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${MONITORING_POLICY_NAME}" &>/dev/null; then
-    # Policy exists, update it
+    # Policy exists, update it (delete oldest non-default version if at the 5-version limit)
+    POLICY_ARN_MON="arn:aws:iam::${ACCOUNT_ID}:policy/${MONITORING_POLICY_NAME}"
     POLICY_VERSION=$(aws iam create-policy-version \
-        --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${MONITORING_POLICY_NAME}" \
+        --policy-arn "$POLICY_ARN_MON" \
         --policy-document "$MONITORING_POLICY" \
         --set-as-default \
         --query 'PolicyVersion.VersionId' \
         --output text 2>/dev/null || echo "")
+    if [ -z "$POLICY_VERSION" ]; then
+        # likely hit the 5-version limit — delete the oldest non-default version and retry
+        OLDEST_VERSION=$(aws iam list-policy-versions \
+            --policy-arn "$POLICY_ARN_MON" \
+            --query 'Versions[?IsDefaultVersion==`false`] | sort_by(@, &CreateDate) | [0].VersionId' \
+            --output text 2>/dev/null || echo "")
+        if [ -n "$OLDEST_VERSION" ] && [ "$OLDEST_VERSION" != "None" ]; then
+            aws iam delete-policy-version --policy-arn "$POLICY_ARN_MON" --version-id "$OLDEST_VERSION" 2>/dev/null
+            POLICY_VERSION=$(aws iam create-policy-version \
+                --policy-arn "$POLICY_ARN_MON" \
+                --policy-document "$MONITORING_POLICY" \
+                --set-as-default \
+                --query 'PolicyVersion.VersionId' \
+                --output text 2>/dev/null || echo "")
+        fi
+    fi
     if [ -n "$POLICY_VERSION" ]; then
-        echo -e "${GREEN}  ✓ Updated ${MONITORING_POLICY_NAME}${NC}"
+        echo -e "${GREEN}  ✓ Updated ${MONITORING_POLICY_NAME} (${POLICY_VERSION})${NC}"
     else
-        echo -e "${GREEN}  ✓ ${MONITORING_POLICY_NAME} already exists${NC}"
+        echo -e "${GREEN}  ✓ ${MONITORING_POLICY_NAME} already exists (unchanged)${NC}"
     fi
 else
     # Create new policy
     aws iam create-policy \
         --policy-name "$MONITORING_POLICY_NAME" \
         --policy-document "$MONITORING_POLICY" \
-        --description "Policy for GLOW monitoring (instance type tracking)" \
+        --description "Policy for GLOW monitoring (instance types, cost explorer)" \
         --query 'Policy.Arn' \
         --output text > /dev/null
     echo -e "${GREEN}  ✓ Created ${MONITORING_POLICY_NAME}${NC}"
