@@ -176,32 +176,22 @@ if __name__ == '__main__':
     paper_latest = path_result / 'paper_latest'
     paper_latest.mkdir(exist_ok=True)
 
-    for label_path in path_result.iterdir():
-        if not label_path.is_dir():
-            continue
-        label = label_path.stem
-        if label not in CONFIG_BY_LABEL:
-            continue
-
-        # find latest timestamp folder for this label
-        timestamp_dirs = sorted(
-            (d for d in label_path.iterdir() if d.is_dir()),
-            key=lambda d: d.name
-        )
-        if not timestamp_dirs:
-            continue
-        latest_dir = timestamp_dirs[-1]
-        timestamp = latest_dir.stem
-
-        df, _folder, n_new = glow.benchmark.load_update_all(label,
-                                                            timestamp,
-                                                            verbose=False)
+    for label, config in CONFIG_BY_LABEL.items():
+        df, folder, n_new = glow.benchmark.load_update_all(label,
+                                                           verbose=False)
         if df.empty:
-            print(f'skipping {label}/{timestamp}: no data')
+            print(f'skipping {label}: no data')
             continue
+
+        # filter to current config (ignore stale results from old configs)
+        if 'config_hash' in df.columns:
+            df = df[df['config_hash'] == config._config_hash()]
+            if df.empty:
+                print(f'skipping {label}: no data for current config')
+                continue
 
         # generate score plot
-        path = _folder / 'score.pdf'
+        path = folder / 'score.pdf'
         if force_replot or n_new or not path.exists():
             print(f'creating: {path}')
             plot_x_vs_metrics(df, one_vs_rest='vba' in label)
@@ -210,8 +200,8 @@ if __name__ == '__main__':
         else:
             print(f'skipping: {path} (already exists, no new data)')
 
-        # copy latest score.pdf to paper_latest/
+        # copy score.pdf to paper_latest/
         if path.exists():
-            dest = paper_latest / f'{label}_{timestamp}.pdf'
+            dest = paper_latest / f'{label}.pdf'
             shutil.copy2(path, dest)
             print(f'  -> {dest}')

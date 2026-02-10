@@ -41,7 +41,8 @@ def run_segment(config, **kwargs):
              'uuid': uuid,
              'vox_total': int(exp.y.shape[2]),
              'vox_effect': int(effect.mask.sum()),
-             'time_sec': total_time_sec}
+             'time_sec': total_time_sec,
+             'config_hash': config._config_hash()}
         file_out.parent.mkdir(exist_ok=True, parents=True)
         with open(file_out, 'w') as f:
             json.dump(d, f, sort_keys=True, indent=4)
@@ -105,7 +106,8 @@ def run_ana(config, **kwargs):
              'uuid': uuid,
              'vox_total': int(ana.exp.y.shape[2]),
              'vox_effect': int(effect.mask.sum()),
-             'time_sec': total_time_sec}
+             'time_sec': total_time_sec,
+             'config_hash': config._config_hash()}
         file_out.parent.mkdir(exist_ok=True, parents=True)
         with open(file_out, 'w') as f:
             json.dump(d, f, sort_keys=True, indent=4)

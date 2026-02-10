@@ -51,7 +51,11 @@ def build_job_info_map(all_job_info):
     if not all_job_ids:
         return all_job_ids, job_info_map
 
-    runner = all_job_info[0]['runner']
+    # find a runner from a config that actually submitted jobs
+    runner = next((info['runner'] for info in all_job_info
+                   if info['runner'] is not None), None)
+    if runner is None:
+        return all_job_ids, job_info_map
     run_id_to_folder = {info['run_id']: info['folder'] for info in all_job_info}
 
     for i in range(0, len(all_job_ids), 100):
@@ -97,6 +101,8 @@ def download_remaining_results(all_job_info):
 
     for job_info in all_job_info:
         runner = job_info['runner']
+        if runner is None:
+            continue  # fully cached config, nothing to download
         result_prefix = f'{runner.config.s3_prefix}/{job_info["run_id"]}/results/'
         try:
             paginator = runner.s3.get_paginator('list_objects_v2')

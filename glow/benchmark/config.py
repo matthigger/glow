@@ -1,10 +1,12 @@
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
 from itertools import product
 from pathlib import Path
 from typing import Literal, Optional, Tuple, List
+import hashlib
+import json
 
 import numpy as np
+import pandas as pd
 import yaml
 from joblib import Parallel, delayed
 from platformdirs import user_data_dir
@@ -94,6 +96,34 @@ class Config:
         self.exp_orig = None
         self.folder = None
         self._shared_exp_s3_key = None  # S3 key for shared experiment data
+
+    def _config_hash(self):
+        """hash of all config parameters that affect results.
+
+        Combines: exp_orig data hash + effect params + analysis config +
+        run function.  Used for result-level cache invalidation.
+        """
+        if self.exp_orig is None:
+            self.prep_exp_orig()
+
+        d = {
+            'exp_hash': self.exp_orig._hash(),
+            'effect_perc': self.effect_perc,
+            'radius': self.radius,
+            'run_fnc': self.run_fnc.__name__ if self.run_fnc else None,
+        }
+
+        if self.ana_kwargs_dict:
+            ana = {}
+            for label, (cls, kw) in self.ana_kwargs_dict.items():
+                entry = {'class': cls.__name__}
+                for k, v in sorted(kw.items()):
+                    entry[k] = v.__name__ if callable(v) else v
+                ana[label] = entry
+            d['ana'] = ana
+
+        sig = json.dumps(d, sort_keys=True, default=str)
+        return hashlib.sha256(sig.encode()).hexdigest()[:12]
 
     def prep_exp_orig(self, hcp_feats=None, wgn_b=None):
         """prepare the base experiment (HCP or WGN)."""
@@ -196,13 +226,54 @@ class Config:
             
             yield kwargs
 
+    def _get_expected_labels(self):
+        """return the set of result 'label' strings one experiment produces."""
+        from glow.benchmark.run import run_ana, run_segment
+        if self.run_fnc is run_ana:
+            return set(self.ana_kwargs_dict.keys())
+        if self.run_fnc is run_segment:
+            return {'ward-naive', 'ward-glm'}
+        return set()
+
+    def _is_experiment_cached(self, kwargs, df, expected_labels, config_hash):
+        """check if all expected labels already have results for these kwargs."""
+        if df.empty or not expected_labels:
+            return False
+        mask = pd.Series(True, index=df.index)
+        # match on config_hash
+        if 'config_hash' in df.columns:
+            mask &= df['config_hash'] == config_hash
+        else:
+            return False  # no hash column means legacy data
+        for key, val in kwargs.items():
+            if key not in df.columns:
+                continue
+            if isinstance(val, (float, np.floating)):
+                mask &= df[key].round(14) == round(float(val), 14)
+            else:
+                mask &= df[key] == val
+        cached_labels = set(df.loc[mask, 'label'].unique())
+        return expected_labels.issubset(cached_labels)
+
+    def _filter_uncached(self, kwargs_list, verbose=True):
+        """return list of (exp_idx, kwargs) for experiments not yet cached."""
+        from glow.benchmark.file import load_update_all
+        df, _folder, _n_new = load_update_all(self.label, verbose=False)
+        expected = self._get_expected_labels()
+        config_hash = self._config_hash()
+
+        uncached = []
+        for exp_idx, kwargs in enumerate(kwargs_list):
+            if not self._is_experiment_cached(kwargs, df, expected, config_hash):
+                uncached.append((exp_idx, kwargs))
+
+        n_cached = len(kwargs_list) - len(uncached)
+        if verbose and n_cached > 0:
+            print(f'  {n_cached} cached, {len(uncached)} to run')
+        return uncached
+
     def prep_folder(self):
-        ts = datetime.now().strftime('%y-%m-%d_%H:%M:%S')
-        self.folder = path_result / self.label / ts
-
-        if self.folder.exists():
-            raise RuntimeError(f'quitting, folder exists: {self.folder}')
-
+        self.folder = path_result / self.label
         self.folder.mkdir(exist_ok=True, parents=True)
 
     def _as_serializable(self):
@@ -235,8 +306,7 @@ class Config:
         if self.cloud_config is not None:
             self._run_all_on_cloud(verbose=verbose)
             return
-        
-        # otherwise run locally (existing code)
+
         # prep folder and save config
         self.prep_folder()
         path_config = self.folder / 'config.yaml'
@@ -244,39 +314,58 @@ class Config:
 
         if verbose:
             print(f'outputs stored in: {self.folder}')
-            if path_config.exists():
-                with open(path_config, 'r') as f:
-                    print(f.read())
 
+        # check cache: skip experiments that already have results
         kwargs_list = list(self.iter_kwargs())
-        
+        uncached = self._filter_uncached(kwargs_list, verbose=verbose)
+
+        if not uncached:
+            if verbose:
+                print(f'  all {len(kwargs_list)} experiments cached')
+            return
+
         if verbose:
-            print(f'running {len(kwargs_list)} experiments')
+            print(f'  running {len(uncached)} experiments')
 
         n_jobs = self.n_jobs if self.n_jobs not in (0, 1) else 1
         Parallel(n_jobs=n_jobs, verbose=10)(
             delayed(self.run_fnc)(config=self, **kwargs)
-            for kwargs in tqdm(kwargs_list)
+            for _, kwargs in tqdm(uncached)
         )
     
     def submit_cloud_jobs(self, verbose=True):
         """submit experiments to AWS Batch (returns job info dict)."""
         from glow.aws.aws_batch import AWSBatchRunner
         import uuid
-        
+
         if verbose:
             print(f'Submitting jobs for: {self.label}')
-        
+
         # prep folder locally (results will be downloaded here)
         self.prep_folder()
-        
+
         # save config locally for reference
         path_config = self.folder / 'config.yaml'
         self.save_config(path=path_config)
-        
+
+        # check cache: skip experiments that already have results
+        kwargs_list = list(self.iter_kwargs())
+        uncached = self._filter_uncached(kwargs_list, verbose=verbose)
+
+        if not uncached:
+            if verbose:
+                print(f'  all {len(kwargs_list)} experiments cached, nothing to submit')
+            return {
+                'runner': None,
+                'run_id': None,
+                'job_ids': [],
+                'folder': self.folder,
+                'label': self.label
+            }
+
         # initialize runner
         runner = AWSBatchRunner(self.cloud_config)
-        
+
         # Load experiment data and compute its hash (used as S3 cache key)
         if self.exp_orig is None:
             if verbose:
@@ -313,23 +402,22 @@ class Config:
             # Store S3 reference; clear local copy so it's not in pickled config
             self._shared_exp_s3_key = shared_data_key
             self.exp_orig = None
-        
+
         # generate unique run ID
         run_id = f'{self.label}_{uuid.uuid4().hex[:8]}'
         if verbose:
             print(f'  Run ID: {run_id}')
-        
-        # upload config to S3 (workers will download this, exp_orig may be None if using shared cache)
+
+        # upload config to S3 (workers will download this)
         runner.upload_config(self, run_id)
-        
-        # submit one job per experiment
-        kwargs_list = list(self.iter_kwargs())
+
+        # submit only uncached experiments
         job_ids = []
-        
+
         if verbose:
-            print(f'  Submitting {len(kwargs_list)} jobs to AWS Batch...')
-        
-        for exp_idx, kwargs in enumerate(tqdm(kwargs_list, desc=f'  {self.label}', disable=not verbose)):
+            print(f'  Submitting {len(uncached)} jobs to AWS Batch...')
+
+        for exp_idx, kwargs in tqdm(uncached, desc=f'  {self.label}', disable=not verbose):
             try:
                 job_id = runner.submit_experiment_job(
                     run_id=run_id,
@@ -340,10 +428,10 @@ class Config:
             except Exception as e:
                 print(f'  ✗ Error submitting job {exp_idx}: {e}')
                 raise
-        
+
         if verbose:
             print(f'  ✓ Submitted {len(job_ids)} jobs')
-        
+
         # return info needed for monitoring/downloading
         return {
             'runner': runner,

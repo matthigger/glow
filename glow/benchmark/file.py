@@ -17,22 +17,12 @@ def get_path_result():
     return path_result
 
 
-def load_update_all(label, time=None, verbose=True):
+def load_update_all(label, verbose=True):
     """load all experiment results from csv, updating from json if needed."""
-    # use latest folder (if none given)
     folder = get_path_result() / label
-    assert folder.exists(), f'label not found: {folder}'
+    if not folder.exists():
+        return pd.DataFrame(), folder, 0
 
-    if time is None or not time:
-        if verbose:
-            print(f'selecting latest folder')
-        folder = sorted(folder.glob('*'))[-1]
-    else:
-        folder = folder / time
-    assert folder.exists(), f'time not found: {folder}'
-
-    # load aggregated results
-    assert folder.exists()
     f_csv = folder / 'results.csv'
     if f_csv.exists():
         df = pd.read_csv(f_csv, index_col=None)
@@ -41,9 +31,9 @@ def load_update_all(label, time=None, verbose=True):
 
     n_old = df.shape[0]
 
-    # aggregate results into csv necessary
+    # aggregate results into csv if necessary
     folder_out = folder / 'out'
-    file_list = list(folder_out.glob('*result.json'))
+    file_list = list(folder_out.glob('*result.json')) if folder_out.exists() else []
     dict_list = list()
     for file in file_list:
         with open(file, 'r') as f:
