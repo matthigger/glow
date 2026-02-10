@@ -114,10 +114,14 @@ class Config:
         }
 
         if self.ana_kwargs_dict:
+            # keys injected at runtime (don't affect results)
+            _runtime_keys = {'checkpoint', 'n_jobs_perm'}
             ana = {}
             for label, (cls, kw) in self.ana_kwargs_dict.items():
                 entry = {'class': cls.__name__}
                 for k, v in sorted(kw.items()):
+                    if k in _runtime_keys:
+                        continue
                     entry[k] = v.__name__ if callable(v) else v
                 ana[label] = entry
             d['ana'] = ana
