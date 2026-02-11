@@ -350,6 +350,14 @@ class AnalysisGLOW(Analysis):
                     std > 0,
                     (self.stat[perm_idx, :] - mu) / std,
                     0.0)
+            if perm_idx == 0:
+                # store H0 null distribution parameters (for viewer)
+                self.stat_mu = mu
+                self.stat_std = std
+
+        # store analysis thresholds (for viewer)
+        self.alpha_fwer = alpha_fwer
+        self.alpha_prune = alpha_prune
 
         # compute sizes of each region
         self.size = np.empty((n_perm + 1, num_reg))
