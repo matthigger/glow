@@ -233,7 +233,8 @@ class AnalysisGLOW(Analysis):
                 resuming interrupted runs. only used in the serial path.
         """
         super().__init__(exp, **kwargs)
-        
+        self.verbose = verbose
+
         # check if running on cloud
         if cloud_config is not None:
             self._run_on_cloud(exp, n_perm, n_perm_adj, n_perm_prune,
@@ -279,6 +280,9 @@ class AnalysisGLOW(Analysis):
             return perm_idx, children, stat_row
         
         # run permutations (parallel or serial)
+        if verbose:
+            print(f'  [1/6] clustering {n_perm + 1 - start_perm} '
+                  f'permutations ({num_vox} voxels, {num_reg} regions) ...')
         if n_jobs_perm not in (0, 1):
             # parallel execution (no checkpointing support)
             results = Parallel(n_jobs=n_jobs_perm, verbose=10 if verbose else 0)(
@@ -312,16 +316,18 @@ class AnalysisGLOW(Analysis):
         # finalize analysis (common to local and cloud execution)
         self._finalize_analysis(exp, n_perm, n_perm_adj, n_perm_prune,
                                alpha_fwer, alpha_prune, min_size)
-    
-    
+
     def _finalize_analysis(self, exp, n_perm, n_perm_adj, n_perm_prune,
                           alpha_fwer, alpha_prune, min_size):
         """post-process after permutations: merge graphs, z-normalise, prune."""
+        verbose = getattr(self, 'verbose', False)
         b, num_img, num_vox = exp.y.shape
         num_reg = num_vox * 2 - 1
 
         # merge all graphs (many nodes are repeated across permutations above,
         # we adjust them all by same mu and std to minimize computation)
+        if verbose:
+            print(f'  [2/6] merging {n_perm + 1} hierarchies ...')
         # use perm index order so local and cloud match (cloud fills child_dict in arbitrary S3 order)
         children_list = [self.child_dict[i] for i in range(n_perm + 1)]
         map_to_new, children, _ = glow.graph.graph_merge(
@@ -330,6 +336,9 @@ class AnalysisGLOW(Analysis):
 
         # to ensure each of these permuted stats is new, we run one
         # permutation ahead of time
+        if verbose:
+            print(f'  [3/6] computing adjustment stats '
+                  f'({n_perm_adj} extra permutations) ...')
         _exp = exp.permute((1 << 31) - 1)
         # compute permutation stat for each region in common graph
         stat_perm = self.get_stat_perm(exp=_exp,
@@ -338,6 +347,8 @@ class AnalysisGLOW(Analysis):
         del _exp
 
         # adjust
+        if verbose:
+            print(f'  [4/6] z-normalising statistics ...')
         self.z_stat = np.empty_like(self.stat)
         for perm_idx, _map_to_new in enumerate(map_to_new):
             # look up stats per region in permutation perm_idx
@@ -367,11 +378,18 @@ class AnalysisGLOW(Analysis):
                                                          children=children)
 
         # compute p-values (max stat across space)
+        if verbose:
+            print(f'  [5/6] computing FWER p-values '
+                  f'(alpha={alpha_fwer}) ...')
         self.pval = self.get_pval(stat=self.z_stat,
                                   reg_active=self.size[0, :] >= min_size)
 
         # prune significant regions (discard to make disjoint set)
         self.sig_reg_list = list(np.where(self.pval <= alpha_fwer)[0])
+        if verbose:
+            print(f'  [6/6] pruning {len(self.sig_reg_list)} significant '
+                  f'regions ({n_perm_prune} permutations, '
+                  f'alpha_prune={alpha_prune}) ...')
         reg_out_list, self.homo_pval_dict = prune(
             sig_reg_list=self.sig_reg_list,
             alpha_prune=alpha_prune,
@@ -391,6 +409,12 @@ class AnalysisGLOW(Analysis):
                                                    reg_idx=reg_idx,
                                                    pval_fwer=pval_fwer)
             self.effect_list.append(eff)
+
+        if verbose:
+            n_disc = len(self.effect_list)
+            n_pruned = len(self.sig_reg_list) - n_disc
+            print(f'  done: {n_disc} discovered, '
+                  f'{n_pruned} pruned')
 
     def _run_on_cloud(self, exp, n_perm, n_perm_adj, n_perm_prune,
                      alpha_fwer, alpha_prune, min_size, verbose,
