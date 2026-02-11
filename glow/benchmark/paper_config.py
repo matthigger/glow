@@ -7,8 +7,8 @@ from glow.benchmark.run import run_ana, run_segment
 # common params
 # run experiments serially (n_jobs=1) and keep permutations serial per experiment
 COMMON = dict(
-    n_seed=5,
-    hotel_tr_all=np.logspace(np.log10(0.005), np.log10(1.0), 5),
+    n_seed=50,
+    hotel_tr_all=np.logspace(np.log10(0.005), np.log10(1.0), 10),
     effect_perc=0.2,
     n_jobs=1,
     detail_save=False,
@@ -88,7 +88,7 @@ config_list.append(make_config('mancova_stat_wgn', 'wgn', run_ana, ana_kwargs_di
 
 # alpha_prune experiment: vary alpha_prune for tradeoff
 ana_kwargs_dict_alpha_prune = dict()
-for _alpha_prune in [.05, .15, .5]:
+for _alpha_prune in [.01, .1, .5]:
     _kwargs_glow = ANALYSES['GLOW'] | dict(alpha_prune=_alpha_prune)
     ana_kwargs_dict_alpha_prune[f'alpha_prune={_alpha_prune}'] = (
         glow.experiment.AnalysisGLOW, _kwargs_glow)
