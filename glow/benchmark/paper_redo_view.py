@@ -12,6 +12,7 @@ Usage::
 """
 
 import gzip
+import json
 
 import cloudpickle as pickle
 import numpy as np
@@ -101,11 +102,79 @@ def _print_ranking(ranking):
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: re-run and view
+# Phase 2: cache, re-run, and view
 # ---------------------------------------------------------------------------
 
-def _rerun_and_view(config_label, seed, hotel_tr, port=8050):
+_CACHE_DIR = 'redo_view'
+_MANIFEST = 'manifest.json'
+
+
+def _cache_dir():
+    return get_path_result() / _CACHE_DIR
+
+
+def _load_manifest():
+    """Load the cached manifest (lightweight, no pickles).
+
+    Returns the manifest dict or None.
+    """
+    manifest_path = _cache_dir() / _MANIFEST
+    if not manifest_path.exists():
+        return None
+    try:
+        with open(manifest_path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _load_cache():
+    """Load the cached analysis and effect from disk.
+
+    Returns (ana, effect_mask) or (None, None).
+    """
+    d = _cache_dir()
+    try:
+        with gzip.open(d / 'analysis.p.gz', 'rb') as f:
+            ana = pickle.load(f)
+        with gzip.open(d / 'effect.p.gz', 'rb') as f:
+            effect = pickle.load(f)
+        return ana, effect.mask
+    except Exception:
+        return None, None
+
+
+def _save_cache(config_label, seed, hotel_tr, exp_eff, effect, ana):
+    """Save artifacts and a manifest recording the experiment identity."""
+    out = _cache_dir()
+    out.mkdir(exist_ok=True, parents=True)
+
+    manifest = {'config': config_label, 'seed': seed, 'hotel_tr': hotel_tr}
+    with open(out / _MANIFEST, 'w') as f:
+        json.dump(manifest, f)
+
+    for name, obj in [('experiment', exp_eff),
+                      ('effect', effect),
+                      ('analysis', ana)]:
+        path = out / f'{name}.p.gz'
+        with gzip.open(path, 'wb') as f:
+            pickle.dump(obj, f)
+        print(f'  Saved {path}')
+
+
+def _rerun_and_view(config_label, seed, hotel_tr, use_cache=False,
+                    port=8050):
     """Re-run a single experiment, save artifacts, and launch viewer."""
+    # try cached result
+    if use_cache:
+        ana, effect_mask = _load_cache()
+        if ana is not None:
+            print(f'  Loading cached result ...')
+            from glow.viewer import launch
+            launch(ana, mask_target=effect_mask, port=port)
+            return
+        print('  Cache load failed, re-running ...')
+
     # determine source from config label
     if 'wgn' in config_label:
         source = 'wgn'
@@ -151,16 +220,8 @@ def _rerun_and_view(config_label, seed, hotel_tr, port=8050):
         mask_active=exp_eff.mask_idx > -1)
     print(f'  Score: f1={f1:.4f}, sens={sens:.4f}, spec={spec:.4f}')
 
-    # save artifacts to the shared results folder
-    out = get_path_result() / 'redo_view' / config_label
-    out.mkdir(exist_ok=True, parents=True)
-    for name, obj in [('experiment', exp_eff),
-                      ('effect', effect),
-                      ('analysis', ana)]:
-        path = out / f'{name}.p.gz'
-        with gzip.open(path, 'wb') as f:
-            pickle.dump(obj, f)
-        print(f'  Saved {path}')
+    # save (overwrites any previous cache)
+    _save_cache(config_label, seed, hotel_tr, exp_eff, effect, ana)
 
     # launch viewer
     from glow.viewer import launch
@@ -213,6 +274,21 @@ def main():
     ranking = _load_and_rank(config_label, top_n=20)
     _print_ranking(ranking)
 
+    # show cache hint if the last run matches a row in the ranking
+    manifest = _load_manifest()
+    cached_idx = None
+    if (manifest is not None
+            and manifest.get('config') == config_label):
+        c_seed = manifest.get('seed')
+        c_htr = manifest.get('hotel_tr')
+        for idx, (_, row) in enumerate(ranking.iterrows()):
+            if int(row['seed']) == c_seed and row['hotel_tr'] == c_htr:
+                cached_idx = idx
+                break
+        if cached_idx is not None:
+            print(f'  (last run cached: #{cached_idx}, '
+                  f'seed={c_seed}, hotel_tr={c_htr})')
+
     case = _prompt_choice('  Select a case to explore [#]: ',
                           len(ranking))
     row = ranking.iloc[case]
@@ -221,7 +297,8 @@ def main():
     print(f'  → seed={seed}, hotel_tr={hotel_tr:.4f}\n')
 
     # -- step 3: re-run & launch viewer ------------------------------------
-    _rerun_and_view(config_label, seed, hotel_tr)
+    use_cache = (cached_idx is not None and case == cached_idx)
+    _rerun_and_view(config_label, seed, hotel_tr, use_cache=use_cache)
 
 
 if __name__ == '__main__':
