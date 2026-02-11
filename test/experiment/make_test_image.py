@@ -6,10 +6,10 @@ import nibabel as nib
 import numpy as np
 from PIL import Image
 
-from hglm import __file__ as hglm_file
+from glow import __file__ as glow_file
 
-folder_hglm = pathlib.Path(hglm_file).resolve().parents[1]
-folder_test_data = folder_hglm / 'test' / 'data'
+folder_glow = pathlib.Path(glow_file).resolve().parents[1]
+folder_test_data = folder_glow / 'test' / 'data'
 
 # build some dummy data to load
 folder_test_data.mkdir(exist_ok=True)

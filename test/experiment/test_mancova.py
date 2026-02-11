@@ -1,0 +1,156 @@
+import warnings
+
+from glow.experiment import ExperimentImageOnly
+from glow.experiment.exper import NoBiasTermWarning
+from glow.experiment.mancova import *
+from glow.graph import iter_topo
+
+
+def test_get_mancova():
+    seed = 0
+    a = 2
+    b = 3
+    num_vox = 5
+    exp = ExperimentImageOnly.from_gauss(seed=seed, b=b, num_img=4, shape=(num_vox,))
+    children = np.arange(2 * num_vox - 2).reshape((-1, 2), order='C')
+
+    for add_bias in range(2):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', NoBiasTermWarning)
+            exp = exp.sample_x(a=a, seed=seed, add_bias=add_bias)
+
+            for reg_idx in iter_topo(children=children, num_leaf=num_vox):
+                vox = np.array(list(iter_topo(children=children,
+                                              num_leaf=num_vox,
+                                              node_start=reg_idx,
+                                              only_leaf=True)))
+                _y = exp.y[:, :, vox]
+
+                e_obs, h_obs, sigma = get_mancova(x=exp.x, y=_y, contrast=exp.contrast)
+
+                # slow and steady compute of e and h
+                yr = np.concatenate([exp.y[:, :, _vox] for _vox in vox], axis=1)
+                xr = np.concatenate([exp.x for _vox in vox], axis=1)
+
+                if not exp.contrast.all():
+                    # project yr into nullspace of covariates
+                    _xr = xr[~exp.contrast, :]
+                    p = np.eye(yr.shape[1]) - np.linalg.pinv(_xr) @ _xr
+                    yr = yr @ p
+                    xr = xr[exp.contrast, :] @ p
+
+                hat = yr @ np.linalg.pinv(xr) @ xr
+                err = yr - hat
+
+                h_exp = hat @ hat.T
+                e_exp = err @ err.T
+
+                # test mancova stats
+                assert np.allclose(h_obs, h_exp)
+                assert np.allclose(e_obs, e_exp)
+
+
+def test_get_hotel_tr():
+    def get_hotel_tr_trusted(e, h):
+        inv_e = np.linalg.inv(e)
+        mat = inv_e @ h
+        return np.trace(mat)
+
+    rng = np.random.default_rng(0)
+    b = 3
+    for _ in range(10):
+        e = rng.standard_normal((b, b))
+        h = rng.standard_normal((b, b))
+
+        exp = get_hotel_tr_trusted(e, h)
+        obs = get_hotel_tr(e, h)
+        assert np.isclose(exp, obs)
+
+
+def test_get_mancova_with_q_tup():
+    """test get_mancova with pre-computed q_tup"""
+    seed = 0
+    a = 2
+    b = 3
+    num_vox = 5
+    exp = ExperimentImageOnly.from_gauss(seed=seed, b=b, num_img=4, shape=(num_vox,))
+    
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', NoBiasTermWarning)
+        exp = exp.sample_x(a=a, seed=seed)
+    
+    y = exp.y[:, :, :3]  # subset of voxels
+    
+    # compute q_tup first
+    q_tup = decompose(exp.x, exp.contrast)
+    
+    # call with q_tup
+    e1, h1, sigma1 = get_mancova(y=y, q_tup=q_tup)
+    
+    # call with x
+    e2, h2, sigma2 = get_mancova(x=exp.x, y=y, contrast=exp.contrast)
+    
+    # should be identical
+    assert np.allclose(e1, e2)
+    assert np.allclose(h1, h2)
+    assert np.allclose(sigma1, sigma2)
+
+
+def test_all_stat_functions():
+    """test all MANCOVA statistics"""
+    rng = np.random.default_rng(42)
+    b = 3
+    
+    # create symmetric positive definite matrices
+    e_raw = rng.standard_normal((b, b))
+    e = e_raw @ e_raw.T + np.eye(b)  # ensure positive definite
+    
+    h_raw = rng.standard_normal((b, b))
+    h = h_raw @ h_raw.T
+    
+    # test all stats run without error
+    wilks = get_neg_wilks(e=e, h=h)
+    assert wilks <= 0  # negative wilks should be negative or zero
+    
+    pillai = get_pillai(e=e, h=h)
+    assert pillai >= 0  # pillai should be non-negative
+    
+    hotel = get_hotel_tr(e=e, h=h)
+    assert hotel >= 0  # hotelling should be non-negative
+    
+    roy = get_roys_root(e=e, h=h)
+    assert roy >= 0  # roy's root should be non-negative
+    
+    # test stat_dict
+    assert len(stat_dict) == 4
+    assert 'Wilks' in stat_dict
+    assert 'Pillai' in stat_dict
+    assert 'Hotelling Tr' in stat_dict
+    assert 'Roy Root' in stat_dict
+    
+    # test all stats via dict
+    for name, stat_func in stat_dict.items():
+        result = stat_func(e=e, h=h)
+        assert isinstance(result, (float, np.floating))
+
+
+def test_singular_matrix_errors():
+    """stat functions raise LinAlgError with diagnostic message on singular input"""
+    import pytest
+
+    # singular E (rank 1) — affects hotel_tr and roys_root
+    e_singular = np.array([[1.0, 2.0], [2.0, 4.0]])
+    h = np.eye(2)
+
+    with pytest.raises(np.linalg.LinAlgError, match='num_img'):
+        get_hotel_tr(e_singular, h)
+
+    with pytest.raises(np.linalg.LinAlgError, match='num_img'):
+        get_roys_root(e_singular, h)
+
+    # singular H + E — affects pillai
+    e_zero = np.zeros((2, 2))
+    h_singular = np.array([[1.0, 0.0], [0.0, 0.0]])
+
+    with pytest.raises(np.linalg.LinAlgError, match='num_img'):
+        get_pillai(e_zero, h_singular)

@@ -3,14 +3,13 @@ import os
 import tempfile
 from pprint import pformat
 
-from hglm import __file__ as hglm_file
-from hglm.experiment import *
-from hglm.experiment.analysis import *
-from hglm.plot import image_iter
-from hglm.plot import make_gif
+from glow import __file__ as glow_file
+from glow.experiment import *
+from glow.experiment.analysis import *
+from glow.plot import image_iter, make_gif
 
-folder_hglm = pathlib.Path(hglm_file).resolve().parents[1]
-folder_test_data = folder_hglm / 'test' / 'data'
+folder_glow = pathlib.Path(glow_file).resolve().parents[1]
+folder_test_data = folder_glow / 'test' / 'data'
 
 case = dict(mask_idx=np.arange(4).reshape((2, 2)),
             children=np.arange(6).reshape((3, 2)),
@@ -63,9 +62,9 @@ def test_make_gif():
     exp = ExperimentImageOnly.from_search(folder=folder_test_data,
                                           sbj_regex='squares_test.png',
                                           img_glob_dict={'color': '*test.png'})
-    exp.bootstrap_img(n=10, noise_scale=0, seed=0)
-    exp = exp.sample_x(a=2, seed=0)
-    children = AnalysisHGLM.cluster(exp=exp)
+    exp = exp.bootstrap_img(n=10, noise_scale=0, seed=0)
+    exp = exp.sample_x(a=2, seed=0, add_bias=True)
+    children = cluster(exp=exp)
 
     file_obs = tempfile.NamedTemporaryFile(suffix='.gif').name
     file_exp = folder_test_data / 'squares_test_cluster.gif'
