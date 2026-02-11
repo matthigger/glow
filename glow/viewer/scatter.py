@@ -12,6 +12,16 @@ import plotly.graph_objects as go
 # columns where a log scale is the sensible default
 _LOG_COLS = {'n_voxel', 'hotel_tr', 'vox_in_target', 'vox_out_target'}
 
+# estimate_state -> (plotly symbol, default color, legend label)
+_STATE_STYLE = {
+    'no_effect':    ('circle',        'steelblue', 'no effect'),
+    'partial':      ('triangle-down', 'orange',    'partial effect (pruned)'),
+    'full_effect':  ('diamond',       'green',     'full effect'),
+    'multi_effect': ('triangle-up',   'red',       '> 1 effect (pruned)'),
+}
+# display order for legend entries
+_STATE_ORDER = ['no_effect', 'partial', 'full_effect', 'multi_effect']
+
 # threshold lines drawn on pval axes:
 #   column -> (analysis attribute name, line style)
 _PVAL_THRESHOLD_MAP = {
@@ -70,8 +80,7 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
     y = _df[y_feat].values
     no_color = (color_feat == '__none__')
     color = None if no_color else _df[color_feat].values
-    is_sig = _df['significant'].values
-    is_disc = _df['discovered'].values
+    states = _df['estimate_state'].values
 
     fig = go.Figure()
 
@@ -90,6 +99,9 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
             hoverinfo='skip',
             showlegend=False,
         ))
+
+    # --- per-point symbols from estimate_state ---
+    symbols = np.array([_STATE_STYLE[s][0] for s in states])
 
     # --- build hover text ---
     hover_cols = ['region_idx', 'n_voxel', 'z_stat', 'hotel_tr', 'pval_fwer']
@@ -111,18 +123,14 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
                 continue
             else:
                 parts.append(f'{c}: {v:.4g}')
-        if row['significant']:
-            if row['discovered']:
-                parts.append('<b>estimated effect</b>')
-            else:
-                parts.append('<i>pruned</i>')
+        state = row['estimate_state']
+        if state != 'no_effect':
+            label = _STATE_STYLE[state][2]
+            parts.append(f'<b>{label}</b>')
         hover_text.append('<br>'.join(parts))
 
-    # --- marker shape: square for significant, circle for non-significant ---
-    reg_indices = _df['region_idx'].values
-    symbols = np.where(is_sig, 'square', 'circle')
-
     # --- marker sizing: larger when selected ---
+    reg_indices = _df['region_idx'].values
     is_selected = np.isin(reg_indices, list(selected_reg))
     marker_size = np.where(is_selected, 14, 7)
     marker_line_width = np.where(is_selected, 2, 0)
@@ -130,10 +138,12 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
 
     # --- main scatter ---
     if no_color:
+        # each state gets its own colour
+        pt_colors = np.array([_STATE_STYLE[s][1] for s in states])
         marker_kwargs = dict(
             size=marker_size,
             symbol=symbols,
-            color='steelblue',
+            color=pt_colors,
             showscale=False,
             line=dict(width=marker_line_width, color=marker_line_color),
         )
@@ -143,7 +153,8 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
             symbol=symbols,
             color=color,
             colorscale='Viridis',
-            colorbar=dict(title=color_feat, x=1.02, len=0.75, y=0.5),
+            colorbar=dict(title=color_feat, x=1.02, len=0.5, y=0.15,
+                         yanchor='bottom'),
             showscale=True,
             line=dict(width=marker_line_width, color=marker_line_color),
         )
@@ -158,42 +169,17 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
         showlegend=False,
     ))
 
-    # --- estimated effect markers (discovered -- thin green circle outline) ---
-    disc = _df[_df['discovered']]
-    if len(disc):
+    # --- legend-only traces for each estimate state ---
+    for state_key in _STATE_ORDER:
+        symbol, default_color, label = _STATE_STYLE[state_key]
         fig.add_trace(go.Scatter(
-            x=disc[x_feat].values,
-            y=disc[y_feat].values,
+            x=[None], y=[None],
             mode='markers',
-            marker=dict(
-                size=12,
-                symbol='circle-open',
-                color='green',
-                line=dict(width=1.5, color='green'),
-            ),
-            customdata=disc['region_idx'].values,
-            hoverinfo='skip',
+            marker=dict(size=10, symbol=symbol, color=default_color),
             showlegend=True,
-            name='estimated effect',
-        ))
-
-    # --- pruned markers (significant but not discovered -> thin red x) ---
-    pruned = _df[_df['significant'] & ~_df['discovered']]
-    if len(pruned):
-        fig.add_trace(go.Scatter(
-            x=pruned[x_feat].values,
-            y=pruned[y_feat].values,
-            mode='markers',
-            marker=dict(
-                size=8,
-                symbol='x-thin',
-                color='rgba(0,0,0,0)',
-                line=dict(width=0.5, color='red'),
-            ),
-            customdata=pruned['region_idx'].values,
-            hoverinfo='skip',
-            showlegend=True,
-            name='pruned',
+            name=label,
+            legendgroup='estimate',
+            legendgrouptitle_text='region estimations:',
         ))
 
     # --- axis scales ---
@@ -211,7 +197,8 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
         yaxis_title=y_feat,
         height=500,
         margin=dict(l=60, r=80, t=30, b=50),
-        legend=dict(x=1.02, y=1.0, xanchor='left', yanchor='top'),
+        legend=dict(x=1.02, y=1.0, xanchor='left', yanchor='top',
+                    tracegroupgap=5),
         hoverlabel=dict(bgcolor='white'),
         plot_bgcolor='white',
     )

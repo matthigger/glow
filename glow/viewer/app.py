@@ -105,9 +105,9 @@ def _make_layout_3d(core_cols, mask_cols, slicer0, slicer1, slicer2):
     all_cols = core_cols + mask_cols
 
     default_x = 'n_voxel' if 'n_voxel' in all_cols else all_cols[0]
-    default_y = 'pval_fwer' if 'pval_fwer' in all_cols else all_cols[
+    default_y = 'z_stat' if 'z_stat' in all_cols else all_cols[
         min(1, len(all_cols) - 1)]
-    default_color = 'z_stat' if 'z_stat' in all_cols else all_cols[0]
+    default_color = '__none__'
 
     return html.Div([
         # --- HEADER ---
@@ -180,9 +180,9 @@ def _make_layout_2d(core_cols, mask_cols, bg_names):
     all_cols = core_cols + mask_cols
 
     default_x = 'n_voxel' if 'n_voxel' in all_cols else all_cols[0]
-    default_y = 'pval_fwer' if 'pval_fwer' in all_cols else all_cols[
+    default_y = 'z_stat' if 'z_stat' in all_cols else all_cols[
         min(1, len(all_cols) - 1)]
-    default_color = 'z_stat' if 'z_stat' in all_cols else all_cols[0]
+    default_color = '__none__'
 
     return html.Div([
         # --- HEADER ---
