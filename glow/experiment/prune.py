@@ -5,7 +5,7 @@ import numpy as np
 from glow.experiment.permute import NotEnoughPermutations
 from .mancova import decompose, get_mancova
 from .permute import get_perm_iter
-from ..graph import get_label_map, SCGraph, GRAPH_EXCLUDE
+from ..graph import get_label_map, get_parent, iter_topo, SCGraph, GRAPH_EXCLUDE
 
 
 def get_llr(label_map, exp, _q_tup=None, _skip_homo=False):
@@ -148,3 +148,61 @@ def prune(sig_reg_list, children, exp, n_perm=300, alpha_prune=.05):
     reg_out_list = np.where(subgraph.included & no_parent)[0]
 
     return reg_out_list, homo_pval_dict
+
+
+def prune_greedy(sig_reg_list, children, num_leaf, stat_adj):
+    """Greedy pruning: select significant regions by largest adjusted stat.
+
+    Iteratively picks the significant region with the highest adjusted
+    statistic, adds it to the output, and removes all regions that
+    share voxels with it (ancestors and descendants in the hierarchy).
+
+    Args:
+        sig_reg_list (list): region indices declared significant
+        children (np.array): (num_leaf - 1, 2) child index pairs
+        num_leaf (int): number of leaf nodes (voxels)
+        stat_adj (np.array): (num_reg,) adjusted statistic for perm 0
+
+    Returns:
+        reg_out_list (list): indices of selected regions (sorted)
+    """
+    if not len(sig_reg_list):
+        return []
+
+    # build parent lookup and descendant sets
+    parent = get_parent(children, num_leaf)
+
+    # for each significant region, collect all descendants
+    sig_set = set(sig_reg_list)
+    desc = {}  # reg_idx -> set of descendants (including self)
+    for reg in sig_set:
+        desc[reg] = set(iter_topo(children=children, num_leaf=num_leaf,
+                                  node_start=reg))
+
+    # for each significant region, collect all ancestors
+    anc = {}
+    for reg in sig_set:
+        ancestors = set()
+        node = reg
+        while True:
+            p = parent[node]
+            if p == -1:
+                break
+            ancestors.add(p)
+            node = p
+        anc[reg] = ancestors
+
+    # sort significant regions by adjusted stat (descending)
+    candidates = sorted(sig_set, key=lambda r: stat_adj[r], reverse=True)
+
+    selected = []
+    removed = set()
+    for reg in candidates:
+        if reg in removed:
+            continue
+        selected.append(reg)
+        # remove all regions that share voxels (ancestors + descendants)
+        overlap = (desc[reg] | anc[reg]) & sig_set
+        removed |= overlap
+
+    return sorted(selected)
