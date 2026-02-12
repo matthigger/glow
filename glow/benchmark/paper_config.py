@@ -33,7 +33,6 @@ N_JOBS_PERM = 1
 
 ANALYSES = {
     'GLOW': dict(n_perm=N_PERM,
-                 n_perm_adj=25,
                  n_perm_prune=100,
                  min_size=1,
                  alpha_prune=0.05,

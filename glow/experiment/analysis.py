@@ -214,14 +214,13 @@ class AnalysisGLOW(Analysis):
     # how often to persist a checkpoint (every N permutations)
     _CHECKPOINT_INTERVAL = 25
 
-    def __init__(self, exp, n_perm, n_perm_adj=10, n_perm_prune=100,
+    def __init__(self, exp, n_perm, n_perm_prune=100,
                  alpha_fwer=.05, alpha_prune=.05, min_size=1, verbose=False,
                  n_jobs_perm=1, cloud_config=None, checkpoint=None, **kwargs):
         """
         Args:
             exp: Experiment to analyze
             n_perm: Number of permutations
-            n_perm_adj: Number of adjustment permutations
             n_perm_prune: Number of pruning permutations
             alpha_fwer: Family-wise error rate
             alpha_prune: Pruning alpha
@@ -232,12 +231,15 @@ class AnalysisGLOW(Analysis):
             checkpoint: optional object with load/save/delete methods for
                 resuming interrupted runs. only used in the serial path.
         """
+        # silently ignore legacy n_perm_adj if passed via **kwargs
+        kwargs.pop('n_perm_adj', None)
+
         super().__init__(exp, **kwargs)
         self.verbose = verbose
 
         # check if running on cloud
         if cloud_config is not None:
-            self._run_on_cloud(exp, n_perm, n_perm_adj, n_perm_prune,
+            self._run_on_cloud(exp, n_perm, n_perm_prune,
                               alpha_fwer, alpha_prune, min_size, verbose,
                               cloud_config, **kwargs)
             return
@@ -281,7 +283,7 @@ class AnalysisGLOW(Analysis):
         
         # run permutations (parallel or serial)
         if verbose:
-            print(f'  [1/6] clustering {n_perm + 1 - start_perm} '
+            print(f'  [1/4] clustering {n_perm + 1 - start_perm} '
                   f'permutations ({num_vox} voxels, {num_reg} regions) ...')
         if n_jobs_perm not in (0, 1):
             # parallel execution (no checkpointing support)
@@ -314,80 +316,110 @@ class AnalysisGLOW(Analysis):
             checkpoint.delete()
 
         # finalize analysis (common to local and cloud execution)
-        self._finalize_analysis(exp, n_perm, n_perm_adj, n_perm_prune,
+        self._finalize_analysis(exp, n_perm, n_perm_prune,
                                alpha_fwer, alpha_prune, min_size)
 
-    def _finalize_analysis(self, exp, n_perm, n_perm_adj, n_perm_prune,
+    @staticmethod
+    def _wls_fit(X, y, w):
+        """Weighted least squares via sqrt-weight transformation."""
+        sw = np.sqrt(w)[:, np.newaxis]
+        beta, _, _, _ = np.linalg.lstsq(X * sw, y * sw.ravel(), rcond=None)
+        return beta
+
+    def _fit_size_regression(self, verbose=False):
+        """Fit power-law mean model on permutation (null) data.
+
+        Model:
+            ln(stat) = a + b * ln(size)
+
+        The adjustment is a simple subtraction: the adjusted stat is
+        the log-space residual after removing the expected mean:
+
+            hotel_tr_adjusted = ln(stat) - (a + b * ln(size))
+
+        All fits are weighted by region size.
+
+        Stores self.adj_mu_beta = [a, b] on the object.
+
+        Returns:
+            mu_log_fn: callable(size_array) -> predicted E[ln(stat)]
+        """
+        # pool null data: all permutations except perm_idx=0
+        sizes = self.size[1:, :].ravel().astype(float)
+        stats = self.stat[1:, :].ravel().astype(float)
+
+        # filter: need positive stat for log
+        valid = (np.isfinite(stats) & (stats > 0)
+                 & (sizes > 0) & np.isfinite(sizes))
+        s, y, w = sizes[valid], stats[valid], sizes[valid]
+        log_s = np.log(s)
+        log_y = np.log(y)
+
+        # --- power-law mean model: ln(stat) = a + b*ln(size) ---
+        X = np.column_stack([np.ones(len(s)), log_s])
+        mu_beta = self._wls_fit(X, log_y, w)
+        self.adj_mu_beta = mu_beta
+
+        def mu_log_fn(sz, b=mu_beta):
+            ls = np.log(np.maximum(sz, 1.0))
+            return b[0] + b[1] * ls
+
+        if verbose:
+            print(f'    power-law: ln(stat) = {mu_beta[0]:.4f} '
+                  f'+ {mu_beta[1]:.4f} * ln(size)')
+
+        return mu_log_fn
+
+    def _finalize_analysis(self, exp, n_perm, n_perm_prune,
                           alpha_fwer, alpha_prune, min_size):
-        """post-process after permutations: merge graphs, z-normalise, prune."""
+        """post-process: size-regression adjustment, FWER p-values, prune."""
         verbose = getattr(self, 'verbose', False)
         b, num_img, num_vox = exp.y.shape
         num_reg = num_vox * 2 - 1
 
-        # merge all graphs (many nodes are repeated across permutations above,
-        # we adjust them all by same mu and std to minimize computation)
-        if verbose:
-            print(f'  [2/6] merging {n_perm + 1} hierarchies ...')
-        # use perm index order so local and cloud match (cloud fills child_dict in arbitrary S3 order)
-        children_list = [self.child_dict[i] for i in range(n_perm + 1)]
-        map_to_new, children, _ = glow.graph.graph_merge(
-            n_common=num_vox,
-            children_list=children_list)
-
-        # to ensure each of these permuted stats is new, we run one
-        # permutation ahead of time
-        if verbose:
-            print(f'  [3/6] computing adjustment stats '
-                  f'({n_perm_adj} extra permutations) ...')
-        _exp = exp.permute((1 << 31) - 1)
-        # compute permutation stat for each region in common graph
-        stat_perm = self.get_stat_perm(exp=_exp,
-                                       children=children,
-                                       n_perm=n_perm_adj)
-        del _exp
-
-        # adjust
-        if verbose:
-            print(f'  [4/6] z-normalising statistics ...')
-        self.z_stat = np.empty_like(self.stat)
-        for perm_idx, _map_to_new in enumerate(map_to_new):
-            # look up stats per region in permutation perm_idx
-            _stat_perm = np.concatenate((stat_perm[:, :num_vox],
-                                         stat_perm[:, _map_to_new]), axis=1)
-            mu = _stat_perm.mean(axis=0)
-            std = _stat_perm.std(axis=0)
-            with np.errstate(divide='ignore', invalid='ignore'):
-                self.z_stat[perm_idx, :] = np.where(
-                    std > 0,
-                    (self.stat[perm_idx, :] - mu) / std,
-                    0.0)
-            if perm_idx == 0:
-                # store H0 null distribution parameters (for viewer)
-                self.stat_mu = mu
-                self.stat_std = std
-
-        # store analysis thresholds (for viewer)
-        self.alpha_fwer = alpha_fwer
-        self.alpha_prune = alpha_prune
-
-        # compute sizes of each region
+        # compute sizes of each region (needed before regression)
         self.size = np.empty((n_perm + 1, num_reg))
         for perm_idx, children in self.child_dict.items():
             self.size[perm_idx, :] = glow.graph.node_sum(x=np.ones(num_vox,
                                                                    dtype=int),
                                                          children=children)
 
-        # compute p-values (max stat across space)
+        # fit power-law mean model on null (permuted) data
         if verbose:
-            print(f'  [5/6] computing FWER p-values '
+            print(f'  [2/4] fitting power-law model '
+                  f'(ln(stat) ~ a + b*ln(size), '
+                  f'{n_perm} permutations) ...')
+        mu_log_fn = self._fit_size_regression(verbose=verbose)
+
+        # compute adjusted stat: subtract expected log-mean
+        if verbose:
+            print(f'  [3/4] computing adjusted stats + FWER p-values '
                   f'(alpha={alpha_fwer}) ...')
-        self.pval = self.get_pval(stat=self.z_stat,
+        self.hotel_tr_adjusted = np.empty_like(self.stat)
+        for p in range(n_perm + 1):
+            sz = self.size[p, :].astype(float)
+            raw = self.stat[p, :]
+            mu_log = mu_log_fn(sz)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                log_stat = np.where(raw > 0, np.log(raw), -np.inf)
+                self.hotel_tr_adjusted[p, :] = log_stat - mu_log
+            # regions with stat <= 0 get -inf; clamp to a large negative
+            self.hotel_tr_adjusted[p, :] = np.nan_to_num(
+                self.hotel_tr_adjusted[p, :], nan=0.0, posinf=0.0,
+                neginf=-30.0)
+
+        # store analysis thresholds (for viewer)
+        self.alpha_fwer = alpha_fwer
+        self.alpha_prune = alpha_prune
+
+        # compute p-values (max stat across space)
+        self.pval = self.get_pval(stat=self.hotel_tr_adjusted,
                                   reg_active=self.size[0, :] >= min_size)
 
         # prune significant regions (discard to make disjoint set)
         self.sig_reg_list = list(np.where(self.pval <= alpha_fwer)[0])
         if verbose:
-            print(f'  [6/6] pruning {len(self.sig_reg_list)} significant '
+            print(f'  [4/4] pruning {len(self.sig_reg_list)} significant '
                   f'regions ({n_perm_prune} permutations, '
                   f'alpha_prune={alpha_prune}) ...')
         reg_out_list, self.homo_pval_dict = prune(
@@ -416,7 +448,7 @@ class AnalysisGLOW(Analysis):
             print(f'  done: {n_disc} discovered, '
                   f'{n_pruned} pruned')
 
-    def _run_on_cloud(self, exp, n_perm, n_perm_adj, n_perm_prune,
+    def _run_on_cloud(self, exp, n_perm, n_perm_prune,
                      alpha_fwer, alpha_prune, min_size, verbose,
                      cloud_config, **kwargs):
         """run permutation processing on AWS Batch and finish locally."""
@@ -431,7 +463,6 @@ class AnalysisGLOW(Analysis):
         # prepare analysis kwargs (without cloud_config)
         ana_kwargs = {
             'get_stat': self.get_stat,
-            'n_perm_adj': n_perm_adj,
             'n_perm_prune': n_perm_prune,
             'alpha_fwer': alpha_fwer,
             'alpha_prune': alpha_prune,
@@ -489,7 +520,7 @@ class AnalysisGLOW(Analysis):
         
         # complete analysis locally using shared finalization method
         print('completing analysis locally...')
-        self._finalize_analysis(exp, n_perm, n_perm_adj, n_perm_prune,
+        self._finalize_analysis(exp, n_perm, n_perm_prune,
                                alpha_fwer, alpha_prune, min_size)
         
         print(f'cloud analysis complete: found {len(self.effect_list)} effects')
