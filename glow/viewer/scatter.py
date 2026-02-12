@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 
 # columns where a log scale is the sensible default
 _LOG_COLS = {'n_voxel', 'hotel_tr', 'vox_in_target', 'vox_out_target'}
+_ADJ_COL = 'hotel_tr_adjusted'
 
 # estimate_state -> (plotly symbol, default color, legend label)
 _STATE_STYLE = {
@@ -30,8 +31,8 @@ _PVAL_THRESHOLD_MAP = {
 }
 
 
-def _compute_z_thresh(ana_glow):
-    """Compute the z_stat value corresponding to alpha_fwer.
+def _compute_adj_thresh(ana_glow):
+    """Compute the hotel_tr_adjusted value corresponding to alpha_fwer.
 
     This is the (1 - alpha_fwer) quantile of the per-permutation
     max-statistic distribution used by the Westfall-Young procedure.
@@ -46,14 +47,19 @@ def _compute_z_thresh(ana_glow):
     if not active.any():
         return None
 
-    stat_max = np.sort(np.nanmax(ana_glow.z_stat[:, active], axis=1))
+    stat = getattr(ana_glow, 'hotel_tr_adjusted', None)
+    if stat is None:
+        return None
+
+    stat_max = np.sort(np.nanmax(stat[:, active], axis=1))
     idx = int((1 - alpha) * len(stat_max))
     idx = min(idx, len(stat_max) - 1)
     return float(stat_max[idx])
 
 
 def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
-                  selected_reg=None, plot_tree=True):
+                  selected_reg=None, plot_tree=True,
+                  log_y=False):
     """Build an interactive Plotly scatter figure.
 
     Args:
@@ -64,6 +70,7 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
         color_feat (str): column name for color
         selected_reg (set): currently selected region indices (highlighted)
         plot_tree (bool): whether to draw hierarchy edges
+        log_y (bool): apply log scale to y axis
 
     Returns:
         fig (go.Figure): Plotly figure with clickable scatter
@@ -104,7 +111,8 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
     symbols = np.array([_STATE_STYLE[s][0] for s in states])
 
     # --- build hover text ---
-    hover_cols = ['region_idx', 'n_voxel', 'z_stat', 'hotel_tr', 'pval_fwer']
+    hover_cols = ['region_idx', 'n_voxel', 'hotel_tr', 'hotel_tr_adjusted',
+                  'pval_fwer']
     for c in ('pval_homo', 'f1', 'sens', 'spec', 'vox_in_target',
               'vox_out_target', 'hotel_tr_mu_h0', 'hotel_tr_std_h0'):
         if c in _df.columns and not _df[c].isna().all():
@@ -183,10 +191,15 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
         ))
 
     # --- axis scales ---
+    # x: auto-log for size/count columns
     if x_feat in _LOG_COLS:
         fig.update_xaxes(type='log')
-    if y_feat in _LOG_COLS:
+    # y: user-controlled toggle
+    if log_y:
         fig.update_yaxes(type='log')
+
+    # --- model overlay (hotel_tr on y vs n_voxel on x) ---
+    _add_model_overlay(fig, ana_glow, x_feat, y_feat)
 
     # --- threshold reference lines ---
     _add_threshold_lines(fig, ana_glow, x_feat, y_feat)
@@ -206,6 +219,60 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
     fig.update_yaxes(showgrid=True, gridcolor='#eee')
 
     return fig
+
+
+def _add_model_overlay(fig, ana_glow, x_feat, y_feat):
+    """Add power-law fit line when hotel_tr is on the y-axis vs n_voxel.
+
+    Shows the back-transformed model mean and annotates the equation.
+    Only drawn when y=hotel_tr and x=n_voxel.
+    """
+    mu_beta = getattr(ana_glow, 'adj_mu_beta', None)
+    if mu_beta is None:
+        return
+
+    # only show when hotel_tr on y, n_voxel on x
+    if y_feat != 'hotel_tr' or x_feat != 'n_voxel':
+        return
+
+    # size range for the model line (log-spaced)
+    sizes = ana_glow.size[0, :].astype(float)
+    sizes = sizes[sizes > 0]
+    if len(sizes) == 0:
+        return
+    sz = np.logspace(np.log10(max(sizes.min(), 1)),
+                     np.log10(sizes.max()), 200)
+
+    # compute predicted mean in original space
+    log_sz = np.log(np.maximum(sz, 1.0))
+    mu_log = mu_beta[0] + mu_beta[1] * log_sz
+    mean_line = np.exp(mu_log)
+
+    # fit line (no legend entry)
+    fig.add_trace(go.Scatter(
+        x=sz, y=mean_line,
+        mode='lines',
+        line=dict(color='rgba(200,0,0,0.6)', width=2, dash='dash'),
+        showlegend=False,
+        hoverinfo='skip',
+    ))
+
+    # equation annotation
+    eq_text = (f'log hotel_tr = {mu_beta[0]:.3f} '
+               f'{"+" if mu_beta[1] >= 0 else ""}'
+               f'{mu_beta[1]:.3f} log n_voxel')
+    fig.add_annotation(
+        text=eq_text,
+        xref='paper', yref='paper',
+        x=0.02, y=0.02,
+        showarrow=False,
+        font=dict(size=11, color='rgba(200,0,0,0.8)',
+                  family='monospace'),
+        bgcolor='rgba(255,255,255,0.8)',
+        bordercolor='rgba(200,0,0,0.3)',
+        borderwidth=1,
+        borderpad=4,
+    )
 
 
 def _add_threshold_lines(fig, ana_glow, x_feat, y_feat):
@@ -229,17 +296,18 @@ def _add_threshold_lines(fig, ana_glow, x_feat, y_feat):
                           annotation_text=label,
                           annotation_position='right')
 
-    # --- z_stat axis: draw alpha_fwer line in z-space ---
-    if alpha_fwer is not None and ('z_stat' in (x_feat, y_feat)):
-        z_thresh = _compute_z_thresh(ana_glow)
-        if z_thresh is not None:
+    # --- hotel_tr_adjusted axis: draw alpha_fwer line ---
+    if alpha_fwer is not None and (
+            'hotel_tr_adjusted' in (x_feat, y_feat)):
+        adj_thresh = _compute_adj_thresh(ana_glow)
+        if adj_thresh is not None:
             style = dict(color='red', dash='dot', width=1.5)
             label = f'alpha_fwer={alpha_fwer}'
-            if x_feat == 'z_stat':
-                fig.add_vline(x=z_thresh, line=style,
+            if x_feat == 'hotel_tr_adjusted':
+                fig.add_vline(x=adj_thresh, line=style,
                               annotation_text=label,
                               annotation_position='top')
-            if y_feat == 'z_stat':
-                fig.add_hline(y=z_thresh, line=style,
+            if y_feat == 'hotel_tr_adjusted':
+                fig.add_hline(y=adj_thresh, line=style,
                               annotation_text=label,
                               annotation_position='right')

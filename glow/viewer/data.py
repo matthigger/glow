@@ -9,6 +9,11 @@ import pandas as pd
 import glow.graph
 
 
+def _get_adjusted_stat(ana_glow):
+    """Return the adjusted stat array (hotel_tr_adjusted)."""
+    return ana_glow.hotel_tr_adjusted
+
+
 def prep_df(ana_glow, mask_target=None):
     """Build a DataFrame with one row per region (unpermuted only).
 
@@ -28,7 +33,7 @@ def prep_df(ana_glow, mask_target=None):
         'region_idx': np.arange(num_reg),
         'n_voxel': ana_glow.size[0, :].astype(int),
         'hotel_tr': ana_glow.stat[0, :],
-        'z_stat': ana_glow.z_stat[0, :],
+        'hotel_tr_adjusted': _get_adjusted_stat(ana_glow)[0, :],
         'pval_fwer': ana_glow.pval,
     }
 

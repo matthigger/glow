@@ -100,14 +100,44 @@ def _region_panel():
               'borderRight': '1px solid #ddd', 'flexShrink': '0'})
 
 
+def _defaults(core_cols, mask_cols):
+    """Compute default dropdown values and log-toggle state."""
+    from .scatter import _LOG_COLS
+    all_cols = core_cols + mask_cols
+    default_x = 'n_voxel' if 'n_voxel' in all_cols else all_cols[0]
+    default_y = ('hotel_tr_adjusted' if 'hotel_tr_adjusted' in all_cols
+                 else all_cols[min(1, len(all_cols) - 1)])
+    log_y_default = default_y in _LOG_COLS
+    return all_cols, default_x, default_y, log_y_default
+
+
+def _controls_row(core_cols, mask_cols, default_x, default_y, log_y_default):
+    """Build the dropdowns + Log Y toggle row."""
+    return html.Div([
+        _dropdown('dd-x', core_cols, mask_cols, default_x, 'X feature'),
+        _dropdown('dd-y', core_cols, mask_cols, default_y, 'Y feature'),
+        _dropdown('dd-color', core_cols, mask_cols, '__none__',
+                  'Color', none_option=True),
+        html.Div([
+            dcc.Checklist(
+                id='log-toggles',
+                options=[
+                    {'label': ' Log Y', 'value': 'log_y'},
+                ],
+                value=['log_y'] if log_y_default else [],
+                inline=True,
+                style={'fontSize': '13px', 'marginTop': '18px'},
+                inputStyle={'marginRight': '4px'},
+            ),
+        ], style={'minWidth': '70px', 'display': 'flex',
+                  'flexDirection': 'column', 'justifyContent': 'center'}),
+    ], style={'display': 'flex', 'padding': '10px 20px',
+              'flexWrap': 'wrap'})
+
+
 def _make_layout_3d(core_cols, mask_cols, slicer0, slicer1, slicer2):
     """Build layout for 3D data (with dash-slicer ortho views)."""
-    all_cols = core_cols + mask_cols
-
-    default_x = 'n_voxel' if 'n_voxel' in all_cols else all_cols[0]
-    default_y = 'z_stat' if 'z_stat' in all_cols else all_cols[
-        min(1, len(all_cols) - 1)]
-    default_color = '__none__'
+    all_cols, default_x, default_y, log_val = _defaults(core_cols, mask_cols)
 
     return html.Div([
         # --- HEADER ---
@@ -117,14 +147,8 @@ def _make_layout_3d(core_cols, mask_cols, slicer0, slicer1, slicer2):
         ], style={'padding': '12px 20px', 'borderBottom': '2px solid #333',
                   'background': '#fafafa'}),
 
-        # --- DROPDOWNS ---
-        html.Div([
-            _dropdown('dd-x', core_cols, mask_cols, default_x, 'X feature'),
-            _dropdown('dd-y', core_cols, mask_cols, default_y, 'Y feature'),
-            _dropdown('dd-color', core_cols, mask_cols, default_color,
-                      'Color', none_option=True),
-        ], style={'display': 'flex', 'padding': '10px 20px',
-                  'flexWrap': 'wrap'}),
+        # --- DROPDOWNS + LOG TOGGLES ---
+        _controls_row(core_cols, mask_cols, default_x, default_y, log_val),
 
         # --- SCATTER PLOT ---
         html.Div([
@@ -177,12 +201,7 @@ def _make_layout_3d(core_cols, mask_cols, slicer0, slicer1, slicer2):
 
 def _make_layout_2d(core_cols, mask_cols, bg_names):
     """Build layout for 2D data (single go.Image view)."""
-    all_cols = core_cols + mask_cols
-
-    default_x = 'n_voxel' if 'n_voxel' in all_cols else all_cols[0]
-    default_y = 'z_stat' if 'z_stat' in all_cols else all_cols[
-        min(1, len(all_cols) - 1)]
-    default_color = '__none__'
+    all_cols, default_x, default_y, log_val = _defaults(core_cols, mask_cols)
 
     return html.Div([
         # --- HEADER ---
@@ -192,14 +211,8 @@ def _make_layout_2d(core_cols, mask_cols, bg_names):
         ], style={'padding': '12px 20px', 'borderBottom': '2px solid #333',
                   'background': '#fafafa'}),
 
-        # --- DROPDOWNS ---
-        html.Div([
-            _dropdown('dd-x', core_cols, mask_cols, default_x, 'X feature'),
-            _dropdown('dd-y', core_cols, mask_cols, default_y, 'Y feature'),
-            _dropdown('dd-color', core_cols, mask_cols, default_color,
-                      'Color', none_option=True),
-        ], style={'display': 'flex', 'padding': '10px 20px',
-                  'flexWrap': 'wrap'}),
+        # --- DROPDOWNS + LOG TOGGLES ---
+        _controls_row(core_cols, mask_cols, default_x, default_y, log_val),
 
         # --- SCATTER PLOT ---
         html.Div([
@@ -428,12 +441,16 @@ def _register_scatter_callback(app, df, ana_glow):
         [Input('dd-x', 'value'),
          Input('dd-y', 'value'),
          Input('dd-color', 'value'),
-         Input('store-selected', 'data')],
+         Input('store-selected', 'data'),
+         Input('log-toggles', 'value')],
     )
-    def update_scatter(x_feat, y_feat, color_feat, selected_json):
+    def update_scatter(x_feat, y_feat, color_feat, selected_json,
+                       log_toggles):
         selected = set(json.loads(selected_json))
+        log_toggles = log_toggles or []
         return build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
-                             selected_reg=selected)
+                             selected_reg=selected,
+                             log_y='log_y' in log_toggles)
 
 
 def _register_selection_callback(app, ana_glow):

@@ -138,16 +138,17 @@ def image_iter(children, mask_idx, num_vox):
 
 def prep_df(ana_glow, mask_target=None):
     df_list = list()
-    for perm_idx, (hotel_tr, z, size) in enumerate(zip(ana_glow.stat,
-                                                       ana_glow.z_stat,
-                                                       ana_glow.size)):
+    _adj = ana_glow.hotel_tr_adjusted
+    for perm_idx, (hotel_tr, adj, size) in enumerate(zip(ana_glow.stat,
+                                                         _adj,
+                                                         ana_glow.size)):
         children = ana_glow.child_dict[perm_idx]
         d = {'region idx': np.arange(size.size),
              'hotel_tr': hotel_tr,
-             'Z-stat': z,
+             'hotel_tr_adjusted': adj,
              'size (voxels)': size,
              'permutation': perm_idx,
-             'discovered': np.zeros(z.shape, dtype=bool)}
+             'discovered': np.zeros(adj.shape, dtype=bool)}
 
         if not perm_idx:
             # add stats specific to unpermuted data
@@ -227,7 +228,7 @@ def scatter_size_vs_stat(analysis, y_feat, mask=None, min_size=1):
 
 
 def scatter_plotly(ana_glow, mask_target=None, x_feat='size (voxels)',
-                   y_feat='Z-stat', color_feat='dice',
+                   y_feat='F-stat', color_feat='dice',
                    plot_permute=True, plot_tree=True, log_x=True, log_y=True):
     """
 
@@ -261,7 +262,7 @@ def scatter_plotly(ana_glow, mask_target=None, x_feat='size (voxels)',
             tree_y += [y[c], y[par], None]
 
     hover_data = {'size (voxels)': ':.0f',
-                  'Z-stat': ':.3e',
+                  'F-stat': ':.3e',
                   'hotel_tr': ':.3e'}
     hover_data_permuted = {'permutation': ':.0f',
                            'region idx': ':.0f'}
