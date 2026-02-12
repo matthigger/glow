@@ -9,6 +9,7 @@ Usage:
 """
 import argparse
 import time
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -189,6 +190,12 @@ def main():
         frames.append(df)
 
     df_all = pd.concat(frames, ignore_index=True)
+
+    # save raw results
+    out_csv = Path(__file__).with_name('compare_pruning_results.csv')
+    df_all.to_csv(out_csv, index=False)
+    print(f'\nResults saved to {out_csv}')
+
     summarise(df_all)
 
 
