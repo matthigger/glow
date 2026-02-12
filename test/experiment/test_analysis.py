@@ -68,7 +68,6 @@ class TestBigEffect:
         analysis = AnalysisGLOW(
             TestBigEffect.exp, 
             n_perm=10,
-            n_perm_adj=15,
             alpha_fwer=.1
         )
         
@@ -224,12 +223,12 @@ class TestZeroStdGuard:
                                    hotel_tr=1.5)
 
         analysis = AnalysisGLOW(exp, n_perm=5, alpha_fwer=0.05,
-                                n_perm_adj=3, min_size=1)
+                                min_size=1)
 
-        assert not np.any(np.isinf(analysis.z_stat)), \
-            'z_stat contains inf (likely zero-std division)'
-        assert not np.any(np.isnan(analysis.z_stat)), \
-            'z_stat contains nan (likely zero-std division)'
+        assert not np.any(np.isinf(analysis.hotel_tr_adjusted)), \
+            'hotel_tr_adjusted contains inf (likely zero-std division)'
+        assert not np.any(np.isnan(analysis.hotel_tr_adjusted)), \
+            'hotel_tr_adjusted contains nan (likely zero-std division)'
 
 
 class TestNaNHandling:

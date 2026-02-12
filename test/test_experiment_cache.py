@@ -47,7 +47,7 @@ def _make_config(label='test_cache', ana_labels=('A', 'B')):
     import glow
     ana_kwargs_dict = {
         lbl: (glow.experiment.AnalysisGLOW, {
-            'n_perm': 1, 'n_perm_adj': 1, 'n_perm_prune': 1,
+            'n_perm': 1, 'n_perm_prune': 1,
             'min_size': 1, 'alpha_prune': 0.05, 'alpha_fwer': 0.05,
             'n_jobs_perm': 1,
         })

@@ -231,9 +231,6 @@ class AnalysisGLOW(Analysis):
             checkpoint: optional object with load/save/delete methods for
                 resuming interrupted runs. only used in the serial path.
         """
-        # silently ignore legacy n_perm_adj if passed via **kwargs
-        kwargs.pop('n_perm_adj', None)
-
         super().__init__(exp, **kwargs)
         self.verbose = verbose
 

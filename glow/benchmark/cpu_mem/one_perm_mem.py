@@ -25,7 +25,6 @@ def build_config(temp_folder):
     ana_kwargs_dict = {
         'GLOW': (glow.experiment.AnalysisGLOW, {
             'n_perm': 1,
-            'n_perm_adj': 1,
             'n_perm_prune': 1,
             'min_size': 1,
             'alpha_prune': 0.05,

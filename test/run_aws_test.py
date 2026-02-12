@@ -254,7 +254,6 @@ def test_aws_runner_methods():
     exp_id = 'test_exp_001'
     ana_kwargs = {
         'n_perm': 5,
-        'n_perm_adj': 5,
         'n_perm_prune': 10,
         'alpha_fwer': 0.05,
         'alpha_prune': 0.05,
@@ -335,7 +334,7 @@ def run_batched_cloud_tests():
         exp, _ = exp_orig.impose_effect(mask=mask, hotel_tr=10.0, seed=42)
 
         n_perm = 5
-        ana_kwargs = dict(n_perm=n_perm, n_perm_adj=5, n_perm_prune=10,
+        ana_kwargs = dict(n_perm=n_perm, n_perm_prune=10,
                           alpha_fwer=0.05, alpha_prune=0.05, min_size=1,
                           verbose=True)
 
@@ -354,7 +353,7 @@ def run_batched_cloud_tests():
 
         cloud_ana_kwargs = {
             'get_stat': get_hotel_tr,
-            'n_perm_adj': 5, 'n_perm_prune': 10,
+            'n_perm_prune': 10,
             'alpha_fwer': 0.05, 'alpha_prune': 0.05, 'min_size': 1,
         }
         runner.upload_experiment(exp, cloud_ana_kwargs, experiment_id)
@@ -377,7 +376,7 @@ def run_batched_cloud_tests():
         print('\n[Prepare] Experiment-level test')
         ana_kwargs_dict = {
             'GLOW': (glow.experiment.AnalysisGLOW,
-                     dict(n_perm=5, n_perm_adj=5, n_perm_prune=10,
+                     dict(n_perm=5, n_perm_prune=10,
                           alpha_fwer=0.05, alpha_prune=0.05, min_size=1,
                           n_jobs_perm=1))
         }
@@ -430,7 +429,7 @@ def run_batched_cloud_tests():
         print('\n[Prepare] HCP test')
         ana_kwargs_dict = {
             'GLOW': (glow.experiment.AnalysisGLOW,
-                     dict(n_perm=5, n_perm_adj=5, n_perm_prune=10,
+                     dict(n_perm=5, n_perm_prune=10,
                           alpha_fwer=0.05, alpha_prune=0.05, min_size=1,
                           n_jobs_perm=1))
         }
@@ -508,7 +507,6 @@ def run_batched_cloud_tests():
 
                 ana_cloud._finalize_analysis(
                     exp, n_perm,  # must pass original (unscaled) exp, same as worker uses
-                    n_perm_adj=ana_kwargs['n_perm_adj'],
                     n_perm_prune=ana_kwargs['n_perm_prune'],
                     alpha_fwer=ana_kwargs['alpha_fwer'],
                     alpha_prune=ana_kwargs['alpha_prune'],
@@ -517,20 +515,20 @@ def run_batched_cloud_tests():
             # compare local vs cloud
             tol = 1e-10
             assert ana_local.pval.shape == ana_cloud.pval.shape, 'pval shape mismatch'
-            assert ana_local.z_stat.shape == ana_cloud.z_stat.shape, 'z_stat shape mismatch'
+            assert ana_local.hotel_tr_adjusted.shape == ana_cloud.hotel_tr_adjusted.shape, 'hotel_tr_adjusted shape mismatch'
 
             max_pval_diff = np.max(np.abs(ana_local.pval - ana_cloud.pval))
-            max_z_diff = np.max(np.abs(ana_local.z_stat - ana_cloud.z_stat))
+            max_z_diff = np.max(np.abs(ana_local.hotel_tr_adjusted - ana_cloud.hotel_tr_adjusted))
             max_stat_diff = np.max(np.abs(ana_local.stat - ana_cloud.stat))
             max_size_diff = np.max(np.abs(ana_local.size - ana_cloud.size))
 
             print(f'  pval max diff:  {max_pval_diff:.2e}')
-            print(f'  z_stat max diff: {max_z_diff:.2e}')
+            print(f'  hotel_tr_adjusted max diff: {max_z_diff:.2e}')
             print(f'  stat max diff:  {max_stat_diff:.2e}')
             print(f'  size max diff:  {max_size_diff:.2e}')
 
             assert max_pval_diff < tol, f'pval mismatch: {max_pval_diff:.2e}'
-            assert max_z_diff < tol, f'z_stat mismatch: {max_z_diff:.2e}'
+            assert max_z_diff < tol, f'hotel_tr_adjusted mismatch: {max_z_diff:.2e}'
             assert max_stat_diff < tol, f'stat mismatch: {max_stat_diff:.2e}'
             assert max_size_diff < tol, f'size mismatch: {max_size_diff:.2e}'
 
