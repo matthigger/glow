@@ -15,6 +15,7 @@ import json
 import os
 
 import numpy as np
+import dash_daq as daq
 from dash import Dash, html, dcc, callback_context, no_update
 from dash.dependencies import Input, Output, State
 
@@ -23,40 +24,55 @@ from .scatter import build_scatter
 from .image import (build_label_map, build_2d_figure, build_region_overlay,
                     compute_bg_volume, get_region_color,
                     compute_region_center)
+from .regression import (build_regression_figure, build_empty_regression,
+                         _get_x_labels, _get_y_labels)
 
 
 # ---------------------------------------------------------------------------
 # Layout helpers
 # ---------------------------------------------------------------------------
 
-def _dropdown(id_, core_cols, mask_cols, value, label,
-              none_option=False, **kwargs):
-    """Small helper to build a labelled dropdown with optional mask section."""
-    options = []
-    if none_option:
-        options.append({'label': 'None', 'value': '__none__'})
-    options += [{'label': c, 'value': c} for c in core_cols]
-    if mask_cols:
-        options.append({
-            'label': html.Span('── mask target ──',
-                               style={'color': '#999', 'fontStyle': 'italic',
-                                      'fontSize': '11px'}),
-            'value': '__divider__',
-            'disabled': True,
-        })
-        options += [{'label': c, 'value': c} for c in mask_cols]
+def _controls_column(core_cols, mask_cols, default_x, default_y,
+                     log_y_default):
+    """Build dropdowns + Log Y toggle as a narrow vertical panel."""
+    def _dd(id_, value, label, none_option=False):
+        options = []
+        if none_option:
+            options.append({'label': 'None', 'value': '__none__'})
+        options += [{'label': c, 'value': c} for c in core_cols]
+        if mask_cols:
+            options.append({
+                'label': html.Span('── mask ──',
+                                   style={'color': '#999',
+                                          'fontStyle': 'italic',
+                                          'fontSize': '10px'}),
+                'value': '__divider__',
+                'disabled': True,
+            })
+            options += [{'label': c, 'value': c} for c in mask_cols]
+        return html.Div([
+            html.Label(label, style={'fontWeight': 'bold',
+                                     'fontSize': '12px',
+                                     'marginBottom': '2px'}),
+            dcc.Dropdown(id=id_, options=options, value=value,
+                         clearable=False, style={'width': '100%'}),
+        ], style={'marginBottom': '6px'})
+
     return html.Div([
-        html.Label(label, style={'fontWeight': 'bold', 'fontSize': '13px',
-                                 'marginBottom': '2px'}),
-        dcc.Dropdown(
-            id=id_,
-            options=options,
-            value=value,
-            clearable=False,
-            style={'width': '100%'},
-            **kwargs,
-        ),
-    ], style={'flex': '1', 'minWidth': '140px', 'marginRight': '12px'})
+        _dd('dd-x', default_x, 'X feature'),
+        _dd('dd-y', default_y, 'Y feature'),
+        # Log Y toggle sits right below Y feature
+        html.Div([
+            html.Label('Log Y', style={'fontSize': '12px',
+                                       'marginRight': '6px',
+                                       'color': '#555'}),
+            daq.BooleanSwitch(id='log-y-switch', on=log_y_default,
+                              color='#119DFF'),
+        ], style={'display': 'flex', 'alignItems': 'center',
+                  'marginBottom': '6px'}),
+        _dd('dd-color', '__none__', 'Color', none_option=True),
+    ], style={'width': '180px', 'padding': '10px',
+              'borderRight': '1px solid #ddd', 'flexShrink': '0'})
 
 
 def _region_panel():
@@ -69,8 +85,8 @@ def _region_panel():
         html.Div([
             dcc.Checklist(
                 id='toggle-hover-preview',
-                options=[{'label': ' mouseover region', 'value': 'on'}],
-                value=[],
+                options=[{'label': ' Preview on hover', 'value': 'on'}],
+                value=['on'],
                 style={'fontSize': '12px'},
             ),
         ], style={'marginTop': '4px', 'marginBottom': '4px',
@@ -96,8 +112,53 @@ def _region_panel():
                         'fontStyle': 'italic', 'marginTop': '6px'}),
         html.Button('Clear all', id='btn-clear',
                     style={'marginTop': '8px', 'fontSize': '12px'}),
-    ], style={'width': '220px', 'padding': '10px',
+    ], style={'width': '180px', 'padding': '10px',
               'borderRight': '1px solid #ddd', 'flexShrink': '0'})
+
+
+def _section_header(title):
+    """Return a styled section header with a top border."""
+    return html.Div([
+        html.H4(title,
+                 style={'margin': '0', 'fontSize': '14px',
+                        'letterSpacing': '1px', 'color': '#555',
+                        'textTransform': 'uppercase'}),
+    ], style={'padding': '10px 20px 4px 20px',
+              'borderTop': '2px solid #ccc', 'marginTop': '6px'})
+
+
+def _regression_panel(x_names, y_names):
+    """Build the right-hand regression scatter panel."""
+    x_opts = [{'label': n, 'value': i} for i, n in enumerate(x_names)]
+    y_opts = [{'label': n, 'value': i} for i, n in enumerate(y_names)]
+    return html.Div([
+        html.H4('REGRESSION', style={
+            'margin': '0', 'fontSize': '14px',
+            'letterSpacing': '1px', 'color': '#555',
+            'marginBottom': '4px'}),
+        html.Div([
+            html.Div([
+                html.Label('X', style={'fontSize': '11px',
+                                       'fontWeight': 'bold',
+                                       'marginRight': '4px'}),
+                dcc.Dropdown(id='dd-reg-x', options=x_opts,
+                             value=0, clearable=False,
+                             style={'width': '100%', 'fontSize': '12px'}),
+            ], style={'flex': '1', 'marginRight': '6px'}),
+            html.Div([
+                html.Label('Y', style={'fontSize': '11px',
+                                       'fontWeight': 'bold',
+                                       'marginRight': '4px'}),
+                dcc.Dropdown(id='dd-reg-y', options=y_opts,
+                             value=0, clearable=False,
+                             style={'width': '100%', 'fontSize': '12px'}),
+            ], style={'flex': '1'}),
+        ], style={'display': 'flex', 'marginBottom': '4px'}),
+        dcc.Graph(id='regression-plot',
+                  config={'scrollZoom': True},
+                  style={'width': '100%'}),
+    ], style={'width': '380px', 'flexShrink': '0', 'padding': '10px',
+              'borderLeft': '1px solid #ddd'})
 
 
 def _defaults(core_cols, mask_cols):
@@ -111,59 +172,42 @@ def _defaults(core_cols, mask_cols):
     return all_cols, default_x, default_y, log_y_default
 
 
-def _controls_row(core_cols, mask_cols, default_x, default_y, log_y_default):
-    """Build the dropdowns + Log Y toggle row."""
-    return html.Div([
-        _dropdown('dd-x', core_cols, mask_cols, default_x, 'X feature'),
-        _dropdown('dd-y', core_cols, mask_cols, default_y, 'Y feature'),
-        _dropdown('dd-color', core_cols, mask_cols, '__none__',
-                  'Color', none_option=True),
-        html.Div([
-            dcc.Checklist(
-                id='log-toggles',
-                options=[
-                    {'label': ' Log Y', 'value': 'log_y'},
-                ],
-                value=['log_y'] if log_y_default else [],
-                inline=True,
-                style={'fontSize': '13px', 'marginTop': '18px'},
-                inputStyle={'marginRight': '4px'},
-            ),
-        ], style={'minWidth': '70px', 'display': 'flex',
-                  'flexDirection': 'column', 'justifyContent': 'center'}),
-    ], style={'display': 'flex', 'padding': '10px 20px',
-              'flexWrap': 'wrap'})
-
-
-def _make_layout_3d(core_cols, mask_cols, slicer0, slicer1, slicer2):
+def _make_layout_3d(core_cols, mask_cols, slicer0, slicer1, slicer2,
+                    x_names=None, y_names=None):
     """Build layout for 3D data (with dash-slicer ortho views)."""
     all_cols, default_x, default_y, log_val = _defaults(core_cols, mask_cols)
 
     return html.Div([
-        # --- HEADER ---
+        # --- APP HEADER ---
         html.Div([
             html.H2('GLOW: Analysis Viewer',
                      style={'margin': '0', 'letterSpacing': '2px'}),
         ], style={'padding': '12px 20px', 'borderBottom': '2px solid #333',
                   'background': '#fafafa'}),
 
-        # --- DROPDOWNS + LOG TOGGLES ---
-        _controls_row(core_cols, mask_cols, default_x, default_y, log_val),
-
-        # --- SCATTER PLOT ---
+        # --- HIERARCHICAL SEGMENTATION ---
+        _section_header('Hierarchical Segmentation'),
         html.Div([
-            dcc.Graph(id='scatter-plot',
-                      config={'scrollZoom': True},
-                      clear_on_unhover=True,
-                      style={'width': '100%'}),
-        ], style={'padding': '0 20px'}),
+            _controls_column(core_cols, mask_cols,
+                             default_x, default_y, log_val),
+            html.Div([
+                dcc.Graph(id='scatter-plot',
+                          config={'scrollZoom': True},
+                          clear_on_unhover=True,
+                          style={'width': '100%'}),
+            ], style={'flex': '1', 'padding': '0'}),
+        ], style={'display': 'flex', 'padding': '0 20px'}),
 
-        # --- BOTTOM SECTION ---
+        # --- IMAGE + REGRESSION (side by side) ---
         html.Div([
             _region_panel(),
 
-            # right panel: three linked ortho slicers
+            # center: three linked ortho slicers
             html.Div([
+                html.H4('IMAGE', style={
+                    'margin': '0', 'fontSize': '14px',
+                    'letterSpacing': '1px', 'color': '#555',
+                    'marginBottom': '4px'}),
                 html.Div(style={
                     'display': 'grid',
                     'gridTemplateColumns': '1fr 1fr 1fr',
@@ -171,25 +215,29 @@ def _make_layout_3d(core_cols, mask_cols, slicer0, slicer1, slicer2):
                 }, children=[
                     html.Div([
                         slicer0.graph,
-                        html.Br(),
-                        slicer0.slider,
+                        html.Div([slicer0.slider],
+                                 style={'marginTop': '2px'}),
                         *slicer0.stores,
                     ]),
                     html.Div([
                         slicer1.graph,
-                        html.Br(),
-                        slicer1.slider,
+                        html.Div([slicer1.slider],
+                                 style={'marginTop': '2px'}),
                         *slicer1.stores,
                     ]),
                     html.Div([
                         slicer2.graph,
-                        html.Br(),
-                        slicer2.slider,
+                        html.Div([slicer2.slider],
+                                 style={'marginTop': '2px'}),
                         *slicer2.stores,
                     ]),
                 ]),
             ], style={'flex': '1', 'padding': '10px'}),
-        ], style={'display': 'flex', 'padding': '0 20px 20px 20px'}),
+
+            # right: regression scatter
+            _regression_panel(x_names or [], y_names or []),
+        ], style={'display': 'flex', 'padding': '0 20px 20px 20px',
+                  'borderTop': '2px solid #ccc', 'marginTop': '6px'}),
 
         # --- HIDDEN STORES ---
         dcc.Store(id='store-selected', data='[]'),
@@ -199,30 +247,33 @@ def _make_layout_3d(core_cols, mask_cols, slicer0, slicer1, slicer2):
               'maxWidth': '1400px', 'margin': '0 auto'})
 
 
-def _make_layout_2d(core_cols, mask_cols, bg_names):
+def _make_layout_2d(core_cols, mask_cols, bg_names,
+                    x_names=None, y_names=None):
     """Build layout for 2D data (single go.Image view)."""
     all_cols, default_x, default_y, log_val = _defaults(core_cols, mask_cols)
 
     return html.Div([
-        # --- HEADER ---
+        # --- APP HEADER ---
         html.Div([
             html.H2('GLOW: Analysis Viewer',
                      style={'margin': '0', 'letterSpacing': '2px'}),
         ], style={'padding': '12px 20px', 'borderBottom': '2px solid #333',
                   'background': '#fafafa'}),
 
-        # --- DROPDOWNS + LOG TOGGLES ---
-        _controls_row(core_cols, mask_cols, default_x, default_y, log_val),
-
-        # --- SCATTER PLOT ---
+        # --- HIERARCHICAL SEGMENTATION ---
+        _section_header('Hierarchical Segmentation'),
         html.Div([
-            dcc.Graph(id='scatter-plot',
-                      config={'scrollZoom': True},
-                      clear_on_unhover=True,
-                      style={'width': '100%'}),
-        ], style={'padding': '0 20px'}),
+            _controls_column(core_cols, mask_cols,
+                             default_x, default_y, log_val),
+            html.Div([
+                dcc.Graph(id='scatter-plot',
+                          config={'scrollZoom': True},
+                          clear_on_unhover=True,
+                          style={'width': '100%'}),
+            ], style={'flex': '1', 'padding': '0'}),
+        ], style={'display': 'flex', 'padding': '0 20px'}),
 
-        # --- BOTTOM SECTION ---
+        # --- IMAGE + REGRESSION (side by side) ---
         html.Div([
             # left panel: background + region list
             html.Div([
@@ -237,15 +288,23 @@ def _make_layout_2d(core_cols, mask_cols, bg_names):
                     style={'marginBottom': '12px'},
                 ),
                 _region_panel(),
-            ], style={'width': '220px', 'flexShrink': '0'}),
+            ], style={'width': '180px', 'flexShrink': '0'}),
 
-            # right panel: image viewer
+            # center: image viewer
             html.Div([
+                html.H4('IMAGE', style={
+                    'margin': '0', 'fontSize': '14px',
+                    'letterSpacing': '1px', 'color': '#555',
+                    'marginBottom': '4px'}),
                 dcc.Graph(id='image-viewer',
                           config={'scrollZoom': True},
-                          style={'width': '100%'}),
+                          style={'width': '100%', 'height': '340px'}),
             ], style={'flex': '1', 'padding': '10px'}),
-        ], style={'display': 'flex', 'padding': '0 20px 20px 20px'}),
+
+            # right: regression scatter
+            _regression_panel(x_names or [], y_names or []),
+        ], style={'display': 'flex', 'padding': '0 20px 20px 20px',
+                  'borderTop': '2px solid #ccc', 'marginTop': '6px'}),
 
         # --- HIDDEN STORES ---
         dcc.Store(id='store-selected', data='[]'),
@@ -302,8 +361,14 @@ def _setup_3d(app, ana_glow, df, core_cols, mask_cols, feature_names=None):
 
     for s in (slicer0, slicer1, slicer2):
         s.graph.config['scrollZoom'] = False
+        s.graph.style = {'height': '280px'}
 
-    app.layout = _make_layout_3d(core_cols, mask_cols, slicer0, slicer1, slicer2)
+    _, x_names, _ = _get_x_labels(ana_glow.exp)
+    y_names = _get_y_labels(ana_glow.exp, feature_names=feature_names)
+
+    app.layout = _make_layout_3d(core_cols, mask_cols,
+                                 slicer0, slicer1, slicer2,
+                                 x_names=x_names, y_names=y_names)
 
     # --- shared callbacks ---
     _register_scatter_callback(app, df, ana_glow)
@@ -311,6 +376,8 @@ def _setup_3d(app, ana_glow, df, core_cols, mask_cols, feature_names=None):
     _register_checklist_sync_callback(app, df)
     _register_hover_callback(app, ana_glow)
     _register_placeholder_callback(app)
+    _register_regression_callback(app, ana_glow, df,
+                                  feature_names=feature_names)
 
     # --- setpos store: dash-slicer picks this up automatically ---
     setpos_store = dcc.Store(
@@ -404,7 +471,11 @@ def _setup_2d(app, ana_glow, df, core_cols, mask_cols, feature_names=None):
     bg_dict = compute_backgrounds(ana_glow, feature_names=feature_names)
     bg_names = list(bg_dict.keys())
 
-    app.layout = _make_layout_2d(core_cols, mask_cols, bg_names)
+    _, x_names, _ = _get_x_labels(ana_glow.exp)
+    y_names = _get_y_labels(ana_glow.exp, feature_names=feature_names)
+
+    app.layout = _make_layout_2d(core_cols, mask_cols, bg_names,
+                                 x_names=x_names, y_names=y_names)
 
     # --- shared callbacks ---
     _register_scatter_callback(app, df, ana_glow)
@@ -412,6 +483,8 @@ def _setup_2d(app, ana_glow, df, core_cols, mask_cols, feature_names=None):
     _register_checklist_sync_callback(app, df)
     _register_hover_callback(app, ana_glow)
     _register_placeholder_callback(app)
+    _register_regression_callback(app, ana_glow, df,
+                                  feature_names=feature_names)
 
     # --- image callback: visible regions + hover + background -> figure ---
     @app.callback(
@@ -450,15 +523,14 @@ def _register_scatter_callback(app, df, ana_glow):
          Input('dd-y', 'value'),
          Input('dd-color', 'value'),
          Input('store-selected', 'data'),
-         Input('log-toggles', 'value')],
+         Input('log-y-switch', 'on')],
     )
     def update_scatter(x_feat, y_feat, color_feat, selected_json,
-                       log_toggles):
+                       log_y_on):
         selected = set(json.loads(selected_json))
-        log_toggles = log_toggles or []
         return build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
                              selected_reg=selected,
-                             log_y='log_y' in log_toggles)
+                             log_y=bool(log_y_on))
 
 
 def _register_selection_callback(app, ana_glow):
@@ -561,7 +633,7 @@ def _register_hover_callback(app, ana_glow):
     def update_hover(hover_data, toggle):
         # always update the label to reflect the hovered region
         if hover_data is None:
-            label = ' mouseover region'
+            label = ' Preview on hover'
             if 'on' not in (toggle or []):
                 return 'null', no_update, [{'label': label, 'value': 'on'}]
             return 'null', no_update, [{'label': label, 'value': 'on'}]
@@ -569,7 +641,7 @@ def _register_hover_callback(app, ana_glow):
         point = hover_data['points'][0]
         reg_idx = point.get('customdata')
         if reg_idx is None:
-            label = ' mouseover region'
+            label = ' Preview on hover'
             return 'null', no_update, [{'label': label, 'value': 'on'}]
 
         reg_idx = int(reg_idx)
@@ -588,6 +660,49 @@ def _register_placeholder_callback(app):
     """The placeholder hint is static -- always visible below the checklist."""
     # No dynamic callback needed; the text is set in _region_panel().
     pass
+
+
+def _register_regression_callback(app, ana_glow, df, feature_names=None):
+    """Regression scatter: visible regions + hover + axis dropdowns -> figure.
+
+    Colours match the slicer overlay (same palette index per region).
+    """
+    @app.callback(
+        Output('regression-plot', 'figure'),
+        [Input('region-checklist', 'value'),
+         Input('store-hover', 'data'),
+         Input('dd-reg-x', 'value'),
+         Input('dd-reg-y', 'value')],
+        [State('store-selected', 'data')],
+    )
+    def update_regression(visible, hover_json, x_feat_idx, y_feat_idx,
+                          selected_json):
+        selected = json.loads(selected_json)
+        visible = visible or []
+
+        hover_reg = (json.loads(hover_json)
+                     if hover_json and hover_json != 'null' else None)
+        show_list = list(visible)
+        if hover_reg is not None and hover_reg not in show_list:
+            show_list.append(hover_reg)
+
+        n_selected = len(selected)
+        color_map = {r: i for i, r in enumerate(selected)}
+
+        if not show_list:
+            return build_empty_regression()
+
+        return build_regression_figure(
+            ana_glow=ana_glow,
+            region_list=show_list,
+            x_feat_idx=int(x_feat_idx),
+            y_feat_idx=int(y_feat_idx),
+            df=df,
+            color_map=color_map,
+            hover_reg=hover_reg,
+            n_selected=n_selected,
+            feature_names=feature_names,
+        )
 
 
 # ---------------------------------------------------------------------------
