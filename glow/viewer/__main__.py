@@ -2,8 +2,11 @@
 
 Usage::
 
-    # built-in demo (15x15x15 WGN cube with sphere effect)
+    # built-in 3D demo (15x15x15 WGN cube with sphere effect)
     python -m glow.viewer --demo
+
+    # built-in 2D demo (mandrill image with ExtenterMinVar effect)
+    python -m glow.viewer --demo2d
 
     # load a pickled AnalysisGLOW
     python -m glow.viewer analysis.p.gz
@@ -131,6 +134,71 @@ def _run_demo():
     launch(ana, mask_target=mask_sphere)
 
 
+def _run_demo2d():
+    """Build and launch a 2D demo: mandrill image with ExtenterMinVar effect."""
+    from PIL import Image
+
+    from glow.effect.extent import ExtenterMinVar
+    from glow.experiment.exper import Experiment, ExperimentImageOnly
+    from glow.experiment.analysis import AnalysisGLOW
+    from glow.mask import get_mask_idx
+    from glow.viewer import launch
+
+    print('Building demo2d: mandrill_small.png with ExtenterMinVar effect ...')
+
+    # locate the image relative to this package (src/glow/viewer/__main__.py)
+    img_path = pathlib.Path(__file__).resolve().parents[2] / \
+        'test' / 'data' / 'mandrill_small.png'
+    if not img_path.exists():
+        # fallback: try from workspace root
+        img_path = pathlib.Path('test/data/mandrill_small.png')
+    print(f'  loading {img_path}')
+
+    img_arr = np.array(Image.open(img_path)).astype(np.float64)  # (H, W, 3)
+    h, w, b = img_arr.shape
+    num_vox = h * w
+    print(f'  image: {h}x{w}, {b} channels, {num_vox} pixels')
+
+    # treat each pixel as a voxel, each channel as a feature (b=3)
+    # build synthetic subjects: replicate image + gaussian noise
+    num_img = 12
+    rng = np.random.default_rng(seed=42)
+    # y shape: (b, num_img, num_vox)
+    pixel_flat = img_arr.reshape(num_vox, b).T  # (b, num_vox)
+    noise_scale = 15.0  # std-dev of per-pixel noise
+    y = np.empty((b, num_img, num_vox))
+    for i in range(num_img):
+        y[:, i, :] = pixel_flat + rng.normal(0, noise_scale, pixel_flat.shape)
+
+    # build experiment
+    shape = (h, w)
+    mask_idx = get_mask_idx(np.ones(shape, dtype=bool))
+    exp_img = ExperimentImageOnly(y=y, mask_idx=mask_idx)
+    exp = exp_img.sample_x(a=2, seed=42, add_bias=True)
+    print(f'  experiment: y.shape={exp.y.shape}')
+
+    # use ExtenterMinVar for ~15% of pixels
+    n_effect = int(0.15 * num_vox)
+    extenter = ExtenterMinVar(n=n_effect)
+    print(f'  growing ExtenterMinVar extent ({n_effect} pixels, '
+          f'{100 * n_effect / num_vox:.1f}% of image) ...')
+
+    hotel_tr = 30.0
+    exp_eff, effect = exp.impose_effect(hotel_tr=hotel_tr, extenter=extenter,
+                                        seed=42)
+    effect_mask = effect.mask
+    print(f'  imposed hotel_tr={hotel_tr} in {effect_mask.sum()} pixels')
+
+    # run analysis
+    print('  running AnalysisGLOW (n_perm=20) ...')
+    ana = AnalysisGLOW(exp_eff, n_perm=20, verbose=True)
+    print(f'  found {len(ana.effect_list)} effects')
+
+    # launch viewer with effect mask as target
+    launch(ana, mask_target=effect_mask,
+           feature_names=['red', 'green', 'blue'])
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog='python -m glow.viewer',
@@ -144,7 +212,10 @@ def main():
         help='Path to a target mask (.nii, .nii.gz, .npy, or pickled Effect)')
     parser.add_argument(
         '--demo', action='store_true',
-        help='Run built-in demo (15x15x15 WGN cube with sphere effect)')
+        help='Run built-in 3D demo (15x15x15 WGN cube with sphere effect)')
+    parser.add_argument(
+        '--demo2d', action='store_true',
+        help='Run built-in 2D demo (mandrill image with ExtenterMinVar effect)')
     parser.add_argument(
         '--port', type=int, default=8050,
         help='Server port (default: 8050)')
@@ -158,8 +229,13 @@ def main():
         _run_demo()
         return
 
+    if args.demo2d:
+        _run_demo2d()
+        return
+
     if args.analysis is None:
-        parser.error('either --demo or an analysis file path is required')
+        parser.error(
+            'either --demo, --demo2d, or an analysis file path is required')
 
     # load analysis
     print(f'Loading analysis from {args.analysis} ...')

@@ -134,8 +134,14 @@ def get_feature_columns(df):
     return sorted(core), sorted(mask)
 
 
-def compute_backgrounds(ana_glow):
+def compute_backgrounds(ana_glow, feature_names=None):
     """Compute per-feature background images from the experiment data.
+
+    Args:
+        ana_glow (AnalysisGLOW): completed analysis
+        feature_names (list[str] | None): optional human-readable names for
+            each imaging feature.  Length must equal ``b`` (number of
+            features).  Falls back to ``"feature 0"``, ``"feature 1"``, ...
 
     Returns:
         bg_dict (dict): feature_name -> np.array with same shape as mask_idx.
@@ -149,9 +155,14 @@ def compute_backgrounds(ana_glow):
     y_mean = y.mean(axis=1)
     b = y_mean.shape[0]
 
+    if feature_names is None:
+        feature_names = [f'feature {i}' for i in range(b)]
+    assert len(feature_names) == b, \
+        f'feature_names length {len(feature_names)} != b={b}'
+
     bg_dict = {}
     for feat_idx in range(b):
-        name = f'feature {feat_idx}'
+        name = feature_names[feat_idx]
         img = np.full(mask_idx.shape, np.nan, dtype=float)
         img[mask_idx >= 0] = y_mean[feat_idx, mask_idx[mask_idx >= 0]]
         bg_dict[name] = img

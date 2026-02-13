@@ -259,8 +259,14 @@ def _make_layout_2d(core_cols, mask_cols, bg_names):
 # App factory
 # ---------------------------------------------------------------------------
 
-def _create_app(ana_glow, mask_target=None):
+def _create_app(ana_glow, mask_target=None, feature_names=None):
     """Create and wire up the Dash app.
+
+    Args:
+        ana_glow (AnalysisGLOW): completed analysis
+        mask_target: optional target mask
+        feature_names (list[str] | None): optional human-readable names for
+            each imaging feature (used in the background dropdown).
 
     Returns:
         app (Dash): configured Dash application
@@ -274,14 +280,16 @@ def _create_app(ana_glow, mask_target=None):
     app = Dash(__name__, update_title=None)
 
     if is_3d:
-        _setup_3d(app, ana_glow, df, core_cols, mask_cols)
+        _setup_3d(app, ana_glow, df, core_cols, mask_cols,
+                  feature_names=feature_names)
     else:
-        _setup_2d(app, ana_glow, df, core_cols, mask_cols)
+        _setup_2d(app, ana_glow, df, core_cols, mask_cols,
+                  feature_names=feature_names)
 
     return app
 
 
-def _setup_3d(app, ana_glow, df, core_cols, mask_cols):
+def _setup_3d(app, ana_glow, df, core_cols, mask_cols, feature_names=None):
     """Set up the app for 3D data using dash-slicer."""
     from dash_slicer import VolumeSlicer
 
@@ -390,10 +398,10 @@ def _build_overlay(slicer, label_map, visible_list, color_map,
     return slicer.create_overlay_data(mask, colors)
 
 
-def _setup_2d(app, ana_glow, df, core_cols, mask_cols):
+def _setup_2d(app, ana_glow, df, core_cols, mask_cols, feature_names=None):
     """Set up the app for 2D data using Plotly go.Image."""
     mask_idx = ana_glow.exp.mask_idx
-    bg_dict = compute_backgrounds(ana_glow)
+    bg_dict = compute_backgrounds(ana_glow, feature_names=feature_names)
     bg_names = list(bg_dict.keys())
 
     app.layout = _make_layout_2d(core_cols, mask_cols, bg_names)
@@ -704,7 +712,8 @@ def _wait_for_port(port, socket_mod, timeout=5.0):
     return False
 
 
-def launch(ana_glow, mask_target=None, port=8050, debug=False):
+def launch(ana_glow, mask_target=None, port=8050, debug=False,
+           feature_names=None):
     """Launch the glow viewer dashboard.
 
     Args:
@@ -715,13 +724,16 @@ def launch(ana_glow, mask_target=None, port=8050, debug=False):
         port (int): server port
         debug (bool): enable Dash debug mode (hot-reload).  If True,
             consider setting dev_tools_props_check=False for performance.
+        feature_names (list[str] | None): optional human-readable names for
+            each imaging feature (used in the background dropdown).
     """
     import signal
     import sys
 
     _check_port(port)
 
-    app = _create_app(ana_glow, mask_target=mask_target)
+    app = _create_app(ana_glow, mask_target=mask_target,
+                      feature_names=feature_names)
 
     # clean shutdown on Ctrl+C (and SIGTERM on Unix)
     def _shutdown(signum, frame):
