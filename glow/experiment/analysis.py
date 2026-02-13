@@ -11,7 +11,7 @@ import glow.graph
 from .cluster import cluster
 from .exper import ExperimentScaled
 from .mancova import get_hotel_tr
-from .prune import prune
+from .prune import prune, prune_dp
 
 
 class Analysis:
@@ -216,20 +216,27 @@ class AnalysisGLOW(Analysis):
 
     def __init__(self, exp, n_perm, n_perm_prune=100,
                  alpha_fwer=.05, alpha_prune=.05, min_size=1, verbose=False,
-                 n_jobs_perm=1, cloud_config=None, checkpoint=None, **kwargs):
+                 n_jobs_perm=1, cloud_config=None, checkpoint=None,
+                 prune_method='homo', prune_geom_exp_eff=1, **kwargs):
         """
         Args:
             exp: Experiment to analyze
             n_perm: Number of permutations
-            n_perm_prune: Number of pruning permutations
+            n_perm_prune: Number of pruning permutations (only used
+                with prune_method='homo')
             alpha_fwer: Family-wise error rate
-            alpha_prune: Pruning alpha
+            alpha_prune: Pruning alpha (only used with prune_method='homo')
             min_size: Minimum region size
             verbose: Print progress
             n_jobs_perm: Number of parallel jobs for permutations (1=serial, -1=all cores)
             cloud_config: CloudConfig for AWS execution (if None, runs locally)
             checkpoint: optional object with load/save/delete methods for
                 resuming interrupted runs. only used in the serial path.
+            prune_method: 'homo' for homogeneity-test pruning (default),
+                'geom_prior' for geometric-prior DP pruning
+            prune_geom_exp_eff: expected number of effect regions under
+                the geometric prior (only used with prune_method='geom_prior',
+                default 1).  higher values yield more regions.
         """
         super().__init__(exp, **kwargs)
         self.verbose = verbose
@@ -238,7 +245,10 @@ class AnalysisGLOW(Analysis):
         if cloud_config is not None:
             self._run_on_cloud(exp, n_perm, n_perm_prune,
                               alpha_fwer, alpha_prune, min_size, verbose,
-                              cloud_config, **kwargs)
+                              cloud_config,
+                              prune_method=prune_method,
+                              prune_geom_exp_eff=prune_geom_exp_eff,
+                              **kwargs)
             return
 
         # constants
@@ -314,7 +324,9 @@ class AnalysisGLOW(Analysis):
 
         # finalize analysis (common to local and cloud execution)
         self._finalize_analysis(exp, n_perm, n_perm_prune,
-                               alpha_fwer, alpha_prune, min_size)
+                               alpha_fwer, alpha_prune, min_size,
+                               prune_method=prune_method,
+                               prune_geom_exp_eff=prune_geom_exp_eff)
 
     @staticmethod
     def _wls_fit(X, y, w):
@@ -368,7 +380,8 @@ class AnalysisGLOW(Analysis):
         return mu_log_fn
 
     def _finalize_analysis(self, exp, n_perm, n_perm_prune,
-                          alpha_fwer, alpha_prune, min_size):
+                          alpha_fwer, alpha_prune, min_size,
+                          prune_method='homo', prune_geom_exp_eff=1):
         """post-process: size-regression adjustment, FWER p-values, prune."""
         verbose = getattr(self, 'verbose', False)
         b, num_img, num_vox = exp.y.shape
@@ -415,16 +428,32 @@ class AnalysisGLOW(Analysis):
 
         # prune significant regions (discard to make disjoint set)
         self.sig_reg_list = list(np.where(self.pval <= alpha_fwer)[0])
-        if verbose:
-            print(f'  [4/4] pruning {len(self.sig_reg_list)} significant '
-                  f'regions ({n_perm_prune} permutations, '
-                  f'alpha_prune={alpha_prune}) ...')
-        reg_out_list, self.homo_pval_dict = prune(
-            sig_reg_list=self.sig_reg_list,
-            alpha_prune=alpha_prune,
-            n_perm=n_perm_prune,
-            exp=exp,
-            children=self.child_dict[0])
+
+        if prune_method == 'geom_prior':
+            # geometric-prior DP pruning
+            if verbose:
+                print(f'  [4/4] geom_prior pruning {len(self.sig_reg_list)} '
+                      f'significant regions '
+                      f'(exp_eff={prune_geom_exp_eff}) ...')
+            reg_out_list, self.dp_info = prune_dp(
+                sig_reg_list=self.sig_reg_list,
+                children=self.child_dict[0],
+                exp=exp,
+                exp_eff=prune_geom_exp_eff)
+            self.homo_pval_dict = {}
+        else:
+            # default: homogeneity-test pruning
+            if verbose:
+                print(f'  [4/4] pruning {len(self.sig_reg_list)} significant '
+                      f'regions ({n_perm_prune} permutations, '
+                      f'alpha_prune={alpha_prune}) ...')
+            reg_out_list, self.homo_pval_dict = prune(
+                sig_reg_list=self.sig_reg_list,
+                alpha_prune=alpha_prune,
+                n_perm=n_perm_prune,
+                exp=exp,
+                children=self.child_dict[0])
+            self.dp_info = {}
 
         # build effects
         self.effect_list = list()
@@ -442,12 +471,15 @@ class AnalysisGLOW(Analysis):
         if verbose:
             n_disc = len(self.effect_list)
             n_pruned = len(self.sig_reg_list) - n_disc
-            print(f'  done: {n_disc} discovered, '
-                  f'{n_pruned} pruned')
+            msg = f'  done: {n_disc} discovered, {n_pruned} pruned'
+            if prune_method == 'geom_prior' and self.dp_info:
+                msg += f' (lambda={self.dp_info["lam"]:.4f})'
+            print(msg)
 
     def _run_on_cloud(self, exp, n_perm, n_perm_prune,
                      alpha_fwer, alpha_prune, min_size, verbose,
-                     cloud_config, **kwargs):
+                     cloud_config, prune_method='homo',
+                     prune_geom_exp_eff=1, **kwargs):
         """run permutation processing on AWS Batch and finish locally."""
         from glow.aws import AWSBatchRunner
         import uuid
@@ -518,6 +550,8 @@ class AnalysisGLOW(Analysis):
         # complete analysis locally using shared finalization method
         print('completing analysis locally...')
         self._finalize_analysis(exp, n_perm, n_perm_prune,
-                               alpha_fwer, alpha_prune, min_size)
+                               alpha_fwer, alpha_prune, min_size,
+                               prune_method=prune_method,
+                               prune_geom_exp_eff=prune_geom_exp_eff)
         
         print(f'cloud analysis complete: found {len(self.effect_list)} effects')

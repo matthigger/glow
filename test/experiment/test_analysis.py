@@ -62,6 +62,29 @@ class TestBigEffect:
         
         # should still find the effect
         assert len(analysis.effect_list) > 0
+
+    def test_glow_geom_prior(self):
+        """geom_prior with exp_eff=1 should find exactly one effect."""
+        analysis = AnalysisGLOW(
+            TestBigEffect.exp,
+            n_perm=25,
+            alpha_fwer=.1,
+            prune_method='geom_prior',
+            prune_geom_exp_eff=1
+        )
+
+        # dp_info should be populated with correct lambda
+        assert hasattr(analysis, 'dp_info')
+        assert np.isclose(analysis.dp_info['lam'], np.log(2))
+
+        # should discover exactly one effect
+        assert len(analysis.effect_list) == 1, \
+            f'expected 1 effect, got {len(analysis.effect_list)}'
+
+        # that one effect should match the true effect
+        assert np.array_equal(analysis.effect_list[0].mask,
+                              TestBigEffect.effect.mask), \
+            'geom_prior effect does not match the true effect'
     
     def test_glow_with_adjustment(self):
         """test GLOW with adjustment permutations"""
