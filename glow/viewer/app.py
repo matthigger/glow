@@ -32,24 +32,33 @@ from .regression import (build_regression_figure, build_empty_regression,
 # Layout helpers
 # ---------------------------------------------------------------------------
 
-def _controls_column(core_cols, mask_cols, default_x, default_y,
-                     log_y_default):
+def _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
+                     default_x, default_y, log_y_default):
     """Build dropdowns + Log Y toggle as a narrow vertical panel."""
+    _divider_style = {'color': '#999', 'fontStyle': 'italic',
+                      'fontSize': '10px'}
+
+    def _add_group(options, cols, heading):
+        """Append a disabled divider heading then the columns."""
+        if not cols:
+            return
+        options.append({
+            'label': html.Span(f'── {heading} ──', style=_divider_style),
+            'value': f'__div_{heading}__',
+            'disabled': True,
+        })
+        options += [{'label': c, 'value': c} for c in cols]
+
     def _dd(id_, value, label, none_option=False):
         options = []
         if none_option:
             options.append({'label': 'None', 'value': '__none__'})
-        options += [{'label': c, 'value': c} for c in core_cols]
-        if mask_cols:
-            options.append({
-                'label': html.Span('── mask ──',
-                                   style={'color': '#999',
-                                          'fontStyle': 'italic',
-                                          'fontSize': '10px'}),
-                'value': '__divider__',
-                'disabled': True,
-            })
-            options += [{'label': c, 'value': c} for c in mask_cols]
+        # generic columns first (no heading)
+        options += [{'label': c, 'value': c} for c in generic_cols]
+        # grouped columns with headings
+        _add_group(options, sig_cols, 'significance')
+        _add_group(options, prune_cols, 'pruning')
+        _add_group(options, mask_cols, 'mask')
         return html.Div([
             html.Label(label, style={'fontWeight': 'bold',
                                      'fontSize': '12px',
@@ -161,10 +170,39 @@ def _regression_panel(x_names, y_names):
               'borderLeft': '1px solid #ddd'})
 
 
-def _defaults(core_cols, mask_cols):
+def _exp_eff_panel(has_dp):
+    """Build the conditional E[effects] slider panel (right of scatter).
+
+    The panel is always rendered but hidden via CSS when not relevant.
+    A callback toggles visibility based on whether ll_gain_net is
+    selected on either scatter axis.
+    """
+    marks = {v: str(v) for v in [1, 2, 5, 10, 20, 50]}
+    return html.Div(
+        id='exp-eff-panel',
+        children=[
+            html.Label('E[effects]',
+                       style={'fontWeight': 'bold', 'fontSize': '11px',
+                              'marginBottom': '4px', 'textAlign': 'center',
+                              'whiteSpace': 'nowrap'}),
+            dcc.Slider(
+                id='slider-exp-eff',
+                min=0.5, max=50, step=0.5, value=1,
+                marks=marks,
+                vertical=True,
+                verticalHeight=350,
+                tooltip={'placement': 'left', 'always_visible': False},
+            ),
+        ],
+        style={'width': '60px', 'padding': '10px 4px',
+               'flexShrink': '0', 'display': 'none' if not has_dp else 'none'},
+    )
+
+
+def _defaults(generic_cols, sig_cols, prune_cols, mask_cols):
     """Compute default dropdown values and log-toggle state."""
     from .scatter import _LOG_COLS
-    all_cols = core_cols + mask_cols
+    all_cols = generic_cols + sig_cols + prune_cols + mask_cols
     default_x = 'n_voxel' if 'n_voxel' in all_cols else all_cols[0]
     default_y = ('hotel_tr_adjusted' if 'hotel_tr_adjusted' in all_cols
                  else all_cols[min(1, len(all_cols) - 1)])
@@ -172,10 +210,12 @@ def _defaults(core_cols, mask_cols):
     return all_cols, default_x, default_y, log_y_default
 
 
-def _make_layout_3d(core_cols, mask_cols, slicer0, slicer1, slicer2,
-                    x_names=None, y_names=None):
+def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
+                    slicer0, slicer1, slicer2,
+                    x_names=None, y_names=None, has_dp=False):
     """Build layout for 3D data (with dash-slicer ortho views)."""
-    all_cols, default_x, default_y, log_val = _defaults(core_cols, mask_cols)
+    all_cols, default_x, default_y, log_val = _defaults(
+        generic_cols, sig_cols, prune_cols, mask_cols)
 
     return html.Div([
         # --- APP HEADER ---
@@ -188,7 +228,7 @@ def _make_layout_3d(core_cols, mask_cols, slicer0, slicer1, slicer2,
         # --- HIERARCHICAL SEGMENTATION ---
         _section_header('Hierarchical Segmentation'),
         html.Div([
-            _controls_column(core_cols, mask_cols,
+            _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
                              default_x, default_y, log_val),
             html.Div([
                 dcc.Graph(id='scatter-plot',
@@ -196,6 +236,7 @@ def _make_layout_3d(core_cols, mask_cols, slicer0, slicer1, slicer2,
                           clear_on_unhover=True,
                           style={'width': '100%'}),
             ], style={'flex': '1', 'padding': '0'}),
+            _exp_eff_panel(has_dp),
         ], style={'display': 'flex', 'padding': '0 20px'}),
 
         # --- IMAGE + REGRESSION (side by side) ---
@@ -247,10 +288,11 @@ def _make_layout_3d(core_cols, mask_cols, slicer0, slicer1, slicer2,
               'maxWidth': '1400px', 'margin': '0 auto'})
 
 
-def _make_layout_2d(core_cols, mask_cols, bg_names,
-                    x_names=None, y_names=None):
+def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
+                    x_names=None, y_names=None, has_dp=False):
     """Build layout for 2D data (single go.Image view)."""
-    all_cols, default_x, default_y, log_val = _defaults(core_cols, mask_cols)
+    all_cols, default_x, default_y, log_val = _defaults(
+        generic_cols, sig_cols, prune_cols, mask_cols)
 
     return html.Div([
         # --- APP HEADER ---
@@ -263,7 +305,7 @@ def _make_layout_2d(core_cols, mask_cols, bg_names,
         # --- HIERARCHICAL SEGMENTATION ---
         _section_header('Hierarchical Segmentation'),
         html.Div([
-            _controls_column(core_cols, mask_cols,
+            _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
                              default_x, default_y, log_val),
             html.Div([
                 dcc.Graph(id='scatter-plot',
@@ -271,6 +313,7 @@ def _make_layout_2d(core_cols, mask_cols, bg_names,
                           clear_on_unhover=True,
                           style={'width': '100%'}),
             ], style={'flex': '1', 'padding': '0'}),
+            _exp_eff_panel(has_dp),
         ], style={'display': 'flex', 'padding': '0 20px'}),
 
         # --- IMAGE + REGRESSION (side by side) ---
@@ -331,7 +374,7 @@ def _create_app(ana_glow, mask_target=None, feature_names=None):
         app (Dash): configured Dash application
     """
     df = prep_df(ana_glow, mask_target=mask_target)
-    core_cols, mask_cols = get_feature_columns(df)
+    generic_cols, sig_cols, prune_cols, mask_cols = get_feature_columns(df)
     mask_idx = ana_glow.exp.mask_idx
     ndim = mask_idx.ndim
     is_3d = ndim == 3
@@ -339,16 +382,20 @@ def _create_app(ana_glow, mask_target=None, feature_names=None):
     app = Dash(__name__, update_title=None)
 
     if is_3d:
-        _setup_3d(app, ana_glow, df, core_cols, mask_cols,
+        _setup_3d(app, ana_glow, df,
+                  generic_cols, sig_cols, prune_cols, mask_cols,
                   feature_names=feature_names)
     else:
-        _setup_2d(app, ana_glow, df, core_cols, mask_cols,
+        _setup_2d(app, ana_glow, df,
+                  generic_cols, sig_cols, prune_cols, mask_cols,
                   feature_names=feature_names)
 
     return app
 
 
-def _setup_3d(app, ana_glow, df, core_cols, mask_cols, feature_names=None):
+def _setup_3d(app, ana_glow, df,
+              generic_cols, sig_cols, prune_cols, mask_cols,
+              feature_names=None):
     """Set up the app for 3D data using dash-slicer."""
     from dash_slicer import VolumeSlicer
 
@@ -366,9 +413,11 @@ def _setup_3d(app, ana_glow, df, core_cols, mask_cols, feature_names=None):
     _, x_names, _ = _get_x_labels(ana_glow.exp)
     y_names = _get_y_labels(ana_glow.exp, feature_names=feature_names)
 
-    app.layout = _make_layout_3d(core_cols, mask_cols,
+    has_dp = bool(getattr(ana_glow, 'dp_info', {}).get('sig_reg_list'))
+    app.layout = _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                                  slicer0, slicer1, slicer2,
-                                 x_names=x_names, y_names=y_names)
+                                 x_names=x_names, y_names=y_names,
+                                 has_dp=has_dp)
 
     # --- shared callbacks ---
     _register_scatter_callback(app, df, ana_glow)
@@ -465,7 +514,9 @@ def _build_overlay(slicer, label_map, visible_list, color_map,
     return slicer.create_overlay_data(mask, colors)
 
 
-def _setup_2d(app, ana_glow, df, core_cols, mask_cols, feature_names=None):
+def _setup_2d(app, ana_glow, df,
+              generic_cols, sig_cols, prune_cols, mask_cols,
+              feature_names=None):
     """Set up the app for 2D data using Plotly go.Image."""
     mask_idx = ana_glow.exp.mask_idx
     bg_dict = compute_backgrounds(ana_glow, feature_names=feature_names)
@@ -474,8 +525,11 @@ def _setup_2d(app, ana_glow, df, core_cols, mask_cols, feature_names=None):
     _, x_names, _ = _get_x_labels(ana_glow.exp)
     y_names = _get_y_labels(ana_glow.exp, feature_names=feature_names)
 
-    app.layout = _make_layout_2d(core_cols, mask_cols, bg_names,
-                                 x_names=x_names, y_names=y_names)
+    has_dp = bool(getattr(ana_glow, 'dp_info', {}).get('sig_reg_list'))
+    app.layout = _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols,
+                                 bg_names,
+                                 x_names=x_names, y_names=y_names,
+                                 has_dp=has_dp)
 
     # --- shared callbacks ---
     _register_scatter_callback(app, df, ana_glow)
@@ -515,22 +569,122 @@ def _setup_2d(app, ana_glow, df, core_cols, mask_cols, feature_names=None):
 # Shared callbacks
 # ---------------------------------------------------------------------------
 
+def _rerun_dp(ana_glow, df, exp_eff):
+    """Re-run the DP with a new exp_eff and update df columns in-place.
+
+    Returns the new lambda value.
+    """
+    from .data import _PRUNING_FEATURES  # avoid circular at top level
+    from glow.experiment.prune import _dp_solve
+    from glow.graph import SCGraph, GRAPH_EXCLUDE
+
+    dp_info = getattr(ana_glow, 'dp_info', {})
+    if not dp_info or not dp_info.get('sig_reg_list'):
+        return 0.0
+
+    lam = np.log(1 + 1 / exp_eff)
+
+    # reconstruct a minimal SCGraph from cached children dict
+    sig_reg_list = dp_info['sig_reg_list']
+    ll_full = dp_info['ll_full']
+    ll_null = dp_info['ll_null']
+    num_vox = ana_glow.exp.y.shape[2]
+    subgraph = SCGraph.from_children(ana_glow.child_dict[0],
+                                     num_leaf=num_vox,
+                                     subset=sig_reg_list)
+
+    reg_out_list, new_info = _dp_solve(subgraph, sig_reg_list,
+                                       ll_full, ll_null, lam)
+
+    # update dp_info on the analysis object (so threshold lines pick it up)
+    ana_glow.dp_info['lam'] = lam
+    ana_glow.dp_info['gain'] = new_info['gain']
+
+    # update effect_list on the analysis object
+    import glow.graph
+    import glow.effect
+    ana_glow.effect_list = []
+    exp = ana_glow.exp
+    for reg_idx in reg_out_list:
+        label_map = glow.graph.get_label_map(reg_idx_list=[reg_idx],
+                                             mask_idx=exp.mask_idx,
+                                             children=ana_glow.child_dict[0])
+        pval_fwer = ana_glow.pval[reg_idx]
+        eff = glow.effect.Effect.from_exp_mask(mask=label_map > -1,
+                                               exp=exp,
+                                               reg_idx=reg_idx,
+                                               pval_fwer=pval_fwer)
+        ana_glow.effect_list.append(eff)
+
+    # update DataFrame columns
+    num_reg = num_vox * 2 - 1
+    df['ll_gain'] = np.nan
+    df['ll_gain_net'] = np.nan
+    for reg_idx, g in new_info['gain'].items():
+        df.loc[df['region_idx'] == reg_idx, 'll_gain'] = g
+        df.loc[df['region_idx'] == reg_idx, 'll_gain_net'] = g - lam
+
+    # update discovered flag and estimate_state
+    discovered = np.zeros(num_reg, dtype=bool)
+    for eff in ana_glow.effect_list:
+        discovered[eff.reg_idx] = True
+    df['discovered'] = discovered
+
+    parent = glow.graph.get_parent(ana_glow.child_dict[0], num_vox)
+    sig = df['significant'].values
+    estimate_state = np.full(num_reg, 'no_effect', dtype=object)
+    estimate_state[discovered] = 'full_effect'
+    disc_set = set(np.where(discovered)[0])
+    for reg in np.where(sig & ~discovered)[0]:
+        node = reg
+        is_partial = False
+        while True:
+            node = parent[node]
+            if node == -1:
+                break
+            if node in disc_set:
+                is_partial = True
+                break
+        estimate_state[reg] = 'partial' if is_partial else 'multi_effect'
+    df['estimate_state'] = estimate_state
+
+    return lam
+
+
 def _register_scatter_callback(app, df, ana_glow):
     """Scatter plot updates when axes change or selection changes."""
     @app.callback(
-        Output('scatter-plot', 'figure'),
+        [Output('scatter-plot', 'figure'),
+         Output('exp-eff-panel', 'style')],
         [Input('dd-x', 'value'),
          Input('dd-y', 'value'),
          Input('dd-color', 'value'),
          Input('store-selected', 'data'),
-         Input('log-y-switch', 'on')],
+         Input('log-y-switch', 'on'),
+         Input('slider-exp-eff', 'value')],
     )
     def update_scatter(x_feat, y_feat, color_feat, selected_json,
-                       log_y_on):
+                       log_y_on, exp_eff):
+        # re-run DP if exp_eff slider changed and we have DP info
+        dp_info = getattr(ana_glow, 'dp_info', {})
+        has_dp = bool(dp_info.get('sig_reg_list'))
+        if has_dp and exp_eff is not None:
+            _rerun_dp(ana_glow, df, float(exp_eff))
+
         selected = set(json.loads(selected_json))
-        return build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
-                             selected_reg=selected,
-                             log_y=bool(log_y_on))
+        fig = build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
+                            selected_reg=selected,
+                            log_y=bool(log_y_on))
+
+        # show/hide the exp_eff panel
+        show_slider = has_dp and 'll_gain_net' in (x_feat, y_feat)
+        panel_style = {
+            'width': '60px', 'padding': '10px 4px',
+            'flexShrink': '0',
+            'display': 'flex' if show_slider else 'none',
+            'flexDirection': 'column', 'alignItems': 'center',
+        }
+        return fig, panel_style
 
 
 def _register_selection_callback(app, ana_glow):

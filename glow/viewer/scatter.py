@@ -113,7 +113,8 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
     # --- build hover text ---
     hover_cols = ['region_idx', 'n_voxel', 'hotel_tr', 'hotel_tr_adjusted',
                   'pval_fwer']
-    for c in ('pval_homo', 'f1', 'sens', 'spec', 'vox_in_target',
+    for c in ('pval_homo', 'll_gain', 'll_gain_net',
+              'f1', 'sens', 'spec', 'vox_in_target',
               'vox_out_target', 'hotel_tr_mu_h0', 'hotel_tr_std_h0'):
         if c in _df.columns and not _df[c].isna().all():
             hover_cols.append(c)
@@ -311,3 +312,30 @@ def _add_threshold_lines(fig, ana_glow, x_feat, y_feat):
                 fig.add_hline(y=adj_thresh, line=style,
                               annotation_text=label,
                               annotation_position='right')
+
+    # --- ll_gain axis: draw lambda threshold ---
+    dp_info = getattr(ana_glow, 'dp_info', {})
+    lam = dp_info.get('lam')
+    if lam is not None and lam > 0:
+        style_lam = dict(color='green', dash='dot', width=1.5)
+        label_lam = f'\u03bb={lam:.3f}'
+        if x_feat == 'll_gain':
+            fig.add_vline(x=lam, line=style_lam,
+                          annotation_text=label_lam,
+                          annotation_position='top')
+        if y_feat == 'll_gain':
+            fig.add_hline(y=lam, line=style_lam,
+                          annotation_text=label_lam,
+                          annotation_position='right')
+
+    # --- ll_gain_net axis: draw zero threshold ---
+    if 'll_gain_net' in (x_feat, y_feat):
+        style_zero = dict(color='green', dash='dot', width=1.5)
+        if x_feat == 'll_gain_net':
+            fig.add_vline(x=0, line=style_zero,
+                          annotation_text='net = 0',
+                          annotation_position='top')
+        if y_feat == 'll_gain_net':
+            fig.add_hline(y=0, line=style_zero,
+                          annotation_text='net = 0',
+                          annotation_position='right')

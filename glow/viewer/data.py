@@ -50,6 +50,18 @@ def prep_df(ana_glow, mask_target=None):
             homo_pval[reg_idx] = pval
     d['pval_homo'] = homo_pval
 
+    # DP pruning diagnostics (only populated with prune_method='geom_prior')
+    ll_gain = np.full(num_reg, np.nan)
+    ll_gain_net = np.full(num_reg, np.nan)
+    _dp_info = getattr(ana_glow, 'dp_info', {})
+    if _dp_info and 'gain' in _dp_info:
+        lam = _dp_info['lam']
+        for reg_idx, g in _dp_info['gain'].items():
+            ll_gain[reg_idx] = g
+            ll_gain_net[reg_idx] = g - lam
+    d['ll_gain'] = ll_gain
+    d['ll_gain_net'] = ll_gain_net
+
     # significant flag (pval <= alpha_fwer)
     alpha_fwer = getattr(ana_glow, 'alpha_fwer', 0.05)
     d['significant'] = ~np.isnan(ana_glow.pval) & (ana_glow.pval <= alpha_fwer)
@@ -106,20 +118,24 @@ def prep_df(ana_glow, mask_target=None):
     return df
 
 
+_GENERIC_FEATURES = {'n_voxel'}
+_PRUNING_FEATURES = {'pval_homo', 'll_gain', 'll_gain_net'}
 _MASK_FEATURES = {'f1', 'sens', 'spec', 'vox_in_target', 'vox_out_target'}
 
 
 def get_feature_columns(df):
-    """Return two sorted lists of numeric columns for scatter axes/color.
+    """Return feature columns grouped by category.
 
     Excludes boolean and index columns, and columns that are all NaN.
 
     Returns:
-        core (list[str]): alphabetised core analysis features
-        mask (list[str]): alphabetised mask-target features (may be empty)
+        generic (list[str]): generic features (e.g. n_voxel)
+        significance (list[str]): significance-testing features
+        pruning (list[str]): pruning-related features
+        mask (list[str]): mask-target features (may be empty)
     """
     exclude = {'region_idx', 'discovered', 'significant', 'estimate_state'}
-    core, mask = [], []
+    generic, significance, pruning, mask = [], [], [], []
     for c in df.columns:
         if c in exclude:
             continue
@@ -127,11 +143,15 @@ def get_feature_columns(df):
             continue
         if df[c].isna().all():
             continue
-        if c in _MASK_FEATURES:
+        if c in _GENERIC_FEATURES:
+            generic.append(c)
+        elif c in _PRUNING_FEATURES:
+            pruning.append(c)
+        elif c in _MASK_FEATURES:
             mask.append(c)
         else:
-            core.append(c)
-    return sorted(core), sorted(mask)
+            significance.append(c)
+    return sorted(generic), sorted(significance), sorted(pruning), sorted(mask)
 
 
 def compute_backgrounds(ana_glow, feature_names=None):
