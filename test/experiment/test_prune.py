@@ -2,7 +2,8 @@ from glow.experiment import Experiment
 from glow.experiment.mancova import decompose
 from glow.experiment.prune import (
     np, prune, prune_dp,
-    _region_loglik, _compute_region_ll,
+    _region_loglik, _compute_region_ll, _calibrate_lambda,
+    _build_vox_cache, _compute_all_ll, _gains_from_ll,
 )
 
 
@@ -158,6 +159,40 @@ class TestDPSolve:
         assert info['lam'] == 0.0
 
 
+class TestSameNodeGain:
+    """test that gain is same-node LLR (sigma cancels)."""
+
+    def test_gain_equals_same_node_llr(self):
+        """gain(node) should equal ll_full(node) - ll_null(node)."""
+        children = _make_tree_8()
+        exp = _make_exp_with_effect()
+        sig_all = [8, 9, 10, 11, 12, 13, 14]
+        _, info = prune_dp(sig_all, children, exp, lam=0.0)
+
+        # gain should be the same-node LLR stored in gain_per_node
+        for node in sig_all:
+            assert np.isclose(info['gain'][node],
+                              info['gain_per_node'][node]), \
+                f'gain mismatch at node {node}'
+
+    def test_gain_positive_for_effect_regions(self):
+        """effect regions should have positive same-node LLR."""
+        children = _make_tree_8()
+        exp = _make_exp_with_effect()
+        # node 8 covers voxels 0-1 (strong effect)
+        _, info = prune_dp([8], children, exp, lam=0.0)
+        assert info['gain'][8] > 0
+
+    def test_gain_per_node_in_dp_info(self):
+        """dp_info should contain gain_per_node for viewer re-use."""
+        children = _make_tree_8()
+        exp = _make_exp_with_effect()
+        _, info = prune_dp([8, 9], children, exp, lam=0.0)
+        assert 'gain_per_node' in info
+        assert 8 in info['gain_per_node']
+        assert 9 in info['gain_per_node']
+
+
 class TestLambdaFormula:
     """test analytic lambda from geometric prior."""
 
@@ -186,3 +221,45 @@ class TestLambdaFormula:
         out_1, _ = prune_dp(sig_all, children, exp, exp_eff=1)
         out_10, _ = prune_dp(sig_all, children, exp, exp_eff=10)
         assert len(out_10) >= len(out_1)
+
+
+class TestPermutationCalibration:
+    """test permutation-based lambda calibration."""
+
+    def test_calibrate_lambda_returns_positive(self):
+        """calibrated lambda should be positive."""
+        children = _make_tree_8()
+        exp = _make_exp_with_effect()
+        sig_all = [8, 9, 10, 11, 12, 13, 14]
+        q_tup = decompose(exp.x, exp.contrast)
+        vox_cache = _build_vox_cache(sig_all, children, 8)
+        lam, max_gains = _calibrate_lambda(
+            sig_all, exp, q_tup, vox_cache, n_perm=20, alpha=0.05)
+        assert lam > 0
+        assert len(max_gains) == 20
+
+    def test_perm_calibrated_dp_finds_effects(self):
+        """permutation-calibrated DP should find effect regions."""
+        children = _make_tree_8()
+        exp = _make_exp_with_effect()
+        sig_all = [8, 9, 10, 11, 12, 13, 14]
+        # use permutation calibration (exp_eff=None, lam=None)
+        reg_out, info = prune_dp(sig_all, children, exp,
+                                 n_perm=25, alpha=0.05)
+        # should find at least one effect (voxels 0-3 have strong signal)
+        assert len(reg_out) > 0
+        assert info['lam'] > 0
+
+    def test_null_data_finds_nothing(self):
+        """on pure-null data, permutation-calibrated DP should find nothing."""
+        np.random.seed(99)
+        children = _make_tree_8()
+        # no effect imposed — pure noise
+        exp = Experiment.from_gauss(a=2, b=2, shape=(8,),
+                                    num_img=20, seed=99)
+        sig_all = [8, 9, 10, 11, 12, 13, 14]
+        reg_out, info = prune_dp(sig_all, children, exp,
+                                 n_perm=50, alpha=0.05)
+        # with pure noise and proper calibration, should find 0 or very few
+        assert len(reg_out) <= 1, \
+            f'expected <=1 effect on null data, got {len(reg_out)}'

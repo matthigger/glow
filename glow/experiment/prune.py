@@ -234,23 +234,26 @@ def _compute_all_ll(sig_reg_list, y, q_tup, vox_cache):
     return ll_full, ll_null
 
 
-def _dp_solve(subgraph, sig_reg_list, ll_full, ll_null, lam):
+def _dp_solve(subgraph, sig_reg_list, gain_per_node, lam):
     """bottom-up DP on the significant subtree.
 
     Finds the antichain E maximising sum_{i in E} [gain(i) - lambda].
 
+    gain(i) is the same-node log-likelihood ratio:
+        gain(i) = LL_full(i) - LL_null(i)
+    where both are computed on the same region so that the spatial
+    covariance (sigma) cancels.
+
     Args:
         subgraph (SCGraph): short-circuited significant subtree
         sig_reg_list (list): significant region indices (ascending order)
-        ll_full (dict): node -> LL_1
-        ll_null (dict): node -> LL_0
+        gain_per_node (dict): node -> same-node LLR
         lam (float): per-region penalty
 
     Returns:
         reg_out_list (list): sorted indices of selected effect regions
-        dp_info (dict): diagnostic arrays (null_sum, gain, best per node)
+        dp_info (dict): diagnostic arrays (gain, best per node)
     """
-    null_sum = {}
     gain = {}
     best = {}
     chose_select = {}
@@ -259,13 +262,7 @@ def _dp_solve(subgraph, sig_reg_list, ll_full, ll_null, lam):
     for node in sorted(sig_reg_list):
         kids = subgraph.children.get(node, [])
 
-        if not kids:
-            # leaf of significant subtree
-            null_sum[node] = ll_null[node]
-        else:
-            null_sum[node] = sum(null_sum[k] for k in kids)
-
-        gain[node] = ll_full[node] - null_sum[node]
+        gain[node] = gain_per_node[node]
         g_net = gain[node] - lam
 
         if not kids:
@@ -293,44 +290,96 @@ def _dp_solve(subgraph, sig_reg_list, ll_full, ll_null, lam):
         if subgraph.parent[node] == GRAPH_EXCLUDE:
             _backtrack(node)
 
-    dp_info = dict(null_sum=null_sum, gain=gain, best=best, lam=lam)
+    dp_info = dict(gain=gain, best=best, lam=lam)
     return sorted(reg_out_list), dp_info
 
 
-def prune_dp(sig_reg_list, children, exp, exp_eff=1, lam=None):
-    """optimal pruning via DP with geometric prior.
+def _gains_from_ll(ll_full, ll_null, sig_reg_list):
+    """same-node LLR gain for each significant node.
 
-    Finds the antichain E in the significant subtree that maximises
-    the MAP objective under a geometric prior on K >= 0 effect regions:
+    gain(i) = LL_full(i) - LL_null(i).  Both are computed on the
+    same region so that the spatial covariance (sigma) cancels.
+
+    Returns:
+        gain_per_node (dict): node -> same-node LLR
+    """
+    return {node: ll_full[node] - ll_null[node] for node in sig_reg_list}
+
+
+def _calibrate_lambda(sig_reg_list, exp, q_tup, vox_cache,
+                      n_perm, alpha):
+    """calibrate lambda from Freedman-Lane permutations.
+
+    For each permutation, computes the same-node LLR gain for every
+    significant node and records the maximum gain.  Lambda is set to
+    the (1 - alpha) quantile of these max-gains so that under H0
+    even the single strongest false-positive region is unlikely to
+    exceed the penalty.
+
+    Args:
+        sig_reg_list (list): significant region indices
+        exp (Experiment): experiment data (unpermuted)
+        q_tup: pre-computed QR decomposition
+        vox_cache (dict): node -> voxel index array
+        n_perm (int): number of permutations (excluding unpermuted)
+        alpha (float): significance level for the quantile
+
+    Returns:
+        lam (float): calibrated per-region penalty
+        max_gains (np.array): (n_perm,) max single-node gain per perm
+    """
+    max_gains = np.empty(n_perm)
+    for p in range(n_perm):
+        exp_perm = exp.permute(perm_idx=p + 1)  # 1-indexed (0 = unpermuted)
+        ll_f_p, ll_n_p = _compute_all_ll(sig_reg_list, exp_perm.y,
+                                         q_tup, vox_cache)
+        gains_p = _gains_from_ll(ll_f_p, ll_n_p, sig_reg_list)
+        max_gains[p] = max(gains_p.values()) if gains_p else 0.0
+
+    lam = float(np.quantile(max_gains, 1.0 - alpha))
+    return lam, max_gains
+
+
+def prune_dp(sig_reg_list, children, exp, n_perm=100, alpha=0.05,
+             exp_eff=None, lam=None):
+    """optimal pruning via DP with permutation-calibrated penalty.
+
+    Finds the antichain E in the significant subtree that maximises:
 
         J(E) = sum_{i in E} [gain(i) - lambda]
 
-    where gain(i) = LL_1(i) - null_sum(i) is the log-likelihood ratio
-    of the full model (effect present) vs the null model (nuisance only)
-    accumulated over the leaves of i's subtree.
+    where gain(i) = LL_full(i) - LL_null(i) is the same-node LLR
+    (full MANCOVA model vs null model, same region, so the spatial
+    covariance sigma cancels).
 
-    The per-region penalty lambda is derived from a geometric prior
-    with expected number of effects exp_eff:
+    Lambda is calibrated from Freedman-Lane permutations: for each
+    permutation the maximum same-node gain across all significant
+    regions is recorded, and lambda is set to the (1 - alpha) quantile.
+    This ensures that under H0 even the single strongest false-positive
+    region is unlikely to exceed the penalty.
 
-        lambda = log(1 + 1 / exp_eff)
+    If ``lam`` is provided it overrides the permutation calibration.
+    If ``exp_eff`` is provided (and ``lam`` is None) it uses the
+    analytic geometric-prior formula lambda = log(1 + 1/exp_eff)
+    instead of permutations.
 
     Args:
         sig_reg_list (list): regions declared significant (via FWER)
         children (np.array): (num_vox - 1, 2) child index pairs
         exp (Experiment): experiment data
-        exp_eff (float): expected number of effect regions under the
-            geometric prior (default 1).  higher values yield a
-            smaller per-region penalty and thus more regions.
-        lam (float or None): override per-region penalty.  if given,
-            exp_eff is ignored.
+        n_perm (int): number of calibration permutations (default 100)
+        alpha (float): quantile level for calibration (default 0.05)
+        exp_eff (float or None): expected number of effect regions
+            (geometric-prior fallback; ignored when lam is given)
+        lam (float or None): override per-region penalty
 
     Returns:
         reg_out_list (list): sorted indices of effect regions
-        dp_info (dict): diagnostics (null_sum, gain, best, lam)
+        dp_info (dict): diagnostics (gain, best, lam, ...)
     """
     if not sig_reg_list:
-        return [], dict(null_sum={}, gain={}, best={}, lam=0.0,
-                        ll_full={}, ll_null={},
+        return [], dict(gain={}, best={}, lam=0.0,
+                        gain_per_node={},
                         subgraph_children={},
                         sig_reg_list=[])
 
@@ -346,21 +395,27 @@ def prune_dp(sig_reg_list, children, exp, exp_eff=1, lam=None):
     # cache voxel indices per significant node
     vox_cache = _build_vox_cache(sig_reg_list, children, num_vox)
 
-    # compute LL_1 and LL_0 on real (unpermuted) data
+    # compute same-node gains on real (unpermuted) data
     ll_full, ll_null = _compute_all_ll(sig_reg_list, exp.y, q_tup,
                                        vox_cache)
+    gain_per_node = _gains_from_ll(ll_full, ll_null, sig_reg_list)
 
-    # derive lambda from the geometric prior (if not provided)
-    if lam is None:
+    # determine lambda
+    if lam is not None:
+        pass  # explicit override
+    elif exp_eff is not None:
         lam = np.log(1 + 1 / exp_eff)
+    else:
+        # permutation calibration
+        lam, _ = _calibrate_lambda(sig_reg_list, exp, q_tup, vox_cache,
+                                   n_perm=n_perm, alpha=alpha)
 
     # run DP
     reg_out_list, dp_info = _dp_solve(subgraph, sig_reg_list,
-                                      ll_full, ll_null, lam)
+                                      gain_per_node, lam)
 
     # store intermediates for viewer re-computation
-    dp_info['ll_full'] = ll_full
-    dp_info['ll_null'] = ll_null
+    dp_info['gain_per_node'] = gain_per_node
     dp_info['subgraph_children'] = dict(subgraph.children)
     dp_info['sig_reg_list'] = list(sig_reg_list)
 

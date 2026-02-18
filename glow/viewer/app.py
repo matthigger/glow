@@ -586,15 +586,14 @@ def _rerun_dp(ana_glow, df, exp_eff):
 
     # reconstruct a minimal SCGraph from cached children dict
     sig_reg_list = dp_info['sig_reg_list']
-    ll_full = dp_info['ll_full']
-    ll_null = dp_info['ll_null']
+    gain_per_node = dp_info['gain_per_node']
     num_vox = ana_glow.exp.y.shape[2]
     subgraph = SCGraph.from_children(ana_glow.child_dict[0],
                                      num_leaf=num_vox,
                                      subset=sig_reg_list)
 
     reg_out_list, new_info = _dp_solve(subgraph, sig_reg_list,
-                                       ll_full, ll_null, lam)
+                                       gain_per_node, lam)
 
     # update dp_info on the analysis object (so threshold lines pick it up)
     ana_glow.dp_info['lam'] = lam
