@@ -422,59 +422,251 @@ def prune_dp(sig_reg_list, children, exp, n_perm=100, alpha=0.05,
     return reg_out_list, dp_info
 
 
-def prune_greedy(sig_reg_list, children, num_leaf, stat_adj):
-    """Greedy pruning: select significant regions by largest adjusted stat.
-
-    Iteratively picks the significant region with the highest adjusted
-    statistic, adds it to the output, and removes all regions that
-    share voxels with it (ancestors and descendants in the hierarchy).
+def _cache_sufficient_stats(sig_reg_list, y, vox_cache):
+    """cache (ysum, yout, size) per significant node.
 
     Args:
-        sig_reg_list (list): region indices declared significant
-        children (np.array): (num_leaf - 1, 2) child index pairs
-        num_leaf (int): number of leaf nodes (voxels)
-        stat_adj (np.array): (num_reg,) adjusted statistic for perm 0
+        sig_reg_list (list): significant region indices
+        y (np.array): (b, num_img, num_vox) imaging data
+        vox_cache (dict): node -> voxel index array
 
     Returns:
-        reg_out_list (list): indices of selected regions (sorted)
+        stats (dict): node -> (ysum, yout, size)
+            ysum: (b, num_img) sum of y across voxels
+            yout: (b, b) sum of y_v @ y_v.T across voxels
+            size: number of voxels
     """
-    if not len(sig_reg_list):
-        return []
+    stats = {}
+    for node in sig_reg_list:
+        y_r = y[:, :, vox_cache[node]]
+        n = y_r.shape[2]
+        ysum = y_r.sum(axis=2)
+        yr = y_r.reshape((y_r.shape[0], -1), order='F')
+        yout = yr @ yr.T
+        stats[node] = [ysum.copy(), yout.copy(), n]
+    return stats
 
-    # build parent lookup and descendant sets
-    parent = get_parent(children, num_leaf)
 
-    # for each significant region, collect all descendants
-    sig_set = set(sig_reg_list)
-    desc = {}  # reg_idx -> set of descendants (including self)
-    for reg in sig_set:
-        desc[reg] = set(iter_topo(children=children, num_leaf=num_leaf,
-                                  node_start=reg))
+def _null_ll_from_stats(ysum, yout, n, q0):
+    """null-model log-likelihood from sufficient statistics.
 
-    # for each significant region, collect all ancestors
-    anc = {}
-    for reg in sig_set:
-        ancestors = set()
-        node = reg
-        while True:
-            p = parent[node]
-            if p == -1:
-                break
-            ancestors.add(p)
-            node = p
-        anc[reg] = ancestors
+    Computes -(n/2) * log|det((E+H)/n)| where
+    E + H = yout - ysum @ q0.T @ q0 @ ysum.T / n.
 
-    # sort significant regions by adjusted stat (descending)
-    candidates = sorted(sig_set, key=lambda r: stat_adj[r], reverse=True)
+    Args:
+        ysum (np.array): (b, num_img)
+        yout (np.array): (b, b)
+        n (int): number of voxels
+        q0 (np.array): nuisance subspace from decompose()
 
+    Returns:
+        ll (float): null-model profile log-likelihood
+    """
+    e_plus_h = yout - ysum @ q0.T @ q0 @ ysum.T / n
+    return _loglik_from_cov(e_plus_h, n)
+
+
+def _leaf_depths(subgraph, sig_reg_list):
+    """depth of each SCGraph leaf (1 = isolated root, deeper = more ancestors).
+
+    Args:
+        subgraph (SCGraph): significant subtree
+        sig_reg_list (list): significant region indices
+
+    Returns:
+        depths (dict): leaf_node -> depth (int >= 1)
+    """
+    depths = {}
+
+    def _walk(node, d):
+        kids = subgraph.children.get(node, [])
+        if not kids:
+            depths[node] = d
+        else:
+            for k in kids:
+                _walk(k, d + 1)
+
+    for node in sorted(sig_reg_list):
+        if subgraph.parent[node] == GRAPH_EXCLUDE:
+            _walk(node, 1)
+    return depths
+
+
+def _depth_weights(subgraph, sig_reg_list):
+    """per-node weight so every voxel contributes to D likelihood terms.
+
+    Internal nodes get weight 1.  SCGraph leaves at depth d(l) get
+    weight 1 + D - d(l) where D = max depth across all leaves.
+
+    Args:
+        subgraph (SCGraph): significant subtree
+        sig_reg_list (list): significant region indices
+
+    Returns:
+        weights (dict): node -> float weight
+        depths (dict): leaf_node -> depth
+    """
+    depths = _leaf_depths(subgraph, sig_reg_list)
+    D = max(depths.values()) if depths else 1
+    weights = {}
+    for node in sig_reg_list:
+        if node in depths:
+            weights[node] = 1 + D - depths[node]
+        else:
+            weights[node] = 1
+    return weights, depths
+
+
+def _apply_effect(node, stats, q_tup, subgraph):
+    """adjust sufficient stats after selecting node as an effect.
+
+    Removes the Q1 projection of node's y_bar from:
+      - the node itself and all descendants (all voxels shifted)
+      - all ancestors (only the V_node voxels shifted)
+
+    Args:
+        node: selected effect node index
+        stats (dict): node -> [ysum, yout, size] (mutated in-place)
+        q_tup: (q0, q1, q2) from decompose()
+        subgraph (SCGraph): significant subtree
+    """
+    ysum_i, yout_i, n_i = stats[node]
+    f = (ysum_i / n_i) @ q_tup[1].T @ q_tup[1]
+
+    # snapshot ysum_i before mutating (needed for ancestor adjustment)
+    ysum_i_orig = ysum_i.copy()
+
+    # node itself + descendants: all n_d voxels lie inside V_i
+    for d in [node] + list(subgraph.iter_desc(node)):
+        ysum_d, yout_d, n_d = stats[d]
+        stats[d][1] = yout_d - ysum_d @ f.T - f @ ysum_d.T + n_d * (f @ f.T)
+        stats[d][0] = ysum_d - n_d * f
+
+    # ancestors: only the n_i voxels in V_i are shifted
+    for a in subgraph.iter_ancest(node):
+        ysum_a, yout_a, n_a = stats[a]
+        stats[a][1] = yout_a - ysum_i_orig @ f.T - f @ ysum_i_orig.T + n_i * (f @ f.T)
+        stats[a][0] = ysum_a - n_i * f
+
+
+def _weighted_cost(sig_reg_list, stats, q0, weights):
+    """weighted sum of null-model LL across all significant nodes."""
+    return sum(
+        weights[node] * _null_ll_from_stats(stats[node][0], stats[node][1],
+                                            stats[node][2], q0)
+        for node in sig_reg_list
+    )
+
+
+def prune_adjusted_ll(sig_reg_list, children, exp):
+    """Disjoint greedy pruning by tree-wide adjusted null-model LL.
+
+    Each iteration evaluates every remaining candidate by temporarily
+    removing its Q1 projection from itself, its descendants, and its
+    ancestors, then computing the weighted sum of null-model LLs
+    across all remaining nodes.  The candidate that maximises this
+    tree-wide cost is selected; it and all its relatives (ancestors
+    and descendants) are then discarded from the pool.
+
+    After discarding, scores must be recomputed because disjoint
+    candidates can share ancestors with the discarded set, changing
+    the set of nodes in the sum.  However, no sufficient-statistic
+    recomputation is needed: discarded nodes are the only ones whose
+    stats would change, and remaining nodes' stats are untouched.
+
+    Shallow SCGraph leaves are upweighted so every voxel contributes
+    to the same number of likelihood terms.
+
+    Args:
+        sig_reg_list (list): regions declared significant (via FWER)
+        children (np.array): (num_vox - 1, 2) child index pairs
+        exp (Experiment): experiment data
+
+    Returns:
+        reg_out_list (list): sorted indices of selected effect regions
+        info (dict): diagnostics (gain_per_node, sig_reg_list,
+            subgraph_children, cost_history, weights)
+    """
+    if not sig_reg_list:
+        return [], dict(gain_per_node={}, sig_reg_list=[],
+                        subgraph_children={}, cost_history=[],
+                        weights={})
+
+    num_vox = exp.y.shape[2]
+
+    subgraph = SCGraph.from_children(children, num_leaf=num_vox,
+                                     subset=sig_reg_list)
+    q_tup = decompose(exp.x, exp.contrast)
+    vox_cache = _build_vox_cache(sig_reg_list, children, num_vox)
+    stats = _cache_sufficient_stats(sig_reg_list, exp.y, vox_cache)
+    weights, _ = _depth_weights(subgraph, sig_reg_list)
+
+    ll_full, ll_null = _compute_all_ll(sig_reg_list, exp.y, q_tup,
+                                       vox_cache)
+    gain_per_node = _gains_from_ll(ll_full, ll_null, sig_reg_list)
+
+    q0 = q_tup[0]
+
+    # pre-compute weighted null LL once per node (stats never change)
+    wll_null = {node: weights[node] * _null_ll_from_stats(
+                    stats[node][0], stats[node][1], stats[node][2], q0)
+                for node in sig_reg_list}
+
+    remaining = set(sig_reg_list)
+    baseline = sum(wll_null[j] for j in remaining)
+    cost_history = [baseline]
     selected = []
-    removed = set()
-    for reg in candidates:
-        if reg in removed:
-            continue
-        selected.append(reg)
-        # remove all regions that share voxels (ancestors + descendants)
-        overlap = (desc[reg] | anc[reg]) & sig_set
-        removed |= overlap
 
-    return sorted(selected)
+    while remaining:
+        best_node = None
+        best_cost = baseline
+
+        for node in remaining:
+            affected = ([node]
+                        + list(subgraph.iter_desc(node))
+                        + list(subgraph.iter_ancest(node)))
+            affected_remaining = [a for a in affected if a in remaining]
+            backup = {a: (stats[a][0].copy(), stats[a][1].copy(),
+                          stats[a][2])
+                      for a in affected if a in stats}
+
+            _apply_effect(node, stats, q_tup, subgraph)
+
+            # only recompute LL for affected nodes still in remaining;
+            # all other remaining nodes contribute their cached wll_null
+            delta = sum(
+                weights[a] * _null_ll_from_stats(
+                    stats[a][0], stats[a][1], stats[a][2], q0)
+                - wll_null[a]
+                for a in affected_remaining)
+            new_cost = baseline + delta
+
+            if new_cost > best_cost:
+                best_cost = new_cost
+                best_node = node
+
+            for a, (ys, yo, n) in backup.items():
+                stats[a][0] = ys
+                stats[a][1] = yo
+                stats[a][2] = n
+
+        if best_node is None:
+            break
+
+        selected.append(best_node)
+        cost_history.append(best_cost)
+
+        to_discard = ({best_node}
+                      | set(subgraph.iter_desc(best_node))
+                      | set(subgraph.iter_ancest(best_node)))
+        remaining -= to_discard
+        baseline = sum(wll_null[j] for j in remaining)
+
+    info = dict(
+        gain_per_node=gain_per_node,
+        sig_reg_list=list(sig_reg_list),
+        subgraph_children=dict(subgraph.children),
+        cost_history=cost_history,
+        weights=weights,
+    )
+    return sorted(selected), info
