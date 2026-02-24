@@ -19,3 +19,4 @@ profile*
 /glow/benchmark/move_plot.py
 .glow_aws_config
 .docker_version
+/docs/
