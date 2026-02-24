@@ -333,6 +333,7 @@ class AWSBatchRunner:
                     pass
         
         failed_jobs = []  # track failed jobs for detailed reporting
+        resubmitted_job_ids = set()  # jobs that were successfully resubmitted
         first_check = True  # track if this is the first instance type check
         had_running_jobs = False  # track if we've seen running jobs (for immediate check)
         downloaded_jobs = set()  # track which jobs have been downloaded
@@ -666,6 +667,7 @@ class AWSBatchRunner:
                         self._resubmit_failed_jobs(
                             newly_failed_jobs, job_info_map)
                     resubmitted_total += len(resubmit_reasons)
+                    resubmitted_job_ids.update(resubmit_reasons.keys())
                     if resubmitted:
                         job_ids.extend(resubmitted)
 
@@ -721,12 +723,14 @@ class AWSBatchRunner:
                     print(f'  results downloaded: {len(downloaded_jobs)}/{statuses["SUCCEEDED"]}')
                     print(f'  total vCPU-hours: {vcpu_hours:.2f}')
                     
-                    # print detailed failure reasons
-                    if failed_jobs:
+                    # print detailed failure reasons (exclude resubmitted jobs)
+                    unresolved = [j for j in failed_jobs
+                                  if j['jobId'] not in resubmitted_job_ids]
+                    if unresolved:
                         print(f'\n{"="*60}')
                         print('FAILURE DETAILS:')
                         print(f'{"="*60}')
-                        for i, job in enumerate(failed_jobs, 1):
+                        for i, job in enumerate(unresolved, 1):
                             print(f'\n{i}. Job: {job["jobName"]} ({job["jobId"]})')
                             print(f'   Reason: {job["statusReason"]}')
                             container = job.get('container', {})
