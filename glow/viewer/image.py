@@ -182,6 +182,19 @@ def _overlay_regions(rgba, label_slice, reg_idx_list, alpha=0.55):
             rgba[mask, 2] * (1 - alpha) + b * alpha, 0, 255).astype(np.uint8)
 
 
+def _overlay_mask(rgba, bool_mask, color, alpha=0.55):
+    """Overlay a boolean mask with a given RGB colour (mutates in-place)."""
+    if bool_mask is None or not bool_mask.any():
+        return
+    r, g, b = color
+    rgba[bool_mask, 0] = np.clip(
+        rgba[bool_mask, 0] * (1 - alpha) + r * alpha, 0, 255).astype(np.uint8)
+    rgba[bool_mask, 1] = np.clip(
+        rgba[bool_mask, 1] * (1 - alpha) + g * alpha, 0, 255).astype(np.uint8)
+    rgba[bool_mask, 2] = np.clip(
+        rgba[bool_mask, 2] * (1 - alpha) + b * alpha, 0, 255).astype(np.uint8)
+
+
 def build_2d_figure(bg_img, label_map, reg_idx_list):
     """Build a single-view Plotly figure for 2D images.
 

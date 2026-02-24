@@ -123,7 +123,8 @@ def build_empty_regression():
 
 def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
                             df=None, color_map=None, hover_reg=None,
-                            n_selected=0, feature_names=None):
+                            n_selected=0, feature_names=None,
+                            target_vox=None):
     """Build a regression scatter for one or more regions.
 
     Args:
@@ -136,6 +137,9 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
         hover_reg (int|None): region being hovered (drawn translucent)
         n_selected (int): number of selected (non-hover) regions
         feature_names (list[str]|None): human-readable y feature names
+        target_vox (np.array|None): voxel indices for the full target mask.
+            When provided, an additional trace with star markers shows
+            the target mask's per-image regression.
 
     Returns:
         fig (go.Figure)
@@ -159,6 +163,8 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
     fig = go.Figure()
 
     for reg_idx in region_list:
+        is_target = (reg_idx == 'target')
+
         # determine colour
         if reg_idx in (color_map or {}):
             cidx = color_map[reg_idx]
@@ -171,7 +177,10 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
         opacity = 0.4 if is_hover else 1.0
 
         # get voxel data
-        vox_idx = _get_voxel_indices(reg_idx, children, num_vox)
+        if is_target and target_vox is not None:
+            vox_idx = target_vox
+        else:
+            vox_idx = _get_voxel_indices(reg_idx, children, num_vox)
         y_mean = _region_means(exp, vox_idx)  # (b, num_img)
         y_std_all = _region_stds(exp, vox_idx)   # (b, num_img)
         y_vals = y_mean[y_feat_idx]  # (num_img,)
@@ -183,7 +192,7 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
 
         # region stats from df
         stat_parts = []
-        if df is not None:
+        if df is not None and not is_target:
             row = df.loc[df['region_idx'] == reg_idx]
             if len(row):
                 row = row.iloc[0]
@@ -201,9 +210,10 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
                     stat_parts.append(f'<b>contains effect(s)</b>')
 
         # hover text per image
+        region_name = 'Target mask' if is_target else f'Region {reg_idx}'
         hover_texts = []
         for img_i in range(num_img):
-            parts = [f'<b>Region {reg_idx}</b>',
+            parts = [f'<b>{region_name}</b>',
                      f'image {img_i}',
                      f'{x_label} = {x_design[img_i]:.4g}',
                      f'{y_label} (mean) = {y_vals[img_i]:.4g}',
@@ -211,7 +221,8 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
             hover_texts.append('<br>'.join(parts))
 
         n_vox = len(vox_idx)
-        legend_label = f'Region {reg_idx} ({n_vox} vox)'
+        legend_label = (f'Target mask ({n_vox} vox)' if is_target
+                        else f'Region {reg_idx} ({n_vox} vox)')
 
         # scatter points with +/-1 SD error bars
         err_opacity = max(opacity * 0.5, 0.15)

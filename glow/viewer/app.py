@@ -16,12 +16,14 @@ import os
 
 import numpy as np
 import dash_daq as daq
+import plotly.graph_objects as go
 from dash import Dash, html, dcc, callback_context, no_update
 from dash.dependencies import Input, Output, State
 
-from .data import prep_df, get_feature_columns, compute_backgrounds
+from .data import (prep_df, get_feature_columns, compute_backgrounds,
+                    compute_target_stats)
 from .scatter import build_scatter
-from .image import (build_label_map, build_2d_figure, build_region_overlay,
+from .image import (build_label_map, build_region_overlay,
                     compute_bg_volume, get_region_color,
                     compute_region_center)
 from .regression import (build_regression_figure, build_empty_regression,
@@ -379,23 +381,32 @@ def _create_app(ana_glow, mask_target=None, feature_names=None):
     ndim = mask_idx.ndim
     is_3d = ndim == 3
 
+    # pre-compute target mask stats and voxel indices (if target provided)
+    target_stats = None
+    target_vox = None
+    if mask_target is not None:
+        target_stats = compute_target_stats(ana_glow, mask_target)
+        target_vox = mask_idx[mask_target & (mask_idx >= 0)]
+
     app = Dash(__name__, update_title=None)
 
     if is_3d:
         _setup_3d(app, ana_glow, df,
                   generic_cols, sig_cols, prune_cols, mask_cols,
-                  feature_names=feature_names)
+                  feature_names=feature_names,
+                  target_stats=target_stats, target_vox=target_vox)
     else:
         _setup_2d(app, ana_glow, df,
                   generic_cols, sig_cols, prune_cols, mask_cols,
-                  feature_names=feature_names)
+                  feature_names=feature_names,
+                  target_stats=target_stats, target_vox=target_vox)
 
     return app
 
 
 def _setup_3d(app, ana_glow, df,
               generic_cols, sig_cols, prune_cols, mask_cols,
-              feature_names=None):
+              feature_names=None, target_stats=None, target_vox=None):
     """Set up the app for 3D data using dash-slicer."""
     from dash_slicer import VolumeSlicer
 
@@ -419,14 +430,27 @@ def _setup_3d(app, ana_glow, df,
                                  x_names=x_names, y_names=y_names,
                                  has_dp=has_dp)
 
+    # pre-compute target mask in image space for overlays
+    mask_target_img = None
+    if target_vox is not None:
+        mask_idx = ana_glow.exp.mask_idx
+        mask_target_img = np.zeros(mask_idx.shape, dtype=bool)
+        mask_target_img[mask_idx >= 0] = np.isin(
+            mask_idx[mask_idx >= 0], target_vox)
+
     # --- shared callbacks ---
-    _register_scatter_callback(app, df, ana_glow)
-    _register_selection_callback(app, ana_glow)
-    _register_checklist_sync_callback(app, df)
-    _register_hover_callback(app, ana_glow)
+    _register_scatter_callback(app, df, ana_glow,
+                               target_stats=target_stats)
+    _register_selection_callback(app, ana_glow,
+                                 mask_target_img=mask_target_img)
+    _register_checklist_sync_callback(app, df,
+                                      target_stats=target_stats)
+    _register_hover_callback(app, ana_glow,
+                             mask_target_img=mask_target_img)
     _register_placeholder_callback(app)
     _register_regression_callback(app, ana_glow, df,
-                                  feature_names=feature_names)
+                                  feature_names=feature_names,
+                                  target_vox=target_vox)
 
     # --- setpos store: dash-slicer picks this up automatically ---
     setpos_store = dcc.Store(
@@ -467,8 +491,9 @@ def _setup_3d(app, ana_glow, df,
         if hover_reg is not None and hover_reg not in show_list:
             show_list.append(hover_reg)
 
-        # build overlay for all shown regions
-        label_map = build_label_map(show_list, ana_glow)
+        # build overlay for tree regions only ('target' handled separately)
+        tree_regs = [r for r in show_list if r != 'target']
+        label_map = build_label_map(tree_regs, ana_glow)
 
         # color index must match position in selected list (for consistency)
         color_map = {r: i for i, r in enumerate(selected)}
@@ -476,20 +501,24 @@ def _setup_3d(app, ana_glow, df,
         n_sel = len(selected)
         return (
             _build_overlay(slicer0, label_map, show_list, color_map,
-                           hover_reg=hover_reg, n_selected=n_sel),
+                           hover_reg=hover_reg, n_selected=n_sel,
+                           mask_target_img=mask_target_img),
             _build_overlay(slicer1, label_map, show_list, color_map,
-                           hover_reg=hover_reg, n_selected=n_sel),
+                           hover_reg=hover_reg, n_selected=n_sel,
+                           mask_target_img=mask_target_img),
             _build_overlay(slicer2, label_map, show_list, color_map,
-                           hover_reg=hover_reg, n_selected=n_sel),
+                           hover_reg=hover_reg, n_selected=n_sel,
+                           mask_target_img=mask_target_img),
         )
 
 
 def _build_overlay(slicer, label_map, visible_list, color_map,
-                   hover_reg=None, n_selected=0):
+                   hover_reg=None, n_selected=0, mask_target_img=None):
     """Build overlay with colours matching the selected-list order.
 
     The hover region (if not already selected) uses the next colour in
     the palette so it keeps the same colour if the user clicks to add it.
+    ``'target'`` entries use ``mask_target_img`` for their voxels.
     """
     from .image import get_region_color
 
@@ -497,11 +526,14 @@ def _build_overlay(slicer, label_map, visible_list, color_map,
     colors = []
 
     for label_val, reg_idx in enumerate(visible_list, start=1):
-        region_voxels = label_map == reg_idx
+        if reg_idx == 'target' and mask_target_img is not None:
+            region_voxels = mask_target_img
+        else:
+            region_voxels = label_map == reg_idx
         if region_voxels.any():
             mask[region_voxels] = label_val
+
         if reg_idx == hover_reg and reg_idx not in color_map:
-            # hover-only: next colour in the palette
             r, g, b = get_region_color(n_selected)
             colors.append((r, g, b, 160))
         else:
@@ -516,7 +548,7 @@ def _build_overlay(slicer, label_map, visible_list, color_map,
 
 def _setup_2d(app, ana_glow, df,
               generic_cols, sig_cols, prune_cols, mask_cols,
-              feature_names=None):
+              feature_names=None, target_stats=None, target_vox=None):
     """Set up the app for 2D data using Plotly go.Image."""
     mask_idx = ana_glow.exp.mask_idx
     bg_dict = compute_backgrounds(ana_glow, feature_names=feature_names)
@@ -531,14 +563,26 @@ def _setup_2d(app, ana_glow, df,
                                  x_names=x_names, y_names=y_names,
                                  has_dp=has_dp)
 
+    # pre-compute target mask in image space for overlays
+    mask_target_img = None
+    if target_vox is not None:
+        mask_target_img = np.zeros(mask_idx.shape, dtype=bool)
+        mask_target_img[mask_idx >= 0] = np.isin(
+            mask_idx[mask_idx >= 0], target_vox)
+
     # --- shared callbacks ---
-    _register_scatter_callback(app, df, ana_glow)
-    _register_selection_callback(app, ana_glow)
-    _register_checklist_sync_callback(app, df)
-    _register_hover_callback(app, ana_glow)
+    _register_scatter_callback(app, df, ana_glow,
+                               target_stats=target_stats)
+    _register_selection_callback(app, ana_glow,
+                                 mask_target_img=mask_target_img)
+    _register_checklist_sync_callback(app, df,
+                                      target_stats=target_stats)
+    _register_hover_callback(app, ana_glow,
+                             mask_target_img=mask_target_img)
     _register_placeholder_callback(app)
     _register_regression_callback(app, ana_glow, df,
-                                  feature_names=feature_names)
+                                  feature_names=feature_names,
+                                  target_vox=target_vox)
 
     # --- image callback: visible regions + hover + background -> figure ---
     @app.callback(
@@ -561,8 +605,33 @@ def _setup_2d(app, ana_glow, df,
         else:
             bg_img = np.full(mask_idx.shape, np.nan)
 
-        label_map = build_label_map(show_list, ana_glow)
-        return build_2d_figure(bg_img, label_map, show_list)
+        # build label map for tree regions only
+        tree_regs = [r for r in show_list if r != 'target']
+        label_map = build_label_map(tree_regs, ana_glow)
+
+        from .image import _bg_to_rgba, _overlay_regions, _overlay_mask
+        rgba = _bg_to_rgba(bg_img)
+        # overlay each entry in order, using palette color from position
+        selected_json_val = None  # not available here; use show_list order
+        for color_idx, reg_idx in enumerate(show_list):
+            if reg_idx == 'target' and mask_target_img is not None:
+                r, g, b = get_region_color(color_idx)
+                _overlay_mask(rgba, mask_target_img, (r, g, b))
+            else:
+                region_mask = label_map == reg_idx
+                if region_mask.any():
+                    r, g, b = get_region_color(color_idx)
+                    _overlay_mask(rgba, region_mask, (r, g, b))
+
+        fig = go.Figure()
+        fig.add_trace(go.Image(z=rgba))
+        fig.update_layout(
+            height=400,
+            margin=dict(l=10, r=10, t=10, b=10),
+        )
+        fig.update_xaxes(showticklabels=False)
+        fig.update_yaxes(showticklabels=False)
+        return fig
 
 
 # ---------------------------------------------------------------------------
@@ -635,7 +704,7 @@ def _rerun_dp(ana_glow, df, exp_eff):
     return lam
 
 
-def _register_scatter_callback(app, df, ana_glow):
+def _register_scatter_callback(app, df, ana_glow, target_stats=None):
     """Scatter plot updates when axes change or selection changes."""
     @app.callback(
         [Output('scatter-plot', 'figure'),
@@ -658,7 +727,8 @@ def _register_scatter_callback(app, df, ana_glow):
         selected = set(json.loads(selected_json))
         fig = build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
                             selected_reg=selected,
-                            log_y=bool(log_y_on))
+                            log_y=bool(log_y_on),
+                            target_stats=target_stats)
 
         # show/hide the exp_eff panel
         show_slider = has_dp and 'll_gain_net' in (x_feat, y_feat)
@@ -671,7 +741,7 @@ def _register_scatter_callback(app, df, ana_glow):
         return fig, panel_style
 
 
-def _register_selection_callback(app, ana_glow):
+def _register_selection_callback(app, ana_glow, mask_target_img=None):
     """Scatter click or clear button -> update store-selected + store-center."""
     @app.callback(
         [Output('store-selected', 'data'),
@@ -697,25 +767,35 @@ def _register_selection_callback(app, ana_glow):
         reg_idx = point.get('customdata')
         if reg_idx is None:
             return no_update, no_update
-        reg_idx = int(reg_idx)
+
+        # keep 'target' as a string; everything else becomes int
+        if reg_idx != 'target':
+            reg_idx = int(reg_idx)
 
         selected = json.loads(selected_json)
         if reg_idx in selected:
             selected.remove(reg_idx)
-            return json.dumps(selected), no_update  # removal — don't recenter
+            return json.dumps(selected), no_update
         else:
             selected.append(reg_idx)
-            center = compute_region_center(reg_idx, ana_glow)
+            if reg_idx == 'target' and mask_target_img is not None:
+                coords = np.argwhere(mask_target_img)
+                center = coords.mean(axis=0).tolist() if len(coords) else None
+            else:
+                center = compute_region_center(reg_idx, ana_glow)
             center_json = json.dumps(center) if center else 'null'
             return json.dumps(selected), center_json
 
 
-def _register_checklist_sync_callback(app, df):
+def _register_checklist_sync_callback(app, df, target_stats=None):
     """Sync the checklist options/value when store-selected changes.
 
     New regions default to visible (checked).  Previously unchecked
     regions stay unchecked.
     """
+    n_target_vox = (int(target_stats['n_voxel'])
+                    if target_stats is not None else 0)
+
     @app.callback(
         [Output('region-checklist', 'options'),
          Output('region-checklist', 'value')],
@@ -736,13 +816,17 @@ def _register_checklist_sync_callback(app, df):
         new_options = []
         for idx, reg_idx in enumerate(selected):
             r, g, b = get_region_color(idx)
-            rows = df.loc[df['region_idx'] == reg_idx, 'n_voxel']
-            size = int(rows.values[0]) if len(rows) else 0
+            if reg_idx == 'target':
+                display = f'Target mask  ({n_target_vox} vox)'
+            else:
+                rows = df.loc[df['region_idx'] == reg_idx, 'n_voxel']
+                size = int(rows.values[0]) if len(rows) else 0
+                display = f'Region {reg_idx}  ({size} vox)'
             label = html.Span([
                 html.Span('\u25A0 ',
                           style={'color': f'rgb({r},{g},{b})',
                                  'fontSize': '16px'}),
-                f'Region {reg_idx}  ({size} vox)',
+                display,
             ])
             new_options.append({'label': label, 'value': reg_idx})
 
@@ -755,7 +839,7 @@ def _register_checklist_sync_callback(app, df):
         return new_options, new_value
 
 
-def _register_hover_callback(app, ana_glow):
+def _register_hover_callback(app, ana_glow, mask_target_img=None):
     """Hover over scatter -> update store-hover (+ center slicers).
 
     Also updates the hover toggle label to show the hovered region index.
@@ -769,7 +853,6 @@ def _register_hover_callback(app, ana_glow):
         prevent_initial_call=True,
     )
     def update_hover(hover_data, toggle):
-        # always update the label to reflect the hovered region
         if hover_data is None:
             label = ' Preview on hover'
             if 'on' not in (toggle or []):
@@ -782,14 +865,21 @@ def _register_hover_callback(app, ana_glow):
             label = ' Preview on hover'
             return 'null', no_update, [{'label': label, 'value': 'on'}]
 
-        reg_idx = int(reg_idx)
-        label = f' Region {reg_idx}'
+        if reg_idx == 'target':
+            label = ' Target mask'
+        else:
+            reg_idx = int(reg_idx)
+            label = f' Region {reg_idx}'
         new_options = [{'label': label, 'value': 'on'}]
 
         if 'on' not in (toggle or []):
             return 'null', no_update, new_options
 
-        center = compute_region_center(reg_idx, ana_glow)
+        if reg_idx == 'target' and mask_target_img is not None:
+            coords = np.argwhere(mask_target_img)
+            center = coords.mean(axis=0).tolist() if len(coords) else None
+        else:
+            center = compute_region_center(reg_idx, ana_glow)
         center_json = json.dumps(center) if center else 'null'
         return json.dumps(reg_idx), center_json, new_options
 
@@ -800,7 +890,8 @@ def _register_placeholder_callback(app):
     pass
 
 
-def _register_regression_callback(app, ana_glow, df, feature_names=None):
+def _register_regression_callback(app, ana_glow, df, feature_names=None,
+                                   target_vox=None):
     """Regression scatter: visible regions + hover + axis dropdowns -> figure.
 
     Colours match the slicer overlay (same palette index per region).
@@ -840,6 +931,7 @@ def _register_regression_callback(app, ana_glow, df, feature_names=None):
             hover_reg=hover_reg,
             n_selected=n_selected,
             feature_names=feature_names,
+            target_vox=target_vox,
         )
 
 

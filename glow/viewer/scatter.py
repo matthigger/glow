@@ -56,7 +56,7 @@ def _compute_adj_thresh(ana_glow):
 
 def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
                   selected_reg=None, plot_tree=True,
-                  log_y=False):
+                  log_y=False, target_stats=None):
     """Build an interactive Plotly scatter figure.
 
     Args:
@@ -68,6 +68,9 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
         selected_reg (set): currently selected region indices (highlighted)
         plot_tree (bool): whether to draw hierarchy edges
         log_y (bool): apply log scale to y axis
+        target_stats (dict|None): stats for the full target mask (from
+            ``compute_target_stats``).  When both axes have finite values,
+            a star marker is drawn at the target's position.
 
     Returns:
         fig (go.Figure): Plotly figure with clickable scatter
@@ -103,6 +106,9 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
             hoverinfo='skip',
             showlegend=False,
         ))
+
+    # --- target mask star marker (behind the main scatter) ---
+    _add_target_star(fig, target_stats, x_feat, y_feat)
 
     # --- per-point symbols from estimate_state ---
     symbols = np.array([_STATE_STYLE[s][0] for s in states])
@@ -217,6 +223,51 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
     fig.update_yaxes(showgrid=True, gridcolor='#eee')
 
     return fig
+
+
+def _add_target_star(fig, target_stats, x_feat, y_feat):
+    """Add an open-star outline at the full target mask's position.
+
+    Clickable (customdata='target') so it behaves like any other region.
+    Added before the main scatter so it renders behind region markers.
+    Only drawn when both axis features have finite values.
+    """
+    if target_stats is None:
+        return
+
+    x_val = target_stats.get(x_feat)
+    y_val = target_stats.get(y_feat)
+    if x_val is None or y_val is None:
+        return
+    if not np.isfinite(x_val) or not np.isfinite(y_val):
+        return
+
+    hover_parts = ['<b>Target mask</b>']
+    for k, v in target_stats.items():
+        if v is None or (isinstance(v, float) and not np.isfinite(v)):
+            continue
+        if isinstance(v, (int, np.integer)):
+            hover_parts.append(f'{k}: {v}')
+        else:
+            hover_parts.append(f'{k}: {v:.4g}')
+    hover_text = '<br>'.join(hover_parts)
+
+    fig.add_trace(go.Scatter(
+        x=[x_val], y=[y_val],
+        mode='markers',
+        marker=dict(
+            size=16,
+            symbol='star-open',
+            color='black',
+            line=dict(width=2, color='black'),
+        ),
+        customdata=['target'],
+        text=[hover_text],
+        hoverinfo='text',
+        showlegend=True,
+        name='target mask',
+        legendgroup='target',
+    ))
 
 
 def _add_model_overlay(fig, ana_glow, x_feat, y_feat):

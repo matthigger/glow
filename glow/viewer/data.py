@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 import glow.graph
+from glow.experiment.mancova import decompose, get_hotel_tr
 
 
 def _get_adjusted_stat(ana_glow):
@@ -130,6 +131,76 @@ def get_feature_columns(df):
         else:
             significance.append(c)
     return sorted(generic), sorted(significance), sorted(pruning), sorted(mask)
+
+
+def compute_target_stats(ana_glow, mask_target):
+    """Compute stats for the full target mask treated as a single region.
+
+    Computes the Hotelling trace (and adjusted variant) for the union of
+    all analysis voxels inside ``mask_target``, plus trivial mask-vs-self
+    metrics.
+
+    Args:
+        ana_glow (AnalysisGLOW): completed analysis
+        mask_target (np.array): boolean target mask (same shape as mask_idx)
+
+    Returns:
+        dict or None: stat-name -> value.  Keys match the DataFrame columns
+            produced by ``prep_df`` where computable; others are NaN.
+            Returns None if the target has no analysis voxels.
+    """
+    exp = ana_glow.exp
+    mask_idx = exp.mask_idx
+    y = exp.y  # (b, num_img, num_vox)
+
+    vox_indices = mask_idx[mask_target & (mask_idx >= 0)]
+    n_voxel = len(vox_indices)
+    if n_voxel == 0:
+        return None
+
+    y_sub = y[:, :, vox_indices]  # (b, num_img, n_vox)
+    ysum = y_sub.sum(axis=2)  # (b, num_img)
+    yout = np.einsum('bin,cin->bc', y_sub, y_sub)  # (b, b)
+
+    q = decompose(x=exp.x, contrast=exp.contrast)
+    a0 = ysum @ q[0].T
+    t = yout - a0 @ a0.T / n_voxel
+    a1 = ysum @ q[1].T
+    h = a1 @ a1.T / n_voxel
+    e = t - h
+
+    try:
+        hotel_tr = get_hotel_tr(e, h)
+    except np.linalg.LinAlgError:
+        hotel_tr = np.nan
+
+    stats = {
+        'n_voxel': n_voxel,
+        'hotel_tr': hotel_tr,
+    }
+
+    mu_beta = getattr(ana_glow, 'adj_mu_beta', None)
+    if mu_beta is not None and np.isfinite(hotel_tr) and hotel_tr > 0:
+        log_stat = np.log(hotel_tr)
+        mu_log = mu_beta[0] + mu_beta[1] * np.log(max(n_voxel, 1))
+        stats['hotel_tr_adjusted'] = log_stat - mu_log
+    else:
+        stats['hotel_tr_adjusted'] = np.nan
+
+    stats['f1'] = 1.0
+    stats['sens'] = 1.0
+    stats['spec'] = 1.0
+    stats['vox_in_target'] = n_voxel
+    stats['vox_out_target'] = 0
+
+    stats['pval_fwer'] = np.nan
+    stats['pval_homo'] = np.nan
+    stats['ll_gain'] = np.nan
+    stats['ll_gain_net'] = np.nan
+    stats['hotel_tr_mu_h0'] = np.nan
+    stats['hotel_tr_std_h0'] = np.nan
+
+    return stats
 
 
 def compute_backgrounds(ana_glow, feature_names=None):
