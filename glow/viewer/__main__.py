@@ -222,6 +222,11 @@ def main():
     parser.add_argument(
         '--debug', action='store_true',
         help='Enable Dash debug mode')
+    parser.add_argument(
+        '--csv', default=None,
+        help='Path to a CSV with extra per-region data (must contain a '
+             'region_idx column).  Columns are merged into the scatter '
+             'plot dropdowns.')
 
     args = parser.parse_args()
 
@@ -249,8 +254,18 @@ def main():
         print(f'  mask shape: {mask_target.shape}, '
               f'{mask_target.sum()} voxels active')
 
+    extra_df = None
+    if args.csv is not None:
+        import pandas as pd
+        print(f'Loading CSV from {args.csv} ...')
+        extra_df = pd.read_csv(args.csv)
+        if 'region_idx' not in extra_df.columns:
+            parser.error('CSV must contain a region_idx column')
+        print(f'  {len(extra_df)} rows, columns: {list(extra_df.columns)}')
+
     from glow.viewer import launch
-    launch(ana, mask_target=mask_target, port=args.port, debug=args.debug)
+    launch(ana, mask_target=mask_target, port=args.port, debug=args.debug,
+           extra_df=extra_df)
 
 
 if __name__ == '__main__':

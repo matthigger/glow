@@ -15,13 +15,16 @@ def _get_adjusted_stat(ana_glow):
     return ana_glow.hotel_tr_adjusted
 
 
-def prep_df(ana_glow, mask_target=None):
+def prep_df(ana_glow, mask_target=None, extra_df=None):
     """Build a DataFrame with one row per region (unpermuted only).
 
     Args:
         ana_glow (AnalysisGLOW): completed analysis
         mask_target (np.array): optional boolean target mask (same shape
             as ana_glow.exp.mask_idx)
+        extra_df (pd.DataFrame): optional DataFrame keyed on ``region_idx``
+            to left-join onto the result.  Extra columns appear in the
+            scatter dropdowns automatically.
 
     Returns:
         df (pd.DataFrame): one row per region with all available stats
@@ -94,11 +97,21 @@ def prep_df(ana_glow, mask_target=None):
         d['vox_out_target'] = miss.astype(int)
 
     df = pd.DataFrame(d)
+
+    if extra_df is not None:
+        extra_df = extra_df.copy()
+        extra_df['region_idx'] = extra_df['region_idx'].astype(int)
+        df = df.merge(extra_df, on='region_idx', how='left')
+
     return df
 
 
 _GENERIC_FEATURES = {'n_voxel'}
-_PRUNING_FEATURES = {'pval_homo', 'll_gain', 'll_gain_net'}
+_PRUNING_FEATURES = {
+    'pval_homo', 'll_gain', 'll_gain_net',
+    'homo_pval', 'geom_gain', 'geom_gain_net', 'adj_ll_gain',
+    'adj_ll_wt_gain',
+}
 _MASK_FEATURES = {'f1', 'sens', 'spec', 'vox_in_target', 'vox_out_target'}
 
 

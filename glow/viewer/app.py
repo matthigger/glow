@@ -363,7 +363,8 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
 # App factory
 # ---------------------------------------------------------------------------
 
-def _create_app(ana_glow, mask_target=None, feature_names=None):
+def _create_app(ana_glow, mask_target=None, feature_names=None,
+                extra_df=None):
     """Create and wire up the Dash app.
 
     Args:
@@ -371,11 +372,13 @@ def _create_app(ana_glow, mask_target=None, feature_names=None):
         mask_target: optional target mask
         feature_names (list[str] | None): optional human-readable names for
             each imaging feature (used in the background dropdown).
+        extra_df (pd.DataFrame | None): optional extra per-region data
+            (keyed on ``region_idx``) merged into the scatter DataFrame.
 
     Returns:
         app (Dash): configured Dash application
     """
-    df = prep_df(ana_glow, mask_target=mask_target)
+    df = prep_df(ana_glow, mask_target=mask_target, extra_df=extra_df)
     generic_cols, sig_cols, prune_cols, mask_cols = get_feature_columns(df)
     mask_idx = ana_glow.exp.mask_idx
     ndim = mask_idx.ndim
@@ -1058,7 +1061,7 @@ def _wait_for_port(port, socket_mod, timeout=5.0):
 
 
 def launch(ana_glow, mask_target=None, port=8050, debug=False,
-           feature_names=None):
+           feature_names=None, extra_df=None):
     """Launch the glow viewer dashboard.
 
     Args:
@@ -1071,6 +1074,8 @@ def launch(ana_glow, mask_target=None, port=8050, debug=False,
             consider setting dev_tools_props_check=False for performance.
         feature_names (list[str] | None): optional human-readable names for
             each imaging feature (used in the background dropdown).
+        extra_df (pd.DataFrame | None): optional extra per-region data
+            (keyed on ``region_idx``) merged into the scatter DataFrame.
     """
     import signal
     import sys
@@ -1078,7 +1083,7 @@ def launch(ana_glow, mask_target=None, port=8050, debug=False,
     _check_port(port)
 
     app = _create_app(ana_glow, mask_target=mask_target,
-                      feature_names=feature_names)
+                      feature_names=feature_names, extra_df=extra_df)
 
     # clean shutdown on Ctrl+C (and SIGTERM on Unix)
     def _shutdown(signum, frame):
