@@ -17,7 +17,7 @@ COMMON = dict(
 
 # source params
 SOURCES = {
-    'wgn': dict(wgn_shape=(16, 16, 16),
+    'wgn': dict(wgn_shape=(13, 13, 13),
                 wgn_a=2,
                 wgn_b=2,
                 wgn_num_img=100,
@@ -93,6 +93,23 @@ for _alpha_prune in [.01, .1, .5]:
     ana_kwargs_dict_alpha_prune[f'alpha_prune={_alpha_prune}'] = (
         glow.experiment.AnalysisGLOW, _kwargs_glow)
 config_list.append(make_config('alpha_prune', 'hcp', run_ana, ana_kwargs_dict_alpha_prune))
+
+# pruning method experiment: compare pruning strategies
+_GLOW_BASE = dict(n_perm=N_PERM, n_perm_prune=100, min_size=1,
+                  alpha_prune=0.05, alpha_fwer=ALPHA_FWER,
+                  n_jobs_perm=N_JOBS_PERM)
+ana_kwargs_dict_prune_method = {
+    'homo': (glow.experiment.AnalysisGLOW,
+             _GLOW_BASE | dict(prune_method='homo')),
+    'geom_prior': (glow.experiment.AnalysisGLOW,
+                   _GLOW_BASE | dict(prune_method='geom_prior')),
+    'adjusted_ll': (glow.experiment.AnalysisGLOW,
+                    _GLOW_BASE | dict(prune_method='adjusted_ll')),
+}
+config_list.append(make_config('prune_method_wgn', 'wgn', run_ana,
+                               ana_kwargs_dict_prune_method, n_seed=10))
+config_list.append(make_config('prune_method_hcp', 'hcp', run_ana,
+                               ana_kwargs_dict_prune_method, n_seed=10))
 
 # segmentation configs
 config_list.append(make_config('segment_hcp', 'hcp', run_segment))
