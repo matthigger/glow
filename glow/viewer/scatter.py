@@ -15,13 +15,10 @@ _ADJ_COL = 'hotel_tr_adjusted'
 
 # estimate_state -> (plotly symbol, default color, legend label)
 _STATE_STYLE = {
-    'no_effect':    ('circle',        'steelblue', 'no effect'),
-    'partial':      ('triangle-down', 'orange',    'partial effect (pruned)'),
-    'full_effect':  ('diamond',       'green',     'full effect'),
-    'multi_effect': ('triangle-up',   'red',       '> 1 effect (pruned)'),
+    'no_effect':   ('circle',  'steelblue', 'no effect'),
+    'has_effect':  ('diamond', 'green',     'contains effect(s)'),
 }
-# display order for legend entries
-_STATE_ORDER = ['no_effect', 'partial', 'full_effect', 'multi_effect']
+_STATE_ORDER = ['no_effect', 'has_effect']
 
 # threshold lines drawn on pval axes:
 #   column -> (analysis attribute name, line style)

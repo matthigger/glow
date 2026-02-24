@@ -576,7 +576,7 @@ def _rerun_dp(ana_glow, df, exp_eff):
     """
     from .data import _PRUNING_FEATURES  # avoid circular at top level
     from glow.experiment.prune import _dp_solve
-    from glow.graph import SCGraph, GRAPH_EXCLUDE
+    from glow.graph import SCGraph
 
     dp_info = getattr(ana_glow, 'dp_info', {})
     if not dp_info or not dp_info.get('sig_reg_list'):
@@ -629,23 +629,8 @@ def _rerun_dp(ana_glow, df, exp_eff):
         discovered[eff.reg_idx] = True
     df['discovered'] = discovered
 
-    parent = glow.graph.get_parent(ana_glow.child_dict[0], num_vox)
     sig = df['significant'].values
-    estimate_state = np.full(num_reg, 'no_effect', dtype=object)
-    estimate_state[discovered] = 'full_effect'
-    disc_set = set(np.where(discovered)[0])
-    for reg in np.where(sig & ~discovered)[0]:
-        node = reg
-        is_partial = False
-        while True:
-            node = parent[node]
-            if node == -1:
-                break
-            if node in disc_set:
-                is_partial = True
-                break
-        estimate_state[reg] = 'partial' if is_partial else 'multi_effect'
-    df['estimate_state'] = estimate_state
+    df['estimate_state'] = np.where(sig, 'has_effect', 'no_effect')
 
     return lam
 

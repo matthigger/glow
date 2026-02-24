@@ -72,30 +72,8 @@ def prep_df(ana_glow, mask_target=None):
         discovered[effect.reg_idx] = True
     d['discovered'] = discovered
 
-    # estimate_state: classify each region into one of four states
-    #   no_effect      — not significant
-    #   partial        — significant, descendant of a discovered effect (subsumed)
-    #   full_effect    — significant and discovered
-    #   multi_effect   — significant, not discovered, not descendant of any effect
-    parent = glow.graph.get_parent(children, num_vox)
-    sig = d['significant']
-    estimate_state = np.full(num_reg, 'no_effect', dtype=object)
-    estimate_state[discovered] = 'full_effect'
-
-    disc_set = set(np.where(discovered)[0])
-    for reg in np.where(sig & ~discovered)[0]:
-        # walk ancestors to see if any is a discovered effect
-        node = reg
-        is_partial = False
-        while True:
-            node = parent[node]
-            if node == -1:
-                break
-            if node in disc_set:
-                is_partial = True
-                break
-        estimate_state[reg] = 'partial' if is_partial else 'multi_effect'
-
+    # estimate_state: 'has_effect' if significant, else 'no_effect'
+    estimate_state = np.where(d['significant'], 'has_effect', 'no_effect')
     d['estimate_state'] = estimate_state
 
     # mask-target derived stats

@@ -197,8 +197,8 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
                         else:
                             stat_parts.append(f'{c}: {v:.4g}')
                 est = row.get('estimate_state', '')
-                if est and est != 'no_effect':
-                    stat_parts.append(f'<b>{est}</b>')
+                if est == 'has_effect':
+                    stat_parts.append(f'<b>contains effect(s)</b>')
 
         # hover text per image
         hover_texts = []
