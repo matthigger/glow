@@ -232,9 +232,11 @@ class Config:
 
     def _get_expected_labels(self):
         """return the set of result 'label' strings one experiment produces."""
-        from glow.benchmark.run import run_ana, run_segment
+        from glow.benchmark.run import run_ana, run_prune_compare, run_segment
         if self.run_fnc is run_ana:
             return set(self.ana_kwargs_dict.keys())
+        if self.run_fnc is run_prune_compare:
+            return {'homo', 'geom_prior', 'adjusted_ll'}
         if self.run_fnc is run_segment:
             return {'ward-naive', 'ward-glm'}
         return set()

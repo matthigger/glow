@@ -2,7 +2,7 @@ import numpy as np
 
 import glow
 from glow.benchmark.config import Config
-from glow.benchmark.run import run_ana, run_segment
+from glow.benchmark.run import run_ana, run_prune_compare, run_segment
 
 # common params
 # run experiments serially (n_jobs=1) and keep permutations serial per experiment
@@ -99,16 +99,11 @@ _GLOW_BASE = dict(n_perm=N_PERM, n_perm_prune=100, min_size=1,
                   alpha_prune=0.05, alpha_fwer=ALPHA_FWER,
                   n_jobs_perm=N_JOBS_PERM)
 ana_kwargs_dict_prune_method = {
-    'homo': (glow.experiment.AnalysisGLOW,
-             _GLOW_BASE | dict(prune_method='homo')),
-    'geom_prior': (glow.experiment.AnalysisGLOW,
-                   _GLOW_BASE | dict(prune_method='geom_prior')),
-    'adjusted_ll': (glow.experiment.AnalysisGLOW,
-                    _GLOW_BASE | dict(prune_method='adjusted_ll')),
+    'GLOW': (glow.experiment.AnalysisGLOW, _GLOW_BASE),
 }
-config_list.append(make_config('prune_method_wgn', 'wgn', run_ana,
+config_list.append(make_config('prune_method_wgn', 'wgn', run_prune_compare,
                                ana_kwargs_dict_prune_method, n_seed=10))
-config_list.append(make_config('prune_method_hcp', 'hcp', run_ana,
+config_list.append(make_config('prune_method_hcp', 'hcp', run_prune_compare,
                                ana_kwargs_dict_prune_method, n_seed=10))
 
 # segmentation configs
