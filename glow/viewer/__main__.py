@@ -227,6 +227,9 @@ def main():
         help='Path to a CSV with extra per-region data (must contain a '
              'region_idx column).  Columns are merged into the scatter '
              'plot dropdowns.')
+    parser.add_argument(
+        '-v', '--verbose', action='store_true',
+        help='Show Dash/Werkzeug request logs (suppressed by default)')
 
     args = parser.parse_args()
 
@@ -265,7 +268,7 @@ def main():
 
     from glow.viewer import launch
     launch(ana, mask_target=mask_target, port=args.port, debug=args.debug,
-           extra_df=extra_df)
+           extra_df=extra_df, quiet=not args.verbose)
 
 
 if __name__ == '__main__':

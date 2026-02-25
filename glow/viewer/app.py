@@ -1061,7 +1061,7 @@ def _wait_for_port(port, socket_mod, timeout=5.0):
 
 
 def launch(ana_glow, mask_target=None, port=8050, debug=False,
-           feature_names=None, extra_df=None):
+           feature_names=None, extra_df=None, quiet=True):
     """Launch the glow viewer dashboard.
 
     Args:
@@ -1076,11 +1076,16 @@ def launch(ana_glow, mask_target=None, port=8050, debug=False,
             each imaging feature (used in the background dropdown).
         extra_df (pd.DataFrame | None): optional extra per-region data
             (keyed on ``region_idx``) merged into the scatter DataFrame.
+        quiet (bool): suppress Dash/Werkzeug request logs.
     """
+    import logging
     import signal
     import sys
 
     _check_port(port)
+
+    if quiet:
+        logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
     app = _create_app(ana_glow, mask_target=mask_target,
                       feature_names=feature_names, extra_df=extra_df)
