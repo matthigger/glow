@@ -23,36 +23,44 @@ def _get_voxel_indices(reg_idx, children, num_vox):
 
 
 def _get_x_labels(exp):
-    """Return (x_values, labels, contrast_mask) with the bias row removed.
+    """Return design matrix rows with labels using original indices.
+
+    The bias row is included (labelled as such) so users see the same
+    indexing as the design matrix.  The default_idx points to the first
+    non-bias row so the dropdown starts on something useful.
 
     Args:
         exp: Experiment (may be ExperimentScaled)
 
     Returns:
-        x_no_bias (np.array): (a_interest, num_img) design matrix rows
+        x (np.array): (a, num_img) full design matrix
         x_names (list[str]): human-readable name per row
-        contrast_no_bias (np.array): (a_interest,) boolean
+        default_idx (int): index of first non-bias row
     """
     x = exp.x           # (a, num_img)
     contrast = exp.contrast  # (a,)
 
-    # identify bias row (all ones)
     is_bias = np.all(x == 1.0, axis=1)
 
-    keep = ~is_bias
-    x_no_bias = x[keep]
-    contrast_no_bias = contrast[keep]
-
-    # generate labels: x0, x1, ... (interest marked)
     x_names = []
-    idx = 0
-    for i, k in enumerate(keep):
-        if k:
-            tag = ' (interest)' if contrast_no_bias[idx] else ' (nuisance)'
-            x_names.append(f'x{idx}{tag}')
-            idx += 1
+    default_idx = 0
+    found_default = False
+    for i in range(x.shape[0]):
+        if is_bias[i]:
+            tag = 'interest' if contrast[i] else 'nuisance'
+            x_names.append(f'x{i} (bias, {tag})')
+        elif contrast[i]:
+            x_names.append(f'x{i} (interest)')
+            if not found_default:
+                default_idx = i
+                found_default = True
+        else:
+            x_names.append(f'x{i} (nuisance)')
+            if not found_default:
+                default_idx = i
+                found_default = True
 
-    return x_no_bias, x_names, contrast_no_bias
+    return x, x_names, default_idx
 
 
 def _get_y_labels(exp, feature_names=None):
@@ -130,7 +138,7 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
     Args:
         ana_glow: AnalysisGLOW
         region_list (list[int]): region indices to show (visible + hover)
-        x_feat_idx (int): which design-matrix row (bias-stripped index)
+        x_feat_idx (int): which design-matrix row (original index)
         y_feat_idx (int): which imaging feature index
         df (pd.DataFrame): region-level stats (for hover annotations)
         color_map (dict): reg_idx -> colour palette index
@@ -149,7 +157,7 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
     num_vox = exp.y.shape[2]
     num_img = exp.y.shape[1]
 
-    x_no_bias, x_names, _ = _get_x_labels(exp)
+    x_full, x_names, _ = _get_x_labels(exp)
     y_names = _get_y_labels(exp, feature_names=feature_names)
 
     x_feat_idx = min(x_feat_idx, len(x_names) - 1)
@@ -158,7 +166,7 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
     x_label = x_names[x_feat_idx]
     y_label = y_names[y_feat_idx]
 
-    x_design = x_no_bias[x_feat_idx]  # (num_img,)
+    x_design = x_full[x_feat_idx]  # (num_img,)
 
     fig = go.Figure()
 

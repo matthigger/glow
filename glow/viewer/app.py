@@ -86,11 +86,30 @@ def _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
               'borderRight': '1px solid #ddd', 'flexShrink': '0'})
 
 
-def _region_panel():
+def _region_panel(num_reg):
     """Build the left-hand region selection panel (shared by 2D and 3D)."""
+    region_options = [{'label': f'Region {i}', 'value': i}
+                      for i in range(num_reg)]
     return html.Div([
         html.Label('Selected regions',
                    style={'fontWeight': 'bold', 'fontSize': '13px'}),
+
+        # lookup dropdown
+        html.Div([
+            html.Label('Add by index',
+                       style={'fontSize': '11px', 'color': '#777',
+                              'marginBottom': '2px'}),
+            dcc.Dropdown(
+                id='dd-region-lookup',
+                options=region_options,
+                value=None,
+                placeholder='e.g. Region 884',
+                clearable=True,
+                searchable=True,
+                style={'fontSize': '12px'},
+            ),
+        ], style={'marginTop': '4px', 'marginBottom': '4px',
+                  'borderBottom': '1px solid #eee', 'paddingBottom': '6px'}),
 
         # hover preview toggle (always visible)
         html.Div([
@@ -100,7 +119,7 @@ def _region_panel():
                 value=['on'],
                 style={'fontSize': '12px'},
             ),
-        ], style={'marginTop': '4px', 'marginBottom': '4px',
+        ], style={'marginBottom': '4px',
                   'borderBottom': '1px solid #eee', 'paddingBottom': '4px'}),
 
         # per-region checklist
@@ -138,7 +157,7 @@ def _section_header(title):
               'borderTop': '2px solid #ccc', 'marginTop': '6px'})
 
 
-def _regression_panel(x_names, y_names):
+def _regression_panel(x_names, y_names, default_x=0):
     """Build the right-hand regression scatter panel."""
     x_opts = [{'label': n, 'value': i} for i, n in enumerate(x_names)]
     y_opts = [{'label': n, 'value': i} for i, n in enumerate(y_names)]
@@ -153,7 +172,7 @@ def _regression_panel(x_names, y_names):
                                        'fontWeight': 'bold',
                                        'marginRight': '4px'}),
                 dcc.Dropdown(id='dd-reg-x', options=x_opts,
-                             value=0, clearable=False,
+                             value=default_x, clearable=False,
                              style={'width': '100%', 'fontSize': '12px'}),
             ], style={'flex': '1', 'marginRight': '6px'}),
             html.Div([
@@ -214,7 +233,8 @@ def _defaults(generic_cols, sig_cols, prune_cols, mask_cols):
 
 def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                     slicer0, slicer1, slicer2,
-                    x_names=None, y_names=None, has_dp=False):
+                    x_names=None, y_names=None, has_dp=False, num_reg=0,
+                    default_reg_x=0):
     """Build layout for 3D data (with dash-slicer ortho views)."""
     all_cols, default_x, default_y, log_val = _defaults(
         generic_cols, sig_cols, prune_cols, mask_cols)
@@ -243,7 +263,7 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
 
         # --- IMAGE + REGRESSION (side by side) ---
         html.Div([
-            _region_panel(),
+            _region_panel(num_reg),
 
             # center: three linked ortho slicers
             html.Div([
@@ -278,7 +298,8 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
             ], style={'flex': '1', 'padding': '10px'}),
 
             # right: regression scatter
-            _regression_panel(x_names or [], y_names or []),
+            _regression_panel(x_names or [], y_names or [],
+                              default_x=default_reg_x),
         ], style={'display': 'flex', 'padding': '0 20px 20px 20px',
                   'borderTop': '2px solid #ccc', 'marginTop': '6px'}),
 
@@ -291,7 +312,8 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
 
 
 def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
-                    x_names=None, y_names=None, has_dp=False):
+                    x_names=None, y_names=None, has_dp=False, num_reg=0,
+                    default_reg_x=0):
     """Build layout for 2D data (single go.Image view)."""
     all_cols, default_x, default_y, log_val = _defaults(
         generic_cols, sig_cols, prune_cols, mask_cols)
@@ -332,7 +354,7 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
                     clearable=False,
                     style={'marginBottom': '12px'},
                 ),
-                _region_panel(),
+                _region_panel(num_reg),
             ], style={'width': '180px', 'flexShrink': '0'}),
 
             # center: image viewer
@@ -347,7 +369,8 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
             ], style={'flex': '1', 'padding': '10px'}),
 
             # right: regression scatter
-            _regression_panel(x_names or [], y_names or []),
+            _regression_panel(x_names or [], y_names or [],
+                              default_x=default_reg_x),
         ], style={'display': 'flex', 'padding': '0 20px 20px 20px',
                   'borderTop': '2px solid #ccc', 'marginTop': '6px'}),
 
@@ -424,14 +447,16 @@ def _setup_3d(app, ana_glow, df,
         s.graph.config['scrollZoom'] = False
         s.graph.style = {'height': '280px'}
 
-    _, x_names, _ = _get_x_labels(ana_glow.exp)
+    _, x_names, default_reg_x = _get_x_labels(ana_glow.exp)
     y_names = _get_y_labels(ana_glow.exp, feature_names=feature_names)
 
     has_dp = bool(getattr(ana_glow, 'dp_info', {}).get('sig_reg_list'))
+    num_reg = ana_glow.exp.y.shape[2] * 2 - 1
     app.layout = _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                                  slicer0, slicer1, slicer2,
                                  x_names=x_names, y_names=y_names,
-                                 has_dp=has_dp)
+                                 has_dp=has_dp, num_reg=num_reg,
+                                 default_reg_x=default_reg_x)
 
     # pre-compute target mask in image space for overlays
     mask_target_img = None
@@ -557,14 +582,16 @@ def _setup_2d(app, ana_glow, df,
     bg_dict = compute_backgrounds(ana_glow, feature_names=feature_names)
     bg_names = list(bg_dict.keys())
 
-    _, x_names, _ = _get_x_labels(ana_glow.exp)
+    _, x_names, default_reg_x = _get_x_labels(ana_glow.exp)
     y_names = _get_y_labels(ana_glow.exp, feature_names=feature_names)
 
     has_dp = bool(getattr(ana_glow, 'dp_info', {}).get('sig_reg_list'))
+    num_reg = ana_glow.exp.y.shape[2] * 2 - 1
     app.layout = _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols,
                                  bg_names,
                                  x_names=x_names, y_names=y_names,
-                                 has_dp=has_dp)
+                                 has_dp=has_dp, num_reg=num_reg,
+                                 default_reg_x=default_reg_x)
 
     # pre-compute target mask in image space for overlays
     mask_target_img = None
@@ -745,31 +772,44 @@ def _register_scatter_callback(app, df, ana_glow, target_stats=None):
 
 
 def _register_selection_callback(app, ana_glow, mask_target_img=None):
-    """Scatter click or clear button -> update store-selected + store-center."""
+    """Scatter click, clear button, or lookup dropdown -> update store-selected."""
     @app.callback(
         [Output('store-selected', 'data'),
-         Output('store-center', 'data')],
+         Output('store-center', 'data'),
+         Output('dd-region-lookup', 'value')],
         [Input('scatter-plot', 'clickData'),
-         Input('btn-clear', 'n_clicks')],
+         Input('btn-clear', 'n_clicks'),
+         Input('dd-region-lookup', 'value')],
         [State('store-selected', 'data')],
     )
-    def toggle_region(click_data, clear_clicks, selected_json):
+    def toggle_region(click_data, clear_clicks, lookup_val, selected_json):
         ctx = callback_context
         if not ctx.triggered:
-            return no_update, no_update
+            return no_update, no_update, no_update
 
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
 
         if trigger_id == 'btn-clear':
-            return '[]', 'null'
+            return '[]', 'null', None
+
+        if trigger_id == 'dd-region-lookup':
+            if lookup_val is None:
+                return no_update, no_update, no_update
+            reg_idx = int(lookup_val)
+            selected = json.loads(selected_json)
+            if reg_idx not in selected:
+                selected.append(reg_idx)
+            center = compute_region_center(reg_idx, ana_glow)
+            center_json = json.dumps(center) if center else 'null'
+            return json.dumps(selected), center_json, None
 
         if click_data is None:
-            return no_update, no_update
+            return no_update, no_update, no_update
 
         point = click_data['points'][0]
         reg_idx = point.get('customdata')
         if reg_idx is None:
-            return no_update, no_update
+            return no_update, no_update, no_update
 
         # keep 'target' as a string; everything else becomes int
         if reg_idx != 'target':
@@ -778,7 +818,7 @@ def _register_selection_callback(app, ana_glow, mask_target_img=None):
         selected = json.loads(selected_json)
         if reg_idx in selected:
             selected.remove(reg_idx)
-            return json.dumps(selected), no_update
+            return json.dumps(selected), no_update, no_update
         else:
             selected.append(reg_idx)
             if reg_idx == 'target' and mask_target_img is not None:
@@ -787,7 +827,7 @@ def _register_selection_callback(app, ana_glow, mask_target_img=None):
             else:
                 center = compute_region_center(reg_idx, ana_glow)
             center_json = json.dumps(center) if center else 'null'
-            return json.dumps(selected), center_json
+            return json.dumps(selected), center_json, no_update
 
 
 def _register_checklist_sync_callback(app, df, target_stats=None):
