@@ -90,8 +90,10 @@ def monitor_all_jobs(all_job_info, all_job_ids, job_info_map):
     print('=' * 60)
 
     if all_job_ids:
-        runner = all_job_info[0]['runner']
-        runner.monitor_jobs(all_job_ids, job_info_map=job_info_map)
+        runner = next((info['runner'] for info in all_job_info
+                       if info['runner'] is not None), None)
+        if runner is not None:
+            runner.monitor_jobs(all_job_ids, job_info_map=job_info_map)
 
 
 def download_remaining_results(all_job_info):
