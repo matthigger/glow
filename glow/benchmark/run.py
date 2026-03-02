@@ -120,7 +120,7 @@ def run_ana(config, **kwargs):
 
 
 def _prune_diagnostics_df(sig, methods):
-    """Build per-region diagnostics from the three pruning results.
+    """Build per-region diagnostics from the pruning results.
 
     Returns a DataFrame with one row per significant region and columns
     for each method's diagnostics, suitable for the viewer's --csv flag.
@@ -128,48 +128,74 @@ def _prune_diagnostics_df(sig, methods):
     import pandas as pd
 
     homo_regs, homo_info = methods['homo']
-    geom_regs, dp_info = methods['geom_prior']
-    adj_regs, adj_info = methods['adjusted_ll']
+    nd_regs, dp_info = methods['node']
+    nd_fl_regs, dp_fl_info = methods['node_fl']
+    tr_regs, tr_info = methods['tree']
 
-    homo_set, geom_set, adj_set = set(homo_regs), set(geom_regs), set(adj_regs)
+    homo_set, nd_set, tr_set = (set(homo_regs), set(nd_regs),
+                                 set(tr_regs))
+    nd_fl_set = set(nd_fl_regs)
     lam = dp_info.get('lam', 0.0)
-    gain_geom = dp_info.get('gain', {})
-    gain_adj = adj_info.get('gain_per_node', {})
-    weights = adj_info.get('weights', {})
+    lam_fl = dp_fl_info.get('lam', 0.0)
+    gain_nd = dp_info.get('gain', {})
+    gain_tr = tr_info.get('gain_per_node', {})
+    weights = tr_info.get('weights', {})
+    wt_passes = tr_info.get('wt_gain_sum_passes', [])
+
+    has_dp = 'tree_dp' in methods
+    if has_dp:
+        tr_dp_regs, tr_dp_info = methods['tree_dp']
+        tr_dp_set = set(tr_dp_regs)
+        tw_gain = tr_dp_info.get('tree_wide_gain', {})
+        lam_dp = tr_dp_info.get('lam', 0.0)
 
     rows = []
     for node in sig:
-        g = gain_geom.get(node, np.nan)
-        ga = gain_adj.get(node, np.nan)
+        g = gain_nd.get(node, np.nan)
+        ga = gain_tr.get(node, np.nan)
         w = weights.get(node, 1.0)
-        rows.append({
+        row = {
             'region_idx': node,
             'homo_pval': homo_info.get(node, np.nan),
             'homo_selected': node in homo_set,
-            'geom_gain': g,
-            'geom_gain_net': g - lam if np.isfinite(g) else np.nan,
-            'geom_selected': node in geom_set,
-            'adj_ll_gain': ga,
-            'adj_ll_wt_gain': ga * w if np.isfinite(ga) else np.nan,
-            'adj_ll_selected': node in adj_set,
-        })
+            'node_gain': g,
+            'node_gain_net': g - lam if np.isfinite(g) else np.nan,
+            'node_selected': node in nd_set,
+            'node_gain_net_fl': g - lam_fl if np.isfinite(g) else np.nan,
+            'node_fl_selected': node in nd_fl_set,
+            'tree_gain': ga,
+            'tree_wt_gain': ga * w if np.isfinite(ga) else np.nan,
+            'tree_selected': node in tr_set,
+        }
+        for k, pass_dict in enumerate(wt_passes):
+            row[f'tree_wt_gain_sum{k}'] = pass_dict.get(node, np.nan)
+        if has_dp:
+            tw = tw_gain.get(node, np.nan)
+            row['tree_dp_tree_gain'] = tw
+            row['tree_dp_tree_gain_net'] = (tw - lam_dp
+                                            if np.isfinite(tw) else np.nan)
+            row['tree_dp_selected'] = node in tr_dp_set
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
 def run_prune_compare(config, **kwargs):
-    """Run one AnalysisGLOW and apply all three pruning methods.
+    """Run one AnalysisGLOW and apply all pruning methods.
 
-    Emits one JSON result per method (homo, geom_prior, adjusted_ll)
-    with the same schema as run_ana, so plot.py works unchanged.
-    Also writes a per-region diagnostics CSV for the viewer's --csv flag.
+    Emits one JSON result per method (homo, node, node_fl,
+    tree, tree_dp) with the same schema as run_ana, so
+    plot.py works unchanged.  Also writes a per-region diagnostics CSV
+    for the viewer's --csv flag.
     """
-    from glow.experiment.prune import prune, prune_dp, prune_adjusted_ll
+    from glow.experiment.prune import (prune, prune_node,
+                                       prune_tree, prune_tree_dp)
 
     exp, effect = config.get_exp_eff(**kwargs)
 
     _, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
     n_perm_prune = ana_kw.get('n_perm_prune', 100)
     alpha_prune = ana_kw.get('alpha_prune', 0.05)
+    exp_eff = ana_kw.get('prune_geom_exp_eff')
 
     start = time.time()
     ana = Ana(exp=exp, **ana_kw)
@@ -181,10 +207,17 @@ def run_prune_compare(config, **kwargs):
     methods = {
         'homo': prune(sig, children, exp,
                        n_perm=n_perm_prune, alpha_prune=alpha_prune),
-        'geom_prior': prune_dp(sig, children, exp,
-                                n_perm=n_perm_prune, alpha=alpha_prune),
-        'adjusted_ll': prune_adjusted_ll(sig, children, exp),
+        'node': prune_node(sig, children, exp,
+                           n_perm=n_perm_prune, alpha=alpha_prune,
+                           exp_eff=exp_eff),
+        'node_fl': prune_node(sig, children, exp,
+                              n_perm=n_perm_prune,
+                              alpha=alpha_prune),
+        'tree': prune_tree(sig, children, exp),
     }
+    if exp_eff is not None:
+        methods['tree_dp'] = prune_tree_dp(
+            sig, children, exp, exp_eff=exp_eff)
 
     run_uuid = str(uuid4())[:8]
 

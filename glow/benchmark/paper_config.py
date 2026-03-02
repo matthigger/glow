@@ -38,7 +38,7 @@ ANALYSES = {
                  alpha_prune=0.05,
                  alpha_fwer=ALPHA_FWER,
                  n_jobs_perm=N_JOBS_PERM,
-                 prune_method='geom_prior'),
+                 prune_method='node'),
     'VBA': dict(n_perm=N_PERM,
                 tfce_flag=False,
                 alpha_fwer=ALPHA_FWER,
@@ -97,7 +97,8 @@ config_list.append(make_config('alpha_prune', 'hcp', run_ana, ana_kwargs_dict_al
 # pruning method experiment: compare pruning strategies
 _GLOW_BASE = dict(n_perm=N_PERM, n_perm_prune=100, min_size=1,
                   alpha_prune=0.05, alpha_fwer=ALPHA_FWER,
-                  n_jobs_perm=N_JOBS_PERM)
+                  n_jobs_perm=N_JOBS_PERM,
+                  prune_geom_exp_eff=3)
 ana_kwargs_dict_prune_method = {
     'GLOW': (glow.experiment.AnalysisGLOW, _GLOW_BASE),
 }

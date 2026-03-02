@@ -173,8 +173,8 @@ if __name__ == '__main__':
     force_replot = True
 
     path_result = glow.benchmark.get_path_result()
-    paper_latest = path_result / 'paper_latest'
-    paper_latest.mkdir(exist_ok=True)
+    latest = path_result / '_latest'
+    latest.mkdir(exist_ok=True)
 
     for label, config in CONFIG_BY_LABEL.items():
         df, folder, n_new = glow.benchmark.load_update_all(label,
@@ -200,8 +200,8 @@ if __name__ == '__main__':
         else:
             print(f'skipping: {path} (already exists, no new data)')
 
-        # copy score.pdf to paper_latest/
+        # copy score.pdf to _latest/
         if path.exists():
-            dest = paper_latest / f'{label}.pdf'
+            dest = latest / f'{label}.pdf'
             shutil.copy2(path, dest)
             print(f'  -> {dest}')

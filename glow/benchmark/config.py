@@ -236,7 +236,8 @@ class Config:
         if self.run_fnc is run_ana:
             return set(self.ana_kwargs_dict.keys())
         if self.run_fnc is run_prune_compare:
-            return {'homo', 'geom_prior', 'adjusted_ll'}
+            return {'homo', 'node', 'node_fl',
+                    'tree', 'tree_dp'}
         if self.run_fnc is run_segment:
             return {'ward-naive', 'ward-glm'}
         return set()
