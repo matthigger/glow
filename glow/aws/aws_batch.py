@@ -594,8 +594,6 @@ class AWSBatchRunner:
                                len(completed_jobs) > 0)
                 
                 if should_print:
-                    timestamp_str = datetime.now().strftime('%H:%M:%S')
-                    
                     # build state string on one line
                     state_parts = []
                     if submitted > 0:
@@ -618,8 +616,8 @@ class AWSBatchRunner:
                     
                     state_str = ', '.join(state_parts) if state_parts else 'All done'
                     
-                    # print status update with newlines (log style)
-                    parts = [f'  {state_str}']
+                    timestamp_str = datetime.now().strftime('%H:%M:%S')
+                    parts = [f'  [{timestamp_str}] {state_str}']
                     parts.append(f'  vCPU-hours: {vcpu_hours:.3f}')
                     if instance_type_counts:
                         instance_str = ', '.join([f'{itype}: {count}' for itype, count in sorted(instance_type_counts.items())])
@@ -734,12 +732,7 @@ class AWSBatchRunner:
 
                     break
             
-                # heartbeat: ticking timestamp on its own line below tqdm
-                for _ in range(int(poll_interval)):
-                    print(f'\r[{datetime.now().strftime("%H:%M:%S")}]',
-                          end='', flush=True)
-                    time.sleep(1)
-                print('\r              \r', end='', flush=True)
+                time.sleep(poll_interval)
         except KeyboardInterrupt:
             pbar.close()
             print('\n\nMonitoring interrupted by user')
