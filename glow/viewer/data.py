@@ -110,7 +110,7 @@ _GENERIC_FEATURES = {'n_voxel'}
 _PRUNING_FEATURES = {
     'pval_homo', 'll_gain', 'll_gain_net',
     'homo_pval', 'node_gain', 'node_gain_net',
-    'node_gain_net_fl',
+    'node_gain_net_fl', 'node_gain_h0_mean', 'node_gain_h0_std',
     'tree_gain', 'tree_wt_gain',
     'tree_dp_tree_gain', 'tree_dp_tree_gain_net',
 }

@@ -316,6 +316,9 @@ def _calibrate_lambda(sig_reg_list, exp, q_tup, vox_cache,
     even the single strongest false-positive region is unlikely to
     exceed the penalty.
 
+    Also returns per-node H0 gain statistics (mean, std) for
+    diagnosing size-dependent bias in the calibration.
+
     Args:
         sig_reg_list (list): significant region indices
         exp (Experiment): experiment data (unpermuted)
@@ -327,17 +330,25 @@ def _calibrate_lambda(sig_reg_list, exp, q_tup, vox_cache,
     Returns:
         lam (float): calibrated per-region penalty
         max_gains (np.array): (n_perm,) max single-node gain per perm
+        node_h0_mean (dict): node -> mean gain under H0
+        node_h0_std (dict): node -> std of gain under H0
     """
-    max_gains = np.empty(n_perm)
+    n_nodes = len(sig_reg_list)
+    gain_matrix = np.empty((n_perm, n_nodes))
     for p in range(n_perm):
-        exp_perm = exp.permute(perm_idx=p + 1)  # 1-indexed (0 = unpermuted)
+        exp_perm = exp.permute(perm_idx=p + 1)
         ll_f_p, ll_n_p = _compute_all_ll(sig_reg_list, exp_perm.y,
                                          q_tup, vox_cache)
         gains_p = _gains_from_ll(ll_f_p, ll_n_p, sig_reg_list)
-        max_gains[p] = max(gains_p.values()) if gains_p else 0.0
+        gain_matrix[p, :] = [gains_p[node] for node in sig_reg_list]
 
+    max_gains = gain_matrix.max(axis=1)
     lam = float(np.quantile(max_gains, 1.0 - alpha))
-    return lam, max_gains
+
+    node_h0_mean = dict(zip(sig_reg_list, gain_matrix.mean(axis=0)))
+    node_h0_std = dict(zip(sig_reg_list, gain_matrix.std(axis=0)))
+
+    return lam, max_gains, node_h0_mean, node_h0_std
 
 
 def prune_node(sig_reg_list, children, exp, n_perm=100, alpha=0.05,
@@ -401,14 +412,16 @@ def prune_node(sig_reg_list, children, exp, n_perm=100, alpha=0.05,
     gain_per_node = _gains_from_ll(ll_full, ll_null, sig_reg_list)
 
     # determine lambda
+    node_h0_mean, node_h0_std = {}, {}
     if lam is not None:
         pass  # explicit override
     elif exp_eff is not None:
         lam = np.log(1 + 1 / exp_eff)
     else:
         # permutation calibration
-        lam, _ = _calibrate_lambda(sig_reg_list, exp, q_tup, vox_cache,
-                                   n_perm=n_perm, alpha=alpha)
+        lam, _, node_h0_mean, node_h0_std = _calibrate_lambda(
+            sig_reg_list, exp, q_tup, vox_cache,
+            n_perm=n_perm, alpha=alpha)
 
     # run DP
     reg_out_list, dp_info = _dp_solve(subgraph, sig_reg_list,
@@ -418,6 +431,8 @@ def prune_node(sig_reg_list, children, exp, n_perm=100, alpha=0.05,
     dp_info['gain_per_node'] = gain_per_node
     dp_info['subgraph_children'] = dict(subgraph.children)
     dp_info['sig_reg_list'] = list(sig_reg_list)
+    dp_info['node_gain_h0_mean'] = node_h0_mean
+    dp_info['node_gain_h0_std'] = node_h0_std
 
     return reg_out_list, dp_info
 

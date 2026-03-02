@@ -236,10 +236,12 @@ class TestPermutationCalibration:
         sig_all = [8, 9, 10, 11, 12, 13, 14]
         q_tup = decompose(exp.x, exp.contrast)
         vox_cache = _build_vox_cache(sig_all, children, 8)
-        lam, max_gains = _calibrate_lambda(
+        lam, max_gains, h0_mean, h0_std = _calibrate_lambda(
             sig_all, exp, q_tup, vox_cache, n_perm=20, alpha=0.05)
         assert lam > 0
         assert len(max_gains) == 20
+        assert set(h0_mean.keys()) == set(sig_all)
+        assert all(v >= 0 for v in h0_mean.values())
 
     def test_perm_calibrated_dp_finds_effects(self):
         """permutation-calibrated DP should find effect regions."""

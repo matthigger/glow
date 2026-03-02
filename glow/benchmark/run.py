@@ -138,6 +138,8 @@ def _prune_diagnostics_df(sig, methods):
     lam = dp_info.get('lam', 0.0)
     lam_fl = dp_fl_info.get('lam', 0.0)
     gain_nd = dp_info.get('gain', {})
+    h0_mean = dp_fl_info.get('node_gain_h0_mean', {})
+    h0_std = dp_fl_info.get('node_gain_h0_std', {})
     gain_tr = tr_info.get('gain_per_node', {})
     weights = tr_info.get('weights', {})
     wt_passes = tr_info.get('wt_gain_sum_passes', [])
@@ -162,6 +164,8 @@ def _prune_diagnostics_df(sig, methods):
             'node_gain_net': g - lam if np.isfinite(g) else np.nan,
             'node_selected': node in nd_set,
             'node_gain_net_fl': g - lam_fl if np.isfinite(g) else np.nan,
+            'node_gain_h0_mean': h0_mean.get(node, np.nan),
+            'node_gain_h0_std': h0_std.get(node, np.nan),
             'node_fl_selected': node in nd_fl_set,
             'tree_gain': ga,
             'tree_wt_gain': ga * w if np.isfinite(ga) else np.nan,
