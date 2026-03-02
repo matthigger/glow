@@ -451,7 +451,7 @@ def _setup_3d(app, ana_glow, df,
     y_names = _get_y_labels(ana_glow.exp, feature_names=feature_names)
 
     has_dp = bool(getattr(ana_glow, 'dp_info', {}).get('sig_reg_list'))
-    num_reg = ana_glow.exp.y.shape[2] * 2 - 1
+    num_reg = ana_glow.exp.y.shape[2] + ana_glow.child_dict[0].shape[0]
     app.layout = _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                                  slicer0, slicer1, slicer2,
                                  x_names=x_names, y_names=y_names,
@@ -586,7 +586,7 @@ def _setup_2d(app, ana_glow, df,
     y_names = _get_y_labels(ana_glow.exp, feature_names=feature_names)
 
     has_dp = bool(getattr(ana_glow, 'dp_info', {}).get('sig_reg_list'))
-    num_reg = ana_glow.exp.y.shape[2] * 2 - 1
+    num_reg = ana_glow.exp.y.shape[2] + ana_glow.child_dict[0].shape[0]
     app.layout = _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols,
                                  bg_names,
                                  x_names=x_names, y_names=y_names,
@@ -715,7 +715,7 @@ def _rerun_dp(ana_glow, df, exp_eff):
         ana_glow.effect_list.append(eff)
 
     # update DataFrame columns
-    num_reg = num_vox * 2 - 1
+    num_reg = num_vox + ana_glow.child_dict[0].shape[0]
     df['ll_gain'] = np.nan
     df['ll_gain_net'] = np.nan
     for reg_idx, g in new_info['gain'].items():

@@ -193,23 +193,29 @@ def get_miss_hits(mask, mask_idx, children):
 def iter_topo(*, children=None, num_leaf, node_start=None, only_leaf=False):
     """topological sort, leaves to root.
 
+    Supports forests: when ``node_start`` is None, iterates from every
+    root (nodes with no parent).
+
     Args:
-        children (np.array): (num_leaf - 1, 2) child index pairs
+        children (np.array): (num_internal, 2) child index pairs
         num_leaf (int): number of leaves
-        node_start (int): subtree root (defaults to entire tree)
+        node_start (int): subtree root (defaults to all roots)
         only_leaf (bool): if True, yield only leaves
 
     Yields:
         node_idx (int): node index
     """
     if children is None:
-        # no graph passed, iterate through leaves
         yield from range(num_leaf)
         return
 
     if node_start is None:
-        # will search largest node (whole thing if graph connected)
-        node_start = num_leaf + children.shape[0] - 1
+        parent = get_parent(children, num_leaf)
+        roots = np.where(parent == -1)[0]
+        for root in roots:
+            yield from iter_topo(children=children, num_leaf=num_leaf,
+                                 node_start=root, only_leaf=only_leaf)
+        return
 
     if node_start >= num_leaf:
         for child in children[int(node_start - num_leaf), :]:

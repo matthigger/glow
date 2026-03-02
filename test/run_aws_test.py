@@ -493,7 +493,8 @@ def run_batched_cloud_tests():
 
                 # reconstruct cloud analysis from downloaded permutations
                 b, num_img, num_vox = exp.y.shape
-                num_reg = num_vox * 2 - 1
+                first_children = next(iter(dl.values()))['children']
+                num_reg = num_vox + first_children.shape[0]
 
                 ana_cloud = object.__new__(glow.experiment.AnalysisGLOW)
                 ana_cloud.exp = exp  # keep original (unscaled) exp, same as cloud path

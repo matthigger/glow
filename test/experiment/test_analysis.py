@@ -3,7 +3,8 @@ import copy
 from glow.effect import ExtenterSphere
 from glow.experiment import *
 from glow.experiment.analysis import *
-from glow.graph import get_f1_sens_spec
+from glow.graph import get_f1_sens_spec, iter_topo
+from glow.mask import get_mask_idx
 
 
 class TestAnalysis:
@@ -342,7 +343,7 @@ class TestCheckpoint:
         # build partial checkpoint from the first 5 permutations
         partial_child_dict = {i: ref.child_dict[i] for i in range(5)}
         b, num_img, num_vox = self.exp.y.shape
-        num_reg = num_vox * 2 - 1
+        num_reg = num_vox + ref.child_dict[0].shape[0]
         partial_stat = np.full((n_perm + 1, num_reg), fill_value=-1.0)
         for i in range(5):
             partial_stat[i, :] = ref.stat[i, :]
@@ -365,3 +366,34 @@ class TestCheckpoint:
 
         # final p-values should match
         np.testing.assert_array_equal(resumed.pval, ref.pval)
+
+
+class TestForest:
+    """AnalysisGLOW on a non-contiguous mask (forest of 2 trees)."""
+
+    def test_forest_completes(self):
+        # 2D mask: two disconnected 5x3 blobs with a gap
+        mask = np.zeros((5, 9), dtype=bool)
+        mask[:, :3] = True
+        mask[:, 6:] = True
+        num_vox = int(mask.sum())
+        mask_idx = get_mask_idx(mask)
+
+        rng = np.random.default_rng(seed=42)
+        b, num_img = 1, 20
+        y = rng.standard_normal((b, num_img, num_vox))
+        x = rng.standard_normal((1, num_img))
+        contrast = np.array([True])
+
+        exp = Experiment(x=x, contrast=contrast, y=y,
+                         mask_idx=mask_idx, add_bias=True)
+        ana = AnalysisGLOW(exp, n_perm=10, alpha_fwer=.5)
+
+        children = ana.child_dict[0]
+        assert children.shape == (num_vox - 2, 2), \
+            f'expected {num_vox - 2} internal nodes, got {children.shape[0]}'
+
+        all_nodes = list(iter_topo(children=children, num_leaf=num_vox))
+        expected_total = num_vox + children.shape[0]
+        assert len(all_nodes) == expected_total, \
+            f'iter_topo yielded {len(all_nodes)}, expected {expected_total}'

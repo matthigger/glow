@@ -58,8 +58,8 @@ def make_gif(file_out, n_list=30, fps=10, mask_idx=None, min_n=1,
 def image_iter(children, mask_idx, num_vox):
     """yield a colour-labelled array at each step of the hierarchy.
 
-    the first image has a unique color per voxel, the final image has the
-    same color for all voxels.  intermediate images show the regions which
+    the first image has a unique color per voxel, the final image has one
+    color per tree root.  intermediate images show the regions which
     are formed
 
     Args:

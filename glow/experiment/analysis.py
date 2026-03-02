@@ -8,7 +8,7 @@ from tqdm import tqdm
 import glow.effect
 import glow.graph
 # glow.vba imported lazily when needed (requires FSL for TFCE)
-from .cluster import cluster
+from .cluster import cluster, count_components
 from .exper import ExperimentScaled
 from .mancova import get_hotel_tr
 from .prune import prune, prune_node, prune_tree, prune_tree_dp
@@ -257,7 +257,8 @@ class AnalysisGLOW(Analysis):
 
         # constants
         b, num_img, num_vox = exp.y.shape
-        num_reg = num_vox * 2 - 1
+        k = count_components(exp.mask_idx)
+        num_reg = 2 * num_vox - k
 
         # build hierarchy per permutation, compute stat per region
         self.child_dict = dict()
@@ -389,7 +390,7 @@ class AnalysisGLOW(Analysis):
         """post-process: size-regression adjustment, FWER p-values, prune."""
         verbose = getattr(self, 'verbose', False)
         b, num_img, num_vox = exp.y.shape
-        num_reg = num_vox * 2 - 1
+        num_reg = num_vox + self.child_dict[0].shape[0]
 
         # compute sizes of each region (needed before regression)
         self.size = np.empty((n_perm + 1, num_reg))
@@ -570,10 +571,10 @@ class AnalysisGLOW(Analysis):
             )
             
             # reconstruct analysis state from results
-            b, num_img, num_vox = exp.y.shape
-            num_reg = num_vox * 2 - 1
-            
             self.child_dict = {}
+            first_children = next(iter(results.values()))['children']
+            b, num_img, num_vox = exp.y.shape
+            num_reg = num_vox + first_children.shape[0]
             self.stat = np.full((n_perm + 1, num_reg), fill_value=-1.0)
             
             for perm_idx, result in results.items():

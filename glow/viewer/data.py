@@ -29,9 +29,9 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
     Returns:
         df (pd.DataFrame): one row per region with all available stats
     """
-    num_vox = ana_glow.exp.y.shape[2]
-    num_reg = num_vox * 2 - 1
     children = ana_glow.child_dict[0]
+    num_vox = ana_glow.exp.y.shape[2]
+    num_reg = num_vox + children.shape[0]
 
     d = {
         'region_idx': np.arange(num_reg),

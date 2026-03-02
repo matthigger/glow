@@ -199,7 +199,7 @@ def _build_vox_cache(sig_reg_list, children, num_vox):
 
     Args:
         sig_reg_list (list): significant region indices
-        children (np.array): (num_vox - 1, 2) child index pairs
+        children (np.array): (num_internal, 2) child index pairs
         num_vox (int): number of leaf nodes (voxels)
 
     Returns:
@@ -365,7 +365,7 @@ def prune_node(sig_reg_list, children, exp, n_perm=100, alpha=0.05,
 
     Args:
         sig_reg_list (list): regions declared significant (via FWER)
-        children (np.array): (num_vox - 1, 2) child index pairs
+        children (np.array): (num_internal, 2) child index pairs
         exp (Experiment): experiment data
         n_perm (int): number of calibration permutations (default 100)
         alpha (float): quantile level for calibration (default 0.05)
@@ -579,7 +579,7 @@ def prune_tree(sig_reg_list, children, exp):
 
     Args:
         sig_reg_list (list): regions declared significant (via FWER)
-        children (np.array): (num_vox - 1, 2) child index pairs
+        children (np.array): (num_internal, 2) child index pairs
         exp (Experiment): experiment data
 
     Returns:
@@ -691,7 +691,7 @@ def prune_tree_dp(sig_reg_list, children, exp, exp_eff):
 
     Args:
         sig_reg_list (list): regions declared significant (via FWER)
-        children (np.array): (num_vox - 1, 2) child index pairs
+        children (np.array): (num_internal, 2) child index pairs
         exp (Experiment): experiment data
         exp_eff (float): expected number of effect regions (required);
             sets lambda = log(1 + 1/exp_eff)
