@@ -619,22 +619,12 @@ class AWSBatchRunner:
                     state_str = ', '.join(state_parts) if state_parts else 'All done'
                     
                     # print status update with newlines (log style)
-                    print(f'\n[{timestamp_str}] Job States: {state_str}')
-                    print(f'  vCPU-hours (spent so far): {vcpu_hours:.3f}')
-                    
-                    # show instance types (always print a line)
+                    parts = [f'  {state_str}']
+                    parts.append(f'  vCPU-hours: {vcpu_hours:.3f}')
                     if instance_type_counts:
                         instance_str = ', '.join([f'{itype}: {count}' for itype, count in sorted(instance_type_counts.items())])
-                        print(f'  Instance types: {instance_str}')
-                    elif instance_type_error:
-                        print(f'  Instance types: unavailable ({instance_type_error})')
-                    elif running > 0:
-                        # Jobs are running but instance info is not yet available
-                        print(f'  Instance types: checking... (running={running})')
-                    else:
-                        # No running jobs yet, so instance types are not available
-                        print('  Instance types: waiting for RUNNING jobs')
-                    
+                        parts.append(f'  instances: {instance_str}')
+                    pbar.write('\n'.join(parts))
                     last_status_print = current_time
                 
                 # update progress bar
@@ -744,12 +734,12 @@ class AWSBatchRunner:
 
                     break
             
-                # heartbeat: show a ticking timestamp while waiting
+                # heartbeat: ticking timestamp on its own line below tqdm
                 for _ in range(int(poll_interval)):
-                    print(f'\r{datetime.now().strftime("%H:%M:%S")}',
+                    print(f'\r[{datetime.now().strftime("%H:%M:%S")}]',
                           end='', flush=True)
                     time.sleep(1)
-                print('\r          \r', end='')  # clear heartbeat line
+                print('\r              \r', end='', flush=True)
         except KeyboardInterrupt:
             pbar.close()
             print('\n\nMonitoring interrupted by user')
