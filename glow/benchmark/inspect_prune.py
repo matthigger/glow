@@ -1,9 +1,12 @@
-"""Inspect pruning benchmark: find where node beats tree.
+"""Inspect pruning benchmark: compare all pruning methods.
 
 Usage::
 
-    # list experiments sorted by node advantage (both sources)
+    # list experiments sorted by reference method's advantage
     python -m glow.benchmark.inspect_prune
+
+    # choose reference method via CLI
+    python -m glow.benchmark.inspect_prune --ref node
 
     # open viewer for experiment at rank 0
     python -m glow.benchmark.inspect_prune 0
@@ -15,48 +18,32 @@ Usage::
 
 import argparse
 import sys
-import tempfile
 
-import numpy as np
 import pandas as pd
 
 import glow.benchmark
 from glow.benchmark.paper_config import CONFIG_BY_LABEL
 
 
-def _load_comparison():
-    """Load prune_method results and pivot node vs tree."""
-    frames = []
-    for label in ('prune_method_wgn', 'prune_method_hcp'):
-        df, _, _ = glow.benchmark.load_update_all(label, verbose=False)
-        if df.empty:
-            continue
-        config = CONFIG_BY_LABEL[label]
-        if 'config_hash' in df.columns:
-            df = df[df['config_hash'] == config._config_hash()]
-        df['source'] = config.source
-        frames.append(df)
+_ALL_METHODS = ['homo', 'node', 'node_fl', 'tree', 'tree_dp']
 
-    if not frames:
-        print('No prune_method results found. Run the benchmark first.')
+
+def _add_gap(pivot, ref_method):
+    """Add f1_gap column and sort by reference method advantage."""
+    method_cols = [c for c in _ALL_METHODS if c in pivot.columns]
+    if ref_method not in pivot.columns:
+        print(f'Reference method {ref_method!r} not in results. '
+              f'Available: {method_cols}')
         sys.exit(1)
 
-    df = pd.concat(frames, ignore_index=True)
+    other_cols = [c for c in method_cols if c != ref_method]
+    pivot['best_other'] = pivot[other_cols].idxmax(axis=1)
+    gap_col = f'{ref_method} - best_other'
+    pivot[gap_col] = (pivot[ref_method]
+                      - pivot[other_cols].max(axis=1))
+    pivot = pivot.sort_values(gap_col, ascending=True).reset_index(drop=True)
 
-    pivot = df.pivot_table(
-        index=['source', 'seed', 'hotel_tr'],
-        columns='label',
-        values='f1',
-    ).reset_index()
-
-    if 'node' not in pivot.columns or 'tree' not in pivot.columns:
-        print('Missing node or tree results.')
-        sys.exit(1)
-
-    pivot['f1_gap'] = pivot['node'] - pivot['tree']
-    pivot = pivot.sort_values('f1_gap', ascending=False).reset_index(drop=True)
-
-    return pivot
+    return pivot, method_cols, gap_col
 
 
 def _run_and_view(source, seed, hotel_tr):
@@ -115,6 +102,61 @@ def _run_and_view(source, seed, hotel_tr):
     launch(ana, mask_target=effect.mask, extra_df=extra_df)
 
 
+def _load_pivot():
+    """Load benchmark results and pivot F1 by method (no gap computation)."""
+    frames = []
+    for label in ('prune_method_wgn', 'prune_method_hcp'):
+        df, _, _ = glow.benchmark.load_update_all(label, verbose=False)
+        if df.empty:
+            continue
+        config = CONFIG_BY_LABEL[label]
+        if 'config_hash' in df.columns:
+            df = df[df['config_hash'] == config._config_hash()]
+        df['source'] = config.source
+        frames.append(df)
+
+    if not frames:
+        print('No prune_method results found. Run the benchmark first.')
+        sys.exit(1)
+
+    df = pd.concat(frames, ignore_index=True)
+    pivot = df.pivot_table(
+        index=['source', 'seed', 'hotel_tr'],
+        columns='label',
+        values='f1',
+    ).reset_index()
+    return pivot
+
+
+def _prompt_ref_method(pivot):
+    """Interactively ask the user which method to use as reference."""
+    available = [m for m in _ALL_METHODS if m in pivot.columns]
+    mean_f1 = {m: pivot[m].mean() for m in available}
+    ranked = sorted(available, key=lambda m: mean_f1[m], reverse=True)
+
+    print('Available pruning methods (sorted by mean F1):')
+    for i, m in enumerate(ranked):
+        print(f'  {i}: {m}  (mean F1 = {mean_f1[m]:.4f})')
+    while True:
+        try:
+            choice = input(f'Reference method (name or number, '
+                           f'default={ranked[0]}): ')
+        except (EOFError, KeyboardInterrupt):
+            sys.exit(0)
+        choice = choice.strip()
+        if not choice:
+            return ranked[0]
+        if choice in available:
+            return choice
+        try:
+            idx = int(choice)
+            if 0 <= idx < len(ranked):
+                return ranked[idx]
+        except ValueError:
+            pass
+        print(f'  invalid choice: {choice!r}')
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Inspect pruning benchmark results.')
@@ -122,20 +164,23 @@ def main():
                         help='Rank index to open in viewer (0 = largest gap)')
     parser.add_argument('--source', choices=['wgn', 'hcp'], default=None,
                         help='Restrict to one data source')
+    parser.add_argument('--ref', choices=_ALL_METHODS, default=None,
+                        help='Reference method for f1_gap (default: prompt)')
     args = parser.parse_args()
 
-    pivot = _load_comparison()
+    pivot = _load_pivot()
+    ref_method = args.ref if args.ref else _prompt_ref_method(pivot)
+    pivot, method_cols, gap_col = _add_gap(pivot, ref_method)
 
     if args.source:
         pivot = pivot[pivot['source'] == args.source].reset_index(drop=True)
 
-    cols = ['source', 'seed', 'hotel_tr', 'node', 'tree',
-            'f1_gap']
+    cols = ['source', 'seed', 'hotel_tr'] + method_cols + ['best_other', gap_col]
     avail = [c for c in cols if c in pivot.columns]
-    with pd.option_context('display.max_rows', None, 'display.width', 120,
+    with pd.option_context('display.max_rows', None, 'display.width', 160,
                            'display.float_format', '{:.4f}'.format):
         print(pivot[avail].to_string())
-    print(f'\n{len(pivot)} experiments (sorted by f1_gap, node - tree).')
+    print(f'\n{len(pivot)} experiments (worst {ref_method} cases first).')
 
     rank = args.rank
     while True:
@@ -151,12 +196,13 @@ def main():
             continue
 
         row = pivot.iloc[rank]
+        method_strs = ', '.join(f'{m}={row[m]:.4f}'
+                                for m in method_cols if m in row.index)
         print(f'\nRank {rank}: source={row["source"]}, '
               f'seed={int(row["seed"])}, '
               f'hotel_tr={row["hotel_tr"]:.4f}, '
-              f'node={row["node"]:.4f}, '
-              f'tree={row["tree"]:.4f}, '
-              f'f1_gap={row["f1_gap"]:.4f}')
+              f'{method_strs}, '
+              f'{gap_col}={row[gap_col]:.4f}')
 
         _run_and_view(row['source'], row['seed'], row['hotel_tr'])
         rank = None
