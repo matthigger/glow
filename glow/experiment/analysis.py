@@ -11,7 +11,7 @@ import glow.graph
 from .cluster import cluster
 from .exper import ExperimentScaled
 from .mancova import get_hotel_tr
-from .prune import prune, prune_dp, prune_adjusted_ll
+from .prune import prune, prune_node, prune_tree, prune_tree_dp
 
 
 class Analysis:
@@ -217,25 +217,26 @@ class AnalysisGLOW(Analysis):
     def __init__(self, exp, n_perm, n_perm_prune=100,
                  alpha_fwer=.05, alpha_prune=.05, min_size=1, verbose=False,
                  n_jobs_perm=1, cloud_config=None, checkpoint=None,
-                 prune_method='geom_prior', prune_geom_exp_eff=None, **kwargs):
+                 prune_method='node', prune_geom_exp_eff=None, **kwargs):
         """
         Args:
             exp: Experiment to analyze
             n_perm: Number of permutations
             n_perm_prune: Number of pruning permutations (used for
-                homogeneity-test pruning and geom_prior calibration)
+                homogeneity-test pruning and node-gain calibration)
             alpha_fwer: Family-wise error rate
             alpha_prune: Pruning alpha (quantile level for both
-                homogeneity and geom_prior calibration)
+                homogeneity and node-gain calibration)
             min_size: Minimum region size
             verbose: Print progress
             n_jobs_perm: Number of parallel jobs for permutations (1=serial, -1=all cores)
             cloud_config: CloudConfig for AWS execution (if None, runs locally)
             checkpoint: optional object with load/save/delete methods for
                 resuming interrupted runs. only used in the serial path.
-            prune_method: 'geom_prior' for geometric-prior DP pruning
-                (default), 'homo' for homogeneity-test pruning,
-                'adjusted_ll' for greedy adjusted-likelihood pruning
+            prune_method: 'node' for per-node-LLR DP pruning (default),
+                'homo' for homogeneity-test pruning, 'tree' for greedy
+                tree-wide adjusted-likelihood pruning, 'tree_dp' for
+                DP tree-wide pruning
             prune_geom_exp_eff: expected number of effect regions under
                 the geometric prior.  if None (default), lambda is
                 calibrated from permutations.  if given, uses the
@@ -384,7 +385,7 @@ class AnalysisGLOW(Analysis):
 
     def _finalize_analysis(self, exp, n_perm, n_perm_prune,
                           alpha_fwer, alpha_prune, min_size,
-                          prune_method='geom_prior', prune_geom_exp_eff=None):
+                          prune_method='node', prune_geom_exp_eff=None):
         """post-process: size-regression adjustment, FWER p-values, prune."""
         verbose = getattr(self, 'verbose', False)
         b, num_img, num_vox = exp.y.shape
@@ -432,14 +433,14 @@ class AnalysisGLOW(Analysis):
         # prune significant regions (discard to make disjoint set)
         self.sig_reg_list = list(np.where(self.pval <= alpha_fwer)[0])
 
-        if prune_method == 'geom_prior':
+        if prune_method == 'node':
             if verbose:
                 _mode = (f'exp_eff={prune_geom_exp_eff}'
                          if prune_geom_exp_eff is not None
                          else f'{n_perm_prune} perms, alpha={alpha_prune}')
-                print(f'  [4/4] geom_prior pruning {len(self.sig_reg_list)} '
+                print(f'  [4/4] node pruning {len(self.sig_reg_list)} '
                       f'significant regions ({_mode}) ...')
-            reg_out_list, self.dp_info = prune_dp(
+            reg_out_list, self.dp_info = prune_node(
                 sig_reg_list=self.sig_reg_list,
                 children=self.child_dict[0],
                 exp=exp,
@@ -447,14 +448,28 @@ class AnalysisGLOW(Analysis):
                 alpha=alpha_prune,
                 exp_eff=prune_geom_exp_eff)
             self.homo_pval_dict = {}
-        elif prune_method == 'adjusted_ll':
+        elif prune_method == 'tree':
             if verbose:
-                print(f'  [4/4] adjusted_ll pruning {len(self.sig_reg_list)} '
+                print(f'  [4/4] tree pruning {len(self.sig_reg_list)} '
                       f'significant regions ...')
-            reg_out_list, self.dp_info = prune_adjusted_ll(
+            reg_out_list, self.dp_info = prune_tree(
                 sig_reg_list=self.sig_reg_list,
                 children=self.child_dict[0],
                 exp=exp)
+            self.homo_pval_dict = {}
+        elif prune_method == 'tree_dp':
+            if prune_geom_exp_eff is None:
+                raise ValueError(
+                    'tree_dp requires prune_geom_exp_eff')
+            if verbose:
+                print(f'  [4/4] tree_dp pruning '
+                      f'{len(self.sig_reg_list)} significant regions '
+                      f'(exp_eff={prune_geom_exp_eff}) ...')
+            reg_out_list, self.dp_info = prune_tree_dp(
+                sig_reg_list=self.sig_reg_list,
+                children=self.child_dict[0],
+                exp=exp,
+                exp_eff=prune_geom_exp_eff)
             self.homo_pval_dict = {}
         elif prune_method == 'homo':
             if verbose:
@@ -470,7 +485,8 @@ class AnalysisGLOW(Analysis):
             self.dp_info = {}
         else:
             raise ValueError(f'unknown prune_method: {prune_method!r}. '
-                             f'expected one of: geom_prior, adjusted_ll, homo')
+                             f'expected one of: node, tree, '
+                             f'tree_dp, homo')
 
         # build effects
         self.effect_list = list()
@@ -489,13 +505,13 @@ class AnalysisGLOW(Analysis):
             n_disc = len(self.effect_list)
             n_pruned = len(self.sig_reg_list) - n_disc
             msg = f'  done: {n_disc} discovered, {n_pruned} pruned'
-            if prune_method == 'geom_prior' and self.dp_info:
+            if prune_method == 'node' and self.dp_info:
                 msg += f' (lambda={self.dp_info["lam"]:.4f})'
             print(msg)
 
     def _run_on_cloud(self, exp, n_perm, n_perm_prune,
                      alpha_fwer, alpha_prune, min_size, verbose,
-                     cloud_config, prune_method='geom_prior',
+                     cloud_config, prune_method='node',
                      prune_geom_exp_eff=None, **kwargs):
         """run permutation processing on AWS Batch and finish locally."""
         from glow.aws import AWSBatchRunner

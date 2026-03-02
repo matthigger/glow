@@ -1,7 +1,7 @@
 from glow.experiment import Experiment
 from glow.experiment.mancova import decompose, get_mancova
 from glow.experiment.prune import (
-    np, prune, prune_dp, prune_adjusted_ll,
+    np, prune, prune_node, prune_tree,
     _region_loglik, _compute_region_ll, _calibrate_lambda,
     _build_vox_cache, _compute_all_ll, _gains_from_ll,
     _cache_sufficient_stats, _null_ll_from_stats, _apply_effect,
@@ -110,14 +110,14 @@ class TestDPSolve:
         """single significant leaf: selected iff gain > lambda."""
         children = _make_tree_8()
         exp = _make_exp_with_effect()
-        reg_out, info = prune_dp([8], children, exp, lam=0.0)
+        reg_out, info = prune_node([8], children, exp, lam=0.0)
         assert 8 in reg_out, 'single leaf with lam=0 should be selected'
 
     def test_large_lambda_selects_nothing(self):
         """very large lambda should select no regions."""
         children = _make_tree_8()
         exp = _make_exp_with_effect()
-        reg_out, info = prune_dp([8, 9, 12], children, exp, lam=1e6)
+        reg_out, info = prune_node([8, 9, 12], children, exp, lam=1e6)
         assert reg_out == []
 
     def test_prefers_split_over_parent(self):
@@ -127,7 +127,7 @@ class TestDPSolve:
         exp = _make_exp_with_effect()
         # nodes 8 (vox 0-1) and 9 (vox 2-3) have real effects;
         # node 12 (vox 0-3) pools effect + potentially dilutes
-        reg_out, info = prune_dp([8, 9, 12], children, exp, lam=0.0)
+        reg_out, info = prune_node([8, 9, 12], children, exp, lam=0.0)
 
         # the DP should either pick 12 alone or split into {8, 9}
         # since the gains are strong at both children, splitting
@@ -140,7 +140,7 @@ class TestDPSolve:
         children = _make_tree_8()
         exp = _make_exp_with_effect()
         sig_all = [8, 9, 10, 11, 12, 13, 14]
-        reg_out, _ = prune_dp(sig_all, children, exp, exp_eff=5)
+        reg_out, _ = prune_node(sig_all, children, exp, exp_eff=5)
 
         from glow.graph import get_parent
         parent = get_parent(children, num_leaf=8)
@@ -157,7 +157,7 @@ class TestDPSolve:
         """empty input should return empty output."""
         children = _make_tree_8()
         exp = _make_exp_with_effect()
-        reg_out, info = prune_dp([], children, exp)
+        reg_out, info = prune_node([], children, exp)
         assert reg_out == []
         assert info['lam'] == 0.0
 
@@ -170,7 +170,7 @@ class TestSameNodeGain:
         children = _make_tree_8()
         exp = _make_exp_with_effect()
         sig_all = [8, 9, 10, 11, 12, 13, 14]
-        _, info = prune_dp(sig_all, children, exp, lam=0.0)
+        _, info = prune_node(sig_all, children, exp, lam=0.0)
 
         # gain should be the same-node LLR stored in gain_per_node
         for node in sig_all:
@@ -183,14 +183,14 @@ class TestSameNodeGain:
         children = _make_tree_8()
         exp = _make_exp_with_effect()
         # node 8 covers voxels 0-1 (strong effect)
-        _, info = prune_dp([8], children, exp, lam=0.0)
+        _, info = prune_node([8], children, exp, lam=0.0)
         assert info['gain'][8] > 0
 
     def test_gain_per_node_in_dp_info(self):
         """dp_info should contain gain_per_node for viewer re-use."""
         children = _make_tree_8()
         exp = _make_exp_with_effect()
-        _, info = prune_dp([8, 9], children, exp, lam=0.0)
+        _, info = prune_node([8, 9], children, exp, lam=0.0)
         assert 'gain_per_node' in info
         assert 8 in info['gain_per_node']
         assert 9 in info['gain_per_node']
@@ -204,7 +204,7 @@ class TestLambdaFormula:
         children = _make_tree_8()
         exp = _make_exp_with_effect()
         for exp_eff in [1, 2, 5, 10]:
-            _, info = prune_dp([8, 9], children, exp, exp_eff=exp_eff)
+            _, info = prune_node([8, 9], children, exp, exp_eff=exp_eff)
             expected = np.log(1 + 1 / exp_eff)
             assert np.isclose(info['lam'], expected), \
                 f'exp_eff={exp_eff}: got {info["lam"]}, expected {expected}'
@@ -213,7 +213,7 @@ class TestLambdaFormula:
         """passing lam= should override the formula."""
         children = _make_tree_8()
         exp = _make_exp_with_effect()
-        _, info = prune_dp([8, 9], children, exp, lam=0.5)
+        _, info = prune_node([8, 9], children, exp, lam=0.5)
         assert info['lam'] == 0.5
 
     def test_higher_exp_eff_yields_more_regions(self):
@@ -221,8 +221,8 @@ class TestLambdaFormula:
         children = _make_tree_8()
         exp = _make_exp_with_effect()
         sig_all = [8, 9, 10, 11, 12, 13, 14]
-        out_1, _ = prune_dp(sig_all, children, exp, exp_eff=1)
-        out_10, _ = prune_dp(sig_all, children, exp, exp_eff=10)
+        out_1, _ = prune_node(sig_all, children, exp, exp_eff=1)
+        out_10, _ = prune_node(sig_all, children, exp, exp_eff=10)
         assert len(out_10) >= len(out_1)
 
 
@@ -246,9 +246,8 @@ class TestPermutationCalibration:
         children = _make_tree_8()
         exp = _make_exp_with_effect()
         sig_all = [8, 9, 10, 11, 12, 13, 14]
-        # use permutation calibration (exp_eff=None, lam=None)
-        reg_out, info = prune_dp(sig_all, children, exp,
-                                 n_perm=25, alpha=0.05)
+        reg_out, info = prune_node(sig_all, children, exp,
+                                    n_perm=25, alpha=0.05)
         # should find at least one effect (voxels 0-3 have strong signal)
         assert len(reg_out) > 0
         assert info['lam'] > 0
@@ -261,8 +260,8 @@ class TestPermutationCalibration:
         exp = Experiment.from_gauss(a=2, b=2, shape=(8,),
                                     num_img=20, seed=99)
         sig_all = [8, 9, 10, 11, 12, 13, 14]
-        reg_out, info = prune_dp(sig_all, children, exp,
-                                 n_perm=50, alpha=0.05)
+        reg_out, info = prune_node(sig_all, children, exp,
+                                    n_perm=50, alpha=0.05)
         # with pure noise and proper calibration, should find 0 or very few
         assert len(reg_out) <= 1, \
             f'expected <=1 effect on null data, got {len(reg_out)}'
@@ -420,15 +419,15 @@ class TestLeafDepths:
         assert weights[9] == 1
 
 
-class TestPruneAdjustedLL:
-    """integration tests for prune_adjusted_ll."""
+class TestPruneTree:
+    """integration tests for prune_tree."""
 
     def test_finds_effect_region(self):
         """should discover at least one region with a real effect."""
         children = _make_tree_8()
         exp = _make_exp_with_effect()
         sig_all = [8, 9, 10, 11, 12, 13, 14]
-        reg_out, info = prune_adjusted_ll(sig_all, children, exp)
+        reg_out, info = prune_tree(sig_all, children, exp)
         assert len(reg_out) > 0, 'should find at least one effect'
         # selected regions should overlap with the true effect (voxels 0-3)
         effect_nodes = {8, 9, 12}
@@ -446,14 +445,14 @@ class TestPruneAdjustedLL:
         exp = Experiment.from_gauss(a=2, b=2, shape=(8,),
                                     num_img=20, seed=99)
         sig_all = [8, 9, 10, 11, 12, 13, 14]
-        reg_out, info = prune_adjusted_ll(sig_all, children, exp)
+        reg_out, info = prune_tree(sig_all, children, exp)
         assert isinstance(reg_out, list)
 
     def test_empty_input(self):
         """empty sig_reg_list should return empty output."""
         children = _make_tree_8()
         exp = _make_exp_with_effect()
-        reg_out, info = prune_adjusted_ll([], children, exp)
+        reg_out, info = prune_tree([], children, exp)
         assert reg_out == []
         assert info['sig_reg_list'] == []
 
@@ -462,7 +461,7 @@ class TestPruneAdjustedLL:
         children = _make_tree_8()
         exp = _make_exp_with_effect()
         sig_all = [8, 9, 10, 11, 12, 13, 14]
-        reg_out, _ = prune_adjusted_ll(sig_all, children, exp)
+        reg_out, _ = prune_tree(sig_all, children, exp)
 
         from glow.graph import get_parent
         parent = get_parent(children, num_leaf=8)
@@ -479,7 +478,7 @@ class TestPruneAdjustedLL:
         children = _make_tree_8()
         exp = _make_exp_with_effect()
         sig_all = [8, 9, 10, 11, 12, 13, 14]
-        _, info = prune_adjusted_ll(sig_all, children, exp)
+        _, info = prune_tree(sig_all, children, exp)
         hist = info['cost_history']
         for i in range(1, len(hist)):
             assert hist[i] > hist[i - 1], \
@@ -489,7 +488,7 @@ class TestPruneAdjustedLL:
         """info dict should contain keys needed by the viewer."""
         children = _make_tree_8()
         exp = _make_exp_with_effect()
-        _, info = prune_adjusted_ll([8, 9, 12], children, exp)
+        _, info = prune_tree([8, 9, 12], children, exp)
         for key in ('gain_per_node', 'sig_reg_list',
                     'subgraph_children', 'cost_history', 'weights'):
             assert key in info, f'missing key: {key}'

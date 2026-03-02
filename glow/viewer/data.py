@@ -54,7 +54,7 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
             homo_pval[reg_idx] = pval
     d['pval_homo'] = homo_pval
 
-    # DP pruning diagnostics (only populated with prune_method='geom_prior')
+    # DP pruning diagnostics (only populated with prune_method='node')
     ll_gain = np.full(num_reg, np.nan)
     ll_gain_net = np.full(num_reg, np.nan)
     _dp_info = getattr(ana_glow, 'dp_info', {})
@@ -109,8 +109,10 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
 _GENERIC_FEATURES = {'n_voxel'}
 _PRUNING_FEATURES = {
     'pval_homo', 'll_gain', 'll_gain_net',
-    'homo_pval', 'geom_gain', 'geom_gain_net', 'adj_ll_gain',
-    'adj_ll_wt_gain',
+    'homo_pval', 'node_gain', 'node_gain_net',
+    'node_gain_net_fl',
+    'tree_gain', 'tree_wt_gain',
+    'tree_dp_tree_gain', 'tree_dp_tree_gain_net',
 }
 _MASK_FEATURES = {'f1', 'sens', 'spec', 'vox_in_target', 'vox_out_target'}
 
@@ -137,7 +139,7 @@ def get_feature_columns(df):
             continue
         if c in _GENERIC_FEATURES:
             generic.append(c)
-        elif c in _PRUNING_FEATURES:
+        elif c in _PRUNING_FEATURES or c.startswith('tree_wt_gain_sum'):
             pruning.append(c)
         elif c in _MASK_FEATURES:
             mask.append(c)
