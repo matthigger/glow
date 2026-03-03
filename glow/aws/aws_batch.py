@@ -732,7 +732,15 @@ class AWSBatchRunner:
 
                     break
             
-                time.sleep(poll_interval)
+                heartbeat_interval = 1
+                slept = 0
+                while slept < poll_interval:
+                    nap = min(heartbeat_interval, poll_interval - slept)
+                    time.sleep(nap)
+                    slept += nap
+                    ts = datetime.now().strftime('%H:%M:%S')
+                    pbar.set_description(f'Jobs [{ts}]')
+                    pbar.refresh()
         except KeyboardInterrupt:
             pbar.close()
             print('\n\nMonitoring interrupted by user')
