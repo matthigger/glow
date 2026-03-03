@@ -5,7 +5,8 @@ import numpy as np
 from glow.experiment.permute import NotEnoughPermutations
 from .mancova import decompose, get_mancova
 from .permute import get_perm_iter
-from ..graph import get_label_map, get_parent, iter_topo, SCGraph, GRAPH_EXCLUDE
+from ..graph import (get_label_map, get_parent, iter_topo, SCGraph,
+                     GRAPH_EXCLUDE, dp_antichain)
 
 
 def _loglik_from_cov(cov, n):
@@ -237,12 +238,8 @@ def _compute_all_ll(sig_reg_list, y, q_tup, vox_cache):
 def _dp_solve(subgraph, sig_reg_list, gain_per_node, lam):
     """bottom-up DP on the significant subtree.
 
-    Finds the antichain E maximising sum_{i in E} [gain(i) - lambda].
-
-    gain(i) is the same-node log-likelihood ratio:
-        gain(i) = LL_full(i) - LL_null(i)
-    where both are computed on the same region so that the spatial
-    covariance (sigma) cancels.
+    Thin wrapper around ``dp_antichain`` using the SCGraph's
+    short-circuited children map.
 
     Args:
         subgraph (SCGraph): short-circuited significant subtree
@@ -254,44 +251,12 @@ def _dp_solve(subgraph, sig_reg_list, gain_per_node, lam):
         reg_out_list (list): sorted indices of selected effect regions
         dp_info (dict): diagnostic arrays (gain, best per node)
     """
-    gain = {}
-    best = {}
-    chose_select = {}
-
-    # process in ascending index order (valid topological order)
-    for node in sorted(sig_reg_list):
-        kids = subgraph.children.get(node, [])
-
-        gain[node] = gain_per_node[node]
-        g_net = gain[node] - lam
-
-        if not kids:
-            # leaf: select this region or leave null
-            best[node] = max(g_net, 0.0)
-            chose_select[node] = g_net > 0
-        else:
-            # internal: select this region or recurse into children
-            split_val = sum(best[k] for k in kids)
-            best[node] = max(g_net, split_val)
-            chose_select[node] = g_net >= split_val
-
-    # backtrack to recover E
-    reg_out_list = []
-
-    def _backtrack(node):
-        if chose_select[node]:
-            reg_out_list.append(node)
-        else:
-            for kid in subgraph.children.get(node, []):
-                _backtrack(kid)
-
-    # start from roots of significant subtree
-    for node in sorted(sig_reg_list):
-        if subgraph.parent[node] == GRAPH_EXCLUDE:
-            _backtrack(node)
-
-    dp_info = dict(gain=gain, best=best, lam=lam)
-    return sorted(reg_out_list), dp_info
+    return dp_antichain(
+        nodes=sorted(sig_reg_list),
+        children_map=subgraph.children,
+        gain=gain_per_node,
+        lam=lam,
+    )
 
 
 def _gains_from_ll(ll_full, ll_null, sig_reg_list):

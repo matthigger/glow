@@ -191,6 +191,75 @@ def get_miss_hits(mask, mask_idx, children):
     return miss, hit
 
 
+def children_to_map(children):
+    """Convert dense children array to a dict suitable for dp_antichain.
+
+    Args:
+        children (np.array): (num_internal, 2) child index pairs
+
+    Returns:
+        dict: node_index -> [child0, child1]
+    """
+    num_leaf = children.shape[0] + 1
+    return {num_leaf + i: [int(children[i, 0]), int(children[i, 1])]
+            for i in range(children.shape[0])}
+
+
+def dp_antichain(nodes, children_map, gain, lam=0.0):
+    """Bottom-up DP finding the antichain that maximises total gain.
+
+    Maximises ``sum_{i in E} [gain(i) - lam]`` over antichains E of the
+    tree defined by *children_map*.  Used both for pruning (on an
+    SCGraph significant subtree) and for stat comparison (full tree,
+    ``lam=0``).
+
+    Args:
+        nodes: node indices in ascending (bottom-up) order
+        children_map (dict): node -> list of child nodes in *nodes*.
+            Nodes absent from the dict (or with empty list) are leaves.
+        gain (dict): node -> gain value
+        lam (float): per-node penalty (default 0)
+
+    Returns:
+        selected (list[int]): sorted indices of antichain regions
+        info (dict): diagnostic keys ``gain``, ``best``, ``lam``
+    """
+    best = {}
+    chose = {}
+
+    for node in nodes:
+        kids = children_map.get(node, [])
+        g_net = gain[node] - lam
+
+        if not kids:
+            best[node] = max(g_net, 0.0)
+            chose[node] = g_net > 0
+        else:
+            split_val = sum(best[k] for k in kids)
+            best[node] = max(g_net, split_val)
+            chose[node] = g_net >= split_val
+
+    # roots = nodes that never appear as a child of another node
+    all_children = set()
+    for kids in children_map.values():
+        all_children.update(kids)
+    roots = sorted(n for n in nodes if n not in all_children)
+
+    selected = []
+
+    def _bt(node):
+        if chose[node]:
+            selected.append(node)
+        else:
+            for kid in children_map.get(node, []):
+                _bt(kid)
+
+    for root in roots:
+        _bt(root)
+
+    return sorted(selected), dict(gain=dict(gain), best=best, lam=lam)
+
+
 def iter_topo(*, children=None, num_leaf, node_start=None, only_leaf=False):
     """topological sort, leaves to root.
 
