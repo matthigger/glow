@@ -285,7 +285,6 @@ def run_batched_cloud_tests():
         dict of test_name -> True/False
     """
     import uuid
-    import tempfile
     import boto3
     from glow.aws.aws_batch import CloudConfig, AWSBatchRunner
     from glow.experiment.mancova import get_llr
@@ -342,7 +341,7 @@ def run_batched_cloud_tests():
         print('  running local analysis...')
         ana_local = glow.experiment.AnalysisGLOW(exp, **ana_kwargs)
 
-        # upload + submit cloud jobs
+        # submit cloud jobs (perm + synthesis) via AWSBatchRunner
         cloud_config = CloudConfig(
             s3_bucket=s3_bucket, s3_prefix='test/comparison_test',
             job_queue=job_queue, job_definition=job_definition,
@@ -362,14 +361,18 @@ def run_batched_cloud_tests():
             skip_completed=True)
 
         perm_job_ids = submission['job_ids']
-        all_job_ids.extend(perm_job_ids)
+
+        synth_job_id = runner.submit_synthesis_job(experiment_id, n_perm)
+        all_cloud_job_ids = perm_job_ids + [synth_job_id]
+
+        all_job_ids.extend(all_cloud_job_ids)
         test_meta['permutation_level'] = {
             'runner': runner, 'experiment_id': experiment_id,
             'n_perm': n_perm, 'exp': exp,
             'ana_local': ana_local, 'ana_kwargs': ana_kwargs,
-            'job_ids': perm_job_ids,
+            'job_ids': all_cloud_job_ids,
         }
-        print(f'  submitted {len(perm_job_ids)} permutation jobs')
+        print(f'  submitted {len(perm_job_ids)} perm + 1 synthesis job')
 
     # ── Experiment-level ──────────────────────────────────────────────
     if RUN_EXPERIMENT_LEVEL_TEST:
@@ -474,7 +477,7 @@ def run_batched_cloud_tests():
     # PHASE 3: Download results + assert per test
     # ══════════════════════════════════════════════════════════════════
 
-    # ── Permutation-level: download, reconstruct, compare ─────────────
+    # ── Permutation-level: download final analysis, compare ─────────
     if 'permutation_level' in test_meta:
         print(f'\n{"─"*70}')
         print('[Assert] Permutation-level: local vs cloud comparison')
@@ -482,36 +485,9 @@ def run_batched_cloud_tests():
         try:
             m = test_meta['permutation_level']
             runner = m['runner']
-            exp = m['exp']
-            n_perm = m['n_perm']
             ana_local = m['ana_local']
-            ana_kwargs = m['ana_kwargs']
 
-            with tempfile.TemporaryDirectory() as tmpdir:
-                dl = runner.download_results(
-                    m['experiment_id'], n_perm, Path(tmpdir))
-
-                # reconstruct cloud analysis from downloaded permutations
-                b, num_img, num_vox = exp.y.shape
-                first_children = next(iter(dl.values()))['children']
-                num_reg = num_vox + first_children.shape[0]
-
-                ana_cloud = object.__new__(glow.experiment.AnalysisGLOW)
-                ana_cloud.exp = exp  # keep original (unscaled) exp, same as cloud path
-                ana_cloud.get_stat = get_llr
-                ana_cloud.n_jobs_perm = 1
-                ana_cloud.child_dict = {}
-                ana_cloud.stat = np.full((n_perm + 1, num_reg), fill_value=-1.0)
-                for perm_idx, result in dl.items():
-                    ana_cloud.child_dict[perm_idx] = result['children']
-                    ana_cloud.stat[perm_idx, :] = result['stat']
-
-                ana_cloud._finalize_analysis(
-                    exp, n_perm,  # must pass original (unscaled) exp, same as worker uses
-                    n_perm_prune=ana_kwargs['n_perm_prune'],
-                    alpha_fwer=ana_kwargs['alpha_fwer'],
-                    alpha_prune=ana_kwargs['alpha_prune'],
-                    min_size=ana_kwargs['min_size'])
+            ana_cloud = runner.download_final_analysis(m['experiment_id'])
 
             # compare local vs cloud
             tol = 1e-10

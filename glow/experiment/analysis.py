@@ -537,78 +537,68 @@ class AnalysisGLOW(Analysis):
                      alpha_fwer, alpha_prune, min_size, verbose,
                      cloud_config, prune_method='node',
                      prune_geom_exp_eff=None, **kwargs):
-        """run permutation processing on AWS Batch and finish locally."""
+        """Run full analysis on AWS Batch (permutations + synthesis).
+
+        Submits N+1 permutation jobs, then a synthesis job that polls S3
+        for all results before running ``_finalize_analysis`` on the cloud.
+        The final pickled AnalysisGLOW is downloaded and its attributes
+        are copied onto ``self``.
+        """
         from glow.aws import AWSBatchRunner
         import uuid
-        
+
         print('running analysis on AWS cloud...')
-        
-        # generate experiment ID
+
         experiment_id = f'glow_{uuid.uuid4().hex[:8]}'
-        
-        # prepare analysis kwargs (without cloud_config)
+
         ana_kwargs = {
             'get_stat': self.get_stat,
             'n_perm_prune': n_perm_prune,
             'alpha_fwer': alpha_fwer,
             'alpha_prune': alpha_prune,
-            'min_size': min_size
+            'min_size': min_size,
+            'prune_method': prune_method,
+            'prune_geom_exp_eff': prune_geom_exp_eff,
         }
         ana_kwargs.update(kwargs)
-        
-        # initialize runner
+
         runner = AWSBatchRunner(cloud_config)
-        
-        # upload experiment
+
         print('uploading experiment data...')
         runner.upload_experiment(exp, ana_kwargs, experiment_id)
-        
-        # submit jobs
+
         print('submitting permutation jobs...')
         submission = runner.submit_jobs(
             experiment_id=experiment_id,
             n_perm=n_perm,
-            skip_completed=True
+            skip_completed=True,
         )
-        
+
         if submission.get('cancelled'):
             raise RuntimeError('job submission cancelled')
-        
-        # monitor progress
+
+        perm_job_ids = submission['job_ids']
+
+        print('submitting synthesis job...')
+        synth_job_id = runner.submit_synthesis_job(experiment_id, n_perm)
+
+        all_job_ids = perm_job_ids + [synth_job_id]
+
         if verbose:
-            runner.monitor_jobs(submission['job_ids'])
+            runner.monitor_jobs(all_job_ids)
         else:
-            print(f'submitted {submission["n_jobs"]} jobs')
-            print('use runner.monitor_jobs(job_ids) to track progress')
-        
-        # download results
-        print('downloading results...')
-        from pathlib import Path
-        import tempfile
-        
-        with tempfile.TemporaryDirectory() as tmpdir:
-            results = runner.download_results(
-                experiment_id=experiment_id,
-                n_perm=n_perm,
-                output_dir=Path(tmpdir)
-            )
-            
-            # reconstruct analysis state from results
-            self.child_dict = {}
-            first_children = next(iter(results.values()))['children']
-            b, num_img, num_vox = exp.y.shape
-            num_reg = num_vox + first_children.shape[0]
-            self.stat = np.full((n_perm + 1, num_reg), fill_value=-1.0)
-            
-            for perm_idx, result in results.items():
-                self.child_dict[perm_idx] = result['children']
-                self.stat[perm_idx, :] = result['stat']
-        
-        # complete analysis locally using shared finalization method
-        print('completing analysis locally...')
-        self._finalize_analysis(exp, n_perm, n_perm_prune,
-                               alpha_fwer, alpha_prune, min_size,
-                               prune_method=prune_method,
-                               prune_geom_exp_eff=prune_geom_exp_eff)
-        
+            print(f'submitted {len(perm_job_ids)} perm jobs + 1 synthesis job')
+
+        print('downloading final analysis...')
+        remote_ana = runner.download_final_analysis(experiment_id)
+
+        _COPY_ATTRS = [
+            'child_dict', 'stat', 'size', 'pval', 'llr_adjusted',
+            'sig_reg_list', 'effect_list', 'alpha_fwer', 'alpha_prune',
+            'dp_info', 'homo_pval_dict', 'adj_model', 'adj_beta',
+        ]
+        for attr in _COPY_ATTRS:
+            if hasattr(remote_ana, attr):
+                setattr(self, attr, getattr(remote_ana, attr))
+
         print(f'cloud analysis complete: found {len(self.effect_list)} effects')

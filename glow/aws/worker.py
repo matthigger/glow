@@ -413,9 +413,120 @@ def run_experiment_mode(args):
     config.folder = original_folder
 
 
+def run_synthesis_mode(args):
+    """Collect permutation results from S3 and run _finalize_analysis."""
+    import time
+    import glow.graph
+    from glow.experiment.analysis import AnalysisGLOW
+    from glow.experiment.mancova import get_llr
+
+    print('=' * 60)
+    print('GLOW Worker - SYNTHESIS MODE')
+    print(f'Experiment: {args.experiment_id}')
+    print(f'Permutations: {args.n_perm + 1}')
+    print('=' * 60)
+
+    s3 = boto3.client('s3')
+    data_key = (f'{args.s3_prefix}/experiments/'
+                f'{args.experiment_id}/data.pkl')
+
+    print(f'\nDownloading experiment data...')
+    try:
+        response = s3.get_object(Bucket=args.s3_bucket, Key=data_key)
+        data = pickle.loads(response['Body'].read())
+        exp = data['exp']
+        ana_kwargs = data['ana_kwargs']
+        print(f'  ✓ Loaded experiment: {exp.y.shape}')
+    except ClientError as e:
+        print(f'  ✗ Error: {e}')
+        sys.exit(1)
+
+    # poll S3 until all permutation results are available
+    n_expected = args.n_perm + 1
+    result_prefix = (f'{args.s3_prefix}/results/'
+                     f'{args.experiment_id}/')
+
+    print(f'\nWaiting for {n_expected} permutation results...')
+    while True:
+        completed = set()
+        paginator = s3.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=args.s3_bucket,
+                                       Prefix=result_prefix):
+            for obj in page.get('Contents', []):
+                key = obj['Key']
+                if key.endswith('_result.pkl'):
+                    fname = Path(key).name
+                    try:
+                        perm_idx = int(fname.split('_')[0])
+                        if 0 <= perm_idx <= args.n_perm:
+                            completed.add(perm_idx)
+                    except ValueError:
+                        continue
+        print(f'  {len(completed)}/{n_expected} results available')
+        if len(completed) >= n_expected:
+            break
+        time.sleep(30)
+
+    # download and reconstruct
+    print(f'\nLoading permutation results...')
+    b, num_img, num_vox = exp.y.shape
+    child_dict = {}
+    stat = None
+
+    for perm_idx in range(n_expected):
+        key = f'{result_prefix}{perm_idx:06d}_result.pkl'
+        response = s3.get_object(Bucket=args.s3_bucket, Key=key)
+        result = pickle.loads(response['Body'].read())
+        child_dict[perm_idx] = result['children']
+        if stat is None:
+            num_reg = num_vox + result['children'].shape[0]
+            stat = np.full((n_expected, num_reg), fill_value=-1.0)
+        stat[perm_idx, :] = result['stat']
+
+    print(f'  ✓ Loaded {n_expected} permutation results')
+
+    # build a shell AnalysisGLOW and run _finalize_analysis
+    get_stat = ana_kwargs.get('get_stat', get_llr)
+    ana = object.__new__(AnalysisGLOW)
+    ana.exp = exp
+    ana.get_stat = get_stat
+    ana.n_jobs_perm = 1
+    ana.verbose = True
+    ana.child_dict = child_dict
+    ana.stat = stat
+
+    n_perm_prune = ana_kwargs.get('n_perm_prune', 100)
+    alpha_fwer = ana_kwargs.get('alpha_fwer', 0.05)
+    alpha_prune = ana_kwargs.get('alpha_prune', 0.05)
+    min_size = ana_kwargs.get('min_size', 1)
+    prune_method = ana_kwargs.get('prune_method', 'node')
+    prune_geom_exp_eff = ana_kwargs.get('prune_geom_exp_eff', None)
+
+    print(f'\nRunning _finalize_analysis...')
+    ana._finalize_analysis(
+        exp, args.n_perm, n_perm_prune,
+        alpha_fwer, alpha_prune, min_size,
+        prune_method=prune_method,
+        prune_geom_exp_eff=prune_geom_exp_eff)
+    print(f'  ✓ {len(ana.effect_list)} effects discovered')
+
+    # upload final analysis
+    final_key = f'{result_prefix}analysis_final.pkl'
+    print(f'\nUploading final analysis to s3://{args.s3_bucket}/{final_key}')
+    try:
+        s3.put_object(
+            Bucket=args.s3_bucket,
+            Key=final_key,
+            Body=pickle.dumps(ana))
+        print(f'  ✓ Uploaded')
+    except ClientError as e:
+        print(f'  ✗ Error: {e}')
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='AWS Batch worker (supports permutation and experiment modes)'
+        description='AWS Batch worker (supports permutation, experiment, and synthesis modes)'
     )
     
     # common arguments
@@ -425,29 +536,37 @@ def main():
     # permutation mode arguments
     parser.add_argument('--data-path', help='S3 path to experiment data (permutation mode)')
     parser.add_argument('--perm-idx', type=int, help='permutation index (permutation mode)')
-    parser.add_argument('--experiment-id', help='experiment ID (permutation mode)')
+    parser.add_argument('--experiment-id', help='experiment ID (permutation/synthesis mode)')
     
     # experiment mode arguments
     parser.add_argument('--run-id', help='run ID (experiment mode)')
     parser.add_argument('--exp-idx', type=int, help='experiment index (experiment mode)')
+
+    # synthesis mode arguments
+    parser.add_argument('--synthesize', action='store_true',
+                        help='synthesis mode: collect perm results and finalize')
+    parser.add_argument('--n-perm', type=int, help='number of permutations (synthesis mode)')
     
     args = parser.parse_args()
     
     # determine mode
-    if args.perm_idx is not None:
-        # permutation mode
+    if args.synthesize:
+        if not all([args.experiment_id, args.n_perm is not None]):
+            parser.error('synthesis mode requires: --experiment-id, --n-perm')
+        run_synthesis_mode(args)
+
+    elif args.perm_idx is not None:
         if not all([args.data_path, args.experiment_id]):
             parser.error('permutation mode requires: --data-path, --perm-idx, --experiment-id')
         run_permutation_mode(args)
         
     elif args.exp_idx is not None:
-        # experiment mode
         if not args.run_id:
             parser.error('experiment mode requires: --run-id, --exp-idx')
         run_experiment_mode(args)
         
     else:
-        parser.error('must specify either --perm-idx (permutation mode) or --exp-idx (experiment mode)')
+        parser.error('must specify --perm-idx, --exp-idx, or --synthesize')
     
     print(f'\n{"=" * 60}')
     print(f'✓ Worker completed successfully')

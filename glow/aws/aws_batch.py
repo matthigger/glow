@@ -297,6 +297,58 @@ class AWSBatchRunner:
             'skipped': list(completed)
         }
     
+    def submit_synthesis_job(self, experiment_id, n_perm):
+        """Submit a synthesis job that polls S3 for permutation results.
+
+        The synthesis worker waits until all permutation result files appear
+        in S3 before running ``_finalize_analysis``, so AWS Batch
+        ``dependsOn`` is not needed (works for any n_perm).
+
+        Returns:
+            synthesis job ID (str)
+        """
+        job_name = f'{experiment_id}_synthesis'
+        overrides = {
+            'command': [
+                '--synthesize',
+                '--experiment-id', experiment_id,
+                '--n-perm', str(n_perm),
+                '--s3-bucket', self.config.s3_bucket,
+                '--s3-prefix', self.config.s3_prefix,
+            ]
+        }
+
+        try:
+            response = self.batch.submit_job(
+                jobName=job_name,
+                jobQueue=self.config.job_queue,
+                jobDefinition=self.config.job_definition,
+                containerOverrides=overrides,
+                retryStrategy={'attempts': 1},
+                timeout={'attemptDurationSeconds': self.config.timeout_minutes * 60},
+            )
+            print(f'submitted synthesis job: {response["jobId"][:12]}...')
+            return response['jobId']
+        except ClientError as e:
+            raise RuntimeError(f'failed to submit synthesis job: {e}')
+
+    def download_final_analysis(self, experiment_id):
+        """Download the final analysis pickle produced by the synthesis worker.
+
+        Returns:
+            unpickled AnalysisGLOW object
+        """
+        final_key = (f'{self.config.s3_prefix}/results/'
+                     f'{experiment_id}/analysis_final.pkl')
+        try:
+            response = self.s3.get_object(
+                Bucket=self.config.s3_bucket, Key=final_key)
+            return pickle.loads(response['Body'].read())
+        except ClientError as e:
+            raise RuntimeError(
+                f'failed to download final analysis '
+                f'(s3://{self.config.s3_bucket}/{final_key}): {e}')
+
     def monitor_jobs(self, job_ids, poll_interval=30,
                     job_info_map=None, cancel_on_error=True):
         """poll AWS Batch until all jobs finish, downloading results as they complete."""
