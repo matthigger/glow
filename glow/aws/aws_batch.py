@@ -103,6 +103,9 @@ class AWSBatchRunner:
                 current_idx = self._job_memory_tier_index.get(base_name, 0)
                 next_idx = current_idx + 1
                 if next_idx >= len(tiers) or len(tiers) < 2:
+                    max_mb = tiers[-1] if tiers else self.config.memory_mb
+                    print(f'  ✗ OOM: {job["jobName"]} exceeded max memory '
+                          f'tier ({max_mb} MB), not resubmitting')
                     continue
                 memory_mb = tiers[next_idx]
                 retry_name = f'{base_name}_retry{next_idx}'
