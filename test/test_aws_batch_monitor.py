@@ -261,6 +261,76 @@ class TestResubmitSpotTermination:
         assert info_map['new-job'] == info_map['job-1']
 
 
+class TestMonitorWaitsForRetries:
+    """Verify monitor_jobs does not exit before resubmitted jobs finish."""
+
+    def test_monitor_continues_after_all_jobs_fail_and_resubmit(self):
+        """Regression: all jobs OOM on first poll, retries succeed on second."""
+        runner = _make_runner()
+        call_count = [0]
+
+        def mock_submit(**kw):
+            call_count[0] += 1
+            return {'jobId': f'retry-{call_count[0]}'}
+
+        runner.batch.submit_job = MagicMock(side_effect=mock_submit)
+
+        poll_num = [0]
+
+        def describe_side_effect(jobs):
+            poll_num[0] += 1
+            result = []
+            for jid in jobs:
+                if jid.startswith('retry-'):
+                    if poll_num[0] >= 2:
+                        result.append({
+                            'jobId': jid,
+                            'jobName': f'name_{jid}',
+                            'status': 'SUCCEEDED',
+                            'startedAt': datetime(2024, 1, 1, 10, 2),
+                            'stoppedAt': datetime(2024, 1, 1, 10, 5),
+                        })
+                    else:
+                        result.append({
+                            'jobId': jid,
+                            'jobName': f'name_{jid}',
+                            'status': 'RUNNING',
+                            'startedAt': datetime(2024, 1, 1, 10, 2),
+                        })
+                else:
+                    result.append({
+                        'jobId': jid,
+                        'jobName': f'name_{jid}',
+                        'status': 'FAILED',
+                        'statusReason': 'OutOfMemoryError',
+                        'container': {
+                            'exitCode': 137,
+                            'command': ['python', 'worker.py'],
+                        },
+                        'startedAt': datetime(2024, 1, 1, 10, 0),
+                        'stoppedAt': datetime(2024, 1, 1, 10, 1),
+                    })
+            return {'jobs': result}
+
+        runner.batch.describe_jobs = MagicMock(side_effect=describe_side_effect)
+
+        with patch('time.sleep'):
+            with patch('glow.aws.aws_batch.tqdm') as mock_tqdm:
+                mock_pbar = MagicMock()
+                mock_tqdm.return_value = mock_pbar
+                with patch('builtins.print') as mock_print:
+                    runner.monitor_jobs(
+                        ['job-1', 'job-2'],
+                        poll_interval=0.01,
+                        job_info_map={})
+
+        assert poll_num[0] >= 2, (
+            'monitor exited after first poll without waiting for retries')
+
+        printed = ' '.join(str(c) for c in mock_print.call_args_list)
+        assert 'succeeded: 2' in printed
+
+
 class TestResubmitMixed:
     """Test _resubmit_failed_jobs with a mix of OOM and spot failures."""
 

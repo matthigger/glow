@@ -703,7 +703,8 @@ class AWSBatchRunner:
                                 print(f'\n⚠ Error downloading results for {job["jobName"]}: {e}')
             
                 # check if all jobs reached a terminal state
-                if all_terminal == total:
+                # (skip if we just resubmitted -- counts are stale)
+                if all_terminal == total and not resubmit_reasons:
                     pbar.close()
                     print(f'\nall jobs complete!')
                     print(f'  succeeded: {statuses["SUCCEEDED"]}')
