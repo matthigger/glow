@@ -4,17 +4,17 @@ For each permutation tree, every region gives a (size, stat) pair under the
 null hypothesis (permuted data has no true effect).  This script:
 
 1. Generates pure-WGN data and loads HCP data -- no effect.
-2. Clusters each permutation and computes all four MANCOVA stats per region.
-3. Fits a power-law mean model: ln(stat) = a + b*ln(size).
-4. Produces diagnostic plots: raw scatter with fit, and log-space residuals
-   with binned empirical variance to assess whether a variance adjustment
-   is necessary.
+2. Clusters each permutation and computes all 5 MANCOVA stats per region.
+3. Fits several candidate regression models per stat and auto-selects the
+   best by R².
+4. Produces diagnostic plots: raw scatter with best fit, and residuals
+   with binned empirical variance.
 
 Usage::
 
-    python -m glow.experiment.stat_vs_size
-    python -m glow.experiment.stat_vs_size --n_perm 100
-    python -m glow.experiment.stat_vs_size --out /tmp/diag
+    python -m glow.benchmark.stat_vs_size
+    python -m glow.benchmark.stat_vs_size --n_perm 100
+    python -m glow.benchmark.stat_vs_size --out /tmp/diag
 """
 
 from __future__ import annotations
@@ -32,15 +32,15 @@ import glow.graph
 from glow.experiment.cluster import cluster
 from glow.experiment.exper import Experiment, ExperimentScaled
 from glow.experiment.mancova import (
-    decompose,
     get_hotel_tr,
+    get_llr,
     get_neg_wilks,
     get_pillai,
     get_roys_root,
 )
 
-# all four stats we evaluate
 STAT_FUNCS = {
+    'llr': get_llr,
     'hotel_tr': get_hotel_tr,
     'pillai': get_pillai,
     'neg_wilks': get_neg_wilks,
@@ -53,32 +53,21 @@ STAT_FUNCS = {
 # ---------------------------------------------------------------------------
 
 def _collect_all_stats(exp, children):
-    """Compute all four MANCOVA stats for every region in one tree walk.
-
-    Args:
-        exp (ExperimentScaled): pre-processed experiment (single permutation)
-        children (np.array): (num_node, 2) child index array
-
-    Returns:
-        records (list[dict]): one dict per region with keys
-            reg_idx, size, hotel_tr, pillai, neg_wilks, roys_root
-    """
+    """Compute all MANCOVA stats for every region in one tree walk."""
     records = []
     num_vox = exp.y.shape[2]
 
-    for reg_idx, e, h in glow.graph.iter_stat(exp=exp, children=children):
-        # e, h have shape (b, b, 1) -- single permutation
+    for reg_idx, size, e, h in glow.graph.iter_stat(exp=exp, children=children):
         _e = e[:, :, 0]
         _h = h[:, :, 0]
         rec = {'reg_idx': reg_idx}
         for name, fn in STAT_FUNCS.items():
             try:
-                rec[name] = fn(e=_e, h=_h)
+                rec[name] = fn(e=_e, h=_h, n=size)
             except np.linalg.LinAlgError:
                 rec[name] = np.nan
         records.append(rec)
 
-    # compute sizes via node_sum
     sizes = glow.graph.node_sum(
         x=np.ones(num_vox, dtype=int), children=children)
     for rec in records:
@@ -88,18 +77,7 @@ def _collect_all_stats(exp, children):
 
 
 def collect_null_data(exp_base, n_perm, label='', verbose=True):
-    """Run clustering + stat computation across permutations.
-
-    Args:
-        exp_base (Experiment): experiment with design matrix (no effect).
-        n_perm (int): number of permutations to run.
-        label (str): data source label for display.
-        verbose (bool): show progress.
-
-    Returns:
-        df (pd.DataFrame): columns = perm_idx, reg_idx, size, plus the
-            four stat columns.
-    """
+    """Run clustering + stat computation across permutations."""
     if not isinstance(exp_base, ExperimentScaled):
         exp_base = ExperimentScaled.from_exp(exp_base)
 
@@ -112,7 +90,6 @@ def collect_null_data(exp_base, n_perm, label='', verbose=True):
     t0 = time.time()
     for perm_idx in tqdm(range(n_perm), desc=f'{label} permutations',
                          disable=not verbose):
-        # use perm_idx >= 1 so data is always permuted (null)
         _exp = exp_base.permute(perm_idx + 1)
         children = cluster(exp=_exp)
         recs = _collect_all_stats(_exp, children)
@@ -152,7 +129,6 @@ def make_hcp_experiment():
         folder=path, sbj_regex=r'[\d]{6}', img_glob_dict=img_glob_dict)
     exp = exp_img.sample_x(a=2, seed=0, add_bias=True)
 
-    # apply radius=8 spherical mask (same as benchmark)
     extenter = glow.effect.ExtenterSphere(radius=8)
     mask = extenter(mask_idx=exp.mask_idx, seed=0, contiguous=True)
     exp = exp.apply_mask(mask)
@@ -160,71 +136,111 @@ def make_hcp_experiment():
 
 
 # ---------------------------------------------------------------------------
-# Power-law fit
+# Regression models
 # ---------------------------------------------------------------------------
 
-def _wls_fit(X, y, w):
-    """Weighted least squares: minimise sum w_i (y_i - X_i @ beta)^2.
+# Each model is defined by:
+#   name:       human-readable label
+#   requires_positive:  whether stat > 0 is needed
+#   transform:  (size, stat) -> (X, y) for OLS
+#   predict:    (beta, size_array) -> predicted stat in original space
+#   residual:   (beta, size, stat) -> residual (in the fitted space)
+#   equation:   (beta) -> human-readable string
 
-    Returns beta (coefficients).
+MODELS = {
+    'linear': dict(
+        requires_positive=False,
+        transform=lambda s, y: (
+            np.column_stack([np.ones_like(s), s]), y),
+        predict=lambda b, sz: b[0] + b[1] * sz,
+        residual=lambda b, s, y: y - (b[0] + b[1] * s),
+        equation=lambda b: f'stat = {b[0]:+.4f} {b[1]:+.6f}*size',
+    ),
+    'linear_no_intercept': dict(
+        requires_positive=False,
+        transform=lambda s, y: (s[:, np.newaxis], y),
+        predict=lambda b, sz: b[0] * sz,
+        residual=lambda b, s, y: y - b[0] * s,
+        equation=lambda b: f'stat = {b[0]:.6f}*size',
+    ),
+    'power_law': dict(
+        requires_positive=True,
+        transform=lambda s, y: (
+            np.column_stack([np.ones_like(s), np.log(s)]), np.log(y)),
+        predict=lambda b, sz: np.exp(b[0] + b[1] * np.log(sz)),
+        residual=lambda b, s, y: np.log(y) - (b[0] + b[1] * np.log(s)),
+        equation=lambda b: f'ln(stat) = {b[0]:+.4f} {b[1]:+.4f}*ln(size)',
+    ),
+    'sqrt': dict(
+        requires_positive=False,
+        transform=lambda s, y: (
+            np.column_stack([np.ones_like(s), np.sqrt(s)]), y),
+        predict=lambda b, sz: b[0] + b[1] * np.sqrt(sz),
+        residual=lambda b, s, y: y - (b[0] + b[1] * np.sqrt(s)),
+        equation=lambda b: f'stat = {b[0]:+.4f} {b[1]:+.4f}*sqrt(size)',
+    ),
+    'log_linear': dict(
+        requires_positive=True,
+        transform=lambda s, y: (
+            np.column_stack([np.ones_like(s), s]), np.log(y)),
+        predict=lambda b, sz: np.exp(b[0] + b[1] * sz),
+        residual=lambda b, s, y: np.log(y) - (b[0] + b[1] * s),
+        equation=lambda b: f'ln(stat) = {b[0]:+.4f} {b[1]:+.6f}*size',
+    ),
+}
+
+
+def _fit_model(model_name, s, y):
+    """Fit one model and return (beta, R², residuals).
+
+    Returns None if the model is inapplicable (e.g. requires positive
+    stat values but some are <= 0).
     """
-    sw = np.sqrt(w)[:, np.newaxis]
-    Xw = X * sw
-    yw = y * sw.ravel()
-    beta, _, _, _ = np.linalg.lstsq(Xw, yw, rcond=None)
-    return beta
+    spec = MODELS[model_name]
+    valid = np.isfinite(y) & (s > 0) & np.isfinite(s)
+    if spec['requires_positive']:
+        valid &= (y > 0)
+    if valid.sum() < 10:
+        return None
 
+    s_v, y_v = s[valid], y[valid]
+    X, y_t = spec['transform'](s_v, y_v)
+    beta, _, _, _ = np.linalg.lstsq(X, y_t, rcond=None)
 
-def fit_power_law(df, stat_col, weight_col='size'):
-    """Fit power-law model: ln(stat) = a + b*ln(size) via WLS.
-
-    Args:
-        df (pd.DataFrame): must contain `stat_col`, 'size', weight_col
-        stat_col (str): name of the stat column
-        weight_col (str): column to use as regression weight
-
-    Returns:
-        beta (np.array): [a, b] coefficients
-        log_r2 (float): weighted R² in log-space
-    """
-    s = df['size'].values.astype(float)
-    y = df[stat_col].values.astype(float)
-    w = df[weight_col].values.astype(float)
-
-    valid = np.isfinite(y) & (y > 0) & (s > 0) & np.isfinite(w)
-    s_v, y_v, w_v = s[valid], y[valid], w[valid]
-    log_s, log_y = np.log(s_v), np.log(y_v)
-
-    X = np.column_stack([np.ones(len(s_v)), log_s])
-    beta = _wls_fit(X, log_y, w_v)
-
-    # weighted R² in log-space
     pred = X @ beta
-    ss_res = np.sum(w_v * (log_y - pred) ** 2)
-    ss_tot = np.sum(w_v * (log_y - np.average(log_y, weights=w_v)) ** 2)
-    log_r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    ss_res = np.sum((y_t - pred) ** 2)
+    ss_tot = np.sum((y_t - y_t.mean()) ** 2)
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
-    return beta, log_r2
+    resid_all = np.full_like(y, np.nan)
+    resid_all[valid] = spec['residual'](beta, s_v, y_v)
+
+    return dict(beta=beta, r2=r2, resid=resid_all, valid=valid,
+                n_valid=int(valid.sum()))
+
+
+def fit_all_models(s, y):
+    """Fit every candidate model, return dict of results + best model name."""
+    results = {}
+    for name in MODELS:
+        res = _fit_model(name, s, y)
+        if res is not None:
+            results[name] = res
+    if not results:
+        return {}, None
+    best = max(results, key=lambda k: results[k]['r2'])
+    return results, best
 
 
 # ---------------------------------------------------------------------------
 # Binned statistics
 # ---------------------------------------------------------------------------
 
-def compute_binned_stats(sizes, values, n_bins=15):
-    """Compute empirical mean and std in log-spaced size bins.
+N_BINS = 15
 
-    Args:
-        sizes (np.array): region sizes (positive)
-        values (np.array): values to bin (same length as sizes)
-        n_bins (int): number of bins
 
-    Returns:
-        bin_centers (np.array): geometric mean of each bin
-        bin_means (np.array): mean of values in each bin
-        bin_stds (np.array): std of values in each bin
-        bin_counts (np.array): number of observations in each bin
-    """
+def compute_binned_stats(sizes, values, n_bins=N_BINS):
+    """Compute empirical mean and std in log-spaced size bins."""
     valid = np.isfinite(values) & (sizes > 0) & np.isfinite(sizes)
     s, v = sizes[valid], values[valid]
 
@@ -251,81 +267,96 @@ def compute_binned_stats(sizes, values, n_bins=15):
 # Plotting
 # ---------------------------------------------------------------------------
 
-N_BINS = 15
+_MODEL_COLORS = {
+    'linear': 'orange',
+    'linear_no_intercept': 'green',
+    'power_law': 'purple',
+    'sqrt': 'brown',
+    'log_linear': 'teal',
+}
 
 
 def plot_stat(df, stat_col, source_label, ax_scatter, ax_resid):
-    """Plot one stat for one source: scatter with power-law fit, residuals.
+    """Plot one stat for one source: scatter with all fits + best residuals.
 
-    Args:
-        df (pd.DataFrame): region data
-        stat_col (str): MANCOVA stat column name
-        source_label (str): 'WGN' or 'HCP'
-        ax_scatter: matplotlib axis for raw scatter + fit
-        ax_resid: matplotlib axis for log-space residuals with binned variance
+    Top panel shows scatter with every applicable model's fit line.
+    Bottom panel shows residuals for the best model only.
     """
     s = df['size'].values.astype(float)
     y = df[stat_col].values.astype(float)
-    pos = np.isfinite(y) & (y > 0) & (s > 0)
-    s_v, y_v = s[pos], y[pos]
 
-    if len(s_v) < 10:
+    results, best_name = fit_all_models(s, y)
+    if best_name is None:
         ax_scatter.set_title(f'{source_label}: {stat_col} (insufficient data)')
         return
 
-    log_s, log_y = np.log(s_v), np.log(y_v)
-
     # subsample for scatter readability
+    best = results[best_name]
+    valid = best['valid']
+    s_v, y_v = s[valid], y[valid]
     rng = np.random.default_rng(42)
     n_plot = min(50_000, len(s_v))
     idx = rng.choice(len(s_v), n_plot, replace=False) if len(s_v) > n_plot \
         else np.arange(len(s_v))
 
-    # --- top panel: raw scatter + power-law fit ---
+    # --- top panel: scatter + all model fit lines ---
     ax_scatter.scatter(s_v[idx], y_v[idx], s=1, alpha=0.05, rasterized=True,
                        color='steelblue')
 
-    # binned mean ± std in raw space
-    bc, bm, bs, bn = compute_binned_stats(s_v, y_v, n_bins=N_BINS)
+    bc, bm, bs, _ = compute_binned_stats(s_v, y_v, n_bins=N_BINS)
     if len(bc) > 0:
         ax_scatter.fill_between(bc, bm - bs, bm + bs,
-                                color='red', alpha=0.15, label='binned mean +/- 1 std')
+                                color='red', alpha=0.12)
         ax_scatter.plot(bc, bm, 'o-', color='red', markersize=3, linewidth=1,
                         label='binned mean')
 
-    # power-law fit line
-    beta, log_r2 = fit_power_law(df[pos.values if hasattr(pos, 'values') else pos],
-                                 stat_col)
-    sz_line = np.logspace(np.log10(max(1, s_v.min())),
-                          np.log10(s_v.max()), 200)
-    y_fit = np.exp(beta[0] + beta[1] * np.log(sz_line))
-    ax_scatter.plot(sz_line, y_fit, color='orange', linewidth=2,
-                    label=f'power law (log R²={log_r2:.3f})')
+    use_log_axes = all(
+        results[n].get('r2', 0) < results.get('power_law', {}).get('r2', -1)
+        or n == 'power_law'
+        for n in results if MODELS[n]['requires_positive']
+    ) and 'power_law' in results and np.all(y_v > 0)
 
-    ax_scatter.set_xscale('log')
-    ax_scatter.set_yscale('log')
+    sz_line_lin = np.linspace(max(1, s_v.min()), s_v.max(), 300)
+    sz_line_log = np.logspace(np.log10(max(1, s_v.min())),
+                              np.log10(s_v.max()), 300)
+
+    for name, res in sorted(results.items(), key=lambda kv: kv[1]['r2']):
+        spec = MODELS[name]
+        sz = sz_line_log if use_log_axes else sz_line_lin
+        y_fit = spec['predict'](res['beta'], sz)
+        is_best = (name == best_name)
+        lw = 2.5 if is_best else 1.2
+        ls = '-' if is_best else '--'
+        color = _MODEL_COLORS.get(name, 'gray')
+        label = f'{name} R²={res["r2"]:.4f}'
+        if is_best:
+            label += ' *'
+        ax_scatter.plot(sz, y_fit, color=color, linewidth=lw, linestyle=ls,
+                        label=label, alpha=0.9 if is_best else 0.6)
+
+    if use_log_axes:
+        ax_scatter.set_xscale('log')
+        ax_scatter.set_yscale('log')
+
     ax_scatter.set_xlabel('region size (voxels)')
     ax_scatter.set_ylabel(stat_col)
     ax_scatter.set_title(f'{source_label}: {stat_col}')
-    ax_scatter.legend(fontsize=7, loc='upper right')
+    ax_scatter.legend(fontsize=6, loc='upper left')
 
-    # --- bottom panel: log-space residuals with binned variance ---
-    resid = log_y - (beta[0] + beta[1] * log_s)
+    # --- bottom panel: residuals of best model ---
+    resid = best['resid']
+    resid_v = resid[valid]
 
-    ax_resid.scatter(s_v[idx], resid[idx], s=1, alpha=0.05, rasterized=True,
+    ax_resid.scatter(s_v[idx], resid_v[idx], s=1, alpha=0.05, rasterized=True,
                      color='steelblue')
 
-    # binned stats on residuals
-    bc_r, bm_r, bs_r, bn_r = compute_binned_stats(s_v, resid, n_bins=N_BINS)
+    bc_r, bm_r, bs_r, bn_r = compute_binned_stats(s_v, resid_v, n_bins=N_BINS)
     if len(bc_r) > 0:
-        # shaded band: mean +/- 1 std
         ax_resid.fill_between(bc_r, bm_r - bs_r, bm_r + bs_r,
                               color='red', alpha=0.15,
                               label='binned mean +/- 1 std')
         ax_resid.plot(bc_r, bm_r, 'o-', color='red', markersize=3,
                       linewidth=1, label='binned mean')
-
-        # annotate counts
         for c, n in zip(bc_r, bn_r):
             ax_resid.annotate(f'n={int(n)}', xy=(c, bm_r[list(bc_r).index(c)]),
                               fontsize=5, color='gray', ha='center',
@@ -334,18 +365,15 @@ def plot_stat(df, stat_col, source_label, ax_scatter, ax_resid):
     ax_resid.axhline(0, color='black', linewidth=0.5)
     ax_resid.set_xscale('log')
     ax_resid.set_xlabel('region size (voxels)')
-    ax_resid.set_ylabel('log-space residual')
-    ax_resid.set_title(f'{source_label}: {stat_col} residuals (power law)')
+    is_log_resid = MODELS[best_name]['requires_positive']
+    ax_resid.set_ylabel('log-space residual' if is_log_resid else 'residual')
+    ax_resid.set_title(
+        f'{source_label}: {stat_col} residuals (best={best_name})')
     ax_resid.legend(fontsize=7, loc='upper right')
 
 
 def make_diagnostic_plots(df_dict, out_dir):
-    """Produce all diagnostic figures.
-
-    Args:
-        df_dict (dict): source_label -> DataFrame
-        out_dir (Path): directory to save figures
-    """
+    """Produce all diagnostic figures and summary table."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -353,7 +381,6 @@ def make_diagnostic_plots(df_dict, out_dir):
     sources = list(df_dict.keys())
     n_src = len(sources)
 
-    # --- per-stat figure: columns = sources, rows = [scatter, residuals] ---
     for stat_col in stat_names:
         fig, axes = plt.subplots(2, n_src, figsize=(7 * n_src, 10),
                                  squeeze=False)
@@ -366,59 +393,67 @@ def make_diagnostic_plots(df_dict, out_dir):
         plt.close(fig)
         print(f'  saved stat_vs_size_{stat_col}.png')
 
-    # --- summary table ---
+    # --- summary table: all models x all stats ---
     rows = []
     for src in sources:
         df = df_dict[src]
         for stat_col in stat_names:
             s = df['size'].values.astype(float)
             y = df[stat_col].values.astype(float)
-            pos = np.isfinite(y) & (y > 0) & (s > 0)
-            if pos.sum() < 10:
-                continue
-            sub = df[pos]
-            beta, log_r2 = fit_power_law(sub, stat_col)
-
-            # binned residual std summary
-            log_s = np.log(s[pos])
-            log_y = np.log(y[pos])
-            resid = log_y - (beta[0] + beta[1] * log_s)
-            bc, bm, bs, bn = compute_binned_stats(
-                s[pos], resid, n_bins=N_BINS)
-
-            rows.append({
-                'source': src,
-                'stat': stat_col,
-                'a (intercept)': beta[0],
-                'b (slope)': beta[1],
-                'log_R2': log_r2,
-                'resid_std_overall': resid.std(),
-                'resid_std_min_bin': bs.min() if len(bs) else np.nan,
-                'resid_std_max_bin': bs.max() if len(bs) else np.nan,
-                'resid_std_ratio': (bs.max() / bs.min()
-                                    if len(bs) and bs.min() > 0
-                                    else np.nan),
-            })
+            results, best_name = fit_all_models(s, y)
+            for model_name, res in results.items():
+                resid = res['resid']
+                valid = res['valid']
+                resid_v = resid[valid]
+                bc, bm, bs, bn = compute_binned_stats(
+                    s[valid], resid_v, n_bins=N_BINS)
+                rows.append({
+                    'source': src,
+                    'stat': stat_col,
+                    'model': model_name,
+                    'equation': MODELS[model_name]['equation'](res['beta']),
+                    'R2': res['r2'],
+                    'best': model_name == best_name,
+                    'n': res['n_valid'],
+                    'resid_std': resid_v.std(),
+                    'resid_std_min_bin': bs.min() if len(bs) else np.nan,
+                    'resid_std_max_bin': bs.max() if len(bs) else np.nan,
+                    'resid_std_ratio': (bs.max() / bs.min()
+                                        if len(bs) and bs.min() > 0
+                                        else np.nan),
+                })
 
     summary = pd.DataFrame(rows)
-    summary_path = out_dir / 'power_law_summary.csv'
+    summary_path = out_dir / 'fit_summary.csv'
     summary.to_csv(summary_path, index=False)
     print(f'\n  saved {summary_path}')
 
-    # pretty-print
-    print('\n' + '=' * 80)
-    print('POWER-LAW FIT SUMMARY')
-    print('=' * 80)
-    for _, row in summary.iterrows():
-        print(f"  {row['source']:4s} {row['stat']:12s}  "
-              f"ln(stat) = {row['a (intercept)']:+.4f} "
-              f"{row['b (slope)']:+.4f}·ln(size)  "
-              f"R²(log)={row['log_R2']:.4f}  "
-              f"σ_resid={row['resid_std_overall']:.4f}  "
+    # pretty-print: best model per (source, stat)
+    best_df = summary[summary['best']].copy()
+    print('\n' + '=' * 100)
+    print('BEST MODEL PER STAT')
+    print('=' * 100)
+    for _, row in best_df.iterrows():
+        print(f"  {row['source']:4s}  {row['stat']:12s}  "
+              f"best={row['model']:22s}  "
+              f"R²={row['R2']:.4f}  "
+              f"σ={row['resid_std']:.4f}  "
               f"σ_bin=[{row['resid_std_min_bin']:.4f}, "
               f"{row['resid_std_max_bin']:.4f}]  "
               f"ratio={row['resid_std_ratio']:.2f}")
-    print()
+
+    # runner-up comparison
+    print('\n' + '-' * 100)
+    print('ALL MODELS (sorted by R² within each source+stat)')
+    print('-' * 100)
+    for (src, stat), grp in summary.groupby(['source', 'stat']):
+        grp_sorted = grp.sort_values('R2', ascending=False)
+        for i, (_, row) in enumerate(grp_sorted.iterrows()):
+            marker = '>>>' if row['best'] else '   '
+            print(f"  {marker} {row['source']:4s}  {row['stat']:12s}  "
+                  f"{row['model']:22s}  R²={row['R2']:.4f}  "
+                  f"{row['equation']}")
+        print()
 
     return summary
 
@@ -437,20 +472,18 @@ def main():
     args = parser.parse_args()
 
     if args.out is None:
-        from platformdirs import user_data_dir
-        out_dir = Path(user_data_dir('glow', 'glow_author')) / 'stat_vs_size'
+        from glow.benchmark.config import path_result
+        out_dir = path_result / 'stat_vs_size'
     else:
         out_dir = Path(args.out)
 
     df_dict = {}
 
-    # WGN
     print('Preparing WGN experiment ...')
     exp_wgn = make_wgn_experiment()
     df_wgn = collect_null_data(exp_wgn, n_perm=args.n_perm, label='WGN')
     df_dict['WGN'] = df_wgn
 
-    # HCP
     print('\nPreparing HCP experiment ...')
     try:
         exp_hcp = make_hcp_experiment()
@@ -460,7 +493,6 @@ def main():
         print(f'  HCP loading failed: {exc}')
         print('  (continuing with WGN only)')
 
-    # produce plots
     print(f'\nGenerating diagnostic plots in {out_dir} ...')
     make_diagnostic_plots(df_dict, out_dir)
     print('Done.')
