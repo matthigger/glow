@@ -16,6 +16,7 @@ def load_cloud_config():
     s3_bucket = parser['aws']['s3_bucket']
     s3_prefix = 'glow-paper-benchmarks'
     region = parser['aws']['region']
+    vcpus = int(parser['aws'].get('vcpus_per_job', 1))
 
     return CloudConfig(
         s3_bucket=s3_bucket,
@@ -23,6 +24,7 @@ def load_cloud_config():
         job_queue=parser['aws']['job_queue'],
         job_definition=parser['aws']['job_definition'],
         region=region,
+        vcpus=vcpus,
         timeout_minutes=180,  # 3 hours per experiment
         retry_attempts=1,
     )

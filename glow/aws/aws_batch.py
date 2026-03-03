@@ -24,7 +24,7 @@ class CloudConfig:
     max_concurrent_jobs: int = 100
     timeout_minutes: int = 60
     memory_mb: int = 1024
-    vcpus: int = 2
+    vcpus: int = 1
     retry_attempts: int = 3
     shared_exp_sources: List[str] = field(default_factory=lambda: ['hcp'])
     oom_memory_mb_tiers: List[int] = field(
