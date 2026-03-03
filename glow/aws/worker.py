@@ -192,10 +192,9 @@ def process_permutation(exp, ana_kwargs, perm_idx):
     """process a single permutation and return children + stat.
     """
     from glow.experiment.cluster import cluster
-    from glow.experiment.mancova import get_hotel_tr
+    from glow.experiment.mancova import get_llr
     
-    # get stat function (default to hotel_tr)
-    get_stat = ana_kwargs.get('get_stat', get_hotel_tr)
+    get_stat = ana_kwargs.get('get_stat', get_llr)
     
     # permute experiment
     _exp = exp.permute(perm_idx)
@@ -209,8 +208,8 @@ def process_permutation(exp, ana_kwargs, perm_idx):
     
     stat = []
     import glow.graph
-    for reg_idx, e, h in glow.graph.iter_stat(exp=_exp, children=children, n_perm=None):
-        stat_val = get_stat(e=e[:, :, 0], h=h[:, :, 0])
+    for reg_idx, size, e, h in glow.graph.iter_stat(exp=_exp, children=children, n_perm=None):
+        stat_val = get_stat(e=e[:, :, 0], h=h[:, :, 0], n=size)
         stat.append(stat_val)
     
     return {

@@ -288,7 +288,7 @@ def run_batched_cloud_tests():
     import tempfile
     import boto3
     from glow.aws.aws_batch import CloudConfig, AWSBatchRunner
-    from glow.experiment.mancova import get_hotel_tr
+    from glow.experiment.mancova import get_llr
 
     # ── check AWS prerequisites once ──────────────────────────────────
     try:
@@ -352,7 +352,7 @@ def run_batched_cloud_tests():
         experiment_id = f'glow_{uuid.uuid4().hex[:8]}'
 
         cloud_ana_kwargs = {
-            'get_stat': get_hotel_tr,
+            'get_stat': get_llr,
             'n_perm_prune': 10,
             'alpha_fwer': 0.05, 'alpha_prune': 0.05, 'min_size': 1,
         }
@@ -498,7 +498,7 @@ def run_batched_cloud_tests():
 
                 ana_cloud = object.__new__(glow.experiment.AnalysisGLOW)
                 ana_cloud.exp = exp  # keep original (unscaled) exp, same as cloud path
-                ana_cloud.get_stat = get_hotel_tr
+                ana_cloud.get_stat = get_llr
                 ana_cloud.n_jobs_perm = 1
                 ana_cloud.child_dict = {}
                 ana_cloud.stat = np.full((n_perm + 1, num_reg), fill_value=-1.0)
@@ -516,20 +516,20 @@ def run_batched_cloud_tests():
             # compare local vs cloud
             tol = 1e-10
             assert ana_local.pval.shape == ana_cloud.pval.shape, 'pval shape mismatch'
-            assert ana_local.hotel_tr_adjusted.shape == ana_cloud.hotel_tr_adjusted.shape, 'hotel_tr_adjusted shape mismatch'
+            assert ana_local.llr_adjusted.shape == ana_cloud.llr_adjusted.shape, 'llr_adjusted shape mismatch'
 
             max_pval_diff = np.max(np.abs(ana_local.pval - ana_cloud.pval))
-            max_z_diff = np.max(np.abs(ana_local.hotel_tr_adjusted - ana_cloud.hotel_tr_adjusted))
+            max_z_diff = np.max(np.abs(ana_local.llr_adjusted - ana_cloud.llr_adjusted))
             max_stat_diff = np.max(np.abs(ana_local.stat - ana_cloud.stat))
             max_size_diff = np.max(np.abs(ana_local.size - ana_cloud.size))
 
             print(f'  pval max diff:  {max_pval_diff:.2e}')
-            print(f'  hotel_tr_adjusted max diff: {max_z_diff:.2e}')
+            print(f'  llr_adjusted max diff: {max_z_diff:.2e}')
             print(f'  stat max diff:  {max_stat_diff:.2e}')
             print(f'  size max diff:  {max_size_diff:.2e}')
 
             assert max_pval_diff < tol, f'pval mismatch: {max_pval_diff:.2e}'
-            assert max_z_diff < tol, f'hotel_tr_adjusted mismatch: {max_z_diff:.2e}'
+            assert max_z_diff < tol, f'llr_adjusted mismatch: {max_z_diff:.2e}'
             assert max_stat_diff < tol, f'stat mismatch: {max_stat_diff:.2e}'
             assert max_size_diff < tol, f'size mismatch: {max_size_diff:.2e}'
 

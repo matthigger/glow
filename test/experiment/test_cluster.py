@@ -19,14 +19,15 @@ def test_cluster():
     exp = exp.bootstrap_img(n=10, noise_scale=0)
     exp = exp.sample_x(a=2, add_bias=True)
 
-    # cleave mask into many pieces (test case not supported)
+    # cleave mask into many pieces (forest clustering)
     mask = exp.mask_idx > -1
     mask[:, mask.shape[1] // 2] = False
     mask[mask.shape[0] // 2, :] = False
     exp_cleave = exp.apply_mask(mask)
-
-    with pytest.raises(NotImplementedError) as e:
-        cluster(exp=exp_cleave)
+    children_forest = cluster(exp=exp_cleave)
+    num_vox_cleave = int((exp_cleave.mask_idx > -1).sum())
+    assert children_forest.shape[0] < num_vox_cleave, \
+        'forest should have fewer internal nodes than a single tree'
 
     for _exp in (exp,):
         # cluster (should collect all areas of consistent color)

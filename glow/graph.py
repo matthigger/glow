@@ -65,6 +65,7 @@ def iter_stat(exp, n_perm=None, **kwargs):
 
     Yields:
         reg_idx (int): region index
+        size (int): number of voxels in the region
         e (np.array): (b, b, num_perm) error matrices
         h (np.array): (b, b, num_perm) hypothesis matrices
     """
@@ -99,7 +100,7 @@ def iter_stat(exp, n_perm=None, **kwargs):
         # compute e (remainder)
         e = t[:, :, np.newaxis] - h
 
-        yield reg_idx, e, h
+        yield reg_idx, size, e, h
 
 
 def node_sum(x, children):

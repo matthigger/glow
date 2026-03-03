@@ -71,9 +71,9 @@ def select_hcp_exp(config, target_vox, seed):
 def measure_breakdown(exp, ana_kwargs, perm_idx=0):
     """Run the phases of process_permutation with per-phase timing."""
     from glow.experiment.cluster import cluster
-    from glow.experiment.mancova import get_hotel_tr
+    from glow.experiment.mancova import get_llr
 
-    get_stat = ana_kwargs.get('get_stat', get_hotel_tr)
+    get_stat = ana_kwargs.get('get_stat', get_llr)
 
     # phase 1: permute
     t0 = time.perf_counter()
@@ -86,9 +86,9 @@ def measure_breakdown(exp, ana_kwargs, perm_idx=0):
 
     # phase 3: iter_stat + get_stat
     stat = []
-    for reg_idx, e, h in glow.graph.iter_stat(
+    for reg_idx, size, e, h in glow.graph.iter_stat(
             exp=_exp, children=children, n_perm=None):
-        stat_val = get_stat(e=e[:, :, 0], h=h[:, :, 0])
+        stat_val = get_stat(e=e[:, :, 0], h=h[:, :, 0], n=size)
         stat.append(stat_val)
     t3 = time.perf_counter()
 

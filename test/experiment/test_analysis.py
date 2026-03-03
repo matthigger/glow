@@ -249,10 +249,10 @@ class TestZeroStdGuard:
         analysis = AnalysisGLOW(exp, n_perm=5, alpha_fwer=0.05,
                                 min_size=1)
 
-        assert not np.any(np.isinf(analysis.hotel_tr_adjusted)), \
-            'hotel_tr_adjusted contains inf (likely zero-std division)'
-        assert not np.any(np.isnan(analysis.hotel_tr_adjusted)), \
-            'hotel_tr_adjusted contains nan (likely zero-std division)'
+        assert not np.any(np.isinf(analysis.llr_adjusted)), \
+            'llr_adjusted contains inf (likely zero-std division)'
+        assert not np.any(np.isnan(analysis.llr_adjusted)), \
+            'llr_adjusted contains nan (likely zero-std division)'
 
 
 class TestNaNHandling:

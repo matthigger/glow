@@ -7,12 +7,12 @@ import numpy as np
 import pandas as pd
 
 import glow.graph
-from glow.experiment.mancova import decompose, get_hotel_tr
+from glow.experiment.mancova import decompose, get_llr
 
 
 def _get_adjusted_stat(ana_glow):
-    """Return the adjusted stat array (hotel_tr_adjusted)."""
-    return ana_glow.hotel_tr_adjusted
+    """Return the adjusted stat array (llr_adjusted)."""
+    return ana_glow.llr_adjusted
 
 
 def prep_df(ana_glow, mask_target=None, extra_df=None):
@@ -36,16 +36,16 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
     d = {
         'region_idx': np.arange(num_reg),
         'n_voxel': ana_glow.size[0, :].astype(int),
-        'hotel_tr': ana_glow.stat[0, :],
-        'hotel_tr_adjusted': _get_adjusted_stat(ana_glow)[0, :],
+        'llr': ana_glow.stat[0, :],
+        'llr_adjusted': _get_adjusted_stat(ana_glow)[0, :],
         'pval_fwer': ana_glow.pval,
     }
 
     # H0 null distribution parameters (stored by _finalize_analysis)
     if hasattr(ana_glow, 'stat_mu'):
-        d['hotel_tr_mu_h0'] = ana_glow.stat_mu
+        d['llr_mu_h0'] = ana_glow.stat_mu
     if hasattr(ana_glow, 'stat_std'):
-        d['hotel_tr_std_h0'] = ana_glow.stat_std
+        d['llr_std_h0'] = ana_glow.stat_std
 
     # homogeneity pruning p-values (only for tested regions)
     homo_pval = np.full(num_reg, np.nan)
@@ -151,8 +151,8 @@ def get_feature_columns(df):
 def compute_target_stats(ana_glow, mask_target):
     """Compute stats for the full target mask treated as a single region.
 
-    Computes the Hotelling trace (and adjusted variant) for the union of
-    all analysis voxels inside ``mask_target``, plus trivial mask-vs-self
+    Computes LLR (and size-adjusted variant) for the union of all
+    analysis voxels inside ``mask_target``, plus trivial mask-vs-self
     metrics.
 
     Args:
@@ -184,23 +184,21 @@ def compute_target_stats(ana_glow, mask_target):
     h = a1 @ a1.T / n_voxel
     e = t - h
 
-    try:
-        hotel_tr = get_hotel_tr(e, h)
-    except np.linalg.LinAlgError:
-        hotel_tr = np.nan
+    llr = get_llr(e, h, n=n_voxel)
 
     stats = {
         'n_voxel': n_voxel,
-        'hotel_tr': hotel_tr,
+        'llr': llr,
     }
 
-    mu_beta = getattr(ana_glow, 'adj_mu_beta', None)
-    if mu_beta is not None and np.isfinite(hotel_tr) and hotel_tr > 0:
-        log_stat = np.log(hotel_tr)
-        mu_log = mu_beta[0] + mu_beta[1] * np.log(max(n_voxel, 1))
-        stats['hotel_tr_adjusted'] = log_stat - mu_log
+    adj_model = getattr(ana_glow, 'adj_model', None)
+    adj_beta = getattr(ana_glow, 'adj_beta', None)
+    if adj_model is not None and adj_beta is not None and np.isfinite(llr):
+        from glow.experiment.analysis import AnalysisGLOW
+        predicted = AnalysisGLOW.predict_null_mean(n_voxel, adj_model, adj_beta)
+        stats['llr_adjusted'] = llr - predicted
     else:
-        stats['hotel_tr_adjusted'] = np.nan
+        stats['llr_adjusted'] = np.nan
 
     stats['f1'] = 1.0
     stats['sens'] = 1.0
@@ -212,8 +210,8 @@ def compute_target_stats(ana_glow, mask_target):
     stats['pval_homo'] = np.nan
     stats['ll_gain'] = np.nan
     stats['ll_gain_net'] = np.nan
-    stats['hotel_tr_mu_h0'] = np.nan
-    stats['hotel_tr_std_h0'] = np.nan
+    stats['llr_mu_h0'] = np.nan
+    stats['llr_std_h0'] = np.nan
 
     return stats
 

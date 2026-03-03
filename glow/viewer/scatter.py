@@ -10,8 +10,8 @@ import plotly.graph_objects as go
 
 
 # columns where a log scale is the sensible default
-_LOG_COLS = {'n_voxel', 'hotel_tr', 'vox_in_target', 'vox_out_target'}
-_ADJ_COL = 'hotel_tr_adjusted'
+_LOG_COLS = {'n_voxel', 'vox_in_target', 'vox_out_target'}
+_ADJ_COL = 'llr_adjusted'
 
 # estimate_state -> (plotly symbol, default color, legend label)
 _STATE_STYLE = {
@@ -29,7 +29,7 @@ _PVAL_THRESHOLD_MAP = {
 
 
 def _compute_adj_thresh(ana_glow):
-    """Compute the hotel_tr_adjusted value corresponding to alpha_fwer.
+    """Compute the llr_adjusted value corresponding to alpha_fwer.
 
     This is the (1 - alpha_fwer) quantile of the per-permutation
     max-statistic distribution used by the Westfall-Young procedure.
@@ -44,7 +44,7 @@ def _compute_adj_thresh(ana_glow):
     if not active.any():
         return None
 
-    stat = getattr(ana_glow, 'hotel_tr_adjusted', None)
+    stat = getattr(ana_glow, 'llr_adjusted', None)
     if stat is None:
         return None
 
@@ -114,11 +114,11 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
     symbols = np.array([_STATE_STYLE[s][0] for s in states])
 
     # --- build hover text ---
-    hover_cols = ['region_idx', 'n_voxel', 'hotel_tr', 'hotel_tr_adjusted',
+    hover_cols = ['region_idx', 'n_voxel', 'llr', 'llr_adjusted',
                   'pval_fwer']
     for c in ('pval_homo', 'll_gain', 'll_gain_net',
               'f1', 'sens', 'spec', 'vox_in_target',
-              'vox_out_target', 'hotel_tr_mu_h0', 'hotel_tr_std_h0'):
+              'vox_out_target', 'llr_mu_h0', 'llr_std_h0'):
         if c in _df.columns and not _df[c].isna().all():
             hover_cols.append(c)
 
@@ -202,7 +202,7 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
     if log_y:
         fig.update_yaxes(type='log')
 
-    # --- model overlay (hotel_tr on y vs n_voxel on x) ---
+    # --- model overlay (llr on y vs n_voxel on x) ---
     _add_model_overlay(fig, ana_glow, x_feat, y_feat)
 
     # --- threshold reference lines ---
@@ -271,33 +271,27 @@ def _add_target_star(fig, target_stats, x_feat, y_feat):
 
 
 def _add_model_overlay(fig, ana_glow, x_feat, y_feat):
-    """Add power-law fit line when hotel_tr is on the y-axis vs n_voxel.
+    """Add size-regression model line when llr is on y-axis vs n_voxel.
 
-    Shows the back-transformed model mean and annotates the equation.
-    Only drawn when y=hotel_tr and x=n_voxel.
+    Uses the fitted model (sqrt or power_law) stored on the analysis object.
     """
-    mu_beta = getattr(ana_glow, 'adj_mu_beta', None)
-    if mu_beta is None:
+    from glow.experiment.analysis import AnalysisGLOW
+
+    adj_model = getattr(ana_glow, 'adj_model', None)
+    adj_beta = getattr(ana_glow, 'adj_beta', None)
+    if adj_model is None or adj_beta is None:
         return
 
-    # only show when hotel_tr on y, n_voxel on x
-    if y_feat != 'hotel_tr' or x_feat != 'n_voxel':
+    if y_feat != 'llr' or x_feat != 'n_voxel':
         return
 
-    # size range for the model line (log-spaced)
     sizes = ana_glow.size[0, :].astype(float)
     sizes = sizes[sizes > 0]
     if len(sizes) == 0:
         return
-    sz = np.logspace(np.log10(max(sizes.min(), 1)),
-                     np.log10(sizes.max()), 200)
+    sz = np.linspace(max(sizes.min(), 1), sizes.max(), 200)
+    mean_line = AnalysisGLOW.predict_null_mean(sz, adj_model, adj_beta)
 
-    # compute predicted mean in original space
-    log_sz = np.log(np.maximum(sz, 1.0))
-    mu_log = mu_beta[0] + mu_beta[1] * log_sz
-    mean_line = np.exp(mu_log)
-
-    # fit line (no legend entry)
     fig.add_trace(go.Scatter(
         x=sz, y=mean_line,
         mode='lines',
@@ -306,10 +300,11 @@ def _add_model_overlay(fig, ana_glow, x_feat, y_feat):
         hoverinfo='skip',
     ))
 
-    # equation annotation
-    eq_text = (f'log hotel_tr = {mu_beta[0]:.3f} '
-               f'{"+" if mu_beta[1] >= 0 else ""}'
-               f'{mu_beta[1]:.3f} log n_voxel')
+    b = adj_beta
+    if adj_model == 'sqrt':
+        eq_text = f'E[stat|H0] = {b[0]:.4f} + {b[1]:.4f}·√size'
+    else:
+        eq_text = f'E[stat|H0] = exp({b[0]:.4f} + {b[1]:.4f}·ln(size))'
     fig.add_annotation(
         text=eq_text,
         xref='paper', yref='paper',
@@ -345,18 +340,18 @@ def _add_threshold_lines(fig, ana_glow, x_feat, y_feat):
                           annotation_text=label,
                           annotation_position='right')
 
-    # --- hotel_tr_adjusted axis: draw alpha_fwer line ---
+    # --- llr_adjusted axis: draw alpha_fwer line ---
     if alpha_fwer is not None and (
-            'hotel_tr_adjusted' in (x_feat, y_feat)):
+            'llr_adjusted' in (x_feat, y_feat)):
         adj_thresh = _compute_adj_thresh(ana_glow)
         if adj_thresh is not None:
             style = dict(color='red', dash='dot', width=1.5)
             label = f'alpha_fwer={alpha_fwer}'
-            if x_feat == 'hotel_tr_adjusted':
+            if x_feat == 'llr_adjusted':
                 fig.add_vline(x=adj_thresh, line=style,
                               annotation_text=label,
                               annotation_position='top')
-            if y_feat == 'hotel_tr_adjusted':
+            if y_feat == 'llr_adjusted':
                 fig.add_hline(y=adj_thresh, line=style,
                               annotation_text=label,
                               annotation_position='right')

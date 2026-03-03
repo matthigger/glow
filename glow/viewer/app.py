@@ -225,7 +225,7 @@ def _defaults(generic_cols, sig_cols, prune_cols, mask_cols):
     from .scatter import _LOG_COLS
     all_cols = generic_cols + sig_cols + prune_cols + mask_cols
     default_x = 'n_voxel' if 'n_voxel' in all_cols else all_cols[0]
-    default_y = ('hotel_tr_adjusted' if 'hotel_tr_adjusted' in all_cols
+    default_y = ('llr_adjusted' if 'llr_adjusted' in all_cols
                  else all_cols[min(1, len(all_cols) - 1)])
     log_y_default = default_y in _LOG_COLS
     return all_cols, default_x, default_y, log_y_default

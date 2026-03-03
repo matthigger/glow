@@ -66,12 +66,38 @@ def decompose(x, contrast):
 # four MANCOVA test statistics
 # ---------------------------------------------------------------------------
 
-def get_neg_wilks(e, h):
+def get_llr(e, h, n):
+    """Log-likelihood ratio: (n/2) * ln|det(I + E^{-1}H)|.
+
+    Equivalent to LL_full - LL_null where both likelihoods are
+    Gaussian profile log-likelihoods on the same region.  The (n/2)
+    prefactor makes LLR scale linearly with region size under H0.
+
+    Args:
+        e (np.array): (b, b) error matrix
+        h (np.array): (b, b) hypothesis matrix
+        n (int): number of voxels in the region
+
+    Returns:
+        float
+    """
+    try:
+        inv_e_h = np.linalg.solve(e, h)
+    except np.linalg.LinAlgError:
+        return np.nan
+    s, logdet = np.linalg.slogdet(np.eye(e.shape[0]) + inv_e_h)
+    if s <= 0:
+        return np.nan
+    return 0.5 * n * logdet
+
+
+def get_neg_wilks(e, h, n=None):
     """negative Wilks' lambda (larger = more evidence against H0).
 
     Args:
         e (np.array): (b, b) error matrix
         h (np.array): (b, b) hypothesis matrix
+        n: unused (accepted for uniform stat-function interface)
 
     Returns:
         float: -det(E) / det(E + H)
@@ -81,12 +107,13 @@ def get_neg_wilks(e, h):
     return -np.exp(logdet_e - logdet_t)
 
 
-def get_pillai(e, h):
+def get_pillai(e, h, n=None):
     """Pillai's trace: tr((H + E)^-1 H).
 
     Args:
         e (np.array): (b, b) error matrix
         h (np.array): (b, b) hypothesis matrix
+        n: unused (accepted for uniform stat-function interface)
 
     Returns:
         float
@@ -104,12 +131,13 @@ def get_pillai(e, h):
         )
 
 
-def get_hotel_tr(e, h):
+def get_hotel_tr(e, h, n=None):
     """Hotelling-Lawley trace: tr(E^-1 H).
 
     Args:
         e (np.array): (b, b) error matrix
         h (np.array): (b, b) hypothesis matrix
+        n: unused (accepted for uniform stat-function interface)
 
     Returns:
         float
@@ -127,12 +155,13 @@ def get_hotel_tr(e, h):
         )
 
 
-def get_roys_root(e, h):
+def get_roys_root(e, h, n=None):
     """Roy's largest root: max eigenvalue of E^-1 H.
 
     Args:
         e (np.array): (b, b) error matrix
         h (np.array): (b, b) hypothesis matrix
+        n: unused (accepted for uniform stat-function interface)
 
     Returns:
         float
@@ -152,7 +181,8 @@ def get_roys_root(e, h):
     return float(np.max(np.real(eigvals)))
 
 
-stat_dict = {'Wilks': get_neg_wilks,
+stat_dict = {'LLR': get_llr,
+             'Wilks': get_neg_wilks,
              'Pillai': get_pillai,
              'Hotelling Tr': get_hotel_tr,
              'Roy Root': get_roys_root}

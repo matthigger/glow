@@ -204,7 +204,7 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
             row = df.loc[df['region_idx'] == reg_idx]
             if len(row):
                 row = row.iloc[0]
-                for c in ('n_voxel', 'hotel_tr', 'hotel_tr_adjusted',
+                for c in ('n_voxel', 'llr', 'llr_adjusted',
                           'pval_fwer', 'pval_homo'):
                     v = row.get(c)
                     if v is not None and not (isinstance(v, float) and

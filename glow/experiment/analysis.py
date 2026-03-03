@@ -10,8 +10,16 @@ import glow.graph
 # glow.vba imported lazily when needed (requires FSL for TFCE)
 from .cluster import cluster, count_components
 from .exper import ExperimentScaled
-from .mancova import get_hotel_tr
+from .mancova import get_llr, get_neg_wilks
 from .prune import prune, prune_node, prune_tree, prune_tree_dp
+
+
+# best regression model per stat (from stat_vs_size benchmark)
+_STAT_MODEL = {
+    get_llr: 'sqrt',
+    get_neg_wilks: 'sqrt',
+}
+_DEFAULT_MODEL = 'power_law'
 
 
 class Analysis:
@@ -19,11 +27,11 @@ class Analysis:
 
     Attributes:
         exp (Experiment): source data
-        get_stat (callable): accepts e, h and returns a scalar statistic
-            (see mancova.py)
+        get_stat (callable): accepts (e, h, n) and returns a scalar
+            statistic (see mancova.py)
     """
 
-    def __init__(self, exp, get_stat=get_hotel_tr, n_jobs_perm=1):
+    def __init__(self, exp, get_stat=get_llr, n_jobs_perm=1):
         if not isinstance(exp, ExperimentScaled):
             # pre-process
             exp = ExperimentScaled.from_exp(exp)
@@ -92,12 +100,13 @@ class Analysis:
 
         n_rows = 1 if n_perm is None else n_perm + 1
         stat = np.full((n_rows, num_reg), fill_value=np.nan)
-        for reg_idx, e, h in glow.graph.iter_stat(exp=exp,
-                                                  children=children,
-                                                  n_perm=n_perm):
+        for reg_idx, size, e, h in glow.graph.iter_stat(exp=exp,
+                                                       children=children,
+                                                       n_perm=n_perm):
             for perm_idx in range(n_rows):
                 stat[perm_idx, reg_idx] = self.get_stat(e=e[:, :, perm_idx],
-                                                        h=h[:, :, perm_idx])
+                                                        h=h[:, :, perm_idx],
+                                                        n=size)
         return stat
 
 
@@ -340,49 +349,67 @@ class AnalysisGLOW(Analysis):
         beta, _, _, _ = np.linalg.lstsq(X * sw, y * sw.ravel(), rcond=None)
         return beta
 
-    def _fit_size_regression(self, verbose=False):
-        """Fit power-law mean model on permutation (null) data.
+    @staticmethod
+    def predict_null_mean(size, model, beta):
+        """Predict E[stat | H0] given region sizes, model name, and coeffs.
 
-        Model:
-            ln(stat) = a + b * ln(size)
-
-        The adjustment is a simple subtraction: the adjusted stat is
-        the log-space residual after removing the expected mean:
-
-            hotel_tr_adjusted = ln(stat) - (a + b * ln(size))
-
-        All fits are weighted by region size.
-
-        Stores self.adj_mu_beta = [a, b] on the object.
+        Args:
+            size: scalar or array of region sizes (voxels)
+            model (str): 'sqrt' or 'power_law'
+            beta (np.array): regression coefficients
 
         Returns:
-            mu_log_fn: callable(size_array) -> predicted E[ln(stat)]
+            predicted mean stat under H0
         """
-        # pool null data: all permutations except perm_idx=0
+        sz = np.asarray(size, dtype=float)
+        if model == 'sqrt':
+            return beta[0] + beta[1] * np.sqrt(sz)
+        elif model == 'power_law':
+            return np.exp(beta[0] + beta[1] * np.log(np.maximum(sz, 1)))
+        else:
+            raise ValueError(f'Unknown model: {model}')
+
+    def _fit_size_regression(self, verbose=False):
+        """Fit a mean model E[stat | size, H0] on permutation (null) data.
+
+        The model type is chosen based on self.get_stat:
+          - LLR, neg_wilks  -> sqrt:      stat = a + b * sqrt(size)
+          - others          -> power_law: ln(stat) = a + b * ln(size)
+
+        Stores self.adj_model (str) and self.adj_beta (array).
+
+        Returns:
+            mu_fn: callable(size_array) -> predicted E[stat | H0]
+        """
         sizes = self.size[1:, :].ravel().astype(float)
         stats = self.stat[1:, :].ravel().astype(float)
+        model = _STAT_MODEL.get(self.get_stat, _DEFAULT_MODEL)
 
-        # filter: need positive stat for log
-        valid = (np.isfinite(stats) & (stats > 0)
-                 & (sizes > 0) & np.isfinite(sizes))
-        s, y, w = sizes[valid], stats[valid], sizes[valid]
-        log_s = np.log(s)
-        log_y = np.log(y)
+        if model == 'sqrt':
+            valid = np.isfinite(stats) & (sizes > 0) & np.isfinite(sizes)
+            s, y = sizes[valid], stats[valid]
+            X = np.column_stack([np.ones(len(s)), np.sqrt(s)])
+            beta, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+            if verbose:
+                print(f'    sqrt: stat = {beta[0]:+.4f} '
+                      f'{beta[1]:+.6f}*sqrt(size)')
+        else:
+            valid = (np.isfinite(stats) & (stats > 0)
+                     & (sizes > 0) & np.isfinite(sizes))
+            s, y = sizes[valid], stats[valid]
+            X = np.column_stack([np.ones(len(s)), np.log(s)])
+            beta, _, _, _ = np.linalg.lstsq(X, np.log(y), rcond=None)
+            if verbose:
+                print(f'    power_law: ln(stat) = {beta[0]:+.4f} '
+                      f'{beta[1]:+.4f}*ln(size)')
 
-        # --- power-law mean model: ln(stat) = a + b*ln(size) ---
-        X = np.column_stack([np.ones(len(s)), log_s])
-        mu_beta = self._wls_fit(X, log_y, w)
-        self.adj_mu_beta = mu_beta
+        self.adj_model = model
+        self.adj_beta = beta
 
-        def mu_log_fn(sz, b=mu_beta):
-            ls = np.log(np.maximum(sz, 1.0))
-            return b[0] + b[1] * ls
+        def mu_fn(sz, _m=model, _b=beta):
+            return AnalysisGLOW.predict_null_mean(sz, _m, _b)
 
-        if verbose:
-            print(f'    power-law: ln(stat) = {mu_beta[0]:.4f} '
-                  f'+ {mu_beta[1]:.4f} * ln(size)')
-
-        return mu_log_fn
+        return mu_fn
 
     def _finalize_analysis(self, exp, n_perm, n_perm_prune,
                           alpha_fwer, alpha_prune, min_size,
@@ -399,28 +426,24 @@ class AnalysisGLOW(Analysis):
                                                                    dtype=int),
                                                          children=children)
 
-        # fit power-law mean model on null (permuted) data
+        # fit size-regression model on null (permuted) data
         if verbose:
-            print(f'  [2/4] fitting power-law model '
-                  f'(ln(stat) ~ a + b*ln(size), '
+            model = _STAT_MODEL.get(self.get_stat, _DEFAULT_MODEL)
+            print(f'  [2/4] fitting size model ({model}, '
                   f'{n_perm} permutations) ...')
-        mu_log_fn = self._fit_size_regression(verbose=verbose)
+        mu_fn = self._fit_size_regression(verbose=verbose)
 
-        # compute adjusted stat: subtract expected log-mean
+        # compute adjusted stat: subtract predicted null mean
         if verbose:
             print(f'  [3/4] computing adjusted stats + FWER p-values '
                   f'(alpha={alpha_fwer}) ...')
-        self.hotel_tr_adjusted = np.empty_like(self.stat)
+        self.llr_adjusted = np.empty_like(self.stat)
         for p in range(n_perm + 1):
             sz = self.size[p, :].astype(float)
             raw = self.stat[p, :]
-            mu_log = mu_log_fn(sz)
-            with np.errstate(divide='ignore', invalid='ignore'):
-                log_stat = np.where(raw > 0, np.log(raw), -np.inf)
-                self.hotel_tr_adjusted[p, :] = log_stat - mu_log
-            # regions with stat <= 0 get -inf; clamp to a large negative
-            self.hotel_tr_adjusted[p, :] = np.nan_to_num(
-                self.hotel_tr_adjusted[p, :], nan=0.0, posinf=0.0,
+            self.llr_adjusted[p, :] = raw - mu_fn(sz)
+            self.llr_adjusted[p, :] = np.nan_to_num(
+                self.llr_adjusted[p, :], nan=0.0, posinf=0.0,
                 neginf=-30.0)
 
         # store analysis thresholds (for viewer)
@@ -428,7 +451,7 @@ class AnalysisGLOW(Analysis):
         self.alpha_prune = alpha_prune
 
         # compute p-values (max stat across space)
-        self.pval = self.get_pval(stat=self.hotel_tr_adjusted,
+        self.pval = self.get_pval(stat=self.llr_adjusted,
                                   reg_active=self.size[0, :] >= min_size)
 
         # prune significant regions (discard to make disjoint set)

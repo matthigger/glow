@@ -116,21 +116,24 @@ def test_all_stat_functions():
     assert pillai >= 0  # pillai should be non-negative
     
     hotel = get_hotel_tr(e=e, h=h)
-    assert hotel >= 0  # hotelling should be non-negative
-    
+    assert hotel >= 0
+
     roy = get_roys_root(e=e, h=h)
-    assert roy >= 0  # roy's root should be non-negative
-    
+    assert roy >= 0
+
+    llr = get_llr(e=e, h=h, n=100)
+    assert llr >= 0
+
     # test stat_dict
-    assert len(stat_dict) == 4
+    assert len(stat_dict) == 5
+    assert 'LLR' in stat_dict
     assert 'Wilks' in stat_dict
     assert 'Pillai' in stat_dict
     assert 'Hotelling Tr' in stat_dict
     assert 'Roy Root' in stat_dict
-    
-    # test all stats via dict
+
     for name, stat_func in stat_dict.items():
-        result = stat_func(e=e, h=h)
+        result = stat_func(e=e, h=h, n=100)
         assert isinstance(result, (float, np.floating))
 
 

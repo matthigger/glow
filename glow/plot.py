@@ -138,14 +138,14 @@ def image_iter(children, mask_idx, num_vox):
 
 def prep_df(ana_glow, mask_target=None):
     df_list = list()
-    _adj = ana_glow.hotel_tr_adjusted
-    for perm_idx, (hotel_tr, adj, size) in enumerate(zip(ana_glow.stat,
-                                                         _adj,
-                                                         ana_glow.size)):
+    _adj = ana_glow.llr_adjusted
+    for perm_idx, (llr, adj, size) in enumerate(zip(ana_glow.stat,
+                                                    _adj,
+                                                    ana_glow.size)):
         children = ana_glow.child_dict[perm_idx]
         d = {'region idx': np.arange(size.size),
-             'hotel_tr': hotel_tr,
-             'hotel_tr_adjusted': adj,
+             'llr': llr,
+             'llr_adjusted': adj,
              'size (voxels)': size,
              'permutation': perm_idx,
              'discovered': np.zeros(adj.shape, dtype=bool)}
@@ -263,7 +263,7 @@ def scatter_plotly(ana_glow, mask_target=None, x_feat='size (voxels)',
 
     hover_data = {'size (voxels)': ':.0f',
                   'F-stat': ':.3e',
-                  'hotel_tr': ':.3e'}
+                  'llr': ':.3e'}
     hover_data_permuted = {'permutation': ':.0f',
                            'region idx': ':.0f'}
     hover_data_unpermuted = {'p-val (FWER control)': ':.2e',

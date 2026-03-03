@@ -147,7 +147,7 @@ def test_iter_stat(exp, children):
             warnings.simplefilter('ignore', NoBiasTermWarning)
             exp = exp.sample_x(a=a, seed=0, add_bias=add_bias)
 
-            for reg_idx, e, h in iter_stat(exp, children=children, n_perm=n_perm):
+            for reg_idx, size, e, h in iter_stat(exp, children=children, n_perm=n_perm):
                 # build reliable compute: get index of all voxels in region
                 vox = np.array(list(iter_topo(children=children,
                                               num_leaf=num_vox,
