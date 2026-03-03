@@ -2,7 +2,7 @@ import numpy as np
 
 import glow
 from glow.benchmark.config import Config
-from glow.benchmark.run import run_ana, run_prune_compare, run_segment
+from glow.benchmark.run import run_ana, run_prune_compare, run_segment, run_stat_auc
 
 # common params
 # run experiments serially (n_jobs=1) and keep permutations serial per experiment
@@ -77,14 +77,12 @@ ana_kwargs_dict_vba = {
 config_list.append(make_config('vba_hcp', 'hcp', run_ana, ana_kwargs_dict_vba))
 config_list.append(make_config('vba_wgn', 'wgn', run_ana, ana_kwargs_dict_vba))
 
-# mancova stat experiment: compare statistics
-ana_kwargs_dict_mancova_stat = dict()
-for label, get_stat in glow.experiment.mancova.stat_dict.items():
-    kwargs = ANALYSES['GLOW'] | dict(get_stat=get_stat)
-    ana_kwargs_dict_mancova_stat[label] = glow.experiment.AnalysisGLOW, kwargs
-
-config_list.append(make_config('mancova_stat_hcp', 'hcp', run_ana, ana_kwargs_dict_mancova_stat))
-config_list.append(make_config('mancova_stat_wgn', 'wgn', run_ana, ana_kwargs_dict_mancova_stat))
+# mancova stat experiment: compare statistics via DP-antichain AUC
+# (replaces old mancova_stat_* which ran full FWER+prune per stat)
+config_list.append(make_config('stat_auc_hcp', 'hcp', run_stat_auc,
+                               fixed_params={'n_perm_fit': 30}))
+config_list.append(make_config('stat_auc_wgn', 'wgn', run_stat_auc,
+                               fixed_params={'n_perm_fit': 30}))
 
 # alpha_prune experiment: vary alpha_prune for tradeoff
 ana_kwargs_dict_alpha_prune = dict()
