@@ -756,6 +756,12 @@ class AWSBatchRunner:
                                 print(f'  ✓ Downloaded {n_files} file(s)')
                             except Exception as e:
                                 print(f'\n⚠ Error downloading results for {job["jobName"]}: {e}')
+                        elif info.get('on_complete'):
+                            try:
+                                info['on_complete'](job)
+                                downloaded_jobs.add(job_id)
+                            except Exception as e:
+                                print(f'\n  ⚠ on_complete failed for {job["jobName"]}: {e}')
             
                 # check if all jobs reached a terminal state
                 # (skip if we just resubmitted -- counts are stale)

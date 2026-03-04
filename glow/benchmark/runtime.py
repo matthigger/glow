@@ -71,6 +71,39 @@ def prep_experiments(exp_orig, targets):
     return experiments
 
 
+def _save_experiment_result(runner, experiment_id, meta, out_dir):
+    """Download final analysis for one experiment and write result JSON."""
+    ana = runner.download_final_analysis(experiment_id)
+
+    perm_elapsed = [t for t in getattr(ana, 'perm_elapsed_sec', [])
+                    if t is not None]
+    synth_elapsed = getattr(ana, 'synthesis_elapsed_sec', None)
+
+    wall_sec = ((max(perm_elapsed) + (synth_elapsed or 0))
+                if perm_elapsed else None)
+
+    result = {
+        'num_voxels': meta['actual_voxels'],
+        'target_voxels': meta['target_voxels'],
+        'n_perm': N_PERM,
+        'perm_elapsed_sec': perm_elapsed,
+        'perm_median_sec': float(np.median(perm_elapsed)) if perm_elapsed else None,
+        'perm_max_sec': float(max(perm_elapsed)) if perm_elapsed else None,
+        'synthesis_elapsed_sec': synth_elapsed,
+        'elapsed_sec': wall_sec,
+        'elapsed_min': wall_sec / 60 if wall_sec is not None else None,
+    }
+
+    uid = uuid4().hex[:8]
+    with open(out_dir / f'{uid}_result.json', 'w') as f:
+        json.dump(result, f, indent=4, sort_keys=True)
+
+    med = result['perm_median_sec']
+    syn = synth_elapsed or 0
+    print(f'\n  ✓ {meta["actual_voxels"]:>6,} voxels: '
+          f'median perm {med:.1f}s, synthesis {syn:.1f}s')
+
+
 def main():
     cloud_config = load_cloud_config()
     runner = AWSBatchRunner(cloud_config)
@@ -100,6 +133,7 @@ def main():
 
     all_job_ids = []
     exp_meta = {}
+    job_info_map = {}
 
     print(f'\nUploading & submitting ({N_PERM} perm + 1 synthesis per experiment)...')
     for exp, actual_vox, target_vox in exps:
@@ -114,52 +148,23 @@ def main():
         all_job_ids.extend(perm_ids)
         all_job_ids.append(synth_job_id)
 
-        exp_meta[experiment_id] = {
+        meta = {
             'target_voxels': target_vox,
             'actual_voxels': actual_vox,
             'n_perm_jobs': len(perm_ids),
         }
+        exp_meta[experiment_id] = meta
+
+        job_info_map[synth_job_id] = {
+            'on_complete': lambda _job, eid=experiment_id, m=meta: (
+                _save_experiment_result(runner, eid, m, out_dir)),
+        }
+
         print(f'  {actual_vox:>6,} voxels: {len(perm_ids)} perm + 1 synthesis')
 
     print(f'\nTotal jobs: {len(all_job_ids)}')
 
-    runner.monitor_jobs(all_job_ids)
-
-    print('\nDownloading results...')
-    for experiment_id, meta in exp_meta.items():
-        try:
-            ana = runner.download_final_analysis(experiment_id)
-        except Exception as e:
-            print(f'  ✗ {meta["actual_voxels"]:>6,} voxels: {e}')
-            continue
-
-        perm_elapsed = [t for t in getattr(ana, 'perm_elapsed_sec', [])
-                        if t is not None]
-        synth_elapsed = getattr(ana, 'synthesis_elapsed_sec', None)
-
-        wall_sec = ((max(perm_elapsed) + (synth_elapsed or 0))
-                    if perm_elapsed else None)
-
-        result = {
-            'num_voxels': meta['actual_voxels'],
-            'target_voxels': meta['target_voxels'],
-            'n_perm': N_PERM,
-            'perm_elapsed_sec': perm_elapsed,
-            'perm_median_sec': float(np.median(perm_elapsed)) if perm_elapsed else None,
-            'perm_max_sec': float(max(perm_elapsed)) if perm_elapsed else None,
-            'synthesis_elapsed_sec': synth_elapsed,
-            'elapsed_sec': wall_sec,
-            'elapsed_min': wall_sec / 60 if wall_sec is not None else None,
-        }
-
-        uid = uuid4().hex[:8]
-        with open(out_dir / f'{uid}_result.json', 'w') as f:
-            json.dump(result, f, indent=4, sort_keys=True)
-
-        med = result['perm_median_sec']
-        syn = synth_elapsed or 0
-        print(f'  ✓ {meta["actual_voxels"]:>6,} voxels: '
-              f'median perm {med:.1f}s, synthesis {syn:.1f}s')
+    runner.monitor_jobs(all_job_ids, job_info_map=job_info_map)
 
     print(f'\nResults saved to: {out_dir}')
 
