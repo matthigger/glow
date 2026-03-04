@@ -420,6 +420,7 @@ class Config:
 
         # submit only uncached experiments
         job_ids = []
+        job_exp_idx = {}
 
         if verbose:
             print(f'  Submitting {len(uncached)} jobs to AWS Batch...')
@@ -432,6 +433,7 @@ class Config:
                     kwargs=kwargs
                 )
                 job_ids.append(job_id)
+                job_exp_idx[job_id] = exp_idx
             except Exception as e:
                 print(f'  ✗ Error submitting job {exp_idx}: {e}')
                 raise
@@ -444,28 +446,34 @@ class Config:
             'runner': runner,
             'run_id': run_id,
             'job_ids': job_ids,
+            'job_exp_idx': job_exp_idx,
             'folder': self.folder,
             'label': self.label
         }
     
     def wait_and_download_results(self, job_info, verbose=True):
-        """monitor jobs and download results when complete."""
+        """monitor jobs and download results as they complete."""
         runner = job_info['runner']
         run_id = job_info['run_id']
         job_ids = job_info['job_ids']
         folder = job_info['folder']
         label = job_info['label']
-        
+        job_exp_idx = job_info.get('job_exp_idx', {})
+
+        job_info_map = {
+            jid: {
+                'run_id': run_id,
+                'exp_idx': job_exp_idx[jid],
+                'output_folder': folder,
+            }
+            for jid in job_ids if jid in job_exp_idx
+        }
+
         if verbose:
             print(f'\nMonitoring {label} ({len(job_ids)} jobs)...')
-        
-        runner.monitor_jobs(job_ids)
-        
-        if verbose:
-            print(f'Downloading {label} results...')
-        
-        runner.download_experiment_results(run_id, folder)
-        
+
+        runner.monitor_jobs(job_ids, job_info_map=job_info_map)
+
         if verbose:
             print(f'✓ {label} complete: {folder}')
     
