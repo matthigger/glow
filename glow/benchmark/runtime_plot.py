@@ -25,7 +25,7 @@ def load_results(results_dir: Path):
 
 
 def plot_runtime(rows, pdf_path: Path):
-    sns.set_theme(context='paper', style='whitegrid')
+    sns.set_theme(context='paper', style='darkgrid', font_scale=1.1)
 
     voxels = np.array([r['num_voxels'] for r in rows])
     minutes = np.array([r['elapsed_min'] for r in rows])
@@ -34,16 +34,32 @@ def plot_runtime(rows, pdf_path: Path):
     voxels = voxels[order]
     minutes = minutes[order]
 
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(voxels, minutes, marker='o', color='tab:blue')
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    ax.plot(voxels, minutes, marker='o', markersize=6, linewidth=1.5,
+            color=sns.color_palette('deep')[0], zorder=3)
+
     ax.set_xscale('log')
     ax.set_yscale('log')
     ax.set_xlabel('Number of voxels')
     ax.set_ylabel('Runtime (minutes)')
-    ax.set_title('AnalysisGLOW Runtime vs Voxel Count (HCP)')
-    ax.grid(True, which='both', alpha=0.3)
+    ax.set_title('AnalysisGLOW Runtime vs Voxel Count (HCP)', pad=10)
+
+    from matplotlib.ticker import LogLocator, ScalarFormatter
+    ax.xaxis.set_major_locator(LogLocator(base=10, numticks=10))
+    ax.xaxis.set_minor_locator(LogLocator(base=10, subs=np.arange(2, 10),
+                                          numticks=20))
+    ax.yaxis.set_major_locator(LogLocator(base=10, numticks=10))
+    ax.yaxis.set_minor_locator(LogLocator(base=10, subs=np.arange(2, 10),
+                                          numticks=20))
+
+    for axis in (ax.xaxis, ax.yaxis):
+        axis.set_major_formatter(ScalarFormatter())
+
+    ax.grid(True, which='major', linewidth=2.0, color='white')
+    ax.grid(True, which='minor', linewidth=1.0, color='white', alpha=0.7)
     fig.tight_layout()
     fig.savefig(pdf_path)
+    fig.savefig(pdf_path.with_suffix('.png'), dpi=200)
     print(f'plot saved: {pdf_path}')
     plt.close(fig)
 

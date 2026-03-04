@@ -204,7 +204,8 @@ S3_HAS_DATA=false
 if [ "$CLEAR_QUEUE" = true ]; then
     echo -e "${YELLOW}Checking job statuses in queue...${NC}"
     
-    python3 << EOF
+    EXIT_CODE=0
+    python3 << EOF || EXIT_CODE=$?
 import boto3
 import sys
 from collections import Counter
@@ -263,8 +264,6 @@ except Exception as e:
     print(f'Error: {e}', file=sys.stderr)
     sys.exit(1)
 EOF
-    
-    EXIT_CODE=$?
     if [ $EXIT_CODE -eq 2 ]; then
         echo ""
         echo -e "${GREEN}✓ No RUNNABLE or RUNNING jobs to cancel${NC}"
@@ -282,7 +281,8 @@ fi
 if [ "$CLEAR_S3" = true ]; then
     echo -e "${YELLOW}Checking S3 storage...${NC}"
     
-    python3 << EOF
+    EXIT_CODE=0
+    python3 << EOF || EXIT_CODE=$?
 import boto3
 import sys
 
@@ -324,8 +324,6 @@ except Exception as e:
     print(f'Error: {e}', file=sys.stderr)
     sys.exit(1)
 EOF
-    
-    EXIT_CODE=$?
     if [ $EXIT_CODE -eq 2 ]; then
         echo ""
         echo -e "${GREEN}✓ S3 storage is already empty${NC}"
