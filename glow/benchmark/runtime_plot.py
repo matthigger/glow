@@ -1,6 +1,8 @@
 """Plot runtime benchmark results (log-log: voxels vs minutes).
 
 Reads result JSON files produced by ``runtime.py`` and produces a PDF.
+Handles both old-format (single elapsed_min) and new permutation-mode
+results (per-perm timing arrays).
 
 Usage::
 
@@ -27,22 +29,57 @@ def load_results(results_dir: Path):
 def plot_runtime(rows, pdf_path: Path):
     sns.set_theme(context='paper', style='darkgrid', font_scale=1.1)
 
-    voxels = np.array([r['num_voxels'] for r in rows])
-    minutes = np.array([r['elapsed_min'] for r in rows])
+    has_perm = any('perm_elapsed_sec' in r for r in rows)
 
+    voxels = np.array([r['num_voxels'] for r in rows])
     order = np.argsort(voxels)
     voxels = voxels[order]
-    minutes = minutes[order]
 
     fig, ax = plt.subplots(figsize=(7, 4.5))
-    ax.plot(voxels, minutes, marker='o', markersize=6, linewidth=1.5,
-            color=sns.color_palette('deep')[0], zorder=3)
+    palette = sns.color_palette('deep')
+
+    if has_perm:
+        perm_med = np.array([
+            float(np.median(r['perm_elapsed_sec'])) / 60
+            if r.get('perm_elapsed_sec') else r.get('elapsed_min', 0)
+            for r in rows])[order]
+        perm_lo = np.array([
+            float(np.min(r['perm_elapsed_sec'])) / 60
+            if r.get('perm_elapsed_sec') else perm_med[i]
+            for i, r in enumerate(rows)])[order]
+        perm_hi = np.array([
+            float(np.max(r['perm_elapsed_sec'])) / 60
+            if r.get('perm_elapsed_sec') else perm_med[i]
+            for i, r in enumerate(rows)])[order]
+
+        ax.fill_between(voxels, perm_lo, perm_hi, alpha=0.18,
+                         color=palette[0], label='perm min-max')
+        ax.plot(voxels, perm_med, marker='o', markersize=6, linewidth=1.5,
+                color=palette[0], zorder=3, label='perm median')
+
+        synth = np.array([
+            (r.get('synthesis_elapsed_sec') or 0) / 60
+            for r in rows])[order]
+        if synth.max() > 0:
+            ax.plot(voxels, synth, marker='s', markersize=4, linewidth=1.0,
+                    color=palette[1], zorder=3, label='synthesis',
+                    linestyle='--')
+            ax.legend(loc='upper left', fontsize=8)
+    else:
+        minutes = np.array([r['elapsed_min'] for r in rows])[order]
+        ax.plot(voxels, minutes, marker='o', markersize=6, linewidth=1.5,
+                color=palette[0], zorder=3)
 
     ax.set_xscale('log')
     ax.set_yscale('log')
     ax.set_xlabel('Number of voxels')
     ax.set_ylabel('Runtime (minutes)')
-    ax.set_title('AnalysisGLOW Runtime vs Voxel Count (HCP)', pad=10)
+
+    n_perm = rows[0].get('n_perm')
+    title = 'AnalysisGLOW Runtime vs Voxel Count (HCP)'
+    if n_perm:
+        title += f' [n_perm={n_perm}]'
+    ax.set_title(title, pad=10)
 
     from matplotlib.ticker import LogLocator, ScalarFormatter
     ax.xaxis.set_major_locator(LogLocator(base=10, numticks=10))

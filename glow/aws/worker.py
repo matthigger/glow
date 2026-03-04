@@ -262,8 +262,11 @@ def run_permutation_mode(args):
     # process permutation
     print(f'\nProcessing permutation {args.perm_idx}...')
     try:
+        import time as _time
+        _t0 = _time.time()
         result = process_permutation(exp, ana_kwargs, args.perm_idx)
-        print(f'  ✓ Completed')
+        result['elapsed_sec'] = _time.time() - _t0
+        print(f'  ✓ Completed ({result["elapsed_sec"]:.1f}s)')
     except Exception as e:
         print(f'  ✗ Error: {e}')
         import traceback
@@ -472,12 +475,14 @@ def run_synthesis_mode(args):
     b, num_img, num_vox = exp.y.shape
     child_dict = {}
     stat = None
+    perm_elapsed = []
 
     for perm_idx in range(n_expected):
         key = f'{result_prefix}{perm_idx:06d}_result.pkl'
         response = s3.get_object(Bucket=args.s3_bucket, Key=key)
         result = pickle.loads(response['Body'].read())
         child_dict[perm_idx] = result['children']
+        perm_elapsed.append(result.get('elapsed_sec'))
         if stat is None:
             num_reg = num_vox + result['children'].shape[0]
             stat = np.full((n_expected, num_reg), fill_value=-1.0)
@@ -503,12 +508,16 @@ def run_synthesis_mode(args):
     prune_geom_exp_eff = ana_kwargs.get('prune_geom_exp_eff', None)
 
     print(f'\nRunning _finalize_analysis...')
+    _t0 = time.time()
     ana._finalize_analysis(
         exp, args.n_perm, n_perm_prune,
         alpha_fwer, alpha_prune, min_size,
         prune_method=prune_method,
         prune_geom_exp_eff=prune_geom_exp_eff)
-    print(f'  ✓ {len(ana.effect_list)} effects discovered')
+    ana.synthesis_elapsed_sec = time.time() - _t0
+    ana.perm_elapsed_sec = perm_elapsed
+    print(f'  ✓ {len(ana.effect_list)} effects discovered '
+          f'(synthesis: {ana.synthesis_elapsed_sec:.1f}s)')
 
     # upload final analysis
     final_key = f'{result_prefix}analysis_final.pkl'
