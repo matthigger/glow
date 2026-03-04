@@ -29,7 +29,7 @@ def load_results(results_dir: Path):
 def plot_runtime(rows, pdf_path: Path):
     sns.set_theme(context='paper', style='darkgrid', font_scale=1.1)
 
-    has_perm = any('perm_elapsed_sec' in r for r in rows)
+    has_perm = any(r.get('perm_elapsed_sec') for r in rows)
 
     voxels = np.array([r['num_voxels'] for r in rows])
     order = np.argsort(voxels)
