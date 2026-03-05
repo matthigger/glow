@@ -35,7 +35,7 @@ def _load_and_rank(config_label, top_n=20):
     -------
     ranking : pd.DataFrame
         Sorted by gap descending (top_n rows).  Columns include seed,
-        hotel_tr, per-method f1/sens/spec, and gap.
+        effect_llr, per-method f1/sens/spec, and gap.
     """
     df, folder, _ = load_update_all(config_label, verbose=False)
     if df.empty:
@@ -55,7 +55,7 @@ def _load_and_rank(config_label, top_n=20):
     # pivot each metric separately, then merge
     parts = []
     for metric in ('f1', 'sens', 'spec'):
-        piv = df.pivot_table(index=['seed', 'hotel_tr'], columns='label',
+        piv = df.pivot_table(index=['seed', 'effect_llr'], columns='label',
                              values=metric, aggfunc='first')
         piv.columns = [f'{col}_{metric}' for col in piv.columns]
         parts.append(piv)
@@ -87,14 +87,14 @@ def _print_ranking(ranking):
     print(f'\n  Top {len(ranking)} worst cases (VBA-TFCE f1 − GLOW f1):')
     sep = '  ' + '-' * (8 + 12 + len(stat_cols) * 12)
     print(sep)
-    header = '  {:>3s}  {:>4s}  {:>10s}'.format('#', 'seed', 'hotel_tr')
+    header = '  {:>3s}  {:>4s}  {:>10s}'.format('#', 'seed', 'effect_llr')
     for c in stat_cols:
         header += f'  {c:>10s}'
     print(header)
     print(sep)
 
     for idx, (_, row) in enumerate(ranking.iterrows()):
-        line = f'  {idx:3d}  {int(row["seed"]):4d}  {row["hotel_tr"]:10.4f}'
+        line = f'  {idx:3d}  {int(row["seed"]):4d}  {row["effect_llr"]:10.4f}'
         for c in stat_cols:
             line += f'  {row[c]:10.4f}'
         print(line)
@@ -144,12 +144,12 @@ def _load_cache():
         return None, None
 
 
-def _save_cache(config_label, seed, hotel_tr, exp_eff, effect, ana):
+def _save_cache(config_label, seed, effect_llr, exp_eff, effect, ana):
     """Save artifacts and a manifest recording the experiment identity."""
     out = _cache_dir()
     out.mkdir(exist_ok=True, parents=True)
 
-    manifest = {'config': config_label, 'seed': seed, 'hotel_tr': hotel_tr}
+    manifest = {'config': config_label, 'seed': seed, 'effect_llr': effect_llr}
     with open(out / _MANIFEST, 'w') as f:
         json.dump(manifest, f)
 
@@ -162,7 +162,7 @@ def _save_cache(config_label, seed, hotel_tr, exp_eff, effect, ana):
         print(f'  Saved {path}')
 
 
-def _rerun_and_view(config_label, seed, hotel_tr, use_cache=False,
+def _rerun_and_view(config_label, seed, effect_llr, use_cache=False,
                     port=8050):
     """Re-run a single experiment, save artifacts, and launch viewer."""
     # try cached result
@@ -193,12 +193,12 @@ def _rerun_and_view(config_label, seed, hotel_tr, use_cache=False,
         ana_kwargs_dict=ana_kwargs_dict_vba,
     )
 
-    print(f'  Re-running: seed={seed}, hotel_tr={hotel_tr:.4f}, '
+    print(f'  Re-running: seed={seed}, effect_llr={effect_llr:.4f}, '
           f'source={source}')
 
     # build experiment + effect
     print('  Building experiment ...')
-    exp_eff, effect = config.get_exp_eff(seed=seed, hotel_tr=hotel_tr)
+    exp_eff, effect = config.get_exp_eff(seed=seed, effect_llr=effect_llr)
     print(f'    y.shape={exp_eff.y.shape}, '
           f'effect: {int(effect.mask.sum())} voxels')
 
@@ -221,7 +221,7 @@ def _rerun_and_view(config_label, seed, hotel_tr, use_cache=False,
     print(f'  Score: f1={f1:.4f}, sens={sens:.4f}, spec={spec:.4f}')
 
     # save (overwrites any previous cache)
-    _save_cache(config_label, seed, hotel_tr, exp_eff, effect, ana)
+    _save_cache(config_label, seed, effect_llr, exp_eff, effect, ana)
 
     # launch viewer
     from glow.viewer import launch
@@ -280,25 +280,25 @@ def main():
     if (manifest is not None
             and manifest.get('config') == config_label):
         c_seed = manifest.get('seed')
-        c_htr = manifest.get('hotel_tr')
+        c_htr = manifest.get('effect_llr')
         for idx, (_, row) in enumerate(ranking.iterrows()):
-            if int(row['seed']) == c_seed and row['hotel_tr'] == c_htr:
+            if int(row['seed']) == c_seed and row['effect_llr'] == c_htr:
                 cached_idx = idx
                 break
         if cached_idx is not None:
             print(f'  (last run cached: #{cached_idx}, '
-                  f'seed={c_seed}, hotel_tr={c_htr})')
+                  f'seed={c_seed}, effect_llr={c_htr})')
 
     case = _prompt_choice('  Select a case to explore [#]: ',
                           len(ranking))
     row = ranking.iloc[case]
     seed = int(row['seed'])
-    hotel_tr = float(row['hotel_tr'])
-    print(f'  → seed={seed}, hotel_tr={hotel_tr:.4f}\n')
+    effect_llr = float(row['effect_llr'])
+    print(f'  → seed={seed}, effect_llr={effect_llr:.4f}\n')
 
     # -- step 3: re-run & launch viewer ------------------------------------
     use_cache = (cached_idx is not None and case == cached_idx)
-    _rerun_and_view(config_label, seed, hotel_tr, use_cache=use_cache)
+    _rerun_and_view(config_label, seed, effect_llr, use_cache=use_cache)
 
 
 if __name__ == '__main__':

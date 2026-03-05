@@ -8,7 +8,7 @@ from glow.benchmark.run import run_ana, run_prune_compare, run_segment, run_stat
 # run experiments serially (n_jobs=1) and keep permutations serial per experiment
 COMMON = dict(
     n_seed=50,
-    hotel_tr_all=np.logspace(np.log10(0.005), np.log10(1.0), 10),
+    effect_llr_all=np.logspace(np.log10(0.003), np.log10(0.3), 10),
     effect_perc=0.2,
     n_jobs=1,
     detail_save=False,

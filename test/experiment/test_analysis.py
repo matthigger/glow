@@ -25,7 +25,7 @@ class TestBigEffect:
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=100, seed=0)
     exp, effect = exp.impose_effect(seed=0,
                                     extenter=ExtenterSphere(radius=2),
-                                    hotel_tr=2)
+                                    effect_llr=0.5)
 
     def test_glow(self):
         analysis = AnalysisGLOW(TestBigEffect.exp, n_perm=25, alpha_fwer=.1)
@@ -123,7 +123,7 @@ class TestAnalysisEdgeCases:
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
         exp, _ = exp.impose_effect(seed=0,
                                    extenter=ExtenterSphere(radius=1),
-                                   hotel_tr=1.5)
+                                   effect_llr=0.5)
         
         # set min_size so large that all regions are filtered
         analysis = AnalysisGLOW(
@@ -163,7 +163,7 @@ class TestAnalysisEdgeCases:
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
         exp, _ = exp.impose_effect(seed=0,
                                    extenter=ExtenterSphere(radius=1),
-                                   hotel_tr=1.5)
+                                   effect_llr=0.5)
         
         # strict alpha
         analysis_strict = AnalysisGLOW(
@@ -191,7 +191,7 @@ class TestParallelExecution:
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
         exp, _ = exp.impose_effect(seed=0,
                                    extenter=ExtenterSphere(radius=1),
-                                   hotel_tr=1.5)
+                                   effect_llr=0.5)
         
         # run with parallel execution
         analysis_parallel = AnalysisGLOW(
@@ -244,7 +244,7 @@ class TestZeroStdGuard:
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
         exp, _ = exp.impose_effect(seed=0,
                                    extenter=ExtenterSphere(radius=1),
-                                   hotel_tr=1.5)
+                                   effect_llr=0.5)
 
         analysis = AnalysisGLOW(exp, n_perm=5, alpha_fwer=0.05,
                                 min_size=1)

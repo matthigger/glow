@@ -45,8 +45,8 @@ def load_update_all(label, verbose=True):
     if df.empty:
         return df, folder, 0
 
-    # round hotel_tr to 14 decimal places (avoids floating point comparison failure)
-    df['hotel_tr'] = df['hotel_tr'].round(14)
+    # round effect_llr to 14 decimal places (avoids floating point comparison failure)
+    df['effect_llr'] = df['effect_llr'].round(14)
 
     # drop duplicates & check for conflicting results
     df.drop_duplicates(inplace=True)

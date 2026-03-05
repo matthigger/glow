@@ -63,32 +63,57 @@ def decompose(x, contrast):
 
 
 # ---------------------------------------------------------------------------
-# four MANCOVA test statistics
+# shared log-likelihood primitive
 # ---------------------------------------------------------------------------
 
-def get_llr(e, h, n):
+def loglik_from_cov(cov, n):
+    """Gaussian profile log-likelihood from a covariance matrix.
+
+    Returns -(n/2) * log|det(cov/n)|.  Additive constants (that
+    cancel in all ratios) are omitted.
+
+    Args:
+        cov (np.array): (b, b) un-normalised covariance (e.g. E or E+H)
+        n (int): number of voxels
+
+    Returns:
+        float: profile log-likelihood (higher = better fit)
+    """
+    s, logdet = np.linalg.slogdet(cov / n)
+    if s <= 0:
+        return np.nan
+    return -0.5 * logdet * n
+
+
+# ---------------------------------------------------------------------------
+# five MANCOVA test statistics
+# ---------------------------------------------------------------------------
+
+def get_llr(e, h, n=None, *, size_normalize=False):
     """Log-likelihood ratio: (n/2) * ln|det(I + E^{-1}H)|.
 
     Equivalent to LL_full - LL_null where both likelihoods are
     Gaussian profile log-likelihoods on the same region.  The (n/2)
     prefactor makes LLR scale linearly with region size under H0.
 
+    When size_normalize=True, returns (1/2) * ln|det(I + E^{-1}H)|
+    instead (size-independent).
+
     Args:
         e (np.array): (b, b) error matrix
         h (np.array): (b, b) hypothesis matrix
-        n (int): number of voxels in the region
+        n (int): number of voxels in the region (unused when size_normalize)
+        size_normalize (bool): if True, return size-independent LLR
 
     Returns:
         float
     """
-    try:
-        inv_e_h = np.linalg.solve(e, h)
-    except np.linalg.LinAlgError:
+    _n = 1 if size_normalize else n
+    ll_alt = loglik_from_cov(e, _n)
+    ll_null = loglik_from_cov(e + h, _n)
+    if np.isnan(ll_alt) or np.isnan(ll_null):
         return np.nan
-    s, logdet = np.linalg.slogdet(np.eye(e.shape[0]) + inv_e_h)
-    if s <= 0:
-        return np.nan
-    return 0.5 * n * logdet
+    return ll_alt - ll_null
 
 
 def get_neg_wilks(e, h, n=None):

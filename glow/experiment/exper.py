@@ -304,12 +304,12 @@ class Experiment(ExperimentImageOnly):
             h.update(np.ascontiguousarray(arr).tobytes())
         return h.hexdigest()[:16]
 
-    def impose_effect(self, hotel_tr, extenter=None, mask=None, seed=None,
+    def impose_effect(self, effect_llr, extenter=None, mask=None, seed=None,
                       **kwargs):
         """return a new experiment with a synthetic effect imposed.
 
         Args:
-            hotel_tr (float): target Hotelling's trace
+            effect_llr (float): target size-normalized LLR
             extenter: ExtenterSphere or ExtenterMinVar (xor mask)
             mask (np.array): boolean effect region (xor extenter)
             seed: random seed for extent sampling
@@ -334,7 +334,7 @@ class Experiment(ExperimentImageOnly):
         offset = glow.effect.compute_offset(x=self.x,
                                             y=y,
                                             contrast=self.contrast,
-                                            hotel_tr=hotel_tr)
+                                            effect_llr=effect_llr)
 
         # impose effect on y, build new experiment
         exp = self.add_offset(offset, mask=mask)
@@ -342,7 +342,7 @@ class Experiment(ExperimentImageOnly):
         effect = glow.effect.Effect.from_exp_mask(exp=exp,
                                                   mask=mask,
                                                   seed=seed,
-                                                  hotel_tr=hotel_tr)
+                                                  effect_llr=effect_llr)
 
         return exp, effect
 

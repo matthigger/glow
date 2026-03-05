@@ -32,7 +32,7 @@ def run_segment(config, **kwargs):
         # dump summary
         uuid = str(uuid4())[:8]
         file_out = config.folder / OUT / f'{uuid}_result.json'
-        d = {'hotel_tr': effect.hotel_tr,
+        d = {'effect_llr': effect.effect_llr,
              'seed': int(effect.seed),
              'f1': f1[idx],
              'label': mode,
@@ -69,7 +69,7 @@ def run_ana(config, **kwargs):
                 d = {'error_msg': traceback.format_exc(),
                      'label': label,
                      'method': Ana.__name__,
-                     'hotel_tr': effect.hotel_tr,
+                     'effect_llr': effect.effect_llr,
                      'seed': int(effect.seed)}
                 print(f'error: {d}')
 
@@ -95,7 +95,7 @@ def run_ana(config, **kwargs):
                                              mask_target=effect.mask,
                                              mask_active=exp.mask_idx > -1)
         # dump summary
-        d = {'hotel_tr': effect.hotel_tr,
+        d = {'effect_llr': effect.effect_llr,
              'seed': int(effect.seed),
              'stat': ana.get_stat.__name__.replace('get_', ''),
              'label': label,
@@ -239,7 +239,7 @@ def run_prune_compare(config, **kwargs):
                                              mask_active=exp.mask_idx > -1)
         uuid = str(uuid4())[:8]
         file_out = config.folder / OUT / f'{uuid}_result.json'
-        d = {'hotel_tr': effect.hotel_tr,
+        d = {'effect_llr': effect.effect_llr,
              'seed': int(effect.seed),
              'stat': ana.get_stat.__name__.replace('get_', ''),
              'label': label,
@@ -412,7 +412,7 @@ def run_stat_auc(config, **kwargs):
         # save result
         uuid = str(uuid4())[:8]
         file_out = config.folder / OUT / f'{uuid}_result.json'
-        d = {'hotel_tr': effect.hotel_tr,
+        d = {'effect_llr': effect.effect_llr,
              'seed': int(effect.seed),
              'stat': stat_fn.__name__.replace('get_', ''),
              'label': stat_label,
@@ -440,6 +440,6 @@ if __name__ == '__main__':
                                 dict(n_perm=100)),
                        'VBA': (glow.experiment.AnalysisVBA, dict(n_perm=100))}
     config = Config(label='quick_test', source='wgn', n_seed=3,
-                    hotel_tr_all=[0, 1], wgn_shape=(3, 3),
+                    effect_llr_all=[0, 0.5], wgn_shape=(3, 3),
                     ana_kwargs_dict=ana_kwargs_dict)
     config.run_all(run_fnc=run_ana)

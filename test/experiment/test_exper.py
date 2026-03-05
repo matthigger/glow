@@ -55,10 +55,10 @@ class TestExperimentOnlyImage:
         exp = Experiment.from_gauss(seed=seed)
         extenter = glow.effect.ExtenterSphere(radius=3)
 
-        for hotel_tr in [0, 1, 100]:
+        for effect_llr in [0, 0.5, 3]:
             _exp, effect = exp.impose_effect(seed=seed, extenter=extenter,
-                                             hotel_tr=hotel_tr)
-            assert np.isclose(effect.hotel_tr, hotel_tr)
+                                             effect_llr=effect_llr)
+            assert np.isclose(effect.effect_llr, effect_llr)
 
     def test_sample_x(self):
         seed = 0
@@ -151,13 +151,13 @@ class TestImposeEffectWithNoise:
         exp_with_noise, effect_with_noise = exp.impose_effect(
             seed=seed,
             extenter=extenter,
-            hotel_tr=2.0,
-            noise_scale=0.5  # triggers lines 171-175
+            effect_llr=0.5,
+            noise_scale=0.5
         )
         
         # should complete successfully
         assert effect_with_noise.mask.sum() > 0
-        assert effect_with_noise.hotel_tr > 0
+        assert effect_with_noise.effect_llr > 0
 
 
 class TestExperimentScaledZeroVariance:

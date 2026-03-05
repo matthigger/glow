@@ -44,12 +44,13 @@ class Config:
     source: Literal['wgn', 'hcp'] = 'wgn'
 
     # -------- sweeps / repetitions --------
-    # an experiment is run per seed / hotel_tr pair
+    # an experiment is run per seed / effect_llr pair
     n_seed: int = 100
 
-    # controls severity of effects (large values = easier to find)
-    hotel_tr_all: np.ndarray = field(
-        default_factory=lambda: np.logspace(np.log10(0.03), np.log10(1.0), 15)
+    # controls severity of effects via size-normalized LLR
+    # (large values = easier to find)
+    effect_llr_all: np.ndarray = field(
+        default_factory=lambda: np.logspace(np.log10(0.01), np.log10(0.3), 15)
     )
 
     # -------- experiment knobs --------
@@ -82,14 +83,14 @@ class Config:
     # -------- experiment iteration specification --------
     # Declarative way to specify what to iterate over
     # iter_params: dict mapping parameter names to lists of values to iterate over
-    #   Default: {'seed': range(n_seed), 'hotel_tr': hotel_tr_all}
+    #   Default: {'seed': range(n_seed), 'effect_llr': effect_llr_all}
     #   Example: {'seed': range(10), 'radius': [2, 5, 10, None]}
     #   Example: {'seed': range(10), 'wgn_b': [1, 2]}
     iter_params: Optional[dict] = None
     
     # fixed_params: dict mapping parameter names to fixed values
     #   These override default values when iterating
-    #   Example: {'hotel_tr': 0.1}  # Use fixed hotel_tr when iterating over other params
+    #   Example: {'effect_llr': 0.1}  # Use fixed effect_llr when iterating over other params
     fixed_params: Optional[dict] = None
 
     def __post_init__(self):
@@ -150,7 +151,7 @@ class Config:
                 b=b,
                 num_img=self.wgn_num_img)
 
-    def get_exp_eff(self, seed, hotel_tr, radius=None, hcp_feats=None, wgn_b=None):
+    def get_exp_eff(self, seed, effect_llr, radius=None, hcp_feats=None, wgn_b=None):
         """return an experiment with a synthetic effect imposed."""
         # Re-prepare exp_orig if dataset parameters changed or if not yet created
         # For dataset experiments, we need to recreate exp_orig each time
@@ -198,16 +199,16 @@ class Config:
         # impose effect
         return exp.impose_effect(extenter=extenter,
                                  seed=seed,
-                                 hotel_tr=hotel_tr)
+                                 effect_llr=effect_llr)
 
     def iter_kwargs(self):
         """yield kwarg dicts for each experiment (product of iter_params)."""
         # build iteration specification
         if self.iter_params is None:
-            # default: iterate over seed and hotel_tr
+            # default: iterate over seed and effect_llr
             iter_spec = {
                 'seed': np.arange(self.n_seed),
-                'hotel_tr': self.hotel_tr_all
+                'effect_llr': self.effect_llr_all
             }
         else:
             iter_spec = self.iter_params.copy()

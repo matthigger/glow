@@ -18,14 +18,14 @@ from glow.benchmark.run import run_ana, run_segment
 # helpers
 # ---------------------------------------------------------------------------
 
-def _make_result_json(folder, label, seed, hotel_tr, extra=None):
+def _make_result_json(folder, label, seed, effect_llr, extra=None):
     """Write a minimal result JSON into folder/out/."""
     out = folder / OUT
     out.mkdir(parents=True, exist_ok=True)
     d = {
         'label': label,
         'seed': int(seed),
-        'hotel_tr': float(hotel_tr),
+        'effect_llr': float(effect_llr),
         'f1': 0.5,
         'sens': 0.5,
         'spec': 0.5,
@@ -36,7 +36,7 @@ def _make_result_json(folder, label, seed, hotel_tr, extra=None):
     }
     if extra:
         d.update(extra)
-    path = out / f'{d["uuid"]}_{label}_{seed}_{hotel_tr}_result.json'
+    path = out / f'{d["uuid"]}_{label}_{seed}_{effect_llr}_result.json'
     with open(path, 'w') as f:
         json.dump(d, f)
     return path
@@ -59,7 +59,7 @@ def _make_config(label='test_cache', ana_labels=('A', 'B')):
         run_fnc=run_ana,
         ana_kwargs_dict=ana_kwargs_dict,
         n_seed=2,
-        hotel_tr_all=np.array([0.1, 0.5]),
+        effect_llr_all=np.array([0.05, 0.2]),
         wgn_shape=(3, 3),
         wgn_a=2, wgn_b=2, wgn_num_img=10,
         exp_seed=0,
@@ -87,8 +87,8 @@ class TestLoadUpdateAll:
         label_dir = tmp_path / label
         label_dir.mkdir()
 
-        _make_result_json(label_dir, 'GLOW', seed=0, hotel_tr=0.1)
-        _make_result_json(label_dir, 'VBA', seed=0, hotel_tr=0.1)
+        _make_result_json(label_dir, 'GLOW', seed=0, effect_llr=0.05)
+        _make_result_json(label_dir, 'VBA', seed=0, effect_llr=0.05)
 
         with patch('glow.benchmark.file.get_path_result', return_value=tmp_path):
             df, folder, n_new = load_update_all(label, verbose=False)
@@ -106,13 +106,13 @@ class TestLoadUpdateAll:
         label_dir.mkdir()
 
         # first load: one result
-        _make_result_json(label_dir, 'GLOW', seed=0, hotel_tr=0.1)
+        _make_result_json(label_dir, 'GLOW', seed=0, effect_llr=0.05)
         with patch('glow.benchmark.file.get_path_result', return_value=tmp_path):
             df1, _, _ = load_update_all(label, verbose=False)
         assert len(df1) == 1
 
         # second load: add another result
-        _make_result_json(label_dir, 'VBA', seed=0, hotel_tr=0.1)
+        _make_result_json(label_dir, 'VBA', seed=0, effect_llr=0.05)
         with patch('glow.benchmark.file.get_path_result', return_value=tmp_path):
             df2, _, n_new = load_update_all(label, verbose=False)
         assert len(df2) == 2
@@ -198,67 +198,67 @@ class TestIsExperimentCached:
 
     def test_empty_df(self):
         assert not self.config._is_experiment_cached(
-            {'seed': 0, 'hotel_tr': 0.1}, pd.DataFrame(), self.expected,
+            {'seed': 0, 'effect_llr': 0.05}, pd.DataFrame(), self.expected,
             self.hash)
 
     def test_fully_cached(self):
         df = pd.DataFrame([
-            {'seed': 0, 'hotel_tr': 0.1, 'label': 'GLOW', 'f1': 0.5,
+            {'seed': 0, 'effect_llr': 0.05, 'label': 'GLOW', 'f1': 0.5,
              'config_hash': self.hash},
-            {'seed': 0, 'hotel_tr': 0.1, 'label': 'VBA', 'f1': 0.6,
+            {'seed': 0, 'effect_llr': 0.05, 'label': 'VBA', 'f1': 0.6,
              'config_hash': self.hash},
         ])
         assert self.config._is_experiment_cached(
-            {'seed': 0, 'hotel_tr': 0.1}, df, self.expected, self.hash)
+            {'seed': 0, 'effect_llr': 0.05}, df, self.expected, self.hash)
 
     def test_partially_cached(self):
         df = pd.DataFrame([
-            {'seed': 0, 'hotel_tr': 0.1, 'label': 'GLOW', 'f1': 0.5,
+            {'seed': 0, 'effect_llr': 0.05, 'label': 'GLOW', 'f1': 0.5,
              'config_hash': self.hash},
         ])
         assert not self.config._is_experiment_cached(
-            {'seed': 0, 'hotel_tr': 0.1}, df, self.expected, self.hash)
+            {'seed': 0, 'effect_llr': 0.05}, df, self.expected, self.hash)
 
     def test_different_seed_not_cached(self):
         df = pd.DataFrame([
-            {'seed': 1, 'hotel_tr': 0.1, 'label': 'GLOW', 'f1': 0.5,
+            {'seed': 1, 'effect_llr': 0.05, 'label': 'GLOW', 'f1': 0.5,
              'config_hash': self.hash},
-            {'seed': 1, 'hotel_tr': 0.1, 'label': 'VBA', 'f1': 0.6,
+            {'seed': 1, 'effect_llr': 0.05, 'label': 'VBA', 'f1': 0.6,
              'config_hash': self.hash},
         ])
         assert not self.config._is_experiment_cached(
-            {'seed': 0, 'hotel_tr': 0.1}, df, self.expected, self.hash)
+            {'seed': 0, 'effect_llr': 0.05}, df, self.expected, self.hash)
 
     def test_wrong_config_hash_not_cached(self):
         """Results with a different config_hash should not count as cached."""
         df = pd.DataFrame([
-            {'seed': 0, 'hotel_tr': 0.1, 'label': 'GLOW', 'f1': 0.5,
+            {'seed': 0, 'effect_llr': 0.05, 'label': 'GLOW', 'f1': 0.5,
              'config_hash': 'wrong_hash_x'},
-            {'seed': 0, 'hotel_tr': 0.1, 'label': 'VBA', 'f1': 0.6,
+            {'seed': 0, 'effect_llr': 0.05, 'label': 'VBA', 'f1': 0.6,
              'config_hash': 'wrong_hash_x'},
         ])
         assert not self.config._is_experiment_cached(
-            {'seed': 0, 'hotel_tr': 0.1}, df, self.expected, self.hash)
+            {'seed': 0, 'effect_llr': 0.05}, df, self.expected, self.hash)
 
     def test_no_hash_column_not_cached(self):
         """Legacy data without config_hash column should not count as cached."""
         df = pd.DataFrame([
-            {'seed': 0, 'hotel_tr': 0.1, 'label': 'GLOW', 'f1': 0.5},
-            {'seed': 0, 'hotel_tr': 0.1, 'label': 'VBA', 'f1': 0.6},
+            {'seed': 0, 'effect_llr': 0.05, 'label': 'GLOW', 'f1': 0.5},
+            {'seed': 0, 'effect_llr': 0.05, 'label': 'VBA', 'f1': 0.6},
         ])
         assert not self.config._is_experiment_cached(
-            {'seed': 0, 'hotel_tr': 0.1}, df, self.expected, self.hash)
+            {'seed': 0, 'effect_llr': 0.05}, df, self.expected, self.hash)
 
     def test_float_rounding(self):
-        """hotel_tr floats should match after rounding to 14 decimals."""
+        """effect_llr floats should match after rounding to 14 decimals."""
         df = pd.DataFrame([
-            {'seed': 0, 'hotel_tr': 0.100000000000001, 'label': 'GLOW',
+            {'seed': 0, 'effect_llr': 0.050000000000001, 'label': 'GLOW',
              'f1': 0.5, 'config_hash': self.hash},
-            {'seed': 0, 'hotel_tr': 0.100000000000001, 'label': 'VBA',
+            {'seed': 0, 'effect_llr': 0.050000000000001, 'label': 'VBA',
              'f1': 0.6, 'config_hash': self.hash},
         ])
         assert self.config._is_experiment_cached(
-            {'seed': 0, 'hotel_tr': 0.1}, df, self.expected, self.hash)
+            {'seed': 0, 'effect_llr': 0.05}, df, self.expected, self.hash)
 
 
 # ---------------------------------------------------------------------------
@@ -283,12 +283,12 @@ class TestFilterUncached:
         n_total = len(kwargs_list)
         ch = config._config_hash()
 
-        # cache the first experiment (seed=0, hotel_tr=0.1)
+        # cache the first experiment (seed=0, effect_llr=0.05)
         label_dir = tmp_path / config.label
         label_dir.mkdir()
-        _make_result_json(label_dir, 'A', seed=0, hotel_tr=0.1,
+        _make_result_json(label_dir, 'A', seed=0, effect_llr=0.05,
                           extra={'config_hash': ch})
-        _make_result_json(label_dir, 'B', seed=0, hotel_tr=0.1,
+        _make_result_json(label_dir, 'B', seed=0, effect_llr=0.05,
                           extra={'config_hash': ch})
         # aggregate into CSV
         with patch('glow.benchmark.file.get_path_result', return_value=tmp_path):
@@ -302,13 +302,13 @@ class TestFilterUncached:
     def test_all_cached(self, tmp_path):
         config = _make_config(ana_labels=('A',))
         config.n_seed = 1
-        config.hotel_tr_all = np.array([0.1])
+        config.effect_llr_all = np.array([0.05])
         kwargs_list = list(config.iter_kwargs())
         ch = config._config_hash()
 
         label_dir = tmp_path / config.label
         label_dir.mkdir()
-        _make_result_json(label_dir, 'A', seed=0, hotel_tr=0.1,
+        _make_result_json(label_dir, 'A', seed=0, effect_llr=0.05,
                           extra={'config_hash': ch})
         with patch('glow.benchmark.file.get_path_result', return_value=tmp_path):
             load_update_all(config.label, verbose=False)
@@ -322,12 +322,12 @@ class TestFilterUncached:
         """Results with old config_hash are ignored."""
         config = _make_config(ana_labels=('A',))
         config.n_seed = 1
-        config.hotel_tr_all = np.array([0.1])
+        config.effect_llr_all = np.array([0.05])
         kwargs_list = list(config.iter_kwargs())
 
         label_dir = tmp_path / config.label
         label_dir.mkdir()
-        _make_result_json(label_dir, 'A', seed=0, hotel_tr=0.1,
+        _make_result_json(label_dir, 'A', seed=0, effect_llr=0.05,
                           extra={'config_hash': 'old_stale_hsh'})
         with patch('glow.benchmark.file.get_path_result', return_value=tmp_path):
             load_update_all(config.label, verbose=False)

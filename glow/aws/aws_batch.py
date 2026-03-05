@@ -1088,7 +1088,7 @@ class AWSBatchRunner:
         Args:
             run_id: unique run identifier
             exp_idx: experiment index
-            kwargs: experiment kwargs dict (seed, hotel_tr, etc.)
+            kwargs: experiment kwargs dict (seed, effect_llr, etc.)
         
         Returns:
             job_id: AWS Batch job ID

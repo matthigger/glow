@@ -27,7 +27,7 @@ def plot_compute_time(df):
 
 
 
-def plot_x_vs_metrics(df, x_param='hotel_tr', metrics=['f1', 'sens', 'spec'],
+def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['f1', 'sens', 'spec'],
                       one_vs_rest=False, one_label='GLOW', alpha=.5, ci=90):
     # ensure numeric x + metrics (prevents lexicographic sorts)
     df2 = df.copy()

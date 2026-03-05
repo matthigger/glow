@@ -46,7 +46,7 @@ def _add_gap(pivot, ref_method):
     return pivot, method_cols, gap_col
 
 
-def _run_and_view(source, seed, hotel_tr):
+def _run_and_view(source, seed, effect_llr):
     """Re-run a single experiment and open the viewer with diagnostics."""
     from glow.benchmark.run import _prune_diagnostics_df
     from glow.experiment.prune import (prune, prune_node,
@@ -57,8 +57,8 @@ def _run_and_view(source, seed, hotel_tr):
     config = CONFIG_BY_LABEL[label]
 
     print(f'Building experiment: source={source}, seed={seed}, '
-          f'hotel_tr={hotel_tr:.4f} ...')
-    exp, effect = config.get_exp_eff(seed=int(seed), hotel_tr=float(hotel_tr))
+          f'effect_llr={effect_llr:.4f} ...')
+    exp, effect = config.get_exp_eff(seed=int(seed), effect_llr=float(effect_llr))
 
     _, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
     n_perm_prune = ana_kw.get('n_perm_prune', 100)
@@ -121,7 +121,7 @@ def _load_pivot():
 
     df = pd.concat(frames, ignore_index=True)
     pivot = df.pivot_table(
-        index=['source', 'seed', 'hotel_tr'],
+        index=['source', 'seed', 'effect_llr'],
         columns='label',
         values='f1',
     ).reset_index()
@@ -175,7 +175,7 @@ def main():
     if args.source:
         pivot = pivot[pivot['source'] == args.source].reset_index(drop=True)
 
-    cols = ['source', 'seed', 'hotel_tr'] + method_cols + ['best_other', gap_col]
+    cols = ['source', 'seed', 'effect_llr'] + method_cols + ['best_other', gap_col]
     avail = [c for c in cols if c in pivot.columns]
     with pd.option_context('display.max_rows', None, 'display.width', 160,
                            'display.float_format', '{:.4f}'.format):
@@ -200,11 +200,11 @@ def main():
                                 for m in method_cols if m in row.index)
         print(f'\nRank {rank}: source={row["source"]}, '
               f'seed={int(row["seed"])}, '
-              f'hotel_tr={row["hotel_tr"]:.4f}, '
+              f'effect_llr={row["effect_llr"]:.4f}, '
               f'{method_strs}, '
               f'{gap_col}={row[gap_col]:.4f}')
 
-        _run_and_view(row['source'], row['seed'], row['hotel_tr'])
+        _run_and_view(row['source'], row['seed'], row['effect_llr'])
         rank = None
 
 

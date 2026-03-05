@@ -120,10 +120,10 @@ def _run_demo():
     print(f'  experiment: y.shape={exp.y.shape}')
 
     # impose effect inside sphere
-    hotel_tr = 30.0
-    exp_eff, effect = exp.impose_effect(hotel_tr=hotel_tr, mask=mask_sphere,
+    effect_llr = 2.0
+    exp_eff, effect = exp.impose_effect(effect_llr=effect_llr, mask=mask_sphere,
                                         seed=0)
-    print(f'  imposed hotel_tr={hotel_tr} in sphere')
+    print(f'  imposed effect_llr={effect_llr} in sphere')
 
     # run analysis (serial, small)
     print('  running AnalysisGLOW (n_perm=20) ...')
@@ -183,11 +183,11 @@ def _run_demo2d():
     print(f'  growing ExtenterMinVar extent ({n_effect} pixels, '
           f'{100 * n_effect / num_vox:.1f}% of image) ...')
 
-    hotel_tr = 30.0
-    exp_eff, effect = exp.impose_effect(hotel_tr=hotel_tr, extenter=extenter,
+    effect_llr = 2.0
+    exp_eff, effect = exp.impose_effect(effect_llr=effect_llr, extenter=extenter,
                                         seed=42)
     effect_mask = effect.mask
-    print(f'  imposed hotel_tr={hotel_tr} in {effect_mask.sum()} pixels')
+    print(f'  imposed effect_llr={effect_llr} in {effect_mask.sum()} pixels')
 
     # run analysis
     print('  running AnalysisGLOW (n_perm=20) ...')

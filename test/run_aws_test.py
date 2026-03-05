@@ -330,7 +330,7 @@ def run_batched_cloud_tests():
                 if (i - center[0])**2 + (j - center[1])**2 <= radius**2:
                     mask[i, j] = True
         mask = np.logical_and(mask, exp_orig.mask_idx > -1)
-        exp, _ = exp_orig.impose_effect(mask=mask, hotel_tr=10.0, seed=42)
+        exp, _ = exp_orig.impose_effect(mask=mask, effect_llr=1.0, seed=42)
 
         n_perm = 5
         ana_kwargs = dict(n_perm=n_perm, n_perm_prune=10,
@@ -390,7 +390,7 @@ def run_batched_cloud_tests():
         config_el = Config(
             label='test_experiment_level', source='wgn', run_fnc=run_ana,
             cloud_config=cloud_config, ana_kwargs_dict=ana_kwargs_dict,
-            n_seed=2, hotel_tr_all=np.array([0.5]),
+            n_seed=2, effect_llr_all=np.array([0.2]),
             wgn_shape=(5, 5, 5), wgn_a=2, wgn_b=2, wgn_num_img=20,
             exp_seed=42, effect_perc=0.2, n_jobs=1,
             detail_save=False, error_save=False)
@@ -416,7 +416,7 @@ def run_batched_cloud_tests():
         config_tfce = Config(
             label='test_tfce', source='wgn', run_fnc=run_ana,
             cloud_config=cloud_config, ana_kwargs_dict=ana_kwargs_dict,
-            n_seed=1, hotel_tr_all=np.array([0.5]),
+            n_seed=1, effect_llr_all=np.array([0.2]),
             wgn_shape=(5, 5, 5), wgn_a=2, wgn_b=2, wgn_num_img=20,
             exp_seed=42, effect_perc=0.2, n_jobs=1,
             detail_save=False, error_save=False)
@@ -443,7 +443,7 @@ def run_batched_cloud_tests():
         config_hcp = Config(
             label='test_hcp', source='hcp', run_fnc=run_ana,
             cloud_config=cloud_config, ana_kwargs_dict=ana_kwargs_dict,
-            n_seed=1, hotel_tr_all=np.array([0.5]),
+            n_seed=1, effect_llr_all=np.array([0.2]),
             hcp_feats=['fa'], radius=5,
             effect_perc=0.2, n_jobs=1,
             detail_save=False, error_save=False)

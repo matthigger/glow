@@ -47,7 +47,7 @@ def bench_memory_profile():
         wgn_num_img=10,
         exp_seed=0,
         n_seed=1,
-        hotel_tr_all=np.array([0.1]),
+        effect_llr_all=np.array([0.05]),
         effect_perc=0.2,
         n_jobs=1,
         detail_save=False,
@@ -83,7 +83,7 @@ def bench_memory_profile():
             raise MemoryError("Simulated memory error for testing")
     
     try:
-        run_ana_with_capture(config, seed=0, hotel_tr=0.1)
+        run_ana_with_capture(config, seed=0, effect_llr=0.05)
     except MemoryError as e:
         print(f"\n3. Memory error caught: {e}")
         print("\n4. Generating memory profile...")

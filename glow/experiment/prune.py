@@ -3,28 +3,10 @@ import warnings
 import numpy as np
 
 from glow.experiment.permute import NotEnoughPermutations
-from .mancova import decompose, get_mancova
+from .mancova import decompose, get_mancova, loglik_from_cov
 from .permute import get_perm_iter
 from ..graph import (get_label_map, get_parent, iter_topo, SCGraph,
                      GRAPH_EXCLUDE, dp_antichain)
-
-
-def _loglik_from_cov(cov, n):
-    """Gaussian profile log-likelihood from a covariance matrix.
-
-    Returns -(n/2) * log|det(cov/n)|.  Additive constants (that
-    cancel in all ratios) are omitted.
-
-    Args:
-        cov (np.array): (b, b) un-normalised covariance (e.g. E or E+H)
-        n (int): number of voxels
-
-    Returns:
-        ll (float): profile log-likelihood (higher = better fit)
-    """
-    s, logdet = np.linalg.slogdet(cov / n)
-    assert s != -1, 'covariance not positive semi-definite'
-    return -0.5 * logdet * n
 
 
 def _region_loglik(y, q_tup):
@@ -41,7 +23,7 @@ def _region_loglik(y, q_tup):
         ll (float): profile log-likelihood (higher = better fit)
     """
     e = get_mancova(y=y, q_tup=q_tup)[0]
-    return _loglik_from_cov(e, y.shape[2])
+    return loglik_from_cov(e, y.shape[2])
 
 
 def get_llr(label_map, exp, _q_tup=None, _skip_homo=False):
@@ -192,7 +174,7 @@ def _compute_region_ll(y_region, q_tup):
     """
     e, h, _ = get_mancova(y=y_region, q_tup=q_tup)
     n = y_region.shape[2]
-    return _loglik_from_cov(e, n), _loglik_from_cov(e + h, n)
+    return loglik_from_cov(e, n), loglik_from_cov(e + h, n)
 
 
 def _build_vox_cache(sig_reg_list, children, num_vox):
@@ -443,7 +425,7 @@ def _null_ll_from_stats(ysum, yout, n, q0):
         ll (float): null-model profile log-likelihood
     """
     e_plus_h = yout - ysum @ q0.T @ q0 @ ysum.T / n
-    return _loglik_from_cov(e_plus_h, n)
+    return loglik_from_cov(e_plus_h, n)
 
 
 def _leaf_depths(subgraph, sig_reg_list):

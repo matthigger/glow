@@ -157,3 +157,40 @@ def test_singular_matrix_errors():
 
     with pytest.raises(np.linalg.LinAlgError, match='num_img'):
         get_pillai(e_zero, h_singular)
+
+
+def test_get_llr_fidelity():
+    """New loglik_from_cov-based get_llr matches the original solve+slogdet."""
+    def _get_llr_reference(e, h, n):
+        """Original implementation (solve + slogdet on I + E^{-1}H)."""
+        try:
+            inv_e_h = np.linalg.solve(e, h)
+        except np.linalg.LinAlgError:
+            return np.nan
+        s, logdet = np.linalg.slogdet(np.eye(e.shape[0]) + inv_e_h)
+        if s <= 0:
+            return np.nan
+        return 0.5 * n * logdet
+
+    rng = np.random.default_rng(42)
+    for b in [1, 2, 4]:
+        for _ in range(20):
+            A = rng.standard_normal((b, b))
+            e = A @ A.T + np.eye(b) * 0.1
+            B = rng.standard_normal((b, b))
+            h = B @ B.T
+            n = rng.integers(1, 1000)
+
+            ref = _get_llr_reference(e, h, n)
+            new = get_llr(e, h, n)
+            assert np.isclose(ref, new, rtol=1e-10), \
+                f'b={b}, n={n}: ref={ref}, new={new}'
+
+    # size_normalize=True should equal get_llr(e, h, n=1)
+    A = rng.standard_normal((2, 2))
+    e = A @ A.T + np.eye(2) * 0.1
+    B = rng.standard_normal((2, 2))
+    h = B @ B.T
+    sn = get_llr(e, h, size_normalize=True)
+    ref_sn = _get_llr_reference(e, h, n=1)
+    assert np.isclose(sn, ref_sn, rtol=1e-10)

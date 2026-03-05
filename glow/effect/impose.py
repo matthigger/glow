@@ -3,17 +3,20 @@ import warnings
 import numpy as np
 from scipy.optimize import minimize
 
-from glow.experiment import decompose, get_hotel_tr
+from glow.experiment import decompose, get_llr
 
 
-def compute_offset(x, y, contrast, hotel_tr):
-    """find the smallest offset to y that imposes a given Hotelling's trace.
+def compute_offset(x, y, contrast, effect_llr):
+    """find the smallest offset to y that imposes a given effect strength.
+
+    The target is expressed as size-normalized LLR:
+    (1/2) * ln|det(I + E^{-1}H)|.
 
     Args:
         x (np.array): (a, num_img) design matrix
         y (np.array): (b, num_img, num_vox) image intensities
         contrast (np.array): (a,) boolean, True for features of interest
-        hotel_tr (float): target Hotelling's trace
+        effect_llr (float): target size-normalized log-likelihood ratio
 
     Returns:
         offset (np.array): (b, num_img) constant offset across voxels
@@ -43,10 +46,9 @@ def compute_offset(x, y, contrast, hotel_tr):
         return e, h, sigma_sum
 
     def constraint(alpha):
-        """zero when target Hotelling's trace is achieved."""
+        """zero when target effect strength is achieved."""
         e, h, _ = get_e_h_sigma(alpha)
-        _hotel_tr = get_hotel_tr(e, h)
-        return _hotel_tr - hotel_tr
+        return get_llr(e, h, size_normalize=True) - effect_llr
 
     def obj(alpha):
         r"""squared offset norm: \sum_i alpha_i^2 ||Q_i Y_bar^T||^2."""

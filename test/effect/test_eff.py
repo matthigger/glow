@@ -177,11 +177,11 @@ class TestEffect:
             mask=mask,
             y_mean=y_mean,
             seed=42,
-            hotel_tr=10.5,
+            effect_llr=1,
             custom_attr='test'
         )
         
         # check that extra kwargs are stored
         assert eff.seed == 42
-        assert eff.hotel_tr == 10.5
+        assert eff.effect_llr == 1
         assert eff.custom_attr == 'test'

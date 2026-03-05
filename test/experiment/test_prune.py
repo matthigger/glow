@@ -1,11 +1,11 @@
 from glow.experiment import Experiment
-from glow.experiment.mancova import decompose, get_mancova
+from glow.experiment.mancova import decompose, get_mancova, loglik_from_cov
 from glow.experiment.prune import (
     np, prune, prune_node, prune_tree,
     _region_loglik, _compute_region_ll, _calibrate_lambda,
     _build_vox_cache, _compute_all_ll, _gains_from_ll,
     _cache_sufficient_stats, _null_ll_from_stats, _apply_effect,
-    _leaf_depths, _depth_weights, _loglik_from_cov,
+    _leaf_depths, _depth_weights,
 )
 from glow.graph import SCGraph, GRAPH_EXCLUDE
 
@@ -277,7 +277,7 @@ class TestNullLLFromStats:
     """test _null_ll_from_stats matches the MANCOVA path."""
 
     def test_matches_mancova(self):
-        """_null_ll_from_stats should match _loglik_from_cov(E+H, n)."""
+        """_null_ll_from_stats should match loglik_from_cov(E+H, n)."""
         exp = _make_exp_with_effect()
         q_tup = decompose(exp.x, exp.contrast)
         children = _make_tree_8()
@@ -288,7 +288,7 @@ class TestNullLLFromStats:
         ll_stats = _null_ll_from_stats(ysum, yout, n, q_tup[0])
 
         e, h, _ = get_mancova(y=exp.y[:, :, vox_cache[12]], q_tup=q_tup)
-        ll_mancova = _loglik_from_cov(e + h, n)
+        ll_mancova = loglik_from_cov(e + h, n)
 
         assert np.isclose(ll_stats, ll_mancova), \
             f'stats={ll_stats}, mancova={ll_mancova}'
@@ -307,7 +307,7 @@ class TestNullLLFromStats:
             ll_s = _null_ll_from_stats(ysum, yout, n, q_tup[0])
             e, h, _ = get_mancova(y=exp.y[:, :, vox_cache[node]],
                                   q_tup=q_tup)
-            ll_m = _loglik_from_cov(e + h, n)
+            ll_m = loglik_from_cov(e + h, n)
             assert np.isclose(ll_s, ll_m), \
                 f'node {node}: stats={ll_s}, mancova={ll_m}'
 
@@ -328,7 +328,7 @@ class TestApplyEffect:
 
         # LL_full before adjustment
         e_before = get_mancova(y=exp.y[:, :, vox_cache[8]], q_tup=q_tup)[0]
-        ll_full_8 = _loglik_from_cov(e_before, stats[8][2])
+        ll_full_8 = loglik_from_cov(e_before, stats[8][2])
 
         _apply_effect(8, stats, q_tup, subgraph)
 
