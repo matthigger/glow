@@ -48,6 +48,7 @@ class AWSBatchRunner:
         self.ec2 = boto3.client('ec2', region_name=config.region)
         self._job_memory_tier_index = {}
         self._job_spot_retry_count = {}
+        self._experiment_shapes = {}
 
     @staticmethod
     def _base_job_name(job_name: str) -> str:
@@ -155,6 +156,51 @@ class AWSBatchRunner:
 
         return resubmitted, resubmit_reasons
     
+    def estimate_memory_mb(self, exp_shape, n_perm=None):
+        """Estimate minimum memory for permutation and synthesis workers.
+
+        Args:
+            exp_shape: (b, num_img, num_vox) tuple, or an experiment object
+                       with a ``.y`` attribute.
+            n_perm: number of permutations (needed for synthesis estimate).
+
+        Returns (perm_mb, synth_mb) rounded up to the nearest OOM tier.
+        If the estimate fits within the job-definition default, returns
+        (None, None) so no override is needed.
+        """
+        if hasattr(exp_shape, 'y'):
+            exp_shape = exp_shape.y.shape
+        b, num_img, num_vox = exp_shape
+        bytes_per_float = 8
+
+        # perm worker: exp.y + permuted copy + clustering/stats overhead
+        data_bytes = b * num_img * num_vox * bytes_per_float
+        perm_bytes = int(data_bytes * 3.0)
+
+        # synthesis worker: exp.y + stat matrix + children arrays +
+        # _finalize_analysis working memory (pruning, effect detection)
+        if n_perm is not None:
+            num_reg = num_vox * 2
+            stat_bytes = (n_perm + 1) * num_reg * bytes_per_float
+            children_bytes = (n_perm + 1) * (num_vox - 1) * 2 * bytes_per_float
+            synth_bytes = int((data_bytes + stat_bytes + children_bytes) * 3)
+        else:
+            synth_bytes = perm_bytes
+
+        tiers = self.config.oom_memory_mb_tiers or []
+        default_mb = self.config.memory_mb
+
+        def _pick_tier(est_bytes):
+            est_mb = est_bytes / (1024 * 1024)
+            if est_mb <= default_mb:
+                return None
+            for t in tiers:
+                if t >= est_mb:
+                    return t
+            return tiers[-1] if tiers else None
+
+        return _pick_tier(perm_bytes), _pick_tier(synth_bytes)
+
     def upload_experiment(self, exp, ana_kwargs: Dict[str, Any], 
                          experiment_id: str) -> str:
         """upload experiment data to S3
@@ -167,6 +213,8 @@ class AWSBatchRunner:
         Returns:
             s3_path: path to uploaded experiment data
         """
+        self._experiment_shapes[experiment_id] = exp.y.shape
+
         # prepare data bundle
         data = {
             'exp': exp,
@@ -223,17 +271,24 @@ class AWSBatchRunner:
         
         return completed
     
-    def submit_jobs(self, experiment_id, n_perm, skip_completed=True):
+    def submit_jobs(self, experiment_id, n_perm, skip_completed=True,
+                    memory_mb=None):
         """submit permutation jobs to AWS Batch.
         
         Args:
             experiment_id: experiment identifier
             n_perm: number of permutations (0 to n_perm inclusive)
             skip_completed: skip permutations that already have results
+            memory_mb: override memory per job (None = auto-estimate from
+                       experiment dimensions, or job definition default)
         
         Returns:
             submission_info dict with job_ids and metadata
         """
+        if memory_mb is None and experiment_id in self._experiment_shapes:
+            memory_mb, _ = self.estimate_memory_mb(
+                self._experiment_shapes[experiment_id], n_perm)
+
         # check which permutations are already done
         completed = set()
         if skip_completed:
@@ -265,10 +320,6 @@ class AWSBatchRunner:
             job_name = f'{experiment_id}_perm_{perm_idx}'
             
             try:
-                # build container overrides
-                # note: vcpus/memory are NOT included for EC2 job definitions
-                # they are set in the job definition itself
-                # for fargate, use resourceRequirements instead
                 overrides = {
                     'command': [
                         '--data-path', data_path,
@@ -278,6 +329,11 @@ class AWSBatchRunner:
                         '--experiment-id', experiment_id
                     ]
                 }
+                if memory_mb is not None:
+                    overrides['resourceRequirements'] = [
+                        {'type': 'VCPU', 'value': str(self.config.vcpus)},
+                        {'type': 'MEMORY', 'value': str(memory_mb)},
+                    ]
                 
                 response = self.batch.submit_job(
                     jobName=job_name,
@@ -288,10 +344,19 @@ class AWSBatchRunner:
                     timeout={'attemptDurationSeconds': self.config.timeout_minutes * 60}
                 )
                 job_ids.append(response['jobId'])
+                if memory_mb is not None:
+                    tiers = self.config.oom_memory_mb_tiers or []
+                    for idx, t in enumerate(tiers):
+                        if t >= memory_mb:
+                            self._job_memory_tier_index[job_name] = idx
+                            break
             except ClientError as e:
                 print(f'error submitting job for perm {perm_idx}: {e}')
         
-        print(f'submitted {len(job_ids)} jobs')
+        if memory_mb is not None:
+            print(f'submitted {len(job_ids)} jobs (memory: {memory_mb} MB)')
+        else:
+            print(f'submitted {len(job_ids)} jobs')
         
         return {
             'n_jobs': n_jobs,
@@ -300,7 +365,7 @@ class AWSBatchRunner:
             'skipped': list(completed)
         }
     
-    def submit_synthesis_job(self, experiment_id, n_perm):
+    def submit_synthesis_job(self, experiment_id, n_perm, memory_mb=None):
         """Submit a synthesis job that polls S3 for permutation results.
 
         The synthesis worker waits until all permutation result files appear
@@ -310,6 +375,9 @@ class AWSBatchRunner:
         Returns:
             synthesis job ID (str)
         """
+        if memory_mb is None and experiment_id in self._experiment_shapes:
+            _, memory_mb = self.estimate_memory_mb(
+                self._experiment_shapes[experiment_id], n_perm)
         job_name = f'{experiment_id}_synthesis'
         overrides = {
             'command': [
@@ -320,6 +388,11 @@ class AWSBatchRunner:
                 '--s3-prefix', self.config.s3_prefix,
             ]
         }
+        if memory_mb is not None:
+            overrides['resourceRequirements'] = [
+                {'type': 'VCPU', 'value': str(self.config.vcpus)},
+                {'type': 'MEMORY', 'value': str(memory_mb)},
+            ]
 
         try:
             response = self.batch.submit_job(
@@ -330,7 +403,14 @@ class AWSBatchRunner:
                 retryStrategy={'attempts': 1},
                 timeout={'attemptDurationSeconds': self.config.timeout_minutes * 60},
             )
-            print(f'submitted synthesis job: {response["jobId"][:12]}...')
+            mem_str = f' (memory: {memory_mb} MB)' if memory_mb else ''
+            print(f'submitted synthesis job: {response["jobId"][:12]}...{mem_str}')
+            if memory_mb is not None:
+                tiers = self.config.oom_memory_mb_tiers or []
+                for idx, t in enumerate(tiers):
+                    if t >= memory_mb:
+                        self._job_memory_tier_index[job_name] = idx
+                        break
             return response['jobId']
         except ClientError as e:
             raise RuntimeError(f'failed to submit synthesis job: {e}')

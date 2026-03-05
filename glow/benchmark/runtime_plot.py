@@ -64,7 +64,12 @@ def plot_runtime(rows, pdf_path: Path):
             ax.plot(voxels, synth, marker='s', markersize=4, linewidth=1.0,
                     color=palette[1], zorder=3, label='synthesis',
                     linestyle='--')
-            ax.legend(loc='upper left', fontsize=8)
+
+        wall = perm_hi + synth
+        ax.plot(voxels, wall, marker='^', markersize=5, linewidth=1.0,
+                color=palette[2], zorder=3, label='wall clock',
+                linestyle=':')
+        ax.legend(loc='upper left', fontsize=8)
     else:
         minutes = np.array([r['elapsed_min'] for r in rows])[order]
         ax.plot(voxels, minutes, marker='o', markersize=6, linewidth=1.5,
