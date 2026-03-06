@@ -15,6 +15,7 @@ Usage::
 import argparse
 import configparser
 import json
+import shutil
 from pathlib import Path
 from uuid import uuid4
 
@@ -168,6 +169,15 @@ def main():
 
     base = Path(user_data_dir('glow', 'glow_author'))
     out_dir = base / 'results' / 'runtime_hcp' / 'out'
+
+    existing = list(out_dir.glob('*_result.json')) if out_dir.exists() else []
+    if existing:
+        resp = input(f'\n  {len(existing)} previous result files in {out_dir}\n'
+                     f'  Delete them? [y/N] ').strip().lower()
+        if resp == 'y':
+            shutil.rmtree(out_dir)
+            print(f'  Cleared {len(existing)} files.')
+
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ana_kwargs = _ana_kwargs(n_perm)
