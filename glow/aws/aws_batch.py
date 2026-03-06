@@ -28,8 +28,8 @@ class CloudConfig:
     retry_attempts: int = 3
     shared_exp_sources: List[str] = field(default_factory=lambda: ['hcp'])
     oom_memory_mb_tiers: List[int] = field(
-        default_factory=lambda: [2000, 4000, 8000, 16000]
-    )  # 2 -> 4 -> 8 -> 16 GB on OOM; hard error above 16 GB
+        default_factory=lambda: [4000, 8000, 16000]
+    )  # 4 -> 8 -> 16 GB on OOM; hard error above 16 GB
     max_spot_retries: int = 3  # max resubmissions per job due to spot reclamation
     
     def to_dict(self):

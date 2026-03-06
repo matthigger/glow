@@ -34,5 +34,7 @@ at that resolution.  For values `b>1`, just divide the table entries above by `b
 
 ## OOM tier escalation
 
-Default tiers: **2 GB → 4 GB → 8 GB → 16 GB**.  If a job exceeds the
-16 GB ceiling, a `MemoryError` is raised and the run is stopped.
+Jobs start at the **2 GB** default (1 vCPU : 2 GiB on AWS compute
+instances).  OOM retries escalate through **4 GB → 8 GB → 16 GB**.
+If a job exceeds the 16 GB ceiling, a `MemoryError` is raised and the
+run is stopped.

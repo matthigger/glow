@@ -551,7 +551,7 @@ class TestResubmitOom:
         assert call_kw['jobName'] == 'exp_00_retry0'
         resources = call_kw['containerOverrides']['resourceRequirements']
         mem = next(r['value'] for r in resources if r['type'] == 'MEMORY')
-        assert mem == '2000'
+        assert mem == '4000'
         assert 'new-j1' in info_map
 
     def test_missing_command_skipped(self):
@@ -580,15 +580,14 @@ class TestResubmitOom:
         assert reasons.get('j4') == 'oom'
 
     def test_tier_escalation(self):
-        """default (2 GB) -> 2 GB -> 4 GB -> 8 GB -> 16 GB -> MemoryError."""
+        """default (2 GB) -> 4 GB -> 8 GB -> 16 GB -> MemoryError."""
         runner = _make_runner()
         runner.batch = MagicMock()
 
         expected_tiers = [
-            ('j1', 'exp_06', 0, '2000'),
-            ('r1', 'exp_06_retry0', 1, '4000'),
-            ('r2', 'exp_06_retry1', 2, '8000'),
-            ('r3', 'exp_06_retry2', 3, '16000'),
+            ('j1', 'exp_06', 0, '4000'),
+            ('r1', 'exp_06_retry0', 1, '8000'),
+            ('r2', 'exp_06_retry1', 2, '16000'),
         ]
         for job_id, job_name, expected_idx, expected_mem in expected_tiers:
             runner.batch.submit_job.return_value = {'jobId': f'new-{job_id}'}
@@ -603,9 +602,9 @@ class TestResubmitOom:
                 if r['type'] == 'MEMORY')
             assert mem == expected_mem
 
-        # fifth attempt: raises MemoryError
+        # fourth attempt: raises MemoryError
         runner.batch.submit_job.reset_mock()
         with pytest.raises(MemoryError, match='FATAL OOM'):
             runner._resubmit_failed_jobs(
-                [{'jobId': 'r4', 'jobName': 'exp_06_retry3',
+                [{'jobId': 'r3', 'jobName': 'exp_06_retry2',
                   'container': {'exitCode': 137, 'command': ['--test']}}], {})
