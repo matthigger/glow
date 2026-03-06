@@ -13,46 +13,6 @@ import psutil
 import tracemalloc
 
 
-class S3Checkpoint:
-    """Persist and resume partial AnalysisGLOW state via S3."""
-
-    def __init__(self, s3_client, bucket, key):
-        self._s3 = s3_client
-        self._bucket = bucket
-        self._key = key
-
-    def load(self):
-        """Return saved state dict or None if no checkpoint exists."""
-        try:
-            response = self._s3.get_object(Bucket=self._bucket, Key=self._key)
-            state = pickle.loads(response['Body'].read())
-            print(f'  checkpoint loaded: s3://{self._bucket}/{self._key}')
-            return state
-        except ClientError:
-            return None
-
-    def save(self, child_dict, stat, perm_idx):
-        """Upload current permutation state to S3."""
-        state = {
-            'child_dict': child_dict,
-            'stat': stat,
-            'last_perm_idx': perm_idx,
-        }
-        self._s3.put_object(
-            Bucket=self._bucket,
-            Key=self._key,
-            Body=pickle.dumps(state),
-        )
-        print(f'  checkpoint saved (perm {perm_idx})')
-
-    def delete(self):
-        """Remove checkpoint from S3 after successful completion."""
-        try:
-            self._s3.delete_object(Bucket=self._bucket, Key=self._key)
-        except ClientError:
-            pass
-
-
 def get_array_info(obj, prefix='', visited=None, max_depth=5, depth=0):
     """recursively find all numpy arrays in an object and return their info."""
     if visited is None:
@@ -189,33 +149,31 @@ def print_memory_profile(config=None, exp=None, ana=None):
 
 
 def process_permutation(exp, ana_kwargs, perm_idx):
-    """process a single permutation and return children + stat.
-    """
+    """process a single permutation and return children + stat + size."""
     from glow.experiment.cluster import cluster
     from glow.experiment.mancova import get_llr
-    
+
     get_stat = ana_kwargs.get('get_stat', get_llr)
-    
-    # permute experiment
+
     _exp = exp.permute(perm_idx)
-    
-    # cluster
     children = cluster(exp=_exp)
-    
-    # compute stats
+
     b, num_img, num_vox = _exp.y.shape
-    num_reg = num_vox + children.shape[0]
-    
+
     stat = []
     import glow.graph
     for reg_idx, size, e, h in glow.graph.iter_stat(exp=_exp, children=children, n_perm=None):
         stat_val = get_stat(e=e[:, :, 0], h=h[:, :, 0], n=size)
         stat.append(stat_val)
-    
+
+    size = glow.graph.node_sum(x=np.ones(num_vox, dtype=int),
+                               children=children)
+
     return {
         'perm_idx': perm_idx,
         'children': children,
-        'stat': stat
+        'stat': stat,
+        'size': size,
     }
 
 
@@ -347,18 +305,10 @@ def run_experiment_mode(args):
     print(f'  Analyses: {len(config.ana_kwargs_dict) if hasattr(config, "ana_kwargs_dict") and config.ana_kwargs_dict else "N/A"}')
     
     if hasattr(config, 'ana_kwargs_dict') and config.ana_kwargs_dict:
-        import glow.experiment
         for label, (Ana, ana_kwargs) in config.ana_kwargs_dict.items():
             if 'n_jobs_perm' in ana_kwargs:
                 ana_kwargs['n_jobs_perm'] = 1
                 print(f'  Setting n_jobs_perm=1 for {label}')
-            # inject S3 checkpoint for AnalysisGLOW analyses
-            if Ana is glow.experiment.AnalysisGLOW:
-                ckpt_key = (f'{args.s3_prefix}/{args.run_id}/checkpoints/'
-                            f'{args.exp_idx:06d}_{label}.pkl')
-                ana_kwargs['checkpoint'] = S3Checkpoint(s3, args.s3_bucket,
-                                                       ckpt_key)
-                print(f'  Checkpoint enabled for {label}')
     
     # run experiment with memory profiling on error
     try:
@@ -470,36 +420,12 @@ def run_synthesis_mode(args):
             break
         time.sleep(30)
 
-    # download and reconstruct
-    print(f'\nLoading permutation results...')
+    # --- streaming synthesis: two passes over S3 results ---
+    from glow.experiment.analysis import _STAT_MODEL, _DEFAULT_MODEL
+
     b, num_img, num_vox = exp.y.shape
-    child_dict = {}
-    stat = None
-    perm_elapsed = []
-
-    for perm_idx in range(n_expected):
-        key = f'{result_prefix}{perm_idx:06d}_result.pkl'
-        response = s3.get_object(Bucket=args.s3_bucket, Key=key)
-        result = pickle.loads(response['Body'].read())
-        child_dict[perm_idx] = result['children']
-        perm_elapsed.append(result.get('elapsed_sec'))
-        if stat is None:
-            num_reg = num_vox + result['children'].shape[0]
-            stat = np.full((n_expected, num_reg), fill_value=-1.0)
-        stat[perm_idx, :] = result['stat']
-
-    print(f'  ✓ Loaded {n_expected} permutation results')
-
-    # build a shell AnalysisGLOW and run _finalize_analysis
     get_stat = ana_kwargs.get('get_stat', get_llr)
-    ana = object.__new__(AnalysisGLOW)
-    ana.exp = exp
-    ana.get_stat = get_stat
-    ana.n_jobs_perm = 1
-    ana.verbose = True
-    ana.child_dict = child_dict
-    ana.stat = stat
-
+    model = _STAT_MODEL.get(get_stat, _DEFAULT_MODEL)
     n_perm_prune = ana_kwargs.get('n_perm_prune', 100)
     alpha_fwer = ana_kwargs.get('alpha_fwer', 0.05)
     alpha_prune = ana_kwargs.get('alpha_prune', 0.05)
@@ -507,11 +433,85 @@ def run_synthesis_mode(args):
     prune_method = ana_kwargs.get('prune_method', 'node')
     prune_geom_exp_eff = ana_kwargs.get('prune_geom_exp_eff', None)
 
-    print(f'\nRunning _finalize_analysis...')
+    def _load_result(perm_idx):
+        key = f'{result_prefix}{perm_idx:06d}_result.pkl'
+        response = s3.get_object(Bucket=args.s3_bucket, Key=key)
+        return pickle.loads(response['Body'].read())
+
+    # load observed (perm 0) — kept permanently
+    print(f'\nPass 1: fitting size regression ({model}) ...')
+    r0 = _load_result(0)
+    stat_0 = np.asarray(r0['stat'], dtype=float)
+    children_0 = r0['children']
+    size_0 = (np.asarray(r0['size'], dtype=float) if 'size' in r0
+              else glow.graph.node_sum(np.ones(num_vox, dtype=int),
+                                       children_0).astype(float))
+    perm_elapsed = [r0.get('elapsed_sec')]
+
+    XtX, Xty = None, None
+    for perm_idx in range(1, n_expected):
+        r = _load_result(perm_idx)
+        stat_p = np.asarray(r['stat'], dtype=float)
+        size_p = (np.asarray(r['size'], dtype=float) if 'size' in r
+                  else glow.graph.node_sum(np.ones(num_vox, dtype=int),
+                                           r['children']).astype(float))
+        perm_elapsed.append(r.get('elapsed_sec'))
+        XtX, Xty = AnalysisGLOW.accumulate_regression(
+            size_p, stat_p, model, XtX, Xty)
+        del r, stat_p, size_p
+
+    mu_fn, _, beta = AnalysisGLOW.fit_size_regression_online(
+        XtX, Xty, model, get_stat)
+    if model == 'sqrt':
+        print(f'  stat = {beta[0]:+.4f} {beta[1]:+.6f}*sqrt(size)')
+    else:
+        print(f'  ln(stat) = {beta[0]:+.4f} {beta[1]:+.4f}*ln(size)')
+
+    # pass 2: compute adjusted max-stat per permutation
+    print(f'Pass 2: computing FWER max-stats ...')
+    reg_active = size_0 >= min_size
+    stat_max_list = []
+
+    adj_0 = stat_0 - mu_fn(size_0)
+    adj_0 = np.nan_to_num(adj_0, nan=0.0, posinf=0.0, neginf=-30.0)
+    if reg_active.any():
+        stat_max_list.append(float(np.nanmax(adj_0[reg_active])))
+    else:
+        stat_max_list.append(float('-inf'))
+
+    for perm_idx in range(1, n_expected):
+        r = _load_result(perm_idx)
+        stat_p = np.asarray(r['stat'], dtype=float)
+        size_p = (np.asarray(r['size'], dtype=float) if 'size' in r
+                  else glow.graph.node_sum(np.ones(num_vox, dtype=int),
+                                           r['children']).astype(float))
+        adj_p = stat_p - mu_fn(size_p)
+        adj_p = np.nan_to_num(adj_p, nan=0.0, posinf=0.0, neginf=-30.0)
+        if reg_active.any():
+            stat_max_list.append(float(np.nanmax(adj_p[reg_active])))
+        else:
+            stat_max_list.append(float('-inf'))
+        del r, stat_p, size_p, adj_p
+
+    stat_max_sorted = np.sort(stat_max_list)
+    print(f'  ✓ {n_expected} max-stats collected')
+
+    # build analysis shell and run streaming finalization
+    ana = object.__new__(AnalysisGLOW)
+    ana.exp = exp
+    ana.get_stat = get_stat
+    ana.n_jobs_perm = 1
+    ana.verbose = True
+    ana.adj_model = model
+    ana.adj_beta = beta
+
+    print(f'\nRunning _finalize_analysis ...')
     _t0 = time.time()
     ana._finalize_analysis(
-        exp, args.n_perm, n_perm_prune,
-        alpha_fwer, alpha_prune, min_size,
+        exp, args.n_perm,
+        stat_0, size_0, children_0,
+        mu_fn, stat_max_sorted,
+        n_perm_prune, alpha_fwer, alpha_prune, min_size,
         prune_method=prune_method,
         prune_geom_exp_eff=prune_geom_exp_eff)
     ana.synthesis_elapsed_sec = time.time() - _t0

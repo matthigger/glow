@@ -1,4 +1,8 @@
+import pickle
+import shutil
+import tempfile
 from bisect import bisect_left
+from pathlib import Path
 
 import numpy as np
 from joblib import Parallel, delayed
@@ -214,18 +218,21 @@ class AnalysisVBA(Analysis):
 class AnalysisGLOW(Analysis):
     """search a hierarchical segmentation for significant effects.
 
-    Attributes:
-        child_dict (dict): perm_idx -> (num_node, 2) children array
-        stat (np.array): (n_perm + 1, num_reg) raw test statistics
-        size (np.array): (n_perm + 1, num_reg) voxel count per region
-    """
+    Uses a disk-backed streaming pipeline: each permutation result is
+    written to a temp directory, regression is accumulated online, and
+    finalization reads the results in a single sweep.
 
-    # how often to persist a checkpoint (every N permutations)
-    _CHECKPOINT_INTERVAL = 25
+    Attributes:
+        child_dict (dict): {0: children_0} — observed-permutation children
+        stat_0 (np.array): (num_reg,) raw test statistics for observed
+        size_0 (np.array): (num_reg,) region sizes for observed
+        pval (np.array): (num_reg,) FWER-controlled p-values
+        effect_list (list): discovered Effect objects
+    """
 
     def __init__(self, exp, n_perm, n_perm_prune=100,
                  alpha_fwer=.05, alpha_prune=.05, min_size=1, verbose=False,
-                 n_jobs_perm=1, cloud_config=None, checkpoint=None,
+                 n_jobs_perm=1, cloud_config=None, perm_dir=None,
                  prune_method='node', prune_geom_exp_eff=None, **kwargs):
         """
         Args:
@@ -238,10 +245,14 @@ class AnalysisGLOW(Analysis):
                 homogeneity and node-gain calibration)
             min_size: Minimum region size
             verbose: Print progress
-            n_jobs_perm: Number of parallel jobs for permutations (1=serial, -1=all cores)
-            cloud_config: CloudConfig for AWS execution (if None, runs locally)
-            checkpoint: optional object with load/save/delete methods for
-                resuming interrupted runs. only used in the serial path.
+            n_jobs_perm: Number of parallel jobs for permutations
+                (1=serial, -1=all cores)
+            cloud_config: CloudConfig for AWS execution (if None, runs
+                locally)
+            perm_dir: path for permutation result files.  If provided,
+                results are kept on disk for post-hoc inspection; if
+                None a temp directory is created and cleaned up.
+                Existing results in the directory are reused (resume).
             prune_method: 'node' for per-node-LLR DP pruning (default),
                 'homo' for homogeneity-test pruning, 'tree' for greedy
                 tree-wide adjusted-likelihood pruning, 'tree_dp' for
@@ -254,7 +265,6 @@ class AnalysisGLOW(Analysis):
         super().__init__(exp, **kwargs)
         self.verbose = verbose
 
-        # check if running on cloud
         if cloud_config is not None:
             self._run_on_cloud(exp, n_perm, n_perm_prune,
                               alpha_fwer, alpha_prune, min_size, verbose,
@@ -264,83 +274,139 @@ class AnalysisGLOW(Analysis):
                               **kwargs)
             return
 
-        # constants
         b, num_img, num_vox = exp.y.shape
-        k = count_components(exp.mask_idx)
-        num_reg = 2 * num_vox - k
+        model = _STAT_MODEL.get(self.get_stat, _DEFAULT_MODEL)
 
-        # build hierarchy per permutation, compute stat per region
-        self.child_dict = dict()
-        self.stat = np.full((n_perm + 1, num_reg),
-                            fill_value=-1.0)
-
-        # try to resume from checkpoint
-        start_perm = 0
-        if checkpoint is not None:
-            resume = checkpoint.load()
-            if resume is not None:
-                self.child_dict = resume['child_dict']
-                self.stat = resume['stat']
-                start_perm = resume['last_perm_idx'] + 1
-                if verbose:
-                    print(f'  resumed from checkpoint (perm {start_perm}/{n_perm + 1})')
-        
-        # helper function for single permutation (for parallelization)
-        def process_permutation(perm_idx):
-            """Process one permutation: cluster and compute stats."""
-            # permute data (get one permutation of experiment)
-            _exp = exp.permute(perm_idx)
-
-            # build hierarchical segmentation
-            children = cluster(exp=_exp)
-
-            # build stat for each region in hierarchy
-            stat_row = self.get_stat_perm(exp=_exp, children=children)
-            
-            # free memory immediately
-            del _exp
-            
-            return perm_idx, children, stat_row
-        
-        # run permutations (parallel or serial)
-        if verbose:
-            print(f'  [1/4] clustering {n_perm + 1 - start_perm} '
-                  f'permutations ({num_vox} voxels, {num_reg} regions) ...')
-        if n_jobs_perm not in (0, 1):
-            # parallel execution (no checkpointing support)
-            results = Parallel(n_jobs=n_jobs_perm, verbose=10 if verbose else 0)(
-                delayed(process_permutation)(perm_idx)
-                for perm_idx in range(n_perm + 1)
-            )
-            # collect results
-            for perm_idx, children, stat_row in results:
-                self.child_dict[perm_idx] = children
-                self.stat[perm_idx, :] = stat_row
+        # set up directory for per-permutation result files
+        _cleanup_dir = perm_dir is None
+        if perm_dir is None:
+            perm_dir = Path(tempfile.mkdtemp(prefix='glow_perm_'))
         else:
-            # serial execution with progress bar
-            remaining = n_perm + 1 - start_perm
-            tqdm_dict = dict(total=remaining,
-                           desc='clustering per permutation',
-                           disable=not verbose)
-            for perm_idx in tqdm(range(start_perm, n_perm + 1), **tqdm_dict):
-                _, children, stat_row = process_permutation(perm_idx)
-                self.child_dict[perm_idx] = children
-                self.stat[perm_idx, :] = stat_row
+            perm_dir = Path(perm_dir)
+            perm_dir.mkdir(parents=True, exist_ok=True)
 
-                # periodic checkpoint
-                if (checkpoint is not None
-                        and (perm_idx + 1) % self._CHECKPOINT_INTERVAL == 0):
-                    checkpoint.save(self.child_dict, self.stat, perm_idx)
+        # scan for existing results (resume support)
+        existing = set()
+        XtX, Xty = None, None
+        for f in sorted(perm_dir.glob('*_result.pkl')):
+            try:
+                perm_idx = int(f.name.split('_')[0])
+            except ValueError:
+                continue
+            existing.add(perm_idx)
+            if perm_idx > 0:
+                with open(f, 'rb') as fh:
+                    r = pickle.load(fh)
+                XtX, Xty = self.accumulate_regression(
+                    r['size'], r['stat'], model, XtX, Xty)
+                del r
 
-        # clean up checkpoint now that all permutations are done
-        if checkpoint is not None:
-            checkpoint.delete()
+        todo = [i for i in range(n_perm + 1) if i not in existing]
+        if existing and verbose:
+            print(f'  resumed: {len(existing)} permutations found on disk, '
+                  f'{len(todo)} remaining')
 
-        # finalize analysis (common to local and cloud execution)
-        self._finalize_analysis(exp, n_perm, n_perm_prune,
-                               alpha_fwer, alpha_prune, min_size,
-                               prune_method=prune_method,
-                               prune_geom_exp_eff=prune_geom_exp_eff)
+        if verbose:
+            print(f'  [1/3] clustering {len(todo)} permutations '
+                  f'({num_vox} voxels) ...')
+
+        if n_jobs_perm not in (0, 1) and todo:
+            results = Parallel(
+                n_jobs=n_jobs_perm,
+                verbose=10 if verbose else 0,
+            )(delayed(self._process_permutation)(exp, perm_idx)
+              for perm_idx in todo)
+            for r in results:
+                p = r['perm_idx']
+                with open(perm_dir / f'{p:06d}_result.pkl', 'wb') as fh:
+                    pickle.dump(r, fh)
+                if p > 0:
+                    XtX, Xty = self.accumulate_regression(
+                        r['size'], r['stat'], model, XtX, Xty)
+                del r
+        else:
+            for perm_idx in tqdm(todo, desc='permutations',
+                                 disable=not verbose):
+                r = self._process_permutation(exp, perm_idx)
+                with open(perm_dir / f'{r["perm_idx"]:06d}_result.pkl',
+                          'wb') as fh:
+                    pickle.dump(r, fh)
+                if perm_idx > 0:
+                    XtX, Xty = self.accumulate_regression(
+                        r['size'], r['stat'], model, XtX, Xty)
+                del r
+
+        # fit regression from accumulated sufficient statistics
+        if verbose:
+            print(f'  [2/3] fitting size model ({model}) ...')
+        mu_fn, _, beta = self.fit_size_regression_online(
+            XtX, Xty, model, self.get_stat)
+        self.adj_model = model
+        self.adj_beta = beta
+
+        # load observed (perm 0) — kept permanently
+        with open(perm_dir / f'{0:06d}_result.pkl', 'rb') as fh:
+            r0 = pickle.load(fh)
+        stat_0 = np.asarray(r0['stat'], dtype=float)
+        size_0 = np.asarray(r0['size'], dtype=float)
+        children_0 = r0['children']
+        del r0
+
+        # pass 2: sweep temp files for adjusted max-stats
+        if verbose:
+            print(f'  [3/3] computing FWER p-values + pruning ...')
+        reg_active = size_0 >= min_size
+        stat_max_list = []
+        for perm_idx in range(n_perm + 1):
+            with open(perm_dir / f'{perm_idx:06d}_result.pkl', 'rb') as fh:
+                r = pickle.load(fh)
+            adj = (np.asarray(r['stat'], dtype=float)
+                   - mu_fn(np.asarray(r['size'], dtype=float)))
+            adj = np.nan_to_num(adj, nan=0.0, posinf=0.0, neginf=-30.0)
+            stat_max_list.append(
+                float(np.nanmax(adj[reg_active])) if reg_active.any()
+                else float('-inf'))
+            del r, adj
+        stat_max_sorted = np.sort(stat_max_list)
+
+        self._finalize_analysis(
+            exp, n_perm, stat_0, size_0, children_0,
+            mu_fn, stat_max_sorted,
+            n_perm_prune, alpha_fwer, alpha_prune, min_size,
+            prune_method=prune_method,
+            prune_geom_exp_eff=prune_geom_exp_eff)
+
+        if _cleanup_dir:
+            shutil.rmtree(perm_dir, ignore_errors=True)
+
+    def _process_permutation(self, exp, perm_idx):
+        """Run one permutation: cluster, compute stats and sizes."""
+        _exp = exp.permute(perm_idx)
+        children = cluster(exp=_exp)
+        stat_row = self.get_stat_perm(exp=_exp, children=children)
+        num_vox = _exp.y.shape[2]
+        size = glow.graph.node_sum(np.ones(num_vox, dtype=int), children)
+        del _exp
+        return {
+            'perm_idx': perm_idx,
+            'children': children,
+            'stat': stat_row.ravel(),
+            'size': size,
+        }
+
+    @classmethod
+    def rerun_permutation(cls, exp, perm_idx, get_stat=get_llr):
+        """Re-run a single permutation for inspection.
+
+        Since permutations are deterministic given ``perm_idx``, this
+        faithfully reproduces the result without needing stored data.
+
+        Returns:
+            dict with keys ``perm_idx``, ``children``, ``stat``, ``size``
+        """
+        ana = object.__new__(cls)
+        ana.get_stat = get_stat
+        return ana._process_permutation(exp, perm_idx)
 
     @staticmethod
     def _wls_fit(X, y, w):
@@ -369,160 +435,151 @@ class AnalysisGLOW(Analysis):
         else:
             raise ValueError(f'Unknown model: {model}')
 
-    def _fit_size_regression(self, verbose=False):
-        """Fit a mean model E[stat | size, H0] on permutation (null) data.
+    @classmethod
+    def fit_size_regression_online(cls, XtX, Xty, model, get_stat=None):
+        """Fit size regression from pre-accumulated sufficient statistics.
 
-        The model type is chosen based on self.get_stat:
-          - LLR, neg_wilks  -> sqrt:      stat = a + b * sqrt(size)
-          - others          -> power_law: ln(stat) = a + b * ln(size)
-
-        Stores self.adj_model (str) and self.adj_beta (array).
+        Args:
+            XtX: (2, 2) accumulated X^T X matrix
+            Xty: (2,) accumulated X^T y vector
+            model: 'sqrt' or 'power_law'
+            get_stat: stat function (stored on result for predict_null_mean)
 
         Returns:
             mu_fn: callable(size_array) -> predicted E[stat | H0]
+            model: model name
+            beta: regression coefficients
         """
-        sizes = self.size[1:, :].ravel().astype(float)
-        stats = self.stat[1:, :].ravel().astype(float)
-        model = _STAT_MODEL.get(self.get_stat, _DEFAULT_MODEL)
+        beta, _, _, _ = np.linalg.lstsq(XtX, Xty, rcond=None)
+        def mu_fn(sz, _m=model, _b=beta):
+            return cls.predict_null_mean(sz, _m, _b)
+        return mu_fn, model, beta
+
+    @staticmethod
+    def accumulate_regression(size, stat, model, XtX=None, Xty=None):
+        """Accumulate OLS sufficient statistics from one permutation row.
+
+        Args:
+            size: (num_reg,) region sizes for this permutation
+            stat: (num_reg,) stat values for this permutation
+            model: 'sqrt' or 'power_law'
+            XtX: running (2, 2) matrix (None to initialize)
+            Xty: running (2,) vector (None to initialize)
+
+        Returns:
+            XtX, Xty: updated sufficient statistics
+        """
+        s = np.asarray(size, dtype=float)
+        y = np.asarray(stat, dtype=float)
 
         if model == 'sqrt':
-            valid = np.isfinite(stats) & (sizes > 0) & np.isfinite(sizes)
-            s, y = sizes[valid], stats[valid]
-            X = np.column_stack([np.ones(len(s)), np.sqrt(s)])
-            beta, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
-            if verbose:
-                print(f'    sqrt: stat = {beta[0]:+.4f} '
-                      f'{beta[1]:+.6f}*sqrt(size)')
+            valid = np.isfinite(y) & (s > 0) & np.isfinite(s)
+            x1 = np.sqrt(s[valid])
+            yv = y[valid]
         else:
-            valid = (np.isfinite(stats) & (stats > 0)
-                     & (sizes > 0) & np.isfinite(sizes))
-            s, y = sizes[valid], stats[valid]
-            X = np.column_stack([np.ones(len(s)), np.log(s)])
-            beta, _, _, _ = np.linalg.lstsq(X, np.log(y), rcond=None)
-            if verbose:
-                print(f'    power_law: ln(stat) = {beta[0]:+.4f} '
-                      f'{beta[1]:+.4f}*ln(size)')
+            valid = np.isfinite(y) & (y > 0) & (s > 0) & np.isfinite(s)
+            x1 = np.log(s[valid])
+            yv = np.log(y[valid])
 
-        self.adj_model = model
-        self.adj_beta = beta
+        x0 = np.ones(x1.shape[0])
+        if XtX is None:
+            XtX = np.zeros((2, 2))
+            Xty = np.zeros(2)
+        XtX[0, 0] += x0 @ x0
+        XtX[0, 1] += x0 @ x1
+        XtX[1, 0] += x0 @ x1
+        XtX[1, 1] += x1 @ x1
+        Xty[0] += x0 @ yv
+        Xty[1] += x1 @ yv
+        return XtX, Xty
 
-        def mu_fn(sz, _m=model, _b=beta):
-            return AnalysisGLOW.predict_null_mean(sz, _m, _b)
-
-        return mu_fn
-
-    def _finalize_analysis(self, exp, n_perm, n_perm_prune,
-                          alpha_fwer, alpha_prune, min_size,
-                          prune_method='node', prune_geom_exp_eff=None):
-        """post-process: size-regression adjustment, FWER p-values, prune."""
+    def _finalize_analysis(self, exp, n_perm,
+                          stat_0, size_0, children_0,
+                          mu_fn, stat_max_sorted,
+                          n_perm_prune, alpha_fwer, alpha_prune,
+                          min_size, prune_method='node',
+                          prune_geom_exp_eff=None):
+        """Finalize: compute p-values from max-stat distribution, prune."""
         verbose = getattr(self, 'verbose', False)
-        b, num_img, num_vox = exp.y.shape
-        num_reg = num_vox + self.child_dict[0].shape[0]
+        num_reg = stat_0.shape[0]
 
-        # compute sizes of each region (needed before regression)
-        self.size = np.empty((n_perm + 1, num_reg))
-        for perm_idx, children in self.child_dict.items():
-            self.size[perm_idx, :] = glow.graph.node_sum(x=np.ones(num_vox,
-                                                                   dtype=int),
-                                                         children=children)
+        llr_adjusted_0 = stat_0 - mu_fn(size_0.astype(float))
+        llr_adjusted_0 = np.nan_to_num(llr_adjusted_0, nan=0.0,
+                                        posinf=0.0, neginf=-30.0)
 
-        # fit size-regression model on null (permuted) data
-        if verbose:
-            model = _STAT_MODEL.get(self.get_stat, _DEFAULT_MODEL)
-            print(f'  [2/4] fitting size model ({model}, '
-                  f'{n_perm} permutations) ...')
-        mu_fn = self._fit_size_regression(verbose=verbose)
-
-        # compute adjusted stat: subtract predicted null mean
-        if verbose:
-            print(f'  [3/4] computing adjusted stats + FWER p-values '
-                  f'(alpha={alpha_fwer}) ...')
-        self.llr_adjusted = np.empty_like(self.stat)
-        for p in range(n_perm + 1):
-            sz = self.size[p, :].astype(float)
-            raw = self.stat[p, :]
-            self.llr_adjusted[p, :] = raw - mu_fn(sz)
-            self.llr_adjusted[p, :] = np.nan_to_num(
-                self.llr_adjusted[p, :], nan=0.0, posinf=0.0,
-                neginf=-30.0)
-
-        # store analysis thresholds (for viewer)
         self.alpha_fwer = alpha_fwer
         self.alpha_prune = alpha_prune
+        self.size_0 = size_0
+        self.stat_0 = stat_0
+        self.llr_adjusted_0 = llr_adjusted_0
+        self.child_dict = {0: children_0}
 
-        # compute p-values (max stat across space)
-        self.pval = self.get_pval(stat=self.llr_adjusted,
-                                  reg_active=self.size[0, :] >= min_size)
+        reg_active = size_0 >= min_size
+        if not reg_active.any():
+            pval = np.full(num_reg, fill_value=np.nan)
+        else:
+            pval = np.full(num_reg, fill_value=-1.0)
+            for reg_idx, z in enumerate(llr_adjusted_0):
+                if np.isnan(z):
+                    pval[reg_idx] = np.nan
+                    continue
+                n_total = len(stat_max_sorted)
+                pval[reg_idx] = max(
+                    1 - bisect_left(stat_max_sorted, z) / n_total,
+                    1 / n_total)
+            pval[~reg_active] = np.nan
+        self.pval = pval
 
-        # prune significant regions (discard to make disjoint set)
         self.sig_reg_list = list(np.where(self.pval <= alpha_fwer)[0])
+        if verbose:
+            print(f'  {len(self.sig_reg_list)} significant regions '
+                  f'(alpha_fwer={alpha_fwer})')
 
         if prune_method == 'node':
             if verbose:
                 _mode = (f'exp_eff={prune_geom_exp_eff}'
                          if prune_geom_exp_eff is not None
                          else f'{n_perm_prune} perms, alpha={alpha_prune}')
-                print(f'  [4/4] node pruning {len(self.sig_reg_list)} '
-                      f'significant regions ({_mode}) ...')
+                print(f'  pruning ({_mode}) ...')
             reg_out_list, self.dp_info = prune_node(
                 sig_reg_list=self.sig_reg_list,
-                children=self.child_dict[0],
-                exp=exp,
-                n_perm=n_perm_prune,
-                alpha=alpha_prune,
+                children=children_0, exp=exp,
+                n_perm=n_perm_prune, alpha=alpha_prune,
                 exp_eff=prune_geom_exp_eff)
             self.homo_pval_dict = {}
         elif prune_method == 'tree':
-            if verbose:
-                print(f'  [4/4] tree pruning {len(self.sig_reg_list)} '
-                      f'significant regions ...')
             reg_out_list, self.dp_info = prune_tree(
                 sig_reg_list=self.sig_reg_list,
-                children=self.child_dict[0],
-                exp=exp)
+                children=children_0, exp=exp)
             self.homo_pval_dict = {}
         elif prune_method == 'tree_dp':
             if prune_geom_exp_eff is None:
-                raise ValueError(
-                    'tree_dp requires prune_geom_exp_eff')
-            if verbose:
-                print(f'  [4/4] tree_dp pruning '
-                      f'{len(self.sig_reg_list)} significant regions '
-                      f'(exp_eff={prune_geom_exp_eff}) ...')
+                raise ValueError('tree_dp requires prune_geom_exp_eff')
             reg_out_list, self.dp_info = prune_tree_dp(
                 sig_reg_list=self.sig_reg_list,
-                children=self.child_dict[0],
-                exp=exp,
+                children=children_0, exp=exp,
                 exp_eff=prune_geom_exp_eff)
             self.homo_pval_dict = {}
         elif prune_method == 'homo':
-            if verbose:
-                print(f'  [4/4] homo pruning {len(self.sig_reg_list)} '
-                      f'significant regions ({n_perm_prune} permutations, '
-                      f'alpha_prune={alpha_prune}) ...')
             reg_out_list, self.homo_pval_dict = prune(
                 sig_reg_list=self.sig_reg_list,
                 alpha_prune=alpha_prune,
-                n_perm=n_perm_prune,
-                exp=exp,
-                children=self.child_dict[0])
+                n_perm=n_perm_prune, exp=exp,
+                children=children_0)
             self.dp_info = {}
         else:
-            raise ValueError(f'unknown prune_method: {prune_method!r}. '
-                             f'expected one of: node, tree, '
-                             f'tree_dp, homo')
+            raise ValueError(f'unknown prune_method: {prune_method!r}')
 
-        # build effects
         self.effect_list = list()
         for reg_idx in reg_out_list:
-            label_map = glow.graph.get_label_map(reg_idx_list=[reg_idx, ],
-                                                 mask_idx=exp.mask_idx,
-                                                 children=self.child_dict[0])
+            label_map = glow.graph.get_label_map(
+                reg_idx_list=[reg_idx],
+                mask_idx=exp.mask_idx,
+                children=children_0)
             pval_fwer = self.pval[reg_idx]
-            eff = glow.effect.Effect.from_exp_mask(mask=label_map > -1,
-                                                   exp=exp,
-                                                   reg_idx=reg_idx,
-                                                   pval_fwer=pval_fwer)
+            eff = glow.effect.Effect.from_exp_mask(
+                mask=label_map > -1, exp=exp,
+                reg_idx=reg_idx, pval_fwer=pval_fwer)
             self.effect_list.append(eff)
 
         if verbose:
@@ -593,7 +650,7 @@ class AnalysisGLOW(Analysis):
         remote_ana = runner.download_final_analysis(experiment_id)
 
         _COPY_ATTRS = [
-            'child_dict', 'stat', 'size', 'pval', 'llr_adjusted',
+            'child_dict', 'stat_0', 'size_0', 'pval', 'llr_adjusted_0',
             'sig_reg_list', 'effect_list', 'alpha_fwer', 'alpha_prune',
             'dp_info', 'homo_pval_dict', 'adj_model', 'adj_beta',
         ]

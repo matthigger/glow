@@ -116,7 +116,7 @@ class Config:
 
         if self.ana_kwargs_dict:
             # keys injected at runtime (don't affect results)
-            _runtime_keys = {'checkpoint', 'n_jobs_perm'}
+            _runtime_keys = {'perm_dir', 'n_jobs_perm'}
             ana = {}
             for label, (cls, kw) in self.ana_kwargs_dict.items():
                 entry = {'class': cls.__name__}

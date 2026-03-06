@@ -1,5 +1,3 @@
-import copy
-
 from glow.effect import ExtenterSphere
 from glow.experiment import *
 from glow.experiment.analysis import *
@@ -95,8 +93,9 @@ class TestBigEffect:
             alpha_fwer=.1
         )
         
-        # should have both regular and adjustment permutations
-        assert len(analysis.child_dict) >= 10
+        # child_dict stores only observed (perm 0) children
+        assert 0 in analysis.child_dict
+        assert hasattr(analysis, 'pval')
     
     def test_analysis_get_stat(self):
         """test custom get_stat function"""
@@ -112,7 +111,7 @@ class TestBigEffect:
         
         # should still work
         assert hasattr(analysis, 'effect_list')
-        assert hasattr(analysis, 'stat')
+        assert hasattr(analysis, 'stat_0')
 
 
 class TestAnalysisEdgeCases:
@@ -249,10 +248,10 @@ class TestZeroStdGuard:
         analysis = AnalysisGLOW(exp, n_perm=5, alpha_fwer=0.05,
                                 min_size=1)
 
-        assert not np.any(np.isinf(analysis.llr_adjusted)), \
-            'llr_adjusted contains inf (likely zero-std division)'
-        assert not np.any(np.isnan(analysis.llr_adjusted)), \
-            'llr_adjusted contains nan (likely zero-std division)'
+        assert not np.any(np.isinf(analysis.llr_adjusted_0)), \
+            'llr_adjusted_0 contains inf (likely zero-std division)'
+        assert not np.any(np.isnan(analysis.llr_adjusted_0)), \
+            'llr_adjusted_0 contains nan (likely zero-std division)'
 
 
 class TestNaNHandling:
@@ -280,92 +279,58 @@ class TestNaNHandling:
 # In-memory checkpoint helper for testing (no S3 dependency)
 # ---------------------------------------------------------------------------
 
-class MemoryCheckpoint:
-    """Minimal checkpoint implementation backed by an in-memory dict."""
+class TestResume:
+    """Test AnalysisGLOW perm_dir-based resume behaviour."""
 
-    def __init__(self, state=None):
-        self._state = state
-        self.save_count = 0
-        self.delete_called = False
-
-    def load(self):
-        return copy.deepcopy(self._state)
-
-    def save(self, child_dict, stat, perm_idx):
-        self._state = {
-            'child_dict': copy.deepcopy(child_dict),
-            'stat': stat.copy(),
-            'last_perm_idx': perm_idx,
-        }
-        self.save_count += 1
-
-    def delete(self):
-        self.delete_called = True
-        self._state = None
-
-
-class TestCheckpoint:
-    """Test AnalysisGLOW checkpoint / resume behaviour."""
-
-    # shared small experiment
     exp = Experiment.from_gauss(a=2, b=1, shape=(3, 3), num_img=20, seed=0)
 
-    def test_no_checkpoint_by_default(self):
-        """AnalysisGLOW works when checkpoint is None (the default)."""
+    def test_no_perm_dir_by_default(self):
+        """AnalysisGLOW works when perm_dir is None (temp dir, auto-clean)."""
         analysis = AnalysisGLOW(self.exp, n_perm=5, alpha_fwer=.5)
         assert hasattr(analysis, 'pval')
-        assert len(analysis.child_dict) == 6  # 0..5
+        assert 0 in analysis.child_dict
 
-    def test_checkpoint_save_called(self):
-        """save() is called during the permutation loop."""
-        # use n_perm high enough to trigger at least one save
-        # _CHECKPOINT_INTERVAL is 25, so n_perm=50 gives 51 permutations
-        ckpt = MemoryCheckpoint()
-        analysis = AnalysisGLOW(
-            self.exp, n_perm=50, alpha_fwer=.5, checkpoint=ckpt)
-
-        assert ckpt.save_count >= 1, 'checkpoint.save() was never called'
-        assert ckpt.delete_called, 'checkpoint.delete() should be called on completion'
-
-    def test_checkpoint_delete_on_completion(self):
-        """delete() is called after all permutations finish."""
-        ckpt = MemoryCheckpoint()
-        AnalysisGLOW(self.exp, n_perm=5, alpha_fwer=.5, checkpoint=ckpt)
-        assert ckpt.delete_called
-
-    def test_checkpoint_resume(self):
-        """Resuming from a partial checkpoint produces the same result."""
+    def test_perm_dir_resume(self):
+        """Partial results in perm_dir are reused, completing the run."""
+        import pickle
+        import tempfile
         n_perm = 10
 
-        # full run (no checkpoint) as reference
+        # full run as reference
         ref = AnalysisGLOW(self.exp, n_perm=n_perm, alpha_fwer=.5)
 
-        # build partial checkpoint from the first 5 permutations
-        partial_child_dict = {i: ref.child_dict[i] for i in range(5)}
-        b, num_img, num_vox = self.exp.y.shape
-        num_reg = num_vox + ref.child_dict[0].shape[0]
-        partial_stat = np.full((n_perm + 1, num_reg), fill_value=-1.0)
-        for i in range(5):
-            partial_stat[i, :] = ref.stat[i, :]
+        # write first 5 permutations into a temp perm_dir
+        perm_dir = tempfile.mkdtemp(prefix='glow_test_resume_')
+        for p in range(5):
+            r = AnalysisGLOW.rerun_permutation(self.exp, p)
+            with open(f'{perm_dir}/{p:06d}_result.pkl', 'wb') as f:
+                pickle.dump(r, f)
 
-        resume_state = {
-            'child_dict': partial_child_dict,
-            'stat': partial_stat,
-            'last_perm_idx': 4,
-        }
-
-        ckpt = MemoryCheckpoint(state=resume_state)
+        # resume from partial perm_dir
         resumed = AnalysisGLOW(
-            self.exp, n_perm=n_perm, alpha_fwer=.5, checkpoint=ckpt)
+            self.exp, n_perm=n_perm, alpha_fwer=.5,
+            perm_dir=perm_dir)
 
-        # child_dict should be complete
-        assert set(resumed.child_dict.keys()) == set(range(n_perm + 1))
-
-        # stat arrays should match
-        np.testing.assert_array_equal(resumed.stat, ref.stat)
-
-        # final p-values should match
         np.testing.assert_array_equal(resumed.pval, ref.pval)
+
+        import shutil
+        shutil.rmtree(perm_dir, ignore_errors=True)
+
+    def test_perm_dir_keeps_files(self):
+        """When perm_dir is provided, result files are kept after run."""
+        import tempfile
+        perm_dir = tempfile.mkdtemp(prefix='glow_test_keep_')
+        n_perm = 5
+
+        AnalysisGLOW(self.exp, n_perm=n_perm, alpha_fwer=.5,
+                      perm_dir=perm_dir)
+
+        from pathlib import Path
+        result_files = list(Path(perm_dir).glob('*_result.pkl'))
+        assert len(result_files) == n_perm + 1
+
+        import shutil
+        shutil.rmtree(perm_dir, ignore_errors=True)
 
 
 class TestForest:
@@ -397,3 +362,49 @@ class TestForest:
         expected_total = num_vox + children.shape[0]
         assert len(all_nodes) == expected_total, \
             f'iter_topo yielded {len(all_nodes)}, expected {expected_total}'
+
+
+class TestStreamingFidelity:
+    """Verify that two identical runs produce the same results."""
+
+    exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=50, seed=0)
+    exp, effect = exp.impose_effect(seed=0,
+                                    extenter=ExtenterSphere(radius=2),
+                                    effect_llr=0.5)
+
+    def test_reproducible(self):
+        """Two runs with the same data must produce identical p-values."""
+        n_perm = 25
+        alpha_fwer = 0.1
+
+        ana_a = AnalysisGLOW(self.exp, n_perm=n_perm, alpha_fwer=alpha_fwer,
+                             verbose=False)
+        ana_b = AnalysisGLOW(self.exp, n_perm=n_perm, alpha_fwer=alpha_fwer,
+                             verbose=False)
+
+        np.testing.assert_array_equal(ana_a.pval, ana_b.pval)
+        assert set(ana_a.sig_reg_list) == set(ana_b.sig_reg_list)
+
+        masks_a = sorted([e.mask.tobytes() for e in ana_a.effect_list])
+        masks_b = sorted([e.mask.tobytes() for e in ana_b.effect_list])
+        assert masks_a == masks_b
+
+    def test_rerun_permutation(self):
+        """rerun_permutation reproduces the same result as a full run."""
+        import pickle, tempfile
+        n_perm = 10
+        perm_dir = tempfile.mkdtemp(prefix='glow_test_rerun_')
+
+        AnalysisGLOW(self.exp, n_perm=n_perm, alpha_fwer=.1,
+                      perm_dir=perm_dir)
+
+        with open(f'{perm_dir}/{3:06d}_result.pkl', 'rb') as f:
+            stored = pickle.load(f)
+        rerun = AnalysisGLOW.rerun_permutation(self.exp, perm_idx=3)
+
+        np.testing.assert_array_equal(stored['stat'], rerun['stat'])
+        np.testing.assert_array_equal(stored['size'], rerun['size'])
+        np.testing.assert_array_equal(stored['children'], rerun['children'])
+
+        import shutil
+        shutil.rmtree(perm_dir, ignore_errors=True)

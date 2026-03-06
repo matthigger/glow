@@ -23,13 +23,13 @@ class CloudConfig:
     region: str = 'us-east-1'
     max_concurrent_jobs: int = 100
     timeout_minutes: int = 60
-    memory_mb: int = 1024
+    memory_mb: int = 2000
     vcpus: int = 1
     retry_attempts: int = 3
     shared_exp_sources: List[str] = field(default_factory=lambda: ['hcp'])
     oom_memory_mb_tiers: List[int] = field(
         default_factory=lambda: [2000, 4000, 8000, 16000]
-    )  # 2 -> 4 -> 8 -> 16 GB (decimal) on OOM
+    )  # 2 -> 4 -> 8 -> 16 GB on OOM; hard error above 16 GB
     max_spot_retries: int = 3  # max resubmissions per job due to spot reclamation
     
     def to_dict(self):
@@ -101,13 +101,14 @@ class AWSBatchRunner:
                 continue
 
             if is_oom:
-                current_idx = self._job_memory_tier_index.get(base_name, 0)
+                current_idx = self._job_memory_tier_index.get(base_name, -1)
                 next_idx = current_idx + 1
                 if next_idx >= len(tiers) or len(tiers) < 2:
                     max_mb = tiers[-1] if tiers else self.config.memory_mb
-                    print(f'  ✗ OOM: {job["jobName"]} exceeded max memory '
-                          f'tier ({max_mb} MB), not resubmitting')
-                    continue
+                    raise MemoryError(
+                        f'FATAL OOM: {job["jobName"]} exceeded max memory '
+                        f'tier ({max_mb} MB). Reduce experiment size or '
+                        f'increase oom_memory_mb_tiers.')
                 memory_mb = tiers[next_idx]
                 retry_name = f'{base_name}_retry{next_idx}'
                 reason_tag = 'oom'
@@ -116,8 +117,9 @@ class AWSBatchRunner:
                 count = self._job_spot_retry_count.get(base_name, 0)
                 if count >= self.config.max_spot_retries:
                     continue
-                current_idx = self._job_memory_tier_index.get(base_name, 0)
-                memory_mb = tiers[current_idx] if tiers else self.config.memory_mb
+                current_idx = self._job_memory_tier_index.get(base_name, -1)
+                memory_mb = (tiers[current_idx] if current_idx >= 0 and tiers
+                             else self.config.memory_mb)
                 retry_name = f'{base_name}_spot{count + 1}'
                 reason_tag = 'spot'
 
@@ -156,50 +158,47 @@ class AWSBatchRunner:
 
         return resubmitted, resubmit_reasons
     
-    def estimate_memory_mb(self, exp_shape, n_perm=None):
-        """Estimate minimum memory for permutation and synthesis workers.
+    def estimate_memory_mb(self, exp_shape):
+        """Estimate minimum memory for a worker (perm or streaming synthesis).
+
+        With streaming synthesis, both workers have the same memory
+        footprint: exp.y + one permuted copy + clustering/stats overhead.
 
         Args:
             exp_shape: (b, num_img, num_vox) tuple, or an experiment object
                        with a ``.y`` attribute.
-            n_perm: number of permutations (needed for synthesis estimate).
 
-        Returns (perm_mb, synth_mb) rounded up to the nearest OOM tier.
-        If the estimate fits within the job-definition default, returns
-        (None, None) so no override is needed.
+        Returns:
+            memory_mb (int or None): OOM tier to request, or None when
+            the default ``config.memory_mb`` is sufficient.
+
+        Raises:
+            MemoryError: if the estimate exceeds the highest OOM tier.
         """
         if hasattr(exp_shape, 'y'):
             exp_shape = exp_shape.y.shape
         b, num_img, num_vox = exp_shape
         bytes_per_float = 8
 
-        # perm worker: exp.y + permuted copy + clustering/stats overhead
         data_bytes = b * num_img * num_vox * bytes_per_float
-        perm_bytes = int(data_bytes * 3.0)
-
-        # synthesis worker: exp.y + stat matrix + children arrays +
-        # _finalize_analysis working memory (pruning, effect detection)
-        if n_perm is not None:
-            num_reg = num_vox * 2
-            stat_bytes = (n_perm + 1) * num_reg * bytes_per_float
-            children_bytes = (n_perm + 1) * (num_vox - 1) * 2 * bytes_per_float
-            synth_bytes = int((data_bytes + stat_bytes + children_bytes) * 3)
-        else:
-            synth_bytes = perm_bytes
+        est_bytes = int(data_bytes * 3.0)
 
         tiers = self.config.oom_memory_mb_tiers or []
         default_mb = self.config.memory_mb
+        max_mb = tiers[-1] if tiers else default_mb
 
-        def _pick_tier(est_bytes):
-            est_mb = est_bytes / (1024 * 1024)
-            if est_mb <= default_mb:
-                return None
-            for t in tiers:
-                if t >= est_mb:
-                    return t
-            return tiers[-1] if tiers else None
-
-        return _pick_tier(perm_bytes), _pick_tier(synth_bytes)
+        est_mb = est_bytes / (1024 * 1024)
+        if est_mb > max_mb:
+            raise MemoryError(
+                f'Experiment {exp_shape} needs ~{est_mb:.0f} MB, '
+                f'exceeding max tier ({max_mb} MB). '
+                f'Reduce num_vox or increase oom_memory_mb_tiers.')
+        if est_mb <= default_mb:
+            return None
+        for t in tiers:
+            if t >= est_mb:
+                return t
+        return tiers[-1] if tiers else None
 
     def upload_experiment(self, exp, ana_kwargs: Dict[str, Any], 
                          experiment_id: str) -> str:
@@ -286,8 +285,8 @@ class AWSBatchRunner:
             submission_info dict with job_ids and metadata
         """
         if memory_mb is None and experiment_id in self._experiment_shapes:
-            memory_mb, _ = self.estimate_memory_mb(
-                self._experiment_shapes[experiment_id], n_perm)
+            memory_mb = self.estimate_memory_mb(
+                self._experiment_shapes[experiment_id])
 
         # check which permutations are already done
         completed = set()
@@ -376,8 +375,8 @@ class AWSBatchRunner:
             synthesis job ID (str)
         """
         if memory_mb is None and experiment_id in self._experiment_shapes:
-            _, memory_mb = self.estimate_memory_mb(
-                self._experiment_shapes[experiment_id], n_perm)
+            memory_mb = self.estimate_memory_mb(
+                self._experiment_shapes[experiment_id])
         job_name = f'{experiment_id}_synthesis'
         overrides = {
             'command': [
