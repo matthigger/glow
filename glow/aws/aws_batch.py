@@ -161,8 +161,9 @@ class AWSBatchRunner:
     def estimate_memory_mb(self, exp_shape):
         """Estimate minimum memory for a worker (perm or streaming synthesis).
 
-        With streaming synthesis, both workers have the same memory
-        footprint: exp.y + one permuted copy + clustering/stats overhead.
+        Uses a Lasso regression model fitted by
+        ``glow.benchmark.memory`` if available, otherwise falls back to
+        a 3x heuristic on the data tensor size.
 
         Args:
             exp_shape: (b, num_img, num_vox) tuple, or an experiment object
@@ -178,16 +179,13 @@ class AWSBatchRunner:
         if hasattr(exp_shape, 'y'):
             exp_shape = exp_shape.y.shape
         b, num_img, num_vox = exp_shape
-        bytes_per_float = 8
 
-        data_bytes = b * num_img * num_vox * bytes_per_float
-        est_bytes = int(data_bytes * 3.0)
+        est_mb = self._predict_memory_mb(b, num_img, num_vox)
 
         tiers = self.config.oom_memory_mb_tiers or []
         default_mb = self.config.memory_mb
         max_mb = tiers[-1] if tiers else default_mb
 
-        est_mb = est_bytes / (1024 * 1024)
         if est_mb > max_mb:
             raise MemoryError(
                 f'Experiment {exp_shape} needs ~{est_mb:.0f} MB, '
@@ -198,6 +196,23 @@ class AWSBatchRunner:
         for t in tiers:
             if t >= est_mb:
                 return t
+
+    @staticmethod
+    def _predict_memory_mb(b, num_img, num_vox):
+        """Predict peak memory in MB from experiment dimensions.
+
+        Tries to load a fitted model from ``memory_model.json`` (produced
+        by ``python -m glow.benchmark.memory``).  Falls back to a 3x
+        heuristic on the raw data tensor size.
+        """
+        try:
+            from glow.benchmark.memory import load_model, predict
+            model = load_model()
+            if model is not None:
+                return predict(model, num_vox, b, num_img)
+        except Exception:
+            pass
+        return 3.0 * b * num_img * num_vox * 8 / (1024 * 1024)
         return tiers[-1] if tiers else None
 
     def upload_experiment(self, exp, ana_kwargs: Dict[str, Any], 
