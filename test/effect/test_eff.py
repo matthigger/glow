@@ -156,7 +156,8 @@ class TestEffect:
     def test_is_close_tolerance(self):
         """test is_close with tolerance parameters"""
         mask = np.ones((10, 10), dtype=bool)
-        y_mean1 = np.random.randn(2, 10)
+        rng = np.random.default_rng(seed=0)
+        y_mean1 = rng.standard_normal((2, 10))
         y_mean2 = y_mean1 + 1e-7  # very small difference
         
         eff1 = glow.effect.Effect(mask=mask, y_mean=y_mean1)

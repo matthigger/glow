@@ -21,7 +21,6 @@ def compute_offset(x, y, contrast, effect_llr):
     Returns:
         offset (np.array): (b, num_img) constant offset across voxels
     """
-    # prep constants
     b, num_img, num_vox = y.shape
 
     # prep matrices
@@ -62,6 +61,7 @@ def compute_offset(x, y, contrast, effect_llr):
     # optimize
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', message='delta_grad == 0.0')
+        warnings.filterwarnings('ignore', message='Singular Jacobian')
         res = minimize(fun=obj, x0=x0, constraints=constraints,
                        method='trust-constr',
                        options=dict(maxiter=10000))

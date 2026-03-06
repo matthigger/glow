@@ -87,7 +87,7 @@ def image_iter(children, mask_idx, num_vox):
     assert mask_idx.ndim == 2, 'only 2d images supported'
 
     # initialize image
-    color_dict = {idx: sample_color(idx) for idx in mask_idx[mask_idx > -1]}
+    color_dict = {int(idx): sample_color(idx) for idx in mask_idx[mask_idx > -1]}
     mask_idx_current = copy(mask_idx)
     image = np.zeros(shape=(*mask_idx.shape, 3), dtype=np.uint8)
     for reg_idx, color in color_dict.items():
@@ -115,12 +115,12 @@ def image_iter(children, mask_idx, num_vox):
             pass
 
         # update color_dict (c0's color is propogated to parent)
-        reg_idx = idx + num_vox
-        color = color_dict[c[0]]
+        reg_idx = int(idx + num_vox)
+        color = color_dict[int(c[0])]
         color_dict[reg_idx] = color
-        del color_dict[c[0]]
-        if c[1] in color_dict:
-            del color_dict[c[1]]
+        del color_dict[int(c[0])]
+        if int(c[1]) in color_dict:
+            del color_dict[int(c[1])]
 
         # update image (c1's color is replaced with c0 / reg_idx's color)
         for i, j in zip(*np.where(mask_idx_current == c[1])):
