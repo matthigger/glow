@@ -53,8 +53,8 @@ def load_cloud_config():
     )
 
 
-def prep_experiments(exp_orig, targets):
-    """Subsample exp_orig at each target voxel count, return list of (exp, actual_voxels)."""
+def prep_experiments(exp_orig, targets, effect_llr=0, effect_perc=0.2):
+    """Subsample exp_orig at each target voxel count, optionally impose effect."""
     max_vox = int((exp_orig.mask_idx > -1).sum())
     experiments = []
     for target in targets:
@@ -66,11 +66,19 @@ def prep_experiments(exp_orig, targets):
             mask = extenter(mask_idx=exp_orig.mask_idx, seed=0, contiguous=True)
             exp = exp_orig.apply_mask(mask)
         exp = glow.experiment.ExperimentScaled.from_exp(exp)
+
+        if effect_llr > 0:
+            n_eff = max(1, int(exp.y.shape[2] * effect_perc))
+            eff_ext = glow.effect.ExtenterSphere(n_vox=n_eff)
+            exp, _effect = exp.impose_effect(
+                effect_llr=effect_llr, extenter=eff_ext, seed=0)
+
         experiments.append((exp, int(exp.y.shape[2]), target))
     return experiments
 
 
-def _save_experiment_result(runner, experiment_id, meta, out_dir, n_perm):
+def _save_experiment_result(runner, experiment_id, meta, out_dir, n_perm,
+                            effect_llr=0, effect_perc=0):
     """Download final analysis for one experiment and write result JSON."""
     ana = runner.download_final_analysis(experiment_id)
 
@@ -85,6 +93,8 @@ def _save_experiment_result(runner, experiment_id, meta, out_dir, n_perm):
         'num_voxels': meta['actual_voxels'],
         'target_voxels': meta['target_voxels'],
         'n_perm': n_perm,
+        'effect_llr': effect_llr,
+        'effect_perc': effect_perc,
         'perm_elapsed_sec': perm_elapsed,
         'perm_median_sec': float(np.median(perm_elapsed)) if perm_elapsed else None,
         'perm_max_sec': float(max(perm_elapsed)) if perm_elapsed else None,
@@ -117,6 +127,11 @@ def parse_args():
                         '(default: 10)')
     p.add_argument('--n-perm', type=int, default=100,
                    help='number of permutations per experiment (default: 100)')
+    p.add_argument('--effect-llr', type=float, default=0.1,
+                   help='size-normalized LLR of imposed effect (default: 0.1, '
+                        '0 for null)')
+    p.add_argument('--effect-perc', type=float, default=0.2,
+                   help='fraction of voxels in effect sphere (default: 0.2)')
     return p.parse_args()
 
 
@@ -142,8 +157,14 @@ def main():
                            args.n_steps).round().astype(int)
     targets = np.unique(targets)
     n_perm = args.n_perm
+    effect_llr = args.effect_llr
+    effect_perc = args.effect_perc
     print(f'  {len(targets)} voxel targets: {targets[0]:,} .. {targets[-1]:,}')
     print(f'  n_perm: {n_perm}')
+    if effect_llr > 0:
+        print(f'  effect: LLR={effect_llr}, {effect_perc:.0%} of voxels')
+    else:
+        print('  effect: null (no imposed effect)')
 
     base = Path(user_data_dir('glow', 'glow_author'))
     out_dir = base / 'results' / 'runtime_hcp' / 'out'
@@ -152,7 +173,8 @@ def main():
     ana_kwargs = _ana_kwargs(n_perm)
 
     print('\nPreparing experiments...')
-    exps = prep_experiments(exp_orig, targets)
+    exps = prep_experiments(exp_orig, targets,
+                            effect_llr=effect_llr, effect_perc=effect_perc)
 
     all_job_ids = []
     exp_meta = {}
@@ -180,7 +202,8 @@ def main():
 
         job_info_map[synth_job_id] = {
             'on_complete': lambda _job, eid=experiment_id, m=meta: (
-                _save_experiment_result(runner, eid, m, out_dir, n_perm)),
+                _save_experiment_result(runner, eid, m, out_dir, n_perm,
+                                        effect_llr, effect_perc)),
         }
 
         print(f'  {actual_vox:>6,} voxels: {len(perm_ids)} perm + 1 synthesis')
