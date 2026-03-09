@@ -237,8 +237,16 @@ class Config:
         if self.run_fnc is run_ana:
             return set(self.ana_kwargs_dict.keys())
         if self.run_fnc is run_prune_compare:
-            return {'homo', 'node', 'node_fl',
-                    'tree', 'tree_dp'}
+            labels = set()
+            for label, (Ana, kw) in self.ana_kwargs_dict.items():
+                if Ana.__name__ == 'AnalysisGLOW':
+                    labels.update({'GLOW-homo', 'GLOW-node',
+                                   'GLOW-node_fl', 'GLOW-tree'})
+                    if kw.get('prune_geom_exp_eff') is not None:
+                        labels.add('GLOW-tree_dp')
+                else:
+                    labels.add(label)
+            return labels
         if self.run_fnc is run_segment:
             return {'ward-naive', 'ward-glm'}
         return set()

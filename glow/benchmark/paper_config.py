@@ -92,18 +92,17 @@ for _alpha_prune in [.01, .1, .5]:
         glow.experiment.AnalysisGLOW, _kwargs_glow)
 config_list.append(make_config('alpha_prune', 'hcp', run_ana, ana_kwargs_dict_alpha_prune))
 
-# pruning method experiment: compare pruning strategies
-_GLOW_BASE = dict(n_perm=N_PERM, n_perm_prune=100, min_size=1,
-                  alpha_prune=0.05, alpha_fwer=ALPHA_FWER,
-                  n_jobs_perm=N_JOBS_PERM,
-                  prune_geom_exp_eff=3)
-ana_kwargs_dict_prune_method = {
-    'GLOW': (glow.experiment.AnalysisGLOW, _GLOW_BASE),
+# method comparison: all pruning strategies + VBA + VBA-TFCE
+ana_kwargs_dict_prune_compare = {
+    'GLOW': (glow.experiment.AnalysisGLOW,
+             ANALYSES['GLOW'] | dict(prune_geom_exp_eff=3)),
+    'VBA': (glow.experiment.AnalysisVBA, ANALYSES['VBA']),
+    'VBA-TFCE': (glow.experiment.AnalysisVBA, ANALYSES['VBA-TFCE']),
 }
-config_list.append(make_config('prune_method_wgn', 'wgn', run_prune_compare,
-                               ana_kwargs_dict_prune_method, n_seed=10))
-config_list.append(make_config('prune_method_hcp', 'hcp', run_prune_compare,
-                               ana_kwargs_dict_prune_method, n_seed=10))
+config_list.append(make_config('prune_compare_wgn', 'wgn', run_prune_compare,
+                               ana_kwargs_dict_prune_compare, n_seed=10))
+config_list.append(make_config('prune_compare_hcp', 'hcp', run_prune_compare,
+                               ana_kwargs_dict_prune_compare, n_seed=10))
 
 # segmentation configs
 config_list.append(make_config('segment_hcp', 'hcp', run_segment))

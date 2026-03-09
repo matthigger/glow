@@ -183,83 +183,135 @@ def _prune_diagnostics_df(sig, methods):
     return pd.DataFrame(rows)
 
 
-def run_prune_compare(config, **kwargs):
-    """Run one AnalysisGLOW and apply all pruning methods.
+def _score_region_masks(masks, effect_mask, mask_active):
+    """Score a list of boolean region masks against ground truth.
 
-    Emits one JSON result per method (homo, node, node_fl,
-    tree, tree_dp) with the same schema as run_ana, so
-    plot.py works unchanged.  Also writes a per-region diagnostics CSV
-    for the viewer's --csv flag.
+    Returns dict with f1, sens, spec, n_regions, region_sizes,
+    region_tp_fracs (sorted largest-first).
+    """
+    mask_pred = np.zeros_like(effect_mask)
+    sizes, tp_fracs = [], []
+
+    for rmask in masks:
+        mask_pred |= rmask
+        n_vox = int(rmask.sum())
+        sizes.append(n_vox)
+        overlap = int((rmask & effect_mask).sum())
+        tp_fracs.append(overlap / n_vox if n_vox > 0 else 0.0)
+
+    f1, sens, spec = glow.mask.get_score(
+        mask_pred=mask_pred, mask_target=effect_mask,
+        mask_active=mask_active)
+
+    order = np.argsort(sizes)[::-1]
+    return dict(
+        f1=f1, sens=sens, spec=spec,
+        n_regions=len(masks),
+        region_sizes=[sizes[i] for i in order],
+        region_tp_fracs=[round(tp_fracs[i], 4) for i in order],
+    )
+
+
+def run_prune_compare(config, **kwargs):
+    """Run GLOW pruning strategies (+ optional VBA / VBA-TFCE).
+
+    For each AnalysisGLOW entry in ``ana_kwargs_dict``, runs a shared
+    analysis then applies all 5 pruning strategies.  Non-GLOW entries
+    (e.g. VBA, VBA-TFCE) are run independently.
+
+    Emits one JSON result per method with F1/sens/spec and region-level
+    metrics (sizes, TP fractions).  Also writes pruning diagnostics CSV.
     """
     from glow.experiment.prune import (prune, prune_node,
                                        prune_tree, prune_tree_dp)
 
     exp, effect = config.get_exp_eff(**kwargs)
+    mask_active = exp.mask_idx > -1
+    config_hash = config._config_hash()
 
-    _, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
-    n_perm_prune = ana_kw.get('n_perm_prune', 100)
-    alpha_prune = ana_kw.get('alpha_prune', 0.05)
-    exp_eff = ana_kw.get('prune_geom_exp_eff')
+    base = dict(
+        effect_llr=effect.effect_llr,
+        seed=int(effect.seed),
+        vox_total=int(exp.y.shape[2]),
+        vox_effect=int(effect.mask.sum()),
+        config_hash=config_hash,
+    )
 
-    start = time.time()
-    ana = Ana(exp=exp, **ana_kw)
-    total_time_sec = time.time() - start
-
-    sig = ana.sig_reg_list
-    children = ana.child_dict[0]
-
-    methods = {
-        'homo': prune(sig, children, exp,
-                       n_perm=n_perm_prune, alpha_prune=alpha_prune),
-        'node': prune_node(sig, children, exp,
-                           n_perm=n_perm_prune, alpha=alpha_prune,
-                           exp_eff=exp_eff),
-        'node_fl': prune_node(sig, children, exp,
-                              n_perm=n_perm_prune,
-                              alpha=alpha_prune),
-        'tree': prune_tree(sig, children, exp),
-    }
-    if exp_eff is not None:
-        methods['tree_dp'] = prune_tree_dp(
-            sig, children, exp, exp_eff=exp_eff)
-
-    run_uuid = str(uuid4())[:8]
-
-    for label, (reg_out_list, _info) in methods.items():
-        mask_pred = np.zeros(ana.exp.mask_idx.shape, dtype=bool)
-        for reg_idx in reg_out_list:
-            label_map = glow.graph.get_label_map(
-                reg_idx_list=[reg_idx],
-                mask_idx=exp.mask_idx,
-                children=children)
-            mask_pred |= (label_map > -1)
-
-        f1, sens, spec = glow.mask.get_score(mask_pred=mask_pred,
-                                             mask_target=effect.mask,
-                                             mask_active=exp.mask_idx > -1)
-        uuid = str(uuid4())[:8]
-        file_out = config.folder / OUT / f'{uuid}_result.json'
-        d = {'effect_llr': effect.effect_llr,
-             'seed': int(effect.seed),
-             'stat': ana.get_stat.__name__.replace('get_', ''),
+    def _save(scores, label, analysis_name, time_sec):
+        uid = str(uuid4())[:8]
+        file_out = config.folder / OUT / f'{uid}_result.json'
+        d = {**base, **scores,
              'label': label,
-             'Analysis': Ana.__name__,
-             'f1': f1,
-             'sens': sens,
-             'spec': spec,
-             'uuid': uuid,
-             'vox_total': int(ana.exp.y.shape[2]),
-             'vox_effect': int(effect.mask.sum()),
-             'time_sec': total_time_sec,
-             'config_hash': config._config_hash()}
+             'Analysis': analysis_name,
+             'time_sec': time_sec,
+             'uuid': uid}
         file_out.parent.mkdir(exist_ok=True, parents=True)
         with open(file_out, 'w') as f:
             json.dump(d, f, sort_keys=True, indent=4)
 
-    if sig:
-        diag_df = _prune_diagnostics_df(sig, methods)
-        csv_out = config.folder / OUT / f'{run_uuid}_diagnostics.csv'
-        diag_df.to_csv(csv_out, index=False)
+    # ---- GLOW: shared analysis, 5 pruning strategies ----
+    for _lbl, (Ana, ana_kw) in config.ana_kwargs_dict.items():
+        if Ana.__name__ != 'AnalysisGLOW':
+            continue
+
+        n_perm_prune = ana_kw.get('n_perm_prune', 100)
+        alpha_prune = ana_kw.get('alpha_prune', 0.05)
+        exp_eff = ana_kw.get('prune_geom_exp_eff')
+
+        start = time.time()
+        ana = Ana(exp=exp, **ana_kw)
+        glow_time = time.time() - start
+
+        sig = ana.sig_reg_list
+        children = ana.child_dict[0]
+
+        prune_methods = {
+            'GLOW-homo': prune(sig, children, exp,
+                               n_perm=n_perm_prune, alpha_prune=alpha_prune),
+            'GLOW-node': prune_node(sig, children, exp,
+                                    n_perm=n_perm_prune, alpha=alpha_prune,
+                                    exp_eff=exp_eff),
+            'GLOW-node_fl': prune_node(sig, children, exp,
+                                       n_perm=n_perm_prune,
+                                       alpha=alpha_prune),
+            'GLOW-tree': prune_tree(sig, children, exp),
+        }
+        if exp_eff is not None:
+            prune_methods['GLOW-tree_dp'] = prune_tree_dp(
+                sig, children, exp, exp_eff=exp_eff)
+
+        for label, (reg_out_list, _info) in prune_methods.items():
+            masks = []
+            for reg_idx in reg_out_list:
+                lm = glow.graph.get_label_map(
+                    reg_idx_list=[reg_idx],
+                    mask_idx=exp.mask_idx,
+                    children=children)
+                masks.append(lm > -1)
+            scores = _score_region_masks(masks, effect.mask, mask_active)
+            _save(scores, label, Ana.__name__, glow_time)
+
+        if sig:
+            diag_methods = {k.replace('GLOW-', ''): v
+                            for k, v in prune_methods.items()}
+            diag_df = _prune_diagnostics_df(sig, diag_methods)
+            run_uuid = str(uuid4())[:8]
+            csv_out = config.folder / OUT / f'{run_uuid}_diagnostics.csv'
+            diag_df.to_csv(csv_out, index=False)
+        break  # only one GLOW entry expected
+
+    # ---- VBA / VBA-TFCE ----
+    for label, (Ana, ana_kw) in config.ana_kwargs_dict.items():
+        if Ana.__name__ == 'AnalysisGLOW':
+            continue
+
+        start = time.time()
+        ana_vba = Ana(exp=exp, **ana_kw)
+        vba_time = time.time() - start
+
+        masks = [e.mask for e in ana_vba.effect_list]
+        scores = _score_region_masks(masks, effect.mask, mask_active)
+        _save(scores, label, Ana.__name__, vba_time)
 
 
 def run_stat_auc(config, **kwargs):
