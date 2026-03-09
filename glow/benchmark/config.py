@@ -77,8 +77,9 @@ class Config:
     wgn_num_img: int = 100
     exp_seed: int = 0
 
-    # region restriction
+    # region restriction (sphere crop applied per-experiment in get_exp_eff)
     radius: Optional[int] = None
+    crop_n_vox: Optional[int] = None
 
     # -------- experiment iteration specification --------
     # Declarative way to specify what to iterate over
@@ -180,13 +181,18 @@ class Config:
         # trim experiment to reasonable size (for speedup)
         # Use provided radius or fall back to self.radius
         radius_to_use = radius if radius is not None else self.radius
-        if radius_to_use is None:
-            exp = self.exp_orig
-        else:
+        if self.crop_n_vox is not None:
+            extenter = glow.effect.ExtenterSphere(n_vox=self.crop_n_vox)
+            mask = extenter(mask_idx=self.exp_orig.mask_idx, seed=seed,
+                            contiguous=True)
+            exp = self.exp_orig.apply_mask(mask)
+        elif radius_to_use is not None:
             extenter = glow.effect.ExtenterSphere(radius=radius_to_use)
             mask = extenter(mask_idx=self.exp_orig.mask_idx, seed=seed,
                             contiguous=True)
             exp = self.exp_orig.apply_mask(mask)
+        else:
+            exp = self.exp_orig
 
         # scale normalize before sampling minimum variance (each feature given
         # equal weight in sampling extent)
