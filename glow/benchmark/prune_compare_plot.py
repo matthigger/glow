@@ -11,8 +11,8 @@ Usage::
     python -m glow.benchmark.prune_compare_plot --source hcp
 """
 
-import argparse
 import json
+import math
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -46,14 +46,40 @@ def load_results(results_dir: Path) -> pd.DataFrame:
     return df
 
 
+_GLOW_COLORS = {
+    'GLOW-node': '#1b9e77',
+    'GLOW-node_fl': '#d95f02',
+    'GLOW-homo': '#7570b3',
+    'GLOW-tree': '#e7298a',
+    'GLOW-tree_dp': '#66a61e',
+}
+
+_VBA_COLORS = {
+    'VBA': '#e41a1c',
+    'VBA-TFCE': '#984ea3',
+}
+
+_METHOD_STYLE = {
+    'GLOW-node':    dict(ls='-',      marker='o'),
+    'GLOW-node_fl': dict(ls='--',     marker='s'),
+    'GLOW-homo':    dict(ls='-.',     marker='^'),
+    'GLOW-tree':    dict(ls=(0, (3, 1, 1, 1)), marker='D'),
+    'GLOW-tree_dp': dict(ls=':',      marker='v'),
+    'VBA':          dict(ls='-',      marker='X'),
+    'VBA-TFCE':     dict(ls='--',     marker='P'),
+}
+
+
 def _get_palette(labels):
-    glow_labels = sorted(l for l in labels if l.startswith('GLOW'))
-    vba_labels = sorted(l for l in labels if not l.startswith('GLOW'))
-    n_glow = len(glow_labels)
-    n_vba = len(vba_labels)
-    glow_colors = sns.color_palette('Blues_d', n_colors=max(n_glow, 3))[:n_glow]
-    vba_colors = sns.color_palette('Reds_d', n_colors=max(n_vba, 2))[:n_vba]
-    return dict(zip(glow_labels + vba_labels, glow_colors + vba_colors))
+    palette = {}
+    for label in labels:
+        if label in _GLOW_COLORS:
+            palette[label] = _GLOW_COLORS[label]
+        elif label in _VBA_COLORS:
+            palette[label] = _VBA_COLORS[label]
+        else:
+            palette[label] = 'grey'
+    return palette
 
 
 def _derive_columns(df):
@@ -77,35 +103,26 @@ def _derive_columns(df):
     return df
 
 
-def _plot_metric_row(axes, df, metric_cols, titles, palette, ci=90):
+def _plot_metric_row(axes, df, metric_cols, titles, palette):
     """Row of metric-vs-effect_llr line plots (shared logic for rows 1 & 2)."""
-    lower_q = (100 - ci) / 2
-    upper_q = 100 - lower_q
-
     for ax, col, title in zip(axes, metric_cols, titles):
         for label in METHOD_ORDER:
             sub = df[df['label'] == label]
             if sub.empty:
                 continue
             color = palette.get(label, 'grey')
-
-            for _seed, g in sub.groupby('seed', sort=False):
-                g = g.sort_values('effect_llr')
-                ax.plot(g['effect_llr'], g[col],
-                        lw=0.4, alpha=0.35, color=color)
+            style = _METHOD_STYLE.get(label, {})
 
             stats = (sub.groupby('effect_llr')[col]
-                     .agg(['mean',
-                           lambda s: np.percentile(s, lower_q),
-                           lambda s: np.percentile(s, upper_q)])
+                     .mean()
                      .reset_index()
                      .sort_values('effect_llr'))
-            stats.columns = ['effect_llr', 'mean', 'lo', 'hi']
 
-            ax.plot(stats['effect_llr'], stats['mean'],
-                    lw=2.5, color=color, label=label)
-            ax.fill_between(stats['effect_llr'], stats['lo'], stats['hi'],
-                            color=color, alpha=0.15)
+            ax.plot(stats['effect_llr'], stats[col],
+                    lw=2.5, color=color, label=label,
+                    ls=style.get('ls', '-'),
+                    marker=style.get('marker'),
+                    markersize=5, markevery=2)
 
         ax.set_title(title)
         ax.set_xscale('log')
@@ -156,8 +173,14 @@ def plot_compare(df, pdf_path: Path):
     palette = _get_palette(labels)
     n_methods = len(labels)
 
-    fig = plt.figure(figsize=(15, 12), constrained_layout=True)
-    gs = fig.add_gridspec(3, max(3, n_methods), height_ratios=[1, 1, 1])
+    strip_cols = 3
+    strip_rows = math.ceil(n_methods / strip_cols)
+    total_rows = 2 + strip_rows
+    fig_height = 4 * 2 + 3.5 * strip_rows
+
+    fig = plt.figure(figsize=(15, fig_height), constrained_layout=True)
+    gs = fig.add_gridspec(total_rows, strip_cols,
+                          height_ratios=[1, 1] + [1] * strip_rows)
 
     # row 1: F1 / sens / spec
     ax_r1 = [fig.add_subplot(gs[0, j]) for j in range(3)]
@@ -185,8 +208,17 @@ def plot_compare(df, pdf_path: Path):
     for ax in ax_r2:
         ax.set_xlabel('effect_llr')
 
-    # row 3: strip chart per method
-    ax_r3 = [fig.add_subplot(gs[2, j]) for j in range(n_methods)]
+    # rows 3+: strip chart per method, 3 columns per row
+    ax_r3 = []
+    for idx in range(n_methods):
+        r = 2 + idx // strip_cols
+        c = idx % strip_cols
+        ax_r3.append(fig.add_subplot(gs[r, c]))
+    for idx in range(n_methods, strip_rows * strip_cols):
+        r = 2 + idx // strip_cols
+        c = idx % strip_cols
+        fig.add_subplot(gs[r, c]).axis('off')
+
     sc = _plot_strip_row(ax_r3, df, palette)
     if sc is not None:
         cbar = fig.colorbar(sc, ax=ax_r3, location='right', shrink=0.8,
@@ -201,33 +233,29 @@ def plot_compare(df, pdf_path: Path):
     plt.close(fig)
 
 
-def parse_args():
-    p = argparse.ArgumentParser(description='Plot method comparison results')
-    p.add_argument('--source', choices=['wgn', 'hcp'], default='wgn')
-    return p.parse_args()
-
-
 def main():
-    args = parse_args()
     base = Path(user_data_dir('glow', 'glow_author'))
-    results_dir = base / 'results' / f'{RESULTS_SUBDIR}_{args.source}'
+    results_base = base / 'results'
 
-    if not results_dir.exists():
-        print(f'results directory not found: {results_dir}')
+    found = sorted(results_base.glob(f'{RESULTS_SUBDIR}_*'))
+    if not found:
+        print(f'no {RESULTS_SUBDIR}_* directories in {results_base}')
         raise SystemExit(1)
 
-    df = load_results(results_dir)
-    if df.empty:
-        print(f'no result files in {results_dir / "out"}')
-        raise SystemExit(1)
+    for results_dir in found:
+        source = results_dir.name.removeprefix(f'{RESULTS_SUBDIR}_')
+        df = load_results(results_dir)
+        if df.empty:
+            print(f'[{source}] no result files in {results_dir / "out"}, skipping')
+            continue
 
-    print(f'loaded {len(df)} results '
-          f'({df["label"].nunique()} methods, '
-          f'{df["seed"].nunique()} seeds, '
-          f'{df["effect_llr"].nunique()} effect levels)')
+        print(f'[{source}] loaded {len(df)} results '
+              f'({df["label"].nunique()} methods, '
+              f'{df["seed"].nunique()} seeds, '
+              f'{df["effect_llr"].nunique()} effect levels)')
 
-    pdf_path = results_dir / 'prune_compare.pdf'
-    plot_compare(df, pdf_path)
+        pdf_path = results_dir / 'prune_compare.pdf'
+        plot_compare(df, pdf_path)
 
 
 if __name__ == '__main__':
