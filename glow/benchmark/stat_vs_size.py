@@ -286,7 +286,7 @@ _MODEL_COLORS = {
 
 _STAT_LABELS = {
     'llr': 'Log-Likelihood Ratio',
-    'neg_wilks': r"$-$Wilks' $\Lambda$",
+    'wilks': r"Wilks' $\Lambda$",
     'hotel_tr': 'Hotelling Trace',
     'pillai': "Pillai's Trace",
     'roys_root': "Roy's Largest Root",
@@ -415,10 +415,14 @@ def make_diagnostic_plots(df_dict, out_dir):
                   f"{row['equation']}")
         print()
 
-    # --- LaTeX table ---
+    # --- LaTeX tables ---
     latex_path = out_dir / 'fit_summary.tex'
     _write_latex_table(summary, latex_path)
     print(f'  saved {latex_path}')
+
+    r2_grid_path = out_dir / 'r2_grid.tex'
+    _write_r2_grid_table(summary, stat_names, r2_grid_path)
+    print(f'  saved {r2_grid_path}')
 
     # --- best model JSON (average R² across sources) ---
     import json
@@ -513,6 +517,93 @@ def _write_latex_table(summary, path):
         all_lines.append('')
 
     path.write_text('\n'.join(all_lines) + '\n')
+
+
+def _write_r2_grid_table(summary, stat_names, path):
+    """Write a stat x model R^2 grid table (averaged across sources).
+
+    Rows = models, columns = stats.  Best R^2 per stat is bolded.
+    Includes an average column (mean across stats per model) and an
+    average row (mean across models per stat).
+    """
+    model_order = list(MODELS.keys())
+    models_present = [m for m in model_order
+                      if m in summary['model'].values]
+
+    # build the grid: mean R^2 across sources for each (model, stat)
+    grid = {}
+    for model in models_present:
+        grid[model] = {}
+        for stat in stat_names:
+            cell = summary[(summary['model'] == model)
+                           & (summary['stat'] == stat)]
+            grid[model][stat] = cell['R2'].mean() if len(cell) else np.nan
+
+    # find best model per stat
+    best_model = {}
+    for stat in stat_names:
+        vals = {m: grid[m][stat] for m in models_present
+                if np.isfinite(grid[m][stat])}
+        best_model[stat] = max(vals, key=vals.get) if vals else None
+
+    # header
+    stat_headers = [_STAT_LABELS.get(s, s) for s in stat_names]
+    n_stats = len(stat_names)
+    col_spec = 'l' + 'c' * n_stats + 'c'
+    lines = [
+        r'\begin{table}[H]',
+        r'\centering',
+        r'\caption{Mean $R^2$ across data sources (WLS, size-weighted) '
+        r'for each regression model and MANCOVA statistic. '
+        r'Best model per statistic shown in bold.}',
+        r'\label{tab:r2_grid}',
+        rf'\begin{{tabular}}{{{col_spec}}}',
+        r'\toprule',
+        'Model & ' + ' & '.join(stat_headers) + r' & Avg. \\',
+        r'\midrule',
+    ]
+
+    # body rows
+    for model in models_present:
+        label = _MODEL_LABELS.get(model, model)
+        cells = []
+        vals = []
+        for stat in stat_names:
+            v = grid[model][stat]
+            if np.isnan(v):
+                cells.append('---')
+            else:
+                vals.append(v)
+                s = f'{v:.4f}'
+                if best_model.get(stat) == model:
+                    s = r'\textbf{' + s + '}'
+                cells.append(s)
+        avg = np.mean(vals) if vals else np.nan
+        avg_s = f'{avg:.4f}' if np.isfinite(avg) else '---'
+        lines.append(f'  {label} & ' + ' & '.join(cells)
+                     + f' & {avg_s} \\\\')
+
+    # average row
+    lines.append(r'\midrule')
+    avg_cells = []
+    all_vals = []
+    for stat in stat_names:
+        col_vals = [grid[m][stat] for m in models_present
+                    if np.isfinite(grid[m][stat])]
+        avg = np.mean(col_vals) if col_vals else np.nan
+        all_vals.extend(col_vals)
+        avg_cells.append(f'{avg:.4f}' if np.isfinite(avg) else '---')
+    grand_avg = np.mean(all_vals) if all_vals else np.nan
+    grand_s = f'{grand_avg:.4f}' if np.isfinite(grand_avg) else '---'
+    lines.append(r'  Avg. & ' + ' & '.join(avg_cells)
+                 + f' & {grand_s} \\\\')
+
+    lines += [
+        r'\bottomrule',
+        r'\end{tabular}',
+        r'\end{table}',
+    ]
+    path.write_text('\n'.join(lines) + '\n')
 
 
 def _make_2x2_figure(df_dict, sources, stat_col, model_name,

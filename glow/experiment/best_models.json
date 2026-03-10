@@ -1,6 +1,6 @@
 {
   "llr": "power_law",
-  "neg_wilks": "log_size",
+  "wilks": "log_size",
   "pillai": "log_linear",
   "hotel_tr": "power_law",
   "roys_root": "log_linear"

@@ -110,15 +110,8 @@ def test_all_stat_functions():
     h = h_raw @ h_raw.T
     
     # test all stats run without error
-    import warnings
-
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', DeprecationWarning)
-        wilks = get_neg_wilks(e=e, h=h)
-        assert wilks <= 0
-
-    with pytest.warns(DeprecationWarning, match='get_neg_wilks is deprecated'):
-        get_neg_wilks(e=e, h=h)
+    wilks = get_wilks(e=e, h=h)
+    assert 0 < wilks <= 1
 
     pillai = get_pillai(e=e, h=h)
     assert pillai >= 0
@@ -135,7 +128,7 @@ def test_all_stat_functions():
     # test stat_dict
     assert len(stat_dict) == 5
     assert 'llr' in stat_dict
-    assert 'neg_wilks' in stat_dict
+    assert 'wilks' in stat_dict
     assert 'pillai' in stat_dict
     assert 'hotel_tr' in stat_dict
     assert 'roys_root' in stat_dict
@@ -143,6 +136,14 @@ def test_all_stat_functions():
     for name, stat_func in stat_dict.items():
         result = stat_func(e=e, h=h, n=100)
         assert isinstance(result, (float, np.floating))
+
+    # test stat_sign
+    assert len(stat_sign) == 5
+    assert stat_sign[get_wilks] == -1
+    assert stat_sign[get_llr] == 1
+    assert stat_sign[get_pillai] == 1
+    assert stat_sign[get_hotel_tr] == 1
+    assert stat_sign[get_roys_root] == 1
 
 
 def test_singular_matrix_errors():

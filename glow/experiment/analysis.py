@@ -15,15 +15,11 @@ import glow.graph
 # glow.vba imported lazily when needed (requires FSL for TFCE)
 from .cluster import cluster, count_components
 from .exper import ExperimentScaled
-from .mancova import get_llr, stat_dict
+from .mancova import get_llr, stat_dict, stat_dict_inv, stat_sign
 from .prune import prune, prune_node, prune_tree, prune_tree_dp
 
 
 _DEFAULT_MODEL = 'power_law'
-
-# stat func -> short name used as key in best_models.json
-_STAT_KEY = {fn: name for name, fn in stat_dict.items()}
-
 
 _BEST_MODELS_PATH = Path(__file__).parent / 'best_models.json'
 
@@ -47,7 +43,7 @@ def get_best_model(get_stat):
     """
     import warnings
     best = _load_best_models()
-    key = _STAT_KEY.get(get_stat)
+    key = stat_dict_inv.get(get_stat)
     if key and key in best:
         return best[key]
     warnings.warn(
@@ -394,13 +390,14 @@ class AnalysisGLOW(Analysis):
         # pass 2: sweep temp files for adjusted max-stats
         if verbose:
             print(f'  [3/3] computing FWER p-values + pruning ...')
+        sign = stat_sign.get(self.get_stat, 1)
         reg_active = size_0 >= min_size
         stat_max_list = []
         for perm_idx in range(n_perm + 1):
             with open(perm_dir / f'{perm_idx:06d}_result.pkl', 'rb') as fh:
                 r = pickle.load(fh)
-            adj = (np.asarray(r['stat'], dtype=float)
-                   - mu_fn(np.asarray(r['size'], dtype=float)))
+            adj = sign * (np.asarray(r['stat'], dtype=float)
+                          - mu_fn(np.asarray(r['size'], dtype=float)))
             adj = np.nan_to_num(adj, nan=0.0, posinf=0.0, neginf=-30.0)
             stat_max_list.append(
                 float(np.nanmax(adj[reg_active])) if reg_active.any()
@@ -556,7 +553,8 @@ class AnalysisGLOW(Analysis):
         verbose = getattr(self, 'verbose', False)
         num_reg = stat_0.shape[0]
 
-        llr_adjusted_0 = stat_0 - mu_fn(size_0.astype(float))
+        sign = stat_sign.get(self.get_stat, 1)
+        llr_adjusted_0 = sign * (stat_0 - mu_fn(size_0.astype(float)))
         llr_adjusted_0 = np.nan_to_num(llr_adjusted_0, nan=0.0,
                                         posinf=0.0, neginf=-30.0)
 

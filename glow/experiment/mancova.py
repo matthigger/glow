@@ -116,22 +116,22 @@ def get_llr(e, h, n=None, *, size_normalize=False):
     return ll_alt - ll_null
 
 
-def get_neg_wilks(e, h, n=None):
-    """Deprecated: use get_llr instead.
+def get_wilks(e, h, n=None):
+    """Wilks' Lambda: det(E) / det(E + H).
 
-    LLR is proportional to -log(Wilks' Lambda); prefer get_llr for
-    size adjustment and all new analyses.
+    Values in (0, 1]; smaller = more evidence against H0.
+
+    Args:
+        e (np.array): (b, b) error matrix
+        h (np.array): (b, b) hypothesis matrix
+        n: unused (accepted for uniform stat-function interface)
+
+    Returns:
+        float: Wilks' Lambda
     """
-    import warnings
-    warnings.warn(
-        "get_neg_wilks is deprecated. LLR is proportional to "
-        "-log(Wilks' Lambda); use get_llr instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
     sign_e, logdet_e = np.linalg.slogdet(e)
     sign_t, logdet_t = np.linalg.slogdet(e + h)
-    return -np.exp(logdet_e - logdet_t)
+    return np.exp(logdet_e - logdet_t)
 
 
 def get_pillai(e, h, n=None):
@@ -210,8 +210,19 @@ def get_roys_root(e, h, n=None):
 
 stat_dict = {
     'llr': get_llr,
-    'neg_wilks': get_neg_wilks,
+    'wilks': get_wilks,
     'pillai': get_pillai,
     'hotel_tr': get_hotel_tr,
     'roys_root': get_roys_root,
+}
+
+stat_dict_inv = {fn: name for name, fn in stat_dict.items()}
+
+# +1 = larger is more significant; -1 = smaller is more significant
+stat_sign = {
+    get_llr: 1,
+    get_wilks: -1,
+    get_pillai: 1,
+    get_hotel_tr: 1,
+    get_roys_root: 1,
 }

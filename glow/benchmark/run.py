@@ -327,7 +327,7 @@ def run_stat_auc(config, **kwargs):
     from glow.experiment.analysis import AnalysisGLOW, get_best_model
     from glow.experiment.cluster import cluster
     from glow.experiment.exper import ExperimentScaled
-    from glow.experiment.mancova import stat_dict
+    from glow.experiment.mancova import stat_dict, stat_sign
     from glow.graph import (children_to_map, dp_antichain, get_miss_hits,
                             node_sum)
 
@@ -402,9 +402,10 @@ def run_stat_auc(config, **kwargs):
             XtX, Xty, model)
 
         # compute adjusted stat on real data (perm 0)
+        sign = stat_sign.get(stat_fn, 1)
         raw = stats_all[0][stat_label]
         predicted = AnalysisGLOW.predict_null_mean(sizes_real, model, beta)
-        adjusted = np.nan_to_num(raw - predicted, nan=-np.inf)
+        adjusted = np.nan_to_num(sign * (raw - predicted), nan=-np.inf)
 
         # DP antichain
         gain = {i: float(adjusted[i]) for i in range(num_reg)}
