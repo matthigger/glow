@@ -111,12 +111,6 @@ def bbox_crop(arr, mask=None):
     return arr[slices], slices
 
 
-def trim_zeros_2d(x, to_trim=0):
-    """Crop rows and columns that are entirely equal to *to_trim*."""
-    cropped, _ = bbox_crop(x, mask=(x != to_trim))
-    return cropped
-
-
 def get_neighbor_offsets(conn, not_reflexive=True):
     """compute neighbour index offsets from a connectivity mask.
 

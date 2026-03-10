@@ -1,7 +1,7 @@
 import numpy as np
 
 from glow.experiment import stretch_sigma
-from glow.experiment.sigma import get_sigma_from_y, get_size_yout_ymean
+from glow.experiment.sigma import get_sigma, get_size_yout_ymean
 
 
 def test_scale_sigma():
@@ -9,16 +9,14 @@ def test_scale_sigma():
     rng = np.random.default_rng(seed=0)
     y = rng.standard_normal((b, num_img, num_vox))
 
-    sigma_before = get_sigma_from_y(y)
+    sigma_before = get_sigma(*get_size_yout_ymean(y))
 
-    # test 1: gain=10
     gain_exp = 10
     y1 = stretch_sigma(y, scale=gain_exp ** .5)
-    sigma_after = get_sigma_from_y(y1)
+    sigma_after = get_sigma(*get_size_yout_ymean(y1))
     gain_obs = np.trace(sigma_after) / np.trace(sigma_before)
     assert np.isclose(gain_exp, gain_obs)
 
-    # output has same mean (per image) as input
     assert np.allclose(y.mean(axis=2), y1.mean(axis=2))
 
 

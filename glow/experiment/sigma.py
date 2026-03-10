@@ -21,11 +21,6 @@ def get_sigma(size, yout, ymean):
     return (yout / size - ymean @ ymean.T) / num_img
 
 
-def get_sigma_from_y(y):
-    size, yout, ymean = get_size_yout_ymean(y)
-    return get_sigma(size=size, yout=yout, ymean=ymean)
-
-
 def stretch_sigma(y, scale):
     """scale spatial covariance of y by a constant factor.
 

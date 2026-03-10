@@ -7,7 +7,6 @@ with click-to-navigate crosshairs and region overlay).
 """
 
 import numpy as np
-import plotly.graph_objects as go
 
 import glow.graph
 
@@ -195,26 +194,3 @@ def _overlay_mask(rgba, bool_mask, color, alpha=0.55):
         rgba[bool_mask, 2] * (1 - alpha) + b * alpha, 0, 255).astype(np.uint8)
 
 
-def build_2d_figure(bg_img, label_map, reg_idx_list):
-    """Build a single-view Plotly figure for 2D images.
-
-    Args:
-        bg_img (np.array): 2D background (NaN outside mask)
-        label_map (np.array): 2D label map (-1 outside regions)
-        reg_idx_list (list[int]): selected region indices
-
-    Returns:
-        fig (go.Figure)
-    """
-    rgba = _bg_to_rgba(bg_img)
-    _overlay_regions(rgba, label_map, reg_idx_list)
-
-    fig = go.Figure()
-    fig.add_trace(go.Image(z=rgba))
-    fig.update_layout(
-        height=400,
-        margin=dict(l=10, r=10, t=10, b=10),
-    )
-    fig.update_xaxes(showticklabels=False)
-    fig.update_yaxes(showticklabels=False)
-    return fig

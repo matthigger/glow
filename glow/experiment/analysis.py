@@ -13,7 +13,7 @@ from tqdm import tqdm
 import glow.effect
 import glow.graph
 # glow.vba imported lazily when needed (requires FSL for TFCE)
-from .cluster import cluster, count_components
+from .cluster import cluster
 from .exper import ExperimentScaled
 from .mancova import get_llr, stat_dict, stat_dict_inv, stat_sign
 from .prune import prune, prune_node, prune_tree, prune_tree_dp

@@ -206,34 +206,3 @@ def test_iter_neighbor():
             assert neigh_set_exp == neigh_set_obs
 
 
-def test_trim_zeros_2d():
-    """test trim_zeros_2d function removes zero borders"""
-    # create array with zero borders
-    x = np.array([[0, 0, 0, 0, 0],
-                  [0, 1, 2, 3, 0],
-                  [0, 4, 5, 6, 0],
-                  [0, 0, 0, 0, 0]])
-    
-    expected = np.array([[1, 2, 3],
-                        [4, 5, 6]])
-    
-    result = trim_zeros_2d(x, to_trim=0)
-    assert np.array_equal(result, expected)
-    
-    # test with different trim value
-    x2 = np.array([[9, 9, 9],
-                   [9, 1, 9],
-                   [9, 2, 9],
-                   [9, 9, 9]])
-    
-    expected2 = np.array([[1],
-                         [2]])
-    
-    result2 = trim_zeros_2d(x2, to_trim=9)
-    assert np.array_equal(result2, expected2)
-    
-    # test with no border to trim
-    x3 = np.array([[1, 2],
-                   [3, 4]])
-    result3 = trim_zeros_2d(x3, to_trim=0)
-    assert np.array_equal(result3, x3)

@@ -1,8 +1,6 @@
-import gzip
 import json
 import pathlib
 
-import cloudpickle as pickle
 import pandas as pd
 from platformdirs import user_data_dir
 
@@ -69,33 +67,6 @@ def load_update_all(label, verbose=True):
         print(f'{n_old} old and {n_new} new experiments stored in {f_csv}')
 
     return df, folder, n_new
-
-
-def get_uuid(df, **match_dict):
-    """return UUIDs of rows matching all key-value pairs in match_dict."""
-    s_bool = pd.Series(True, index=df.index)
-    for col, val in match_dict.items():
-        s_bool &= df[col] == val
-    return df[s_bool]['uuid']
-
-
-def load(df, folder='', uuid=None, **kwargs):
-    """load (Analysis, Effect) from a saved result file."""
-    folder = pathlib.Path(folder) / 'out'
-    assert folder.exists()
-    if uuid is None:
-        s_uuid = get_uuid(df=df, **kwargs)
-        assert s_uuid.size == 1, f'search found {s_uuid.size} unique experiments'
-        uuid = s_uuid.iloc[0]
-
-    file_list = list(folder.glob(f'*{uuid}_detail*'))
-    assert len(file_list) == 1, f'unique file not found for uuid: {uuid}'
-    file = file_list[0]
-
-    with gzip.open(file, 'rb') as f:
-        x = pickle.load(f)
-
-    return x
 
 
 if __name__ == '__main__':

@@ -6,24 +6,6 @@ from sklearn.feature_extraction.image import grid_to_graph
 from glow.mask import bbox_crop
 
 
-def count_components(mask_idx):
-    """Number of connected components in the mask.
-
-    Uses 6-connectivity for 3D, 4-connectivity for 2D (matching
-    grid_to_graph defaults and Ward's clustering connectivity).
-
-    Args:
-        mask_idx (np.array): -1 outside mask, sequential int inside
-
-    Returns:
-        k (int): number of connected components
-    """
-    mask = mask_idx >= 0
-    structure = generate_binary_structure(mask.ndim, 1)
-    _, k = label(mask, structure=structure)
-    return k
-
-
 def cluster(exp, mode='ward-glm'):
     """hierarchical segmentation via Ward's method (6-connectivity in 3d).
 
