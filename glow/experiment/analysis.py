@@ -622,6 +622,24 @@ class AnalysisGLOW(Analysis):
                 children=children_0, exp=exp,
                 exp_eff=prune_geom_exp_eff)
             self.homo_pval_dict = {}
+        elif prune_method == 'adjusted':
+            if verbose:
+                print(f'  pruning (adjusted-stat DP, lam=0) ...')
+            num_vox = exp.y.shape[2]
+            subgraph = glow.graph.SCGraph.from_children(
+                children_0, num_leaf=num_vox,
+                subset=self.sig_reg_list)
+            gain = {i: float(llr_adjusted_0[i]) for i in self.sig_reg_list}
+            reg_out_list, self.dp_info = glow.graph.dp_antichain(
+                nodes=sorted(self.sig_reg_list),
+                children_map=subgraph.children,
+                gain=gain,
+                lam=0.0,
+            )
+            self.dp_info['gain_per_node'] = gain
+            self.dp_info['subgraph_children'] = dict(subgraph.children)
+            self.dp_info['sig_reg_list'] = list(self.sig_reg_list)
+            self.homo_pval_dict = {}
         elif prune_method == 'homo':
             reg_out_list, self.homo_pval_dict = prune(
                 sig_reg_list=self.sig_reg_list,

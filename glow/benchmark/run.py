@@ -280,6 +280,19 @@ def run_prune_compare(config, **kwargs):
             prune_methods['GLOW-tree_dp'] = prune_tree_dp(
                 sig, children, exp, exp_eff=exp_eff)
 
+        # adjusted-stat DP: gain = size-adjusted stat, lam=0
+        if sig:
+            num_vox = exp.y.shape[2]
+            subgraph = glow.graph.SCGraph.from_children(
+                children, num_leaf=num_vox, subset=sig)
+            adj_gain = {i: float(ana.llr_adjusted_0[i]) for i in sig}
+            prune_methods['GLOW-adjusted'] = glow.graph.dp_antichain(
+                nodes=sorted(sig),
+                children_map=subgraph.children,
+                gain=adj_gain,
+                lam=0.0,
+            )
+
         for label, (reg_out_list, _info) in prune_methods.items():
             masks = []
             for reg_idx in reg_out_list:
