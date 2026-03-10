@@ -3,6 +3,8 @@ from scipy.ndimage import label, generate_binary_structure
 from sklearn.cluster import ward_tree
 from sklearn.feature_extraction.image import grid_to_graph
 
+from glow.mask import bbox_crop
+
 
 def count_components(mask_idx):
     """Number of connected components in the mask.
@@ -52,28 +54,34 @@ def cluster(exp, mode='ward-glm'):
     y = y.reshape((-1, num_vox))
 
     mask = exp.mask_idx >= 0
+    mask_bb, bb_slices = bbox_crop(mask)
     structure = generate_binary_structure(mask.ndim, 1)
-    labeled, num_components = label(mask, structure=structure)
+    labeled, num_components = label(mask_bb, structure=structure)
 
     if num_components == 1:
-        connectivity = grid_to_graph(*mask.shape, mask=mask)
+        connectivity = grid_to_graph(*mask_bb.shape, mask=mask_bb)
         children = ward_tree(X=y.T, connectivity=connectivity)[0]
         return children
+
+    # global indices of active voxels, ordered by raster scan of the bbox
+    global_idx = exp.mask_idx[bb_slices][mask_bb]
 
     # per-component clustering → forest
     all_children = []
     internal_offset = 0
 
     for c in range(1, num_components + 1):
-        comp_mask = labeled == c
-        comp_global_idx = exp.mask_idx[comp_mask]
+        comp_mask_bb = labeled == c
+        comp_bb, _ = bbox_crop(comp_mask_bb)
+        comp_select = labeled[mask_bb] == c
+        comp_global_idx = global_idx[comp_select]
         n_c = comp_global_idx.size
 
         if n_c < 2:
             continue
 
         local_X = y[:, comp_global_idx].T
-        local_conn = grid_to_graph(*comp_mask.shape, mask=comp_mask)
+        local_conn = grid_to_graph(*comp_bb.shape, mask=comp_bb)
         local_children = ward_tree(X=local_X, connectivity=local_conn)[0]
 
         remapped = np.empty_like(local_children)

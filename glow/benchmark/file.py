@@ -48,8 +48,13 @@ def load_update_all(label, verbose=True):
     # round effect_llr to 14 decimal places (avoids floating point comparison failure)
     df['effect_llr'] = df['effect_llr'].round(14)
 
-    # drop duplicates & check for conflicting results
+    # drop duplicates — convert list columns to tuples for hashing
+    list_cols = [c for c in df.columns if df[c].apply(type).eq(list).any()]
+    for c in list_cols:
+        df[c] = df[c].apply(lambda x: tuple(x) if isinstance(x, list) else x)
     df.drop_duplicates(inplace=True)
+    for c in list_cols:
+        df[c] = df[c].apply(lambda x: list(x) if isinstance(x, tuple) else x)
 
     # overwrite csv with latest / greatest
     df.to_csv(f_csv, index=False)

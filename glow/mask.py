@@ -90,17 +90,31 @@ def get_score(mask_pred, mask_target, mask_active=None):
     return f1, sens, spec
 
 
+def bbox_crop(arr, mask=None):
+    """Crop an ndarray to the bounding box of non-zero entries.
+
+    Args:
+        arr (np.array): array of any dimensionality
+        mask (np.array, optional): boolean array selecting "active" cells.
+            If None, active cells are those where ``arr != 0``.
+
+    Returns:
+        cropped (np.array): tight slice of *arr* with no all-inactive border
+        slices (tuple of slice): the slices applied, one per axis
+    """
+    if mask is None:
+        mask = arr != 0
+    coords = np.argwhere(mask)
+    lo = coords.min(axis=0)
+    hi = coords.max(axis=0) + 1
+    slices = tuple(slice(l, h) for l, h in zip(lo, hi))
+    return arr[slices], slices
+
+
 def trim_zeros_2d(x, to_trim=0):
-    """crop rows and columns that are entirely equal to to_trim."""
-    # rows and cols where there is at least one non-zero element
-    non_zero_rows = np.any(x != to_trim, axis=1)
-    non_zero_cols = np.any(x != to_trim, axis=0)
-
-    # indices of the first and last True values
-    row_start, row_end = np.where(non_zero_rows)[0][[0, -1]]
-    col_start, col_end = np.where(non_zero_cols)[0][[0, -1]]
-
-    return x[row_start:row_end + 1, col_start:col_end + 1]
+    """Crop rows and columns that are entirely equal to *to_trim*."""
+    cropped, _ = bbox_crop(x, mask=(x != to_trim))
+    return cropped
 
 
 def get_neighbor_offsets(conn, not_reflexive=True):

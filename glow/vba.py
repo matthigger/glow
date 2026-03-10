@@ -7,6 +7,8 @@ fslmaths -tfce output exactly.
 import numpy as np
 from scipy.ndimage import label, generate_binary_structure
 
+from glow.mask import bbox_crop
+
 
 def apply_tfce_img(x, H=2.0, E=0.5, connectivity=6, n_steps=100):
     """apply TFCE to a 3d statistical image.
@@ -64,8 +66,9 @@ def apply_tfce_img(x, H=2.0, E=0.5, connectivity=6, n_steps=100):
 def apply_tfce_x(x, mask_idx):
     """apply TFCE to a vector of stats given a 3d mask index.
 
-    pads the mask with a single-voxel border of zeros (TFCE requires
-    the image boundary to be zero).
+    Crops to the bounding box of active voxels before running TFCE,
+    then pads with a single-voxel border of zeros (TFCE requires the
+    image boundary to be zero).
 
     Args:
         x (np.array): 1d array of statistical values (one per active voxel)
@@ -75,13 +78,15 @@ def apply_tfce_x(x, mask_idx):
     Returns:
         tfce (np.array): TFCE stats for each active voxel
     """
-    # zero pad (TFCE requires border of zeros)
-    mask_idx = np.pad(np.atleast_3d(mask_idx), pad_width=1,
-                      constant_values=-1)
+    mask_idx = np.atleast_3d(mask_idx)
 
-    mask_bool = mask_idx > -1
-    img = np.zeros(mask_idx.shape)
-    img[mask_bool] = x
+    # crop to bounding box of active voxels, then pad (TFCE needs zero border)
+    mask_idx_bb, _ = bbox_crop(mask_idx, mask=(mask_idx > -1))
+    mask_idx_bb = np.pad(mask_idx_bb, pad_width=1, constant_values=-1)
+    mask_bool_bb_pad = mask_idx_bb > -1
+
+    img = np.zeros(mask_idx_bb.shape)
+    img[mask_bool_bb_pad] = x
 
     img_tfce = apply_tfce_img(img)
-    return img_tfce[mask_bool]
+    return img_tfce[mask_bool_bb_pad]
