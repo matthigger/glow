@@ -98,6 +98,7 @@ def test_get_mancova_with_q_tup():
 
 def test_all_stat_functions():
     """test all MANCOVA statistics"""
+    import pytest
     rng = np.random.default_rng(42)
     b = 3
     
@@ -109,12 +110,19 @@ def test_all_stat_functions():
     h = h_raw @ h_raw.T
     
     # test all stats run without error
-    wilks = get_neg_wilks(e=e, h=h)
-    assert wilks <= 0  # negative wilks should be negative or zero
-    
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', DeprecationWarning)
+        wilks = get_neg_wilks(e=e, h=h)
+        assert wilks <= 0
+
+    with pytest.warns(DeprecationWarning, match='get_neg_wilks is deprecated'):
+        get_neg_wilks(e=e, h=h)
+
     pillai = get_pillai(e=e, h=h)
-    assert pillai >= 0  # pillai should be non-negative
-    
+    assert pillai >= 0
+
     hotel = get_hotel_tr(e=e, h=h)
     assert hotel >= 0
 
@@ -126,11 +134,11 @@ def test_all_stat_functions():
 
     # test stat_dict
     assert len(stat_dict) == 5
-    assert 'LLR' in stat_dict
-    assert 'Wilks' in stat_dict
-    assert 'Pillai' in stat_dict
-    assert 'Hotelling Tr' in stat_dict
-    assert 'Roy Root' in stat_dict
+    assert 'llr' in stat_dict
+    assert 'neg_wilks' in stat_dict
+    assert 'pillai' in stat_dict
+    assert 'hotel_tr' in stat_dict
+    assert 'roys_root' in stat_dict
 
     for name, stat_func in stat_dict.items():
         result = stat_func(e=e, h=h, n=100)

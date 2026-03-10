@@ -117,16 +117,18 @@ def get_llr(e, h, n=None, *, size_normalize=False):
 
 
 def get_neg_wilks(e, h, n=None):
-    """negative Wilks' lambda (larger = more evidence against H0).
+    """Deprecated: use get_llr instead.
 
-    Args:
-        e (np.array): (b, b) error matrix
-        h (np.array): (b, b) hypothesis matrix
-        n: unused (accepted for uniform stat-function interface)
-
-    Returns:
-        float: -det(E) / det(E + H)
+    LLR is proportional to -log(Wilks' Lambda); prefer get_llr for
+    size adjustment and all new analyses.
     """
+    import warnings
+    warnings.warn(
+        "get_neg_wilks is deprecated. LLR is proportional to "
+        "-log(Wilks' Lambda); use get_llr instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     sign_e, logdet_e = np.linalg.slogdet(e)
     sign_t, logdet_t = np.linalg.slogdet(e + h)
     return -np.exp(logdet_e - logdet_t)
@@ -206,8 +208,10 @@ def get_roys_root(e, h, n=None):
     return float(np.max(np.real(eigvals)))
 
 
-stat_dict = {'LLR': get_llr,
-             'Wilks': get_neg_wilks,
-             'Pillai': get_pillai,
-             'Hotelling Tr': get_hotel_tr,
-             'Roy Root': get_roys_root}
+stat_dict = {
+    'llr': get_llr,
+    'neg_wilks': get_neg_wilks,
+    'pillai': get_pillai,
+    'hotel_tr': get_hotel_tr,
+    'roys_root': get_roys_root,
+}

@@ -421,11 +421,11 @@ def run_synthesis_mode(args):
         time.sleep(30)
 
     # --- streaming synthesis: two passes over S3 results ---
-    from glow.experiment.analysis import _STAT_MODEL, _DEFAULT_MODEL
+    from glow.experiment.analysis import get_best_model
 
     b, num_img, num_vox = exp.y.shape
     get_stat = ana_kwargs.get('get_stat', get_llr)
-    model = _STAT_MODEL.get(get_stat, _DEFAULT_MODEL)
+    model = ana_kwargs.get('size_adjust_model') or get_best_model(get_stat)
     n_perm_prune = ana_kwargs.get('n_perm_prune', 100)
     alpha_fwer = ana_kwargs.get('alpha_fwer', 0.05)
     alpha_prune = ana_kwargs.get('alpha_prune', 0.05)
@@ -462,10 +462,7 @@ def run_synthesis_mode(args):
 
     mu_fn, _, beta = AnalysisGLOW.fit_size_regression_online(
         XtX, Xty, model, get_stat)
-    if model == 'sqrt':
-        print(f'  stat = {beta[0]:+.4f} {beta[1]:+.6f}*sqrt(size)')
-    else:
-        print(f'  ln(stat) = {beta[0]:+.4f} {beta[1]:+.4f}*ln(size)')
+    print(f'  model={model}  beta={beta}')
 
     # pass 2: compute adjusted max-stat per permutation
     print(f'Pass 2: computing FWER max-stats ...')

@@ -324,7 +324,7 @@ def run_stat_auc(config, **kwargs):
     """
     from sklearn.metrics import roc_auc_score
     from tqdm import tqdm
-    from glow.experiment.analysis import AnalysisGLOW, _STAT_MODEL, _DEFAULT_MODEL
+    from glow.experiment.analysis import AnalysisGLOW, get_best_model
     from glow.experiment.cluster import cluster
     from glow.experiment.exper import ExperimentScaled
     from glow.experiment.mancova import stat_dict
@@ -392,20 +392,14 @@ def run_stat_auc(config, **kwargs):
         null_stats = np.concatenate([stats_all[p][stat_label]
                                      for p in range(1, n_perm_fit + 1)])
 
-        model = _STAT_MODEL.get(stat_fn, _DEFAULT_MODEL)
+        model = get_best_model(stat_fn)
 
-        if model == 'sqrt':
-            valid = (np.isfinite(null_stats) & (null_sizes > 0)
-                     & np.isfinite(null_sizes))
-            s, y = null_sizes[valid], null_stats[valid]
-            X = np.column_stack([np.ones(len(s)), np.sqrt(s)])
-            beta, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
-        else:
-            valid = (np.isfinite(null_stats) & (null_stats > 0)
-                     & (null_sizes > 0) & np.isfinite(null_sizes))
-            s, y = null_sizes[valid], null_stats[valid]
-            X = np.column_stack([np.ones(len(s)), np.log(s)])
-            beta, _, _, _ = np.linalg.lstsq(X, np.log(y), rcond=None)
+        XtX, Xty = None, None
+        for p in range(1, n_perm_fit + 1):
+            XtX, Xty = AnalysisGLOW.accumulate_regression(
+                sizes_all[p], stats_all[p][stat_label], model, XtX, Xty)
+        mu_fn, _, beta = AnalysisGLOW.fit_size_regression_online(
+            XtX, Xty, model)
 
         # compute adjusted stat on real data (perm 0)
         raw = stats_all[0][stat_label]
