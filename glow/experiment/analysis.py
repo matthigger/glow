@@ -259,7 +259,7 @@ class AnalysisGLOW(Analysis):
         effect_list (list): discovered Effect objects
     """
 
-    def __init__(self, exp, n_perm, n_perm_prune=100,
+    def __init__(self, exp, n_perm, n_perm_prune=100, n_perm_fit=25,
                  alpha_fwer=.05, alpha_prune=.05, min_size=1, verbose=False,
                  n_jobs_perm=1, cloud_config=None, perm_dir=None,
                  prune_method='node', prune_geom_exp_eff=None,
@@ -267,9 +267,12 @@ class AnalysisGLOW(Analysis):
         """
         Args:
             exp: Experiment to analyze
-            n_perm: Number of permutations
+            n_perm: Number of permutations for FWER control
             n_perm_prune: Number of pruning permutations (used for
                 homogeneity-test pruning and node-gain calibration)
+            n_perm_fit: Number of held-out permutations used exclusively
+                to fit the size-adjustment regression (default 25).
+                These are independent of the n_perm FWER permutations.
             alpha_fwer: Family-wise error rate
             alpha_prune: Pruning alpha (quantile level for both
                 homogeneity and node-gain calibration)
@@ -302,7 +305,7 @@ class AnalysisGLOW(Analysis):
         if cloud_config is not None:
             self._run_on_cloud(exp, n_perm, n_perm_prune,
                               alpha_fwer, alpha_prune, min_size, verbose,
-                              cloud_config,
+                              cloud_config, n_perm_fit=n_perm_fit,
                               prune_method=prune_method,
                               prune_geom_exp_eff=prune_geom_exp_eff,
                               size_adjust_model=size_adjust_model,
@@ -311,6 +314,14 @@ class AnalysisGLOW(Analysis):
 
         b, num_img, num_vox = exp.y.shape
         model = size_adjust_model or get_best_model(self.get_stat)
+
+        # Permutation index layout:
+        #   0           = observed data
+        #   1..n_perm   = FWER null permutations
+        #   n_perm+1..n_perm+n_perm_fit = held-out fit permutations
+        fit_start = n_perm + 1
+        fit_end = n_perm + n_perm_fit
+        all_perm_indices = list(range(fit_end + 1))
 
         # set up directory for per-permutation result files
         _cleanup_dir = perm_dir is None
@@ -329,21 +340,21 @@ class AnalysisGLOW(Analysis):
             except ValueError:
                 continue
             existing.add(perm_idx)
-            if perm_idx > 0:
+            if perm_idx >= fit_start:
                 with open(f, 'rb') as fh:
                     r = pickle.load(fh)
                 XtX, Xty = self.accumulate_regression(
                     r['size'], r['stat'], model, XtX, Xty)
                 del r
 
-        todo = [i for i in range(n_perm + 1) if i not in existing]
+        todo = [i for i in all_perm_indices if i not in existing]
         if existing and verbose:
             print(f'  resumed: {len(existing)} permutations found on disk, '
                   f'{len(todo)} remaining')
 
         if verbose:
             print(f'  [1/3] clustering {len(todo)} permutations '
-                  f'({num_vox} voxels) ...')
+                  f'({num_vox} voxels, {n_perm} FWER + {n_perm_fit} fit) ...')
 
         if n_jobs_perm not in (0, 1) and todo:
             results = Parallel(
@@ -355,7 +366,7 @@ class AnalysisGLOW(Analysis):
                 p = r['perm_idx']
                 with open(perm_dir / f'{p:06d}_result.pkl', 'wb') as fh:
                     pickle.dump(r, fh)
-                if p > 0:
+                if p >= fit_start:
                     XtX, Xty = self.accumulate_regression(
                         r['size'], r['stat'], model, XtX, Xty)
                 del r
@@ -366,7 +377,7 @@ class AnalysisGLOW(Analysis):
                 with open(perm_dir / f'{r["perm_idx"]:06d}_result.pkl',
                           'wb') as fh:
                     pickle.dump(r, fh)
-                if perm_idx > 0:
+                if perm_idx >= fit_start:
                     XtX, Xty = self.accumulate_regression(
                         r['size'], r['stat'], model, XtX, Xty)
                 del r
@@ -643,15 +654,16 @@ class AnalysisGLOW(Analysis):
 
     def _run_on_cloud(self, exp, n_perm, n_perm_prune,
                      alpha_fwer, alpha_prune, min_size, verbose,
-                     cloud_config, prune_method='node',
+                     cloud_config, n_perm_fit=25, prune_method='node',
                      prune_geom_exp_eff=None,
                      size_adjust_model=None, **kwargs):
         """Run full analysis on AWS Batch (permutations + synthesis).
 
-        Submits N+1 permutation jobs, then a synthesis job that polls S3
-        for all results before running ``_finalize_analysis`` on the cloud.
-        The final pickled AnalysisGLOW is downloaded and its attributes
-        are copied onto ``self``.
+        Submits N+1+n_perm_fit permutation jobs, then a synthesis job
+        that polls S3 for all results before running
+        ``_finalize_analysis`` on the cloud.  The final pickled
+        AnalysisGLOW is downloaded and its attributes are copied onto
+        ``self``.
         """
         from glow.aws import AWSBatchRunner
         import uuid
@@ -663,6 +675,7 @@ class AnalysisGLOW(Analysis):
         ana_kwargs = {
             'get_stat': self.get_stat,
             'n_perm_prune': n_perm_prune,
+            'n_perm_fit': n_perm_fit,
             'alpha_fwer': alpha_fwer,
             'alpha_prune': alpha_prune,
             'min_size': min_size,
@@ -680,7 +693,7 @@ class AnalysisGLOW(Analysis):
         print('submitting permutation jobs...')
         submission = runner.submit_jobs(
             experiment_id=experiment_id,
-            n_perm=n_perm,
+            n_perm=n_perm + n_perm_fit,
             skip_completed=True,
         )
 
@@ -690,7 +703,8 @@ class AnalysisGLOW(Analysis):
         perm_job_ids = submission['job_ids']
 
         print('submitting synthesis job...')
-        synth_job_id = runner.submit_synthesis_job(experiment_id, n_perm)
+        synth_job_id = runner.submit_synthesis_job(
+            experiment_id, n_perm + n_perm_fit)
 
         all_job_ids = perm_job_ids + [synth_job_id]
 

@@ -395,6 +395,9 @@ def run_synthesis_mode(args):
         sys.exit(1)
 
     # poll S3 until all permutation results are available
+    n_perm_fit = ana_kwargs.get('n_perm_fit', 25)
+    n_perm_fwer = args.n_perm - n_perm_fit
+    fit_start = n_perm_fwer + 1
     n_expected = args.n_perm + 1
     result_prefix = (f'{args.s3_prefix}/results/'
                      f'{args.experiment_id}/')
@@ -456,8 +459,9 @@ def run_synthesis_mode(args):
                   else glow.graph.node_sum(np.ones(num_vox, dtype=int),
                                            r['children']).astype(float))
         perm_elapsed.append(r.get('elapsed_sec'))
-        XtX, Xty = AnalysisGLOW.accumulate_regression(
-            size_p, stat_p, model, XtX, Xty)
+        if perm_idx >= fit_start:
+            XtX, Xty = AnalysisGLOW.accumulate_regression(
+                size_p, stat_p, model, XtX, Xty)
         del r, stat_p, size_p
 
     mu_fn, _, beta = AnalysisGLOW.fit_size_regression_online(
@@ -477,7 +481,7 @@ def run_synthesis_mode(args):
     else:
         stat_max_list.append(float('-inf'))
 
-    for perm_idx in range(1, n_expected):
+    for perm_idx in range(1, n_perm_fwer + 1):
         r = _load_result(perm_idx)
         stat_p = np.asarray(r['stat'], dtype=float)
         size_p = (np.asarray(r['size'], dtype=float) if 'size' in r
@@ -492,7 +496,8 @@ def run_synthesis_mode(args):
         del r, stat_p, size_p, adj_p
 
     stat_max_sorted = np.sort(stat_max_list)
-    print(f'  ✓ {n_expected} max-stats collected')
+    n_fwer = n_perm_fwer + 1
+    print(f'  ✓ {n_fwer} max-stats collected ({n_perm_fit} fit perms held out)')
 
     # build analysis shell and run streaming finalization
     ana = object.__new__(AnalysisGLOW)
@@ -506,7 +511,7 @@ def run_synthesis_mode(args):
     print(f'\nRunning _finalize_analysis ...')
     _t0 = time.time()
     ana._finalize_analysis(
-        exp, args.n_perm,
+        exp, n_perm_fwer,
         stat_0, size_0, children_0,
         mu_fn, stat_max_sorted,
         n_perm_prune, alpha_fwer, alpha_prune, min_size,

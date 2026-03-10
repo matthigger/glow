@@ -321,13 +321,14 @@ class TestResume:
         import tempfile
         perm_dir = tempfile.mkdtemp(prefix='glow_test_keep_')
         n_perm = 5
+        n_perm_fit = 25
 
-        AnalysisGLOW(self.exp, n_perm=n_perm, alpha_fwer=.5,
-                      perm_dir=perm_dir)
+        AnalysisGLOW(self.exp, n_perm=n_perm, n_perm_fit=n_perm_fit,
+                      alpha_fwer=.5, perm_dir=perm_dir)
 
         from pathlib import Path
         result_files = list(Path(perm_dir).glob('*_result.pkl'))
-        assert len(result_files) == n_perm + 1
+        assert len(result_files) == n_perm + 1 + n_perm_fit
 
         import shutil
         shutil.rmtree(perm_dir, ignore_errors=True)
