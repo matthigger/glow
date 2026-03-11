@@ -253,7 +253,7 @@ def test_aws_runner_methods():
     
     exp_id = 'test_exp_001'
     ana_kwargs = {
-        'n_perm': 5,
+        'n_perm_fwer': 5,
         'n_perm_prune': 10,
         'alpha_fwer': 0.05,
         'alpha_prune': 0.05,
@@ -332,8 +332,8 @@ def run_batched_cloud_tests():
         mask = np.logical_and(mask, exp_orig.mask_idx > -1)
         exp, _ = exp_orig.impose_effect(mask=mask, effect_llr=1.0, seed=42)
 
-        n_perm = 5
-        ana_kwargs = dict(n_perm=n_perm, n_perm_prune=10,
+        n_perm_fwer = 5
+        ana_kwargs = dict(n_perm_fwer=n_perm_fwer, n_perm_prune=10,
                           alpha_fwer=0.05, alpha_prune=0.05, min_size=1,
                           verbose=True)
 
@@ -357,18 +357,18 @@ def run_batched_cloud_tests():
         }
         runner.upload_experiment(exp, cloud_ana_kwargs, experiment_id)
         submission = runner.submit_jobs(
-            experiment_id=experiment_id, n_perm=n_perm,
+            experiment_id=experiment_id, n_perm=n_perm_fwer,
             skip_completed=True)
 
         perm_job_ids = submission['job_ids']
 
-        synth_job_id = runner.submit_synthesis_job(experiment_id, n_perm)
+        synth_job_id = runner.submit_synthesis_job(experiment_id, n_perm_fwer)
         all_cloud_job_ids = perm_job_ids + [synth_job_id]
 
         all_job_ids.extend(all_cloud_job_ids)
         test_meta['permutation_level'] = {
             'runner': runner, 'experiment_id': experiment_id,
-            'n_perm': n_perm, 'exp': exp,
+            'n_perm_fwer': n_perm_fwer, 'exp': exp,
             'ana_local': ana_local, 'ana_kwargs': ana_kwargs,
             'job_ids': all_cloud_job_ids,
         }
@@ -379,7 +379,7 @@ def run_batched_cloud_tests():
         print('\n[Prepare] Experiment-level test')
         ana_kwargs_dict = {
             'GLOW': (glow.experiment.AnalysisGLOW,
-                     dict(n_perm=5, n_perm_prune=10,
+                     dict(n_perm_fwer=5, n_perm_prune=10,
                           alpha_fwer=0.05, alpha_prune=0.05, min_size=1,
                           n_jobs_perm=1))
         }
@@ -406,7 +406,7 @@ def run_batched_cloud_tests():
         print('\n[Prepare] TFCE test')
         ana_kwargs_dict = {
             'VBA-TFCE': (glow.experiment.AnalysisVBA,
-                         dict(n_perm=5, tfce_flag=True, alpha_fwer=0.05,
+                         dict(n_perm_fwer=5, tfce_flag=True, alpha_fwer=0.05,
                               n_jobs_perm=1))
         }
         cloud_config = CloudConfig(
@@ -432,7 +432,7 @@ def run_batched_cloud_tests():
         print('\n[Prepare] HCP test')
         ana_kwargs_dict = {
             'GLOW': (glow.experiment.AnalysisGLOW,
-                     dict(n_perm=5, n_perm_prune=10,
+                     dict(n_perm_fwer=5, n_perm_prune=10,
                           alpha_fwer=0.05, alpha_prune=0.05, min_size=1,
                           n_jobs_perm=1))
         }

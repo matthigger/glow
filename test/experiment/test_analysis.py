@@ -26,7 +26,7 @@ class TestBigEffect:
                                     effect_llr=0.5)
 
     def test_glow(self):
-        analysis = AnalysisGLOW(TestBigEffect.exp, n_perm=25, alpha_fwer=.1)
+        analysis = AnalysisGLOW(TestBigEffect.exp, n_perm_fwer=25, alpha_fwer=.1)
 
         # check that target region segmented properly
         f1 = get_f1_sens_spec(mask=TestBigEffect.effect.mask,
@@ -43,7 +43,7 @@ class TestBigEffect:
         kwargs_list = [dict(tfce_flag=False),
                        dict(tfce_flag=True)]
         for kwargs in kwargs_list:
-            analysis = AnalysisVBA(TestBigEffect.exp, n_perm=25,
+            analysis = AnalysisVBA(TestBigEffect.exp, n_perm_fwer=25,
                                    alpha_fwer=.1, **kwargs)
         mask_all = sum(eff.mask for eff in analysis.effect_list)
         np.testing.assert_allclose(mask_all,
@@ -52,8 +52,8 @@ class TestBigEffect:
     def test_glow_with_prune(self):
         """test GLOW with pruning enabled"""
         analysis = AnalysisGLOW(
-            TestBigEffect.exp, 
-            n_perm=10, 
+            TestBigEffect.exp,
+            n_perm_fwer=10,
             n_perm_prune=15,
             alpha_fwer=.1,
             alpha_prune=.05
@@ -66,7 +66,7 @@ class TestBigEffect:
         """pruning with exp_eff=1 should find exactly one effect."""
         analysis = AnalysisGLOW(
             TestBigEffect.exp,
-            n_perm=25,
+            n_perm_fwer=25,
             alpha_fwer=.1,
             prune_geom_exp_eff=1
         )
@@ -87,8 +87,8 @@ class TestBigEffect:
     def test_glow_with_adjustment(self):
         """test GLOW with adjustment permutations"""
         analysis = AnalysisGLOW(
-            TestBigEffect.exp, 
-            n_perm=10,
+            TestBigEffect.exp,
+            n_perm_fwer=10,
             alpha_fwer=.1
         )
         
@@ -102,7 +102,7 @@ class TestBigEffect:
         # use pillai instead of default hotelling
         analysis = AnalysisGLOW(
             TestBigEffect.exp,
-            n_perm=5,
+            n_perm_fwer=5,
             alpha_fwer=.1,
             get_stat=get_pillai
         )
@@ -125,7 +125,7 @@ class TestAnalysisEdgeCases:
         # set min_size so large that all regions are filtered
         analysis = AnalysisGLOW(
             exp,
-            n_perm=5,
+            n_perm_fwer=5,
             alpha_fwer=.1,
             min_size=1000000  # impossibly large
         )
@@ -146,7 +146,7 @@ class TestAnalysisEdgeCases:
         
         analysis = AnalysisGLOW(
             exp,
-            n_perm=3,
+            n_perm_fwer=3,
             alpha_fwer=.5,  # lenient for small sample
             min_size=1
         )
@@ -165,14 +165,14 @@ class TestAnalysisEdgeCases:
         # strict alpha
         analysis_strict = AnalysisGLOW(
             exp,
-            n_perm=5,
+            n_perm_fwer=5,
             alpha_fwer=.01
         )
-        
+
         # lenient alpha
         analysis_lenient = AnalysisGLOW(
             exp,
-            n_perm=5,
+            n_perm_fwer=5,
             alpha_fwer=.5
         )
         
@@ -193,15 +193,15 @@ class TestParallelExecution:
         # run with parallel execution
         analysis_parallel = AnalysisGLOW(
             exp,
-            n_perm=10,
+            n_perm_fwer=10,
             alpha_fwer=.1,
             n_jobs_perm=2  # parallel execution
         )
-        
+
         # run with serial execution
         analysis_serial = AnalysisGLOW(
             exp,
-            n_perm=10,
+            n_perm_fwer=10,
             alpha_fwer=.1,
             n_jobs_perm=0  # serial execution
         )
@@ -243,7 +243,7 @@ class TestZeroStdGuard:
                                    extenter=ExtenterSphere(radius=1),
                                    effect_llr=0.5)
 
-        analysis = AnalysisGLOW(exp, n_perm=5, alpha_fwer=0.05,
+        analysis = AnalysisGLOW(exp, n_perm_fwer=5, alpha_fwer=0.05,
                                 min_size=1)
 
         assert not np.any(np.isinf(analysis.llr_adjusted_0)), \
@@ -284,7 +284,7 @@ class TestResume:
 
     def test_no_perm_dir_by_default(self):
         """AnalysisGLOW works when perm_dir is None (temp dir, auto-clean)."""
-        analysis = AnalysisGLOW(self.exp, n_perm=5, alpha_fwer=.5)
+        analysis = AnalysisGLOW(self.exp, n_perm_fwer=5, alpha_fwer=.5)
         assert hasattr(analysis, 'pval')
         assert hasattr(analysis, 'children')
 
@@ -292,10 +292,10 @@ class TestResume:
         """Partial results in perm_dir are reused, completing the run."""
         import pickle
         import tempfile
-        n_perm = 10
+        n_perm_fwer = 10
 
         # full run as reference
-        ref = AnalysisGLOW(self.exp, n_perm=n_perm, alpha_fwer=.5)
+        ref = AnalysisGLOW(self.exp, n_perm_fwer=n_perm_fwer, alpha_fwer=.5)
 
         # write first 5 permutations into a temp perm_dir
         perm_dir = tempfile.mkdtemp(prefix='glow_test_resume_')
@@ -306,7 +306,7 @@ class TestResume:
 
         # resume from partial perm_dir
         resumed = AnalysisGLOW(
-            self.exp, n_perm=n_perm, alpha_fwer=.5,
+            self.exp, n_perm_fwer=n_perm_fwer, alpha_fwer=.5,
             perm_dir=perm_dir)
 
         np.testing.assert_array_equal(resumed.pval, ref.pval)
@@ -318,15 +318,16 @@ class TestResume:
         """When perm_dir is provided, result files are kept after run."""
         import tempfile
         perm_dir = tempfile.mkdtemp(prefix='glow_test_keep_')
-        n_perm = 5
-        n_perm_fit = 25
+        n_perm_fwer = 5
+        n_perm_fwer_size_adjust = 25
 
-        AnalysisGLOW(self.exp, n_perm=n_perm, n_perm_fit=n_perm_fit,
+        AnalysisGLOW(self.exp, n_perm_fwer=n_perm_fwer,
+                      n_perm_fwer_size_adjust=n_perm_fwer_size_adjust,
                       alpha_fwer=.5, perm_dir=perm_dir)
 
         from pathlib import Path
         result_files = list(Path(perm_dir).glob('*_result.pkl'))
-        assert len(result_files) == n_perm + 1 + n_perm_fit
+        assert len(result_files) == n_perm_fwer + 1 + n_perm_fwer_size_adjust
 
         import shutil
         shutil.rmtree(perm_dir, ignore_errors=True)
@@ -351,7 +352,7 @@ class TestForest:
 
         exp = Experiment(x=x, contrast=contrast, y=y,
                          mask_idx=mask_idx, add_bias=True)
-        ana = AnalysisGLOW(exp, n_perm=10, alpha_fwer=.5)
+        ana = AnalysisGLOW(exp, n_perm_fwer=10, alpha_fwer=.5)
 
         children = ana.children
         assert children.shape == (num_vox - 2, 2), \
@@ -373,13 +374,13 @@ class TestStreamingFidelity:
 
     def test_reproducible(self):
         """Two runs with the same data must produce identical p-values."""
-        n_perm = 25
+        n_perm_fwer = 25
         alpha_fwer = 0.1
 
-        ana_a = AnalysisGLOW(self.exp, n_perm=n_perm, alpha_fwer=alpha_fwer,
-                             verbose=False)
-        ana_b = AnalysisGLOW(self.exp, n_perm=n_perm, alpha_fwer=alpha_fwer,
-                             verbose=False)
+        ana_a = AnalysisGLOW(self.exp, n_perm_fwer=n_perm_fwer,
+                             alpha_fwer=alpha_fwer, verbose=False)
+        ana_b = AnalysisGLOW(self.exp, n_perm_fwer=n_perm_fwer,
+                             alpha_fwer=alpha_fwer, verbose=False)
 
         np.testing.assert_array_equal(ana_a.pval, ana_b.pval)
         assert set(ana_a.sig_reg_list) == set(ana_b.sig_reg_list)
@@ -391,10 +392,10 @@ class TestStreamingFidelity:
     def test_rerun_permutation(self):
         """rerun_permutation reproduces the same result as a full run."""
         import pickle, tempfile
-        n_perm = 10
+        n_perm_fwer = 10
         perm_dir = tempfile.mkdtemp(prefix='glow_test_rerun_')
 
-        AnalysisGLOW(self.exp, n_perm=n_perm, alpha_fwer=.1,
+        AnalysisGLOW(self.exp, n_perm_fwer=n_perm_fwer, alpha_fwer=.1,
                       perm_dir=perm_dir)
 
         with open(f'{perm_dir}/{3:06d}_result.pkl', 'rb') as f:

@@ -205,7 +205,7 @@ def _rerun_and_view(config_label, seed, effect_llr, use_cache=False,
     # run GLOW analysis with parallel permutations
     glow_kwargs = dict(ANALYSES['GLOW'])
     glow_kwargs['n_jobs_perm'] = -1  # use all cores
-    print(f'  Running AnalysisGLOW (n_perm={glow_kwargs["n_perm"]}, '
+    print(f'  Running AnalysisGLOW (n_perm_fwer={glow_kwargs["n_perm_fwer"]}, '
           f'parallel) ...')
     ana = glow.experiment.AnalysisGLOW(exp_eff, verbose=True, **glow_kwargs)
     print(f'  Found {len(ana.effect_list)} effects')

@@ -27,7 +27,7 @@ def bench_memory_profile():
     # Create a simple WGN config (fast to set up)
     ana_kwargs_dict = {
         'GLOW': (glow.experiment.AnalysisGLOW, {
-            'n_perm': 50,
+            'n_perm_fwer': 50,
             'n_perm_prune': 20,
             'min_size': 1,
             'alpha_prune': 0.05,

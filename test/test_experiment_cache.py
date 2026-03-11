@@ -47,7 +47,7 @@ def _make_config(label='test_cache', ana_labels=('A', 'B')):
     import glow
     ana_kwargs_dict = {
         lbl: (glow.experiment.AnalysisGLOW, {
-            'n_perm': 1, 'n_perm_prune': 1,
+            'n_perm_fwer': 1, 'n_perm_prune': 1,
             'min_size': 1, 'alpha_prune': 0.05, 'alpha_fwer': 0.05,
             'n_jobs_perm': 1,
         })
@@ -131,12 +131,11 @@ class TestConfigHash:
         assert c1._config_hash() == c2._config_hash()
 
     def test_different_nperm(self):
-        """Changing n_perm in ana_kwargs_dict produces a different hash."""
+        """Changing n_perm_fwer in ana_kwargs_dict produces a different hash."""
         c1 = _make_config(ana_labels=('GLOW',))
         c2 = _make_config(ana_labels=('GLOW',))
-        # mutate c2's n_perm
         _, kw = c2.ana_kwargs_dict['GLOW']
-        kw['n_perm'] = 999
+        kw['n_perm_fwer'] = 999
         assert c1._config_hash() != c2._config_hash()
 
     def test_different_source(self):

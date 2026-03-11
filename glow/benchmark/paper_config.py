@@ -2,7 +2,8 @@ import numpy as np
 
 import glow
 from glow.benchmark.config import Config
-from glow.benchmark.run import run_ana, run_segment, run_stat_auc
+from glow.benchmark.run import run_ana, run_segment
+from glow.experiment.mancova import stat_dict
 
 # common params
 # run experiments serially (n_jobs=1) and keep permutations serial per experiment
@@ -35,17 +36,17 @@ ALPHA_FWER = 0.05
 N_JOBS_PERM = 1
 
 ANALYSES = {
-    'GLOW': dict(n_perm=N_PERM,
+    'GLOW': dict(n_perm_fwer=N_PERM,
                  n_perm_prune=100,
                  min_size=1,
                  alpha_prune=0.05,
                  alpha_fwer=ALPHA_FWER,
                  n_jobs_perm=N_JOBS_PERM),
-    'VBA': dict(n_perm=N_PERM,
+    'VBA': dict(n_perm_fwer=N_PERM,
                 tfce_flag=False,
                 alpha_fwer=ALPHA_FWER,
                 n_jobs_perm=N_JOBS_PERM),
-    'VBA-TFCE': dict(n_perm=N_PERM,
+    'VBA-TFCE': dict(n_perm_fwer=N_PERM,
                      tfce_flag=True,
                      alpha_fwer=ALPHA_FWER,
                      n_jobs_perm=N_JOBS_PERM),
@@ -79,12 +80,15 @@ ana_kwargs_dict_vba = {
 config_list.append(make_config('vba_hcp', 'hcp', run_ana, ana_kwargs_dict_vba))
 config_list.append(make_config('vba_wgn', 'wgn', run_ana, ana_kwargs_dict_vba))
 
-# mancova stat experiment: compare statistics via DP-antichain AUC
-# (replaces old mancova_stat_* which ran full FWER+prune per stat)
-config_list.append(make_config('stat_auc_hcp', 'hcp', run_stat_auc,
-                               fixed_params={'n_perm_fit': 30}))
-config_list.append(make_config('stat_auc_wgn', 'wgn', run_stat_auc,
-                               fixed_params={'n_perm_fit': 30}))
+# mancova stat experiment: compare all 5 statistics using full GLOW pipeline
+ana_kwargs_dict_stat = {
+    name: (glow.experiment.AnalysisGLOW, ANALYSES['GLOW'] | {'get_stat': fn})
+    for name, fn in stat_dict.items()
+}
+config_list.append(make_config('mancova_stat_hcp', 'hcp', run_ana,
+                               ana_kwargs_dict_stat))
+config_list.append(make_config('mancova_stat_wgn', 'wgn', run_ana,
+                               ana_kwargs_dict_stat))
 
 
 # segmentation configs

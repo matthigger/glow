@@ -126,8 +126,8 @@ def _run_demo():
     print(f'  imposed effect_llr={effect_llr} in sphere')
 
     # run analysis (serial, small)
-    print('  running AnalysisGLOW (n_perm=20) ...')
-    ana = AnalysisGLOW(exp_eff, n_perm=20, verbose=True)
+    print('  running AnalysisGLOW (n_perm_fwer=20) ...')
+    ana = AnalysisGLOW(exp_eff, n_perm_fwer=20, verbose=True)
     print(f'  found {len(ana.effect_list)} effects')
 
     # launch viewer with sphere as target mask
@@ -190,8 +190,8 @@ def _run_demo2d():
     print(f'  imposed effect_llr={effect_llr} in {effect_mask.sum()} pixels')
 
     # run analysis
-    print('  running AnalysisGLOW (n_perm=20) ...')
-    ana = AnalysisGLOW(exp_eff, n_perm=20, verbose=True)
+    print('  running AnalysisGLOW (n_perm_fwer=20) ...')
+    ana = AnalysisGLOW(exp_eff, n_perm_fwer=20, verbose=True)
     print(f'  found {len(ana.effect_list)} effects')
 
     # launch viewer with effect mask as target

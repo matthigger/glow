@@ -144,12 +144,12 @@ class Analysis:
 
 
 class AnalysisVBA(Analysis):
-    def __init__(self, exp, n_perm, alpha_fwer=.05, verbose=False,
+    def __init__(self, exp, n_perm_fwer, alpha_fwer=.05, verbose=False,
                  tfce_flag=False, conn=None, n_jobs_perm=1, **kwargs):
         """
         Args:
             exp: Experiment to analyze
-            n_perm: Number of permutations
+            n_perm_fwer: Number of permutations for FWER control
             alpha_fwer: Family-wise error rate
             verbose: Print progress
             tfce_flag: Apply TFCE enhancement
@@ -160,7 +160,7 @@ class AnalysisVBA(Analysis):
         self.tfce_flag = tfce_flag
 
         # compute stat per each voxel (for every permutation)
-        self.stat = self.get_stat_perm(exp, n_perm=n_perm, children=None)
+        self.stat = self.get_stat_perm(exp, n_perm=n_perm_fwer, children=None)
 
         # apply TFCE per image
         if self.tfce_flag:
@@ -259,7 +259,8 @@ class AnalysisGLOW(Analysis):
         effect_list (list): discovered Effect objects
     """
 
-    def __init__(self, exp, n_perm, n_perm_prune=100, n_perm_fit=25,
+    def __init__(self, exp, n_perm_fwer, n_perm_prune=100,
+                 n_perm_fwer_size_adjust=25,
                  alpha_fwer=.05, alpha_prune=.05, min_size=1, verbose=False,
                  n_jobs_perm=1, cloud_config=None, perm_dir=None,
                  prune_geom_exp_eff=None,
@@ -267,12 +268,12 @@ class AnalysisGLOW(Analysis):
         """
         Args:
             exp: Experiment to analyze
-            n_perm: Number of permutations for FWER control
+            n_perm_fwer: Number of permutations for FWER control
             n_perm_prune: Number of pruning permutations for node-gain
                 calibration
-            n_perm_fit: Number of held-out permutations used exclusively
-                to fit the size-adjustment regression (default 25).
-                These are independent of the n_perm FWER permutations.
+            n_perm_fwer_size_adjust: Number of held-out permutations used
+                exclusively to fit the size-adjustment regression (default 25).
+                These are independent of the n_perm_fwer FWER permutations.
             alpha_fwer: Family-wise error rate
             alpha_prune: Pruning alpha (quantile level for node-gain
                 calibration)
@@ -299,9 +300,10 @@ class AnalysisGLOW(Analysis):
         self.verbose = verbose
 
         if cloud_config is not None:
-            self._run_on_cloud(exp, n_perm, n_perm_prune,
+            self._run_on_cloud(exp, n_perm_fwer, n_perm_prune,
                               alpha_fwer, alpha_prune, min_size, verbose,
-                              cloud_config, n_perm_fit=n_perm_fit,
+                              cloud_config,
+                              n_perm_fwer_size_adjust=n_perm_fwer_size_adjust,
                               prune_geom_exp_eff=prune_geom_exp_eff,
                               size_adjust_model=size_adjust_model,
                               **kwargs)
@@ -311,11 +313,11 @@ class AnalysisGLOW(Analysis):
         model = size_adjust_model or get_best_model(self.get_stat)
 
         # Permutation index layout:
-        #   0           = observed data
-        #   1..n_perm   = FWER null permutations
-        #   n_perm+1..n_perm+n_perm_fit = held-out fit permutations
-        fit_start = n_perm + 1
-        fit_end = n_perm + n_perm_fit
+        #   0                                        = observed data
+        #   1..n_perm_fwer                           = FWER null permutations
+        #   n_perm_fwer+1..n_perm_fwer+n_perm_fwer_size_adjust = held-out fit permutations
+        fit_start = n_perm_fwer + 1
+        fit_end = n_perm_fwer + n_perm_fwer_size_adjust
         all_perm_indices = list(range(fit_end + 1))
 
         # set up directory for per-permutation result files
@@ -349,7 +351,7 @@ class AnalysisGLOW(Analysis):
 
         if verbose:
             print(f'  [1/3] clustering {len(todo)} permutations '
-                  f'({num_vox} voxels, {n_perm} FWER + {n_perm_fit} fit) ...')
+                  f'({num_vox} voxels, {n_perm_fwer} FWER + {n_perm_fwer_size_adjust} fit) ...')
 
         if n_jobs_perm not in (0, 1) and todo:
             results = Parallel(
@@ -399,7 +401,7 @@ class AnalysisGLOW(Analysis):
         sign = stat_sign.get(self.get_stat, 1)
         reg_active = size_0 >= min_size
         stat_max_list = []
-        for perm_idx in range(n_perm + 1):
+        for perm_idx in range(n_perm_fwer + 1):
             with open(perm_dir / f'{perm_idx:06d}_result.pkl', 'rb') as fh:
                 r = pickle.load(fh)
             adj = sign * (np.asarray(r['stat'], dtype=float)
@@ -412,7 +414,7 @@ class AnalysisGLOW(Analysis):
         stat_max_sorted = np.sort(stat_max_list)
 
         self._finalize_analysis(
-            exp, n_perm, stat_0, size_0, children_0,
+            exp, n_perm_fwer, stat_0, size_0, children_0,
             mu_fn, stat_max_sorted,
             n_perm_prune, alpha_fwer, alpha_prune, min_size,
             prune_geom_exp_eff=prune_geom_exp_eff)
@@ -548,7 +550,7 @@ class AnalysisGLOW(Analysis):
         Xty[1] += (w * x1) @ yv
         return XtX, Xty
 
-    def _finalize_analysis(self, exp, n_perm,
+    def _finalize_analysis(self, exp, n_perm_fwer,
                           stat_0, size_0, children_0,
                           mu_fn, stat_max_sorted,
                           n_perm_prune, alpha_fwer, alpha_prune,
@@ -622,15 +624,15 @@ class AnalysisGLOW(Analysis):
                 msg += f' (lambda={self.dp_info["lam"]:.4f})'
             print(msg)
 
-    def _run_on_cloud(self, exp, n_perm, n_perm_prune,
+    def _run_on_cloud(self, exp, n_perm_fwer, n_perm_prune,
                      alpha_fwer, alpha_prune, min_size, verbose,
-                     cloud_config, n_perm_fit=25,
+                     cloud_config, n_perm_fwer_size_adjust=25,
                      prune_geom_exp_eff=None,
                      size_adjust_model=None, **kwargs):
         """Run full analysis on AWS Batch (permutations + synthesis).
 
-        Submits N+1+n_perm_fit permutation jobs, then a synthesis job
-        that polls S3 for all results before running
+        Submits N+1+n_perm_fwer_size_adjust permutation jobs, then a
+        synthesis job that polls S3 for all results before running
         ``_finalize_analysis`` on the cloud.  The final pickled
         AnalysisGLOW is downloaded and its attributes are copied onto
         ``self``.
@@ -645,7 +647,7 @@ class AnalysisGLOW(Analysis):
         ana_kwargs = {
             'get_stat': self.get_stat,
             'n_perm_prune': n_perm_prune,
-            'n_perm_fit': n_perm_fit,
+            'n_perm_fwer_size_adjust': n_perm_fwer_size_adjust,
             'alpha_fwer': alpha_fwer,
             'alpha_prune': alpha_prune,
             'min_size': min_size,
@@ -662,7 +664,7 @@ class AnalysisGLOW(Analysis):
         print('submitting permutation jobs...')
         submission = runner.submit_jobs(
             experiment_id=experiment_id,
-            n_perm=n_perm + n_perm_fit,
+            n_perm=n_perm_fwer + n_perm_fwer_size_adjust,
             skip_completed=True,
         )
 
@@ -673,7 +675,7 @@ class AnalysisGLOW(Analysis):
 
         print('submitting synthesis job...')
         synth_job_id = runner.submit_synthesis_job(
-            experiment_id, n_perm + n_perm_fit)
+            experiment_id, n_perm_fwer + n_perm_fwer_size_adjust)
 
         all_job_ids = perm_job_ids + [synth_job_id]
 

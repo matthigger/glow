@@ -395,8 +395,8 @@ def run_synthesis_mode(args):
         sys.exit(1)
 
     # poll S3 until all permutation results are available
-    n_perm_fit = ana_kwargs.get('n_perm_fit', 25)
-    n_perm_fwer = args.n_perm - n_perm_fit
+    n_perm_fwer_size_adjust = ana_kwargs.get('n_perm_fwer_size_adjust', 25)
+    n_perm_fwer = args.n_perm - n_perm_fwer_size_adjust
     fit_start = n_perm_fwer + 1
     n_expected = args.n_perm + 1
     result_prefix = (f'{args.s3_prefix}/results/'
@@ -496,7 +496,7 @@ def run_synthesis_mode(args):
 
     stat_max_sorted = np.sort(stat_max_list)
     n_fwer = n_perm_fwer + 1
-    print(f'  ✓ {n_fwer} max-stats collected ({n_perm_fit} fit perms held out)')
+    print(f'  ✓ {n_fwer} max-stats collected ({n_perm_fwer_size_adjust} fit perms held out)')
 
     # build analysis shell and run streaming finalization
     ana = object.__new__(AnalysisGLOW)
