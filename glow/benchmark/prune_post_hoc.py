@@ -72,7 +72,7 @@ def _run_and_view(source, seed, effect_llr):
           f'{len(ana.effect_list)} effects (node)')
 
     sig = ana.sig_reg_list
-    children = ana.child_dict[0]
+    children = ana.children
 
     if sig:
         methods = {

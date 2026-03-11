@@ -31,7 +31,7 @@ class TestBigEffect:
         # check that target region segmented properly
         f1 = get_f1_sens_spec(mask=TestBigEffect.effect.mask,
                               mask_idx=analysis.exp.mask_idx,
-                              children=analysis.child_dict[0])[0]
+                              children=analysis.children)[0]
         assert np.isclose(f1.max(), 1), 'target region not segmented'
 
         # true effect should be among the discovered effects
@@ -93,8 +93,7 @@ class TestBigEffect:
             alpha_fwer=.1
         )
         
-        # child_dict stores only observed (perm 0) children
-        assert 0 in analysis.child_dict
+        assert hasattr(analysis, 'children')
         assert hasattr(analysis, 'pval')
     
     def test_analysis_get_stat(self):
@@ -111,7 +110,7 @@ class TestBigEffect:
         
         # should still work
         assert hasattr(analysis, 'effect_list')
-        assert hasattr(analysis, 'stat_0')
+        assert hasattr(analysis, 'stat')
 
 
 class TestAnalysisEdgeCases:
@@ -288,7 +287,7 @@ class TestResume:
         """AnalysisGLOW works when perm_dir is None (temp dir, auto-clean)."""
         analysis = AnalysisGLOW(self.exp, n_perm=5, alpha_fwer=.5)
         assert hasattr(analysis, 'pval')
-        assert 0 in analysis.child_dict
+        assert hasattr(analysis, 'children')
 
     def test_perm_dir_resume(self):
         """Partial results in perm_dir are reused, completing the run."""
@@ -355,7 +354,7 @@ class TestForest:
                          mask_idx=mask_idx, add_bias=True)
         ana = AnalysisGLOW(exp, n_perm=10, alpha_fwer=.5)
 
-        children = ana.child_dict[0]
+        children = ana.children
         assert children.shape == (num_vox - 2, 2), \
             f'expected {num_vox - 2} internal nodes, got {children.shape[0]}'
 

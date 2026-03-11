@@ -135,7 +135,7 @@ def prep_df(ana_glow, mask_target=None):
     for perm_idx, (llr, adj, size) in enumerate(zip(ana_glow.stat,
                                                     _adj,
                                                     ana_glow.size)):
-        children = ana_glow.child_dict[perm_idx]
+        children = ana_glow.children
         d = {'region idx': np.arange(size.size),
              'llr': llr,
              'llr_adjusted': adj,
@@ -151,7 +151,7 @@ def prep_df(ana_glow, mask_target=None):
             if mask_target is not None:
                 d['f1'], d['sens'], d['spec'] = \
                     glow.graph.get_f1_sens_spec(
-                        children=ana_glow.child_dict[0],
+                        children=ana_glow.children,
                         mask_idx=ana_glow.exp.mask_idx,
                         mask=mask_target)
 

@@ -68,7 +68,7 @@ def build_label_map(reg_idx_list, ana_glow):
     return glow.graph.get_label_map(
         reg_idx_list=reg_idx_list,
         mask_idx=ana_glow.exp.mask_idx,
-        children=ana_glow.child_dict[0])
+        children=ana_glow.children)
 
 
 def compute_bg_volume(ana_glow, feature_idx=0):

@@ -79,7 +79,7 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
         selected_reg = set()
 
     num_vox = ana_glow.exp.y.shape[2]
-    children = ana_glow.child_dict[0]
+    children = ana_glow.children
 
     # sort by region_idx for consistent indexing
     _df = df.sort_values('region_idx').copy()

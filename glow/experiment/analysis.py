@@ -252,9 +252,9 @@ class AnalysisGLOW(Analysis):
     finalization reads the results in a single sweep.
 
     Attributes:
-        child_dict (dict): {0: children_0} — observed-permutation children
-        stat_0 (np.array): (num_reg,) raw test statistics for observed
-        size_0 (np.array): (num_reg,) region sizes for observed
+        children (np.array): (num_leaf - 1, 2) Ward children for observed data
+        stat (np.array): (num_reg,) raw test statistics for observed
+        size (np.array): (num_reg,) region sizes for observed
         pval (np.array): (num_reg,) FWER-controlled p-values
         effect_list (list): discovered Effect objects
     """
@@ -571,10 +571,10 @@ class AnalysisGLOW(Analysis):
 
         self.alpha_fwer = alpha_fwer
         self.alpha_prune = alpha_prune
-        self.size_0 = size_0
-        self.stat_0 = stat_0
+        self.size = size_0
+        self.stat = stat_0
         self.llr_adjusted_0 = llr_adjusted_0
-        self.child_dict = {0: children_0}
+        self.children = children_0
 
         reg_active = size_0 >= min_size
         if not reg_active.any():
@@ -726,7 +726,7 @@ class AnalysisGLOW(Analysis):
         remote_ana = runner.download_final_analysis(experiment_id)
 
         _COPY_ATTRS = [
-            'child_dict', 'stat_0', 'size_0', 'pval', 'llr_adjusted_0',
+            'children', 'stat', 'size', 'pval', 'llr_adjusted_0',
             'sig_reg_list', 'effect_list', 'alpha_fwer', 'alpha_prune',
             'dp_info', 'homo_pval_dict', 'adj_model', 'adj_beta',
         ]

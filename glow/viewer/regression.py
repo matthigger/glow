@@ -153,7 +153,7 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
         fig (go.Figure)
     """
     exp = ana_glow.exp
-    children = ana_glow.child_dict[0]
+    children = ana_glow.children
     num_vox = exp.y.shape[2]
     num_img = exp.y.shape[1]
 

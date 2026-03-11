@@ -263,7 +263,7 @@ def run_prune_compare(config, **kwargs):
         glow_time = time.time() - start
 
         sig = ana.sig_reg_list
-        children = ana.child_dict[0]
+        children = ana.children
 
         prune_methods = {
             'GLOW-homo': prune(sig, children, exp,
