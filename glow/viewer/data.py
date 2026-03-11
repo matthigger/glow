@@ -47,14 +47,7 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
     if hasattr(ana_glow, 'stat_std'):
         d['llr_std_h0'] = ana_glow.stat_std
 
-    # homogeneity pruning p-values (only for tested regions)
-    homo_pval = np.full(num_reg, np.nan)
-    if hasattr(ana_glow, 'homo_pval_dict'):
-        for reg_idx, pval in ana_glow.homo_pval_dict.items():
-            homo_pval[reg_idx] = pval
-    d['pval_homo'] = homo_pval
-
-    # DP pruning diagnostics (only populated with prune_method='node')
+    # DP pruning diagnostics
     ll_gain = np.full(num_reg, np.nan)
     ll_gain_net = np.full(num_reg, np.nan)
     _dp_info = getattr(ana_glow, 'dp_info', {})
@@ -96,6 +89,13 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
         d['vox_in_target'] = hits.astype(int)
         d['vox_out_target'] = miss.astype(int)
 
+        sig_mask = ~np.isnan(ana_glow.pval) & (ana_glow.pval <= alpha_fwer)
+        max_f1_sig = float(f1[sig_mask].max()) if sig_mask.any() else 0.0
+        if max_f1_sig > 0:
+            d['pct_max_f1'] = f1 / max_f1_sig
+        else:
+            d['pct_max_f1'] = np.full(num_reg, np.nan)
+
     df = pd.DataFrame(d)
 
     if extra_df is not None:
@@ -107,14 +107,9 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
 
 
 _GENERIC_FEATURES = {'n_voxel'}
-_PRUNING_FEATURES = {
-    'pval_homo', 'll_gain', 'll_gain_net',
-    'homo_pval', 'node_gain', 'node_gain_net',
-    'node_gain_net_fl', 'node_gain_h0_mean', 'node_gain_h0_std',
-    'tree_gain', 'tree_wt_gain',
-    'tree_dp_tree_gain', 'tree_dp_tree_gain_net',
-}
-_MASK_FEATURES = {'f1', 'sens', 'spec', 'vox_in_target', 'vox_out_target'}
+_PRUNING_FEATURES = {'ll_gain', 'll_gain_net'}
+_MASK_FEATURES = {'f1', 'sens', 'spec', 'pct_max_f1',
+                   'vox_in_target', 'vox_out_target'}
 
 
 def get_feature_columns(df):
@@ -207,7 +202,6 @@ def compute_target_stats(ana_glow, mask_target):
     stats['vox_out_target'] = 0
 
     stats['pval_fwer'] = np.nan
-    stats['pval_homo'] = np.nan
     stats['ll_gain'] = np.nan
     stats['ll_gain_net'] = np.nan
     stats['llr_mu_h0'] = np.nan

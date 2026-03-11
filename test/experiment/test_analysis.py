@@ -63,12 +63,11 @@ class TestBigEffect:
         assert len(analysis.effect_list) > 0
 
     def test_glow_node(self):
-        """node pruning with exp_eff=1 should find exactly one effect."""
+        """pruning with exp_eff=1 should find exactly one effect."""
         analysis = AnalysisGLOW(
             TestBigEffect.exp,
             n_perm=25,
             alpha_fwer=.1,
-            prune_method='node',
             prune_geom_exp_eff=1
         )
 

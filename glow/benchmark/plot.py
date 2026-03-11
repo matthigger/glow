@@ -205,3 +205,20 @@ if __name__ == '__main__':
             dest = latest / f'{label}.pdf'
             shutil.copy2(path, dest)
             print(f'  -> {dest}')
+
+        # generate pct_max_f1 plot (prune_compare configs only)
+        if 'pct_max_f1' in df.columns:
+            path_mf = folder / 'max_f1_score.pdf'
+            if force_replot or n_new or not path_mf.exists():
+                print(f'creating: {path_mf}')
+                plot_x_vs_metrics(df, metrics=['pct_max_f1'],
+                                  one_vs_rest=False)
+                plt.gcf().savefig(path_mf, bbox_inches='tight')
+                plt.close('all')
+            else:
+                print(f'skipping: {path_mf} (already exists, no new data)')
+
+            if path_mf.exists():
+                dest = latest / f'{label}_max_f1_score.pdf'
+                shutil.copy2(path_mf, dest)
+                print(f'  -> {dest}')

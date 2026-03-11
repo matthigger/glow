@@ -2,16 +2,16 @@ import numpy as np
 
 import glow
 from glow.benchmark.config import Config
-from glow.benchmark.run import run_ana, run_prune_compare, run_segment, run_stat_auc
+from glow.benchmark.run import run_ana, run_segment, run_stat_auc
 
 # common params
 # run experiments serially (n_jobs=1) and keep permutations serial per experiment
 # TEMP: quick test settings (2k vox, 100 perm, 4 seeds)
 COMMON = dict(
     n_seed=4,
-    effect_llr_all=np.logspace(np.log10(0.003), np.log10(0.3), 10),
+    effect_llr_all=np.logspace(np.log10(0.003), np.log10(0.3), 5),
     effect_perc=0.2,
-    crop_n_vox=2_000,       # TEMP: 2k vox (production: 10_000)
+    crop_n_vox=500,
     n_jobs=1,
     detail_save=False,
     error_save=False,
@@ -40,8 +40,7 @@ ANALYSES = {
                  min_size=1,
                  alpha_prune=0.05,
                  alpha_fwer=ALPHA_FWER,
-                 n_jobs_perm=N_JOBS_PERM,
-                 prune_method='node'),
+                 n_jobs_perm=N_JOBS_PERM),
     'VBA': dict(n_perm=N_PERM,
                 tfce_flag=False,
                 alpha_fwer=ALPHA_FWER,
@@ -87,18 +86,6 @@ config_list.append(make_config('stat_auc_hcp', 'hcp', run_stat_auc,
 config_list.append(make_config('stat_auc_wgn', 'wgn', run_stat_auc,
                                fixed_params={'n_perm_fit': 30}))
 
-
-# method comparison: all pruning strategies + VBA + VBA-TFCE
-ana_kwargs_dict_prune_compare = {
-    'GLOW': (glow.experiment.AnalysisGLOW,
-             ANALYSES['GLOW'] | dict(prune_geom_exp_eff=3)),
-    'VBA': (glow.experiment.AnalysisVBA, ANALYSES['VBA']),
-    'VBA-TFCE': (glow.experiment.AnalysisVBA, ANALYSES['VBA-TFCE']),
-}
-config_list.append(make_config('prune_compare_wgn', 'wgn', run_prune_compare,
-                               ana_kwargs_dict_prune_compare, n_seed=10))
-config_list.append(make_config('prune_compare_hcp', 'hcp', run_prune_compare,
-                               ana_kwargs_dict_prune_compare, n_seed=10))
 
 # segmentation configs
 config_list.append(make_config('segment_hcp', 'hcp', run_segment))

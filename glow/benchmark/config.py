@@ -239,20 +239,9 @@ class Config:
 
     def _get_expected_labels(self):
         """return the set of result 'label' strings one experiment produces."""
-        from glow.benchmark.run import run_ana, run_prune_compare, run_segment
+        from glow.benchmark.run import run_ana, run_segment
         if self.run_fnc is run_ana:
             return set(self.ana_kwargs_dict.keys())
-        if self.run_fnc is run_prune_compare:
-            labels = set()
-            for label, (Ana, kw) in self.ana_kwargs_dict.items():
-                if Ana.__name__ == 'AnalysisGLOW':
-                    labels.update({'GLOW-adjusted', 'GLOW-homo', 'GLOW-node',
-                                   'GLOW-node_fl', 'GLOW-tree'})
-                    if kw.get('prune_geom_exp_eff') is not None:
-                        labels.add('GLOW-tree_dp')
-                else:
-                    labels.add(label)
-            return labels
         if self.run_fnc is run_segment:
             return {'ward-naive', 'ward-glm'}
         return set()

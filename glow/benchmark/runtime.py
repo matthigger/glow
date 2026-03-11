@@ -33,7 +33,6 @@ def _ana_kwargs(n_perm):
         alpha_fwer=0.05,
         alpha_prune=0.05,
         min_size=1,
-        prune_method='node',
     )
 
 

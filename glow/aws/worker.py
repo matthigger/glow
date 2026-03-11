@@ -433,7 +433,6 @@ def run_synthesis_mode(args):
     alpha_fwer = ana_kwargs.get('alpha_fwer', 0.05)
     alpha_prune = ana_kwargs.get('alpha_prune', 0.05)
     min_size = ana_kwargs.get('min_size', 1)
-    prune_method = ana_kwargs.get('prune_method', 'node')
     prune_geom_exp_eff = ana_kwargs.get('prune_geom_exp_eff', None)
 
     def _load_result(perm_idx):
@@ -515,7 +514,6 @@ def run_synthesis_mode(args):
         stat_0, size_0, children_0,
         mu_fn, stat_max_sorted,
         n_perm_prune, alpha_fwer, alpha_prune, min_size,
-        prune_method=prune_method,
         prune_geom_exp_eff=prune_geom_exp_eff)
     ana.synthesis_elapsed_sec = time.time() - _t0
     ana.perm_elapsed_sec = perm_elapsed
