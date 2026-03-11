@@ -246,7 +246,7 @@ class Config:
             labels = set()
             for label, (Ana, kw) in self.ana_kwargs_dict.items():
                 if Ana.__name__ == 'AnalysisGLOW':
-                    labels.update({'GLOW-homo', 'GLOW-node',
+                    labels.update({'GLOW-adjusted', 'GLOW-homo', 'GLOW-node',
                                    'GLOW-node_fl', 'GLOW-tree'})
                     if kw.get('prune_geom_exp_eff') is not None:
                         labels.add('GLOW-tree_dp')

@@ -222,7 +222,7 @@ def run_prune_compare(config, **kwargs):
     Emits one JSON result per method with F1/sens/spec and region-level
     metrics (sizes, TP fractions).  Also writes pruning diagnostics CSV.
     """
-    from glow.experiment.prune import (prune, prune_node,
+    from glow.experiment.prune import (prune, prune_adjusted, prune_node,
                                        prune_tree, prune_tree_dp)
 
     exp, effect = config.get_exp_eff(**kwargs)
@@ -280,18 +280,8 @@ def run_prune_compare(config, **kwargs):
             prune_methods['GLOW-tree_dp'] = prune_tree_dp(
                 sig, children, exp, exp_eff=exp_eff)
 
-        # adjusted-stat DP: gain = size-adjusted stat, lam=0
-        if sig:
-            num_vox = exp.y.shape[2]
-            subgraph = glow.graph.SCGraph.from_children(
-                children, num_leaf=num_vox, subset=sig)
-            adj_gain = {i: float(ana.llr_adjusted_0[i]) for i in sig}
-            prune_methods['GLOW-adjusted'] = glow.graph.dp_antichain(
-                nodes=sorted(sig),
-                children_map=subgraph.children,
-                gain=adj_gain,
-                lam=0.0,
-            )
+        prune_methods['GLOW-adjusted'] = prune_adjusted(
+            sig, children, exp.y.shape[2], ana.llr_adjusted_0)
 
         for label, (reg_out_list, _info) in prune_methods.items():
             masks = []

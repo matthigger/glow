@@ -16,7 +16,7 @@ import glow.graph
 from .cluster import cluster
 from .exper import ExperimentScaled
 from .mancova import get_llr, stat_dict, stat_dict_inv, stat_sign
-from .prune import prune, prune_node, prune_tree, prune_tree_dp
+from .prune import prune, prune_adjusted, prune_node, prune_tree, prune_tree_dp
 
 
 _DEFAULT_MODEL = 'power_law'
@@ -625,20 +625,11 @@ class AnalysisGLOW(Analysis):
         elif prune_method == 'adjusted':
             if verbose:
                 print(f'  pruning (adjusted-stat DP, lam=0) ...')
-            num_vox = exp.y.shape[2]
-            subgraph = glow.graph.SCGraph.from_children(
-                children_0, num_leaf=num_vox,
-                subset=self.sig_reg_list)
-            gain = {i: float(llr_adjusted_0[i]) for i in self.sig_reg_list}
-            reg_out_list, self.dp_info = glow.graph.dp_antichain(
-                nodes=sorted(self.sig_reg_list),
-                children_map=subgraph.children,
-                gain=gain,
-                lam=0.0,
-            )
-            self.dp_info['gain_per_node'] = gain
-            self.dp_info['subgraph_children'] = dict(subgraph.children)
-            self.dp_info['sig_reg_list'] = list(self.sig_reg_list)
+            reg_out_list, self.dp_info = prune_adjusted(
+                sig_reg_list=self.sig_reg_list,
+                children=children_0,
+                num_vox=exp.y.shape[2],
+                adjusted_stats=llr_adjusted_0)
             self.homo_pval_dict = {}
         elif prune_method == 'homo':
             reg_out_list, self.homo_pval_dict = prune(

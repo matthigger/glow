@@ -725,3 +725,42 @@ def prune_tree_dp(sig_reg_list, children, exp, exp_eff):
     dp_info['weights'] = weights
 
     return reg_out_list, dp_info
+
+
+def prune_adjusted(sig_reg_list, children, num_vox, adjusted_stats):
+    """DP pruning using size-adjusted statistics with no penalty.
+
+    Selects the antichain maximising sum of adjusted stats (lambda=0),
+    which is equivalent to picking all nodes whose adjusted stat is
+    positive and that form a valid antichain.
+
+    Args:
+        sig_reg_list (list): regions declared significant (via FWER)
+        children (np.array): (num_internal, 2) child index pairs
+        num_vox (int): number of leaf nodes (voxels)
+        adjusted_stats (np.array): per-region size-adjusted statistics
+            (e.g. ``ana.llr_adjusted_0``)
+
+    Returns:
+        reg_out_list (list): sorted indices of selected effect regions
+        info (dict): diagnostics from dp_antichain
+    """
+    if not sig_reg_list:
+        return [], dict(gain={}, best={}, lam=0.0,
+                        gain_per_node={},
+                        subgraph_children={},
+                        sig_reg_list=[])
+
+    subgraph = SCGraph.from_children(children, num_leaf=num_vox,
+                                     subset=sig_reg_list)
+    gain = {i: float(adjusted_stats[i]) for i in sig_reg_list}
+    reg_out_list, info = dp_antichain(
+        nodes=sorted(sig_reg_list),
+        children_map=subgraph.children,
+        gain=gain,
+        lam=0.0,
+    )
+    info['gain_per_node'] = gain
+    info['subgraph_children'] = dict(subgraph.children)
+    info['sig_reg_list'] = list(sig_reg_list)
+    return reg_out_list, info
