@@ -156,8 +156,9 @@ class TestExtenterMinVarRandomInit:
         """test that different seeds produce different results"""
         mask_idx = np.arange(64).reshape((8, 8))
         extenter = ExtenterMinVar(n=10)
-        
-        y = np.random.standard_normal((1, 1, 64))
+
+        rng = np.random.default_rng(42)
+        y = rng.standard_normal((1, 1, 64))
         
         mask1 = extenter(mask_idx=mask_idx, y=y, seed=0)
         mask2 = extenter(mask_idx=mask_idx, y=y, seed=1)
