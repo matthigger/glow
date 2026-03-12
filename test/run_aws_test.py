@@ -254,9 +254,7 @@ def test_aws_runner_methods():
     exp_id = 'test_exp_001'
     ana_kwargs = {
         'n_perm_fwer': 5,
-        'n_perm_prune': 10,
         'alpha_fwer': 0.05,
-        'alpha_prune': 0.05,
         'min_size': 1
     }
     
@@ -333,8 +331,8 @@ def run_batched_cloud_tests():
         exp, _ = exp_orig.impose_effect(mask=mask, effect_llr=1.0, seed=42)
 
         n_perm_fwer = 5
-        ana_kwargs = dict(n_perm_fwer=n_perm_fwer, n_perm_prune=10,
-                          alpha_fwer=0.05, alpha_prune=0.05, min_size=1,
+        ana_kwargs = dict(n_perm_fwer=n_perm_fwer,
+                          alpha_fwer=0.05, min_size=1,
                           verbose=True)
 
         # run local analysis (fast, needed for comparison)
@@ -352,8 +350,7 @@ def run_batched_cloud_tests():
 
         cloud_ana_kwargs = {
             'get_stat': get_llr,
-            'n_perm_prune': 10,
-            'alpha_fwer': 0.05, 'alpha_prune': 0.05, 'min_size': 1,
+            'alpha_fwer': 0.05, 'min_size': 1,
         }
         runner.upload_experiment(exp, cloud_ana_kwargs, experiment_id)
         submission = runner.submit_jobs(
@@ -379,8 +376,8 @@ def run_batched_cloud_tests():
         print('\n[Prepare] Experiment-level test')
         ana_kwargs_dict = {
             'GLOW': (glow.experiment.AnalysisGLOW,
-                     dict(n_perm_fwer=5, n_perm_prune=10,
-                          alpha_fwer=0.05, alpha_prune=0.05, min_size=1,
+                     dict(n_perm_fwer=5,
+                          alpha_fwer=0.05, min_size=1,
                           n_jobs_perm=1))
         }
         cloud_config = CloudConfig(
@@ -432,8 +429,8 @@ def run_batched_cloud_tests():
         print('\n[Prepare] HCP test')
         ana_kwargs_dict = {
             'GLOW': (glow.experiment.AnalysisGLOW,
-                     dict(n_perm_fwer=5, n_perm_prune=10,
-                          alpha_fwer=0.05, alpha_prune=0.05, min_size=1,
+                     dict(n_perm_fwer=5,
+                          alpha_fwer=0.05, min_size=1,
                           n_jobs_perm=1))
         }
         cloud_config = CloudConfig(

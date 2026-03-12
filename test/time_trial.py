@@ -8,7 +8,5 @@ exp = glow.experiment.Experiment.from_gauss(seed=0,
 
 glow.experiment.AnalysisGLOW(exp,
                              n_perm_fwer=20,
-                             n_perm_prune=20,
                              alpha_fwer=.05,
-                             alpha_prune=.05,
                              min_size=1)

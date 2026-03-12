@@ -26,7 +26,8 @@ class TestBigEffect:
                                     effect_llr=0.5)
 
     def test_glow(self):
-        analysis = AnalysisGLOW(TestBigEffect.exp, n_perm_fwer=25, alpha_fwer=.1)
+        analysis = AnalysisGLOW(TestBigEffect.exp, n_perm_fwer=25, alpha_fwer=.1,
+                                prune_geom_exp_eff=1)
 
         # check that target region segmented properly
         f1 = get_f1_sens_spec(mask=TestBigEffect.effect.mask,
@@ -50,15 +51,13 @@ class TestBigEffect:
                                    TestBigEffect.effect.mask)
     
     def test_glow_with_prune(self):
-        """test GLOW with pruning enabled"""
+        """test GLOW with default pruning (llr_adjusted, lam=0)"""
         analysis = AnalysisGLOW(
             TestBigEffect.exp,
             n_perm_fwer=10,
-            n_perm_prune=15,
             alpha_fwer=.1,
-            alpha_prune=.05
         )
-        
+
         # should still find the effect
         assert len(analysis.effect_list) > 0
 

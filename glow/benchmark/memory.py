@@ -105,10 +105,8 @@ def _worker_experiment(num_vox, b, num_img, n_perm, result_queue):
             __import__('glow.experiment.analysis', fromlist=['AnalysisGLOW']).AnalysisGLOW,
             dict(
                 n_perm_fwer=n_perm,
-                n_perm_prune=min(n_perm, 100),
                 n_perm_fwer_size_adjust=min(25, n_perm // 4),
                 alpha_fwer=0.05,
-                alpha_prune=0.05,
                 min_size=1,
             ),
         ),

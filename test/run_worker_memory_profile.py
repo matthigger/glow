@@ -28,9 +28,7 @@ def bench_memory_profile():
     ana_kwargs_dict = {
         'GLOW': (glow.experiment.AnalysisGLOW, {
             'n_perm_fwer': 50,
-            'n_perm_prune': 20,
             'min_size': 1,
-            'alpha_prune': 0.05,
             'alpha_fwer': 0.05,
             'n_jobs_perm': 1
         })

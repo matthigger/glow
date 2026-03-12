@@ -29,9 +29,7 @@ from glow.experiment.mancova import get_llr
 def _ana_kwargs(n_perm):
     return dict(
         get_stat=get_llr,
-        n_perm_prune=n_perm,
         alpha_fwer=0.05,
-        alpha_prune=0.05,
         min_size=1,
     )
 

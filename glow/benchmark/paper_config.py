@@ -31,25 +31,22 @@ SOURCES = {
 
 # analysis params
 # TEMP: 100 perms (production: 250)
-N_PERM = 100
+N_PERM_FWER = 100
+N_PERM_FWER_SIZE_ADJUST = 25
+N_PERM_FWER_VBA = N_PERM_FWER + N_PERM_FWER_SIZE_ADJUST
 ALPHA_FWER = 0.05
-N_JOBS_PERM = 1
 
 ANALYSES = {
-    'GLOW': dict(n_perm_fwer=N_PERM,
-                 n_perm_prune=100,
+    'GLOW': dict(n_perm_fwer=N_PERM_FWER,
+                 n_perm_fwer_size_adjust=N_PERM_FWER_SIZE_ADJUST,
                  min_size=1,
-                 alpha_prune=0.05,
-                 alpha_fwer=ALPHA_FWER,
-                 n_jobs_perm=N_JOBS_PERM),
-    'VBA': dict(n_perm_fwer=N_PERM,
+                 alpha_fwer=ALPHA_FWER),
+    'VBA': dict(n_perm_fwer=N_PERM_FWER_VBA,
                 tfce_flag=False,
-                alpha_fwer=ALPHA_FWER,
-                n_jobs_perm=N_JOBS_PERM),
-    'VBA-TFCE': dict(n_perm_fwer=N_PERM,
+                alpha_fwer=ALPHA_FWER),
+    'VBA-TFCE': dict(n_perm_fwer=N_PERM_FWER_VBA,
                      tfce_flag=True,
-                     alpha_fwer=ALPHA_FWER,
-                     n_jobs_perm=N_JOBS_PERM),
+                     alpha_fwer=ALPHA_FWER),
 }
 
 
