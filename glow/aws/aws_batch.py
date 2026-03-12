@@ -201,7 +201,7 @@ class AWSBatchRunner:
     def _predict_memory_mb(b, num_img, num_vox):
         """Predict peak memory in MB from experiment dimensions.
 
-        Tries to load a fitted model from ``memory_model.json`` (produced
+        Tries to load a fitted model from ``memory_permutation.json`` (produced
         by ``python -m glow.benchmark.memory``).  Falls back to a 3x
         heuristic on the raw data tensor size.
         """
@@ -210,9 +210,40 @@ class AWSBatchRunner:
             model = load_model()
             if model is not None:
                 return predict(model, num_vox, b, num_img)
-        except Exception:
+        except (ImportError, FileNotFoundError):
             pass
         return 3.0 * b * num_img * num_vox * 8 / (1024 * 1024)
+
+    def estimate_experiment_memory_mb(self, b: int, num_img: int, num_vox: int, n_perm: int):
+        """Estimate memory for an experiment worker (full run_ana in one process).
+
+        Uses the Lasso regression in memory_experiment.json (from
+        ``python -m glow.benchmark.memory --profile experiment``) if present.
+        Returns None if the model is missing or if the estimate is <= default
+        (so the job definition default memory is used).
+        """
+        try:
+            from glow.benchmark.memory import load_experiment_model, predict_experiment_memory
+        except ImportError:
+            return None
+        model = load_experiment_model()
+        if model is None:
+            return None
+        est_mb = predict_experiment_memory(model, num_vox, b, num_img, n_perm)
+
+        default_mb = self.config.memory_mb
+        tiers = self.config.oom_memory_mb_tiers or []
+        max_mb = tiers[-1] if tiers else default_mb
+
+        if est_mb > max_mb:
+            raise MemoryError(
+                f'Experiment worker estimate {est_mb:.0f} MB exceeds max tier '
+                f'({max_mb} MB). Reduce size or increase oom_memory_mb_tiers.')
+        if est_mb <= default_mb:
+            return None
+        for t in tiers:
+            if t >= est_mb:
+                return t
         return tiers[-1] if tiers else None
 
     def upload_experiment(self, exp, ana_kwargs: Dict[str, Any], 
@@ -1093,7 +1124,8 @@ class AWSBatchRunner:
         except ClientError as e:
             raise RuntimeError(f'failed to upload config: {e}')
     
-    def submit_experiment_job(self, run_id: str, exp_idx: int, kwargs: Dict[str, Any]) -> str:
+    def submit_experiment_job(self, run_id: str, exp_idx: int, kwargs: Dict[str, Any],
+                             memory_mb: Optional[int] = None) -> str:
         """submit a single experiment job to AWS Batch
         
         Each job runs a full experiment with all permutations serially.
@@ -1103,6 +1135,8 @@ class AWSBatchRunner:
             run_id: unique run identifier
             exp_idx: experiment index
             kwargs: experiment kwargs dict (seed, effect_llr, etc.)
+            memory_mb: optional memory in MB; if set, overrides job definition default
+                       and is recorded for OOM tier escalation.
         
         Returns:
             job_id: AWS Batch job ID
@@ -1122,7 +1156,21 @@ class AWSBatchRunner:
         
         # submit job
         job_name = f'glow_{run_id}_exp{exp_idx:06d}'
-        
+        overrides = {
+            'command': [
+                '--s3-bucket', self.config.s3_bucket,
+                '--s3-prefix', self.config.s3_prefix,
+                '--run-id', run_id,
+                '--exp-idx', str(exp_idx)
+            ]
+        }
+        if memory_mb is not None:
+            overrides['resourceRequirements'] = [
+                {'type': 'VCPU', 'value': str(self.config.vcpus)},
+                {'type': 'MEMORY', 'value': str(memory_mb)},
+            ]
+            self._job_memory_tier_index[job_name] = 0
+
         try:
             response = self.batch.submit_job(
                 jobName=job_name,
@@ -1130,14 +1178,7 @@ class AWSBatchRunner:
                 jobDefinition=self.config.job_definition,
                 timeout={'attemptDurationSeconds': self.config.timeout_minutes * 60},
                 retryStrategy={'attempts': self.config.retry_attempts},
-                containerOverrides={
-                    'command': [
-                        '--s3-bucket', self.config.s3_bucket,
-                        '--s3-prefix', self.config.s3_prefix,
-                        '--run-id', run_id,
-                        '--exp-idx', str(exp_idx)
-                    ]
-                }
+                containerOverrides=overrides
             )
             
             return response['jobId']

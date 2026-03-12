@@ -384,6 +384,33 @@ class Config:
             self.prep_exp_orig()
         exp_sig = self.exp_orig._hash()
 
+        # Estimate memory for experiment workers (before clearing exp_orig for HCP)
+        memory_mb = None
+        b, num_img, num_vox_full = self.exp_orig.y.shape[0], self.exp_orig.y.shape[1], self.exp_orig.y.shape[2]
+        n_perm = 100
+        if self.ana_kwargs_dict:
+            first_kw = next(iter(self.ana_kwargs_dict.values()))[1]
+            n_perm = first_kw.get('n_perm_fwer', n_perm)
+        if self.source == 'hcp':
+            num_vox_cropped = self.crop_n_vox if self.crop_n_vox is not None else num_vox_full
+            full_dataset_mb = b * num_img * num_vox_full * 8 / (1024 * 1024)
+            regression_mb = runner.estimate_experiment_memory_mb(b, num_img, num_vox_cropped, n_perm)
+            if regression_mb is not None:
+                memory_mb = int(full_dataset_mb + regression_mb)
+            else:
+                memory_mb = int(full_dataset_mb)
+            if runner.config.oom_memory_mb_tiers:
+                for t in runner.config.oom_memory_mb_tiers:
+                    if t >= memory_mb:
+                        memory_mb = t
+                        break
+                else:
+                    memory_mb = runner.config.oom_memory_mb_tiers[-1]
+            if memory_mb <= runner.config.memory_mb:
+                memory_mb = None
+        else:
+            memory_mb = runner.estimate_experiment_memory_mb(b, num_img, num_vox_full, n_perm)
+
         # For shared cache sources, upload to S3 if not already there
         if (hasattr(self.cloud_config, 'shared_exp_sources') and
             self.source in self.cloud_config.shared_exp_sources):
@@ -434,7 +461,8 @@ class Config:
                 job_id = runner.submit_experiment_job(
                     run_id=run_id,
                     exp_idx=exp_idx,
-                    kwargs=kwargs
+                    kwargs=kwargs,
+                    memory_mb=memory_mb,
                 )
                 job_ids.append(job_id)
                 job_exp_idx[job_id] = exp_idx

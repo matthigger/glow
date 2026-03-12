@@ -9,7 +9,7 @@ dimensions, not the number of permutations.
 Memory is estimated by a Lasso regression fitted on actual peak-RSS
 measurements across a grid of `(num_vox, b, num_img)` values.  The
 fitted coefficients are stored in
-[`memory_model.json`](memory_model.json) and loaded at runtime by
+[`memory_permutation.json`](memory_permutation.json) and loaded at runtime by
 `AWSBatchRunner.estimate_memory_mb`.
 
 To re-run the profiling benchmark and refit the model:
@@ -28,6 +28,28 @@ The current model (R² = 0.96) retains these terms:
 
 The dominant terms are `num_vox × b` and `num_vox` (Ward clustering
 and stat-array overhead that scales with voxel count).
+
+## Experiment-worker memory model
+
+A **second** regression is used for the **experiment worker** (paper/config
+path), which runs the full experiment (`config.run_fnc(config, **kwargs)`)
+in one process — all permutations and analyses serially.  The same script
+[`glow.benchmark.memory`](../benchmark/memory.py) has an **experiment**
+profile:
+
+    python -m glow.benchmark.memory --profile experiment
+
+This runs a grid of `(num_vox, b, num_img, n_perm)`, measures peak RSS for
+full `run_ana` in a subprocess, fits a Lasso regression, and saves
+[`memory_experiment.json`](memory_experiment.json).
+`AWSBatchRunner.estimate_experiment_memory_mb` loads that model when
+submitting experiment jobs.
+
+**HCP vs WGN:** For **HCP**, the worker keeps the full `exp_orig` in memory
+(loading from S3 each run would add ~12 s per job).  We therefore request
+the **sum** of (1) full-dataset size and (2) the experiment regression
+prediction, snapped to the nearest tier.  For **WGN**, only the regression
+is used (the data is small).  See [aws_job_types.md](aws_job_types.md) § 3.
 
 ## Maximum subjects per tier
 
