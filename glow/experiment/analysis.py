@@ -259,9 +259,9 @@ class AnalysisGLOW(Analysis):
         effect_list (list): discovered Effect objects
     """
 
-    def __init__(self, exp, n_perm_fwer, n_perm_prune=100,
+    def __init__(self, exp, n_perm_fwer,
                  n_perm_fwer_size_adjust=25,
-                 alpha_fwer=.05, alpha_prune=.05, min_size=1, verbose=False,
+                 alpha_fwer=.05, min_size=1, verbose=False,
                  n_jobs_perm=1, cloud_config=None, perm_dir=None,
                  prune_geom_exp_eff=None,
                  size_adjust_model=None, **kwargs):
@@ -269,14 +269,10 @@ class AnalysisGLOW(Analysis):
         Args:
             exp: Experiment to analyze
             n_perm_fwer: Number of permutations for FWER control
-            n_perm_prune: Number of pruning permutations for node-gain
-                calibration
             n_perm_fwer_size_adjust: Number of held-out permutations used
                 exclusively to fit the size-adjustment regression (default 25).
                 These are independent of the n_perm_fwer FWER permutations.
             alpha_fwer: Family-wise error rate
-            alpha_prune: Pruning alpha (quantile level for node-gain
-                calibration)
             min_size: Minimum region size
             verbose: Print progress
             n_jobs_perm: Number of parallel jobs for permutations
@@ -288,9 +284,10 @@ class AnalysisGLOW(Analysis):
                 None a temp directory is created and cleaned up.
                 Existing results in the directory are reused (resume).
             prune_geom_exp_eff: expected number of effect regions under
-                the geometric prior.  if None (default), lambda is
-                calibrated from permutations.  if given, uses the
-                analytic formula lambda = log(1 + 1/exp_eff) instead.
+                the geometric prior.  if None (default), pruning uses
+                llr_adjusted directly with no additional penalty.  if
+                given, uses the analytic formula
+                lambda = log(1 + 1/exp_eff).
             size_adjust_model: regression model for the size adjustment
                 ('sqrt', 'power_law', etc.).  If None (default),
                 auto-selected from stat_vs_size benchmark results
@@ -300,8 +297,8 @@ class AnalysisGLOW(Analysis):
         self.verbose = verbose
 
         if cloud_config is not None:
-            self._run_on_cloud(exp, n_perm_fwer, n_perm_prune,
-                              alpha_fwer, alpha_prune, min_size, verbose,
+            self._run_on_cloud(exp, n_perm_fwer,
+                              alpha_fwer, min_size, verbose,
                               cloud_config,
                               n_perm_fwer_size_adjust=n_perm_fwer_size_adjust,
                               prune_geom_exp_eff=prune_geom_exp_eff,
@@ -416,7 +413,7 @@ class AnalysisGLOW(Analysis):
         self._finalize_analysis(
             exp, n_perm_fwer, stat_0, size_0, children_0,
             mu_fn, stat_max_sorted,
-            n_perm_prune, alpha_fwer, alpha_prune, min_size,
+            alpha_fwer, min_size,
             prune_geom_exp_eff=prune_geom_exp_eff)
 
         if _cleanup_dir:
@@ -553,8 +550,8 @@ class AnalysisGLOW(Analysis):
     def _finalize_analysis(self, exp, n_perm_fwer,
                           stat_0, size_0, children_0,
                           mu_fn, stat_max_sorted,
-                          n_perm_prune, alpha_fwer, alpha_prune,
-                          min_size, prune_geom_exp_eff=None):
+                          alpha_fwer, min_size,
+                          prune_geom_exp_eff=None):
         """Finalize: compute p-values from max-stat distribution, prune."""
         verbose = getattr(self, 'verbose', False)
         num_reg = stat_0.shape[0]
@@ -565,7 +562,6 @@ class AnalysisGLOW(Analysis):
                                         posinf=0.0, neginf=-30.0)
 
         self.alpha_fwer = alpha_fwer
-        self.alpha_prune = alpha_prune
         self.size = size_0
         self.stat = stat_0
         self.llr_adjusted_0 = llr_adjusted_0
@@ -595,12 +591,12 @@ class AnalysisGLOW(Analysis):
         if verbose:
             _mode = (f'exp_eff={prune_geom_exp_eff}'
                      if prune_geom_exp_eff is not None
-                     else f'{n_perm_prune} perms, alpha={alpha_prune}')
+                     else 'llr_adjusted')
             print(f'  pruning ({_mode}) ...')
         reg_out_list, self.dp_info = prune(
             sig_reg_list=self.sig_reg_list,
-            children=children_0, exp=exp,
-            n_perm=n_perm_prune, alpha=alpha_prune,
+            children=children_0,
+            llr_adjusted=llr_adjusted_0,
             exp_eff=prune_geom_exp_eff)
         self.homo_pval_dict = {}
 
@@ -620,12 +616,13 @@ class AnalysisGLOW(Analysis):
             n_disc = len(self.effect_list)
             n_pruned = len(self.sig_reg_list) - n_disc
             msg = f'  done: {n_disc} discovered, {n_pruned} pruned'
-            if self.dp_info:
-                msg += f' (lambda={self.dp_info["lam"]:.4f})'
+            lam = self.dp_info.get('lam', 0.0)
+            if lam:
+                msg += f' (lambda={lam:.4f})'
             print(msg)
 
-    def _run_on_cloud(self, exp, n_perm_fwer, n_perm_prune,
-                     alpha_fwer, alpha_prune, min_size, verbose,
+    def _run_on_cloud(self, exp, n_perm_fwer,
+                     alpha_fwer, min_size, verbose,
                      cloud_config, n_perm_fwer_size_adjust=25,
                      prune_geom_exp_eff=None,
                      size_adjust_model=None, **kwargs):
@@ -646,10 +643,8 @@ class AnalysisGLOW(Analysis):
 
         ana_kwargs = {
             'get_stat': self.get_stat,
-            'n_perm_prune': n_perm_prune,
             'n_perm_fwer_size_adjust': n_perm_fwer_size_adjust,
             'alpha_fwer': alpha_fwer,
-            'alpha_prune': alpha_prune,
             'min_size': min_size,
             'prune_geom_exp_eff': prune_geom_exp_eff,
             'size_adjust_model': size_adjust_model,
@@ -689,7 +684,7 @@ class AnalysisGLOW(Analysis):
 
         _COPY_ATTRS = [
             'children', 'stat', 'size', 'pval', 'llr_adjusted_0',
-            'sig_reg_list', 'effect_list', 'alpha_fwer', 'alpha_prune',
+            'sig_reg_list', 'effect_list', 'alpha_fwer',
             'dp_info', 'homo_pval_dict', 'adj_model', 'adj_beta',
         ]
         for attr in _COPY_ATTRS:

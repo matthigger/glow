@@ -208,9 +208,9 @@ def children_to_map(children):
 def dp_antichain(nodes, children_map, gain, lam=0.0):
     """Bottom-up DP finding the antichain that maximises total gain.
 
-    Maximises ``sum_{i in E} [gain(i) - lam]`` over antichains E of the
-    tree defined by *children_map*.  Used both for pruning (on an
-    SCGraph significant subtree) and for stat comparison (full tree,
+    Maximises ``sum_{i in E} [gain(i) - lam(i)]`` over antichains E
+    of the tree defined by *children_map*.  Used both for pruning (on
+    an SCGraph significant subtree) and for stat comparison (full tree,
     ``lam=0``).
 
     Args:
@@ -218,18 +218,21 @@ def dp_antichain(nodes, children_map, gain, lam=0.0):
         children_map (dict): node -> list of child nodes in *nodes*.
             Nodes absent from the dict (or with empty list) are leaves.
         gain (dict): node -> gain value
-        lam (float): per-node penalty (default 0)
+        lam (float or dict): penalty — either a scalar applied to all
+            nodes, or a dict mapping node -> penalty.
 
     Returns:
         selected (list[int]): sorted indices of antichain regions
         info (dict): diagnostic keys ``gain``, ``best``, ``lam``
     """
+    _lam_is_dict = isinstance(lam, dict)
     best = {}
     chose = {}
 
     for node in nodes:
         kids = children_map.get(node, [])
-        g_net = gain[node] - lam
+        lam_node = lam[node] if _lam_is_dict else lam
+        g_net = gain[node] - lam_node
 
         if not kids:
             best[node] = max(g_net, 0.0)
@@ -257,7 +260,7 @@ def dp_antichain(nodes, children_map, gain, lam=0.0):
     for root in roots:
         _bt(root)
 
-    return sorted(selected), dict(gain=dict(gain), best=best, lam=lam)
+    return sorted(selected), dict(gain=gain, best=best, lam=lam)
 
 
 def iter_topo(*, children=None, num_leaf, node_start=None, only_leaf=False):

@@ -429,9 +429,7 @@ def run_synthesis_mode(args):
     b, num_img, num_vox = exp.y.shape
     get_stat = ana_kwargs.get('get_stat', get_llr)
     model = ana_kwargs.get('size_adjust_model') or get_best_model(get_stat)
-    n_perm_prune = ana_kwargs.get('n_perm_prune', 100)
     alpha_fwer = ana_kwargs.get('alpha_fwer', 0.05)
-    alpha_prune = ana_kwargs.get('alpha_prune', 0.05)
     min_size = ana_kwargs.get('min_size', 1)
     prune_geom_exp_eff = ana_kwargs.get('prune_geom_exp_eff', None)
 
@@ -513,7 +511,7 @@ def run_synthesis_mode(args):
         exp, n_perm_fwer,
         stat_0, size_0, children_0,
         mu_fn, stat_max_sorted,
-        n_perm_prune, alpha_fwer, alpha_prune, min_size,
+        alpha_fwer, min_size,
         prune_geom_exp_eff=prune_geom_exp_eff)
     ana.synthesis_elapsed_sec = time.time() - _t0
     ana.perm_elapsed_sec = perm_elapsed
