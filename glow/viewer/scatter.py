@@ -24,34 +24,34 @@ _STATE_ORDER = ['no_effect', 'has_effect']
 #   column -> (analysis attribute name, line style)
 _PVAL_THRESHOLD_MAP = {
     'pval_fwer': ('alpha_fwer', dict(color='red', dash='dot', width=1.5)),
-    'pval_homo': ('alpha_prune', dict(color='orange', dash='dot', width=1.5)),
 }
 
 
 def _compute_adj_thresh(ana_glow):
-    """Compute the llr_adjusted value corresponding to alpha_fwer.
+    """Compute the llr_adjusted value at the alpha_fwer significance boundary.
 
-    This is the (1 - alpha_fwer) quantile of the per-permutation
-    max-statistic distribution used by the Westfall-Young procedure.
+    Returns the minimum llr_adjusted among regions with pval <= alpha_fwer,
+    i.e. the effective decision boundary on the adjusted-statistic axis.
 
-    Returns None if alpha_fwer is not available.
+    Returns None if alpha_fwer or the adjusted stat is not available,
+    or if no regions are significant.
     """
     alpha = getattr(ana_glow, 'alpha_fwer', None)
     if alpha is None:
         return None
 
-    active = ana_glow.size[0, :] >= 1
-    if not active.any():
+    pval = getattr(ana_glow, 'pval', None)
+    adj = getattr(ana_glow, 'llr_adjusted_0', None)
+    if pval is None or adj is None:
+        return None
+    if adj.ndim > 1:
+        adj = adj[0]
+
+    sig = ~np.isnan(pval) & (pval <= alpha)
+    if not sig.any():
         return None
 
-    stat = getattr(ana_glow, 'llr_adjusted', None)
-    if stat is None:
-        return None
-
-    stat_max = np.sort(np.nanmax(stat[:, active], axis=1))
-    idx = int((1 - alpha) * len(stat_max))
-    idx = min(idx, len(stat_max) - 1)
-    return float(stat_max[idx])
+    return float(np.nanmin(adj[sig]))
 
 
 def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
@@ -116,7 +116,7 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
     # --- build hover text ---
     hover_cols = ['region_idx', 'n_voxel', 'llr', 'llr_adjusted',
                   'pval_fwer']
-    for c in ('pval_homo', 'll_gain', 'll_gain_net',
+    for c in ('pval_homo',
               'f1', 'sens', 'spec', 'vox_in_target',
               'vox_out_target', 'llr_mu_h0', 'llr_std_h0'):
         if c in _df.columns and not _df[c].isna().all():
@@ -175,7 +175,7 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
         x=x, y=y,
         mode='markers',
         marker=marker_kwargs,
-        customdata=reg_indices,
+        customdata=reg_indices.tolist(),
         text=hover_text,
         hoverinfo='text',
         showlegend=False,
@@ -356,29 +356,3 @@ def _add_threshold_lines(fig, ana_glow, x_feat, y_feat):
                               annotation_text=label,
                               annotation_position='right')
 
-    # --- ll_gain axis: draw lambda threshold ---
-    dp_info = getattr(ana_glow, 'dp_info', {})
-    lam = dp_info.get('lam')
-    if lam is not None and lam > 0:
-        style_lam = dict(color='green', dash='dot', width=1.5)
-        label_lam = f'\u03bb={lam:.3f}'
-        if x_feat == 'll_gain':
-            fig.add_vline(x=lam, line=style_lam,
-                          annotation_text=label_lam,
-                          annotation_position='top')
-        if y_feat == 'll_gain':
-            fig.add_hline(y=lam, line=style_lam,
-                          annotation_text=label_lam,
-                          annotation_position='right')
-
-    # --- ll_gain_net axis: draw zero threshold ---
-    if 'll_gain_net' in (x_feat, y_feat):
-        style_zero = dict(color='green', dash='dot', width=1.5)
-        if x_feat == 'll_gain_net':
-            fig.add_vline(x=0, line=style_zero,
-                          annotation_text='net = 0',
-                          annotation_position='top')
-        if y_feat == 'll_gain_net':
-            fig.add_hline(y=0, line=style_zero,
-                          annotation_text='net = 0',
-                          annotation_position='right')

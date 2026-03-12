@@ -11,8 +11,14 @@ from glow.experiment.mancova import decompose, get_llr
 
 
 def _get_adjusted_stat(ana_glow):
-    """Return the adjusted stat array (llr_adjusted)."""
-    return ana_glow.llr_adjusted
+    """Return the adjusted stat array (llr_adjusted), always 1-D."""
+    adj = getattr(ana_glow, 'llr_adjusted_0', ana_glow.llr_adjusted_0)
+    return adj if adj.ndim == 1 else adj[0]
+
+
+def _ensure_1d(arr):
+    """Return a 1-D view: if 2-D (b, num_reg), take first row."""
+    return arr if arr.ndim == 1 else arr[0]
 
 
 def prep_df(ana_glow, mask_target=None, extra_df=None):
@@ -36,8 +42,8 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
     d = {
         'region_idx': np.arange(num_reg),
         'n_voxel': ana_glow.size.astype(int),
-        'llr': ana_glow.stat[0, :],
-        'llr_adjusted': _get_adjusted_stat(ana_glow)[0, :],
+        'llr': _ensure_1d(ana_glow.stat),
+        'llr_adjusted': _get_adjusted_stat(ana_glow),
         'pval_fwer': ana_glow.pval,
     }
 
@@ -46,18 +52,6 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
         d['llr_mu_h0'] = ana_glow.stat_mu
     if hasattr(ana_glow, 'stat_std'):
         d['llr_std_h0'] = ana_glow.stat_std
-
-    # DP pruning diagnostics
-    ll_gain = np.full(num_reg, np.nan)
-    ll_gain_net = np.full(num_reg, np.nan)
-    _dp_info = getattr(ana_glow, 'dp_info', {})
-    if _dp_info and 'gain' in _dp_info:
-        lam = _dp_info['lam']
-        for reg_idx, g in _dp_info['gain'].items():
-            ll_gain[reg_idx] = g
-            ll_gain_net[reg_idx] = g - lam
-    d['ll_gain'] = ll_gain
-    d['ll_gain_net'] = ll_gain_net
 
     # significant flag (pval <= alpha_fwer)
     alpha_fwer = getattr(ana_glow, 'alpha_fwer', 0.05)
@@ -107,7 +101,7 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
 
 
 _GENERIC_FEATURES = {'n_voxel'}
-_PRUNING_FEATURES = {'ll_gain', 'll_gain_net'}
+_PRUNING_FEATURES = set()
 _MASK_FEATURES = {'f1', 'sens', 'spec', 'pct_max_f1',
                    'vox_in_target', 'vox_out_target'}
 
@@ -202,8 +196,6 @@ def compute_target_stats(ana_glow, mask_target):
     stats['vox_out_target'] = 0
 
     stats['pval_fwer'] = np.nan
-    stats['ll_gain'] = np.nan
-    stats['ll_gain_net'] = np.nan
     stats['llr_mu_h0'] = np.nan
     stats['llr_std_h0'] = np.nan
 
