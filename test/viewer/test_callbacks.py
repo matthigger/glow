@@ -11,6 +11,7 @@ import pytest
 
 from glow.viewer.data import prep_df, compute_target_stats
 from glow.viewer.scatter import build_scatter
+from glow.viewer.regression import build_regression_figure
 
 
 class TestToggleRegionLogic:
@@ -137,3 +138,61 @@ class TestScatterCallbackIntegration:
         sizes = np.array(main.marker.size)
         assert sizes[idx] == sizes.max(), \
             'selected region should have the largest marker'
+
+
+class TestRegressionClickToImage:
+    """Clicking a regression data point should yield an image index."""
+
+    def _build_reg_fig(self, ana, df):
+        num_vox = ana.exp.y.shape[2]
+        reg_idx = num_vox  # first internal node
+        return build_regression_figure(
+            ana_glow=ana, region_list=[reg_idx],
+            x_feat_idx=0, y_feat_idx=0, df=df)
+
+    def test_marker_traces_have_customdata(self, ana, df_with_target):
+        fig = self._build_reg_fig(ana, df_with_target)
+        marker_traces = [t for t in fig.data if t.mode == 'markers']
+        assert len(marker_traces) >= 1
+        for t in marker_traces:
+            assert t.customdata is not None, 'regression markers need customdata'
+            assert len(t.customdata) == ana.exp.y.shape[1]
+
+    def test_customdata_are_image_indices(self, ana, df_with_target):
+        fig = self._build_reg_fig(ana, df_with_target)
+        marker_traces = [t for t in fig.data if t.mode == 'markers']
+        num_img = ana.exp.y.shape[1]
+        for t in marker_traces:
+            assert list(t.customdata) == list(range(num_img))
+
+    @staticmethod
+    def _simulate_click(img_idx):
+        """Build a Plotly clickData dict for a regression marker."""
+        return {'points': [{'customdata': img_idx, 'pointIndex': img_idx}]}
+
+    def test_click_extracts_image_idx(self):
+        """The callback logic: extract customdata and return str(img_idx)."""
+        click = self._simulate_click(3)
+        point = click['points'][0]
+        img_idx = point.get('customdata')
+        assert img_idx is not None
+        assert str(int(img_idx)) == '3'
+
+    def test_click_line_trace_no_customdata(self, ana, df_with_target):
+        """OLS fit-line traces should NOT have customdata (ignored on click)."""
+        fig = self._build_reg_fig(ana, df_with_target)
+        line_traces = [t for t in fig.data if t.mode == 'lines']
+        for t in line_traces:
+            assert t.customdata is None
+
+    def test_multiple_regions(self, ana, df_with_target):
+        """Each region's marker trace should carry image-index customdata."""
+        num_vox = ana.exp.y.shape[2]
+        regs = [num_vox, num_vox + 1]
+        fig = build_regression_figure(
+            ana_glow=ana, region_list=regs,
+            x_feat_idx=0, y_feat_idx=0, df=df_with_target)
+        marker_traces = [t for t in fig.data if t.mode == 'markers']
+        assert len(marker_traces) == 2
+        for t in marker_traces:
+            assert list(t.customdata) == list(range(ana.exp.y.shape[1]))

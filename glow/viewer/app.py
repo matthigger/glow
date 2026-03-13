@@ -514,6 +514,7 @@ def _setup_3d(app, ana_glow, df,
     _register_regression_callback(app, ana_glow, df,
                                   feature_names=feature_names,
                                   target_vox=target_vox)
+    _register_regression_click_callback(app, 'dd-image-3d')
 
     # --- setpos store: dash-slicer picks this up automatically ---
     setpos_store = dcc.Store(
@@ -679,6 +680,7 @@ def _setup_2d(app, ana_glow, df,
     _register_regression_callback(app, ana_glow, df,
                                   feature_names=feature_names,
                                   target_vox=target_vox)
+    _register_regression_click_callback(app, 'dd-image')
 
     # --- image callback: visible regions + hover + background + image -> figure ---
     @app.callback(
@@ -967,6 +969,28 @@ def _register_regression_callback(app, ana_glow, df, feature_names=None,
             feature_names=feature_names,
             target_vox=target_vox,
         )
+
+
+def _register_regression_click_callback(app, image_dd_id):
+    """Click on a regression data point -> switch the Image dropdown.
+
+    Each marker trace in the regression figure carries ``customdata``
+    with 0-based image indices so the IMAGE view can show that specific
+    observation.
+    """
+    @app.callback(
+        Output(image_dd_id, 'value'),
+        [Input('regression-plot', 'clickData')],
+        prevent_initial_call=True,
+    )
+    def on_regression_click(click_data):
+        if not click_data:
+            return no_update
+        point = click_data['points'][0]
+        img_idx = point.get('customdata')
+        if img_idx is None:
+            return no_update
+        return str(int(img_idx))
 
 
 # ---------------------------------------------------------------------------
