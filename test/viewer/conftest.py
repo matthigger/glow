@@ -28,6 +28,31 @@ def demo_analysis():
 
 
 @pytest.fixture(scope='session')
+def demo_analysis_2d():
+    """Small 2D analysis (8x8, circle effect) for viewer layout tests."""
+    shape = (8, 8)
+    center = np.array([s // 2 for s in shape])
+    coords = np.indices(shape).reshape(2, -1).T
+    dist = np.sqrt(((coords - center) ** 2).sum(axis=1))
+    mask_circle = (dist <= 2.5).reshape(shape)
+
+    exp = Experiment.from_gauss(b=1, num_img=6, shape=shape, seed=42, a=2)
+    exp_eff, _ = exp.impose_effect(effect_llr=2.0, mask=mask_circle, seed=42)
+    ana = AnalysisGLOW(exp_eff, n_perm_fwer=5, verbose=False)
+    return ana, mask_circle
+
+
+@pytest.fixture(scope='session')
+def ana_2d(demo_analysis_2d):
+    return demo_analysis_2d[0]
+
+
+@pytest.fixture(scope='session')
+def mask_target_2d(demo_analysis_2d):
+    return demo_analysis_2d[1]
+
+
+@pytest.fixture(scope='session')
 def ana(demo_analysis):
     return demo_analysis[0]
 

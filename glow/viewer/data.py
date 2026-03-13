@@ -217,7 +217,7 @@ def get_original_y(exp):
     return exp.y
 
 
-def compute_backgrounds(ana_glow, feature_names=None):
+def compute_backgrounds(ana_glow, feature_names=None, image_idx=None):
     """Compute per-feature background images from the experiment data.
 
     Uses original (pre-scaled) intensities so that backgrounds match
@@ -228,6 +228,8 @@ def compute_backgrounds(ana_glow, feature_names=None):
         feature_names (list[str] | None): optional human-readable names for
             each imaging feature.  Length must equal ``b`` (number of
             features).  Falls back to ``"feature 0"``, ``"feature 1"``, ...
+        image_idx (int | None): if provided, use a single image (0-indexed)
+            instead of the mean across all images.
 
     Returns:
         bg_dict (dict): feature_name -> np.array with same shape as mask_idx.
@@ -237,8 +239,10 @@ def compute_backgrounds(ana_glow, feature_names=None):
     mask_idx = exp.mask_idx
     y = get_original_y(exp)  # (b, num_img, num_vox)
 
-    # grand mean across images: (b, num_vox)
-    y_mean = y.mean(axis=1)
+    if image_idx is not None:
+        y_mean = y[:, image_idx, :]  # (b, num_vox) single image
+    else:
+        y_mean = y.mean(axis=1)      # (b, num_vox) grand mean
     b = y_mean.shape[0]
 
     if feature_names is None:

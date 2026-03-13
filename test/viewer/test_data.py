@@ -3,7 +3,8 @@
 import numpy as np
 import pandas as pd
 
-from glow.viewer.data import prep_df, get_feature_columns, compute_target_stats
+from glow.viewer.data import (prep_df, get_feature_columns,
+                               compute_target_stats, compute_backgrounds)
 
 
 class TestPrepDf:
@@ -105,3 +106,46 @@ class TestComputeTargetStats:
     def test_empty_mask_returns_none(self, ana):
         empty_mask = np.zeros_like(ana.exp.mask_idx, dtype=bool)
         assert compute_target_stats(ana, empty_mask) is None
+
+
+class TestComputeBackgrounds:
+    """Tests for compute_backgrounds including per-image selection."""
+
+    def test_mean_returns_dict(self, ana):
+        bg = compute_backgrounds(ana)
+        assert isinstance(bg, dict)
+        assert len(bg) >= 1
+
+    def test_mean_shapes_match_mask(self, ana):
+        bg = compute_backgrounds(ana)
+        mask_shape = ana.exp.mask_idx.shape
+        for name, img in bg.items():
+            assert img.shape[:len(mask_shape)] == mask_shape
+
+    def test_single_image_returns_dict(self, ana):
+        bg = compute_backgrounds(ana, image_idx=0)
+        assert isinstance(bg, dict)
+        assert len(bg) >= 1
+
+    def test_single_image_differs_from_mean(self, ana):
+        bg_mean = compute_backgrounds(ana)
+        bg_0 = compute_backgrounds(ana, image_idx=0)
+        key = list(bg_mean.keys())[0]
+        if key == 'RGB':
+            key = list(bg_mean.keys())[1] if len(bg_mean) > 1 else key
+        valid = ~np.isnan(bg_mean[key])
+        if valid.any():
+            assert not np.allclose(bg_mean[key][valid], bg_0[key][valid]), \
+                'single image should generally differ from the mean'
+
+    def test_all_image_indices_valid(self, ana):
+        num_img = ana.exp.y.shape[1]
+        for i in range(num_img):
+            bg = compute_backgrounds(ana, image_idx=i)
+            assert isinstance(bg, dict)
+
+    def test_feature_names_used_as_keys(self, ana):
+        names = [f'feat_{i}' for i in range(ana.exp.y.shape[0])]
+        bg = compute_backgrounds(ana, feature_names=names)
+        for n in names:
+            assert n in bg

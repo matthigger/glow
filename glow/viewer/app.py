@@ -284,10 +284,19 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
 
 def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
                     x_names=None, y_names=None, num_reg=0,
-                    default_reg_x=0):
+                    default_reg_x=0, num_img=0):
     """Build layout for 2D data (single go.Image view)."""
     all_cols, default_x, default_y, log_val, default_color = _defaults(
         generic_cols, sig_cols, prune_cols, mask_cols)
+
+    bg_default = ('RGB' if 'RGB' in bg_names
+                  else bg_names[0] if bg_names else '__none__')
+    image_options = [{'label': 'Mean', 'value': 'mean'}]
+    image_options += [{'label': f'Image {i}', 'value': str(i)}
+                      for i in range(num_img)]
+
+    _dd_label = {'fontSize': '11px', 'fontWeight': 'bold',
+                 'marginBottom': '2px'}
 
     return html.Div([
         # --- APP HEADER ---
@@ -312,27 +321,39 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
 
         # --- IMAGE + REGRESSION (side by side) ---
         html.Div([
-            # left panel: background + region list
-            html.Div([
-                html.Label('Background', style={'fontWeight': 'bold',
-                                                'fontSize': '13px'}),
-                dcc.Dropdown(
-                    id='dd-bg',
-                    options=[{'label': n, 'value': n} for n in bg_names],
-                    value=('RGB' if 'RGB' in bg_names
-                           else bg_names[0] if bg_names else '__none__'),
-                    clearable=False,
-                    style={'marginBottom': '12px'},
-                ),
-                _region_panel(num_reg),
-            ], style={'width': '180px', 'flexShrink': '0'}),
+            # left panel: region selection (aligned with controls column)
+            _region_panel(num_reg),
 
-            # center: image viewer
+            # center: IMAGE with header dropdowns
             html.Div([
-                html.H4('IMAGE', style={
-                    'margin': '0', 'fontSize': '14px',
-                    'letterSpacing': '1px', 'color': '#555',
-                    'marginBottom': '4px'}),
+                html.Div([
+                    html.H4('IMAGE', style={
+                        'margin': '0', 'fontSize': '14px',
+                        'letterSpacing': '1px', 'color': '#555',
+                        'marginRight': '16px', 'whiteSpace': 'nowrap'}),
+                    html.Div([
+                        html.Label('Background', style=_dd_label),
+                        dcc.Dropdown(
+                            id='dd-bg',
+                            options=[{'label': n, 'value': n}
+                                     for n in bg_names],
+                            value=bg_default,
+                            clearable=False,
+                            style={'fontSize': '12px'},
+                        ),
+                    ], style={'width': '130px', 'marginRight': '8px'}),
+                    html.Div([
+                        html.Label('Image', style=_dd_label),
+                        dcc.Dropdown(
+                            id='dd-image',
+                            options=image_options,
+                            value='mean',
+                            clearable=False,
+                            style={'fontSize': '12px'},
+                        ),
+                    ], style={'width': '130px'}),
+                ], style={'display': 'flex', 'alignItems': 'flex-end',
+                          'marginBottom': '4px'}),
                 dcc.Graph(id='image-viewer',
                           config={'scrollZoom': True},
                           style={'width': '100%', 'height': '340px'}),
@@ -555,11 +576,13 @@ def _setup_2d(app, ana_glow, df,
     y_names = _get_y_labels(ana_glow.exp, feature_names=feature_names)
 
     num_reg = ana_glow.exp.y.shape[2] + ana_glow.children.shape[0]
+    num_img = ana_glow.exp.y.shape[1]
     app.layout = _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols,
                                  bg_names,
                                  x_names=x_names, y_names=y_names,
                                  num_reg=num_reg,
-                                 default_reg_x=default_reg_x)
+                                 default_reg_x=default_reg_x,
+                                 num_img=num_img)
 
     # pre-compute target mask in image space for overlays
     mask_target_img = None
@@ -582,14 +605,15 @@ def _setup_2d(app, ana_glow, df,
                                   feature_names=feature_names,
                                   target_vox=target_vox)
 
-    # --- image callback: visible regions + hover + background -> figure ---
+    # --- image callback: visible regions + hover + background + image -> figure ---
     @app.callback(
         Output('image-viewer', 'figure'),
         [Input('region-checklist', 'value'),
          Input('store-hover', 'data'),
-         Input('dd-bg', 'value')],
+         Input('dd-bg', 'value'),
+         Input('dd-image', 'value')],
     )
-    def update_image(visible, hover_json, bg_name):
+    def update_image(visible, hover_json, bg_name, image_sel):
         visible = visible or []
 
         # append hover region if not already visible
@@ -598,8 +622,16 @@ def _setup_2d(app, ana_glow, df,
         if hover_reg is not None and hover_reg not in show_list:
             show_list.append(hover_reg)
 
-        if bg_name and bg_name != '__none__' and bg_name in bg_dict:
-            bg_img = bg_dict[bg_name]
+        # resolve background: precomputed mean or single-image on-the-fly
+        if image_sel is not None and image_sel != 'mean':
+            active_bg = compute_backgrounds(
+                ana_glow, feature_names=feature_names,
+                image_idx=int(image_sel))
+        else:
+            active_bg = bg_dict
+
+        if bg_name and bg_name != '__none__' and bg_name in active_bg:
+            bg_img = active_bg[bg_name]
         else:
             bg_img = np.full(mask_idx.shape, np.nan)
 
