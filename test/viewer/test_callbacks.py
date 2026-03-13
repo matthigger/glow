@@ -1,0 +1,139 @@
+"""Tests for viewer callback logic.
+
+These test the callback functions directly (without running a Dash server)
+by calling them with mock clickData / hoverData dicts.
+"""
+
+import json
+
+import numpy as np
+import pytest
+
+from glow.viewer.data import prep_df, compute_target_stats
+from glow.viewer.scatter import build_scatter
+
+
+class TestToggleRegionLogic:
+    """Test the selection toggle logic used by _register_selection_callback.
+
+    We replicate the callback body here since the inner function is not
+    importable, but the logic is simple enough to test directly.
+    """
+
+    @staticmethod
+    def _toggle(click_data, selected_json, is_target_click=False):
+        """Replicate the core of toggle_region's click branch."""
+        if click_data is None:
+            return None, None
+
+        point = click_data['points'][0]
+        reg_idx = point.get('customdata')
+        if reg_idx is None:
+            return None, None
+
+        if reg_idx != 'target':
+            reg_idx = int(reg_idx)
+
+        selected = json.loads(selected_json)
+        if reg_idx in selected:
+            selected.remove(reg_idx)
+        else:
+            selected.append(reg_idx)
+        return json.dumps(selected), reg_idx
+
+    def test_add_region(self):
+        click = {'points': [{'customdata': 42}]}
+        result, reg = self._toggle(click, '[]')
+        assert json.loads(result) == [42]
+        assert reg == 42
+
+    def test_remove_region(self):
+        click = {'points': [{'customdata': 42}]}
+        result, reg = self._toggle(click, '[42]')
+        assert json.loads(result) == []
+        assert reg == 42
+
+    def test_add_target(self):
+        click = {'points': [{'customdata': 'target'}]}
+        result, reg = self._toggle(click, '[]')
+        assert json.loads(result) == ['target']
+        assert reg == 'target'
+
+    def test_remove_target(self):
+        click = {'points': [{'customdata': 'target'}]}
+        result, reg = self._toggle(click, '["target"]')
+        assert json.loads(result) == []
+
+    def test_add_multiple(self):
+        click1 = {'points': [{'customdata': 10}]}
+        click2 = {'points': [{'customdata': 20}]}
+        result, _ = self._toggle(click1, '[]')
+        result, _ = self._toggle(click2, result)
+        assert json.loads(result) == [10, 20]
+
+    def test_target_with_existing_regions(self):
+        click = {'points': [{'customdata': 'target'}]}
+        result, _ = self._toggle(click, '[42, 100]')
+        assert json.loads(result) == [42, 100, 'target']
+
+    def test_none_customdata_ignored(self):
+        click = {'points': [{}]}
+        result, reg = self._toggle(click, '[42]')
+        assert result is None
+
+    def test_none_click_ignored(self):
+        result, reg = self._toggle(None, '[42]')
+        assert result is None
+
+
+class TestTargetStarClickable:
+    """Verify the target star trace has the right customdata for clicks."""
+
+    def test_target_customdata_is_string(self, df_with_target, ana,
+                                         target_stats):
+        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_adjusted',
+                            '__none__', target_stats=target_stats)
+        star = [t for t in fig.data
+                if getattr(t, 'customdata', None) is not None
+                and 'target' in list(t.customdata)]
+        assert len(star) == 1
+        assert star[0].customdata[0] == 'target'
+
+
+class TestScatterCallbackIntegration:
+    """End-to-end: build figure, verify it can be rebuilt with different axes.
+
+    This catches the IndexError regression and y-feature responsiveness.
+    """
+
+    def test_rebuild_all_y_features(self, df_with_target, ana, feature_cols,
+                                    target_stats):
+        """Changing Y feature must not crash (IndexError regression)."""
+        generic, sig, prune, mask = feature_cols
+        all_y = generic + sig + prune + mask
+        for y_feat in all_y:
+            fig = build_scatter(df_with_target, ana, 'n_voxel', y_feat,
+                                '__none__', target_stats=target_stats)
+            assert fig.layout.yaxis.title.text == y_feat, \
+                f'y-axis title should be {y_feat}'
+
+    def test_rebuild_all_x_features(self, df_with_target, ana, feature_cols,
+                                    target_stats):
+        for x_feat in sum(feature_cols, []):
+            fig = build_scatter(df_with_target, ana, x_feat, 'llr_adjusted',
+                                '__none__', target_stats=target_stats)
+            assert fig.layout.xaxis.title.text == x_feat
+
+    def test_selected_round_trip(self, df_with_target, ana):
+        """Select a region, rebuild figure, verify it's highlighted."""
+        reg = int(df_with_target['region_idx'].iloc[5])
+        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_adjusted',
+                            '__none__', selected_reg={reg})
+        main = [t for t in fig.data
+                if t.mode == 'markers' and t.showlegend is False
+                and getattr(t, 'customdata', None) is not None
+                and 'target' not in list(t.customdata)][0]
+        idx = list(main.customdata).index(reg)
+        sizes = np.array(main.marker.size)
+        assert sizes[idx] == sizes.max(), \
+            'selected region should have the largest marker'
