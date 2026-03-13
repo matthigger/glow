@@ -218,37 +218,30 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
     _dd_label = {'fontSize': '11px', 'fontWeight': 'bold',
                  'marginBottom': '2px'}
 
-    # dropdowns in IMAGE header: Feature (only when b > 1) + Image
-    image_header_children = [
-        html.H4('IMAGE', style={
-            'margin': '0', 'fontSize': '14px',
-            'letterSpacing': '1px', 'color': '#555',
-            'marginRight': '16px', 'whiteSpace': 'nowrap'}),
-    ]
+    # dropdowns below IMAGE title: Feature (only when b > 1) + Image
+    image_dd_children = []
     if len(feat_names) > 1:
-        image_header_children.append(html.Div([
+        image_dd_children.append(html.Div([
             html.Label('Feature', style=_dd_label),
             dcc.Dropdown(
                 id='dd-feature-3d',
                 options=feat_options,
                 value='0',
                 clearable=False,
-                style={'fontSize': '12px'},
-            ),
-        ], style={'width': '130px', 'marginRight': '8px'}))
+                style={'width': '100%', 'fontSize': '12px'}),
+        ], style={'flex': '1', 'marginRight': '6px'}))
     else:
-        image_header_children.append(
+        image_dd_children.append(
             dcc.Store(id='dd-feature-3d', data='0'))
-    image_header_children.append(html.Div([
+    image_dd_children.append(html.Div([
         html.Label('Image', style=_dd_label),
         dcc.Dropdown(
             id='dd-image-3d',
             options=image_options,
             value='mean',
             clearable=False,
-            style={'fontSize': '12px'},
-        ),
-    ], style={'width': '130px'}))
+            style={'width': '100%', 'fontSize': '12px'}),
+    ], style={'flex': '1'}))
 
     return html.Div([
         # --- APP HEADER ---
@@ -277,8 +270,12 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
 
             # center: three linked ortho slicers
             html.Div([
-                html.Div(image_header_children,
-                         style={'display': 'flex', 'alignItems': 'flex-end',
+                html.H4('IMAGE', style={
+                    'margin': '0', 'fontSize': '14px',
+                    'letterSpacing': '1px', 'color': '#555',
+                    'marginBottom': '4px'}),
+                html.Div(image_dd_children,
+                         style={'display': 'flex',
                                 'marginBottom': '4px'}),
                 html.Div(style={
                     'display': 'grid',
@@ -362,13 +359,13 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
             # left panel: region selection (aligned with controls column)
             _region_panel(num_reg),
 
-            # center: IMAGE with header dropdowns
+            # center: IMAGE with dropdowns below title
             html.Div([
+                html.H4('IMAGE', style={
+                    'margin': '0', 'fontSize': '14px',
+                    'letterSpacing': '1px', 'color': '#555',
+                    'marginBottom': '4px'}),
                 html.Div([
-                    html.H4('IMAGE', style={
-                        'margin': '0', 'fontSize': '14px',
-                        'letterSpacing': '1px', 'color': '#555',
-                        'marginRight': '16px', 'whiteSpace': 'nowrap'}),
                     html.Div([
                         html.Label('Background', style=_dd_label),
                         dcc.Dropdown(
@@ -377,9 +374,8 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
                                      for n in bg_names],
                             value=bg_default,
                             clearable=False,
-                            style={'fontSize': '12px'},
-                        ),
-                    ], style={'width': '130px', 'marginRight': '8px'}),
+                            style={'width': '100%', 'fontSize': '12px'}),
+                    ], style={'flex': '1', 'marginRight': '6px'}),
                     html.Div([
                         html.Label('Image', style=_dd_label),
                         dcc.Dropdown(
@@ -387,11 +383,9 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
                             options=image_options,
                             value='mean',
                             clearable=False,
-                            style={'fontSize': '12px'},
-                        ),
-                    ], style={'width': '130px'}),
-                ], style={'display': 'flex', 'alignItems': 'flex-end',
-                          'marginBottom': '4px'}),
+                            style={'width': '100%', 'fontSize': '12px'}),
+                    ], style={'flex': '1'}),
+                ], style={'display': 'flex', 'marginBottom': '4px'}),
                 dcc.Graph(id='image-viewer',
                           config={'scrollZoom': True},
                           style={'width': '100%', 'height': '340px'}),
