@@ -203,10 +203,52 @@ def _defaults(generic_cols, sig_cols, prune_cols, mask_cols):
 def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                     slicer0, slicer1, slicer2,
                     x_names=None, y_names=None, num_reg=0,
-                    default_reg_x=0):
+                    default_reg_x=0, num_img=0, feat_names=None):
     """Build layout for 3D data (with dash-slicer ortho views)."""
     all_cols, default_x, default_y, log_val, default_color = _defaults(
         generic_cols, sig_cols, prune_cols, mask_cols)
+
+    feat_names = feat_names or []
+    image_options = [{'label': 'Mean', 'value': 'mean'}]
+    image_options += [{'label': f'Image {i}', 'value': str(i)}
+                      for i in range(num_img)]
+    feat_options = [{'label': n, 'value': str(i)}
+                    for i, n in enumerate(feat_names)]
+
+    _dd_label = {'fontSize': '11px', 'fontWeight': 'bold',
+                 'marginBottom': '2px'}
+
+    # dropdowns in IMAGE header: Feature (only when b > 1) + Image
+    image_header_children = [
+        html.H4('IMAGE', style={
+            'margin': '0', 'fontSize': '14px',
+            'letterSpacing': '1px', 'color': '#555',
+            'marginRight': '16px', 'whiteSpace': 'nowrap'}),
+    ]
+    if len(feat_names) > 1:
+        image_header_children.append(html.Div([
+            html.Label('Feature', style=_dd_label),
+            dcc.Dropdown(
+                id='dd-feature-3d',
+                options=feat_options,
+                value='0',
+                clearable=False,
+                style={'fontSize': '12px'},
+            ),
+        ], style={'width': '130px', 'marginRight': '8px'}))
+    else:
+        image_header_children.append(
+            dcc.Store(id='dd-feature-3d', data='0'))
+    image_header_children.append(html.Div([
+        html.Label('Image', style=_dd_label),
+        dcc.Dropdown(
+            id='dd-image-3d',
+            options=image_options,
+            value='mean',
+            clearable=False,
+            style={'fontSize': '12px'},
+        ),
+    ], style={'width': '130px'}))
 
     return html.Div([
         # --- APP HEADER ---
@@ -235,10 +277,9 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
 
             # center: three linked ortho slicers
             html.Div([
-                html.H4('IMAGE', style={
-                    'margin': '0', 'fontSize': '14px',
-                    'letterSpacing': '1px', 'color': '#555',
-                    'marginBottom': '4px'}),
+                html.Div(image_header_children,
+                         style={'display': 'flex', 'alignItems': 'flex-end',
+                                'marginBottom': '4px'}),
                 html.Div(style={
                     'display': 'grid',
                     'gridTemplateColumns': '1fr 1fr 1fr',
@@ -438,12 +479,19 @@ def _setup_3d(app, ana_glow, df,
     _, x_names, default_reg_x = _get_x_labels(ana_glow.exp)
     y_names = _get_y_labels(ana_glow.exp, feature_names=feature_names)
 
+    b = ana_glow.exp.y.shape[0]
+    num_img = ana_glow.exp.y.shape[1]
     num_reg = ana_glow.exp.y.shape[2] + ana_glow.children.shape[0]
+    if feature_names is None:
+        feat_names = [f'feature {i}' for i in range(b)]
+    else:
+        feat_names = list(feature_names)
     app.layout = _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                                  slicer0, slicer1, slicer2,
                                  x_names=x_names, y_names=y_names,
                                  num_reg=num_reg,
-                                 default_reg_x=default_reg_x)
+                                 default_reg_x=default_reg_x,
+                                 num_img=num_img, feat_names=feat_names)
 
     # pre-compute target mask in image space for overlays
     mask_target_img = None
@@ -525,6 +573,36 @@ def _setup_3d(app, ana_glow, df,
                            hover_reg=hover_reg, n_selected=n_sel,
                            mask_target_img=mask_target_img),
         )
+
+    # --- background volume callback: feature / image dropdown -> volume ---
+    _prop = 'data' if b == 1 else 'value'
+
+    @app.callback(
+        [Output(slicer0.state.id, 'data', allow_duplicate=True),
+         Output(slicer1.state.id, 'data', allow_duplicate=True),
+         Output(slicer2.state.id, 'data', allow_duplicate=True),
+         Output(slicer0.clim.id, 'data', allow_duplicate=True),
+         Output(slicer1.clim.id, 'data', allow_duplicate=True),
+         Output(slicer2.clim.id, 'data', allow_duplicate=True)],
+        [Input('dd-feature-3d', _prop),
+         Input('dd-image-3d', 'value')],
+        [State(slicer0.state.id, 'data'),
+         State(slicer1.state.id, 'data'),
+         State(slicer2.state.id, 'data')],
+        prevent_initial_call=True,
+    )
+    def update_bg_volume(feat_val, img_val, st0, st1, st2):
+        feat_idx = int(feat_val) if feat_val is not None else 0
+        img_idx = None if img_val in (None, 'mean') else int(img_val)
+        new_vol = compute_bg_volume(ana_glow, feature_idx=feat_idx,
+                                    image_idx=img_idx)
+        for s in (slicer0, slicer1, slicer2):
+            s._volume = new_vol
+        new_clim = [float(new_vol.min()), float(new_vol.max())]
+        import time
+        t = time.time()
+        return ({**st0, '_vt': t}, {**st1, '_vt': t}, {**st2, '_vt': t},
+                new_clim, new_clim, new_clim)
 
 
 def _build_overlay(slicer, label_map, visible_list, color_map,

@@ -71,17 +71,18 @@ def build_label_map(reg_idx_list, ana_glow):
         children=ana_glow.children)
 
 
-def compute_bg_volume(ana_glow, feature_idx=0):
-    """Compute a background volume from mean image data.
+def compute_bg_volume(ana_glow, feature_idx=0, image_idx=None):
+    """Compute a background volume from image data.
 
     Uses original (pre-scaled) intensities so that the background matches
-    the user's input images.  Averages across images for the given feature,
-    then maps back into image space.  Voxels outside the analysis mask are
-    set to zero.
+    the user's input images.  Voxels outside the analysis mask are set to
+    zero.
 
     Args:
         ana_glow (AnalysisGLOW): completed analysis
         feature_idx (int): which imaging feature to use (default 0)
+        image_idx (int | None): if provided, use a single image (0-indexed)
+            instead of the mean across all images.
 
     Returns:
         vol (np.array): same shape as mask_idx, float32
@@ -92,12 +93,14 @@ def compute_bg_volume(ana_glow, feature_idx=0):
     mask_idx = exp.mask_idx
     y = get_original_y(exp)  # (b, num_img, num_vox)
 
-    # mean across images for one feature
     feat_idx = min(feature_idx, y.shape[0] - 1)
-    y_mean = y[feat_idx].mean(axis=0)  # (num_vox,)
+    if image_idx is not None:
+        y_agg = y[feat_idx, image_idx, :]  # (num_vox,) single image
+    else:
+        y_agg = y[feat_idx].mean(axis=0)   # (num_vox,) mean across images
 
     vol = np.zeros(mask_idx.shape, dtype=np.float32)
-    vol[mask_idx >= 0] = y_mean[mask_idx[mask_idx >= 0]]
+    vol[mask_idx >= 0] = y_agg[mask_idx[mask_idx >= 0]]
     return vol
 
 
