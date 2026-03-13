@@ -98,7 +98,7 @@ def _load_mask(path, mask_idx):
 
 def _run_demo():
     """Build and launch a small demo: 15x15x15 WGN cube with sphere effect."""
-    from glow.experiment.exper import Experiment
+    from glow.experiment.exper import Experiment, ExperimentImageOnly
     from glow.experiment.analysis import AnalysisGLOW
     from glow.viewer import launch
 
@@ -116,7 +116,13 @@ def _run_demo():
     print(f'  sphere: {n_sphere} voxels at center {tuple(center)}, radius=5')
 
     # create experiment (WGN, b=1 feature, 12 images)
-    exp = Experiment.from_gauss(b=1, num_img=12, shape=shape, seed=0, a=2)
+    num_img = 12
+    exp_img = ExperimentImageOnly.from_gauss(
+        b=1, num_img=num_img, shape=shape, seed=0)
+    x = np.arange(num_img, dtype=float).reshape(1, -1)
+    contrast = np.array([True])
+    exp = Experiment(x=x, contrast=contrast,
+                     y=exp_img.y, mask_idx=exp_img.mask_idx, add_bias=True)
     print(f'  experiment: y.shape={exp.y.shape}')
 
     # impose effect inside sphere
@@ -170,11 +176,14 @@ def _run_demo2d():
     for i in range(num_img):
         y[:, i, :] = pixel_flat + rng.normal(0, noise_scale, pixel_flat.shape)
 
-    # build experiment
+    # build experiment: x0 (bias) + x1 = 0..num_img-1 (interest)
     shape = (h, w)
     mask_idx = get_mask_idx(np.ones(shape, dtype=bool))
     exp_img = ExperimentImageOnly(y=y, mask_idx=mask_idx)
-    exp = exp_img.sample_x(a=2, seed=42, add_bias=True)
+    x = np.arange(num_img, dtype=float).reshape(1, -1)
+    contrast = np.array([True])
+    exp = Experiment(x=x, contrast=contrast,
+                     y=exp_img.y, mask_idx=exp_img.mask_idx, add_bias=True)
     print(f'  experiment: y.shape={exp.y.shape}')
 
     # use ExtenterMinVar for ~15% of pixels
