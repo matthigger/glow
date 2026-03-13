@@ -236,7 +236,9 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
         fig.update_xaxes(type='log')
     # y: user-controlled toggle
     if log_y:
-        fig.update_yaxes(type='log')
+        fig.update_yaxes(type='log',
+                         range=_log_y_range(y_v, ana_glow, y_feat,
+                                            target_stats))
 
     # --- model overlay (llr on y vs n_voxel on x) ---
     _add_model_overlay(fig, ana_glow, x_feat, y_feat)
@@ -259,6 +261,45 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
     fig.update_yaxes(showgrid=True, gridcolor='#eee')
 
     return fig
+
+
+def _log_y_range(y_v, ana_glow, y_feat, target_stats):
+    """Compute an explicit [log10_min, log10_max] range for log-y mode.
+
+    Includes visible scatter data, any threshold hline, and the target star
+    so that Plotly doesn't auto-range to absurd extremes from outliers.
+    Returns *None* when there are no positive values at all (let Plotly
+    fall back to defaults).
+    """
+    pos = y_v[np.isfinite(y_v) & (y_v > 0)]
+    if len(pos) == 0:
+        return None
+
+    lo = np.log10(pos.min())
+    hi = np.log10(pos.max())
+
+    # include threshold line
+    if y_feat == 'llr_adjusted':
+        thresh = _compute_adj_thresh(ana_glow)
+        if thresh is not None and thresh > 0:
+            t = np.log10(thresh)
+            lo, hi = min(lo, t), max(hi, t)
+    for feat, (attr, _) in _PVAL_THRESHOLD_MAP.items():
+        if y_feat == feat:
+            val = getattr(ana_glow, attr, None)
+            if val is not None and val > 0:
+                t = np.log10(val)
+                lo, hi = min(lo, t), max(hi, t)
+
+    # include target star
+    if target_stats and y_feat in target_stats:
+        ty = target_stats[y_feat]
+        if np.isfinite(ty) and ty > 0:
+            t = np.log10(ty)
+            lo, hi = min(lo, t), max(hi, t)
+
+    pad = max((hi - lo) * 0.05, 0.5)
+    return [lo - pad, hi + pad]
 
 
 def _add_target_star(fig, target_stats, x_feat, y_feat, log_y=False):

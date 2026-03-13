@@ -33,6 +33,27 @@ class TestBuildScatterBasic:
                             '__none__', log_y=True)
         assert isinstance(fig, go.Figure)
 
+    def test_log_y_axis_range_reasonable(self, df_with_target, ana,
+                                         target_stats):
+        """Log-y must set an explicit range derived from visible data,
+        not Plotly's unbounded autorange (regression: axis went to 10^270)."""
+        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_adjusted',
+                            '__none__', log_y=True, target_stats=target_stats)
+        yaxis = fig.layout.yaxis
+        assert yaxis.type == 'log'
+        assert yaxis.range is not None, 'log-y should set an explicit range'
+
+        log_lo, log_hi = yaxis.range
+        pos_vals = df_with_target['llr_adjusted'].values
+        pos_vals = pos_vals[np.isfinite(pos_vals) & (pos_vals > 0)]
+        data_lo = np.log10(pos_vals.min())
+        data_hi = np.log10(pos_vals.max())
+
+        assert log_lo <= data_lo, 'range should include the smallest point'
+        assert log_hi >= data_hi, 'range should include the largest point'
+        assert log_hi - log_lo < 1000, \
+            f'range span {log_hi - log_lo} is unreasonably large'
+
 
 class TestBuildScatterTraces:
     """Verify trace structure and content."""
