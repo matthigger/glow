@@ -75,23 +75,30 @@ def _get_y_labels(exp, feature_names=None):
     return [f'y{i}' for i in range(b)]
 
 
-def _region_means(exp, vox_indices):
+def _region_means(y, vox_indices):
     """Compute mean y across voxels in a region, per image, per feature.
+
+    Args:
+        y (np.array): ``(b, num_img, num_vox)`` imaging data
+        vox_indices: voxel indices for the region
 
     Returns:
         y_mean (np.array): (b, num_img)  -- mean imaging value per image
     """
-    # exp.y shape: (b, num_img, num_vox)
-    return exp.y[:, :, vox_indices].mean(axis=2)
+    return y[:, :, vox_indices].mean(axis=2)
 
 
-def _region_stds(exp, vox_indices):
+def _region_stds(y, vox_indices):
     """Compute std of y across voxels in a region, per image, per feature.
+
+    Args:
+        y (np.array): ``(b, num_img, num_vox)`` imaging data
+        vox_indices: voxel indices for the region
 
     Returns:
         y_std (np.array): (b, num_img)  -- spatial std per image
     """
-    return exp.y[:, :, vox_indices].std(axis=2)
+    return y[:, :, vox_indices].std(axis=2)
 
 
 def _ols_fit(x_vec, y_vec):
@@ -152,10 +159,13 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
     Returns:
         fig (go.Figure)
     """
+    from .data import get_original_y
+
     exp = ana_glow.exp
     children = ana_glow.children
-    num_vox = exp.y.shape[2]
-    num_img = exp.y.shape[1]
+    y_orig = get_original_y(exp)
+    num_vox = y_orig.shape[2]
+    num_img = y_orig.shape[1]
 
     x_full, x_names, _ = _get_x_labels(exp)
     y_names = _get_y_labels(exp, feature_names=feature_names)
@@ -189,8 +199,8 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
             vox_idx = target_vox
         else:
             vox_idx = _get_voxel_indices(reg_idx, children, num_vox)
-        y_mean = _region_means(exp, vox_idx)  # (b, num_img)
-        y_std_all = _region_stds(exp, vox_idx)   # (b, num_img)
+        y_mean = _region_means(y_orig, vox_idx)  # (b, num_img)
+        y_std_all = _region_stds(y_orig, vox_idx)   # (b, num_img)
         y_vals = y_mean[y_feat_idx]  # (num_img,)
         y_std = y_std_all[y_feat_idx]  # (num_img,)
 

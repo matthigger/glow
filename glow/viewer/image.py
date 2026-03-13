@@ -74,8 +74,10 @@ def build_label_map(reg_idx_list, ana_glow):
 def compute_bg_volume(ana_glow, feature_idx=0):
     """Compute a background volume from mean image data.
 
-    Averages across images for the given feature, maps back into image
-    space.  Voxels outside the analysis mask are set to zero.
+    Uses original (pre-scaled) intensities so that the background matches
+    the user's input images.  Averages across images for the given feature,
+    then maps back into image space.  Voxels outside the analysis mask are
+    set to zero.
 
     Args:
         ana_glow (AnalysisGLOW): completed analysis
@@ -84,9 +86,11 @@ def compute_bg_volume(ana_glow, feature_idx=0):
     Returns:
         vol (np.array): same shape as mask_idx, float32
     """
+    from .data import get_original_y
+
     exp = ana_glow.exp
     mask_idx = exp.mask_idx
-    y = exp.y  # (b, num_img, num_vox)
+    y = get_original_y(exp)  # (b, num_img, num_vox)
 
     # mean across images for one feature
     feat_idx = min(feature_idx, y.shape[0] - 1)
@@ -141,11 +145,20 @@ def build_region_overlay(slicer, label_map, reg_idx_list, alpha=160):
 # 2D: Plotly go.Image fallback
 # ---------------------------------------------------------------------------
 
-def _bg_to_rgba(bg_slice):
-    """Convert a 2D background array to an RGBA uint8 image.
+_CHANNEL_SCALES = {'red': 0, 'green': 1, 'blue': 2}
 
-    Maps the non-NaN range to a grey scale [20, 235].
+
+def _bg_to_rgba(bg_slice, channel=None):
+    """Convert a background array to an RGBA uint8 image.
+
+    * 3-D input ``(H, W, 3)`` is composited as RGB.
+    * 2-D input with *channel* ``'red'``, ``'green'``, or ``'blue'`` uses
+      the matching single-colour ramp (black -> colour).
+    * Otherwise falls back to greyscale ``[20, 235]``.
     """
+    if bg_slice.ndim == 3:
+        return _rgb_to_rgba(bg_slice)
+
     h, w = bg_slice.shape
     rgba = np.zeros((h, w, 4), dtype=np.uint8)
 
@@ -157,12 +170,43 @@ def _bg_to_rgba(bg_slice):
     vmax = np.nanmax(bg_slice)
     rng = vmax - vmin if vmax != vmin else 1.0
 
-    grey = ((bg_slice[valid] - vmin) / rng * 215 + 20).astype(np.uint8)
-    rgba[valid, 0] = grey
-    rgba[valid, 1] = grey
-    rgba[valid, 2] = grey
-    rgba[valid, 3] = 255
+    intensity = ((bg_slice[valid] - vmin) / rng * 215 + 20).astype(np.uint8)
 
+    ch_idx = _CHANNEL_SCALES.get(channel.lower() if channel else '')
+    if ch_idx is not None:
+        rgba[valid, ch_idx] = intensity
+    else:
+        rgba[valid, 0] = intensity
+        rgba[valid, 1] = intensity
+        rgba[valid, 2] = intensity
+
+    rgba[valid, 3] = 255
+    return rgba
+
+
+def _rgb_to_rgba(rgb_slice):
+    """Convert a ``(H, W, 3)`` RGB background to an RGBA uint8 image.
+
+    All three channels share a single global normalisation to ``[0, 255]``
+    so that relative colour balance is preserved.
+    """
+    h, w, _ = rgb_slice.shape
+    rgba = np.zeros((h, w, 4), dtype=np.uint8)
+
+    vmin = np.nanmin(rgb_slice)
+    vmax = np.nanmax(rgb_slice)
+    rng = vmax - vmin if vmax != vmin else 1.0
+
+    for c in range(3):
+        ch = rgb_slice[:, :, c]
+        valid = ~np.isnan(ch)
+        if not valid.any():
+            continue
+        rgba[valid, c] = np.clip(
+            (ch[valid] - vmin) / rng * 255, 0, 255).astype(np.uint8)
+
+    any_valid = ~np.isnan(rgb_slice).all(axis=2)
+    rgba[any_valid, 3] = 255
     return rgba
 
 

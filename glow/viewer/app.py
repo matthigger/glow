@@ -35,7 +35,7 @@ from .regression import (build_regression_figure, build_empty_regression,
 # ---------------------------------------------------------------------------
 
 def _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
-                     default_x, default_y, log_y_default):
+                     default_x, default_y, log_y_default, default_color):
     """Build dropdowns + Log Y toggle as a narrow vertical panel."""
     _divider_style = {'color': '#999', 'fontStyle': 'italic',
                       'fontSize': '10px'}
@@ -81,7 +81,7 @@ def _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
                               color='#119DFF'),
         ], style={'display': 'flex', 'alignItems': 'center',
                   'marginBottom': '6px'}),
-        _dd('dd-color', '__none__', 'Color', none_option=True),
+        _dd('dd-color', default_color, 'Color', none_option=True),
     ], style={'width': '180px', 'padding': '10px',
               'borderRight': '1px solid #ddd', 'flexShrink': '0'})
 
@@ -199,7 +199,8 @@ def _defaults(generic_cols, sig_cols, prune_cols, mask_cols):
     default_y = ('llr_adjusted' if 'llr_adjusted' in all_cols
                  else all_cols[min(1, len(all_cols) - 1)])
     log_y_default = default_y in _LOG_COLS
-    return all_cols, default_x, default_y, log_y_default
+    default_color = 'f1' if 'f1' in mask_cols else '__none__'
+    return all_cols, default_x, default_y, log_y_default, default_color
 
 
 def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
@@ -207,7 +208,7 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                     x_names=None, y_names=None, num_reg=0,
                     default_reg_x=0):
     """Build layout for 3D data (with dash-slicer ortho views)."""
-    all_cols, default_x, default_y, log_val = _defaults(
+    all_cols, default_x, default_y, log_val, default_color = _defaults(
         generic_cols, sig_cols, prune_cols, mask_cols)
 
     return html.Div([
@@ -222,7 +223,7 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
         _section_header('Hierarchical Segmentation'),
         html.Div([
             _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
-                             default_x, default_y, log_val),
+                             default_x, default_y, log_val, default_color),
             html.Div([
                 dcc.Graph(id='scatter-plot',
                           config={'scrollZoom': True},
@@ -285,7 +286,7 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
                     x_names=None, y_names=None, num_reg=0,
                     default_reg_x=0):
     """Build layout for 2D data (single go.Image view)."""
-    all_cols, default_x, default_y, log_val = _defaults(
+    all_cols, default_x, default_y, log_val, default_color = _defaults(
         generic_cols, sig_cols, prune_cols, mask_cols)
 
     return html.Div([
@@ -300,7 +301,7 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
         _section_header('Hierarchical Segmentation'),
         html.Div([
             _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
-                             default_x, default_y, log_val),
+                             default_x, default_y, log_val, default_color),
             html.Div([
                 dcc.Graph(id='scatter-plot',
                           config={'scrollZoom': True},
@@ -317,9 +318,9 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
                                                 'fontSize': '13px'}),
                 dcc.Dropdown(
                     id='dd-bg',
-                    options=[{'label': 'None', 'value': '__none__'}] +
-                            [{'label': n, 'value': n} for n in bg_names],
-                    value=bg_names[0] if bg_names else '__none__',
+                    options=[{'label': n, 'value': n} for n in bg_names],
+                    value=('RGB' if 'RGB' in bg_names
+                           else bg_names[0] if bg_names else '__none__'),
                     clearable=False,
                     style={'marginBottom': '12px'},
                 ),
@@ -607,7 +608,7 @@ def _setup_2d(app, ana_glow, df,
         label_map = build_label_map(tree_regs, ana_glow)
 
         from .image import _bg_to_rgba, _overlay_regions, _overlay_mask
-        rgba = _bg_to_rgba(bg_img)
+        rgba = _bg_to_rgba(bg_img, channel=bg_name)
         # overlay each entry in order, using palette color from position
         selected_json_val = None  # not available here; use show_list order
         for color_idx, reg_idx in enumerate(show_list):

@@ -64,7 +64,7 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
     d['discovered'] = discovered
 
     # estimate_state: 'has_effect' if significant, else 'no_effect'
-    estimate_state = np.where(d['significant'], 'has_effect', 'no_effect')
+    estimate_state = np.where(d['discovered'], 'has_effect', 'no_effect')
     d['estimate_state'] = estimate_state
 
     # mask-target derived stats
@@ -202,8 +202,26 @@ def compute_target_stats(ana_glow, mask_target):
     return stats
 
 
+def get_original_y(exp):
+    """Return the original (pre-scaling) imaging data.
+
+    If *exp* is an ``ExperimentScaled``, inverts the zero-mean + whitening
+    transform so the returned array has the same units as the user's input
+    images.  Otherwise returns ``exp.y`` unchanged.
+
+    Returns:
+        y (np.array): ``(b, num_img, num_vox)``
+    """
+    if hasattr(exp, 'prep_inv'):
+        return exp.prep_inv(exp.y)
+    return exp.y
+
+
 def compute_backgrounds(ana_glow, feature_names=None):
     """Compute per-feature background images from the experiment data.
+
+    Uses original (pre-scaled) intensities so that backgrounds match
+    the user's input images.
 
     Args:
         ana_glow (AnalysisGLOW): completed analysis
@@ -217,7 +235,7 @@ def compute_backgrounds(ana_glow, feature_names=None):
     """
     exp = ana_glow.exp
     mask_idx = exp.mask_idx
-    y = exp.y  # (b, num_img, num_vox)
+    y = get_original_y(exp)  # (b, num_img, num_vox)
 
     # grand mean across images: (b, num_vox)
     y_mean = y.mean(axis=1)
@@ -234,5 +252,16 @@ def compute_backgrounds(ana_glow, feature_names=None):
         img = np.full(mask_idx.shape, np.nan, dtype=float)
         img[mask_idx >= 0] = y_mean[feat_idx, mask_idx[mask_idx >= 0]]
         bg_dict[name] = img
+
+    # RGB composite when the three canonical channels are present (2D only)
+    _RGB_CHANNELS = ('red', 'green', 'blue')
+    lower_names = [n.lower() for n in feature_names]
+    if (mask_idx.ndim == 2
+            and set(lower_names) == set(_RGB_CHANNELS)):
+        rgb = np.full((*mask_idx.shape, 3), np.nan, dtype=float)
+        for ci, ch_name in enumerate(_RGB_CHANNELS):
+            src_idx = lower_names.index(ch_name)
+            rgb[:, :, ci] = bg_dict[feature_names[src_idx]]
+        bg_dict['RGB'] = rgb
 
     return bg_dict

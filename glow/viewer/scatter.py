@@ -8,6 +8,13 @@ and threshold reference lines.
 import numpy as np
 import plotly.graph_objects as go
 
+from glow.graph import get_parent
+
+
+def _ensure_1d(arr):
+    """Return a 1-D view: if 2-D (b, num_reg), take first row."""
+    return arr if arr.ndim == 1 else arr[0]
+
 
 # columns where a log scale is the sensible default
 _LOG_COLS = {'n_voxel', 'vox_in_target', 'vox_out_target'}
@@ -80,6 +87,7 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
 
     num_vox = ana_glow.exp.y.shape[2]
     children = ana_glow.children
+    parent = get_parent(children, num_vox)
 
     # sort by region_idx for consistent indexing
     _df = df.sort_values('region_idx').copy()
@@ -89,16 +97,23 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
     color = None if no_color else _df[color_feat].values
     states = _df['estimate_state'].values
 
+    # in log mode, hide regions with non-positive y values
+    if log_y:
+        vis = np.isfinite(y) & (y > 0)
+    else:
+        vis = np.ones(len(y), dtype=bool)
+
     fig = go.Figure()
 
-    # --- tree edges ---
+    # --- tree edges (only between visible endpoints) ---
     if plot_tree:
         tree_x, tree_y = [], []
         for idx, child in enumerate(children):
             par = idx + num_vox
             for c in child:
-                tree_x += [x[c], x[par], None]
-                tree_y += [y[c], y[par], None]
+                if vis[c] and vis[par]:
+                    tree_x += [x[c], x[par], None]
+                    tree_y += [y[c], y[par], None]
         fig.add_trace(go.Scatter(
             x=tree_x, y=tree_y,
             mode='lines',
@@ -107,11 +122,14 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
             showlegend=False,
         ))
 
-    # --- target mask star marker (behind the main scatter) ---
-    _add_target_star(fig, target_stats, x_feat, y_feat)
+    # --- apply visibility mask to per-point arrays ---
+    x_v = x[vis]
+    y_v = y[vis]
+    color_v = None if color is None else color[vis]
+    states_v = states[vis]
 
     # --- per-point symbols from estimate_state ---
-    symbols = np.array([_STATE_STYLE[s][0] for s in states])
+    symbols = np.array([_STATE_STYLE[s][0] for s in states_v])
 
     # --- build hover text ---
     hover_cols = ['region_idx', 'n_voxel', 'llr', 'llr_adjusted',
@@ -123,7 +141,7 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
             hover_cols.append(c)
 
     hover_text = []
-    for _, row in _df.iterrows():
+    for _, row in _df[vis].iterrows():
         parts = []
         for c in hover_cols:
             v = row[c]
@@ -139,19 +157,31 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
         if state != 'no_effect':
             label = _STATE_STYLE[state][2]
             parts.append(f'<b>{label}</b>')
+        reg_idx = int(row['region_idx'])
+        p = parent[reg_idx]
+        parts.append(f'parent: {p}' if p != -1 else 'parent: none (root)')
+        if reg_idx >= num_vox:
+            c0, c1 = children[reg_idx - num_vox]
+            parts.append(f'children: {c0}, {c1}')
+        else:
+            parts.append('children: none (leaf)')
         hover_text.append('<br>'.join(parts))
 
-    # --- marker sizing: larger when selected ---
-    reg_indices = _df['region_idx'].values
+    # --- marker sizing: larger when selected; diamonds always get a border ---
+    reg_indices = _df['region_idx'].values[vis]
     is_selected = np.isin(reg_indices, list(selected_reg))
-    marker_size = np.where(is_selected, 14, 7)
-    marker_line_width = np.where(is_selected, 2, 0)
-    marker_line_color = np.where(is_selected, 'black', 'rgba(0,0,0,0)')
+    is_diamond = np.array([s == 'has_effect' for s in states_v])
+    marker_size = np.where(is_selected, 14,
+                           np.where(is_diamond, 10, 7))
+    marker_line_width = np.where(is_selected, 2,
+                                 np.where(is_diamond, 1.5, 0))
+    marker_line_color = np.where(is_selected, 'black',
+                                 np.where(is_diamond, 'black',
+                                          'rgba(0,0,0,0)'))
 
     # --- main scatter ---
     if no_color:
-        # each state gets its own colour
-        pt_colors = np.array([_STATE_STYLE[s][1] for s in states])
+        pt_colors = np.array([_STATE_STYLE[s][1] for s in states_v])
         marker_kwargs = dict(
             size=marker_size,
             symbol=symbols,
@@ -163,7 +193,7 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
         marker_kwargs = dict(
             size=marker_size,
             symbol=symbols,
-            color=color,
+            color=color_v,
             colorscale='Viridis',
             colorbar=dict(title=color_feat, x=1.02, len=0.5, y=0.15,
                          yanchor='bottom'),
@@ -172,7 +202,7 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
         )
 
     fig.add_trace(go.Scatter(
-        x=x, y=y,
+        x=x_v, y=y_v,
         mode='markers',
         marker=marker_kwargs,
         customdata=reg_indices.tolist(),
@@ -181,13 +211,19 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
         showlegend=False,
     ))
 
+    # --- target mask star marker (on top of scatter for clickability) ---
+    _add_target_star(fig, target_stats, x_feat, y_feat, log_y=log_y)
+
     # --- legend-only traces for each estimate state ---
     for state_key in _STATE_ORDER:
         symbol, default_color, label = _STATE_STYLE[state_key]
+        legend_line = (dict(width=1.5, color='black')
+                       if state_key == 'has_effect' else dict(width=0))
         fig.add_trace(go.Scatter(
             x=[None], y=[None],
             mode='markers',
-            marker=dict(size=10, symbol=symbol, color=default_color),
+            marker=dict(size=10, symbol=symbol, color=default_color,
+                        line=legend_line),
             showlegend=True,
             name=label,
             legendgroup='estimate',
@@ -225,7 +261,7 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
     return fig
 
 
-def _add_target_star(fig, target_stats, x_feat, y_feat):
+def _add_target_star(fig, target_stats, x_feat, y_feat, log_y=False):
     """Add an open-star outline at the full target mask's position.
 
     Clickable (customdata='target') so it behaves like any other region.
@@ -240,6 +276,8 @@ def _add_target_star(fig, target_stats, x_feat, y_feat):
     if x_val is None or y_val is None:
         return
     if not np.isfinite(x_val) or not np.isfinite(y_val):
+        return
+    if log_y and y_val <= 0:
         return
 
     hover_parts = ['<b>Target mask</b>']
@@ -285,7 +323,7 @@ def _add_model_overlay(fig, ana_glow, x_feat, y_feat):
     if y_feat != 'llr' or x_feat != 'n_voxel':
         return
 
-    sizes = ana_glow.size[0, :].astype(float)
+    sizes = _ensure_1d(ana_glow.size).astype(float)
     sizes = sizes[sizes > 0]
     if len(sizes) == 0:
         return
@@ -355,4 +393,6 @@ def _add_threshold_lines(fig, ana_glow, x_feat, y_feat):
                 fig.add_hline(y=adj_thresh, line=style,
                               annotation_text=label,
                               annotation_position='right')
+
+
 
