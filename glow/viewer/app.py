@@ -15,7 +15,6 @@ import json
 import os
 
 import numpy as np
-import dash_daq as daq
 import plotly.graph_objects as go
 from dash import Dash, html, dcc, callback_context, no_update
 from dash.dependencies import Input, Output, State
@@ -73,14 +72,12 @@ def _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
         _dd('dd-x', default_x, 'X feature'),
         _dd('dd-y', default_y, 'Y feature'),
         # Log Y toggle sits right below Y feature
-        html.Div([
-            html.Label('Log Y', style={'fontSize': '12px',
-                                       'marginRight': '6px',
-                                       'color': '#555'}),
-            daq.BooleanSwitch(id='log-y-switch', on=log_y_default,
-                              color='#119DFF'),
-        ], style={'display': 'flex', 'alignItems': 'center',
-                  'marginBottom': '6px'}),
+        dcc.Checklist(
+            id='log-y-switch',
+            options=[{'label': ' Log Y', 'value': 'on'}],
+            value=['on'] if log_y_default else [],
+            style={'fontSize': '12px', 'marginBottom': '6px'},
+        ),
         _dd('dd-color', default_color, 'Color', none_option=True),
     ], style={'width': '180px', 'padding': '10px',
               'borderRight': '1px solid #ddd', 'flexShrink': '0'})
@@ -196,7 +193,7 @@ def _defaults(generic_cols, sig_cols, prune_cols, mask_cols):
     from .scatter import _LOG_COLS
     all_cols = generic_cols + sig_cols + prune_cols + mask_cols
     default_x = 'n_voxel' if 'n_voxel' in all_cols else all_cols[0]
-    default_y = ('llr_adjusted' if 'llr_adjusted' in all_cols
+    default_y = ('llr' if 'llr' in all_cols
                  else all_cols[min(1, len(all_cols) - 1)])
     log_y_default = default_y in _LOG_COLS
     default_color = 'f1' if 'f1' in mask_cols else '__none__'
@@ -676,13 +673,14 @@ def _register_scatter_callback(app, df, ana_glow, target_stats=None):
          Input('dd-y', 'value'),
          Input('dd-color', 'value'),
          Input('store-selected', 'data'),
-         Input('log-y-switch', 'on')],
+         Input('log-y-switch', 'value')],
     )
-    def update_scatter(x_feat, y_feat, color_feat, selected_json, log_y_on):
+    def update_scatter(x_feat, y_feat, color_feat, selected_json, log_y_val):
         selected = set(json.loads(selected_json))
+        log_y = 'on' in (log_y_val or [])
         return build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
                              selected_reg=selected,
-                             log_y=bool(log_y_on),
+                             log_y=log_y,
                              target_stats=target_stats)
 
 
