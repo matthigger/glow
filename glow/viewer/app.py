@@ -461,13 +461,18 @@ def _setup_3d(app, ana_glow, df,
 
     bg_vol = compute_bg_volume(ana_glow, feature_idx=0)
 
-    # Global clim across all features / images so colour scale never changes.
+    # Per-feature clim across all images so colour scale is stable when
+    # switching images but adapts when switching features.
     from .data import get_original_y
     _y_all = get_original_y(ana_glow.exp)
     _mask = ana_glow.exp.mask_idx
-    _valid = _y_all[:, :, _mask[_mask >= 0].ravel()]
-    global_clim = [float(np.nanmin(_valid)), float(np.nanmax(_valid))]
-    del _y_all, _valid
+    _valid_idx = _mask[_mask >= 0].ravel()
+    _per_feat_clim = {}
+    for _fi in range(_y_all.shape[0]):
+        _vals = _y_all[_fi, :, _valid_idx]
+        _per_feat_clim[_fi] = [float(np.nanmin(_vals)),
+                               float(np.nanmax(_vals))]
+    del _y_all, _valid_idx
 
     scene_id = 'glow-viewer'
     slicer0 = VolumeSlicer(app, bg_vol, axis=0, scene_id=scene_id)
@@ -601,6 +606,7 @@ def _setup_3d(app, ana_glow, df,
                                     image_idx=img_idx)
         for s in (slicer0, slicer1, slicer2):
             s._volume = new_vol
+        clim = _per_feat_clim.get(feat_idx, _per_feat_clim[0])
         # dash-slicer's upload_requested_slice only re-renders when
         # index_changed is True; force it so the new volume is displayed.
         import time
@@ -609,7 +615,7 @@ def _setup_3d(app, ana_glow, df,
             {**st0, 'index_changed': True, '_vt': t},
             {**st1, 'index_changed': True, '_vt': t},
             {**st2, 'index_changed': True, '_vt': t},
-            global_clim, global_clim, global_clim,
+            clim, clim, clim,
         )
 
 
