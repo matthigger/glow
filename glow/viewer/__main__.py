@@ -2,11 +2,8 @@
 
 Usage::
 
-    # built-in 3D demo (15x15x15 WGN cube with sphere effect)
+    # interactive demo
     python -m glow.viewer --demo
-
-    # built-in 2D demo (mandrill image with ExtenterMinVar effect)
-    python -m glow.viewer --demo2d
 
     # load a pickled AnalysisGLOW
     python -m glow.viewer analysis.p.gz
@@ -27,11 +24,26 @@ import warnings
 import numpy as np
 
 
-def _load_analysis(path):
-    """Load a pickled AnalysisGLOW from a file.
+# ---------------------------------------------------------------------------
+# Data paths (relative to this package: src/glow/viewer/__main__.py)
+# ---------------------------------------------------------------------------
 
-    Supports plain pickle (.pkl, .p) and gzip-compressed pickle (.p.gz).
-    """
+_DATA_DIR = pathlib.Path(__file__).resolve().parents[2] / 'test' / 'data'
+
+
+def _data_path(filename):
+    p = _DATA_DIR / filename
+    if not p.exists():
+        p = pathlib.Path('test/data') / filename
+    return p
+
+
+# ---------------------------------------------------------------------------
+# IO helpers
+# ---------------------------------------------------------------------------
+
+def _load_analysis(path):
+    """Load a pickled AnalysisGLOW from a file."""
     path = pathlib.Path(path)
     suffixes = ''.join(path.suffixes)
 
@@ -41,25 +53,11 @@ def _load_analysis(path):
     else:
         with open(path, 'rb') as f:
             obj = pickle.load(f)
-
     return obj
 
 
 def _load_mask(path, mask_idx):
-    """Load a target mask from a file.
-
-    Supports:
-        - .nii / .nii.gz  (nibabel, boolean volume)
-        - .npy            (numpy boolean array)
-        - anything else   (try pickle, expect Effect with .mask attribute)
-
-    Args:
-        path (str): file path
-        mask_idx (np.array): analysis mask_idx (for shape validation)
-
-    Returns:
-        mask (np.array): boolean mask, same shape as mask_idx
-    """
+    """Load a target mask from a file."""
     path = pathlib.Path(path)
     suffixes = ''.join(path.suffixes)
 
@@ -71,12 +69,9 @@ def _load_mask(path, mask_idx):
             'Loaded nifti mask -- assuming it is in the same voxel space as '
             'the analysis images.  The affine is NOT checked.',
             stacklevel=2)
-
     elif suffixes.endswith('.npy'):
         mask = np.load(str(path)).astype(bool)
-
     else:
-        # try pickle (expect an Effect with .mask)
         obj = _load_analysis(path)
         if hasattr(obj, 'mask'):
             mask = np.asarray(obj.mask).astype(bool)
@@ -91,122 +86,340 @@ def _load_mask(path, mask_idx):
     if mask.shape != mask_idx.shape:
         raise ValueError(
             f'Mask shape {mask.shape} does not match analysis mask_idx shape '
-            f'{mask_idx.shape}.  Ensure the mask is in the same voxel space.')
-
+            f'{mask_idx.shape}.')
     return mask
 
 
-def _run_demo():
-    """Build and launch a small demo: 15x15x15 WGN cube with sphere effect."""
-    from glow.experiment.exper import Experiment, ExperimentImageOnly
-    from glow.experiment.analysis import AnalysisGLOW
-    from glow.viewer import launch
+# ---------------------------------------------------------------------------
+# Interactive prompt helpers
+# ---------------------------------------------------------------------------
 
-    print('Building demo: 15x15x15 WGN cube with sphere effect ...')
+def _choose(prompt, options, default=None):
+    """Display a numbered menu and return the user's choice.
 
-    shape = (15, 15, 15)
-    center = np.array([s // 2 for s in shape])
+    *options* is a list of ``(key, label)`` tuples.  *default* (if given)
+    is the *key* to select when the user presses Enter without typing.
+    """
+    print(f'\n  {prompt}')
+    default_idx = None
+    for i, (key, label) in enumerate(options, 1):
+        tag = ' [default]' if key == default else ''
+        print(f'    {i}) {label}{tag}')
+    while True:
+        raw = input('  > ').strip()
+        if raw == '' and default is not None:
+            return default
+        try:
+            idx = int(raw)
+            if 1 <= idx <= len(options):
+                return options[idx - 1][0]
+        except ValueError:
+            pass
+        print(f'  please enter 1-{len(options)}')
 
-    # build a sphere mask (radius ~5 voxels)
-    coords = np.indices(shape).reshape(3, -1).T  # (N, 3)
-    dist = np.sqrt(((coords - center) ** 2).sum(axis=1))
-    sphere_flat = dist <= 5.0
-    mask_sphere = sphere_flat.reshape(shape)
-    n_sphere = mask_sphere.sum()
-    print(f'  sphere: {n_sphere} voxels at center {tuple(center)}, radius=5')
 
-    # create experiment (WGN, b=1 feature, 12 images)
-    num_img = 12
-    exp_img = ExperimentImageOnly.from_gauss(
-        b=1, num_img=num_img, shape=shape, seed=0)
+def _choose_int(prompt, default, lo=1, hi=20):
+    """Prompt for an integer with a default."""
+    print(f'\n  {prompt} [{default}]')
+    while True:
+        raw = input('  > ').strip()
+        if raw == '':
+            return default
+        try:
+            v = int(raw)
+            if lo <= v <= hi:
+                return v
+        except ValueError:
+            pass
+        print(f'  please enter an integer between {lo} and {hi}')
+
+
+# ---------------------------------------------------------------------------
+# Shared builder helpers
+# ---------------------------------------------------------------------------
+
+_NUM_IMG = 12
+
+_EFFECT_MAP = {
+    'none':   0.0,
+    'mild':   1.0,
+    'medium': 2.0,
+    'strong': 4.0,
+}
+
+
+def _build_experiment(y, mask_idx, num_img=_NUM_IMG):
+    """Wrap imaging data into an Experiment with bias + linear regressor."""
+    from glow.experiment.exper import Experiment
     x = np.arange(num_img, dtype=float).reshape(1, -1)
     contrast = np.array([True])
-    exp = Experiment(x=x, contrast=contrast,
-                     y=exp_img.y, mask_idx=exp_img.mask_idx, add_bias=True)
-    print(f'  experiment: y.shape={exp.y.shape}')
-
-    # impose effect inside sphere
-    effect_llr = 2.0
-    exp_eff, effect = exp.impose_effect(effect_llr=effect_llr, mask=mask_sphere,
-                                        seed=0)
-    print(f'  imposed effect_llr={effect_llr} in sphere')
-
-    # run analysis (serial, small)
-    print('  running AnalysisGLOW (n_perm_fwer=20) ...')
-    ana = AnalysisGLOW(exp_eff, n_perm_fwer=20, verbose=True)
-    print(f'  found {len(ana.effect_list)} effects')
-
-    # launch viewer with sphere as target mask
-    launch(ana, mask_target=mask_sphere)
+    return Experiment(x=x, contrast=contrast, y=y, mask_idx=mask_idx,
+                      add_bias=True)
 
 
-def _run_demo2d():
-    """Build and launch a 2D demo: mandrill image with ExtenterMinVar effect."""
-    from PIL import Image
-
+def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
+    """Optionally impose an effect, run AnalysisGLOW, and launch the viewer."""
     from glow.effect.extent import ExtenterMinVar
-    from glow.experiment.exper import Experiment, ExperimentImageOnly
     from glow.experiment.analysis import AnalysisGLOW
-    from glow.mask import get_mask_idx
     from glow.viewer import launch
 
-    print('Building demo2d: mandrill_small.png with ExtenterMinVar effect ...')
+    if effect_llr > 0:
+        n_vox = (exp.mask_idx >= 0).sum()
+        n_effect = max(int(0.15 * n_vox), 10)
+        extenter = ExtenterMinVar(n=n_effect)
+        print(f'  imposing effect (llr={effect_llr}) in ~{n_effect} voxels '
+              f'({100 * n_effect / n_vox:.0f}% of mask) ...')
+        try:
+            exp_eff, effect = exp.impose_effect(
+                effect_llr=effect_llr, extenter=extenter, seed=seed)
+        except Exception:
+            # optimiser can fail for certain data; fall back to sphere mask
+            print('  (extenter failed, falling back to sphere mask)')
+            shape = exp.mask_idx.shape
+            center = np.array([s // 2 for s in shape])
+            coords = np.indices(shape).reshape(len(shape), -1).T
+            dist = np.sqrt(((coords - center) ** 2).sum(axis=1))
+            target_n = n_effect
+            radius = 1.0
+            while (dist <= radius).sum() < target_n and radius < max(shape):
+                radius += 0.5
+            sphere = (dist <= radius).reshape(shape) & (exp.mask_idx >= 0)
+            exp_eff, effect = exp.impose_effect(
+                effect_llr=effect_llr, mask=sphere, seed=seed)
+        mask_target = effect.mask
+    else:
+        exp_eff = exp
+        print('  no effect imposed')
 
-    # locate the image relative to this package (src/glow/viewer/__main__.py)
-    img_path = pathlib.Path(__file__).resolve().parents[2] / \
-        'test' / 'data' / 'mandrill_small.png'
-    if not img_path.exists():
-        # fallback: try from workspace root
-        img_path = pathlib.Path('test/data/mandrill_small.png')
-    print(f'  loading {img_path}')
-
-    img_arr = np.array(Image.open(img_path)).astype(np.float64)  # (H, W, 3)
-    h, w, b = img_arr.shape
-    num_vox = h * w
-    print(f'  image: {h}x{w}, {b} channels, {num_vox} pixels')
-
-    # treat each pixel as a voxel, each channel as a feature (b=3)
-    # build synthetic subjects: replicate image + gaussian noise
-    num_img = 12
-    rng = np.random.default_rng(seed=42)
-    # y shape: (b, num_img, num_vox)
-    pixel_flat = img_arr.reshape(num_vox, b).T  # (b, num_vox)
-    noise_scale = 15.0  # std-dev of per-pixel noise
-    y = np.empty((b, num_img, num_vox))
-    for i in range(num_img):
-        y[:, i, :] = pixel_flat + rng.normal(0, noise_scale, pixel_flat.shape)
-
-    # build experiment: x0 (bias) + x1 = 0..num_img-1 (interest)
-    shape = (h, w)
-    mask_idx = get_mask_idx(np.ones(shape, dtype=bool))
-    exp_img = ExperimentImageOnly(y=y, mask_idx=mask_idx)
-    x = np.arange(num_img, dtype=float).reshape(1, -1)
-    contrast = np.array([True])
-    exp = Experiment(x=x, contrast=contrast,
-                     y=exp_img.y, mask_idx=exp_img.mask_idx, add_bias=True)
-    print(f'  experiment: y.shape={exp.y.shape}')
-
-    # use ExtenterMinVar for ~15% of pixels
-    n_effect = int(0.15 * num_vox)
-    extenter = ExtenterMinVar(n=n_effect)
-    print(f'  growing ExtenterMinVar extent ({n_effect} pixels, '
-          f'{100 * n_effect / num_vox:.1f}% of image) ...')
-
-    effect_llr = 2.0
-    exp_eff, effect = exp.impose_effect(effect_llr=effect_llr, extenter=extenter,
-                                        seed=42)
-    effect_mask = effect.mask
-    print(f'  imposed effect_llr={effect_llr} in {effect_mask.sum()} pixels')
-
-    # run analysis
     print('  running AnalysisGLOW (n_perm_fwer=20) ...')
     ana = AnalysisGLOW(exp_eff, n_perm_fwer=20, verbose=True)
-    print(f'  found {len(ana.effect_list)} effects')
+    n_eff = len(ana.effect_list)
+    print(f'  found {n_eff} effect{"s" if n_eff != 1 else ""}')
+    return ana, mask_target
 
-    # launch viewer with effect mask as target
-    launch(ana, mask_target=effect_mask,
-           feature_names=['red', 'green', 'blue'])
 
+def _load_dti_mean(dim):
+    """Load pre-computed mean FA/MD images.
+
+    Args:
+        dim: '2d' or '3d'
+
+    Returns:
+        fa, md (np.array), mask (bool array)
+    """
+    import nibabel as nib
+    suffix = '_axial' if dim == '2d' else ''
+    fa = nib.load(str(_data_path(f'hcp_mean_fa{suffix}.nii.gz'))).get_fdata()
+    md = nib.load(str(_data_path(f'hcp_mean_md{suffix}.nii.gz'))).get_fdata()
+    mask = fa > 0
+    return fa.astype(np.float64), md.astype(np.float64), mask
+
+
+def _sample_dti(mean_imgs, mask, num_img=_NUM_IMG, noise_frac=0.15,
+                seed=42):
+    """Generate synthetic DTI images: mean + WGN.
+
+    Args:
+        mean_imgs: dict of feat_name -> (spatial_shape) array
+        mask: boolean mask
+        num_img: number of synthetic images
+        noise_frac: noise std as fraction of feature std within mask
+
+    Returns:
+        y (b, num_img, num_vox), mask_idx, feature_names
+    """
+    from glow.mask import get_mask_idx
+    mask_idx = get_mask_idx(mask)
+    n_vox = int(mask.sum())
+    feat_names = list(mean_imgs.keys())
+    b = len(feat_names)
+
+    rng = np.random.default_rng(seed)
+    y = np.empty((b, num_img, n_vox), dtype=np.float64)
+    for fi, name in enumerate(feat_names):
+        vals = mean_imgs[name][mask]
+        sigma = max(vals.std() * noise_frac, 1e-6)
+        for i in range(num_img):
+            y[fi, i, :] = vals + rng.normal(0, sigma, n_vox)
+
+    return y, mask_idx, feat_names
+
+
+# ---------------------------------------------------------------------------
+# Demo builders (one per image-set choice)
+# ---------------------------------------------------------------------------
+
+def _demo_wgn_2d(b, effect_llr):
+    """2D White Gaussian Noise demo."""
+    from glow.experiment.exper import ExperimentImageOnly
+    shape = (64, 64)
+    print(f'  building 2D WGN: shape={shape}, b={b}')
+    exp_img = ExperimentImageOnly.from_gauss(
+        b=b, num_img=_NUM_IMG, shape=shape, seed=0)
+    exp = _build_experiment(exp_img.y, exp_img.mask_idx)
+    feat_names = [f'feature {i}' for i in range(b)] if b > 1 else None
+    ana, mask_target = _impose_and_run(exp, effect_llr)
+    return ana, mask_target, feat_names
+
+
+def _demo_mandrill(channels, effect_llr):
+    """2D Mandrill RGB demo."""
+    from PIL import Image
+    from glow.mask import get_mask_idx
+
+    img_path = _data_path('mandrill_small.png')
+    print(f'  loading {img_path}')
+    img_arr = np.array(Image.open(img_path)).astype(np.float64)  # (H, W, 3)
+    h, w, _ = img_arr.shape
+
+    channel_map = {'red': 0, 'green': 1, 'blue': 2}
+    if channels == 'all':
+        feat_indices = [0, 1, 2]
+        feat_names = ['red', 'green', 'blue']
+    else:
+        feat_indices = [channel_map[channels]]
+        feat_names = [channels]
+    b = len(feat_indices)
+
+    num_vox = h * w
+    pixel_flat = img_arr.reshape(num_vox, 3).T  # (3, num_vox)
+    rng = np.random.default_rng(42)
+    y = np.empty((b, _NUM_IMG, num_vox))
+    for fi, ci in enumerate(feat_indices):
+        base = pixel_flat[ci]
+        noise_scale = 15.0
+        for i in range(_NUM_IMG):
+            y[fi, i, :] = base + rng.normal(0, noise_scale, num_vox)
+
+    mask_idx = get_mask_idx(np.ones((h, w), dtype=bool))
+    exp = _build_experiment(y, mask_idx)
+    print(f'  mandrill: {h}x{w}, features={feat_names}')
+    ana, mask_target = _impose_and_run(exp, effect_llr)
+    return ana, mask_target, feat_names if b > 1 else None
+
+
+def _demo_dti_2d(features, effect_llr):
+    """2D Axial Slice DTI demo."""
+    fa, md, mask = _load_dti_mean('2d')
+    mean_imgs = {}
+    feat_names_map = {'fa': ('Fractional Anisotropy', fa),
+                      'md': ('Mean Diffusivity', md)}
+    if features == 'all':
+        for key in ('fa', 'md'):
+            mean_imgs[feat_names_map[key][0]] = feat_names_map[key][1]
+    else:
+        name, arr = feat_names_map[features]
+        mean_imgs[name] = arr
+
+    print(f'  2D axial DTI: shape={fa.shape}, mask={mask.sum()} vox, '
+          f'features={list(mean_imgs.keys())}')
+    y, mask_idx, feat_names = _sample_dti(mean_imgs, mask)
+    exp = _build_experiment(y, mask_idx)
+    ana, mask_target = _impose_and_run(exp, effect_llr)
+    return ana, mask_target, feat_names if len(feat_names) > 1 else None
+
+
+def _demo_wgn_3d(b, effect_llr):
+    """3D White Gaussian Noise demo."""
+    from glow.experiment.exper import ExperimentImageOnly
+    shape = (15, 15, 15)
+    print(f'  building 3D WGN: shape={shape}, b={b}')
+    exp_img = ExperimentImageOnly.from_gauss(
+        b=b, num_img=_NUM_IMG, shape=shape, seed=0)
+    exp = _build_experiment(exp_img.y, exp_img.mask_idx)
+    feat_names = [f'feature {i}' for i in range(b)] if b > 1 else None
+    ana, mask_target = _impose_and_run(exp, effect_llr)
+    return ana, mask_target, feat_names
+
+
+def _demo_dti_3d(features, effect_llr):
+    """3D DTI demo."""
+    fa, md, mask = _load_dti_mean('3d')
+    mean_imgs = {}
+    feat_names_map = {'fa': ('Fractional Anisotropy', fa),
+                      'md': ('Mean Diffusivity', md)}
+    if features == 'all':
+        for key in ('fa', 'md'):
+            mean_imgs[feat_names_map[key][0]] = feat_names_map[key][1]
+    else:
+        name, arr = feat_names_map[features]
+        mean_imgs[name] = arr
+
+    print(f'  3D DTI: shape={fa.shape}, mask={mask.sum()} vox, '
+          f'features={list(mean_imgs.keys())}')
+    y, mask_idx, feat_names = _sample_dti(mean_imgs, mask)
+    exp = _build_experiment(y, mask_idx)
+    ana, mask_target = _impose_and_run(exp, effect_llr)
+    return ana, mask_target, feat_names if len(feat_names) > 1 else None
+
+
+# ---------------------------------------------------------------------------
+# Interactive demo entry point
+# ---------------------------------------------------------------------------
+
+def _run_demo():
+    """Interactive demo: prompt for image set, features, effect severity."""
+    from glow.viewer import launch
+
+    print('\n=== GLOW Viewer Demo ===\n')
+
+    # --- 1) image set ---
+    image_set = _choose('Select an image set:', [
+        ('wgn2d',      '2D White Gaussian Noise'),
+        ('mandrill',   '2D Mandrill RGB'),
+        ('dti2d',      '2D Axial Slice DTI'),
+        ('wgn3d',      '3D White Gaussian Noise'),
+        ('dti3d',      '3D DTI'),
+    ], default='wgn2d')
+
+    # --- 2) feature selection (depends on image set) ---
+    feat_choice = None
+    b_choice = 1
+    if image_set in ('wgn2d', 'wgn3d'):
+        b_choice = _choose_int(
+            'Number of image features (b):', default=1, lo=1, hi=20)
+    elif image_set == 'mandrill':
+        feat_choice = _choose('Select colour channel(s):', [
+            ('red',   'Red'),
+            ('blue',  'Blue'),
+            ('green', 'Green'),
+            ('all',   'All (RGB)'),
+        ], default='all')
+    elif image_set in ('dti2d', 'dti3d'):
+        feat_choice = _choose('Select DTI feature(s):', [
+            ('fa',  'Fractional Anisotropy (FA)'),
+            ('md',  'Mean Diffusivity (MD)'),
+            ('all', 'All (FA + MD)'),
+        ], default='all')
+
+    # --- 3) effect severity ---
+    severity = _choose('Effect severity to impose:', [
+        ('none',   'None'),
+        ('mild',   'Mild'),
+        ('medium', 'Medium'),
+        ('strong', 'Strong'),
+    ], default='medium')
+    effect_llr = _EFFECT_MAP[severity]
+
+    # --- build ---
+    print(f'\nBuilding demo ...')
+    if image_set == 'wgn2d':
+        ana, mask_target, feat_names = _demo_wgn_2d(b_choice, effect_llr)
+    elif image_set == 'mandrill':
+        ana, mask_target, feat_names = _demo_mandrill(feat_choice, effect_llr)
+    elif image_set == 'dti2d':
+        ana, mask_target, feat_names = _demo_dti_2d(feat_choice, effect_llr)
+    elif image_set == 'wgn3d':
+        ana, mask_target, feat_names = _demo_wgn_3d(b_choice, effect_llr)
+    elif image_set == 'dti3d':
+        ana, mask_target, feat_names = _demo_dti_3d(feat_choice, effect_llr)
+
+    launch(ana, mask_target=mask_target, feature_names=feat_names)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
@@ -221,10 +434,7 @@ def main():
         help='Path to a target mask (.nii, .nii.gz, .npy, or pickled Effect)')
     parser.add_argument(
         '--demo', action='store_true',
-        help='Run built-in 3D demo (15x15x15 WGN cube with sphere effect)')
-    parser.add_argument(
-        '--demo2d', action='store_true',
-        help='Run built-in 2D demo (mandrill image with ExtenterMinVar effect)')
+        help='Run interactive demo')
     parser.add_argument(
         '--port', type=int, default=8050,
         help='Server port (default: 8050)')
@@ -234,8 +444,7 @@ def main():
     parser.add_argument(
         '--csv', default=None,
         help='Path to a CSV with extra per-region data (must contain a '
-             'region_idx column).  Columns are merged into the scatter '
-             'plot dropdowns.')
+             'region_idx column).')
     parser.add_argument(
         '-v', '--verbose', action='store_true',
         help='Show Dash/Werkzeug request logs (suppressed by default)')
@@ -246,19 +455,12 @@ def main():
         _run_demo()
         return
 
-    if args.demo2d:
-        _run_demo2d()
-        return
-
     if args.analysis is None:
-        parser.error(
-            'either --demo, --demo2d, or an analysis file path is required')
+        parser.error('either --demo or an analysis file path is required')
 
-    # load analysis
     print(f'Loading analysis from {args.analysis} ...')
     ana = _load_analysis(args.analysis)
 
-    # load mask (if provided)
     mask_target = None
     if args.mask is not None:
         print(f'Loading mask from {args.mask} ...')
