@@ -99,20 +99,26 @@ def _choose(prompt, options, default=None):
 
     *options* is a list of ``(key, label)`` tuples.  *default* (if given)
     is the *key* to select when the user presses Enter without typing.
+    Echoes the chosen option so the user sees what was selected.
     """
     print(f'\n  {prompt}')
-    default_idx = None
+    label_by_key = {}
     for i, (key, label) in enumerate(options, 1):
         tag = ' [default]' if key == default else ''
         print(f'    {i}) {label}{tag}')
+        label_by_key[key] = label
+    hint = ' (enter for default)' if default is not None else ''
     while True:
-        raw = input('  > ').strip()
+        raw = input(f'  >{hint} ').strip()
         if raw == '' and default is not None:
+            print(f'  -> {label_by_key[default]}')
             return default
         try:
             idx = int(raw)
             if 1 <= idx <= len(options):
-                return options[idx - 1][0]
+                chosen = options[idx - 1]
+                print(f'  -> {chosen[1]}')
+                return chosen[0]
         except ValueError:
             pass
         print(f'  please enter 1-{len(options)}')
@@ -122,12 +128,14 @@ def _choose_int(prompt, default, lo=1, hi=20):
     """Prompt for an integer with a default."""
     print(f'\n  {prompt} [{default}]')
     while True:
-        raw = input('  > ').strip()
+        raw = input('  > (enter for default) ').strip()
         if raw == '':
+            print(f'  -> {default}')
             return default
         try:
             v = int(raw)
             if lo <= v <= hi:
+                print(f'  -> {v}')
                 return v
         except ValueError:
             pass
@@ -142,9 +150,9 @@ _NUM_IMG = 12
 
 _EFFECT_MAP = {
     'none':   0.0,
-    'mild':   1.0,
-    'medium': 2.0,
-    'strong': 4.0,
+    'mild':   0.25,
+    'medium': 0.5,
+    'strong': 1.0,
 }
 
 
@@ -402,7 +410,7 @@ def _run_demo():
     effect_llr = _EFFECT_MAP[severity]
 
     # --- build ---
-    print(f'\nBuilding demo ...')
+    print(f'\n  Building demo (effect_llr={effect_llr:.2g}) ...')
     if image_set == 'wgn2d':
         ana, mask_target, feat_names = _demo_wgn_2d(b_choice, effect_llr)
     elif image_set == 'mandrill':
