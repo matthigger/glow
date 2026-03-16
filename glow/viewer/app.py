@@ -20,7 +20,7 @@ from dash import Dash, html, dcc, callback_context, no_update
 from dash.dependencies import Input, Output, State
 
 from .data import (prep_df, get_feature_columns, compute_backgrounds,
-                    compute_target_stats)
+                    compute_bg_ranges, compute_target_stats)
 from .scatter import build_scatter
 from .image import (build_label_map, build_region_overlay,
                     compute_bg_volume, get_region_color,
@@ -461,6 +461,14 @@ def _setup_3d(app, ana_glow, df,
 
     bg_vol = compute_bg_volume(ana_glow, feature_idx=0)
 
+    # Global clim across all features / images so colour scale never changes.
+    from .data import get_original_y
+    _y_all = get_original_y(ana_glow.exp)
+    _mask = ana_glow.exp.mask_idx
+    _valid = _y_all[:, :, _mask[_mask >= 0].ravel()]
+    global_clim = [float(np.nanmin(_valid)), float(np.nanmax(_valid))]
+    del _y_all, _valid
+
     scene_id = 'glow-viewer'
     slicer0 = VolumeSlicer(app, bg_vol, axis=0, scene_id=scene_id)
     slicer1 = VolumeSlicer(app, bg_vol, axis=1, scene_id=scene_id)
@@ -593,11 +601,16 @@ def _setup_3d(app, ana_glow, df,
                                     image_idx=img_idx)
         for s in (slicer0, slicer1, slicer2):
             s._volume = new_vol
-        new_clim = [float(new_vol.min()), float(new_vol.max())]
+        # dash-slicer's upload_requested_slice only re-renders when
+        # index_changed is True; force it so the new volume is displayed.
         import time
         t = time.time()
-        return ({**st0, '_vt': t}, {**st1, '_vt': t}, {**st2, '_vt': t},
-                new_clim, new_clim, new_clim)
+        return (
+            {**st0, 'index_changed': True, '_vt': t},
+            {**st1, 'index_changed': True, '_vt': t},
+            {**st2, 'index_changed': True, '_vt': t},
+            global_clim, global_clim, global_clim,
+        )
 
 
 def _build_overlay(slicer, label_map, visible_list, color_map,
@@ -640,6 +653,7 @@ def _setup_2d(app, ana_glow, df,
     """Set up the app for 2D data using Plotly go.Image."""
     mask_idx = ana_glow.exp.mask_idx
     bg_dict = compute_backgrounds(ana_glow, feature_names=feature_names)
+    bg_ranges = compute_bg_ranges(ana_glow, feature_names=feature_names)
     bg_names = list(bg_dict.keys())
 
     _, x_names, default_reg_x = _get_x_labels(ana_glow.exp)
@@ -711,7 +725,8 @@ def _setup_2d(app, ana_glow, df,
         label_map = build_label_map(tree_regs, ana_glow)
 
         from .image import _bg_to_rgba, _overlay_regions, _overlay_mask
-        rgba = _bg_to_rgba(bg_img, channel=bg_name)
+        gmin, gmax = bg_ranges.get(bg_name, (None, None))
+        rgba = _bg_to_rgba(bg_img, channel=bg_name, vmin=gmin, vmax=gmax)
         # overlay each entry in order, using palette color from position
         selected_json_val = None  # not available here; use show_list order
         for color_idx, reg_idx in enumerate(show_list):

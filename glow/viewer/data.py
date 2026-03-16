@@ -269,3 +269,35 @@ def compute_backgrounds(ana_glow, feature_names=None, image_idx=None):
         bg_dict['RGB'] = rgb
 
     return bg_dict
+
+
+def compute_bg_ranges(ana_glow, feature_names=None):
+    """Compute the global (vmin, vmax) for each background key across ALL images.
+
+    This ensures the colour scale stays constant regardless of which image
+    (mean or individual) is displayed.
+
+    Returns:
+        ranges (dict): bg_name -> (vmin, vmax) floats
+    """
+    exp = ana_glow.exp
+    mask_idx = exp.mask_idx
+    y = get_original_y(exp)  # (b, num_img, num_vox)
+    b = y.shape[0]
+
+    if feature_names is None:
+        feature_names = [f'feature {i}' for i in range(b)]
+
+    ranges = {}
+    for feat_idx in range(b):
+        vals = y[feat_idx][:, mask_idx[mask_idx >= 0]]  # (num_img, valid_vox)
+        ranges[feature_names[feat_idx]] = (
+            float(np.nanmin(vals)), float(np.nanmax(vals)))
+
+    _RGB_CHANNELS = ('red', 'green', 'blue')
+    lower_names = [n.lower() for n in feature_names]
+    if mask_idx.ndim == 2 and set(lower_names) == set(_RGB_CHANNELS):
+        all_vals = y[:, :, mask_idx[mask_idx >= 0].ravel()]
+        ranges['RGB'] = (float(np.nanmin(all_vals)), float(np.nanmax(all_vals)))
+
+    return ranges

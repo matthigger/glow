@@ -151,16 +151,19 @@ def build_region_overlay(slicer, label_map, reg_idx_list, alpha=160):
 _CHANNEL_SCALES = {'red': 0, 'green': 1, 'blue': 2}
 
 
-def _bg_to_rgba(bg_slice, channel=None):
+def _bg_to_rgba(bg_slice, channel=None, vmin=None, vmax=None):
     """Convert a background array to an RGBA uint8 image.
 
     * 3-D input ``(H, W, 3)`` is composited as RGB.
     * 2-D input with *channel* ``'red'``, ``'green'``, or ``'blue'`` uses
       the matching single-colour ramp (black -> colour).
     * Otherwise falls back to greyscale ``[20, 235]``.
+
+    When *vmin* / *vmax* are supplied the colour scale is pinned to that
+    range (keeping it consistent across different image selections).
     """
     if bg_slice.ndim == 3:
-        return _rgb_to_rgba(bg_slice)
+        return _rgb_to_rgba(bg_slice, vmin=vmin, vmax=vmax)
 
     h, w = bg_slice.shape
     rgba = np.zeros((h, w, 4), dtype=np.uint8)
@@ -169,11 +172,15 @@ def _bg_to_rgba(bg_slice, channel=None):
     if not valid.any():
         return rgba
 
-    vmin = np.nanmin(bg_slice)
-    vmax = np.nanmax(bg_slice)
+    if vmin is None:
+        vmin = np.nanmin(bg_slice)
+    if vmax is None:
+        vmax = np.nanmax(bg_slice)
     rng = vmax - vmin if vmax != vmin else 1.0
 
-    intensity = ((bg_slice[valid] - vmin) / rng * 215 + 20).astype(np.uint8)
+    intensity = np.clip(
+        (bg_slice[valid] - vmin) / rng * 215 + 20, 20, 235
+    ).astype(np.uint8)
 
     ch_idx = _CHANNEL_SCALES.get(channel.lower() if channel else '')
     if ch_idx is not None:
@@ -187,17 +194,22 @@ def _bg_to_rgba(bg_slice, channel=None):
     return rgba
 
 
-def _rgb_to_rgba(rgb_slice):
+def _rgb_to_rgba(rgb_slice, vmin=None, vmax=None):
     """Convert a ``(H, W, 3)`` RGB background to an RGBA uint8 image.
 
     All three channels share a single global normalisation to ``[0, 255]``
     so that relative colour balance is preserved.
+
+    When *vmin* / *vmax* are supplied the colour scale is pinned to that
+    range (keeping it consistent across different image selections).
     """
     h, w, _ = rgb_slice.shape
     rgba = np.zeros((h, w, 4), dtype=np.uint8)
 
-    vmin = np.nanmin(rgb_slice)
-    vmax = np.nanmax(rgb_slice)
+    if vmin is None:
+        vmin = np.nanmin(rgb_slice)
+    if vmax is None:
+        vmax = np.nanmax(rgb_slice)
     rng = vmax - vmin if vmax != vmin else 1.0
 
     for c in range(3):
