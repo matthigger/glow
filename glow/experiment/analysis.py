@@ -593,6 +593,14 @@ class AnalysisGLOW(Analysis):
             pval[~reg_active] = np.nan
         self.pval = pval
 
+        n_total = len(stat_max_sorted)
+        if n_total > 0:
+            crit_idx = min(int(np.ceil(n_total * (1 - alpha_fwer))),
+                           n_total - 1)
+            self.adj_crit = float(stat_max_sorted[crit_idx])
+        else:
+            self.adj_crit = None
+
         self.sig_reg_list = list(np.where(self.pval <= alpha_fwer)[0])
         if verbose:
             print(f'  {len(self.sig_reg_list)} significant regions '
@@ -707,7 +715,7 @@ class AnalysisGLOW(Analysis):
 
         _COPY_ATTRS = [
             'children', 'stat', 'size', 'pval', 'llr_adjusted_0',
-            'sig_reg_list', 'effect_list', 'alpha_fwer',
+            'sig_reg_list', 'effect_list', 'alpha_fwer', 'adj_crit',
             'dp_info', 'homo_pval_dict', 'adj_model', 'adj_beta',
         ]
         for attr in _COPY_ATTRS:

@@ -2,7 +2,6 @@ import math
 import warnings
 
 import numpy as np
-from scipy.stats import t as t_dist
 
 from ..graph import SCGraph, dp_antichain, iter_topo
 from .mancova import decompose, llr_from_ysum_yout
@@ -88,15 +87,20 @@ def prune(sig_reg_list, children, stat, sizes=None, exp=None,
 
 def prune_perm(sig_reg_list, children, stat, sizes, exp,
                n_perm_prune=25, alpha_prune=0.05):
-    """Bottom-up DP with on-the-fly permutation penalties.
+    """Bottom-up DP with accumulated permutation penalties.
 
-    For each SCGraph internal node, determines the antichain below it,
-    estimates the overfitting bonus of that partition via random
-    re-partitioning, fits a t-distribution to the deltas, and sets
-    lambda as the Bonferroni-corrected quantile.
+    For each SCGraph internal node with 2+ children, estimates the
+    overfitting bonus of splitting via random re-partitioning:
+    ``lambda(i) = max(deltas)``.  Lambdas accumulate bottom-up so that
+    keeping a parent absorbs all split-penalties in its subtree::
 
-    Lambda is used locally for the parent-vs-children comparison and
-    then discarded (not propagated upward).
+        gain'(j) = LLR(j) + sum(lambda(i) for internal i in j's subtree)
+
+    Then :func:`dp_antichain` runs on ``gain'`` with ``lam=0``.
+
+    Single-child SCGraph nodes get no penalty (the DP decides on raw
+    LLR alone).  Nodes too small to permute are forced as parents
+    (their descendants are removed from the DP).
 
     Args:
         sig_reg_list (list): significant region indices
@@ -105,12 +109,11 @@ def prune_perm(sig_reg_list, children, stat, sizes, exp,
         sizes (np.array): (num_reg,) region sizes
         exp: Experiment with y, x, contrast
         n_perm_prune (int): random re-partitions per node
-        alpha_prune (float): family-wise prune error rate
+        alpha_prune (float): unused (kept for interface compatibility)
 
     Returns:
         selected (list[int]): sorted antichain region indices
-        info (dict): diagnostics including prune_delta, prune_lambda,
-            prune_pval arrays
+        info (dict): diagnostics
     """
     num_vox = exp.y.shape[2]
     num_reg = num_vox + children.shape[0]
@@ -121,19 +124,10 @@ def prune_perm(sig_reg_list, children, stat, sizes, exp,
     q_tup = decompose(x=exp.x, contrast=exp.contrast)
     y = exp.y
 
-    # count internal SCGraph nodes for Bonferroni correction
-    num_internal = sum(1 for n in sig_reg_list
-                       if subgraph.children.get(n, []))
-    alpha_per_node = alpha_prune / max(num_internal, 1)
-
-    # per-node diagnostic arrays
     delta_arr = np.full(num_reg, np.nan)
-    pval_arr = np.full(num_reg, np.nan)
+    pval_homo_arr = np.full(num_reg, np.nan)
+    compared_to = {}
 
-    # bottom-up DP
-    best = {}
-    chose = {}
-    antichain = {}
     _leaf_cache = {}
 
     def _get_leaves(node):
@@ -143,37 +137,32 @@ def prune_perm(sig_reg_list, children, stat, sizes, exp,
                           node_start=node, only_leaf=True)), dtype=int)
         return _leaf_cache[node]
 
+    # -- Phase 1: per-node lambda from permutations --------------------------
+    lam_per_node = {}
+    forced_parents = set()
+
     for node in sorted(sig_reg_list):
         kids = subgraph.children.get(node, [])
-
         if not kids:
-            best[node] = float(stat[node])
-            chose[node] = True
-            antichain[node] = [node]
             continue
 
-        # collect the resolved antichain below this node
-        child_ac = []
-        for kid in kids:
-            child_ac.extend(antichain[kid])
+        compared_to[node] = [int(r) for r in kids]
 
-        split_val = sum(float(stat[r]) for r in child_ac)
+        if len(kids) == 1:
+            lam_per_node[node] = 0.0
+            delta_arr[node] = 0.0
+            continue
 
-        # group sizes for permutation test
-        ac_sizes = [int(sizes[r]) for r in child_ac]
+        kid_sizes = [int(sizes[r]) for r in kids]
         parent_size = int(sizes[node])
-        leftover = parent_size - sum(ac_sizes)
+        leftover = parent_size - sum(kid_sizes)
 
-        # check if enough distinct partitions exist
-        min_group = min(ac_sizes) if ac_sizes else 0
-        if (len(ac_sizes) == 1
-                and leftover > 0
-                and _n_partitions(parent_size, min(min_group, leftover))
-                    < n_perm_prune):
-            # too few distinct re-partitions; collapse to parent
-            best[node] = float(stat[node])
-            chose[node] = True
-            antichain[node] = [node]
+        min_group = min(kid_sizes)
+        check_size = min(min_group, leftover) if leftover > 0 else min_group
+        if (check_size > 0
+                and _n_partitions(parent_size, check_size) < n_perm_prune):
+            forced_parents.add(node)
+            lam_per_node[node] = 0.0
             delta_arr[node] = 0.0
             continue
 
@@ -181,7 +170,7 @@ def prune_perm(sig_reg_list, children, stat, sizes, exp,
 
         deltas = _compute_perm_deltas(
             parent_voxels=parent_voxels,
-            ac_sizes=ac_sizes,
+            ac_sizes=kid_sizes,
             leftover=leftover,
             y=y,
             q_tup=q_tup,
@@ -190,47 +179,63 @@ def prune_perm(sig_reg_list, children, stat, sizes, exp,
             seed=node,
         )
 
-        # fit t-distribution
-        mu = float(np.mean(deltas))
-        sigma = float(np.std(deltas, ddof=1)) if len(deltas) > 1 else 0.0
-
-        if sigma > 0:
-            df = len(deltas) - 1
-            lam_node = mu + sigma * t_dist.ppf(1 - alpha_per_node, df)
-        else:
-            lam_node = mu
-
+        lam_node = float(np.max(deltas))
+        lam_per_node[node] = lam_node
         delta_arr[node] = lam_node
 
-        # observed split p-value
+        # diagnostic: empirical p-value for observed split
+        split_val = sum(float(stat[r]) for r in kids)
+        if leftover > 0:
+            ac_voxels = set()
+            for r in kids:
+                ac_voxels.update(_get_leaves(r).tolist())
+            leftover_vox = np.array(
+                [v for v in parent_voxels if v not in ac_voxels], dtype=int)
+            y_left = y[:, :, leftover_vox]
+            ysum_left = y_left.sum(axis=2)
+            yout_left = np.einsum('bin,cin->bc', y_left, y_left)
+            lo_llr = llr_from_ysum_yout(ysum_left, yout_left, leftover, q_tup)
+            if np.isfinite(lo_llr):
+                split_val += lo_llr
+
         observed_delta = split_val - float(stat[node])
-        if sigma > 0:
-            pval_arr[node] = float(
-                t_dist.cdf((float(stat[node]) - split_val - mu) / sigma, df))
+        n_exceed = int(np.sum(deltas >= observed_delta))
+        pval_homo_arr[node] = max(n_exceed, 1) / len(deltas)
 
-        # local comparison: lambda helps parent, then is discarded
-        keep_val = float(stat[node]) + lam_node
-        if keep_val >= split_val:
-            best[node] = float(stat[node])
-            chose[node] = True
-            antichain[node] = [node]
-        else:
-            best[node] = split_val
-            chose[node] = False
-            antichain[node] = list(child_ac)
+    # -- Phase 2: remove forced-parent descendants from DP -------------------
+    nodes_to_remove = set()
+    for fp in forced_parents:
+        for desc in subgraph.iter_desc(fp):
+            nodes_to_remove.add(desc)
 
-    # collect final antichain from SCGraph roots
-    all_children = set()
-    for kids in subgraph.children.values():
-        all_children.update(kids)
-    roots = sorted(n for n in sig_reg_list if n not in all_children)
+    dp_nodes = sorted(n for n in sig_reg_list if n not in nodes_to_remove)
+    dp_node_set = set(dp_nodes)
 
-    selected = []
-    for root in roots:
-        selected.extend(antichain[root])
-    selected = sorted(selected)
+    dp_children_map = {}
+    for node in dp_nodes:
+        kids = subgraph.children.get(node, [])
+        dp_children_map[node] = [k for k in kids if k in dp_node_set]
 
-    # warn if any non-significant node was selected (should not happen)
+    # -- Phase 3: accumulate lambdas bottom-up -------------------------------
+    cum_lam = {}
+    for node in dp_nodes:
+        kids = dp_children_map.get(node, [])
+        my_lam = lam_per_node.get(node, 0.0)
+        cum_lam[node] = my_lam + sum(cum_lam.get(k, 0.0) for k in kids)
+
+    # -- Phase 4: build penalised gain and run DP ----------------------------
+    gain_prime = {}
+    for node in dp_nodes:
+        gain_prime[node] = float(stat[node]) + cum_lam.get(node, 0.0)
+
+    selected, dp_raw = dp_antichain(
+        nodes=dp_nodes,
+        children_map=dp_children_map,
+        gain=gain_prime,
+        lam=0.0,
+    )
+
+    # -- Phase 5: diagnostics ------------------------------------------------
     sig_set = set(sig_reg_list)
     for r in selected:
         if r not in sig_set:
@@ -238,24 +243,31 @@ def prune_perm(sig_reg_list, children, stat, sizes, exp,
                 f'prune_perm: non-significant node {r} selected in antichain',
                 stacklevel=2)
 
-    # compute accumulated lambda (diagnostic only)
-    lambda_arr = np.full(num_reg, np.nan)
-    for node in sorted(sig_reg_list):
-        kids = subgraph.children.get(node, [])
-        own_delta = delta_arr[node] if np.isfinite(delta_arr[node]) else 0.0
-        child_sum = sum(
-            lambda_arr[k] for k in kids if np.isfinite(lambda_arr[k]))
-        lambda_arr[node] = own_delta + child_sum
+    chose = dp_raw.get('chose', {})
+
+    kept_vs_children_arr = np.full(num_reg, np.nan)
+    for node in dp_nodes:
+        if dp_children_map.get(node, []):
+            kept_vs_children_arr[node] = 1.0 if chose.get(node, True) else 0.0
+    for node in forced_parents:
+        kept_vs_children_arr[node] = 1.0
+
+    kept_final_arr = np.full(num_reg, np.nan)
+    selected_set = set(selected)
+    for node in sig_reg_list:
+        kept_final_arr[node] = 1.0 if node in selected_set else 0.0
 
     info = {
         'subgraph_children': dict(subgraph.children),
         'sig_reg_list': list(sig_reg_list),
-        'best': best,
+        'best': dp_raw.get('best', {}),
         'chose': chose,
         'lam': 0.0,
         'prune_delta': delta_arr,
-        'prune_lambda': lambda_arr,
-        'prune_pval': pval_arr,
+        'prune_pval_homo': pval_homo_arr,
+        'prune_kept_vs_children': kept_vs_children_arr,
+        'prune_kept_final': kept_final_arr,
+        'prune_compared_to': compared_to,
     }
     return selected, info
 
@@ -276,9 +288,10 @@ def _compute_perm_deltas(parent_voxels, ac_sizes, leftover,
     """Compute permutation deltas for one parent node.
 
     Randomly re-partitions *parent_voxels* into groups matching
-    *ac_sizes* (significant groups that get full-model LLR) plus a
-    leftover group (LLR = 0).  Returns an array of deltas:
-    ``sum(group LLRs) - parent_stat``.
+    *ac_sizes* plus a leftover group.  All groups (including leftover)
+    get their LLR computed so both sides of the comparison cover the
+    full parent volume.  Returns an array of deltas:
+    ``sum(all group LLRs) - parent_stat``.
 
     Args:
         parent_voxels (np.array): 1-D voxel indices for the parent
@@ -311,7 +324,14 @@ def _compute_perm_deltas(parent_voxels, ac_sizes, leftover,
             total_llr += llr if np.isfinite(llr) else 0.0
             offset += group_size
 
-        # leftover group gets LLR = 0 (not computed)
+        if leftover > 0:
+            group_vox = parent_voxels[perm[offset:offset + leftover]]
+            y_group = y[:, :, group_vox]
+            ysum = y_group.sum(axis=2)
+            yout = np.einsum('bin,cin->bc', y_group, y_group)
+            llr = llr_from_ysum_yout(ysum, yout, leftover, q_tup)
+            total_llr += llr if np.isfinite(llr) else 0.0
+
         deltas[perm_idx] = total_llr - parent_stat
 
     return deltas

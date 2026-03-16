@@ -260,7 +260,7 @@ def dp_antichain(nodes, children_map, gain, lam=0.0):
     for root in roots:
         _bt(root)
 
-    return sorted(selected), dict(gain=gain, best=best, lam=lam)
+    return sorted(selected), dict(gain=gain, best=best, lam=lam, chose=chose)
 
 
 def iter_topo(*, children=None, num_leaf, node_start=None, only_leaf=False):

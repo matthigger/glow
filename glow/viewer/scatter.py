@@ -37,11 +37,12 @@ _PVAL_THRESHOLD_MAP = {
 def _compute_adj_thresh(ana_glow):
     """Compute the llr_adjusted value at the alpha_fwer significance boundary.
 
-    Returns the minimum llr_adjusted among regions with pval <= alpha_fwer,
-    i.e. the effective decision boundary on the adjusted-statistic axis.
+    When significant regions exist, returns the minimum llr_adjusted among
+    them (the empirical decision boundary).  Otherwise falls back to
+    ``adj_crit`` — the exact critical value from the permutation null
+    distribution (stored during analysis).
 
-    Returns None if alpha_fwer or the adjusted stat is not available,
-    or if no regions are significant.
+    Returns None only when neither source is available.
     """
     alpha = getattr(ana_glow, 'alpha_fwer', None)
     if alpha is None:
@@ -50,15 +51,15 @@ def _compute_adj_thresh(ana_glow):
     pval = getattr(ana_glow, 'pval', None)
     adj = getattr(ana_glow, 'llr_adjusted_0', None)
     if pval is None or adj is None:
-        return None
+        return getattr(ana_glow, 'adj_crit', None)
     if adj.ndim > 1:
         adj = adj[0]
 
     sig = ~np.isnan(pval) & (pval <= alpha)
-    if not sig.any():
-        return None
+    if sig.any():
+        return float(np.nanmin(adj[sig]))
 
-    return float(np.nanmin(adj[sig]))
+    return getattr(ana_glow, 'adj_crit', None)
 
 
 def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
@@ -139,6 +140,11 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
               'vox_out_target', 'llr_mu_h0', 'llr_std_h0'):
         if c in _df.columns and not _df[c].isna().all():
             hover_cols.append(c)
+    for c in ('prune_delta', 'prune_pval_homo', 'prune_kept_vs_children',
+              'prune_kept_final', 'prune_llr_plus_lambda',
+              'prune_compared_to'):
+        if c in _df.columns and not _df[c].isna().all():
+            hover_cols.append(c)
 
     hover_text = []
     for _, row in _df[vis].iterrows():
@@ -147,6 +153,8 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
             v = row[c]
             if c == 'region_idx':
                 parts.append(f'Region {int(v)}')
+            elif isinstance(v, str):
+                parts.append(f'{c}: {v}')
             elif isinstance(v, (int, np.integer)):
                 parts.append(f'{c}: {v}')
             elif np.isnan(v):

@@ -561,6 +561,7 @@ def _setup_3d(app, ana_glow, df,
         show_list = list(visible)
         if hover_reg is not None and hover_reg not in show_list:
             show_list.append(hover_reg)
+        show_list = [r for r in show_list if _valid_reg(r, ana_glow)]
 
         # build overlay for tree regions only ('target' handled separately)
         tree_regs = [r for r in show_list if r != 'target']
@@ -712,6 +713,7 @@ def _setup_2d(app, ana_glow, df,
         show_list = list(visible)
         if hover_reg is not None and hover_reg not in show_list:
             show_list.append(hover_reg)
+        show_list = [r for r in show_list if _valid_reg(r, ana_glow)]
 
         # resolve background: precomputed mean or single-image on-the-fly
         if image_sel is not None and image_sel != 'mean':
@@ -760,6 +762,14 @@ def _setup_2d(app, ana_glow, df,
 # Shared callbacks
 # ---------------------------------------------------------------------------
 
+def _valid_reg(reg_idx, ana_glow):
+    """Return True if reg_idx is in range for this analysis tree."""
+    if reg_idx == 'target':
+        return True
+    num_reg = ana_glow.exp.y.shape[2] + ana_glow.children.shape[0]
+    return isinstance(reg_idx, (int, np.integer)) and 0 <= reg_idx < num_reg
+
+
 def _register_scatter_callback(app, df, ana_glow, target_stats=None):
     """Scatter plot updates when axes change or selection changes."""
     @app.callback(
@@ -804,6 +814,8 @@ def _register_selection_callback(app, ana_glow, mask_target_img=None):
             if lookup_val is None:
                 return no_update, no_update, no_update
             reg_idx = int(lookup_val)
+            if not _valid_reg(reg_idx, ana_glow):
+                return no_update, no_update, no_update
             selected = json.loads(selected_json)
             if reg_idx not in selected:
                 selected.append(reg_idx)
@@ -822,6 +834,9 @@ def _register_selection_callback(app, ana_glow, mask_target_img=None):
         # keep 'target' as a string; everything else becomes int
         if reg_idx != 'target':
             reg_idx = int(reg_idx)
+
+        if not _valid_reg(reg_idx, ana_glow):
+            return no_update, no_update, no_update
 
         selected = json.loads(selected_json)
         if reg_idx in selected:
@@ -916,10 +931,14 @@ def _register_hover_callback(app, ana_glow, mask_target_img=None):
             label = ' Preview on hover'
             return 'null', no_update, [{'label': label, 'value': 'on'}]
 
+        if reg_idx != 'target':
+            reg_idx = int(reg_idx)
+        if not _valid_reg(reg_idx, ana_glow):
+            return 'null', no_update, no_update
+
         if reg_idx == 'target':
             label = ' Target mask'
         else:
-            reg_idx = int(reg_idx)
             label = f' Region {reg_idx}'
         new_options = [{'label': label, 'value': 'on'}]
 
@@ -965,6 +984,9 @@ def _register_regression_callback(app, ana_glow, df, feature_names=None,
         show_list = list(visible)
         if hover_reg is not None and hover_reg not in show_list:
             show_list.append(hover_reg)
+
+        # guard against stale indices from a previous browser session
+        show_list = [r for r in show_list if _valid_reg(r, ana_glow)]
 
         n_selected = len(selected)
         color_map = {r: i for i, r in enumerate(selected)}

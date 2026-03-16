@@ -9,7 +9,7 @@ from glow.experiment.mancova import stat_dict
 # run experiments serially (n_jobs=1) and keep permutations serial per experiment
 # TEMP: quick test settings (2k vox, 100 perm, 4 seeds)
 COMMON = dict(
-    n_seed=4,
+    n_seed=10,
     effect_llr_all=np.logspace(np.log10(0.003), np.log10(0.3), 5),
     effect_perc=0.2,
     crop_n_vox=500,
