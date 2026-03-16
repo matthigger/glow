@@ -257,20 +257,20 @@ def _sample_dti(mean_imgs, mask, num_img=_NUM_IMG, noise_frac=0.15,
 # Demo builders (one per image-set choice)
 # ---------------------------------------------------------------------------
 
-def _demo_wgn_2d(b, effect_llr):
+def _demo_wgn_2d(b, effect_llr, seed=0):
     """2D White Gaussian Noise demo."""
     from glow.experiment.exper import ExperimentImageOnly
     shape = (64, 64)
     print(f'  building 2D WGN: shape={shape}, b={b}')
     exp_img = ExperimentImageOnly.from_gauss(
-        b=b, num_img=_NUM_IMG, shape=shape, seed=0)
+        b=b, num_img=_NUM_IMG, shape=shape, seed=seed)
     exp = _build_experiment(exp_img.y, exp_img.mask_idx)
     feat_names = [f'feature {i}' for i in range(b)] if b > 1 else None
-    ana, mask_target = _impose_and_run(exp, effect_llr)
+    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
     return ana, mask_target, feat_names
 
 
-def _demo_mandrill(channels, effect_llr):
+def _demo_mandrill(channels, effect_llr, seed=0):
     """2D Mandrill RGB demo."""
     from PIL import Image
     from glow.mask import get_mask_idx
@@ -291,7 +291,7 @@ def _demo_mandrill(channels, effect_llr):
 
     num_vox = h * w
     pixel_flat = img_arr.reshape(num_vox, 3).T  # (3, num_vox)
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng(seed)
     y = np.empty((b, _NUM_IMG, num_vox))
     for fi, ci in enumerate(feat_indices):
         base = pixel_flat[ci]
@@ -302,11 +302,11 @@ def _demo_mandrill(channels, effect_llr):
     mask_idx = get_mask_idx(np.ones((h, w), dtype=bool))
     exp = _build_experiment(y, mask_idx)
     print(f'  mandrill: {h}x{w}, features={feat_names}')
-    ana, mask_target = _impose_and_run(exp, effect_llr)
+    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
     return ana, mask_target, feat_names if b > 1 else None
 
 
-def _demo_dti_2d(features, effect_llr):
+def _demo_dti_2d(features, effect_llr, seed=0):
     """2D Axial Slice DTI demo."""
     fa, md, mask = _load_dti_mean('2d')
     mean_imgs = {}
@@ -321,26 +321,26 @@ def _demo_dti_2d(features, effect_llr):
 
     print(f'  2D axial DTI: shape={fa.shape}, mask={mask.sum()} vox, '
           f'features={list(mean_imgs.keys())}')
-    y, mask_idx, feat_names = _sample_dti(mean_imgs, mask)
+    y, mask_idx, feat_names = _sample_dti(mean_imgs, mask, seed=seed)
     exp = _build_experiment(y, mask_idx)
-    ana, mask_target = _impose_and_run(exp, effect_llr)
+    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
     return ana, mask_target, feat_names if len(feat_names) > 1 else None
 
 
-def _demo_wgn_3d(b, effect_llr):
+def _demo_wgn_3d(b, effect_llr, seed=0):
     """3D White Gaussian Noise demo."""
     from glow.experiment.exper import ExperimentImageOnly
     shape = (15, 15, 15)
     print(f'  building 3D WGN: shape={shape}, b={b}')
     exp_img = ExperimentImageOnly.from_gauss(
-        b=b, num_img=_NUM_IMG, shape=shape, seed=0)
+        b=b, num_img=_NUM_IMG, shape=shape, seed=seed)
     exp = _build_experiment(exp_img.y, exp_img.mask_idx)
     feat_names = [f'feature {i}' for i in range(b)] if b > 1 else None
-    ana, mask_target = _impose_and_run(exp, effect_llr)
+    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
     return ana, mask_target, feat_names
 
 
-def _demo_dti_3d(features, effect_llr):
+def _demo_dti_3d(features, effect_llr, seed=0):
     """3D DTI demo."""
     fa, md, mask = _load_dti_mean('3d')
     mean_imgs = {}
@@ -355,9 +355,9 @@ def _demo_dti_3d(features, effect_llr):
 
     print(f'  3D DTI: shape={fa.shape}, mask={mask.sum()} vox, '
           f'features={list(mean_imgs.keys())}')
-    y, mask_idx, feat_names = _sample_dti(mean_imgs, mask)
+    y, mask_idx, feat_names = _sample_dti(mean_imgs, mask, seed=seed)
     exp = _build_experiment(y, mask_idx)
-    ana, mask_target = _impose_and_run(exp, effect_llr)
+    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
     return ana, mask_target, feat_names if len(feat_names) > 1 else None
 
 
@@ -409,18 +409,21 @@ def _run_demo():
     ], default='medium')
     effect_llr = _EFFECT_MAP[severity]
 
+    # --- 4) random seed ---
+    seed = _choose_int('Random seed:', default=0, lo=0, hi=2**31 - 1)
+
     # --- build ---
-    print(f'\n  Building demo (effect_llr={effect_llr:.2g}) ...')
+    print(f'\n  Building demo (effect_llr={effect_llr:.2g}, seed={seed}) ...')
     if image_set == 'wgn2d':
-        ana, mask_target, feat_names = _demo_wgn_2d(b_choice, effect_llr)
+        ana, mask_target, feat_names = _demo_wgn_2d(b_choice, effect_llr, seed)
     elif image_set == 'mandrill':
-        ana, mask_target, feat_names = _demo_mandrill(feat_choice, effect_llr)
+        ana, mask_target, feat_names = _demo_mandrill(feat_choice, effect_llr, seed)
     elif image_set == 'dti2d':
-        ana, mask_target, feat_names = _demo_dti_2d(feat_choice, effect_llr)
+        ana, mask_target, feat_names = _demo_dti_2d(feat_choice, effect_llr, seed)
     elif image_set == 'wgn3d':
-        ana, mask_target, feat_names = _demo_wgn_3d(b_choice, effect_llr)
+        ana, mask_target, feat_names = _demo_wgn_3d(b_choice, effect_llr, seed)
     elif image_set == 'dti3d':
-        ana, mask_target, feat_names = _demo_dti_3d(feat_choice, effect_llr)
+        ana, mask_target, feat_names = _demo_dti_3d(feat_choice, effect_llr, seed)
 
     launch(ana, mask_target=mask_target, feature_names=feat_names)
 
