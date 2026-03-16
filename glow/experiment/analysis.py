@@ -264,6 +264,7 @@ class AnalysisGLOW(Analysis):
                  alpha_fwer=.05, min_size=1, verbose=False,
                  n_jobs_perm=1, cloud_config=None, perm_dir=None,
                  prune_geom_exp_eff=None,
+                 n_perm_prune=25, alpha_prune=0.05,
                  size_adjust_model=None, **kwargs):
         """
         Args:
@@ -285,9 +286,13 @@ class AnalysisGLOW(Analysis):
                 Existing results in the directory are reused (resume).
             prune_geom_exp_eff: expected number of effect regions under
                 the geometric prior.  if None (default), pruning uses
-                llr_adjusted directly with no additional penalty.  if
-                given, uses the analytic formula
-                lambda = log(1 + 1/exp_eff).
+                permutation-based per-node penalties.  if given, uses
+                the analytic formula lambda = log(1 + 1/exp_eff).
+            n_perm_prune: random re-partitions per node for the
+                permutation pruning penalty (default 25; only used when
+                prune_geom_exp_eff is None)
+            alpha_prune: family-wise prune error rate (default 0.05;
+                only used when prune_geom_exp_eff is None)
             size_adjust_model: regression model for the size adjustment
                 ('sqrt', 'power_law', etc.).  If None (default),
                 auto-selected from stat_vs_size benchmark results
@@ -302,6 +307,8 @@ class AnalysisGLOW(Analysis):
                               cloud_config,
                               n_perm_fwer_size_adjust=n_perm_fwer_size_adjust,
                               prune_geom_exp_eff=prune_geom_exp_eff,
+                              n_perm_prune=n_perm_prune,
+                              alpha_prune=alpha_prune,
                               size_adjust_model=size_adjust_model,
                               **kwargs)
             return
@@ -414,7 +421,9 @@ class AnalysisGLOW(Analysis):
             exp, n_perm_fwer, stat_0, size_0, children_0,
             mu_fn, stat_max_sorted,
             alpha_fwer, min_size,
-            prune_geom_exp_eff=prune_geom_exp_eff)
+            prune_geom_exp_eff=prune_geom_exp_eff,
+            n_perm_prune=n_perm_prune,
+            alpha_prune=alpha_prune)
 
         if _cleanup_dir:
             shutil.rmtree(perm_dir, ignore_errors=True)
@@ -551,7 +560,8 @@ class AnalysisGLOW(Analysis):
                           stat_0, size_0, children_0,
                           mu_fn, stat_max_sorted,
                           alpha_fwer, min_size,
-                          prune_geom_exp_eff=None):
+                          prune_geom_exp_eff=None,
+                          n_perm_prune=25, alpha_prune=0.05):
         """Finalize: compute p-values from max-stat distribution, prune."""
         verbose = getattr(self, 'verbose', False)
         num_reg = stat_0.shape[0]
@@ -589,15 +599,25 @@ class AnalysisGLOW(Analysis):
                   f'(alpha_fwer={alpha_fwer})')
 
         if verbose:
-            _mode = (f'exp_eff={prune_geom_exp_eff}'
-                     if prune_geom_exp_eff is not None
-                     else 'llr_adjusted')
+            if prune_geom_exp_eff is not None:
+                _mode = f'exp_eff={prune_geom_exp_eff}'
+            else:
+                _mode = f'perm(n={n_perm_prune}, alpha={alpha_prune})'
             print(f'  pruning ({_mode}) ...')
+
+        # raw stat (e.g. LLR) is the gain for all pruning modes
+        stat_gain = np.nan_to_num(stat_0.astype(float), nan=0.0,
+                                  posinf=0.0, neginf=0.0)
+
         reg_out_list, self.dp_info = prune(
             sig_reg_list=self.sig_reg_list,
             children=children_0,
-            llr_adjusted=llr_adjusted_0,
-            exp_eff=prune_geom_exp_eff)
+            stat=stat_gain,
+            sizes=size_0,
+            exp=exp,
+            exp_eff=prune_geom_exp_eff,
+            n_perm_prune=n_perm_prune,
+            alpha_prune=alpha_prune)
         self.homo_pval_dict = {}
 
         self.effect_list = list()
@@ -617,7 +637,7 @@ class AnalysisGLOW(Analysis):
             n_pruned = len(self.sig_reg_list) - n_disc
             msg = f'  done: {n_disc} discovered, {n_pruned} pruned'
             lam = self.dp_info.get('lam', 0.0)
-            if lam:
+            if isinstance(lam, (int, float)) and lam:
                 msg += f' (lambda={lam:.4f})'
             print(msg)
 
@@ -625,6 +645,7 @@ class AnalysisGLOW(Analysis):
                      alpha_fwer, min_size, verbose,
                      cloud_config, n_perm_fwer_size_adjust=25,
                      prune_geom_exp_eff=None,
+                     n_perm_prune=25, alpha_prune=0.05,
                      size_adjust_model=None, **kwargs):
         """Run full analysis on AWS Batch (permutations + synthesis).
 
@@ -647,6 +668,8 @@ class AnalysisGLOW(Analysis):
             'alpha_fwer': alpha_fwer,
             'min_size': min_size,
             'prune_geom_exp_eff': prune_geom_exp_eff,
+            'n_perm_prune': n_perm_prune,
+            'alpha_prune': alpha_prune,
             'size_adjust_model': size_adjust_model,
         }
         ana_kwargs.update(kwargs)

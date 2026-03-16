@@ -53,6 +53,21 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
     if hasattr(ana_glow, 'stat_std'):
         d['llr_std_h0'] = ana_glow.stat_std
 
+    # pruning diagnostics (permutation mode)
+    dp_info = getattr(ana_glow, 'dp_info', {})
+    if 'prune_delta' in dp_info:
+        d['prune_delta'] = dp_info['prune_delta']
+    if 'prune_lambda' in dp_info:
+        d['prune_lambda'] = dp_info['prune_lambda']
+    if 'prune_pval' in dp_info:
+        d['prune_pval'] = dp_info['prune_pval']
+    if 'prune_delta' in dp_info:
+        stat_arr = _ensure_1d(ana_glow.stat).astype(float)
+        delta_arr = dp_info['prune_delta']
+        llr_plus_lam = np.where(np.isfinite(delta_arr),
+                                stat_arr + delta_arr, np.nan)
+        d['prune_llr_plus_lambda'] = llr_plus_lam
+
     # significant flag (pval <= alpha_fwer)
     alpha_fwer = getattr(ana_glow, 'alpha_fwer', 0.05)
     d['significant'] = ~np.isnan(ana_glow.pval) & (ana_glow.pval <= alpha_fwer)
@@ -101,7 +116,8 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
 
 
 _GENERIC_FEATURES = {'n_voxel'}
-_PRUNING_FEATURES = set()
+_PRUNING_FEATURES = {'prune_delta', 'prune_lambda', 'prune_pval',
+                      'prune_llr_plus_lambda'}
 _MASK_FEATURES = {'f1', 'sens', 'spec', 'pct_max_f1',
                    'vox_in_target', 'vox_out_target'}
 

@@ -111,26 +111,36 @@ class TestLambdaFormula:
         assert len(out_10) >= len(out_1)
 
 
-class TestDefaultLambdaZero:
-    """when neither exp_eff nor lam is given, lam should be 0."""
+class TestExplicitLamZero:
+    """explicit lam=0.0 (no penalty) behaviour."""
 
-    def test_default_lam_zero(self):
+    def test_lam_zero(self):
         children = _make_tree_8()
         adj = _make_llr_adjusted_8()
-        _, info = prune([8, 9], children, adj)
+        _, info = prune([8, 9], children, adj, lam=0.0)
         assert info['lam'] == 0.0
 
     def test_positive_adjusted_selected(self):
-        """nodes with positive llr_adjusted should be selected at lam=0."""
+        """nodes with positive stat should be selected at lam=0."""
         children = _make_tree_8()
         adj = _make_llr_adjusted_8()
-        reg_out, _ = prune([10], children, adj)
-        assert 10 in reg_out, 'positive llr_adjusted node should be selected'
+        reg_out, _ = prune([10], children, adj, lam=0.0)
+        assert 10 in reg_out, 'positive stat node should be selected'
 
     def test_negative_adjusted_not_selected(self):
-        """nodes with negative llr_adjusted should not be selected."""
+        """nodes with negative stat should not be selected."""
         children = _make_tree_8()
         adj = np.zeros(15)
         adj[8] = -1.0
-        reg_out, _ = prune([8], children, adj)
+        reg_out, _ = prune([8], children, adj, lam=0.0)
         assert reg_out == []
+
+    def test_default_requires_exp_and_sizes(self):
+        """default (permutation) mode should raise without exp/sizes."""
+        children = _make_tree_8()
+        adj = _make_llr_adjusted_8()
+        try:
+            prune([8, 9], children, adj)
+            assert False, 'should have raised ValueError'
+        except ValueError:
+            pass

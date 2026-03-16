@@ -35,12 +35,16 @@ N_PERM_FWER = 100
 N_PERM_FWER_SIZE_ADJUST = 25
 N_PERM_FWER_VBA = N_PERM_FWER + N_PERM_FWER_SIZE_ADJUST
 ALPHA_FWER = 0.05
+N_PERM_PRUNE = 25
+ALPHA_PRUNE = 0.05
 
 ANALYSES = {
     'GLOW': dict(n_perm_fwer=N_PERM_FWER,
                  n_perm_fwer_size_adjust=N_PERM_FWER_SIZE_ADJUST,
                  min_size=1,
-                 alpha_fwer=ALPHA_FWER),
+                 alpha_fwer=ALPHA_FWER,
+                 n_perm_prune=N_PERM_PRUNE,
+                 alpha_prune=ALPHA_PRUNE),
     'VBA': dict(n_perm_fwer=N_PERM_FWER_VBA,
                 tfce_flag=False,
                 alpha_fwer=ALPHA_FWER),
