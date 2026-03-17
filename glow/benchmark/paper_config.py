@@ -86,6 +86,16 @@ config_list.append(make_config('mancova_stat_wgn', 'wgn', run_ana,
                                ana_kwargs_dict_stat))
 
 
+# roughness sweep: one config per (source, roughness) pair
+ROUGHNESS_VALUES = np.linspace(0, 1, 5)
+for source in ('hcp', 'wgn'):
+    for rough in ROUGHNESS_VALUES:
+        tag = f'{rough:.2f}'.replace('.', '')
+        config_list.append(make_config(
+            f'roughness_{source}_{tag}', source, run_ana, ana_kwargs_dict_vba,
+            fixed_params={'roughness': float(rough)},
+        ))
+
 # segmentation configs
 config_list.append(make_config('segment_hcp', 'hcp', run_segment))
 config_list.append(make_config('segment_wgn', 'wgn', run_segment))

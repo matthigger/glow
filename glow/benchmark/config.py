@@ -152,7 +152,8 @@ class Config:
                 b=b,
                 num_img=self.wgn_num_img)
 
-    def get_exp_eff(self, seed, effect_llr, radius=None, hcp_feats=None, wgn_b=None):
+    def get_exp_eff(self, seed, effect_llr, radius=None, hcp_feats=None,
+                    wgn_b=None, roughness=None):
         """return an experiment with a synthetic effect imposed."""
         # Re-prepare exp_orig if dataset parameters changed or if not yet created
         # For dataset experiments, we need to recreate exp_orig each time
@@ -205,7 +206,8 @@ class Config:
         # impose effect
         return exp.impose_effect(extenter=extenter,
                                  seed=seed,
-                                 effect_llr=effect_llr)
+                                 effect_llr=effect_llr,
+                                 roughness=roughness)
 
     def iter_kwargs(self):
         """yield kwarg dicts for each experiment (product of iter_params)."""

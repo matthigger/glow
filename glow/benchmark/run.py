@@ -52,6 +52,7 @@ def run_ana(config, **kwargs):
     """run all analyses defined in config.ana_kwargs_dict."""
     # build a particular effect
     exp, effect = config.get_exp_eff(**kwargs)
+    exp_roughness = kwargs.get('roughness')
 
     for label, (Ana, kwargs) in config.ana_kwargs_dict.items():
         # prep output file
@@ -126,6 +127,8 @@ def run_ana(config, **kwargs):
              'vox_effect': int(effect.mask.sum()),
              'time_sec': total_time_sec,
              'config_hash': config._config_hash()}
+        if exp_roughness is not None:
+            d['roughness'] = float(exp_roughness)
         file_out.parent.mkdir(exist_ok=True, parents=True)
         with open(file_out, 'w') as f:
             json.dump(d, f, sort_keys=True, indent=4)
