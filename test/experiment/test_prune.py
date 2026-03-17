@@ -135,12 +135,10 @@ class TestExplicitLamZero:
         reg_out, _ = prune([8], children, adj, lam=0.0)
         assert reg_out == []
 
-    def test_default_requires_exp_and_sizes(self):
-        """default (permutation) mode should raise without exp/sizes."""
+    def test_default_without_exp_falls_back_to_geometric(self):
+        """without exp/sizes, should fall back to geometric prior."""
         children = _make_tree_8()
         adj = _make_llr_adjusted_8()
-        try:
-            prune([8, 9], children, adj)
-            assert False, 'should have raised ValueError'
-        except ValueError:
-            pass
+        reg_out, info = prune([8, 9], children, adj)
+        expected_lam = np.log(1 + 1 / 3)
+        assert np.isclose(info['lam'], expected_lam)

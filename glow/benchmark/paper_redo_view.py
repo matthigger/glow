@@ -20,7 +20,6 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import numpy as np
-from scipy.stats import t as t_dist
 
 import glow
 from glow.benchmark.file import get_path_result, load_update_all
@@ -29,7 +28,7 @@ from glow.benchmark.paper_config import (
 )
 from glow.experiment.mancova import decompose, llr_from_ysum_yout
 from glow.experiment.prune import _compute_perm_deltas
-from glow.graph import SCGraph, get_f1_sens_spec, iter_topo
+from glow.graph import get_f1_sens_spec, iter_topo
 
 
 # ---------------------------------------------------------------------------
@@ -171,14 +170,13 @@ def _save_cache(config_label, seed, effect_llr, exp_eff, effect, ana):
 
 
 def _generate_delta_histograms(ana, mask_target, n_top=20, n_perm=200):
-    """Generate a multi-panel figure of permutation-delta histograms.
+    """Generate per-page PDF of permutation-delta histograms.
 
-    For each of the *n_top* highest-F1 significant regions that are
-    internal nodes in the SCGraph, runs *n_perm* permutations and plots
-    the delta distribution with the fitted t-distribution and
-    Bonferroni-corrected threshold.
+    For each of the *n_top* highest-F1 significant internal nodes, runs
+    *n_perm* permutations and plots the delta distribution with mu and
+    the mu + (k-1)*lam_geom threshold.
 
-    Saves the figure next to the redo-view cache.
+    Saves delta_histograms.pdf next to the redo-view cache.
     """
     exp = ana.exp
     children = ana.children
@@ -211,9 +209,8 @@ def _generate_delta_histograms(ana, mask_target, n_top=20, n_perm=200):
                          nan=0.0, posinf=0.0, neginf=0.0)
     q_tup = decompose(x=exp.x, contrast=exp.contrast)
 
-    num_internal = len(internal)
-    alpha_prune = getattr(ana, 'alpha_prune', 0.05)
-    alpha_per_node = alpha_prune / max(num_internal, 1)
+    exp_eff = dp_info.get('exp_eff', 3)
+    lam_geom = np.log(1 + 1 / exp_eff)
 
     # leaf cache
     _leaf_cache = {}
@@ -264,43 +261,35 @@ def _generate_delta_histograms(ana, mask_target, n_top=20, n_perm=200):
             )
 
             mu = float(np.mean(deltas))
-            sigma = float(np.std(deltas, ddof=1)) if len(deltas) > 1 else 0.0
-            df = n_perm - 1
+            k = len(child_ac)
+            penalty = (k - 1) * lam_geom
+            threshold = mu + penalty
 
-            if sigma > 0:
-                lam_node = mu + sigma * t_dist.ppf(1 - alpha_per_node, df)
-            else:
-                lam_node = mu
-
-            keep = (float(stat[node]) + lam_node) >= split_val
+            keep = (float(stat[node]) + threshold) >= split_val
             decision = 'KEEP' if keep else 'SPLIT'
 
             fig, ax = plt.subplots(figsize=(8, 5))
 
+            sigma = float(np.std(deltas, ddof=1)) if len(deltas) > 1 else 0.01
             ax.hist(deltas, bins=30, density=True, alpha=0.6,
                     color='steelblue', edgecolor='white',
                     label=f'perm deltas (n={n_perm})')
 
-            x_lo = min(deltas.min(), observed_delta) - 2 * max(sigma, 0.01)
-            x_hi = max(deltas.max(), observed_delta, lam_node) + 2 * max(sigma, 0.01)
-            xs = np.linspace(x_lo, x_hi, 300)
-            if sigma > 0:
-                pdf_vals = t_dist.pdf((xs - mu) / sigma, df) / sigma
-                ax.plot(xs, pdf_vals, 'k-', lw=2,
-                        label=f't-fit (mu={mu:.2f}, sig={sigma:.2f})')
-
-            ax.axvline(lam_node, color='red', ls='--', lw=2,
-                       label=f'lambda={lam_node:.2f} (alpha/k={alpha_per_node:.4f})')
+            ax.axvline(mu, color='blue', ls=':', lw=1.5,
+                       label=f'mu={mu:.3f}')
+            ax.axvline(threshold, color='red', ls='--', lw=2,
+                       label=f'mu+{k-1}*lam={threshold:.3f} '
+                             f'(lam_geom={lam_geom:.3f})')
             ax.axvline(observed_delta, color='green', ls='-', lw=2,
-                       label=f'observed delta={observed_delta:.2f}')
+                       label=f'observed delta={observed_delta:.3f}')
 
-            ax.set_xlabel('delta = sum(LLR_children) - LLR_parent')
+            ax.set_xlabel('delta = sum(all group LLRs) - LLR_parent')
             ax.set_ylabel('density')
             ax.set_title(
                 f'Node {node} vs {child_ac}   [{decision}]\n'
                 f'LLR_parent={stat[node]:.2f}  split_val={split_val:.2f}  '
                 f'F1={f1[node]:.3f}  '
-                f'(sz={int(sizes[node])}, leftover={leftover})')
+                f'(sz={int(sizes[node])}, left={leftover}, k={k})')
             ax.legend(fontsize=9)
             fig.tight_layout()
 

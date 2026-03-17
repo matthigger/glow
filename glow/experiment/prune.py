@@ -8,34 +8,32 @@ from .mancova import decompose, llr_from_ysum_yout
 
 
 def prune(sig_reg_list, children, stat, sizes=None, exp=None,
-          exp_eff=None, lam=None,
-          n_perm_prune=25, alpha_prune=0.05,
-          get_stat=None):
+          exp_eff=3, lam=None, n_perm_prune=25,
+          get_stat=None, **kwargs):
     """Optimal pruning via DP on the significant subtree.
 
-    Three modes (checked in order):
+    Two modes (checked in order):
 
-    1. ``lam`` provided: constant penalty per region.
-    2. ``exp_eff`` provided: geometric-prior penalty
-       ``lam = log(1 + 1/exp_eff)``.
-    3. Neither (default): permutation-based per-node penalty via
-       :func:`prune_perm`.  Requires ``sizes`` and ``exp``.
+    1. ``lam`` provided: constant penalty per region (legacy).
+    2. Otherwise (default): hybrid permutation + geometric-prior
+       penalty via :func:`prune_perm`.  Requires ``sizes`` and ``exp``.
+       Each split must exceed `mu + (k-1)*lam_geom` where mu is the
+       mean permutation delta (data-dependent overfitting correction)
+       and lam_geom = log(1 + 1/exp_eff).
 
     Args:
         sig_reg_list (list): regions declared significant (via FWER)
         children (np.array): (num_internal, 2) child index pairs
-        stat (np.array): 1-D statistic per region (raw LLR for
-            permutation mode; can be llr_adjusted for legacy modes)
+        stat (np.array): 1-D statistic per region (raw LLR)
         sizes (np.array or None): 1-D region sizes (required for
-            permutation mode)
-        exp: Experiment object (required for permutation mode)
-        exp_eff (float or None): expected number of effect regions
-            (geometric-prior penalty; ignored when lam is given)
+            default mode)
+        exp: Experiment object (required for default mode)
+        exp_eff (float): expected number of effect regions for the
+            geometric prior (default 3)
         lam (float or None): explicit constant penalty override
+            (bypasses permutation test entirely)
         n_perm_prune (int): random re-partitions per node
-            (permutation mode only)
-        alpha_prune (float): family-wise prune error rate
-            (permutation mode only)
+            (default mode only)
         get_stat: unused, kept for interface compatibility
 
     Returns:
@@ -49,15 +47,11 @@ def prune(sig_reg_list, children, stat, sizes=None, exp=None,
 
     num_vox = len(stat) - children.shape[0]
 
-    if lam is not None or exp_eff is not None:
-        # legacy constant-lambda or geometric-prior mode
+    if lam is not None or sizes is None or exp is None:
+        if lam is None:
+            lam = np.log(1 + 1 / exp_eff)
         subgraph = SCGraph.from_children(children, num_leaf=num_vox,
                                          subset=sig_reg_list)
-        if lam is not None:
-            pass
-        elif exp_eff is not None:
-            lam = np.log(1 + 1 / exp_eff)
-
         reg_out_list, dp_info = dp_antichain(
             nodes=sorted(sig_reg_list),
             children_map=subgraph.children,
@@ -68,39 +62,32 @@ def prune(sig_reg_list, children, stat, sizes=None, exp=None,
         dp_info['sig_reg_list'] = list(sig_reg_list)
         return reg_out_list, dp_info
 
-    # permutation-based pruning (default)
-    if sizes is None or exp is None:
-        raise ValueError(
-            'permutation pruning (default) requires sizes and exp. '
-            'Pass exp_eff or lam to use a constant penalty instead.')
-
     return prune_perm(
         sig_reg_list=sig_reg_list,
         children=children,
         stat=stat,
         sizes=sizes,
         exp=exp,
+        exp_eff=exp_eff,
         n_perm_prune=n_perm_prune,
-        alpha_prune=alpha_prune,
     )
 
 
 def prune_perm(sig_reg_list, children, stat, sizes, exp,
-               n_perm_prune=25, alpha_prune=0.05):
-    """Bottom-up DP with accumulated permutation penalties.
+               exp_eff=3, n_perm_prune=25):
+    """Bottom-up DP with hybrid permutation + geometric-prior penalty.
 
-    For each SCGraph internal node with 2+ children, estimates the
-    overfitting bonus of splitting via random re-partitioning:
-    ``lambda(i) = max(deltas)``.  Lambdas accumulate bottom-up so that
-    keeping a parent absorbs all split-penalties in its subtree::
+    At each internal SCGraph node the decision is local:
 
-        gain'(j) = LLR(j) + sum(lambda(i) for internal i in j's subtree)
+        split if  (observed_delta - mu) > (k - 1) * lam_geom
 
-    Then :func:`dp_antichain` runs on ``gain'`` with ``lam=0``.
+    where *mu* is the mean of the permutation-delta distribution
+    (data-dependent overfitting correction), *k* is the number of
+    regions in the resolved antichain below this node, and
+    *lam_geom = ln(1 + 1/exp_eff)* is the per-region geometric-prior
+    cost.
 
-    Single-child SCGraph nodes get no penalty (the DP decides on raw
-    LLR alone).  Nodes too small to permute are forced as parents
-    (their descendants are removed from the DP).
+    Equivalently: keep if  stat[node] + mu + (k-1)*lam_geom >= split_val.
 
     Args:
         sig_reg_list (list): significant region indices
@@ -108,8 +95,8 @@ def prune_perm(sig_reg_list, children, stat, sizes, exp,
         stat (np.array): (num_reg,) raw statistic per region
         sizes (np.array): (num_reg,) region sizes
         exp: Experiment with y, x, contrast
-        n_perm_prune (int): random re-partitions per node
-        alpha_prune (float): unused (kept for interface compatibility)
+        exp_eff (float): expected number of effect regions (default 3)
+        n_perm_prune (int): random re-partitions per node (default 25)
 
     Returns:
         selected (list[int]): sorted antichain region indices
@@ -117,6 +104,8 @@ def prune_perm(sig_reg_list, children, stat, sizes, exp,
     """
     num_vox = exp.y.shape[2]
     num_reg = num_vox + children.shape[0]
+
+    lam_geom = np.log(1 + 1 / exp_eff)
 
     subgraph = SCGraph.from_children(children, num_leaf=num_vox,
                                      subset=sig_reg_list)
@@ -126,6 +115,7 @@ def prune_perm(sig_reg_list, children, stat, sizes, exp,
 
     delta_arr = np.full(num_reg, np.nan)
     pval_homo_arr = np.full(num_reg, np.nan)
+    kept_vs_children_arr = np.full(num_reg, np.nan)
     compared_to = {}
 
     _leaf_cache = {}
@@ -137,40 +127,67 @@ def prune_perm(sig_reg_list, children, stat, sizes, exp,
                           node_start=node, only_leaf=True)), dtype=int)
         return _leaf_cache[node]
 
-    # -- Phase 1: per-node lambda from permutations --------------------------
-    lam_per_node = {}
-    forced_parents = set()
+    def _leftover_llr(parent_voxels, child_ac, leftover):
+        """Compute LLR for the leftover voxels not in any child."""
+        if leftover <= 0:
+            return 0.0
+        ac_voxels = set()
+        for r in child_ac:
+            ac_voxels.update(_get_leaves(r).tolist())
+        leftover_vox = np.array(
+            [v for v in parent_voxels if v not in ac_voxels], dtype=int)
+        y_left = y[:, :, leftover_vox]
+        ysum = y_left.sum(axis=2)
+        yout = np.einsum('bin,cin->bc', y_left, y_left)
+        llr = llr_from_ysum_yout(ysum, yout, leftover, q_tup)
+        return llr if np.isfinite(llr) else 0.0
+
+    # bottom-up DP
+    best = {}
+    chose = {}
+    antichain = {}
 
     for node in sorted(sig_reg_list):
         kids = subgraph.children.get(node, [])
+
         if not kids:
+            best[node] = float(stat[node])
+            chose[node] = True
+            antichain[node] = [node]
             continue
 
-        compared_to[node] = [int(r) for r in kids]
+        # resolved antichain below this node
+        child_ac = []
+        for kid in kids:
+            child_ac.extend(antichain[kid])
 
-        if len(kids) == 1:
-            lam_per_node[node] = 0.0
-            delta_arr[node] = 0.0
-            continue
+        compared_to[node] = [int(r) for r in child_ac]
+        k = len(child_ac)
 
-        kid_sizes = [int(sizes[r]) for r in kids]
+        # observed split value (children + leftover)
+        ac_sizes = [int(sizes[r]) for r in child_ac]
         parent_size = int(sizes[node])
-        leftover = parent_size - sum(kid_sizes)
+        leftover = parent_size - sum(ac_sizes)
 
-        min_group = min(kid_sizes)
+        parent_voxels = _get_leaves(node)
+        split_val = (sum(float(stat[r]) for r in child_ac)
+                     + _leftover_llr(parent_voxels, child_ac, leftover))
+
+        # small-region guard: not enough distinct partitions
+        min_group = min(ac_sizes) if ac_sizes else 0
         check_size = min(min_group, leftover) if leftover > 0 else min_group
         if (check_size > 0
                 and _n_partitions(parent_size, check_size) < n_perm_prune):
-            forced_parents.add(node)
-            lam_per_node[node] = 0.0
+            best[node] = float(stat[node])
+            chose[node] = True
+            antichain[node] = [node]
             delta_arr[node] = 0.0
+            kept_vs_children_arr[node] = 1.0
             continue
-
-        parent_voxels = _get_leaves(node)
 
         deltas = _compute_perm_deltas(
             parent_voxels=parent_voxels,
-            ac_sizes=kid_sizes,
+            ac_sizes=ac_sizes,
             leftover=leftover,
             y=y,
             q_tup=q_tup,
@@ -179,78 +196,43 @@ def prune_perm(sig_reg_list, children, stat, sizes, exp,
             seed=node,
         )
 
-        lam_node = float(np.max(deltas))
-        lam_per_node[node] = lam_node
-        delta_arr[node] = lam_node
-
-        # diagnostic: empirical p-value for observed split
-        split_val = sum(float(stat[r]) for r in kids)
-        if leftover > 0:
-            ac_voxels = set()
-            for r in kids:
-                ac_voxels.update(_get_leaves(r).tolist())
-            leftover_vox = np.array(
-                [v for v in parent_voxels if v not in ac_voxels], dtype=int)
-            y_left = y[:, :, leftover_vox]
-            ysum_left = y_left.sum(axis=2)
-            yout_left = np.einsum('bin,cin->bc', y_left, y_left)
-            lo_llr = llr_from_ysum_yout(ysum_left, yout_left, leftover, q_tup)
-            if np.isfinite(lo_llr):
-                split_val += lo_llr
+        mu = float(np.mean(deltas))
+        penalty = (k - 1) * lam_geom
+        delta_arr[node] = mu
 
         observed_delta = split_val - float(stat[node])
         n_exceed = int(np.sum(deltas >= observed_delta))
         pval_homo_arr[node] = max(n_exceed, 1) / len(deltas)
 
-    # -- Phase 2: remove forced-parent descendants from DP -------------------
-    nodes_to_remove = set()
-    for fp in forced_parents:
-        for desc in subgraph.iter_desc(fp):
-            nodes_to_remove.add(desc)
+        keep_val = float(stat[node]) + mu + penalty
+        if keep_val >= split_val:
+            best[node] = float(stat[node])
+            chose[node] = True
+            antichain[node] = [node]
+            kept_vs_children_arr[node] = 1.0
+        else:
+            best[node] = split_val
+            chose[node] = False
+            antichain[node] = list(child_ac)
+            kept_vs_children_arr[node] = 0.0
 
-    dp_nodes = sorted(n for n in sig_reg_list if n not in nodes_to_remove)
-    dp_node_set = set(dp_nodes)
+    # collect final antichain from SCGraph roots
+    all_children = set()
+    for kids in subgraph.children.values():
+        all_children.update(kids)
+    roots = sorted(n for n in sig_reg_list if n not in all_children)
 
-    dp_children_map = {}
-    for node in dp_nodes:
-        kids = subgraph.children.get(node, [])
-        dp_children_map[node] = [k for k in kids if k in dp_node_set]
+    selected = []
+    for root in roots:
+        selected.extend(antichain[root])
+    selected = sorted(selected)
 
-    # -- Phase 3: accumulate lambdas bottom-up -------------------------------
-    cum_lam = {}
-    for node in dp_nodes:
-        kids = dp_children_map.get(node, [])
-        my_lam = lam_per_node.get(node, 0.0)
-        cum_lam[node] = my_lam + sum(cum_lam.get(k, 0.0) for k in kids)
-
-    # -- Phase 4: build penalised gain and run DP ----------------------------
-    gain_prime = {}
-    for node in dp_nodes:
-        gain_prime[node] = float(stat[node]) + cum_lam.get(node, 0.0)
-
-    selected, dp_raw = dp_antichain(
-        nodes=dp_nodes,
-        children_map=dp_children_map,
-        gain=gain_prime,
-        lam=0.0,
-    )
-
-    # -- Phase 5: diagnostics ------------------------------------------------
     sig_set = set(sig_reg_list)
     for r in selected:
         if r not in sig_set:
             warnings.warn(
-                f'prune_perm: non-significant node {r} selected in antichain',
+                f'prune_perm: non-significant node {r} selected',
                 stacklevel=2)
-
-    chose = dp_raw.get('chose', {})
-
-    kept_vs_children_arr = np.full(num_reg, np.nan)
-    for node in dp_nodes:
-        if dp_children_map.get(node, []):
-            kept_vs_children_arr[node] = 1.0 if chose.get(node, True) else 0.0
-    for node in forced_parents:
-        kept_vs_children_arr[node] = 1.0
 
     kept_final_arr = np.full(num_reg, np.nan)
     selected_set = set(selected)
@@ -260,9 +242,10 @@ def prune_perm(sig_reg_list, children, stat, sizes, exp,
     info = {
         'subgraph_children': dict(subgraph.children),
         'sig_reg_list': list(sig_reg_list),
-        'best': dp_raw.get('best', {}),
+        'best': best,
         'chose': chose,
-        'lam': 0.0,
+        'lam': lam_geom,
+        'exp_eff': exp_eff,
         'prune_delta': delta_arr,
         'prune_pval_homo': pval_homo_arr,
         'prune_kept_vs_children': kept_vs_children_arr,
