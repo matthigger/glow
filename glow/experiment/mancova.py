@@ -41,6 +41,27 @@ def get_mancova(*, x=None, y, contrast=None, q_tup=None):
     return e, h, sigma
 
 
+def get_roughness(e, sigma):
+    """Roughness coefficient: Tr(sigma) / Tr(E).
+
+    Measures the fraction of the error matrix attributable to spatial
+    (voxel-to-voxel) covariance vs the residual-mean projection.
+    Values near 1 indicate spatially noisy ("rough") data; values near 0
+    indicate error dominated by the between-image mean structure.
+
+    Args:
+        e (np.array): (b, b) error matrix
+        sigma (np.array): (b, b) spatial covariance (un-normalised)
+
+    Returns:
+        float: roughness in [0, 1]
+    """
+    tr_e = np.trace(e)
+    if tr_e == 0:
+        return np.nan
+    return float(np.trace(sigma) / tr_e)
+
+
 def decompose(x, contrast):
     """decompose design matrix into orthonormal basis via QR.
 

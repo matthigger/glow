@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 import glow.graph
-from glow.experiment.mancova import decompose, get_llr
+from glow.experiment.mancova import decompose, get_llr, get_roughness
 
 
 def _get_adjusted_stat(ana_glow):
@@ -39,12 +39,27 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
     num_vox = ana_glow.exp.y.shape[2]
     num_reg = num_vox + children.shape[0]
 
+    # compute per-region roughness via tree walk
+    roughness_arr = np.full(num_reg, np.nan)
+    q_tup = decompose(x=ana_glow.exp.x, contrast=ana_glow.exp.contrast)
+    for reg_idx, size, ysum, yout in glow.graph.iter_size_ysum_yout(
+            ana_glow.exp.y, children=children):
+        ymean = ysum / size
+        sigma = yout - ymean @ ymean.T * size
+        a0 = ysum @ q_tup[0].T
+        t = yout - a0 @ a0.T / size
+        a1 = ysum @ q_tup[1].T
+        h = a1 @ a1.T / size
+        e = t - h
+        roughness_arr[reg_idx] = get_roughness(e, sigma)
+
     d = {
         'region_idx': np.arange(num_reg),
         'n_voxel': ana_glow.size.astype(int),
         'llr': _ensure_1d(ana_glow.stat),
         'llr_adjusted': _get_adjusted_stat(ana_glow),
         'pval_fwer': ana_glow.pval,
+        'roughness': roughness_arr,
     }
 
     # H0 null distribution parameters (stored by _finalize_analysis)
@@ -100,7 +115,7 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
     return df
 
 
-_GENERIC_FEATURES = {'n_voxel'}
+_GENERIC_FEATURES = {'n_voxel', 'roughness'}
 _PRUNING_FEATURES = set()
 _MASK_FEATURES = {'f1', 'sens', 'spec', 'pct_max_f1',
                    'vox_in_target', 'vox_out_target'}

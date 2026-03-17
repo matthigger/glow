@@ -305,7 +305,7 @@ class Experiment(ExperimentImageOnly):
         return h.hexdigest()[:16]
 
     def impose_effect(self, effect_llr, extenter=None, mask=None, seed=None,
-                      **kwargs):
+                      roughness=None, **kwargs):
         """return a new experiment with a synthetic effect imposed.
 
         Args:
@@ -313,6 +313,9 @@ class Experiment(ExperimentImageOnly):
             extenter: ExtenterSphere or ExtenterMinVar (xor mask)
             mask (np.array): boolean effect region (xor extenter)
             seed: random seed for extent sampling
+            roughness (float | None): target Tr(sigma)/Tr(E) in (0,1).
+                When set, the spatial covariance within the effect region
+                is scaled so the post-imposition roughness matches.
 
         Returns:
             exp (Experiment): experiment with effect
@@ -330,14 +333,14 @@ class Experiment(ExperimentImageOnly):
         effect_idx = self.mask_idx[mask]
         y = self.y[:, :, effect_idx]
 
-        # get offset which imposes desired effect strength
-        offset = glow.effect.compute_offset(x=self.x,
-                                            y=y,
-                                            contrast=self.contrast,
-                                            effect_llr=effect_llr)
+        # get offset (and sigma_scale when roughness is requested)
+        offset, sigma_scale = glow.effect.compute_offset(
+            x=self.x, y=y, contrast=self.contrast,
+            effect_llr=effect_llr, roughness=roughness,
+        )
 
         # impose effect on y, build new experiment
-        exp = self.add_offset(offset, mask=mask)
+        exp = self.add_offset(offset, mask=mask, sigma_scale=sigma_scale)
 
         effect = glow.effect.Effect.from_exp_mask(exp=exp,
                                                   mask=mask,
