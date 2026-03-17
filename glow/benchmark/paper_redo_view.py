@@ -15,10 +15,6 @@ import gzip
 import json
 
 import cloudpickle as pickle
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
 import numpy as np
 
 import glow
@@ -26,9 +22,6 @@ from glow.benchmark.file import get_path_result, load_update_all
 from glow.benchmark.paper_config import (
     ANALYSES, CONFIG_BY_LABEL, make_config, ana_kwargs_dict_vba,
 )
-from glow.experiment.mancova import decompose, llr_from_ysum_yout
-from glow.experiment.prune import _compute_perm_deltas
-from glow.graph import get_f1_sens_spec, iter_topo
 
 
 # ---------------------------------------------------------------------------
@@ -169,136 +162,6 @@ def _save_cache(config_label, seed, effect_llr, exp_eff, effect, ana):
         print(f'  Saved {path}')
 
 
-def _generate_delta_histograms(ana, mask_target, n_top=20, n_perm=200):
-    """Generate per-page PDF of permutation-delta histograms.
-
-    For each of the *n_top* highest-F1 significant internal nodes, runs
-    *n_perm* permutations and plots the delta distribution with mu and
-    the mu + (k-1)*lam_geom threshold.
-
-    Saves delta_histograms.pdf next to the redo-view cache.
-    """
-    exp = ana.exp
-    children = ana.children
-    num_vox = exp.y.shape[2]
-    dp_info = getattr(ana, 'dp_info', {})
-    sig_reg_list = dp_info.get('sig_reg_list', [])
-    sc_children = dp_info.get('subgraph_children', {})
-    compared_to = dp_info.get('prune_compared_to', {})
-
-    if not sig_reg_list:
-        print('  No significant regions — skipping histograms.')
-        return
-
-    # F1 scores for ranking
-    f1, _, _ = get_f1_sens_spec(
-        mask=mask_target, mask_idx=exp.mask_idx, children=children)
-
-    # find internal SCGraph nodes among significant regions, ranked by F1
-    internal = [n for n in sig_reg_list if sc_children.get(n, [])]
-    internal.sort(key=lambda n: -f1[n])
-    nodes = internal[:n_top]
-
-    if not nodes:
-        print('  No internal significant nodes — skipping histograms.')
-        return
-
-    sizes = ana.size.astype(float)
-    stat = np.nan_to_num(ana.stat.astype(float) if ana.stat.ndim == 1
-                         else ana.stat[0].astype(float),
-                         nan=0.0, posinf=0.0, neginf=0.0)
-    q_tup = decompose(x=exp.x, contrast=exp.contrast)
-
-    exp_eff = dp_info.get('exp_eff', 3)
-    lam_geom = np.log(1 + 1 / exp_eff)
-
-    # leaf cache
-    _leaf_cache = {}
-
-    def _get_leaves(node):
-        if node not in _leaf_cache:
-            _leaf_cache[node] = np.array(sorted(
-                iter_topo(children=children, num_leaf=num_vox,
-                          node_start=node, only_leaf=True)), dtype=int)
-        return _leaf_cache[node]
-
-    out_path = _cache_dir() / 'delta_histograms.pdf'
-    out_path.parent.mkdir(exist_ok=True, parents=True)
-
-    with PdfPages(out_path) as pdf:
-        for i, node in enumerate(nodes):
-            child_ac = compared_to.get(node, list(sc_children.get(node, [])))
-            if not child_ac:
-                continue
-
-            parent_voxels = _get_leaves(node)
-            ac_sizes = [int(sizes[r]) for r in child_ac]
-            leftover = int(sizes[node]) - sum(ac_sizes)
-            split_val = sum(float(stat[r]) for r in child_ac)
-            if leftover > 0:
-                ac_voxels = set()
-                for r in child_ac:
-                    ac_voxels.update(_get_leaves(r).tolist())
-                leftover_vox = np.array(
-                    [v for v in parent_voxels if v not in ac_voxels], dtype=int)
-                y_left = exp.y[:, :, leftover_vox]
-                ysum_l = y_left.sum(axis=2)
-                yout_l = np.einsum('bin,cin->bc', y_left, y_left)
-                lo_llr = llr_from_ysum_yout(ysum_l, yout_l, leftover, q_tup)
-                if np.isfinite(lo_llr):
-                    split_val += lo_llr
-            observed_delta = split_val - float(stat[node])
-
-            deltas = _compute_perm_deltas(
-                parent_voxels=parent_voxels,
-                ac_sizes=ac_sizes,
-                leftover=leftover,
-                y=exp.y,
-                q_tup=q_tup,
-                parent_stat=float(stat[node]),
-                n_perm=n_perm,
-                seed=node,
-            )
-
-            mu = float(np.mean(deltas))
-            k = len(child_ac)
-            penalty = (k - 1) * lam_geom
-            threshold = mu + penalty
-
-            keep = (float(stat[node]) + threshold) >= split_val
-            decision = 'KEEP' if keep else 'SPLIT'
-
-            fig, ax = plt.subplots(figsize=(8, 5))
-
-            sigma = float(np.std(deltas, ddof=1)) if len(deltas) > 1 else 0.01
-            ax.hist(deltas, bins=30, density=True, alpha=0.6,
-                    color='steelblue', edgecolor='white',
-                    label=f'perm deltas (n={n_perm})')
-
-            ax.axvline(mu, color='blue', ls=':', lw=1.5,
-                       label=f'mu={mu:.3f}')
-            ax.axvline(threshold, color='red', ls='--', lw=2,
-                       label=f'mu+{k-1}*lam={threshold:.3f} '
-                             f'(lam_geom={lam_geom:.3f})')
-            ax.axvline(observed_delta, color='green', ls='-', lw=2,
-                       label=f'observed delta={observed_delta:.3f}')
-
-            ax.set_xlabel('delta = sum(all group LLRs) - LLR_parent')
-            ax.set_ylabel('density')
-            ax.set_title(
-                f'Node {node} vs {child_ac}   [{decision}]\n'
-                f'LLR_parent={stat[node]:.2f}  split_val={split_val:.2f}  '
-                f'F1={f1[node]:.3f}  '
-                f'(sz={int(sizes[node])}, left={leftover}, k={k})')
-            ax.legend(fontsize=9)
-            fig.tight_layout()
-
-            pdf.savefig(fig)
-            plt.close(fig)
-
-    print(f'  Saved delta histograms ({len(nodes)} pages) → {out_path}')
-
-
 def _rerun_and_view(config_label, seed, effect_llr, use_cache=False,
                     port=8050):
     """Re-run a single experiment, save artifacts, and launch viewer."""
@@ -307,7 +170,6 @@ def _rerun_and_view(config_label, seed, effect_llr, use_cache=False,
         ana, effect_mask = _load_cache()
         if ana is not None:
             print(f'  Loading cached result ...')
-            _generate_delta_histograms(ana, effect_mask)
             from glow.viewer import launch
             launch(ana, mask_target=effect_mask, port=port)
             return
@@ -360,8 +222,6 @@ def _rerun_and_view(config_label, seed, effect_llr, use_cache=False,
 
     # save (overwrites any previous cache)
     _save_cache(config_label, seed, effect_llr, exp_eff, effect, ana)
-
-    _generate_delta_histograms(ana, effect.mask)
 
     # launch viewer
     from glow.viewer import launch

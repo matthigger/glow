@@ -140,12 +140,6 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
               'vox_out_target', 'llr_mu_h0', 'llr_std_h0'):
         if c in _df.columns and not _df[c].isna().all():
             hover_cols.append(c)
-    for c in ('prune_delta', 'prune_pval_homo', 'prune_kept_vs_children',
-              'prune_kept_final', 'prune_llr_plus_lambda',
-              'prune_compared_to'):
-        if c in _df.columns and not _df[c].isna().all():
-            hover_cols.append(c)
-
     hover_text = []
     for _, row in _df[vis].iterrows():
         parts = []
