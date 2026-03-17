@@ -256,17 +256,18 @@ def run_experiment_mode(args):
     # download config and kwargs
     s3 = boto3.client('s3')
     config_key = f'{args.s3_prefix}/{args.run_id}/config.pkl'
-    kwargs_key = f'{args.s3_prefix}/{args.run_id}/kwargs/{args.exp_idx:06d}.pkl'
-    
+    all_kwargs_key = f'{args.s3_prefix}/{args.run_id}/all_kwargs.pkl'
+
     print(f'\nDownloading config from s3://{args.s3_bucket}/{config_key}')
     try:
         response = s3.get_object(Bucket=args.s3_bucket, Key=config_key)
         config = pickle.loads(response['Body'].read())
         print(f'  ✓ Config: {config.label}, source: {config.source}')
-        
-        response = s3.get_object(Bucket=args.s3_bucket, Key=kwargs_key)
-        kwargs = pickle.loads(response['Body'].read())
-        print(f'  ✓ Kwargs loaded')
+
+        response = s3.get_object(Bucket=args.s3_bucket, Key=all_kwargs_key)
+        all_kwargs = pickle.loads(response['Body'].read())
+        kwargs = all_kwargs[args.exp_idx]
+        print(f'  ✓ Kwargs loaded (from bulk file, {len(all_kwargs)} total)')
     except ClientError as e:
         print(f'  ✗ Error: {e}')
         sys.exit(1)
@@ -339,26 +340,26 @@ def run_experiment_mode(args):
         traceback.print_exc()
         sys.exit(1)
     
-    # upload results
-    result_prefix = f'{args.s3_prefix}/{args.run_id}/results/{args.exp_idx:06d}'
-    print(f'\nUploading results to s3://{args.s3_bucket}/{result_prefix}/')
-    
+    # pack results into a single tar.gz and upload
+    import tarfile, io
+    result_key = f'{args.s3_prefix}/{args.run_id}/results/{args.exp_idx:06d}.tar.gz'
+    print(f'\nUploading results to s3://{args.s3_bucket}/{result_key}')
+
     try:
-        uploaded = 0
-        for local_file in temp_folder.rglob('*'):
-            if local_file.is_file():
-                rel_path = local_file.relative_to(temp_folder)
-                s3_key = f'{result_prefix}/{rel_path}'
-                
-                s3.upload_file(
-                    Filename=str(local_file),
-                    Bucket=args.s3_bucket,
-                    Key=s3_key
-                )
-                print(f'  uploaded {rel_path}')
-                uploaded += 1
-        
-        print(f'  ✓ Uploaded {uploaded} files')
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode='w:gz') as tar:
+            for local_file in temp_folder.rglob('*'):
+                if local_file.is_file():
+                    arcname = str(local_file.relative_to(temp_folder))
+                    tar.add(str(local_file), arcname=arcname)
+                    print(f'  packed {arcname}')
+        buf.seek(0)
+        s3.put_object(
+            Bucket=args.s3_bucket,
+            Key=result_key,
+            Body=buf.getvalue(),
+        )
+        print(f'  ✓ Uploaded ({buf.tell() / 1024:.1f} KB)')
     except ClientError as e:
         print(f'  ✗ Error: {e}')
         sys.exit(1)

@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from itertools import product
 from pathlib import Path
@@ -448,29 +449,29 @@ class Config:
         if verbose:
             print(f'  Run ID: {run_id}')
 
-        # upload config to S3 (workers will download this)
+        # upload config + all kwargs to S3 (workers will download these)
         runner.upload_config(self, run_id)
+        runner.upload_all_kwargs(run_id, uncached)
 
-        # submit only uncached experiments
+        # submit jobs in parallel (API calls are I/O-bound)
         job_ids = []
         job_exp_idx = {}
 
         if verbose:
             print(f'  Submitting {len(uncached)} jobs to AWS Batch...')
 
-        for exp_idx, kwargs in tqdm(uncached, desc=f'  {self.label}', disable=not verbose):
-            try:
-                job_id = runner.submit_experiment_job(
-                    run_id=run_id,
-                    exp_idx=exp_idx,
-                    kwargs=kwargs,
-                    memory_mb=memory_mb,
-                )
+        def _submit(exp_idx):
+            return exp_idx, runner.submit_experiment_job(
+                run_id=run_id, exp_idx=exp_idx, memory_mb=memory_mb)
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            futures = {pool.submit(_submit, idx): idx
+                       for idx, _kw in uncached}
+            for fut in tqdm(as_completed(futures), total=len(futures),
+                            desc=f'  {self.label}', disable=not verbose):
+                exp_idx, job_id = fut.result()
                 job_ids.append(job_id)
                 job_exp_idx[job_id] = exp_idx
-            except Exception as e:
-                print(f'  ✗ Error submitting job {exp_idx}: {e}')
-                raise
 
         if verbose:
             print(f'  ✓ Submitted {len(job_ids)} jobs')

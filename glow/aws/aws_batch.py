@@ -864,29 +864,41 @@ class AWSBatchRunner:
                     print(f'\n⚠ Warning: Requested {len(job_ids)} jobs, AWS returned {jobs_found}')
                     first_check = False
                 
-                # download results for newly completed jobs and print immediately
+                # download results for newly completed jobs (parallel)
+                from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+                download_targets = []
                 for job in completed_jobs:
                     job_id = job['jobId']
-                    if job_id in job_info_map:
-                        info = job_info_map[job_id]
-                        if info.get('output_folder'):
+                    if job_id not in job_info_map:
+                        continue
+                    info = job_info_map[job_id]
+                    if info.get('output_folder'):
+                        download_targets.append((job_id, job, info))
+                    elif info.get('on_complete'):
+                        try:
+                            info['on_complete'](job)
+                            downloaded_jobs.add(job_id)
+                        except Exception as e:
+                            print(f'\n  ⚠ on_complete failed for {job["jobName"]}: {e}')
+
+                if download_targets:
+                    def _dl(job_id, job, info):
+                        return job_id, job['jobName'], \
+                            self._download_single_experiment_result(
+                                info['run_id'], info['exp_idx'],
+                                info['output_folder'])
+
+                    with ThreadPoolExecutor(max_workers=16) as dl_pool:
+                        futs = {dl_pool.submit(_dl, *t): t[0]
+                                for t in download_targets}
+                        for fut in _as_completed(futs):
                             try:
-                                output_folder = Path(info['output_folder'])
-                                print(f'\n[Downloading] {job["jobName"]} → {output_folder}')
-                                
-                                n_files = self._download_single_experiment_result(
-                                    info['run_id'], info['exp_idx'], info['output_folder']
-                                )
-                                downloaded_jobs.add(job_id)
-                                print(f'  ✓ Downloaded {n_files} file(s)')
+                                jid, jname, n_files = fut.result()
+                                downloaded_jobs.add(jid)
+                                print(f'  ✓ Downloaded {jname} ({n_files} file(s))')
                             except Exception as e:
-                                print(f'\n⚠ Error downloading results for {job["jobName"]}: {e}')
-                        elif info.get('on_complete'):
-                            try:
-                                info['on_complete'](job)
-                                downloaded_jobs.add(job_id)
-                            except Exception as e:
-                                print(f'\n  ⚠ on_complete failed for {job["jobName"]}: {e}')
+                                jid = futs[fut]
+                                print(f'\n⚠ Error downloading {jid[:8]}...: {e}')
             
                 # check if all jobs reached a terminal state
                 # (skip if we just resubmitted -- counts are stale)
@@ -1124,37 +1136,39 @@ class AWSBatchRunner:
         except ClientError as e:
             raise RuntimeError(f'failed to upload config: {e}')
     
-    def submit_experiment_job(self, run_id: str, exp_idx: int, kwargs: Dict[str, Any],
-                             memory_mb: Optional[int] = None) -> str:
-        """submit a single experiment job to AWS Batch
-        
-        Each job runs a full experiment with all permutations serially.
-        This amortizes container overhead across all permutations.
-        
+    def upload_all_kwargs(self, run_id: str, kwargs_list: List[Tuple[int, Dict[str, Any]]]):
+        """Upload all experiment kwargs as a single S3 object.
+
         Args:
             run_id: unique run identifier
-            exp_idx: experiment index
-            kwargs: experiment kwargs dict (seed, effect_llr, etc.)
-            memory_mb: optional memory in MB; if set, overrides job definition default
-                       and is recorded for OOM tier escalation.
-        
-        Returns:
-            job_id: AWS Batch job ID
+            kwargs_list: list of (exp_idx, kwargs) pairs
         """
-        # upload kwargs
-        kwargs_key = f'{self.config.s3_prefix}/{run_id}/kwargs/{exp_idx:06d}.pkl'
-        kwargs_bytes = pickle.dumps(kwargs)
-        
+        kwargs_dict = {exp_idx: kw for exp_idx, kw in kwargs_list}
+        key = f'{self.config.s3_prefix}/{run_id}/all_kwargs.pkl'
         try:
             self.s3.put_object(
                 Bucket=self.config.s3_bucket,
-                Key=kwargs_key,
-                Body=kwargs_bytes
+                Key=key,
+                Body=pickle.dumps(kwargs_dict),
             )
         except ClientError as e:
             raise RuntimeError(f'failed to upload kwargs: {e}')
-        
-        # submit job
+
+    def submit_experiment_job(self, run_id: str, exp_idx: int,
+                             memory_mb: Optional[int] = None) -> str:
+        """Submit a single experiment job to AWS Batch.
+
+        Kwargs are read by the worker from the bulk ``all_kwargs.pkl`` file
+        uploaded via :meth:`upload_all_kwargs`.
+
+        Args:
+            run_id: unique run identifier
+            exp_idx: experiment index
+            memory_mb: optional memory override for OOM tier escalation
+
+        Returns:
+            job_id: AWS Batch job ID
+        """
         job_name = f'glow_{run_id}_exp{exp_idx:06d}'
         overrides = {
             'command': [
@@ -1186,125 +1200,86 @@ class AWSBatchRunner:
             raise RuntimeError(f'failed to submit job: {e}')
     
     def _download_single_experiment_result(self, run_id: str, exp_idx: int, output_folder: Path):
-        """download results for a single experiment and delete from S3
-        
+        """Download the tar.gz archive for one experiment and extract locally.
+
         Args:
             run_id: unique run identifier
             exp_idx: experiment index
-            output_folder: local folder to save results
+            output_folder: local folder to extract results into
+
+        Returns:
+            file_count: number of files extracted
         """
-        result_prefix = f'{self.config.s3_prefix}/{run_id}/results/{exp_idx:06d}/'
-        
-        # list objects for this experiment
+        import io
+        import tarfile
+
+        s3_key = f'{self.config.s3_prefix}/{run_id}/results/{exp_idx:06d}.tar.gz'
+
         try:
-            paginator = self.s3.get_paginator('list_objects_v2')
-            pages = paginator.paginate(
-                Bucket=self.config.s3_bucket,
-                Prefix=result_prefix
-            )
-            
-            s3_keys_to_delete = []
-            file_count = 0
-            
-            for page in pages:
-                if 'Contents' not in page:
-                    continue
-                
-                for obj in page['Contents']:
-                    s3_key = obj['Key']
-                    relative_path = s3_key[len(result_prefix):]
-                    local_path = output_folder / relative_path
-                    
-                    # create parent dirs
-                    local_path.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    # download file
-                    self.s3.download_file(
-                        self.config.s3_bucket,
-                        s3_key,
-                        str(local_path)
-                    )
-                    file_count += 1
-                    s3_keys_to_delete.append(s3_key)
-            
-            # delete from S3 after successful download
-            if s3_keys_to_delete:
-                # delete in batches of 1000 (S3 limit)
-                for i in range(0, len(s3_keys_to_delete), 1000):
-                    batch = s3_keys_to_delete[i:i+1000]
-                    delete_objects = [{'Key': key} for key in batch]
-                    try:
-                        self.s3.delete_objects(
-                            Bucket=self.config.s3_bucket,
-                            Delete={'Objects': delete_objects}
-                        )
-                    except ClientError as e:
-                        # log but don't fail - results are already downloaded
-                        print(f'  ⚠ Warning: Could not delete some S3 objects: {e}')
-            
+            response = self.s3.get_object(
+                Bucket=self.config.s3_bucket, Key=s3_key)
+            buf = io.BytesIO(response['Body'].read())
+
+            output_folder = Path(output_folder)
+            output_folder.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(fileobj=buf, mode='r:gz') as tar:
+                tar.extractall(path=str(output_folder))
+                file_count = len(tar.getmembers())
+
+            # delete archive from S3
+            try:
+                self.s3.delete_object(
+                    Bucket=self.config.s3_bucket, Key=s3_key)
+            except ClientError:
+                pass
+
         except ClientError as e:
             raise RuntimeError(f'failed to download results: {e}')
 
         return file_count
     
     def download_experiment_results(self, run_id: str, output_folder: Path):
-        """download all experiment results from S3 to local folder
-        
+        """Download all experiment tar.gz archives for a run in parallel.
+
         Args:
             run_id: unique run identifier
-            output_folder: local folder to save results
+            output_folder: local folder to extract results into
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         result_prefix = f'{self.config.s3_prefix}/{run_id}/results/'
-        
         print(f'downloading results from s3://{self.config.s3_bucket}/{result_prefix}')
-        
-        # list all objects
+
+        # list all .tar.gz archives
         try:
             paginator = self.s3.get_paginator('list_objects_v2')
             pages = paginator.paginate(
-                Bucket=self.config.s3_bucket,
-                Prefix=result_prefix
-            )
-            
-            file_count = 0
-            s3_keys_to_delete = []
-            
+                Bucket=self.config.s3_bucket, Prefix=result_prefix)
+
+            tar_keys = []
             for page in pages:
-                if 'Contents' not in page:
-                    continue
-                
-                for obj in page['Contents']:
-                    s3_key = obj['Key']
-                    relative_path = s3_key[len(result_prefix):]
-                    local_path = output_folder / relative_path
-                    
-                    # create parent dirs
-                    local_path.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    # download file
-                    self.s3.download_file(
-                        self.config.s3_bucket,
-                        s3_key,
-                        str(local_path)
-                    )
-                    file_count += 1
-                    s3_keys_to_delete.append(s3_key)
-            
-            # delete from S3 after successful download
-            if s3_keys_to_delete:
-                # delete in batches of 1000 (S3 limit)
-                for i in range(0, len(s3_keys_to_delete), 1000):
-                    batch = s3_keys_to_delete[i:i+1000]
-                    delete_objects = [{'Key': key} for key in batch]
-                    try:
-                        self.s3.delete_objects(
-                            Bucket=self.config.s3_bucket,
-                            Delete={'Objects': delete_objects}
-                        )
-                    except ClientError as e:
-                        # log but don't fail - results are already downloaded
-                        print(f'  ⚠ Warning: Could not delete some S3 objects: {e}')
-            
-            print(f'  downloaded {file_count} files to {output_folder}')
+                for obj in page.get('Contents', []):
+                    if obj['Key'].endswith('.tar.gz'):
+                        tar_keys.append(obj['Key'])
         except ClientError as e:
-            raise RuntimeError(f'failed to download results: {e}')
+            raise RuntimeError(f'failed to list results: {e}')
+
+        if not tar_keys:
+            print('  no results found')
+            return
+
+        output_folder = Path(output_folder)
+        file_count = 0
+
+        def _download_one(s3_key):
+            exp_tag = s3_key.rsplit('/', 1)[-1].replace('.tar.gz', '')
+            exp_idx = int(exp_tag)
+            return self._download_single_experiment_result(
+                run_id, exp_idx, output_folder)
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            futures = [pool.submit(_download_one, k) for k in tar_keys]
+            for fut in as_completed(futures):
+                file_count += fut.result()
+
+        print(f'  downloaded {file_count} files from {len(tar_keys)} archives to {output_folder}')

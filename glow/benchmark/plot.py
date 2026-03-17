@@ -194,7 +194,9 @@ if __name__ == '__main__':
         path = folder / 'score.pdf'
         if force_replot or n_new or not path.exists():
             print(f'creating: {path}')
-            plot_x_vs_metrics(df, one_vs_rest='vba' in label)
+            labels_in_data = set(df['label'].unique())
+            has_comparison = 'GLOW' in labels_in_data and len(labels_in_data) > 1
+            plot_x_vs_metrics(df, one_vs_rest=has_comparison)
             plt.gcf().savefig(path, bbox_inches='tight')
             plt.close('all')
         else:
