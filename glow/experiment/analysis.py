@@ -592,11 +592,10 @@ class AnalysisGLOW(Analysis):
         stat_gain = np.nan_to_num(stat_0.astype(float), nan=0.0,
                                   posinf=0.0, neginf=0.0)
 
-        reg_out_list, self.dp_info = prune_greedy(
+        reg_out_list, self.prune_info = prune_greedy(
             sig_reg_list=self.sig_reg_list,
             children=children_0,
             stat=stat_gain)
-        self.homo_pval_dict = {}
 
         self.effect_list = list()
         for reg_idx in reg_out_list:
@@ -677,7 +676,7 @@ class AnalysisGLOW(Analysis):
         _COPY_ATTRS = [
             'children', 'stat', 'size', 'pval', 'llr_adjusted_0',
             'sig_reg_list', 'effect_list', 'alpha_fwer', 'adj_crit',
-            'dp_info', 'homo_pval_dict', 'adj_model', 'adj_beta',
+            'prune_info', 'adj_model', 'adj_beta',
         ]
         for attr in _COPY_ATTRS:
             if hasattr(remote_ana, attr):

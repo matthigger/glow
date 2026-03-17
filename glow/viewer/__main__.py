@@ -165,7 +165,8 @@ def _build_experiment(y, mask_idx, num_img=_NUM_IMG):
                       add_bias=True)
 
 
-def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
+def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
+                    roughness=None):
     """Optionally impose an effect, run AnalysisGLOW, and launch the viewer."""
     from glow.effect.extent import ExtenterMinVar
     from glow.experiment.analysis import AnalysisGLOW
@@ -175,13 +176,14 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
         n_vox = (exp.mask_idx >= 0).sum()
         n_effect = max(int(0.15 * n_vox), 10)
         extenter = ExtenterMinVar(n=n_effect)
-        print(f'  imposing effect (llr={effect_llr}) in ~{n_effect} voxels '
-              f'({100 * n_effect / n_vox:.0f}% of mask) ...')
+        rough_str = f', roughness={roughness}' if roughness is not None else ''
+        print(f'  imposing effect (llr={effect_llr}{rough_str}) in ~{n_effect}'
+              f' voxels ({100 * n_effect / n_vox:.0f}% of mask) ...')
         try:
             exp_eff, effect = exp.impose_effect(
-                effect_llr=effect_llr, extenter=extenter, seed=seed)
+                effect_llr=effect_llr, extenter=extenter, seed=seed,
+                roughness=roughness)
         except Exception:
-            # optimiser can fail for certain data; fall back to sphere mask
             print('  (extenter failed, falling back to sphere mask)')
             shape = exp.mask_idx.shape
             center = np.array([s // 2 for s in shape])
@@ -193,7 +195,8 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
                 radius += 0.5
             sphere = (dist <= radius).reshape(shape) & (exp.mask_idx >= 0)
             exp_eff, effect = exp.impose_effect(
-                effect_llr=effect_llr, mask=sphere, seed=seed)
+                effect_llr=effect_llr, mask=sphere, seed=seed,
+                roughness=roughness)
         mask_target = effect.mask
     else:
         exp_eff = exp
@@ -257,7 +260,7 @@ def _sample_dti(mean_imgs, mask, num_img=_NUM_IMG, noise_frac=0.15,
 # Demo builders (one per image-set choice)
 # ---------------------------------------------------------------------------
 
-def _demo_wgn_2d(b, effect_llr, seed=0):
+def _demo_wgn_2d(b, effect_llr, seed=0, roughness=None):
     """2D White Gaussian Noise demo."""
     from glow.experiment.exper import ExperimentImageOnly
     shape = (64, 64)
@@ -266,11 +269,12 @@ def _demo_wgn_2d(b, effect_llr, seed=0):
         b=b, num_img=_NUM_IMG, shape=shape, seed=seed)
     exp = _build_experiment(exp_img.y, exp_img.mask_idx)
     feat_names = [f'feature {i}' for i in range(b)] if b > 1 else None
-    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
+    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
+                                       roughness=roughness)
     return ana, mask_target, feat_names
 
 
-def _demo_mandrill(channels, effect_llr, seed=0):
+def _demo_mandrill(channels, effect_llr, seed=0, roughness=None):
     """2D Mandrill RGB demo."""
     from PIL import Image
     from glow.mask import get_mask_idx
@@ -302,11 +306,12 @@ def _demo_mandrill(channels, effect_llr, seed=0):
     mask_idx = get_mask_idx(np.ones((h, w), dtype=bool))
     exp = _build_experiment(y, mask_idx)
     print(f'  mandrill: {h}x{w}, features={feat_names}')
-    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
+    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
+                                       roughness=roughness)
     return ana, mask_target, feat_names if b > 1 else None
 
 
-def _demo_dti_2d(features, effect_llr, seed=0):
+def _demo_dti_2d(features, effect_llr, seed=0, roughness=None):
     """2D Axial Slice DTI demo."""
     fa, md, mask = _load_dti_mean('2d')
     mean_imgs = {}
@@ -323,11 +328,12 @@ def _demo_dti_2d(features, effect_llr, seed=0):
           f'features={list(mean_imgs.keys())}')
     y, mask_idx, feat_names = _sample_dti(mean_imgs, mask, seed=seed)
     exp = _build_experiment(y, mask_idx)
-    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
+    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
+                                       roughness=roughness)
     return ana, mask_target, feat_names if len(feat_names) > 1 else None
 
 
-def _demo_wgn_3d(b, effect_llr, seed=0):
+def _demo_wgn_3d(b, effect_llr, seed=0, roughness=None):
     """3D White Gaussian Noise demo."""
     from glow.experiment.exper import ExperimentImageOnly
     shape = (15, 15, 15)
@@ -336,11 +342,12 @@ def _demo_wgn_3d(b, effect_llr, seed=0):
         b=b, num_img=_NUM_IMG, shape=shape, seed=seed)
     exp = _build_experiment(exp_img.y, exp_img.mask_idx)
     feat_names = [f'feature {i}' for i in range(b)] if b > 1 else None
-    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
+    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
+                                       roughness=roughness)
     return ana, mask_target, feat_names
 
 
-def _demo_dti_3d(features, effect_llr, seed=0):
+def _demo_dti_3d(features, effect_llr, seed=0, roughness=None):
     """3D DTI demo."""
     fa, md, mask = _load_dti_mean('3d')
     mean_imgs = {}
@@ -357,7 +364,8 @@ def _demo_dti_3d(features, effect_llr, seed=0):
           f'features={list(mean_imgs.keys())}')
     y, mask_idx, feat_names = _sample_dti(mean_imgs, mask, seed=seed)
     exp = _build_experiment(y, mask_idx)
-    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
+    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
+                                       roughness=roughness)
     return ana, mask_target, feat_names if len(feat_names) > 1 else None
 
 
@@ -409,21 +417,41 @@ def _run_demo():
     ], default='medium')
     effect_llr = _EFFECT_MAP[severity]
 
+    # --- 3b) roughness (only when an effect is imposed) ---
+    roughness = None
+    if effect_llr > 0:
+        rough_choice = _choose('Roughness (spatial covariance fraction):', [
+            ('natural', 'Natural (no roughness control)'),
+            ('smooth',  'Smooth (0.0 — all residual mean)'),
+            ('low',     'Low   (0.25)'),
+            ('mid',     'Mid   (0.50)'),
+            ('high',    'High  (0.75)'),
+            ('rough',   'Rough (1.0 — all spatial covariance)'),
+        ], default='natural')
+        _ROUGH_MAP = {
+            'natural': None, 'smooth': 0.0, 'low': 0.25,
+            'mid': 0.5, 'high': 0.75, 'rough': 1.0,
+        }
+        roughness = _ROUGH_MAP[rough_choice]
+
     # --- 4) random seed ---
     seed = _choose_int('Random seed:', default=0, lo=0, hi=2**31 - 1)
 
     # --- build ---
-    print(f'\n  Building demo (effect_llr={effect_llr:.2g}, seed={seed}) ...')
+    rough_str = f', roughness={roughness}' if roughness is not None else ''
+    print(f'\n  Building demo (effect_llr={effect_llr:.2g}{rough_str},'
+          f' seed={seed}) ...')
+    kw = dict(effect_llr=effect_llr, seed=seed, roughness=roughness)
     if image_set == 'wgn2d':
-        ana, mask_target, feat_names = _demo_wgn_2d(b_choice, effect_llr, seed)
+        ana, mask_target, feat_names = _demo_wgn_2d(b_choice, **kw)
     elif image_set == 'mandrill':
-        ana, mask_target, feat_names = _demo_mandrill(feat_choice, effect_llr, seed)
+        ana, mask_target, feat_names = _demo_mandrill(feat_choice, **kw)
     elif image_set == 'dti2d':
-        ana, mask_target, feat_names = _demo_dti_2d(feat_choice, effect_llr, seed)
+        ana, mask_target, feat_names = _demo_dti_2d(feat_choice, **kw)
     elif image_set == 'wgn3d':
-        ana, mask_target, feat_names = _demo_wgn_3d(b_choice, effect_llr, seed)
+        ana, mask_target, feat_names = _demo_wgn_3d(b_choice, **kw)
     elif image_set == 'dti3d':
-        ana, mask_target, feat_names = _demo_dti_3d(feat_choice, effect_llr, seed)
+        ana, mask_target, feat_names = _demo_dti_3d(feat_choice, **kw)
 
     launch(ana, mask_target=mask_target, feature_names=feat_names)
 

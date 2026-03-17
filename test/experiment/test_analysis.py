@@ -67,7 +67,7 @@ class TestBigEffect:
             alpha_fwer=.1,
         )
 
-        assert hasattr(analysis, 'dp_info')
+        assert hasattr(analysis, 'prune_info')
         assert len(analysis.effect_list) >= 1, \
             f'expected at least 1 effect, got {len(analysis.effect_list)}'
     
