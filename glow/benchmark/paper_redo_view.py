@@ -28,14 +28,27 @@ from glow.benchmark.paper_config import (
 # Phase 1: find worst cases
 # ---------------------------------------------------------------------------
 
-def _load_and_rank(config_label, top_n=20):
-    """Load results and rank experiments by GLOW underperformance vs VBA-TFCE.
+_SORT_OPTIONS = {
+    'f1':   ('VBA-TFCE_f1',  'GLOW_f1',   'F1 difference (GLOW − VBA-TFCE)'),
+    'sens': ('VBA-TFCE_sens', 'GLOW_sens', 'Sensitivity difference (GLOW − VBA-TFCE)'),
+    'spec': ('VBA-TFCE_spec', 'GLOW_spec', 'Specificity difference (GLOW − VBA-TFCE)'),
+}
+
+
+def _load_and_rank(config_label, sort_metric='f1', top_n=20):
+    """Load results and rank experiments by GLOW vs VBA-TFCE gap.
+
+    Parameters
+    ----------
+    config_label : str
+    sort_metric : str
+        One of 'f1', 'sens', 'spec'.
+    top_n : int
 
     Returns
     -------
     ranking : pd.DataFrame
-        Sorted by gap descending (top_n rows).  Columns include seed,
-        effect_llr, per-method f1/sens/spec, and gap.
+        Sorted by gap ascending (most negative = GLOW worst).
     """
     df, folder, _ = load_update_all(config_label, verbose=False)
     if df.empty:
@@ -49,10 +62,8 @@ def _load_and_rank(config_label, top_n=20):
     if 'VBA-TFCE' not in labels:
         raise SystemExit(f'No VBA-TFCE results in "{config_label}".')
 
-    # keep only GLOW and VBA-TFCE
     df = df[df['label'].isin(['GLOW', 'VBA-TFCE'])].copy()
 
-    # pivot each metric separately, then merge
     parts = []
     for metric in ('f1', 'sens', 'spec'):
         piv = df.pivot_table(index=['seed', 'effect_llr'], columns='label',
@@ -63,19 +74,18 @@ def _load_and_rank(config_label, top_n=20):
     merged = parts[0].join(parts[1:]).reset_index()
     merged = merged.dropna(subset=['GLOW_f1'])
 
-    # gap = VBA-TFCE f1 − GLOW f1
-    merged['gap'] = merged['VBA-TFCE_f1'] - merged['GLOW_f1']
+    vba_col, glow_col, _ = _SORT_OPTIONS[sort_metric]
+    merged['gap'] = merged[glow_col] - merged[vba_col]
 
     ranking = (merged
-               .sort_values('gap', ascending=False)
+               .sort_values('gap', ascending=True)
                .head(top_n)
                .reset_index(drop=True))
     return ranking
 
 
-def _print_ranking(ranking):
+def _print_ranking(ranking, sort_label=''):
     """Pretty-print the ranking table with a 0-based index column."""
-    # columns: GLOW stats, then VBA-TFCE stats, then gap
     stat_cols = []
     for method in ('GLOW', 'VBA-TFCE'):
         for metric in ('f1', 'sens', 'spec'):
@@ -84,7 +94,8 @@ def _print_ranking(ranking):
                 stat_cols.append(col)
     stat_cols.append('gap')
 
-    print(f'\n  Top {len(ranking)} worst cases (VBA-TFCE f1 − GLOW f1):')
+    title = sort_label or 'GLOW − VBA-TFCE'
+    print(f'\n  Top {len(ranking)} worst cases ({title}):')
     sep = '  ' + '-' * (8 + 12 + len(stat_cols) * 12)
     print(sep)
     header = '  {:>3s}  {:>4s}  {:>10s}'.format('#', 'seed', 'effect_llr')
@@ -270,9 +281,21 @@ def main():
     config_label = available[choice]
     print(f'  → {config_label}\n')
 
+    # -- step 1b: choose sort metric ----------------------------------------
+    sort_keys = list(_SORT_OPTIONS.keys())
+    print('  Sort ranking by:')
+    for i, key in enumerate(sort_keys):
+        _, _, desc = _SORT_OPTIONS[key]
+        print(f'  {i:3d}  {desc}')
+    print()
+    sort_choice = _prompt_choice('  Sort metric [#]: ', len(sort_keys))
+    sort_metric = sort_keys[sort_choice]
+    _, _, sort_label = _SORT_OPTIONS[sort_metric]
+    print(f'  → {sort_label}\n')
+
     # -- step 2: load & rank -----------------------------------------------
-    ranking = _load_and_rank(config_label, top_n=20)
-    _print_ranking(ranking)
+    ranking = _load_and_rank(config_label, sort_metric=sort_metric, top_n=20)
+    _print_ranking(ranking, sort_label=sort_label)
 
     # show cache hint if the last run matches a row in the ranking
     manifest = _load_manifest()
