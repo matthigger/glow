@@ -9,8 +9,8 @@ from glow.experiment.mancova import stat_dict
 # run experiments serially (n_jobs=1) and keep permutations serial per experiment
 # TEMP: quick test settings (2k vox, 100 perm, 4 seeds)
 COMMON = dict(
-    n_seed=30,
-    effect_llr_all=np.logspace(np.log10(0.003), np.log10(0.3), 5),
+    n_seed=15,
+    effect_llr_all=np.logspace(np.log10(0.003), np.log10(0.3), 11),
     effect_perc=0.2,
     crop_n_vox=500,
     n_jobs=1,
@@ -39,6 +39,11 @@ ANALYSES = {
                  n_perm_fwer_size_adjust=N_PERM_FWER_SIZE_ADJUST,
                  min_size=1,
                  alpha_fwer=ALPHA_FWER),
+    'GLOW-PL': dict(n_perm_fwer=N_PERM_FWER,
+                     n_perm_fwer_size_adjust=N_PERM_FWER_SIZE_ADJUST,
+                     min_size=1,
+                     alpha_fwer=ALPHA_FWER,
+                     use_pl=True),
     'VBA': dict(n_perm_fwer=N_PERM_FWER_VBA,
                 tfce_flag=False,
                 alpha_fwer=ALPHA_FWER),
@@ -68,6 +73,7 @@ config_list = []
 # vba experiment: compare methods
 ana_kwargs_dict_vba = {
     'GLOW': (glow.experiment.AnalysisGLOW, ANALYSES['GLOW']),
+    'GLOW-PL': (glow.experiment.AnalysisGLOW, ANALYSES['GLOW-PL']),
     'VBA': (glow.experiment.AnalysisVBA, ANALYSES['VBA']),
     'VBA-TFCE': (glow.experiment.AnalysisVBA, ANALYSES['VBA-TFCE']),
 }
@@ -75,26 +81,22 @@ ana_kwargs_dict_vba = {
 config_list.append(make_config('vba_hcp', 'hcp', run_ana, ana_kwargs_dict_vba))
 config_list.append(make_config('vba_wgn', 'wgn', run_ana, ana_kwargs_dict_vba))
 
-# mancova stat experiment: compare all 5 statistics using full GLOW pipeline
+# mancova stat experiment: compare all MANCOVA statistics + PL using full GLOW pipeline
 ana_kwargs_dict_stat = {
     name: (glow.experiment.AnalysisGLOW, ANALYSES['GLOW'] | {'get_stat': fn})
     for name, fn in stat_dict.items()
+    if name != 'pl_llr'
 }
+ana_kwargs_dict_stat['pl_llr'] = (
+    glow.experiment.AnalysisGLOW, ANALYSES['GLOW-PL']
+)
 config_list.append(make_config('mancova_stat_hcp', 'hcp', run_ana,
                                ana_kwargs_dict_stat))
 config_list.append(make_config('mancova_stat_wgn', 'wgn', run_ana,
                                ana_kwargs_dict_stat))
 
 
-# roughness sweep: one config per (source, roughness) pair
-ROUGHNESS_VALUES = np.linspace(0, 1, 5)
-for source in ('hcp', 'wgn'):
-    for rough in ROUGHNESS_VALUES:
-        tag = f'{rough:.2f}'.replace('.', '')
-        config_list.append(make_config(
-            f'roughness_{source}_{tag}', source, run_ana, ana_kwargs_dict_vba,
-            fixed_params={'roughness': float(rough)},
-        ))
+
 
 # segmentation configs
 config_list.append(make_config('segment_hcp', 'hcp', run_segment))
