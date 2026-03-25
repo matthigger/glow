@@ -40,6 +40,33 @@ def test_get_f1_sens_spec():
     assert np.allclose(spec, spec_exp)
 
 
+def test_get_f1_sens_spec_with_inactive_voxels():
+    """Specificity must ignore spatial positions outside the analysis mask."""
+    # 2x4 spatial grid, only 4 of 8 positions are analysis voxels
+    mask_idx = np.array([[-1, 0, 1, -1],
+                         [-1, 2, 3, -1]])
+    mask = np.array([[False, False, False, False],
+                     [False, True,  True,  False]])
+    children = np.array([[0, 1],
+                         [2, 3],
+                         [4, 5]])
+
+    # 4 analysis voxels, 2 in target (vox 2, 3)
+    # Region 6 (root): all 4 voxels → tp=2, fp=2, fn=0, tn=0
+    #   spec = 0/(0+2) = 0, NOT ~0.75 which you'd get using mask.size=8
+    f1, sens, spec = get_f1_sens_spec(mask=mask, mask_idx=mask_idx,
+                                      children=children)
+    root = 6
+    assert spec[root] == 0.0
+    assert sens[root] == 1.0
+
+    # Region 5 (vox 2,3 = the target): tp=2, fp=0, fn=0, tn=2 → spec=1
+    assert spec[5] == 1.0
+
+    # Region 4 (vox 0,1 = no target): tp=0, fp=2, fn=2, tn=0 → spec=0
+    assert spec[4] == 0.0
+
+
 def test_get_miss_hit():
     mask = np.array([0, 0, 1, 1])
     mask_idx = np.arange(4)

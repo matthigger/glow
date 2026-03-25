@@ -149,8 +149,8 @@ def get_f1_sens_spec(mask, mask_idx, children):
     # false negative: targets outside of estimated region
     fn = mask.sum() - tp
 
-    # true negative: everything else
-    total = float(mask.size)
+    # true negative: analysis voxels not in target and not in region
+    total = float((mask_idx >= 0).sum())
     tn = total - tp - fp - fn
 
     # metrics with safe division (0 where undefined)
