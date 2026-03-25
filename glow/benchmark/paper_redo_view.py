@@ -28,19 +28,29 @@ from glow.benchmark.paper_config import (
 # Phase 1: find worst cases
 # ---------------------------------------------------------------------------
 
-_SORT_OPTIONS = {
-    'f1':   ('VBA-TFCE_f1',  'GLOW_f1',   'F1 difference (GLOW − VBA-TFCE)'),
-    'sens': ('VBA-TFCE_sens', 'GLOW_sens', 'Sensitivity difference (GLOW − VBA-TFCE)'),
-    'spec': ('VBA-TFCE_spec', 'GLOW_spec', 'Specificity difference (GLOW − VBA-TFCE)'),
-}
+def _sort_options(glow_label, baseline_label):
+    """Build sort-option dict keyed on metric for a given pair of methods."""
+    return {
+        'f1':   (f'{baseline_label}_f1',  f'{glow_label}_f1',
+                 f'F1 difference ({glow_label} − {baseline_label})'),
+        'sens': (f'{baseline_label}_sens', f'{glow_label}_sens',
+                 f'Sensitivity difference ({glow_label} − {baseline_label})'),
+        'spec': (f'{baseline_label}_spec', f'{glow_label}_spec',
+                 f'Specificity difference ({glow_label} − {baseline_label})'),
+    }
 
 
-def _load_and_rank(config_label, sort_metric='f1', top_n=20):
-    """Load results and rank experiments by GLOW vs VBA-TFCE gap.
+def _load_and_rank(config_label, glow_label='GLOW',
+                   baseline_label='VBA-TFCE', sort_metric='f1', top_n=20):
+    """Load results and rank experiments by gap between two methods.
 
     Parameters
     ----------
     config_label : str
+    glow_label : str
+        Primary method to explore in the viewer.
+    baseline_label : str
+        Comparison method (gap = glow - baseline; most negative = worst).
     sort_metric : str
         One of 'f1', 'sens', 'spec'.
     top_n : int
@@ -48,7 +58,7 @@ def _load_and_rank(config_label, sort_metric='f1', top_n=20):
     Returns
     -------
     ranking : pd.DataFrame
-        Sorted by gap ascending (most negative = GLOW worst).
+        Sorted by gap ascending (most negative = glow_label worst).
     """
     df, folder, _ = load_update_all(config_label, verbose=False)
     if df.empty:
@@ -57,12 +67,12 @@ def _load_and_rank(config_label, sort_metric='f1', top_n=20):
             f'Run the benchmark first (python glow/benchmark/paper.py).')
 
     labels = set(df['label'].unique())
-    if 'GLOW' not in labels:
-        raise SystemExit(f'No GLOW results in "{config_label}".')
-    if 'VBA-TFCE' not in labels:
-        raise SystemExit(f'No VBA-TFCE results in "{config_label}".')
+    if glow_label not in labels:
+        raise SystemExit(f'No {glow_label} results in "{config_label}".')
+    if baseline_label not in labels:
+        raise SystemExit(f'No {baseline_label} results in "{config_label}".')
 
-    df = df[df['label'].isin(['GLOW', 'VBA-TFCE'])].copy()
+    df = df[df['label'].isin([glow_label, baseline_label])].copy()
 
     parts = []
     for metric in ('f1', 'sens', 'spec'):
@@ -72,10 +82,11 @@ def _load_and_rank(config_label, sort_metric='f1', top_n=20):
         parts.append(piv)
 
     merged = parts[0].join(parts[1:]).reset_index()
-    merged = merged.dropna(subset=['GLOW_f1'])
+    merged = merged.dropna(subset=[f'{glow_label}_f1'])
 
-    vba_col, glow_col, _ = _SORT_OPTIONS[sort_metric]
-    merged['gap'] = merged[glow_col] - merged[vba_col]
+    opts = _sort_options(glow_label, baseline_label)
+    base_col, glow_col, _ = opts[sort_metric]
+    merged['gap'] = merged[glow_col] - merged[base_col]
 
     ranking = (merged
                .sort_values('gap', ascending=True)
@@ -84,17 +95,18 @@ def _load_and_rank(config_label, sort_metric='f1', top_n=20):
     return ranking
 
 
-def _print_ranking(ranking, sort_label=''):
+def _print_ranking(ranking, glow_label='GLOW', baseline_label='VBA-TFCE',
+                   sort_label=''):
     """Pretty-print the ranking table with a 0-based index column."""
     stat_cols = []
-    for method in ('GLOW', 'VBA-TFCE'):
+    for method in (glow_label, baseline_label):
         for metric in ('f1', 'sens', 'spec'):
             col = f'{method}_{metric}'
             if col in ranking.columns:
                 stat_cols.append(col)
     stat_cols.append('gap')
 
-    title = sort_label or 'GLOW − VBA-TFCE'
+    title = sort_label or f'{glow_label} − {baseline_label}'
     print(f'\n  Top {len(ranking)} worst cases ({title}):')
     sep = '  ' + '-' * (8 + 12 + len(stat_cols) * 12)
     print(sep)
@@ -173,8 +185,8 @@ def _save_cache(config_label, seed, effect_llr, exp_eff, effect, ana):
         print(f'  Saved {path}')
 
 
-def _rerun_and_view(config_label, seed, effect_llr, use_cache=False,
-                    port=8050):
+def _rerun_and_view(config_label, seed, effect_llr, glow_label='GLOW',
+                    use_cache=False, port=8050):
     """Re-run a single experiment, save artifacts, and launch viewer."""
     # try cached result
     if use_cache:
@@ -204,8 +216,8 @@ def _rerun_and_view(config_label, seed, effect_llr, use_cache=False,
         ana_kwargs_dict=ana_kwargs_dict_vba,
     )
 
-    print(f'  Re-running: seed={seed}, effect_llr={effect_llr:.4f}, '
-          f'source={source}')
+    print(f'  Re-running ({glow_label}): seed={seed}, '
+          f'effect_llr={effect_llr:.4f}, source={source}')
 
     # build experiment + effect
     print('  Building experiment ...')
@@ -213,11 +225,11 @@ def _rerun_and_view(config_label, seed, effect_llr, use_cache=False,
     print(f'    y.shape={exp_eff.y.shape}, '
           f'effect: {int(effect.mask.sum())} voxels')
 
-    # run GLOW analysis with parallel permutations
-    glow_kwargs = dict(ANALYSES['GLOW'])
-    glow_kwargs['n_jobs_perm'] = -1  # use all cores
-    print(f'  Running AnalysisGLOW (n_perm_fwer={glow_kwargs["n_perm_fwer"]}, '
-          f'parallel) ...')
+    # run analysis with the selected GLOW variant
+    glow_kwargs = dict(ANALYSES[glow_label])
+    glow_kwargs['n_jobs_perm'] = -1
+    print(f'  Running AnalysisGLOW[{glow_label}] '
+          f'(n_perm_fwer={glow_kwargs["n_perm_fwer"]}, parallel) ...')
     ana = glow.experiment.AnalysisGLOW(exp_eff, verbose=True, **glow_kwargs)
     print(f'  Found {len(ana.effect_list)} effects')
 
@@ -259,10 +271,16 @@ def _prompt_choice(prompt, n_options):
         print(f'  Out of range.  Please enter 0–{n_options - 1}.')
 
 
+def _get_method_labels(config_label):
+    """Return all method labels available in a config's ana_kwargs_dict."""
+    cfg = CONFIG_BY_LABEL.get(config_label)
+    if cfg is None or cfg.ana_kwargs_dict is None:
+        return []
+    return list(cfg.ana_kwargs_dict.keys())
+
+
 def main():
     # -- step 1: choose a config ------------------------------------------
-    # only show configs whose results actually exist (run_ana-based, i.e.
-    # those that produce per-experiment f1 scores)
     available = []
     for label, cfg in sorted(CONFIG_BY_LABEL.items()):
         if cfg.ana_kwargs_dict is not None:
@@ -281,21 +299,68 @@ def main():
     config_label = available[choice]
     print(f'  → {config_label}\n')
 
-    # -- step 1b: choose sort metric ----------------------------------------
-    sort_keys = list(_SORT_OPTIONS.keys())
+    # -- step 1b: choose primary method (re-run in viewer) -----------------
+    all_methods = _get_method_labels(config_label)
+    glow_methods = [m for m in all_methods if m.startswith('GLOW')]
+    if len(glow_methods) == 0:
+        raise SystemExit(f'No GLOW variants found in "{config_label}".')
+
+    print('  The primary method is the one that will be re-run and')
+    print('  explored in the viewer.  Choose a GLOW variant:')
+    print()
+    for i, v in enumerate(glow_methods):
+        print(f'  {i:3d}  {v}')
+    print()
+    if len(glow_methods) == 1:
+        glow_label = glow_methods[0]
+        print(f'  → {glow_label} (only one available)\n')
+    else:
+        gv_choice = _prompt_choice('  Select primary method [#]: ',
+                                   len(glow_methods))
+        glow_label = glow_methods[gv_choice]
+        print(f'  → {glow_label}\n')
+
+    # -- step 1c: choose baseline method (for ranking) ---------------------
+    baseline_options = [m for m in all_methods if m != glow_label]
+    if len(baseline_options) == 0:
+        raise SystemExit('Only one method in this config — nothing to '
+                         'compare against.')
+
+    print('  The baseline method is used for sorting: experiments are')
+    print(f'  ranked by where {glow_label} underperforms the baseline')
+    print('  the most, so you can explore the hardest cases.')
+    print()
+    for i, v in enumerate(baseline_options):
+        print(f'  {i:3d}  {v}')
+    print()
+    if len(baseline_options) == 1:
+        baseline_label = baseline_options[0]
+        print(f'  → {baseline_label} (only one available)\n')
+    else:
+        bl_choice = _prompt_choice('  Select baseline method [#]: ',
+                                   len(baseline_options))
+        baseline_label = baseline_options[bl_choice]
+        print(f'  → {baseline_label}\n')
+
+    # -- step 1d: choose sort metric ----------------------------------------
+    opts = _sort_options(glow_label, baseline_label)
+    sort_keys = list(opts.keys())
     print('  Sort ranking by:')
     for i, key in enumerate(sort_keys):
-        _, _, desc = _SORT_OPTIONS[key]
+        _, _, desc = opts[key]
         print(f'  {i:3d}  {desc}')
     print()
     sort_choice = _prompt_choice('  Sort metric [#]: ', len(sort_keys))
     sort_metric = sort_keys[sort_choice]
-    _, _, sort_label = _SORT_OPTIONS[sort_metric]
+    _, _, sort_label = opts[sort_metric]
     print(f'  → {sort_label}\n')
 
     # -- step 2: load & rank -----------------------------------------------
-    ranking = _load_and_rank(config_label, sort_metric=sort_metric, top_n=20)
-    _print_ranking(ranking, sort_label=sort_label)
+    ranking = _load_and_rank(config_label, glow_label=glow_label,
+                             baseline_label=baseline_label,
+                             sort_metric=sort_metric, top_n=20)
+    _print_ranking(ranking, glow_label=glow_label,
+                   baseline_label=baseline_label, sort_label=sort_label)
 
     # show cache hint if the last run matches a row in the ranking
     manifest = _load_manifest()
@@ -321,7 +386,8 @@ def main():
 
     # -- step 3: re-run & launch viewer ------------------------------------
     use_cache = (cached_idx is not None and case == cached_idx)
-    _rerun_and_view(config_label, seed, effect_llr, use_cache=use_cache)
+    _rerun_and_view(config_label, seed, effect_llr,
+                    glow_label=glow_label, use_cache=use_cache)
 
 
 if __name__ == '__main__':
