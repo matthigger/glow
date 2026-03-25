@@ -9,7 +9,7 @@ from glow.experiment.mancova import decompose
 _MODES = ("ward's (all)", "ward's (q0, q1)", "ward's (q1)")
 
 
-def cluster(exp, mode="ward's (q0, q1)"):
+def cluster(exp, mode="ward's (q1)"):
     """hierarchical segmentation via Ward's method (6-connectivity in 3d).
 
     Supports non-contiguous masks: each connected component is clustered
