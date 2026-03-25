@@ -4,9 +4,12 @@ from sklearn.cluster import ward_tree
 from sklearn.feature_extraction.image import grid_to_graph
 
 from glow.mask import bbox_crop
+from glow.experiment.mancova import decompose
+
+_MODES = ("ward's (all)", "ward's (q0, q1)", "ward's (q1)")
 
 
-def cluster(exp, mode='ward-glm'):
+def cluster(exp, mode="ward's (q0, q1)"):
     """hierarchical segmentation via Ward's method (6-connectivity in 3d).
 
     Supports non-contiguous masks: each connected component is clustered
@@ -14,8 +17,9 @@ def cluster(exp, mode='ward-glm'):
 
     Args:
         exp (Experiment): experiment providing y and mask_idx
-        mode (str): 'ward-naive' (pooled covariance) or 'ward-glm'
-            (residual after projecting onto x)
+        mode (str): "ward's (all)" clusters raw y,
+            "ward's (q0, q1)" projects onto full design space,
+            "ward's (q1)" projects onto contrast-of-interest subspace only
 
     Returns:
         children (np.array): (num_internal, 2) child index pairs.
@@ -23,14 +27,17 @@ def cluster(exp, mode='ward-glm'):
             For k components, num_internal = num_vox - k.
     """
     assert exp.mask_idx.ndim in (2, 3), 'mask must be 2d or 3d'
-    assert mode in ('ward-naive', 'ward-glm'), 'mode not recognized'
+    assert mode in _MODES, f'mode not recognized: {mode}'
 
-    if mode == 'ward-naive':
+    if mode == "ward's (all)":
         y = exp.y
-    else:
+    elif mode == "ward's (q0, q1)":
         q, r = np.linalg.qr(exp.x.T)
         q = q.T
         y = np.einsum('bnr,na->bar', exp.y, q.T, optimize=True)
+    else:
+        _, q1, _ = decompose(exp.x, exp.contrast)
+        y = np.einsum('bnr,na->bar', exp.y, q1.T, optimize=True)
 
     num_vox = y.shape[2]
     y = y.reshape((-1, num_vox))

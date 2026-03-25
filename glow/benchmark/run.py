@@ -17,7 +17,8 @@ def run_segment(config, **kwargs):
     # build a particular effect
     exp, effect = config.get_exp_eff(**kwargs)
 
-    for mode in ('ward-naive', 'ward-glm'):
+    from glow.experiment.cluster import _MODES
+    for mode in _MODES:
         # cluster
         start = time.time()
         children = glow.experiment.cluster(exp, mode=mode)

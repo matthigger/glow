@@ -178,7 +178,8 @@ class TestGetExpectedLabels:
 
     def test_run_segment_labels(self):
         config = Config(label='seg', run_fnc=run_segment, source='wgn')
-        assert config._get_expected_labels() == {'ward-naive', 'ward-glm'}
+        from glow.experiment.cluster import _MODES
+        assert config._get_expected_labels() == set(_MODES)
 
     def test_unknown_run_fnc(self):
         config = Config(label='x', run_fnc=lambda: None, source='wgn')

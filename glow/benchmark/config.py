@@ -246,7 +246,8 @@ class Config:
         if self.run_fnc is run_ana:
             return set(self.ana_kwargs_dict.keys())
         if self.run_fnc is run_segment:
-            return {'ward-naive', 'ward-glm'}
+            from glow.experiment.cluster import _MODES
+            return set(_MODES)
         return set()
 
     def _is_experiment_cached(self, kwargs, df, expected_labels, config_hash):
