@@ -126,7 +126,7 @@ def test_all_stat_functions():
     assert llr >= 0
 
     # test stat_dict
-    assert len(stat_dict) == 5
+    assert len(stat_dict) == 6
     assert 'llr' in stat_dict
     assert 'wilks' in stat_dict
     assert 'pillai' in stat_dict
@@ -134,11 +134,13 @@ def test_all_stat_functions():
     assert 'roys_root' in stat_dict
 
     for name, stat_func in stat_dict.items():
+        if name == 'pl_llr':
+            continue
         result = stat_func(e=e, h=h, n=100)
         assert isinstance(result, (float, np.floating))
 
     # test stat_sign
-    assert len(stat_sign) == 5
+    assert len(stat_sign) == 6
     assert stat_sign[get_wilks] == -1
     assert stat_sign[get_llr] == 1
     assert stat_sign[get_pillai] == 1

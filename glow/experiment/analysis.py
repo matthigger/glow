@@ -15,7 +15,7 @@ import glow.graph
 # glow.vba imported lazily when needed (requires FSL for TFCE)
 from .cluster import cluster
 from .exper import ExperimentScaled
-from .mancova import get_llr, stat_dict, stat_dict_inv, stat_sign
+from .mancova import get_llr, get_pl_llr, stat_dict, stat_dict_inv, stat_sign
 from .prune import prune_greedy
 
 
@@ -263,7 +263,7 @@ class AnalysisGLOW(Analysis):
                  n_perm_fwer_size_adjust=25,
                  alpha_fwer=.05, min_size=1, verbose=False,
                  n_jobs_perm=1, cloud_config=None, perm_dir=None,
-                 size_adjust_model=None, **kwargs):
+                 size_adjust_model=None, use_pl=False, **kwargs):
         """
         Args:
             exp: Experiment to analyze
@@ -286,9 +286,18 @@ class AnalysisGLOW(Analysis):
                 ('sqrt', 'power_law', etc.).  If None (default),
                 auto-selected from stat_vs_size benchmark results
                 (best_models.json).
+            use_pl: if True, use pseudo-likelihood LLR instead of
+                MANCOVA stats.  Overrides get_stat to get_pl_llr.
         """
         super().__init__(exp, **kwargs)
         self.verbose = verbose
+        self.use_pl = use_pl
+        if use_pl:
+            self.get_stat = get_pl_llr
+            from .pseudo_likelihood import build_adjacency
+            if verbose:
+                print('  building spatial adjacency for PL ...')
+            self._pl_neighbors, self._pl_W = build_adjacency(exp.mask_idx)
 
         if cloud_config is not None:
             self._run_on_cloud(exp, n_perm_fwer,
@@ -296,6 +305,7 @@ class AnalysisGLOW(Analysis):
                               cloud_config,
                               n_perm_fwer_size_adjust=n_perm_fwer_size_adjust,
                               size_adjust_model=size_adjust_model,
+                              use_pl=use_pl,
                               **kwargs)
             return
 
@@ -415,14 +425,23 @@ class AnalysisGLOW(Analysis):
         """Run one permutation: cluster, compute stats and sizes."""
         _exp = exp.permute(perm_idx)
         children = cluster(exp=_exp)
-        stat_row = self.get_stat_perm(exp=_exp, children=children)
-        num_vox = _exp.y.shape[2]
-        size = glow.graph.node_sum(np.ones(num_vox, dtype=int), children)
+
+        if self.use_pl:
+            from .pseudo_likelihood import get_pl_stat
+            stat, size = get_pl_stat(
+                _exp, children, exp.mask_idx,
+                neighbors=self._pl_neighbors, W=self._pl_W)
+        else:
+            stat_row = self.get_stat_perm(exp=_exp, children=children)
+            stat = stat_row.ravel()
+            num_vox = _exp.y.shape[2]
+            size = glow.graph.node_sum(np.ones(num_vox, dtype=int), children)
+
         del _exp
         return {
             'perm_idx': perm_idx,
             'children': children,
-            'stat': stat_row.ravel(),
+            'stat': stat,
             'size': size,
         }
 
@@ -438,6 +457,7 @@ class AnalysisGLOW(Analysis):
         """
         ana = object.__new__(cls)
         ana.get_stat = get_stat
+        ana.use_pl = False
         return ana._process_permutation(exp, perm_idx)
 
     # models that fit in log(stat) space and need exp() to predict
@@ -617,7 +637,7 @@ class AnalysisGLOW(Analysis):
     def _run_on_cloud(self, exp, n_perm_fwer,
                      alpha_fwer, min_size, verbose,
                      cloud_config, n_perm_fwer_size_adjust=25,
-                     size_adjust_model=None, **kwargs):
+                     size_adjust_model=None, use_pl=False, **kwargs):
         """Run full analysis on AWS Batch (permutations + synthesis).
 
         Submits N+1+n_perm_fwer_size_adjust permutation jobs, then a
@@ -639,6 +659,7 @@ class AnalysisGLOW(Analysis):
             'alpha_fwer': alpha_fwer,
             'min_size': min_size,
             'size_adjust_model': size_adjust_model,
+            'use_pl': use_pl,
         }
         ana_kwargs.update(kwargs)
 
