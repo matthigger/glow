@@ -4,5 +4,5 @@
   "pillai": "log_linear",
   "hotel_tr": "power_law",
   "roys_root": "log_linear",
-  "pl_llr": "linear"
+  "pl_llr": "power_law"
 }

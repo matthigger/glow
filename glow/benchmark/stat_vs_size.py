@@ -231,6 +231,14 @@ MODELS = {
         residual=lambda b, s, y: np.log(y) - (b[0] + b[1] * s),
         equation=lambda b: f'ln(stat) = {b[0]:+.4f} {b[1]:+.6f}*size',
     ),
+    'reciprocal': dict(
+        requires_positive=False,
+        transform=lambda s, y: (
+            np.column_stack([np.ones_like(s), 1.0 / s]), y),
+        predict=lambda b, sz: b[0] + b[1] / sz,
+        residual=lambda b, s, y: y - (b[0] + b[1] / s),
+        equation=lambda b: f'stat = {b[0]:+.4f} {b[1]:+.4f}/size',
+    ),
 }
 
 

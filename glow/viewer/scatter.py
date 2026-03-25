@@ -367,6 +367,8 @@ def _format_model_eq(model, beta, r2=None):
         eq = f'E[stat|H0] = exp({b[0]:.4f} + {b[1]:.4f}·ln(size))'
     elif model == 'log_size':
         eq = f'E[stat|H0] = {b[0]:.4f} + {b[1]:.4f}·ln(size)'
+    elif model == 'reciprocal':
+        eq = f'E[stat|H0] = {b[0]:.4f} + {b[1]:.4f}/size'
     else:
         eq = f'E[stat|H0] = {b[0]:.4f} + {b[1]:.4f}·size'
     if r2 is not None and np.isfinite(r2):

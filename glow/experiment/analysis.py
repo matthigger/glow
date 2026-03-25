@@ -474,6 +474,8 @@ class AnalysisGLOW(Analysis):
             return np.sqrt(sz)
         elif model in ('power_law', 'log_size'):
             return np.log(np.maximum(sz, 1))
+        elif model == 'reciprocal':
+            return 1.0 / np.maximum(sz, 1)
         else:
             raise ValueError(f'Unknown model: {model}')
 
@@ -484,7 +486,7 @@ class AnalysisGLOW(Analysis):
         Args:
             size: scalar or array of region sizes (voxels)
             model (str): 'linear', 'sqrt', 'power_law', 'log_size',
-                or 'log_linear'
+                'log_linear', or 'reciprocal'
             beta (np.array): regression coefficients
 
         Returns:

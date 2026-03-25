@@ -2,8 +2,9 @@
 
 Provides an incremental bottom-up computation of PL for all regions
 in a Ward hierarchy, suitable as a test statistic in permutation
-testing.  The PL-LLR (PL on full-model residuals minus PL on
-null-model residuals) replaces the MANCOVA LLR when activated.
+testing.  The per-voxel PL-LLR (PL on full-model residuals minus PL
+on null-model residuals, divided by region size) replaces the MANCOVA
+LLR when activated.
 
 The PL model for each voxel v in a region R is:
 
@@ -387,9 +388,12 @@ def _run_pl_pass(P, y, num_vox, children, W, edges):
 def get_pl_stat(exp, children, mask_idx, neighbors=None, W=None):
     """Compute PL-LLR for all regions in a Ward hierarchy.
 
-    PL-LLR = PL(full-model residuals) - PL(null-model residuals).
-    Positive when the effect is real (the full-model residuals have
-    less unexplained variance under the spatial model).
+    PL-LLR = [PL(full-model residuals) - PL(null-model residuals)] / n,
+    i.e. the per-voxel pseudo-likelihood ratio.  Normalising by region
+    size is essential: the raw PL is a sum over voxels, so the total
+    grows monotonically with n even after size-adjustment (by concavity
+    of log).  Per-voxel normalisation restores the property that the
+    adjusted stat is highest for tight-fitting regions.
 
     The two PL passes run sequentially to limit peak memory (each
     requires a (V, K) working array).
@@ -402,7 +406,7 @@ def get_pl_stat(exp, children, mask_idx, neighbors=None, W=None):
         W: optional pre-built sparse adjacency (for caching)
 
     Returns:
-        stat: (num_nodes,) PL-LLR per region (NaN where n < 2)
+        stat: (num_nodes,) per-voxel PL-LLR (NaN where n < 2)
         size: (num_nodes,) int region sizes
     """
     b, num_img, num_vox = exp.y.shape
@@ -419,7 +423,7 @@ def get_pl_stat(exp, children, mask_idx, neighbors=None, W=None):
     ll_alt, _ = _run_pl_pass(P_alt, exp.y, num_vox, children, W, edges)
     ll_null, _ = _run_pl_pass(P_null, exp.y, num_vox, children, W, edges)
 
-    stat = ll_alt - ll_null
     size = glow.graph.node_sum(np.ones(num_vox, dtype=int), children)
+    stat = (ll_alt - ll_null) / size.astype(float)
 
     return stat, size
