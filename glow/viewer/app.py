@@ -193,8 +193,10 @@ def _defaults(generic_cols, sig_cols, prune_cols, mask_cols):
     from .scatter import _LOG_COLS
     all_cols = generic_cols + sig_cols + prune_cols + mask_cols
     default_x = 'n_voxel' if 'n_voxel' in all_cols else all_cols[0]
-    default_y = ('llr' if 'llr' in all_cols
-                 else all_cols[min(1, len(all_cols) - 1)])
+    default_y = next(
+        (c for c in ('pllr', 'llr') if c in all_cols),
+        all_cols[min(1, len(all_cols) - 1)],
+    )
     log_y_default = default_y in _LOG_COLS
     default_color = 'f1' if 'f1' in mask_cols else '__none__'
     return all_cols, default_x, default_y, log_y_default, default_color
@@ -410,7 +412,7 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
 # ---------------------------------------------------------------------------
 
 def _create_app(ana_glow, mask_target=None, feature_names=None,
-                extra_df=None):
+                extra_df=None, companion=True):
     """Create and wire up the Dash app.
 
     Args:
@@ -420,10 +422,35 @@ def _create_app(ana_glow, mask_target=None, feature_names=None,
             each imaging feature (used in the background dropdown).
         extra_df (pd.DataFrame | None): optional extra per-region data
             (keyed on ``region_idx``) merged into the scatter DataFrame.
+        companion (bool): if True, automatically compute the complementary
+            stat (PLLR when using MANCOVA, LLR when using PL) and include
+            it in the scatter dropdowns with a "(ref only)" suffix.
 
     Returns:
         app (Dash): configured Dash application
     """
+    from .data import stat_col_name, compute_companion_df, _compute_r2
+
+    ana_glow._primary_stat_col = stat_col_name(ana_glow)
+
+    adj_model = getattr(ana_glow, 'adj_model', None)
+    adj_beta = getattr(ana_glow, 'adj_beta', None)
+    if adj_model is not None and adj_beta is not None:
+        from .scatter import _ensure_1d
+        stat = _ensure_1d(ana_glow.stat)
+        ana_glow._primary_r2 = _compute_r2(
+            stat, ana_glow.size.astype(float), adj_model, adj_beta)
+
+    if companion:
+        print('  computing companion stat ...', end=' ', flush=True)
+        comp_df, comp_info = compute_companion_df(ana_glow)
+        ana_glow._companion_info = comp_info
+        if extra_df is not None:
+            extra_df = extra_df.merge(comp_df, on='region_idx', how='left')
+        else:
+            extra_df = comp_df
+        print('done.')
+
     df = prep_df(ana_glow, mask_target=mask_target, extra_df=extra_df)
     generic_cols, sig_cols, prune_cols, mask_cols = get_feature_columns(df)
     mask_idx = ana_glow.exp.mask_idx
@@ -1153,7 +1180,8 @@ def _wait_for_port(port, socket_mod, timeout=5.0):
 
 
 def launch(ana_glow, mask_target=None, port=8050, debug=False,
-           feature_names=None, extra_df=None, quiet=True):
+           feature_names=None, extra_df=None, quiet=True,
+           companion=True):
     """Launch the glow viewer dashboard.
 
     Args:
@@ -1169,6 +1197,9 @@ def launch(ana_glow, mask_target=None, port=8050, debug=False,
         extra_df (pd.DataFrame | None): optional extra per-region data
             (keyed on ``region_idx``) merged into the scatter DataFrame.
         quiet (bool): suppress Dash/Werkzeug request logs.
+        companion (bool): if True, compute the complementary stat (PLLR
+            when using MANCOVA, LLR when using PL) and include it in the
+            scatter dropdowns with a "(ref only)" suffix.
     """
     import logging
     import signal
@@ -1180,7 +1211,8 @@ def launch(ana_glow, mask_target=None, port=8050, debug=False,
         logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
     app = _create_app(ana_glow, mask_target=mask_target,
-                      feature_names=feature_names, extra_df=extra_df)
+                      feature_names=feature_names, extra_df=extra_df,
+                      companion=companion)
 
     # clean shutdown on Ctrl+C (and SIGTERM on Unix)
     def _shutdown(signum, frame):
