@@ -21,16 +21,6 @@ def _ensure_1d(arr):
     return arr if arr.ndim == 1 else arr[0]
 
 
-def stat_col_name(ana_glow):
-    """Return the primary stat column name ('pllr' or 'llr')."""
-    return 'pllr' if getattr(ana_glow, 'use_pl', False) else 'llr'
-
-
-def adj_col_name(ana_glow):
-    """Return the primary adjusted-stat column name."""
-    return stat_col_name(ana_glow) + '_adjusted'
-
-
 def prep_df(ana_glow, mask_target=None, extra_df=None):
     """Build a DataFrame with one row per region (unpermuted only).
 
@@ -49,9 +39,6 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
     num_vox = ana_glow.exp.y.shape[2]
     num_reg = num_vox + children.shape[0]
 
-    stat_name = stat_col_name(ana_glow)
-    adj_name = adj_col_name(ana_glow)
-
     # compute per-region roughness via tree walk
     roughness_arr = np.full(num_reg, np.nan)
     q_tup = decompose(x=ana_glow.exp.x, contrast=ana_glow.exp.contrast)
@@ -69,8 +56,8 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
     d = {
         'region_idx': np.arange(num_reg),
         'n_voxel': ana_glow.size.astype(int),
-        stat_name: _ensure_1d(ana_glow.stat),
-        adj_name: _get_adjusted_stat(ana_glow),
+        'llr': _ensure_1d(ana_glow.stat),
+        'llr_adjusted': _get_adjusted_stat(ana_glow),
         'pval_fwer': ana_glow.pval,
         'roughness': roughness_arr,
     }
@@ -134,6 +121,23 @@ _MASK_FEATURES = {'f1', 'sens', 'spec', 'pct_max_f1',
                    'vox_in_target', 'vox_out_target'}
 
 
+def _compute_r2(stat, size, model, beta):
+    """Compute R² for a size-adjustment model on the unpermuted data."""
+    from glow.experiment.analysis import AnalysisGLOW
+    valid = np.isfinite(stat) & (size > 0) & np.isfinite(size)
+    if model in AnalysisGLOW._POSITIVE_STAT_MODELS:
+        valid &= (stat > 0)
+    s, y = size[valid].astype(float), stat[valid].astype(float)
+    if len(y) < 3:
+        return np.nan
+    y_hat = AnalysisGLOW.predict_null_mean(s, model, beta)
+    ss_res = np.sum((y - y_hat) ** 2)
+    ss_tot = np.sum((y - y.mean()) ** 2)
+    if ss_tot == 0:
+        return np.nan
+    return 1 - ss_res / ss_tot
+
+
 def get_feature_columns(df):
     """Return feature columns grouped by category.
 
@@ -165,103 +169,6 @@ def get_feature_columns(df):
     return sorted(generic), sorted(significance), sorted(pruning), sorted(mask)
 
 
-def _compute_r2(stat, size, model, beta):
-    """Compute R² for a size-adjustment model on the unpermuted data."""
-    from glow.experiment.analysis import AnalysisGLOW
-    valid = np.isfinite(stat) & (size > 0) & np.isfinite(size)
-    if model in AnalysisGLOW._POSITIVE_STAT_MODELS:
-        valid &= (stat > 0)
-    s, y = size[valid].astype(float), stat[valid].astype(float)
-    if len(y) < 3:
-        return np.nan
-    y_hat = AnalysisGLOW.predict_null_mean(s, model, beta)
-    ss_res = np.sum((y - y_hat) ** 2)
-    ss_tot = np.sum((y - y.mean()) ** 2)
-    if ss_tot == 0:
-        return np.nan
-    return 1 - ss_res / ss_tot
-
-
-def _fit_companion_model(stat, size, model_name):
-    """Fit a size-regression model to companion stat data (single pass).
-
-    Returns (model, beta, r2).
-    """
-    from glow.experiment.analysis import AnalysisGLOW
-    XtX, Xty = AnalysisGLOW.accumulate_regression(
-        size, stat, model_name)
-    _, _, beta = AnalysisGLOW.fit_size_regression_online(
-        XtX, Xty, model_name)
-    r2 = _compute_r2(stat, size, model_name, beta)
-    return model_name, beta, r2
-
-
-def compute_companion_df(ana_glow):
-    """Compute the complementary stat from the stored unpermuted Ward tree.
-
-    When the analysis used PL (``use_pl=True``), computes the MANCOVA LLR
-    as the companion.  When it used MANCOVA, computes the PLLR.
-
-    Companion columns are suffixed with ``(ref only)`` to indicate they
-    were not used for significance testing or pruning.
-
-    Returns:
-        companion_df (pd.DataFrame): keyed on ``region_idx`` with companion
-            stat and adjusted-stat columns.
-        companion_info (dict): ``model``, ``beta``, ``r2``, ``stat_col``,
-            ``adj_col`` for the companion's size-regression model.
-    """
-    from glow.experiment.analysis import AnalysisGLOW, get_best_model
-    from glow.experiment.mancova import get_pl_llr
-
-    children = ana_glow.children
-    exp = ana_glow.exp
-    num_vox = exp.y.shape[2]
-    num_reg = num_vox + children.shape[0]
-
-    use_pl = getattr(ana_glow, 'use_pl', False)
-
-    if use_pl:
-        stat = np.full(num_reg, np.nan)
-        for reg_idx, size, e, h in glow.graph.iter_stat(
-                exp=exp, children=children, n_perm=None):
-            stat[reg_idx] = get_llr(e=e[:, :, 0], h=h[:, :, 0], n=size)
-        base_name = 'llr'
-        get_stat_fn = get_llr
-    else:
-        from glow.experiment.pseudo_likelihood import get_pl_stat, build_adjacency
-        neighbors, W = build_adjacency(exp.mask_idx)
-        stat, _ = get_pl_stat(exp, children, exp.mask_idx,
-                              neighbors=neighbors, W=W)
-        base_name = 'pllr'
-        get_stat_fn = get_pl_llr
-
-    stat_col = f'{base_name} (ref only)'
-    adj_col = f'{base_name}_adjusted (ref only)'
-
-    size = ana_glow.size.astype(float)
-    model_name = get_best_model(get_stat_fn)
-    model_name, beta, r2 = _fit_companion_model(stat, size, model_name)
-
-    predicted = AnalysisGLOW.predict_null_mean(size, model_name, beta)
-    adj = stat - predicted
-
-    df = pd.DataFrame({
-        'region_idx': np.arange(num_reg),
-        stat_col: stat,
-        adj_col: adj,
-    })
-
-    companion_info = {
-        'model': model_name,
-        'beta': beta,
-        'r2': r2,
-        'stat_col': stat_col,
-        'adj_col': adj_col,
-    }
-    return df, companion_info
-
-
 def compute_target_stats(ana_glow, mask_target):
     """Compute stats for the full target mask treated as a single region.
 
@@ -281,9 +188,6 @@ def compute_target_stats(ana_glow, mask_target):
     exp = ana_glow.exp
     mask_idx = exp.mask_idx
     y = exp.y  # (b, num_img, num_vox)
-
-    sn = stat_col_name(ana_glow)
-    an = adj_col_name(ana_glow)
 
     vox_indices = mask_idx[mask_target & (mask_idx >= 0)]
     n_voxel = len(vox_indices)
@@ -305,7 +209,7 @@ def compute_target_stats(ana_glow, mask_target):
 
     stats = {
         'n_voxel': n_voxel,
-        sn: llr,
+        'llr': llr,
     }
 
     adj_model = getattr(ana_glow, 'adj_model', None)
@@ -313,9 +217,9 @@ def compute_target_stats(ana_glow, mask_target):
     if adj_model is not None and adj_beta is not None and np.isfinite(llr):
         from glow.experiment.analysis import AnalysisGLOW
         predicted = AnalysisGLOW.predict_null_mean(n_voxel, adj_model, adj_beta)
-        stats[an] = llr - predicted
+        stats['llr_adjusted'] = llr - predicted
     else:
-        stats[an] = np.nan
+        stats['llr_adjusted'] = np.nan
 
     stats['f1'] = 1.0
     stats['sens'] = 1.0

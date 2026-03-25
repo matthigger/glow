@@ -34,7 +34,7 @@ from glow.experiment.cluster import cluster
 from glow.experiment.exper import Experiment, ExperimentScaled
 from glow.experiment.mancova import stat_dict
 
-DEFAULT_STATS = [k for k in stat_dict if k != 'pl_llr']
+DEFAULT_STATS = list(stat_dict.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -95,50 +95,6 @@ def collect_null_data(exp_base, n_perm, stat_funcs, label='', verbose=True):
     df['source'] = label
     return df
 
-
-def collect_null_data_pl(exp_base, n_perm, label='', verbose=True):
-    """Run clustering + PL-LLR computation across permutations.
-
-    Similar to ``collect_null_data`` but uses the pseudo-likelihood
-    code path instead of MANCOVA stats.
-    """
-    from glow.experiment.pseudo_likelihood import build_adjacency, get_pl_stat
-
-    if not isinstance(exp_base, ExperimentScaled):
-        exp_base = ExperimentScaled.from_exp(exp_base)
-
-    b, num_img, num_vox = exp_base.y.shape
-    if verbose:
-        print(f'\n[{label}] PL: b={b}, num_img={num_img}, '
-              f'num_vox={num_vox}, n_perm={n_perm}')
-
-    neighbors, W = build_adjacency(exp_base.mask_idx)
-
-    dfs = []
-    t0 = time.time()
-    for perm_idx in tqdm(range(n_perm), desc=f'{label} PL permutations',
-                         disable=not verbose):
-        _exp = exp_base.permute(perm_idx + 1)
-        children = cluster(exp=_exp)
-        stat, size = get_pl_stat(
-            _exp, children, exp_base.mask_idx,
-            neighbors=neighbors, W=W)
-        n = len(stat)
-        dfs.append(pd.DataFrame({
-            'reg_idx': np.arange(n),
-            'size': size.astype(int),
-            'pl_llr': stat.astype(float),
-            'perm_idx': perm_idx,
-        }))
-        del _exp
-
-    elapsed = time.time() - t0
-    if verbose:
-        print(f'  {sum(len(d) for d in dfs)} region-records in {elapsed:.1f}s')
-
-    df = pd.concat(dfs, ignore_index=True)
-    df['source'] = label
-    return df
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +299,6 @@ _STAT_LABELS = {
     'hotel_tr': 'Hotelling Trace',
     'pillai': "Pillai's Trace",
     'roys_root': "Roy's Largest Root",
-    'pl_llr': 'PL Log-Likelihood Ratio',
 }
 
 _MODEL_LABELS = {
@@ -751,10 +706,6 @@ def main():
                         help=f'statistics to compute (default: {DEFAULT_STATS})')
     parser.add_argument('--out', type=str, default=None,
                         help='output directory for plots (default: auto)')
-    parser.add_argument('--include_pl', action='store_true', default=True,
-                        help='include PL-LLR statistic (default: True)')
-    parser.add_argument('--no_pl', dest='include_pl', action='store_false',
-                        help='exclude PL-LLR statistic')
     args = parser.parse_args()
 
     stat_funcs = {k: stat_dict[k] for k in args.stats}
@@ -766,11 +717,9 @@ def main():
         out_dir = Path(args.out)
 
     df_dict = {}
-    experiments = {}
 
     print('Preparing WGN experiment ...')
     exp_wgn = make_wgn_experiment()
-    experiments['WGN'] = exp_wgn
     df_wgn = collect_null_data(exp_wgn, n_perm=args.n_perm,
                                stat_funcs=stat_funcs, label='WGN')
     df_dict['WGN'] = df_wgn
@@ -778,22 +727,12 @@ def main():
     print('\nPreparing HCP experiment ...')
     try:
         exp_hcp = make_hcp_experiment()
-        experiments['HCP'] = exp_hcp
         df_hcp = collect_null_data(exp_hcp, n_perm=args.n_perm,
                                    stat_funcs=stat_funcs, label='HCP')
         df_dict['HCP'] = df_hcp
     except Exception as exc:
         print(f'  HCP loading failed: {exc}')
         print('  (continuing with WGN only)')
-
-    if args.include_pl:
-        print('\nCollecting PL-LLR data ...')
-        for label, exp in experiments.items():
-            df_pl = collect_null_data_pl(
-                exp, n_perm=args.n_perm, label=label)
-            df_dict[label] = df_dict[label].merge(
-                df_pl[['reg_idx', 'perm_idx', 'pl_llr']],
-                on=['reg_idx', 'perm_idx'], how='left')
 
     print(f'\nGenerating diagnostic plots in {out_dir} ...')
     make_diagnostic_plots(df_dict, out_dir)

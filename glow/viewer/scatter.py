@@ -19,10 +19,7 @@ def _ensure_1d(arr):
 # columns where a log scale is the sensible default
 _LOG_COLS = {'n_voxel', 'vox_in_target', 'vox_out_target'}
 
-# all column names that represent a raw or adjusted stat
-_STAT_COLS = {'llr', 'pllr', 'llr (ref only)', 'pllr (ref only)'}
-_ADJ_COLS = {'llr_adjusted', 'pllr_adjusted',
-             'llr_adjusted (ref only)', 'pllr_adjusted (ref only)'}
+_ADJ_COL = 'llr_adjusted'
 
 # estimate_state -> (plotly symbol, default color, legend label)
 _STATE_STYLE = {
@@ -137,11 +134,8 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
     symbols = np.array([_STATE_STYLE[s][0] for s in states_v])
 
     # --- build hover text ---
-    hover_cols = ['region_idx', 'n_voxel']
-    for c in sorted(_STAT_COLS | _ADJ_COLS):
-        if c in _df.columns and not _df[c].isna().all():
-            hover_cols.append(c)
-    hover_cols.append('pval_fwer')
+    hover_cols = ['region_idx', 'n_voxel', 'llr', 'llr_adjusted',
+                  'pval_fwer']
     for c in ('pval_homo',
               'f1', 'sens', 'spec', 'vox_in_target',
               'vox_out_target', 'llr_mu_h0', 'llr_std_h0'):
@@ -287,8 +281,7 @@ def _log_y_range(y_v, ana_glow, y_feat, target_stats):
     lo = np.log10(pos.min())
     hi = np.log10(pos.max())
 
-    # include threshold line (only for the primary adjusted stat)
-    if y_feat in _ADJ_COLS and '(ref only)' not in y_feat:
+    if y_feat == _ADJ_COL:
         thresh = _compute_adj_thresh(ana_glow)
         if thresh is not None and thresh > 0:
             t = np.log10(thresh)
@@ -377,16 +370,15 @@ def _format_model_eq(model, beta, r2=None):
 
 
 def _add_model_overlay(fig, ana_glow, x_feat, y_feat):
-    """Add size-regression model lines when a stat is on y vs n_voxel on x.
-
-    Draws the primary model (red dashed) and, when companion model info is
-    available, the companion model (blue dashed).
-    """
+    """Add size-regression model line when llr is on y vs n_voxel on x."""
     from glow.experiment.analysis import AnalysisGLOW
 
-    if x_feat != 'n_voxel':
+    if x_feat != 'n_voxel' or y_feat != 'llr':
         return
-    if y_feat not in _STAT_COLS:
+
+    adj_model = getattr(ana_glow, 'adj_model', None)
+    adj_beta = getattr(ana_glow, 'adj_beta', None)
+    if adj_model is None or adj_beta is None:
         return
 
     sizes = _ensure_1d(ana_glow.size).astype(float)
@@ -395,52 +387,24 @@ def _add_model_overlay(fig, ana_glow, x_feat, y_feat):
         return
     sz = np.linspace(max(sizes.min(), 1), sizes.max(), 200)
 
-    annotations = []
-
-    # primary stat model
-    adj_model = getattr(ana_glow, 'adj_model', None)
-    adj_beta = getattr(ana_glow, 'adj_beta', None)
-    from .data import stat_col_name
-    primary_col = getattr(ana_glow, '_primary_stat_col', None) or stat_col_name(ana_glow)
-    if adj_model is not None and adj_beta is not None and y_feat == primary_col:
-        r2 = getattr(ana_glow, '_primary_r2', None)
-        mean_line = AnalysisGLOW.predict_null_mean(sz, adj_model, adj_beta)
-        fig.add_trace(go.Scatter(
-            x=sz, y=mean_line, mode='lines',
-            line=dict(color='rgba(200,0,0,0.6)', width=2, dash='dash'),
-            showlegend=False, hoverinfo='skip',
-        ))
-        annotations.append((
-            _format_model_eq(adj_model, adj_beta, r2),
-            'rgba(200,0,0,0.8)', 'rgba(200,0,0,0.3)',
-        ))
-
-    # companion stat model
-    comp = getattr(ana_glow, '_companion_info', None)
-    if comp is not None and y_feat == comp['stat_col']:
-        c_model, c_beta, c_r2 = comp['model'], comp['beta'], comp['r2']
-        mean_line = AnalysisGLOW.predict_null_mean(sz, c_model, c_beta)
-        fig.add_trace(go.Scatter(
-            x=sz, y=mean_line, mode='lines',
-            line=dict(color='rgba(0,0,200,0.6)', width=2, dash='dash'),
-            showlegend=False, hoverinfo='skip',
-        ))
-        annotations.append((
-            _format_model_eq(c_model, c_beta, c_r2),
-            'rgba(0,0,200,0.8)', 'rgba(0,0,200,0.3)',
-        ))
-
-    for i, (eq_text, font_color, border_color) in enumerate(annotations):
-        fig.add_annotation(
-            text=eq_text,
-            xref='paper', yref='paper',
-            x=0.02, y=0.02 + i * 0.06,
-            showarrow=False,
-            font=dict(size=11, color=font_color, family='monospace'),
-            bgcolor='rgba(255,255,255,0.8)',
-            bordercolor=border_color,
-            borderwidth=1, borderpad=4,
-        )
+    r2 = getattr(ana_glow, '_primary_r2', None)
+    mean_line = AnalysisGLOW.predict_null_mean(sz, adj_model, adj_beta)
+    fig.add_trace(go.Scatter(
+        x=sz, y=mean_line, mode='lines',
+        line=dict(color='rgba(200,0,0,0.6)', width=2, dash='dash'),
+        showlegend=False, hoverinfo='skip',
+    ))
+    eq_text = _format_model_eq(adj_model, adj_beta, r2)
+    fig.add_annotation(
+        text=eq_text,
+        xref='paper', yref='paper',
+        x=0.02, y=0.02,
+        showarrow=False,
+        font=dict(size=11, color='rgba(200,0,0,0.8)', family='monospace'),
+        bgcolor='rgba(255,255,255,0.8)',
+        bordercolor='rgba(200,0,0,0.3)',
+        borderwidth=1, borderpad=4,
+    )
 
 
 def _add_threshold_lines(fig, ana_glow, x_feat, y_feat):
@@ -464,19 +428,17 @@ def _add_threshold_lines(fig, ana_glow, x_feat, y_feat):
                           annotation_text=label,
                           annotation_position='right')
 
-    # --- primary adjusted-stat axis: draw alpha_fwer line ---
-    from .data import adj_col_name
-    primary_adj = adj_col_name(ana_glow)
-    if alpha_fwer is not None and primary_adj in (x_feat, y_feat):
+    # --- adjusted-stat axis: draw alpha_fwer line ---
+    if alpha_fwer is not None and _ADJ_COL in (x_feat, y_feat):
         adj_thresh = _compute_adj_thresh(ana_glow)
         if adj_thresh is not None:
             style = dict(color='red', dash='dot', width=1.5)
             label = f'alpha_fwer={alpha_fwer}'
-            if x_feat == primary_adj:
+            if x_feat == _ADJ_COL:
                 fig.add_vline(x=adj_thresh, line=style,
                               annotation_text=label,
                               annotation_position='top')
-            if y_feat == primary_adj:
+            if y_feat == _ADJ_COL:
                 fig.add_hline(y=adj_thresh, line=style,
                               annotation_text=label,
                               annotation_position='right')

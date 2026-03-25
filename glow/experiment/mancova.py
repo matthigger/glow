@@ -252,19 +252,12 @@ def llr_from_ysum_yout(ysum, yout, size, q_tup):
     return get_llr(e, h, n=size)
 
 
-def get_pl_llr(e=None, h=None, n=None):
-    """Sentinel for PL-LLR; actual computation lives in pseudo_likelihood.py."""
-    raise NotImplementedError(
-        'PL-LLR uses a different code path; see pseudo_likelihood.py')
-
-
 stat_dict = {
     'llr': get_llr,
     'wilks': get_wilks,
     'pillai': get_pillai,
     'hotel_tr': get_hotel_tr,
     'roys_root': get_roys_root,
-    'pl_llr': get_pl_llr,
 }
 
 stat_dict_inv = {fn: name for name, fn in stat_dict.items()}
@@ -276,5 +269,4 @@ stat_sign = {
     get_pillai: 1,
     get_hotel_tr: 1,
     get_roys_root: 1,
-    get_pl_llr: 1,
 }

@@ -3,7 +3,6 @@ import numpy as np
 import glow
 from glow.benchmark.config import Config
 from glow.benchmark.run import run_ana, run_segment
-from glow.experiment.mancova import stat_dict
 
 # common params
 # run experiments serially (n_jobs=1) and keep permutations serial per experiment
@@ -39,11 +38,6 @@ ANALYSES = {
                  n_perm_fwer_size_adjust=N_PERM_FWER_SIZE_ADJUST,
                  min_size=1,
                  alpha_fwer=ALPHA_FWER),
-    'GLOW-PL': dict(n_perm_fwer=N_PERM_FWER,
-                     n_perm_fwer_size_adjust=N_PERM_FWER_SIZE_ADJUST,
-                     min_size=1,
-                     alpha_fwer=ALPHA_FWER,
-                     use_pl=True),
     'VBA': dict(n_perm_fwer=N_PERM_FWER_VBA,
                 tfce_flag=False,
                 alpha_fwer=ALPHA_FWER),
@@ -73,27 +67,12 @@ config_list = []
 # vba experiment: compare methods
 ana_kwargs_dict_vba = {
     'GLOW': (glow.experiment.AnalysisGLOW, ANALYSES['GLOW']),
-    'GLOW-PL': (glow.experiment.AnalysisGLOW, ANALYSES['GLOW-PL']),
     'VBA': (glow.experiment.AnalysisVBA, ANALYSES['VBA']),
     'VBA-TFCE': (glow.experiment.AnalysisVBA, ANALYSES['VBA-TFCE']),
 }
 
 config_list.append(make_config('vba_hcp', 'hcp', run_ana, ana_kwargs_dict_vba))
 config_list.append(make_config('vba_wgn', 'wgn', run_ana, ana_kwargs_dict_vba))
-
-# mancova stat experiment: compare all MANCOVA statistics + PL using full GLOW pipeline
-ana_kwargs_dict_stat = {
-    name: (glow.experiment.AnalysisGLOW, ANALYSES['GLOW'] | {'get_stat': fn})
-    for name, fn in stat_dict.items()
-    if name != 'pl_llr'
-}
-ana_kwargs_dict_stat['pl_llr'] = (
-    glow.experiment.AnalysisGLOW, ANALYSES['GLOW-PL']
-)
-config_list.append(make_config('mancova_stat_hcp', 'hcp', run_ana,
-                               ana_kwargs_dict_stat))
-config_list.append(make_config('mancova_stat_wgn', 'wgn', run_ana,
-                               ana_kwargs_dict_stat))
 
 
 

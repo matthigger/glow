@@ -154,26 +154,21 @@ def process_permutation(exp, ana_kwargs, perm_idx):
     from glow.experiment.mancova import get_llr
 
     get_stat = ana_kwargs.get('get_stat', get_llr)
-    use_pl = ana_kwargs.get('use_pl', False)
 
     _exp = exp.permute(perm_idx)
     children = cluster(exp=_exp)
 
     b, num_img, num_vox = _exp.y.shape
 
-    if use_pl:
-        from glow.experiment.pseudo_likelihood import get_pl_stat
-        stat, size = get_pl_stat(_exp, children, exp.mask_idx)
-    else:
-        stat = []
-        import glow.graph
-        for reg_idx, size, e, h in glow.graph.iter_stat(
-                exp=_exp, children=children, n_perm=None):
-            stat_val = get_stat(e=e[:, :, 0], h=h[:, :, 0], n=size)
-            stat.append(stat_val)
+    stat = []
+    import glow.graph
+    for reg_idx, size, e, h in glow.graph.iter_stat(
+            exp=_exp, children=children, n_perm=None):
+        stat_val = get_stat(e=e[:, :, 0], h=h[:, :, 0], n=size)
+        stat.append(stat_val)
 
-        size = glow.graph.node_sum(x=np.ones(num_vox, dtype=int),
-                                   children=children)
+    size = glow.graph.node_sum(x=np.ones(num_vox, dtype=int),
+                               children=children)
 
     return {
         'perm_idx': perm_idx,
