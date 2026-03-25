@@ -141,6 +141,71 @@ def run_ana(config, **kwargs):
                 pickle.dump((ana, effect), f)
 
 
+def run_prune_compare(config, **kwargs):
+    """Run one AnalysisGLOW and apply all four pruning methods.
+
+    Emits one JSON result per method with the same schema as run_ana,
+    so the plotting pipeline works unchanged.
+    """
+    from glow.experiment.prune import (prune_greedy, prune_dp,
+                                       prune_greedy_full_adjust)
+
+    exp, effect = config.get_exp_eff(**kwargs)
+
+    _, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
+
+    start = time.time()
+    ana = Ana(exp=exp, **ana_kw)
+    total_time_sec = time.time() - start
+
+    sig = ana.sig_reg_list
+    children = ana.children
+    stat = np.nan_to_num(ana.stat.ravel().astype(float),
+                         nan=0.0, posinf=0.0, neginf=0.0)
+
+    methods = {
+        'greedy': prune_greedy(sig, children, stat),
+        'dp_lam0': prune_dp(sig, children, stat, lam=0.0),
+        'dp_geom3': prune_dp(sig, children, stat, exp_n_eff=3.0),
+        'full_adjust': prune_greedy_full_adjust(sig, children, exp),
+    }
+
+    mask_active = exp.mask_idx > -1
+
+    for label, (reg_out_list, _info) in methods.items():
+        mask_pred = np.zeros(ana.exp.mask_idx.shape, dtype=bool)
+        for reg_idx in reg_out_list:
+            label_map = glow.graph.get_label_map(
+                reg_idx_list=[reg_idx],
+                mask_idx=exp.mask_idx,
+                children=children)
+            mask_pred |= (label_map > -1)
+
+        f1, sens, spec = glow.mask.get_score(mask_pred=mask_pred,
+                                             mask_target=effect.mask,
+                                             mask_active=mask_active)
+        uuid = str(uuid4())[:8]
+        file_out = config.folder / OUT / f'{uuid}_result.json'
+        d = {'effect_llr': effect.effect_llr,
+             'seed': int(effect.seed),
+             'stat': ana.get_stat.__name__.replace('get_', ''),
+             'label': label,
+             'Analysis': Ana.__name__,
+             'f1': f1,
+             'sens': sens,
+             'spec': spec,
+             'uuid': uuid,
+             'vox_total': int(ana.exp.y.shape[2]),
+             'vox_effect': int(effect.mask.sum()),
+             'n_sig': len(sig),
+             'n_selected': len(reg_out_list),
+             'time_sec': total_time_sec,
+             'config_hash': config._config_hash()}
+        file_out.parent.mkdir(exist_ok=True, parents=True)
+        with open(file_out, 'w') as f:
+            json.dump(d, f, sort_keys=True, indent=4)
+
+
 if __name__ == '__main__':
     from glow.benchmark.config import Config
 

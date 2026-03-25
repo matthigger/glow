@@ -2,7 +2,7 @@ import numpy as np
 
 import glow
 from glow.benchmark.config import Config
-from glow.benchmark.run import run_ana, run_segment
+from glow.benchmark.run import run_ana, run_prune_compare, run_segment
 
 # common params
 # run experiments serially (n_jobs=1) and keep permutations serial per experiment
@@ -75,7 +75,14 @@ config_list.append(make_config('vba_hcp', 'hcp', run_ana, ana_kwargs_dict_vba))
 config_list.append(make_config('vba_wgn', 'wgn', run_ana, ana_kwargs_dict_vba))
 
 
-
+# pruning method experiment: run GLOW once, compare all pruning strategies
+ana_kwargs_dict_prune = {
+    'GLOW': (glow.experiment.AnalysisGLOW, ANALYSES['GLOW']),
+}
+config_list.append(make_config('prune_method_hcp', 'hcp', run_prune_compare,
+                               ana_kwargs_dict_prune))
+config_list.append(make_config('prune_method_wgn', 'wgn', run_prune_compare,
+                               ana_kwargs_dict_prune))
 
 # segmentation configs
 config_list.append(make_config('segment_hcp', 'hcp', run_segment))

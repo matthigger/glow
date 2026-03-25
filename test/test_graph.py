@@ -67,6 +67,50 @@ def test_get_f1_sens_spec_with_inactive_voxels():
     assert spec[4] == 0.0
 
 
+def test_dp_antichain_basic():
+    """dp_antichain with lam=0 selects the gain-maximising antichain."""
+    from glow.graph import dp_antichain
+
+    #     6
+    #    / \
+    #   4   5
+    #  /\  /\
+    # 0  1 2  3
+    children_map = {6: [4, 5], 4: [], 5: []}
+    gain = {4: 5.0, 5: 3.0, 6: 7.0}
+    # split(6) = best(4)+best(5) = 5+3 = 8 > 7, so split
+    selected, info = dp_antichain(
+        nodes=[4, 5, 6], children_map=children_map, gain=gain, lam=0.0)
+    assert selected == [4, 5]
+
+    # with higher gain on root, should select root
+    gain[6] = 10.0
+    selected, _ = dp_antichain(
+        nodes=[4, 5, 6], children_map=children_map, gain=gain, lam=0.0)
+    assert selected == [6]
+
+
+def test_dp_antichain_with_penalty():
+    """Positive lam should suppress small-gain nodes."""
+    from glow.graph import dp_antichain
+
+    children_map = {6: [4, 5], 4: [], 5: []}
+    gain = {4: 5.0, 5: 3.0, 6: 7.0}
+    # lam=4: net gains are 1, -1, 3
+    # best(4) = max(1, 0) = 1; best(5) = max(-1, 0) = 0
+    # split(6) = 1; chose 6 since 3 >= 1
+    selected, _ = dp_antichain(
+        nodes=[4, 5, 6], children_map=children_map, gain=gain, lam=4.0)
+    assert selected == [6]
+
+
+def test_dp_antichain_empty():
+    """Empty node list returns empty selection."""
+    from glow.graph import dp_antichain
+    selected, _ = dp_antichain(nodes=[], children_map={}, gain={}, lam=0.0)
+    assert selected == []
+
+
 def test_get_miss_hit():
     mask = np.array([0, 0, 1, 1])
     mask_idx = np.arange(4)
