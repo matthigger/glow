@@ -169,8 +169,8 @@ class TestEffect:
         # should not be close with very strict tolerance
         assert not eff1.is_close(eff2, rtol=1e-10, atol=1e-10)
     
-    def test_extra_kwargs_storage(self):
-        """test that extra kwargs are stored as attributes"""
+    def test_explicit_kwargs_storage(self):
+        """test that named kwargs are stored as attributes"""
         mask = np.ones((10, 10), dtype=bool)
         y_mean = np.random.randn(2, 10)
         
@@ -179,10 +179,20 @@ class TestEffect:
             y_mean=y_mean,
             seed=42,
             effect_llr=1,
-            custom_attr='test'
         )
         
-        # check that extra kwargs are stored
         assert eff.seed == 42
         assert eff.effect_llr == 1
-        assert eff.custom_attr == 'test'
+
+    def test_meta_storage(self):
+        """test that meta dict is stored"""
+        mask = np.ones((10, 10), dtype=bool)
+        y_mean = np.random.randn(2, 10)
+        
+        eff = glow.effect.Effect(
+            mask=mask,
+            y_mean=y_mean,
+            meta={'custom': 'value'},
+        )
+        
+        assert eff.meta == {'custom': 'value'}
