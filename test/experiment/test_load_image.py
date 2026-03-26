@@ -117,7 +117,7 @@ class TestLoadImageNii:
         }, index=['img0', 'img1', 'img2'])
         
         # load images
-        feat_sbj_img, mask_idx = load_image_nii(df)
+        feat_sbj_img, mask_idx, affine = load_image_nii(df)
         
         # check structure
         assert 'feat0' in feat_sbj_img
@@ -153,7 +153,7 @@ class TestLoadImageNii:
             ]
         }, index=['img0', 'img1'])
         
-        feat_sbj_img, mask_idx = load_image_nii(df)
+        feat_sbj_img, mask_idx, _affine = load_image_nii(df)
         
         # mask should only include voxels that are non-zero in ALL subjects
         mask = mask_idx > -1

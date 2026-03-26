@@ -26,11 +26,14 @@ class ExperimentImageOnly:
     Attributes:
         y (np.array): (b, num_img, num_vox) image intensities
         mask_idx (np.array): voxel index array (-1 outside analysis)
+        meta (dict): optional metadata (subjects, features, affine, etc.)
+            not used by analysis — propagated for export / display
     """
 
-    def __init__(self, *, y, mask_idx, **kwargs):
+    def __init__(self, *, y, mask_idx, meta=None, **kwargs):
         self.y = y
         self.mask_idx = mask_idx
+        self.meta = meta if meta is not None else {}
 
     def _hash(self):
         """rolling SHA-256 hash over data arrays (16-char hex digest)."""
@@ -84,9 +87,12 @@ class ExperimentImageOnly:
             # add to proper mean
             y = y + mu[:, np.newaxis]
 
+        meta = kwargs.pop('meta', {})
+        meta.setdefault('features', [f'feat_{i}' for i in range(b)])
+        meta.setdefault('subjects', [f'subject_{i:03d}' for i in range(num_img)])
         return cls(y=y.reshape((b, num_img, num_vox)),
                    mask_idx=get_mask_idx(np.ones(shape)),
-                   **kwargs)
+                   meta=meta, **kwargs)
 
     @classmethod
     def from_search(cls, folder, sbj_regex, img_glob_dict, **kwargs):
@@ -124,8 +130,9 @@ class ExperimentImageOnly:
             print(df.loc[s_missing, :].notnull().astype('int'))
 
         nii_in_file = ['.nii' in str(file) for file in df.values.flatten()]
+        affine = None
         if all(nii_in_file):
-            feat_sbj_img, mask_idx = load_image_nii(df)
+            feat_sbj_img, mask_idx, affine = load_image_nii(df)
         elif not any(nii_in_file):
             feat_sbj_img, mask_idx = load_image_color(df)
         else:
@@ -143,12 +150,19 @@ class ExperimentImageOnly:
         # mask into each image, store as y
         mask = mask_idx >= 0
         y_names = sorted(feat_sbj_img.keys())
+        subjects = sorted(df.index)
         y = np.empty((len(feat_sbj_img), df.shape[0], mask.sum()))
-        for sbj_idx, sbj in enumerate(sorted(df.index)):
+        for sbj_idx, sbj in enumerate(subjects):
             for feat_idx, feat in enumerate(y_names):
                 y[feat_idx, sbj_idx, :] = feat_sbj_img[feat][sbj][mask]
 
-        return cls(y=y, mask_idx=mask_idx, **kwargs)
+        meta = kwargs.pop('meta', {})
+        meta.setdefault('subjects', [str(s) for s in subjects])
+        meta.setdefault('features', list(y_names))
+        if affine is not None:
+            meta.setdefault('affine', affine)
+
+        return cls(y=y, mask_idx=mask_idx, meta=meta, **kwargs)
 
     def bootstrap_img(self, n, seed=None, noise_scale=0):
         """return a new experiment with bootstrap-resampled images.
@@ -207,7 +221,8 @@ class ExperimentImageOnly:
         x = rng.standard_normal(size=(a, num_img))
 
         return Experiment(x=x, contrast=contrast, y=self.y,
-                          mask_idx=self.mask_idx, **kwargs)
+                          mask_idx=self.mask_idx,
+                          meta=self.meta, **kwargs)
 
     def apply_mask(self, mask):
         """return a new experiment restricted to voxels where mask is True.
@@ -366,7 +381,7 @@ class Experiment(ExperimentImageOnly):
             y = np.einsum('abc,bd->adc', self.y, freed_lane, optimize=True)
 
         return Experiment(x=self.x, y=y, contrast=self.contrast,
-                          mask_idx=self.mask_idx)
+                          mask_idx=self.mask_idx, meta=self.meta)
 
 
 class ExperimentScaled(Experiment):
@@ -382,7 +397,7 @@ class ExperimentScaled(Experiment):
     @classmethod
     def from_exp(cls, exp):
         return cls(y=exp.y, mask_idx=exp.mask_idx, x=exp.x,
-                   contrast=exp.contrast)
+                   contrast=exp.contrast, meta=getattr(exp, 'meta', None))
 
     def prep(self, y):
         """apply pre-processing: y_out = pre_scale @ (y - mean_orig)."""

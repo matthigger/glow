@@ -17,15 +17,14 @@ def load_image_nii(df):
     Returns:
         feat_sbj_img (dict): feat -> sbj -> np.array
         mask_idx (np.array): voxel index array (-1 where any image is zero)
+        affine (np.array): (4, 4) NIfTI affine (consistent across all images)
     """
-    # load images (check affine is consistent, if present)
     affine = None
     feat_sbj_img = defaultdict(dict)
     for feat in df.columns:
         for sbj in df.index:
             file = df.loc[sbj, feat]
 
-            # load nifti img
             img = nib.load(file)
             if affine is None:
                 affine = img.affine
@@ -45,7 +44,7 @@ def load_image_nii(df):
     mask = vox_count == df.size
     mask_idx = glow.mask.get_mask_idx(mask)
 
-    return feat_sbj_img, mask_idx
+    return feat_sbj_img, mask_idx, affine
 
 
 def load_image_color(df):
