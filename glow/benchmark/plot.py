@@ -26,9 +26,61 @@ def plot_compute_time(df):
                 hue='label')
 
 
+def plot_calibration(df, alpha_max=0.20, n_pts=200):
+    """Plot FWER calibration curve: nominal alpha vs empirical rejection rate.
+
+    Requires a ``min_pval`` column (minimum FWER-corrected p-value per seed).
+    Each method (label) gets its own curve; the diagonal is the reference.
+    """
+    if 'min_pval' not in df.columns:
+        print('  (no min_pval column — skipping calibration plot)')
+        return
+
+    df2 = df.copy()
+    df2['min_pval'] = pd.to_numeric(df2['min_pval'], errors='coerce')
+    df2 = df2.dropna(subset=['min_pval'])
+    if df2.empty:
+        return
+
+    labels_sorted = sorted(df2['label'].unique().tolist())
+    color_map = get_cmap_dict(labels_sorted)
+
+    alphas = np.linspace(0, alpha_max, n_pts)
+
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.plot([0, alpha_max], [0, alpha_max], ls='--', color='grey', lw=1,
+            label='ideal')
+
+    for label in labels_sorted:
+        pvals = df2.loc[df2['label'] == label, 'min_pval'].values
+        n = len(pvals)
+        if n == 0:
+            continue
+        rates = np.array([(pvals <= a).mean() for a in alphas])
+
+        ax.plot(alphas, rates, lw=2.5, color=color_map[label], label=label)
+
+        # binomial 95% CI at nominal alpha = 0.05
+        a05 = 0.05
+        r05 = (pvals <= a05).mean()
+        se = np.sqrt(r05 * (1 - r05) / n) if n > 1 else 0
+        ax.errorbar(a05, r05, yerr=1.96 * se, fmt='o', ms=5,
+                    color=color_map[label], capsize=3)
+
+    ax.set_xlabel('nominal $\\alpha$')
+    ax.set_ylabel('empirical rejection rate')
+    ax.set_title('FWER calibration (null)')
+    ax.legend(frameon=False)
+    ax.set_xlim(0, alpha_max)
+    ax.set_ylim(0, alpha_max)
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+
 
 def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['f1', 'sens', 'spec'],
-                      one_vs_rest=False, one_label='GLOW', alpha=.5, ci=90):
+                      one_vs_rest=False, one_label='GLOW', alpha=.5, ci=90,
+                      title=None, ylabel=None):
     # ensure numeric x + metrics (prevents lexicographic sorts)
     df2 = df.copy()
     df2[x_param] = pd.to_numeric(df2[x_param], errors='coerce')
@@ -99,7 +151,7 @@ def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['f1', 'sens', 'spec'],
 
         if j == 0:
             ax_top.legend(frameon=False)
-        ax_top.set_title(metric)
+        ax_top.set_title(title if title else metric)
         ax_top.grid(True, alpha=alpha, linewidth=1.2)
         if nrows == 1:
             ax_top.set_xlabel(x_param)
@@ -162,7 +214,7 @@ def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['f1', 'sens', 'spec'],
             for ax in axes[r]:
                 ax.set_xscale('log')
 
-    axes[0, 0].set_ylabel('score')
+    axes[0, 0].set_ylabel(ylabel if ylabel else 'score')
     plt.tight_layout()
 
 if __name__ == '__main__':
@@ -190,13 +242,34 @@ if __name__ == '__main__':
                 print(f'skipping {label}: no data for current config')
                 continue
 
+        x_param = getattr(config, 'x_param', 'effect_llr')
+        is_null = label.startswith('null_')
+
+        # null configs: calibration plot instead of score curves
+        if is_null:
+            path = folder / 'calibration.pdf'
+            if force_replot or n_new or not path.exists():
+                print(f'creating: {path}')
+                plot_calibration(df)
+                plt.gcf().savefig(path, bbox_inches='tight')
+                plt.close('all')
+            else:
+                print(f'skipping: {path} (already exists, no new data)')
+
+            if path.exists():
+                dest = latest / f'{label}.pdf'
+                shutil.copy2(path, dest)
+                print(f'  -> {dest}')
+            continue
+
         # generate score plot
         path = folder / 'score.pdf'
         if force_replot or n_new or not path.exists():
             print(f'creating: {path}')
             labels_in_data = set(df['label'].unique())
             has_comparison = 'GLOW' in labels_in_data and len(labels_in_data) > 1
-            plot_x_vs_metrics(df, one_vs_rest=has_comparison)
+            plot_x_vs_metrics(df, x_param=x_param,
+                              one_vs_rest=has_comparison)
             plt.gcf().savefig(path, bbox_inches='tight')
             plt.close('all')
         else:
@@ -208,13 +281,17 @@ if __name__ == '__main__':
             shutil.copy2(path, dest)
             print(f'  -> {dest}')
 
-        # generate pct_max_f1 plot (prune_compare configs only)
+        # generate pct_max_f1 plot (only GLOW variants)
         if 'pct_max_f1' in df.columns:
             path_mf = folder / 'max_f1_score.pdf'
             if force_replot or n_new or not path_mf.exists():
                 print(f'creating: {path_mf}')
-                plot_x_vs_metrics(df, metrics=['pct_max_f1'],
-                                  one_vs_rest=False)
+                df_glow = df[df['label'].str.contains('GLOW')]
+                source_tag = label.rsplit('_', 1)[-1].upper()
+                plot_x_vs_metrics(df_glow, x_param=x_param,
+                                  metrics=['pct_max_f1'],
+                                  one_vs_rest=False, title=source_tag,
+                                  ylabel=r'$F_1(\hat{r})\;/\;\max_r F_1(r)$')
                 plt.gcf().savefig(path_mf, bbox_inches='tight')
                 plt.close('all')
             else:

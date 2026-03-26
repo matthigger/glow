@@ -95,6 +95,10 @@ class Config:
     #   Example: {'effect_llr': 0.1}  # Use fixed effect_llr when iterating over other params
     fixed_params: Optional[dict] = None
 
+    # -------- plotting --------
+    # which iterated parameter to use as the x-axis when plotting
+    x_param: str = 'effect_llr'
+
     def __post_init__(self):
         self.exp_orig = None
         self.folder = None
@@ -132,7 +136,7 @@ class Config:
         sig = json.dumps(d, sort_keys=True, default=str)
         return hashlib.sha256(sig.encode()).hexdigest()[:12]
 
-    def prep_exp_orig(self, hcp_feats=None, wgn_b=None):
+    def prep_exp_orig(self, hcp_feats=None, wgn_b=None, wgn_num_img=None):
         """prepare the base experiment (HCP or WGN)."""
         if self.source == 'hcp':
             path = get_hcp_path()
@@ -146,42 +150,43 @@ class Config:
                                          add_bias=True)
         elif self.source == 'wgn':
             b = wgn_b if wgn_b is not None else self.wgn_b
+            num_img = wgn_num_img if wgn_num_img is not None else self.wgn_num_img
             self.exp_orig = glow.experiment.Experiment.from_gauss(
                 seed=self.exp_seed,
                 shape=self.wgn_shape,
                 a=self.wgn_a,
                 b=b,
-                num_img=self.wgn_num_img)
+                num_img=num_img)
 
     def get_exp_eff(self, seed, effect_llr, radius=None, hcp_feats=None,
-                    wgn_b=None, roughness=None):
+                    wgn_b=None, wgn_num_img=None, effect_perc=None,
+                    roughness=None):
         """return an experiment with a synthetic effect imposed."""
         # Re-prepare exp_orig if dataset parameters changed or if not yet created
-        # For dataset experiments, we need to recreate exp_orig each time
         # Note: On cloud workers, exp_orig should already be loaded from shared cache
         needs_recreate = (
             self.exp_orig is None or
             (hcp_feats is not None and hcp_feats != getattr(self, '_last_hcp_feats', None)) or
-            (wgn_b is not None and wgn_b != getattr(self, '_last_wgn_b', None))
+            (wgn_b is not None and wgn_b != getattr(self, '_last_wgn_b', None)) or
+            (wgn_num_img is not None and wgn_num_img != getattr(self, '_last_wgn_num_img', None))
         )
         
         if needs_recreate:
-            # On cloud workers, if exp_orig is None and we have a shared cache reference,
-            # this means the worker failed to load it - raise an error
             if hasattr(self, '_shared_exp_s3_key') and self._shared_exp_s3_key and self.exp_orig is None:
                 raise RuntimeError(
                     f'exp_orig is None but shared cache reference exists. '
                     f'Worker should have loaded from: {self._shared_exp_s3_key}'
                 )
-            self.prep_exp_orig(hcp_feats=hcp_feats, wgn_b=wgn_b)
-            # Cache the parameters used
+            self.prep_exp_orig(hcp_feats=hcp_feats, wgn_b=wgn_b,
+                               wgn_num_img=wgn_num_img)
             if hcp_feats is not None:
                 self._last_hcp_feats = hcp_feats
             if wgn_b is not None:
                 self._last_wgn_b = wgn_b
+            if wgn_num_img is not None:
+                self._last_wgn_num_img = wgn_num_img
 
         # trim experiment to reasonable size (for speedup)
-        # Use provided radius or fall back to self.radius
         radius_to_use = radius if radius is not None else self.radius
         if self.crop_n_vox is not None:
             extenter = glow.effect.ExtenterSphere(n_vox=self.crop_n_vox)
@@ -201,7 +206,8 @@ class Config:
         exp = glow.experiment.ExperimentScaled.from_exp(exp)
 
         # sample effect space
-        n = exp.y.shape[2] * self.effect_perc
+        perc = effect_perc if effect_perc is not None else self.effect_perc
+        n = exp.y.shape[2] * perc
         extenter = glow.effect.ExtenterMinVar(n=n)
 
         # impose effect

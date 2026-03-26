@@ -12,25 +12,41 @@ import glow
 from glow.benchmark.file import OUT, ERROR
 
 
-def run_segment(config, **kwargs):
+def _jsonable(v):
+    """coerce numpy scalars / small types to JSON-safe Python types."""
+    if isinstance(v, (np.integer,)):
+        return int(v)
+    if isinstance(v, (np.floating,)):
+        return float(v)
+    if isinstance(v, (np.bool_,)):
+        return bool(v)
+    if isinstance(v, (list, tuple)):
+        return [_jsonable(x) for x in v]
+    return v
+
+
+def _merge_iter_kw(d, iter_kw):
+    """add swept iteration parameters to result dict (skip duplicates)."""
+    for k, v in iter_kw.items():
+        if k not in d:
+            d[k] = _jsonable(v)
+
+
+def run_segment(config, **iter_kw):
     """run Ward's clustering and score against the imposed effect."""
-    # build a particular effect
-    exp, effect = config.get_exp_eff(**kwargs)
+    exp, effect = config.get_exp_eff(**iter_kw)
 
     from glow.experiment.cluster import _MODES
     for mode in _MODES:
-        # cluster
         start = time.time()
         children = glow.experiment.cluster(exp, mode=mode)
         total_time_sec = time.time() - start
 
-        # find best (f1) region
         f1, sens, spec = glow.graph.get_f1_sens_spec(mask=effect.mask,
                                                      mask_idx=exp.mask_idx,
                                                      children=children)
         idx = np.argmax(f1)
 
-        # dump summary
         uuid = str(uuid4())[:8]
         file_out = config.folder / OUT / f'{uuid}_result.json'
         d = {'effect_llr': effect.effect_llr,
@@ -44,32 +60,27 @@ def run_segment(config, **kwargs):
              'vox_effect': int(effect.mask.sum()),
              'time_sec': total_time_sec,
              'config_hash': config._config_hash()}
+        _merge_iter_kw(d, iter_kw)
         file_out.parent.mkdir(exist_ok=True, parents=True)
         with open(file_out, 'w') as f:
             json.dump(d, f, sort_keys=True, indent=4)
 
 
-def run_ana(config, **kwargs):
+def run_ana(config, **iter_kw):
     """run all analyses defined in config.ana_kwargs_dict."""
-    # build a particular effect
-    exp, effect = config.get_exp_eff(**kwargs)
-    exp_roughness = kwargs.get('roughness')
+    exp, effect = config.get_exp_eff(**iter_kw)
 
-    for label, (Ana, kwargs) in config.ana_kwargs_dict.items():
-        # prep output file
+    for ana_label, (Ana, ana_kw) in config.ana_kwargs_dict.items():
         uuid = str(uuid4())[:8]
         file_out = config.folder / OUT / f'{uuid}_result.json'
 
-        # run analysis
         start = time.time()
         if config.error_save:
-            # catch errors and dump to json if any occur (allows us to
-            # continue with experiment in event of errors)
             try:
-                ana = Ana(exp=exp, **kwargs)
+                ana = Ana(exp=exp, **ana_kw)
             except Exception as e:
                 d = {'error_msg': traceback.format_exc(),
-                     'label': label,
+                     'label': ana_label,
                      'method': Ana.__name__,
                      'effect_llr': effect.effect_llr,
                      'seed': int(effect.seed)}
@@ -81,10 +92,8 @@ def run_ana(config, **kwargs):
                 with open(file_out, 'w') as f:
                     json.dump(d, f, sort_keys=True, indent=4)
                 continue
-
         else:
-            # no error catching, will stop all experiments if any error
-            ana = Ana(exp=exp, **kwargs)
+            ana = Ana(exp=exp, **ana_kw)
         total_time_sec = time.time() - start
 
         # build mask of predicted area (union of all effect masks)
@@ -94,7 +103,6 @@ def run_ana(config, **kwargs):
 
         mask_active = exp.mask_idx > -1
 
-        # compute scores
         f1, sens, spec = glow.mask.get_score(mask_pred=mask_pred,
                                              mask_target=effect.mask,
                                              mask_active=mask_active)
@@ -113,35 +121,36 @@ def run_ana(config, **kwargs):
                     pct_max_f1 = float(
                         max(f1_all[i] for i in out_regs) / max_f1_sig)
 
-        # dump summary
+        # minimum FWER-corrected p-value (for type I error calibration)
+        min_pval = float(np.nanmin(ana.pval)) if hasattr(ana, 'pval') else None
+
         d = {'effect_llr': effect.effect_llr,
              'seed': int(effect.seed),
              'stat': ana.get_stat.__name__.replace('get_', ''),
-             'label': label,
+             'label': ana_label,
              'Analysis': Ana.__name__,
              'f1': f1,
              'sens': sens,
              'spec': spec,
              'pct_max_f1': pct_max_f1,
+             'min_pval': min_pval,
              'uuid': uuid,
              'vox_total': int(ana.exp.y.shape[2]),
              'vox_effect': int(effect.mask.sum()),
              'time_sec': total_time_sec,
              'config_hash': config._config_hash()}
-        if exp_roughness is not None:
-            d['roughness'] = float(exp_roughness)
+        _merge_iter_kw(d, iter_kw)
         file_out.parent.mkdir(exist_ok=True, parents=True)
         with open(file_out, 'w') as f:
             json.dump(d, f, sort_keys=True, indent=4)
 
         if config.detail_save:
-            # dump detail
             file_out = config.folder / OUT / f'{uuid}_detail.p.gz'
             with gzip.open(file_out, 'wb') as f:
                 pickle.dump((ana, effect), f)
 
 
-def run_prune_compare(config, **kwargs):
+def run_prune_compare(config, **iter_kw):
     """Run one AnalysisGLOW and apply all four pruning methods.
 
     Emits one JSON result per method with the same schema as run_ana,
@@ -150,7 +159,7 @@ def run_prune_compare(config, **kwargs):
     from glow.experiment.prune import (prune_greedy, prune_dp,
                                        prune_greedy_full_adjust)
 
-    exp, effect = config.get_exp_eff(**kwargs)
+    exp, effect = config.get_exp_eff(**iter_kw)
 
     _, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
 
@@ -172,7 +181,7 @@ def run_prune_compare(config, **kwargs):
 
     mask_active = exp.mask_idx > -1
 
-    for label, (reg_out_list, _info) in methods.items():
+    for prune_label, (reg_out_list, _info) in methods.items():
         mask_pred = np.zeros(ana.exp.mask_idx.shape, dtype=bool)
         for reg_idx in reg_out_list:
             label_map = glow.graph.get_label_map(
@@ -189,7 +198,7 @@ def run_prune_compare(config, **kwargs):
         d = {'effect_llr': effect.effect_llr,
              'seed': int(effect.seed),
              'stat': ana.get_stat.__name__.replace('get_', ''),
-             'label': label,
+             'label': prune_label,
              'Analysis': Ana.__name__,
              'f1': f1,
              'sens': sens,
@@ -201,6 +210,7 @@ def run_prune_compare(config, **kwargs):
              'n_selected': len(reg_out_list),
              'time_sec': total_time_sec,
              'config_hash': config._config_hash()}
+        _merge_iter_kw(d, iter_kw)
         file_out.parent.mkdir(exist_ok=True, parents=True)
         with open(file_out, 'w') as f:
             json.dump(d, f, sort_keys=True, indent=4)
