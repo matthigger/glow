@@ -63,15 +63,17 @@ def _get_x_labels(exp):
     return x, x_names, default_idx
 
 
-def _get_y_labels(exp, feature_names=None):
-    """Return (b, names) for the imaging features.
+def _get_y_labels(exp, y_features=None):
+    """Return human-readable names for each imaging feature.
 
-    If the experiment is ExperimentScaled, labels note they are in
-    pre-processed space.
+    Falls back to ``exp.meta['features']`` when *y_features* is not
+    supplied, then to ``y0, y1, …``.
     """
     b = exp.y.shape[0]
-    if feature_names is not None and len(feature_names) == b:
-        return feature_names[:]
+    if y_features is None:
+        y_features = getattr(exp, 'meta', {}).get('features')
+    if y_features is not None and len(y_features) == b:
+        return list(y_features)
     return [f'y{i}' for i in range(b)]
 
 
@@ -138,8 +140,8 @@ def build_empty_regression():
 
 def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
                             df=None, color_map=None, hover_reg=None,
-                            n_selected=0, feature_names=None,
-                            target_vox=None):
+                            n_selected=0, y_features=None,
+                            subject_names=None, target_vox=None):
     """Build a regression scatter for one or more regions.
 
     Args:
@@ -151,7 +153,8 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
         color_map (dict): reg_idx -> colour palette index
         hover_reg (int|None): region being hovered (drawn translucent)
         n_selected (int): number of selected (non-hover) regions
-        feature_names (list[str]|None): human-readable y feature names
+        y_features (list[str]|None): human-readable imaging feature names
+        subject_names (list[str]|None): per-image subject names for hover
         target_vox (np.array|None): voxel indices for the full target mask.
             When provided, an additional trace with star markers shows
             the target mask's per-image regression.
@@ -168,7 +171,7 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
     num_img = y_orig.shape[1]
 
     x_full, x_names, _ = _get_x_labels(exp)
-    y_names = _get_y_labels(exp, feature_names=feature_names)
+    y_names = _get_y_labels(exp, y_features=y_features)
 
     x_feat_idx = min(x_feat_idx, len(x_names) - 1)
     y_feat_idx = min(y_feat_idx, len(y_names) - 1)
@@ -229,10 +232,12 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
 
         # hover text per image
         region_name = 'Target mask' if is_target else f'Region {reg_idx}'
+        _has_subj = (subject_names and len(subject_names) == num_img)
         hover_texts = []
         for img_i in range(num_img):
+            img_label = subject_names[img_i] if _has_subj else f'image {img_i}'
             parts = [f'<b>{region_name}</b>',
-                     f'image {img_i}',
+                     img_label,
                      f'{x_label} = {x_design[img_i]:.4g}',
                      f'{y_label} (mean) = {y_vals[img_i]:.4g}',
                      f'sd = {y_std[img_i]:.4g}']

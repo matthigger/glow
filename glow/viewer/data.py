@@ -249,7 +249,7 @@ def get_original_y(exp):
     return exp.y
 
 
-def compute_backgrounds(ana_glow, feature_names=None, image_idx=None):
+def compute_backgrounds(ana_glow, y_features=None, image_idx=None):
     """Compute per-feature background images from the experiment data.
 
     Uses original (pre-scaled) intensities so that backgrounds match
@@ -257,9 +257,9 @@ def compute_backgrounds(ana_glow, feature_names=None, image_idx=None):
 
     Args:
         ana_glow (AnalysisGLOW): completed analysis
-        feature_names (list[str] | None): optional human-readable names for
-            each imaging feature.  Length must equal ``b`` (number of
-            features).  Falls back to ``"feature 0"``, ``"feature 1"``, ...
+        y_features (list[str] | None): human-readable names for each
+            imaging feature.  Falls back to ``exp.meta['features']``,
+            then ``"feature 0"``, ``"feature 1"``, ...
         image_idx (int | None): if provided, use a single image (0-indexed)
             instead of the mean across all images.
 
@@ -277,33 +277,35 @@ def compute_backgrounds(ana_glow, feature_names=None, image_idx=None):
         y_mean = y.mean(axis=1)      # (b, num_vox) grand mean
     b = y_mean.shape[0]
 
-    if feature_names is None:
-        feature_names = [f'feature {i}' for i in range(b)]
-    assert len(feature_names) == b, \
-        f'feature_names length {len(feature_names)} != b={b}'
+    if y_features is None:
+        y_features = getattr(exp, 'meta', {}).get('features')
+    if y_features is None:
+        y_features = [f'feature {i}' for i in range(b)]
+    assert len(y_features) == b, \
+        f'y_features length {len(y_features)} != b={b}'
 
     bg_dict = {}
     for feat_idx in range(b):
-        name = feature_names[feat_idx]
+        name = y_features[feat_idx]
         img = np.full(mask_idx.shape, np.nan, dtype=float)
         img[mask_idx >= 0] = y_mean[feat_idx, mask_idx[mask_idx >= 0]]
         bg_dict[name] = img
 
     # RGB composite when the three canonical channels are present (2D only)
     _RGB_CHANNELS = ('red', 'green', 'blue')
-    lower_names = [n.lower() for n in feature_names]
+    lower_names = [n.lower() for n in y_features]
     if (mask_idx.ndim == 2
             and set(lower_names) == set(_RGB_CHANNELS)):
         rgb = np.full((*mask_idx.shape, 3), np.nan, dtype=float)
         for ci, ch_name in enumerate(_RGB_CHANNELS):
             src_idx = lower_names.index(ch_name)
-            rgb[:, :, ci] = bg_dict[feature_names[src_idx]]
+            rgb[:, :, ci] = bg_dict[y_features[src_idx]]
         bg_dict['RGB'] = rgb
 
     return bg_dict
 
 
-def compute_bg_ranges(ana_glow, feature_names=None):
+def compute_bg_ranges(ana_glow, y_features=None):
     """Compute the global (vmin, vmax) for each background key across ALL images.
 
     This ensures the colour scale stays constant regardless of which image
@@ -317,17 +319,19 @@ def compute_bg_ranges(ana_glow, feature_names=None):
     y = get_original_y(exp)  # (b, num_img, num_vox)
     b = y.shape[0]
 
-    if feature_names is None:
-        feature_names = [f'feature {i}' for i in range(b)]
+    if y_features is None:
+        y_features = getattr(exp, 'meta', {}).get('features')
+    if y_features is None:
+        y_features = [f'feature {i}' for i in range(b)]
 
     ranges = {}
     for feat_idx in range(b):
         vals = y[feat_idx][:, mask_idx[mask_idx >= 0]]  # (num_img, valid_vox)
-        ranges[feature_names[feat_idx]] = (
+        ranges[y_features[feat_idx]] = (
             float(np.nanmin(vals)), float(np.nanmax(vals)))
 
     _RGB_CHANNELS = ('red', 'green', 'blue')
-    lower_names = [n.lower() for n in feature_names]
+    lower_names = [n.lower() for n in y_features]
     if mask_idx.ndim == 2 and set(lower_names) == set(_RGB_CHANNELS):
         all_vals = y[:, :, mask_idx[mask_idx >= 0].ravel()]
         ranges['RGB'] = (float(np.nanmin(all_vals)), float(np.nanmax(all_vals)))

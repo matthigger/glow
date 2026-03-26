@@ -144,8 +144,8 @@ class TestComputeBackgrounds:
             bg = compute_backgrounds(ana, image_idx=i)
             assert isinstance(bg, dict)
 
-    def test_feature_names_used_as_keys(self, ana):
+    def test_y_features_used_as_keys(self, ana):
         names = [f'feat_{i}' for i in range(ana.exp.y.shape[0])]
-        bg = compute_backgrounds(ana, feature_names=names)
+        bg = compute_backgrounds(ana, y_features=names)
         for n in names:
             assert n in bg

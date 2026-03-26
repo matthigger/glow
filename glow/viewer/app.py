@@ -202,15 +202,20 @@ def _defaults(generic_cols, sig_cols, prune_cols, mask_cols):
 def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                     slicer0, slicer1, slicer2,
                     x_names=None, y_names=None, num_reg=0,
-                    default_reg_x=0, num_img=0, feat_names=None):
+                    default_reg_x=0, num_img=0, feat_names=None,
+                    subject_names=None):
     """Build layout for 3D data (with dash-slicer ortho views)."""
     all_cols, default_x, default_y, log_val, default_color = _defaults(
         generic_cols, sig_cols, prune_cols, mask_cols)
 
     feat_names = feat_names or []
     image_options = [{'label': 'Mean', 'value': 'mean'}]
-    image_options += [{'label': f'Image {i}', 'value': str(i)}
-                      for i in range(num_img)]
+    if subject_names and len(subject_names) == num_img:
+        image_options += [{'label': subject_names[i], 'value': str(i)}
+                          for i in range(num_img)]
+    else:
+        image_options += [{'label': f'Image {i}', 'value': str(i)}
+                          for i in range(num_img)]
     feat_options = [{'label': n, 'value': str(i)}
                     for i, n in enumerate(feat_names)]
 
@@ -318,7 +323,7 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
 
 def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
                     x_names=None, y_names=None, num_reg=0,
-                    default_reg_x=0, num_img=0):
+                    default_reg_x=0, num_img=0, subject_names=None):
     """Build layout for 2D data (single go.Image view)."""
     all_cols, default_x, default_y, log_val, default_color = _defaults(
         generic_cols, sig_cols, prune_cols, mask_cols)
@@ -326,8 +331,12 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
     bg_default = ('RGB' if 'RGB' in bg_names
                   else bg_names[0] if bg_names else '__none__')
     image_options = [{'label': 'Mean', 'value': 'mean'}]
-    image_options += [{'label': f'Image {i}', 'value': str(i)}
-                      for i in range(num_img)]
+    if subject_names and len(subject_names) == num_img:
+        image_options += [{'label': subject_names[i], 'value': str(i)}
+                          for i in range(num_img)]
+    else:
+        image_options += [{'label': f'Image {i}', 'value': str(i)}
+                          for i in range(num_img)]
 
     _dd_label = {'fontSize': '11px', 'fontWeight': 'bold',
                  'marginBottom': '2px'}
@@ -408,21 +417,29 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
 # App factory
 # ---------------------------------------------------------------------------
 
-def _create_app(ana_glow, mask_target=None, feature_names=None,
-                extra_df=None):
+def _create_app(ana_glow, mask_target=None, y_features=None,
+                subject_names=None, extra_df=None):
     """Create and wire up the Dash app.
 
     Args:
         ana_glow (AnalysisGLOW): completed analysis
         mask_target: optional target mask
-        feature_names (list[str] | None): optional human-readable names for
-            each imaging feature (used in the background dropdown).
+        y_features (list[str] | None): imaging feature names (auto-extracted
+            from ``exp.meta['features']`` when *None*).
+        subject_names (list[str] | None): per-image subject names
+            (auto-extracted from ``exp.meta['subjects']`` when *None*).
         extra_df (pd.DataFrame | None): optional extra per-region data
             (keyed on ``region_idx``) merged into the scatter DataFrame.
 
     Returns:
         app (Dash): configured Dash application
     """
+    meta = getattr(ana_glow.exp, 'meta', {})
+    if y_features is None:
+        y_features = meta.get('features')
+    if subject_names is None:
+        subject_names = meta.get('subjects')
+
     adj_model = getattr(ana_glow, 'adj_model', None)
     adj_beta = getattr(ana_glow, 'adj_beta', None)
     if adj_model is not None and adj_beta is not None:
@@ -449,12 +466,12 @@ def _create_app(ana_glow, mask_target=None, feature_names=None,
     if is_3d:
         _setup_3d(app, ana_glow, df,
                   generic_cols, sig_cols, prune_cols, mask_cols,
-                  feature_names=feature_names,
+                  y_features=y_features, subject_names=subject_names,
                   target_stats=target_stats, target_vox=target_vox)
     else:
         _setup_2d(app, ana_glow, df,
                   generic_cols, sig_cols, prune_cols, mask_cols,
-                  feature_names=feature_names,
+                  y_features=y_features, subject_names=subject_names,
                   target_stats=target_stats, target_vox=target_vox)
 
     return app
@@ -462,7 +479,8 @@ def _create_app(ana_glow, mask_target=None, feature_names=None,
 
 def _setup_3d(app, ana_glow, df,
               generic_cols, sig_cols, prune_cols, mask_cols,
-              feature_names=None, target_stats=None, target_vox=None):
+              y_features=None, subject_names=None,
+              target_stats=None, target_vox=None):
     """Set up the app for 3D data using dash-slicer."""
     from dash_slicer import VolumeSlicer
 
@@ -491,21 +509,22 @@ def _setup_3d(app, ana_glow, df,
         s.graph.style = {'height': '280px'}
 
     _, x_names, default_reg_x = _get_x_labels(ana_glow.exp)
-    y_names = _get_y_labels(ana_glow.exp, feature_names=feature_names)
+    y_names = _get_y_labels(ana_glow.exp, y_features=y_features)
 
     b = ana_glow.exp.y.shape[0]
     num_img = ana_glow.exp.y.shape[1]
     num_reg = ana_glow.exp.y.shape[2] + ana_glow.children.shape[0]
-    if feature_names is None:
+    if y_features is None:
         feat_names = [f'feature {i}' for i in range(b)]
     else:
-        feat_names = list(feature_names)
+        feat_names = list(y_features)
     app.layout = _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                                  slicer0, slicer1, slicer2,
                                  x_names=x_names, y_names=y_names,
                                  num_reg=num_reg,
                                  default_reg_x=default_reg_x,
-                                 num_img=num_img, feat_names=feat_names)
+                                 num_img=num_img, feat_names=feat_names,
+                                 subject_names=subject_names)
 
     # pre-compute target mask in image space for overlays
     mask_target_img = None
@@ -526,7 +545,8 @@ def _setup_3d(app, ana_glow, df,
                              mask_target_img=mask_target_img)
     _register_placeholder_callback(app)
     _register_regression_callback(app, ana_glow, df,
-                                  feature_names=feature_names,
+                                  y_features=y_features,
+                                  subject_names=subject_names,
                                   target_vox=target_vox)
     _register_regression_click_callback(app, 'dd-image-3d')
 
@@ -663,15 +683,16 @@ def _build_overlay(slicer, label_map, visible_list, color_map,
 
 def _setup_2d(app, ana_glow, df,
               generic_cols, sig_cols, prune_cols, mask_cols,
-              feature_names=None, target_stats=None, target_vox=None):
+              y_features=None, subject_names=None,
+              target_stats=None, target_vox=None):
     """Set up the app for 2D data using Plotly go.Image."""
     mask_idx = ana_glow.exp.mask_idx
-    bg_dict = compute_backgrounds(ana_glow, feature_names=feature_names)
-    bg_ranges = compute_bg_ranges(ana_glow, feature_names=feature_names)
+    bg_dict = compute_backgrounds(ana_glow, y_features=y_features)
+    bg_ranges = compute_bg_ranges(ana_glow, y_features=y_features)
     bg_names = list(bg_dict.keys())
 
     _, x_names, default_reg_x = _get_x_labels(ana_glow.exp)
-    y_names = _get_y_labels(ana_glow.exp, feature_names=feature_names)
+    y_names = _get_y_labels(ana_glow.exp, y_features=y_features)
 
     num_reg = ana_glow.exp.y.shape[2] + ana_glow.children.shape[0]
     num_img = ana_glow.exp.y.shape[1]
@@ -680,7 +701,8 @@ def _setup_2d(app, ana_glow, df,
                                  x_names=x_names, y_names=y_names,
                                  num_reg=num_reg,
                                  default_reg_x=default_reg_x,
-                                 num_img=num_img)
+                                 num_img=num_img,
+                                 subject_names=subject_names)
 
     # pre-compute target mask in image space for overlays
     mask_target_img = None
@@ -700,7 +722,8 @@ def _setup_2d(app, ana_glow, df,
                              mask_target_img=mask_target_img)
     _register_placeholder_callback(app)
     _register_regression_callback(app, ana_glow, df,
-                                  feature_names=feature_names,
+                                  y_features=y_features,
+                                  subject_names=subject_names,
                                   target_vox=target_vox)
     _register_regression_click_callback(app, 'dd-image')
 
@@ -725,7 +748,7 @@ def _setup_2d(app, ana_glow, df,
         # resolve background: precomputed mean or single-image on-the-fly
         if image_sel is not None and image_sel != 'mean':
             active_bg = compute_backgrounds(
-                ana_glow, feature_names=feature_names,
+                ana_glow, y_features=y_features,
                 image_idx=int(image_sel))
         else:
             active_bg = bg_dict
@@ -967,8 +990,8 @@ def _register_placeholder_callback(app):
     pass
 
 
-def _register_regression_callback(app, ana_glow, df, feature_names=None,
-                                   target_vox=None):
+def _register_regression_callback(app, ana_glow, df, y_features=None,
+                                   subject_names=None, target_vox=None):
     """Regression scatter: visible regions + hover + axis dropdowns -> figure.
 
     Colours match the slicer overlay (same palette index per region).
@@ -1010,7 +1033,8 @@ def _register_regression_callback(app, ana_glow, df, feature_names=None,
             color_map=color_map,
             hover_reg=hover_reg,
             n_selected=n_selected,
-            feature_names=feature_names,
+            y_features=y_features,
+            subject_names=subject_names,
             target_vox=target_vox,
         )
 
@@ -1160,7 +1184,8 @@ def _wait_for_port(port, socket_mod, timeout=5.0):
 
 
 def launch(ana_glow, mask_target=None, port=8050, debug=False,
-           feature_names=None, extra_df=None, quiet=True):
+           y_features=None, subject_names=None,
+           extra_df=None, quiet=True):
     """Launch the glow viewer dashboard.
 
     Args:
@@ -1171,8 +1196,12 @@ def launch(ana_glow, mask_target=None, port=8050, debug=False,
         port (int): server port
         debug (bool): enable Dash debug mode (hot-reload).  If True,
             consider setting dev_tools_props_check=False for performance.
-        feature_names (list[str] | None): optional human-readable names for
-            each imaging feature (used in the background dropdown).
+        y_features (list[str] | None): human-readable names for each
+            imaging feature.  When *None*, extracted from
+            ``ana_glow.exp.meta['features']`` if available.
+        subject_names (list[str] | None): human-readable names for each
+            image / subject.  When *None*, extracted from
+            ``ana_glow.exp.meta['subjects']`` if available.
         extra_df (pd.DataFrame | None): optional extra per-region data
             (keyed on ``region_idx``) merged into the scatter DataFrame.
         quiet (bool): suppress Dash/Werkzeug request logs.
@@ -1187,7 +1216,8 @@ def launch(ana_glow, mask_target=None, port=8050, debug=False,
         logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
     app = _create_app(ana_glow, mask_target=mask_target,
-                      feature_names=feature_names, extra_df=extra_df)
+                      y_features=y_features, subject_names=subject_names,
+                      extra_df=extra_df)
 
     # clean shutdown on Ctrl+C (and SIGTERM on Unix)
     def _shutdown(signum, frame):

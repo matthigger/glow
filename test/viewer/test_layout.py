@@ -100,7 +100,7 @@ class TestComputeBackgroundsImageIdx:
     def test_named_features(self, ana_2d):
         b = ana_2d.exp.y.shape[0]
         names = [f'ch{i}' for i in range(b)]
-        bg = compute_backgrounds(ana_2d, feature_names=names, image_idx=0)
+        bg = compute_backgrounds(ana_2d, y_features=names, image_idx=0)
         for n in names:
             assert n in bg
 
@@ -166,7 +166,7 @@ class TestLayout3DMultiFeature:
                          y=exp_img.y, mask_idx=exp_img.mask_idx,
                          add_bias=True)
         ana = AnalysisGLOW(exp, n_perm_fwer=3, verbose=False)
-        return _create_app(ana, feature_names=['feat_A', 'feat_B'])
+        return _create_app(ana, y_features=['feat_A', 'feat_B'])
 
     @pytest.fixture(scope='class')
     def layout(self, app_3d_multi):
