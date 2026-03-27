@@ -9,7 +9,7 @@ dimensions, not the number of permutations.
 Memory is estimated by a Lasso regression fitted on actual peak-RSS
 measurements across a grid of `(num_vox, b, num_img)` values.  The
 fitted coefficients are stored in
-[`memory_permutation.json`](memory_permutation.json) and loaded at runtime by
+[`memory_permutation.json`](../glow/aws/memory_permutation.json) and loaded at runtime by
 `AWSBatchRunner.estimate_memory_mb`.
 
 To re-run the profiling benchmark and refit the model:
@@ -34,14 +34,14 @@ and stat-array overhead that scales with voxel count).
 A **second** regression is used for the **experiment worker** (paper/config
 path), which runs the full experiment (`config.run_fnc(config, **kwargs)`)
 in one process — all permutations and analyses serially.  The same script
-[`glow.benchmark.memory`](../benchmark/memory.py) has an **experiment**
+[`glow.benchmark.memory`](../glow/benchmark/memory.py) has an **experiment**
 profile:
 
     python -m glow.benchmark.memory --profile experiment
 
 This runs a grid of `(num_vox, b, num_img, n_perm)`, measures peak RSS for
 full `run_ana` in a subprocess, fits a Lasso regression, and saves
-[`memory_experiment.json`](memory_experiment.json).
+[`memory_experiment.json`](../glow/aws/memory_experiment.json).
 `AWSBatchRunner.estimate_experiment_memory_mb` loads that model when
 submitting experiment jobs.
 
