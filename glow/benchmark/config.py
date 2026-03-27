@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Literal, Optional, Tuple, List
 import hashlib
 import json
+import math
 
 import numpy as np
 import pandas as pd
@@ -463,6 +464,21 @@ class Config:
         runner.upload_config(self, run_id)
         runner.upload_all_kwargs(run_id, uncached)
 
+        # estimate per-job timeout from runtime models
+        timeout_minutes = None
+        try:
+            from glow.benchmark.runtime import estimate_timeout_minutes
+            est = estimate_timeout_minutes(self)
+            if est is not None:
+                timeout_minutes = int(math.ceil(est[0]))
+                est_min = est[1]
+                tag = ' (upper bound)' if est[2] else ''
+                if verbose:
+                    print(f'  Estimated runtime: {est_min:.1f} min/job{tag}'
+                          f'  ->  timeout: {timeout_minutes} min')
+        except Exception:
+            pass
+
         # submit jobs in parallel (API calls are I/O-bound)
         job_ids = []
         job_exp_idx = {}
@@ -472,7 +488,8 @@ class Config:
 
         def _submit(exp_idx):
             return exp_idx, runner.submit_experiment_job(
-                run_id=run_id, exp_idx=exp_idx, memory_mb=memory_mb)
+                run_id=run_id, exp_idx=exp_idx, memory_mb=memory_mb,
+                timeout_minutes=timeout_minutes)
 
         with ThreadPoolExecutor(max_workers=16) as pool:
             futures = {pool.submit(_submit, idx): idx

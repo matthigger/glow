@@ -98,6 +98,42 @@ def monitor_all_jobs(all_job_info, all_job_ids, job_info_map):
             runner.monitor_jobs(all_job_ids, job_info_map=job_info_map)
 
 
+def _download_partial_results(runner, run_id, folder):
+    """Download individual result JSONs from the ``partial/`` S3 prefix.
+
+    These are uploaded by the worker as each analysis finishes, so they
+    survive even when the job times out before the tar.gz is created.
+    Returns the number of files downloaded.
+    """
+    from pathlib import Path
+
+    bucket = runner.config.s3_bucket
+    prefix = f'{runner.config.s3_prefix}/{run_id}/partial/'
+    folder = Path(folder)
+    count = 0
+
+    try:
+        paginator = runner.s3.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get('Contents', []):
+                key = obj['Key']
+                if not key.endswith('_result.json'):
+                    continue
+                rel = key[len(prefix):]
+                parts = rel.split('/', 1)
+                if len(parts) < 2:
+                    continue
+                local_path = folder / parts[1]
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                response = runner.s3.get_object(Bucket=bucket, Key=key)
+                local_path.write_bytes(response['Body'].read())
+                count += 1
+    except Exception:
+        pass
+
+    return count
+
+
 def download_remaining_results(all_job_info):
     print('\n' + '=' * 60)
     print('[PHASE 3] Downloading any remaining results...')
@@ -123,6 +159,102 @@ def download_remaining_results(all_job_info):
         except Exception as e:
             print(f'  ⚠ Could not check/download remaining results: {e}')
 
+        # recover partial results from timed-out jobs
+        try:
+            n_partial = _download_partial_results(
+                runner, job_info['run_id'], job_info['folder'])
+            if n_partial:
+                print(f'  ✓ Recovered {n_partial} partial result(s) for '
+                      f'{job_info["label"]}')
+        except Exception as e:
+            print(f'  ⚠ Could not recover partial results: {e}')
+
+
+VCPU_HOUR_COST = 0.02
+
+
+def _count_uncached_jobs(config):
+    """Return number of experiments that still need to run."""
+    kwargs_list = list(config.iter_kwargs())
+    uncached = config._filter_uncached(kwargs_list, verbose=False)
+    return len(uncached)
+
+
+def _print_cost_summary(configs, cloud_config):
+    """Print estimated runtime/cost table and return True if user confirms."""
+    from glow.benchmark.runtime import estimate_timeout_minutes
+
+    vcpus = cloud_config.vcpus
+    has_models = True
+    rows = []
+    upper_bound_labels = set()
+
+    for config in configs:
+        n_jobs = _count_uncached_jobs(config)
+        est = None
+        try:
+            est = estimate_timeout_minutes(config)
+        except Exception:
+            pass
+
+        if est is None:
+            has_models = False
+            rows.append((config.label, n_jobs, None, None, None))
+        else:
+            timeout_min, est_min, is_ub = est
+            cost = n_jobs * (est_min / 60.0) * vcpus * VCPU_HOUR_COST
+            rows.append((config.label, n_jobs, est_min, timeout_min, cost))
+            if is_ub:
+                upper_bound_labels.add(config.label)
+
+    total_jobs = sum(r[1] for r in rows)
+    total_cost = sum(r[4] for r in rows if r[4] is not None)
+    default_timeout = cloud_config.timeout_minutes
+
+    # header
+    print('\n' + '=' * 72)
+    print('  ESTIMATED COST SUMMARY')
+    print('=' * 72)
+
+    if not has_models:
+        print(f'\n  No runtime models found. Using default timeout '
+              f'({default_timeout} min).')
+        print('  Run: python -m glow.benchmark.runtime --profile experiment')
+        print()
+
+    hdr = f'  {"Config":<24} {"Jobs":>5}  {"Est/job":>10}  ' \
+          f'{"Timeout":>10}  {"Est. cost":>10}'
+    print(hdr)
+    print('  ' + '-' * 68)
+
+    for label, n_jobs, est_min, timeout_min, cost in rows:
+        ub = ' *' if label in upper_bound_labels else '  '
+        if est_min is not None:
+            prefix = '<' if label in upper_bound_labels else '~'
+            est_str = f'{prefix}{est_min:>5.0f} min'
+            to_str = f'{timeout_min:>5.0f} min'
+            cost_str = f'${cost:>7.2f}'
+        else:
+            est_str = f'{"?":>9}'
+            to_str = f'{default_timeout:>5} min'
+            cost_str = f'{"?":>8}'
+        print(f'  {label:<24} {n_jobs:>5}  {est_str:>10}  '
+              f'{to_str:>10}  {cost_str:>10}{ub}')
+
+    print('  ' + '-' * 68)
+    cost_total_str = f'${total_cost:>.2f}' if has_models else '?'
+    print(f'  {"Total":<24} {total_jobs:>5}  '
+          f'{"":>10}  {"":>10}  {cost_total_str:>10}')
+
+    if upper_bound_labels:
+        print(f'\n  * upper bound (run_segment / similar is faster than '
+              f'run_ana)')
+
+    print('=' * 72)
+
+    resp = input('\n  Proceed? [y/N] ').strip().lower()
+    return resp == 'y'
+
 
 def run_cloud(configs):
     cloud_config = load_cloud_config()
@@ -132,6 +264,10 @@ def run_cloud(configs):
     print('=' * 60)
     print('Cloud execution enabled - parallel submission mode')
     print('=' * 60)
+
+    if not _print_cost_summary(configs, cloud_config):
+        print('\nAborted.')
+        return
 
     all_job_info = submit_all_jobs(configs)
     all_job_ids, job_info_map = build_job_info_map(all_job_info)

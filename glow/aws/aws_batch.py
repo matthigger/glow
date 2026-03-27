@@ -1155,7 +1155,8 @@ class AWSBatchRunner:
             raise RuntimeError(f'failed to upload kwargs: {e}')
 
     def submit_experiment_job(self, run_id: str, exp_idx: int,
-                             memory_mb: Optional[int] = None) -> str:
+                             memory_mb: Optional[int] = None,
+                             timeout_minutes: Optional[int] = None) -> str:
         """Submit a single experiment job to AWS Batch.
 
         Kwargs are read by the worker from the bulk ``all_kwargs.pkl`` file
@@ -1165,10 +1166,15 @@ class AWSBatchRunner:
             run_id: unique run identifier
             exp_idx: experiment index
             memory_mb: optional memory override for OOM tier escalation
+            timeout_minutes: per-job timeout override (falls back to
+                ``self.config.timeout_minutes``)
 
         Returns:
             job_id: AWS Batch job ID
         """
+        if timeout_minutes is None:
+            timeout_minutes = self.config.timeout_minutes
+
         job_name = f'glow_{run_id}_exp{exp_idx:06d}'
         overrides = {
             'command': [
@@ -1190,7 +1196,7 @@ class AWSBatchRunner:
                 jobName=job_name,
                 jobQueue=self.config.job_queue,
                 jobDefinition=self.config.job_definition,
-                timeout={'attemptDurationSeconds': self.config.timeout_minutes * 60},
+                timeout={'attemptDurationSeconds': timeout_minutes * 60},
                 retryStrategy={'attempts': self.config.retry_attempts},
                 containerOverrides=overrides
             )

@@ -1,21 +1,30 @@
-"""Cloud runtime benchmark: AnalysisGLOW at varying HCP voxel counts.
+"""Cloud runtime benchmarks and timeout estimation.
 
-Runs in permutation mode on AWS Batch.  For each voxel count, n_perm + 1
-jobs are launched (one per permutation plus a synthesis worker that polls
-S3 and runs ``_finalize_analysis``).  Each permutation worker records its
-own wall-clock time; the synthesis worker collects these and records its
-own timing, attaching both to the final analysis object.
+Two profiling modes (selected by ``--profile``):
+
+  permutation (default)
+      Per-permutation timing of AnalysisGLOW at varying HCP voxel counts.
+      For each voxel count, n_perm + 1 jobs are launched (one per
+      permutation plus a synthesis worker).  Each permutation worker
+      records its own wall-clock time.
+
+  experiment
+      Full ``run_ana`` timing on WGN across a grid of (num_vox, b,
+      num_img, n_perm) for GLOW, VBA, and VBA-TFCE independently.
+      Fits per-analysis-type Lasso regression models and saves them as
+      JSON files used by :func:`estimate_timeout_minutes`.
 
 Usage::
 
-    python -m glow.benchmark.runtime
-    python -m glow.benchmark.runtime --min-voxels 500 --max-voxels 5000 --n-steps 5
+    python -m glow.benchmark.runtime                         # permutation (default)
+    python -m glow.benchmark.runtime --profile experiment    # fit runtime models
 """
 
 import argparse
 import configparser
 import json
 import shutil
+from itertools import product
 from pathlib import Path
 from uuid import uuid4
 
@@ -25,6 +34,146 @@ from platformdirs import user_data_dir
 import glow
 from glow.aws.aws_batch import AWSBatchRunner, CloudConfig
 from glow.experiment.mancova import get_llr
+
+
+# ---------------------------------------------------------------------------
+# Runtime model paths and constants
+# ---------------------------------------------------------------------------
+
+RUNTIME_MODEL_DIR = Path(__file__).resolve().parent.parent / 'aws'
+RUNTIME_MODEL_PATHS = {
+    'GLOW': RUNTIME_MODEL_DIR / 'runtime_glow.json',
+    'VBA': RUNTIME_MODEL_DIR / 'runtime_vba.json',
+    'VBA-TFCE': RUNTIME_MODEL_DIR / 'runtime_vba_tfce.json',
+}
+RUNTIME_FEATURE_COLS = ['num_vox', 'b', 'num_img', 'n_perm']
+
+
+# ---------------------------------------------------------------------------
+# Load / predict runtime models
+# ---------------------------------------------------------------------------
+
+def load_runtime_model(analysis_type):
+    """Load a fitted runtime model for *analysis_type*, or ``None``.
+
+    *analysis_type* is one of ``'GLOW'``, ``'VBA'``, ``'VBA-TFCE'``.
+    """
+    from glow.benchmark.memory import load_model
+    path = RUNTIME_MODEL_PATHS.get(analysis_type)
+    if path is None:
+        return None
+    return load_model(path)
+
+
+def predict_runtime_sec(model, num_vox, b, num_img, n_perm):
+    """Predict runtime in seconds from a fitted runtime model dict."""
+    from glow.benchmark.memory import _apply_poly_model
+    return _apply_poly_model(
+        model, RUNTIME_FEATURE_COLS,
+        num_vox=num_vox, b=b, num_img=num_img, n_perm=n_perm,
+    )
+
+
+def _get_analysis_type(Ana, ana_kw):
+    """Map (AnalysisClass, kwargs) to a runtime model key."""
+    name = Ana.__name__
+    if name == 'AnalysisGLOW':
+        return 'GLOW'
+    if name == 'AnalysisVBA':
+        return 'VBA-TFCE' if ana_kw.get('tfce_flag', False) else 'VBA'
+    return None
+
+
+def _get_total_perms(Ana, ana_kw):
+    """Total permutations for an analysis (including size-adjust for GLOW)."""
+    n = ana_kw.get('n_perm_fwer', 100)
+    if Ana.__name__ == 'AnalysisGLOW':
+        n += ana_kw.get('n_perm_fwer_size_adjust', 0)
+    return n
+
+
+def _get_config_dimensions(config):
+    """Extract ``(num_vox, b, num_img)`` from a Config."""
+    if config.source == 'wgn':
+        num_vox = config.crop_n_vox
+        if num_vox is None:
+            num_vox = int(np.prod(config.wgn_shape))
+        return num_vox, config.wgn_b, config.wgn_num_img
+
+    num_vox = config.crop_n_vox or 50_000
+    b = len(config.hcp_feats)
+    if config.exp_orig is not None:
+        num_img = config.exp_orig.y.shape[1]
+    else:
+        num_img = 100
+    return num_vox, b, num_img
+
+
+def estimate_timeout_minutes(config, safety_factor=2.5):
+    """Estimate per-job timeout for *config*'s experiment jobs.
+
+    Returns ``(timeout_minutes, estimated_minutes, is_upper_bound)`` or
+    ``None`` if no fitted runtime models are available.
+    """
+    from glow.benchmark.run import (run_ana, run_prune_compare, run_segment,
+                                     run_mancova, run_vba_tfce_compare)
+
+    num_vox, b, num_img = _get_config_dimensions(config)
+    total_sec = 0.0
+    is_upper_bound = False
+
+    if config.run_fnc in (run_ana, run_prune_compare):
+        items = list(config.ana_kwargs_dict.items())
+        if config.run_fnc is run_prune_compare:
+            items = items[:1]
+        for _label, (Ana, ana_kw) in items:
+            atype = _get_analysis_type(Ana, ana_kw)
+            if atype is None:
+                return None
+            model = load_runtime_model(atype)
+            if model is None:
+                return None
+            n_perm = _get_total_perms(Ana, ana_kw)
+            total_sec += max(0.0, predict_runtime_sec(
+                model, num_vox, b, num_img, n_perm))
+
+    elif config.run_fnc is run_mancova:
+        _, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
+        model = load_runtime_model('GLOW')
+        if model is None:
+            return None
+        n_perm = _get_total_perms(Ana, ana_kw)
+        total_sec = max(0.0, predict_runtime_sec(
+            model, num_vox, b, num_img, n_perm))
+
+    elif config.run_fnc is run_vba_tfce_compare:
+        _, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
+        model = load_runtime_model('VBA-TFCE')
+        if model is None:
+            return None
+        n_perm = _get_total_perms(Ana, ana_kw)
+        total_sec = max(0.0, predict_runtime_sec(
+            model, num_vox, b, num_img, n_perm))
+
+    elif config.run_fnc is run_segment:
+        model = load_runtime_model('GLOW')
+        if model is None:
+            return None
+        total_sec = max(0.0, predict_runtime_sec(
+            model, num_vox, b, num_img, 100))
+        is_upper_bound = True
+
+    else:
+        return None
+
+    estimated_min = total_sec / 60.0
+    timeout_min = max(15.0, estimated_min * safety_factor)
+    return timeout_min, estimated_min, is_upper_bound
+
+
+# ---------------------------------------------------------------------------
+# Permutation benchmark helpers (existing)
+# ---------------------------------------------------------------------------
 
 def _ana_kwargs(n_perm):
     return dict(
@@ -113,28 +262,8 @@ def _save_experiment_result(runner, experiment_id, meta, out_dir, n_perm,
           f'median perm {med_str}, synthesis {syn_str}')
 
 
-def parse_args():
-    p = argparse.ArgumentParser(
-        description='Cloud runtime benchmark for AnalysisGLOW vs voxel count')
-    p.add_argument('--min-voxels', type=int, default=1000,
-                   help='smallest voxel count (default: 1000)')
-    p.add_argument('--max-voxels', type=int, default=None,
-                   help='largest voxel count (default: all voxels in HCP mask)')
-    p.add_argument('--n-steps', type=int, default=10,
-                   help='number of log-spaced voxel counts from min to max '
-                        '(default: 10)')
-    p.add_argument('--n-perm', type=int, default=100,
-                   help='number of permutations per experiment (default: 100)')
-    p.add_argument('--effect-llr', type=float, default=0.1,
-                   help='size-normalized LLR of imposed effect (default: 0.1, '
-                        '0 for null)')
-    p.add_argument('--effect-perc', type=float, default=0.2,
-                   help='fraction of voxels in effect sphere (default: 0.2)')
-    return p.parse_args()
-
-
-def main():
-    args = parse_args()
+def main_permutation(args):
+    """Run permutation-mode runtime benchmark on HCP (existing behaviour)."""
     cloud_config = load_cloud_config()
     runner = AWSBatchRunner(cloud_config)
 
@@ -220,6 +349,197 @@ def main():
     runner.monitor_jobs(all_job_ids, job_info_map=job_info_map)
 
     print(f'\nResults saved to: {out_dir}')
+
+
+# ---------------------------------------------------------------------------
+# Experiment runtime profiling (run on AWS)
+# ---------------------------------------------------------------------------
+
+def _build_runtime_profile_configs(cloud_config):
+    """Build Config objects for the runtime profiling grid."""
+    from glow.benchmark.config import Config
+    from glow.benchmark.run import run_ana
+
+    vox_targets = np.geomspace(500, 50_000, 6).round().astype(int).tolist()
+    b_values = [1, 2, 4]
+    img_values = [25, 50, 100]
+    n_perm_values = [100, 500, 1050]
+
+    max_side = 40  # 40^3 = 64000, larger than any vox target
+
+    common = dict(
+        source='wgn',
+        run_fnc=run_ana,
+        n_seed=1,
+        effect_llr_all=np.array([0.05]),
+        effect_perc=0.2,
+        wgn_shape=(max_side, max_side, max_side),
+        wgn_a=2,
+        n_jobs=1,
+        detail_save=False,
+        error_save=False,
+        cloud_config=cloud_config,
+    )
+
+    configs = []
+    for n_perm, b, num_img, vox in product(
+            n_perm_values, b_values, img_values, vox_targets):
+        n_sa = min(50, n_perm // 4)
+        n_fwer_glow = n_perm - n_sa
+
+        configs.append(Config(
+            label=f'rtprof_glow_{vox}v_{b}b_{num_img}i_{n_perm}p',
+            ana_kwargs_dict={'GLOW': (
+                glow.experiment.AnalysisGLOW,
+                dict(n_perm_fwer=n_fwer_glow,
+                     n_perm_fwer_size_adjust=n_sa,
+                     alpha_fwer=0.05, min_size=1),
+            )},
+            wgn_b=b, wgn_num_img=num_img, crop_n_vox=vox,
+            **common,
+        ))
+
+        configs.append(Config(
+            label=f'rtprof_vba_{vox}v_{b}b_{num_img}i_{n_perm}p',
+            ana_kwargs_dict={'VBA': (
+                glow.experiment.AnalysisVBA,
+                dict(n_perm_fwer=n_perm, tfce_flag=False,
+                     alpha_fwer=0.05),
+            )},
+            wgn_b=b, wgn_num_img=num_img, crop_n_vox=vox,
+            **common,
+        ))
+
+        configs.append(Config(
+            label=f'rtprof_vba_tfce_{vox}v_{b}b_{num_img}i_{n_perm}p',
+            ana_kwargs_dict={'VBA-TFCE': (
+                glow.experiment.AnalysisVBA,
+                dict(n_perm_fwer=n_perm, tfce_flag=True,
+                     alpha_fwer=0.05),
+            )},
+            wgn_b=b, wgn_num_img=num_img, crop_n_vox=vox,
+            **common,
+        ))
+
+    return configs
+
+
+def _collect_runtime_results(configs):
+    """Collect timing data from completed profiling results."""
+    from glow.benchmark.file import load_update_all
+    import pandas as pd
+
+    rows = []
+    for config in configs:
+        df, _folder, _ = load_update_all(config.label, verbose=False)
+        if df.empty:
+            continue
+        _label, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
+        n_perm = _get_total_perms(Ana, ana_kw)
+        for _, row in df.iterrows():
+            rows.append({
+                'num_vox': int(row.get('vox_total', 0)),
+                'b': config.wgn_b,
+                'num_img': config.wgn_num_img,
+                'n_perm': n_perm,
+                'analysis_type': str(row['label']),
+                'time_sec': float(row['time_sec']),
+            })
+
+    return pd.DataFrame(rows)
+
+
+def _fit_runtime_models(df):
+    """Fit per-analysis-type Lasso regression models on timing data."""
+    from glow.benchmark.memory import fit_poly_lasso
+
+    models = {}
+    for analysis_type, path in RUNTIME_MODEL_PATHS.items():
+        df_type = df[df['analysis_type'] == analysis_type]
+        if df_type.empty:
+            print(f'  no data for {analysis_type}, skipping')
+            continue
+        print(f'\n  Fitting {analysis_type} model ({len(df_type)} points)...')
+        models[analysis_type] = fit_poly_lasso(
+            df_type,
+            feature_cols=RUNTIME_FEATURE_COLS,
+            target_col='time_sec',
+            model_path=path,
+        )
+    return models
+
+
+def main_experiment_profile():
+    """Run experiment-mode runtime profiling on AWS and fit models."""
+    cloud_config = load_cloud_config()
+    cloud_config.timeout_minutes = 360
+    cloud_config.retry_attempts = 1
+
+    configs = _build_runtime_profile_configs(cloud_config)
+    n_grid = len(configs) // 3
+    print(f'Runtime profiling: {len(configs)} experiment jobs')
+    print(f'  ({n_grid} grid points x 3 analysis types)')
+
+    from glow.benchmark.paper import (submit_all_jobs, build_job_info_map,
+                                       monitor_all_jobs,
+                                       download_remaining_results)
+
+    all_job_info = submit_all_jobs(configs)
+    all_job_ids, job_info_map = build_job_info_map(all_job_info)
+    monitor_all_jobs(all_job_info, all_job_ids, job_info_map)
+    download_remaining_results(all_job_info)
+
+    print('\n' + '=' * 60)
+    print('Fitting runtime models...')
+    print('=' * 60)
+
+    df = _collect_runtime_results(configs)
+    if df.empty:
+        print('  no results collected')
+        return
+
+    print(f'  collected {len(df)} timing measurements')
+    models = _fit_runtime_models(df)
+
+    if models:
+        print('\n  Sample predictions:')
+        for atype in ['GLOW', 'VBA', 'VBA-TFCE']:
+            model = load_runtime_model(atype)
+            if model:
+                pred = predict_runtime_sec(model, 50000, 2, 100, 1050)
+                print(f'    {atype}: (50k vox, b=2, 100 img, '
+                      f'1050 perm) -> {pred:.0f}s ({pred / 60:.1f} min)')
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def parse_args():
+    p = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument(
+        '--profile', choices=['permutation', 'experiment'],
+        default='permutation',
+        help='Profile mode (default: permutation)',
+    )
+    p.add_argument('--min-voxels', type=int, default=1000)
+    p.add_argument('--max-voxels', type=int, default=None)
+    p.add_argument('--n-steps', type=int, default=10)
+    p.add_argument('--n-perm', type=int, default=100)
+    p.add_argument('--effect-llr', type=float, default=0.1)
+    p.add_argument('--effect-perc', type=float, default=0.2)
+    return p.parse_args()
+
+
+def main():
+    args = parse_args()
+    if args.profile == 'experiment':
+        main_experiment_profile()
+    else:
+        main_permutation(args)
 
 
 if __name__ == '__main__':
