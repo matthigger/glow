@@ -183,7 +183,8 @@ class Analysis:
 
 class AnalysisVBA(Analysis):
     def __init__(self, exp, n_perm_fwer, alpha_fwer=.05, verbose=False,
-                 tfce_flag=False, conn=None, n_jobs_perm=1, **kwargs):
+                 tfce_flag=False, z_flag=False, conn=None, n_jobs_perm=1,
+                 **kwargs):
         """
         Args:
             exp: Experiment to analyze
@@ -191,14 +192,27 @@ class AnalysisVBA(Analysis):
             alpha_fwer: Family-wise error rate
             verbose: Print progress
             tfce_flag: Apply TFCE enhancement
+            z_flag: Z-score voxel-wise using the permutation null before
+                TFCE.  Makes the null distribution spatially homogeneous
+                (pivotal), improving power under max-stat correction.
             conn: Connectivity for clustering
             n_jobs_perm: Number of parallel jobs for permutations (1=serial, -1=all cores)
         """
         super().__init__(exp, n_jobs_perm=n_jobs_perm, **kwargs)
         self.tfce_flag = tfce_flag
+        self.z_flag = z_flag
 
         # compute stat per each voxel (for every permutation)
         self.stat = self.get_stat_perm(exp, n_perm=n_perm_fwer, children=None)
+
+        # orient so that larger values = more evidence against H0
+        sign = stat_sign.get(self.get_stat, 1)
+        if sign != 1:
+            self.stat = sign * self.stat
+
+        # z-score voxel-wise using the permutation null
+        if self.z_flag:
+            self.stat = self.z_score_stat(self.stat)
 
         # apply TFCE per image
         if self.tfce_flag:
@@ -256,6 +270,25 @@ class AnalysisVBA(Analysis):
                                                           mask_idx=mask_idx)
 
         return tfce
+
+    @classmethod
+    def z_score_stat(cls, stat):
+        """Z-score a (n_perm+1, num_vox) stat matrix using permutation null.
+
+        Assumes stat is already oriented (larger = more evidence).
+        Rows 1: are the permutation null; all rows are standardized.
+
+        Args:
+            stat (np.array): (n_perm+1, num_vox) statistics
+
+        Returns:
+            z (np.array): same shape, voxel-wise z-scored
+        """
+        null = stat[1:, :]
+        mu = np.nanmean(null, axis=0)
+        sigma = np.nanstd(null, axis=0, ddof=1)
+        sigma[sigma < 1e-12] = 1.0
+        return (stat - mu) / sigma
 
     @classmethod
     def discover_mask(cls, mask, exp):

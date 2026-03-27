@@ -324,6 +324,67 @@ def run_mancova(config, **iter_kw):
                         f'GLOW-{name}', total_time, iter_kw)
 
 
+def run_vba_tfce_compare(config, **iter_kw):
+    """Run VBA-TFCE with all 5 MANCOVA stats x {raw, z-scored}.
+
+    Computes all stats from a single voxel walk (shared E/H), then
+    loops over 10 variants: 5 stats x {raw, z}.  Each variant gets
+    stat_sign orientation, optional z-scoring, TFCE, and FWER p-values.
+    """
+    from glow.experiment.analysis import Analysis, AnalysisVBA
+    from glow.experiment.mancova import (
+        stat_dict, stat_dict_inv, stat_sign)
+
+    exp, effect = config.get_exp_eff(**iter_kw)
+    start = time.time()
+
+    stat_fns = list(stat_dict.values())
+    _, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
+    n_perm_fwer = ana_kw['n_perm_fwer']
+    alpha_fwer = ana_kw.get('alpha_fwer', 0.05)
+
+    # one voxel walk, all 5 stats
+    multi = Analysis.get_stat_perm_multi(
+        exp, stat_fns, n_perm=n_perm_fwer, children=None)
+    walk_time = time.time() - start
+
+    for fn in stat_fns:
+        name = stat_dict_inv[fn]
+        sign = stat_sign.get(fn, 1)
+
+        for z_flag in [False, True]:
+            tfce_start = time.time()
+            stat = multi[fn].copy()
+
+            # orient so larger = more evidence
+            if sign != 1:
+                stat = sign * stat
+
+            if z_flag:
+                stat = AnalysisVBA.z_score_stat(stat)
+
+            stat = AnalysisVBA.apply_tfce(stat=stat, mask_idx=exp.mask_idx)
+
+            pval = Analysis.get_pval(stat)
+
+            mask = np.zeros(exp.mask_idx.shape, dtype=bool)
+            mask[exp.mask_idx > -1] = pval <= alpha_fwer
+            effect_list = AnalysisVBA.discover_mask(mask=mask, exp=exp)
+
+            total_time = walk_time + (time.time() - tfce_start)
+
+            ana = object.__new__(AnalysisVBA)
+            ana.get_stat = fn
+            ana.exp = exp
+            ana.stat = stat
+            ana.pval = pval
+            ana.effect_list = effect_list
+
+            suffix = '-z' if z_flag else ''
+            _score_and_emit(ana, effect, config,
+                            f'VBA-TFCE-{name}{suffix}', total_time, iter_kw)
+
+
 if __name__ == '__main__':
     from glow.benchmark.config import Config
 
