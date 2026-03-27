@@ -89,7 +89,7 @@ if [ "$PROMPT_USER" = true ]; then
     echo ""
     echo -e "What would you like to clean?"
     echo ""
-    read -p "Clear RUNNABLE and RUNNING jobs from queue? (yes/no): " -r
+    read -p "Clear all active jobs from queue? (yes/no): " -r
     if [[ $REPLY =~ ^[Yy][Ee][Ss]$ ]]; then
         CLEAR_QUEUE=true
     else
@@ -220,18 +220,24 @@ try:
     
     for status in all_statuses:
         try:
-            response = batch.list_jobs(
-                jobQueue='${JOB_QUEUE}',
-                jobStatus=status,
-                maxResults=1000
-            )
-            jobs = response['jobSummaryList']
-            count = len(jobs)
-            status_counts[status] = count
-            all_jobs.extend([(j['jobId'], j['jobName'], status) for j in jobs])
+            next_token = None
+            while True:
+                kwargs = dict(
+                    jobQueue='${JOB_QUEUE}',
+                    jobStatus=status,
+                    maxResults=100,
+                )
+                if next_token:
+                    kwargs['nextToken'] = next_token
+                response = batch.list_jobs(**kwargs)
+                jobs = response['jobSummaryList']
+                status_counts[status] += len(jobs)
+                all_jobs.extend([(j['jobId'], j['jobName'], status) for j in jobs])
+                next_token = response.get('nextToken')
+                if not next_token:
+                    break
         except Exception as e:
             print(f'  Warning: Error listing {status} jobs: {e}', file=sys.stderr)
-            status_counts[status] = 0
     
     # show counts for all statuses
     print('  Job status counts:')
@@ -242,20 +248,17 @@ try:
         print(f'    {status}: {count}')
     print(f'  Total active jobs: {total}')
     
-    # filter to only RUNNABLE and RUNNING jobs for cancellation
-    jobs_to_cancel = [(job_id, job_name, status) for job_id, job_name, status in all_jobs 
-                      if status in ['RUNNABLE', 'RUNNING']]
+    jobs_to_cancel = all_jobs
     
     if not jobs_to_cancel:
-        print('\n  ✓ No RUNNABLE or RUNNING jobs to cancel')
-        sys.exit(2)  # special exit code for "no jobs to cancel"
+        print('\n  ✓ No active jobs to cancel')
+        sys.exit(2)
     
-    # save job IDs for cancellation
     with open('/tmp/glow_jobs_to_cancel.txt', 'w') as f:
         for job_id, _, status in jobs_to_cancel:
-            f.write(f'{job_id}\n')
+            f.write(f'{job_id}\t{status}\n')
     
-    print(f'\n  Jobs to cancel (RUNNABLE + RUNNING): {len(jobs_to_cancel)}')
+    print(f'\n  Jobs to cancel: {len(jobs_to_cancel)}')
     cancel_counts = Counter(status for _, _, status in jobs_to_cancel)
     for status, count in sorted(cancel_counts.items()):
         print(f'    {status}: {count}')
@@ -266,7 +269,7 @@ except Exception as e:
 EOF
     if [ $EXIT_CODE -eq 2 ]; then
         echo ""
-        echo -e "${GREEN}✓ No RUNNABLE or RUNNING jobs to cancel${NC}"
+        echo -e "${GREEN}✓ No active jobs to cancel${NC}"
         QUEUE_HAS_JOBS=false
     elif [ $EXIT_CODE -ne 0 ]; then
         echo ""
@@ -342,7 +345,7 @@ echo ""
 # confirmation prompt (unless --force)
 if [ "$FORCE" = false ]; then
     if [ "$CLEAR_QUEUE" = true ] && [ "$QUEUE_HAS_JOBS" = true ]; then
-        echo -e "${YELLOW}⚠  This will cancel all RUNNABLE and RUNNING jobs in ${JOB_QUEUE}${NC}"
+        echo -e "${YELLOW}⚠  This will cancel all active jobs in ${JOB_QUEUE}${NC}"
     fi
     if [ "$CLEAR_S3" = true ] && [ "$S3_HAS_DATA" = true ]; then
         echo -e "${YELLOW}⚠  This will delete all data under s3://${S3_BUCKET}/${S3_PREFIX}/${NC}"
@@ -371,33 +374,38 @@ import sys
 try:
     batch = boto3.client('batch', region_name='${REGION}')
     
-    # read job IDs
+    # read job IDs and statuses
     with open('/tmp/glow_jobs_to_cancel.txt', 'r') as f:
-        job_ids = [line.strip() for line in f if line.strip()]
+        jobs = []
+        for line in f:
+            line = line.strip()
+            if line:
+                job_id, status = line.split('\t')
+                jobs.append((job_id, status))
     
-    if not job_ids:
+    if not jobs:
         print('  No jobs to cancel')
         sys.exit(0)
     
     canceled = 0
     failed = 0
+    reason = 'Queue cleanup via cleanup_aws.sh'
     
-    for i, job_id in enumerate(job_ids, 1):
+    for i, (job_id, status) in enumerate(jobs, 1):
         try:
-            batch.terminate_job(
-                jobId=job_id,
-                reason='Queue cleanup via cleanup_aws.sh'
-            )
+            if status in ('SUBMITTED', 'PENDING'):
+                batch.cancel_job(jobId=job_id, reason=reason)
+            else:
+                batch.terminate_job(jobId=job_id, reason=reason)
             canceled += 1
             
-            # show progress
-            if i % 10 == 0 or i == len(job_ids):
-                progress = (i / len(job_ids)) * 100
-                print(f'  Progress: {i}/{len(job_ids)} ({progress:.0f}%)', end='\r')
+            if i % 10 == 0 or i == len(jobs):
+                progress = (i / len(jobs)) * 100
+                print(f'  Progress: {i}/{len(jobs)} ({progress:.0f}%)', end='\r')
                 sys.stdout.flush()
         except Exception as e:
             failed += 1
-            if failed <= 3:  # only show first few errors
+            if failed <= 3:
                 print(f'\n  ✗ Failed to cancel {job_id[:12]}...: {e}')
     
     print()  # newline after progress
