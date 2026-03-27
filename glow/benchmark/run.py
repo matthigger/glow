@@ -66,14 +66,67 @@ def run_segment(config, **iter_kw):
             json.dump(d, f, sort_keys=True, indent=4)
 
 
+def _score_and_emit(ana, effect, config, label, total_time_sec, iter_kw):
+    """Score a completed analysis and write the result JSON."""
+    exp = ana.exp
+
+    mask_pred = np.zeros(exp.mask_idx.shape, dtype=bool)
+    for _effect in ana.effect_list:
+        mask_pred |= _effect.mask
+
+    mask_active = exp.mask_idx > -1
+    f1, sens, spec = glow.mask.get_score(mask_pred=mask_pred,
+                                         mask_target=effect.mask,
+                                         mask_active=mask_active)
+
+    pct_max_f1 = 0.0
+    if hasattr(ana, 'sig_reg_list') and hasattr(ana, 'children'):
+        f1_all, _, _ = glow.graph.get_f1_sens_spec(
+            mask=effect.mask, mask_idx=exp.mask_idx,
+            children=ana.children)
+        sig = ana.sig_reg_list
+        max_f1_sig = max((f1_all[i] for i in sig), default=0.0)
+        if max_f1_sig > 0:
+            out_regs = [eff.reg_idx for eff in ana.effect_list]
+            if out_regs:
+                pct_max_f1 = float(
+                    max(f1_all[i] for i in out_regs) / max_f1_sig)
+
+    min_pval = float(np.nanmin(ana.pval)) if hasattr(ana, 'pval') else None
+
+    uuid_str = str(uuid4())[:8]
+    file_out = config.folder / OUT / f'{uuid_str}_result.json'
+    d = {'effect_llr': effect.effect_llr,
+         'seed': int(effect.seed),
+         'stat': ana.get_stat.__name__.replace('get_', ''),
+         'label': label,
+         'Analysis': type(ana).__name__,
+         'f1': f1,
+         'sens': sens,
+         'spec': spec,
+         'pct_max_f1': pct_max_f1,
+         'min_pval': min_pval,
+         'uuid': uuid_str,
+         'vox_total': int(exp.y.shape[2]),
+         'vox_effect': int(effect.mask.sum()),
+         'time_sec': total_time_sec,
+         'config_hash': config._config_hash()}
+    _merge_iter_kw(d, iter_kw)
+    file_out.parent.mkdir(exist_ok=True, parents=True)
+    with open(file_out, 'w') as f:
+        json.dump(d, f, sort_keys=True, indent=4)
+
+    if config.detail_save:
+        file_out = config.folder / OUT / f'{uuid_str}_detail.p.gz'
+        with gzip.open(file_out, 'wb') as f:
+            pickle.dump((ana, effect), f)
+
+
 def run_ana(config, **iter_kw):
     """run all analyses defined in config.ana_kwargs_dict."""
     exp, effect = config.get_exp_eff(**iter_kw)
 
     for ana_label, (Ana, ana_kw) in config.ana_kwargs_dict.items():
-        uuid = str(uuid4())[:8]
-        file_out = config.folder / OUT / f'{uuid}_result.json'
-
         start = time.time()
         if config.error_save:
             try:
@@ -86,8 +139,8 @@ def run_ana(config, **iter_kw):
                      'seed': int(effect.seed)}
                 print(f'error: {d}')
 
-                file_out = str(file_out).replace(OUT, ERROR)
-                file_out = pathlib.Path(file_out)
+                uuid_str = str(uuid4())[:8]
+                file_out = config.folder / ERROR / f'{uuid_str}_result.json'
                 file_out.parent.mkdir(exist_ok=True, parents=True)
                 with open(file_out, 'w') as f:
                     json.dump(d, f, sort_keys=True, indent=4)
@@ -96,58 +149,8 @@ def run_ana(config, **iter_kw):
             ana = Ana(exp=exp, **ana_kw)
         total_time_sec = time.time() - start
 
-        # build mask of predicted area (union of all effect masks)
-        mask_pred = np.zeros(ana.exp.mask_idx.shape, dtype=bool)
-        for _effect in ana.effect_list:
-            mask_pred |= _effect.mask
-
-        mask_active = exp.mask_idx > -1
-
-        f1, sens, spec = glow.mask.get_score(mask_pred=mask_pred,
-                                             mask_target=effect.mask,
-                                             mask_active=mask_active)
-
-        # pct_max_f1: fraction of max achievable per-region F1
-        pct_max_f1 = 0.0
-        if hasattr(ana, 'sig_reg_list') and hasattr(ana, 'children'):
-            f1_all, _, _ = glow.graph.get_f1_sens_spec(
-                mask=effect.mask, mask_idx=exp.mask_idx,
-                children=ana.children)
-            sig = ana.sig_reg_list
-            max_f1_sig = max((f1_all[i] for i in sig), default=0.0)
-            if max_f1_sig > 0:
-                out_regs = [eff.reg_idx for eff in ana.effect_list]
-                if out_regs:
-                    pct_max_f1 = float(
-                        max(f1_all[i] for i in out_regs) / max_f1_sig)
-
-        # minimum FWER-corrected p-value (for type I error calibration)
-        min_pval = float(np.nanmin(ana.pval)) if hasattr(ana, 'pval') else None
-
-        d = {'effect_llr': effect.effect_llr,
-             'seed': int(effect.seed),
-             'stat': ana.get_stat.__name__.replace('get_', ''),
-             'label': ana_label,
-             'Analysis': Ana.__name__,
-             'f1': f1,
-             'sens': sens,
-             'spec': spec,
-             'pct_max_f1': pct_max_f1,
-             'min_pval': min_pval,
-             'uuid': uuid,
-             'vox_total': int(ana.exp.y.shape[2]),
-             'vox_effect': int(effect.mask.sum()),
-             'time_sec': total_time_sec,
-             'config_hash': config._config_hash()}
-        _merge_iter_kw(d, iter_kw)
-        file_out.parent.mkdir(exist_ok=True, parents=True)
-        with open(file_out, 'w') as f:
-            json.dump(d, f, sort_keys=True, indent=4)
-
-        if config.detail_save:
-            file_out = config.folder / OUT / f'{uuid}_detail.p.gz'
-            with gzip.open(file_out, 'wb') as f:
-                pickle.dump((ana, effect), f)
+        _score_and_emit(ana, effect, config, ana_label,
+                        total_time_sec, iter_kw)
 
 
 def run_prune_compare(config, **iter_kw):
@@ -214,6 +217,111 @@ def run_prune_compare(config, **iter_kw):
         file_out.parent.mkdir(exist_ok=True, parents=True)
         with open(file_out, 'w') as f:
             json.dump(d, f, sort_keys=True, indent=4)
+
+
+def run_mancova(config, **iter_kw):
+    """Run GLOW with all MANCOVA stats, sharing E/H across stats.
+
+    Performs one tree walk per permutation and evaluates every stat in
+    stat_dict on the same (E, H) matrices.  Size regression, FWER
+    p-values and pruning are computed independently per stat.  Pruning
+    always uses LLR regardless of the test statistic.
+    """
+    from glow.experiment.analysis import Analysis, AnalysisGLOW, get_best_model
+    from glow.experiment.cluster import cluster
+    from glow.experiment.mancova import (
+        stat_dict, stat_dict_inv, stat_sign, get_llr)
+
+    exp, effect = config.get_exp_eff(**iter_kw)
+    start = time.time()
+
+    stat_fns = list(stat_dict.values())
+    _, ana_kw = next(iter(config.ana_kwargs_dict.values()))
+    n_perm_fwer = ana_kw['n_perm_fwer']
+    n_perm_sa = ana_kw.get('n_perm_fwer_size_adjust', 50)
+    alpha_fwer = ana_kw.get('alpha_fwer', 0.05)
+    min_size = ana_kw.get('min_size', 1)
+
+    fit_start = n_perm_fwer + 1
+    fit_end = n_perm_fwer + n_perm_sa
+    num_vox = exp.y.shape[2]
+
+    models = {fn: get_best_model(fn) for fn in stat_fns}
+    XtX = {fn: None for fn in stat_fns}
+    Xty = {fn: None for fn in stat_fns}
+
+    # phase 1: fit permutations (held-out, for size regression)
+    for perm_idx in range(fit_start, fit_end + 1):
+        _exp = exp.permute(perm_idx)
+        children = cluster(exp=_exp)
+        multi = Analysis.get_stat_perm_multi(
+            exp=_exp, get_stat_list=stat_fns, children=children)
+        size = glow.graph.node_sum(
+            np.ones(num_vox, dtype=int), children)
+        for fn in stat_fns:
+            XtX[fn], Xty[fn] = AnalysisGLOW.accumulate_regression(
+                size, multi[fn].ravel(), models[fn], XtX[fn], Xty[fn])
+
+    mu_fns = {}
+    betas = {}
+    for fn in stat_fns:
+        mu_fn, _, beta = AnalysisGLOW.fit_size_regression_online(
+            XtX[fn], Xty[fn], models[fn], fn)
+        mu_fns[fn] = mu_fn
+        betas[fn] = beta
+
+    # phase 2: observed (perm 0) + FWER permutations
+    stat_max = {fn: [] for fn in stat_fns}
+    children_0 = size_0 = stat_0 = None
+
+    for perm_idx in range(n_perm_fwer + 1):
+        _exp = exp.permute(perm_idx)
+        children = cluster(exp=_exp)
+        multi = Analysis.get_stat_perm_multi(
+            exp=_exp, get_stat_list=stat_fns, children=children)
+        size = glow.graph.node_sum(
+            np.ones(num_vox, dtype=int), children).astype(float)
+
+        active = size >= min_size
+        for fn in stat_fns:
+            sign = stat_sign.get(fn, 1)
+            adj = sign * (multi[fn].ravel() - mu_fns[fn](size))
+            adj = np.nan_to_num(adj, nan=0.0, posinf=0.0, neginf=-30.0)
+            stat_max[fn].append(
+                float(np.nanmax(adj[active])) if active.any()
+                else float('-inf'))
+
+        if perm_idx == 0:
+            children_0 = children
+            size_0 = size
+            stat_0 = {fn: multi[fn].ravel().astype(float)
+                       for fn in stat_fns}
+
+    stat_max_sorted = {fn: np.sort(stat_max[fn]) for fn in stat_fns}
+    total_time = time.time() - start
+
+    # phase 3: finalize each stat via AnalysisGLOW._finalize_analysis
+    llr_prune = stat_0[get_llr]
+
+    for fn in stat_fns:
+        name = stat_dict_inv[fn]
+
+        ana = object.__new__(AnalysisGLOW)
+        ana.get_stat = fn
+        ana.verbose = False
+        ana.exp = exp
+        ana.adj_model = models[fn]
+        ana.adj_beta = betas[fn]
+
+        ana._finalize_analysis(
+            exp, n_perm_fwer,
+            stat_0[fn], size_0, children_0,
+            mu_fns[fn], stat_max_sorted[fn],
+            alpha_fwer, min_size,
+            prune_stat=llr_prune)
+
+        _score_and_emit(ana, effect, config,
+                        f'GLOW-{name}', total_time, iter_kw)
 
 
 if __name__ == '__main__':

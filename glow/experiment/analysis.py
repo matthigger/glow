@@ -113,6 +113,44 @@ class Analysis:
 
         return pval
 
+    @classmethod
+    def get_stat_perm_multi(cls, exp, get_stat_list, n_perm=None,
+                            children=None):
+        """compute multiple test statistics from a single tree walk.
+
+        Avoids redundant E/H computation when comparing stat functions.
+
+        Args:
+            exp (Experiment): experiment data
+            get_stat_list (list): stat functions (each accepts e, h, n)
+            n_perm (int): number of permutations (excluding unpermuted)
+            children (np.array): (num_leaf - 1, 2) child index array
+
+        Returns:
+            dict mapping each stat function to (n_perm + 1, num_reg) array
+        """
+        b, num_img, num_vox = exp.y.shape
+        num_reg = num_vox
+        if children is not None:
+            num_reg += children.shape[0]
+
+        n_rows = 1 if n_perm is None else n_perm + 1
+        result = {fn: np.full((n_rows, num_reg), fill_value=np.nan)
+                  for fn in get_stat_list}
+
+        for reg_idx, size, e, h in glow.graph.iter_stat(
+                exp=exp, children=children, n_perm=n_perm):
+            for perm_idx in range(n_rows):
+                _e = e[:, :, perm_idx]
+                _h = h[:, :, perm_idx]
+                for fn in get_stat_list:
+                    try:
+                        result[fn][perm_idx, reg_idx] = fn(
+                            e=_e, h=_h, n=size)
+                    except np.linalg.LinAlgError:
+                        pass
+        return result
+
     def get_stat_perm(self, exp, n_perm=None, children=None):
         """compute test statistic for each region under each permutation.
 
@@ -548,8 +586,16 @@ class AnalysisGLOW(Analysis):
                           stat_0, size_0, children_0,
                           mu_fn, stat_max_sorted,
                           alpha_fwer, min_size,
+                          prune_stat=None,
                           ):
-        """Finalize: compute p-values from max-stat distribution, prune."""
+        """Finalize: compute p-values from max-stat distribution, prune.
+
+        Args:
+            prune_stat (np.array): optional override for the stat array
+                used by greedy pruning.  When None (default), ``stat_0``
+                is used.  Pass e.g. LLR values here when the test
+                statistic differs from the desired pruning criterion.
+        """
         verbose = getattr(self, 'verbose', False)
         num_reg = stat_0.shape[0]
 
@@ -594,7 +640,8 @@ class AnalysisGLOW(Analysis):
                   f'(alpha_fwer={alpha_fwer})')
             print('  pruning (greedy LLR) ...')
 
-        stat_gain = np.nan_to_num(stat_0.astype(float), nan=0.0,
+        _prune = stat_0 if prune_stat is None else prune_stat
+        stat_gain = np.nan_to_num(_prune.astype(float), nan=0.0,
                                   posinf=0.0, neginf=0.0)
 
         reg_out_list, self.prune_info = prune_greedy(

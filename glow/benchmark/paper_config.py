@@ -2,11 +2,11 @@ import numpy as np
 
 import glow
 from glow.benchmark.config import Config
-from glow.benchmark.run import run_ana, run_prune_compare, run_segment
+from glow.benchmark.run import run_ana, run_mancova, run_prune_compare, run_segment
 
 # ---------- common parameters ----------
 COMMON = dict(
-    n_seed=50,
+    n_seed=10,
     effect_llr_all=np.logspace(np.log10(0.003), np.log10(0.3), 11),
     effect_perc=0.1,
     crop_n_vox=50000,
@@ -65,6 +65,10 @@ ana_kwargs_dict_vba = {
 }
 
 ana_kwargs_dict_prune = {
+    'GLOW': (glow.experiment.AnalysisGLOW, ANALYSES['GLOW']),
+}
+
+ana_kwargs_dict_mancova = {
     'GLOW': (glow.experiment.AnalysisGLOW, ANALYSES['GLOW']),
 }
 
@@ -139,7 +143,13 @@ config_list.append(make_config(
 config_list.append(make_config(
     'prune_method_wgn', 'wgn', run_prune_compare, ana_kwargs_dict_prune))
 
-# ---------- H. segmentation comparison ----------
+# ---------- H. MANCOVA stat comparison ----------
+config_list.append(make_config(
+    'mancova_wgn', 'wgn', run_mancova, ana_kwargs_dict_mancova))
+config_list.append(make_config(
+    'mancova_hcp', 'hcp', run_mancova, ana_kwargs_dict_mancova))
+
+# ---------- I. segmentation comparison ----------
 config_list.append(make_config('segment_hcp', 'hcp', run_segment))
 config_list.append(make_config('segment_wgn', 'wgn', run_segment))
 
