@@ -294,7 +294,7 @@ def main_permutation(args):
         print('  effect: null (no imposed effect)')
 
     base = Path(user_data_dir('glow', 'glow_author'))
-    out_dir = base / 'results' / 'runtime_hcp' / 'out'
+    out_dir = base / 'results' / 'runtime' / 'permutation' / 'out'
 
     existing = list(out_dir.glob('*_result.json')) if out_dir.exists() else []
     if existing:
@@ -355,6 +355,11 @@ def main_permutation(args):
 # Experiment runtime profiling (run on AWS)
 # ---------------------------------------------------------------------------
 
+RUNTIME_EXPERIMENT_DIR = (
+    Path(user_data_dir('glow', 'glow_author')) / 'results' / 'runtime' / 'experiment'
+)
+
+
 def _build_runtime_profile_configs(cloud_config):
     """Build Config objects for the runtime profiling grid."""
     from glow.benchmark.config import Config
@@ -379,6 +384,7 @@ def _build_runtime_profile_configs(cloud_config):
         detail_save=False,
         error_save=False,
         cloud_config=cloud_config,
+        result_dir=RUNTIME_EXPERIMENT_DIR,
     )
 
     configs = []
@@ -431,7 +437,8 @@ def _collect_runtime_results(configs):
 
     rows = []
     for config in configs:
-        df, _folder, _ = load_update_all(config.label, verbose=False)
+        df, _folder, _ = load_update_all(
+            config.label, verbose=False, result_dir=RUNTIME_EXPERIMENT_DIR)
         if df.empty:
             continue
         _label, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))

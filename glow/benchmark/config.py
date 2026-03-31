@@ -100,6 +100,9 @@ class Config:
     # which iterated parameter to use as the x-axis when plotting
     x_param: str = 'effect_llr'
 
+    # override default result directory (None → standard results/)
+    result_dir: Optional[Path] = None
+
     def __post_init__(self):
         self.exp_orig = None
         self.folder = None
@@ -283,7 +286,8 @@ class Config:
     def _filter_uncached(self, kwargs_list, verbose=True):
         """return list of (exp_idx, kwargs) for experiments not yet cached."""
         from glow.benchmark.file import load_update_all
-        df, _folder, _n_new = load_update_all(self.label, verbose=False)
+        df, _folder, _n_new = load_update_all(
+            self.label, verbose=False, result_dir=self.result_dir)
         expected = self._get_expected_labels()
         config_hash = self._config_hash()
 
@@ -298,7 +302,8 @@ class Config:
         return uncached
 
     def prep_folder(self):
-        self.folder = path_result / self.label
+        base = self.result_dir if self.result_dir is not None else path_result
+        self.folder = base / self.label
         self.folder.mkdir(exist_ok=True, parents=True)
 
     def _as_serializable(self):

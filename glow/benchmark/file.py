@@ -15,9 +15,10 @@ def get_path_result():
     return path_result
 
 
-def load_update_all(label, verbose=True):
+def load_update_all(label, verbose=True, result_dir=None):
     """load all experiment results from csv, updating from json if needed."""
-    folder = get_path_result() / label
+    base = result_dir if result_dir is not None else get_path_result()
+    folder = base / label
     if not folder.exists():
         return pd.DataFrame(), folder, 0
 
