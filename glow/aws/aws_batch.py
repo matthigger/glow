@@ -559,7 +559,7 @@ class AWSBatchRunner:
                 total=len(config_jobs[name]),
                 desc=_strip_hash(name), unit='job',
                 bar_format=bar_fmt, ncols=MONITOR_COLS,
-                position=i, leave=True)
+                position=i + 1, leave=True)
         config_done = {name: 0 for name in config_names}
         config_resubmitted = {name: 0 for name in config_names}
         first_pbar = config_pbars[config_names[0]]
@@ -835,6 +835,7 @@ class AWSBatchRunner:
                     if instance_type_counts:
                         instance_str = ', '.join([f'{itype}: {count}' for itype, count in sorted(instance_type_counts.items())])
                         parts.append(f'instances: {instance_str}')
+                    _write('')  # blank line between query cycles
                     _write('\n'.join(parts))
                     last_status_print = current_time
 
