@@ -208,7 +208,7 @@ class TestResubmitSpotTermination:
             'container': {'command': ['python', 'worker.py']},
         }]
 
-        resubmitted, reasons = runner._resubmit_failed_jobs(failed, {})
+        resubmitted, reasons, _msgs = runner._resubmit_failed_jobs(failed, {})
 
         assert len(resubmitted) == 1
         assert reasons == {'job-1': 'spot'}
@@ -238,7 +238,7 @@ class TestResubmitSpotTermination:
 
         # third attempt should be skipped
         failed = [{**base_job, 'jobId': 'job-2'}]
-        resubmitted, reasons = runner._resubmit_failed_jobs(failed, {})
+        resubmitted, reasons, _msgs = runner._resubmit_failed_jobs(failed, {})
         assert len(resubmitted) == 0
         assert len(reasons) == 0
 
@@ -360,7 +360,7 @@ class TestResubmitMixed:
             },
         ]
 
-        resubmitted, reasons = runner._resubmit_failed_jobs(failed, {})
+        resubmitted, reasons, _msgs = runner._resubmit_failed_jobs(failed, {})
 
         assert len(resubmitted) == 2
         assert reasons['oom-job'] == 'oom'
@@ -431,11 +431,12 @@ class TestResubmitMixed:
                         poll_interval=0.01,
                         job_info_map={})
 
-                    printed = ' '.join(
-                        str(c) for c in mock_print.call_args_list)
-                    assert 'OOM' in printed
-                    assert 'SPOT' in printed
-                    assert 'instance reclaimed' in printed
+                    # OOM/SPOT messages go through pbar.write()
+                    written = ' '.join(
+                        str(c) for c in mock_pbar.write.call_args_list)
+                    assert 'OOM' in written
+                    assert 'SPOT' in written
+                    assert 'instance reclaimed' in written
 
 
 # ---------------------------------------------------------------------------
@@ -525,7 +526,7 @@ class TestResubmitOom:
     def test_non_oom_skipped(self):
         runner = _make_runner()
         runner.batch = MagicMock()
-        resubmitted, reasons = runner._resubmit_failed_jobs(
+        resubmitted, reasons, _msgs = runner._resubmit_failed_jobs(
             [{'jobId': 'j1', 'jobName': 'exp_00',
               'statusReason': 'Essential container exited',
               'container': {'exitCode': 1, 'reason': 'task failed',
@@ -539,7 +540,7 @@ class TestResubmitOom:
         runner.batch.submit_job.return_value = {'jobId': 'new-j1'}
 
         info_map = {'j1': {'run_id': 'r1', 'exp_idx': 0}}
-        resubmitted, reasons = runner._resubmit_failed_jobs(
+        resubmitted, reasons, _msgs = runner._resubmit_failed_jobs(
             [{'jobId': 'j1', 'jobName': 'exp_00',
               'container': {'exitCode': 137,
                             'command': ['--s3-bucket', 'b']}}],
@@ -557,7 +558,7 @@ class TestResubmitOom:
     def test_missing_command_skipped(self):
         runner = _make_runner()
         runner.batch = MagicMock()
-        resubmitted, _ = runner._resubmit_failed_jobs(
+        resubmitted, _, _msgs = runner._resubmit_failed_jobs(
             [{'jobId': 'j1', 'jobName': 'exp_00',
               'container': {'exitCode': 137}}], {})
         assert resubmitted == []
@@ -575,7 +576,7 @@ class TestResubmitOom:
              'statusReason': 'timeout',
              'container': {'exitCode': 1, 'command': ['--test']}},
         ]
-        resubmitted, reasons = runner._resubmit_failed_jobs(failed, {})
+        resubmitted, reasons, _msgs = runner._resubmit_failed_jobs(failed, {})
         assert len(resubmitted) == 1
         assert reasons.get('j4') == 'oom'
 

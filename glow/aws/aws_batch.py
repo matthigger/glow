@@ -1,5 +1,6 @@
 """AWS Batch integration for parallel permutation processing."""
 
+import re
 import time
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
@@ -11,6 +12,8 @@ import boto3
 import cloudpickle as pickle
 from botocore.exceptions import ClientError
 from tqdm import tqdm
+
+MONITOR_COLS = 79
 
 
 @dataclass
@@ -81,11 +84,13 @@ class AWSBatchRunner:
         Returns:
             resubmitted (list): new job IDs
             resubmit_reasons (dict): maps source job ID -> 'oom' | 'spot'
+            messages (list): status messages to display
         """
         tiers = self.config.oom_memory_mb_tiers or []
 
         resubmitted = []
         resubmit_reasons = {}
+        messages = []
         for job in failed_jobs:
             # determine failure type
             is_oom = self._is_oom_failure(job)
@@ -97,7 +102,7 @@ class AWSBatchRunner:
             container = job.get('container', {}) or {}
             command = container.get('command')
             if not command:
-                print(f'  ⚠ Cannot resubmit {job["jobName"]}: missing command')
+                messages.append(f'  ⚠ Cannot resubmit {job["jobName"]}: missing command')
                 continue
 
             if is_oom:
@@ -148,15 +153,15 @@ class AWSBatchRunner:
 
                 if is_oom:
                     self._job_memory_tier_index[base_name] = next_idx
-                    print(f'  ↻ {job["jobName"]} → {memory_mb} MB ({retry_name})')
+                    messages.append(f'  ↻ {job["jobName"]} → {memory_mb} MB ({retry_name})')
                 else:
                     self._job_spot_retry_count[base_name] = \
                         self._job_spot_retry_count.get(base_name, 0) + 1
-                    print(f'  ↻ {job["jobName"]} → resubmitted ({retry_name})')
+                    messages.append(f'  ↻ {job["jobName"]} → resubmitted ({retry_name})')
             except ClientError as e:
-                print(f'  ✗ Failed to resubmit {job["jobName"]}: {e}')
+                messages.append(f'  ✗ Failed to resubmit {job["jobName"]}: {e}')
 
-        return resubmitted, resubmit_reasons
+        return resubmitted, resubmit_reasons, messages
     
     def estimate_memory_mb(self, exp_shape):
         """Estimate minimum memory for a worker (perm or streaming synthesis).
@@ -520,7 +525,6 @@ class AWSBatchRunner:
         start_time = time.time()
         last_done_count = 0
         last_done_time = start_time
-        previous_done = 0
         resubmitted_total = 0
         last_status_print = 0  # track when we last printed status
         
@@ -535,11 +539,40 @@ class AWSBatchRunner:
         instance_type_error = None
         last_instance_check = -instance_check_interval  # initialize to allow immediate first check
         
-        # create progress bar
-        pbar = tqdm(total=len(job_ids), desc='Jobs', unit='job', 
-                   bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
-                   leave=True)
-        
+        # group jobs by config (run_id) for per-config progress bars
+        config_jobs = {}  # run_id -> set of job_ids
+        for jid in job_ids:
+            if jid in job_info_map and 'run_id' in job_info_map[jid]:
+                rid = job_info_map[jid]['run_id']
+            else:
+                rid = 'jobs'
+            config_jobs.setdefault(rid, set()).add(jid)
+
+        # create per-config progress bars
+        config_names = sorted(config_jobs.keys())
+        config_pbars = {}
+        bar_fmt = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
+        # strip trailing _<hex> hash from run_id for display
+        _strip_hash = lambda s: re.sub(r'_[0-9a-f]{8,12}$', '', s)
+        for i, name in enumerate(config_names):
+            config_pbars[name] = tqdm(
+                total=len(config_jobs[name]),
+                desc=_strip_hash(name), unit='job',
+                bar_format=bar_fmt, ncols=MONITOR_COLS,
+                position=i, leave=True)
+        config_done = {name: 0 for name in config_names}
+        config_resubmitted = {name: 0 for name in config_names}
+        first_pbar = config_pbars[config_names[0]]
+        job_statuses_map = {}  # job_id -> latest status string
+
+        def _clear_heartbeat():
+            print('\r' + ' ' * MONITOR_COLS + '\r', end='', flush=True)
+
+        def _write(msg):
+            """write message above progress bars, clearing heartbeat first."""
+            _clear_heartbeat()
+            first_pbar.write(msg)
+
         try:
             while True:
                 # get job statuses and timestamps
@@ -562,7 +595,8 @@ class AWSBatchRunner:
                             job_id = job['jobId']
                             status = job['status']
                             statuses[status] = statuses.get(status, 0) + 1
-                            
+                            job_statuses_map[job_id] = status
+
                             # track timestamps for vCPU-hours calculation
                             if job_id not in job_timestamps:
                                 job_timestamps[job_id] = {}
@@ -611,7 +645,7 @@ class AWSBatchRunner:
                                 failed_jobs.append(job_failure)
                                 newly_failed_jobs.append(job_failure)
                     except ClientError as e:
-                        print(f'error checking jobs: {e}')
+                        _write(f'error checking jobs: {e}')
                         continue
                 
                 # get instance types for running jobs (periodically, to avoid too many API calls)
@@ -633,13 +667,13 @@ class AWSBatchRunner:
                         )
                         if not queue_info.get('jobQueues'):
                             if first_check:
-                                print(f'  Note: Could not find job queue: {self.config.job_queue}')
+                                _write(f'  Note: Could not find job queue: {self.config.job_queue}')
                             raise ValueError("Job queue not found")
                             
                         compute_envs = queue_info['jobQueues'][0].get('computeEnvironmentOrder', [])
                         if not compute_envs:
                             if first_check:
-                                print(f'  Note: Job queue has no compute environments')
+                                _write(f'  Note: Job queue has no compute environments')
                             raise ValueError("No compute environments")
                             
                         compute_env_name = compute_envs[0].get('computeEnvironment')
@@ -650,13 +684,13 @@ class AWSBatchRunner:
                         )
                         if not env_info.get('computeEnvironments'):
                             if first_check:
-                                print(f'  Note: Could not find compute environment: {compute_env_name}')
+                                _write(f'  Note: Could not find compute environment: {compute_env_name}')
                             raise ValueError("Compute environment not found")
                             
                         ecs_cluster_arn = env_info['computeEnvironments'][0].get('ecsClusterArn', '')
                         if not ecs_cluster_arn:
                             if first_check:
-                                print(f'  Note: Compute environment has no ECS cluster')
+                                _write(f'  Note: Compute environment has no ECS cluster')
                             raise ValueError("No ECS cluster")
                             
                         ecs_cluster = ecs_cluster_arn.split('/')[-1]
@@ -696,7 +730,7 @@ class AWSBatchRunner:
                                             new_instance_type_counts[instance_type] = new_instance_type_counts.get(instance_type, 0) + 1
                         
                         if not found_instances and first_check:
-                            print(f'  Note: No container instances found in ECS cluster (jobs may not have started yet)')
+                            _write(f'  Note: No container instances found in ECS cluster (jobs may not have started yet)')
                         
                         # update outer scope variable
                         instance_type_counts = new_instance_type_counts
@@ -713,8 +747,8 @@ class AWSBatchRunner:
                             if instance_type_error is None:
                                 instance_type_error = f'{type(e).__name__}: {e}'
                         if first_check:  # Only print on first failure to avoid spam
-                            print(f'  Note: Could not fetch instance types: {instance_type_error}')
-                            print('  (This is optional - jobs will still run normally)')
+                            _write(f'  Note: Could not fetch instance types: {instance_type_error}')
+                            _write('  (This is optional - jobs will still run normally)')
                     
                     last_instance_check = current_time
                     first_check = False  # Mark that we've attempted the first check
@@ -766,15 +800,13 @@ class AWSBatchRunner:
                         eta_seconds = remaining / rate
                         eta_str = f'{eta_seconds/60:.1f}m' if eta_seconds > 60 else f'{eta_seconds:.0f}s'
                 
-                # print status update in log style (simple, no overwriting)
-                # only print if significant change or enough time has passed
-                should_print = (current_time - last_status_print >= poll_interval or 
-                               done > last_done_count or 
+                # print status update (scrolls above progress bars)
+                should_print = (current_time - last_status_print >= poll_interval or
+                               done > last_done_count or
                                len(newly_failed_jobs) > 0 or
                                len(completed_jobs) > 0)
-                
+
                 if should_print:
-                    # build state string on one line
                     state_parts = []
                     if submitted > 0:
                         state_parts.append(f'Submitted: {submitted}')
@@ -793,75 +825,77 @@ class AWSBatchRunner:
                         state_parts.append(f'Resubmitted: {resubmitted_total}')
                     if actual_failed > 0:
                         state_parts.append(f'Failed: {actual_failed}')
-                    
+
                     state_str = ', '.join(state_parts) if state_parts else 'All done'
-                    
+
                     timestamp_str = datetime.now().strftime('%H:%M:%S')
-                    parts = [f'  [{timestamp_str}] {state_str}']
-                    parts.append(f'  vCPU-hours: {vcpu_hours:.3f}')
+                    parts = [f'[{timestamp_str}]']
+                    parts.append(f'vCPU-hours: {vcpu_hours:.3f}')
+                    parts.append(f'Jobs: {state_str}')
                     if instance_type_counts:
                         instance_str = ', '.join([f'{itype}: {count}' for itype, count in sorted(instance_type_counts.items())])
-                        parts.append(f'  instances: {instance_str}')
-                    pbar.write('\n'.join(parts))
+                        parts.append(f'instances: {instance_str}')
+                    _write('\n'.join(parts))
                     last_status_print = current_time
-                
-                # update progress bar
-                if done > previous_done:
-                    pbar.update(done - previous_done)
-                    previous_done = done
-                
-                # update progress bar postfix
-                postfix_parts = []
-                if pending > 0:
-                    postfix_parts.append(f'pending={pending}')
-                if running > 0:
-                    postfix_parts.append(f'running={running}')
-                if completed > 0:
-                    postfix_parts.append(f'completed={completed}')
-                actual_failed = failed - resubmitted_total
-                if resubmitted_total > 0:
-                    postfix_parts.append(f'resubmitted={resubmitted_total}')
-                if actual_failed > 0:
-                    postfix_parts.append(f'failed={actual_failed}')
-                postfix_parts.append(f'eta={eta_str}')
-                
-                postfix_str = ', '.join(postfix_parts)
-                pbar.set_postfix_str(postfix_str)
+
+                # update per-config progress bars
+                for name in config_names:
+                    succeeded = sum(1 for jid in config_jobs[name]
+                                    if job_statuses_map.get(jid) == 'SUCCEEDED')
+                    delta = succeeded - config_done[name]
+                    if delta > 0:
+                        _clear_heartbeat()
+                        config_pbars[name].update(delta)
+                        config_done[name] = succeeded
                 
                 # immediately resubmit OOM / spot failures
                 resubmit_reasons = {}
                 if newly_failed_jobs:
-                    resubmitted, resubmit_reasons = \
+                    resubmitted, resubmit_reasons, resubmit_msgs = \
                         self._resubmit_failed_jobs(
                             newly_failed_jobs, job_info_map)
+                    for msg in resubmit_msgs:
+                        _write(msg)
                     resubmitted_total += len(resubmit_reasons)
                     resubmitted_job_ids.update(resubmit_reasons.keys())
                     if resubmitted:
                         job_ids.extend(resubmitted)
+                        # add resubmitted jobs to their config group
+                        for new_jid in resubmitted:
+                            if new_jid in job_info_map and 'run_id' in job_info_map[new_jid]:
+                                rid = job_info_map[new_jid]['run_id']
+                            else:
+                                rid = 'jobs'
+                            config_jobs.setdefault(rid, set()).add(new_jid)
+                            config_resubmitted[rid] = config_resubmitted.get(rid, 0) + 1
+                            if rid in config_pbars:
+                                config_pbars[rid].total = len(config_jobs[rid]) - config_resubmitted[rid]
+                                _clear_heartbeat()
+                                config_pbars[rid].refresh()
 
                 # print failed jobs (resubmitted jobs get a softer message)
                 for job in newly_failed_jobs:
                     job_id = job['jobId']
                     reason = resubmit_reasons.get(job_id)
                     if reason == 'oom':
-                        print(f'\n⟳ OOM: {job["jobName"]} — resubmitting with more memory')
+                        _write(f'⟳ OOM: {job["jobName"]} — resubmitting with more memory')
                     elif reason == 'spot':
-                        print(f'\n⟳ SPOT: {job["jobName"]} — resubmitting (instance reclaimed)')
+                        _write(f'⟳ SPOT: {job["jobName"]} — resubmitting (instance reclaimed)')
                     else:
-                        print(f'\n✗ FAILED: {job["jobName"]} ({job_id[:8]}...)')
-                        print(f'  Reason: {job["statusReason"]}')
+                        _write(f'✗ FAILED: {job["jobName"]} ({job_id[:8]}...)')
+                        _write(f'  Reason: {job["statusReason"]}')
                         container = job.get('container', {})
                         if 'reason' in container:
-                            print(f'  Container: {container["reason"]}')
+                            _write(f'  Container: {container["reason"]}')
                         if 'exitCode' in container:
-                            print(f'  Exit Code: {container["exitCode"]}')
+                            _write(f'  Exit Code: {container["exitCode"]}')
                         if 'logStreamName' in container:
                             log_stream = container["logStreamName"]
-                            print(f'  Logs: aws logs get-log-events --log-group-name /aws/batch/job --log-stream-name {log_stream} --limit 50 --output text | tail -30')
+                            _write(f'  Logs: aws logs get-log-events --log-group-name /aws/batch/job --log-stream-name {log_stream} --limit 50 --output text | tail -30')
 
                 # verify we got responses for all requested jobs
                 if first_check and jobs_found != len(job_ids):
-                    print(f'\n⚠ Warning: Requested {len(job_ids)} jobs, AWS returned {jobs_found}')
+                    _write(f'⚠ Warning: Requested {len(job_ids)} jobs, AWS returned {jobs_found}')
                     first_check = False
                 
                 # download results for newly completed jobs (parallel)
@@ -879,7 +913,7 @@ class AWSBatchRunner:
                             info['on_complete'](job)
                             downloaded_jobs.add(job_id)
                         except Exception as e:
-                            print(f'\n  ⚠ on_complete failed for {job["jobName"]}: {e}')
+                            _write(f'  ⚠ on_complete failed for {job["jobName"]}: {e}')
 
                 if download_targets:
                     def _dl(job_id, job, info):
@@ -895,21 +929,23 @@ class AWSBatchRunner:
                             try:
                                 jid, jname, n_files = fut.result()
                                 downloaded_jobs.add(jid)
-                                print(f'  ✓ Downloaded {jname} ({n_files} file(s))')
+                                _write(f'  ✓ Downloaded {jname} ({n_files} file(s))')
                             except Exception as e:
                                 jid = futs[fut]
-                                print(f'\n⚠ Error downloading {jid[:8]}...: {e}')
+                                _write(f'⚠ Error downloading {jid[:8]}...: {e}')
             
                 # check if all jobs reached a terminal state
                 # (skip if we just resubmitted -- counts are stale)
                 if all_terminal == total and not resubmit_reasons:
-                    pbar.close()
+                    _clear_heartbeat()
+                    for pb in config_pbars.values():
+                        pb.close()
                     print(f'\nall jobs complete!')
                     print(f'  succeeded: {statuses["SUCCEEDED"]}')
                     print(f'  failed: {statuses["FAILED"]}')
                     print(f'  results downloaded: {len(downloaded_jobs)}/{statuses["SUCCEEDED"]}')
                     print(f'  total vCPU-hours: {vcpu_hours:.2f}')
-                    
+
                     # print detailed failure reasons (exclude resubmitted jobs)
                     unresolved = [j for j in failed_jobs
                                   if j['jobId'] not in resubmitted_job_ids]
@@ -930,7 +966,8 @@ class AWSBatchRunner:
                                 print(f'   Logs: aws logs get-log-events --log-group-name /aws/batch/job --log-stream-name {log_stream} --limit 50 --output text | tail -30')
 
                     break
-            
+
+                # heartbeat: tick every second during poll sleep
                 heartbeat_interval = 1
                 slept = 0
                 while slept < poll_interval:
@@ -938,10 +975,11 @@ class AWSBatchRunner:
                     time.sleep(nap)
                     slept += nap
                     ts = datetime.now().strftime('%H:%M:%S')
-                    pbar.set_description(f'Jobs [{ts}]')
-                    pbar.refresh()
+                    print(f'\r[{ts}]', end='', flush=True)
         except KeyboardInterrupt:
-            pbar.close()
+            _clear_heartbeat()
+            for pb in config_pbars.values():
+                pb.close()
             print('\n\nMonitoring interrupted by user')
             print('cancelling AWS jobs')
             cancel_summary = self.cancel_jobs(job_ids, reason='Monitoring interrupted by user')
@@ -950,7 +988,9 @@ class AWSBatchRunner:
                 print(f'✗ Failed to cancel: {cancel_summary["failed"]}')
             raise
         except Exception as e:
-            pbar.close()
+            _clear_heartbeat()
+            for pb in config_pbars.values():
+                pb.close()
             if cancel_on_error:
                 print('\n\nMonitoring failed; cancelling AWS jobs')
                 cancel_summary = self.cancel_jobs(job_ids, reason='Monitoring error')
