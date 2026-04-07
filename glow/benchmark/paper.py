@@ -43,45 +43,21 @@ def build_job_info_map(all_job_info):
     all_job_ids = []
     job_info_map = {}
     for job_info in all_job_info:
+        run_id = job_info['run_id']
+        folder = job_info['folder']
+        job_exp_idx = job_info.get('job_exp_idx', {})
         for job_id in job_info['job_ids']:
             all_job_ids.append(job_id)
+            if job_id in job_exp_idx:
+                job_info_map[job_id] = {
+                    'run_id': run_id,
+                    'exp_idx': job_exp_idx[job_id],
+                    'output_folder': folder,
+                }
 
     print(f'\nTotal jobs submitted in this run: {len(all_job_ids)}')
     if all_job_ids:
         print(f'Job IDs tracked: {all_job_ids[0][:8]}... through {all_job_ids[-1][:8]}...')
-
-    if not all_job_ids:
-        return all_job_ids, job_info_map
-
-    # find a runner from a config that actually submitted jobs
-    runner = next((info['runner'] for info in all_job_info
-                   if info['runner'] is not None), None)
-    if runner is None:
-        return all_job_ids, job_info_map
-    run_id_to_folder = {info['run_id']: info['folder'] for info in all_job_info}
-
-    for i in range(0, len(all_job_ids), 100):
-        chunk = all_job_ids[i:i + 100]
-        try:
-            response = runner.batch.describe_jobs(jobs=chunk)
-            for job in response['jobs']:
-                job_name = job['jobName']
-                if job_name.startswith('glow_') and '_exp' in job_name:
-                    parts = job_name.replace('glow_', '').split('_exp')
-                    if len(parts) == 2:
-                        run_id = parts[0]
-                        try:
-                            exp_idx = int(parts[1])
-                            if run_id in run_id_to_folder:
-                                job_info_map[job['jobId']] = {
-                                    'run_id': run_id,
-                                    'exp_idx': exp_idx,
-                                    'output_folder': run_id_to_folder[run_id]
-                                }
-                        except ValueError:
-                            pass
-        except Exception:
-            pass
 
     return all_job_ids, job_info_map
 
