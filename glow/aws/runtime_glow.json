@@ -1,0 +1,25 @@
+{
+  "feature_names": [
+    "num_vox",
+    "num_vox b",
+    "num_vox num_img",
+    "num_vox n_perm",
+    "b num_img",
+    "b n_perm",
+    "num_img^2",
+    "num_img n_perm"
+  ],
+  "intercept": 41.1266,
+  "coefficients": [
+    0.0195490769,
+    0.0003214271,
+    3.65435e-05,
+    0.0010988985,
+    -0.0225038036,
+    -0.092318556,
+    -0.0040293664,
+    0.0079430217
+  ],
+  "r2": 0.9715,
+  "alpha": 8.568025
+}
