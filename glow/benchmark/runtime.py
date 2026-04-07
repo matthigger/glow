@@ -360,15 +360,27 @@ RUNTIME_EXPERIMENT_DIR = (
 )
 
 
-def _build_runtime_profile_configs(cloud_config):
+def _build_runtime_profile_configs(cloud_config=None):
     """Build Config objects for the runtime profiling grid."""
     from glow.benchmark.config import Config
     from glow.benchmark.run import run_ana
 
-    vox_targets = np.geomspace(500, 50_000, 6).round().astype(int).tolist()
-    b_values = [1, 2, 4]
-    img_values = [25, 50, 100]
-    n_perm_values = [100, 500, 1050]
+    if cloud_config is not None:
+        # reduced grid for cloud: cap voxels at 30k and drop 1050-perm
+        # to avoid OOM (previous runs hit 16 GB ceiling at 50k x 1050).
+        # 5 * 2 * 3 * 3 = 90 grid points (x3 analysis types = 270 jobs),
+        # still plenty for Lasso.  The polynomial model + 2.5x safety
+        # factor in estimate_timeout_minutes covers extrapolation.
+        vox_targets = np.geomspace(500, 30_000, 5).round().astype(int).tolist()
+        n_perm_values = [100, 500]
+    else:
+        # reduced grid for local: drop expensive 50k-vox and 1050-perm
+        # configs.  The polynomial model extrapolates; the 2.5x safety
+        # factor in estimate_timeout_minutes covers the gap.
+        vox_targets = np.geomspace(500, 20_000, 4).round().astype(int).tolist()
+        n_perm_values = [100, 500]
+    b_values = [1, 4] if cloud_config is None else [1, 2, 4]
+    img_values = [25, 100] if cloud_config is None else [25, 50, 100]
 
     max_side = 40  # 40^3 = 64000, larger than any vox target
 
@@ -476,25 +488,86 @@ def _fit_runtime_models(df):
     return models
 
 
-def main_experiment_profile():
-    """Run experiment-mode runtime profiling on AWS and fit models."""
-    cloud_config = load_cloud_config()
-    cloud_config.timeout_minutes = 360
-    cloud_config.retry_attempts = 1
+def _run_one_profile(config, kwargs):
+    """Run one profiling experiment locally, catching errors."""
+    from glow.benchmark.run import run_ana
+    try:
+        run_ana(config=config, **kwargs)
+    except Exception as e:
+        print(f'  ✗ {config.label}: {e}')
+
+
+def _run_profile_local(configs, n_jobs=-1):
+    """Run profiling configs locally in parallel."""
+    from joblib import Parallel, delayed
+
+    # Cache exp_orig by WGN parameters (486 configs share only 9 unique
+    # experiments).  Also cache the expensive _hash() call.
+    print('  Checking cache...')
+    exp_cache = {}
+    to_run = []
+    for config in configs:
+        config.prep_folder()
+
+        cache_key = (config.wgn_shape, config.wgn_a, config.wgn_b,
+                     config.wgn_num_img, config.exp_seed)
+        if cache_key not in exp_cache:
+            config.prep_exp_orig()
+            h = config.exp_orig._hash()
+            config.exp_orig._hash = lambda _h=h: _h
+            exp_cache[cache_key] = config.exp_orig
+        else:
+            config.exp_orig = exp_cache[cache_key]
+
+        config.save_config(config.folder / 'config.yaml')
+        kwargs_list = list(config.iter_kwargs())
+        uncached = config._filter_uncached(kwargs_list, verbose=False)
+        for _, kwargs in uncached:
+            to_run.append((config, kwargs))
+        # Clear exp_orig to reduce pickle size for multiprocessing;
+        # workers recreate it from WGN parameters.
+        config.exp_orig = None
+
+    n_cached = len(configs) - len(to_run)
+    if n_cached:
+        print(f'  {n_cached} cached, {len(to_run)} to run')
+    if not to_run:
+        print('  all experiments cached')
+        return
+
+    print(f'  Running {len(to_run)} experiments locally (n_jobs={n_jobs})...')
+    Parallel(n_jobs=n_jobs, verbose=10)(
+        delayed(_run_one_profile)(config, kwargs)
+        for config, kwargs in to_run
+    )
+
+
+def main_experiment_profile(cloud=False, n_jobs=-1):
+    """Run experiment-mode runtime profiling and fit models."""
+    if cloud:
+        cloud_config = load_cloud_config()
+        cloud_config.timeout_minutes = 360
+        cloud_config.retry_attempts = 1
+    else:
+        cloud_config = None
 
     configs = _build_runtime_profile_configs(cloud_config)
     n_grid = len(configs) // 3
-    print(f'Runtime profiling: {len(configs)} experiment jobs')
+    mode = 'cloud' if cloud else 'local'
+    print(f'Runtime profiling: {len(configs)} experiment jobs ({mode})')
     print(f'  ({n_grid} grid points x 3 analysis types)')
 
-    from glow.benchmark.paper import (submit_all_jobs, build_job_info_map,
-                                       monitor_all_jobs,
-                                       download_remaining_results)
+    if cloud:
+        from glow.benchmark.paper import (submit_all_jobs, build_job_info_map,
+                                           monitor_all_jobs,
+                                           download_remaining_results)
 
-    all_job_info = submit_all_jobs(configs)
-    all_job_ids, job_info_map = build_job_info_map(all_job_info)
-    monitor_all_jobs(all_job_info, all_job_ids, job_info_map)
-    download_remaining_results(all_job_info)
+        all_job_info = submit_all_jobs(configs)
+        all_job_ids, job_info_map = build_job_info_map(all_job_info)
+        monitor_all_jobs(all_job_info, all_job_ids, job_info_map)
+        download_remaining_results(all_job_info)
+    else:
+        _run_profile_local(configs, n_jobs=n_jobs)
 
     print('\n' + '=' * 60)
     print('Fitting runtime models...')
@@ -532,6 +605,10 @@ def parse_args():
         default='permutation',
         help='Profile mode (default: permutation)',
     )
+    p.add_argument('--cloud', action='store_true',
+                   help='Run experiment profiling on AWS (default: local)')
+    p.add_argument('--n-jobs', type=int, default=-1,
+                   help='Parallel jobs for local profiling (-1 = all cores)')
     p.add_argument('--min-voxels', type=int, default=1000)
     p.add_argument('--max-voxels', type=int, default=None)
     p.add_argument('--n-steps', type=int, default=10)
@@ -544,7 +621,7 @@ def parse_args():
 def main():
     args = parse_args()
     if args.profile == 'experiment':
-        main_experiment_profile()
+        main_experiment_profile(cloud=args.cloud, n_jobs=args.n_jobs)
     else:
         main_permutation(args)
 
