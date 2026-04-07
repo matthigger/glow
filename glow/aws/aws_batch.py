@@ -1232,19 +1232,23 @@ class AWSBatchRunner:
             ]
             self._job_memory_tier_index[job_name] = 0
 
-        try:
-            response = self.batch.submit_job(
-                jobName=job_name,
-                jobQueue=self.config.job_queue,
-                jobDefinition=self.config.job_definition,
-                timeout={'attemptDurationSeconds': timeout_minutes * 60},
-                retryStrategy={'attempts': self.config.retry_attempts},
-                containerOverrides=overrides
-            )
-            
-            return response['jobId']
-        except ClientError as e:
-            raise RuntimeError(f'failed to submit job: {e}')
+        max_retries = 8
+        for attempt in range(max_retries):
+            try:
+                response = self.batch.submit_job(
+                    jobName=job_name,
+                    jobQueue=self.config.job_queue,
+                    jobDefinition=self.config.job_definition,
+                    timeout={'attemptDurationSeconds': timeout_minutes * 60},
+                    retryStrategy={'attempts': self.config.retry_attempts},
+                    containerOverrides=overrides
+                )
+                return response['jobId']
+            except ClientError as e:
+                if 'TooManyRequestsException' in str(e) and attempt < max_retries - 1:
+                    time.sleep(2 ** attempt * 0.5)
+                    continue
+                raise RuntimeError(f'failed to submit job: {e}')
     
     def _download_single_experiment_result(self, run_id: str, exp_idx: int, output_folder: Path):
         """Download the tar.gz archive for one experiment and extract locally.
