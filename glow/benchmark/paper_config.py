@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 
 import glow
@@ -6,11 +8,13 @@ from glow.benchmark.run import (run_ana, run_mancova, run_prune_compare,
                                 run_segment, run_vba_tfce_compare)
 
 # ---------- common parameters ----------
+CROP_N_VOX = 500
+
 COMMON = dict(
-    n_seed=10,
+    n_seed=25,
     effect_llr_all=np.logspace(np.log10(0.003), np.log10(0.3), 11),
     effect_perc=0.1,
-    crop_n_vox=50000,
+    crop_n_vox=CROP_N_VOX,
     n_jobs=1,
     detail_save=False,
     error_save=False,
@@ -19,8 +23,10 @@ COMMON = dict(
 MODERATE_EFFECT_LLR = 0.03
 
 # ---------- source parameters ----------
+_wgn_side = math.ceil(CROP_N_VOX ** (1 / 3))
+
 SOURCES = {
-    'wgn': dict(wgn_shape=(25, 25, 25), wgn_a=2, wgn_b=2,
+    'wgn': dict(wgn_shape=(_wgn_side, _wgn_side, _wgn_side), wgn_a=2, wgn_b=2,
                 wgn_num_img=100, exp_seed=0),
     'hcp': dict(hcp_feats=['fa', 'md']),
 }
@@ -137,10 +143,10 @@ config_list.append(make_config(
     fixed_params={'effect_llr': MODERATE_EFFECT_LLR}))
 
 # ---------- F. 2D images (WGN) ----------
-# (224, 224) gives ~50k voxels matching crop_n_vox; no cropping needed
+_wgn_side_2d = math.ceil(CROP_N_VOX ** (1 / 2))
 config_list.append(make_config(
     'vba_wgn_2d', 'wgn', run_ana, ana_kwargs_dict_vba,
-    wgn_shape=(224, 224), crop_n_vox=None))
+    wgn_shape=(_wgn_side_2d, _wgn_side_2d)))
 
 # ---------- G. pruning method comparison ----------
 config_list.append(make_config(
