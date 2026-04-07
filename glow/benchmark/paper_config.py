@@ -8,7 +8,7 @@ from glow.benchmark.run import (run_ana, run_mancova, run_prune_compare,
                                 run_segment, run_vba_tfce_compare)
 
 # ---------- common parameters ----------
-CROP_N_VOX = 500
+CROP_N_VOX = 25000
 
 COMMON = dict(
     n_seed=25,
@@ -32,19 +32,20 @@ SOURCES = {
 }
 
 # ---------- analysis parameters ----------
-N_PERM_FWER = 1000
-N_PERM_FWER_SIZE_ADJUST = 50
-N_PERM_FWER_VBA = N_PERM_FWER + N_PERM_FWER_SIZE_ADJUST
+N_PERM_TOTAL = 250
+SIZE_ADJUST_FRAC = 0.05
+N_PERM_FWER_SIZE_ADJUST = max(1, round(N_PERM_TOTAL * SIZE_ADJUST_FRAC))
+N_PERM_FWER = N_PERM_TOTAL - N_PERM_FWER_SIZE_ADJUST
 ALPHA_FWER = 0.05
 ANALYSES = {
     'GLOW': dict(n_perm_fwer=N_PERM_FWER,
                  n_perm_fwer_size_adjust=N_PERM_FWER_SIZE_ADJUST,
                  min_size=1,
                  alpha_fwer=ALPHA_FWER),
-    'VBA': dict(n_perm_fwer=N_PERM_FWER_VBA,
+    'VBA': dict(n_perm_fwer=N_PERM_TOTAL,
                 tfce_flag=False,
                 alpha_fwer=ALPHA_FWER),
-    'VBA-TFCE': dict(n_perm_fwer=N_PERM_FWER_VBA,
+    'VBA-TFCE': dict(n_perm_fwer=N_PERM_TOTAL,
                      tfce_flag=True,
                      alpha_fwer=ALPHA_FWER),
 }
