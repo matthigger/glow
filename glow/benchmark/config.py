@@ -1,4 +1,3 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from itertools import product
 from pathlib import Path
@@ -312,6 +311,8 @@ class Config:
                 return obj.tolist()
             if isinstance(obj, (np.integer, np.floating, np.bool_)):
                 return obj.item()
+            if isinstance(obj, Path):
+                return str(obj)
             if isinstance(obj, dict):
                 return {k: convert(v) for k, v in obj.items()}
             if isinstance(obj, (list, tuple)):
@@ -484,26 +485,26 @@ class Config:
         except Exception:
             pass
 
-        # submit jobs in parallel (API calls are I/O-bound)
-        job_ids = []
-        job_exp_idx = {}
-
+        # submit jobs as array job (single API call)
         if verbose:
             print(f'  Submitting {len(uncached)} jobs to AWS Batch...')
 
-        def _submit(exp_idx):
-            return exp_idx, runner.submit_experiment_job(
-                run_id=run_id, exp_idx=exp_idx, memory_mb=memory_mb,
-                timeout_minutes=timeout_minutes)
-
-        with ThreadPoolExecutor(max_workers=16) as pool:
-            futures = {pool.submit(_submit, idx): idx
-                       for idx, _kw in uncached}
-            for fut in tqdm(as_completed(futures), total=len(futures),
-                            desc=f'  {self.label}', disable=not verbose):
-                exp_idx, job_id = fut.result()
-                job_ids.append(job_id)
-                job_exp_idx[job_id] = exp_idx
+        indices = [idx for idx, _kw in uncached]
+        command_template = [
+            '--s3-bucket', runner.config.s3_bucket,
+            '--s3-prefix', runner.config.s3_prefix,
+            '--run-id', run_id,
+        ]
+        array_info = runner.submit_array_job(
+            job_name=f'glow_{run_id}',
+            command_template=command_template,
+            indices=indices,
+            index_arg='--exp-idx',
+            memory_mb=memory_mb,
+            timeout_minutes=timeout_minutes,
+        )
+        job_ids = array_info['child_job_ids']
+        job_exp_idx = array_info['index_map']
 
         if verbose:
             print(f'  ✓ Submitted {len(job_ids)} jobs')

@@ -572,8 +572,28 @@ def main():
     parser.add_argument('--synthesize', action='store_true',
                         help='synthesis mode: collect perm results and finalize')
     parser.add_argument('--n-perm', type=int, help='number of permutations (synthesis mode)')
-    
+
+    # array job arguments
+    parser.add_argument('--index-map', help='S3 key to array index map JSON')
+
     args = parser.parse_args()
+
+    # resolve array job index from index map
+    array_idx = os.environ.get('AWS_BATCH_JOB_ARRAY_INDEX')
+    if array_idx is not None and args.index_map:
+        import json as _json
+        array_idx = int(array_idx)
+        _s3 = boto3.client('s3')
+        _resp = _s3.get_object(Bucket=args.s3_bucket, Key=args.index_map)
+        _map_data = _json.loads(_resp['Body'].read())
+        actual_index = _map_data['indices'][array_idx]
+        index_arg = _map_data['index_arg']
+        if index_arg == '--exp-idx':
+            args.exp_idx = actual_index
+        elif index_arg == '--perm-idx':
+            args.perm_idx = actual_index
+        print(f'Array job: AWS_BATCH_JOB_ARRAY_INDEX={array_idx} '
+              f'-> {index_arg} {actual_index}')
     
     # determine mode
     if args.synthesize:

@@ -1,5 +1,6 @@
 """AWS Batch integration for parallel permutation processing."""
 
+import json
 import re
 import time
 from dataclasses import dataclass, asdict, field
@@ -55,7 +56,9 @@ class AWSBatchRunner:
 
     @staticmethod
     def _base_job_name(job_name: str) -> str:
-        return job_name.rsplit('_retry', 1)[0]
+        # strip array child index suffix (e.g. ":42")
+        name = job_name.split(':')[0]
+        return name.rsplit('_retry', 1)[0]
 
     @staticmethod
     def _is_spot_termination(job_failure: Dict[str, Any]) -> bool:
@@ -104,6 +107,29 @@ class AWSBatchRunner:
             if not command:
                 messages.append(f'  ⚠ Cannot resubmit {job["jobName"]}: missing command')
                 continue
+
+            # For array child jobs, replace --index-map with explicit index arg
+            job_id = job['jobId']
+            if ':' in job_id and job_id in job_info_map:
+                info = job_info_map[job_id]
+                command = list(command)  # copy
+                # Remove --index-map and its value from command
+                new_cmd = []
+                skip_next = False
+                for tok in command:
+                    if skip_next:
+                        skip_next = False
+                        continue
+                    if tok == '--index-map':
+                        skip_next = True
+                        continue
+                    new_cmd.append(tok)
+                command = new_cmd
+                # Add explicit index arg
+                if 'exp_idx' in info:
+                    command.extend(['--exp-idx', str(info['exp_idx'])])
+                elif 'perm_idx' in info:
+                    command.extend(['--perm-idx', str(info['perm_idx'])])
 
             if is_oom:
                 current_idx = self._job_memory_tier_index.get(base_name, -1)
@@ -362,57 +388,36 @@ class AWSBatchRunner:
         print(f'timeout: {self.config.timeout_minutes} min per job')
         print(f'{"="*60}\n')
         
-        # submit jobs
-        job_ids = []
+        # submit jobs via array job
         data_path = f's3://{self.config.s3_bucket}/{self.config.s3_prefix}/experiments/{experiment_id}/data.pkl'
-        
-        for perm_idx in perm_indices:
-            job_name = f'{experiment_id}_perm_{perm_idx}'
-            
-            try:
-                overrides = {
-                    'command': [
-                        '--data-path', data_path,
-                        '--perm-idx', str(perm_idx),
-                        '--s3-bucket', self.config.s3_bucket,
-                        '--s3-prefix', self.config.s3_prefix,
-                        '--experiment-id', experiment_id
-                    ]
-                }
-                if memory_mb is not None:
-                    overrides['resourceRequirements'] = [
-                        {'type': 'VCPU', 'value': str(self.config.vcpus)},
-                        {'type': 'MEMORY', 'value': str(memory_mb)},
-                    ]
-                
-                response = self.batch.submit_job(
-                    jobName=job_name,
-                    jobQueue=self.config.job_queue,
-                    jobDefinition=self.config.job_definition,
-                    containerOverrides=overrides,
-                    retryStrategy={'attempts': self.config.retry_attempts},
-                    timeout={'attemptDurationSeconds': self.config.timeout_minutes * 60}
-                )
-                job_ids.append(response['jobId'])
-                if memory_mb is not None:
-                    tiers = self.config.oom_memory_mb_tiers or []
-                    for idx, t in enumerate(tiers):
-                        if t >= memory_mb:
-                            self._job_memory_tier_index[job_name] = idx
-                            break
-            except ClientError as e:
-                print(f'error submitting job for perm {perm_idx}: {e}')
-        
+
+        command_template = [
+            '--data-path', data_path,
+            '--s3-bucket', self.config.s3_bucket,
+            '--s3-prefix', self.config.s3_prefix,
+            '--experiment-id', experiment_id,
+        ]
+
+        array_info = self.submit_array_job(
+            job_name=f'{experiment_id}_perm',
+            command_template=command_template,
+            indices=perm_indices,
+            index_arg='--perm-idx',
+            memory_mb=memory_mb,
+        )
+        job_ids = array_info['child_job_ids']
+
         if memory_mb is not None:
             print(f'submitted {len(job_ids)} jobs (memory: {memory_mb} MB)')
         else:
             print(f'submitted {len(job_ids)} jobs')
-        
+
         return {
             'n_jobs': n_jobs,
             'job_ids': job_ids,
             'perm_indices': perm_indices,
-            'skipped': list(completed)
+            'skipped': list(completed),
+            'index_map': array_info['index_map'],
         }
     
     def submit_synthesis_job(self, experiment_id, n_perm, memory_mb=None):
@@ -1250,6 +1255,138 @@ class AWSBatchRunner:
                     continue
                 raise RuntimeError(f'failed to submit job: {e}')
     
+    def submit_array_job(self, job_name, command_template, indices, index_arg,
+                         memory_mb=None, timeout_minutes=None):
+        """Submit an AWS Batch array job (one API call creates N child jobs).
+
+        Args:
+            job_name: base name for the job
+            command_template: list of CLI args common to all children
+            indices: list of actual indices to run (may have gaps)
+            index_arg: CLI flag name (e.g. '--exp-idx' or '--perm-idx')
+            memory_mb: optional memory override
+            timeout_minutes: optional per-job timeout override
+
+        Returns:
+            dict with 'parent_job_ids', 'child_job_ids', 'index_map'
+        """
+        if timeout_minutes is None:
+            timeout_minutes = self.config.timeout_minutes
+
+        if len(indices) == 0:
+            return {'parent_job_ids': [], 'child_job_ids': [], 'index_map': {}}
+
+        # single index: fall back to regular submit (array size must be >= 2)
+        if len(indices) == 1:
+            command = list(command_template) + [index_arg, str(indices[0])]
+            overrides = {'command': command}
+            if memory_mb is not None:
+                overrides['resourceRequirements'] = [
+                    {'type': 'VCPU', 'value': str(self.config.vcpus)},
+                    {'type': 'MEMORY', 'value': str(memory_mb)},
+                ]
+            max_retries = 8
+            for attempt in range(max_retries):
+                try:
+                    response = self.batch.submit_job(
+                        jobName=job_name,
+                        jobQueue=self.config.job_queue,
+                        jobDefinition=self.config.job_definition,
+                        containerOverrides=overrides,
+                        retryStrategy={'attempts': self.config.retry_attempts},
+                        timeout={'attemptDurationSeconds': timeout_minutes * 60},
+                    )
+                    job_id = response['jobId']
+                    if memory_mb is not None:
+                        base = self._base_job_name(job_name)
+                        tiers = self.config.oom_memory_mb_tiers or []
+                        for idx, t in enumerate(tiers):
+                            if t >= memory_mb:
+                                self._job_memory_tier_index[base] = idx
+                                break
+                    return {
+                        'parent_job_ids': [job_id],
+                        'child_job_ids': [job_id],
+                        'index_map': {job_id: indices[0]},
+                    }
+                except ClientError as e:
+                    if 'TooManyRequestsException' in str(e) and attempt < max_retries - 1:
+                        time.sleep(2 ** attempt * 0.5)
+                        continue
+                    raise RuntimeError(f'failed to submit job: {e}')
+
+        # chunk into array jobs of at most 10000
+        max_array_size = 10000
+        chunks = [indices[i:i + max_array_size]
+                  for i in range(0, len(indices), max_array_size)]
+
+        parent_job_ids = []
+        child_job_ids = []
+        index_map = {}
+
+        for chunk_idx, chunk in enumerate(chunks):
+            # upload index map to S3
+            map_data = {'index_arg': index_arg, 'indices': chunk}
+            chunk_suffix = f'_chunk{chunk_idx}' if len(chunks) > 1 else ''
+            map_key = (f'{self.config.s3_prefix}/{job_name}/'
+                       f'array_index_map{chunk_suffix}.json')
+            self.s3.put_object(
+                Bucket=self.config.s3_bucket,
+                Key=map_key,
+                Body=json.dumps(map_data),
+            )
+
+            command = list(command_template) + ['--index-map', map_key]
+            overrides = {'command': command}
+            if memory_mb is not None:
+                overrides['resourceRequirements'] = [
+                    {'type': 'VCPU', 'value': str(self.config.vcpus)},
+                    {'type': 'MEMORY', 'value': str(memory_mb)},
+                ]
+
+            array_job_name = (f'{job_name}{chunk_suffix}'
+                              if len(chunks) > 1 else job_name)
+
+            max_retries = 8
+            for attempt in range(max_retries):
+                try:
+                    response = self.batch.submit_job(
+                        jobName=array_job_name,
+                        jobQueue=self.config.job_queue,
+                        jobDefinition=self.config.job_definition,
+                        containerOverrides=overrides,
+                        arrayProperties={'size': len(chunk)},
+                        retryStrategy={'attempts': self.config.retry_attempts},
+                        timeout={'attemptDurationSeconds': timeout_minutes * 60},
+                    )
+                    parent_id = response['jobId']
+                    parent_job_ids.append(parent_id)
+
+                    if memory_mb is not None:
+                        base = self._base_job_name(array_job_name)
+                        tiers = self.config.oom_memory_mb_tiers or []
+                        for idx, t in enumerate(tiers):
+                            if t >= memory_mb:
+                                self._job_memory_tier_index[base] = idx
+                                break
+
+                    for pos, actual_idx in enumerate(chunk):
+                        child_id = f'{parent_id}:{pos}'
+                        child_job_ids.append(child_id)
+                        index_map[child_id] = actual_idx
+                    break
+                except ClientError as e:
+                    if 'TooManyRequestsException' in str(e) and attempt < max_retries - 1:
+                        time.sleep(2 ** attempt * 0.5)
+                        continue
+                    raise RuntimeError(f'failed to submit array job: {e}')
+
+        return {
+            'parent_job_ids': parent_job_ids,
+            'child_job_ids': child_job_ids,
+            'index_map': index_map,
+        }
+
     def _download_single_experiment_result(self, run_id: str, exp_idx: int, output_folder: Path):
         """Download the tar.gz archive for one experiment and extract locally.
 
