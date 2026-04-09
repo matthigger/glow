@@ -324,11 +324,11 @@ def run_mancova_glow(config, **iter_kw):
 
 
 def run_mancova_tfce(config, **iter_kw):
-    """Run VBA-TFCE with all 5 MANCOVA stats x {raw, z-scored}.
+    """Run VBA and VBA-TFCE with all 5 MANCOVA stats x {raw, z-scored}.
 
     Computes all stats from a single voxel walk (shared E/H), then
-    loops over 10 variants: 5 stats x {raw, z}.  Each variant gets
-    optional z-scoring, TFCE, and FWER p-values.
+    loops over 20 variants: 5 stats x {raw, z} x {VBA, VBA-TFCE}.
+    The permutation walk is the expensive step; TFCE and p-values are cheap.
     """
     from glow.experiment.analysis import Analysis, AnalysisVBA
     from glow.experiment.mancova import (
@@ -351,32 +351,49 @@ def run_mancova_tfce(config, **iter_kw):
         name = stat_dict_inv[fn]
 
         for z_flag in [False, True]:
-            tfce_start = time.time()
+            variant_start = time.time()
             stat = multi[fn].copy()
 
             if z_flag:
                 stat = AnalysisVBA.z_score_stat(stat)
 
-            stat = AnalysisVBA.apply_tfce(stat=stat, mask_idx=exp.mask_idx)
-
-            pval = Analysis.get_pval(stat)
-
-            mask = np.zeros(exp.mask_idx.shape, dtype=bool)
-            mask[exp.mask_idx > -1] = pval <= alpha_fwer
-            effect_list = AnalysisVBA.discover_mask(mask=mask, exp=exp)
-
-            total_time = walk_time + (time.time() - tfce_start)
-
-            ana = object.__new__(AnalysisVBA)
-            ana.get_stat = fn
-            ana.exp = exp
-            ana.stat = stat
-            ana.pval = pval
-            ana.effect_list = effect_list
-
             suffix = '-z' if z_flag else ''
-            _score_and_emit(ana, effect, config,
-                            f'VBA-TFCE-{name}{suffix}', total_time, iter_kw)
+
+            # plain VBA (no TFCE)
+            pval_vba = Analysis.get_pval(stat)
+            mask_vba = np.zeros(exp.mask_idx.shape, dtype=bool)
+            mask_vba[exp.mask_idx > -1] = pval_vba <= alpha_fwer
+
+            ana_vba = object.__new__(AnalysisVBA)
+            ana_vba.get_stat = fn
+            ana_vba.exp = exp
+            ana_vba.stat = stat
+            ana_vba.pval = pval_vba
+            ana_vba.effect_list = AnalysisVBA.discover_mask(
+                mask=mask_vba, exp=exp)
+            _score_and_emit(ana_vba, effect, config,
+                            f'VBA-{name}{suffix}',
+                            walk_time + (time.time() - variant_start),
+                            iter_kw)
+
+            # VBA-TFCE
+            stat_tfce = AnalysisVBA.apply_tfce(
+                stat=stat, mask_idx=exp.mask_idx)
+            pval_tfce = Analysis.get_pval(stat_tfce)
+            mask_tfce = np.zeros(exp.mask_idx.shape, dtype=bool)
+            mask_tfce[exp.mask_idx > -1] = pval_tfce <= alpha_fwer
+
+            ana_tfce = object.__new__(AnalysisVBA)
+            ana_tfce.get_stat = fn
+            ana_tfce.exp = exp
+            ana_tfce.stat = stat_tfce
+            ana_tfce.pval = pval_tfce
+            ana_tfce.effect_list = AnalysisVBA.discover_mask(
+                mask=mask_tfce, exp=exp)
+            _score_and_emit(ana_tfce, effect, config,
+                            f'VBA-TFCE-{name}{suffix}',
+                            walk_time + (time.time() - variant_start),
+                            iter_kw)
 
 
 if __name__ == '__main__':
