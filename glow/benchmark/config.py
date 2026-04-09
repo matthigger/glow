@@ -251,13 +251,13 @@ class Config:
 
     def _get_expected_labels(self):
         """return the set of result 'label' strings one experiment produces."""
-        from glow.benchmark.run import run_ana, run_segment, run_mancova
+        from glow.benchmark.run import run_ana, run_segment, run_mancova_glow
         if self.run_fnc is run_ana:
             return set(self.ana_kwargs_dict.keys())
         if self.run_fnc is run_segment:
             from glow.experiment.cluster import _MODES
             return set(_MODES)
-        if self.run_fnc is run_mancova:
+        if self.run_fnc is run_mancova_glow:
             from glow.experiment.mancova import stat_dict
             return {f'GLOW-{name}' for name in stat_dict}
         return set()

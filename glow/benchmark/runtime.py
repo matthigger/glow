@@ -116,7 +116,7 @@ def estimate_timeout_minutes(config, safety_factor=2.5):
     ``None`` if no fitted runtime models are available.
     """
     from glow.benchmark.run import (run_ana, run_prune_compare, run_segment,
-                                     run_mancova, run_vba_tfce_compare)
+                                     run_mancova_glow, run_mancova_tfce)
 
     num_vox, b, num_img = _get_config_dimensions(config)
     total_sec = 0.0
@@ -137,7 +137,7 @@ def estimate_timeout_minutes(config, safety_factor=2.5):
             total_sec += max(0.0, predict_runtime_sec(
                 model, num_vox, b, num_img, n_perm))
 
-    elif config.run_fnc is run_mancova:
+    elif config.run_fnc is run_mancova_glow:
         _, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
         model = load_runtime_model('GLOW')
         if model is None:
@@ -146,7 +146,7 @@ def estimate_timeout_minutes(config, safety_factor=2.5):
         total_sec = max(0.0, predict_runtime_sec(
             model, num_vox, b, num_img, n_perm))
 
-    elif config.run_fnc is run_vba_tfce_compare:
+    elif config.run_fnc is run_mancova_tfce:
         _, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
         model = load_runtime_model('VBA-TFCE')
         if model is None:

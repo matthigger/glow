@@ -219,7 +219,7 @@ def run_prune_compare(config, **iter_kw):
             json.dump(d, f, sort_keys=True, indent=4)
 
 
-def run_mancova(config, **iter_kw):
+def run_mancova_glow(config, **iter_kw):
     """Run GLOW with all MANCOVA stats, sharing E/H across stats.
 
     Performs one tree walk per permutation and evaluates every stat in
@@ -323,7 +323,7 @@ def run_mancova(config, **iter_kw):
                         f'GLOW-{name}', total_time, iter_kw)
 
 
-def run_vba_tfce_compare(config, **iter_kw):
+def run_mancova_tfce(config, **iter_kw):
     """Run VBA-TFCE with all 5 MANCOVA stats x {raw, z-scored}.
 
     Computes all stats from a single voxel walk (shared E/H), then

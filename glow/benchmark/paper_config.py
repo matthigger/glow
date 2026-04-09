@@ -4,14 +4,14 @@ import numpy as np
 
 import glow
 from glow.benchmark.config import Config
-from glow.benchmark.run import (run_ana, run_mancova, run_prune_compare,
-                                run_segment, run_vba_tfce_compare)
+from glow.benchmark.run import (run_ana, run_mancova_glow, run_prune_compare,
+                                run_segment, run_mancova_tfce)
 
 # ---------- common parameters ----------
 CROP_N_VOX = 25000
 
 COMMON = dict(
-    n_seed=25,
+    n_seed=50,
     effect_llr_all=np.logspace(np.log10(0.003), np.log10(0.3), 11),
     effect_perc=0.1,
     crop_n_vox=CROP_N_VOX,
@@ -155,17 +155,21 @@ config_list.append(make_config(
 config_list.append(make_config(
     'prune_method_wgn', 'wgn', run_prune_compare, ana_kwargs_dict_prune))
 
-# ---------- H. MANCOVA stat comparison ----------
+# ---------- H. MANCOVA stat comparison (GLOW) ----------
 config_list.append(make_config(
-    'mancova_wgn', 'wgn', run_mancova, ana_kwargs_dict_mancova))
+    'mancova_glow_wgn', 'wgn', run_mancova_glow, ana_kwargs_dict_mancova,
+    crop_n_vox=5000))
 config_list.append(make_config(
-    'mancova_hcp', 'hcp', run_mancova, ana_kwargs_dict_mancova))
+    'mancova_glow_hcp', 'hcp', run_mancova_glow, ana_kwargs_dict_mancova,
+    crop_n_vox=5000))
 
-# ---------- I. TFCE stat comparison (5 stats x {raw, z-scored}) ----------
+# ---------- I. MANCOVA stat comparison (VBA-TFCE) ----------
 config_list.append(make_config(
-    'tfce_stat_wgn', 'wgn', run_vba_tfce_compare, ana_kwargs_dict_vba_tfce))
+    'mancova_vba_wgn', 'wgn', run_mancova_tfce, ana_kwargs_dict_vba_tfce,
+    crop_n_vox=5000))
 config_list.append(make_config(
-    'tfce_stat_hcp', 'hcp', run_vba_tfce_compare, ana_kwargs_dict_vba_tfce))
+    'mancova_vba_hcp', 'hcp', run_mancova_tfce, ana_kwargs_dict_vba_tfce,
+    crop_n_vox=5000))
 
 # ---------- J. segmentation comparison ----------
 config_list.append(make_config('segment_hcp', 'hcp', run_segment))
