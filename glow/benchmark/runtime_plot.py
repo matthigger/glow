@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from matplotlib.ticker import LogLocator, ScalarFormatter
+from matplotlib.ticker import FuncFormatter, LogLocator, ScalarFormatter
 from platformdirs import user_data_dir
 
 
@@ -95,37 +95,165 @@ def plot_runtime(rows, pdf_path: Path):
             for i, r in enumerate(rows)])[order]
 
         ax.fill_between(voxels, perm_lo, perm_hi, alpha=0.18,
-                         color=palette[0], label='perm min-max')
+                         color=palette[0], label='Permutation min–max')
         ax.plot(voxels, perm_med, marker='o', markersize=6, linewidth=1.5,
-                color=palette[0], zorder=3, label='perm median')
+                color=palette[0], zorder=3, label='Permutation median')
 
         synth = np.array([
             (r.get('synthesis_elapsed_sec') or 0) / 60
             for r in rows])[order]
         if synth.max() > 0:
             ax.plot(voxels, synth, marker='s', markersize=4, linewidth=1.0,
-                    color=palette[1], zorder=3, label='synthesis',
+                    color=palette[1], zorder=3, label='Synthesis',
                     linestyle='--')
 
         wall = perm_hi + synth
         ax.plot(voxels, wall, marker='^', markersize=5, linewidth=1.0,
-                color=palette[2], zorder=3, label='wall clock',
+                color=palette[2], zorder=3, label='Wall Clock',
                 linestyle=':')
-        ax.legend(loc='upper left', fontsize=8)
     else:
         minutes = np.array([r['elapsed_min'] for r in rows])[order]
         ax.plot(voxels, minutes, marker='o', markersize=6, linewidth=1.5,
                 color=palette[0], zorder=3)
 
-    _log_axes(ax)
-    ax.set_xlabel('Number of voxels')
-    ax.set_ylabel('Runtime (minutes)')
+    # -- Log-log fits --
+    def _loglog_fit(x, y):
+        lx, ly = np.log10(x), np.log10(y)
+        mask = np.isfinite(lx) & np.isfinite(ly)
+        m, b = np.polyfit(lx[mask], ly[mask], 1)
+        return m, 10**b
 
-    n_perm = rows[0].get('n_perm')
-    title = 'AnalysisGLOW Runtime vs Voxel Count (HCP)'
-    if n_perm:
-        title += f' [n_perm={n_perm}]'
-    ax.set_title(title, pad=10)
+    fit_lines = []
+    if has_perm:
+        m, a = _loglog_fit(voxels, perm_med)
+        fit_lines.append(('Permutation', a, m))
+        if synth.max() > 0:
+            m, a = _loglog_fit(voxels, synth)
+            fit_lines.append(('Synthesis', a, m))
+        m, a = _loglog_fit(voxels, wall)
+        fit_lines.append(('Wall Clock', a, m))
+    else:
+        m, a = _loglog_fit(voxels, minutes)
+        fit_lines.append(('Runtime', a, m))
+
+    txt_path = pdf_path.with_suffix('.txt')
+    header = (
+        'Log-log best fit:  minutes = a · voxels^m\n'
+        '  a = intercept (predicted minutes at 1 voxel)\n'
+        '  m = scaling exponent (slope in log-log space;\n'
+        '      m=1 → linear, m=2 → quadratic, etc.)\n'
+    )
+    with open(txt_path, 'w') as f:
+        f.write(header + '\n')
+        print(header)
+        for name, a, m in fit_lines:
+            line = (f'{name:15s}  a = {a:.4e}  m = {m:.4f}'
+                    f'  (e.g. {10_000:,} vox → {a * 10_000**m:.2f} min,'
+                    f' {100_000:,} vox → {a * 100_000**m:.2f} min)')
+            print(line)
+            f.write(line + '\n')
+        # Whole-brain cost/time estimates per fit
+        cost_per_min = 0.02 / 60
+        brain_mm3 = 1_300_000
+        resolutions = {
+            '2 mm³':    int(brain_mm3 / 2**3),
+            '1.25 mm³ (HCP)': int(brain_mm3 / 1.25**3),
+            '1 mm³':    brain_mm3,
+        }
+        sep = '-' * 72
+        for name, fa, fm in fit_lines:
+            table_hdr = (f'\nWhole-brain estimates ({name}):\n{sep}\n'
+                         f'{"Resolution":>20s}  {"Voxels":>10s}'
+                         f'  {"Minutes":>10s}  {"Cost ($)":>10s}\n'
+                         f'{sep}')
+            print(table_hdr)
+            f.write(table_hdr + '\n')
+            for res_label, nvox in resolutions.items():
+                mins = fa * nvox**fm
+                cost = mins * cost_per_min
+                row = (f'{res_label:>20s}  {nvox:>10,}'
+                       f'  {mins:>10.4g}  {cost:>10.4g}')
+                print(row)
+                f.write(row + '\n')
+            print(sep)
+            f.write(sep + '\n')
+
+        # Per-permutation summary table (rows = metric, cols = resolution)
+        n_perm = rows[0].get('n_perm', 1)
+        res_labels = list(resolutions.keys())
+        res_voxels = [resolutions[r] for r in res_labels]
+
+        # use permutation fit for per-perm estimates
+        perm_fit = [(n, a, m) for n, a, m in fit_lines if n == 'Permutation']
+        if perm_fit:
+            _, pa, pm = perm_fit[0]
+        else:
+            _, pa, pm = fit_lines[0]
+
+        col_w = 18
+        sep2 = '-' * (22 + col_w * len(res_labels))
+        hdr = f'\nPer-permutation estimates (from Permutation fit, n_perm={n_perm}):\n{sep2}\n'
+        hdr += f'{"":>20s}'
+        for rl in res_labels:
+            hdr += f'  {rl:>{col_w - 2}s}'
+        hdr += f'\n{sep2}'
+        print(hdr)
+        f.write(hdr + '\n')
+
+        for metric, fmt in [('min / perm', lambda mins, _nv: f'{mins / n_perm:#.4g}'),
+                            ('$ / perm',   lambda mins, _nv: f'{mins / n_perm * cost_per_min:#.4g}')]:
+            row = f'{metric:>20s}'
+            for nvox in res_voxels:
+                mins = pa * nvox**pm
+                row += f'  {fmt(mins, nvox):>{col_w - 2}s}'
+            print(row)
+            f.write(row + '\n')
+        print(sep2)
+        f.write(sep2 + '\n')
+
+    print(f'\nfit summary saved: {txt_path}')
+
+    # -- Brain volume vertical lines --
+    brain_mm3 = 1_300_000  # ~1.4 million mm³
+    brain_voxels = {
+        'brain at 2 mm³':    int(brain_mm3 / 2**3),
+        'brain at 1.25 mm³ (HCP)': int(brain_mm3 / 1.25**3),
+        'brain at 1 mm³':    brain_mm3,
+    }
+
+    _log_axes(ax)
+
+    def _voxel_fmt(x, _pos):
+        exp = np.log10(x)
+        if abs(exp - round(exp)) < 0.01:
+            exp = int(round(exp))
+            if exp == 0:
+                return '1 voxel'
+            return f'$10^{exp}$ voxels'
+        return ''
+
+    ax.xaxis.set_major_formatter(FuncFormatter(_voxel_fmt))
+    ax.set_xlabel('')
+    ax.set_ylabel('Runtime (minutes)')
+    ax.set_xlim(right=1_600_000)
+
+    for label, nvox in brain_voxels.items():
+        ax.axvline(nvox, color='black', linestyle='--', linewidth=1.0,
+                   alpha=0.6, zorder=2)
+        ax.text(nvox, ax.get_ylim()[0] * 1.3, f' {label}',
+                rotation=90, va='bottom', ha='right', fontsize=7,
+                color='black')
+
+    # -- Secondary cost axis (right) --
+    cost_per_min = 0.02 / 60  # $0.02/hour
+    ax_cost = ax.secondary_yaxis('right',
+                                  functions=(lambda y: y * cost_per_min,
+                                             lambda c: c / cost_per_min))
+    ax_cost.set_ylabel('Cost ($)')
+
+    ax.legend(loc='upper left', fontsize=7)
+
+    ax.set_title('GLOW: Single Permutation Runtime vs Voxel Count', pad=10)
 
     _save(fig, pdf_path)
 
