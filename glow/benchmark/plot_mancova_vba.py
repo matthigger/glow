@@ -1,7 +1,7 @@
-"""Visualise the TFCE stat comparison benchmark (5 stats x {raw, z}).
+"""Visualise the VBA-TFCE MANCOVA stat comparison (5 stats x {raw, z}).
 
 Usage:
-    python -m glow.benchmark.plot_tfce_stat
+    python -m glow.benchmark.plot_mancova_vba
 """
 import matplotlib
 matplotlib.use('Agg')
@@ -187,37 +187,104 @@ def plot_z_delta(datasets):
 
 # ------------------------------------------------------------------
 
+def build_summary_table(raw_dfs):
+    """Build a summary CSV: mean Dice, std, and win rate by stat and z-score.
+
+    Parameters
+    ----------
+    raw_dfs : list of (pd.DataFrame, str)
+        Each entry is (raw df with 'label' column, source nice-name).
+
+    Returns
+    -------
+    pd.DataFrame
+    """
+    rows = []
+    for df, source_nice in raw_dfs:
+        # parse stat and z flag from label
+        parsed = df['label'].map(_parse_label)
+        df = df.copy()
+        df['stat'] = [s for s, _ in parsed]
+        df['z_scored'] = [z for _, z in parsed]
+
+        # mean dice by (stat, z_scored)
+        grp = df.groupby(['stat', 'z_scored'])['dice']
+        means = grp.mean()
+        stds = grp.std()
+
+        # win rate: which (stat, z) combo has highest dice per
+        # (seed, effect_llr)?  sums to 1 across all 10 variants.
+        df_sig = df[df['effect_llr'] > 0.01]
+        best_idx = df_sig.groupby(['seed', 'effect_llr'])['dice'].idxmax()
+        win_counts = (df_sig.loc[best_idx]
+                      .groupby(['stat', 'z_scored']).size())
+        wins = win_counts / win_counts.sum()
+
+        for z_flag in [False, True]:
+            for stat in STAT_ORDER:
+                rows.append({
+                    'source': source_nice,
+                    'stat': STAT_NICE.get(stat, stat),
+                    'z_scored': z_flag,
+                    'mean_dice': means.get((stat, z_flag), np.nan),
+                    'std_dice': stds.get((stat, z_flag), np.nan),
+                    'win_rate': wins.get((stat, z_flag), 0.0),
+                })
+
+    return pd.DataFrame(rows)
+
+
 def main():
     datasets = []
-    folders = {}
+    raw_dfs = []
     for label, nice in SOURCES:
         df, folder = _load(label)
         if df.empty:
             print(f'skipping {label}: no data')
             continue
+        raw_dfs.append((df, nice))
         datasets.append((_agg(df), nice))
-        folders[label] = folder
 
     if not datasets:
         print('no data found')
         return
 
-    out = folders.get(SOURCES[0][0], folders[next(iter(folders))])
+    out = glow.benchmark.get_path_result() / '_latest'
+    out.mkdir(exist_ok=True)
 
     fig1 = plot_facet_grid(datasets)
-    p1 = out / 'tfce_facet.pdf'
+    p1 = out / 'mancova_vba_facet.pdf'
     fig1.savefig(p1, bbox_inches='tight')
     print(f'saved: {p1}')
 
     fig2 = plot_summary(datasets)
-    p2 = out / 'tfce_summary.pdf'
+    p2 = out / 'mancova_vba_summary.pdf'
     fig2.savefig(p2, bbox_inches='tight')
     print(f'saved: {p2}')
 
     fig3 = plot_z_delta(datasets)
-    p3 = out / 'tfce_z_delta.pdf'
+    p3 = out / 'mancova_vba_z_delta.pdf'
     fig3.savefig(p3, bbox_inches='tight')
     print(f'saved: {p3}')
+
+    summary = build_summary_table(raw_dfs)
+    csv_path = out / 'mancova_vba_summary.csv'
+    summary.to_csv(csv_path, index=False, float_format='%.4f')
+    print(f'saved: {csv_path}')
+
+    # print markdown table to stdout
+    for source in summary['source'].unique():
+        sub = summary[summary['source'] == source].sort_values(
+            'win_rate', ascending=False)
+        print(f'\n## {source}\n')
+        print(f'| stat | z_scored | mean_dice | std_dice | win_rate |')
+        print(f'|------|----------|-----------|----------|----------|')
+        for _, r in sub.iterrows():
+            z = 'yes' if r['z_scored'] else 'no'
+            print(f'| {r["stat"]:<12s} | {z:<8s} '
+                  f'| {r["mean_dice"]:.4f}    '
+                  f'| {r["std_dice"]:.4f}   '
+                  f'| {r["win_rate"]:.4f}   |')
 
     plt.close('all')
 
