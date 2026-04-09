@@ -1,7 +1,7 @@
 from glow.effect import ExtenterSphere
 from glow.experiment import *
 from glow.experiment.analysis import *
-from glow.graph import get_f1_sens_spec, iter_topo
+from glow.graph import get_dice_sens_spec, iter_topo
 from glow.mask import get_mask_idx
 
 
@@ -29,10 +29,10 @@ class TestBigEffect:
         analysis = AnalysisGLOW(TestBigEffect.exp, n_perm_fwer=25, alpha_fwer=.1)
 
         # check that target region segmented properly
-        f1 = get_f1_sens_spec(mask=TestBigEffect.effect.mask,
+        dice = get_dice_sens_spec(mask=TestBigEffect.effect.mask,
                               mask_idx=analysis.exp.mask_idx,
                               children=analysis.children)[0]
-        assert np.isclose(f1.max(), 1), 'target region not segmented'
+        assert np.isclose(dice.max(), 1), 'target region not segmented'
 
         # should discover at least one effect overlapping the target
         assert len(analysis.effect_list) >= 1, \

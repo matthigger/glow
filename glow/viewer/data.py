@@ -84,7 +84,7 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
 
     # mask-target derived stats
     if mask_target is not None:
-        f1, sens, spec = glow.graph.get_f1_sens_spec(
+        dice, sens, spec = glow.graph.get_dice_sens_spec(
             children=children,
             mask_idx=ana_glow.exp.mask_idx,
             mask=mask_target)
@@ -92,18 +92,18 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
             children=children,
             mask_idx=ana_glow.exp.mask_idx,
             mask=mask_target)
-        d['f1'] = f1
+        d['dice'] = dice
         d['sens'] = sens
         d['spec'] = spec
         d['vox_in_target'] = hits.astype(int)
         d['vox_out_target'] = miss.astype(int)
 
         sig_mask = ~np.isnan(ana_glow.pval) & (ana_glow.pval <= alpha_fwer)
-        max_f1_sig = float(f1[sig_mask].max()) if sig_mask.any() else 0.0
-        if max_f1_sig > 0:
-            d['pct_max_f1'] = f1 / max_f1_sig
+        max_dice_sig = float(dice[sig_mask].max()) if sig_mask.any() else 0.0
+        if max_dice_sig > 0:
+            d['pct_max_dice'] = dice / max_dice_sig
         else:
-            d['pct_max_f1'] = np.full(num_reg, np.nan)
+            d['pct_max_dice'] = np.full(num_reg, np.nan)
 
     df = pd.DataFrame(d)
 
@@ -117,7 +117,7 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
 
 _GENERIC_FEATURES = {'n_voxel', 'roughness'}
 _PRUNING_FEATURES = set()
-_MASK_FEATURES = {'f1', 'sens', 'spec', 'pct_max_f1',
+_MASK_FEATURES = {'dice', 'sens', 'spec', 'pct_max_dice',
                    'vox_in_target', 'vox_out_target'}
 
 
@@ -221,7 +221,7 @@ def compute_target_stats(ana_glow, mask_target):
     else:
         stats['llr_adjusted'] = np.nan
 
-    stats['f1'] = 1.0
+    stats['dice'] = 1.0
     stats['sens'] = 1.0
     stats['spec'] = 1.0
     stats['vox_in_target'] = n_voxel

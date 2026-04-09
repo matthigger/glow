@@ -31,8 +31,8 @@ from glow.benchmark.paper_config import (
 def _sort_options(glow_label, baseline_label):
     """Build sort-option dict keyed on metric for a given pair of methods."""
     return {
-        'f1':   (f'{baseline_label}_f1',  f'{glow_label}_f1',
-                 f'F1 difference ({glow_label} − {baseline_label})'),
+        'dice':  (f'{baseline_label}_dice',  f'{glow_label}_dice',
+                  f'Dice difference ({glow_label} − {baseline_label})'),
         'sens': (f'{baseline_label}_sens', f'{glow_label}_sens',
                  f'Sensitivity difference ({glow_label} − {baseline_label})'),
         'spec': (f'{baseline_label}_spec', f'{glow_label}_spec',
@@ -41,7 +41,7 @@ def _sort_options(glow_label, baseline_label):
 
 
 def _load_and_rank(config_label, glow_label='GLOW',
-                   baseline_label='VBA-TFCE', sort_metric='f1', top_n=20):
+                   baseline_label='VBA-TFCE', sort_metric='dice', top_n=20):
     """Load results and rank experiments by gap between two methods.
 
     Parameters
@@ -52,7 +52,7 @@ def _load_and_rank(config_label, glow_label='GLOW',
     baseline_label : str
         Comparison method (gap = glow - baseline; most negative = worst).
     sort_metric : str
-        One of 'f1', 'sens', 'spec'.
+        One of 'dice', 'sens', 'spec'.
     top_n : int
 
     Returns
@@ -75,14 +75,14 @@ def _load_and_rank(config_label, glow_label='GLOW',
     df = df[df['label'].isin([glow_label, baseline_label])].copy()
 
     parts = []
-    for metric in ('f1', 'sens', 'spec'):
+    for metric in ('dice', 'sens', 'spec'):
         piv = df.pivot_table(index=['seed', 'effect_llr'], columns='label',
                              values=metric, aggfunc='first')
         piv.columns = [f'{col}_{metric}' for col in piv.columns]
         parts.append(piv)
 
     merged = parts[0].join(parts[1:]).reset_index()
-    merged = merged.dropna(subset=[f'{glow_label}_f1'])
+    merged = merged.dropna(subset=[f'{glow_label}_dice'])
 
     opts = _sort_options(glow_label, baseline_label)
     base_col, glow_col, _ = opts[sort_metric]
@@ -100,7 +100,7 @@ def _print_ranking(ranking, glow_label='GLOW', baseline_label='VBA-TFCE',
     """Pretty-print the ranking table with a 0-based index column."""
     stat_cols = []
     for method in (glow_label, baseline_label):
-        for metric in ('f1', 'sens', 'spec'):
+        for metric in ('dice', 'sens', 'spec'):
             col = f'{method}_{metric}'
             if col in ranking.columns:
                 stat_cols.append(col)
@@ -237,11 +237,11 @@ def _rerun_and_view(config_label, seed, effect_llr, glow_label='GLOW',
     mask_pred = np.zeros(ana.exp.mask_idx.shape, dtype=bool)
     for eff in ana.effect_list:
         mask_pred |= eff.mask
-    f1, sens, spec = glow.mask.get_score(
+    dice, sens, spec = glow.mask.get_score(
         mask_pred=mask_pred,
         mask_target=effect.mask,
         mask_active=exp_eff.mask_idx > -1)
-    print(f'  Score: f1={f1:.4f}, sens={sens:.4f}, spec={spec:.4f}')
+    print(f'  Score: dice={dice:.4f}, sens={sens:.4f}, spec={spec:.4f}')
 
     # save (overwrites any previous cache)
     _save_cache(config_label, seed, effect_llr, exp_eff, effect, ana)

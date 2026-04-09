@@ -195,7 +195,7 @@ def _defaults(generic_cols, sig_cols, prune_cols, mask_cols):
     default_x = 'n_voxel' if 'n_voxel' in all_cols else all_cols[0]
     default_y = 'llr' if 'llr' in all_cols else all_cols[min(1, len(all_cols) - 1)]
     log_y_default = default_y in _LOG_COLS
-    default_color = 'f1' if 'f1' in mask_cols else '__none__'
+    default_color = 'dice' if 'dice' in mask_cols else '__none__'
     return all_cols, default_x, default_y, log_y_default, default_color
 
 
@@ -1191,7 +1191,7 @@ def launch(ana_glow, mask_target=None, port=8050, debug=False,
     Args:
         ana_glow (AnalysisGLOW): completed analysis
         mask_target (np.array): optional target mask (boolean, same shape
-            as ana_glow.exp.mask_idx).  When provided, per-region f1/sens/
+            as ana_glow.exp.mask_idx).  When provided, per-region dice/sens/
             spec/vox_in_target/vox_out_target columns become available.
         port (int): server port
         debug (bool): enable Dash debug mode (hot-reload).  If True,

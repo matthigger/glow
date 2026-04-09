@@ -127,8 +127,8 @@ def node_sum(x, children):
     return summed
 
 
-def get_f1_sens_spec(mask, mask_idx, children):
-    """compute F1, sensitivity (recall/TPR), and specificity (TNR) per region.
+def get_dice_sens_spec(mask, mask_idx, children):
+    """compute Dice, sensitivity (recall/TPR), and specificity (TNR) per region.
 
     Args:
         mask (np.array): target mask (boolean, same shape as mask_idx)
@@ -137,7 +137,7 @@ def get_f1_sens_spec(mask, mask_idx, children):
             sklearn.cluster.Ward.children_)
 
     Returns:
-        f1 (np.array): f1 score per region
+        dice (np.array): Dice score per region
         sens (np.array): TP / (TP + FN) per region
         spec (np.array): TN / (TN + FP) per region
     """
@@ -155,15 +155,15 @@ def get_f1_sens_spec(mask, mask_idx, children):
 
     # metrics with safe division (0 where undefined)
     with np.errstate(divide='ignore', invalid='ignore'):
-        f1 = 2 * tp / (2 * tp + fp + fn)
+        dice = 2 * tp / (2 * tp + fp + fn)
         sens = tp / (tp + fn)
         spec = tn / (tn + fp)
 
-    f1 = np.nan_to_num(f1, nan=0)
+    dice = np.nan_to_num(dice, nan=0)
     sens = np.nan_to_num(sens, nan=0)
     spec = np.nan_to_num(spec, nan=1)
 
-    return f1, sens, spec
+    return dice, sens, spec
 
 
 def get_miss_hits(mask, mask_idx, children):

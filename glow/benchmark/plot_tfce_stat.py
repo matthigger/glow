@@ -36,8 +36,8 @@ def _parse_label(label):
 
 
 def _agg(df):
-    """Mean F1 per (label, effect_llr)."""
-    return (df.groupby(['label', 'effect_llr'])['f1']
+    """Mean Dice per (label, effect_llr)."""
+    return (df.groupby(['label', 'effect_llr'])['dice']
             .agg(['mean', 'std', 'count'])
             .reset_index())
 
@@ -87,7 +87,7 @@ def plot_facet_grid(datasets):
             if row == 0:
                 ax.set_title(STAT_NICE[stat], fontsize=11)
             if col == 0:
-                ax.set_ylabel(f'{src_title}\nF1', fontsize=10)
+                ax.set_ylabel(f'{src_title}\nDice', fontsize=10)
             if row == n_src - 1:
                 ax.set_xlabel('effect LLR', fontsize=9)
             ax.legend(fontsize=7, frameon=False, loc='upper left')
@@ -137,13 +137,13 @@ def plot_summary(datasets):
 
         ax.set_xscale('log')
         ax.set_xlabel('effect LLR')
-        ax.set_ylabel('F1')
+        ax.set_ylabel('Dice')
         ax.set_title(src_title, fontsize=12)
         ax.legend(fontsize=8, frameon=False, ncol=2)
         ax.grid(True, alpha=0.25)
         ax.set_ylim(-0.02, 1.02)
 
-    fig.suptitle('VBA-TFCE: F1 by statistic (mean ± 1 SE)', fontsize=13, y=1.01)
+    fig.suptitle('VBA-TFCE: Dice by statistic (mean ± 1 SE)', fontsize=13, y=1.01)
     fig.tight_layout()
     return fig
 
@@ -175,12 +175,12 @@ def plot_z_delta(datasets):
         ax.axhline(0, color='black', lw=0.8, ls=':')
         ax.set_xscale('log')
         ax.set_xlabel('effect LLR')
-        ax.set_ylabel('$\\Delta$ F1  (z-scored $-$ raw)')
+        ax.set_ylabel('$\\Delta$ Dice  (z-scored $-$ raw)')
         ax.set_title(src_title, fontsize=12)
         ax.legend(fontsize=8, frameon=False)
         ax.grid(True, alpha=0.25)
 
-    fig.suptitle('Effect of z-scoring on F1 by statistic', fontsize=13, y=1.01)
+    fig.suptitle('Effect of z-scoring on Dice by statistic', fontsize=13, y=1.01)
     fig.tight_layout()
     return fig
 

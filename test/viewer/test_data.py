@@ -37,12 +37,12 @@ class TestPrepDf:
             'no_effect', 'has_effect'}
 
     def test_mask_target_columns(self, df_with_target):
-        for col in ('f1', 'sens', 'spec', 'vox_in_target', 'vox_out_target'):
+        for col in ('dice', 'sens', 'spec', 'vox_in_target', 'vox_out_target'):
             assert col in df_with_target.columns, f'missing column: {col}'
 
-    def test_f1_range(self, df_with_target):
-        f1 = df_with_target['f1']
-        assert (f1 >= 0).all() and (f1 <= 1).all()
+    def test_dice_range(self, df_with_target):
+        dice = df_with_target['dice']
+        assert (dice >= 0).all() and (dice <= 1).all()
 
     def test_extra_df_merge(self, ana):
         num_reg = ana.exp.y.shape[2] + ana.children.shape[0]
@@ -75,7 +75,7 @@ class TestGetFeatureColumns:
 
     def test_mask_columns_present_with_target(self, df_with_target):
         _, _, _, mask_cols = get_feature_columns(df_with_target)
-        assert 'f1' in mask_cols
+        assert 'dice' in mask_cols
 
     def test_excludes_boolean_and_index(self, df_no_target):
         generic, sig, prune, mask = get_feature_columns(df_no_target)
@@ -99,7 +99,7 @@ class TestComputeTargetStats:
         assert target_stats['n_voxel'] == expected
 
     def test_self_metrics(self, target_stats):
-        assert target_stats['f1'] == 1.0
+        assert target_stats['dice'] == 1.0
         assert target_stats['sens'] == 1.0
         assert target_stats['spec'] == 1.0
 

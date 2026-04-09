@@ -147,10 +147,10 @@ def prep_df(ana_glow, mask_target=None):
             # add stats specific to unpermuted data
             d['p-val (FWER control)'] = ana_glow.pval
 
-            # compute f1 (dice) score with mask_target
+            # compute Dice score with mask_target
             if mask_target is not None:
-                d['f1'], d['sens'], d['spec'] = \
-                    glow.graph.get_f1_sens_spec(
+                d['dice'], d['sens'], d['spec'] = \
+                    glow.graph.get_dice_sens_spec(
                         children=ana_glow.children,
                         mask_idx=ana_glow.exp.mask_idx,
                         mask=mask_target)

@@ -19,14 +19,14 @@ def plot_compute_time(df):
     labels_sorted = sorted(df['label'].unique().tolist())
     color_map = get_cmap_dict(labels_sorted)
 
-    plt.title('Computation time (per experiment)')
+    plt.title('Computation Time (per Experiment)')
     plt.xlabel('time (sec)')
     plt.ylabel('')
     sns.boxplot(data=df, x='time_sec', y='label', palette=color_map,
                 hue='label')
 
 
-def plot_calibration(df, alpha_max=0.20, n_pts=200):
+def plot_calibration(df, alpha_max=0.20, n_pts=200, title=None):
     """Plot FWER calibration curve: nominal alpha vs empirical rejection rate.
 
     Requires a ``min_pval`` column (minimum FWER-corrected p-value per seed).
@@ -69,7 +69,7 @@ def plot_calibration(df, alpha_max=0.20, n_pts=200):
 
     ax.set_xlabel('nominal $\\alpha$')
     ax.set_ylabel('empirical rejection rate')
-    ax.set_title('FWER calibration (null)')
+    ax.set_title(title if title else 'FWER Calibration (Null)')
     ax.legend(frameon=False)
     ax.set_xlim(0, alpha_max)
     ax.set_ylim(0, alpha_max)
@@ -78,7 +78,22 @@ def plot_calibration(df, alpha_max=0.20, n_pts=200):
     plt.tight_layout()
 
 
-def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['f1', 'sens', 'spec'],
+_METRIC_TITLES = {
+    'dice': 'Dice',
+    'sens': 'Sensitivity',
+    'spec': 'Specificity',
+    'pct_max_dice': r'Dice$(\hat{r})\;/\;\max_r$ Dice$(r)$',
+}
+
+_X_PARAM_LABELS = {
+    'effect_llr': 'Effect LLR',
+    'effect_perc': 'Effect Size (% of Volume)',
+    'wgn_num_img': 'Number of Subjects',
+    'wgn_b': 'Number of Features ($b$)',
+}
+
+
+def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['dice', 'sens', 'spec'],
                       one_vs_rest=False, one_label='GLOW', alpha=.5, ci=90,
                       title=None, ylabel=None):
     # ensure numeric x + metrics (prevents lexicographic sorts)
@@ -151,10 +166,10 @@ def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['f1', 'sens', 'spec'],
 
         if j == 0:
             ax_top.legend(frameon=False)
-        ax_top.set_title(title if title else metric)
+        ax_top.set_title(title if title else _METRIC_TITLES.get(metric, metric))
         ax_top.grid(True, alpha=alpha, linewidth=1.2)
         if nrows == 1:
-            ax_top.set_xlabel(x_param)
+            ax_top.set_xlabel(_X_PARAM_LABELS.get(x_param, x_param))
 
         # bottom: GLOW - best(other), no shading
         if nrows == 2:
@@ -201,7 +216,7 @@ def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['f1', 'sens', 'spec'],
                     ax_bot.set_ylabel(f'{one_label} - best vba')
                     ax_bot.axhline(0, lw=.5, color='black', alpha=alpha)
                     ax_bot.grid(True, alpha=alpha, linewidth=1.2)
-                    ax_bot.set_xlabel(x_param)
+                    ax_bot.set_xlabel(_X_PARAM_LABELS.get(x_param, x_param))
                 else:
                     ax_bot.axis('off')
             else:
@@ -250,7 +265,8 @@ if __name__ == '__main__':
             path = folder / 'calibration.pdf'
             if force_replot or n_new or not path.exists():
                 print(f'creating: {path}')
-                plot_calibration(df)
+                cal_title = 'WGN' if 'wgn' in label else 'HCP'
+                plot_calibration(df, title=cal_title)
                 plt.gcf().savefig(path, bbox_inches='tight')
                 plt.close('all')
             else:
@@ -281,23 +297,23 @@ if __name__ == '__main__':
             shutil.copy2(path, dest)
             print(f'  -> {dest}')
 
-        # generate pct_max_f1 plot (only GLOW variants)
-        if 'pct_max_f1' in df.columns:
-            path_mf = folder / 'max_f1_score.pdf'
+        # generate pct_max_dice plot (only GLOW variants)
+        if 'pct_max_dice' in df.columns:
+            path_mf = folder / 'max_dice.pdf'
             if force_replot or n_new or not path_mf.exists():
                 print(f'creating: {path_mf}')
                 df_glow = df[df['label'].str.contains('GLOW')]
                 source_tag = label.rsplit('_', 1)[-1].upper()
                 plot_x_vs_metrics(df_glow, x_param=x_param,
-                                  metrics=['pct_max_f1'],
+                                  metrics=['pct_max_dice'],
                                   one_vs_rest=False, title=source_tag,
-                                  ylabel=r'$F_1(\hat{r})\;/\;\max_r F_1(r)$')
+                                  ylabel=r'Dice$(\hat{r})\;/\;\max_r$ Dice$(r)$')
                 plt.gcf().savefig(path_mf, bbox_inches='tight')
                 plt.close('all')
             else:
                 print(f'skipping: {path_mf} (already exists, no new data)')
 
             if path_mf.exists():
-                dest = latest / f'{label}_max_f1_score.pdf'
+                dest = latest / f'{label}_max_dice.pdf'
                 shutil.copy2(path_mf, dest)
                 print(f'  -> {dest}')

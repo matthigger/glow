@@ -67,7 +67,7 @@ def get_entropy(mask_idx):
 
 
 def get_score(mask_pred, mask_target, mask_active=None):
-    """compute F1, sensitivity, and specificity against ground truth."""
+    """compute Dice, sensitivity, and specificity against ground truth."""
     if mask_active is None:
         # no mask_active passed, assume all voxels were analyzed
         y_true = mask_target.flatten()
@@ -77,8 +77,8 @@ def get_score(mask_pred, mask_target, mask_active=None):
         y_true = mask_target[mask_active]
         y_pred = mask_pred[mask_active]
 
-    # compute scores (default to zero)
-    f1 = f1_score(y_true=y_true, y_pred=y_pred, zero_division=0)
+    # compute Dice score (default to zero)
+    dice = f1_score(y_true=y_true, y_pred=y_pred, zero_division=0)
     sens = recall_score(y_true=y_true, y_pred=y_pred, zero_division=0)
 
     # specificity with safe division (defaults to 1)
@@ -87,7 +87,7 @@ def get_score(mask_pred, mask_target, mask_active=None):
     denom = tn + fp
     spec = 1 if denom == 0 else tn / denom
 
-    return f1, sens, spec
+    return dice, sens, spec
 
 
 def bbox_crop(arr, mask=None):

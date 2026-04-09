@@ -20,7 +20,7 @@ def test_iter_node_sum():
     assert np.allclose(node_sum(x, children), exp)
 
 
-def test_get_f1_sens_spec():
+def test_get_dice_sens_spec():
     mask = np.array([0, 0, 1, 1])
     mask_idx = np.arange(4)
     children = np.array([[0, 1],
@@ -28,19 +28,19 @@ def test_get_f1_sens_spec():
                          [4, 5]])
 
     # Expected per region: leaves 0..3, then internal nodes 4..6
-    f1_exp = np.array([0.0, 0.0, 2 / 3, 2 / 3, 0.0, 1.0, 2 / 3])
+    dice_exp = np.array([0.0, 0.0, 2 / 3, 2 / 3, 0.0, 1.0, 2 / 3])
     sens_exp = np.array([0.0, 0.0, 0.5, 0.5, 0.0, 1.0, 1.0])
     spec_exp = np.array([0.5, 0.5, 1.0, 1.0, 0.0, 1.0, 0.0])
 
-    f1, sens, spec = get_f1_sens_spec(mask=mask, mask_idx=mask_idx,
+    dice, sens, spec = get_dice_sens_spec(mask=mask, mask_idx=mask_idx,
                                       children=children)
 
-    assert np.allclose(f1, f1_exp)
+    assert np.allclose(dice, dice_exp)
     assert np.allclose(sens, sens_exp)
     assert np.allclose(spec, spec_exp)
 
 
-def test_get_f1_sens_spec_with_inactive_voxels():
+def test_get_dice_sens_spec_with_inactive_voxels():
     """Specificity must ignore spatial positions outside the analysis mask."""
     # 2x4 spatial grid, only 4 of 8 positions are analysis voxels
     mask_idx = np.array([[-1, 0, 1, -1],
@@ -54,7 +54,7 @@ def test_get_f1_sens_spec_with_inactive_voxels():
     # 4 analysis voxels, 2 in target (vox 2, 3)
     # Region 6 (root): all 4 voxels → tp=2, fp=2, fn=0, tn=0
     #   spec = 0/(0+2) = 0, NOT ~0.75 which you'd get using mask.size=8
-    f1, sens, spec = get_f1_sens_spec(mask=mask, mask_idx=mask_idx,
+    dice, sens, spec = get_dice_sens_spec(mask=mask, mask_idx=mask_idx,
                                       children=children)
     root = 6
     assert spec[root] == 0.0

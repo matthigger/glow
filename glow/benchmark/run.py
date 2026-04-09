@@ -42,16 +42,16 @@ def run_segment(config, **iter_kw):
         children = glow.experiment.cluster(exp, mode=mode)
         total_time_sec = time.time() - start
 
-        f1, sens, spec = glow.graph.get_f1_sens_spec(mask=effect.mask,
-                                                     mask_idx=exp.mask_idx,
-                                                     children=children)
-        idx = np.argmax(f1)
+        dice, sens, spec = glow.graph.get_dice_sens_spec(mask=effect.mask,
+                                                         mask_idx=exp.mask_idx,
+                                                         children=children)
+        idx = np.argmax(dice)
 
         uuid = str(uuid4())[:8]
         file_out = config.folder / OUT / f'{uuid}_result.json'
         d = {'effect_llr': effect.effect_llr,
              'seed': int(effect.seed),
-             'f1': f1[idx],
+             'dice': dice[idx],
              'label': mode,
              'sens': sens[idx],
              'spec': spec[idx],
@@ -75,22 +75,22 @@ def _score_and_emit(ana, effect, config, label, total_time_sec, iter_kw):
         mask_pred |= _effect.mask
 
     mask_active = exp.mask_idx > -1
-    f1, sens, spec = glow.mask.get_score(mask_pred=mask_pred,
-                                         mask_target=effect.mask,
-                                         mask_active=mask_active)
+    dice, sens, spec = glow.mask.get_score(mask_pred=mask_pred,
+                                           mask_target=effect.mask,
+                                           mask_active=mask_active)
 
-    pct_max_f1 = 0.0
+    pct_max_dice = 0.0
     if hasattr(ana, 'sig_reg_list') and hasattr(ana, 'children'):
-        f1_all, _, _ = glow.graph.get_f1_sens_spec(
+        dice_all, _, _ = glow.graph.get_dice_sens_spec(
             mask=effect.mask, mask_idx=exp.mask_idx,
             children=ana.children)
         sig = ana.sig_reg_list
-        max_f1_sig = max((f1_all[i] for i in sig), default=0.0)
-        if max_f1_sig > 0:
+        max_dice_sig = max((dice_all[i] for i in sig), default=0.0)
+        if max_dice_sig > 0:
             out_regs = [eff.reg_idx for eff in ana.effect_list]
             if out_regs:
-                pct_max_f1 = float(
-                    max(f1_all[i] for i in out_regs) / max_f1_sig)
+                pct_max_dice = float(
+                    max(dice_all[i] for i in out_regs) / max_dice_sig)
 
     min_pval = float(np.nanmin(ana.pval)) if hasattr(ana, 'pval') else None
 
@@ -101,10 +101,10 @@ def _score_and_emit(ana, effect, config, label, total_time_sec, iter_kw):
          'stat': ana.get_stat.__name__.replace('get_', ''),
          'label': label,
          'Analysis': type(ana).__name__,
-         'f1': f1,
+         'dice': dice,
          'sens': sens,
          'spec': spec,
-         'pct_max_f1': pct_max_f1,
+         'pct_max_dice': pct_max_dice,
          'min_pval': min_pval,
          'uuid': uuid_str,
          'vox_total': int(exp.y.shape[2]),
@@ -193,9 +193,9 @@ def run_prune_compare(config, **iter_kw):
                 children=children)
             mask_pred |= (label_map > -1)
 
-        f1, sens, spec = glow.mask.get_score(mask_pred=mask_pred,
-                                             mask_target=effect.mask,
-                                             mask_active=mask_active)
+        dice, sens, spec = glow.mask.get_score(mask_pred=mask_pred,
+                                               mask_target=effect.mask,
+                                               mask_active=mask_active)
         uuid = str(uuid4())[:8]
         file_out = config.folder / OUT / f'{uuid}_result.json'
         d = {'effect_llr': effect.effect_llr,
@@ -203,7 +203,7 @@ def run_prune_compare(config, **iter_kw):
              'stat': ana.get_stat.__name__.replace('get_', ''),
              'label': prune_label,
              'Analysis': Ana.__name__,
-             'f1': f1,
+             'dice': dice,
              'sens': sens,
              'spec': spec,
              'uuid': uuid,

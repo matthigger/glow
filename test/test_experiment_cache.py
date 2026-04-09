@@ -26,7 +26,7 @@ def _make_result_json(folder, label, seed, effect_llr, extra=None):
         'label': label,
         'seed': int(seed),
         'effect_llr': float(effect_llr),
-        'f1': 0.5,
+        'dice': 0.5,
         'sens': 0.5,
         'spec': 0.5,
         'uuid': 'test1234',
@@ -203,9 +203,9 @@ class TestIsExperimentCached:
 
     def test_fully_cached(self):
         df = pd.DataFrame([
-            {'seed': 0, 'effect_llr': 0.05, 'label': 'GLOW', 'f1': 0.5,
+            {'seed': 0, 'effect_llr': 0.05, 'label': 'GLOW', 'dice': 0.5,
              'config_hash': self.hash},
-            {'seed': 0, 'effect_llr': 0.05, 'label': 'VBA', 'f1': 0.6,
+            {'seed': 0, 'effect_llr': 0.05, 'label': 'VBA', 'dice': 0.6,
              'config_hash': self.hash},
         ])
         assert self.config._is_experiment_cached(
@@ -213,7 +213,7 @@ class TestIsExperimentCached:
 
     def test_partially_cached(self):
         df = pd.DataFrame([
-            {'seed': 0, 'effect_llr': 0.05, 'label': 'GLOW', 'f1': 0.5,
+            {'seed': 0, 'effect_llr': 0.05, 'label': 'GLOW', 'dice': 0.5,
              'config_hash': self.hash},
         ])
         assert not self.config._is_experiment_cached(
@@ -221,9 +221,9 @@ class TestIsExperimentCached:
 
     def test_different_seed_not_cached(self):
         df = pd.DataFrame([
-            {'seed': 1, 'effect_llr': 0.05, 'label': 'GLOW', 'f1': 0.5,
+            {'seed': 1, 'effect_llr': 0.05, 'label': 'GLOW', 'dice': 0.5,
              'config_hash': self.hash},
-            {'seed': 1, 'effect_llr': 0.05, 'label': 'VBA', 'f1': 0.6,
+            {'seed': 1, 'effect_llr': 0.05, 'label': 'VBA', 'dice': 0.6,
              'config_hash': self.hash},
         ])
         assert not self.config._is_experiment_cached(
@@ -232,9 +232,9 @@ class TestIsExperimentCached:
     def test_wrong_config_hash_not_cached(self):
         """Results with a different config_hash should not count as cached."""
         df = pd.DataFrame([
-            {'seed': 0, 'effect_llr': 0.05, 'label': 'GLOW', 'f1': 0.5,
+            {'seed': 0, 'effect_llr': 0.05, 'label': 'GLOW', 'dice': 0.5,
              'config_hash': 'wrong_hash_x'},
-            {'seed': 0, 'effect_llr': 0.05, 'label': 'VBA', 'f1': 0.6,
+            {'seed': 0, 'effect_llr': 0.05, 'label': 'VBA', 'dice': 0.6,
              'config_hash': 'wrong_hash_x'},
         ])
         assert not self.config._is_experiment_cached(
@@ -243,8 +243,8 @@ class TestIsExperimentCached:
     def test_no_hash_column_not_cached(self):
         """Legacy data without config_hash column should not count as cached."""
         df = pd.DataFrame([
-            {'seed': 0, 'effect_llr': 0.05, 'label': 'GLOW', 'f1': 0.5},
-            {'seed': 0, 'effect_llr': 0.05, 'label': 'VBA', 'f1': 0.6},
+            {'seed': 0, 'effect_llr': 0.05, 'label': 'GLOW', 'dice': 0.5},
+            {'seed': 0, 'effect_llr': 0.05, 'label': 'VBA', 'dice': 0.6},
         ])
         assert not self.config._is_experiment_cached(
             {'seed': 0, 'effect_llr': 0.05}, df, self.expected, self.hash)
@@ -253,9 +253,9 @@ class TestIsExperimentCached:
         """effect_llr floats should match after rounding to 14 decimals."""
         df = pd.DataFrame([
             {'seed': 0, 'effect_llr': 0.050000000000001, 'label': 'GLOW',
-             'f1': 0.5, 'config_hash': self.hash},
+             'dice': 0.5, 'config_hash': self.hash},
             {'seed': 0, 'effect_llr': 0.050000000000001, 'label': 'VBA',
-             'f1': 0.6, 'config_hash': self.hash},
+             'dice': 0.6, 'config_hash': self.hash},
         ])
         assert self.config._is_experiment_cached(
             {'seed': 0, 'effect_llr': 0.05}, df, self.expected, self.hash)

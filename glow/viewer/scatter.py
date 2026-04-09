@@ -137,7 +137,7 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
     hover_cols = ['region_idx', 'n_voxel', 'llr', 'llr_adjusted',
                   'pval_fwer']
     for c in ('pval_homo',
-              'f1', 'sens', 'spec', 'vox_in_target',
+              'dice', 'sens', 'spec', 'vox_in_target',
               'vox_out_target', 'llr_mu_h0', 'llr_std_h0'):
         if c in _df.columns and not _df[c].isna().all():
             hover_cols.append(c)
