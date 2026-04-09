@@ -269,16 +269,22 @@ def parse_args():
 
 
 def resolve_configs(args):
-    labels = list(args.configs)
-    if not labels:
-        labels = list(CONFIG_BY_LABEL.keys())
+    from fnmatch import fnmatch
+
+    patterns = list(args.configs)
+    if not patterns:
+        return list(CONFIG_BY_LABEL.values())
 
     configs = []
-    for label in labels:
-        if label in CONFIG_BY_LABEL:
-            configs.append(CONFIG_BY_LABEL[label])
+    for pattern in patterns:
+        if pattern in CONFIG_BY_LABEL:
+            configs.append(CONFIG_BY_LABEL[pattern])
         else:
-            raise ValueError(f'unknown config label: {label}')
+            matched = [c for k, c in CONFIG_BY_LABEL.items()
+                       if fnmatch(k, pattern)]
+            if not matched:
+                raise ValueError(f'no config labels match: {pattern}')
+            configs.extend(matched)
     return configs
 
 
