@@ -74,42 +74,6 @@ def monitor_all_jobs(all_job_info, all_job_ids, job_info_map):
             runner.monitor_jobs(all_job_ids, job_info_map=job_info_map)
 
 
-def _download_partial_results(runner, run_id, folder):
-    """Download individual result JSONs from the ``partial/`` S3 prefix.
-
-    These are uploaded by the worker as each analysis finishes, so they
-    survive even when the job times out before the tar.gz is created.
-    Returns the number of files downloaded.
-    """
-    from pathlib import Path
-
-    bucket = runner.config.s3_bucket
-    prefix = f'{runner.config.s3_prefix}/{run_id}/partial/'
-    folder = Path(folder)
-    count = 0
-
-    try:
-        paginator = runner.s3.get_paginator('list_objects_v2')
-        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-            for obj in page.get('Contents', []):
-                key = obj['Key']
-                if not key.endswith('_result.json'):
-                    continue
-                rel = key[len(prefix):]
-                parts = rel.split('/', 1)
-                if len(parts) < 2:
-                    continue
-                local_path = folder / parts[1]
-                local_path.parent.mkdir(parents=True, exist_ok=True)
-                response = runner.s3.get_object(Bucket=bucket, Key=key)
-                local_path.write_bytes(response['Body'].read())
-                count += 1
-    except Exception:
-        pass
-
-    return count
-
-
 def download_remaining_results(all_job_info):
     print('\n' + '=' * 60)
     print('[PHASE 3] Downloading any remaining results...')
@@ -134,16 +98,6 @@ def download_remaining_results(all_job_info):
                 print(f'  ✓ {job_info["folder"]}')
         except Exception as e:
             print(f'  ⚠ Could not check/download remaining results: {e}')
-
-        # recover partial results from timed-out jobs
-        try:
-            n_partial = _download_partial_results(
-                runner, job_info['run_id'], job_info['folder'])
-            if n_partial:
-                print(f'  ✓ Recovered {n_partial} partial result(s) for '
-                      f'{job_info["label"]}')
-        except Exception as e:
-            print(f'  ⚠ Could not recover partial results: {e}')
 
 
 VCPU_HOUR_COST = 0.02

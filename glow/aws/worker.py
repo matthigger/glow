@@ -341,24 +341,6 @@ def run_experiment_mode(args):
         traceback.print_exc()
         sys.exit(1)
     
-    # upload individual result JSONs to S3 as a safety net (survives timeout
-    # on future jobs even if the tar.gz below is never created)
-    partial_prefix = (f'{args.s3_prefix}/{args.run_id}/partial/'
-                      f'{args.exp_idx:06d}')
-    out_folder = temp_folder / 'out'
-    if out_folder.exists():
-        for json_file in sorted(out_folder.glob('*_result.json')):
-            partial_key = f'{partial_prefix}/out/{json_file.name}'
-            try:
-                s3.put_object(
-                    Bucket=args.s3_bucket,
-                    Key=partial_key,
-                    Body=json_file.read_bytes(),
-                )
-                print(f'  ↑ partial: {json_file.name}')
-            except ClientError as e:
-                print(f'  ⚠ partial upload failed for {json_file.name}: {e}')
-
     # pack results into a single tar.gz and upload
     import tarfile, io
     result_key = f'{args.s3_prefix}/{args.run_id}/results/{args.exp_idx:06d}.tar.gz'
