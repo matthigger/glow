@@ -252,7 +252,7 @@ class Config:
     def _get_expected_labels(self):
         """return the set of result 'label' strings one experiment produces."""
         from glow.benchmark.run import (run_ana, run_segment,
-                                        run_mancova_glow, run_mancova_tfce)
+                                        run_mancova_glow, run_mancova_vba)
         if self.run_fnc is run_ana:
             return set(self.ana_kwargs_dict.keys())
         if self.run_fnc is run_segment:
@@ -261,13 +261,14 @@ class Config:
         if self.run_fnc is run_mancova_glow:
             from glow.experiment.mancova import stat_dict
             return {f'GLOW-{name}' for name in stat_dict}
-        if self.run_fnc is run_mancova_tfce:
+        if self.run_fnc is run_mancova_vba:
             from glow.experiment.mancova import stat_dict
             labels = set()
             for name in stat_dict:
                 for prefix in ('VBA', 'VBA-TFCE'):
                     for suffix in ('', '-z'):
                         labels.add(f'{prefix}-{name}{suffix}')
+                labels.add(f'CET-{name}')
             return labels
         return set()
 

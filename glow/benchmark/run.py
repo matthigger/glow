@@ -323,14 +323,14 @@ def run_mancova_glow(config, **iter_kw):
                         f'GLOW-{name}', total_time, iter_kw)
 
 
-def run_mancova_tfce(config, **iter_kw):
-    """Run VBA and VBA-TFCE with all 5 MANCOVA stats x {raw, z-scored}.
+def run_mancova_vba(config, **iter_kw):
+    """Run VBA, VBA-TFCE, and CET with all 5 MANCOVA stats.
 
     Computes all stats from a single voxel walk (shared E/H), then
-    loops over 20 variants: 5 stats x {raw, z} x {VBA, VBA-TFCE}.
-    The permutation walk is the expensive step; TFCE and p-values are cheap.
+    loops over variants: 5 stats x {raw, z} x {VBA, VBA-TFCE} + CET.
+    The permutation walk is the expensive step; TFCE/CET/p-values are cheap.
     """
-    from glow.experiment.analysis import Analysis, AnalysisVBA
+    from glow.experiment.analysis import Analysis, AnalysisVBA, AnalysisCET
     from glow.experiment.mancova import (
         stat_dict, stat_dict_inv)
 
@@ -394,6 +394,36 @@ def run_mancova_tfce(config, **iter_kw):
                             f'VBA-TFCE-{name}{suffix}',
                             walk_time + (time.time() - variant_start),
                             iter_kw)
+
+    # CET variants (fixed cft_pval, sweep stats only)
+    cft_pval = 0.0001
+    for fn in stat_fns:
+        name = stat_dict_inv[fn]
+        variant_start = time.time()
+        stat = multi[fn].copy()
+
+        # empirical CFT from pooled null
+        null_pool = stat[1:, :].ravel()
+        cft = np.quantile(null_pool, 1 - cft_pval)
+
+        pval_cet = AnalysisCET._get_pval_cet(stat, exp.mask_idx, cft)
+        mask_cet = np.zeros(exp.mask_idx.shape, dtype=bool)
+        mask_cet[exp.mask_idx > -1] = pval_cet <= alpha_fwer
+
+        ana_cet = object.__new__(AnalysisCET)
+        ana_cet.get_stat = fn
+        ana_cet.exp = exp
+        ana_cet.stat = stat
+        ana_cet.pval = pval_cet
+        ana_cet.cft_pval = cft_pval
+        ana_cet.cft = cft
+        ana_cet.effect_list = AnalysisVBA.discover_mask(
+            mask=mask_cet, exp=exp)
+
+        _score_and_emit(ana_cet, effect, config,
+                        f'CET-{name}',
+                        walk_time + (time.time() - variant_start),
+                        iter_kw)
 
 
 if __name__ == '__main__':
