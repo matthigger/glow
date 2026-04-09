@@ -20,4 +20,5 @@ profile*
 .glow_aws_config
 .docker_version
 /docs/notes/
-/docs/paper/
+/docs/paper
+/.claude/
