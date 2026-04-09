@@ -49,28 +49,26 @@ class TestBigEffect:
                                    TestBigEffect.effect.mask)
     
     def test_vba_wilks(self):
-        """VBA with Wilks' Lambda should detect effects (stat_sign orientation).
+        """VBA with Wilks' Lambda (1 - Wilks) should detect effects.
 
-        Without stat_sign orientation, get_pval (which uses nanmax) looks
-        at the wrong tail for Wilks and all p-values are ~1.
+        get_wilks returns 1 - Lambda, so larger = more evidence against H0,
+        compatible with max-stat and TFCE without sign correction.
         """
         from glow.experiment.mancova import get_wilks
-        # non-TFCE: stat_sign negation alone gives correct max-stat ordering
+        # non-TFCE
         ana = AnalysisVBA(TestBigEffect.exp, n_perm_fwer=25,
                           alpha_fwer=.5, tfce_flag=False,
                           get_stat=get_wilks)
         assert np.nanmin(ana.pval) <= 0.5, (
             f'Wilks VBA produced no small p-values '
-            f'(min={np.nanmin(ana.pval):.3f}); '
-            f'stat_sign orientation likely missing')
+            f'(min={np.nanmin(ana.pval):.3f})')
 
-        # TFCE + z_flag: z-scoring makes negated Wilks positive, so TFCE
-        # can enhance clusters
+        # TFCE: 1-Wilks is non-negative, so TFCE works directly
         ana_tfce = AnalysisVBA(TestBigEffect.exp, n_perm_fwer=25,
                                alpha_fwer=.5, tfce_flag=True,
-                               z_flag=True, get_stat=get_wilks)
+                               get_stat=get_wilks)
         assert np.nanmin(ana_tfce.pval) <= 0.5, (
-            f'Wilks VBA-TFCE-z produced no small p-values '
+            f'Wilks VBA-TFCE produced no small p-values '
             f'(min={np.nanmin(ana_tfce.pval):.3f})')
 
     def test_glow_with_prune(self):

@@ -391,7 +391,7 @@ def run_synthesis_mode(args):
     import time
     import glow.graph
     from glow.experiment.analysis import AnalysisGLOW
-    from glow.experiment.mancova import get_llr, stat_sign
+    from glow.experiment.mancova import get_llr
 
     print('=' * 60)
     print('GLOW Worker - SYNTHESIS MODE')
@@ -486,11 +486,10 @@ def run_synthesis_mode(args):
 
     # pass 2: compute adjusted max-stat per permutation
     print(f'Pass 2: computing FWER max-stats ...')
-    sign = stat_sign.get(get_stat, 1)
     reg_active = size_0 >= min_size
     stat_max_list = []
 
-    adj_0 = sign * (stat_0 - mu_fn(size_0))
+    adj_0 = stat_0 - mu_fn(size_0)
     adj_0 = np.nan_to_num(adj_0, nan=0.0, posinf=0.0, neginf=-30.0)
     if reg_active.any():
         stat_max_list.append(float(np.nanmax(adj_0[reg_active])))
@@ -503,7 +502,7 @@ def run_synthesis_mode(args):
         size_p = (np.asarray(r['size'], dtype=float) if 'size' in r
                   else glow.graph.node_sum(np.ones(num_vox, dtype=int),
                                            r['children']).astype(float))
-        adj_p = sign * (stat_p - mu_fn(size_p))
+        adj_p = stat_p - mu_fn(size_p)
         adj_p = np.nan_to_num(adj_p, nan=0.0, posinf=0.0, neginf=-30.0)
         if reg_active.any():
             stat_max_list.append(float(np.nanmax(adj_p[reg_active])))

@@ -138,9 +138,9 @@ def get_llr(e, h, n=None, *, size_normalize=False):
 
 
 def get_wilks(e, h, n=None):
-    """Wilks' Lambda: det(E) / det(E + H).
+    """1 - Wilks' Lambda: 1 - det(E) / det(E + H).
 
-    Values in (0, 1]; smaller = more evidence against H0.
+    Values in [0, 1); larger = more evidence against H0.
 
     Args:
         e (np.array): (b, b) error matrix
@@ -148,11 +148,11 @@ def get_wilks(e, h, n=None):
         n: unused (accepted for uniform stat-function interface)
 
     Returns:
-        float: Wilks' Lambda
+        float: 1 - Wilks' Lambda
     """
     sign_e, logdet_e = np.linalg.slogdet(e)
     sign_t, logdet_t = np.linalg.slogdet(e + h)
-    return np.exp(logdet_e - logdet_t)
+    return 1.0 - np.exp(logdet_e - logdet_t)
 
 
 def get_pillai(e, h, n=None):
@@ -261,12 +261,3 @@ stat_dict = {
 }
 
 stat_dict_inv = {fn: name for name, fn in stat_dict.items()}
-
-# +1 = larger is more significant; -1 = smaller is more significant
-stat_sign = {
-    get_llr: 1,
-    get_wilks: -1,
-    get_pillai: 1,
-    get_hotel_tr: 1,
-    get_roys_root: 1,
-}

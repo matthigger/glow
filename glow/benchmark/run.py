@@ -230,7 +230,7 @@ def run_mancova(config, **iter_kw):
     from glow.experiment.analysis import Analysis, AnalysisGLOW, get_best_model
     from glow.experiment.cluster import cluster
     from glow.experiment.mancova import (
-        stat_dict, stat_dict_inv, stat_sign, get_llr)
+        stat_dict, stat_dict_inv, get_llr)
 
     exp, effect = config.get_exp_eff(**iter_kw)
     start = time.time()
@@ -284,8 +284,7 @@ def run_mancova(config, **iter_kw):
 
         active = size >= min_size
         for fn in stat_fns:
-            sign = stat_sign.get(fn, 1)
-            adj = sign * (multi[fn].ravel() - mu_fns[fn](size))
+            adj = multi[fn].ravel() - mu_fns[fn](size)
             adj = np.nan_to_num(adj, nan=0.0, posinf=0.0, neginf=-30.0)
             stat_max[fn].append(
                 float(np.nanmax(adj[active])) if active.any()
@@ -329,11 +328,11 @@ def run_vba_tfce_compare(config, **iter_kw):
 
     Computes all stats from a single voxel walk (shared E/H), then
     loops over 10 variants: 5 stats x {raw, z}.  Each variant gets
-    stat_sign orientation, optional z-scoring, TFCE, and FWER p-values.
+    optional z-scoring, TFCE, and FWER p-values.
     """
     from glow.experiment.analysis import Analysis, AnalysisVBA
     from glow.experiment.mancova import (
-        stat_dict, stat_dict_inv, stat_sign)
+        stat_dict, stat_dict_inv)
 
     exp, effect = config.get_exp_eff(**iter_kw)
     start = time.time()
@@ -350,15 +349,10 @@ def run_vba_tfce_compare(config, **iter_kw):
 
     for fn in stat_fns:
         name = stat_dict_inv[fn]
-        sign = stat_sign.get(fn, 1)
 
         for z_flag in [False, True]:
             tfce_start = time.time()
             stat = multi[fn].copy()
-
-            # orient so larger = more evidence
-            if sign != 1:
-                stat = sign * stat
 
             if z_flag:
                 stat = AnalysisVBA.z_score_stat(stat)

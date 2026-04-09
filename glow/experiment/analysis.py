@@ -15,7 +15,7 @@ import glow.graph
 # glow.vba imported lazily when needed (requires FSL for TFCE)
 from .cluster import cluster
 from .exper import ExperimentScaled
-from .mancova import get_llr, stat_dict, stat_dict_inv, stat_sign
+from .mancova import get_llr, stat_dict, stat_dict_inv
 from .prune import prune_greedy
 
 
@@ -204,11 +204,6 @@ class AnalysisVBA(Analysis):
 
         # compute stat per each voxel (for every permutation)
         self.stat = self.get_stat_perm(exp, n_perm=n_perm_fwer, children=None)
-
-        # orient so that larger values = more evidence against H0
-        sign = stat_sign.get(self.get_stat, 1)
-        if sign != 1:
-            self.stat = sign * self.stat
 
         # z-score voxel-wise using the permutation null
         if self.z_flag:
@@ -459,14 +454,13 @@ class AnalysisGLOW(Analysis):
         # pass 2: sweep temp files for adjusted max-stats
         if verbose:
             print(f'  [3/3] computing FWER p-values + pruning ...')
-        sign = stat_sign.get(self.get_stat, 1)
         reg_active = size_0 >= min_size
         stat_max_list = []
         for perm_idx in range(n_perm_fwer + 1):
             with open(perm_dir / f'{perm_idx:06d}_result.pkl', 'rb') as fh:
                 r = pickle.load(fh)
-            adj = sign * (np.asarray(r['stat'], dtype=float)
-                          - mu_fn(np.asarray(r['size'], dtype=float)))
+            adj = (np.asarray(r['stat'], dtype=float)
+                   - mu_fn(np.asarray(r['size'], dtype=float)))
             adj = np.nan_to_num(adj, nan=0.0, posinf=0.0, neginf=-30.0)
             stat_max_list.append(
                 float(np.nanmax(adj[reg_active])) if reg_active.any()
@@ -632,8 +626,7 @@ class AnalysisGLOW(Analysis):
         verbose = getattr(self, 'verbose', False)
         num_reg = stat_0.shape[0]
 
-        sign = stat_sign.get(self.get_stat, 1)
-        llr_adjusted_0 = sign * (stat_0 - mu_fn(size_0.astype(float)))
+        llr_adjusted_0 = stat_0 - mu_fn(size_0.astype(float))
         llr_adjusted_0 = np.nan_to_num(llr_adjusted_0, nan=0.0,
                                         posinf=0.0, neginf=-30.0)
 

@@ -137,13 +137,10 @@ def test_all_stat_functions():
         result = stat_func(e=e, h=h, n=100)
         assert isinstance(result, (float, np.floating))
 
-    # test stat_sign
-    assert len(stat_sign) == 5
-    assert stat_sign[get_wilks] == -1
-    assert stat_sign[get_llr] == 1
-    assert stat_sign[get_pillai] == 1
-    assert stat_sign[get_hotel_tr] == 1
-    assert stat_sign[get_roys_root] == 1
+    # all stats oriented so larger = more evidence against H0
+    for name, stat_func in stat_dict.items():
+        result = stat_func(e=e, h=h, n=100)
+        assert result >= 0, f'{name} should be non-negative'
 
 
 def test_singular_matrix_errors():
