@@ -15,7 +15,7 @@ import glow.graph
 # glow.vba imported lazily when needed (requires FSL for TFCE)
 from .cluster import cluster
 from .exper import ExperimentScaled
-from .mancova import get_llr, stat_dict, stat_dict_inv
+from .mancova import get_llr, get_wilks, stat_dict, stat_dict_inv
 from .prune import prune_greedy
 
 
@@ -184,7 +184,7 @@ class Analysis:
 class AnalysisVBA(Analysis):
     def __init__(self, exp, n_perm_fwer, alpha_fwer=.05, verbose=False,
                  tfce_flag=False, z_flag=False, conn=None, n_jobs_perm=1,
-                 **kwargs):
+                 get_stat=get_wilks, **kwargs):
         """
         Args:
             exp: Experiment to analyze
@@ -198,7 +198,8 @@ class AnalysisVBA(Analysis):
             conn: Connectivity for clustering
             n_jobs_perm: Number of parallel jobs for permutations (1=serial, -1=all cores)
         """
-        super().__init__(exp, n_jobs_perm=n_jobs_perm, **kwargs)
+        super().__init__(exp, get_stat=get_stat, n_jobs_perm=n_jobs_perm,
+                         **kwargs)
         self.tfce_flag = tfce_flag
         self.z_flag = z_flag
 

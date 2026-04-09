@@ -47,6 +47,7 @@ ANALYSES = {
                 alpha_fwer=ALPHA_FWER),
     'VBA-TFCE': dict(n_perm_fwer=N_PERM_TOTAL,
                      tfce_flag=True,
+                     z_flag=True,
                      alpha_fwer=ALPHA_FWER),
 }
 
