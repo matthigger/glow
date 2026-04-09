@@ -122,6 +122,37 @@ class TestBigEffect:
         assert hasattr(analysis, 'stat')
 
 
+class TestCET:
+    def test_big_effect(self):
+        """CET discovers the strong effect."""
+        ana = AnalysisCET(TestBigEffect.exp, n_perm_fwer=25,
+                          alpha_fwer=.1, cft_pval=0.01)
+        assert len(ana.effect_list) >= 1
+
+    def test_null_no_discoveries(self):
+        """Under the null (no effect), CET should not discover at alpha=0.05."""
+        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
+                                    num_img=100, seed=0)
+        ana = AnalysisCET(exp, n_perm_fwer=25, alpha_fwer=.05)
+        assert len(ana.effect_list) == 0
+
+    def test_pval_bounds(self):
+        """p-values in [1/n_perm, 1]."""
+        n = 25
+        ana = AnalysisCET(TestBigEffect.exp, n_perm_fwer=n, alpha_fwer=.1)
+        assert (ana.pval >= 1 / n).all()
+        assert (ana.pval <= 1.0).all()
+
+    def test_cluster_members_share_pval(self):
+        """All voxels in a discovered cluster should have the same p-value."""
+        ana = AnalysisCET(TestBigEffect.exp, n_perm_fwer=25,
+                          alpha_fwer=.5, cft_pval=0.01)
+        for eff in ana.effect_list:
+            vox_idx = ana.exp.mask_idx[eff.mask]
+            pvals = ana.pval[vox_idx]
+            assert np.all(pvals == pvals[0])
+
+
 class TestAnalysisEdgeCases:
     """test edge cases and error handling"""
     
