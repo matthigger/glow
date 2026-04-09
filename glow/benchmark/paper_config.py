@@ -158,19 +158,15 @@ config_list.append(make_config(
 
 # ---------- H. MANCOVA stat comparison (GLOW) ----------
 config_list.append(make_config(
-    'mancova_glow_wgn', 'wgn', run_mancova_glow, ana_kwargs_dict_mancova,
-    crop_n_vox=5000))
+    'mancova_glow_wgn', 'wgn', run_mancova_glow, ana_kwargs_dict_mancova))
 config_list.append(make_config(
-    'mancova_glow_hcp', 'hcp', run_mancova_glow, ana_kwargs_dict_mancova,
-    crop_n_vox=5000))
+    'mancova_glow_hcp', 'hcp', run_mancova_glow, ana_kwargs_dict_mancova))
 
-# ---------- I. MANCOVA stat comparison (VBA-TFCE) ----------
+# ---------- I. MANCOVA stat comparison (VBA / VBA-TFCE / CET) ----------
 config_list.append(make_config(
-    'mancova_vba_wgn', 'wgn', run_mancova_vba, ana_kwargs_dict_mancova_vba,
-    crop_n_vox=5000))
+    'mancova_vba_wgn', 'wgn', run_mancova_vba, ana_kwargs_dict_mancova_vba))
 config_list.append(make_config(
-    'mancova_vba_hcp', 'hcp', run_mancova_vba, ana_kwargs_dict_mancova_vba,
-    crop_n_vox=5000))
+    'mancova_vba_hcp', 'hcp', run_mancova_vba, ana_kwargs_dict_mancova_vba))
 
 # ---------- J. segmentation comparison ----------
 config_list.append(make_config('segment_hcp', 'hcp', run_segment))
