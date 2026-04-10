@@ -6,6 +6,7 @@ import glow
 from glow.benchmark.config import Config
 from glow.benchmark.run import (run_ana, run_mancova_glow, run_prune_compare,
                                 run_segment, run_mancova_vba)
+from glow.experiment.mancova import get_hotel_tr, get_llr, get_wilks
 
 # ---------- common parameters ----------
 CROP_N_VOX = 25000
@@ -41,14 +42,21 @@ ANALYSES = {
     'GLOW': dict(n_perm_fwer=N_PERM_FWER,
                  n_perm_fwer_size_adjust=N_PERM_FWER_SIZE_ADJUST,
                  min_size=1,
-                 alpha_fwer=ALPHA_FWER),
+                 alpha_fwer=ALPHA_FWER,
+                 get_stat=get_llr),
     'VBA': dict(n_perm_fwer=N_PERM_TOTAL,
                 tfce_flag=False,
-                alpha_fwer=ALPHA_FWER),
+                z_flag=True,
+                alpha_fwer=ALPHA_FWER,
+                get_stat=get_hotel_tr),
     'VBA-TFCE': dict(n_perm_fwer=N_PERM_TOTAL,
                      tfce_flag=True,
                      z_flag=True,
-                     alpha_fwer=ALPHA_FWER),
+                     alpha_fwer=ALPHA_FWER,
+                     get_stat=get_wilks),
+    'CET': dict(n_perm_fwer=N_PERM_TOTAL,
+                alpha_fwer=ALPHA_FWER,
+                get_stat=get_hotel_tr),
 }
 
 
@@ -71,6 +79,7 @@ ana_kwargs_dict_vba = {
     'GLOW': (glow.experiment.AnalysisGLOW, ANALYSES['GLOW']),
     'VBA': (glow.experiment.AnalysisVBA, ANALYSES['VBA']),
     'VBA-TFCE': (glow.experiment.AnalysisVBA, ANALYSES['VBA-TFCE']),
+    'CET': (glow.experiment.AnalysisCET, ANALYSES['CET']),
 }
 
 ana_kwargs_dict_prune = {
@@ -158,9 +167,11 @@ config_list.append(make_config(
 
 # ---------- H. MANCOVA stat comparison (GLOW) ----------
 config_list.append(make_config(
-    'mancova_glow_wgn', 'wgn', run_mancova_glow, ana_kwargs_dict_mancova))
+    'mancova_glow_wgn', 'wgn', run_mancova_glow, ana_kwargs_dict_mancova,
+    crop_n_vox=5000))
 config_list.append(make_config(
-    'mancova_glow_hcp', 'hcp', run_mancova_glow, ana_kwargs_dict_mancova))
+    'mancova_glow_hcp', 'hcp', run_mancova_glow, ana_kwargs_dict_mancova,
+    crop_n_vox=5000))
 
 # ---------- I. MANCOVA stat comparison (VBA / VBA-TFCE / CET) ----------
 config_list.append(make_config(
