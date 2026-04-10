@@ -67,11 +67,18 @@ def monitor_all_jobs(all_job_info, all_job_ids, job_info_map):
     print(f'[PHASE 2] Monitoring all jobs from {len(all_job_info)} configs')
     print('=' * 60)
 
+    permanently_failed = []
     if all_job_ids:
         runner = next((info['runner'] for info in all_job_info
                        if info['runner'] is not None), None)
         if runner is not None:
-            runner.monitor_jobs(all_job_ids, job_info_map=job_info_map)
+            permanently_failed = runner.monitor_jobs(
+                all_job_ids, job_info_map=job_info_map) or []
+
+    if permanently_failed:
+        print(f'\n⚠ {len(permanently_failed)} job(s) permanently failed '
+              f'(exceeded max memory tier)')
+    return permanently_failed
 
 
 def download_remaining_results(all_job_info):
@@ -201,11 +208,16 @@ def run_cloud(configs):
 
     all_job_info = submit_all_jobs(configs)
     all_job_ids, job_info_map = build_job_info_map(all_job_info)
-    monitor_all_jobs(all_job_info, all_job_ids, job_info_map)
+    permanently_failed = monitor_all_jobs(all_job_info, all_job_ids,
+                                          job_info_map)
     download_remaining_results(all_job_info)
 
     print('\n' + '=' * 60)
-    print('✓ All benchmarks complete')
+    if permanently_failed:
+        print(f'⚠ Benchmarks finished with {len(permanently_failed)} '
+              f'permanent OOM failure(s)')
+    else:
+        print('✓ All benchmarks complete')
     print('=' * 60)
 
 

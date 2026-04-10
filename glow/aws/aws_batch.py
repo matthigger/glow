@@ -82,18 +82,21 @@ class AWSBatchRunner:
         """resubmit OOM and spot-terminated jobs.
 
         OOM jobs advance to the next memory tier.  Spot-terminated jobs are
-        resubmitted with the same resource requirements.
+        resubmitted with the same resource requirements.  Jobs that exceed
+        the max memory tier are recorded as permanently failed (not raised).
 
         Returns:
             resubmitted (list): new job IDs
             resubmit_reasons (dict): maps source job ID -> 'oom' | 'spot'
             messages (list): status messages to display
+            permanently_failed (list): jobs that exceeded max memory tier
         """
         tiers = self.config.oom_memory_mb_tiers or []
 
         resubmitted = []
         resubmit_reasons = {}
         messages = []
+        permanently_failed = []
         for job in failed_jobs:
             # determine failure type
             is_oom = self._is_oom_failure(job)
@@ -136,10 +139,16 @@ class AWSBatchRunner:
                 next_idx = current_idx + 1
                 if next_idx >= len(tiers) or len(tiers) < 2:
                     max_mb = tiers[-1] if tiers else self.config.memory_mb
-                    raise MemoryError(
-                        f'FATAL OOM: {job["jobName"]} exceeded max memory '
-                        f'tier ({max_mb} MB). Reduce experiment size or '
-                        f'increase oom_memory_mb_tiers.')
+                    permanently_failed.append({
+                        'jobId': job['jobId'],
+                        'jobName': job['jobName'],
+                        'reason': (
+                            f'OOM: exceeded max memory tier ({max_mb} MB)'),
+                    })
+                    messages.append(
+                        f'  ✗ {job["jobName"]}: OOM at max tier '
+                        f'({max_mb} MB) — permanent failure')
+                    continue
                 memory_mb = tiers[next_idx]
                 retry_name = f'{base_name}_retry{next_idx}'
                 reason_tag = 'oom'
@@ -187,7 +196,7 @@ class AWSBatchRunner:
             except ClientError as e:
                 messages.append(f'  ✗ Failed to resubmit {job["jobName"]}: {e}')
 
-        return resubmitted, resubmit_reasons, messages
+        return resubmitted, resubmit_reasons, messages, permanently_failed
     
     def estimate_memory_mb(self, exp_shape):
         """Estimate minimum memory for a worker (perm or streaming synthesis).
@@ -489,7 +498,12 @@ class AWSBatchRunner:
 
     def monitor_jobs(self, job_ids, poll_interval=30,
                     job_info_map=None, cancel_on_error=True):
-        """poll AWS Batch until all jobs finish, downloading results as they complete."""
+        """poll AWS Batch until all jobs finish, downloading results as they complete.
+
+        Returns:
+            list of permanently failed job dicts (OOM at max tier), or
+            empty list if all jobs succeeded or were retried.
+        """
         if not job_ids:
             print('no jobs to monitor')
             return
@@ -524,6 +538,7 @@ class AWSBatchRunner:
         
         failed_jobs = []  # track failed jobs for detailed reporting
         resubmitted_job_ids = set()  # jobs that were successfully resubmitted
+        permanently_failed_jobs = []  # jobs that exceeded max memory tier
         first_check = True  # track if this is the first instance type check
         had_running_jobs = False  # track if we've seen running jobs (for immediate check)
         downloaded_jobs = set()  # track which jobs have been downloaded
@@ -825,9 +840,13 @@ class AWSBatchRunner:
                         state_parts.append(f'Running: {running}')
                     if completed > 0:
                         state_parts.append(f'Succeeded: {completed}')
+                    n_perm_failed = len(permanently_failed_jobs)
+                    n_resubmitted = resubmitted_total - n_perm_failed
                     actual_failed = failed - resubmitted_total
-                    if resubmitted_total > 0:
-                        state_parts.append(f'Resubmitted: {resubmitted_total}')
+                    if n_resubmitted > 0:
+                        state_parts.append(f'Resubmitted: {n_resubmitted}')
+                    if n_perm_failed > 0:
+                        state_parts.append(f'Perm. failed: {n_perm_failed}')
                     if actual_failed > 0:
                         state_parts.append(f'Failed: {actual_failed}')
 
@@ -857,13 +876,19 @@ class AWSBatchRunner:
                 # immediately resubmit OOM / spot failures
                 resubmit_reasons = {}
                 if newly_failed_jobs:
-                    resubmitted, resubmit_reasons, resubmit_msgs = \
+                    resubmitted, resubmit_reasons, resubmit_msgs, perm_failed = \
                         self._resubmit_failed_jobs(
                             newly_failed_jobs, job_info_map)
                     for msg in resubmit_msgs:
                         _write(msg)
+                    permanently_failed_jobs.extend(perm_failed)
                     resubmitted_total += len(resubmit_reasons)
                     resubmitted_job_ids.update(resubmit_reasons.keys())
+                    # also count permanently failed OOM jobs as "resubmitted"
+                    # for progress bar accounting (they won't succeed)
+                    perm_failed_ids = {j['jobId'] for j in perm_failed}
+                    resubmitted_job_ids.update(perm_failed_ids)
+                    resubmitted_total += len(perm_failed)
                     if resubmitted:
                         job_ids.extend(resubmitted)
                         # add resubmitted jobs to their config group
@@ -946,15 +971,30 @@ class AWSBatchRunner:
                     _clear_heartbeat()
                     for pb in config_pbars.values():
                         pb.close()
+                    n_perm_failed = len(permanently_failed_jobs)
                     print(f'\nall jobs complete!')
                     print(f'  succeeded: {statuses["SUCCEEDED"]}')
                     print(f'  failed: {statuses["FAILED"]}')
+                    if n_perm_failed:
+                        print(f'  permanently failed (max OOM): {n_perm_failed}')
                     print(f'  results downloaded: {len(downloaded_jobs)}/{statuses["SUCCEEDED"]}')
                     print(f'  total vCPU-hours: {vcpu_hours:.2f}')
 
-                    # print detailed failure reasons (exclude resubmitted jobs)
+                    # print permanently failed OOM jobs
+                    if permanently_failed_jobs:
+                        print(f'\n{"="*60}')
+                        print('PERMANENTLY FAILED (exceeded max memory tier):')
+                        print(f'{"="*60}')
+                        for i, job in enumerate(permanently_failed_jobs, 1):
+                            print(f'  {i}. {job["jobName"]}: {job["reason"]}')
+
+                    # print detailed failure reasons (exclude resubmitted
+                    # and permanently-failed jobs)
+                    perm_failed_ids = {j['jobId']
+                                       for j in permanently_failed_jobs}
                     unresolved = [j for j in failed_jobs
-                                  if j['jobId'] not in resubmitted_job_ids]
+                                  if j['jobId'] not in resubmitted_job_ids
+                                  and j['jobId'] not in perm_failed_ids]
                     if unresolved:
                         print(f'\n{"="*60}')
                         print('FAILURE DETAILS:')
@@ -1004,6 +1044,8 @@ class AWSBatchRunner:
                 if cancel_summary['failed']:
                     print(f'✗ Failed to cancel: {cancel_summary["failed"]}')
             raise
+
+        return permanently_failed_jobs
 
     def cancel_jobs(self, job_ids, reason='Canceled by user'):
         """cancel AWS Batch jobs, returning counts of canceled/failed/skipped."""

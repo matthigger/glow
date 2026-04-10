@@ -208,10 +208,11 @@ class TestResubmitSpotTermination:
             'container': {'command': ['python', 'worker.py']},
         }]
 
-        resubmitted, reasons, _msgs = runner._resubmit_failed_jobs(failed, {})
+        resubmitted, reasons, _msgs, perm_failed = runner._resubmit_failed_jobs(failed, {})
 
         assert len(resubmitted) == 1
         assert reasons == {'job-1': 'spot'}
+        assert perm_failed == []
 
         # verify same memory (first tier, since no prior OOM escalation)
         call_kwargs = runner.batch.submit_job.call_args
@@ -238,7 +239,7 @@ class TestResubmitSpotTermination:
 
         # third attempt should be skipped
         failed = [{**base_job, 'jobId': 'job-2'}]
-        resubmitted, reasons, _msgs = runner._resubmit_failed_jobs(failed, {})
+        resubmitted, reasons, _msgs, _perm = runner._resubmit_failed_jobs(failed, {})
         assert len(resubmitted) == 0
         assert len(reasons) == 0
 
@@ -360,11 +361,12 @@ class TestResubmitMixed:
             },
         ]
 
-        resubmitted, reasons, _msgs = runner._resubmit_failed_jobs(failed, {})
+        resubmitted, reasons, _msgs, perm_failed = runner._resubmit_failed_jobs(failed, {})
 
         assert len(resubmitted) == 2
         assert reasons['oom-job'] == 'oom'
         assert reasons['spot-job'] == 'spot'
+        assert perm_failed == []
 
     def test_monitor_prints_correct_messages(self):
         """monitor_jobs should print distinct messages for OOM vs spot."""
@@ -518,20 +520,24 @@ class TestResubmitOom:
 
     def test_no_memory_tiers(self):
         runner = _make_runner(oom_memory_mb_tiers=[])
-        with pytest.raises(MemoryError, match='FATAL OOM'):
-            runner._resubmit_failed_jobs(
-                [{'jobId': 'j1', 'jobName': 'exp_00',
-                  'container': {'exitCode': 137, 'command': ['--test']}}], {})
+        resubmitted, reasons, _msgs, perm_failed = runner._resubmit_failed_jobs(
+            [{'jobId': 'j1', 'jobName': 'exp_00',
+              'container': {'exitCode': 137, 'command': ['--test']}}], {})
+        assert resubmitted == []
+        assert len(perm_failed) == 1
+        assert perm_failed[0]['jobId'] == 'j1'
+        assert 'OOM' in perm_failed[0]['reason']
 
     def test_non_oom_skipped(self):
         runner = _make_runner()
         runner.batch = MagicMock()
-        resubmitted, reasons, _msgs = runner._resubmit_failed_jobs(
+        resubmitted, reasons, _msgs, perm_failed = runner._resubmit_failed_jobs(
             [{'jobId': 'j1', 'jobName': 'exp_00',
               'statusReason': 'Essential container exited',
               'container': {'exitCode': 1, 'reason': 'task failed',
                             'command': ['--test']}}], {})
         assert resubmitted == []
+        assert perm_failed == []
         runner.batch.submit_job.assert_not_called()
 
     def test_oom_resubmits_with_next_tier(self):
@@ -540,7 +546,7 @@ class TestResubmitOom:
         runner.batch.submit_job.return_value = {'jobId': 'new-j1'}
 
         info_map = {'j1': {'run_id': 'r1', 'exp_idx': 0}}
-        resubmitted, reasons, _msgs = runner._resubmit_failed_jobs(
+        resubmitted, reasons, _msgs, perm_failed = runner._resubmit_failed_jobs(
             [{'jobId': 'j1', 'jobName': 'exp_00',
               'container': {'exitCode': 137,
                             'command': ['--s3-bucket', 'b']}}],
@@ -548,6 +554,7 @@ class TestResubmitOom:
 
         assert resubmitted == ['new-j1']
         assert reasons == {'j1': 'oom'}
+        assert perm_failed == []
         call_kw = runner.batch.submit_job.call_args.kwargs
         assert call_kw['jobName'] == 'exp_00_retry0'
         resources = call_kw['containerOverrides']['resourceRequirements']
@@ -558,7 +565,7 @@ class TestResubmitOom:
     def test_missing_command_skipped(self):
         runner = _make_runner()
         runner.batch = MagicMock()
-        resubmitted, _, _msgs = runner._resubmit_failed_jobs(
+        resubmitted, _, _msgs, _perm = runner._resubmit_failed_jobs(
             [{'jobId': 'j1', 'jobName': 'exp_00',
               'container': {'exitCode': 137}}], {})
         assert resubmitted == []
@@ -576,9 +583,10 @@ class TestResubmitOom:
              'statusReason': 'timeout',
              'container': {'exitCode': 1, 'command': ['--test']}},
         ]
-        resubmitted, reasons, _msgs = runner._resubmit_failed_jobs(failed, {})
+        resubmitted, reasons, _msgs, perm_failed = runner._resubmit_failed_jobs(failed, {})
         assert len(resubmitted) == 1
         assert reasons.get('j4') == 'oom'
+        assert perm_failed == []
 
     def test_tier_escalation(self):
         """default (2 GB) -> 4 GB -> 8 GB -> 16 GB -> MemoryError."""
@@ -603,9 +611,14 @@ class TestResubmitOom:
                 if r['type'] == 'MEMORY')
             assert mem == expected_mem
 
-        # fourth attempt: raises MemoryError
+        # fourth attempt: permanently failed (no longer raises)
         runner.batch.submit_job.reset_mock()
-        with pytest.raises(MemoryError, match='FATAL OOM'):
-            runner._resubmit_failed_jobs(
-                [{'jobId': 'r3', 'jobName': 'exp_06_retry2',
-                  'container': {'exitCode': 137, 'command': ['--test']}}], {})
+        resubmitted, reasons, _msgs, perm_failed = runner._resubmit_failed_jobs(
+            [{'jobId': 'r3', 'jobName': 'exp_06_retry2',
+              'container': {'exitCode': 137, 'command': ['--test']}}], {})
+        assert resubmitted == []
+        assert len(perm_failed) == 1
+        assert perm_failed[0]['jobId'] == 'r3'
+        assert 'OOM' in perm_failed[0]['reason']
+        assert '16000' in perm_failed[0]['reason']
+        runner.batch.submit_job.assert_not_called()
