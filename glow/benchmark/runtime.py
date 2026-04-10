@@ -81,6 +81,8 @@ def _get_analysis_type(Ana, ana_kw):
         return 'GLOW'
     if name == 'AnalysisVBA':
         return 'VBA-TFCE' if ana_kw.get('tfce_flag', False) else 'VBA'
+    if name == 'AnalysisCET':
+        return 'VBA'
     return None
 
 
