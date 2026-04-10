@@ -66,10 +66,19 @@ class AWSBatchRunner:
         return 'host ec2' in status_reason and 'terminated' in status_reason
 
     @staticmethod
+    def _is_timeout_failure(job_failure: Dict[str, Any]) -> bool:
+        status_reason = (job_failure.get('statusReason') or '').lower()
+        return 'duration' in status_reason and 'timeout' in status_reason
+
+    @staticmethod
     def _is_oom_failure(job_failure: Dict[str, Any]) -> bool:
         status_reason = (job_failure.get('statusReason') or '').lower()
         container = job_failure.get('container', {}) or {}
         container_reason = (container.get('reason') or '').lower()
+        # timeout kills also produce exit code 137 — check text first
+        for text in (status_reason, container_reason):
+            if 'duration' in text and 'timeout' in text:
+                return False
         exit_code = container.get('exitCode')
         if exit_code in (137, 134):
             return True
@@ -98,7 +107,16 @@ class AWSBatchRunner:
         messages = []
         permanently_failed = []
         for job in failed_jobs:
-            # determine failure type
+            # determine failure type — check timeout first (exit 137 overlap)
+            if self._is_timeout_failure(job):
+                permanently_failed.append({
+                    'jobId': job['jobId'],
+                    'jobName': job['jobName'],
+                    'reason': 'timeout: job exceeded attemptDurationSeconds',
+                })
+                messages.append(
+                    f'  ✗ {job["jobName"]}: timed out — permanent failure')
+                continue
             is_oom = self._is_oom_failure(job)
             is_spot = (not is_oom) and self._is_spot_termination(job)
             if not (is_oom or is_spot):

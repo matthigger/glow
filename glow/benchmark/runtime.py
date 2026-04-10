@@ -138,22 +138,26 @@ def estimate_timeout_minutes(config, safety_factor=2.5):
                 model, num_vox, b, num_img, n_perm))
 
     elif config.run_fnc is run_mancova_glow:
+        from glow.experiment.mancova import stat_dict
         _, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
         model = load_runtime_model('GLOW')
         if model is None:
             return None
         n_perm = _get_total_perms(Ana, ana_kw)
+        # runtime model is for 1 stat; mancova evaluates all stats per walk
         total_sec = max(0.0, predict_runtime_sec(
-            model, num_vox, b, num_img, n_perm))
+            model, num_vox, b, num_img, n_perm)) * len(stat_dict)
 
     elif config.run_fnc is run_mancova_vba:
+        from glow.experiment.mancova import stat_dict
         _, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
         model = load_runtime_model('VBA-TFCE')
         if model is None:
             return None
         n_perm = _get_total_perms(Ana, ana_kw)
+        # runtime model is for 1 stat; mancova evaluates all stats per walk
         total_sec = max(0.0, predict_runtime_sec(
-            model, num_vox, b, num_img, n_perm))
+            model, num_vox, b, num_img, n_perm)) * len(stat_dict)
 
     elif config.run_fnc is run_segment:
         model = load_runtime_model('GLOW')

@@ -491,6 +491,23 @@ class TestIsOomFailure:
         assert not AWSBatchRunner._is_oom_failure({
             'statusReason': None, 'container': {'exitCode': 2}})
 
+    def test_timeout_exit_137_not_oom(self):
+        """Exit code 137 with timeout status reason is NOT OOM."""
+        assert not AWSBatchRunner._is_oom_failure({
+            'statusReason': 'Job attempt duration exceeded timeout',
+            'container': {'exitCode': 137}})
+
+    def test_timeout_exit_137_detected(self):
+        """Exit code 137 with timeout status reason IS a timeout."""
+        assert AWSBatchRunner._is_timeout_failure({
+            'statusReason': 'Job attempt duration exceeded timeout',
+            'container': {'exitCode': 137}})
+
+    def test_oom_exit_137_not_timeout(self):
+        """Exit code 137 without timeout status reason is not a timeout."""
+        assert not AWSBatchRunner._is_timeout_failure({
+            'container': {'exitCode': 137}})
+
 
 # ---------------------------------------------------------------------------
 # _base_job_name
@@ -621,4 +638,17 @@ class TestResubmitOom:
         assert perm_failed[0]['jobId'] == 'r3'
         assert 'OOM' in perm_failed[0]['reason']
         assert '16000' in perm_failed[0]['reason']
+        runner.batch.submit_job.assert_not_called()
+
+    def test_timeout_recorded_as_permanent_failure(self):
+        """Timed-out jobs should be permanently failed, not resubmitted."""
+        runner = _make_runner()
+        runner.batch = MagicMock()
+        resubmitted, reasons, msgs, perm_failed = runner._resubmit_failed_jobs(
+            [{'jobId': 'j1', 'jobName': 'exp_00',
+              'statusReason': 'Job attempt duration exceeded timeout',
+              'container': {'exitCode': 137, 'command': ['--test']}}], {})
+        assert resubmitted == []
+        assert len(perm_failed) == 1
+        assert 'timeout' in perm_failed[0]['reason']
         runner.batch.submit_job.assert_not_called()
