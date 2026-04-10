@@ -1,4 +1,6 @@
-"""Visualise the VBA-TFCE MANCOVA stat comparison (5 stats x {raw, z}).
+"""Visualise the MANCOVA stat comparison across all methods.
+
+Covers VBA, VBA-TFCE, CET, and GLOW (5 stats each, ±z where applicable).
 
 Usage:
     python -m glow.benchmark.plot_mancova_vba
@@ -16,10 +18,19 @@ STAT_NICE = {
     'llr': 'LLR', 'pillai': 'Pillai', 'wilks': 'Wilks',
     'hotel_tr': 'Hotelling', 'roys_root': "Roy's root",
 }
-SOURCES = [
-    ('mancova_vba_wgn', 'WGN (synthetic)'),
-    ('mancova_vba_hcp', 'HCP (real)'),
+METHOD_ORDER = ['VBA', 'VBA-TFCE', 'CET', 'GLOW']
+
+# VBA/TFCE/CET results live in mancova_vba_*, GLOW in mancova_glow_*
+SOURCES_VBA = [
+    ('mancova_vba_wgn', 'WGN'),
+    ('mancova_vba_hcp', 'HCP'),
 ]
+SOURCES_GLOW = [
+    ('mancova_glow_wgn', 'WGN'),
+    ('mancova_glow_hcp', 'HCP'),
+]
+# legacy alias used by the VBA-TFCE detail plots
+SOURCES = [(l, f'{n} ({"synthetic" if "wgn" in l else "real"})') for l, n in SOURCES_VBA]
 
 
 def _load(label):
@@ -33,6 +44,31 @@ def _parse_label(label):
     if rest.endswith('-z'):
         return rest[:-2], True
     return rest, False
+
+
+def _parse_label_full(label):
+    """Parse any mancova label into (method, stat, z_flag).
+
+    Examples:
+        'VBA-TFCE-llr-z' -> ('VBA-TFCE', 'llr', True)
+        'VBA-llr'        -> ('VBA',      'llr', False)
+        'CET-pillai'     -> ('CET',      'pillai', False)
+        'GLOW-wilks'     -> ('GLOW',     'wilks', False)
+    """
+    z_flag = label.endswith('-z')
+    if z_flag:
+        label = label[:-2]
+
+    if label.startswith('VBA-TFCE-'):
+        return 'VBA-TFCE', label.removeprefix('VBA-TFCE-'), z_flag
+    if label.startswith('VBA-'):
+        return 'VBA', label.removeprefix('VBA-'), z_flag
+    if label.startswith('CET-'):
+        return 'CET', label.removeprefix('CET-'), z_flag
+    if label.startswith('GLOW-'):
+        return 'GLOW', label.removeprefix('GLOW-'), z_flag
+
+    return label, '', z_flag
 
 
 def _agg(df):
@@ -194,6 +230,7 @@ def build_summary_table(raw_dfs):
     ----------
     raw_dfs : list of (pd.DataFrame, str)
         Each entry is (raw df with 'label' column, source nice-name).
+        Labels must be VBA-TFCE-{stat}[-z] format.
 
     Returns
     -------
@@ -234,57 +271,172 @@ def build_summary_table(raw_dfs):
     return pd.DataFrame(rows)
 
 
+def build_best_stat_table(all_dfs):
+    """Build a table of best stat per (method, source).
+
+    Parameters
+    ----------
+    all_dfs : list of (pd.DataFrame, str)
+        Each entry is (raw df, source nice-name).  Labels can be any method.
+
+    Returns
+    -------
+    pd.DataFrame  with columns: source, method, stat, z_scored, mean_dice,
+                                std_dice, win_rate, tie_rate, mean_loss
+    """
+    rows = []
+    for df, source_nice in all_dfs:
+        df = df.copy()
+        parsed = df['label'].map(_parse_label_full)
+        df['method'] = [m for m, _, _ in parsed]
+        df['stat'] = [s for _, s, _ in parsed]
+        df['z_scored'] = [z for _, _, z in parsed]
+
+        for method in METHOD_ORDER:
+            mdf = df[df['method'] == method]
+            if mdf.empty:
+                continue
+
+            # mean dice per variant
+            grp = mdf.groupby(['stat', 'z_scored'])['dice']
+            means = grp.mean()
+            stds = grp.std()
+
+            # per-(seed, effect_llr): best dice across all variants of this
+            # method, then regret = best - this variant's dice
+            mdf_sig = mdf[mdf['effect_llr'] > 0.01]
+            if mdf_sig.empty:
+                continue
+
+            # best dice per trial
+            best_per_trial = mdf_sig.groupby(
+                ['seed', 'effect_llr'])['dice'].transform('max')
+            mdf_sig = mdf_sig.copy()
+            mdf_sig['is_max'] = mdf_sig['dice'] == best_per_trial
+
+            # number of stats sharing the max per trial
+            n_at_max = mdf_sig.groupby(
+                ['seed', 'effect_llr'])['is_max'].transform('sum')
+            mdf_sig['is_tie'] = mdf_sig['is_max'] & (n_at_max > 1)
+
+            # win rate (includes ties) and tie rate, per variant
+            n_trials = mdf_sig.groupby(['stat', 'z_scored']).size()
+            win_counts = (mdf_sig.groupby(['stat', 'z_scored'])['is_max']
+                          .sum())
+            wins = win_counts / n_trials
+            tie_counts = (mdf_sig.groupby(['stat', 'z_scored'])['is_tie']
+                          .sum())
+            ties = tie_counts / n_trials
+
+            # mean loss: average regret conditioned on NOT being the max
+            mdf_sig['regret'] = best_per_trial - mdf_sig['dice']
+            loss_mask = ~mdf_sig['is_max']
+            loss_regret = (mdf_sig[loss_mask]
+                           .groupby(['stat', 'z_scored'])['regret'].mean())
+
+            z_options = [False, True] if method in ('VBA', 'VBA-TFCE') else [False]
+            for z_flag in z_options:
+                for stat in STAT_ORDER:
+                    if (stat, z_flag) not in means.index:
+                        continue
+                    rows.append({
+                        'source': source_nice,
+                        'method': method,
+                        'stat': STAT_NICE.get(stat, stat),
+                        'z_scored': z_flag,
+                        'mean_dice': means.get((stat, z_flag), np.nan),
+                        'std_dice': stds.get((stat, z_flag), np.nan),
+                        'win_rate': wins.get((stat, z_flag), 0.0),
+                        'tie_rate': ties.get((stat, z_flag), 0.0),
+                        'mean_loss': loss_regret.get((stat, z_flag), 0.0),
+                    })
+
+    return pd.DataFrame(rows)
+
+
 def main():
-    datasets = []
-    raw_dfs = []
-    for label, nice in SOURCES:
+    # --- load all sources (VBA/TFCE/CET from mancova_vba_*, GLOW from mancova_glow_*) ---
+    # keyed by source nice-name -> combined df
+    combined = {}  # source_nice -> list of dfs
+    for label, nice in SOURCES_VBA + SOURCES_GLOW:
         df, folder = _load(label)
         if df.empty:
             print(f'skipping {label}: no data')
             continue
-        raw_dfs.append((df, nice))
-        datasets.append((_agg(df), nice))
+        combined.setdefault(nice, []).append(df)
 
-    if not datasets:
+    all_dfs = []
+    for nice, dfs in combined.items():
+        all_dfs.append((pd.concat(dfs, ignore_index=True), nice))
+
+    if not all_dfs:
         print('no data found')
         return
 
     out = glow.benchmark.get_path_result() / '_latest'
     out.mkdir(exist_ok=True)
 
-    fig1 = plot_facet_grid(datasets)
-    p1 = out / 'mancova_vba_facet.pdf'
-    fig1.savefig(p1, bbox_inches='tight')
-    print(f'saved: {p1}')
+    # --- VBA-TFCE detail plots (existing) ---
+    tfce_datasets = []
+    tfce_raw = []
+    for label, nice in SOURCES:
+        df, folder = _load(label)
+        if df.empty:
+            continue
+        df_tfce = df[df['label'].str.startswith('VBA-TFCE-')]
+        if df_tfce.empty:
+            continue
+        tfce_raw.append((df_tfce, nice))
+        tfce_datasets.append((_agg(df_tfce), nice))
 
-    fig2 = plot_summary(datasets)
-    p2 = out / 'mancova_vba_summary.pdf'
-    fig2.savefig(p2, bbox_inches='tight')
-    print(f'saved: {p2}')
+    if tfce_datasets:
+        fig1 = plot_facet_grid(tfce_datasets)
+        p1 = out / 'mancova_vba_facet.pdf'
+        fig1.savefig(p1, bbox_inches='tight')
+        print(f'saved: {p1}')
 
-    fig3 = plot_z_delta(datasets)
-    p3 = out / 'mancova_vba_z_delta.pdf'
-    fig3.savefig(p3, bbox_inches='tight')
-    print(f'saved: {p3}')
+        fig2 = plot_summary(tfce_datasets)
+        p2 = out / 'mancova_vba_summary.pdf'
+        fig2.savefig(p2, bbox_inches='tight')
+        print(f'saved: {p2}')
 
-    summary = build_summary_table(raw_dfs)
-    csv_path = out / 'mancova_vba_summary.csv'
-    summary.to_csv(csv_path, index=False, float_format='%.4f')
+        fig3 = plot_z_delta(tfce_datasets)
+        p3 = out / 'mancova_vba_z_delta.pdf'
+        fig3.savefig(p3, bbox_inches='tight')
+        print(f'saved: {p3}')
+
+    # --- best stat per method (all methods) ---
+    best = build_best_stat_table(all_dfs)
+    csv_path = out / 'mancova_best_stat.csv'
+    best.to_csv(csv_path, index=False, float_format='%.4f')
     print(f'saved: {csv_path}')
 
-    # print markdown table to stdout
-    for source in summary['source'].unique():
-        sub = summary[summary['source'] == source].sort_values(
-            'win_rate', ascending=False)
+    # print best-stat summary to stdout
+    for source in best['source'].unique():
         print(f'\n## {source}\n')
-        print(f'| stat | z_scored | mean_dice | std_dice | win_rate |')
-        print(f'|------|----------|-----------|----------|----------|')
-        for _, r in sub.iterrows():
+        for method in METHOD_ORDER:
+            sub = best[(best['source'] == source) & (best['method'] == method)]
+            if sub.empty:
+                continue
+            sub = sub.sort_values('win_rate', ascending=False)
+            winner = sub.iloc[0]
+            z_str = ' (z)' if winner['z_scored'] else ''
+            print(f'  {method:<10s}  best={winner["stat"]}{z_str:<14s}  '
+                  f'win={winner["win_rate"]:.1%}  '
+                  f'tie={winner["tie_rate"]:.1%}  '
+                  f'loss={winner["mean_loss"]:.4f}')
+
+        # full table
+        sub_all = best[best['source'] == source].sort_values(
+            ['method', 'win_rate'], ascending=[True, False])
+        print(f'\n| method     | stat         | z   | win_rate | tie_rate | mean_loss |')
+        print(f'|------------|--------------|-----|----------|----------|-----------|')
+        for _, r in sub_all.iterrows():
             z = 'yes' if r['z_scored'] else 'no'
-            print(f'| {r["stat"]:<12s} | {z:<8s} '
-                  f'| {r["mean_dice"]:.4f}    '
-                  f'| {r["std_dice"]:.4f}   '
-                  f'| {r["win_rate"]:.4f}   |')
+            print(f'| {r["method"]:<10s} | {r["stat"]:<12s} | {z:<3s} '
+                  f'| {r["win_rate"]:.4f}   '
+                  f'| {r["tie_rate"]:.4f}   '
+                  f'| {r["mean_loss"]:.4f}    |')
 
     plt.close('all')
 
