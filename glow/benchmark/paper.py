@@ -207,15 +207,43 @@ def run_cloud(configs):
         return
 
     all_job_info = submit_all_jobs(configs)
+
+    # persist job info so results can be downloaded later
+    from glow.aws.download import save_job_info
+    saved = save_job_info(all_job_info, cloud_config)
+
     all_job_ids, job_info_map = build_job_info_map(all_job_info)
+
+    if not all_job_ids:
+        print('\nAll experiments cached — nothing to monitor.')
+        return
+
+    print(f'\nJob info saved to disk ({len(saved)} run(s)).')
+    print('You can download results later with:')
+    print('  python -m glow.aws.download')
+    resp = input('\nWait for results now? [Y/n] ').strip().lower()
+    if resp == 'n':
+        print('\nJobs are running on AWS Batch. Download when ready with:')
+        print('  python -m glow.aws.download')
+        return
+
     permanently_failed = monitor_all_jobs(all_job_info, all_job_ids,
                                           job_info_map)
     download_remaining_results(all_job_info)
 
+    # clean up job info files for completed runs
+    from glow.aws.download import JOBS_DIR
+    for info in all_job_info:
+        run_id = info.get('run_id')
+        if run_id:
+            p = JOBS_DIR / f'{run_id}.json'
+            if p.exists():
+                p.unlink()
+
     print('\n' + '=' * 60)
     if permanently_failed:
         print(f'⚠ Benchmarks finished with {len(permanently_failed)} '
-              f'permanent OOM failure(s)')
+              f'permanent failure(s)')
     else:
         print('✓ All benchmarks complete')
     print('=' * 60)
