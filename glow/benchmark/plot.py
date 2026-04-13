@@ -167,6 +167,8 @@ def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['dice', 'sens', 'spec']
         if j == 0:
             ax_top.legend(frameon=False)
         ax_top.set_title(title if title else _METRIC_TITLES.get(metric, metric))
+        if metric == 'spec':
+            ax_top.set_ylim(0, 1)
         ax_top.grid(True, alpha=alpha, linewidth=1.2)
         if nrows == 1:
             ax_top.set_xlabel(_X_PARAM_LABELS.get(x_param, x_param))
