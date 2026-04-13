@@ -355,7 +355,7 @@ def run_mancova_vba(config, **iter_kw):
             stat = multi[fn].copy()
 
             if z_flag:
-                stat = AnalysisVBA.z_score_stat(stat)
+                stat = Analysis.z_score_stat(stat)
 
             suffix = '-z' if z_flag else ''
 
@@ -395,35 +395,43 @@ def run_mancova_vba(config, **iter_kw):
                             walk_time + (time.time() - variant_start),
                             iter_kw)
 
-    # CET variants (fixed cft_pval, sweep stats only)
+    # CET variants (fixed cft_pval, sweep stats x {raw, z})
     cft_pval = 0.0001
     for fn in stat_fns:
         name = stat_dict_inv[fn]
-        variant_start = time.time()
-        stat = multi[fn].copy()
 
-        # empirical CFT from pooled null
-        null_pool = stat[1:, :].ravel()
-        cft = np.quantile(null_pool, 1 - cft_pval)
+        for z_flag in [False, True]:
+            variant_start = time.time()
+            stat = multi[fn].copy()
 
-        pval_cet = AnalysisCET._get_pval_cet(stat, exp.mask_idx, cft)
-        mask_cet = np.zeros(exp.mask_idx.shape, dtype=bool)
-        mask_cet[exp.mask_idx > -1] = pval_cet <= alpha_fwer
+            if z_flag:
+                stat = Analysis.z_score_stat(stat)
 
-        ana_cet = object.__new__(AnalysisCET)
-        ana_cet.get_stat = fn
-        ana_cet.exp = exp
-        ana_cet.stat = stat
-        ana_cet.pval = pval_cet
-        ana_cet.cft_pval = cft_pval
-        ana_cet.cft = cft
-        ana_cet.effect_list = AnalysisVBA.discover_mask(
-            mask=mask_cet, exp=exp)
+            suffix = '-z' if z_flag else ''
 
-        _score_and_emit(ana_cet, effect, config,
-                        f'CET-{name}',
-                        walk_time + (time.time() - variant_start),
-                        iter_kw)
+            # empirical CFT from pooled null
+            null_pool = stat[1:, :].ravel()
+            cft = np.quantile(null_pool, 1 - cft_pval)
+
+            pval_cet = AnalysisCET._get_pval_cet(stat, exp.mask_idx, cft)
+            mask_cet = np.zeros(exp.mask_idx.shape, dtype=bool)
+            mask_cet[exp.mask_idx > -1] = pval_cet <= alpha_fwer
+
+            ana_cet = object.__new__(AnalysisCET)
+            ana_cet.get_stat = fn
+            ana_cet.exp = exp
+            ana_cet.stat = stat
+            ana_cet.pval = pval_cet
+            ana_cet.cft_pval = cft_pval
+            ana_cet.cft = cft
+            ana_cet.z_flag = z_flag
+            ana_cet.effect_list = AnalysisVBA.discover_mask(
+                mask=mask_cet, exp=exp)
+
+            _score_and_emit(ana_cet, effect, config,
+                            f'CET-{name}{suffix}',
+                            walk_time + (time.time() - variant_start),
+                            iter_kw)
 
 
 if __name__ == '__main__':

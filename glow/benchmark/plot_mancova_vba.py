@@ -334,7 +334,7 @@ def build_best_stat_table(all_dfs):
             loss_regret = (mdf_sig[loss_mask]
                            .groupby(['stat', 'z_scored'])['regret'].mean())
 
-            z_options = [False, True] if method in ('VBA', 'VBA-TFCE') else [False]
+            z_options = [False, True] if method in ('VBA', 'VBA-TFCE', 'CET') else [False]
             for z_flag in z_options:
                 for stat in STAT_ORDER:
                     if (stat, z_flag) not in means.index:

@@ -122,12 +122,54 @@ class TestBigEffect:
         assert hasattr(analysis, 'stat')
 
 
+class TestZScoreStat:
+    """z_score_stat lives on Analysis and is inherited by subclasses."""
+
+    def test_shape_preserved(self):
+        stat = np.random.default_rng(0).standard_normal((11, 50))
+        z = Analysis.z_score_stat(stat)
+        assert z.shape == stat.shape
+
+    def test_null_columns_standardised(self):
+        """Null rows (1:) of each voxel should have mean ~0 and std ~1."""
+        stat = np.random.default_rng(0).standard_normal((51, 200))
+        z = Analysis.z_score_stat(stat)
+        null_z = z[1:, :]
+        np.testing.assert_allclose(null_z.mean(axis=0), 0, atol=1e-12)
+        np.testing.assert_allclose(null_z.std(axis=0, ddof=1), 1, atol=1e-12)
+
+    def test_constant_row_safe(self):
+        """A constant row should not produce inf or nan."""
+        stat = np.ones((5, 10))
+        z = Analysis.z_score_stat(stat)
+        assert not np.any(np.isinf(z))
+        assert not np.any(np.isnan(z))
+
+    def test_inherited_by_subclasses(self):
+        """Subclasses should not override z_score_stat."""
+        stat = np.random.default_rng(0).standard_normal((5, 20))
+        np.testing.assert_array_equal(
+            AnalysisVBA.z_score_stat(stat),
+            Analysis.z_score_stat(stat))
+        np.testing.assert_array_equal(
+            AnalysisCET.z_score_stat(stat),
+            Analysis.z_score_stat(stat))
+
+
 class TestCET:
     def test_big_effect(self):
         """CET discovers the strong effect."""
         ana = AnalysisCET(TestBigEffect.exp, n_perm_fwer=25,
                           alpha_fwer=.1, cft_pval=0.01)
         assert len(ana.effect_list) >= 1
+
+    def test_big_effect_z(self):
+        """CET with z_flag runs without error and sets the flag."""
+        ana = AnalysisCET(TestBigEffect.exp, n_perm_fwer=25,
+                          alpha_fwer=.5, cft_pval=0.05, z_flag=True)
+        assert ana.z_flag is True
+        assert hasattr(ana, 'pval')
+        assert hasattr(ana, 'effect_list')
 
     def test_null_no_discoveries(self):
         """Under the null (no effect), CET should not discover at alpha=0.05."""

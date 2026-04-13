@@ -114,6 +114,30 @@ class Analysis:
         return pval
 
     @classmethod
+    def z_score_stat(cls, stat):
+        """Z-score each voxel across permutations using the null rows.
+
+        For each voxel, the mean and std are computed from the permutation
+        null (rows 1:).  All rows (including the observed row 0) are then
+        standardized by that voxel's null mean and std.  This makes each
+        voxel's null distribution ~N(0,1), removing spatial heterogeneity
+        so that max-stat FWER is not biased by regionally varying noise
+        (Salimi-Khorshidi et al. 2011, NeuroImage).
+
+        Args:
+            stat (np.array): (n_perm+1, num_vox) statistics.
+                Row 0 is the observed (unpermuted) statistic.
+
+        Returns:
+            z (np.array): same shape, voxel-wise z-scored
+        """
+        null = stat[1:, :]
+        mu = np.nanmean(null, axis=0)
+        sigma = np.nanstd(null, axis=0, ddof=1)
+        sigma[sigma < 1e-12] = 1.0
+        return (stat - mu) / sigma
+
+    @classmethod
     def get_stat_perm_multi(cls, exp, get_stat_list, n_perm=None,
                             children=None):
         """compute multiple test statistics from a single tree walk.
@@ -268,25 +292,6 @@ class AnalysisVBA(Analysis):
         return tfce
 
     @classmethod
-    def z_score_stat(cls, stat):
-        """Z-score a (n_perm+1, num_vox) stat matrix using permutation null.
-
-        Assumes stat is already oriented (larger = more evidence).
-        Rows 1: are the permutation null; all rows are standardized.
-
-        Args:
-            stat (np.array): (n_perm+1, num_vox) statistics
-
-        Returns:
-            z (np.array): same shape, voxel-wise z-scored
-        """
-        null = stat[1:, :]
-        mu = np.nanmean(null, axis=0)
-        sigma = np.nanstd(null, axis=0, ddof=1)
-        sigma[sigma < 1e-12] = 1.0
-        return (stat - mu) / sigma
-
-    @classmethod
     def discover_mask(cls, mask, exp):
         """split a boolean mask into connected-component effects.
 
@@ -321,14 +326,19 @@ class AnalysisCET(Analysis):
     """
 
     def __init__(self, exp, n_perm_fwer, alpha_fwer=.05,
-                 cft_pval=0.001, n_jobs_perm=1,
+                 cft_pval=0.001, z_flag=False, n_jobs_perm=1,
                  get_stat=get_wilks, **kwargs):
         super().__init__(exp, get_stat=get_stat, n_jobs_perm=n_jobs_perm,
                          **kwargs)
         self.cft_pval = cft_pval
+        self.z_flag = z_flag
 
         # voxel-wise stats (same as VBA)
         self.stat = self.get_stat_perm(exp, n_perm=n_perm_fwer, children=None)
+
+        # z-score voxel-wise using the permutation null
+        if self.z_flag:
+            self.stat = self.z_score_stat(self.stat)
 
         # CFT from empirical null: pool all permutation stats
         null_pool = self.stat[1:, :].ravel()
