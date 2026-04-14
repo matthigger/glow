@@ -730,7 +730,7 @@ def main():
         df_hcp = collect_null_data(exp_hcp, n_perm=args.n_perm,
                                    stat_funcs=stat_funcs, label='HCP')
         df_dict['HCP'] = df_hcp
-    except Exception as exc:
+    except (OSError, ValueError, AssertionError) as exc:
         print(f'  HCP loading failed: {exc}')
         print('  (continuing with WGN only)')
 

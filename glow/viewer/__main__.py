@@ -183,7 +183,7 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
             exp_eff, effect = exp.impose_effect(
                 effect_llr=effect_llr, extenter=extenter, seed=seed,
                 roughness=roughness)
-        except Exception:
+        except (ValueError, RuntimeError, np.linalg.LinAlgError, AssertionError):
             print('  (extenter failed, falling back to sphere mask)')
             shape = exp.mask_idx.shape
             center = np.array([s // 2 for s in shape])

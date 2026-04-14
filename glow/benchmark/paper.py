@@ -1,4 +1,5 @@
 import argparse
+import json
 
 from glow.benchmark.paper_config import CONFIG_BY_LABEL
 
@@ -131,7 +132,8 @@ def _print_cost_summary(configs, cloud_config):
         est = None
         try:
             est = estimate_timeout_minutes(config)
-        except Exception:
+        except (ImportError, FileNotFoundError, json.JSONDecodeError,
+                KeyError, ValueError, TypeError):
             pass
 
         if est is None:

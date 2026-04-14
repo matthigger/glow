@@ -147,7 +147,7 @@ def _load_manifest():
     try:
         with open(manifest_path) as f:
             return json.load(f)
-    except Exception:
+    except (json.JSONDecodeError, OSError):
         return None
 
 
@@ -163,7 +163,8 @@ def _load_cache():
         with gzip.open(d / 'effect.p.gz', 'rb') as f:
             effect = pickle.load(f)
         return ana, effect.mask
-    except Exception:
+    except (OSError, gzip.BadGzipFile, pickle.UnpicklingError,
+            ModuleNotFoundError, AttributeError, EOFError):
         return None, None
 
 

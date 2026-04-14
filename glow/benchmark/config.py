@@ -492,7 +492,8 @@ class Config:
                 if verbose:
                     print(f'  Estimated runtime: {est_min:.1f} min/job{tag}'
                           f'  ->  timeout: {timeout_minutes} min')
-        except Exception:
+        except (ImportError, FileNotFoundError, json.JSONDecodeError,
+                KeyError, ValueError, TypeError):
             pass
 
         # submit jobs as array job (single API call)
