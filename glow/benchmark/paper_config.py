@@ -76,22 +76,22 @@ def make_config(label, source, run_fnc, ana_kwargs_dict=None, **overrides):
 
 # ---------- shared analysis kwarg dicts ----------
 ana_kwargs_dict_vba = {
-    'GLOW': (glow.experiment.AnalysisGLOW, ANALYSES['GLOW']),
-    'VBA': (glow.experiment.AnalysisVBA, ANALYSES['VBA']),
-    'VBA-TFCE': (glow.experiment.AnalysisVBA, ANALYSES['VBA-TFCE']),
-    'CET': (glow.experiment.AnalysisCET, ANALYSES['CET']),
+    'GLOW': (glow.analysis.AnalysisGLOW, ANALYSES['GLOW']),
+    'VBA': (glow.analysis.AnalysisVBA, ANALYSES['VBA']),
+    'VBA-TFCE': (glow.analysis.AnalysisVBA, ANALYSES['VBA-TFCE']),
+    'CET': (glow.analysis.AnalysisCET, ANALYSES['CET']),
 }
 
 ana_kwargs_dict_prune = {
-    'GLOW': (glow.experiment.AnalysisGLOW, ANALYSES['GLOW']),
+    'GLOW': (glow.analysis.AnalysisGLOW, ANALYSES['GLOW']),
 }
 
 ana_kwargs_dict_mancova = {
-    'GLOW': (glow.experiment.AnalysisGLOW, ANALYSES['GLOW']),
+    'GLOW': (glow.analysis.AnalysisGLOW, ANALYSES['GLOW']),
 }
 
 ana_kwargs_dict_mancova_vba = {
-    'VBA-TFCE': (glow.experiment.AnalysisVBA, ANALYSES['VBA-TFCE']),
+    'VBA-TFCE': (glow.analysis.AnalysisVBA, ANALYSES['VBA-TFCE']),
 }
 
 

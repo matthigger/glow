@@ -414,7 +414,7 @@ def _build_runtime_profile_configs(cloud_config=None):
         configs.append(Config(
             label=f'rtprof_glow_{vox}v_{b}b_{num_img}i_{n_perm}p',
             ana_kwargs_dict={'GLOW': (
-                glow.experiment.AnalysisGLOW,
+                glow.analysis.AnalysisGLOW,
                 dict(n_perm_fwer=n_fwer_glow,
                      n_perm_fwer_size_adjust=n_sa,
                      alpha_fwer=0.05, min_size=1),
@@ -426,7 +426,7 @@ def _build_runtime_profile_configs(cloud_config=None):
         configs.append(Config(
             label=f'rtprof_vba_{vox}v_{b}b_{num_img}i_{n_perm}p',
             ana_kwargs_dict={'VBA': (
-                glow.experiment.AnalysisVBA,
+                glow.analysis.AnalysisVBA,
                 dict(n_perm_fwer=n_perm, tfce_flag=False,
                      alpha_fwer=0.05),
             )},
@@ -437,7 +437,7 @@ def _build_runtime_profile_configs(cloud_config=None):
         configs.append(Config(
             label=f'rtprof_vba_tfce_{vox}v_{b}b_{num_img}i_{n_perm}p',
             ana_kwargs_dict={'VBA-TFCE': (
-                glow.experiment.AnalysisVBA,
+                glow.analysis.AnalysisVBA,
                 dict(n_perm_fwer=n_perm, tfce_flag=True,
                      alpha_fwer=0.05),
             )},

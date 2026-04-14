@@ -505,7 +505,8 @@ class Config:
 
         # upload config + all kwargs to S3 (workers will download these)
         runner.upload_config(self, run_id)
-        runner.upload_all_kwargs(run_id, uncached)
+        runner.upload_all_kwargs(
+            run_id, [(idx, kw) for idx, kw, _missing in uncached])
 
         # estimate per-job timeout from runtime models
         timeout_minutes = None

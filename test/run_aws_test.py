@@ -337,7 +337,7 @@ def run_batched_cloud_tests():
 
         # run local analysis (fast, needed for comparison)
         print('  running local analysis...')
-        ana_local = glow.experiment.AnalysisGLOW(exp, **ana_kwargs)
+        ana_local = glow.analysis.AnalysisGLOW(exp, **ana_kwargs)
 
         # submit cloud jobs (perm + synthesis) via AWSBatchRunner
         cloud_config = CloudConfig(
@@ -375,7 +375,7 @@ def run_batched_cloud_tests():
     if RUN_EXPERIMENT_LEVEL_TEST:
         print('\n[Prepare] Experiment-level test')
         ana_kwargs_dict = {
-            'GLOW': (glow.experiment.AnalysisGLOW,
+            'GLOW': (glow.analysis.AnalysisGLOW,
                      dict(n_perm_fwer=5,
                           alpha_fwer=0.05, min_size=1,
                           n_jobs_perm=1))
@@ -402,7 +402,7 @@ def run_batched_cloud_tests():
     if RUN_TFCE_TEST:
         print('\n[Prepare] TFCE test')
         ana_kwargs_dict = {
-            'VBA-TFCE': (glow.experiment.AnalysisVBA,
+            'VBA-TFCE': (glow.analysis.AnalysisVBA,
                          dict(n_perm_fwer=5, tfce_flag=True, alpha_fwer=0.05,
                               n_jobs_perm=1))
         }
@@ -428,7 +428,7 @@ def run_batched_cloud_tests():
     if RUN_HCP_TEST:
         print('\n[Prepare] HCP test')
         ana_kwargs_dict = {
-            'GLOW': (glow.experiment.AnalysisGLOW,
+            'GLOW': (glow.analysis.AnalysisGLOW,
                      dict(n_perm_fwer=5,
                           alpha_fwer=0.05, min_size=1,
                           n_jobs_perm=1))

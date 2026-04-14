@@ -402,9 +402,9 @@ if __name__ == '__main__':
     from glow.benchmark.config import Config
 
     # quick test
-    ana_kwargs_dict = {'GLOW': (glow.experiment.AnalysisGLOW,
+    ana_kwargs_dict = {'GLOW': (glow.analysis.AnalysisGLOW,
                                 dict(n_perm_fwer=100)),
-                       'VBA': (glow.experiment.AnalysisVBA, dict(n_perm_fwer=100))}
+                       'VBA': (glow.analysis.AnalysisVBA, dict(n_perm_fwer=100))}
     config = Config(label='quick_test', source='wgn', n_seed=3,
                     effect_llr_all=[0, 0.5], wgn_shape=(3, 3),
                     ana_kwargs_dict=ana_kwargs_dict)

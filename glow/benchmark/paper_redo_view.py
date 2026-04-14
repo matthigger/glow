@@ -231,7 +231,7 @@ def _rerun_and_view(config_label, seed, effect_llr, glow_label='GLOW',
     glow_kwargs['n_jobs_perm'] = -1
     print(f'  Running AnalysisGLOW[{glow_label}] '
           f'(n_perm_fwer={glow_kwargs["n_perm_fwer"]}, parallel) ...')
-    ana = glow.experiment.AnalysisGLOW(exp_eff, verbose=True, **glow_kwargs)
+    ana = glow.analysis.AnalysisGLOW(exp_eff, verbose=True, **glow_kwargs)
     print(f'  Found {len(ana.effect_list)} effects')
 
     # compute overall score
