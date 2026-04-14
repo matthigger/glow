@@ -83,7 +83,7 @@ class AnalysisVBA(Analysis):
         Returns:
             tfce (np.array): (num_permute, num_vox) TFCE-enhanced stats
         """
-        import glow.vba  # lazy import (requires FSL)
+        from . import _tfce as _tfce_mod  # lazy import (requires FSL)
         # apply & store tfce
         tqdm_dict = dict(desc='tfce per permutation',
                          disable=not verbose)
@@ -92,7 +92,7 @@ class AnalysisVBA(Analysis):
 
         # helper function for parallel processing
         def process_tfce_permutation(perm_idx_local):
-            return glow.vba.apply_tfce_x(stat[perm_idx_local, :],
+            return _tfce_mod.apply_tfce_x(stat[perm_idx_local, :],
                                         mask_idx=mask_idx)
 
         if n_jobs_perm not in (0, 1):
@@ -106,7 +106,7 @@ class AnalysisVBA(Analysis):
         else:
             # serial execution
             for perm_idx, _stat in tqdm(enumerate(stat), **tqdm_dict):
-                tfce[perm_idx, :] = glow.vba.apply_tfce_x(_stat,
+                tfce[perm_idx, :] = _tfce_mod.apply_tfce_x(_stat,
                                                           mask_idx=mask_idx)
 
         return tfce

@@ -40,7 +40,7 @@ def _input_int(prompt, default):
 
 def main():
     from glow.benchmark.paper_config import CONFIG_BY_LABEL, COMMON
-    from glow.experiment.export import to_folder
+    from glow.benchmark.export import to_folder
 
     parser = argparse.ArgumentParser(
         description='Regenerate and export a paper experiment to a folder')
