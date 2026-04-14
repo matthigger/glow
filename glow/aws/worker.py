@@ -497,13 +497,9 @@ def run_synthesis_mode(args):
     print(f'  ✓ {n_fwer} max-stats collected ({n_perm_fwer_size_adjust} fit perms held out)')
 
     # build analysis shell and run streaming finalization
-    ana = object.__new__(AnalysisGLOW)
-    ana.exp = exp
-    ana.get_stat = get_stat
-    ana.n_jobs_perm = 1
-    ana.verbose = True
-    ana.adj_model = model
-    ana.adj_beta = beta
+    ana = AnalysisGLOW.from_precomputed(
+        exp=exp, get_stat=get_stat,
+        adj_model=model, adj_beta=beta, verbose=True)
 
     print(f'\nRunning _finalize_analysis ...')
     _t0 = time.time()

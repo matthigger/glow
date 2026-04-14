@@ -7,21 +7,20 @@ from pathlib import Path
 
 import numpy as np
 from joblib import Parallel, delayed
-from scipy.ndimage import label
 from tqdm import tqdm
 
 import glow.effect
 import glow.graph
-# glow.vba imported lazily when needed (requires FSL for TFCE)
-from .cluster import cluster
-from .exper import ExperimentScaled
-from .mancova import get_llr, get_wilks, stat_dict, stat_dict_inv
-from .prune import prune_greedy
+from ._base import Analysis
+from ..exper import ExperimentScaled
+from ..mancova import get_llr, stat_dict_inv
+from ..prune import prune_greedy
+from ..cluster import cluster
 
 
 _DEFAULT_MODEL = 'power_law'
 
-_BEST_MODELS_PATH = Path(__file__).parent / 'best_models.json'
+_BEST_MODELS_PATH = Path(__file__).parent.parent / 'best_models.json'
 
 
 def _load_best_models():
@@ -53,354 +52,6 @@ def get_best_model(get_stat):
         stacklevel=2,
     )
     return _DEFAULT_MODEL
-
-
-class Analysis:
-    """performs effect discovery (glow or TFCE) and computes FWER p-values.
-
-    Attributes:
-        exp (Experiment): source data
-        get_stat (callable): accepts (e, h, n) and returns a scalar
-            statistic (see mancova.py)
-    """
-
-    def __init__(self, exp, get_stat=get_llr, n_jobs_perm=1):
-        if not isinstance(exp, ExperimentScaled):
-            # pre-process
-            exp = ExperimentScaled.from_exp(exp)
-        self.exp = exp
-        self.get_stat = get_stat
-        self.n_jobs_perm = n_jobs_perm
-
-    @classmethod
-    def get_pval(cls, stat, reg_active=None):
-        """compute FWER-adjusted p-values via Westfall-Young permutation.
-
-        Args:
-            stat (np.array): (num_permute, num_reg) statistics per region
-            reg_active (np.array): (num_reg) boolean mask. only active
-                regions have a p-value computed; inactive get np.nan.
-                discarding a-priori small regions from the comparison
-                set preserves power for larger regions. defaults to all
-                regions active.
-
-        Returns:
-            pval (np.array): (num_reg) FWER-controlled p-values
-        """
-        if reg_active is None:
-            reg_active = np.ones(stat.shape[1], dtype=bool)
-        elif not reg_active.any():
-            # no active regions, return all nan
-            num_reg = stat.shape[1]
-            return np.full(num_reg, fill_value=np.nan)
-
-        # max stat per permutation (sorted from low to high)
-        stat_max = np.sort(np.nanmax(stat[:, reg_active], axis=1))
-
-        # compute pvalues (what percentage of permuted, or unpermuted,
-        # stats were >= to observed value?)
-        num_perm, num_reg = stat.shape
-        pval = np.full(num_reg, fill_value=-1.0)
-        for reg_idx, z in enumerate(stat[0, :]):
-            if np.isnan(z):
-                pval[reg_idx] = np.nan
-                continue
-            pval[reg_idx] = max(1 - bisect_left(stat_max, z) / num_perm,
-                               1 / num_perm)
-
-        # inactive regions get no pvalue (otherwise we don't control FWER!)
-        pval[~reg_active] = np.nan
-
-        return pval
-
-    @classmethod
-    def z_score_stat(cls, stat):
-        """Z-score each voxel across permutations using the null rows.
-
-        For each voxel, the mean and std are computed from the permutation
-        null (rows 1:).  All rows (including the observed row 0) are then
-        standardized by that voxel's null mean and std.  This makes each
-        voxel's null distribution ~N(0,1), removing spatial heterogeneity
-        so that max-stat FWER is not biased by regionally varying noise
-        (Salimi-Khorshidi et al. 2011, NeuroImage).
-
-        Args:
-            stat (np.array): (n_perm+1, num_vox) statistics.
-                Row 0 is the observed (unpermuted) statistic.
-
-        Returns:
-            z (np.array): same shape, voxel-wise z-scored
-        """
-        null = stat[1:, :]
-        mu = np.nanmean(null, axis=0)
-        sigma = np.nanstd(null, axis=0, ddof=1)
-        sigma[sigma < 1e-12] = 1.0
-        return (stat - mu) / sigma
-
-    @classmethod
-    def get_stat_perm_multi(cls, exp, get_stat_list, n_perm=None,
-                            children=None):
-        """compute multiple test statistics from a single tree walk.
-
-        Avoids redundant E/H computation when comparing stat functions.
-
-        Args:
-            exp (Experiment): experiment data
-            get_stat_list (list): stat functions (each accepts e, h, n)
-            n_perm (int): number of permutations (excluding unpermuted)
-            children (np.array): (num_leaf - 1, 2) child index array
-
-        Returns:
-            dict mapping each stat function to (n_perm + 1, num_reg) array
-        """
-        b, num_img, num_vox = exp.y.shape
-        num_reg = num_vox
-        if children is not None:
-            num_reg += children.shape[0]
-
-        n_rows = 1 if n_perm is None else n_perm + 1
-        result = {fn: np.full((n_rows, num_reg), fill_value=np.nan)
-                  for fn in get_stat_list}
-
-        for reg_idx, size, e, h in glow.graph.iter_stat(
-                exp=exp, children=children, n_perm=n_perm):
-            for perm_idx in range(n_rows):
-                _e = e[:, :, perm_idx]
-                _h = h[:, :, perm_idx]
-                for fn in get_stat_list:
-                    try:
-                        result[fn][perm_idx, reg_idx] = fn(
-                            e=_e, h=_h, n=size)
-                    except np.linalg.LinAlgError:
-                        pass
-        return result
-
-    def get_stat_perm(self, exp, n_perm=None, children=None):
-        """compute test statistic for each region under each permutation.
-
-        Args:
-            exp (Experiment): experiment to evaluate
-            n_perm (int): number of permutations (in addition to unpermuted)
-            children (np.array): (num_reg, 2) child index array. if None,
-                only iterates through individual voxels.
-
-        Returns:
-            stat (np.array): (n_perm + 1, num_reg) test statistics
-        """
-        # compute wilks per region
-        b, num_img, num_vox = exp.y.shape
-        num_reg = num_vox
-        if children is not None:
-            num_reg += children.shape[0]
-
-        n_rows = 1 if n_perm is None else n_perm + 1
-        stat = np.full((n_rows, num_reg), fill_value=np.nan)
-        for reg_idx, size, e, h in glow.graph.iter_stat(exp=exp,
-                                                       children=children,
-                                                       n_perm=n_perm):
-            for perm_idx in range(n_rows):
-                stat[perm_idx, reg_idx] = self.get_stat(e=e[:, :, perm_idx],
-                                                        h=h[:, :, perm_idx],
-                                                        n=size)
-        return stat
-
-
-class AnalysisVBA(Analysis):
-    def __init__(self, exp, n_perm_fwer, alpha_fwer=.05, verbose=False,
-                 tfce_flag=False, z_flag=False, conn=None, n_jobs_perm=1,
-                 get_stat=get_wilks, **kwargs):
-        """
-        Args:
-            exp: Experiment to analyze
-            n_perm_fwer: Number of permutations for FWER control
-            alpha_fwer: Family-wise error rate
-            verbose: Print progress
-            tfce_flag: Apply TFCE enhancement
-            z_flag: Z-score voxel-wise using the permutation null before
-                TFCE.  Makes the null distribution spatially homogeneous
-                (pivotal), improving power under max-stat correction.
-            conn: Connectivity for clustering
-            n_jobs_perm: Number of parallel jobs for permutations (1=serial, -1=all cores)
-        """
-        super().__init__(exp, get_stat=get_stat, n_jobs_perm=n_jobs_perm,
-                         **kwargs)
-        self.tfce_flag = tfce_flag
-        self.z_flag = z_flag
-
-        # compute stat per each voxel (for every permutation)
-        self.stat = self.get_stat_perm(exp, n_perm=n_perm_fwer, children=None)
-
-        # z-score voxel-wise using the permutation null
-        if self.z_flag:
-            self.stat = self.z_score_stat(self.stat)
-
-        # apply TFCE per image
-        if self.tfce_flag:
-            self.stat = self.apply_tfce(stat=self.stat,
-                                        mask_idx=exp.mask_idx,
-                                        verbose=verbose,
-                                        n_jobs_perm=self.n_jobs_perm)
-
-        # compute p-values
-        self.pval = self.get_pval(self.stat)
-
-        # discover effects
-        mask = np.zeros(exp.mask_idx.shape, dtype=bool)
-        mask[exp.mask_idx > -1] = self.pval <= alpha_fwer
-
-        self.effect_list = self.discover_mask(mask=mask, exp=exp)
-
-    @classmethod
-    def apply_tfce(cls, stat, mask_idx, verbose=False, n_jobs_perm=1):
-        """apply TFCE to every permutation image.
-
-        Args:
-            stat (np.array): (num_permute, num_vox) statistics
-            mask_idx (np.array): 3d voxel index array (-1 outside analysis)
-            verbose (bool): print progress
-            n_jobs_perm (int): parallel jobs for TFCE (1=serial)
-
-        Returns:
-            tfce (np.array): (num_permute, num_vox) TFCE-enhanced stats
-        """
-        import glow.vba  # lazy import (requires FSL)
-        # apply & store tfce
-        tqdm_dict = dict(desc='tfce per permutation',
-                         disable=not verbose)
-        tfce = np.full(shape=stat.shape,
-                       fill_value=np.nanmin(stat))
-        
-        # helper function for parallel processing
-        def process_tfce_permutation(perm_idx_local):
-            return glow.vba.apply_tfce_x(stat[perm_idx_local, :],
-                                        mask_idx=mask_idx)
-        
-        if n_jobs_perm not in (0, 1):
-            # parallel execution
-            results = Parallel(n_jobs=n_jobs_perm, verbose=0)(
-                delayed(process_tfce_permutation)(perm_idx)
-                for perm_idx in tqdm(range(stat.shape[0]), **tqdm_dict)
-            )
-            for perm_idx, tfce_result in enumerate(results):
-                tfce[perm_idx, :] = tfce_result
-        else:
-            # serial execution
-            for perm_idx, _stat in tqdm(enumerate(stat), **tqdm_dict):
-                tfce[perm_idx, :] = glow.vba.apply_tfce_x(_stat,
-                                                          mask_idx=mask_idx)
-
-        return tfce
-
-    @classmethod
-    def discover_mask(cls, mask, exp):
-        """split a boolean mask into connected-component effects.
-
-        Args:
-            mask (np.array): boolean mask, same shape as exp.mask_idx
-            exp (Experiment): experiment for constructing Effect objects
-
-        Returns:
-            effect_list (list): discovered Effect objects
-        """
-        # split discovered regions into disjoint effects (all adjacent are
-        # same effect)
-        mask_est, num_effect = label(mask.astype(bool))
-
-        effect_list = list()
-        for eff_idx in range(1, num_effect + 1):
-            # build effect for each contiguous effect found
-            _mask = mask_est == eff_idx
-            eff = glow.effect.Effect.from_exp_mask(exp=exp, mask=_mask)
-            effect_list.append(eff)
-
-        return effect_list
-
-
-class AnalysisCET(Analysis):
-    """Cluster Extent Thresholding with permutation-based FWER.
-
-    Thresholds voxel-wise stats at a cluster forming threshold (CFT)
-    derived from the permutation null at cft_pval, finds connected
-    components, and compares cluster sizes to the permutation null
-    of max cluster sizes.
-    """
-
-    def __init__(self, exp, n_perm_fwer, alpha_fwer=.05,
-                 cft_pval=0.001, z_flag=False, n_jobs_perm=1,
-                 get_stat=get_wilks, **kwargs):
-        super().__init__(exp, get_stat=get_stat, n_jobs_perm=n_jobs_perm,
-                         **kwargs)
-        self.cft_pval = cft_pval
-        self.z_flag = z_flag
-
-        # voxel-wise stats (same as VBA)
-        self.stat = self.get_stat_perm(exp, n_perm=n_perm_fwer, children=None)
-
-        # z-score voxel-wise using the permutation null
-        if self.z_flag:
-            self.stat = self.z_score_stat(self.stat)
-
-        # CFT from empirical null: pool all permutation stats
-        null_pool = self.stat[1:, :].ravel()
-        self.cft = np.quantile(null_pool, 1 - self.cft_pval)
-
-        # cluster-extent FWER
-        self.pval = self._get_pval_cet(self.stat, exp.mask_idx, self.cft)
-
-        # discover effects
-        mask = np.zeros(exp.mask_idx.shape, dtype=bool)
-        mask[exp.mask_idx > -1] = self.pval <= alpha_fwer
-        self.effect_list = AnalysisVBA.discover_mask(mask=mask, exp=exp)
-
-    @staticmethod
-    def _get_pval_cet(stat, mask_idx, cft):
-        """FWER via permutation null of max cluster sizes.
-
-        For each permutation (and the observed data), thresholds the stat
-        map at cft, labels connected components, and records the max
-        cluster size.  The observed clusters are then compared to the
-        sorted null of max cluster sizes.
-
-        Args:
-            stat: (n_perm+1, num_vox) stats (row 0 = observed)
-            mask_idx: voxel index array (2D or 3D, -1 outside)
-            cft: cluster-forming threshold (in stat units)
-
-        Returns:
-            pval: (num_vox,) p-value per voxel (cluster members share p)
-        """
-        n_rows, num_vox = stat.shape
-        vox_mask = mask_idx > -1
-
-        max_sizes = np.zeros(n_rows)
-        obs_labels = None
-        obs_sizes = None
-
-        for i in range(n_rows):
-            vol = np.zeros(mask_idx.shape)
-            vol[vox_mask] = stat[i, :]
-            labeled, n_cl = label(vol >= cft)  # default face-connectivity
-            if n_cl == 0:
-                if i == 0:
-                    obs_labels, obs_sizes = labeled, np.array([])
-                continue
-            sizes = np.bincount(labeled.ravel())[1:]  # skip background
-            max_sizes[i] = sizes.max()
-            if i == 0:
-                obs_labels, obs_sizes = labeled, sizes
-
-        null_sorted = np.sort(max_sizes[1:])
-        n_perm = len(null_sorted)
-
-        pval = np.ones(num_vox)
-        if len(obs_sizes) > 0:
-            obs_flat = obs_labels[vox_mask]
-            for cid in range(1, len(obs_sizes) + 1):
-                p = max(1 - bisect_left(null_sorted, obs_sizes[cid - 1]) / n_perm,
-                        1 / n_perm)
-                pval[obs_flat == cid] = p
-
-        return pval
 
 
 class AnalysisGLOW(Analysis):
@@ -569,6 +220,20 @@ class AnalysisGLOW(Analysis):
         if _cleanup_dir:
             shutil.rmtree(perm_dir, ignore_errors=True)
 
+    @classmethod
+    def from_precomputed(cls, *, exp, get_stat, adj_model=None, adj_beta=None, verbose=False):
+        """Construct a shell for finalization without running full __init__.
+
+        The caller should then invoke _finalize_analysis() to compute p-values.
+        """
+        obj = cls.__new__(cls)
+        obj.exp = exp if isinstance(exp, ExperimentScaled) else ExperimentScaled.from_exp(exp)
+        obj.get_stat = get_stat
+        obj.adj_model = adj_model
+        obj.adj_beta = adj_beta
+        obj.verbose = verbose
+        return obj
+
     def _process_permutation(self, exp, perm_idx):
         """Run one permutation: cluster, compute stats and sizes."""
         _exp = exp.permute(perm_idx)
@@ -597,8 +262,7 @@ class AnalysisGLOW(Analysis):
         Returns:
             dict with keys ``perm_idx``, ``children``, ``stat``, ``size``
         """
-        ana = object.__new__(cls)
-        ana.get_stat = get_stat
+        ana = cls.from_precomputed(exp=exp, get_stat=get_stat)
         return ana._process_permutation(exp, perm_idx)
 
     # models that fit in log(stat) space and need exp() to predict

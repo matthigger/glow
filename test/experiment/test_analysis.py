@@ -491,3 +491,54 @@ class TestStreamingFidelity:
 
         import shutil
         shutil.rmtree(perm_dir, ignore_errors=True)
+
+
+class TestFromPrecomputed:
+    """Test factory classmethods for constructing analysis from pre-computed data."""
+
+    exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=100, seed=0)
+    exp_eff, effect = exp.impose_effect(seed=0,
+                                         extenter=ExtenterSphere(radius=2),
+                                         effect_llr=0.5)
+
+    def test_vba_from_precomputed(self):
+        from glow.experiment.mancova import get_wilks
+        ana = AnalysisVBA(self.exp_eff, n_perm_fwer=25, alpha_fwer=.5,
+                          get_stat=get_wilks)
+        ana2 = AnalysisVBA.from_precomputed(
+            exp=self.exp_eff, get_stat=get_wilks,
+            stat=ana.stat, alpha_fwer=.5)
+        np.testing.assert_array_equal(ana2.pval, ana.pval)
+        assert len(ana2.effect_list) == len(ana.effect_list)
+
+    def test_cet_from_precomputed(self):
+        from glow.experiment.mancova import get_wilks
+        ana = AnalysisCET(self.exp_eff, n_perm_fwer=25, alpha_fwer=.5,
+                          cft_pval=0.01, get_stat=get_wilks)
+        ana2 = AnalysisCET.from_precomputed(
+            exp=self.exp_eff, get_stat=get_wilks,
+            stat=ana.stat, cft=ana.cft, cft_pval=ana.cft_pval,
+            alpha_fwer=.5)
+        np.testing.assert_array_equal(ana2.pval, ana.pval)
+
+    def test_glow_from_precomputed_has_attrs(self):
+        from glow.experiment.mancova import get_llr
+        ana = AnalysisGLOW.from_precomputed(
+            exp=self.exp_eff, get_stat=get_llr,
+            adj_model='power_law', adj_beta=np.array([1.0, 0.5]),
+            verbose=True)
+        assert hasattr(ana, 'exp')
+        assert ana.get_stat is get_llr
+        assert ana.adj_model == 'power_law'
+        np.testing.assert_array_equal(ana.adj_beta, np.array([1.0, 0.5]))
+        assert ana.verbose is True
+
+    def test_discover_mask_on_base(self):
+        """Verify Analysis.discover_mask works (it was moved from AnalysisVBA)."""
+        mask = np.zeros((5, 5), dtype=bool)
+        mask[1:4, 1:4] = True
+
+        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=10, seed=0)
+        effects = Analysis.discover_mask(mask=mask, exp=exp)
+        assert len(effects) == 1
+        np.testing.assert_array_equal(effects[0].mask, mask)
