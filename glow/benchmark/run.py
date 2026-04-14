@@ -3,13 +3,12 @@ import json
 import pathlib
 import time
 import traceback
-from uuid import uuid4
 
 import cloudpickle as pickle
 import numpy as np
 
 import glow
-from glow.benchmark.file import OUT, ERROR
+from glow.benchmark.file import OUT, ERROR, short_uuid
 
 
 def _jsonable(v):
@@ -32,6 +31,17 @@ def _merge_iter_kw(d, iter_kw):
             d[k] = _jsonable(v)
 
 
+def _write_result(config, d, *, subfolder=OUT):
+    """Generate UUID, write result dict as JSON. Returns the UUID string."""
+    uuid_str = short_uuid()
+    d['uuid'] = uuid_str
+    file_out = config.folder / subfolder / f'{uuid_str}_result.json'
+    file_out.parent.mkdir(exist_ok=True, parents=True)
+    with open(file_out, 'w') as f:
+        json.dump(d, f, sort_keys=True, indent=4)
+    return uuid_str
+
+
 def run_segment(config, **iter_kw):
     """run Ward's clustering and score against the imposed effect."""
     exp, effect = config.get_exp_eff(**iter_kw)
@@ -47,23 +57,18 @@ def run_segment(config, **iter_kw):
                                                          children=children)
         idx = np.argmax(dice)
 
-        uuid = str(uuid4())[:8]
-        file_out = config.folder / OUT / f'{uuid}_result.json'
         d = {'effect_llr': effect.effect_llr,
              'seed': int(effect.seed),
              'dice': dice[idx],
              'label': mode,
              'sens': sens[idx],
              'spec': spec[idx],
-             'uuid': uuid,
              'vox_total': int(exp.y.shape[2]),
              'vox_effect': int(effect.mask.sum()),
              'time_sec': total_time_sec,
              'config_hash': config._config_hash()}
         _merge_iter_kw(d, iter_kw)
-        file_out.parent.mkdir(exist_ok=True, parents=True)
-        with open(file_out, 'w') as f:
-            json.dump(d, f, sort_keys=True, indent=4)
+        _write_result(config, d)
 
 
 def _score_and_emit(ana, effect, config, label, total_time_sec, iter_kw):
@@ -94,8 +99,6 @@ def _score_and_emit(ana, effect, config, label, total_time_sec, iter_kw):
 
     min_pval = float(np.nanmin(ana.pval)) if hasattr(ana, 'pval') else None
 
-    uuid_str = str(uuid4())[:8]
-    file_out = config.folder / OUT / f'{uuid_str}_result.json'
     d = {'effect_llr': effect.effect_llr,
          'seed': int(effect.seed),
          'stat': ana.get_stat.__name__.replace('get_', ''),
@@ -106,15 +109,12 @@ def _score_and_emit(ana, effect, config, label, total_time_sec, iter_kw):
          'spec': spec,
          'pct_max_dice': pct_max_dice,
          'min_pval': min_pval,
-         'uuid': uuid_str,
          'vox_total': int(exp.y.shape[2]),
          'vox_effect': int(effect.mask.sum()),
          'time_sec': total_time_sec,
          'config_hash': config._config_hash()}
     _merge_iter_kw(d, iter_kw)
-    file_out.parent.mkdir(exist_ok=True, parents=True)
-    with open(file_out, 'w') as f:
-        json.dump(d, f, sort_keys=True, indent=4)
+    uuid_str = _write_result(config, d)
 
     if config.detail_save:
         file_out = config.folder / OUT / f'{uuid_str}_detail.p.gz'
@@ -139,11 +139,7 @@ def run_ana(config, **iter_kw):
                      'seed': int(effect.seed)}
                 print(f'error: {d}')
 
-                uuid_str = str(uuid4())[:8]
-                file_out = config.folder / ERROR / f'{uuid_str}_result.json'
-                file_out.parent.mkdir(exist_ok=True, parents=True)
-                with open(file_out, 'w') as f:
-                    json.dump(d, f, sort_keys=True, indent=4)
+                _write_result(config, d, subfolder=ERROR)
                 continue
         else:
             ana = Ana(exp=exp, **ana_kw)
@@ -196,8 +192,6 @@ def run_prune_compare(config, **iter_kw):
         dice, sens, spec = glow.mask.get_score(mask_pred=mask_pred,
                                                mask_target=effect.mask,
                                                mask_active=mask_active)
-        uuid = str(uuid4())[:8]
-        file_out = config.folder / OUT / f'{uuid}_result.json'
         d = {'effect_llr': effect.effect_llr,
              'seed': int(effect.seed),
              'stat': ana.get_stat.__name__.replace('get_', ''),
@@ -206,7 +200,6 @@ def run_prune_compare(config, **iter_kw):
              'dice': dice,
              'sens': sens,
              'spec': spec,
-             'uuid': uuid,
              'vox_total': int(ana.exp.y.shape[2]),
              'vox_effect': int(effect.mask.sum()),
              'n_sig': len(sig),
@@ -214,9 +207,7 @@ def run_prune_compare(config, **iter_kw):
              'time_sec': total_time_sec,
              'config_hash': config._config_hash()}
         _merge_iter_kw(d, iter_kw)
-        file_out.parent.mkdir(exist_ok=True, parents=True)
-        with open(file_out, 'w') as f:
-            json.dump(d, f, sort_keys=True, indent=4)
+        _write_result(config, d)
 
 
 def run_mancova_glow(config, **iter_kw):
@@ -227,7 +218,8 @@ def run_mancova_glow(config, **iter_kw):
     p-values and pruning are computed independently per stat.  Pruning
     always uses LLR regardless of the test statistic.
     """
-    from glow.experiment.analysis import Analysis, AnalysisGLOW, get_best_model
+    from glow.experiment.analysis import (
+        Analysis, AnalysisGLOW, get_best_model, _sanitize_adjusted_stat)
     from glow.experiment.cluster import cluster
     from glow.experiment.mancova import (
         stat_dict, stat_dict_inv, get_llr)
@@ -285,7 +277,7 @@ def run_mancova_glow(config, **iter_kw):
         active = size >= min_size
         for fn in stat_fns:
             adj = multi[fn].ravel() - mu_fns[fn](size)
-            adj = np.nan_to_num(adj, nan=0.0, posinf=0.0, neginf=-30.0)
+            adj = _sanitize_adjusted_stat(adj)
             stat_max[fn].append(
                 float(np.nanmax(adj[active])) if active.any()
                 else float('-inf'))
@@ -305,12 +297,9 @@ def run_mancova_glow(config, **iter_kw):
     for fn in stat_fns:
         name = stat_dict_inv[fn]
 
-        ana = object.__new__(AnalysisGLOW)
-        ana.get_stat = fn
-        ana.verbose = False
-        ana.exp = exp
-        ana.adj_model = models[fn]
-        ana.adj_beta = betas[fn]
+        ana = AnalysisGLOW.from_precomputed(
+            exp=exp, get_stat=fn,
+            adj_model=models[fn], adj_beta=betas[fn])
 
         ana._finalize_analysis(
             exp, n_perm_fwer,
@@ -323,6 +312,15 @@ def run_mancova_glow(config, **iter_kw):
                         f'GLOW-{name}', total_time, iter_kw)
 
 
+def _run_variant(config, effect, exp, fn, name, stat, alpha_fwer,
+                 walk_time, iter_kw, variant_start, AnalysisCls, **factory_kw):
+    """Build an analysis variant via factory and emit its score."""
+    ana = AnalysisCls.from_precomputed(
+        exp=exp, get_stat=fn, stat=stat, alpha_fwer=alpha_fwer, **factory_kw)
+    _score_and_emit(ana, effect, config, name,
+                    walk_time + (time.time() - variant_start), iter_kw)
+
+
 def run_mancova_vba(config, **iter_kw):
     """Run VBA, VBA-TFCE, and CET with all 5 MANCOVA stats.
 
@@ -330,7 +328,8 @@ def run_mancova_vba(config, **iter_kw):
     loops over variants: 5 stats x {raw, z} x {VBA, VBA-TFCE} + CET.
     The permutation walk is the expensive step; TFCE/CET/p-values are cheap.
     """
-    from glow.experiment.analysis import Analysis, AnalysisVBA, AnalysisCET
+    from glow.experiment.analysis import (
+        Analysis, AnalysisVBA, AnalysisCET, DEFAULT_CET_CFT_PVAL)
     from glow.experiment.mancova import (
         stat_dict, stat_dict_inv)
 
@@ -359,44 +358,19 @@ def run_mancova_vba(config, **iter_kw):
 
             suffix = '-z' if z_flag else ''
 
-            # plain VBA (no TFCE)
-            pval_vba = Analysis.get_pval(stat)
-            mask_vba = np.zeros(exp.mask_idx.shape, dtype=bool)
-            mask_vba[exp.mask_idx > -1] = pval_vba <= alpha_fwer
-
-            ana_vba = object.__new__(AnalysisVBA)
-            ana_vba.get_stat = fn
-            ana_vba.exp = exp
-            ana_vba.stat = stat
-            ana_vba.pval = pval_vba
-            ana_vba.effect_list = AnalysisVBA.discover_mask(
-                mask=mask_vba, exp=exp)
-            _score_and_emit(ana_vba, effect, config,
-                            f'VBA-{name}{suffix}',
-                            walk_time + (time.time() - variant_start),
-                            iter_kw)
+            # VBA
+            _run_variant(config, effect, exp, fn, f'VBA-{name}{suffix}',
+                         stat, alpha_fwer, walk_time, iter_kw, variant_start,
+                         AnalysisVBA)
 
             # VBA-TFCE
-            stat_tfce = AnalysisVBA.apply_tfce(
-                stat=stat, mask_idx=exp.mask_idx)
-            pval_tfce = Analysis.get_pval(stat_tfce)
-            mask_tfce = np.zeros(exp.mask_idx.shape, dtype=bool)
-            mask_tfce[exp.mask_idx > -1] = pval_tfce <= alpha_fwer
-
-            ana_tfce = object.__new__(AnalysisVBA)
-            ana_tfce.get_stat = fn
-            ana_tfce.exp = exp
-            ana_tfce.stat = stat_tfce
-            ana_tfce.pval = pval_tfce
-            ana_tfce.effect_list = AnalysisVBA.discover_mask(
-                mask=mask_tfce, exp=exp)
-            _score_and_emit(ana_tfce, effect, config,
-                            f'VBA-TFCE-{name}{suffix}',
-                            walk_time + (time.time() - variant_start),
-                            iter_kw)
+            stat_tfce = AnalysisVBA.apply_tfce(stat=stat, mask_idx=exp.mask_idx)
+            _run_variant(config, effect, exp, fn, f'VBA-TFCE-{name}{suffix}',
+                         stat_tfce, alpha_fwer, walk_time, iter_kw, variant_start,
+                         AnalysisVBA)
 
     # CET variants (fixed cft_pval, sweep stats x {raw, z})
-    cft_pval = 0.0001
+    cft_pval = DEFAULT_CET_CFT_PVAL
     for fn in stat_fns:
         name = stat_dict_inv[fn]
 
@@ -413,25 +387,9 @@ def run_mancova_vba(config, **iter_kw):
             null_pool = stat[1:, :].ravel()
             cft = np.quantile(null_pool, 1 - cft_pval)
 
-            pval_cet = AnalysisCET._get_pval_cet(stat, exp.mask_idx, cft)
-            mask_cet = np.zeros(exp.mask_idx.shape, dtype=bool)
-            mask_cet[exp.mask_idx > -1] = pval_cet <= alpha_fwer
-
-            ana_cet = object.__new__(AnalysisCET)
-            ana_cet.get_stat = fn
-            ana_cet.exp = exp
-            ana_cet.stat = stat
-            ana_cet.pval = pval_cet
-            ana_cet.cft_pval = cft_pval
-            ana_cet.cft = cft
-            ana_cet.z_flag = z_flag
-            ana_cet.effect_list = AnalysisVBA.discover_mask(
-                mask=mask_cet, exp=exp)
-
-            _score_and_emit(ana_cet, effect, config,
-                            f'CET-{name}{suffix}',
-                            walk_time + (time.time() - variant_start),
-                            iter_kw)
+            _run_variant(config, effect, exp, fn, f'CET-{name}{suffix}',
+                         stat, alpha_fwer, walk_time, iter_kw, variant_start,
+                         AnalysisCET, cft=cft, cft_pval=cft_pval, z_flag=z_flag)
 
 
 if __name__ == '__main__':

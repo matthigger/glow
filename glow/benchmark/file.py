@@ -1,11 +1,17 @@
 import json
 import pathlib
+from uuid import uuid4
 
 import pandas as pd
 from platformdirs import user_data_dir
 
 OUT = 'out'
 ERROR = 'error'
+
+
+def short_uuid():
+    """Return an 8-character hex UUID string."""
+    return str(uuid4())[:8]
 
 
 def get_path_result():
