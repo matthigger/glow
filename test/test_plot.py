@@ -6,6 +6,7 @@ from pprint import pformat
 from glow import __file__ as glow_file
 from glow.experiment import *
 from glow.experiment.analysis import *
+from glow.experiment.cluster import cluster
 from glow.plot import image_iter, make_gif
 
 folder_glow = pathlib.Path(glow_file).resolve().parents[1]
