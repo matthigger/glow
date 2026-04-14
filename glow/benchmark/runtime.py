@@ -528,7 +528,7 @@ def _run_profile_local(configs, n_jobs=-1):
         config.save_config(config.folder / 'config.yaml')
         kwargs_list = list(config.iter_kwargs())
         uncached = config._filter_uncached(kwargs_list, verbose=False)
-        for _, kwargs in uncached:
+        for _, kwargs, _missing in uncached:
             to_run.append((config, kwargs))
         # Clear exp_orig to reduce pickle size for multiprocessing;
         # workers recreate it from WGN parameters.

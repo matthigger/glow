@@ -265,23 +265,21 @@ class Config:
             from glow.analysis.mancova import stat_dict
             labels = set()
             for name in stat_dict:
-                for prefix in ('VBA', 'VBA-TFCE'):
+                for prefix in ('VBA', 'VBA-TFCE', 'CET'):
                     for suffix in ('', '-z'):
                         labels.add(f'{prefix}-{name}{suffix}')
-                labels.add(f'CET-{name}')
             return labels
         return set()
 
-    def _is_experiment_cached(self, kwargs, df, expected_labels, config_hash):
-        """check if all expected labels already have results for these kwargs."""
-        if df.empty or not expected_labels:
-            return False
+    def _cached_labels(self, kwargs, df, config_hash):
+        """return the set of labels already cached for these kwargs."""
+        if df.empty:
+            return set()
         mask = pd.Series(True, index=df.index)
-        # match on config_hash
         if 'config_hash' in df.columns:
             mask &= df['config_hash'] == config_hash
         else:
-            return False  # no hash column means legacy data
+            return set()
         for key, val in kwargs.items():
             if key not in df.columns:
                 continue
@@ -289,11 +287,23 @@ class Config:
                 mask &= df[key].round(14) == round(float(val), 14)
             else:
                 mask &= df[key] == val
-        cached_labels = set(df.loc[mask, 'label'].unique())
-        return expected_labels.issubset(cached_labels)
+        return set(df.loc[mask, 'label'].unique())
+
+    def _is_experiment_cached(self, kwargs, df, expected_labels, config_hash):
+        """check if all expected labels already have results for these kwargs."""
+        if not expected_labels:
+            return False
+        return expected_labels.issubset(
+            self._cached_labels(kwargs, df, config_hash))
 
     def _filter_uncached(self, kwargs_list, verbose=True):
-        """return list of (exp_idx, kwargs) for experiments not yet cached."""
+        """return list of (exp_idx, kwargs, missing_labels) for experiments
+        that have at least one missing label.
+
+        Each entry is (exp_idx, kwargs, missing_labels) where missing_labels
+        is the set of labels still needed.  Fully cached experiments are
+        omitted entirely.
+        """
         from glow.benchmark.file import load_update_all
         df, _folder, _n_new = load_update_all(
             self.label, verbose=False, result_dir=self.result_dir)
@@ -301,13 +311,26 @@ class Config:
         config_hash = self._config_hash()
 
         uncached = []
+        n_fully_cached = 0
+        n_partial = 0
         for exp_idx, kwargs in enumerate(kwargs_list):
-            if not self._is_experiment_cached(kwargs, df, expected, config_hash):
-                uncached.append((exp_idx, kwargs))
+            cached = self._cached_labels(kwargs, df, config_hash)
+            missing = expected - cached
+            if not missing:
+                n_fully_cached += 1
+            else:
+                if cached:
+                    n_partial += 1
+                uncached.append((exp_idx, kwargs, missing))
 
-        n_cached = len(kwargs_list) - len(uncached)
-        if verbose and n_cached > 0:
-            print(f'  {n_cached} cached, {len(uncached)} to run')
+        if verbose and (n_fully_cached > 0 or n_partial > 0):
+            parts = []
+            if n_fully_cached:
+                parts.append(f'{n_fully_cached} fully cached')
+            if n_partial:
+                parts.append(f'{n_partial} partially cached')
+            parts.append(f'{len(uncached)} to run')
+            print(f'  {", ".join(parts)}')
         return uncached
 
     def prep_folder(self):
@@ -369,9 +392,13 @@ class Config:
             print(f'  running {len(uncached)} experiments')
 
         n_jobs = self.n_jobs if self.n_jobs not in (0, 1) else 1
+        expected = self._get_expected_labels()
         Parallel(n_jobs=n_jobs, verbose=10)(
-            delayed(self.run_fnc)(config=self, **kwargs)
-            for _, kwargs in tqdm(uncached)
+            delayed(self.run_fnc)(
+                config=self,
+                _skip_labels=expected - missing,
+                **kwargs)
+            for _, kwargs, missing in tqdm(uncached)
         )
     
     def submit_cloud_jobs(self, verbose=True):
@@ -500,7 +527,7 @@ class Config:
         if verbose:
             print(f'  Submitting {len(uncached)} jobs to AWS Batch...')
 
-        indices = [idx for idx, _kw in uncached]
+        indices = [idx for idx, _kw, _missing in uncached]
         command_template = [
             '--s3-bucket', runner.config.s3_bucket,
             '--s3-prefix', runner.config.s3_prefix,

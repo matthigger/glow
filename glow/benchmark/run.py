@@ -122,11 +122,17 @@ def _score_and_emit(ana, effect, config, label, total_time_sec, iter_kw):
             pickle.dump((ana, effect), f)
 
 
-def run_ana(config, **iter_kw):
-    """run all analyses defined in config.ana_kwargs_dict."""
+def run_ana(config, _skip_labels=None, **iter_kw):
+    """run all analyses defined in config.ana_kwargs_dict.
+
+    Args:
+        _skip_labels: optional set of labels to skip (already cached).
+    """
     exp, effect = config.get_exp_eff(**iter_kw)
 
     for ana_label, (Ana, ana_kw) in config.ana_kwargs_dict.items():
+        if _skip_labels and ana_label in _skip_labels:
+            continue
         start = time.time()
         if config.error_save:
             try:

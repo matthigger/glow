@@ -275,7 +275,7 @@ class TestFilterUncached:
 
         assert len(uncached) == len(kwargs_list)
         # indices should be sequential
-        assert [idx for idx, _ in uncached] == list(range(len(kwargs_list)))
+        assert [idx for idx, _, _ in uncached] == list(range(len(kwargs_list)))
 
     def test_partial_cache(self, tmp_path):
         config = _make_config(ana_labels=('A', 'B'))
@@ -317,6 +317,30 @@ class TestFilterUncached:
             uncached = config._filter_uncached(kwargs_list, verbose=False)
 
         assert len(uncached) == 0
+
+    def test_partial_label_cache(self, tmp_path):
+        """Experiment with one label cached returns with missing={B}."""
+        config = _make_config(ana_labels=('A', 'B'))
+        config.n_seed = 1
+        config.effect_llr_all = np.array([0.05])
+        kwargs_list = list(config.iter_kwargs())
+        ch = config._config_hash()
+
+        # cache only label A for the single experiment
+        label_dir = tmp_path / config.label
+        label_dir.mkdir()
+        _make_result_json(label_dir, 'A', seed=0, effect_llr=0.05,
+                          extra={'config_hash': ch})
+        with patch('glow.benchmark.file.get_path_result', return_value=tmp_path):
+            load_update_all(config.label, verbose=False)
+
+        with patch('glow.benchmark.file.get_path_result', return_value=tmp_path):
+            uncached = config._filter_uncached(kwargs_list, verbose=False)
+
+        assert len(uncached) == 1
+        exp_idx, kwargs, missing = uncached[0]
+        assert exp_idx == 0
+        assert missing == {'B'}
 
     def test_stale_hash_not_cached(self, tmp_path):
         """Results with old config_hash are ignored."""
