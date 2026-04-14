@@ -1,4 +1,4 @@
-from glow.experiment.analysis._tfce import *
+from glow.analysis._tfce import *
 
 
 def test_apply_tfce():

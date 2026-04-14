@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from glow.experiment.exper import Experiment
-from glow.experiment.analysis import AnalysisGLOW
+from glow.analysis import AnalysisGLOW
 from glow.viewer.data import prep_df, get_feature_columns, compute_target_stats
 
 

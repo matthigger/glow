@@ -2,7 +2,7 @@ import warnings
 
 from glow.experiment import ExperimentImageOnly
 from glow.experiment.exper import NoBiasTermWarning
-from glow.experiment.mancova import *
+from glow.analysis.mancova import *
 from glow.graph import iter_topo
 
 

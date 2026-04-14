@@ -2,7 +2,7 @@ from collections import Counter
 
 import numpy as np
 
-from glow.experiment.mancova import decompose
+from glow.analysis.mancova import decompose
 
 
 def iter_size_ysum_yout(y, children=None):

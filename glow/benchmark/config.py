@@ -256,13 +256,13 @@ class Config:
         if self.run_fnc is run_ana:
             return set(self.ana_kwargs_dict.keys())
         if self.run_fnc is run_segment:
-            from glow.experiment.cluster import _MODES
+            from glow.analysis.cluster import _MODES
             return set(_MODES)
         if self.run_fnc is run_mancova_glow:
-            from glow.experiment.mancova import stat_dict
+            from glow.analysis.mancova import stat_dict
             return {f'GLOW-{name}' for name in stat_dict}
         if self.run_fnc is run_mancova_vba:
-            from glow.experiment.mancova import stat_dict
+            from glow.analysis.mancova import stat_dict
             labels = set()
             for name in stat_dict:
                 for prefix in ('VBA', 'VBA-TFCE'):

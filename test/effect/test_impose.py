@@ -1,8 +1,9 @@
 import numpy as np
 
 from glow.effect.impose import compute_offset
-from glow.experiment import Experiment, get_mancova
-from glow.experiment.mancova import get_llr, get_roughness
+from glow.experiment import Experiment
+from glow.analysis.mancova import get_mancova
+from glow.analysis.mancova import get_llr, get_roughness
 from glow.experiment.sigma import stretch_sigma
 
 

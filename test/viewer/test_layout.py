@@ -157,7 +157,7 @@ class TestLayout3DMultiFeature:
     @pytest.fixture(scope='class')
     def app_3d_multi(self):
         from glow.experiment.exper import Experiment, ExperimentImageOnly
-        from glow.experiment.analysis import AnalysisGLOW
+        from glow.analysis import AnalysisGLOW
         shape = (5, 5, 5)
         exp_img = ExperimentImageOnly.from_gauss(
             b=2, num_img=8, shape=shape, seed=99)

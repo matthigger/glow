@@ -33,7 +33,7 @@ from platformdirs import user_data_dir
 
 import glow
 from glow.aws.aws_batch import AWSBatchRunner, CloudConfig
-from glow.experiment.mancova import get_llr
+from glow.analysis.mancova import get_llr
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +140,7 @@ def estimate_timeout_minutes(config, safety_factor=2.5):
                 model, num_vox, b, num_img, n_perm))
 
     elif config.run_fnc is run_mancova_glow:
-        from glow.experiment.mancova import stat_dict
+        from glow.analysis.mancova import stat_dict
         _, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
         model = load_runtime_model('GLOW')
         if model is None:
@@ -151,7 +151,7 @@ def estimate_timeout_minutes(config, safety_factor=2.5):
             model, num_vox, b, num_img, n_perm)) * len(stat_dict)
 
     elif config.run_fnc is run_mancova_vba:
-        from glow.experiment.mancova import stat_dict
+        from glow.analysis.mancova import stat_dict
         _, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
         model = load_runtime_model('VBA-TFCE')
         if model is None:

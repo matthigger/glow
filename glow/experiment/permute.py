@@ -6,7 +6,7 @@ from collections import Counter
 
 import numpy as np
 
-from .mancova import decompose
+from glow.analysis.mancova import decompose
 
 
 def get_freed_lane(x, contrast, perm_idx):

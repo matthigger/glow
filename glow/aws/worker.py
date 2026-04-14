@@ -150,8 +150,8 @@ def print_memory_profile(config=None, exp=None, ana=None):
 
 def process_permutation(exp, ana_kwargs, perm_idx):
     """process a single permutation and return children + stat + size."""
-    from glow.experiment.cluster import cluster
-    from glow.experiment.mancova import get_llr
+    from glow.analysis.cluster import cluster
+    from glow.analysis.mancova import get_llr
 
     get_stat = ana_kwargs.get('get_stat', get_llr)
 
@@ -372,8 +372,8 @@ def run_synthesis_mode(args):
     """Collect permutation results from S3 and run _finalize_analysis."""
     import time
     import glow.graph
-    from glow.experiment.analysis import AnalysisGLOW
-    from glow.experiment.mancova import get_llr
+    from glow.analysis import AnalysisGLOW
+    from glow.analysis.mancova import get_llr
 
     print('=' * 60)
     print('GLOW Worker - SYNTHESIS MODE')
@@ -426,7 +426,7 @@ def run_synthesis_mode(args):
         time.sleep(30)
 
     # --- streaming synthesis: two passes over S3 results ---
-    from glow.experiment.analysis import get_best_model
+    from glow.analysis import get_best_model
 
     b, num_img, num_vox = exp.y.shape
     get_stat = ana_kwargs.get('get_stat', get_llr)

@@ -1,6 +1,6 @@
 from glow.effect import ExtenterSphere
 from glow.experiment import *
-from glow.experiment.analysis import *
+from glow.analysis import *
 from glow.graph import get_dice_sens_spec, iter_topo
 from glow.mask import get_mask_idx
 
@@ -54,7 +54,7 @@ class TestBigEffect:
         get_wilks returns 1 - Lambda, so larger = more evidence against H0,
         compatible with max-stat and TFCE without sign correction.
         """
-        from glow.experiment.mancova import get_wilks
+        from glow.analysis.mancova import get_wilks
         # non-TFCE
         ana = AnalysisVBA(TestBigEffect.exp, n_perm_fwer=25,
                           alpha_fwer=.5, tfce_flag=False,
@@ -107,7 +107,7 @@ class TestBigEffect:
     
     def test_analysis_get_stat(self):
         """test custom get_stat function"""
-        from glow.experiment.mancova import get_pillai
+        from glow.analysis.mancova import get_pillai
         
         # use pillai instead of default hotelling
         analysis = AnalysisGLOW(
@@ -502,7 +502,7 @@ class TestFromPrecomputed:
                                          effect_llr=0.5)
 
     def test_vba_from_precomputed(self):
-        from glow.experiment.mancova import get_wilks
+        from glow.analysis.mancova import get_wilks
         ana = AnalysisVBA(self.exp_eff, n_perm_fwer=25, alpha_fwer=.5,
                           get_stat=get_wilks)
         ana2 = AnalysisVBA.from_precomputed(
@@ -512,7 +512,7 @@ class TestFromPrecomputed:
         assert len(ana2.effect_list) == len(ana.effect_list)
 
     def test_cet_from_precomputed(self):
-        from glow.experiment.mancova import get_wilks
+        from glow.analysis.mancova import get_wilks
         ana = AnalysisCET(self.exp_eff, n_perm_fwer=25, alpha_fwer=.5,
                           cft_pval=0.01, get_stat=get_wilks)
         ana2 = AnalysisCET.from_precomputed(
@@ -522,7 +522,7 @@ class TestFromPrecomputed:
         np.testing.assert_array_equal(ana2.pval, ana.pval)
 
     def test_glow_from_precomputed_has_attrs(self):
-        from glow.experiment.mancova import get_llr
+        from glow.analysis.mancova import get_llr
         ana = AnalysisGLOW.from_precomputed(
             exp=self.exp_eff, get_stat=get_llr,
             adj_model='power_law', adj_beta=np.array([1.0, 0.5]),

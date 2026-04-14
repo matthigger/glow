@@ -1,5 +1,5 @@
 import numpy as np
-from glow.experiment.prune import prune_greedy, prune_dp, prune_greedy_full_adjust
+from glow.analysis.prune import prune_greedy, prune_dp, prune_greedy_full_adjust
 
 
 def _make_tree_8():

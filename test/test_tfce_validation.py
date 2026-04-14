@@ -12,7 +12,7 @@ from shutil import which
 import nibabel as nib
 import numpy as np
 import pytest
-from glow.experiment.analysis._tfce import apply_tfce_img
+from glow.analysis._tfce import apply_tfce_img
 
 # --- FSL detection (finds fslmaths on $PATH) ---
 

@@ -4,7 +4,7 @@ from sklearn.cluster import ward_tree
 from sklearn.feature_extraction.image import grid_to_graph
 
 from glow.mask import bbox_crop
-from glow.experiment.mancova import decompose
+from .mancova import decompose
 
 _MODES = ("ward's (all)", "ward's (q0, q1)", "ward's (q1)")
 

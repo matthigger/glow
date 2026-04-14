@@ -2,9 +2,9 @@ import pytest
 from scipy.ndimage import label
 
 from glow.experiment import *
-from glow.experiment.cluster import *
+from glow.analysis.cluster import *
 from glow.graph import get_dice_sens_spec
-from .make_test_image import folder_test_data
+from test.experiment.make_test_image import folder_test_data
 
 
 def test_cluster():

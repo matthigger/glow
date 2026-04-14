@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 import glow.graph
-from glow.experiment.mancova import decompose, get_llr, get_roughness
+from glow.analysis.mancova import decompose, get_llr, get_roughness
 
 
 def _get_adjusted_stat(ana_glow):
@@ -123,7 +123,7 @@ _MASK_FEATURES = {'dice', 'sens', 'spec', 'pct_max_dice',
 
 def _compute_r2(stat, size, model, beta):
     """Compute R² for a size-adjustment model on the unpermuted data."""
-    from glow.experiment.analysis import AnalysisGLOW
+    from glow.analysis import AnalysisGLOW
     valid = np.isfinite(stat) & (size > 0) & np.isfinite(size)
     if model in AnalysisGLOW._POSITIVE_STAT_MODELS:
         valid &= (stat > 0)
@@ -215,7 +215,7 @@ def compute_target_stats(ana_glow, mask_target):
     adj_model = getattr(ana_glow, 'adj_model', None)
     adj_beta = getattr(ana_glow, 'adj_beta', None)
     if adj_model is not None and adj_beta is not None and np.isfinite(llr):
-        from glow.experiment.analysis import AnalysisGLOW
+        from glow.analysis import AnalysisGLOW
         predicted = AnalysisGLOW.predict_null_mean(n_voxel, adj_model, adj_beta)
         stats['llr_adjusted'] = llr - predicted
     else:

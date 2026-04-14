@@ -30,9 +30,9 @@ import pandas as pd
 from tqdm import tqdm
 
 import glow.graph
-from glow.experiment.cluster import cluster
+from glow.analysis.cluster import cluster
 from glow.experiment.exper import Experiment, ExperimentScaled
-from glow.experiment.mancova import stat_dict
+from glow.analysis.mancova import stat_dict
 
 DEFAULT_STATS = list(stat_dict.keys())
 
@@ -435,7 +435,7 @@ def make_diagnostic_plots(df_dict, out_dir):
 
     # --- best model JSON (average R² across sources) ---
     import json
-    from glow.experiment.analysis import _BEST_MODELS_PATH
+    from glow.analysis import _BEST_MODELS_PATH
 
     best_by_stat = {}
     for stat_col in stat_names:

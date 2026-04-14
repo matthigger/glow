@@ -12,15 +12,15 @@ from tqdm import tqdm
 import glow.effect
 import glow.graph
 from ._base import Analysis
-from ..exper import ExperimentScaled
-from ..mancova import get_llr, stat_dict_inv
-from ..prune import prune_greedy
-from ..cluster import cluster
+from glow.experiment.exper import ExperimentScaled
+from .mancova import get_llr, stat_dict_inv
+from .prune import prune_greedy
+from .cluster import cluster
 
 
 _DEFAULT_MODEL = 'power_law'
 
-_BEST_MODELS_PATH = Path(__file__).parent.parent / 'best_models.json'
+_BEST_MODELS_PATH = Path(__file__).parent / 'best_models.json'
 
 
 def _load_best_models():

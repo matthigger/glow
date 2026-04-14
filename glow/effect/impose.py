@@ -3,7 +3,7 @@ import warnings
 import numpy as np
 from scipy.optimize import minimize
 
-from glow.experiment import decompose, get_llr
+from glow.analysis.mancova import decompose, get_llr
 
 
 def compute_offset(x, y, contrast, effect_llr, roughness=None):

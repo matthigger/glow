@@ -46,10 +46,10 @@ def run_segment(config, **iter_kw):
     """run Ward's clustering and score against the imposed effect."""
     exp, effect = config.get_exp_eff(**iter_kw)
 
-    from glow.experiment.cluster import _MODES
+    from glow.analysis.cluster import _MODES, cluster
     for mode in _MODES:
         start = time.time()
-        children = glow.experiment.cluster(exp, mode=mode)
+        children = cluster(exp, mode=mode)
         total_time_sec = time.time() - start
 
         dice, sens, spec = glow.graph.get_dice_sens_spec(mask=effect.mask,
@@ -155,8 +155,8 @@ def run_prune_compare(config, **iter_kw):
     Emits one JSON result per method with the same schema as run_ana,
     so the plotting pipeline works unchanged.
     """
-    from glow.experiment.prune import (prune_greedy, prune_dp,
-                                       prune_greedy_full_adjust)
+    from glow.analysis.prune import (prune_greedy, prune_dp,
+                                     prune_greedy_full_adjust)
 
     exp, effect = config.get_exp_eff(**iter_kw)
 
@@ -218,10 +218,10 @@ def run_mancova_glow(config, **iter_kw):
     p-values and pruning are computed independently per stat.  Pruning
     always uses LLR regardless of the test statistic.
     """
-    from glow.experiment.analysis import (
+    from glow.analysis import (
         Analysis, AnalysisGLOW, get_best_model, _sanitize_adjusted_stat)
-    from glow.experiment.cluster import cluster
-    from glow.experiment.mancova import (
+    from glow.analysis.cluster import cluster
+    from glow.analysis.mancova import (
         stat_dict, stat_dict_inv, get_llr)
 
     exp, effect = config.get_exp_eff(**iter_kw)
@@ -328,9 +328,9 @@ def run_mancova_vba(config, **iter_kw):
     loops over variants: 5 stats x {raw, z} x {VBA, VBA-TFCE} + CET.
     The permutation walk is the expensive step; TFCE/CET/p-values are cheap.
     """
-    from glow.experiment.analysis import (
+    from glow.analysis import (
         Analysis, AnalysisVBA, AnalysisCET, DEFAULT_CET_CFT_PVAL)
-    from glow.experiment.mancova import (
+    from glow.analysis.mancova import (
         stat_dict, stat_dict_inv)
 
     exp, effect = config.get_exp_eff(**iter_kw)

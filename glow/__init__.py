@@ -1,3 +1,4 @@
+import glow.analysis
 import glow.effect
 import glow.experiment
 import glow.graph

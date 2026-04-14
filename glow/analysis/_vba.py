@@ -23,7 +23,7 @@ class AnalysisVBA(Analysis):
             n_jobs_perm: Number of parallel jobs for permutations (1=serial, -1=all cores)
         """
         if get_stat is None:
-            from ..mancova import get_wilks
+            from .mancova import get_wilks
             get_stat = get_wilks
         super().__init__(exp, get_stat=get_stat, n_jobs_perm=n_jobs_perm,
                          **kwargs)
@@ -59,7 +59,7 @@ class AnalysisVBA(Analysis):
 
         Computes p-values and discovers effects from the given stat matrix.
         """
-        from ..exper import ExperimentScaled
+        from glow.experiment.exper import ExperimentScaled
         obj = cls.__new__(cls)
         obj.exp = exp if isinstance(exp, ExperimentScaled) else ExperimentScaled.from_exp(exp)
         obj.get_stat = get_stat

@@ -371,7 +371,7 @@ def _format_model_eq(model, beta, r2=None):
 
 def _add_model_overlay(fig, ana_glow, x_feat, y_feat):
     """Add size-regression model line when llr is on y vs n_voxel on x."""
-    from glow.experiment.analysis import AnalysisGLOW
+    from glow.analysis import AnalysisGLOW
 
     if x_feat != 'n_voxel' or y_feat != 'llr':
         return

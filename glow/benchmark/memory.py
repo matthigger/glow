@@ -102,7 +102,7 @@ def _worker_experiment(num_vox, b, num_img, n_perm, result_queue):
     config.error_save = False
     config.ana_kwargs_dict = {
         'GLOW': (
-            __import__('glow.experiment.analysis', fromlist=['AnalysisGLOW']).AnalysisGLOW,
+            __import__('glow.analysis', fromlist=['AnalysisGLOW']).AnalysisGLOW,
             dict(
                 n_perm_fwer=n_perm,
                 n_perm_fwer_size_adjust=min(25, n_perm // 4),

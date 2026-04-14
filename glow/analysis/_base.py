@@ -29,9 +29,9 @@ class Analysis:
 
     def __init__(self, exp, get_stat=None, n_jobs_perm=1):
         if get_stat is None:
-            from ..mancova import get_llr
+            from .mancova import get_llr
             get_stat = get_llr
-        from ..exper import ExperimentScaled
+        from glow.experiment.exper import ExperimentScaled
         if not isinstance(exp, ExperimentScaled):
             # pre-process
             exp = ExperimentScaled.from_exp(exp)

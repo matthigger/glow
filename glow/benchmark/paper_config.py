@@ -6,7 +6,7 @@ import glow
 from glow.benchmark.config import Config
 from glow.benchmark.run import (run_ana, run_mancova_glow, run_prune_compare,
                                 run_segment, run_mancova_vba)
-from glow.experiment.mancova import get_hotel_tr, get_llr, get_wilks
+from glow.analysis.mancova import get_hotel_tr, get_llr, get_wilks
 
 # ---------- common parameters ----------
 CROP_N_VOX = 25000

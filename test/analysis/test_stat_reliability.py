@@ -15,7 +15,7 @@ from scipy import stats as sp_stats
 
 from glow.effect import ExtenterSphere
 from glow.experiment import Experiment
-from glow.experiment.analysis import (
+from glow.analysis import (
     Analysis, AnalysisVBA, AnalysisCET, AnalysisGLOW,
 )
 
@@ -264,7 +264,7 @@ class TestPermutationExchangeability:
         for seed in range(K):
             exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                         num_img=30, seed=seed)
-            from glow.experiment.mancova import get_wilks
+            from glow.analysis.mancova import get_wilks
             ana = Analysis(exp, get_stat=get_wilks)
             stat = ana.get_stat_perm(exp, n_perm=n_perm)
 

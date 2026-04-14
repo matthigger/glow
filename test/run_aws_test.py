@@ -285,7 +285,7 @@ def run_batched_cloud_tests():
     import uuid
     import boto3
     from glow.aws.aws_batch import CloudConfig, AWSBatchRunner
-    from glow.experiment.mancova import get_llr
+    from glow.analysis.mancova import get_llr
 
     # ── check AWS prerequisites once ──────────────────────────────────
     try:

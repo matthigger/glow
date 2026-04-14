@@ -19,7 +19,7 @@ class AnalysisCET(Analysis):
                  cft_pval=0.001, z_flag=False, n_jobs_perm=1,
                  get_stat=None, **kwargs):
         if get_stat is None:
-            from ..mancova import get_wilks
+            from .mancova import get_wilks
             get_stat = get_wilks
         super().__init__(exp, get_stat=get_stat, n_jobs_perm=n_jobs_perm,
                          **kwargs)
@@ -51,7 +51,7 @@ class AnalysisCET(Analysis):
 
         Computes cluster-extent p-values and discovers effects.
         """
-        from ..exper import ExperimentScaled
+        from glow.experiment.exper import ExperimentScaled
         obj = cls.__new__(cls)
         obj.exp = exp if isinstance(exp, ExperimentScaled) else ExperimentScaled.from_exp(exp)
         obj.get_stat = get_stat

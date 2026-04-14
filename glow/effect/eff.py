@@ -1,6 +1,6 @@
 import numpy as np
 
-from glow.experiment import get_mancova
+from glow.analysis.mancova import get_mancova
 
 
 class Effect:

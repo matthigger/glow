@@ -21,8 +21,8 @@ except ImportError:
     pytest.skip("worker dependencies not available", allow_module_level=True)
 
 from glow.experiment import Experiment
-from glow.experiment.analysis import AnalysisGLOW
-from glow.experiment.mancova import get_llr
+from glow.analysis import AnalysisGLOW
+from glow.analysis.mancova import get_llr
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +127,7 @@ class TestProcessPermutationFidelity:
 
     def test_custom_get_stat(self):
         """Worker should respect get_stat from ana_kwargs."""
-        from glow.experiment.mancova import get_wilks
+        from glow.analysis.mancova import get_wilks
         r_wilks = process_permutation(
             self.exp, {'get_stat': get_wilks}, 0)
         r_llr = process_permutation(self.exp, {}, 0)

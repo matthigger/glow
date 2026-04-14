@@ -4,7 +4,7 @@ from itertools import product
 import pytest
 
 from glow.experiment import ExperimentImageOnly
-from glow.experiment import get_mancova
+from glow.analysis.mancova import get_mancova
 from glow.experiment.exper import NoBiasTermWarning
 from glow.graph import *
 

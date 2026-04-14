@@ -8,7 +8,7 @@ import pytest
 from glow.benchmark.file import OUT, ERROR
 from glow.benchmark.run import _write_result, _run_variant, _score_and_emit
 from glow.experiment.exper import Experiment
-from glow.experiment.analysis import AnalysisVBA, AnalysisCET, Analysis
+from glow.analysis import AnalysisVBA, AnalysisCET, Analysis
 
 
 def _make_config(tmp_path, detail_save=False):
@@ -94,7 +94,7 @@ class TestRunVariant:
         config = _make_config(tmp_path)
 
         # compute voxel-wise stat (VBA-style: no tree, just voxels)
-        from glow.experiment.mancova import get_wilks
+        from glow.analysis.mancova import get_wilks
         stat = Analysis.get_stat_perm_multi(
             exp, [get_wilks], n_perm=10, children=None)[get_wilks]
 
@@ -145,14 +145,14 @@ class TestRunVariant:
 
 class TestMagicConstants:
     def test_sanitize_adjusted_stat(self):
-        from glow.experiment.analysis import _sanitize_adjusted_stat
+        from glow.analysis import _sanitize_adjusted_stat
         arr = np.array([1.0, np.nan, np.inf, -np.inf, 2.0])
         result = _sanitize_adjusted_stat(arr)
         expected = np.array([1.0, 0.0, 0.0, -30.0, 2.0])
         np.testing.assert_array_equal(result, expected)
 
     def test_default_cet_cft_pval(self):
-        from glow.experiment.analysis import DEFAULT_CET_CFT_PVAL
+        from glow.analysis import DEFAULT_CET_CFT_PVAL
         assert DEFAULT_CET_CFT_PVAL == 0.0001
 
 

@@ -46,7 +46,7 @@ def _make_config(label='test_cache', ana_labels=('A', 'B')):
     """Build a tiny Config with mock analyses."""
     import glow
     ana_kwargs_dict = {
-        lbl: (glow.experiment.AnalysisGLOW, {
+        lbl: (glow.analysis.AnalysisGLOW, {
             'n_perm_fwer': 1,
             'min_size': 1, 'alpha_fwer': 0.05,
             'n_jobs_perm': 1,
@@ -178,7 +178,7 @@ class TestGetExpectedLabels:
 
     def test_run_segment_labels(self):
         config = Config(label='seg', run_fnc=run_segment, source='wgn')
-        from glow.experiment.cluster import _MODES
+        from glow.analysis.cluster import _MODES
         assert config._get_expected_labels() == set(_MODES)
 
     def test_unknown_run_fnc(self):

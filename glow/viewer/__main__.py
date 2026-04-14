@@ -169,7 +169,7 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
                     roughness=None):
     """Optionally impose an effect, run AnalysisGLOW, and launch the viewer."""
     from glow.effect.extent import ExtenterMinVar
-    from glow.experiment.analysis import AnalysisGLOW
+    from glow.analysis import AnalysisGLOW
     from glow.viewer import launch
 
     if effect_llr > 0:
