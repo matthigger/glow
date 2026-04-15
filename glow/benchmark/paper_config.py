@@ -56,6 +56,7 @@ ANALYSES = {
                      get_stat=get_wilks),
     'CET': dict(n_perm_fwer=N_PERM_TOTAL,
                 alpha_fwer=ALPHA_FWER,
+                z_flag=True,
                 get_stat=get_hotel_tr),
 }
 

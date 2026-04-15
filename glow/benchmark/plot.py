@@ -254,7 +254,12 @@ if __name__ == '__main__':
 
         # filter to current config (ignore stale results from old configs)
         if 'config_hash' in df.columns:
-            df = df[df['config_hash'] == config._config_hash()]
+            valid_hashes = {config._config_hash()}
+            if config.ana_kwargs_dict:
+                valid_hashes.update(
+                    config._config_hash_for_label(lab)
+                    for lab in config.ana_kwargs_dict)
+            df = df[df['config_hash'].isin(valid_hashes)]
             if df.empty:
                 print(f'skipping {label}: no data for current config')
                 continue

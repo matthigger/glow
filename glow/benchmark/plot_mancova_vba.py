@@ -418,22 +418,24 @@ def main():
             sub = best[(best['source'] == source) & (best['method'] == method)]
             if sub.empty:
                 continue
-            sub = sub.sort_values('win_rate', ascending=False)
+            sub = sub.sort_values('mean_dice', ascending=False)
             winner = sub.iloc[0]
             z_str = ' (z)' if winner['z_scored'] else ''
             print(f'  {method:<10s}  best={winner["stat"]}{z_str:<14s}  '
+                  f'dice={winner["mean_dice"]:.4f}  '
                   f'win={winner["win_rate"]:.1%}  '
                   f'tie={winner["tie_rate"]:.1%}  '
                   f'loss={winner["mean_loss"]:.4f}')
 
         # full table
         sub_all = best[best['source'] == source].sort_values(
-            ['method', 'win_rate'], ascending=[True, False])
-        print(f'\n| method     | stat         | z   | win_rate | tie_rate | mean_loss |')
-        print(f'|------------|--------------|-----|----------|----------|-----------|')
+            ['method', 'mean_dice'], ascending=[True, False])
+        print(f'\n| method     | stat         | z   | mean_dice | win_rate | tie_rate | mean_loss |')
+        print(f'|------------|--------------|-----|-----------|----------|----------|-----------|')
         for _, r in sub_all.iterrows():
             z = 'yes' if r['z_scored'] else 'no'
             print(f'| {r["method"]:<10s} | {r["stat"]:<12s} | {z:<3s} '
+                  f'| {r["mean_dice"]:.4f}    '
                   f'| {r["win_rate"]:.4f}   '
                   f'| {r["tie_rate"]:.4f}   '
                   f'| {r["mean_loss"]:.4f}    |')

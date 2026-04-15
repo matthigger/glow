@@ -66,7 +66,7 @@ def run_segment(config, **iter_kw):
              'vox_total': int(exp.y.shape[2]),
              'vox_effect': int(effect.mask.sum()),
              'time_sec': total_time_sec,
-             'config_hash': config._config_hash()}
+             'config_hash': config._config_hash_for_label(mode)}
         _merge_iter_kw(d, iter_kw)
         _write_result(config, d)
 
@@ -112,7 +112,7 @@ def _score_and_emit(ana, effect, config, label, total_time_sec, iter_kw):
          'vox_total': int(exp.y.shape[2]),
          'vox_effect': int(effect.mask.sum()),
          'time_sec': total_time_sec,
-         'config_hash': config._config_hash()}
+         'config_hash': config._config_hash_for_label(label)}
     _merge_iter_kw(d, iter_kw)
     uuid_str = _write_result(config, d)
 
@@ -211,7 +211,8 @@ def run_prune_compare(config, **iter_kw):
              'n_sig': len(sig),
              'n_selected': len(reg_out_list),
              'time_sec': total_time_sec,
-             'config_hash': config._config_hash()}
+             'config_hash': config._config_hash_for_label(
+                 next(iter(config.ana_kwargs_dict)))}
         _merge_iter_kw(d, iter_kw)
         _write_result(config, d)
 

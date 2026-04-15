@@ -107,35 +107,44 @@ class Config:
         self.folder = None
         self._shared_exp_s3_key = None  # S3 key for shared experiment data
 
-    def _config_hash(self):
-        """hash of all config parameters that affect results.
-
-        Combines: exp_orig data hash + effect params + analysis config +
-        run function.  Used for result-level cache invalidation.
-        """
+    def _base_hash_dict(self):
+        """Shared config parameters that affect all results."""
         if self.exp_orig is None:
             self.prep_exp_orig()
-
-        d = {
+        return {
             'exp_hash': self.exp_orig._hash(),
             'effect_perc': self.effect_perc,
             'radius': self.radius,
             'run_fnc': self.run_fnc.__name__ if self.run_fnc else None,
         }
 
+    @staticmethod
+    def _ana_entry(cls, kw):
+        _runtime_keys = {'perm_dir', 'n_jobs_perm'}
+        entry = {'class': cls.__name__}
+        for k, v in sorted(kw.items()):
+            if k in _runtime_keys:
+                continue
+            entry[k] = v.__name__ if callable(v) else v
+        return entry
+
+    def _config_hash(self):
+        """Global hash (legacy, used when no per-label hash exists)."""
+        d = self._base_hash_dict()
         if self.ana_kwargs_dict:
-            # keys injected at runtime (don't affect results)
-            _runtime_keys = {'perm_dir', 'n_jobs_perm'}
             ana = {}
             for label, (cls, kw) in self.ana_kwargs_dict.items():
-                entry = {'class': cls.__name__}
-                for k, v in sorted(kw.items()):
-                    if k in _runtime_keys:
-                        continue
-                    entry[k] = v.__name__ if callable(v) else v
-                ana[label] = entry
+                ana[label] = self._ana_entry(cls, kw)
             d['ana'] = ana
+        sig = json.dumps(d, sort_keys=True, default=str)
+        return hashlib.sha256(sig.encode()).hexdigest()[:12]
 
+    def _config_hash_for_label(self, label):
+        """Per-label hash: shared params + only this label's analysis config."""
+        d = self._base_hash_dict()
+        if self.ana_kwargs_dict and label in self.ana_kwargs_dict:
+            cls, kw = self.ana_kwargs_dict[label]
+            d['ana'] = {label: self._ana_entry(cls, kw)}
         sig = json.dumps(d, sort_keys=True, default=str)
         return hashlib.sha256(sig.encode()).hexdigest()[:12]
 
@@ -271,30 +280,45 @@ class Config:
             return labels
         return set()
 
-    def _cached_labels(self, kwargs, df, config_hash):
-        """return the set of labels already cached for these kwargs."""
+    def _cached_labels(self, kwargs, df, label_hashes):
+        """return the set of labels already cached for these kwargs.
+
+        Parameters
+        ----------
+        label_hashes : dict[str, str]
+            Mapping from label -> per-label config hash.
+        """
         if df.empty:
             return set()
-        mask = pd.Series(True, index=df.index)
-        if 'config_hash' in df.columns:
-            mask &= df['config_hash'] == config_hash
-        else:
+        if 'config_hash' not in df.columns:
             return set()
+
+        # build kwargs mask once
+        kw_mask = pd.Series(True, index=df.index)
         for key, val in kwargs.items():
             if key not in df.columns:
                 continue
             if isinstance(val, (float, np.floating)):
-                mask &= df[key].round(14) == round(float(val), 14)
+                kw_mask &= df[key].round(14) == round(float(val), 14)
             else:
-                mask &= df[key] == val
-        return set(df.loc[mask, 'label'].unique())
+                kw_mask &= df[key] == val
 
-    def _is_experiment_cached(self, kwargs, df, expected_labels, config_hash):
+        cached = set()
+        global_hash = self._config_hash()
+        for label, lhash in label_hashes.items():
+            label_mask = kw_mask & (df['label'] == label)
+            # match per-label hash or legacy global hash
+            hash_mask = (df['config_hash'] == lhash) | (df['config_hash'] == global_hash)
+            if (label_mask & hash_mask).any():
+                cached.add(label)
+        return cached
+
+    def _is_experiment_cached(self, kwargs, df, expected_labels, label_hashes):
         """check if all expected labels already have results for these kwargs."""
         if not expected_labels:
             return False
         return expected_labels.issubset(
-            self._cached_labels(kwargs, df, config_hash))
+            self._cached_labels(kwargs, df, label_hashes))
 
     def _filter_uncached(self, kwargs_list, verbose=True):
         """return list of (exp_idx, kwargs, missing_labels) for experiments
@@ -308,13 +332,14 @@ class Config:
         df, _folder, _n_new = load_update_all(
             self.label, verbose=False, result_dir=self.result_dir)
         expected = self._get_expected_labels()
-        config_hash = self._config_hash()
+        label_hashes = {lab: self._config_hash_for_label(lab)
+                        for lab in expected}
 
         uncached = []
         n_fully_cached = 0
         n_partial = 0
         for exp_idx, kwargs in enumerate(kwargs_list):
-            cached = self._cached_labels(kwargs, df, config_hash)
+            cached = self._cached_labels(kwargs, df, label_hashes)
             missing = expected - cached
             if not missing:
                 n_fully_cached += 1

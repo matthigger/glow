@@ -194,40 +194,46 @@ class TestIsExperimentCached:
     def setup_method(self):
         self.config = _make_config(ana_labels=('GLOW', 'VBA'))
         self.expected = {'GLOW', 'VBA'}
-        self.hash = self.config._config_hash()
+        self.label_hashes = {
+            lab: self.config._config_hash_for_label(lab)
+            for lab in self.expected
+        }
 
     def test_empty_df(self):
         assert not self.config._is_experiment_cached(
             {'seed': 0, 'effect_llr': 0.05}, pd.DataFrame(), self.expected,
-            self.hash)
+            self.label_hashes)
 
     def test_fully_cached(self):
         df = pd.DataFrame([
             {'seed': 0, 'effect_llr': 0.05, 'label': 'GLOW', 'dice': 0.5,
-             'config_hash': self.hash},
+             'config_hash': self.label_hashes['GLOW']},
             {'seed': 0, 'effect_llr': 0.05, 'label': 'VBA', 'dice': 0.6,
-             'config_hash': self.hash},
+             'config_hash': self.label_hashes['VBA']},
         ])
         assert self.config._is_experiment_cached(
-            {'seed': 0, 'effect_llr': 0.05}, df, self.expected, self.hash)
+            {'seed': 0, 'effect_llr': 0.05}, df, self.expected,
+            self.label_hashes)
 
     def test_partially_cached(self):
         df = pd.DataFrame([
             {'seed': 0, 'effect_llr': 0.05, 'label': 'GLOW', 'dice': 0.5,
-             'config_hash': self.hash},
+             'config_hash': self.label_hashes['GLOW']},
         ])
         assert not self.config._is_experiment_cached(
-            {'seed': 0, 'effect_llr': 0.05}, df, self.expected, self.hash)
+            {'seed': 0, 'effect_llr': 0.05}, df, self.expected,
+            self.label_hashes)
 
     def test_different_seed_not_cached(self):
         df = pd.DataFrame([
             {'seed': 1, 'effect_llr': 0.05, 'label': 'GLOW', 'dice': 0.5,
-             'config_hash': self.hash},
+             'config_hash': self.label_hashes['GLOW']},
             {'seed': 1, 'effect_llr': 0.05, 'label': 'VBA', 'dice': 0.6,
-             'config_hash': self.hash},
+             'config_hash': self.label_hashes['VBA']},
         ])
         assert not self.config._is_experiment_cached(
-            {'seed': 0, 'effect_llr': 0.05}, df, self.expected, self.hash)
+            {'seed': 0, 'effect_llr': 0.05}, df, self.expected,
+            self.label_hashes)
 
     def test_wrong_config_hash_not_cached(self):
         """Results with a different config_hash should not count as cached."""
@@ -238,7 +244,8 @@ class TestIsExperimentCached:
              'config_hash': 'wrong_hash_x'},
         ])
         assert not self.config._is_experiment_cached(
-            {'seed': 0, 'effect_llr': 0.05}, df, self.expected, self.hash)
+            {'seed': 0, 'effect_llr': 0.05}, df, self.expected,
+            self.label_hashes)
 
     def test_no_hash_column_not_cached(self):
         """Legacy data without config_hash column should not count as cached."""
@@ -247,18 +254,33 @@ class TestIsExperimentCached:
             {'seed': 0, 'effect_llr': 0.05, 'label': 'VBA', 'dice': 0.6},
         ])
         assert not self.config._is_experiment_cached(
-            {'seed': 0, 'effect_llr': 0.05}, df, self.expected, self.hash)
+            {'seed': 0, 'effect_llr': 0.05}, df, self.expected,
+            self.label_hashes)
 
     def test_float_rounding(self):
         """effect_llr floats should match after rounding to 14 decimals."""
         df = pd.DataFrame([
             {'seed': 0, 'effect_llr': 0.050000000000001, 'label': 'GLOW',
-             'dice': 0.5, 'config_hash': self.hash},
+             'dice': 0.5, 'config_hash': self.label_hashes['GLOW']},
             {'seed': 0, 'effect_llr': 0.050000000000001, 'label': 'VBA',
-             'dice': 0.6, 'config_hash': self.hash},
+             'dice': 0.6, 'config_hash': self.label_hashes['VBA']},
         ])
         assert self.config._is_experiment_cached(
-            {'seed': 0, 'effect_llr': 0.05}, df, self.expected, self.hash)
+            {'seed': 0, 'effect_llr': 0.05}, df, self.expected,
+            self.label_hashes)
+
+    def test_legacy_global_hash_still_cached(self):
+        """Results with the old global config_hash should still be recognized."""
+        global_hash = self.config._config_hash()
+        df = pd.DataFrame([
+            {'seed': 0, 'effect_llr': 0.05, 'label': 'GLOW', 'dice': 0.5,
+             'config_hash': global_hash},
+            {'seed': 0, 'effect_llr': 0.05, 'label': 'VBA', 'dice': 0.6,
+             'config_hash': global_hash},
+        ])
+        assert self.config._is_experiment_cached(
+            {'seed': 0, 'effect_llr': 0.05}, df, self.expected,
+            self.label_hashes)
 
 
 # ---------------------------------------------------------------------------
