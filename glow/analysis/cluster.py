@@ -8,6 +8,12 @@ from .mancova import decompose
 
 _MODES = ("ward's (all)", "ward's (q0, q1)", "ward's (q1)")
 
+MODE_LABELS = {
+    "ward's (all)": "Naive",
+    "ward's (q0, q1)": "GLM Error",
+    "ward's (q1)": "Focus",
+}
+
 
 def cluster(exp, mode="ward's (q1)"):
     """hierarchical segmentation via Ward's method (6-connectivity in 3d).

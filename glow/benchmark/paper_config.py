@@ -12,7 +12,7 @@ from glow.analysis.mancova import get_hotel_tr, get_llr, get_wilks
 CROP_N_VOX = 25000
 
 COMMON = dict(
-    n_seed=50,
+    n_seed=5,
     effect_llr_all=np.logspace(np.log10(0.003), np.log10(0.3), 11),
     effect_perc=0.1,
     crop_n_vox=CROP_N_VOX,

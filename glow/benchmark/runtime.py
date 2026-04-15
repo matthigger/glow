@@ -1,6 +1,6 @@
 """Cloud runtime benchmarks and timeout estimation.
 
-Two profiling modes (selected by ``--profile``):
+Three profiling modes (selected by ``--profile``):
 
   permutation (default)
       Per-permutation timing of AnalysisGLOW at varying HCP voxel counts.
@@ -14,16 +14,26 @@ Two profiling modes (selected by ``--profile``):
       Fits per-analysis-type Lasso regression models and saves them as
       JSON files used by :func:`estimate_timeout_minutes`.
 
+  spinup
+      Measures cold-start latency: submits a no-op job to AWS Batch
+      and records the time from SUBMITTED to RUNNING.  Warns if the
+      queue has active jobs (warm instances bias the measurement).
+
 Usage::
 
     python -m glow.benchmark.runtime                         # permutation (default)
     python -m glow.benchmark.runtime --profile experiment    # fit runtime models
+    python -m glow.benchmark.runtime --profile spinup        # cold-start timing
+    python -m glow.benchmark.runtime --profile spinup --n 5  # repeated measurements
 """
 
 import argparse
 import configparser
 import json
 import shutil
+import sys
+import time
+from datetime import datetime, timezone
 from itertools import product
 from pathlib import Path
 from uuid import uuid4
@@ -230,6 +240,25 @@ def prep_experiments(exp_orig, targets, effect_llr=0, effect_perc=0.2):
     return experiments
 
 
+def _get_spinup_times(batch_client, job_ids):
+    """Query describe_jobs and return per-job spinup seconds.
+
+    Spinup = startedAt - createdAt (both are epoch-ms from AWS).
+    Returns a list of floats (one per job that has both timestamps).
+    """
+    spinups = []
+    # describe_jobs accepts up to 100 IDs per call
+    for i in range(0, len(job_ids), 100):
+        chunk = job_ids[i:i + 100]
+        resp = batch_client.describe_jobs(jobs=chunk)
+        for job in resp.get('jobs', []):
+            created = job.get('createdAt')
+            started = job.get('startedAt')
+            if created is not None and started is not None:
+                spinups.append((started - created) / 1000.0)
+    return spinups
+
+
 def _save_experiment_result(runner, experiment_id, meta, out_dir, n_perm,
                             effect_llr=0, effect_perc=0):
     """Download final analysis for one experiment and write result JSON."""
@@ -255,6 +284,8 @@ def _save_experiment_result(runner, experiment_id, meta, out_dir, n_perm,
         'elapsed_sec': wall_sec,
         'elapsed_min': wall_sec / 60 if wall_sec is not None else None,
     }
+
+    # spinup times are added in a post-hoc pass (see main_permutation)
 
     uid = uuid4().hex[:8]
     with open(out_dir / f'{uid}_result.json', 'w') as f:
@@ -319,6 +350,7 @@ def main_permutation(args):
                             effect_llr=effect_llr, effect_perc=effect_perc)
 
     all_job_ids = []
+    exp_job_ids = {}  # experiment_id -> list of perm job IDs
     exp_meta = {}
     job_info_map = {}
 
@@ -334,6 +366,7 @@ def main_permutation(args):
         perm_ids = submission['job_ids']
         all_job_ids.extend(perm_ids)
         all_job_ids.append(synth_job_id)
+        exp_job_ids[experiment_id] = perm_ids
 
         meta = {
             'target_voxels': target_vox,
@@ -353,6 +386,31 @@ def main_permutation(args):
     print(f'\nTotal jobs: {len(all_job_ids)}')
 
     runner.monitor_jobs(all_job_ids, job_info_map=job_info_map)
+
+    # collect spinup times from AWS timestamps and patch into result JSONs
+    print('\nCollecting spinup times from AWS timestamps...')
+    # build experiment_id -> result file mapping (by matching num_voxels)
+    result_files = {
+        json.load(open(p))['num_voxels']: p
+        for p in out_dir.glob('*_result.json')
+    }
+
+    for experiment_id, perm_ids in exp_job_ids.items():
+        spinups = _get_spinup_times(runner.batch, perm_ids)
+        if not spinups:
+            continue
+        vox = exp_meta[experiment_id]['actual_voxels']
+        path = result_files.get(vox)
+        if path is None:
+            continue
+        with open(path) as f:
+            result = json.load(f)
+        result['spinup_sec'] = spinups
+        result['spinup_median_sec'] = float(np.median(spinups))
+        with open(path, 'w') as f:
+            json.dump(result, f, indent=4, sort_keys=True)
+        print(f'  {vox:>6,} voxels: median spinup {np.median(spinups):.1f}s '
+              f'(n={len(spinups)})')
 
     print(f'\nResults saved to: {out_dir}')
 
@@ -598,6 +656,142 @@ def main_experiment_profile(cloud=False, n_jobs=-1):
 
 
 # ---------------------------------------------------------------------------
+# spinup profiling
+# ---------------------------------------------------------------------------
+
+def _check_active_jobs(batch, job_queue):
+    """Return count of non-terminal jobs in the queue."""
+    active = 0
+    for status in ('SUBMITTED', 'PENDING', 'RUNNABLE', 'STARTING', 'RUNNING'):
+        response = batch.list_jobs(jobQueue=job_queue, jobStatus=status)
+        active += len(response.get('jobSummaryList', []))
+    return active
+
+
+def _measure_spinup(cloud_config, quiet=False):
+    """Submit a no-op job and return a dict of state transition times."""
+    import boto3
+
+    batch = boto3.client('batch', region_name=cloud_config.region)
+
+    # pass --help so the worker's argparser exits 0 immediately after
+    # image pull + container boot + Python startup + glow imports
+    response = batch.submit_job(
+        jobName='glow_spinup_probe',
+        jobQueue=cloud_config.job_queue,
+        jobDefinition=cloud_config.job_definition,
+        containerOverrides={'command': ['--help']},
+        retryStrategy={'attempts': 1},
+        timeout={'attemptDurationSeconds': 300},
+    )
+    job_id = response['jobId']
+    t_submit = time.monotonic()
+
+    if not quiet:
+        print(f'  job {job_id} submitted')
+
+    # poll until terminal state, recording first-seen times
+    seen = {}
+    while True:
+        resp = batch.describe_jobs(jobs=[job_id])
+        job = resp['jobs'][0]
+        status = job['status']
+
+        if status not in seen:
+            elapsed = time.monotonic() - t_submit
+            seen[status] = elapsed
+            if not quiet:
+                print(f'  {status:>10s}  +{elapsed:6.1f}s')
+
+        if status in ('SUCCEEDED', 'FAILED'):
+            break
+
+        time.sleep(2)
+
+    # extract AWS-side epoch timestamps
+    aws_times = {}
+    for key in ('createdAt', 'startedAt', 'stoppedAt'):
+        ms = job.get(key)
+        if ms is not None:
+            aws_times[key] = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+
+    result = {
+        'job_id': job_id,
+        'status': status,
+        'seen': seen,
+        'aws_times': aws_times,
+    }
+
+    # spinup = creation to RUNNING (AWS-side timestamps preferred)
+    if 'createdAt' in aws_times and 'startedAt' in aws_times:
+        spinup = (aws_times['startedAt'] - aws_times['createdAt']).total_seconds()
+        result['spinup_sec'] = spinup
+    elif 'RUNNING' in seen:
+        result['spinup_sec'] = seen['RUNNING']
+
+    return result
+
+
+def main_spinup(n=1, quiet=False):
+    """Measure cold-start spinup time for AWS Batch jobs."""
+    import boto3
+
+    cloud_config = load_cloud_config()
+    cloud_config.timeout_minutes = 5
+    cloud_config.retry_attempts = 1
+
+    batch = boto3.client('batch', region_name=cloud_config.region)
+
+    # warn if queue has active jobs (warm instances bias the measurement)
+    active = _check_active_jobs(batch, cloud_config.job_queue)
+    if active > 0:
+        print(f'WARNING: {active} active job(s) in queue '
+              f'"{cloud_config.job_queue}" — instances may be warm, '
+              f'spinup times will be artificially low', file=sys.stderr)
+        print(f'  Wait for queue to drain for a cold-start measurement.',
+              file=sys.stderr)
+
+    spinups = []
+    for i in range(n):
+        if n > 1 and not quiet:
+            print(f'\n--- measurement {i + 1}/{n} ---')
+        result = _measure_spinup(cloud_config, quiet=quiet)
+
+        if result['status'] == 'FAILED':
+            print(f'  job FAILED (job_id={result["job_id"]})', file=sys.stderr)
+            continue
+
+        sec = result.get('spinup_sec')
+        if sec is not None:
+            spinups.append(sec)
+            if not quiet:
+                print(f'  spinup: {sec:.1f}s')
+
+        # wait for queue to drain between measurements
+        if i < n - 1:
+            if not quiet:
+                print('  waiting for queue to drain...')
+            while _check_active_jobs(batch, cloud_config.job_queue) > 0:
+                time.sleep(10)
+
+    if not spinups:
+        print('no successful measurements', file=sys.stderr)
+        sys.exit(1)
+
+    if n > 1:
+        import statistics
+        print(f'\n=== {len(spinups)} measurements ===')
+        print(f'  mean:   {statistics.mean(spinups):.1f}s')
+        print(f'  median: {statistics.median(spinups):.1f}s')
+        print(f'  min:    {min(spinups):.1f}s')
+        print(f'  max:    {max(spinups):.1f}s')
+        if len(spinups) > 1:
+            print(f'  stdev:  {statistics.stdev(spinups):.1f}s')
+    else:
+        print(f'spinup: {spinups[0]:.1f}s')
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -607,7 +801,7 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
-        '--profile', choices=['permutation', 'experiment'],
+        '--profile', choices=['permutation', 'experiment', 'spinup'],
         default='permutation',
         help='Profile mode (default: permutation)',
     )
@@ -621,6 +815,10 @@ def parse_args():
     p.add_argument('--n-perm', type=int, default=100)
     p.add_argument('--effect-llr', type=float, default=0.1)
     p.add_argument('--effect-perc', type=float, default=0.2)
+    p.add_argument('--n', type=int, default=1,
+                   help='Number of spinup measurements (default: 1)')
+    p.add_argument('--quiet', action='store_true',
+                   help='Only print summary (spinup mode)')
     return p.parse_args()
 
 
@@ -628,6 +826,8 @@ def main():
     args = parse_args()
     if args.profile == 'experiment':
         main_experiment_profile(cloud=args.cloud, n_jobs=args.n_jobs)
+    elif args.profile == 'spinup':
+        main_spinup(n=args.n, quiet=args.quiet)
     else:
         main_permutation(args)
 

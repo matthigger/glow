@@ -149,6 +149,10 @@ class AWSBatchRunner:
                 # Add explicit index arg
                 if 'exp_idx' in info:
                     command.extend(['--exp-idx', str(info['exp_idx'])])
+                elif 'perm_indices' in info:
+                    command.extend([
+                        '--perm-indices',
+                        ','.join(str(x) for x in info['perm_indices'])])
                 elif 'perm_idx' in info:
                     command.extend(['--perm-idx', str(info['perm_idx'])])
 
@@ -374,17 +378,92 @@ class AWSBatchRunner:
         
         return completed
     
+    @staticmethod
+    def _fmt_duration(minutes):
+        """Format minutes into human-readable duration."""
+        if minutes < 60:
+            return f'{minutes:.1f} min'
+        if minutes < 1440:
+            return f'{minutes / 60:.1f} hr'
+        return f'{minutes / 1440:.1f} days'
+
+    @staticmethod
+    def estimate_batch_table(n_perm, perm_sec, overhead_sec=180,
+                             cost_per_vcpu_hr=0.02):
+        """Print a table of perms-per-job vs cost/time tradeoffs.
+
+        Args:
+            n_perm: total permutations to run
+            perm_sec: estimated seconds per permutation
+            overhead_sec: fixed per-job overhead — instance scheduling,
+                image pull, container start, data transfer (default 180s)
+            cost_per_vcpu_hr: cost per vCPU-hour (default $0.02)
+
+        Returns:
+            list of dicts with table rows
+        """
+        fixed_sec = overhead_sec
+
+        candidates = [1, 2, 5, 10, 25, 50]
+        # also include n_perm itself (single job) if not already covered
+        candidates = [c for c in candidates if c <= n_perm]
+        if not candidates or candidates[-1] < n_perm:
+            candidates.append(n_perm)
+
+        rows = []
+        for ppj in candidates:
+            n_jobs = -(-n_perm // ppj)  # ceil division
+            compute_sec = ppj * perm_sec
+            total_sec = compute_sec + fixed_sec
+            total_min = total_sec / 60
+            overhead_pct = fixed_sec / total_sec * 100
+            total_vcpu_hr = n_jobs * total_sec / 3600
+            cost = total_vcpu_hr * cost_per_vcpu_hr
+            rows.append({
+                'perms_per_job': ppj,
+                'n_jobs': n_jobs,
+                'wall_min': total_min,
+                'overhead_pct': overhead_pct,
+                'vcpu_hr': total_vcpu_hr,
+                'cost': cost,
+            })
+
+        fmt = AWSBatchRunner._fmt_duration
+        perm_str = fmt(perm_sec / 60)
+        fixed_str = fmt(fixed_sec / 60)
+
+        print(f'\n  ~{fixed_str} per-job overhead budgeted '
+              f'(instance scheduling, image pull, container start, '
+              f'data transfer)')
+        print(f'  Estimated compute: ~{perm_str}/perm, '
+              f'{n_perm} permutations total\n')
+
+        hdr = (f'  {"perms/job":>10s}  {"jobs":>6s}  {"total time":>10s}'
+               f'  {"overhead":>8s}  {"vCPU-hrs":>9s}  {"cost":>8s}')
+        sep = '  ' + '-' * 62
+        print(hdr)
+        print(sep)
+        for r in rows:
+            print(f'  {r["perms_per_job"]:>10d}  {r["n_jobs"]:>6d}'
+                  f'  {fmt(r["wall_min"]):>10s}'
+                  f'  {r["overhead_pct"]:>7.1f}%'
+                  f'  {r["vcpu_hr"]:>9.1f}'
+                  f'  ${r["cost"]:>7.2f}')
+        print(sep)
+        return rows
+
     def submit_jobs(self, experiment_id, n_perm, skip_completed=True,
-                    memory_mb=None):
+                    memory_mb=None, perms_per_job=1):
         """submit permutation jobs to AWS Batch.
-        
+
         Args:
             experiment_id: experiment identifier
             n_perm: number of permutations (0 to n_perm inclusive)
             skip_completed: skip permutations that already have results
             memory_mb: override memory per job (None = auto-estimate from
                        experiment dimensions, or job definition default)
-        
+            perms_per_job: number of permutations per job (>1 = batch mode)
+
         Returns:
             submission_info dict with job_ids and metadata
         """
@@ -397,24 +476,36 @@ class AWSBatchRunner:
         if skip_completed:
             completed = self.check_existing_results(experiment_id, n_perm)
             print(f'found {len(completed)} completed permutations, will skip')
-        
+
         # determine which permutations to run
         perm_indices = [i for i in range(n_perm + 1) if i not in completed]
-        n_jobs = len(perm_indices)
-        
-        if n_jobs == 0:
+
+        if len(perm_indices) == 0:
             print('all permutations already completed')
             return {'n_jobs': 0, 'job_ids': [], 'skipped': list(completed)}
-        
+
+        # batch permutations into jobs
+        if perms_per_job > 1:
+            batches = [perm_indices[i:i + perms_per_job]
+                       for i in range(0, len(perm_indices), perms_per_job)]
+            n_jobs = len(batches)
+            index_arg = '--perm-indices'
+            indices = batches
+        else:
+            n_jobs = len(perm_indices)
+            index_arg = '--perm-idx'
+            indices = perm_indices
+
         print(f'\n{"="*60}')
         print('AWS BATCH JOB SUBMISSION')
         print(f'{"="*60}')
         print(f'experiment: {experiment_id}')
-        print(f'jobs to submit: {n_jobs}')
+        print(f'permutations: {len(perm_indices)}'
+              f' ({perms_per_job} per job, {n_jobs} jobs)')
         print(f'skipped (completed): {len(completed)}')
         print(f'timeout: {self.config.timeout_minutes} min per job')
         print(f'{"="*60}\n')
-        
+
         # submit jobs via array job
         data_path = f's3://{self.config.s3_bucket}/{self.config.s3_prefix}/experiments/{experiment_id}/data.pkl'
 
@@ -425,12 +516,18 @@ class AWSBatchRunner:
             '--experiment-id', experiment_id,
         ]
 
+        # scale timeout for batch mode
+        timeout = None
+        if perms_per_job > 1:
+            timeout = self.config.timeout_minutes * perms_per_job
+
         array_info = self.submit_array_job(
             job_name=f'{experiment_id}_perm',
             command_template=command_template,
-            indices=perm_indices,
-            index_arg='--perm-idx',
+            indices=indices,
+            index_arg=index_arg,
             memory_mb=memory_mb,
+            timeout_minutes=timeout,
         )
         job_ids = array_info['child_job_ids']
 
@@ -439,12 +536,21 @@ class AWSBatchRunner:
         else:
             print(f'submitted {len(job_ids)} jobs')
 
+        # build job_info_map for monitor_jobs resubmit support
+        job_info_map = {}
+        for child_id, actual_idx in array_info['index_map'].items():
+            if isinstance(actual_idx, list):
+                job_info_map[child_id] = {'perm_indices': actual_idx}
+            else:
+                job_info_map[child_id] = {'perm_idx': actual_idx}
+
         return {
             'n_jobs': n_jobs,
             'job_ids': job_ids,
             'perm_indices': perm_indices,
             'skipped': list(completed),
             'index_map': array_info['index_map'],
+            'job_info_map': job_info_map,
         }
     
     def submit_synthesis_job(self, experiment_id, n_perm, memory_mb=None):
@@ -1338,7 +1444,13 @@ class AWSBatchRunner:
 
         # single index: fall back to regular submit (array size must be >= 2)
         if len(indices) == 1:
-            command = list(command_template) + [index_arg, str(indices[0])]
+            idx = indices[0]
+            if isinstance(idx, list):
+                # batch mode: comma-separated perm indices
+                command = list(command_template) + [
+                    index_arg, ','.join(str(x) for x in idx)]
+            else:
+                command = list(command_template) + [index_arg, str(idx)]
             overrides = {'command': command}
             if memory_mb is not None:
                 overrides['resourceRequirements'] = [

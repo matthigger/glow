@@ -128,17 +128,6 @@ class Config:
             entry[k] = v.__name__ if callable(v) else v
         return entry
 
-    def _config_hash(self):
-        """Global hash (legacy, used when no per-label hash exists)."""
-        d = self._base_hash_dict()
-        if self.ana_kwargs_dict:
-            ana = {}
-            for label, (cls, kw) in self.ana_kwargs_dict.items():
-                ana[label] = self._ana_entry(cls, kw)
-            d['ana'] = ana
-        sig = json.dumps(d, sort_keys=True, default=str)
-        return hashlib.sha256(sig.encode()).hexdigest()[:12]
-
     def _config_hash_for_label(self, label):
         """Per-label hash: shared params + only this label's analysis config."""
         d = self._base_hash_dict()
@@ -146,6 +135,20 @@ class Config:
             cls, kw = self.ana_kwargs_dict[label]
             d['ana'] = {label: self._ana_entry(cls, kw)}
         sig = json.dumps(d, sort_keys=True, default=str)
+        return hashlib.sha256(sig.encode()).hexdigest()[:12]
+
+    def _job_hash(self, labels=None):
+        """Combined hash for a set of labels (for job identification).
+
+        Hashes the sorted per-label hashes together. If labels is None,
+        uses all expected labels.
+        """
+        if labels is None:
+            labels = sorted(self._get_expected_labels())
+        else:
+            labels = sorted(labels)
+        per_label = [self._config_hash_for_label(lab) for lab in labels]
+        sig = json.dumps(per_label, sort_keys=True)
         return hashlib.sha256(sig.encode()).hexdigest()[:12]
 
     def prep_exp_orig(self, hcp_feats=None, wgn_b=None, wgn_num_img=None):
@@ -265,8 +268,8 @@ class Config:
         if self.run_fnc is run_ana:
             return set(self.ana_kwargs_dict.keys())
         if self.run_fnc is run_segment:
-            from glow.analysis.cluster import _MODES
-            return set(_MODES)
+            from glow.analysis.cluster import MODE_LABELS
+            return set(MODE_LABELS.values())
         if self.run_fnc is run_mancova_glow:
             from glow.analysis.mancova import stat_dict
             return {f'GLOW-{name}' for name in stat_dict}
@@ -304,11 +307,9 @@ class Config:
                 kw_mask &= df[key] == val
 
         cached = set()
-        global_hash = self._config_hash()
         for label, lhash in label_hashes.items():
             label_mask = kw_mask & (df['label'] == label)
-            # match per-label hash or legacy global hash
-            hash_mask = (df['config_hash'] == lhash) | (df['config_hash'] == global_hash)
+            hash_mask = df['config_hash'] == lhash
             if (label_mask & hash_mask).any():
                 cached.add(label)
         return cached

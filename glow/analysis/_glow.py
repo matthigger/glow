@@ -106,6 +106,7 @@ class AnalysisGLOW(Analysis):
                               cloud_config,
                               n_perm_fwer_size_adjust=n_perm_fwer_size_adjust,
                               size_adjust_model=size_adjust_model,
+                              perms_per_job=kwargs.pop('perms_per_job', None),
                               **kwargs)
             return
 
@@ -449,10 +450,30 @@ class AnalysisGLOW(Analysis):
             n_pruned = len(self.sig_reg_list) - n_disc
             print(f'  done: {n_disc} discovered, {n_pruned} pruned')
 
+    @staticmethod
+    def _estimate_perm_sec(exp):
+        """Estimate seconds per permutation from experiment dimensions.
+
+        Uses the runtime benchmark model if available, otherwise falls
+        back to a rough linear heuristic on num_vox.
+        """
+        b, num_img, num_vox = exp.y.shape
+        try:
+            from glow.benchmark.runtime import (
+                load_runtime_model, predict_runtime_sec)
+            model = load_runtime_model('GLOW')
+            if model is not None:
+                return predict_runtime_sec(model, num_vox, b, num_img, n_perm=1)
+        except (ImportError, FileNotFoundError):
+            pass
+        # fallback: ~0.3 ms per voxel (rough estimate from benchmarks)
+        return max(num_vox * 3e-4, 5.0)
+
     def _run_on_cloud(self, exp, n_perm_fwer,
                      alpha_fwer, min_size, verbose,
                      cloud_config, n_perm_fwer_size_adjust=25,
-                     size_adjust_model=None, **kwargs):
+                     size_adjust_model=None, perms_per_job=None,
+                     **kwargs):
         """Run full analysis on AWS Batch (permutations + synthesis).
 
         Submits N+1+n_perm_fwer_size_adjust permutation jobs, then a
@@ -478,6 +499,19 @@ class AnalysisGLOW(Analysis):
         ana_kwargs.update(kwargs)
 
         runner = AWSBatchRunner(cloud_config)
+        n_perm = n_perm_fwer + n_perm_fwer_size_adjust
+
+        # interactive batch-size selection when perms_per_job not specified
+        if perms_per_job is None:
+            perm_sec = self._estimate_perm_sec(exp)
+            AWSBatchRunner.estimate_batch_table(
+                n_perm + 1, perm_sec)
+            choice = input('\nperms_per_job (or "q" to cancel): ').strip()
+            if choice.lower() in ('q', 'quit', 'cancel'):
+                print('cancelled.')
+                return
+            perms_per_job = int(choice)
+            print()
 
         print('uploading experiment data...')
         runner.upload_experiment(exp, ana_kwargs, experiment_id)
@@ -485,23 +519,24 @@ class AnalysisGLOW(Analysis):
         print('submitting permutation jobs...')
         submission = runner.submit_jobs(
             experiment_id=experiment_id,
-            n_perm=n_perm_fwer + n_perm_fwer_size_adjust,
+            n_perm=n_perm,
             skip_completed=True,
+            perms_per_job=perms_per_job,
         )
 
         if submission.get('cancelled'):
             raise RuntimeError('job submission cancelled')
 
         perm_job_ids = submission['job_ids']
+        job_info_map = submission.get('job_info_map', {})
 
         print('submitting synthesis job...')
-        synth_job_id = runner.submit_synthesis_job(
-            experiment_id, n_perm_fwer + n_perm_fwer_size_adjust)
+        synth_job_id = runner.submit_synthesis_job(experiment_id, n_perm)
 
         all_job_ids = perm_job_ids + [synth_job_id]
 
         if verbose:
-            runner.monitor_jobs(all_job_ids)
+            runner.monitor_jobs(all_job_ids, job_info_map=job_info_map)
         else:
             print(f'submitted {len(perm_job_ids)} perm jobs + 1 synthesis job')
 

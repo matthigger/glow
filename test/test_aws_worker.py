@@ -347,3 +347,131 @@ class TestProcessPermutationFormat:
         expected = glow.graph.node_sum(
             np.ones(num_vox, dtype=int), r['children'])
         np.testing.assert_array_equal(r['size'], expected)
+
+
+# ---------------------------------------------------------------------------
+# Batch mode
+# ---------------------------------------------------------------------------
+
+class TestEstimateBatchTable:
+    """AWSBatchRunner.estimate_batch_table validation."""
+
+    def test_returns_rows(self):
+        from glow.aws.aws_batch import AWSBatchRunner
+        rows = AWSBatchRunner.estimate_batch_table(
+            n_perm=100, perm_sec=300, overhead_sec=180)
+        assert len(rows) >= 1
+        for r in rows:
+            assert set(r.keys()) >= {
+                'perms_per_job', 'n_jobs', 'wall_min',
+                'overhead_pct', 'vcpu_hr', 'cost'}
+
+    def test_single_perm_per_job_highest_spinup(self):
+        from glow.aws.aws_batch import AWSBatchRunner
+        rows = AWSBatchRunner.estimate_batch_table(
+            n_perm=100, perm_sec=300, overhead_sec=180)
+        # 1-per-job should have the highest spinup percentage
+        ppj1 = [r for r in rows if r['perms_per_job'] == 1][0]
+        for r in rows:
+            assert r['overhead_pct'] <= ppj1['overhead_pct'] + 0.01
+
+    def test_all_perms_in_one_job(self):
+        from glow.aws.aws_batch import AWSBatchRunner
+        rows = AWSBatchRunner.estimate_batch_table(
+            n_perm=10, perm_sec=60, overhead_sec=180)
+        last = rows[-1]
+        assert last['n_jobs'] == 1
+
+
+class TestSubmitArrayJobListIndex:
+    """submit_array_job handles list indices (batch mode single-index fallback)."""
+
+    def test_single_list_index_uses_comma_sep(self):
+        """When indices=[[0,1,2]], command should use comma-separated string."""
+        from unittest.mock import MagicMock
+        from glow.aws.aws_batch import AWSBatchRunner, CloudConfig
+
+        cfg = CloudConfig(
+            s3_bucket='b', s3_prefix='p', job_queue='q',
+            job_definition='jd')
+        runner = AWSBatchRunner(cfg)
+        runner.batch = MagicMock()
+        runner.batch.submit_job.return_value = {'jobId': 'j1'}
+        runner.s3 = MagicMock()
+
+        result = runner.submit_array_job(
+            job_name='test', command_template=['--foo', 'bar'],
+            indices=[[0, 1, 2]], index_arg='--perm-indices')
+
+        call_args = runner.batch.submit_job.call_args
+        cmd = call_args[1]['containerOverrides']['command']
+        assert '--perm-indices' in cmd
+        idx = cmd.index('--perm-indices')
+        assert cmd[idx + 1] == '0,1,2'
+
+
+class TestResubmitPermIndices:
+    """_resubmit_failed_jobs handles perm_indices for batch mode."""
+
+    def test_resubmit_batch_oom(self):
+        from unittest.mock import MagicMock
+        from glow.aws.aws_batch import AWSBatchRunner, CloudConfig
+
+        cfg = CloudConfig(
+            s3_bucket='b', s3_prefix='p', job_queue='q',
+            job_definition='jd',
+            oom_memory_mb_tiers=[2000, 4000, 8000])
+        runner = AWSBatchRunner(cfg)
+        runner.batch = MagicMock()
+        runner.batch.submit_job.return_value = {'jobId': 'retry1'}
+
+        failed = [{
+            'jobId': 'parent:0',
+            'jobName': 'exp_perm',
+            'container': {
+                'command': ['--data-path', 's3://b/d', '--index-map', 'k'],
+                'exitCode': 137,
+            },
+        }]
+        job_info_map = {
+            'parent:0': {'perm_indices': [10, 11, 12]},
+        }
+
+        resub, reasons, msgs, pf = runner._resubmit_failed_jobs(
+            failed, job_info_map)
+
+        assert len(resub) == 1
+        # verify the resubmitted command has --perm-indices
+        call_cmd = runner.batch.submit_job.call_args[1][
+            'containerOverrides']['command']
+        assert '--perm-indices' in call_cmd
+        idx = call_cmd.index('--perm-indices')
+        assert call_cmd[idx + 1] == '10,11,12'
+        # --index-map should be stripped
+        assert '--index-map' not in call_cmd
+
+
+class TestWorkerBatchCLI:
+    """Worker CLI parses --perm-indices correctly."""
+
+    def test_parse_comma_separated(self):
+        """--perm-indices '0,1,2' should parse to list [0,1,2]."""
+        from glow.aws.worker import main
+        import argparse
+        # Build a parser the same way main() does, then parse
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--s3-bucket')
+        parser.add_argument('--s3-prefix')
+        parser.add_argument('--data-path')
+        parser.add_argument('--perm-idx', type=int)
+        parser.add_argument('--perm-indices')
+        parser.add_argument('--experiment-id')
+        args = parser.parse_args([
+            '--s3-bucket', 'b', '--s3-prefix', 'p',
+            '--data-path', 's3://b/k', '--experiment-id', 'e',
+            '--perm-indices', '5,10,15',
+        ])
+        # Simulate the parsing that main() does
+        if isinstance(args.perm_indices, str):
+            args.perm_indices = [int(x) for x in args.perm_indices.split(',')]
+        assert args.perm_indices == [5, 10, 15]

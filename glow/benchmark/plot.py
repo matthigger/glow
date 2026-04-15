@@ -1,18 +1,54 @@
+import colorsys
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 
+# ---------------------------------------------------------------------------
+# Consistent paper colour palette
+# ---------------------------------------------------------------------------
+# Base: teal from Fig. 3 (#4DA6A6), H=180° S=0.37 L=0.48 in HLS.
+# Analysis methods: 4 hues evenly spaced (90° apart), same S/L.
+# Segmentation methods: R/G/B hues (0°/120°/240°), same S/L.
+_H, _L, _S = 0.500, 0.476, 0.366  # HLS of #4DA6A6
+
+def _hls_hex(h, l=_L, s=_S):
+    r, g, b = colorsys.hls_to_rgb(h % 1.0, l, s)
+    return f'#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}'
+
+COLOR_ANALYSIS = {
+    'GLOW':     _hls_hex(0/4 + _H),   # teal  (180°)
+    'VBA-TFCE': _hls_hex(1/4 + _H),   # purple (270°)
+    'VBA':      _hls_hex(2/4 + _H),   # coral  (0°)
+    'CET':      _hls_hex(3/4 + _H),   # olive  (90°)
+}
+
+COLOR_SEGMENT = {
+    'Naive':     _hls_hex(0/3),        # red    (0°)
+    'GLM Error': _hls_hex(1/3),        # green  (120°)
+    'Focus':     _hls_hex(2/3),        # blue   (240°)
+}
+
 
 def get_cmap_dict(label_list):
-    label_list = sorted(label_list)
-    if 'GLOW' in label_list:
-        # glow / vba analysis
-        c_list = sns.hls_palette(n_colors=len(label_list), l=.6, s=.9)
-    else:
-        # mancova (or other) comparison
-        c_list = sns.husl_palette(n_colors=len(label_list), h=.9)
-    return dict(zip(label_list, c_list))
+    """Return {label: color} using the fixed palette when possible."""
+    out = {}
+    for lab in label_list:
+        if lab in COLOR_ANALYSIS:
+            out[lab] = COLOR_ANALYSIS[lab]
+        elif lab in COLOR_SEGMENT:
+            out[lab] = COLOR_SEGMENT[lab]
+        else:
+            out[lab] = None  # placeholder
+
+    # fall back to seaborn for labels not in the fixed palettes
+    missing = [lab for lab in sorted(label_list) if out[lab] is None]
+    if missing:
+        fallback = sns.husl_palette(n_colors=len(missing), h=0.9)
+        for lab, c in zip(missing, fallback):
+            out[lab] = c
+    return out
 
 
 def plot_compute_time(df):
@@ -129,17 +165,9 @@ def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['dice', 'sens', 'spec']
     for j, metric in enumerate(metrics):
         ax_top = axes[0, j]
 
-        # top: per-seed lines + bold mean + percentile shading
+        # top: bold mean + shaded percentile band
         for label, sub in df_agg.groupby('label'):
             color = color_map[label]
-
-            # thin per-seed lines
-            for seed, g in sub.groupby('seed', sort=False):
-                g = g.sort_values(x_param)
-                ax_top.plot(
-                    g[x_param], g[metric],
-                    lw=.5, alpha=alpha, color=color
-                )
 
             # aggregate stats: mean + quantiles
             g_stats = (
@@ -195,24 +223,24 @@ def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['dice', 'sens', 'spec']
                     pv['best_other'] = pv[others].max(axis=1, skipna=True)
                     pv['diff'] = pv[one_label] - pv['best_other']
 
-                    # per-seed thin lines (light grey for visibility)
-                    for seed, g in pv.groupby('seed', sort=False):
-                        g = g.sort_values(x_param)
-                        ax_bot.plot(
-                            g[x_param], g['diff'],
-                            lw=.5, alpha=0.7, color='lightgrey'
-                        )
-
-                    # mean diff (bold black line, no shading)
-                    diff_mean = (
+                    # mean diff + shaded band
+                    diff_stats = (
                         pv.groupby(x_param)['diff']
-                        .mean()
+                        .agg(['mean',
+                              lambda s: np.percentile(s, lower_q),
+                              lambda s: np.percentile(s, upper_q)])
                         .reset_index()
                         .sort_values(x_param)
                     )
+                    diff_stats.columns = [x_param, 'mean', 'q_low', 'q_high']
                     ax_bot.plot(
-                        diff_mean[x_param], diff_mean['diff'],
+                        diff_stats[x_param], diff_stats['mean'],
                         lw=3, color='black'
+                    )
+                    ax_bot.fill_between(
+                        diff_stats[x_param],
+                        diff_stats['q_low'], diff_stats['q_high'],
+                        color='black', alpha=0.15
                     )
 
                     ax_bot.set_ylabel(f'{one_label} - best vba')
@@ -254,12 +282,12 @@ if __name__ == '__main__':
 
         # filter to current config (ignore stale results from old configs)
         if 'config_hash' in df.columns:
-            valid_hashes = {config._config_hash()}
-            if config.ana_kwargs_dict:
-                valid_hashes.update(
-                    config._config_hash_for_label(lab)
-                    for lab in config.ana_kwargs_dict)
-            df = df[df['config_hash'].isin(valid_hashes)]
+            expected = config._get_expected_labels()
+            valid = pd.Series(False, index=df.index)
+            for lab in expected:
+                lhash = config._config_hash_for_label(lab)
+                valid |= (df['label'] == lab) & (df['config_hash'] == lhash)
+            df = df[valid]
             if df.empty:
                 print(f'skipping {label}: no data for current config')
                 continue

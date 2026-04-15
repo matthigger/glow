@@ -246,6 +246,73 @@ def run_permutation_mode(args):
         sys.exit(1)
 
 
+def run_permutation_batch_mode(args):
+    """Run multiple permutations in a single job (batch mode)."""
+    perm_indices = args.perm_indices
+    print(f'=' * 60)
+    print(f'GLOW Worker - PERMUTATION BATCH MODE')
+    print(f'Permutations: {perm_indices[0]}..{perm_indices[-1]} '
+          f'({len(perm_indices)} total)')
+    print(f'=' * 60)
+
+    # parse S3 path for experiment data
+    if not args.data_path.startswith('s3://'):
+        print('error: data-path must start with s3://')
+        sys.exit(1)
+
+    s3_path = args.data_path[5:]
+    bucket, key = s3_path.split('/', 1)
+
+    # download experiment data ONCE
+    s3 = boto3.client('s3')
+    print(f'\nDownloading experiment from s3://{bucket}/{key}')
+
+    try:
+        response = s3.get_object(Bucket=bucket, Key=key)
+        data = pickle.loads(response['Body'].read())
+        exp = data['exp']
+        ana_kwargs = data['ana_kwargs']
+        experiment_id = data['experiment_id']
+        print(f'  Loaded experiment: {exp.y.shape}')
+    except ClientError as e:
+        print(f'  Error: {e}')
+        sys.exit(1)
+
+    import time as _time
+    n_done = 0
+    n_skipped = 0
+
+    for perm_idx in perm_indices:
+        result_key = (f'{args.s3_prefix}/results/{experiment_id}/'
+                      f'{perm_idx:06d}_result.pkl')
+
+        # idempotency: skip if already exists
+        try:
+            s3.head_object(Bucket=args.s3_bucket, Key=result_key)
+            n_skipped += 1
+            continue
+        except ClientError:
+            pass
+
+        # process
+        print(f'  perm {perm_idx}...', end='', flush=True)
+        _t0 = _time.time()
+        result = process_permutation(exp, ana_kwargs, perm_idx)
+        result['elapsed_sec'] = _time.time() - _t0
+        print(f' {result["elapsed_sec"]:.1f}s', end='', flush=True)
+
+        # upload
+        s3.put_object(
+            Bucket=args.s3_bucket,
+            Key=result_key,
+            Body=pickle.dumps(result),
+        )
+        print(' uploaded')
+        n_done += 1
+
+    print(f'\nBatch complete: {n_done} processed, {n_skipped} skipped')
+
+
 def run_experiment_mode(args):
     """run full experiment with all permutations (for many small experiments)"""
     print(f'=' * 60)
@@ -539,6 +606,7 @@ def main():
     # permutation mode arguments
     parser.add_argument('--data-path', help='S3 path to experiment data (permutation mode)')
     parser.add_argument('--perm-idx', type=int, help='permutation index (permutation mode)')
+    parser.add_argument('--perm-indices', help='comma-separated permutation indices (batch mode)')
     parser.add_argument('--experiment-id', help='experiment ID (permutation/synthesis mode)')
     
     # experiment mode arguments
@@ -567,6 +635,8 @@ def main():
         index_arg = _map_data['index_arg']
         if index_arg == '--exp-idx':
             args.exp_idx = actual_index
+        elif index_arg == '--perm-indices':
+            args.perm_indices = actual_index  # list of ints
         elif index_arg == '--perm-idx':
             args.perm_idx = actual_index
         print(f'Array job: AWS_BATCH_JOB_ARRAY_INDEX={array_idx} '
@@ -577,6 +647,14 @@ def main():
         if not all([args.experiment_id, args.n_perm is not None]):
             parser.error('synthesis mode requires: --experiment-id, --n-perm')
         run_synthesis_mode(args)
+
+    elif getattr(args, 'perm_indices', None) is not None:
+        # batch permutation mode (from index map or CLI)
+        if isinstance(args.perm_indices, str):
+            args.perm_indices = [int(x) for x in args.perm_indices.split(',')]
+        if not all([args.data_path, args.experiment_id]):
+            parser.error('batch permutation mode requires: --data-path, --experiment-id')
+        run_permutation_batch_mode(args)
 
     elif args.perm_idx is not None:
         if not all([args.data_path, args.experiment_id]):

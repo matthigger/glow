@@ -22,3 +22,5 @@ profile*
 /docs/notes/
 /docs/paper
 /.claude/
+/glow.sublime-project
+/glow.sublime-workspace

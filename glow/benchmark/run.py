@@ -46,7 +46,7 @@ def run_segment(config, **iter_kw):
     """run Ward's clustering and score against the imposed effect."""
     exp, effect = config.get_exp_eff(**iter_kw)
 
-    from glow.analysis.cluster import _MODES, cluster
+    from glow.analysis.cluster import _MODES, MODE_LABELS, cluster
     for mode in _MODES:
         start = time.time()
         children = cluster(exp, mode=mode)
@@ -57,16 +57,17 @@ def run_segment(config, **iter_kw):
                                                          children=children)
         idx = np.argmax(dice)
 
+        label = MODE_LABELS[mode]
         d = {'effect_llr': effect.effect_llr,
              'seed': int(effect.seed),
              'dice': dice[idx],
-             'label': mode,
+             'label': label,
              'sens': sens[idx],
              'spec': spec[idx],
              'vox_total': int(exp.y.shape[2]),
              'vox_effect': int(effect.mask.sum()),
              'time_sec': total_time_sec,
-             'config_hash': config._config_hash_for_label(mode)}
+             'config_hash': config._config_hash_for_label(label)}
         _merge_iter_kw(d, iter_kw)
         _write_result(config, d)
 

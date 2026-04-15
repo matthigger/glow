@@ -16,7 +16,6 @@ def _make_config(tmp_path, detail_save=False):
     config = SimpleNamespace(
         folder=tmp_path,
         detail_save=detail_save,
-        _config_hash=lambda: 'abc123',
         _config_hash_for_label=lambda label: 'abc123',
     )
     return config

@@ -92,9 +92,6 @@ def _worker_experiment(num_vox, b, num_img, n_perm, result_queue):
         def get_exp_eff(self, **kwargs):
             return exp_eff, effect
 
-        def _config_hash(self):
-            return exp_eff._hash()
-
         def _config_hash_for_label(self, label):
             return exp_eff._hash()
 

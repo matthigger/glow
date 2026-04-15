@@ -80,6 +80,8 @@ def plot_runtime(rows, pdf_path: Path):
     fig, ax = plt.subplots(figsize=(7, 4.5))
     palette = sns.color_palette('deep')
 
+    has_spinup = any(r.get('spinup_median_sec') for r in rows)
+
     if has_perm:
         perm_med = np.array([
             float(np.median(r['perm_elapsed_sec'])) / 60
@@ -107,10 +109,30 @@ def plot_runtime(rows, pdf_path: Path):
                     color=palette[1], zorder=3, label='Synthesis',
                     linestyle='--')
 
+        spinup_min = np.array([
+            (r.get('spinup_median_sec') or 0) / 60
+            for r in rows])[order]
+
         wall = perm_hi + synth
-        ax.plot(voxels, wall, marker='^', markersize=5, linewidth=1.0,
-                color=palette[2], zorder=3, label='Wall Clock',
-                linestyle=':')
+        if has_spinup:
+            wall_with_spinup = wall + spinup_min
+            ax.plot(voxels, wall_with_spinup, marker='^', markersize=5,
+                    linewidth=1.5, color=palette[2], zorder=3,
+                    label='Wall clock (incl. spinup)', linestyle=':')
+            ax.plot(voxels, wall, marker='^', markersize=4, linewidth=1.0,
+                    color=palette[2], zorder=2, alpha=0.4,
+                    label='Wall clock (compute only)', linestyle=':')
+            # annotate median spinup
+            med_spinup = float(np.median(spinup_min[spinup_min > 0])) * 60
+            ax.annotate(f'median spinup: {med_spinup:.0f}s',
+                        xy=(0.98, 0.02), xycoords='axes fraction',
+                        ha='right', va='bottom', fontsize=7,
+                        bbox=dict(boxstyle='round,pad=0.3', fc='wheat',
+                                  alpha=0.8))
+        else:
+            ax.plot(voxels, wall, marker='^', markersize=5, linewidth=1.0,
+                    color=palette[2], zorder=3, label='Wall Clock',
+                    linestyle=':')
     else:
         minutes = np.array([r['elapsed_min'] for r in rows])[order]
         ax.plot(voxels, minutes, marker='o', markersize=6, linewidth=1.5,
@@ -130,8 +152,11 @@ def plot_runtime(rows, pdf_path: Path):
         if synth.max() > 0:
             m, a = _loglog_fit(voxels, synth)
             fit_lines.append(('Synthesis', a, m))
+        if has_spinup:
+            m, a = _loglog_fit(voxels, wall_with_spinup)
+            fit_lines.append(('Wall Clock (incl. spinup)', a, m))
         m, a = _loglog_fit(voxels, wall)
-        fit_lines.append(('Wall Clock', a, m))
+        fit_lines.append(('Wall Clock (compute)', a, m))
     else:
         m, a = _loglog_fit(voxels, minutes)
         fit_lines.append(('Runtime', a, m))
