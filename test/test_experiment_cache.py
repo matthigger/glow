@@ -206,9 +206,19 @@ class TestGetExpectedLabels:
         from glow.analysis.cluster import MODE_LABELS
         assert config._get_expected_labels() == set(MODE_LABELS.values())
 
-    def test_unknown_run_fnc(self):
+    def test_unknown_run_fnc_raises(self):
+        """Unknown run_fnc must raise — a silent empty set would mark
+        every experiment as fully cached and skip running."""
         config = Config(label='x', run_fnc=lambda: None, source='wgn')
-        assert config._get_expected_labels() == set()
+        with pytest.raises(ValueError, match='unknown run_fnc'):
+            config._get_expected_labels()
+
+    def test_run_prune_compare_labels(self):
+        from glow.benchmark.run import run_prune_compare
+        config = Config(label='p', run_fnc=run_prune_compare, source='wgn')
+        labels = config._get_expected_labels()
+        assert labels == {'greedy', 'greedy_adj', 'dp_lam0', 'dp_lam0_adj',
+                          'dp_geom3', 'full_adjust'}
 
 
 # ---------------------------------------------------------------------------

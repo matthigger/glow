@@ -264,7 +264,8 @@ class Config:
     def _get_expected_labels(self):
         """return the set of result 'label' strings one experiment produces."""
         from glow.benchmark.run import (run_ana, run_segment,
-                                        run_mancova_glow, run_mancova_vba)
+                                        run_mancova_glow, run_mancova_vba,
+                                        run_prune_compare)
         if self.run_fnc is run_ana:
             return set(self.ana_kwargs_dict.keys())
         if self.run_fnc is run_segment:
@@ -281,7 +282,13 @@ class Config:
                     for suffix in ('', '-z'):
                         labels.add(f'{prefix}-{name}{suffix}')
             return labels
-        return set()
+        if self.run_fnc is run_prune_compare:
+            return {'greedy', 'greedy_adj', 'dp_lam0', 'dp_lam0_adj',
+                    'dp_geom3', 'full_adjust'}
+        raise ValueError(
+            f'unknown run_fnc {self.run_fnc!r}: add its expected labels '
+            f'to _get_expected_labels (returning set() would silently '
+            f'mark every experiment as fully cached)')
 
     def _cached_labels(self, kwargs, df, label_hashes):
         """return the set of labels already cached for these kwargs.
