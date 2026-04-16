@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 import glow.effect
 import glow.graph
-from ._base import Analysis
+from ._base import Analysis, _sanitize_adjusted_stat
 from glow.experiment.exper import ExperimentScaled
 from .mancova import get_llr, stat_dict_inv
 from .prune import prune_greedy
@@ -166,10 +166,11 @@ class AnalysisGLOW(Analysis):
                 r = pickle.load(fh)
             adj = (np.asarray(r['stat'], dtype=float)
                    - mu_fn(np.asarray(r['size'], dtype=float)))
-            adj = np.nan_to_num(adj, nan=0.0, posinf=0.0, neginf=-30.0)
-            stat_max_list.append(
-                float(np.nanmax(adj[reg_active])) if reg_active.any()
-                else float('-inf'))
+            adj = _sanitize_adjusted_stat(adj)
+            if reg_active.any() and np.isfinite(adj[reg_active]).any():
+                stat_max_list.append(float(np.nanmax(adj[reg_active])))
+            else:
+                stat_max_list.append(float('-inf'))
             del r, adj
         stat_max_sorted = np.sort(stat_max_list)
 
@@ -301,8 +302,7 @@ class AnalysisGLOW(Analysis):
         num_reg = stat_0.shape[0]
 
         llr_adjusted_0 = stat_0 - mu_fn(size_0.astype(float))
-        llr_adjusted_0 = np.nan_to_num(llr_adjusted_0, nan=0.0,
-                                        posinf=0.0, neginf=-30.0)
+        llr_adjusted_0 = _sanitize_adjusted_stat(llr_adjusted_0)
 
         self.alpha_fwer = alpha_fwer
         self.size = size_0

@@ -195,6 +195,7 @@ class TestSynthesisFidelity:
                 np.concatenate(fit_sizes), np.concatenate(fit_stats))
 
             # compute adjusted max-stats for FWER permutations
+            from glow.analysis import _sanitize_adjusted_stat
             reg_active = size_0 >= min_size
             stat_max_list = []
             for pidx in range(n_perm_fwer + 1):
@@ -202,9 +203,8 @@ class TestSynthesisFidelity:
                 stat_p = np.asarray(r['stat'], dtype=float)
                 size_p = np.asarray(r['size'], dtype=float)
                 adj = stat_p - mu_fn(size_p)
-                adj = np.nan_to_num(adj, nan=0.0, posinf=0.0,
-                                    neginf=-30.0)
-                if reg_active.any():
+                adj = _sanitize_adjusted_stat(adj)
+                if reg_active.any() and np.isfinite(adj[reg_active]).any():
                     stat_max_list.append(
                         float(np.nanmax(adj[reg_active])))
                 else:
@@ -285,17 +285,19 @@ class TestSynthesisFidelity:
             gam, mu_fn, r2 = AnalysisGLOW.fit_size_gam(
                 np.concatenate(fit_sizes), np.concatenate(fit_stats))
 
+            from glow.analysis import _sanitize_adjusted_stat
             reg_active = size_0 >= 1
             stat_max_list = []
             for pidx in range(n_perm_fwer + 1):
                 r = results[pidx]
                 adj = (np.asarray(r['stat'], dtype=float)
                        - mu_fn(np.asarray(r['size'], dtype=float)))
-                adj = np.nan_to_num(adj, nan=0.0, posinf=0.0,
-                                    neginf=-30.0)
-                stat_max_list.append(
-                    float(np.nanmax(adj[reg_active]))
-                    if reg_active.any() else float('-inf'))
+                adj = _sanitize_adjusted_stat(adj)
+                if reg_active.any() and np.isfinite(adj[reg_active]).any():
+                    stat_max_list.append(
+                        float(np.nanmax(adj[reg_active])))
+                else:
+                    stat_max_list.append(float('-inf'))
             stat_max_sorted = np.sort(stat_max_list)
 
             ana = AnalysisGLOW.from_precomputed(

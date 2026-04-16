@@ -439,7 +439,7 @@ def run_synthesis_mode(args):
     """Collect permutation results from S3 and run _finalize_analysis."""
     import time
     import glow.graph
-    from glow.analysis import AnalysisGLOW
+    from glow.analysis import AnalysisGLOW, _sanitize_adjusted_stat
     from glow.analysis.mancova import get_llr
 
     print('=' * 60)
@@ -537,8 +537,8 @@ def run_synthesis_mode(args):
     stat_max_list = []
 
     adj_0 = stat_0 - mu_fn(size_0)
-    adj_0 = np.nan_to_num(adj_0, nan=0.0, posinf=0.0, neginf=-30.0)
-    if reg_active.any():
+    adj_0 = _sanitize_adjusted_stat(adj_0)
+    if reg_active.any() and np.isfinite(adj_0[reg_active]).any():
         stat_max_list.append(float(np.nanmax(adj_0[reg_active])))
     else:
         stat_max_list.append(float('-inf'))
@@ -550,8 +550,8 @@ def run_synthesis_mode(args):
                   else glow.graph.node_sum(np.ones(num_vox, dtype=int),
                                            r['children']).astype(float))
         adj_p = stat_p - mu_fn(size_p)
-        adj_p = np.nan_to_num(adj_p, nan=0.0, posinf=0.0, neginf=-30.0)
-        if reg_active.any():
+        adj_p = _sanitize_adjusted_stat(adj_p)
+        if reg_active.any() and np.isfinite(adj_p[reg_active]).any():
             stat_max_list.append(float(np.nanmax(adj_p[reg_active])))
         else:
             stat_max_list.append(float('-inf'))

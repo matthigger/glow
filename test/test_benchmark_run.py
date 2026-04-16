@@ -149,7 +149,9 @@ class TestMagicConstants:
         from glow.analysis import _sanitize_adjusted_stat
         arr = np.array([1.0, np.nan, np.inf, -np.inf, 2.0])
         result = _sanitize_adjusted_stat(arr)
-        expected = np.array([1.0, 0.0, 0.0, -30.0, 2.0])
+        # nan/posinf -> 0 (treated as no evidence);
+        # neginf -> nan (invalid, propagates to NaN p-value)
+        expected = np.array([1.0, 0.0, 0.0, np.nan, 2.0])
         np.testing.assert_array_equal(result, expected)
 
     def test_default_cet_cft_pval(self):

@@ -13,9 +13,21 @@ DEFAULT_CET_CFT_PVAL = 0.0001
 def _sanitize_adjusted_stat(adj):
     """Replace non-finite values in an adjusted stat array.
 
-    nan -> 0.0, posinf -> 0.0, neginf -> -30.0
+    nan -> 0.0, posinf -> 0.0, neginf -> nan.
+
+    Rationale: nan/posinf come from well-understood numerical paths
+    (NaN stats from singular covariance, posinf rare floating-point
+    overflow on well-behaved stats) and can safely be treated as "no
+    evidence" (0.0).  neginf can arise from stats like Wilks' Lambda
+    in degenerate numerical regimes (overflow in ``exp(logdet_e -
+    logdet_t)``); previous code clipped to the magic value -30.0,
+    which silently contaminates the max-stat null distribution.
+    NaN propagates through ``nanmax`` (the region is ignored in the
+    FWER null) and through the per-region p-value loop (the region
+    gets a NaN p-value), which is the correct "invalid / unknown"
+    handling.
     """
-    return np.nan_to_num(adj, nan=0.0, posinf=0.0, neginf=-30.0)
+    return np.nan_to_num(adj, nan=0.0, posinf=0.0, neginf=np.nan)
 
 
 class Analysis:

@@ -436,9 +436,10 @@ class RunMancovaGlow(Runner):
             for fn in stat_fns:
                 adj = multi[fn].ravel() - mu_fns[fn](size)
                 adj = _sanitize_adjusted_stat(adj)
-                stat_max[fn].append(
-                    float(np.nanmax(adj[active])) if active.any()
-                    else float('-inf'))
+                if active.any() and np.isfinite(adj[active]).any():
+                    stat_max[fn].append(float(np.nanmax(adj[active])))
+                else:
+                    stat_max[fn].append(float('-inf'))
 
             if perm_idx == 0:
                 children_0 = children
