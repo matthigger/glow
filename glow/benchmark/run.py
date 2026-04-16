@@ -227,7 +227,7 @@ def run_mancova_glow(config, **iter_kw):
     always uses LLR regardless of the test statistic.
     """
     from glow.analysis import (
-        Analysis, AnalysisGLOW, get_best_model, _sanitize_adjusted_stat)
+        Analysis, AnalysisGLOW, _sanitize_adjusted_stat)
     from glow.analysis.cluster import cluster
     from glow.analysis.mancova import (
         stat_dict, stat_dict_inv, get_llr)
@@ -246,11 +246,10 @@ def run_mancova_glow(config, **iter_kw):
     fit_end = n_perm_fwer + n_perm_sa
     num_vox = exp.y.shape[2]
 
-    models = {fn: get_best_model(fn) for fn in stat_fns}
-    XtX = {fn: None for fn in stat_fns}
-    Xty = {fn: None for fn in stat_fns}
+    fit_sizes_all = {fn: [] for fn in stat_fns}
+    fit_stats_all = {fn: [] for fn in stat_fns}
 
-    # phase 1: fit permutations (held-out, for size regression)
+    # phase 1: fit permutations (held-out, for GAM size adjustment)
     for perm_idx in range(fit_start, fit_end + 1):
         _exp = exp.permute(perm_idx)
         children = cluster(exp=_exp)
@@ -259,16 +258,17 @@ def run_mancova_glow(config, **iter_kw):
         size = glow.graph.node_sum(
             np.ones(num_vox, dtype=int), children)
         for fn in stat_fns:
-            XtX[fn], Xty[fn] = AnalysisGLOW.accumulate_regression(
-                size, multi[fn].ravel(), models[fn], XtX[fn], Xty[fn])
+            fit_sizes_all[fn].append(size.astype(float))
+            fit_stats_all[fn].append(multi[fn].ravel().astype(float))
 
     mu_fns = {}
-    betas = {}
+    gams = {}
     for fn in stat_fns:
-        mu_fn, _, beta = AnalysisGLOW.fit_size_regression_online(
-            XtX[fn], Xty[fn], models[fn], fn)
+        sz = np.concatenate(fit_sizes_all[fn])
+        st = np.concatenate(fit_stats_all[fn])
+        gam, mu_fn, r2 = AnalysisGLOW.fit_size_gam(sz, st)
         mu_fns[fn] = mu_fn
-        betas[fn] = beta
+        gams[fn] = gam
 
     # phase 2: observed (perm 0) + FWER permutations
     stat_max = {fn: [] for fn in stat_fns}
@@ -307,7 +307,7 @@ def run_mancova_glow(config, **iter_kw):
 
         ana = AnalysisGLOW.from_precomputed(
             exp=exp, get_stat=fn,
-            adj_model=models[fn], adj_beta=betas[fn])
+            adj_gam=gams[fn])
 
         ana._finalize_analysis(
             exp, n_perm_fwer,

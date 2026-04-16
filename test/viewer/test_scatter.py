@@ -195,10 +195,10 @@ class TestModelOverlay:
         assert isinstance(fig, go.Figure)
 
     def test_model_line_present(self, df_with_target, ana):
-        """When adj_model is set and axes are n_voxel vs llr, a model line
+        """When adj_gam is set and axes are n_voxel vs llr, a model line
         should appear."""
-        if getattr(ana, 'adj_model', None) is None:
-            pytest.skip('no adj_model on this analysis')
+        if getattr(ana, 'adj_gam', None) is None:
+            pytest.skip('no adj_gam on this analysis')
         fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr', '__none__')
         dashed = [t for t in fig.data
                   if t.mode == 'lines'

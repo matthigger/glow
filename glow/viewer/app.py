@@ -440,13 +440,12 @@ def _create_app(ana_glow, mask_target=None, y_features=None,
     if subject_names is None:
         subject_names = meta.get('subjects')
 
-    adj_model = getattr(ana_glow, 'adj_model', None)
-    adj_beta = getattr(ana_glow, 'adj_beta', None)
-    if adj_model is not None and adj_beta is not None:
+    adj_gam = getattr(ana_glow, 'adj_gam', None)
+    if adj_gam is not None:
         from .scatter import _ensure_1d
         stat = _ensure_1d(ana_glow.stat)
         ana_glow._primary_r2 = _compute_r2(
-            stat, ana_glow.size.astype(float), adj_model, adj_beta)
+            stat, ana_glow.size.astype(float), adj_gam)
 
     df = prep_df(ana_glow, mask_target=mask_target, extra_df=extra_df)
     generic_cols, sig_cols, prune_cols, mask_cols = get_feature_columns(df)

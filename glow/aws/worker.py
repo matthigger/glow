@@ -493,11 +493,8 @@ def run_synthesis_mode(args):
         time.sleep(30)
 
     # --- streaming synthesis: two passes over S3 results ---
-    from glow.analysis import get_best_model
-
     b, num_img, num_vox = exp.y.shape
     get_stat = ana_kwargs.get('get_stat', get_llr)
-    model = ana_kwargs.get('size_adjust_model') or get_best_model(get_stat)
     alpha_fwer = ana_kwargs.get('alpha_fwer', 0.05)
     min_size = ana_kwargs.get('min_size', 1)
 
@@ -507,7 +504,7 @@ def run_synthesis_mode(args):
         return pickle.loads(response['Body'].read())
 
     # load observed (perm 0) — kept permanently
-    print(f'\nPass 1: fitting size regression ({model}) ...')
+    print(f'\nPass 1: fitting size-adjustment GAM ...')
     r0 = _load_result(0)
     stat_0 = np.asarray(r0['stat'], dtype=float)
     children_0 = r0['children']
@@ -516,7 +513,7 @@ def run_synthesis_mode(args):
                                        children_0).astype(float))
     perm_elapsed = [r0.get('elapsed_sec')]
 
-    XtX, Xty = None, None
+    fit_sizes, fit_stats = [], []
     for perm_idx in range(1, n_expected):
         r = _load_result(perm_idx)
         stat_p = np.asarray(r['stat'], dtype=float)
@@ -525,13 +522,14 @@ def run_synthesis_mode(args):
                                            r['children']).astype(float))
         perm_elapsed.append(r.get('elapsed_sec'))
         if perm_idx >= fit_start:
-            XtX, Xty = AnalysisGLOW.accumulate_regression(
-                size_p, stat_p, model, XtX, Xty)
-        del r, stat_p, size_p
+            fit_sizes.append(size_p)
+            fit_stats.append(stat_p)
+        del r
 
-    mu_fn, _, beta = AnalysisGLOW.fit_size_regression_online(
-        XtX, Xty, model, get_stat)
-    print(f'  model={model}  beta={beta}')
+    all_sizes = np.concatenate(fit_sizes)
+    all_stats = np.concatenate(fit_stats)
+    gam, mu_fn, r2 = AnalysisGLOW.fit_size_gam(all_sizes, all_stats)
+    print(f'  GAM R²={r2:.4f}' if r2 is not None else '  GAM: insufficient data')
 
     # pass 2: compute adjusted max-stat per permutation
     print(f'Pass 2: computing FWER max-stats ...')
@@ -566,7 +564,7 @@ def run_synthesis_mode(args):
     # build analysis shell and run streaming finalization
     ana = AnalysisGLOW.from_precomputed(
         exp=exp, get_stat=get_stat,
-        adj_model=model, adj_beta=beta, verbose=True)
+        adj_gam=gam, verbose=True)
 
     print(f'\nRunning _finalize_analysis ...')
     _t0 = time.time()

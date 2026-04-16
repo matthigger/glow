@@ -220,32 +220,21 @@ class TestSizeAdjustment:
         assert abs(r_adj) < 0.5, (
             f'Adjusted correlation still too high: r={r_adj:.3f}')
 
-    def test_predict_null_mean_monotone(self):
-        """Predicted null mean should increase with region size for LLR."""
-        sizes = np.array([1, 5, 10, 50, 100, 500])
-        beta = np.array([0.5, 0.3])
-        pred = AnalysisGLOW.predict_null_mean(sizes, 'power_law', beta)
-        assert np.all(np.diff(pred) > 0), (
-            f'Predicted null mean not increasing with size: {pred}')
-
-    def test_accumulate_regression_symmetric(self):
-        """Accumulating in one batch vs two should give same result."""
+    def test_fit_size_gam_returns_callable(self):
+        """fit_size_gam should return a GAM, callable mu_fn, and R²."""
         rng = np.random.default_rng(7)
-        sizes = rng.integers(1, 100, size=200).astype(float)
-        stats = 0.5 * np.log(sizes) + rng.standard_normal(200) * 0.3
+        sizes = rng.integers(1, 500, size=200).astype(float)
+        stats = 0.5 * np.log10(sizes) + rng.standard_normal(200) * 0.3
 
-        # one-shot
-        XtX_1, Xty_1 = AnalysisGLOW.accumulate_regression(
-            sizes, stats, 'power_law')
+        gam, mu_fn, r2 = AnalysisGLOW.fit_size_gam(sizes, stats)
+        assert gam is not None
+        assert callable(mu_fn)
+        assert r2 is not None and r2 > 0
 
-        # two-batch
-        XtX_2, Xty_2 = AnalysisGLOW.accumulate_regression(
-            sizes[:100], stats[:100], 'power_law')
-        XtX_2, Xty_2 = AnalysisGLOW.accumulate_regression(
-            sizes[100:], stats[100:], 'power_law', XtX_2, Xty_2)
-
-        np.testing.assert_allclose(XtX_1, XtX_2)
-        np.testing.assert_allclose(Xty_1, Xty_2)
+        # mu_fn should return predictions for an array of sizes
+        pred = mu_fn(sizes)
+        assert pred.shape == sizes.shape
+        assert np.all(np.isfinite(pred))
 
 
 # ---------------------------------------------------------------------------

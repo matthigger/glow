@@ -121,16 +121,15 @@ _MASK_FEATURES = {'dice', 'sens', 'spec', 'pct_max_dice',
                    'vox_in_target', 'vox_out_target'}
 
 
-def _compute_r2(stat, size, model, beta):
-    """Compute R² for a size-adjustment model on the unpermuted data."""
+def _compute_r2(stat, size, adj_gam):
+    """Compute R² for the GAM size-adjustment on the unpermuted data."""
     from glow.analysis import AnalysisGLOW
     valid = np.isfinite(stat) & (size > 0) & np.isfinite(size)
-    if model in AnalysisGLOW._POSITIVE_STAT_MODELS:
-        valid &= (stat > 0)
     s, y = size[valid].astype(float), stat[valid].astype(float)
     if len(y) < 3:
         return np.nan
-    y_hat = AnalysisGLOW.predict_null_mean(s, model, beta)
+    mu_fn = AnalysisGLOW.mu_fn_from_gam(adj_gam)
+    y_hat = mu_fn(s)
     ss_res = np.sum((y - y_hat) ** 2)
     ss_tot = np.sum((y - y.mean()) ** 2)
     if ss_tot == 0:
@@ -212,11 +211,11 @@ def compute_target_stats(ana_glow, mask_target):
         'llr': llr,
     }
 
-    adj_model = getattr(ana_glow, 'adj_model', None)
-    adj_beta = getattr(ana_glow, 'adj_beta', None)
-    if adj_model is not None and adj_beta is not None and np.isfinite(llr):
+    adj_gam = getattr(ana_glow, 'adj_gam', None)
+    if adj_gam is not None and np.isfinite(llr):
         from glow.analysis import AnalysisGLOW
-        predicted = AnalysisGLOW.predict_null_mean(n_voxel, adj_model, adj_beta)
+        mu_fn = AnalysisGLOW.mu_fn_from_gam(adj_gam)
+        predicted = mu_fn(np.array([n_voxel]))[0]
         stats['llr_adjusted'] = llr - predicted
     else:
         stats['llr_adjusted'] = np.nan

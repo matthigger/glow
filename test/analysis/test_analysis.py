@@ -525,12 +525,11 @@ class TestFromPrecomputed:
         from glow.analysis.mancova import get_llr
         ana = AnalysisGLOW.from_precomputed(
             exp=self.exp_eff, get_stat=get_llr,
-            adj_model='power_law', adj_beta=np.array([1.0, 0.5]),
+            adj_gam=None,
             verbose=True)
         assert hasattr(ana, 'exp')
         assert ana.get_stat is get_llr
-        assert ana.adj_model == 'power_law'
-        np.testing.assert_array_equal(ana.adj_beta, np.array([1.0, 0.5]))
+        assert ana.adj_gam is None
         assert ana.verbose is True
 
     def test_discover_mask_on_base(self):

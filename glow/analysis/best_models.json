@@ -1,7 +1,0 @@
-{
-  "llr": "power_law",
-  "wilks": "log_size",
-  "pillai": "log_linear",
-  "hotel_tr": "power_law",
-  "roys_root": "log_linear"
-}

@@ -351,34 +351,15 @@ def _add_target_star(fig, target_stats, x_feat, y_feat, log_y=False):
     ))
 
 
-def _format_model_eq(model, beta, r2=None):
-    """Format the E[stat|H0] equation string for display."""
-    b = beta
-    if model == 'sqrt':
-        eq = f'E[stat|H0] = {b[0]:.4f} + {b[1]:.4f}·√size'
-    elif model in ('power_law', 'log_linear'):
-        eq = f'E[stat|H0] = exp({b[0]:.4f} + {b[1]:.4f}·ln(size))'
-    elif model == 'log_size':
-        eq = f'E[stat|H0] = {b[0]:.4f} + {b[1]:.4f}·ln(size)'
-    elif model == 'reciprocal':
-        eq = f'E[stat|H0] = {b[0]:.4f} + {b[1]:.4f}/size'
-    else:
-        eq = f'E[stat|H0] = {b[0]:.4f} + {b[1]:.4f}·size'
-    if r2 is not None and np.isfinite(r2):
-        eq += f'  (R²={r2:.3f})'
-    return eq
-
-
 def _add_model_overlay(fig, ana_glow, x_feat, y_feat):
-    """Add size-regression model line when llr is on y vs n_voxel on x."""
+    """Add GAM size-adjustment curve when llr is on y vs n_voxel on x."""
     from glow.analysis import AnalysisGLOW
 
     if x_feat != 'n_voxel' or y_feat != 'llr':
         return
 
-    adj_model = getattr(ana_glow, 'adj_model', None)
-    adj_beta = getattr(ana_glow, 'adj_beta', None)
-    if adj_model is None or adj_beta is None:
+    adj_gam = getattr(ana_glow, 'adj_gam', None)
+    if adj_gam is None:
         return
 
     sizes = _ensure_1d(ana_glow.size).astype(float)
@@ -388,13 +369,16 @@ def _add_model_overlay(fig, ana_glow, x_feat, y_feat):
     sz = np.linspace(max(sizes.min(), 1), sizes.max(), 200)
 
     r2 = getattr(ana_glow, '_primary_r2', None)
-    mean_line = AnalysisGLOW.predict_null_mean(sz, adj_model, adj_beta)
+    mu_fn = AnalysisGLOW.mu_fn_from_gam(adj_gam)
+    mean_line = mu_fn(sz)
     fig.add_trace(go.Scatter(
         x=sz, y=mean_line, mode='lines',
         line=dict(color='rgba(200,0,0,0.6)', width=2, dash='dash'),
         showlegend=False, hoverinfo='skip',
     ))
-    eq_text = _format_model_eq(adj_model, adj_beta, r2)
+    eq_text = 'E[stat|H0] = GAM(log10(size))'
+    if r2 is not None and np.isfinite(r2):
+        eq_text += f'  (R²={r2:.3f})'
     fig.add_annotation(
         text=eq_text,
         xref='paper', yref='paper',

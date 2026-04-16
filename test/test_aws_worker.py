@@ -156,7 +156,6 @@ class TestSynthesisFidelity:
         n_perm_fwer_size_adjust = 5
         alpha_fwer = 0.05
         min_size = 1
-        model = 'power_law'
 
         # 1. Run local AnalysisGLOW with perm_dir for reference
         perm_dir = tempfile.mkdtemp(prefix='glow_test_synth_')
@@ -165,7 +164,7 @@ class TestSynthesisFidelity:
                 exp, n_perm_fwer=n_perm_fwer,
                 n_perm_fwer_size_adjust=n_perm_fwer_size_adjust,
                 alpha_fwer=alpha_fwer, min_size=min_size,
-                perm_dir=perm_dir, size_adjust_model=model)
+                perm_dir=perm_dir)
 
             # 2. Load saved permutation results
             results = {}
@@ -184,18 +183,16 @@ class TestSynthesisFidelity:
             children_0 = r0['children']
             size_0 = np.asarray(r0['size'], dtype=float)
 
-            # accumulate regression from fit permutations only
-            XtX, Xty = None, None
+            # collect size/stat arrays from fit permutations
+            fit_sizes, fit_stats = [], []
             for pidx in range(1, n_expected):
                 r = results[pidx]
-                stat_p = np.asarray(r['stat'], dtype=float)
-                size_p = np.asarray(r['size'], dtype=float)
                 if pidx >= fit_start:
-                    XtX, Xty = AnalysisGLOW.accumulate_regression(
-                        size_p, stat_p, model, XtX, Xty)
+                    fit_sizes.append(np.asarray(r['size'], dtype=float))
+                    fit_stats.append(np.asarray(r['stat'], dtype=float))
 
-            mu_fn, _, beta = AnalysisGLOW.fit_size_regression_online(
-                XtX, Xty, model, get_llr)
+            gam, mu_fn, r2 = AnalysisGLOW.fit_size_gam(
+                np.concatenate(fit_sizes), np.concatenate(fit_stats))
 
             # compute adjusted max-stats for FWER permutations
             reg_active = size_0 >= min_size
@@ -217,7 +214,7 @@ class TestSynthesisFidelity:
             # finalize
             ana = AnalysisGLOW.from_precomputed(
                 exp=exp, get_stat=get_llr,
-                adj_model=model, adj_beta=beta)
+                adj_gam=gam)
             ana._finalize_analysis(
                 exp, n_perm_fwer, stat_0, size_0, children_0,
                 mu_fn, stat_max_sorted, alpha_fwer, min_size)
@@ -255,15 +252,13 @@ class TestSynthesisFidelity:
         n_perm_fwer = 10
         n_perm_fwer_size_adjust = 5
         alpha_fwer = 0.1
-        model = 'power_law'
 
         perm_dir = tempfile.mkdtemp(prefix='glow_test_synth_h1_')
         try:
             ref = AnalysisGLOW(
                 exp, n_perm_fwer=n_perm_fwer,
                 n_perm_fwer_size_adjust=n_perm_fwer_size_adjust,
-                alpha_fwer=alpha_fwer, perm_dir=perm_dir,
-                size_adjust_model=model)
+                alpha_fwer=alpha_fwer, perm_dir=perm_dir)
 
             # load and replay
             results = {}
@@ -280,17 +275,15 @@ class TestSynthesisFidelity:
             children_0 = r0['children']
             size_0 = np.asarray(r0['size'], dtype=float)
 
-            XtX, Xty = None, None
+            fit_sizes, fit_stats = [], []
             for pidx in range(1, n_perm + 1):
                 r = results[pidx]
                 if pidx >= fit_start:
-                    XtX, Xty = AnalysisGLOW.accumulate_regression(
-                        np.asarray(r['size'], dtype=float),
-                        np.asarray(r['stat'], dtype=float),
-                        model, XtX, Xty)
+                    fit_sizes.append(np.asarray(r['size'], dtype=float))
+                    fit_stats.append(np.asarray(r['stat'], dtype=float))
 
-            mu_fn, _, beta = AnalysisGLOW.fit_size_regression_online(
-                XtX, Xty, model, get_llr)
+            gam, mu_fn, r2 = AnalysisGLOW.fit_size_gam(
+                np.concatenate(fit_sizes), np.concatenate(fit_stats))
 
             reg_active = size_0 >= 1
             stat_max_list = []
@@ -307,7 +300,7 @@ class TestSynthesisFidelity:
 
             ana = AnalysisGLOW.from_precomputed(
                 exp=exp, get_stat=get_llr,
-                adj_model=model, adj_beta=beta)
+                adj_gam=gam)
             ana._finalize_analysis(
                 exp, n_perm_fwer, stat_0, size_0, children_0,
                 mu_fn, stat_max_sorted, alpha_fwer, 1)
