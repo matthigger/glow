@@ -452,6 +452,8 @@ class AWSBatchRunner:
                   f'  {r["vcpu_hr"]:>9.1f}'
                   f'  ${r["cost"]:>7.2f}')
         print(sep)
+        print('  Model fit on 500-30k vox, 100-500 perms (WGN); '
+              'HCP or out-of-range data may differ.')
         return rows
 
     def submit_jobs(self, experiment_id, n_perm, skip_completed=True,

@@ -184,8 +184,12 @@ def _print_cost_summary(configs, cloud_config):
           f'{"":>10}  {"":>10}  {cost_total_str:>10}')
 
     if upper_bound_labels:
-        print(f'\n  * upper bound (run_segment / similar is faster than '
-              f'run_ana)')
+        print('\n  * upper bound — mancova stats share a tree walk and '
+              'run_segment uses the GLOW model as a proxy; actual runtime '
+              'is typically shorter.')
+
+    print('  Model fit on 500-30k vox, 100-500 perms (WGN); '
+          'HCP or out-of-range data may differ.')
 
     print('=' * 72)
 
