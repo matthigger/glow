@@ -202,14 +202,16 @@ def batched_cloud_results():
     m['ana_cloud'] = m['runner'].download_final_analysis(m['experiment_id'])
 
     # The three experiment-style tests: download result files to folders.
-    # When everything is cached, job_info['runner'] is None — just glob the
-    # existing folder (cached runs already have result files on disk).
+    # Cached runs may have already aggregated out/*.json into results.csv,
+    # so accept either as evidence that the cloud pipeline produced results.
     for key in ('experiment_level', 'tfce', 'hcp'):
         ji = test_meta[key]['job_info']
         if ji['runner'] is not None:
             ji['runner'].download_experiment_results(ji['run_id'], ji['folder'])
-        test_meta[key]['result_files'] = list(
-            (ji['folder'] / 'out').glob('*_result.json'))
+        raw = list((ji['folder'] / 'out').glob('*_result.json'))
+        aggregated = ji['folder'] / 'results.csv'
+        test_meta[key]['result_files'] = raw
+        test_meta[key]['has_results'] = bool(raw) or aggregated.exists()
 
     return test_meta
 
@@ -257,19 +259,19 @@ def test_permutation_level_equivalence(batched_cloud_results):
 @pytest.mark.aws
 def test_experiment_level(batched_cloud_results):
     """Experiment-level cloud run should produce result files."""
-    files = batched_cloud_results['experiment_level']['result_files']
-    assert len(files) > 0, 'no result files downloaded from experiment-level run'
+    assert batched_cloud_results['experiment_level']['has_results'], \
+        'no results from experiment-level run (neither out/*.json nor results.csv)'
 
 
 @pytest.mark.aws
 def test_tfce(batched_cloud_results):
     """TFCE cloud run should produce result files."""
-    files = batched_cloud_results['tfce']['result_files']
-    assert len(files) > 0, 'no result files downloaded from TFCE run'
+    assert batched_cloud_results['tfce']['has_results'], \
+        'no results from TFCE run (neither out/*.json nor results.csv)'
 
 
 @pytest.mark.aws
 def test_hcp(batched_cloud_results):
     """HCP cloud run should produce result files."""
-    files = batched_cloud_results['hcp']['result_files']
-    assert len(files) > 0, 'no result files downloaded from HCP run'
+    assert batched_cloud_results['hcp']['has_results'], \
+        'no results from HCP run (neither out/*.json nor results.csv)'
