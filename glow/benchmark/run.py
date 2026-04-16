@@ -157,10 +157,12 @@ def run_ana(config, _skip_labels=None, **iter_kw):
 
 
 def run_prune_compare(config, **iter_kw):
-    """Run one AnalysisGLOW and apply all four pruning methods.
+    """Run one AnalysisGLOW and apply six pruning methods.
 
-    Emits one JSON result per method with the same schema as run_ana,
-    so the plotting pipeline works unchanged.
+    Tests greedy and DP pruning with both raw LLR and size-adjusted
+    LLR, plus DP with geometric penalty and full-adjust.  Emits one
+    JSON result per method with the same schema as run_ana, so the
+    plotting pipeline works unchanged.
     """
     from glow.analysis.prune import (prune_greedy, prune_dp,
                                      prune_greedy_full_adjust)
@@ -177,10 +179,14 @@ def run_prune_compare(config, **iter_kw):
     children = ana.children
     stat = np.nan_to_num(ana.stat.ravel().astype(float),
                          nan=0.0, posinf=0.0, neginf=0.0)
+    stat_adj = np.nan_to_num(ana.llr_adjusted_0.ravel().astype(float),
+                             nan=0.0, posinf=0.0, neginf=0.0)
 
     methods = {
         'greedy': prune_greedy(sig, children, stat),
+        'greedy_adj': prune_greedy(sig, children, stat_adj),
         'dp_lam0': prune_dp(sig, children, stat, lam=0.0),
+        'dp_lam0_adj': prune_dp(sig, children, stat_adj, lam=0.0),
         'dp_geom3': prune_dp(sig, children, stat, exp_n_eff=3.0),
         'full_adjust': prune_greedy_full_adjust(sig, children, exp),
     }
