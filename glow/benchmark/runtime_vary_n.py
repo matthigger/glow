@@ -22,7 +22,7 @@ from platformdirs import user_data_dir
 
 import glow
 from glow.benchmark.config import Config
-from glow.benchmark.run import run_ana
+from glow.benchmark.runner import RunAna
 
 LABEL = 'runtime_vary_n'
 CROP_N_VOX = 10_000
@@ -43,8 +43,7 @@ def _make_config(cloud_config=None):
     return Config(
         label=LABEL,
         source='wgn',
-        run_fnc=run_ana,
-        ana_kwargs_dict=ana_kwargs_dict,
+        runner=RunAna(ana_kwargs_dict),
         n_seed=N_REPEATS,
         effect_llr_all=np.array([0.0]),
         effect_perc=0.1,

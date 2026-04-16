@@ -1,4 +1,4 @@
-"""Tests for glow.benchmark.run helpers (_write_result, _run_variant)."""
+"""Tests for glow.benchmark.runner helpers (_write_result, RunMancovaVba._emit_variant)."""
 import json
 from types import SimpleNamespace
 
@@ -6,17 +6,18 @@ import numpy as np
 import pytest
 
 from glow.benchmark.file import OUT, ERROR
-from glow.benchmark.run import _write_result, _run_variant, _score_and_emit
+from glow.benchmark.runner import _write_result, _score_and_emit, RunMancovaVba
 from glow.experiment.exper import Experiment
 from glow.analysis import AnalysisVBA, AnalysisCET, Analysis
 
 
 def _make_config(tmp_path, detail_save=False):
     """Build a minimal config-like object sufficient for _write_result."""
+    fake_runner = SimpleNamespace(hash=lambda _cfg, _label: 'abc123')
     config = SimpleNamespace(
         folder=tmp_path,
         detail_save=detail_save,
-        _config_hash_for_label=lambda label: 'abc123',
+        runner=fake_runner,
     )
     return config
 
@@ -103,7 +104,7 @@ class TestRunVariant:
     def test_run_variant_vba(self, setup):
         exp, effect, config, stat, get_wilks = setup
         import time
-        _run_variant(
+        RunMancovaVba._emit_variant(
             config, effect, exp, get_wilks, 'VBA-wilks',
             stat, 0.05, 0.0, {}, time.time(), AnalysisVBA)
 
@@ -125,7 +126,7 @@ class TestRunVariant:
         cft_pval = 0.01
         cft = np.quantile(null_pool, 1 - cft_pval)
 
-        _run_variant(
+        RunMancovaVba._emit_variant(
             config, effect, exp, get_wilks, 'CET-wilks',
             stat, 0.05, 0.0, {}, time.time(), AnalysisCET,
             cft=cft, cft_pval=cft_pval, z_flag=False)

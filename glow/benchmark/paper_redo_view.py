@@ -210,11 +210,11 @@ def _rerun_and_view(config_label, seed, effect_llr, glow_label='GLOW',
             f'Expected label containing "wgn" or "hcp".')
 
     # build a Config with exact paper params (DRY)
+    from glow.benchmark.runner import RunAna
     config = make_config(
         label=f'_redo_{config_label}',
         source=source,
-        run_fnc=None,
-        ana_kwargs_dict=ana_kwargs_dict_vba,
+        runner=RunAna(ana_kwargs_dict_vba),
     )
 
     print(f'  Re-running ({glow_label}): seed={seed}, '
@@ -273,18 +273,20 @@ def _prompt_choice(prompt, n_options):
 
 
 def _get_method_labels(config_label):
-    """Return all method labels available in a config's ana_kwargs_dict."""
+    """Return all labels the config's runner emits."""
+    from glow.benchmark.runner import RunAna
     cfg = CONFIG_BY_LABEL.get(config_label)
-    if cfg is None or cfg.ana_kwargs_dict is None:
+    if cfg is None or not isinstance(cfg.runner, RunAna):
         return []
-    return list(cfg.ana_kwargs_dict.keys())
+    return list(cfg.runner.ana_kwargs_dict.keys())
 
 
 def main():
     # -- step 1: choose a config ------------------------------------------
+    from glow.benchmark.runner import RunAna
     available = []
     for label, cfg in sorted(CONFIG_BY_LABEL.items()):
-        if cfg.ana_kwargs_dict is not None:
+        if isinstance(cfg.runner, RunAna):
             available.append(label)
 
     if not available:

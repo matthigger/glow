@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import numpy as np
 import glow
 from glow.benchmark.config import Config
-from glow.benchmark.run import run_ana
+from glow.benchmark.runner import RunAna
 from glow.aws.worker import print_memory_profile, get_memory_profile
 
 
@@ -37,8 +37,7 @@ def bench_memory_profile():
     config = Config(
         label='test_memory_profile',
         source='wgn',
-        run_fnc=run_ana,
-        ana_kwargs_dict=ana_kwargs_dict,
+        runner=RunAna(ana_kwargs_dict),
         wgn_shape=(5, 5, 5),  # 125 voxels
         wgn_a=2,
         wgn_b=2,
@@ -69,15 +68,12 @@ def bench_memory_profile():
     
     def run_ana_with_capture(config, **kwargs):
         nonlocal exp_captured, ana_captured
-        # Get exp
         exp, effect = config.get_exp_eff(**kwargs)
         exp_captured = exp
-        
-        # Run first analysis to get ana object
-        for label, (Ana, ana_kwargs) in config.ana_kwargs_dict.items():
+
+        for label, (Ana, ana_kwargs) in config.runner.iter_ana_kwargs():
             ana = Ana(exp=exp, **ana_kwargs)
             ana_captured = ana
-            # Now trigger fake memory error
             raise MemoryError("Simulated memory error for testing")
     
     try:

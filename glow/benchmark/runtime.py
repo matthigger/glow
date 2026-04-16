@@ -127,18 +127,17 @@ def estimate_timeout_minutes(config, safety_factor=2.5):
     Returns ``(timeout_minutes, estimated_minutes, is_upper_bound)`` or
     ``None`` if no fitted runtime models are available.
     """
-    from glow.benchmark.run import (run_ana, run_prune_compare, run_segment,
-                                     run_mancova_glow, run_mancova_vba)
+    from glow.benchmark.runner import (RunAna, RunSegment, RunPruneCompare,
+                                       RunMancovaGlow, RunMancovaVba)
+    from glow.analysis.mancova import stat_dict
 
     num_vox, b, num_img = _get_config_dimensions(config)
     total_sec = 0.0
     is_upper_bound = False
+    runner = config.runner
 
-    if config.run_fnc in (run_ana, run_prune_compare):
-        items = list(config.ana_kwargs_dict.items())
-        if config.run_fnc is run_prune_compare:
-            items = items[:1]
-        for _label, (Ana, ana_kw) in items:
+    if isinstance(runner, RunAna):
+        for _label, (Ana, ana_kw) in runner.ana_kwargs_dict.items():
             atype = _get_analysis_type(Ana, ana_kw)
             if atype is None:
                 return None
@@ -149,9 +148,18 @@ def estimate_timeout_minutes(config, safety_factor=2.5):
             total_sec += max(0.0, predict_runtime_sec(
                 model, num_vox, b, num_img, n_perm))
 
-    elif config.run_fnc is run_mancova_glow:
-        from glow.analysis.mancova import stat_dict
-        _, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
+    elif isinstance(runner, RunPruneCompare):
+        Ana, ana_kw = next(iter(runner.iter_ana_kwargs()))[1]
+        atype = _get_analysis_type(Ana, ana_kw)
+        model = load_runtime_model(atype) if atype else None
+        if model is None:
+            return None
+        n_perm = _get_total_perms(Ana, ana_kw)
+        total_sec = max(0.0, predict_runtime_sec(
+            model, num_vox, b, num_img, n_perm))
+
+    elif isinstance(runner, RunMancovaGlow):
+        Ana, ana_kw = next(iter(runner.iter_ana_kwargs()))[1]
         model = load_runtime_model('GLOW')
         if model is None:
             return None
@@ -160,18 +168,16 @@ def estimate_timeout_minutes(config, safety_factor=2.5):
         total_sec = max(0.0, predict_runtime_sec(
             model, num_vox, b, num_img, n_perm)) * len(stat_dict)
 
-    elif config.run_fnc is run_mancova_vba:
-        from glow.analysis.mancova import stat_dict
-        _, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
+    elif isinstance(runner, RunMancovaVba):
+        Ana, ana_kw = next(iter(runner.iter_ana_kwargs()))[1]
         model = load_runtime_model('VBA-TFCE')
         if model is None:
             return None
         n_perm = _get_total_perms(Ana, ana_kw)
-        # runtime model is for 1 stat; mancova evaluates all stats per walk
         total_sec = max(0.0, predict_runtime_sec(
             model, num_vox, b, num_img, n_perm)) * len(stat_dict)
 
-    elif config.run_fnc is run_segment:
+    elif isinstance(runner, RunSegment):
         model = load_runtime_model('GLOW')
         if model is None:
             return None
@@ -427,7 +433,7 @@ RUNTIME_EXPERIMENT_DIR = (
 def _build_runtime_profile_configs(cloud_config=None):
     """Build Config objects for the runtime profiling grid."""
     from glow.benchmark.config import Config
-    from glow.benchmark.run import run_ana
+    from glow.benchmark.runner import RunAna
 
     if cloud_config is not None:
         # reduced grid for cloud: cap voxels at 30k and drop 1050-perm
@@ -450,7 +456,6 @@ def _build_runtime_profile_configs(cloud_config=None):
 
     common = dict(
         source='wgn',
-        run_fnc=run_ana,
         n_seed=1,
         effect_llr_all=np.array([0.05]),
         effect_perc=0.2,
@@ -471,34 +476,34 @@ def _build_runtime_profile_configs(cloud_config=None):
 
         configs.append(Config(
             label=f'rtprof_glow_{vox}v_{b}b_{num_img}i_{n_perm}p',
-            ana_kwargs_dict={'GLOW': (
+            runner=RunAna({'GLOW': (
                 glow.analysis.AnalysisGLOW,
                 dict(n_perm_fwer=n_fwer_glow,
                      n_perm_fwer_size_adjust=n_sa,
                      alpha_fwer=0.05, min_size=1),
-            )},
+            )}),
             wgn_b=b, wgn_num_img=num_img, crop_n_vox=vox,
             **common,
         ))
 
         configs.append(Config(
             label=f'rtprof_vba_{vox}v_{b}b_{num_img}i_{n_perm}p',
-            ana_kwargs_dict={'VBA': (
+            runner=RunAna({'VBA': (
                 glow.analysis.AnalysisVBA,
                 dict(n_perm_fwer=n_perm, tfce_flag=False,
                      alpha_fwer=0.05),
-            )},
+            )}),
             wgn_b=b, wgn_num_img=num_img, crop_n_vox=vox,
             **common,
         ))
 
         configs.append(Config(
             label=f'rtprof_vba_tfce_{vox}v_{b}b_{num_img}i_{n_perm}p',
-            ana_kwargs_dict={'VBA-TFCE': (
+            runner=RunAna({'VBA-TFCE': (
                 glow.analysis.AnalysisVBA,
                 dict(n_perm_fwer=n_perm, tfce_flag=True,
                      alpha_fwer=0.05),
-            )},
+            )}),
             wgn_b=b, wgn_num_img=num_img, crop_n_vox=vox,
             **common,
         ))
@@ -517,7 +522,7 @@ def _collect_runtime_results(configs):
             config.label, verbose=False, result_dir=RUNTIME_EXPERIMENT_DIR)
         if df.empty:
             continue
-        _label, (Ana, ana_kw) = next(iter(config.ana_kwargs_dict.items()))
+        _label, (Ana, ana_kw) = next(iter(config.runner.iter_ana_kwargs()))
         n_perm = _get_total_perms(Ana, ana_kw)
         for _, row in df.iterrows():
             rows.append({
@@ -554,9 +559,8 @@ def _fit_runtime_models(df):
 
 def _run_one_profile(config, kwargs):
     """Run one profiling experiment locally, catching errors."""
-    from glow.benchmark.run import run_ana
     try:
-        run_ana(config=config, **kwargs)
+        config.runner.run(config=config, **kwargs)
     except Exception as e:
         print(f'  ✗ {config.label}: {e}')
 

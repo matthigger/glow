@@ -185,7 +185,7 @@ def plot_summary(datasets):
 
 
 # ------------------------------------------------------------------
-# Figure 3: z-scoring delta (F1_z - F1_raw) per stat
+# Figure 3: z-scoring delta (Dice_z - Dice_raw) per stat
 # ------------------------------------------------------------------
 
 def plot_z_delta(datasets):

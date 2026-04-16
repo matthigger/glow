@@ -119,6 +119,7 @@ _METRIC_TITLES = {
     'sens': 'Sensitivity',
     'spec': 'Specificity',
     'pct_max_dice': r'Dice$(\hat{r})\;/\;\max_r$ Dice$(r)$',
+    'n_selected': 'Num Selected Regions',
 }
 
 _X_PARAM_LABELS = {
@@ -282,10 +283,10 @@ if __name__ == '__main__':
 
         # filter to current config (ignore stale results from old configs)
         if 'config_hash' in df.columns:
-            expected = config._get_expected_labels()
+            expected = set(config.runner.labels)
             valid = pd.Series(False, index=df.index)
             for lab in expected:
-                lhash = config._config_hash_for_label(lab)
+                lhash = config.runner.hash(config, lab)
                 valid |= (df['label'] == lab) & (df['config_hash'] == lhash)
             df = df[valid]
             if df.empty:
@@ -331,6 +332,25 @@ if __name__ == '__main__':
             dest = latest / f'{label}.pdf'
             shutil.copy2(path, dest)
             print(f'  -> {dest}')
+
+        # generate n_selected plot (prune_method_* configs)
+        if 'n_selected' in df.columns and df['n_selected'].notna().any():
+            path_n = folder / 'n_selected.pdf'
+            if force_replot or n_new or not path_n.exists():
+                print(f'creating: {path_n}')
+                plot_x_vs_metrics(df, x_param=x_param,
+                                  metrics=['n_selected'],
+                                  one_vs_rest=False,
+                                  ylabel='num selected regions')
+                plt.gcf().savefig(path_n, bbox_inches='tight')
+                plt.close('all')
+            else:
+                print(f'skipping: {path_n} (already exists, no new data)')
+
+            if path_n.exists():
+                dest = latest / f'{label}_n_selected.pdf'
+                shutil.copy2(path_n, dest)
+                print(f'  -> {dest}')
 
         # generate pct_max_dice plot (only GLOW variants)
         if 'pct_max_dice' in df.columns:

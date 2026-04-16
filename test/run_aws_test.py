@@ -50,7 +50,7 @@ import numpy as np
 
 import glow
 from glow.benchmark.config import Config
-from glow.benchmark.run import run_ana
+from glow.benchmark.runner import RunAna
 
 
 def print_debug_info():
@@ -385,8 +385,9 @@ def run_batched_cloud_tests():
             job_queue=job_queue, job_definition=job_definition,
             region=region, timeout_minutes=30, retry_attempts=1)
         config_el = Config(
-            label='test_experiment_level', source='wgn', run_fnc=run_ana,
-            cloud_config=cloud_config, ana_kwargs_dict=ana_kwargs_dict,
+            label='test_experiment_level', source='wgn',
+            runner=RunAna(ana_kwargs_dict),
+            cloud_config=cloud_config,
             n_seed=2, effect_llr_all=np.array([0.2]),
             wgn_shape=(5, 5, 5), wgn_a=2, wgn_b=2, wgn_num_img=20,
             exp_seed=42, effect_perc=0.2, n_jobs=1,
@@ -411,8 +412,9 @@ def run_batched_cloud_tests():
             job_queue=job_queue, job_definition=job_definition,
             region=region, timeout_minutes=30, retry_attempts=1)
         config_tfce = Config(
-            label='test_tfce', source='wgn', run_fnc=run_ana,
-            cloud_config=cloud_config, ana_kwargs_dict=ana_kwargs_dict,
+            label='test_tfce', source='wgn',
+            runner=RunAna(ana_kwargs_dict),
+            cloud_config=cloud_config,
             n_seed=1, effect_llr_all=np.array([0.2]),
             wgn_shape=(5, 5, 5), wgn_a=2, wgn_b=2, wgn_num_img=20,
             exp_seed=42, effect_perc=0.2, n_jobs=1,
@@ -438,8 +440,9 @@ def run_batched_cloud_tests():
             job_queue=job_queue, job_definition=job_definition,
             region=region, timeout_minutes=60, retry_attempts=1)
         config_hcp = Config(
-            label='test_hcp', source='hcp', run_fnc=run_ana,
-            cloud_config=cloud_config, ana_kwargs_dict=ana_kwargs_dict,
+            label='test_hcp', source='hcp',
+            runner=RunAna(ana_kwargs_dict),
+            cloud_config=cloud_config,
             n_seed=1, effect_llr_all=np.array([0.2]),
             hcp_feats=['fa'], radius=5,
             effect_perc=0.2, n_jobs=1,

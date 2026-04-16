@@ -72,11 +72,11 @@ def measure_peak_rss(num_vox, b, num_img):
 # ---------------------------------------------------------------------------
 
 def _worker_experiment(num_vox, b, num_img, n_perm, result_queue):
-    """Run full run_ana in a child process and report peak RSS."""
+    """Run full RunAna in a child process and report peak RSS."""
     from glow.experiment.exper import Experiment
     from glow.experiment.exper import ExperimentScaled
     import glow.effect
-    from glow.benchmark.run import run_ana
+    from glow.benchmark.runner import RunAna
 
     side = math.ceil(num_vox ** (1 / 3))
     shape = (side, side, side)
@@ -88,19 +88,7 @@ def _worker_experiment(num_vox, b, num_img, n_perm, result_queue):
         extenter=extenter, effect_llr=0.05, seed=0
     )
 
-    class MinimalConfig:
-        def get_exp_eff(self, **kwargs):
-            return exp_eff, effect
-
-        def _config_hash_for_label(self, label):
-            return exp_eff._hash()
-
-    config = MinimalConfig()
-    config.run_fnc = run_ana
-    config.folder = Path(tempfile.mkdtemp(prefix='glow_mem_'))
-    config.detail_save = False
-    config.error_save = False
-    config.ana_kwargs_dict = {
+    runner = RunAna({
         'GLOW': (
             __import__('glow.analysis', fromlist=['AnalysisGLOW']).AnalysisGLOW,
             dict(
@@ -110,9 +98,19 @@ def _worker_experiment(num_vox, b, num_img, n_perm, result_queue):
                 min_size=1,
             ),
         ),
-    }
+    })
 
-    run_ana(config, seed=0, effect_llr=0.05)
+    class MinimalConfig:
+        def get_exp_eff(self, **kwargs):
+            return exp_eff, effect
+
+    config = MinimalConfig()
+    config.runner = runner
+    config.folder = Path(tempfile.mkdtemp(prefix='glow_mem_'))
+    config.detail_save = False
+    config.error_save = False
+
+    runner.run(config, seed=0, effect_llr=0.05)
 
     peak_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     result_queue.put(peak_kb / 1024.0)

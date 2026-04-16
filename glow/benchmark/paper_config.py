@@ -4,15 +4,16 @@ import numpy as np
 
 import glow
 from glow.benchmark.config import Config
-from glow.benchmark.run import (run_ana, run_mancova_glow, run_prune_compare,
-                                run_segment, run_mancova_vba)
+from glow.benchmark.runner import (RunAna, RunSegment, RunPruneCompare,
+                                   RunMancovaGlow, RunMancovaVba)
 from glow.analysis.mancova import get_hotel_tr, get_llr, get_wilks
 
 # ---------- common parameters ----------
-CROP_N_VOX = 25000
+# CROP_N_VOX = 25_000
+CROP_N_VOX = 1_000
 
 COMMON = dict(
-    n_seed=5,
+    n_seed=50,
     effect_llr_all=np.logspace(np.log10(0.003), np.log10(0.3), 11),
     effect_perc=0.1,
     crop_n_vox=CROP_N_VOX,
@@ -61,7 +62,7 @@ ANALYSES = {
 }
 
 
-def make_config(label, source, run_fnc, ana_kwargs_dict=None, **overrides):
+def make_config(label, source, runner, **overrides):
     params = {}
     params.update(COMMON)
     params.update(SOURCES[source])
@@ -69,30 +70,17 @@ def make_config(label, source, run_fnc, ana_kwargs_dict=None, **overrides):
     return Config(
         label=label,
         source=source,
-        run_fnc=run_fnc,
-        ana_kwargs_dict=ana_kwargs_dict,
+        runner=runner,
         **params
     )
 
 
-# ---------- shared analysis kwarg dicts ----------
+# ---------- shared ana_kwargs_dicts used by RunAna configs ----------
 ana_kwargs_dict_vba = {
     'GLOW': (glow.analysis.AnalysisGLOW, ANALYSES['GLOW']),
     'VBA': (glow.analysis.AnalysisVBA, ANALYSES['VBA']),
     'VBA-TFCE': (glow.analysis.AnalysisVBA, ANALYSES['VBA-TFCE']),
     'CET': (glow.analysis.AnalysisCET, ANALYSES['CET']),
-}
-
-ana_kwargs_dict_prune = {
-    'GLOW': (glow.analysis.AnalysisGLOW, ANALYSES['GLOW']),
-}
-
-ana_kwargs_dict_mancova = {
-    'GLOW': (glow.analysis.AnalysisGLOW, ANALYSES['GLOW']),
-}
-
-ana_kwargs_dict_mancova_vba = {
-    'VBA-TFCE': (glow.analysis.AnalysisVBA, ANALYSES['VBA-TFCE']),
 }
 
 
@@ -104,52 +92,49 @@ config_list = []
 # ---------- A. type I error (null) ----------
 # effect_llr=0, 500 seeds — produces calibration curves via min_pval
 config_list.append(make_config(
-    'null_hcp', 'hcp', run_ana, ana_kwargs_dict_vba,
+    'null_hcp', 'hcp', RunAna(ana_kwargs_dict_vba),
     effect_llr_all=np.array([0.0]), n_seed=500))
 config_list.append(make_config(
-    'null_wgn', 'wgn', run_ana, ana_kwargs_dict_vba,
+    'null_wgn', 'wgn', RunAna(ana_kwargs_dict_vba),
     effect_llr_all=np.array([0.0]), n_seed=500))
 
 # ---------- B. VBA comparison split by feature count ----------
 # HCP: FA only (b=1) and FA+MD (b=2)
 config_list.append(make_config(
-    'vba_hcp_fa', 'hcp', run_ana, ana_kwargs_dict_vba,
+    'vba_hcp_fa', 'hcp', RunAna(ana_kwargs_dict_vba),
     hcp_feats=['fa']))
 config_list.append(make_config(
-    'vba_hcp_famd', 'hcp', run_ana, ana_kwargs_dict_vba))
+    'vba_hcp_famd', 'hcp', RunAna(ana_kwargs_dict_vba)))
 
 # WGN: b=1 and b=2
 config_list.append(make_config(
-    'vba_wgn_b1', 'wgn', run_ana, ana_kwargs_dict_vba,
+    'vba_wgn_b1', 'wgn', RunAna(ana_kwargs_dict_vba),
     wgn_b=1))
 config_list.append(make_config(
-    'vba_wgn_b2', 'wgn', run_ana, ana_kwargs_dict_vba))
+    'vba_wgn_b2', 'wgn', RunAna(ana_kwargs_dict_vba)))
 
 # ---------- C. b sweep (WGN) ----------
-# vary number of features 1..10 at fixed moderate effect
 config_list.append(make_config(
-    'sweep_b_wgn', 'wgn', run_ana, ana_kwargs_dict_vba,
+    'sweep_b_wgn', 'wgn', RunAna(ana_kwargs_dict_vba),
     x_param='wgn_b',
     iter_params={'wgn_b': list(range(1, 11))},
     fixed_params={'effect_llr': MODERATE_EFFECT_LLR}))
 
 # ---------- D. effect_perc sweep ----------
-# 15 geometrically spaced points from 1% to 100% of volume
 config_list.append(make_config(
-    'sweep_perc_hcp', 'hcp', run_ana, ana_kwargs_dict_vba,
+    'sweep_perc_hcp', 'hcp', RunAna(ana_kwargs_dict_vba),
     x_param='effect_perc',
     iter_params={'effect_perc': np.geomspace(0.01, 1.0, 15).tolist()},
     fixed_params={'effect_llr': MODERATE_EFFECT_LLR}))
 config_list.append(make_config(
-    'sweep_perc_wgn', 'wgn', run_ana, ana_kwargs_dict_vba,
+    'sweep_perc_wgn', 'wgn', RunAna(ana_kwargs_dict_vba),
     x_param='effect_perc',
     iter_params={'effect_perc': np.geomspace(0.01, 1.0, 15).tolist()},
     fixed_params={'effect_llr': MODERATE_EFFECT_LLR}))
 
 # ---------- E. num_img sweep (WGN only) ----------
-# 7 geometrically spaced points from 10 to 300 subjects
 config_list.append(make_config(
-    'sweep_nimg_wgn', 'wgn', run_ana, ana_kwargs_dict_vba,
+    'sweep_nimg_wgn', 'wgn', RunAna(ana_kwargs_dict_vba),
     x_param='wgn_num_img',
     iter_params={'wgn_num_img': [10, 18, 30, 55, 100, 180, 300]},
     fixed_params={'effect_llr': MODERATE_EFFECT_LLR}))
@@ -157,32 +142,30 @@ config_list.append(make_config(
 # ---------- F. 2D images (WGN) ----------
 _wgn_side_2d = math.ceil(CROP_N_VOX ** (1 / 2))
 config_list.append(make_config(
-    'vba_wgn_2d', 'wgn', run_ana, ana_kwargs_dict_vba,
+    'vba_wgn_2d', 'wgn', RunAna(ana_kwargs_dict_vba),
     wgn_shape=(_wgn_side_2d, _wgn_side_2d)))
 
 # ---------- G. pruning method comparison ----------
 config_list.append(make_config(
-    'prune_method_hcp', 'hcp', run_prune_compare, ana_kwargs_dict_prune))
+    'prune_method_hcp', 'hcp', RunPruneCompare(ANALYSES['GLOW'])))
 config_list.append(make_config(
-    'prune_method_wgn', 'wgn', run_prune_compare, ana_kwargs_dict_prune))
+    'prune_method_wgn', 'wgn', RunPruneCompare(ANALYSES['GLOW'])))
 
 # ---------- H. MANCOVA stat comparison (GLOW) ----------
 config_list.append(make_config(
-    'mancova_glow_wgn', 'wgn', run_mancova_glow, ana_kwargs_dict_mancova,
-    crop_n_vox=5000))
+    'mancova_glow_wgn', 'wgn', RunMancovaGlow(ANALYSES['GLOW'])))
 config_list.append(make_config(
-    'mancova_glow_hcp', 'hcp', run_mancova_glow, ana_kwargs_dict_mancova,
-    crop_n_vox=5000))
+    'mancova_glow_hcp', 'hcp', RunMancovaGlow(ANALYSES['GLOW'])))
 
 # ---------- I. MANCOVA stat comparison (VBA / VBA-TFCE / CET) ----------
 config_list.append(make_config(
-    'mancova_vba_wgn', 'wgn', run_mancova_vba, ana_kwargs_dict_mancova_vba))
+    'mancova_vba_wgn', 'wgn', RunMancovaVba(ANALYSES['VBA-TFCE'])))
 config_list.append(make_config(
-    'mancova_vba_hcp', 'hcp', run_mancova_vba, ana_kwargs_dict_mancova_vba))
+    'mancova_vba_hcp', 'hcp', RunMancovaVba(ANALYSES['VBA-TFCE'])))
 
 # ---------- J. segmentation comparison ----------
-config_list.append(make_config('segment_hcp', 'hcp', run_segment))
-config_list.append(make_config('segment_wgn', 'wgn', run_segment))
+config_list.append(make_config('segment_hcp', 'hcp', RunSegment()))
+config_list.append(make_config('segment_wgn', 'wgn', RunSegment()))
 
 
 CONFIG_BY_LABEL = {config.label: config for config in config_list}

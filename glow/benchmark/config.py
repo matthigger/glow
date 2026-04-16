@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from itertools import product
 from pathlib import Path
 from typing import Literal, Optional, Tuple, List
@@ -27,19 +27,14 @@ path_result.mkdir(parents=True, exist_ok=True)
 class Config:
     label: str
 
-    # -------- run function --------
-    # function to run for this config (e.g., run_ana or run_segment)
-    run_fnc: callable = None
+    # -------- runner --------
+    # Runner instance that owns this config's result emission + hashing.
+    # See glow.benchmark.runner for concrete subclasses.
+    runner: 'Runner' = None
 
     # -------- cloud execution --------
     # if set, runs experiments on AWS cloud (one job per experiment)
     cloud_config: Optional['CloudConfig'] = None
-
-    # -------- analysis kwargs --------
-    # a dictionary, keys are labels of each analysis, values are tuples of
-    # Analysis objects (AnalysisGLOW or AnalysisVBA) and kwargs to be sent
-    # to their constructor
-    ana_kwargs_dict: dict = None
 
     # -------- image set selection --------
     source: Literal['wgn', 'hcp'] = 'wgn'
@@ -107,47 +102,28 @@ class Config:
         self.folder = None
         self._shared_exp_s3_key = None  # S3 key for shared experiment data
 
-    def _base_hash_dict(self):
-        """Shared config parameters that affect all results."""
+    def base_recipe(self):
+        """Shared per-row recipe components (merged with Runner.label_recipe)."""
         if self.exp_orig is None:
             self.prep_exp_orig()
         return {
             'exp_hash': self.exp_orig._hash(),
             'effect_perc': self.effect_perc,
             'radius': self.radius,
-            'run_fnc': self.run_fnc.__name__ if self.run_fnc else None,
+            'runner': type(self.runner).__name__ if self.runner else None,
         }
-
-    @staticmethod
-    def _ana_entry(cls, kw):
-        _runtime_keys = {'perm_dir', 'n_jobs_perm'}
-        entry = {'class': cls.__name__}
-        for k, v in sorted(kw.items()):
-            if k in _runtime_keys:
-                continue
-            entry[k] = v.__name__ if callable(v) else v
-        return entry
-
-    def _config_hash_for_label(self, label):
-        """Per-label hash: shared params + only this label's analysis config."""
-        d = self._base_hash_dict()
-        if self.ana_kwargs_dict and label in self.ana_kwargs_dict:
-            cls, kw = self.ana_kwargs_dict[label]
-            d['ana'] = {label: self._ana_entry(cls, kw)}
-        sig = json.dumps(d, sort_keys=True, default=str)
-        return hashlib.sha256(sig.encode()).hexdigest()[:12]
 
     def _job_hash(self, labels=None):
         """Combined hash for a set of labels (for job identification).
 
         Hashes the sorted per-label hashes together. If labels is None,
-        uses all expected labels.
+        uses all labels the runner emits.
         """
         if labels is None:
-            labels = sorted(self._get_expected_labels())
+            labels = sorted(self.runner.labels)
         else:
             labels = sorted(labels)
-        per_label = [self._config_hash_for_label(lab) for lab in labels]
+        per_label = [self.runner.hash(self, lab) for lab in labels]
         sig = json.dumps(per_label, sort_keys=True)
         return hashlib.sha256(sig.encode()).hexdigest()[:12]
 
@@ -261,35 +237,6 @@ class Config:
             
             yield kwargs
 
-    def _get_expected_labels(self):
-        """return the set of result 'label' strings one experiment produces."""
-        from glow.benchmark.run import (run_ana, run_segment,
-                                        run_mancova_glow, run_mancova_vba,
-                                        run_prune_compare)
-        if self.run_fnc is run_ana:
-            return set(self.ana_kwargs_dict.keys())
-        if self.run_fnc is run_segment:
-            from glow.analysis.cluster import MODE_LABELS
-            return set(MODE_LABELS.values())
-        if self.run_fnc is run_mancova_glow:
-            from glow.analysis.mancova import stat_dict
-            return {f'GLOW-{name}' for name in stat_dict}
-        if self.run_fnc is run_mancova_vba:
-            from glow.analysis.mancova import stat_dict
-            labels = set()
-            for name in stat_dict:
-                for prefix in ('VBA', 'VBA-TFCE', 'CET'):
-                    for suffix in ('', '-z'):
-                        labels.add(f'{prefix}-{name}{suffix}')
-            return labels
-        if self.run_fnc is run_prune_compare:
-            return {'greedy', 'greedy_adj', 'dp_lam0', 'dp_lam0_adj',
-                    'dp_geom3', 'full_adjust'}
-        raise ValueError(
-            f'unknown run_fnc {self.run_fnc!r}: add its expected labels '
-            f'to _get_expected_labels (returning set() would silently '
-            f'mark every experiment as fully cached)')
-
     def _cached_labels(self, kwargs, df, label_hashes):
         """return the set of labels already cached for these kwargs.
 
@@ -339,8 +286,8 @@ class Config:
         from glow.benchmark.file import load_update_all
         df, _folder, _n_new = load_update_all(
             self.label, verbose=False, result_dir=self.result_dir)
-        expected = self._get_expected_labels()
-        label_hashes = {lab: self._config_hash_for_label(lab)
+        expected = set(self.runner.labels)
+        label_hashes = {lab: self.runner.hash(self, lab)
                         for lab in expected}
 
         uncached = []
@@ -372,7 +319,12 @@ class Config:
         self.folder.mkdir(exist_ok=True, parents=True)
 
     def _as_serializable(self):
+        from glow.benchmark.runner import Runner
+        from dataclasses import is_dataclass, fields
+
         def convert(obj):
+            if isinstance(obj, Runner):
+                return convert(obj.to_dict())
             if isinstance(obj, np.ndarray):
                 return obj.tolist()
             if isinstance(obj, (np.integer, np.floating, np.bool_)):
@@ -383,11 +335,20 @@ class Config:
                 return {k: convert(v) for k, v in obj.items()}
             if isinstance(obj, (list, tuple)):
                 return [convert(v) for v in obj]
+            if is_dataclass(obj) and not isinstance(obj, type):
+                return {f.name: convert(getattr(obj, f.name))
+                        for f in fields(obj)}
             if hasattr(obj, '__name__'):
                 return obj.__name__
             return obj
 
-        return convert(asdict(self))
+        # asdict() is recursive on dataclasses but passes non-dataclass
+        # attributes through unchanged; convert() handles the rest.
+        d = {k: convert(v) for k, v in self.__dict__.items()}
+        for k in ('exp_orig', 'folder', '_shared_exp_s3_key',
+                  '_last_hcp_feats', '_last_wgn_b', '_last_wgn_num_img'):
+            d.pop(k, None)
+        return d
 
     def save_config(self, path):
         path = Path(path).with_suffix('.yaml')
@@ -425,14 +386,24 @@ class Config:
             print(f'  running {len(uncached)} experiments')
 
         n_jobs = self.n_jobs if self.n_jobs not in (0, 1) else 1
-        expected = self._get_expected_labels()
-        Parallel(n_jobs=n_jobs, verbose=10)(
-            delayed(self.run_fnc)(
-                config=self,
-                _skip_labels=expected - missing,
-                **kwargs)
-            for _, kwargs, missing in tqdm(uncached)
-        )
+        expected = set(self.runner.labels)
+
+        # _skip_labels is only honored by RunAna (per-label analyses); other
+        # runners ignore unknown kwargs via **iter_kw signature.
+        from glow.benchmark.runner import RunAna
+        if isinstance(self.runner, RunAna):
+            Parallel(n_jobs=n_jobs, verbose=10)(
+                delayed(self.runner.run)(
+                    config=self,
+                    _skip_labels=expected - missing,
+                    **kwargs)
+                for _, kwargs, missing in tqdm(uncached)
+            )
+        else:
+            Parallel(n_jobs=n_jobs, verbose=10)(
+                delayed(self.runner.run)(config=self, **kwargs)
+                for _, kwargs, _missing in tqdm(uncached)
+            )
     
     def submit_cloud_jobs(self, verbose=True):
         """submit experiments to AWS Batch (returns job info dict)."""
@@ -478,8 +449,9 @@ class Config:
         memory_mb = None
         b, num_img, num_vox_full = self.exp_orig.y.shape[0], self.exp_orig.y.shape[1], self.exp_orig.y.shape[2]
         n_perm = 100
-        if self.ana_kwargs_dict:
-            first_kw = next(iter(self.ana_kwargs_dict.values()))[1]
+        rep = self.runner.representative_ana_kw() if self.runner else None
+        if rep is not None:
+            _Ana, first_kw = rep
             n_perm = first_kw.get('n_perm_fwer', n_perm)
         if self.source == 'hcp':
             num_vox_cropped = self.crop_n_vox if self.crop_n_vox is not None else num_vox_full

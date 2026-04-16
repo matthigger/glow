@@ -11,7 +11,7 @@ import pytest
 
 from glow.benchmark.config import Config
 from glow.benchmark.file import load_update_all, OUT
-from glow.benchmark.run import run_ana, run_segment
+from glow.benchmark.runner import (RunAna, RunSegment, RunPruneCompare)
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ def _make_result_json(folder, label, seed, effect_llr, extra=None):
     return path
 
 
-def _make_config(label='test_cache', ana_labels=('A', 'B')):
+def _make_config(label='test_cache', ana_labels=('GLOW', 'VBA')):
     """Build a tiny Config with mock analyses."""
     import glow
     ana_kwargs_dict = {
@@ -56,8 +56,7 @@ def _make_config(label='test_cache', ana_labels=('A', 'B')):
     return Config(
         label=label,
         source='wgn',
-        run_fnc=run_ana,
-        ana_kwargs_dict=ana_kwargs_dict,
+        runner=RunAna(ana_kwargs_dict),
         n_seed=2,
         effect_llr_all=np.array([0.05, 0.2]),
         wgn_shape=(3, 3),
@@ -67,6 +66,10 @@ def _make_config(label='test_cache', ana_labels=('A', 'B')):
         detail_save=False,
         error_save=False,
     )
+
+
+def _label_hash(config, label):
+    return config.runner.hash(config, label)
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +123,7 @@ class TestLoadUpdateAll:
 
 
 # ---------------------------------------------------------------------------
-# _config_hash_for_label
+# runner.hash (per-label config hashing)
 # ---------------------------------------------------------------------------
 
 class TestConfigHash:
@@ -128,56 +131,56 @@ class TestConfigHash:
         """Same config produces same hash for same label."""
         c1 = _make_config(ana_labels=('GLOW', 'VBA'))
         c2 = _make_config(ana_labels=('GLOW', 'VBA'))
-        assert c1._config_hash_for_label('GLOW') == c2._config_hash_for_label('GLOW')
+        assert _label_hash(c1, 'GLOW') == _label_hash(c2, 'GLOW')
 
     def test_different_labels_different_hash(self):
         """Different labels produce different hashes."""
         c = _make_config(ana_labels=('GLOW', 'VBA'))
-        assert c._config_hash_for_label('GLOW') != c._config_hash_for_label('VBA')
+        assert _label_hash(c, 'GLOW') != _label_hash(c, 'VBA')
 
     def test_different_nperm(self):
         """Changing n_perm_fwer for a label changes that label's hash."""
         c1 = _make_config(ana_labels=('GLOW',))
         c2 = _make_config(ana_labels=('GLOW',))
-        _, kw = c2.ana_kwargs_dict['GLOW']
+        _, kw = c2.runner.ana_kwargs_dict['GLOW']
         kw['n_perm_fwer'] = 999
-        assert c1._config_hash_for_label('GLOW') != c2._config_hash_for_label('GLOW')
+        assert _label_hash(c1, 'GLOW') != _label_hash(c2, 'GLOW')
 
     def test_changing_other_label_no_effect(self):
         """Changing VBA's config does not affect GLOW's hash."""
         c1 = _make_config(ana_labels=('GLOW', 'VBA'))
         c2 = _make_config(ana_labels=('GLOW', 'VBA'))
-        _, kw = c2.ana_kwargs_dict['VBA']
+        _, kw = c2.runner.ana_kwargs_dict['VBA']
         kw['n_perm_fwer'] = 999
-        assert c1._config_hash_for_label('GLOW') == c2._config_hash_for_label('GLOW')
-        assert c1._config_hash_for_label('VBA') != c2._config_hash_for_label('VBA')
+        assert _label_hash(c1, 'GLOW') == _label_hash(c2, 'GLOW')
+        assert _label_hash(c1, 'VBA') != _label_hash(c2, 'VBA')
 
     def test_different_source(self):
         """Changing source changes the hash (base params changed)."""
         c1 = _make_config()
         c2 = _make_config()
         c2.source = 'hcp'
-        assert c1._config_hash_for_label('GLOW') != c2._config_hash_for_label('GLOW')
+        assert _label_hash(c1, 'GLOW') != _label_hash(c2, 'GLOW')
 
     def test_different_wgn_shape(self):
         """Changing wgn_shape changes the hash (base params changed)."""
         c1 = _make_config()
         c2 = _make_config()
         c2.wgn_shape = (5, 5)
-        assert c1._config_hash_for_label('GLOW') != c2._config_hash_for_label('GLOW')
+        assert _label_hash(c1, 'GLOW') != _label_hash(c2, 'GLOW')
 
     def test_hash_length(self):
         """Hash should be a 12 character hex string."""
         c = _make_config()
-        h = c._config_hash_for_label('GLOW')
+        h = _label_hash(c, 'GLOW')
         assert len(h) == 12
         assert all(ch in '0123456789abcdef' for ch in h)
 
     def test_lazy_loads_exp_orig(self):
-        """_config_hash_for_label() auto-loads exp_orig if None."""
+        """runner.hash() auto-loads exp_orig via base_recipe if None."""
         c = _make_config()
         assert c.exp_orig is None
-        c._config_hash_for_label('GLOW')
+        _label_hash(c, 'GLOW')
         assert c.exp_orig is not None
 
     def test_job_hash_deterministic(self):
@@ -193,30 +196,25 @@ class TestConfigHash:
 
 
 # ---------------------------------------------------------------------------
-# _get_expected_labels
+# runner.labels
 # ---------------------------------------------------------------------------
 
-class TestGetExpectedLabels:
+class TestRunnerLabels:
     def test_run_ana_labels(self):
         config = _make_config(ana_labels=('GLOW', 'VBA', 'VBA-TFCE'))
-        assert config._get_expected_labels() == {'GLOW', 'VBA', 'VBA-TFCE'}
+        assert set(config.runner.labels) == {'GLOW', 'VBA', 'VBA-TFCE'}
 
     def test_run_segment_labels(self):
-        config = Config(label='seg', run_fnc=run_segment, source='wgn')
+        config = Config(label='seg', runner=RunSegment(), source='wgn')
         from glow.analysis.cluster import MODE_LABELS
-        assert config._get_expected_labels() == set(MODE_LABELS.values())
-
-    def test_unknown_run_fnc_raises(self):
-        """Unknown run_fnc must raise — a silent empty set would mark
-        every experiment as fully cached and skip running."""
-        config = Config(label='x', run_fnc=lambda: None, source='wgn')
-        with pytest.raises(ValueError, match='unknown run_fnc'):
-            config._get_expected_labels()
+        assert set(config.runner.labels) == set(MODE_LABELS.values())
 
     def test_run_prune_compare_labels(self):
-        from glow.benchmark.run import run_prune_compare
-        config = Config(label='p', run_fnc=run_prune_compare, source='wgn')
-        labels = config._get_expected_labels()
+        import glow
+        runner = RunPruneCompare({'n_perm_fwer': 1, 'alpha_fwer': 0.05,
+                                  'min_size': 1, 'n_jobs_perm': 1})
+        config = Config(label='p', runner=runner, source='wgn')
+        labels = set(config.runner.labels)
         assert labels == {'greedy', 'greedy_adj', 'dp_lam0', 'dp_lam0_adj',
                           'dp_geom3', 'full_adjust'}
 
@@ -230,7 +228,7 @@ class TestIsExperimentCached:
         self.config = _make_config(ana_labels=('GLOW', 'VBA'))
         self.expected = {'GLOW', 'VBA'}
         self.label_hashes = {
-            lab: self.config._config_hash_for_label(lab)
+            lab: _label_hash(self.config, lab)
             for lab in self.expected
         }
 
@@ -345,9 +343,9 @@ class TestFilterUncached:
         label_dir = tmp_path / config.label
         label_dir.mkdir()
         _make_result_json(label_dir, 'A', seed=0, effect_llr=0.05,
-                          extra={'config_hash': config._config_hash_for_label('A')})
+                          extra={'config_hash': _label_hash(config,'A')})
         _make_result_json(label_dir, 'B', seed=0, effect_llr=0.05,
-                          extra={'config_hash': config._config_hash_for_label('B')})
+                          extra={'config_hash': _label_hash(config,'B')})
         # aggregate into CSV
         with patch('glow.benchmark.file.get_path_result', return_value=tmp_path):
             load_update_all(config.label, verbose=False)
@@ -366,7 +364,7 @@ class TestFilterUncached:
         label_dir = tmp_path / config.label
         label_dir.mkdir()
         _make_result_json(label_dir, 'A', seed=0, effect_llr=0.05,
-                          extra={'config_hash': config._config_hash_for_label('A')})
+                          extra={'config_hash': _label_hash(config,'A')})
         with patch('glow.benchmark.file.get_path_result', return_value=tmp_path):
             load_update_all(config.label, verbose=False)
 
@@ -386,7 +384,7 @@ class TestFilterUncached:
         label_dir = tmp_path / config.label
         label_dir.mkdir()
         _make_result_json(label_dir, 'A', seed=0, effect_llr=0.05,
-                          extra={'config_hash': config._config_hash_for_label('A')})
+                          extra={'config_hash': _label_hash(config,'A')})
         with patch('glow.benchmark.file.get_path_result', return_value=tmp_path):
             load_update_all(config.label, verbose=False)
 
@@ -481,7 +479,8 @@ class TestPrepFolder:
     def test_creates_flat_folder(self, tmp_path):
         """prep_folder creates results/{label}/ with no timestamp."""
         with patch('glow.benchmark.config.path_result', tmp_path):
-            config = Config(label='test_flat', source='wgn', run_fnc=run_ana)
+            config = Config(label='test_flat', source='wgn',
+                            runner=RunSegment())
             config.prep_folder()
 
         assert config.folder == tmp_path / 'test_flat'
@@ -490,7 +489,8 @@ class TestPrepFolder:
     def test_idempotent(self, tmp_path):
         """calling prep_folder twice doesn't raise."""
         with patch('glow.benchmark.config.path_result', tmp_path):
-            config = Config(label='test_idem', source='wgn', run_fnc=run_ana)
+            config = Config(label='test_idem', source='wgn',
+                            runner=RunSegment())
             config.prep_folder()
             config.prep_folder()  # should not raise
 

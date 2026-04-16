@@ -371,19 +371,19 @@ def run_experiment_mode(args):
     print(f'\nRunning experiment...')
     print(f'  Config: {config.label}')
     print(f'  Source: {config.source}')
-    print(f'  Analyses: {len(config.ana_kwargs_dict) if hasattr(config, "ana_kwargs_dict") and config.ana_kwargs_dict else "N/A"}')
-    
-    if hasattr(config, 'ana_kwargs_dict') and config.ana_kwargs_dict:
-        for label, (Ana, ana_kwargs) in config.ana_kwargs_dict.items():
+    print(f'  Runner: {type(config.runner).__name__ if config.runner else "N/A"}')
+
+    if config.runner is not None:
+        for label, (_Ana, ana_kwargs) in config.runner.iter_ana_kwargs():
             if 'n_jobs_perm' in ana_kwargs:
                 ana_kwargs['n_jobs_perm'] = 1
                 print(f'  Setting n_jobs_perm=1 for {label}')
-    
+
     # run experiment with memory profiling on error
     try:
         # Start tracemalloc for memory tracking
         tracemalloc.start()
-        config.run_fnc(config=config, **kwargs)
+        config.runner.run(config=config, **kwargs)
         tracemalloc.stop()
         print(f'  ✓ Completed')
     except MemoryError as e:

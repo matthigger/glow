@@ -25,19 +25,6 @@ import glow.benchmark
 from glow.benchmark.paper_config import CONFIG_BY_LABEL
 
 
-# CET's config changed: z_flag was absent (False), now True.
-# Compute what the per-label hash WOULD be for old CET config.
-def _old_cet_hash(config):
-    """Per-label hash for CET with old config (no z_flag)."""
-    d = config._base_hash_dict()
-    if config.ana_kwargs_dict and 'CET' in config.ana_kwargs_dict:
-        cls, kw = config.ana_kwargs_dict['CET']
-        old_kw = {k: v for k, v in kw.items() if k != 'z_flag'}
-        d['ana'] = {'CET': config._ana_entry(cls, old_kw)}
-    sig = json.dumps(d, sort_keys=True, default=str)
-    return hashlib.sha256(sig.encode()).hexdigest()[:12]
-
-
 def migrate(dry_run=False):
     p = glow.benchmark.get_path_result()
 
@@ -52,17 +39,9 @@ def migrate(dry_run=False):
 
         old_hashes = set(df['config_hash'].unique())
 
-        # build label -> new hash mapping
-        expected = config._get_expected_labels()
-        label_to_hash = {}
-        for lab in expected:
-            label_to_hash[lab] = config._config_hash_for_label(lab)
-
-        # for CET, use old hash (without z_flag) so rows are marked stale
-        if 'CET' in expected and config.ana_kwargs_dict and 'CET' in config.ana_kwargs_dict:
-            cet_kw = config.ana_kwargs_dict['CET'][1]
-            if 'z_flag' in cet_kw:
-                label_to_hash['CET'] = _old_cet_hash(config)
+        expected = set(config.runner.labels)
+        label_to_hash = {lab: config.runner.hash(config, lab)
+                         for lab in expected}
 
         # rewrite: only touch rows whose label is in our mapping
         new_hashes = df['config_hash'].copy()
@@ -105,8 +84,8 @@ def verify():
         if df.empty or 'config_hash' not in df.columns:
             continue
 
-        expected = config._get_expected_labels()
-        label_to_hash = {lab: config._config_hash_for_label(lab) for lab in expected}
+        expected = set(config.runner.labels)
+        label_to_hash = {lab: config.runner.hash(config, lab) for lab in expected}
 
         n_valid = 0
         n_stale = 0
