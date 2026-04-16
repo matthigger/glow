@@ -74,7 +74,3 @@ def load_update_all(label, verbose=True, result_dir=None):
         print(f'{n_old} old and {n_new} new experiments stored in {f_csv}')
 
     return df, folder, n_new
-
-
-if __name__ == '__main__':
-    df = load_update_all('vba_hcp')
