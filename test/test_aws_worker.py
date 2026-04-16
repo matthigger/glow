@@ -191,8 +191,9 @@ class TestSynthesisFidelity:
                     fit_sizes.append(np.asarray(r['size'], dtype=float))
                     fit_stats.append(np.asarray(r['stat'], dtype=float))
 
-            gam, mu_fn, r2 = AnalysisGLOW.fit_size_gam(
+            fit = AnalysisGLOW.fit_size_gam(
                 np.concatenate(fit_sizes), np.concatenate(fit_stats))
+            gam, mu_fn = fit.gam, fit.mu_fn
 
             # compute adjusted max-stats for FWER permutations
             from glow.analysis import _sanitize_adjusted_stat
@@ -282,8 +283,9 @@ class TestSynthesisFidelity:
                     fit_sizes.append(np.asarray(r['size'], dtype=float))
                     fit_stats.append(np.asarray(r['stat'], dtype=float))
 
-            gam, mu_fn, r2 = AnalysisGLOW.fit_size_gam(
+            fit = AnalysisGLOW.fit_size_gam(
                 np.concatenate(fit_sizes), np.concatenate(fit_stats))
+            gam, mu_fn = fit.gam, fit.mu_fn
 
             from glow.analysis import _sanitize_adjusted_stat
             reg_active = size_0 >= 1

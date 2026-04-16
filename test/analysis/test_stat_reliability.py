@@ -226,10 +226,12 @@ class TestSizeAdjustment:
         sizes = rng.integers(1, 500, size=200).astype(float)
         stats = 0.5 * np.log10(sizes) + rng.standard_normal(200) * 0.3
 
-        gam, mu_fn, r2 = AnalysisGLOW.fit_size_gam(sizes, stats)
+        fit = AnalysisGLOW.fit_size_gam(sizes, stats)
+        gam, mu_fn, r2 = fit.gam, fit.mu_fn, fit.r2
         assert gam is not None
         assert callable(mu_fn)
         assert r2 is not None and r2 > 0
+        assert fit.size_adjusted is True
 
         # mu_fn should return predictions for an array of sizes
         pred = mu_fn(sizes)

@@ -528,8 +528,11 @@ def run_synthesis_mode(args):
 
     all_sizes = np.concatenate(fit_sizes)
     all_stats = np.concatenate(fit_stats)
-    gam, mu_fn, r2 = AnalysisGLOW.fit_size_gam(all_sizes, all_stats)
-    print(f'  GAM R²={r2:.4f}' if r2 is not None else '  GAM: insufficient data')
+    fit = AnalysisGLOW.fit_size_gam(all_sizes, all_stats)
+    gam = fit.gam
+    mu_fn = fit.mu_fn
+    print(f'  GAM R²={fit.r2:.4f}' if fit.r2 is not None
+          else '  GAM: size adjustment disabled (low-data fallback)')
 
     # pass 2: compute adjusted max-stat per permutation
     print(f'Pass 2: computing FWER max-stats ...')

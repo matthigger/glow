@@ -417,9 +417,9 @@ class RunMancovaGlow(Runner):
         for fn in stat_fns:
             sz = np.concatenate(fit_sizes_all[fn])
             st = np.concatenate(fit_stats_all[fn])
-            gam, mu_fn, _r2 = AnalysisGLOW.fit_size_gam(sz, st)
-            mu_fns[fn] = mu_fn
-            gams[fn] = gam
+            fit = AnalysisGLOW.fit_size_gam(sz, st)
+            mu_fns[fn] = fit.mu_fn
+            gams[fn] = fit.gam
 
         stat_max = {fn: [] for fn in stat_fns}
         children_0 = size_0 = stat_0 = None

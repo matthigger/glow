@@ -1,13 +1,29 @@
 import pickle
 import shutil
 import tempfile
+import warnings
 from bisect import bisect_left
+from collections import namedtuple
 from pathlib import Path
 
 import numpy as np
 from joblib import Parallel, delayed
 from pygam import LinearGAM, s
 from tqdm import tqdm
+
+
+GAMFitResult = namedtuple('GAMFitResult',
+                          ['gam', 'mu_fn', 'r2', 'size_adjusted'])
+"""Return type of fit_size_gam.
+
+Attributes:
+    gam: fitted LinearGAM object, or None if fallback used.
+    mu_fn: callable(size_array) -> predicted E[stat | H0]. When
+        size_adjusted is False, returns zeros (identity adjustment).
+    r2: R² of the fit, or None if fallback used.
+    size_adjusted (bool): True if the GAM was fit, False if the
+        low-data fallback was used.
+"""
 
 import glow.effect
 import glow.graph
@@ -143,10 +159,14 @@ class AnalysisGLOW(Analysis):
             print(f'  [2/3] fitting size-adjustment GAM ...')
         all_sizes = np.concatenate(fit_sizes)
         all_stats = np.concatenate(fit_stats)
-        gam, mu_fn, r2 = self.fit_size_gam(all_sizes, all_stats)
-        self.adj_gam = gam
-        if verbose and r2 is not None:
-            print(f'         R²={r2:.4f}')
+        fit = self.fit_size_gam(all_sizes, all_stats)
+        self.adj_gam = fit.gam
+        self.size_adjusted = fit.size_adjusted
+        mu_fn = fit.mu_fn
+        if verbose and fit.r2 is not None:
+            print(f'         R²={fit.r2:.4f}')
+        elif verbose:
+            print(f'         size adjustment disabled (low-data fallback)')
 
         # load observed (perm 0) — kept permanently
         with open(perm_dir / f'{0:06d}_result.pkl', 'rb') as fh:
@@ -228,6 +248,8 @@ class AnalysisGLOW(Analysis):
 
     _N_SPLINES = 10
 
+    _MIN_GAM_FIT_POINTS = 50
+
     @classmethod
     def fit_size_gam(cls, size, stat, n_splines=None):
         """Fit a GAM: stat ~ f(log10(size)) using pygam.
@@ -238,9 +260,11 @@ class AnalysisGLOW(Analysis):
             n_splines: number of splines (default: cls._N_SPLINES)
 
         Returns:
-            gam: fitted LinearGAM object (or None if insufficient data)
-            mu_fn: callable(size_array) -> predicted E[stat | H0]
-            r2: R² of the fit (or None)
+            GAMFitResult(gam, mu_fn, r2, size_adjusted): see dataclass
+            docstring.  When ``valid.sum() < _MIN_GAM_FIT_POINTS``, the
+            fallback identity mu_fn is used and a ``RuntimeWarning`` is
+            emitted; ``size_adjusted`` is False so callers can surface
+            this to users.
         """
         if n_splines is None:
             n_splines = cls._N_SPLINES
@@ -249,9 +273,25 @@ class AnalysisGLOW(Analysis):
         y = np.asarray(stat, dtype=float)
         valid = np.isfinite(y) & np.isfinite(sz) & (sz > 0)
 
-        if valid.sum() < 50:
-            # not enough data — fall back to identity (no adjustment)
-            return None, lambda sz: np.zeros_like(np.asarray(sz, dtype=float)), None
+        n_valid = int(valid.sum())
+        if n_valid < cls._MIN_GAM_FIT_POINTS:
+            warnings.warn(
+                f'fit_size_gam: only {n_valid} valid (size, stat) pairs '
+                f'(threshold is {cls._MIN_GAM_FIT_POINTS}); falling back '
+                f'to identity mu_fn.  No size adjustment will be applied '
+                f'-- downstream FWER max-stats will reflect raw stats.  '
+                f'Consider increasing n_perm_fwer_size_adjust or '
+                f'verifying that the stat function is well-behaved on '
+                f'small regions.',
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return GAMFitResult(
+                gam=None,
+                mu_fn=lambda sz: np.zeros_like(np.asarray(sz, dtype=float)),
+                r2=None,
+                size_adjusted=False,
+            )
 
         log_size = np.log10(sz[valid])
         y_valid = y[valid]
@@ -268,7 +308,8 @@ class AnalysisGLOW(Analysis):
             sz = np.asarray(sz, dtype=float)
             return _gam.predict(np.log10(np.maximum(sz, 1)))
 
-        return gam, mu_fn, r2
+        return GAMFitResult(gam=gam, mu_fn=mu_fn, r2=r2,
+                            size_adjusted=True)
 
     @staticmethod
     def mu_fn_from_gam(gam):
