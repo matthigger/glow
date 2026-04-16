@@ -201,10 +201,13 @@ def batched_cloud_results():
     m = test_meta['permutation_level']
     m['ana_cloud'] = m['runner'].download_final_analysis(m['experiment_id'])
 
-    # The three experiment-style tests: download result files to folders
+    # The three experiment-style tests: download result files to folders.
+    # When everything is cached, job_info['runner'] is None — just glob the
+    # existing folder (cached runs already have result files on disk).
     for key in ('experiment_level', 'tfce', 'hcp'):
         ji = test_meta[key]['job_info']
-        ji['runner'].download_experiment_results(ji['run_id'], ji['folder'])
+        if ji['runner'] is not None:
+            ji['runner'].download_experiment_results(ji['run_id'], ji['folder'])
         test_meta[key]['result_files'] = list(
             (ji['folder'] / 'out').glob('*_result.json'))
 
