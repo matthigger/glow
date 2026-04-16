@@ -200,6 +200,26 @@ def fit_poly_lasso(df, feature_cols, target_col='peak_rss_mb', model_path=None):
     if zeroed:
         print(f'\n  zeroed out: {", ".join(zeroed)}')
 
+    # Safety-factor calibration: fit Gaussian to actual/predicted ratios,
+    # use 99.99% quantile (z=3.7190). Exposed so downstream callers
+    # (estimate_timeout_minutes) can size timeouts without hardcoding 2.5x.
+    Z_99_99 = 3.7190
+    valid = y_pred > 0
+    if valid.sum() >= 2:
+        ratios = y[valid] / y_pred[valid]
+        mu_r = float(ratios.mean())
+        sd_r = float(ratios.std(ddof=1))
+        factor = mu_r + Z_99_99 * sd_r
+        max_ratio = float(ratios.max())
+        print(f'\n  safety factor (99.99% Gaussian): '
+              f'μ={mu_r:.3f}, σ={sd_r:.3f}  →  factor={factor:.3f}')
+        print(f'  max observed actual/predicted = {max_ratio:.3f}')
+        if max_ratio > factor:
+            print(f'  ⚠  max ratio exceeds computed factor — '
+                  f'residuals may be non-Gaussian (heavy tails)')
+    else:
+        factor, mu_r, sd_r, max_ratio = None, None, None, None
+
     model = {
         'feature_names': surviving_names,
         'intercept': round(intercept_original, 4),
@@ -207,6 +227,11 @@ def fit_poly_lasso(df, feature_cols, target_col='peak_rss_mb', model_path=None):
         'r2': round(r2, 4),
         'alpha': round(float(lasso.alpha_), 6),
     }
+    if factor is not None:
+        model['safety_factor'] = round(factor, 4)
+        model['residual_mean'] = round(mu_r, 4)
+        model['residual_std'] = round(sd_r, 4)
+        model['residual_max_ratio'] = round(max_ratio, 4)
 
     model_path = Path(model_path)
     model_path.parent.mkdir(parents=True, exist_ok=True)

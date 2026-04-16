@@ -121,11 +121,25 @@ def _get_config_dimensions(config):
     return num_vox, b, num_img
 
 
-def estimate_timeout_minutes(config, safety_factor=2.5):
+_DEFAULT_SAFETY_FACTOR = 2.5
+
+
+def _get_model_safety_factor(model):
+    """Pull the per-model calibrated safety factor, or fall back to 2.5."""
+    if model is None:
+        return _DEFAULT_SAFETY_FACTOR
+    return float(model.get('safety_factor', _DEFAULT_SAFETY_FACTOR))
+
+
+def estimate_timeout_minutes(config, safety_factor=None):
     """Estimate per-job timeout for *config*'s experiment jobs.
 
     Returns ``(timeout_minutes, estimated_minutes, is_upper_bound)`` or
     ``None`` if no fitted runtime models are available.
+
+    When ``safety_factor`` is None, the per-model calibrated 99.99%-quantile
+    factor (written by ``fit_poly_lasso``) is used; otherwise the caller's
+    value applies uniformly.
     """
     from glow.benchmark.runner import (RunAna, RunSegment, RunPruneCompare,
                                        RunMancovaGlow, RunMancovaVba)
@@ -135,6 +149,13 @@ def estimate_timeout_minutes(config, safety_factor=2.5):
     total_sec = 0.0
     is_upper_bound = False
     runner = config.runner
+    factor_used = None
+
+    def _apply_model(model):
+        nonlocal factor_used
+        f = (safety_factor if safety_factor is not None
+             else _get_model_safety_factor(model))
+        factor_used = max(factor_used or 0.0, f)
 
     if isinstance(runner, RunAna):
         for _label, (Ana, ana_kw) in runner.ana_kwargs_dict.items():
@@ -147,6 +168,7 @@ def estimate_timeout_minutes(config, safety_factor=2.5):
             n_perm = _get_total_perms(Ana, ana_kw)
             total_sec += max(0.0, predict_runtime_sec(
                 model, num_vox, b, num_img, n_perm))
+            _apply_model(model)
 
     elif isinstance(runner, RunPruneCompare):
         Ana, ana_kw = next(iter(runner.iter_ana_kwargs()))[1]
@@ -157,6 +179,7 @@ def estimate_timeout_minutes(config, safety_factor=2.5):
         n_perm = _get_total_perms(Ana, ana_kw)
         total_sec = max(0.0, predict_runtime_sec(
             model, num_vox, b, num_img, n_perm))
+        _apply_model(model)
 
     elif isinstance(runner, RunMancovaGlow):
         Ana, ana_kw = next(iter(runner.iter_ana_kwargs()))[1]
@@ -167,6 +190,8 @@ def estimate_timeout_minutes(config, safety_factor=2.5):
         # runtime model is for 1 stat; mancova evaluates all stats per walk
         total_sec = max(0.0, predict_runtime_sec(
             model, num_vox, b, num_img, n_perm)) * len(stat_dict)
+        is_upper_bound = True
+        _apply_model(model)
 
     elif isinstance(runner, RunMancovaVba):
         Ana, ana_kw = next(iter(runner.iter_ana_kwargs()))[1]
@@ -176,20 +201,26 @@ def estimate_timeout_minutes(config, safety_factor=2.5):
         n_perm = _get_total_perms(Ana, ana_kw)
         total_sec = max(0.0, predict_runtime_sec(
             model, num_vox, b, num_img, n_perm)) * len(stat_dict)
+        is_upper_bound = True
+        _apply_model(model)
 
     elif isinstance(runner, RunSegment):
+        # RunSegment does Ward's clustering, no permutations. No dedicated
+        # runtime model; we use GLOW @ 100 perms as a loose upper bound.
         model = load_runtime_model('GLOW')
         if model is None:
             return None
         total_sec = max(0.0, predict_runtime_sec(
             model, num_vox, b, num_img, 100))
         is_upper_bound = True
+        _apply_model(model)
 
     else:
         return None
 
+    factor = factor_used if factor_used is not None else _DEFAULT_SAFETY_FACTOR
     estimated_min = total_sec / 60.0
-    timeout_min = max(15.0, estimated_min * safety_factor)
+    timeout_min = max(15.0, estimated_min * factor)
     return timeout_min, estimated_min, is_upper_bound
 
 
