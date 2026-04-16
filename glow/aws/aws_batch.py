@@ -14,6 +14,8 @@ import cloudpickle as pickle
 from botocore.exceptions import ClientError
 from tqdm import tqdm
 
+from glow.aws.pricing import COST_PER_VCPU_HOUR
+
 MONITOR_COLS = 79
 
 
@@ -389,7 +391,7 @@ class AWSBatchRunner:
 
     @staticmethod
     def estimate_batch_table(n_perm, perm_sec, overhead_sec=180,
-                             cost_per_vcpu_hr=0.02):
+                             cost_per_vcpu_hr=COST_PER_VCPU_HOUR):
         """Print a table of perms-per-job vs cost/time tradeoffs.
 
         Args:
@@ -397,7 +399,7 @@ class AWSBatchRunner:
             perm_sec: estimated seconds per permutation
             overhead_sec: fixed per-job overhead — instance scheduling,
                 image pull, container start, data transfer (default 180s)
-            cost_per_vcpu_hr: cost per vCPU-hour (default $0.02)
+            cost_per_vcpu_hr: cost per vCPU-hour (default COST_PER_VCPU_HOUR)
 
         Returns:
             list of dicts with table rows

@@ -1,6 +1,7 @@
 import argparse
 import json
 
+from glow.aws.pricing import COST_PER_VCPU_HOUR
 from glow.benchmark.paper_config import CONFIG_BY_LABEL
 
 
@@ -108,9 +109,6 @@ def download_remaining_results(all_job_info):
             print(f'  ⚠ Could not check/download remaining results: {e}')
 
 
-VCPU_HOUR_COST = 0.02
-
-
 def _count_uncached_jobs(config):
     """Return number of experiments that still need to run."""
     kwargs_list = list(config.iter_kwargs())
@@ -141,7 +139,7 @@ def _print_cost_summary(configs, cloud_config):
             rows.append((config.label, n_jobs, None, None, None))
         else:
             timeout_min, est_min, is_ub = est
-            cost = n_jobs * (est_min / 60.0) * vcpus * VCPU_HOUR_COST
+            cost = n_jobs * (est_min / 60.0) * vcpus * COST_PER_VCPU_HOUR
             rows.append((config.label, n_jobs, est_min, timeout_min, cost))
             if is_ub:
                 upper_bound_labels.add(config.label)
