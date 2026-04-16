@@ -222,17 +222,17 @@ def test_permutation_level_equivalence(batched_cloud_results):
 
     assert ana_local.pval.shape == ana_cloud.pval.shape, \
         'pval shape mismatch'
-    assert ana_local.llr_adjusted.shape == ana_cloud.llr_adjusted.shape, \
-        'llr_adjusted shape mismatch'
+    assert ana_local.llr_adjusted_0.shape == ana_cloud.llr_adjusted_0.shape, \
+        'llr_adjusted_0 shape mismatch'
 
     max_pval_diff = np.max(np.abs(ana_local.pval - ana_cloud.pval))
     max_z_diff = np.max(
-        np.abs(ana_local.llr_adjusted - ana_cloud.llr_adjusted))
+        np.abs(ana_local.llr_adjusted_0 - ana_cloud.llr_adjusted_0))
     max_stat_diff = np.max(np.abs(ana_local.stat - ana_cloud.stat))
     max_size_diff = np.max(np.abs(ana_local.size - ana_cloud.size))
 
     assert max_pval_diff < tol, f'pval mismatch: {max_pval_diff:.2e}'
-    assert max_z_diff < tol, f'llr_adjusted mismatch: {max_z_diff:.2e}'
+    assert max_z_diff < tol, f'llr_adjusted_0 mismatch: {max_z_diff:.2e}'
     assert max_stat_diff < tol, f'stat mismatch: {max_stat_diff:.2e}'
     assert max_size_diff < tol, f'size mismatch: {max_size_diff:.2e}'
 
