@@ -409,22 +409,25 @@ class AnalysisGLOW(Analysis):
 
     @staticmethod
     def _estimate_perm_sec(exp):
-        """Estimate seconds per permutation from experiment dimensions.
+        """Estimate seconds per permutation from the runtime benchmark model.
 
-        Uses the runtime benchmark model if available, otherwise falls
-        back to a rough linear heuristic on num_vox.
+        Raises:
+            FileNotFoundError: if no GLOW runtime model is available.
+                Previously this fell back to ``max(num_vox * 3e-4, 5.0)``,
+                which gave a plausible-looking number with no grounding
+                in measurement and would silently mis-size AWS batch jobs.
         """
         b, num_img, num_vox = exp.y.shape
-        try:
-            from glow.benchmark.runtime import (
-                load_runtime_model, predict_runtime_sec)
-            model = load_runtime_model('GLOW')
-            if model is not None:
-                return predict_runtime_sec(model, num_vox, b, num_img, n_perm=1)
-        except (ImportError, FileNotFoundError):
-            pass
-        # fallback: ~0.3 ms per voxel (rough estimate from benchmarks)
-        return max(num_vox * 3e-4, 5.0)
+        from glow.benchmark.runtime import (
+            RUNTIME_MODEL_PATHS, load_runtime_model, predict_runtime_sec)
+        model = load_runtime_model('GLOW')
+        if model is None:
+            path = RUNTIME_MODEL_PATHS.get('GLOW')
+            raise FileNotFoundError(
+                f'GLOW runtime model not found at {path}.  '
+                f'Regenerate with: '
+                f'python -m glow.benchmark.runtime --profile experiment')
+        return predict_runtime_sec(model, num_vox, b, num_img, n_perm=1)
 
     def _run_on_cloud(self, exp, n_perm_fwer,
                      alpha_fwer, min_size, verbose,
