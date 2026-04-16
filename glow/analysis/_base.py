@@ -1,3 +1,4 @@
+import warnings
 from bisect import bisect_left
 
 import numpy as np
@@ -8,6 +9,49 @@ import glow.graph
 
 DEFAULT_CET_CFT_PVAL = 0.0001
 """Default cluster-forming-threshold p-value used for CET variants."""
+
+# Fraction of (perm, region, stat) cells that can fail with
+# LinAlgError before we warn / raise.  Tuned so that the typical
+# near-singular-matrix boundary case (a handful of bad regions) does
+# not trigger, but systemic failure (num_img too small for b) does.
+_LINALG_WARN_RATE = 0.01   # emit RuntimeWarning above this
+_LINALG_FAIL_RATE = 0.10   # raise RuntimeError above this
+
+
+def _check_linalg_rate(n_err, n_total, *, fn_name):
+    """Warn / raise based on LinAlgError fraction in a permutation run.
+
+    Args:
+        n_err (int): count of np.linalg.LinAlgError swallowed into NaN
+        n_total (int): total (perm, region, stat) cells attempted
+        fn_name (str): caller identity, used in the message
+
+    Raises:
+        RuntimeError: if ``n_err / n_total`` exceeds
+            ``_LINALG_FAIL_RATE``.
+    """
+    if n_total == 0:
+        return
+    rate = n_err / n_total
+    if rate > _LINALG_FAIL_RATE:
+        raise RuntimeError(
+            f'{fn_name}: LinAlgError rate {rate:.1%} '
+            f'({n_err}/{n_total}) exceeds {_LINALG_FAIL_RATE:.0%} fail '
+            f'threshold.  Likely cause: num_img is too small relative '
+            f'to b (the E or H + E matrix is systematically singular).  '
+            f'Consider reducing b (fewer response features) or adding '
+            f'more images.')
+    if rate > _LINALG_WARN_RATE:
+        warnings.warn(
+            f'{fn_name}: LinAlgError rate {rate:.1%} '
+            f'({n_err}/{n_total}) exceeds {_LINALG_WARN_RATE:.0%} warn '
+            f'threshold.  The affected (region, permutation) cells '
+            f'were filled with NaN and will be ignored downstream.  '
+            f'If this rate climbs further, consider reducing b or '
+            f'adding more images.',
+            RuntimeWarning,
+            stacklevel=3,
+        )
 
 
 def _sanitize_adjusted_stat(adj):
@@ -131,6 +175,11 @@ class Analysis:
 
         Returns:
             dict mapping each stat function to (n_perm + 1, num_reg) array
+
+        Raises:
+            RuntimeError: if the fraction of LinAlgError failures
+                exceeds ``_LINALG_FAIL_RATE`` (results too unreliable
+                to proceed).
         """
         b, num_img, num_vox = exp.y.shape
         num_reg = num_vox
@@ -141,17 +190,22 @@ class Analysis:
         result = {fn: np.full((n_rows, num_reg), fill_value=np.nan)
                   for fn in get_stat_list}
 
+        n_linalg_err = 0
+        n_total = 0
         for reg_idx, size, e, h in glow.graph.iter_stat(
                 exp=exp, children=children, n_perm=n_perm):
             for perm_idx in range(n_rows):
                 _e = e[:, :, perm_idx]
                 _h = h[:, :, perm_idx]
                 for fn in get_stat_list:
+                    n_total += 1
                     try:
                         result[fn][perm_idx, reg_idx] = fn(
                             e=_e, h=_h, n=size)
                     except np.linalg.LinAlgError:
-                        pass
+                        n_linalg_err += 1
+
+        _check_linalg_rate(n_linalg_err, n_total, fn_name='get_stat_perm_multi')
         return result
 
     def get_stat_perm(self, exp, n_perm=None, children=None):
@@ -165,6 +219,11 @@ class Analysis:
 
         Returns:
             stat (np.array): (n_perm + 1, num_reg) test statistics
+
+        Raises:
+            RuntimeError: if the fraction of LinAlgError failures
+                exceeds ``_LINALG_FAIL_RATE`` (results too unreliable
+                to proceed).
         """
         # compute wilks per region
         b, num_img, num_vox = exp.y.shape
@@ -174,13 +233,22 @@ class Analysis:
 
         n_rows = 1 if n_perm is None else n_perm + 1
         stat = np.full((n_rows, num_reg), fill_value=np.nan)
+        n_linalg_err = 0
+        n_total = 0
         for reg_idx, size, e, h in glow.graph.iter_stat(exp=exp,
                                                        children=children,
                                                        n_perm=n_perm):
             for perm_idx in range(n_rows):
-                stat[perm_idx, reg_idx] = self.get_stat(e=e[:, :, perm_idx],
-                                                        h=h[:, :, perm_idx],
-                                                        n=size)
+                n_total += 1
+                try:
+                    stat[perm_idx, reg_idx] = self.get_stat(
+                        e=e[:, :, perm_idx],
+                        h=h[:, :, perm_idx],
+                        n=size)
+                except np.linalg.LinAlgError:
+                    n_linalg_err += 1
+
+        _check_linalg_rate(n_linalg_err, n_total, fn_name='get_stat_perm')
         return stat
 
     @classmethod

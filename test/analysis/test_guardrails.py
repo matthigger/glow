@@ -11,7 +11,9 @@ import warnings
 import numpy as np
 import pytest
 
-from glow.analysis import AnalysisGLOW
+from glow.analysis import Analysis, AnalysisGLOW
+from glow.analysis._base import (
+    _check_linalg_rate, _LINALG_WARN_RATE, _LINALG_FAIL_RATE)
 
 
 # ---------------------------------------------------------------------------
@@ -62,3 +64,68 @@ class TestFitSizeGamLowData:
             warnings.simplefilter('error', RuntimeWarning)
             fit = AnalysisGLOW.fit_size_gam(sizes_ok, stats_ok)
         assert fit.size_adjusted is True
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: LinAlgError rate tracking
+# ---------------------------------------------------------------------------
+
+class TestLinAlgRateHelper:
+    """Unit tests for the _check_linalg_rate threshold logic."""
+
+    def test_zero_total_is_noop(self):
+        # should not warn or raise on an empty run
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', RuntimeWarning)
+            _check_linalg_rate(0, 0, fn_name='test')
+
+    def test_below_warn_is_silent(self):
+        # 0.5% failure rate -> silent
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', RuntimeWarning)
+            _check_linalg_rate(5, 1000, fn_name='test')
+
+    def test_above_warn_warns(self):
+        # 5% failure rate -> warn (> 1%, < 10%)
+        with pytest.warns(RuntimeWarning, match='LinAlgError rate'):
+            _check_linalg_rate(50, 1000, fn_name='test')
+
+    def test_above_fail_raises(self):
+        # 20% failure rate -> raise
+        with pytest.raises(RuntimeError, match='LinAlgError rate'):
+            _check_linalg_rate(200, 1000, fn_name='test')
+
+    def test_message_includes_fn_name(self):
+        with pytest.raises(RuntimeError, match='my_fn'):
+            _check_linalg_rate(200, 1000, fn_name='my_fn')
+
+
+class TestLinAlgRateIntegration:
+    """End-to-end: force LinAlgError via rank-deficient design and verify."""
+
+    def _tiny_exp(self, num_img):
+        # rank-deficient setup: num_img <= b makes E singular under
+        # some permutations, which raises LinAlgError in get_hotel_tr
+        # / get_pillai / get_roys_root.
+        from glow.experiment.exper import Experiment
+        return Experiment.from_gauss(a=2, b=3, shape=(4, 4),
+                                      num_img=num_img, seed=0)
+
+    def test_raises_when_all_cells_fail(self):
+        from glow.analysis.mancova import get_hotel_tr
+        # num_img == b => E is guaranteed singular at all regions/perms
+        exp = self._tiny_exp(num_img=3)
+        with pytest.raises(RuntimeError, match='LinAlgError rate'):
+            Analysis.get_stat_perm_multi(
+                exp=exp, get_stat_list=[get_hotel_tr], n_perm=1,
+                children=None)
+
+    def test_healthy_run_is_silent(self):
+        from glow.analysis.mancova import get_llr
+        exp = self._tiny_exp(num_img=20)
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', RuntimeWarning)
+            result = Analysis.get_stat_perm_multi(
+                exp=exp, get_stat_list=[get_llr], n_perm=2,
+                children=None)
+        assert get_llr in result
