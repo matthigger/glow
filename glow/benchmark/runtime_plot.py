@@ -28,6 +28,13 @@ import seaborn as sns
 from matplotlib.ticker import FuncFormatter, LogLocator, ScalarFormatter
 from platformdirs import user_data_dir
 
+from glow.aws.pricing import (
+    COST_PER_VCPU_HOUR,
+    SPINUP_SECONDS,
+    vcpu_hours_to_dollars,
+    wall_to_vcpu_hours,
+)
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -177,8 +184,8 @@ def plot_runtime(rows, pdf_path: Path):
                     f' {100_000:,} vox → {a * 100_000**m:.2f} min)')
             print(line)
             f.write(line + '\n')
-        # Whole-brain cost/time estimates per fit
-        cost_per_min = 0.02 / 60
+        # Whole-brain cost/time estimates per fit.
+        # Cost includes spinup (billed) per single-job interpretation.
         brain_mm3 = 1_300_000
         resolutions = {
             '2 mm³':    int(brain_mm3 / 2**3),
@@ -195,7 +202,9 @@ def plot_runtime(rows, pdf_path: Path):
             f.write(table_hdr + '\n')
             for res_label, nvox in resolutions.items():
                 mins = fa * nvox**fm
-                cost = mins * cost_per_min
+                vcpu_hrs = wall_to_vcpu_hours(mins * 60, vcpus=1,
+                                              include_spinup=True)
+                cost = vcpu_hours_to_dollars(vcpu_hrs)
                 row = (f'{res_label:>20s}  {nvox:>10,}'
                        f'  {mins:>10.4g}  {cost:>10.4g}')
                 print(row)
@@ -225,8 +234,16 @@ def plot_runtime(rows, pdf_path: Path):
         print(hdr)
         f.write(hdr + '\n')
 
+        # Per-permutation cost is compute-only; spinup amortizes across
+        # the batch and is not attributable to any single permutation.
+        def _dollars_per_perm(mins, _nv):
+            perm_min = mins / n_perm
+            vcpu_hrs = wall_to_vcpu_hours(perm_min * 60, vcpus=1,
+                                          include_spinup=False)
+            return f'{vcpu_hours_to_dollars(vcpu_hrs):#.4g}'
+
         for metric, fmt in [('min / perm', lambda mins, _nv: f'{mins / n_perm:#.4g}'),
-                            ('$ / perm',   lambda mins, _nv: f'{mins / n_perm * cost_per_min:#.4g}')]:
+                            ('$ / perm',   _dollars_per_perm)]:
             row = f'{metric:>20s}'
             for nvox in res_voxels:
                 mins = pa * nvox**pm
@@ -270,11 +287,22 @@ def plot_runtime(rows, pdf_path: Path):
                 color='black')
 
     # -- Secondary cost axis (right) --
-    cost_per_min = 0.02 / 60  # $0.02/hour
+    # Cost reflects billed wall time (compute + spinup) at 1 vCPU; spinup
+    # is a fixed additive offset per job.
+    def _minutes_to_dollars(y_min):
+        vcpu_hrs = wall_to_vcpu_hours(y_min * 60, vcpus=1,
+                                      include_spinup=True)
+        return vcpu_hours_to_dollars(vcpu_hrs)
+
+    def _dollars_to_minutes(c):
+        # Inverse of _minutes_to_dollars: c = ((y*60)+SPINUP)/3600 * rate
+        wall_sec = c / COST_PER_VCPU_HOUR * 3600 - SPINUP_SECONDS
+        return wall_sec / 60
+
     ax_cost = ax.secondary_yaxis('right',
-                                  functions=(lambda y: y * cost_per_min,
-                                             lambda c: c / cost_per_min))
-    ax_cost.set_ylabel('Cost ($)')
+                                  functions=(_minutes_to_dollars,
+                                             _dollars_to_minutes))
+    ax_cost.set_ylabel('Cost ($, incl. spinup)')
 
     ax.legend(loc='upper left', fontsize=7)
 

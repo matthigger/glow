@@ -1,5 +1,7 @@
 """Unit tests for glow.aws.pricing helpers."""
 
+from pathlib import Path
+
 import pytest
 
 from glow.aws.pricing import (
@@ -56,5 +58,45 @@ def test_format_cost_estimate_numeric_correctness():
     s = format_cost_estimate(n_jobs=1, perm_sec=3420, perms_per_job=1, vcpus=1)
     assert '$0.02' in s
     assert '1.0 vCPU-hrs' in s
+
+
+def test_no_hardcoded_002_outside_pricing():
+    """Regression guard: the literal ``0.02`` should not appear in glow/ .py
+    files outside ``pricing.py`` as a cost constant.
+
+    Specific non-cost uses that coincidentally equal 0.02 are whitelisted.
+    """
+    glow_dir = Path(__file__).resolve().parent.parent / 'glow'
+    assert glow_dir.is_dir(), glow_dir
+
+    # (relative path, substring identifying the allowed line)
+    whitelist = {
+        # axes-fraction annotation coordinates in runtime_plot spinup label
+        ('benchmark/runtime_plot.py', "xy=(0.98, 0.02)"),
+        # plot y-axis limits for p-value plots
+        ('benchmark/plot_mancova_vba.py', '-0.02, 1.02'),
+        # viewer scatter annotation offset
+        ('viewer/scatter.py', 'x=0.02'),
+    }
+
+    offenders = []
+    for path in glow_dir.rglob('*.py'):
+        rel = path.relative_to(glow_dir).as_posix()
+        if rel == 'aws/pricing.py':
+            continue
+        with open(path) as f:
+            for lineno, line in enumerate(f, 1):
+                if '0.02' not in line:
+                    continue
+                if any(rel == wl_rel and wl_sub in line
+                       for wl_rel, wl_sub in whitelist):
+                    continue
+                offenders.append(f'{rel}:{lineno}: {line.rstrip()}')
+
+    assert not offenders, (
+        'Hardcoded 0.02 found outside glow/aws/pricing.py:\n'
+        + '\n'.join(offenders)
+        + '\nUse COST_PER_VCPU_HOUR from glow.aws.pricing instead.'
+    )
 
 
