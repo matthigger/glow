@@ -197,6 +197,63 @@ def _print_cost_summary(configs, cloud_config):
     return resp == 'y'
 
 
+def _log_runtime_history(configs, all_job_info):
+    """Write one runtime_history record per completed AWS job."""
+    from glow.benchmark import runtime_history
+    from glow.benchmark.runtime import (
+        _get_config_dimensions, _get_total_perms, _get_analysis_type,
+        load_runtime_model, predict_runtime_sec)
+    from glow.benchmark.runner import (RunAna, RunMancovaGlow, RunMancovaVba,
+                                       RunPruneCompare, RunSegment)
+
+    configs_by_label = {c.label: c for c in configs}
+
+    for info in all_job_info:
+        runner = info.get('runner')
+        if runner is None:
+            continue
+        timestamps = getattr(runner, 'last_job_timestamps', None) or {}
+        label = info.get('label')
+        config = configs_by_label.get(label)
+        if config is None:
+            continue
+
+        num_vox, b, num_img = _get_config_dimensions(config)
+        crunner = config.runner
+
+        if isinstance(crunner, (RunAna, RunPruneCompare, RunMancovaGlow,
+                                 RunMancovaVba, RunSegment)):
+            try:
+                Ana, ana_kw = next(iter(crunner.iter_ana_kwargs()))[1]
+                atype = _get_analysis_type(Ana, ana_kw) or 'GLOW'
+                n_perm = _get_total_perms(Ana, ana_kw)
+            except (StopIteration, AttributeError):
+                atype, n_perm = None, None
+        else:
+            atype, n_perm = None, None
+
+        model = load_runtime_model(atype) if atype else None
+        predicted_sec = None
+        if model is not None and n_perm is not None:
+            predicted_sec = max(0.0, predict_runtime_sec(
+                model, num_vox, b, num_img, n_perm))
+
+        for job_id in info.get('job_ids', []):
+            ts = timestamps.get(job_id)
+            if not ts or 'started_at' not in ts or 'stopped_at' not in ts:
+                continue
+            actual_sec = ts['stopped_at'] - ts['started_at']
+            try:
+                runtime_history.record(
+                    config_label=label, analysis_type=atype,
+                    num_vox=num_vox, b=b, num_img=num_img, n_perm=n_perm,
+                    predicted_sec=predicted_sec, actual_sec=actual_sec,
+                    job_id=job_id)
+            except Exception as e:
+                print(f'  ⚠ runtime_history write failed for '
+                      f'{job_id[:8]}: {e}')
+
+
 def run_cloud(configs):
     cloud_config = load_cloud_config()
     for config in configs:
@@ -233,6 +290,7 @@ def run_cloud(configs):
 
     permanently_failed = monitor_all_jobs(all_job_info, all_job_ids,
                                           job_info_map)
+    _log_runtime_history(configs, all_job_info)
     download_remaining_results(all_job_info)
 
     # clean up job info files for completed runs

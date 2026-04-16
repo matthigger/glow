@@ -1139,6 +1139,9 @@ class AWSBatchRunner:
                                 log_stream = container["logStreamName"]
                                 print(f'   Logs: aws logs get-log-events --log-group-name /aws/batch/job --log-stream-name {log_stream} --limit 50 --output text | tail -30')
 
+                    # expose timestamps so callers can write a post-hoc
+                    # runtime_history record (predicted vs actual)
+                    self.last_job_timestamps = dict(job_timestamps)
                     break
 
                 # heartbeat: tick every second during poll sleep
