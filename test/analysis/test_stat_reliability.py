@@ -11,6 +11,7 @@ Small synthetic experiments keep runtime manageable.
 """
 
 import numpy as np
+import pytest
 from scipy import stats as sp_stats
 
 from glow.effect import ExtenterSphere
@@ -90,38 +91,89 @@ class TestFWERCalibration:
 
 
 # ---------------------------------------------------------------------------
+# VBA+z FWER at small n_perm — tighter regression than TestFWERCalibration
+# ---------------------------------------------------------------------------
+
+class TestVbaZFwerSmallNPerm:
+    """VBA+z must control FWER at small n_perm.
+
+    Historical context: when ``z_score_stat`` computed mu/sigma from the
+    null rows (1:) only, the observed row (0) was standardized by
+    parameters it did not contribute to — an asymmetry that broke
+    exchangeability at finite B and inflated rejection to ~11% at B=49
+    / ~6–8% at B=250 against a nominal 5%. Moving mu/sigma to all rows
+    (Phipson & Smyth 2010; Winkler et al. 2014) restored exchangeability.
+
+    This test uses a tighter budget than ``TestFWERCalibration.test_vba_z``
+    (which allows up to 20%) so that any regression reintroducing the
+    small-B drift would fail loudly here.
+
+    Gated by ``--runslow`` (K=200 trials × 49 perms).
+    """
+
+    K = 200
+    N_PERM = 49
+    ALPHA = 0.05
+
+    # K=200, true rate ≈ ALPHA: 99% binomial upper bound ≈ 0.09
+    MAX_RATE = 0.09
+
+    @pytest.mark.slow
+    def test_vba_z_controls_fwer(self):
+        """At n_perm=49, VBA+z rejection stays within binomial CI of nominal."""
+        rate = _null_rejection_rate(
+            AnalysisVBA, self.K, self.N_PERM, self.ALPHA, z_flag=True)
+        assert rate <= self.MAX_RATE, (
+            f'VBA+z rate {rate:.3f} exceeds {self.MAX_RATE} — exchangeability '
+            f'drift may have reappeared (check z_score_stat includes observed '
+            f'row in mu/sigma)')
+
+    @pytest.mark.slow
+    def test_vba_no_z_controls_fwer(self):
+        """Reference: same setup without z-scoring also controls FWER."""
+        rate = _null_rejection_rate(
+            AnalysisVBA, self.K, self.N_PERM, self.ALPHA, z_flag=False)
+        assert rate <= self.MAX_RATE, (
+            f'VBA (no z) rate {rate:.3f} exceeds {self.MAX_RATE}')
+
+
+# ---------------------------------------------------------------------------
 # z-score standardization
 # ---------------------------------------------------------------------------
 
 class TestZScoreStatReliability:
-    """z_score_stat must use null rows only and equalize voxel variances."""
+    """z_score_stat uses all rows (observed + null) to equalize voxel scales.
 
-    def test_observed_excluded_from_standardization(self):
-        """Extreme observed row must not affect null z-scores."""
+    Including the observed row in mu/sigma preserves exchangeability at
+    finite B — each row is standardized by parameters it contributed to.
+    Phipson & Smyth (2010) / Winkler et al. (2014).
+    """
+
+    def test_observed_contributes_to_standardization(self):
+        """Extreme observed row inflates sigma, deflating its own z."""
         stat = np.ones((51, 10))
         stat[0, :] = 100  # extreme observed row
 
         z = Analysis.z_score_stat(stat)
 
-        # null rows are constant → sigma clipped to 1 → z = (1-1)/1 = 0
-        np.testing.assert_allclose(z[1:, :], 0, atol=1e-12)
-        # observed z should reflect its extremity: (100-1)/1 = 99
-        assert np.all(z[0, :] > 50), \
-            'Observed z too small — may include observed row in stats'
+        # all-rows mean = (100 + 50*1) / 51 ≈ 2.94
+        # all-rows std dominated by the single outlier — observed z is
+        # bounded by sqrt(n-1) ≈ 7.07 for a single-outlier column
+        assert np.all(z[0, :] < 10), \
+            'Observed z too large — observed row not contributing to sigma'
+        # null rows contribute symmetrically, so their z is small (< 1)
+        assert np.all(np.abs(z[1:, :]) < 1), \
+            'Null z too large — unexpected scale'
 
-    def test_heterogeneous_null_equalized(self):
-        """Voxels with 10x different null std should all have std=1 after."""
+    def test_heterogeneous_voxels_equalized(self):
+        """Voxels with 10x different std should all have std=1 after."""
         rng = np.random.default_rng(42)
-        null = rng.standard_normal((200, 50))
-        null[:, :10] *= 10
-
-        obs = rng.standard_normal((1, 50))
-        obs[:, :10] *= 10
-        stat = np.vstack([obs, null])
+        stat = rng.standard_normal((201, 50))
+        stat[:, :10] *= 10
 
         z = Analysis.z_score_stat(stat)
-        null_stds = z[1:, :].std(axis=0, ddof=1)
-        np.testing.assert_allclose(null_stds, 1.0, atol=1e-10)
+        stds = z.std(axis=0, ddof=1)
+        np.testing.assert_allclose(stds, 1.0, atol=1e-10)
 
     def test_wrong_axis_leaves_heterogeneity(self):
         """Normalizing across voxels (wrong) does NOT equalize per-voxel stds.

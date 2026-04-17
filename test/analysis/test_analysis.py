@@ -130,13 +130,12 @@ class TestZScoreStat:
         z = Analysis.z_score_stat(stat)
         assert z.shape == stat.shape
 
-    def test_null_columns_standardised(self):
-        """Null rows (1:) of each voxel should have mean ~0 and std ~1."""
+    def test_all_rows_standardised(self):
+        """All rows (observed + null) should have per-voxel mean ~0, std ~1."""
         stat = np.random.default_rng(0).standard_normal((51, 200))
         z = Analysis.z_score_stat(stat)
-        null_z = z[1:, :]
-        np.testing.assert_allclose(null_z.mean(axis=0), 0, atol=1e-12)
-        np.testing.assert_allclose(null_z.std(axis=0, ddof=1), 1, atol=1e-12)
+        np.testing.assert_allclose(z.mean(axis=0), 0, atol=1e-12)
+        np.testing.assert_allclose(z.std(axis=0, ddof=1), 1, atol=1e-12)
 
     def test_constant_row_safe(self):
         """A constant row should not produce inf or nan."""

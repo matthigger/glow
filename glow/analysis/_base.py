@@ -138,14 +138,20 @@ class Analysis:
 
     @classmethod
     def z_score_stat(cls, stat):
-        """Z-score each voxel across permutations using the null rows.
+        """Z-score each voxel across permutations (observed row included).
 
-        For each voxel, the mean and std are computed from the permutation
-        null (rows 1:).  All rows (including the observed row 0) are then
-        standardized by that voxel's null mean and std.  This makes each
-        voxel's null distribution ~N(0,1), removing spatial heterogeneity
-        so that max-stat FWER is not biased by regionally varying noise
-        (Salimi-Khorshidi et al. 2011, NeuroImage).
+        For each voxel, the mean and std are computed from **all** rows
+        — the observed row (0) together with the permutation null (1:) —
+        then every row is standardized by that voxel's empirical mean and
+        std.  This equalizes per-voxel scale so max-stat FWER is not
+        biased by regional heterogeneity.
+
+        Under H0 the observed row is exchangeable with the permuted rows
+        (Phipson & Smyth 2010; Winkler et al. 2014), so it must contribute
+        to the standardization on equal footing — otherwise row 0 is
+        divided by a sigma it did not contribute to while rows 1: are
+        divided by a sigma they did, and max-stat FWER drifts above
+        nominal at finite B (see test_stat_reliability.py).
 
         Args:
             stat (np.array): (n_perm+1, num_vox) statistics.
@@ -154,9 +160,8 @@ class Analysis:
         Returns:
             z (np.array): same shape, voxel-wise z-scored
         """
-        null = stat[1:, :]
-        mu = np.nanmean(null, axis=0)
-        sigma = np.nanstd(null, axis=0, ddof=1)
+        mu = np.nanmean(stat, axis=0)
+        sigma = np.nanstd(stat, axis=0, ddof=1)
         sigma[sigma < 1e-12] = 1.0
         return (stat - mu) / sigma
 
