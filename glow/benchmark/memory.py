@@ -156,8 +156,15 @@ def build_grid_experiment():
 # Shared: fit and save model
 # ---------------------------------------------------------------------------
 
-def fit_poly_lasso(df, feature_cols, target_col='peak_rss_mb', model_path=None):
-    """Fit PolynomialFeatures(degree=2) + LassoCV and save JSON to model_path."""
+def fit_poly_lasso(df, feature_cols, target_col='peak_rss_mb', model_path=None,
+                   log_target=False):
+    """Fit PolynomialFeatures(degree=2) + LassoCV and save JSON to model_path.
+
+    With ``log_target=True`` the polynomial is fit against ``log(target)`` so
+    multiplicative errors are treated uniformly — appropriate for targets
+    that span multiple orders of magnitude (e.g. runtime). The saved model
+    carries a ``log_target`` flag that ``_apply_poly_model`` honors.
+    """
     from sklearn.linear_model import LassoCV
     from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
@@ -165,7 +172,13 @@ def fit_poly_lasso(df, feature_cols, target_col='peak_rss_mb', model_path=None):
         model_path = MODEL_PATH
 
     X_raw = df[feature_cols].values
-    y = df[target_col].values
+    y_raw = df[target_col].values
+    if log_target:
+        if np.any(y_raw <= 0):
+            raise ValueError('log_target requires all target values > 0')
+        y_fit = np.log(y_raw)
+    else:
+        y_fit = y_raw
 
     poly = PolynomialFeatures(degree=2, include_bias=False)
     X_poly = poly.fit_transform(X_raw)
@@ -175,7 +188,7 @@ def fit_poly_lasso(df, feature_cols, target_col='peak_rss_mb', model_path=None):
     X_scaled = scaler.fit_transform(X_poly)
 
     lasso = LassoCV(cv=5, max_iter=50_000, fit_intercept=True)
-    lasso.fit(X_scaled, y)
+    lasso.fit(X_scaled, y_fit)
 
     coefs_original = lasso.coef_ / scaler.scale_
     intercept_original = lasso.intercept_ - (coefs_original * scaler.mean_).sum()
@@ -184,12 +197,13 @@ def fit_poly_lasso(df, feature_cols, target_col='peak_rss_mb', model_path=None):
     surviving_names = feature_names[mask].tolist()
     surviving_coefs = coefs_original[mask].tolist()
 
-    y_pred = intercept_original + X_poly @ coefs_original
-    ss_res = ((y - y_pred) ** 2).sum()
-    ss_tot = ((y - y.mean()) ** 2).sum()
+    y_pred_fit = intercept_original + X_poly @ coefs_original
+    ss_res = ((y_fit - y_pred_fit) ** 2).sum()
+    ss_tot = ((y_fit - y_fit.mean()) ** 2).sum()
     r2 = 1.0 - ss_res / ss_tot
 
-    print(f'\n  LassoCV  alpha={lasso.alpha_:.6f}  R²={r2:.4f}')
+    scale_tag = 'log(target)' if log_target else 'target'
+    print(f'\n  LassoCV ({scale_tag})  alpha={lasso.alpha_:.6f}  R²={r2:.4f}')
     print(f'  intercept = {intercept_original:.2f}')
     print(f'\n  {"term":<30} {"coefficient":>14}')
     print(f'  {"-"*30} {"-"*14}')
@@ -204,9 +218,10 @@ def fit_poly_lasso(df, feature_cols, target_col='peak_rss_mb', model_path=None):
     # use 99.99% quantile (z=3.7190). Exposed so downstream callers
     # (estimate_timeout_minutes) can size timeouts without hardcoding 2.5x.
     Z_99_99 = 3.7190
-    valid = y_pred > 0
+    y_pred_linear = np.exp(y_pred_fit) if log_target else y_pred_fit
+    valid = y_pred_linear > 0
     if valid.sum() >= 2:
-        ratios = y[valid] / y_pred[valid]
+        ratios = y_raw[valid] / y_pred_linear[valid]
         mu_r = float(ratios.mean())
         sd_r = float(ratios.std(ddof=1))
         factor = mu_r + Z_99_99 * sd_r
@@ -227,6 +242,8 @@ def fit_poly_lasso(df, feature_cols, target_col='peak_rss_mb', model_path=None):
         'r2': round(r2, 4),
         'alpha': round(float(lasso.alpha_), 6),
     }
+    if log_target:
+        model['log_target'] = True
     if factor is not None:
         model['safety_factor'] = round(factor, 4)
         model['residual_mean'] = round(mu_r, 4)
@@ -247,7 +264,11 @@ def fit_poly_lasso(df, feature_cols, target_col='peak_rss_mb', model_path=None):
 # ---------------------------------------------------------------------------
 
 def _apply_poly_model(model, feature_cols, **kwargs):
-    """Apply saved polynomial model; kwargs are feature values (e.g. num_vox=1, b=2, ...)."""
+    """Apply saved polynomial model; kwargs are feature values (e.g. num_vox=1, b=2, ...).
+
+    If the model was fit with ``log_target=True``, the raw polynomial output
+    is exponentiated before being returned.
+    """
     from sklearn.preprocessing import PolynomialFeatures
 
     poly = PolynomialFeatures(degree=2, include_bias=False)
@@ -262,6 +283,8 @@ def _apply_poly_model(model, feature_cols, **kwargs):
     for name, coef in zip(model['feature_names'], model['coefficients']):
         idx = all_names.index(name)
         est += coef * X_poly[idx]
+    if model.get('log_target'):
+        est = float(np.exp(est))
     return est
 
 

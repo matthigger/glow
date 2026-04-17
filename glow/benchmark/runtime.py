@@ -584,6 +584,7 @@ def _fit_runtime_models(df):
             feature_cols=RUNTIME_FEATURE_COLS,
             target_col='time_sec',
             model_path=path,
+            log_target=True,
         )
     return models
 

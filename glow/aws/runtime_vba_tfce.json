@@ -1,17 +1,28 @@
 {
   "feature_names": [
     "num_vox",
+    "num_img",
     "n_perm",
+    "num_vox^2",
     "num_vox b",
-    "num_vox n_perm"
+    "num_vox n_perm",
+    "n_perm^2"
   ],
-  "intercept": 6.0992,
+  "intercept": 0.2718,
   "coefficients": [
-    0.0032501878,
-    0.2177268911,
-    0.0001710782,
-    0.0001311295
+    0.0004386167,
+    -0.0002212842,
+    0.0037855486,
+    -1.38e-08,
+    4.948e-07,
+    -3.4e-08,
+    3.971e-07
   ],
-  "r2": 0.9773,
-  "alpha": 9.588516
+  "r2": 0.9698,
+  "alpha": 0.008789,
+  "log_target": true,
+  "safety_factor": 2.0225,
+  "residual_mean": 1.0314,
+  "residual_std": 0.2665,
+  "residual_max_ratio": 1.8562
 }
