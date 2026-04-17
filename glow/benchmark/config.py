@@ -101,6 +101,7 @@ class Config:
         self.exp_orig = None
         self.folder = None
         self._shared_exp_s3_key = None  # S3 key for shared experiment data
+        self._exp_img_only = None  # cached HCP image-only exp (pre-sample_x)
 
     def base_recipe(self):
         """Shared per-row recipe components (merged with Runner.label_recipe)."""
@@ -127,23 +128,40 @@ class Config:
         sig = json.dumps(per_label, sort_keys=True)
         return hashlib.sha256(sig.encode()).hexdigest()[:12]
 
-    def prep_exp_orig(self, hcp_feats=None, wgn_b=None, wgn_num_img=None):
+    def prep_exp_orig(self, hcp_feats=None, wgn_b=None, wgn_num_img=None,
+                      seed=None):
         """prepare the base experiment (HCP or WGN)."""
         if self.source == 'hcp':
-            path = get_hcp_path()
-            feats = hcp_feats if hcp_feats is not None else self.hcp_feats
-            img_glob_dict = {feat: f'*_{feat}.nii.gz' for feat in feats}
-            exp = glow.experiment.ExperimentImageOnly.from_search(
-                folder=path,
-                sbj_regex=self.hcp_sbj_regex,
-                img_glob_dict=img_glob_dict)
-            self.exp_orig = exp.sample_x(a=2, seed=self.exp_seed,
-                                         add_bias=True)
+            if self._exp_img_only is None:
+                path = get_hcp_path()
+                feats = hcp_feats if hcp_feats is not None else self.hcp_feats
+                img_glob_dict = {feat: f'*_{feat}.nii.gz' for feat in feats}
+                self._exp_img_only = (
+                    glow.experiment.ExperimentImageOnly.from_search(
+                        folder=path,
+                        sbj_regex=self.hcp_sbj_regex,
+                        img_glob_dict=img_glob_dict))
+            # Per-trial X draw: combine exp_seed with trial seed so each
+            # trial gets an independent design matrix.
+            if seed is None:
+                x_seed = self.exp_seed
+            else:
+                x_seed = int(np.random.SeedSequence(
+                    [int(self.exp_seed), int(seed)]).generate_state(1)[0])
+            self.exp_orig = self._exp_img_only.sample_x(a=2, seed=x_seed,
+                                                        add_bias=True)
         elif self.source == 'wgn':
             b = wgn_b if wgn_b is not None else self.wgn_b
             num_img = wgn_num_img if wgn_num_img is not None else self.wgn_num_img
+            # Per-trial noise draw: combine exp_seed with trial seed so each
+            # trial is an independent WGN realization.
+            if seed is None:
+                noise_seed = self.exp_seed
+            else:
+                noise_seed = int(np.random.SeedSequence(
+                    [int(self.exp_seed), int(seed)]).generate_state(1)[0])
             self.exp_orig = glow.experiment.Experiment.from_gauss(
-                seed=self.exp_seed,
+                seed=noise_seed,
                 shape=self.wgn_shape,
                 a=self.wgn_a,
                 b=b,
@@ -155,27 +173,43 @@ class Config:
         """return an experiment with a synthetic effect imposed."""
         # Re-prepare exp_orig if dataset parameters changed or if not yet created
         # Note: On cloud workers, exp_orig should already be loaded from shared cache
+        wgn_seed_changed = (
+            self.source == 'wgn' and
+            seed != getattr(self, '_last_wgn_seed', object())
+        )
+        hcp_seed_changed = (
+            self.source == 'hcp' and
+            seed != getattr(self, '_last_hcp_seed', object())
+        )
         needs_recreate = (
             self.exp_orig is None or
             (hcp_feats is not None and hcp_feats != getattr(self, '_last_hcp_feats', None)) or
             (wgn_b is not None and wgn_b != getattr(self, '_last_wgn_b', None)) or
-            (wgn_num_img is not None and wgn_num_img != getattr(self, '_last_wgn_num_img', None))
+            (wgn_num_img is not None and wgn_num_img != getattr(self, '_last_wgn_num_img', None)) or
+            wgn_seed_changed or
+            hcp_seed_changed
         )
-        
+
         if needs_recreate:
-            if hasattr(self, '_shared_exp_s3_key') and self._shared_exp_s3_key and self.exp_orig is None:
+            if (hasattr(self, '_shared_exp_s3_key') and self._shared_exp_s3_key
+                    and self.exp_orig is None
+                    and getattr(self, '_exp_img_only', None) is None):
                 raise RuntimeError(
                     f'exp_orig is None but shared cache reference exists. '
                     f'Worker should have loaded from: {self._shared_exp_s3_key}'
                 )
             self.prep_exp_orig(hcp_feats=hcp_feats, wgn_b=wgn_b,
-                               wgn_num_img=wgn_num_img)
+                               wgn_num_img=wgn_num_img, seed=seed)
             if hcp_feats is not None:
                 self._last_hcp_feats = hcp_feats
             if wgn_b is not None:
                 self._last_wgn_b = wgn_b
             if wgn_num_img is not None:
                 self._last_wgn_num_img = wgn_num_img
+            if self.source == 'wgn':
+                self._last_wgn_seed = seed
+            if self.source == 'hcp':
+                self._last_hcp_seed = seed
 
         # trim experiment to reasonable size (for speedup)
         radius_to_use = radius if radius is not None else self.radius
@@ -346,7 +380,9 @@ class Config:
         # attributes through unchanged; convert() handles the rest.
         d = {k: convert(v) for k, v in self.__dict__.items()}
         for k in ('exp_orig', 'folder', '_shared_exp_s3_key',
-                  '_last_hcp_feats', '_last_wgn_b', '_last_wgn_num_img'):
+                  '_exp_img_only',
+                  '_last_hcp_feats', '_last_wgn_b', '_last_wgn_num_img',
+                  '_last_wgn_seed', '_last_hcp_seed'):
             d.pop(k, None)
         return d
 
@@ -443,7 +479,14 @@ class Config:
             if verbose:
                 print('  Preparing experiment data...')
             self.prep_exp_orig()
-        exp_sig = self.exp_orig._hash()
+        # For shared-cache sources use the pre-sample_x hash so the S3 key
+        # is stable across per-trial X redraws.
+        is_shared = (hasattr(self.cloud_config, 'shared_exp_sources') and
+                     self.source in self.cloud_config.shared_exp_sources)
+        if is_shared and self._exp_img_only is not None:
+            exp_sig = self._exp_img_only._hash()
+        else:
+            exp_sig = self.exp_orig._hash()
 
         # Estimate memory for experiment workers (before clearing exp_orig for HCP)
         memory_mb = None
@@ -474,9 +517,12 @@ class Config:
             memory_mb = runner.estimate_experiment_memory_mb(b, num_img, num_vox_full, n_perm)
 
         # For shared cache sources, upload to S3 if not already there
-        if (hasattr(self.cloud_config, 'shared_exp_sources') and
-            self.source in self.cloud_config.shared_exp_sources):
-
+        if is_shared:
+            # Upload the pre-sample_x image-only experiment so workers can
+            # redraw X per trial from the same cached data.
+            shared_obj = (self._exp_img_only
+                          if self._exp_img_only is not None
+                          else self.exp_orig)
             shared_data_key = f'{self.cloud_config.s3_prefix}/shared_exp_data/{exp_sig}.pkl'
 
             try:
@@ -490,7 +536,7 @@ class Config:
                 # Upload to S3
                 if verbose:
                     print(f'  Uploading shared experiment data: {exp_sig[:8]}...')
-                exp_bytes = pickle.dumps(self.exp_orig)
+                exp_bytes = pickle.dumps(shared_obj)
                 runner.s3.put_object(
                     Bucket=self.cloud_config.s3_bucket,
                     Key=shared_data_key,
@@ -499,9 +545,10 @@ class Config:
                 if verbose:
                     print(f'  ✓ Uploaded ({len(exp_bytes) / 1024**2:.1f} MB)')
 
-            # Store S3 reference; clear local copy so it's not in pickled config
+            # Store S3 reference; clear local copies so they aren't pickled.
             self._shared_exp_s3_key = shared_data_key
             self.exp_orig = None
+            self._exp_img_only = None
 
         # generate unique run ID
         run_id = f'{self.label}_{uuid.uuid4().hex[:8]}'

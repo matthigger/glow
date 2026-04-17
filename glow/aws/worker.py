@@ -345,12 +345,18 @@ def run_experiment_mode(args):
         print(f'\nDownloading shared experiment data from s3://{args.s3_bucket}/{config._shared_exp_s3_key}')
         try:
             response = s3.get_object(Bucket=args.s3_bucket, Key=config._shared_exp_s3_key)
-            config.exp_orig = pickle.loads(response['Body'].read())
+            loaded = pickle.loads(response['Body'].read())
+            # Shared cache now holds the pre-sample_x ExperimentImageOnly so
+            # workers can redraw the design matrix per trial. Older caches
+            # may hold a full Experiment; both are acceptable as the
+            # image-only source because Experiment subclasses it.
+            config._exp_img_only = loaded
+            config.exp_orig = None
             print(f'  ✓ Loaded shared experiment data')
         except ClientError as e:
             print(f'  ✗ Error loading shared experiment data: {e}')
             sys.exit(1)
-    elif config.source == 'hcp' and config.exp_orig is None:
+    elif config.source == 'hcp' and config.exp_orig is None and getattr(config, '_exp_img_only', None) is None:
         # HCP should have exp_orig loaded (either from shared cache or included in config)
         print(f'\n✗ Error: exp_orig is None for HCP source')
         print(f'  Expected either _shared_exp_s3_key or exp_orig in config')
