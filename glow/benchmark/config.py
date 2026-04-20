@@ -102,13 +102,53 @@ class Config:
         self.folder = None
         self._shared_exp_s3_key = None  # S3 key for shared experiment data
         self._exp_img_only = None  # cached HCP image-only exp (pre-sample_x)
+        self._hcp_subjects = None  # cached sorted subject id list
+
+    def _hcp_subject_list(self):
+        """Sorted list of HCP subject ids picked up by hcp_sbj_regex.
+
+        Canonical across regex rewrites that select the same files.  Cached
+        on the Config after the first directory scan.
+        """
+        if self._hcp_subjects is None:
+            feats = tuple(sorted(self.hcp_feats))
+            img_glob_dict = {feat: f'*_{feat}.nii.gz' for feat in feats}
+            self._hcp_subjects = tuple(
+                glow.experiment.ExperimentImageOnly.list_subjects(
+                    folder=get_hcp_path(),
+                    sbj_regex=self.hcp_sbj_regex,
+                    img_glob_dict=img_glob_dict))
+        return self._hcp_subjects
 
     def base_recipe(self):
-        """Shared per-row recipe components (merged with Runner.label_recipe)."""
-        if self.exp_orig is None:
-            self.prep_exp_orig()
+        """Shared per-row recipe components (merged with Runner.label_recipe).
+
+        Hashes the declared config knobs that define the dataset — not the
+        realized noise/design draw, which now varies per trial.  Source-
+        specific identity:
+          * WGN: shape, a, b, num_img, exp_seed
+          * HCP: sorted feats + sorted subject ids (stable under regex rewrites)
+        """
+        if self.source == 'wgn':
+            source_id = {
+                'wgn_shape': tuple(self.wgn_shape),
+                'wgn_a': self.wgn_a,
+                'wgn_b': self.wgn_b,
+                'wgn_num_img': self.wgn_num_img,
+                'exp_seed': self.exp_seed,
+            }
+        elif self.source == 'hcp':
+            source_id = {
+                'hcp_feats': tuple(sorted(self.hcp_feats)),
+                'hcp_subjects': self._hcp_subject_list(),
+            }
+        else:
+            raise ValueError(f'unknown source: {self.source}')
+
         return {
-            'exp_hash': self.exp_orig._hash(),
+            'source': self.source,
+            **source_id,
+            'crop_n_vox': self.crop_n_vox,
             'effect_perc': self.effect_perc,
             'radius': self.radius,
             'runner': type(self.runner).__name__ if self.runner else None,

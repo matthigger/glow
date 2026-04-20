@@ -95,6 +95,31 @@ class ExperimentImageOnly:
                    meta=meta, **kwargs)
 
     @classmethod
+    def _search_files(cls, folder, sbj_regex, img_glob_dict):
+        """scan folder for feature files and return a (subject x feature)
+        DataFrame of file paths.  No image data is loaded."""
+        folder = pathlib.Path(folder)
+        df = pd.DataFrame()
+        for y_feat, y_glob in img_glob_dict.items():
+            for file in folder.glob(y_glob):
+                sbj_list = re.findall(sbj_regex, str(file))
+                assert len(sbj_list) == 1, \
+                    f'unique sbj not found in file: {file}'
+                sbj = sbj_list[0]
+                df.loc[sbj, y_feat] = file
+        return df
+
+    @classmethod
+    def list_subjects(cls, folder, sbj_regex, img_glob_dict):
+        """return the sorted list of subject ids discovered under folder.
+
+        Canonical across regex rewrites that select the same files — useful
+        as a stable identity for caching / hashing."""
+        df = cls._search_files(folder, sbj_regex, img_glob_dict)
+        assert df.size, 'no images found'
+        return sorted(df.index)
+
+    @classmethod
     def from_search(cls, folder, sbj_regex, img_glob_dict, **kwargs):
         """search a folder for images and build an experiment.
 
@@ -106,19 +131,7 @@ class ExperimentImageOnly:
         Returns:
             Experiment built from discovered images
         """
-        # find all images
-        folder = pathlib.Path(folder)
-        df = pd.DataFrame()
-        for y_feat, y_glob in img_glob_dict.items():
-            for file in folder.glob(y_glob):
-                # extract sbj from full path of file
-                sbj_list = re.findall(sbj_regex, str(file))
-                assert len(sbj_list) == 1, \
-                    f'unique sbj not found in file: {file}'
-                sbj = sbj_list[0]
-
-                df.loc[sbj, y_feat] = file
-
+        df = cls._search_files(folder, sbj_regex, img_glob_dict)
         assert df.size, 'no images found'
         assert len(set(df.values.flatten())) == np.prod(df.shape), \
             'file repeated for more than one subject-feature pair'
