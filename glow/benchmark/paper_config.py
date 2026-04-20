@@ -13,7 +13,8 @@ from glow.analysis.mancova import get_hotel_tr, get_llr, get_wilks
 CROP_N_VOX = 1_000
 
 COMMON = dict(
-    n_seed=50,
+    n_seed=10,
+    # n_seed=50,
     effect_llr_all=np.logspace(np.log10(0.003), np.log10(0.3), 11),
     effect_perc=0.1,
     crop_n_vox=CROP_N_VOX,
@@ -44,7 +45,8 @@ ANALYSES = {
                  n_perm_fwer_size_adjust=N_PERM_FWER_SIZE_ADJUST,
                  min_size=1,
                  alpha_fwer=ALPHA_FWER,
-                 get_stat=get_llr),
+                 get_stat=get_llr,
+                 cluster_mode="ward's (q0, q1)"),
     'VBA': dict(n_perm_fwer=N_PERM_TOTAL,
                 tfce_flag=False,
                 z_flag=True,
@@ -76,8 +78,14 @@ def make_config(label, source, runner, **overrides):
 
 
 # ---------- shared ana_kwargs_dicts used by RunAna configs ----------
+def _glow_kw(cluster_mode):
+    """GLOW kwargs with a specific Ward clustering projection."""
+    return {**ANALYSES['GLOW'], 'cluster_mode': cluster_mode}
+
+
 ana_kwargs_dict_vba = {
-    'GLOW': (glow.analysis.AnalysisGLOW, ANALYSES['GLOW']),
+    'GLOW-Focus': (glow.analysis.AnalysisGLOW, _glow_kw("ward's (q1)")),
+    'GLOW-GLM': (glow.analysis.AnalysisGLOW, _glow_kw("ward's (q0, q1)")),
     'VBA': (glow.analysis.AnalysisVBA, ANALYSES['VBA']),
     'VBA-TFCE': (glow.analysis.AnalysisVBA, ANALYSES['VBA-TFCE']),
     'CET': (glow.analysis.AnalysisCET, ANALYSES['CET']),
