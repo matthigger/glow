@@ -154,9 +154,10 @@ def process_permutation(exp, ana_kwargs, perm_idx):
     from glow.analysis.mancova import get_llr
 
     get_stat = ana_kwargs.get('get_stat', get_llr)
+    cluster_mode = ana_kwargs.get('cluster_mode', "ward's (q1)")
 
     _exp = exp.permute(perm_idx)
-    children = cluster(exp=_exp)
+    children = cluster(exp=_exp, mode=cluster_mode)
 
     b, num_img, num_vox = _exp.y.shape
 

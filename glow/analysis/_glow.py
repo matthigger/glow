@@ -53,6 +53,7 @@ class AnalysisGLOW(Analysis):
                  n_perm_fwer_size_adjust=25,
                  alpha_fwer=.05, min_size=1, verbose=False,
                  n_jobs_perm=1, cloud_config=None, perm_dir=None,
+                 cluster_mode="ward's (q1)",
                  **kwargs):
         """
         Args:
@@ -72,9 +73,16 @@ class AnalysisGLOW(Analysis):
                 results are kept on disk for post-hoc inspection; if
                 None a temp directory is created and cleaned up.
                 Existing results in the directory are reused (resume).
+            cluster_mode: projection used by Ward clustering.  Must be
+                one of the keys in ``glow.analysis.cluster._MODES``.
+                Default ``"ward's (q1)"`` ("Focus") projects onto the
+                contrast-of-interest subspace; ``"ward's (q0, q1)"``
+                ("GLM Error") keeps bias + contrast; ``"ward's (all)"``
+                ("Naive") clusters raw ``y``.
         """
         super().__init__(exp, **kwargs)
         self.verbose = verbose
+        self.cluster_mode = cluster_mode
 
         if cloud_config is not None:
             self._run_on_cloud(exp, n_perm_fwer,
@@ -82,6 +90,7 @@ class AnalysisGLOW(Analysis):
                               cloud_config,
                               n_perm_fwer_size_adjust=n_perm_fwer_size_adjust,
                               perms_per_job=kwargs.pop('perms_per_job', None),
+                              cluster_mode=cluster_mode,
                               **kwargs)
             return
 
@@ -203,7 +212,8 @@ class AnalysisGLOW(Analysis):
             shutil.rmtree(perm_dir, ignore_errors=True)
 
     @classmethod
-    def from_precomputed(cls, *, exp, get_stat, adj_gam=None, verbose=False):
+    def from_precomputed(cls, *, exp, get_stat, adj_gam=None, verbose=False,
+                         cluster_mode="ward's (q1)"):
         """Construct a shell for finalization without running full __init__.
 
         The caller should then invoke _finalize_analysis() to compute p-values.
@@ -213,12 +223,13 @@ class AnalysisGLOW(Analysis):
         obj.get_stat = get_stat
         obj.adj_gam = adj_gam
         obj.verbose = verbose
+        obj.cluster_mode = cluster_mode
         return obj
 
     def _process_permutation(self, exp, perm_idx):
         """Run one permutation: cluster, compute stats and sizes."""
         _exp = exp.permute(perm_idx)
-        children = cluster(exp=_exp)
+        children = cluster(exp=_exp, mode=self.cluster_mode)
 
         stat_row = self.get_stat_perm(exp=_exp, children=children)
         stat = stat_row.ravel()
@@ -234,7 +245,8 @@ class AnalysisGLOW(Analysis):
         }
 
     @classmethod
-    def rerun_permutation(cls, exp, perm_idx, get_stat=get_llr):
+    def rerun_permutation(cls, exp, perm_idx, get_stat=get_llr,
+                          cluster_mode="ward's (q1)"):
         """Re-run a single permutation for inspection.
 
         Since permutations are deterministic given ``perm_idx``, this
@@ -244,6 +256,7 @@ class AnalysisGLOW(Analysis):
             dict with keys ``perm_idx``, ``children``, ``stat``, ``size``
         """
         ana = cls.from_precomputed(exp=exp, get_stat=get_stat)
+        ana.cluster_mode = cluster_mode
         return ana._process_permutation(exp, perm_idx)
 
     _N_SPLINES = 10
@@ -433,6 +446,7 @@ class AnalysisGLOW(Analysis):
                      alpha_fwer, min_size, verbose,
                      cloud_config, n_perm_fwer_size_adjust=25,
                      perms_per_job=None,
+                     cluster_mode="ward's (q1)",
                      **kwargs):
         """Run full analysis on AWS Batch (permutations + synthesis).
 
@@ -454,6 +468,7 @@ class AnalysisGLOW(Analysis):
             'n_perm_fwer_size_adjust': n_perm_fwer_size_adjust,
             'alpha_fwer': alpha_fwer,
             'min_size': min_size,
+            'cluster_mode': cluster_mode,
         }
         ana_kwargs.update(kwargs)
 

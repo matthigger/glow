@@ -393,6 +393,7 @@ class RunMancovaGlow(Runner):
         n_perm_sa = ana_kw.get('n_perm_fwer_size_adjust', 50)
         alpha_fwer = ana_kw.get('alpha_fwer', 0.05)
         min_size = ana_kw.get('min_size', 1)
+        cluster_mode = ana_kw.get('cluster_mode', "ward's (q1)")
 
         fit_start = n_perm_fwer + 1
         fit_end = n_perm_fwer + n_perm_sa
@@ -403,7 +404,7 @@ class RunMancovaGlow(Runner):
 
         for perm_idx in range(fit_start, fit_end + 1):
             _exp = exp.permute(perm_idx)
-            children = cluster(exp=_exp)
+            children = cluster(exp=_exp, mode=cluster_mode)
             multi = Analysis.get_stat_perm_multi(
                 exp=_exp, get_stat_list=stat_fns, children=children)
             size = glow.graph.node_sum(
@@ -426,7 +427,7 @@ class RunMancovaGlow(Runner):
 
         for perm_idx in range(n_perm_fwer + 1):
             _exp = exp.permute(perm_idx)
-            children = cluster(exp=_exp)
+            children = cluster(exp=_exp, mode=cluster_mode)
             multi = Analysis.get_stat_perm_multi(
                 exp=_exp, get_stat_list=stat_fns, children=children)
             size = glow.graph.node_sum(
