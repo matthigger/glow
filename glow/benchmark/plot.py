@@ -224,27 +224,27 @@ def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['dice', 'sens', 'spec']
                     pv['best_other'] = pv[others].max(axis=1, skipna=True)
                     pv['diff'] = pv[one_label] - pv['best_other']
 
-                    # mean diff + shaded band
-                    diff_stats = (
-                        pv.groupby(x_param)['diff']
-                        .agg(['mean',
-                              lambda s: np.percentile(s, lower_q),
-                              lambda s: np.percentile(s, upper_q)])
+                    # thin line per seed (experiment)
+                    for _, seed_df in pv.groupby('seed'):
+                        seed_df = seed_df.sort_values(x_param)
+                        ax_bot.plot(
+                            seed_df[x_param], seed_df['diff'],
+                            lw=0.5, color='black', alpha=0.3
+                        )
+
+                    # thick mean line
+                    mean_diff = (
+                        pv.groupby(x_param)['diff'].mean()
                         .reset_index()
                         .sort_values(x_param)
                     )
-                    diff_stats.columns = [x_param, 'mean', 'q_low', 'q_high']
                     ax_bot.plot(
-                        diff_stats[x_param], diff_stats['mean'],
+                        mean_diff[x_param], mean_diff['diff'],
                         lw=3, color='black'
                     )
-                    ax_bot.fill_between(
-                        diff_stats[x_param],
-                        diff_stats['q_low'], diff_stats['q_high'],
-                        color='black', alpha=0.15
-                    )
 
-                    ax_bot.set_ylabel(f'{one_label} - best vba')
+                    ax_bot.set_ylabel(f'{one_label} - best other')
+                    ax_bot.set_ylim(-1, 1)
                     ax_bot.axhline(0, lw=.5, color='black', alpha=alpha)
                     ax_bot.grid(True, alpha=alpha, linewidth=1.2)
                     ax_bot.set_xlabel(_X_PARAM_LABELS.get(x_param, x_param))
