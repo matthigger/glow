@@ -418,7 +418,8 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
 # ---------------------------------------------------------------------------
 
 def _create_app(ana_glow, mask_target=None, y_features=None,
-                subject_names=None, extra_df=None):
+                subject_names=None, extra_df=None,
+                url_base_pathname=None, server=None):
     """Create and wire up the Dash app.
 
     Args:
@@ -430,6 +431,12 @@ def _create_app(ana_glow, mask_target=None, y_features=None,
             (auto-extracted from ``exp.meta['subjects']`` when *None*).
         extra_df (pd.DataFrame | None): optional extra per-region data
             (keyed on ``region_idx``) merged into the scatter DataFrame.
+        url_base_pathname (str | None): when serving under a path prefix
+            on a shared Flask server (e.g. ``"/wgn2d/"``).  Default *None*
+            serves at the root.
+        server (flask.Flask | None): existing Flask server to mount onto.
+            When *None*, Dash creates its own.  Used by the multi-demo
+            web entry point to host several apps under one server.
 
     Returns:
         app (Dash): configured Dash application
@@ -460,7 +467,12 @@ def _create_app(ana_glow, mask_target=None, y_features=None,
         target_stats = compute_target_stats(ana_glow, mask_target)
         target_vox = mask_idx[mask_target & (mask_idx >= 0)]
 
-    app = Dash(__name__, update_title=None)
+    dash_kw = {'update_title': None}
+    if url_base_pathname is not None:
+        dash_kw['url_base_pathname'] = url_base_pathname
+    if server is not None:
+        dash_kw['server'] = server
+    app = Dash(__name__, **dash_kw)
 
     if is_3d:
         _setup_3d(app, ana_glow, df,
