@@ -110,13 +110,25 @@ viewer. Each link below loads a pre-baked analysis with synthetic effects
 imposed on the source images. Pick one to explore the scatter,
 region overlay, and per-region regression panels.</p>
 
+<h2>How to use</h2>
+<ul>
+<li>Hover over a point in the scatter plot to preview that region's
+segmentation in the image viewer.</li>
+<li>Click a point to keep the region in the selected list; the regression
+panel updates with the active selection.</li>
+<li>Use the dropdowns at the top of each demo to change which features
+color the scatter or drive the regression.</li>
+</ul>
+
 <h2>Available demos</h2>
 <ul>
 {items}
 </ul>
 
 <footer>
-GLOW: General Linear models Optimized with Ward's method.
+GLOW: General Linear models Optimized with Ward's method.<br>
+Questions or feedback:
+<a href="mailto:mhigger@ccs.neu.edu">mhigger@ccs.neu.edu</a>
 </footer>
 </body>
 </html>"""
