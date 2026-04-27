@@ -433,13 +433,13 @@ class AnalysisGLOW(Analysis):
         b, num_img, num_vox = exp.y.shape
         from glow.benchmark.runtime import (
             RUNTIME_MODEL_PATHS, load_runtime_model, predict_runtime_sec)
-        model = load_runtime_model('GLOW')
+        model = load_runtime_model('GLOW', platform='aws')
         if model is None:
-            path = RUNTIME_MODEL_PATHS.get('GLOW')
+            path = RUNTIME_MODEL_PATHS['aws'].get('GLOW')
             raise FileNotFoundError(
-                f'GLOW runtime model not found at {path}.  '
+                f'GLOW AWS runtime model not found at {path}.  '
                 f'Regenerate with: '
-                f'python -m glow.benchmark.runtime --profile experiment')
+                f'python -m glow.benchmark.runtime --profile experiment --cloud')
         return predict_runtime_sec(model, num_vox, b, num_img, n_perm=1)
 
     def _run_on_cloud(self, exp, n_perm_fwer,

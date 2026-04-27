@@ -604,7 +604,7 @@ class Config:
         timeout_minutes = None
         try:
             from glow.benchmark.runtime import estimate_timeout_minutes
-            est = estimate_timeout_minutes(self)
+            est = estimate_timeout_minutes(self, platform='aws')
             if est is not None:
                 timeout_minutes = int(math.ceil(est[0]))
                 est_min = est[1]

@@ -129,7 +129,7 @@ def _print_cost_summary(configs, cloud_config):
         n_jobs = _count_uncached_jobs(config)
         est = None
         try:
-            est = estimate_timeout_minutes(config)
+            est = estimate_timeout_minutes(config, platform='aws')
         except (ImportError, FileNotFoundError, json.JSONDecodeError,
                 KeyError, ValueError, TypeError):
             pass
@@ -232,7 +232,7 @@ def _log_runtime_history(configs, all_job_info):
         else:
             atype, n_perm = None, None
 
-        model = load_runtime_model(atype) if atype else None
+        model = load_runtime_model(atype, platform='aws') if atype else None
         predicted_sec = None
         if model is not None and n_perm is not None:
             predicted_sec = max(0.0, predict_runtime_sec(

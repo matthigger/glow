@@ -50,11 +50,18 @@ from glow.analysis.mancova import get_llr
 # Runtime model paths and constants
 # ---------------------------------------------------------------------------
 
-RUNTIME_MODEL_DIR = Path(__file__).resolve().parent.parent / 'aws'
+RUNTIME_MODEL_DIR = Path(__file__).resolve().parent / 'runtime_models'
 RUNTIME_MODEL_PATHS = {
-    'GLOW': RUNTIME_MODEL_DIR / 'runtime_glow.json',
-    'VBA': RUNTIME_MODEL_DIR / 'runtime_vba.json',
-    'VBA-TFCE': RUNTIME_MODEL_DIR / 'runtime_vba_tfce.json',
+    'aws': {
+        'GLOW':     RUNTIME_MODEL_DIR / 'aws' / 'runtime_glow.json',
+        'VBA':      RUNTIME_MODEL_DIR / 'aws' / 'runtime_vba.json',
+        'VBA-TFCE': RUNTIME_MODEL_DIR / 'aws' / 'runtime_vba_tfce.json',
+    },
+    'local': {
+        'GLOW':     RUNTIME_MODEL_DIR / 'local' / 'runtime_glow.json',
+        'VBA':      RUNTIME_MODEL_DIR / 'local' / 'runtime_vba.json',
+        'VBA-TFCE': RUNTIME_MODEL_DIR / 'local' / 'runtime_vba_tfce.json',
+    },
 }
 RUNTIME_FEATURE_COLS = ['num_vox', 'b', 'num_img', 'n_perm']
 
@@ -63,14 +70,17 @@ RUNTIME_FEATURE_COLS = ['num_vox', 'b', 'num_img', 'n_perm']
 # Load / predict runtime models
 # ---------------------------------------------------------------------------
 
-def load_runtime_model(analysis_type):
-    """Load a fitted runtime model for *analysis_type*, or ``None``.
+def load_runtime_model(analysis_type, platform):
+    """Load a fitted runtime model for *analysis_type* on *platform*.
 
     *analysis_type* is one of ``'GLOW'``, ``'VBA'``, ``'VBA-TFCE'``.
+    *platform* is ``'aws'`` or ``'local'``; the two regimes are kept
+    separate because per-core silicon speed differs by ~8x.
+    Returns ``None`` if no model is fitted for that combination yet.
     """
     from glow.benchmark.memory import load_model
-    path = RUNTIME_MODEL_PATHS.get(analysis_type)
-    if path is None:
+    path = RUNTIME_MODEL_PATHS.get(platform, {}).get(analysis_type)
+    if path is None or not path.exists():
         return None
     return load_model(path)
 
@@ -131,11 +141,15 @@ def _get_model_safety_factor(model):
     return float(model.get('safety_factor', _DEFAULT_SAFETY_FACTOR))
 
 
-def estimate_timeout_minutes(config, safety_factor=None):
+def estimate_timeout_minutes(config, platform, safety_factor=None):
     """Estimate per-job timeout for *config*'s experiment jobs.
 
+    *platform* is ``'aws'`` or ``'local'``; per-core silicon differs
+    enough between the two that they need separate fitted models.
+
     Returns ``(timeout_minutes, estimated_minutes, is_upper_bound)`` or
-    ``None`` if no fitted runtime models are available.
+    ``None`` if no fitted runtime model is available for that platform
+    (callers should fall back to a default timeout in that case).
 
     When ``safety_factor`` is None, the per-model calibrated 99.99%-quantile
     factor (written by ``fit_poly_lasso``) is used; otherwise the caller's
@@ -162,7 +176,7 @@ def estimate_timeout_minutes(config, safety_factor=None):
             atype = _get_analysis_type(Ana, ana_kw)
             if atype is None:
                 return None
-            model = load_runtime_model(atype)
+            model = load_runtime_model(atype, platform)
             if model is None:
                 return None
             n_perm = _get_total_perms(Ana, ana_kw)
@@ -173,7 +187,7 @@ def estimate_timeout_minutes(config, safety_factor=None):
     elif isinstance(runner, RunPruneCompare):
         Ana, ana_kw = next(iter(runner.iter_ana_kwargs()))[1]
         atype = _get_analysis_type(Ana, ana_kw)
-        model = load_runtime_model(atype) if atype else None
+        model = load_runtime_model(atype, platform) if atype else None
         if model is None:
             return None
         n_perm = _get_total_perms(Ana, ana_kw)
@@ -183,7 +197,7 @@ def estimate_timeout_minutes(config, safety_factor=None):
 
     elif isinstance(runner, RunMancovaGlow):
         Ana, ana_kw = next(iter(runner.iter_ana_kwargs()))[1]
-        model = load_runtime_model('GLOW')
+        model = load_runtime_model('GLOW', platform)
         if model is None:
             return None
         n_perm = _get_total_perms(Ana, ana_kw)
@@ -195,7 +209,7 @@ def estimate_timeout_minutes(config, safety_factor=None):
 
     elif isinstance(runner, RunMancovaVba):
         Ana, ana_kw = next(iter(runner.iter_ana_kwargs()))[1]
-        model = load_runtime_model('VBA-TFCE')
+        model = load_runtime_model('VBA-TFCE', platform)
         if model is None:
             return None
         n_perm = _get_total_perms(Ana, ana_kw)
@@ -207,7 +221,7 @@ def estimate_timeout_minutes(config, safety_factor=None):
     elif isinstance(runner, RunSegment):
         # RunSegment does Ward's clustering, no permutations. No dedicated
         # runtime model; we use GLOW @ 100 perms as a loose upper bound.
-        model = load_runtime_model('GLOW')
+        model = load_runtime_model('GLOW', platform)
         if model is None:
             return None
         total_sec = max(0.0, predict_runtime_sec(
@@ -568,17 +582,18 @@ def _collect_runtime_results(configs):
     return pd.DataFrame(rows)
 
 
-def _fit_runtime_models(df):
-    """Fit per-analysis-type Lasso regression models on timing data."""
+def _fit_runtime_models(df, platform):
+    """Fit per-analysis-type Lasso regression models for *platform*."""
     from glow.benchmark.memory import fit_poly_lasso
 
     models = {}
-    for analysis_type, path in RUNTIME_MODEL_PATHS.items():
+    for analysis_type, path in RUNTIME_MODEL_PATHS[platform].items():
         df_type = df[df['analysis_type'] == analysis_type]
         if df_type.empty:
             print(f'  no data for {analysis_type}, skipping')
             continue
         print(f'\n  Fitting {analysis_type} model ({len(df_type)} points)...')
+        path.parent.mkdir(parents=True, exist_ok=True)
         models[analysis_type] = fit_poly_lasso(
             df_type,
             feature_cols=RUNTIME_FEATURE_COLS,
@@ -652,6 +667,7 @@ def _run_profile_local(configs, n_jobs=-1):
 
 def main_experiment_profile(cloud=False, n_jobs=-1):
     """Run experiment-mode runtime profiling and fit models."""
+    platform = 'aws' if cloud else 'local'
     if cloud:
         cloud_config = load_cloud_config()
         cloud_config.timeout_minutes = 360
@@ -687,12 +703,12 @@ def main_experiment_profile(cloud=False, n_jobs=-1):
         return
 
     print(f'  collected {len(df)} timing measurements')
-    models = _fit_runtime_models(df)
+    models = _fit_runtime_models(df, platform=platform)
 
     if models:
         print('\n  Sample predictions:')
         for atype in ['GLOW', 'VBA', 'VBA-TFCE']:
-            model = load_runtime_model(atype)
+            model = load_runtime_model(atype, platform)
             if model:
                 pred = predict_runtime_sec(model, 50000, 2, 100, 1050)
                 print(f'    {atype}: (50k vox, b=2, 100 img, '
