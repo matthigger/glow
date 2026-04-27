@@ -6,17 +6,17 @@
 #   2. Bootstraps a Space checkout at $SPACE_DIR (clones on first run)
 #   3. Rsyncs the deployable subset into the Space checkout:
 #        glow/                       <-  src/glow/
-#        Dockerfile                  <-  src/glow/viewer_web/Dockerfile
-#        README.md                   <-  src/glow/viewer_web/README.md
-#        .dockerignore               <-  src/glow/viewer_web/.dockerignore
+#        Dockerfile                  <-  src/glow/viewer/web/Dockerfile
+#        README.md                   <-  src/glow/viewer/web/README.md
+#        .dockerignore               <-  src/glow/viewer/web/.dockerignore
 #   4. Writes a Space-specific .gitignore (does NOT exclude pickles)
 #   5. Commits and pushes
 #
 # Usage:
-#   glow/viewer_web/deploy_hf.sh                    # interactive
-#   glow/viewer_web/deploy_hf.sh --user myname      # set HF username
-#   glow/viewer_web/deploy_hf.sh --yes              # skip confirmation
-#   glow/viewer_web/deploy_hf.sh --space my-space   # custom Space name
+#   glow/viewer/web/deploy_hf.sh                    # interactive
+#   glow/viewer/web/deploy_hf.sh --user myname      # set HF username
+#   glow/viewer/web/deploy_hf.sh --yes              # skip confirmation
+#   glow/viewer/web/deploy_hf.sh --space my-space   # custom Space name
 #
 # Auth:
 #   Either run `hf auth login` once (from huggingface_hub; older docs say
@@ -58,7 +58,7 @@ done
 
 # resolve project root from this script's location
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 PICKLE_DIR="$SCRIPT_DIR/pickles"
 
 if [ -z "$HF_USER" ]; then
@@ -89,10 +89,10 @@ if [ ! -d "$PICKLE_DIR" ] || [ -z "$(ls -A "$PICKLE_DIR" 2>/dev/null)" ]; then
     fi
     case "$REPLY" in
         y|Y|yes|YES)
-            python3 -m glow.viewer_web.bake_demos
+            python3 -m glow.viewer.web.bake_demos
             ;;
         *)
-            echo -e "${RED}✗ Aborting -- run python -m glow.viewer_web.bake_demos first${NC}"
+            echo -e "${RED}✗ Aborting -- run python -m glow.viewer.web.bake_demos first${NC}"
             exit 1
             ;;
     esac
@@ -144,11 +144,11 @@ rsync -a --delete \
     --exclude '*tmp*' \
     --exclude 'aws/' \
     --exclude 'benchmark/' \
-    --exclude 'viewer_web/pickles/' \
+    --exclude 'viewer/web/pickles/' \
     "$PROJECT_ROOT/glow/" "$SPACE_DIR/glow/"
 
 # the source-tree gitignore would exclude pickles; remove it
-rm -f "$SPACE_DIR/glow/viewer_web/.gitignore"
+rm -f "$SPACE_DIR/glow/viewer/web/.gitignore"
 
 # top-level deploy files
 cp "$SCRIPT_DIR/Dockerfile"     "$SPACE_DIR/Dockerfile"
@@ -160,7 +160,7 @@ cat > "$SPACE_DIR/.gitignore" <<'EOF'
 __pycache__/
 *.pyc
 .pytest_cache/
-glow/viewer_web/pickles/
+glow/viewer/web/pickles/
 EOF
 
 # ---------------------------------------------------------------------------
@@ -215,7 +215,7 @@ fi
 echo ""
 echo -e "${BLUE}Uploading pickles via Xet ...${NC}"
 hf upload "${HF_USER}/${SPACE_NAME}" \
-    "${PICKLE_DIR}" "glow/viewer_web/pickles" \
+    "${PICKLE_DIR}" "glow/viewer/web/pickles" \
     --repo-type space \
     --commit-message "upload pickles ${SRC_SHA}${SRC_DIRTY}"
 

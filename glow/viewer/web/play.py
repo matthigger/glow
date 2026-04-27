@@ -7,9 +7,9 @@ baked combo before deploying.
 
 Usage::
 
-    python -m glow.viewer_web.play wgn2d_b1_medium_s0
-    python -m glow.viewer_web.play --list
-    python -m glow.viewer_web.play path/to/some.p.gz
+    python -m glow.viewer.web.play wgn2d_b1_medium_s0
+    python -m glow.viewer.web.play --list
+    python -m glow.viewer.web.play path/to/some.p.gz
 """
 
 import argparse

@@ -6,12 +6,12 @@ to ``PICKLE_DIR``.
 
 Usage::
 
-    python -m glow.viewer_web.bake_demos                    # bake all
-    python -m glow.viewer_web.bake_demos --force            # rebuild even
+    python -m glow.viewer.web.bake_demos                    # bake all
+    python -m glow.viewer.web.bake_demos --force            # rebuild even
                                                             # if pickle exists
-    python -m glow.viewer_web.bake_demos --out path/to/dir  # custom output
+    python -m glow.viewer.web.bake_demos --out path/to/dir  # custom output
 
-The pickles are loaded by ``glow.viewer_web.server`` at startup and served
+The pickles are loaded by ``glow.viewer.web.server`` at startup and served
 via the multi-user Dash app.
 
 Each combo produces a single ``.p.gz`` file named by ``canonical_key()`` so

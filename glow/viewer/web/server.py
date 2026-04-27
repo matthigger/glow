@@ -10,12 +10,12 @@ session-key plumbing or hot-swap is required.
 
 Run locally::
 
-    python -m glow.viewer_web.server                # dev server, port 7860
-    PORT=8080 python -m glow.viewer_web.server      # custom port
+    python -m glow.viewer.web.server                # dev server, port 7860
+    PORT=8080 python -m glow.viewer.web.server      # custom port
 
 Run under gunicorn (Docker / HF Spaces)::
 
-    gunicorn glow.viewer_web.server:application --bind 0.0.0.0:7860
+    gunicorn glow.viewer.web.server:application --bind 0.0.0.0:7860
 """
 
 import argparse
@@ -142,14 +142,14 @@ def build_application(pickle_dir=_PICKLE_DIR):
     if not pickle_dir.exists():
         raise SystemExit(
             f'pickle dir not found: {pickle_dir}\n'
-            f'run: python -m glow.viewer_web.bake_demos')
+            f'run: python -m glow.viewer.web.bake_demos')
 
     print(f'loading registry from {pickle_dir}')
     registry = _load_registry(pickle_dir)
     if not registry:
         raise SystemExit(f'no pickles found in {pickle_dir}')
 
-    server = Flask('glow_viewer_web')
+    server = Flask('glow_viewer_web_demo')
     page = _landing_html(registry)
 
     @server.route('/')
@@ -172,7 +172,7 @@ def build_application(pickle_dir=_PICKLE_DIR):
     return server
 
 
-# WSGI entry point: gunicorn loads ``glow.viewer_web.server:application``.
+# WSGI entry point: gunicorn loads ``glow.viewer.web.server:application``.
 # Built eagerly at import so workers don't race on first request.
 application = build_application()
 
@@ -188,7 +188,7 @@ def main():
     args = parser.parse_args()
 
     from werkzeug.serving import run_simple
-    print(f'\n  glow:viewer_web running at http://{args.host}:{args.port}')
+    print(f'\n  glow:viewer:web running at http://{args.host}:{args.port}')
     print('  press Ctrl+C to stop\n')
     run_simple(args.host, args.port, application,
                use_reloader=args.debug, use_debugger=args.debug)
