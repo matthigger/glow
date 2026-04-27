@@ -40,13 +40,14 @@ SIZE_ADJUST_FRAC = 0.05
 N_PERM_FWER_SIZE_ADJUST = max(1, round(N_PERM_TOTAL * SIZE_ADJUST_FRAC))
 N_PERM_FWER = N_PERM_TOTAL - N_PERM_FWER_SIZE_ADJUST
 ALPHA_FWER = 0.05
+_GLOW_BASE = dict(n_perm_fwer=N_PERM_FWER,
+                  n_perm_fwer_size_adjust=N_PERM_FWER_SIZE_ADJUST,
+                  min_size=1,
+                  alpha_fwer=ALPHA_FWER,
+                  get_stat=get_llr)
 ANALYSES = {
-    'GLOW': dict(n_perm_fwer=N_PERM_FWER,
-                 n_perm_fwer_size_adjust=N_PERM_FWER_SIZE_ADJUST,
-                 min_size=1,
-                 alpha_fwer=ALPHA_FWER,
-                 get_stat=get_llr,
-                 cluster_mode="ward's (q0, q1)"),
+    'GLOW-Focus': {**_GLOW_BASE, 'cluster_mode': "ward's (q1)"},
+    'GLOW-GLM':   {**_GLOW_BASE, 'cluster_mode': "ward's (q0, q1)"},
     'VBA': dict(n_perm_fwer=N_PERM_TOTAL,
                 tfce_flag=False,
                 z_flag=True,
@@ -78,17 +79,12 @@ def make_config(label, source, runner, **overrides):
 
 
 # ---------- shared ana_kwargs_dicts used by RunAna configs ----------
-def _glow_kw(cluster_mode):
-    """GLOW kwargs with a specific Ward clustering projection."""
-    return {**ANALYSES['GLOW'], 'cluster_mode': cluster_mode}
-
-
 ana_kwargs_dict_vba = {
-    'GLOW-Focus': (glow.analysis.AnalysisGLOW, _glow_kw("ward's (q1)")),
-    'GLOW-GLM': (glow.analysis.AnalysisGLOW, _glow_kw("ward's (q0, q1)")),
-    'VBA': (glow.analysis.AnalysisVBA, ANALYSES['VBA']),
-    'VBA-TFCE': (glow.analysis.AnalysisVBA, ANALYSES['VBA-TFCE']),
-    'CET': (glow.analysis.AnalysisCET, ANALYSES['CET']),
+    'GLOW-Focus': (glow.analysis.AnalysisGLOW, ANALYSES['GLOW-Focus']),
+    'GLOW-GLM':   (glow.analysis.AnalysisGLOW, ANALYSES['GLOW-GLM']),
+    'VBA':        (glow.analysis.AnalysisVBA, ANALYSES['VBA']),
+    'VBA-TFCE':   (glow.analysis.AnalysisVBA, ANALYSES['VBA-TFCE']),
+    'CET':        (glow.analysis.AnalysisCET, ANALYSES['CET']),
 }
 
 
@@ -155,15 +151,15 @@ config_list.append(make_config(
 
 # ---------- G. pruning method comparison ----------
 config_list.append(make_config(
-    'prune_method_hcp', 'hcp', RunPruneCompare(ANALYSES['GLOW'])))
+    'prune_method_hcp', 'hcp', RunPruneCompare(ANALYSES['GLOW-GLM'])))
 config_list.append(make_config(
-    'prune_method_wgn', 'wgn', RunPruneCompare(ANALYSES['GLOW'])))
+    'prune_method_wgn', 'wgn', RunPruneCompare(ANALYSES['GLOW-GLM'])))
 
 # ---------- H. MANCOVA stat comparison (GLOW) ----------
 config_list.append(make_config(
-    'mancova_glow_wgn', 'wgn', RunMancovaGlow(ANALYSES['GLOW'])))
+    'mancova_glow_wgn', 'wgn', RunMancovaGlow(ANALYSES['GLOW-GLM'])))
 config_list.append(make_config(
-    'mancova_glow_hcp', 'hcp', RunMancovaGlow(ANALYSES['GLOW'])))
+    'mancova_glow_hcp', 'hcp', RunMancovaGlow(ANALYSES['GLOW-GLM'])))
 
 # ---------- I. MANCOVA stat comparison (VBA / VBA-TFCE / CET) ----------
 config_list.append(make_config(
