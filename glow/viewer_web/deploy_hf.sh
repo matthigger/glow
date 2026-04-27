@@ -19,8 +19,10 @@
 #   glow/viewer_web/deploy_hf.sh --space my-space   # custom Space name
 #
 # Auth:
-#   Either run `huggingface-cli login` once, or have a git credential helper
-#   that supplies your HF token at the password prompt for huggingface.co.
+#   Either run `hf auth login` once (from huggingface_hub; older docs say
+#   `huggingface-cli login`, which is now deprecated), or have a git
+#   credential helper that supplies your HF token at the password prompt
+#   for huggingface.co.
 
 set -e
 
@@ -129,11 +131,20 @@ echo -e "${BLUE}Syncing files ...${NC}"
 # clear stale package code (preserves git metadata)
 rm -rf "$SPACE_DIR/glow"
 
-# rsync the whole glow package (small, simpler than picking subdirs)
+# rsync the glow package, excluding subpackages and dev cruft the
+# runtime viewer never imports (top-level glow/__init__.py only pulls
+# analysis, effect, experiment, graph, mask).  Pickles are excluded
+# because HF rejects binary files in git -- they are uploaded via
+# `hf upload` (Xet) after the git push.
 rsync -a \
     --exclude '__pycache__/' \
     --exclude '*.pyc' \
     --exclude '.pytest_cache/' \
+    --exclude '.ipynb_checkpoints/' \
+    --exclude '*tmp*' \
+    --exclude 'aws/' \
+    --exclude 'benchmark/' \
+    --exclude 'viewer_web/pickles/' \
     "$PROJECT_ROOT/glow/" "$SPACE_DIR/glow/"
 
 # the source-tree gitignore would exclude pickles; remove it
@@ -144,11 +155,12 @@ cp "$SCRIPT_DIR/Dockerfile"     "$SPACE_DIR/Dockerfile"
 cp "$SCRIPT_DIR/README.md"      "$SPACE_DIR/README.md"
 cp "$SCRIPT_DIR/.dockerignore"  "$SPACE_DIR/.dockerignore"
 
-# Space-specific .gitignore: keep pickles, drop only python cruft
+# Space-specific .gitignore: pickles live outside git (uploaded via Xet)
 cat > "$SPACE_DIR/.gitignore" <<'EOF'
 __pycache__/
 *.pyc
 .pytest_cache/
+glow/viewer_web/pickles/
 EOF
 
 # ---------------------------------------------------------------------------
@@ -187,6 +199,25 @@ git commit -m "deploy ${SRC_SHA}${SRC_DIRTY}"
 echo ""
 echo -e "${BLUE}Pushing to ${SPACE_URL} ...${NC}"
 git push
+
+# ---------------------------------------------------------------------------
+# 5. Upload pickles via hf upload (Xet)
+# ---------------------------------------------------------------------------
+# Pickles can't go through plain git -- HF rejects binary files in git and
+# requires Xet for them.  `hf upload` handles Xet transparently.
+if ! command -v hf >/dev/null 2>&1; then
+    echo -e "${RED}✗ 'hf' CLI not found on PATH${NC}"
+    echo -e "${YELLOW}  install with: pip install -U huggingface_hub${NC}"
+    echo -e "${YELLOW}  then re-run this script (the git push already landed)${NC}"
+    exit 1
+fi
+
+echo ""
+echo -e "${BLUE}Uploading pickles via Xet ...${NC}"
+hf upload "${HF_USER}/${SPACE_NAME}" \
+    "${PICKLE_DIR}" "glow/viewer_web/pickles" \
+    --repo-type space \
+    --commit-message "upload pickles ${SRC_SHA}${SRC_DIRTY}"
 
 echo ""
 echo -e "${GREEN}✓ Done${NC}"
