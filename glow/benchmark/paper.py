@@ -322,7 +322,7 @@ def run_local(configs, n_procs=None):
     # this the workers fight over the same threadpool and throughput
     # collapses (see scaling benchmark, ~16x throughput vs single-process
     # BLAS-multithreaded on a 32-core box).
-    with joblib.parallel_config(inner_max_num_threads=1):
+    with joblib.parallel_config(backend='loky', inner_max_num_threads=1):
         for config in configs:
             config.n_jobs = n_procs
             print(f'begin: {config.label}  (n_procs={n_procs})')

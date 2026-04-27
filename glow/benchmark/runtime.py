@@ -643,7 +643,7 @@ def _run_profile_local(configs, n_jobs=-1):
     # workers and the parallel-local runner.  Without this, workers fight
     # for the same threadpool and the fitted model conflates BLAS contention
     # with workload size.
-    with joblib.parallel_config(inner_max_num_threads=1):
+    with joblib.parallel_config(backend='loky', inner_max_num_threads=1):
         Parallel(n_jobs=n_jobs, verbose=10)(
             delayed(_run_one_profile)(config, kwargs)
             for config, kwargs in to_run
