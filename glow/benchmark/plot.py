@@ -18,10 +18,11 @@ def _hls_hex(h, l=_L, s=_S):
     return f'#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}'
 
 COLOR_ANALYSIS = {
-    'GLOW':     _hls_hex(0/4 + _H),   # teal  (180°)
-    'VBA-TFCE': _hls_hex(1/4 + _H),   # purple (270°)
-    'VBA':      _hls_hex(2/4 + _H),   # coral  (0°)
-    'CET':      _hls_hex(3/4 + _H),   # olive  (90°)
+    'GLOW-Focus': _hls_hex(0/4 + _H),                # teal   (180°)
+    'GLOW-GLM':   _hls_hex(0/4 + _H, l=_L * 0.6),    # darker teal
+    'VBA-TFCE':   _hls_hex(1/4 + _H),                # purple (270°)
+    'VBA':        _hls_hex(2/4 + _H),                # coral  (0°)
+    'CET':        _hls_hex(3/4 + _H),                # olive  (90°)
 }
 
 COLOR_SEGMENT = {
@@ -131,7 +132,7 @@ _X_PARAM_LABELS = {
 
 
 def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['dice', 'sens', 'spec'],
-                      one_vs_rest=False, one_label='GLOW', alpha=.5, ci=90,
+                      one_vs_rest=False, one_labels=None, alpha=.5, ci=90,
                       title=None, ylabel=None):
     # ensure numeric x + metrics (prevents lexicographic sorts)
     df2 = df.copy()
@@ -146,18 +147,23 @@ def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['dice', 'sens', 'spec']
         .mean()
     )
 
-    # build color map by sorted labels → tab10(0), tab10(1), ...
     labels_sorted = sorted(df_agg['label'].unique().tolist())
     color_map = get_cmap_dict(labels_sorted)
 
-    nrows = 2 if one_vs_rest else 1
+    # one diff row per one_label; default to all GLOW variants present
+    if one_vs_rest:
+        if one_labels is None:
+            one_labels = [l for l in labels_sorted if l.startswith('GLOW')]
+        diff_labels = [l for l in one_labels if l in labels_sorted]
+    else:
+        diff_labels = []
+
+    nrows = 1 + len(diff_labels)
     fig, axes = plt.subplots(
         nrows, len(metrics),
-        figsize=(14, 5.5 if one_vs_rest else 3.0),
-        sharex='col'
+        figsize=(14, 3.0 + 2.5 * len(diff_labels)),
+        sharex='col', squeeze=False,
     )
-    if nrows == 1:
-        axes = np.atleast_2d(axes)
 
     # percentiles for shading
     lower_q = (100 - ci) / 2
@@ -170,7 +176,6 @@ def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['dice', 'sens', 'spec']
         for label, sub in df_agg.groupby('label'):
             color = color_map[label]
 
-            # aggregate stats: mean + quantiles
             g_stats = (
                 sub.groupby(x_param)[metric]
                 .agg(['mean',
@@ -181,13 +186,10 @@ def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['dice', 'sens', 'spec']
             )
             g_stats.columns = [x_param, 'mean', 'q_low', 'q_high']
 
-            # mean curve
             ax_top.plot(
                 g_stats[x_param], g_stats['mean'],
                 lw=3, color=color, label=label
             )
-
-            # shaded band (only on top plots)
             ax_top.fill_between(
                 g_stats[x_param], g_stats['q_low'], g_stats['q_high'],
                 color=color, alpha=0.2
@@ -199,59 +201,60 @@ def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['dice', 'sens', 'spec']
         if metric == 'spec':
             ax_top.set_ylim(0, 1)
         ax_top.grid(True, alpha=alpha, linewidth=1.2)
-        if nrows == 1:
-            ax_top.set_xlabel(_X_PARAM_LABELS.get(x_param, x_param))
 
-        # bottom: GLOW - best(other), no shading
-        if nrows == 2:
-            ax_bot = axes[1, j]
-
+        # diff rows: each one_label - best of non-(diff_labels) methods
+        if diff_labels:
             pivot = (
                 df_agg.pivot_table(
                     index=['seed', x_param], columns='label', values=metric
                 )
                 .reset_index()
             )
-
             others = [c for c in pivot.columns
-                      if c not in {'seed', x_param, one_label}]
-            if (one_label in pivot.columns) and len(others) > 0:
-                valid = pivot[one_label].notna()
-                if others:
-                    valid &= pivot[others].notna().any(axis=1)
-                pv = pivot.loc[valid].copy()
-                if not pv.empty:
-                    pv['best_other'] = pv[others].max(axis=1, skipna=True)
-                    pv['diff'] = pv[one_label] - pv['best_other']
+                      if c not in {'seed', x_param}
+                      and c not in diff_labels]
 
-                    # thin line per seed (experiment)
-                    for _, seed_df in pv.groupby('seed'):
-                        seed_df = seed_df.sort_values(x_param)
-                        ax_bot.plot(
-                            seed_df[x_param], seed_df['diff'],
-                            lw=0.5, color='black', alpha=0.3
-                        )
+            for i, one_label in enumerate(diff_labels):
+                ax_bot = axes[1 + i, j]
 
-                    # thick mean line
-                    mean_diff = (
-                        pv.groupby(x_param)['diff'].mean()
-                        .reset_index()
-                        .sort_values(x_param)
-                    )
-                    ax_bot.plot(
-                        mean_diff[x_param], mean_diff['diff'],
-                        lw=3, color='black'
-                    )
-
-                    ax_bot.set_ylabel(f'{one_label} - best other')
-                    ax_bot.set_ylim(-1, 1)
-                    ax_bot.axhline(0, lw=.5, color='black', alpha=alpha)
-                    ax_bot.grid(True, alpha=alpha, linewidth=1.2)
-                    ax_bot.set_xlabel(_X_PARAM_LABELS.get(x_param, x_param))
-                else:
+                if one_label not in pivot.columns or not others:
                     ax_bot.axis('off')
-            else:
-                ax_bot.axis('off')
+                    continue
+
+                valid = pivot[one_label].notna() & pivot[others].notna().any(axis=1)
+                pv = pivot.loc[valid].copy()
+                if pv.empty:
+                    ax_bot.axis('off')
+                    continue
+
+                pv['best_other'] = pv[others].max(axis=1, skipna=True)
+                pv['diff'] = pv[one_label] - pv['best_other']
+
+                for _, seed_df in pv.groupby('seed'):
+                    seed_df = seed_df.sort_values(x_param)
+                    ax_bot.plot(
+                        seed_df[x_param], seed_df['diff'],
+                        lw=0.5, color='black', alpha=0.3,
+                    )
+
+                mean_diff = (
+                    pv.groupby(x_param)['diff'].mean()
+                    .reset_index()
+                    .sort_values(x_param)
+                )
+                ax_bot.plot(
+                    mean_diff[x_param], mean_diff['diff'],
+                    lw=3, color='black',
+                )
+
+                if j == 0:
+                    ax_bot.set_ylabel(f'{one_label} - best other')
+                ax_bot.set_ylim(-1, 1)
+                ax_bot.axhline(0, lw=.5, color='black', alpha=alpha)
+                ax_bot.grid(True, alpha=alpha, linewidth=1.2)
+
+        # x label only on the bottom-most row
+        axes[-1, j].set_xlabel(_X_PARAM_LABELS.get(x_param, x_param))
 
     # log x-axis if strictly positive
     xmin = df_agg[x_param].min()
@@ -319,9 +322,13 @@ if __name__ == '__main__':
         if force_replot or n_new or not path.exists():
             print(f'creating: {path}')
             labels_in_data = set(df['label'].unique())
-            has_comparison = 'GLOW' in labels_in_data and len(labels_in_data) > 1
+            glow_labels = sorted(l for l in labels_in_data
+                                 if l.startswith('GLOW'))
+            has_comparison = (len(glow_labels) > 0
+                              and len(labels_in_data) > len(glow_labels))
             plot_x_vs_metrics(df, x_param=x_param,
-                              one_vs_rest=has_comparison)
+                              one_vs_rest=has_comparison,
+                              one_labels=glow_labels)
             plt.gcf().savefig(path, bbox_inches='tight')
             plt.close('all')
         else:
