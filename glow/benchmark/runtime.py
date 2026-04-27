@@ -599,6 +599,7 @@ def _run_one_profile(config, kwargs):
 
 def _run_profile_local(configs, n_jobs=-1):
     """Run profiling configs locally in parallel."""
+    import joblib
     from joblib import Parallel, delayed
 
     # Cache exp_orig by WGN parameters (486 configs share only 9 unique
@@ -635,11 +636,18 @@ def _run_profile_local(configs, n_jobs=-1):
         print('  all experiments cached')
         return
 
-    print(f'  Running {len(to_run)} experiments locally (n_jobs={n_jobs})...')
-    Parallel(n_jobs=n_jobs, verbose=10)(
-        delayed(_run_one_profile)(config, kwargs)
-        for config, kwargs in to_run
-    )
+    print(f'  Running {len(to_run)} experiments locally (n_jobs={n_jobs}, '
+          f'1 BLAS thread per worker)...')
+    # Pin BLAS to 1 thread per worker so each profile sample describes
+    # per-process-1-thread runtime — the regime that matches AWS Batch
+    # workers and the parallel-local runner.  Without this, workers fight
+    # for the same threadpool and the fitted model conflates BLAS contention
+    # with workload size.
+    with joblib.parallel_config(inner_max_num_threads=1):
+        Parallel(n_jobs=n_jobs, verbose=10)(
+            delayed(_run_one_profile)(config, kwargs)
+            for config, kwargs in to_run
+        )
 
 
 def main_experiment_profile(cloud=False, n_jobs=-1):
