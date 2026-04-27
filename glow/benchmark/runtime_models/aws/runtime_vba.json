@@ -1,0 +1,42 @@
+{
+  "feature_names": [
+    "num_vox",
+    "b",
+    "num_img",
+    "n_perm",
+    "num_vox^2",
+    "num_vox b",
+    "num_vox num_img",
+    "num_vox n_perm",
+    "b^2",
+    "b num_img",
+    "b n_perm",
+    "num_img^2",
+    "num_img n_perm",
+    "n_perm^2"
+  ],
+  "intercept": 0.3076,
+  "coefficients": [
+    0.0004436803,
+    0.9163819372,
+    0.0147875481,
+    0.0033810552,
+    -1.04e-08,
+    1.449e-07,
+    2.48e-08,
+    -3.7e-09,
+    -0.1786194961,
+    0.0002451554,
+    1.55955e-05,
+    -0.00011344,
+    -3.8231e-06,
+    1.0716e-06
+  ],
+  "r2": 0.8427,
+  "alpha": 0.001335,
+  "log_target": true,
+  "safety_factor": 3.873,
+  "residual_mean": 1.2401,
+  "residual_std": 0.7079,
+  "residual_max_ratio": 3.4328
+}
