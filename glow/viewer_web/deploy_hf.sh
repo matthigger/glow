@@ -128,15 +128,15 @@ fi
 echo ""
 echo -e "${BLUE}Syncing files ...${NC}"
 
-# clear stale package code (preserves git metadata)
-rm -rf "$SPACE_DIR/glow"
-
-# rsync the glow package, excluding subpackages and dev cruft the
-# runtime viewer never imports (top-level glow/__init__.py only pulls
-# analysis, effect, experiment, graph, mask).  Pickles are excluded
-# because HF rejects binary files in git -- they are uploaded via
-# `hf upload` (Xet) after the git push.
-rsync -a \
+# Mirror the glow package into the Space tree.  --delete drops files
+# that disappeared from source.  Excluded paths are skipped from BOTH
+# the transfer AND --delete, so pickles already on the Space (uploaded
+# via Xet in step 5) are preserved untouched across deploys.
+#
+# Excludes: subpackages and dev cruft the runtime viewer never imports
+# (top-level glow/__init__.py only pulls analysis, effect, experiment,
+# graph, mask), plus pickles which live outside git.
+rsync -a --delete \
     --exclude '__pycache__/' \
     --exclude '*.pyc' \
     --exclude '.pytest_cache/' \
