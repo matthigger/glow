@@ -230,6 +230,53 @@ class TestAnalysisGlowEndToEnd:
             assert anc.isdisjoint(selected), \
                 f'region {i} has ancestor in selected: {anc & set(selected)}'
 
+    def test_keep_fit_data_storage(self):
+        """fit-data subsample is stored when keep_fit_data=True, None otherwise."""
+        exp = self._make_exp(seed=4)
+        ana_off = AnalysisGLOW(exp=exp, n_perm_fwer=20,
+                               n_perm_fwer_size_adjust=15,
+                               keep_fit_data=False, verbose=False)
+        assert ana_off._gam_fit_data is None
+
+        ana_on = AnalysisGLOW(exp=exp, n_perm_fwer=20,
+                              n_perm_fwer_size_adjust=15,
+                              keep_fit_data=True,
+                              score_method='z_score', verbose=False)
+        fd = ana_on._gam_fit_data
+        assert fd is not None
+        # within budget; float32 to keep memory small
+        assert len(fd['size']) <= AnalysisGLOW._GAM_FIT_DATA_BUDGET
+        assert fd['size'].dtype == np.float32
+        assert fd['stat'].dtype == np.float32
+        # log-uniform stratified: should span the size range, not just
+        # cluster at 1
+        assert fd['size'].min() >= 1
+        assert fd['size'].max() > 1
+
+    def test_h0_prep_df_columns(self):
+        """prep_df_h0 returns the H0_FEATURES columns when sigma_gam is set."""
+        from glow.viewer.data import prep_df_h0, H0_FEATURES
+        exp = self._make_exp(seed=5)
+        ana = AnalysisGLOW(exp=exp, n_perm_fwer=20,
+                           n_perm_fwer_size_adjust=15,
+                           keep_fit_data=True, score_method='z_score',
+                           verbose=False)
+        df = prep_df_h0(ana)
+        assert df is not None and len(df) > 0
+        # H0_FEATURES is the universe; df has at least n_voxel/llr
+        # and (since z_score) llr_adjusted + z_score
+        assert {'n_voxel', 'llr', 'llr_adjusted', 'z_score'} <= set(df.columns)
+        assert set(df.columns) <= set(H0_FEATURES)
+
+    def test_h0_prep_df_none_when_off(self):
+        """prep_df_h0 returns None when keep_fit_data was off."""
+        from glow.viewer.data import prep_df_h0
+        exp = self._make_exp(seed=6)
+        ana = AnalysisGLOW(exp=exp, n_perm_fwer=20,
+                           n_perm_fwer_size_adjust=15,
+                           verbose=False)
+        assert prep_df_h0(ana) is None
+
     def test_legacy_pickle_restores_as_mean_adj(self):
         """T5: a pre-z_score AnalysisGLOW pickle has no sigma_gam and no
         score_method.  __setstate__ should restore it as mean_adj."""
