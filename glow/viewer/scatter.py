@@ -352,10 +352,15 @@ def _add_target_star(fig, target_stats, x_feat, y_feat, log_y=False):
 
 
 def _add_model_overlay(fig, ana_glow, x_feat, y_feat):
-    """Add GAM size-adjustment curve when llr is on y vs n_voxel on x."""
+    """Add GAM size-adjustment curve and ±sigma envelope.
+
+    Active when x is ``n_voxel`` and y is either ``llr`` (raw LLR; mean
+    line tracks mu_fn) or ``llr_adjusted`` (mean line at zero by
+    construction; the sigma envelope is the informative piece).
+    """
     from glow.analysis import AnalysisGLOW
 
-    if x_feat != 'n_voxel' or y_feat != 'llr':
+    if x_feat != 'n_voxel' or y_feat not in ('llr', 'llr_adjusted'):
         return
 
     adj_gam = getattr(ana_glow, 'adj_gam', None)
@@ -369,16 +374,45 @@ def _add_model_overlay(fig, ana_glow, x_feat, y_feat):
     sz = np.linspace(max(sizes.min(), 1), sizes.max(), 200)
 
     r2 = getattr(ana_glow, '_primary_r2', None)
-    mu_fn = AnalysisGLOW.mu_fn_from_gam(adj_gam)
-    mean_line = mu_fn(sz)
+    if y_feat == 'llr':
+        mu_fn = AnalysisGLOW.mu_fn_from_gam(adj_gam)
+        mean_line = mu_fn(sz)
+    else:  # llr_adjusted -- the GAM mean is zero by construction
+        mean_line = np.zeros_like(sz)
+
     fig.add_trace(go.Scatter(
         x=sz, y=mean_line, mode='lines',
         line=dict(color='rgba(200,0,0,0.6)', width=2, dash='dash'),
         showlegend=False, hoverinfo='skip',
     ))
-    eq_text = 'E[stat|H0] = GAM(log10(size))'
+
+    # GAM-estimated ±1 sigma envelope (when sigma_gam is fitted; legacy
+    # mean-only analyses have sigma_gam=None and skip this).  The
+    # log-transform digamma bias (~0.53x) is corrected so the envelope
+    # visually matches the empirical scatter spread.
+    sigma_gam = getattr(ana_glow, 'sigma_gam', None)
+    if sigma_gam is not None:
+        sigma_fn = AnalysisGLOW.sigma_fn_from_gam(sigma_gam)
+        BIAS_LOG_VAR = 1.27
+        sigma_line = sigma_fn(sz) * np.exp(0.5 * BIAS_LOG_VAR)
+        fig.add_trace(go.Scatter(
+            x=np.concatenate([sz, sz[::-1]]),
+            y=np.concatenate([mean_line + sigma_line,
+                              (mean_line - sigma_line)[::-1]]),
+            fill='toself',
+            fillcolor='rgba(200,0,0,0.15)',
+            line=dict(color='rgba(0,0,0,0)'),
+            showlegend=False, hoverinfo='skip',
+        ))
+
+    if y_feat == 'llr':
+        eq_text = 'E[stat|H0] = GAM(log10(size))'
+    else:
+        eq_text = 'llr - GAM(log10(size))  (mean=0 by construction)'
     if r2 is not None and np.isfinite(r2):
         eq_text += f'  (R²={r2:.3f})'
+    if sigma_gam is not None:
+        eq_text += '  ±σ̂ shaded'
     fig.add_annotation(
         text=eq_text,
         xref='paper', yref='paper',

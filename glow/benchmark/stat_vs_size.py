@@ -23,6 +23,7 @@ from pygam import LinearGAM, s
 from tqdm import tqdm
 
 import glow.graph
+from glow.analysis import AnalysisGLOW
 from glow.analysis.cluster import cluster
 from glow.analysis.mancova import stat_dict
 from glow.experiment.exper import Experiment, ExperimentScaled
@@ -116,27 +117,27 @@ _STAT_LABELS = {
 
 
 def fit_gam(size, stat, n_splines=10):
-    """Fit a GAM: stat ~ f(log10(size)).
+    """Fit the two-stage size-adjustment GAM (mean + log-variance).
 
-    Uses gridsearch over smoothing penalty.
-    Returns (gam, r2, valid_mask) or (None, None, None) if insufficient data.
+    Delegates to :py:meth:`AnalysisGLOW.fit_size_gam` so the diagnostic
+    plot uses exactly the same μ_fn and σ_fn that the analysis pipeline
+    will use at runtime.
+
+    Returns:
+        (fit, r2): GAMFitResult from AnalysisGLOW (with mu_fn / sigma_fn
+        callables) and the R² of the mean stage.  Returns (None, None)
+        when the data is too thin for the fit.
     """
     valid = np.isfinite(stat) & np.isfinite(size) & (size > 0)
     if valid.sum() < 50:
-        return None, None, None
-
-    log_size = np.log10(size[valid])
-    y = stat[valid]
-
-    gam = LinearGAM(s(0, n_splines=n_splines))
-    gam.gridsearch(log_size, y, progress=False)
-
-    pred = gam.predict(log_size)
-    ss_res = np.sum((y - pred) ** 2)
-    ss_tot = np.sum((y - y.mean()) ** 2)
-    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
-
-    return gam, r2, valid
+        return None, None
+    fit = AnalysisGLOW.fit_size_gam(size[valid].astype(float),
+                                     stat[valid].astype(float),
+                                     n_splines=n_splines,
+                                     score_method='z_score')
+    if not fit.size_adjusted:
+        return None, None
+    return fit, fit.r2
 
 
 # ---------------------------------------------------------------------------
@@ -206,10 +207,10 @@ def plot_gam_fits(df_dict, stat_col, out_dir):
             ax.plot(bc, bm, 'o-', color='red', ms=4, lw=1.2, zorder=5,
                     label=r'Binned mean $\pm$ 1 SD')
 
-        # fit GAM on raw data, report R²
-        gam, r2, _ = fit_gam(size, stat)
-        results[src] = (gam, r2)
-        if gam is None:
+        # fit two-stage GAM on raw data
+        fit, r2 = fit_gam(size, stat)
+        results[src] = (fit, r2)
+        if fit is None:
             continue
 
         # GAM fit curve — span the range of bin centers
@@ -218,10 +219,27 @@ def plot_gam_fits(df_dict, stat_col, out_dir):
         else:
             gam_lo, gam_hi = log_s_v.min(), log_s_v.max()
         log_line = np.linspace(gam_lo, gam_hi, 300)
-        pred = gam.predict(log_line)
-        ax.plot(log_line, pred,
-                color='black', lw=2.5, zorder=4,
-                label=f'GAM  $R^2$={r2:.4f}')
+        sizes_line = 10 ** log_line
+        mu_line = fit.mu_fn(sizes_line)
+        # σ̂ from sigma_fn carries the log-transform bias (~0.53× under-
+        # estimate for Gaussian residuals; see studentize note).  The
+        # bias is constant and cancels in the FWER pipeline, but for a
+        # diagnostic plot we want σ̂ to visually match the empirical
+        # binned ±1 SD, so apply the digamma correction:
+        # E[log e²] = log σ² + ψ(1/2) - log(1/2) ≈ log σ² - 1.27.
+        BIAS_LOG_VAR = 1.27
+        sigma_line = fit.sigma_fn(sizes_line) * np.exp(0.5 * BIAS_LOG_VAR)
+
+        ax.plot(log_line, mu_line,
+                color='black', lw=2.5, zorder=5,
+                label=fr'GAM $\hat{{\mu}}$  $R^2$={r2:.4f}')
+        # GAM-estimated ±1σ̂: dashed envelope lines in a contrasting
+        # colour so the band is visible behind the empirical SD shading.
+        ax.plot(log_line, mu_line + sigma_line,
+                color='C0', lw=1.6, ls='--', zorder=5,
+                label=r'GAM $\hat{\mu} \pm \hat{\sigma}$')
+        ax.plot(log_line, mu_line - sigma_line,
+                color='C0', lw=1.6, ls='--', zorder=5)
 
         ax.set_xlabel(r'$\log_{10}\,|r|$')
         ax.set_ylabel(stat_label)
@@ -285,9 +303,9 @@ def main():
     print(f'\nFitting GAMs and plotting to {out_dir} ...\n')
     for stat_col in args.stats:
         results = plot_gam_fits(df_dict, stat_col, out_dir)
-        for src, (gam, r2) in results.items():
+        for src, (fit, r2) in results.items():
             if r2 is not None:
-                print(f'  {src:8s}  {stat_col:12s}  R²={r2:.4f}')
+                print(f'  {src:8s}  {stat_col:12s}  R²(mu)={r2:.4f}')
         print()
 
     print('Done.')

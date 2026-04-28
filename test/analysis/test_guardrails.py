@@ -30,12 +30,13 @@ class TestFitSizeGamLowData:
         stats = np.log10(sizes) + 0.1
         with pytest.warns(RuntimeWarning, match='fit_size_gam'):
             fit = AnalysisGLOW.fit_size_gam(sizes, stats)
-        assert fit.gam is None
+        assert fit.mu_gam is None
+        assert fit.sigma_gam is None
         assert fit.r2 is None
         assert fit.size_adjusted is False
-        # fallback mu_fn returns zeros (identity)
-        pred = fit.mu_fn(sizes)
-        np.testing.assert_array_equal(pred, np.zeros_like(sizes))
+        # fallback mu_fn returns zeros, sigma_fn returns ones (identity)
+        np.testing.assert_array_equal(fit.mu_fn(sizes), np.zeros_like(sizes))
+        np.testing.assert_array_equal(fit.sigma_fn(sizes), np.ones_like(sizes))
 
     def test_no_warn_above_threshold(self):
         rng = np.random.default_rng(1)
@@ -43,9 +44,11 @@ class TestFitSizeGamLowData:
         stats = 0.5 * np.log10(sizes) + rng.standard_normal(100) * 0.3
         with warnings.catch_warnings():
             warnings.simplefilter('error', RuntimeWarning)
-            fit = AnalysisGLOW.fit_size_gam(sizes, stats)
+            fit = AnalysisGLOW.fit_size_gam(sizes, stats,
+                                            score_method='z_score')
         assert fit.size_adjusted is True
-        assert fit.gam is not None
+        assert fit.mu_gam is not None
+        assert fit.sigma_gam is not None
 
     def test_threshold_boundary(self):
         # exactly at threshold - 1 should warn; at threshold should not.

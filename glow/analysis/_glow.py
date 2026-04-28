@@ -12,16 +12,28 @@ from pygam import LinearGAM, s
 from tqdm import tqdm
 
 
-GAMFitResult = namedtuple('GAMFitResult',
-                          ['gam', 'mu_fn', 'r2', 'size_adjusted'])
+GAMFitResult = namedtuple(
+    'GAMFitResult',
+    ['mu_gam', 'mu_fn', 'sigma_gam', 'sigma_fn', 'r2', 'size_adjusted'])
 """Return type of fit_size_gam.
 
+Two-stage fit modelling both the conditional mean and the conditional
+standard deviation of the null statistic as smooth functions of region
+size (analogous to the GAMLSS framework, Rigby & Stasinopoulos 2005).
+Studentizing by ``sigma_fn`` removes size-dependent heteroscedasticity
+that mean-only adjustment leaves intact.
+
 Attributes:
-    gam: fitted LinearGAM object, or None if fallback used.
-    mu_fn: callable(size_array) -> predicted E[stat | H0]. When
-        size_adjusted is False, returns zeros (identity adjustment).
-    r2: R² of the fit, or None if fallback used.
-    size_adjusted (bool): True if the GAM was fit, False if the
+    mu_gam: fitted LinearGAM for E[stat | log10 size], or None if
+        the low-data fallback was used.
+    mu_fn: callable(size_array) -> predicted E[stat | H0].  When
+        ``size_adjusted`` is False, returns zeros (identity adjustment).
+    sigma_gam: fitted LinearGAM for log Var[stat | log10 size], or None
+        when ``score_method='mean_adj'`` or under the low-data fallback.
+    sigma_fn: callable(size_array) -> predicted SD[stat | H0].  Returns
+        ones (identity scale) when ``sigma_gam`` is None.
+    r2: R² of the mean GAM, or None if fallback used.
+    size_adjusted (bool): True if the GAM(s) were fit, False if the
         low-data fallback was used.
 """
 
@@ -54,6 +66,7 @@ class AnalysisGLOW(Analysis):
                  alpha_fwer=.05, min_size=1, verbose=False,
                  n_jobs_perm=1, cloud_config=None, perm_dir=None,
                  cluster_mode="ward's (q1)",
+                 score_method='mean_adj',
                  **kwargs):
         """
         Args:
@@ -67,6 +80,14 @@ class AnalysisGLOW(Analysis):
             verbose: Print progress
             n_jobs_perm: Number of parallel jobs for permutations
                 (1=serial, -1=all cores)
+            score_method: Adjustment used for FWER threshold.
+                ``'mean_adj'`` (default) subtracts the size-conditional
+                null mean only -- this is the historical behaviour and
+                stays the default until the studentized variant is
+                evaluated more thoroughly.  ``'z_score'`` additionally
+                divides by the fitted size-conditional null SD
+                (studentization, GAMLSS-style).  Pruning rank is on
+                raw LLR in either case.
             cloud_config: CloudConfig for AWS execution (if None, runs
                 locally)
             perm_dir: path for permutation result files.  If provided,
@@ -83,6 +104,7 @@ class AnalysisGLOW(Analysis):
         super().__init__(exp, **kwargs)
         self.verbose = verbose
         self.cluster_mode = cluster_mode
+        self.score_method = score_method
 
         if cloud_config is not None:
             self._run_on_cloud(exp, n_perm_fwer,
@@ -165,15 +187,21 @@ class AnalysisGLOW(Analysis):
 
         # fit GAM from collected size/stat arrays
         if verbose:
-            print(f'  [2/3] fitting size-adjustment GAM ...')
+            print(f'  [2/3] fitting size-adjustment GAM(s) ...')
         all_sizes = np.concatenate(fit_sizes)
         all_stats = np.concatenate(fit_stats)
-        fit = self.fit_size_gam(all_sizes, all_stats)
-        self.adj_gam = fit.gam
+        fit = self.fit_size_gam(all_sizes, all_stats,
+                                score_method=score_method)
+        self.adj_gam = fit.mu_gam            # legacy alias
+        self.mu_gam = fit.mu_gam
+        self.sigma_gam = fit.sigma_gam
         self.size_adjusted = fit.size_adjusted
         mu_fn = fit.mu_fn
+        sigma_fn = fit.sigma_fn
         if verbose and fit.r2 is not None:
-            print(f'         R²={fit.r2:.4f}')
+            print(f'         R²(mu)={fit.r2:.4f}'
+                  + (' (z_score: sigma_gam fitted)'
+                     if fit.sigma_gam is not None else ''))
         elif verbose:
             print(f'         size adjustment disabled (low-data fallback)')
 
@@ -193,8 +221,9 @@ class AnalysisGLOW(Analysis):
         for perm_idx in range(n_perm_fwer + 1):
             with open(perm_dir / f'{perm_idx:06d}_result.pkl', 'rb') as fh:
                 r = pickle.load(fh)
-            adj = (np.asarray(r['stat'], dtype=float)
-                   - mu_fn(np.asarray(r['size'], dtype=float)))
+            sz_p = np.asarray(r['size'], dtype=float)
+            adj = ((np.asarray(r['stat'], dtype=float) - mu_fn(sz_p))
+                   / sigma_fn(sz_p))
             adj = _sanitize_adjusted_stat(adj)
             if reg_active.any() and np.isfinite(adj[reg_active]).any():
                 stat_max_list.append(float(np.nanmax(adj[reg_active])))
@@ -206,24 +235,41 @@ class AnalysisGLOW(Analysis):
         self._finalize_analysis(
             exp, n_perm_fwer, stat_0, size_0, children_0,
             mu_fn, stat_max_sorted,
-            alpha_fwer, min_size)
+            alpha_fwer, min_size,
+            sigma_fn=sigma_fn)
 
         if _cleanup_dir:
             shutil.rmtree(perm_dir, ignore_errors=True)
 
     @classmethod
-    def from_precomputed(cls, *, exp, get_stat, adj_gam=None, verbose=False,
-                         cluster_mode="ward's (q1)"):
+    def from_precomputed(cls, *, exp, get_stat, adj_gam=None,
+                         sigma_gam=None, verbose=False,
+                         cluster_mode="ward's (q1)",
+                         score_method=None):
         """Construct a shell for finalization without running full __init__.
 
         The caller should then invoke _finalize_analysis() to compute p-values.
+
+        Args:
+            adj_gam: legacy alias for the mean GAM (mu_gam).
+            sigma_gam: optional log-variance GAM.  When None, the
+                resulting analysis behaves as ``score_method='mean_adj'``;
+                when provided, ``score_method='z_score'``.
+            score_method: explicit override.  When None, inferred from
+                whether ``sigma_gam`` is provided.
         """
         obj = cls.__new__(cls)
         obj.exp = exp if isinstance(exp, ExperimentScaled) else ExperimentScaled.from_exp(exp)
         obj.get_stat = get_stat
-        obj.adj_gam = adj_gam
+        obj.adj_gam = adj_gam        # legacy alias
+        obj.mu_gam = adj_gam
+        obj.sigma_gam = sigma_gam
         obj.verbose = verbose
         obj.cluster_mode = cluster_mode
+        obj.score_method = (score_method
+                            if score_method is not None
+                            else ('z_score' if sigma_gam is not None
+                                  else 'mean_adj'))
         return obj
 
     def _process_permutation(self, exp, perm_idx):
@@ -263,24 +309,55 @@ class AnalysisGLOW(Analysis):
 
     _MIN_GAM_FIT_POINTS = 50
 
+    def __setstate__(self, state):
+        """Pickle restore with backward compatibility.
+
+        Pre-z_score pickles only stored ``adj_gam`` (no ``sigma_gam``
+        and no ``score_method``).  Restore them as legacy mean-only
+        analyses so ``_finalize_analysis``-derived attributes remain
+        consistent with the original computation.
+        """
+        self.__dict__.update(state)
+        if 'mu_gam' not in self.__dict__:
+            self.mu_gam = self.__dict__.get('adj_gam')
+        if 'sigma_gam' not in self.__dict__:
+            self.sigma_gam = None
+        if 'score_method' not in self.__dict__:
+            self.score_method = ('mean_adj' if self.sigma_gam is None
+                                 else 'z_score')
+
     @classmethod
-    def fit_size_gam(cls, size, stat, n_splines=None):
-        """Fit a GAM: stat ~ f(log10(size)) using pygam.
+    def fit_size_gam(cls, size, stat, n_splines=None,
+                     score_method='mean_adj'):
+        """Fit size-adjustment GAM(s) for the null statistic distribution.
+
+        Stage 1 (always): mu_gam fits stat ~ f_mu(log10 size).
+        Stage 2 (only when score_method='z_score'): sigma_gam fits
+            log(e^2 + eps) ~ f_sigma(log10 size), where
+            e = stat - mu_gam.predict(log10 size) and eps is a tiny
+            positive floor to keep the log finite.  sigma_fn(s) is then
+            recovered as exp(0.5 * sigma_gam.predict(log10 s)), positive
+            by construction.
 
         Args:
             size: (N,) region sizes (voxels)
             stat: (N,) stat values
-            n_splines: number of splines (default: cls._N_SPLINES)
+            n_splines: number of splines per stage (default: cls._N_SPLINES)
+            score_method: 'mean_adj' (default) fits only mu_gam; 'z_score'
+                additionally fits sigma_gam so callers can studentize.
 
         Returns:
-            GAMFitResult(gam, mu_fn, r2, size_adjusted): see dataclass
-            docstring.  When ``valid.sum() < _MIN_GAM_FIT_POINTS``, the
-            fallback identity mu_fn is used and a ``RuntimeWarning`` is
-            emitted; ``size_adjusted`` is False so callers can surface
-            this to users.
+            GAMFitResult: see namedtuple docstring.  When
+            ``valid.sum() < _MIN_GAM_FIT_POINTS``, identity fallbacks are
+            used and a ``RuntimeWarning`` is emitted; ``size_adjusted``
+            is False so callers can surface this to users.
         """
         if n_splines is None:
             n_splines = cls._N_SPLINES
+        if score_method not in ('mean_adj', 'z_score'):
+            raise ValueError(
+                f'score_method must be mean_adj or z_score; '
+                f'got {score_method!r}')
 
         sz = np.asarray(size, dtype=float)
         y = np.asarray(stat, dtype=float)
@@ -291,17 +368,19 @@ class AnalysisGLOW(Analysis):
             warnings.warn(
                 f'fit_size_gam: only {n_valid} valid (size, stat) pairs '
                 f'(threshold is {cls._MIN_GAM_FIT_POINTS}); falling back '
-                f'to identity mu_fn.  No size adjustment will be applied '
-                f'-- downstream FWER max-stats will reflect raw stats.  '
-                f'Consider increasing n_perm_fwer_size_adjust or '
-                f'verifying that the stat function is well-behaved on '
+                f'to identity mu_fn / sigma_fn.  No size adjustment will '
+                f'be applied -- downstream FWER max-stats will reflect '
+                f'raw stats.  Consider increasing n_perm_fwer_size_adjust '
+                f'or verifying that the stat function is well-behaved on '
                 f'small regions.',
                 RuntimeWarning,
                 stacklevel=2,
             )
             return GAMFitResult(
-                gam=None,
+                mu_gam=None,
                 mu_fn=lambda sz: np.zeros_like(np.asarray(sz, dtype=float)),
+                sigma_gam=None,
+                sigma_fn=lambda sz: np.ones_like(np.asarray(sz, dtype=float)),
                 r2=None,
                 size_adjusted=False,
             )
@@ -309,20 +388,35 @@ class AnalysisGLOW(Analysis):
         log_size = np.log10(sz[valid])
         y_valid = y[valid]
 
-        gam = LinearGAM(s(0, n_splines=n_splines))
-        gam.gridsearch(log_size, y_valid, progress=False)
+        # --- Stage 1: mean ---
+        mu_gam = LinearGAM(s(0, n_splines=n_splines))
+        mu_gam.gridsearch(log_size, y_valid, progress=False)
 
-        pred = gam.predict(log_size)
-        ss_res = np.sum((y_valid - pred) ** 2)
+        mu_pred = mu_gam.predict(log_size)
+        ss_res = np.sum((y_valid - mu_pred) ** 2)
         ss_tot = np.sum((y_valid - y_valid.mean()) ** 2)
         r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
-        def mu_fn(sz, _gam=gam):
-            sz = np.asarray(sz, dtype=float)
-            return _gam.predict(np.log10(np.maximum(sz, 1)))
+        mu_fn = cls.mu_fn_from_gam(mu_gam)
 
-        return GAMFitResult(gam=gam, mu_fn=mu_fn, r2=r2,
-                            size_adjusted=True)
+        # --- Stage 2: log variance (z_score only) ---
+        sigma_gam = None
+        if score_method == 'z_score':
+            resid_sq = (y_valid - mu_pred) ** 2
+            # eps: tiny floor preventing log(0) and bounding minimum
+            # implied variance.  See note 2026_studentize_size_adjust.
+            max_sq = float(np.maximum(resid_sq.max(), np.finfo(float).tiny))
+            eps = np.finfo(float).eps * max_sq
+            log_sq = np.log(resid_sq + eps)
+
+            sigma_gam = LinearGAM(s(0, n_splines=n_splines))
+            sigma_gam.gridsearch(log_size, log_sq, progress=False)
+
+        sigma_fn = cls.sigma_fn_from_gam(sigma_gam)
+
+        return GAMFitResult(mu_gam=mu_gam, mu_fn=mu_fn,
+                            sigma_gam=sigma_gam, sigma_fn=sigma_fn,
+                            r2=r2, size_adjusted=True)
 
     @staticmethod
     def mu_fn_from_gam(gam):
@@ -338,24 +432,52 @@ class AnalysisGLOW(Analysis):
             return _gam.predict(np.log10(np.maximum(sz, 1)))
         return mu_fn
 
+    @staticmethod
+    def sigma_fn_from_gam(gam):
+        """Build a sigma_fn callable from a fitted log-variance GAM.
+
+        The GAM stores E[log(e^2 + eps) | log10 size]; we recover
+        sigma(s) = exp(0.5 * gam.predict(log10 s)).  When ``gam`` is
+        None, returns the identity scale (ones) so callers can use a
+        common (stat - mu) / sigma pipeline regardless of whether
+        studentization is configured.
+        """
+        if gam is None:
+            return lambda sz: np.ones_like(np.asarray(sz, dtype=float))
+
+        def sigma_fn(sz, _gam=gam):
+            sz = np.asarray(sz, dtype=float)
+            log_sq = _gam.predict(np.log10(np.maximum(sz, 1)))
+            return np.exp(0.5 * log_sq)
+        return sigma_fn
+
     def _finalize_analysis(self, exp, n_perm_fwer,
                           stat_0, size_0, children_0,
                           mu_fn, stat_max_sorted,
                           alpha_fwer, min_size,
+                          sigma_fn=None,
                           prune_stat=None,
                           ):
         """Finalize: compute p-values from max-stat distribution, prune.
 
         Args:
+            sigma_fn: callable(size) -> SD estimate.  When None, the
+                identity (ones) is used, reproducing the legacy
+                mean-only adjustment.  When non-None, the observed
+                statistic is studentized: z = (stat - mu) / sigma.
             prune_stat (np.array): optional override for the stat array
-                used by greedy pruning.  When None (default), ``stat_0``
-                is used.  Pass e.g. LLR values here when the test
-                statistic differs from the desired pruning criterion.
+                used by greedy pruning.  When None (default), the
+                studentized statistic ``llr_adjusted_0`` is used so the
+                pruning rank is consistent with the FWER threshold.
         """
         verbose = getattr(self, 'verbose', False)
         num_reg = stat_0.shape[0]
 
-        llr_adjusted_0 = stat_0 - mu_fn(size_0.astype(float))
+        if sigma_fn is None:
+            sigma_fn = lambda sz: np.ones_like(np.asarray(sz, dtype=float))
+
+        size_f = size_0.astype(float)
+        llr_adjusted_0 = (stat_0 - mu_fn(size_f)) / sigma_fn(size_f)
         llr_adjusted_0 = _sanitize_adjusted_stat(llr_adjusted_0)
 
         self.alpha_fwer = alpha_fwer
@@ -392,8 +514,20 @@ class AnalysisGLOW(Analysis):
         if verbose:
             print(f'  {len(self.sig_reg_list)} significant regions '
                   f'(alpha_fwer={alpha_fwer})')
-            print('  pruning (greedy LLR) ...')
+            print('  pruning (greedy on raw LLR) ...')
 
+        # Rank pruning candidates by raw LLR.  Significance is gated by
+        # the studentized statistic against the FWER threshold above;
+        # within the surviving set, raw-LLR ranking keeps the original
+        # ``largest spatially-coherent region wins'' behaviour.
+        # Studentized ranking (z-score) was tried and rejected:
+        # because sigma_fn(size) ~ sqrt(size) for CLT-ish nulls, z grows
+        # only as sqrt(size) for a uniform effect, so on heterogeneous
+        # within-region signal (e.g.\ mandrill colour gradients) z can
+        # peak on a subregion of strongest pixels rather than the
+        # parent node spanning the planted effect.  Raw-LLR ranking
+        # naturally prefers the parent.
+        # Caller may override via ``prune_stat``.
         _prune = stat_0 if prune_stat is None else prune_stat
         stat_gain = np.nan_to_num(_prune.astype(float), nan=0.0,
                                   posinf=0.0, neginf=0.0)
