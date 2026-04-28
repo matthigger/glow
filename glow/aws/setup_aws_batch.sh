@@ -23,15 +23,20 @@ MEMORY_PER_JOB=2000         # memory (MB) per job
 # script triggers a teardown+recreate when it drifts.
 ALLOC_STRATEGY="BEST_FIT_PROGRESSIVE"
 
-# instance type list -- pruned from earlier r-class + 5-series mix after the
-# bench_instance_types.py sweep showed:
-#   * r-series pays for memory the GLOW workload doesn't use (3x $/run on
-#     r5.large vs c7i.large for the same job)
+# instance type list -- pruned to drop 5-series only.  bench_instance_types.py
+# (2026-04-28 sweep) showed:
 #   * 5-series (Skylake/Naples, 2017) is 2x slower per core than 7-series
-#     (Sapphire Rapids/Genoa, 2023) on BLAS-heavy permutation work
-# The list keeps c-class (compute-optimized, 2 GB/vCPU) and m-class
-# (general, 4 GB/vCPU) on 6th and 7th generations only.  Rerun
-# bench_instance_types.py if the workload memory profile changes.
+#     (Sapphire Rapids/Genoa, 2023) on BLAS-heavy permutation work, and
+#     usually CHEAPER hourly than 6/7-series within the same family.
+#     BEST_FIT_PROGRESSIVE picks lowest-$/vCPU first, so leaving 5-series in
+#     the list locks the queue into the slow tier even when faster types
+#     have capacity.  Drop them.
+#   * r-series stays in the list: BEST_FIT_PROGRESSIVE prefers c then m then
+#     r (cheapest $/vCPU first), so r-only ever runs as a capacity fallback
+#     when c/m Spot is tight.  No cost penalty in the common path; useful
+#     reliability cushion for high-pressure submissions.
+# Rerun bench_instance_types.py if the workload memory profile changes
+# (e.g. mancova at 30k+ voxels actually needs >4 GB/vCPU).
 INSTANCE_TYPES='[
     "c6i.large", "c6i.xlarge", "c6i.2xlarge", "c6i.4xlarge", "c6i.8xlarge", "c6i.12xlarge",
     "c6a.large", "c6a.xlarge", "c6a.2xlarge", "c6a.4xlarge", "c6a.8xlarge", "c6a.12xlarge",
@@ -40,7 +45,11 @@ INSTANCE_TYPES='[
     "m6i.large", "m6i.xlarge", "m6i.2xlarge", "m6i.4xlarge", "m6i.8xlarge",
     "m6a.large", "m6a.xlarge", "m6a.2xlarge", "m6a.4xlarge", "m6a.8xlarge",
     "m7i.large", "m7i.xlarge", "m7i.2xlarge", "m7i.4xlarge", "m7i.8xlarge",
-    "m7a.large", "m7a.xlarge", "m7a.2xlarge", "m7a.4xlarge", "m7a.8xlarge"
+    "m7a.large", "m7a.xlarge", "m7a.2xlarge", "m7a.4xlarge", "m7a.8xlarge",
+    "r6i.large", "r6i.xlarge", "r6i.2xlarge", "r6i.4xlarge",
+    "r6a.large", "r6a.xlarge", "r6a.2xlarge", "r6a.4xlarge",
+    "r7i.large", "r7i.xlarge", "r7i.2xlarge", "r7i.4xlarge",
+    "r7a.large", "r7a.xlarge", "r7a.2xlarge", "r7a.4xlarge"
 ]'
 
 # ═══════════════════════════════════════════════════════════════
