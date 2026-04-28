@@ -53,6 +53,11 @@ class Config:
     # the percentage of total volume which the effect occupies
     effect_perc: float = 0.2
 
+    # how the effect's spatial extent is sampled:
+    #   'minvar' — ExtenterMinVar (greedy variance-minimising growth)
+    #   'sphere' — ExtenterSphere (random-centre dilation)
+    effect_extenter: Literal['minvar', 'sphere'] = 'minvar'
+
     # number of jobs (each runs another effect).  1 is serial, -1 runs as many
     # as the computer has threads
     n_jobs: int = 1
@@ -150,6 +155,7 @@ class Config:
             **source_id,
             'crop_n_vox': self.crop_n_vox,
             'effect_perc': self.effect_perc,
+            'effect_extenter': self.effect_extenter,
             'radius': self.radius,
             'runner': type(self.runner).__name__ if self.runner else None,
         }
@@ -273,7 +279,14 @@ class Config:
         # sample effect space
         perc = effect_perc if effect_perc is not None else self.effect_perc
         n = exp.y.shape[2] * perc
-        extenter = glow.effect.ExtenterMinVar(n_vox=n)
+        if self.effect_extenter == 'minvar':
+            extenter = glow.effect.ExtenterMinVar(n_vox=n)
+        elif self.effect_extenter == 'sphere':
+            extenter = glow.effect.ExtenterSphere(n_vox=int(n),
+                                                   connected=True)
+        else:
+            raise ValueError(
+                f'unknown effect_extenter: {self.effect_extenter!r}')
 
         # impose effect
         return exp.impose_effect(extenter=extenter,
