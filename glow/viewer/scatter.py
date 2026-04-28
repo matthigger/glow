@@ -63,6 +63,180 @@ def _compute_adj_thresh(ana_glow):
     return getattr(ana_glow, 'adj_crit', None)
 
 
+def build_scatter_h0(df_h0, ana_glow, x_feat, y_feat, color_feat,
+                     log_y=False):
+    """Plotly scatter for the H0 (Permuted Samples) view.
+
+    Sister to ``build_scatter`` for the case where points come from
+    held-out fit permutations under the null (via ``prep_df_h0``).  No
+    tree edges, no per-region selection, no target stars: just the
+    cloud, the GAM mu / sigma overlay, and the FWER threshold reference.
+
+    Args:
+        df_h0 (pd.DataFrame): from glow.viewer.data.prep_df_h0
+        ana_glow (AnalysisGLOW): for mu_gam / sigma_gam / adj_crit
+        x_feat (str): one of H0_FEATURES (typically 'n_voxel')
+        y_feat (str): one of H0_FEATURES (typically 'llr',
+            'llr_adjusted', or 'z_score')
+        color_feat (str): one of H0_FEATURES + '__none__'
+        log_y (bool): apply log scale to y (only sensible for raw 'llr')
+    """
+    if df_h0 is None or len(df_h0) == 0:
+        fig = go.Figure()
+        fig.add_annotation(
+            text='no fit-permutation cloud retained on this analysis<br>'
+                 '(rerun with keep_fit_data=True)',
+            xref='paper', yref='paper', x=0.5, y=0.5,
+            showarrow=False, font=dict(size=12, color='#666'))
+        fig.update_layout(margin=dict(l=10, r=10, t=10, b=10),
+                          height=420)
+        return fig
+
+    x = df_h0[x_feat].values
+    y = df_h0[y_feat].values
+    no_color = (color_feat in (None, '__none__'))
+    color = None if no_color else df_h0[color_feat].values
+
+    if log_y:
+        vis = np.isfinite(y) & (y > 0)
+    else:
+        vis = np.isfinite(y)
+    x_v, y_v = x[vis], y[vis]
+    color_v = None if color is None else color[vis]
+
+    fig = go.Figure()
+    marker_kw = dict(size=4, opacity=0.55,
+                     line=dict(width=0))
+    if color_v is not None:
+        marker_kw['color'] = color_v
+        marker_kw['colorscale'] = 'Viridis'
+        marker_kw['showscale'] = True
+        marker_kw['colorbar'] = dict(title=color_feat, thickness=12,
+                                     len=0.7)
+    else:
+        marker_kw['color'] = 'rgba(80,80,80,0.55)'
+    fig.add_trace(go.Scatter(
+        x=x_v, y=y_v,
+        mode='markers',
+        marker=marker_kw,
+        hovertemplate=(f'{x_feat}=%{{x}}<br>'
+                       f'{y_feat}=%{{y:.3f}}<extra>H0</extra>'),
+        showlegend=False,
+    ))
+
+    # GAM overlay (always relevant in H0): use raw mu, or zero/one for
+    # the adjusted axes since by construction the mean is 0 and SD 1.
+    _add_h0_gam_overlay(fig, ana_glow, x_feat, y_feat)
+
+    # FWER threshold reference -- only meaningful when y matches the
+    # active score_method's natural adjusted axis.
+    _add_h0_threshold_line(fig, ana_glow, x_feat, y_feat)
+
+    fig.update_layout(
+        xaxis=dict(title=x_feat),
+        yaxis=dict(title=y_feat,
+                   type='log' if log_y else 'linear'),
+        margin=dict(l=10, r=10, t=10, b=40),
+        height=420,
+        plot_bgcolor='white',
+        annotations=[
+            dict(text='Permuted Samples (H₀)',
+                 xref='paper', yref='paper', x=0.99, y=0.99,
+                 xanchor='right', yanchor='top',
+                 showarrow=False,
+                 font=dict(size=11, color='#666',
+                           family='monospace'),
+                 bgcolor='rgba(255,255,255,0.85)',
+                 bordercolor='#ccc', borderwidth=1, borderpad=3),
+        ],
+    )
+    if x_feat == 'n_voxel':
+        fig.update_xaxes(type='log')
+    return fig
+
+
+def _add_h0_gam_overlay(fig, ana_glow, x_feat, y_feat):
+    """Mu / sigma GAM curves on the H0 scatter, axis-aware."""
+    from glow.analysis import AnalysisGLOW
+    if x_feat != 'n_voxel':
+        return
+    mu_gam = getattr(ana_glow, 'mu_gam', None) or getattr(ana_glow, 'adj_gam',
+                                                          None)
+    if mu_gam is None:
+        return
+
+    sizes = np.asarray(_ensure_1d(ana_glow.size), dtype=float)
+    sizes = sizes[sizes > 0]
+    if len(sizes) == 0:
+        return
+    sz = np.geomspace(max(sizes.min(), 1), sizes.max(), 200)
+
+    mu_fn = AnalysisGLOW.mu_fn_from_gam(mu_gam)
+    sigma_gam = getattr(ana_glow, 'sigma_gam', None)
+    sigma_fn = AnalysisGLOW.sigma_fn_from_gam(sigma_gam)
+    BIAS_LOG_VAR = 1.27  # digamma correction for visual match
+    sigma = sigma_fn(sz) * np.exp(0.5 * BIAS_LOG_VAR)
+    mu = mu_fn(sz)
+
+    if y_feat == 'llr':
+        mean_line = mu
+        upper, lower = mu + sigma, mu - sigma
+    elif y_feat == 'llr_adjusted':
+        mean_line = np.zeros_like(sz)
+        upper, lower = sigma, -sigma
+    elif y_feat == 'z_score':
+        if sigma_gam is None:
+            return
+        mean_line = np.zeros_like(sz)
+        # in z space sigma is 1 by construction (after bias correction);
+        # use it as a unit reference band
+        upper, lower = np.ones_like(sz), -np.ones_like(sz)
+    else:
+        return
+
+    fig.add_trace(go.Scatter(
+        x=sz, y=mean_line, mode='lines',
+        line=dict(color='rgba(200,0,0,0.7)', width=2, dash='dash'),
+        name='GAM μ̂', showlegend=False, hoverinfo='skip',
+    ))
+    fig.add_trace(go.Scatter(
+        x=np.concatenate([sz, sz[::-1]]),
+        y=np.concatenate([upper, lower[::-1]]),
+        fill='toself', fillcolor='rgba(200,0,0,0.15)',
+        line=dict(color='rgba(0,0,0,0)'),
+        showlegend=False, hoverinfo='skip',
+    ))
+
+
+def _add_h0_threshold_line(fig, ana_glow, x_feat, y_feat):
+    """Horizontal FWER threshold reference, axis-aware."""
+    crit = getattr(ana_glow, 'adj_crit', None)
+    if crit is None or not np.isfinite(crit):
+        return
+    score_method = getattr(ana_glow, 'score_method', 'mean_adj')
+
+    # crit lives in mean_adj units when score_method='mean_adj', and in
+    # z units when score_method='z_score'.  Draw the line only on the
+    # axis where it is meaningful.
+    if score_method == 'mean_adj' and y_feat == 'llr_adjusted':
+        line_y = float(crit)
+        label = f'FWER α={ana_glow.alpha_fwer:.2f} (LLR−μ̂)'
+    elif score_method == 'z_score' and y_feat == 'z_score':
+        line_y = float(crit)
+        label = f'FWER α={ana_glow.alpha_fwer:.2f} (z)'
+    else:
+        return
+
+    fig.add_hline(
+        y=line_y,
+        line=dict(color='rgba(220,80,80,0.6)', width=1.5, dash='dot'),
+        annotation_text=label,
+        annotation_position='top right',
+        annotation_font_size=10,
+        annotation_font_color='rgba(180,40,40,0.9)',
+    )
+
+
 def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
                   selected_reg=None, plot_tree=True,
                   log_y=False, target_stats=None):

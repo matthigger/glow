@@ -202,10 +202,15 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
         exp_eff = exp
         print('  no effect imposed')
 
-    print('  running AnalysisGLOW (n_perm_fwer=200) ...')
+    print('  running AnalysisGLOW (n_perm_fwer=200, score_method=z_score) ...')
+    # Opt into z_score so the viewer scatter renders the GAM ±sigma band.
+    # keep_fit_data=True retains the (size, stat) cloud so the viewer's
+    # H0 (Permuted Samples) toggle has data to render.  Both flags are
+    # demo-only opts; the library default stays mean_adj.
     ana = AnalysisGLOW(exp_eff, n_perm_fwer=200,
                        n_perm_fwer_size_adjust=50,
-                       n_jobs_perm=-1, verbose=True)
+                       n_jobs_perm=-1, score_method='z_score',
+                       keep_fit_data=True, verbose=True)
     n_eff = len(ana.effect_list)
     print(f'  found {n_eff} effect{"s" if n_eff != 1 else ""}')
     return ana, mask_target

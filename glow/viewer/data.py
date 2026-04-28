@@ -120,6 +120,54 @@ _PRUNING_FEATURES = set()
 _MASK_FEATURES = {'dice', 'sens', 'spec', 'pct_max_dice',
                    'vox_in_target', 'vox_out_target'}
 
+# columns that ``prep_df_h0`` exposes for the H0 (permuted samples) view.
+# Anything outside this set is hidden from the dropdown options when
+# the viewer is in H0 mode.
+H0_FEATURES = ('n_voxel', 'llr', 'llr_adjusted', 'z_score')
+
+
+def prep_df_h0(ana_glow):
+    """Build the DataFrame for the viewer's H0 (Permuted Samples) mode.
+
+    Reads the (size, stat) cloud retained by AnalysisGLOW when run with
+    ``keep_fit_data=True`` and computes the size-adjusted variants on
+    the fly (``llr_adjusted`` and, when ``sigma_gam`` is available,
+    ``z_score``).
+
+    Returns:
+        df (pd.DataFrame | None): one row per retained fit-perm region,
+        with columns drawn from ``H0_FEATURES``.  Returns None if the
+        analysis was not built with ``keep_fit_data=True``.
+    """
+    fd = getattr(ana_glow, '_gam_fit_data', None)
+    if fd is None:
+        return None
+
+    from glow.analysis import AnalysisGLOW
+    sz = fd['size'].astype(float)
+    st = fd['stat'].astype(float)
+
+    mu_gam = getattr(ana_glow, 'mu_gam', None) or getattr(ana_glow, 'adj_gam',
+                                                          None)
+    sigma_gam = getattr(ana_glow, 'sigma_gam', None)
+
+    mu_fn = AnalysisGLOW.mu_fn_from_gam(mu_gam)
+    llr_adjusted = st - mu_fn(sz)
+
+    d = {
+        'n_voxel': sz.astype(int),
+        'llr': st,
+        'llr_adjusted': llr_adjusted,
+    }
+    if sigma_gam is not None:
+        sigma_fn = AnalysisGLOW.sigma_fn_from_gam(sigma_gam)
+        sigma = sigma_fn(sz)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            z = np.where(sigma > 0, llr_adjusted / sigma, np.nan)
+        d['z_score'] = z
+
+    return pd.DataFrame(d)
+
 
 def _compute_r2(stat, size, adj_gam):
     """Compute R² for the GAM size-adjustment on the unpermuted data."""

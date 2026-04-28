@@ -67,6 +67,7 @@ class AnalysisGLOW(Analysis):
                  n_jobs_perm=1, cloud_config=None, perm_dir=None,
                  cluster_mode="ward's (q1)",
                  score_method='mean_adj',
+                 keep_fit_data=False,
                  **kwargs):
         """
         Args:
@@ -88,6 +89,13 @@ class AnalysisGLOW(Analysis):
                 divides by the fitted size-conditional null SD
                 (studentization, GAMLSS-style).  Pruning rank is on
                 raw LLR in either case.
+            keep_fit_data: When True, store a log-uniformly stratified
+                subsample of the (size, stat) pairs from the held-out
+                fit permutations on ``self._gam_fit_data`` (~2k pairs,
+                float32, ~16 KB).  Useful for the viewer's H0 mode
+                which renders this cloud as the actual data the
+                size-adjustment GAM was fit to.  Default False so
+                production analyses don't carry the diagnostic data.
             cloud_config: CloudConfig for AWS execution (if None, runs
                 locally)
             perm_dir: path for permutation result files.  If provided,
@@ -105,6 +113,8 @@ class AnalysisGLOW(Analysis):
         self.verbose = verbose
         self.cluster_mode = cluster_mode
         self.score_method = score_method
+        self.keep_fit_data = keep_fit_data
+        self._gam_fit_data = None
 
         if cloud_config is not None:
             self._run_on_cloud(exp, n_perm_fwer,
@@ -204,6 +214,14 @@ class AnalysisGLOW(Analysis):
                      if fit.sigma_gam is not None else ''))
         elif verbose:
             print(f'         size adjustment disabled (low-data fallback)')
+
+        # diagnostic subsample of the fit cloud (used by viewer H0 mode)
+        if keep_fit_data:
+            self._gam_fit_data = self._subsample_fit_data(
+                all_sizes, all_stats)
+            if verbose and self._gam_fit_data is not None:
+                print(f'         retained {len(self._gam_fit_data["size"])}'
+                      f' fit-cloud pairs')
 
         # load observed (perm 0) — kept permanently
         with open(perm_dir / f'{0:06d}_result.pkl', 'rb') as fh:
@@ -417,6 +435,63 @@ class AnalysisGLOW(Analysis):
         return GAMFitResult(mu_gam=mu_gam, mu_fn=mu_fn,
                             sigma_gam=sigma_gam, sigma_fn=sigma_fn,
                             r2=r2, size_adjusted=True)
+
+    _GAM_FIT_DATA_BUDGET = 2000
+    """Maximum number of (size, stat) pairs retained for the diagnostic
+    H0 cloud render in the viewer.  ~16 KB at float32."""
+
+    @classmethod
+    def _subsample_fit_data(cls, sizes, stats, budget=None):
+        """Log-uniform stratified subsample of the GAM fit cloud.
+
+        The raw fit data is heavily skewed toward small regions (a Ward
+        tree on N voxels has 2N-1 nodes, of which N are leaves).  For a
+        diagnostic plot we want every size band visible, so we bucket
+        log10-uniformly and sample within each bucket without
+        replacement up to a per-bucket cap.
+
+        Args:
+            sizes: (N,) raw region sizes from fit permutations
+            stats: (N,) raw stat values from fit permutations
+            budget: target number of pairs to keep
+                (default: cls._GAM_FIT_DATA_BUDGET).
+
+        Returns:
+            dict with 'size' and 'stat' float32 arrays of length
+            <= budget, or None if input is empty.
+        """
+        if budget is None:
+            budget = cls._GAM_FIT_DATA_BUDGET
+        sz = np.asarray(sizes, dtype=float)
+        st = np.asarray(stats, dtype=float)
+        valid = np.isfinite(sz) & np.isfinite(st) & (sz > 0)
+        sz, st = sz[valid], st[valid]
+        if sz.size == 0:
+            return None
+
+        n_bins = 30
+        log_sz = np.log10(sz)
+        edges = np.linspace(log_sz.min(), log_sz.max(), n_bins + 1)
+        per_bin = max(1, budget // n_bins)
+        rng = np.random.default_rng(0)
+
+        keep_idx = []
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            in_bin = np.flatnonzero((log_sz >= lo) & (log_sz <= hi))
+            if in_bin.size == 0:
+                continue
+            take = min(per_bin, in_bin.size)
+            keep_idx.append(rng.choice(in_bin, size=take, replace=False))
+        if not keep_idx:
+            return None
+        keep = np.concatenate(keep_idx)
+        if keep.size > budget:
+            keep = rng.choice(keep, size=budget, replace=False)
+
+        return {
+            'size': sz[keep].astype(np.float32),
+            'stat': st[keep].astype(np.float32),
+        }
 
     @staticmethod
     def mu_fn_from_gam(gam):
