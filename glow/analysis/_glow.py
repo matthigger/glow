@@ -7,7 +7,7 @@ from collections import namedtuple
 from pathlib import Path
 
 import numpy as np
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, parallel_config
 from pygam import LinearGAM, s
 from tqdm import tqdm
 
@@ -170,11 +170,18 @@ class AnalysisGLOW(Analysis):
                   f'({num_vox} voxels, {n_perm_fwer} FWER + {n_perm_fwer_size_adjust} fit) ...')
 
         if n_jobs_perm not in (0, 1) and todo:
-            results = Parallel(
-                n_jobs=n_jobs_perm,
-                verbose=10 if verbose else 0,
-            )(delayed(self._process_permutation)(exp, perm_idx)
-              for perm_idx in todo)
+            # Pin BLAS threads to 1 inside each worker (mirrors the
+            # runtime profiler fix).  Without this, numpy / scipy /
+            # sklearn each spawn O(N_cores) BLAS threads inside every
+            # joblib worker, leading to thread-pool explosion and
+            # occasional SIGSEGV on large WGN volumes (sklearn ward
+            # tree path is the usual trigger).
+            with parallel_config(backend='loky', inner_max_num_threads=1):
+                results = Parallel(
+                    n_jobs=n_jobs_perm,
+                    verbose=10 if verbose else 0,
+                )(delayed(self._process_permutation)(exp, perm_idx)
+                  for perm_idx in todo)
             for r in results:
                 p = r['perm_idx']
                 with open(perm_dir / f'{p:06d}_result.pkl', 'wb') as fh:
