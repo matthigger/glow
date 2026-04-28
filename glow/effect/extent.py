@@ -1,4 +1,5 @@
 from functools import wraps
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 from scipy.ndimage import label
@@ -12,6 +13,21 @@ CONNECTIVITY_3D = generate_binary_structure(3, 1)  # 6-connectivity (faces only)
 
 class ContiguousRegionNotFound(RuntimeError):
     pass
+
+
+@runtime_checkable
+class Extenter(Protocol):
+    """Sample a contiguous voxel mask defining an effect's spatial extent.
+
+    All concrete extenters share the same call signature. ``y`` is required
+    by data-driven extenters (e.g. ``ExtenterMinVar``) and ignored by
+    geometric ones (e.g. ``ExtenterSphere``); pass it whenever it's
+    available.
+    """
+
+    def __call__(self, *, mask_idx, y=None, seed=None, contiguous=False,
+                 max_iter=100, **kwargs) -> np.ndarray:  # pragma: no cover
+        ...
 
 
 def resample_to_contiguous(fnc):
@@ -154,22 +170,24 @@ def iter_vox_neighbor(mask, mask_idx):
 class ExtenterMinVar:
     """grow effect extent from a seed voxel to greedily minimise variance."""
 
-    def __init__(self, n):
-        self.n = int(n)
+    def __init__(self, n_vox):
+        self.n_vox = int(n_vox)
 
     @resample_to_contiguous
-    def __call__(self, y, mask_idx, seed=None, vox_init=None, verbose=False):
-        """return a boolean mask of n voxels with minimal pooled variance.
+    def __call__(self, mask_idx, y=None, seed=None, vox_init=None,
+                 verbose=False):
+        """return a boolean mask of n_vox voxels with minimal pooled variance.
 
         Args:
-            y (np.array): (b, num_img, num_vox) image intensities
             mask_idx (np.array): voxel index array (-1 outside analysis)
+            y (np.array): (b, num_img, num_vox) image intensities (required)
             seed: random seed for reproducibility
             vox_init (int): seed voxel (random if not passed)
 
         Returns:
             mask (np.array): boolean, True within extent
         """
+        assert y is not None, 'ExtenterMinVar requires y'
 
         # choose a random initial voxel
         if vox_init is None:
@@ -182,10 +200,10 @@ class ExtenterMinVar:
         mu = y[:, :, vox_init]
         y_norm_sq = (mu ** 2).sum()
 
-        tqdm_dict = dict(total=self.n - 1,
+        tqdm_dict = dict(total=self.n_vox - 1,
                          disable=not verbose,
                          desc='finding min var extent')
-        for n in tqdm(range(1, self.n), **tqdm_dict):
+        for n in tqdm(range(1, self.n_vox), **tqdm_dict):
             # init
             min_var = np.inf
             vox_idx_best = None

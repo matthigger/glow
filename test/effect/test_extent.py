@@ -113,7 +113,7 @@ class TestExtenterMinVar:
                          [0., 0., 0., 0., 0., 0., 0.]])
         mask_idx = np.arange(mask.size).reshape(mask.shape)
 
-        extenter_min_var = ExtenterMinVar(n=mask.sum())
+        extenter_min_var = ExtenterMinVar(n_vox=mask.sum())
 
         # test case 1: no noise, single image
         mask_obs = extenter_min_var(y=mask.reshape((1, 1, mask.size)),
@@ -138,7 +138,7 @@ class TestExtenterMinVarRandomInit:
         mask_idx = np.arange(64).reshape((8, 8))
         
         # create extenter that grows to size 10
-        extenter = ExtenterMinVar(n=10)
+        extenter = ExtenterMinVar(n_vox=10)
         
         # create simple y data (1 feature, 1 image, 64 voxels)
         y = np.random.standard_normal((1, 1, 64))
@@ -155,7 +155,7 @@ class TestExtenterMinVarRandomInit:
     def test_minvar_with_different_seeds(self):
         """test that different seeds produce different results"""
         mask_idx = np.arange(64).reshape((8, 8))
-        extenter = ExtenterMinVar(n=10)
+        extenter = ExtenterMinVar(n_vox=10)
 
         rng = np.random.default_rng(42)
         y = rng.standard_normal((1, 1, 64))

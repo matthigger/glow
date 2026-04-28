@@ -273,7 +273,7 @@ class Config:
         # sample effect space
         perc = effect_perc if effect_perc is not None else self.effect_perc
         n = exp.y.shape[2] * perc
-        extenter = glow.effect.ExtenterMinVar(n=n)
+        extenter = glow.effect.ExtenterMinVar(n_vox=n)
 
         # impose effect
         return exp.impose_effect(extenter=extenter,

@@ -175,7 +175,7 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
     if effect_llr > 0:
         n_vox = (exp.mask_idx >= 0).sum()
         n_effect = max(int(0.15 * n_vox), 10)
-        extenter = ExtenterMinVar(n=n_effect)
+        extenter = ExtenterMinVar(n_vox=n_effect)
         rough_str = f', roughness={roughness}' if roughness is not None else ''
         print(f'  imposing effect (llr={effect_llr}{rough_str}) in ~{n_effect}'
               f' voxels ({100 * n_effect / n_vox:.0f}% of mask) ...')

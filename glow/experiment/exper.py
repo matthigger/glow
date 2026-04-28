@@ -338,7 +338,7 @@ class Experiment(ExperimentImageOnly):
 
         Args:
             effect_llr (float): target size-normalized LLR
-            extenter: ExtenterSphere or ExtenterMinVar (xor mask)
+            extenter: any glow.effect.Extenter (xor mask)
             mask (np.array): boolean effect region (xor extenter)
             seed: random seed for extent sampling
             roughness (float | None): target Tr(sigma)/Tr(E) in (0,1).
