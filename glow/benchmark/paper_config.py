@@ -168,8 +168,15 @@ config_list.append(make_config(
     'mancova_vba_hcp', 'hcp', RunMancovaVba(ANALYSES['VBA-TFCE'])))
 
 # ---------- J. segmentation comparison ----------
-config_list.append(make_config('segment_hcp', 'hcp', RunSegment()))
-config_list.append(make_config('segment_wgn', 'wgn', RunSegment()))
+# minvar: greedy variance-minimising effect extent (the paper's default)
+# sphere: random-centre dilated sphere — segmentation when the effect has
+#         no special covariance structure
+config_list.append(make_config('segment_minvar_hcp', 'hcp', RunSegment()))
+config_list.append(make_config('segment_minvar_wgn', 'wgn', RunSegment()))
+config_list.append(make_config('segment_sphere_hcp', 'hcp', RunSegment(),
+                               effect_extenter='sphere'))
+config_list.append(make_config('segment_sphere_wgn', 'wgn', RunSegment(),
+                               effect_extenter='sphere'))
 
 
 CONFIG_BY_LABEL = {config.label: config for config in config_list}
