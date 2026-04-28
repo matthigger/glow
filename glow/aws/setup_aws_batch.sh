@@ -15,6 +15,34 @@ MAX_VCPUS=4048              # max vCPUs for compute environment
 VCPUS_PER_JOB=1             # vCPUs per job (1 = max concurrency)
 MEMORY_PER_JOB=2000         # memory (MB) per job
 
+# allocation strategy: BEST_FIT_PROGRESSIVE biases toward the closest-fit
+# instance type and falls back to larger sizes when Spot capacity is short.
+# Trades a bit of Spot reliability for major cost+speed wins vs
+# SPOT_CAPACITY_OPTIMIZED (which would happily place a 2 GB job on r5.large
+# 16 GB and pay the unused-memory premium).  This is immutable on a CE; the
+# script triggers a teardown+recreate when it drifts.
+ALLOC_STRATEGY="BEST_FIT_PROGRESSIVE"
+
+# instance type list -- pruned from earlier r-class + 5-series mix after the
+# bench_instance_types.py sweep showed:
+#   * r-series pays for memory the GLOW workload doesn't use (3x $/run on
+#     r5.large vs c7i.large for the same job)
+#   * 5-series (Skylake/Naples, 2017) is 2x slower per core than 7-series
+#     (Sapphire Rapids/Genoa, 2023) on BLAS-heavy permutation work
+# The list keeps c-class (compute-optimized, 2 GB/vCPU) and m-class
+# (general, 4 GB/vCPU) on 6th and 7th generations only.  Rerun
+# bench_instance_types.py if the workload memory profile changes.
+INSTANCE_TYPES='[
+    "c6i.large", "c6i.xlarge", "c6i.2xlarge", "c6i.4xlarge", "c6i.8xlarge", "c6i.12xlarge",
+    "c6a.large", "c6a.xlarge", "c6a.2xlarge", "c6a.4xlarge", "c6a.8xlarge", "c6a.12xlarge",
+    "c7i.large", "c7i.xlarge", "c7i.2xlarge", "c7i.4xlarge", "c7i.8xlarge", "c7i.12xlarge",
+    "c7a.large", "c7a.xlarge", "c7a.2xlarge", "c7a.4xlarge", "c7a.8xlarge", "c7a.12xlarge",
+    "m6i.large", "m6i.xlarge", "m6i.2xlarge", "m6i.4xlarge", "m6i.8xlarge",
+    "m6a.large", "m6a.xlarge", "m6a.2xlarge", "m6a.4xlarge", "m6a.8xlarge",
+    "m7i.large", "m7i.xlarge", "m7i.2xlarge", "m7i.4xlarge", "m7i.8xlarge",
+    "m7a.large", "m7a.xlarge", "m7a.2xlarge", "m7a.4xlarge", "m7a.8xlarge"
+]'
+
 # ═══════════════════════════════════════════════════════════════
 
 # colors for output
@@ -242,50 +270,10 @@ echo ""
 # ============================================================================
 echo -e "${BLUE}[4/7] Setting up compute environment...${NC}"
 
-if aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].computeEnvironmentName" --output text 2>/dev/null | grep -q "$COMPUTE_ENV_NAME"; then
-    STATUS=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].status" --output text)
-    CURRENT_MAX_VCPUS=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].computeResources.maxvCpus" --output text)
-    CURRENT_ALLOC_STRATEGY=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].computeResources.allocationStrategy" --output text 2>/dev/null || echo "unknown")
-    CURRENT_INSTANCE_TYPES=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].computeResources.instanceTypes" --output json 2>/dev/null || echo "[]")
-    
-    echo -e "${YELLOW}  Compute environment exists (status: $STATUS, maxvCpus: $CURRENT_MAX_VCPUS, strategy: $CURRENT_ALLOC_STRATEGY)${NC}"
-    
-    NEEDS_RECREATE=false
-    
-    # Check allocation strategy (immutable after creation)
-    if [ "$CURRENT_ALLOC_STRATEGY" != "SPOT_CAPACITY_OPTIMIZED" ]; then
-        echo -e "${YELLOW}  ⚠ Allocation strategy is '${CURRENT_ALLOC_STRATEGY}' (expected SPOT_CAPACITY_OPTIMIZED)${NC}"
-        NEEDS_RECREATE=true
-    fi
-    
-    # Check that instance types include mixed families (c, m, r)
-    HAS_GENERAL=$(echo "$CURRENT_INSTANCE_TYPES" | grep -cE '"m[0-9]' || true)
-    HAS_MEMORY=$(echo "$CURRENT_INSTANCE_TYPES" | grep -cE '"r[0-9]' || true)
-    if [ "$HAS_GENERAL" -eq 0 ] || [ "$HAS_MEMORY" -eq 0 ]; then
-        echo -e "${YELLOW}  ⚠ Missing general-purpose (m) or memory-optimized (r) instance families${NC}"
-        NEEDS_RECREATE=true
-    fi
-    
-    if [ "$NEEDS_RECREATE" = true ]; then
-        echo -e "${YELLOW}  These settings are immutable after creation. To update:${NC}"
-        echo -e "${YELLOW}    1. Delete the compute environment in the AWS Console:${NC}"
-        echo -e "${YELLOW}       https://console.aws.amazon.com/batch/home?region=${REGION}#/compute-environments${NC}"
-        echo -e "${YELLOW}    2. Re-run this script to recreate with the correct configuration${NC}"
-    fi
-    
-    if [ "$CURRENT_MAX_VCPUS" != "$MAX_VCPUS" ]; then
-        echo -e "${YELLOW}  Updating maxvCpus from $CURRENT_MAX_VCPUS to $MAX_VCPUS...${NC}"
-        aws batch update-compute-environment \
-            --compute-environment $COMPUTE_ENV_NAME \
-            --compute-resources "{\"maxvCpus\": $MAX_VCPUS}" \
-            --region $REGION
-        echo -e "${GREEN}  ✓ Updated compute environment${NC}"
-        sleep 5
-    else
-        echo -e "${GREEN}  ✓ Compute environment already configured correctly${NC}"
-    fi
-else
-    echo -e "${YELLOW}  Creating new compute environment...${NC}"
+# helper: serialize the desired instanceTypes list for the JSON body
+INSTANCE_TYPES_JSON=$(echo "$INSTANCE_TYPES" | tr -d '\n' | tr -s ' ')
+
+create_compute_environment() {
     aws batch create-compute-environment \
         --compute-environment-name $COMPUTE_ENV_NAME \
         --type MANAGED \
@@ -294,36 +282,17 @@ else
         --service-role "arn:aws:iam::${ACCOUNT_ID}:role/GlowBatchServiceRole" \
         --compute-resources "{
             \"type\": \"SPOT\",
-            \"allocationStrategy\": \"SPOT_CAPACITY_OPTIMIZED\",
+            \"allocationStrategy\": \"${ALLOC_STRATEGY}\",
             \"minvCpus\": 0,
             \"maxvCpus\": $MAX_VCPUS,
             \"desiredvCpus\": 0,
-            \"instanceTypes\": [
-                \"c5.large\", \"c5.xlarge\", \"c5.2xlarge\", \"c5.4xlarge\", \"c5.9xlarge\", \"c5.12xlarge\",
-                \"c5a.large\", \"c5a.xlarge\", \"c5a.2xlarge\", \"c5a.4xlarge\", \"c5a.8xlarge\", \"c5a.12xlarge\",
-                \"c6i.large\", \"c6i.xlarge\", \"c6i.2xlarge\", \"c6i.4xlarge\", \"c6i.8xlarge\", \"c6i.12xlarge\",
-                \"c6a.large\", \"c6a.xlarge\", \"c6a.2xlarge\", \"c6a.4xlarge\", \"c6a.8xlarge\", \"c6a.12xlarge\",
-                \"c7i.large\", \"c7i.xlarge\", \"c7i.2xlarge\", \"c7i.4xlarge\", \"c7i.8xlarge\", \"c7i.12xlarge\",
-                \"c7a.large\", \"c7a.xlarge\", \"c7a.2xlarge\", \"c7a.4xlarge\", \"c7a.8xlarge\", \"c7a.12xlarge\",
-                \"m5.large\", \"m5.xlarge\", \"m5.2xlarge\", \"m5.4xlarge\", \"m5.8xlarge\",
-                \"m5a.large\", \"m5a.xlarge\", \"m5a.2xlarge\", \"m5a.4xlarge\", \"m5a.8xlarge\",
-                \"m6i.large\", \"m6i.xlarge\", \"m6i.2xlarge\", \"m6i.4xlarge\", \"m6i.8xlarge\",
-                \"m6a.large\", \"m6a.xlarge\", \"m6a.2xlarge\", \"m6a.4xlarge\", \"m6a.8xlarge\",
-                \"m7i.large\", \"m7i.xlarge\", \"m7i.2xlarge\", \"m7i.4xlarge\", \"m7i.8xlarge\",
-                \"m7a.large\", \"m7a.xlarge\", \"m7a.2xlarge\", \"m7a.4xlarge\", \"m7a.8xlarge\",
-                \"r5.large\", \"r5.xlarge\", \"r5.2xlarge\", \"r5.4xlarge\",
-                \"r5a.large\", \"r5a.xlarge\", \"r5a.2xlarge\", \"r5a.4xlarge\",
-                \"r6i.large\", \"r6i.xlarge\", \"r6i.2xlarge\", \"r6i.4xlarge\",
-                \"r6a.large\", \"r6a.xlarge\", \"r6a.2xlarge\", \"r6a.4xlarge\",
-                \"r7i.large\", \"r7i.xlarge\", \"r7i.2xlarge\", \"r7i.4xlarge\",
-                \"r7a.large\", \"r7a.xlarge\", \"r7a.2xlarge\", \"r7a.4xlarge\"
-            ],
+            \"instanceTypes\": ${INSTANCE_TYPES_JSON},
             \"subnets\": [\"${SUBNET_ID}\"],
             \"securityGroupIds\": [\"${SG_ID}\"],
             \"instanceRole\": \"arn:aws:iam::${ACCOUNT_ID}:instance-profile/ecsInstanceRole\",
             \"spotIamFleetRole\": \"arn:aws:iam::${ACCOUNT_ID}:role/aws-ec2-spot-fleet-tagging-role\"
-        }"
-    
+        }" > /dev/null
+
     echo -e "${YELLOW}  Waiting for compute environment to become VALID...${NC}"
     for i in {1..60}; do
         STATUS=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].status" --output text)
@@ -333,6 +302,101 @@ else
         echo -e "    Status: $STATUS (waiting... $i/60)"
         sleep 5
     done
+}
+
+# Force-recreate handles immutable drift (allocationStrategy, type) by tearing
+# down the queue + CE and recreating.  Disrupts in-flight jobs in the queue.
+recreate_compute_environment() {
+    echo -e "${YELLOW}  Tearing down job queue + compute environment for recreate...${NC}"
+
+    if aws batch describe-job-queues --job-queues $JOB_QUEUE_NAME --region $REGION --query "jobQueues[0].jobQueueName" --output text 2>/dev/null | grep -q "$JOB_QUEUE_NAME"; then
+        aws batch update-job-queue --job-queue $JOB_QUEUE_NAME --state DISABLED --region $REGION > /dev/null
+        for i in {1..60}; do
+            QSTATUS=$(aws batch describe-job-queues --job-queues $JOB_QUEUE_NAME --region $REGION --query "jobQueues[0].status" --output text 2>/dev/null || echo "MISSING")
+            QSTATE=$(aws batch describe-job-queues --job-queues $JOB_QUEUE_NAME --region $REGION --query "jobQueues[0].state" --output text 2>/dev/null || echo "MISSING")
+            [ "$QSTATE" = "DISABLED" ] && [ "$QSTATUS" = "VALID" ] && break
+            sleep 5
+        done
+        aws batch delete-job-queue --job-queue $JOB_QUEUE_NAME --region $REGION > /dev/null
+        for i in {1..60}; do
+            aws batch describe-job-queues --job-queues $JOB_QUEUE_NAME --region $REGION --query "jobQueues[0].jobQueueName" --output text 2>/dev/null | grep -q "$JOB_QUEUE_NAME" || break
+            sleep 5
+        done
+    fi
+
+    aws batch update-compute-environment --compute-environment $COMPUTE_ENV_NAME --state DISABLED --region $REGION > /dev/null
+    for i in {1..60}; do
+        CSTATUS=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].status" --output text 2>/dev/null || echo "MISSING")
+        CSTATE=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].state" --output text 2>/dev/null || echo "MISSING")
+        [ "$CSTATE" = "DISABLED" ] && [ "$CSTATUS" = "VALID" ] && break
+        sleep 5
+    done
+    aws batch delete-compute-environment --compute-environment $COMPUTE_ENV_NAME --region $REGION > /dev/null
+    for i in {1..60}; do
+        aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].computeEnvironmentName" --output text 2>/dev/null | grep -q "$COMPUTE_ENV_NAME" || break
+        sleep 5
+    done
+
+    create_compute_environment
+}
+
+if aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].computeEnvironmentName" --output text 2>/dev/null | grep -q "$COMPUTE_ENV_NAME"; then
+    STATUS=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].status" --output text)
+    CURRENT_MAX_VCPUS=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].computeResources.maxvCpus" --output text)
+    CURRENT_ALLOC_STRATEGY=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].computeResources.allocationStrategy" --output text 2>/dev/null || echo "unknown")
+    CURRENT_INSTANCE_TYPES=$(aws batch describe-compute-environments --compute-environments $COMPUTE_ENV_NAME --region $REGION --query "computeEnvironments[0].computeResources.instanceTypes" --output json 2>/dev/null || echo "[]")
+    DESIRED_INSTANCE_TYPES_NORMALIZED=$(echo "$INSTANCE_TYPES" | python3 -c "import sys, json; print(json.dumps(sorted(json.loads(sys.stdin.read()))))")
+    CURRENT_INSTANCE_TYPES_NORMALIZED=$(echo "$CURRENT_INSTANCE_TYPES" | python3 -c "import sys, json; print(json.dumps(sorted(json.loads(sys.stdin.read()))))")
+
+    echo -e "${YELLOW}  Compute environment exists (status: $STATUS, maxvCpus: $CURRENT_MAX_VCPUS, strategy: $CURRENT_ALLOC_STRATEGY)${NC}"
+
+    # Immutable drift: allocationStrategy.  Requires teardown + recreate.
+    if [ "$CURRENT_ALLOC_STRATEGY" != "$ALLOC_STRATEGY" ]; then
+        echo -e "${YELLOW}  ⚠ allocationStrategy is '${CURRENT_ALLOC_STRATEGY}', expected '${ALLOC_STRATEGY}' (immutable on a CE)${NC}"
+        if [ "${FORCE_RECREATE:-0}" = "1" ] || [ "${1:-}" = "--force-recreate" ]; then
+            ANSWER="y"
+        else
+            echo -ne "${YELLOW}  Tear down + recreate the CE now? [y/N] ${NC}"
+            read ANSWER
+        fi
+        case "$ANSWER" in
+            y|Y|yes|YES)
+                recreate_compute_environment
+                # queue will be created fresh in step 5
+                ;;
+            *)
+                echo -e "${YELLOW}  Skipping recreate.  Re-run with --force-recreate to apply.${NC}"
+                ;;
+        esac
+    fi
+
+    # Mutable drift: instanceTypes + maxvCpus.  Apply in place.
+    UPDATED=false
+    if [ "$CURRENT_INSTANCE_TYPES_NORMALIZED" != "$DESIRED_INSTANCE_TYPES_NORMALIZED" ]; then
+        echo -e "${YELLOW}  Updating instanceTypes (existing instances drain naturally)...${NC}"
+        aws batch update-compute-environment \
+            --compute-environment $COMPUTE_ENV_NAME \
+            --compute-resources "{\"instanceTypes\": ${INSTANCE_TYPES_JSON}}" \
+            --region $REGION > /dev/null
+        UPDATED=true
+    fi
+    if [ "$CURRENT_MAX_VCPUS" != "$MAX_VCPUS" ]; then
+        echo -e "${YELLOW}  Updating maxvCpus from $CURRENT_MAX_VCPUS to $MAX_VCPUS...${NC}"
+        aws batch update-compute-environment \
+            --compute-environment $COMPUTE_ENV_NAME \
+            --compute-resources "{\"maxvCpus\": $MAX_VCPUS}" \
+            --region $REGION > /dev/null
+        UPDATED=true
+    fi
+
+    if [ "$UPDATED" = true ]; then
+        echo -e "${GREEN}  ✓ Compute environment updated${NC}"
+    else
+        echo -e "${GREEN}  ✓ Compute environment already configured correctly${NC}"
+    fi
+else
+    echo -e "${YELLOW}  Creating new compute environment...${NC}"
+    create_compute_environment
     echo -e "${GREEN}✓ Compute environment created${NC}"
 fi
 echo ""
