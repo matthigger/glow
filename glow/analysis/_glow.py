@@ -343,6 +343,10 @@ class AnalysisGLOW(Analysis):
         if 'score_method' not in self.__dict__:
             self.score_method = ('mean_adj' if self.sigma_gam is None
                                  else 'z_score')
+        if '_gam_fit_data' not in self.__dict__:
+            self._gam_fit_data = None
+        if 'keep_fit_data' not in self.__dict__:
+            self.keep_fit_data = self._gam_fit_data is not None
 
     @classmethod
     def fit_size_gam(cls, size, stat, n_splines=None,
