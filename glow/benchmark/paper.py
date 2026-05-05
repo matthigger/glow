@@ -311,30 +311,16 @@ def run_cloud(configs):
     print('=' * 60)
 
 
-def run_local(configs, n_procs=None):
-    import multiprocessing as mp
-    import joblib
-
-    if n_procs is None:
-        n_procs = mp.cpu_count()
-
-    # inner_max_num_threads=1 pins BLAS to one thread per worker — without
-    # this the workers fight over the same threadpool and throughput
-    # collapses (see scaling benchmark, ~16x throughput vs single-process
-    # BLAS-multithreaded on a 32-core box).
-    with joblib.parallel_config(backend='loky', inner_max_num_threads=1):
-        for config in configs:
-            config.n_jobs = n_procs
-            print(f'begin: {config.label}  (n_procs={n_procs})')
-            config.run_all(verbose=True)
+def run_local(configs):
+    for config in configs:
+        print(f'begin: {config.label}')
+        config.run_all(verbose=True)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Run paper benchmarks.')
     parser.add_argument('configs', nargs='*', help='config labels to run')
     parser.add_argument('--local', action='store_true', help='run locally')
-    parser.add_argument('--n-procs', type=int, default=None,
-                        help='parallel workers for --local (default: cpu_count())')
     return parser.parse_args()
 
 
@@ -362,6 +348,6 @@ if __name__ == '__main__':
     args = parse_args()
     configs = resolve_configs(args)
     if args.local:
-        run_local(configs, n_procs=args.n_procs)
+        run_local(configs)
     else:
         run_cloud(configs)
