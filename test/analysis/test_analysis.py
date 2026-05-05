@@ -397,19 +397,20 @@ class TestResume:
         shutil.rmtree(perm_dir, ignore_errors=True)
 
     def test_perm_dir_keeps_files(self):
-        """When perm_dir is provided, result files are kept after run."""
+        """When perm_dir is provided, outer-perm files are kept after run."""
         import tempfile
         perm_dir = tempfile.mkdtemp(prefix='glow_test_keep_')
         n_perm_fwer = 5
-        n_perm_fwer_size_adjust = 25
 
         AnalysisGLOW(self.exp, n_perm_fwer=n_perm_fwer,
-                      n_perm_fwer_size_adjust=n_perm_fwer_size_adjust,
+                      n_perm_inner=10,
                       alpha_fwer=.5, perm_dir=perm_dir)
 
         from pathlib import Path
         result_files = list(Path(perm_dir).glob('*_result.pkl'))
-        assert len(result_files) == n_perm_fwer + 1 + n_perm_fwer_size_adjust
+        # only outer perms (0..n_perm_fwer) are written to perm_dir;
+        # inner perms run on the synth side without per-perm files
+        assert len(result_files) == n_perm_fwer + 1
 
         import shutil
         shutil.rmtree(perm_dir, ignore_errors=True)
@@ -523,12 +524,9 @@ class TestFromPrecomputed:
     def test_glow_from_precomputed_has_attrs(self):
         from glow.analysis.mancova import get_llr
         ana = AnalysisGLOW.from_precomputed(
-            exp=self.exp_eff, get_stat=get_llr,
-            adj_gam=None,
-            verbose=True)
+            exp=self.exp_eff, get_stat=get_llr, verbose=True)
         assert hasattr(ana, 'exp')
         assert ana.get_stat is get_llr
-        assert ana.adj_gam is None
         assert ana.verbose is True
 
     def test_discover_mask_on_base(self):

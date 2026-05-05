@@ -92,7 +92,7 @@ class TestTargetStarClickable:
 
     def test_target_customdata_is_string(self, df_with_target, ana,
                                          target_stats):
-        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_adjusted',
+        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr',
                             '__none__', target_stats=target_stats)
         star = [t for t in fig.data
                 if getattr(t, 'customdata', None) is not None

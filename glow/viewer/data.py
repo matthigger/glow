@@ -131,92 +131,20 @@ H0_FEATURES = ('n_voxel', 'llr', 'llr_adjusted', 'z_score',
 
 
 def prep_df_h0(ana_glow):
-    """Build the DataFrame for the viewer's H0 (Permuted Samples) mode.
+    """Stub: per_region_z does not retain a GAM fit cloud.
 
-    Reads the (size, stat) cloud retained by AnalysisGLOW when run with
-    ``keep_fit_data=True`` and computes the size-adjusted variants on
-    the fly (``llr_adjusted`` and, when ``sigma_gam`` is available,
-    ``z_score``).  When the analysis was run with ``target_mask``
-    supplied, the ``dice`` / ``sens`` / ``spec`` triple is derived
-    per-region from the stored target overlap so the H0 view shares
-    the same labelling as the H1 scatter.
-
-    Returns:
-        df (pd.DataFrame | None): one row per retained fit-perm region.
-        Returns None if the analysis was not built with
-        ``keep_fit_data=True``.
+    The H0 panel was historically wired up to the size-conditional GAM
+    fit cloud (``ana_glow._gam_fit_data``).  Per-region permutation
+    z-scoring no longer fits a GAM, so this returns None and the H0
+    panel renders as inert.  A per-region diagnostic (e.g. mu_r vs
+    std_r per merged region) can be added later.
     """
-    fd = getattr(ana_glow, '_gam_fit_data', None)
-    if fd is None:
-        return None
-
-    from glow.analysis import AnalysisGLOW
-    sz = fd['size'].astype(float)
-    st = fd['stat'].astype(float)
-
-    mu_gam = getattr(ana_glow, 'mu_gam', None) or getattr(ana_glow, 'adj_gam',
-                                                          None)
-    sigma_gam = getattr(ana_glow, 'sigma_gam', None)
-
-    mu_fn = AnalysisGLOW.mu_fn_from_gam(mu_gam)
-    llr_adjusted = st - mu_fn(sz)
-
-    d = {
-        'n_voxel': sz.astype(int),
-        'llr': st,
-        'llr_adjusted': llr_adjusted,
-    }
-    if sigma_gam is not None:
-        sigma_fn = AnalysisGLOW.sigma_fn_from_gam(sigma_gam)
-        sigma = sigma_fn(sz)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            z = np.where(sigma > 0, llr_adjusted / sigma, np.nan)
-        d['z_score'] = z
-
-    if 'perm_idx' in fd:
-        d['perm_idx'] = fd['perm_idx'].astype(int)
-        # x_correlation: how much of the contrast-of-interest direction
-        # a given Freedman-Lane permutation preserved.  Stored once per
-        # perm; we broadcast to per-region rows here.
-        pxc = getattr(ana_glow, '_gam_fit_perm_x_corr', None)
-        if pxc:
-            d['x_correlation'] = np.array(
-                [pxc.get(int(p), np.nan) for p in fd['perm_idx']],
-                dtype=float)
-
-    # dice / sens / spec derived from target_overlap.  TP per region
-    # = overlap × size; rest follows from the stored target / volume
-    # totals.  Matches the H1 columns produced in ``prep_df``.
-    overlap = fd.get('target_overlap')
-    target_size = getattr(ana_glow, '_gam_fit_target_size', None)
-    num_vox = getattr(ana_glow, '_gam_fit_num_vox', None)
-    if overlap is not None and target_size and num_vox:
-        tp = overlap.astype(float) * sz
-        denom_dice = sz + target_size
-        with np.errstate(divide='ignore', invalid='ignore'):
-            d['dice'] = np.where(denom_dice > 0, 2 * tp / denom_dice, 0.0)
-            d['sens'] = tp / target_size
-            non_target = num_vox - target_size
-            tn = non_target - (sz - tp)  # not-target & not-in-region
-            d['spec'] = np.where(non_target > 0, tn / non_target, 1.0)
-
-    return pd.DataFrame(d)
+    return None
 
 
 def _compute_r2(stat, size, adj_gam):
-    """Compute R² for the GAM size-adjustment on the unpermuted data."""
-    from glow.analysis import AnalysisGLOW
-    valid = np.isfinite(stat) & (size > 0) & np.isfinite(size)
-    s, y = size[valid].astype(float), stat[valid].astype(float)
-    if len(y) < 3:
-        return np.nan
-    mu_fn = AnalysisGLOW.mu_fn_from_gam(adj_gam)
-    y_hat = mu_fn(s)
-    ss_res = np.sum((y - y_hat) ** 2)
-    ss_tot = np.sum((y - y.mean()) ** 2)
-    if ss_tot == 0:
-        return np.nan
-    return 1 - ss_res / ss_tot
+    """Stub: GAM R² is no longer computed (per_region_z has no GAM)."""
+    return float('nan')
 
 
 def get_feature_columns(df):
@@ -293,14 +221,11 @@ def compute_target_stats(ana_glow, mask_target):
         'llr': llr,
     }
 
-    adj_gam = getattr(ana_glow, 'adj_gam', None)
-    if adj_gam is not None and np.isfinite(llr):
-        from glow.analysis import AnalysisGLOW
-        mu_fn = AnalysisGLOW.mu_fn_from_gam(adj_gam)
-        predicted = mu_fn(np.array([n_voxel]))[0]
-        stats['llr_adjusted'] = llr - predicted
-    else:
-        stats['llr_adjusted'] = np.nan
+    # llr_adjusted is the per-region z-score, which is computed on the
+    # merged-graph regions, not on an arbitrary user-selected mask.
+    # Leave NaN here so the viewer hides the row when this stub mask
+    # isn't aligned to a known merged region.
+    stats['llr_adjusted'] = np.nan
 
     stats['dice'] = 1.0
     stats['sens'] = 1.0

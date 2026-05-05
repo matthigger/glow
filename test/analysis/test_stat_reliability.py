@@ -244,55 +244,27 @@ class TestPowerMonotonicity:
 # ---------------------------------------------------------------------------
 
 class TestSizeAdjustment:
-    """GLOW regression should remove the size-stat confound."""
+    """Sanity that per-region z-scoring runs and produces finite output.
 
-    def test_adjustment_reduces_size_correlation(self):
-        """Raw LLR correlates with size; adjustment should reduce this."""
+    The historical "adjustment reduces size correlation" check made sense
+    for the GAM smooth (which fit a function of size).  Per-region z
+    doesn't model size at all — each region is z-scored against its own
+    null — so a residual size correlation in ``llr_adjusted_0`` is just
+    a finite-sample property of which regions ended up with which sizes,
+    not a statement about the method.  The real validation lives in
+    null-FWER calibration runs (see ``test/validate_studentize.py``).
+    """
+
+    def test_runs_and_produces_finite_output(self):
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                     num_img=50, seed=42)
-        ana = AnalysisGLOW(exp, n_perm_fwer=10, alpha_fwer=0.05,
-                           n_perm_fwer_size_adjust=25)
+        ana = AnalysisGLOW(exp, n_perm_fwer=20, n_perm_inner=50,
+                           alpha_fwer=0.05)
 
         valid = (np.isfinite(ana.stat)
                  & np.isfinite(ana.llr_adjusted_0)
                  & (ana.size > 0))
-
-        r_raw, _ = sp_stats.pearsonr(np.log(ana.size[valid]),
-                                      ana.stat[valid])
-        r_adj, _ = sp_stats.pearsonr(np.log(ana.size[valid]),
-                                      ana.llr_adjusted_0[valid])
-
-        # raw LLR should positively correlate with size (the confound)
-        assert r_raw > 0.3, (
-            f'Expected positive raw size-stat correlation, got r={r_raw:.3f}')
-        # adjustment should reduce correlation
-        assert abs(r_adj) < abs(r_raw), (
-            f'Adjustment did not reduce correlation: '
-            f'raw={r_raw:.3f}, adj={r_adj:.3f}')
-        assert abs(r_adj) < 0.5, (
-            f'Adjusted correlation still too high: r={r_adj:.3f}')
-
-    def test_fit_size_gam_returns_callable(self):
-        """fit_size_gam should return a GAM, callable mu_fn, and R²."""
-        rng = np.random.default_rng(7)
-        sizes = rng.integers(1, 500, size=200).astype(float)
-        stats = 0.5 * np.log10(sizes) + rng.standard_normal(200) * 0.3
-
-        fit = AnalysisGLOW.fit_size_gam(sizes, stats)
-        mu_gam, mu_fn, r2 = fit.mu_gam, fit.mu_fn, fit.r2
-        assert mu_gam is not None
-        assert callable(mu_fn)
-        assert callable(fit.sigma_fn)
-        assert r2 is not None and r2 > 0
-        assert fit.size_adjusted is True
-
-        # mu_fn / sigma_fn should return predictions for an array of sizes
-        pred = mu_fn(sizes)
-        assert pred.shape == sizes.shape
-        assert np.all(np.isfinite(pred))
-        sigma = fit.sigma_fn(sizes)
-        assert sigma.shape == sizes.shape
-        assert np.all(np.isfinite(sigma)) and np.all(sigma > 0)
+        assert valid.sum() > 0, 'no valid regions'
 
 
 # ---------------------------------------------------------------------------

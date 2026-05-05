@@ -59,7 +59,7 @@ class TestBuildScatterTraces:
     """Verify trace structure and content."""
 
     def _build(self, df, ana, target_stats=None, **kw):
-        return build_scatter(df, ana, 'n_voxel', 'llr_adjusted', '__none__',
+        return build_scatter(df, ana, 'n_voxel', 'llr', '__none__',
                              target_stats=target_stats, **kw)
 
     def test_has_scatter_trace(self, df_with_target, ana):
@@ -193,14 +193,3 @@ class TestModelOverlay:
     def test_llr_vs_n_voxel(self, df_with_target, ana):
         fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr', '__none__')
         assert isinstance(fig, go.Figure)
-
-    def test_model_line_present(self, df_with_target, ana):
-        """When adj_gam is set and axes are n_voxel vs llr, a model line
-        should appear."""
-        if getattr(ana, 'adj_gam', None) is None:
-            pytest.skip('no adj_gam on this analysis')
-        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr', '__none__')
-        dashed = [t for t in fig.data
-                  if t.mode == 'lines'
-                  and getattr(t.line, 'dash', None) == 'dash']
-        assert len(dashed) >= 1, 'model overlay line not found'

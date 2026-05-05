@@ -205,18 +205,10 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
         exp_eff = exp
         print('  no effect imposed')
 
-    print('  running AnalysisGLOW (n_perm_fwer=200, score_method=z_score) ...')
-    # Opt into z_score so the viewer scatter renders the GAM ±sigma band.
-    # keep_fit_data='all' retains every (size, stat) pair (no subsample)
-    # so the viewer's H0 mode shows the actual cloud the GAM was fit to.
-    # target_mask threads the planted-effect mask in so the H0 view
-    # gets a per-region 'target_overlap' column for colouring.
-    # All four flags are demo-only opts; library defaults stay off.
+    print('  running AnalysisGLOW (n_perm_fwer=200, n_perm_inner=200) ...')
     ana = AnalysisGLOW(exp_eff, n_perm_fwer=200,
-                       n_perm_fwer_size_adjust=50,
-                       n_jobs_perm=-1, score_method='z_score',
-                       keep_fit_data='all',
-                       target_mask=mask_target,
+                       n_perm_inner=200,
+                       n_jobs_perm=-1,
                        verbose=True)
     n_eff = len(ana.effect_list)
     print(f'  found {n_eff} effect{"s" if n_eff != 1 else ""}')

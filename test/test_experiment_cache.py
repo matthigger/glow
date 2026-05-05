@@ -215,8 +215,7 @@ class TestRunnerLabels:
                                   'min_size': 1, 'n_jobs_perm': 1})
         config = Config(label='p', runner=runner, source='wgn')
         labels = set(config.runner.labels)
-        assert labels == {'greedy', 'greedy_adj', 'dp_lam0', 'dp_lam0_adj',
-                          'dp_geom3', 'full_adjust'}
+        assert labels == {'greedy_llr', 'greedy_z', 'dp_llr', 'dp_z'}
 
 
 # ---------------------------------------------------------------------------

@@ -443,10 +443,10 @@ def run_experiment_mode(args):
 
 
 def run_synthesis_mode(args):
-    """Collect permutation results from S3 and run _finalize_analysis."""
+    """Collect outer-perm results from S3 and run per_region_z synthesis."""
+    import tempfile
     import time
-    import glow.graph
-    from glow.analysis import AnalysisGLOW, _sanitize_adjusted_stat
+    from glow.analysis import AnalysisGLOW
     from glow.analysis.mancova import get_llr
 
     print('=' * 60)
@@ -470,15 +470,13 @@ def run_synthesis_mode(args):
         print(f'  ✗ Error: {e}')
         sys.exit(1)
 
-    # poll S3 until all permutation results are available
-    n_perm_fwer_size_adjust = ana_kwargs.get('n_perm_fwer_size_adjust', 25)
-    n_perm_fwer = args.n_perm - n_perm_fwer_size_adjust
-    fit_start = n_perm_fwer + 1
-    n_expected = args.n_perm + 1
+    n_perm_fwer = args.n_perm
+    n_perm_inner = ana_kwargs.get('n_perm_inner', 200)
+    n_expected = n_perm_fwer + 1
     result_prefix = (f'{args.s3_prefix}/results/'
                      f'{args.experiment_id}/')
 
-    print(f'\nWaiting for {n_expected} permutation results...')
+    print(f'\nWaiting for {n_expected} outer-perm results...')
     while True:
         completed = set()
         paginator = s3.get_paginator('list_objects_v2')
@@ -490,7 +488,7 @@ def run_synthesis_mode(args):
                     fname = Path(key).name
                     try:
                         perm_idx = int(fname.split('_')[0])
-                        if 0 <= perm_idx <= args.n_perm:
+                        if 0 <= perm_idx <= n_perm_fwer:
                             completed.add(perm_idx)
                     except ValueError:
                         continue
@@ -499,90 +497,39 @@ def run_synthesis_mode(args):
             break
         time.sleep(30)
 
-    # --- streaming synthesis: two passes over S3 results ---
-    b, num_img, num_vox = exp.y.shape
     get_stat = ana_kwargs.get('get_stat', get_llr)
     alpha_fwer = ana_kwargs.get('alpha_fwer', 0.05)
     min_size = ana_kwargs.get('min_size', 1)
+    cluster_mode = ana_kwargs.get('cluster_mode', "ward's (q1)")
 
-    def _load_result(perm_idx):
+    # download all per-perm result pickles into a local dir so the
+    # per-region-z finalizer can read them as if they were produced by
+    # a local run.
+    perm_dir = Path(tempfile.mkdtemp(prefix='glow_synth_'))
+    print(f'\nDownloading {n_expected} perm results to {perm_dir} ...')
+    perm_elapsed = [None] * n_expected
+    for perm_idx in range(n_expected):
         key = f'{result_prefix}{perm_idx:06d}_result.pkl'
         response = s3.get_object(Bucket=args.s3_bucket, Key=key)
-        return pickle.loads(response['Body'].read())
+        body = response['Body'].read()
+        with open(perm_dir / f'{perm_idx:06d}_result.pkl', 'wb') as fh:
+            fh.write(body)
+        try:
+            r = pickle.loads(body)
+            perm_elapsed[perm_idx] = r.get('elapsed_sec')
+        except Exception:
+            pass
 
-    # load observed (perm 0) — kept permanently
-    print(f'\nPass 1: fitting size-adjustment GAM ...')
-    r0 = _load_result(0)
-    stat_0 = np.asarray(r0['stat'], dtype=float)
-    children_0 = r0['children']
-    size_0 = (np.asarray(r0['size'], dtype=float) if 'size' in r0
-              else glow.graph.node_sum(np.ones(num_vox, dtype=int),
-                                       children_0).astype(float))
-    perm_elapsed = [r0.get('elapsed_sec')]
-
-    fit_sizes, fit_stats = [], []
-    for perm_idx in range(1, n_expected):
-        r = _load_result(perm_idx)
-        stat_p = np.asarray(r['stat'], dtype=float)
-        size_p = (np.asarray(r['size'], dtype=float) if 'size' in r
-                  else glow.graph.node_sum(np.ones(num_vox, dtype=int),
-                                           r['children']).astype(float))
-        perm_elapsed.append(r.get('elapsed_sec'))
-        if perm_idx >= fit_start:
-            fit_sizes.append(size_p)
-            fit_stats.append(stat_p)
-        del r
-
-    all_sizes = np.concatenate(fit_sizes)
-    all_stats = np.concatenate(fit_stats)
-    fit = AnalysisGLOW.fit_size_gam(all_sizes, all_stats)
-    gam = fit.gam
-    mu_fn = fit.mu_fn
-    print(f'  GAM R²={fit.r2:.4f}' if fit.r2 is not None
-          else '  GAM: size adjustment disabled (low-data fallback)')
-
-    # pass 2: compute adjusted max-stat per permutation
-    print(f'Pass 2: computing FWER max-stats ...')
-    reg_active = size_0 >= min_size
-    stat_max_list = []
-
-    adj_0 = stat_0 - mu_fn(size_0)
-    adj_0 = _sanitize_adjusted_stat(adj_0)
-    if reg_active.any() and np.isfinite(adj_0[reg_active]).any():
-        stat_max_list.append(float(np.nanmax(adj_0[reg_active])))
-    else:
-        stat_max_list.append(float('-inf'))
-
-    for perm_idx in range(1, n_perm_fwer + 1):
-        r = _load_result(perm_idx)
-        stat_p = np.asarray(r['stat'], dtype=float)
-        size_p = (np.asarray(r['size'], dtype=float) if 'size' in r
-                  else glow.graph.node_sum(np.ones(num_vox, dtype=int),
-                                           r['children']).astype(float))
-        adj_p = stat_p - mu_fn(size_p)
-        adj_p = _sanitize_adjusted_stat(adj_p)
-        if reg_active.any() and np.isfinite(adj_p[reg_active]).any():
-            stat_max_list.append(float(np.nanmax(adj_p[reg_active])))
-        else:
-            stat_max_list.append(float('-inf'))
-        del r, stat_p, size_p, adj_p
-
-    stat_max_sorted = np.sort(stat_max_list)
-    n_fwer = n_perm_fwer + 1
-    print(f'  ✓ {n_fwer} max-stats collected ({n_perm_fwer_size_adjust} fit perms held out)')
-
-    # build analysis shell and run streaming finalization
+    print(f'\nRunning per_region_z synthesis '
+          f'({n_perm_inner} inner perms) ...')
     ana = AnalysisGLOW.from_precomputed(
-        exp=exp, get_stat=get_stat,
-        adj_gam=gam, verbose=True)
-
-    print(f'\nRunning _finalize_analysis ...')
+        exp=exp, get_stat=get_stat, verbose=True,
+        cluster_mode=cluster_mode)
     _t0 = time.time()
-    ana._finalize_analysis(
-        exp, n_perm_fwer,
-        stat_0, size_0, children_0,
-        mu_fn, stat_max_sorted,
-        alpha_fwer, min_size)
+    ana._finalize_per_region_z(
+        exp, perm_dir, n_perm_fwer, n_perm_inner,
+        alpha_fwer, min_size,
+        inner_seed_offset=n_perm_fwer + 1)
     ana.synthesis_elapsed_sec = time.time() - _t0
     ana.perm_elapsed_sec = perm_elapsed
     print(f'  ✓ {len(ana.effect_list)} effects discovered '

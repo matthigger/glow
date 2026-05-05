@@ -271,14 +271,15 @@ class RunSegment(Runner):
 # ---------------------------------------------------------------------------
 
 class RunPruneCompare(Runner):
-    """Run one AnalysisGLOW then apply six pruning methods.
+    """Run one AnalysisGLOW then prune by raw LLR vs per-region z-LLR.
 
-    AnalysisGLOW is hard-coded since the prune variants all assume it
-    (they consume its children, sig_reg_list, llr_adjusted_0, etc.).
+    Compares two pruning gain choices on the same significant-region
+    set: raw LLR (``stat``) vs the per-region z-scored LLR
+    (``llr_adjusted_0``).  Both greedy and DP-antichain are tried,
+    giving four labels.
     """
 
-    PRUNE_LABELS = ('greedy', 'greedy_adj', 'dp_lam0', 'dp_lam0_adj',
-                    'dp_geom3', 'full_adjust')
+    PRUNE_LABELS = ('greedy_llr', 'greedy_z', 'dp_llr', 'dp_z')
 
     def __init__(self, glow_ana_kwargs):
         self.glow_ana_kwargs = glow_ana_kwargs
@@ -288,7 +289,6 @@ class RunPruneCompare(Runner):
         return set(self.PRUNE_LABELS)
 
     def label_recipe(self, label):
-        # label (the prune-method string) goes in via the base recipe
         return {'ana': ana_entry(glow.analysis.AnalysisGLOW,
                                  self.glow_ana_kwargs)}
 
@@ -296,8 +296,7 @@ class RunPruneCompare(Runner):
         yield 'GLOW', (glow.analysis.AnalysisGLOW, self.glow_ana_kwargs)
 
     def run(self, config, **iter_kw):
-        from glow.analysis.prune import (prune_greedy, prune_dp,
-                                         prune_greedy_full_adjust)
+        from glow.analysis.prune import prune_greedy, prune_dp
 
         exp, effect = config.get_exp_eff(**iter_kw)
 
@@ -307,18 +306,16 @@ class RunPruneCompare(Runner):
 
         sig = ana.sig_reg_list
         children = ana.children
-        stat = np.nan_to_num(ana.stat.ravel().astype(float),
-                             nan=0.0, posinf=0.0, neginf=0.0)
-        stat_adj = np.nan_to_num(ana.llr_adjusted_0.ravel().astype(float),
-                                 nan=0.0, posinf=0.0, neginf=0.0)
+        llr = np.nan_to_num(ana.stat.astype(float),
+                            nan=0.0, posinf=0.0, neginf=0.0)
+        llr_z = np.nan_to_num(ana.llr_adjusted_0.astype(float),
+                              nan=0.0, posinf=0.0, neginf=0.0)
 
         methods = {
-            'greedy': prune_greedy(sig, children, stat),
-            'greedy_adj': prune_greedy(sig, children, stat_adj),
-            'dp_lam0': prune_dp(sig, children, stat, lam=0.0),
-            'dp_lam0_adj': prune_dp(sig, children, stat_adj, lam=0.0),
-            'dp_geom3': prune_dp(sig, children, stat, exp_n_eff=3.0),
-            'full_adjust': prune_greedy_full_adjust(sig, children, exp),
+            'greedy_llr': prune_greedy(sig, children, llr),
+            'greedy_z':   prune_greedy(sig, children, llr_z),
+            'dp_llr':     prune_dp(sig, children, llr, lam=0.0),
+            'dp_z':       prune_dp(sig, children, llr_z, lam=0.0),
         }
 
         mask_active = exp.mask_idx > -1
@@ -378,94 +375,27 @@ class RunMancovaGlow(Runner):
         yield 'GLOW', (glow.analysis.AnalysisGLOW, self.glow_ana_kwargs)
 
     def run(self, config, **iter_kw):
-        from glow.analysis import (
-            Analysis, AnalysisGLOW, _sanitize_adjusted_stat)
-        from glow.analysis.cluster import cluster
-        from glow.analysis.mancova import (
-            stat_dict, stat_dict_inv, get_llr)
+        from glow.analysis import AnalysisGLOW
+        from glow.analysis.mancova import stat_dict, stat_dict_inv
 
         exp, effect = config.get_exp_eff(**iter_kw)
-        start = time.time()
 
-        stat_fns = list(stat_dict.values())
-        ana_kw = self.glow_ana_kwargs
-        n_perm_fwer = ana_kw['n_perm_fwer']
-        n_perm_sa = ana_kw.get('n_perm_fwer_size_adjust', 50)
-        alpha_fwer = ana_kw.get('alpha_fwer', 0.05)
-        min_size = ana_kw.get('min_size', 1)
-        cluster_mode = ana_kw.get('cluster_mode', "ward's (q1)")
-
-        fit_start = n_perm_fwer + 1
-        fit_end = n_perm_fwer + n_perm_sa
-        num_vox = exp.y.shape[2]
-
-        fit_sizes_all = {fn: [] for fn in stat_fns}
-        fit_stats_all = {fn: [] for fn in stat_fns}
-
-        for perm_idx in range(fit_start, fit_end + 1):
-            _exp = exp.permute(perm_idx)
-            children = cluster(exp=_exp, mode=cluster_mode)
-            multi = Analysis.get_stat_perm_multi(
-                exp=_exp, get_stat_list=stat_fns, children=children)
-            size = glow.graph.node_sum(
-                np.ones(num_vox, dtype=int), children)
-            for fn in stat_fns:
-                fit_sizes_all[fn].append(size.astype(float))
-                fit_stats_all[fn].append(multi[fn].astype(float))
-
-        mu_fns = {}
-        gams = {}
-        for fn in stat_fns:
-            sz = np.concatenate(fit_sizes_all[fn])
-            st = np.concatenate(fit_stats_all[fn])
-            fit = AnalysisGLOW.fit_size_gam(sz, st)
-            mu_fns[fn] = fit.mu_fn
-            gams[fn] = fit.gam
-
-        stat_max = {fn: [] for fn in stat_fns}
-        children_0 = size_0 = stat_0 = None
-
-        for perm_idx in range(n_perm_fwer + 1):
-            _exp = exp.permute(perm_idx)
-            children = cluster(exp=_exp, mode=cluster_mode)
-            multi = Analysis.get_stat_perm_multi(
-                exp=_exp, get_stat_list=stat_fns, children=children)
-            size = glow.graph.node_sum(
-                np.ones(num_vox, dtype=int), children).astype(float)
-
-            active = size >= min_size
-            for fn in stat_fns:
-                adj = multi[fn] - mu_fns[fn](size)
-                adj = _sanitize_adjusted_stat(adj)
-                if active.any() and np.isfinite(adj[active]).any():
-                    stat_max[fn].append(float(np.nanmax(adj[active])))
-                else:
-                    stat_max[fn].append(float('-inf'))
-
-            if perm_idx == 0:
-                children_0 = children
-                size_0 = size
-                stat_0 = {fn: multi[fn].astype(float)
-                          for fn in stat_fns}
-
-        stat_max_sorted = {fn: np.sort(stat_max[fn]) for fn in stat_fns}
-        total_time = time.time() - start
-
-        llr_prune = stat_0[get_llr]
-
-        for fn in stat_fns:
+        # Run a separate AnalysisGLOW per stat function.  The outer-perm
+        # Ward clusterings depend on the stat function only through the
+        # Y projection of cluster_mode (they don't), so in principle
+        # Phase 1 could be shared across stats — but the per_region_z
+        # finalization (inner perms + (mu, std) per merged region) is
+        # stat-specific.  Sharing would require a per-merged-region
+        # array of (mu, std) per stat function from a single E/H walk,
+        # which is a useful future optimization but not done here.
+        for fn in stat_dict.values():
             name = stat_dict_inv[fn]
-            ana = AnalysisGLOW.from_precomputed(
-                exp=exp, get_stat=fn, adj_gam=gams[fn])
-            ana._finalize_analysis(
-                exp, n_perm_fwer,
-                stat_0[fn], size_0, children_0,
-                mu_fns[fn], stat_max_sorted[fn],
-                alpha_fwer, min_size,
-                prune_stat=llr_prune)
-
+            ana_kw = {**self.glow_ana_kwargs, 'get_stat': fn}
+            start = time.time()
+            ana = AnalysisGLOW(exp=exp, **ana_kw)
+            elapsed = time.time() - start
             _score_and_emit(ana, effect, config,
-                            f'GLOW-{name}', total_time, iter_kw)
+                            f'GLOW-{name}', elapsed, iter_kw)
 
 
 # ---------------------------------------------------------------------------

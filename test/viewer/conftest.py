@@ -23,7 +23,8 @@ def demo_analysis():
 
     exp = Experiment.from_gauss(b=1, num_img=10, shape=shape, seed=0, a=2)
     exp_eff, _ = exp.impose_effect(effect_llr=2.0, mask=mask_sphere, seed=0)
-    ana = AnalysisGLOW(exp_eff, n_perm_fwer=5, verbose=False)
+    ana = AnalysisGLOW(exp_eff, n_perm_fwer=5, n_perm_inner=10,
+                       verbose=False)
     return ana, mask_sphere
 
 
@@ -38,7 +39,8 @@ def demo_analysis_2d():
 
     exp = Experiment.from_gauss(b=1, num_img=6, shape=shape, seed=42, a=2)
     exp_eff, _ = exp.impose_effect(effect_llr=2.0, mask=mask_circle, seed=42)
-    ana = AnalysisGLOW(exp_eff, n_perm_fwer=5, verbose=False)
+    ana = AnalysisGLOW(exp_eff, n_perm_fwer=5, n_perm_inner=10,
+                       verbose=False)
     return ana, mask_circle
 
 

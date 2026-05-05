@@ -35,30 +35,28 @@ SOURCES = {
 }
 
 # ---------- analysis parameters ----------
-N_PERM_TOTAL = 250
-SIZE_ADJUST_FRAC = 0.05
-N_PERM_FWER_SIZE_ADJUST = max(1, round(N_PERM_TOTAL * SIZE_ADJUST_FRAC))
-N_PERM_FWER = N_PERM_TOTAL - N_PERM_FWER_SIZE_ADJUST
+N_PERM_FWER = 250          # outer permutations for FWER
+N_PERM_INNER = 200         # inner permutations for per-region (mu, std)
 ALPHA_FWER = 0.05
 _GLOW_BASE = dict(n_perm_fwer=N_PERM_FWER,
-                  n_perm_fwer_size_adjust=N_PERM_FWER_SIZE_ADJUST,
+                  n_perm_inner=N_PERM_INNER,
                   min_size=1,
                   alpha_fwer=ALPHA_FWER,
                   get_stat=get_llr)
 ANALYSES = {
     'GLOW-Focus': {**_GLOW_BASE, 'cluster_mode': "ward's (q1)"},
     'GLOW-GLM':   {**_GLOW_BASE, 'cluster_mode': "ward's (q0, q1)"},
-    'VBA': dict(n_perm_fwer=N_PERM_TOTAL,
+    'VBA': dict(n_perm_fwer=N_PERM_FWER,
                 tfce_flag=False,
                 z_flag=True,
                 alpha_fwer=ALPHA_FWER,
                 get_stat=get_hotel_tr),
-    'VBA-TFCE': dict(n_perm_fwer=N_PERM_TOTAL,
+    'VBA-TFCE': dict(n_perm_fwer=N_PERM_FWER,
                      tfce_flag=True,
                      z_flag=True,
                      alpha_fwer=ALPHA_FWER,
                      get_stat=get_wilks),
-    'CET': dict(n_perm_fwer=N_PERM_TOTAL,
+    'CET': dict(n_perm_fwer=N_PERM_FWER,
                 alpha_fwer=ALPHA_FWER,
                 z_flag=True,
                 get_stat=get_hotel_tr),
