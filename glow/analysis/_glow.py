@@ -402,8 +402,7 @@ class AnalysisGLOW(Analysis):
         _exp = exp.permute(perm_idx)
         children = cluster(exp=_exp, mode=self.cluster_mode)
 
-        stat_row = self.get_stat_perm(exp=_exp, children=children)
-        stat = stat_row.ravel()
+        stat = self.get_stat_perm(exp=_exp, children=children)
         num_vox = _exp.y.shape[2]
         size = glow.graph.node_sum(np.ones(num_vox, dtype=int), children)
 

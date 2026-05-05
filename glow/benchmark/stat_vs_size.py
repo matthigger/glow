@@ -67,11 +67,10 @@ def _collect_all_stats(exp, children, stat_funcs):
     records = []
     num_vox = exp.y.shape[2]
     for reg_idx, size, e, h in glow.graph.iter_stat(exp=exp, children=children):
-        _e, _h = e[:, :, 0], h[:, :, 0]
         rec = {'reg_idx': reg_idx}
         for name, fn in stat_funcs.items():
             try:
-                rec[name] = fn(e=_e, h=_h, n=size)
+                rec[name] = fn(e=e, h=h, n=size)
             except np.linalg.LinAlgError:
                 rec[name] = np.nan
         records.append(rec)

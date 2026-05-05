@@ -30,8 +30,12 @@ class AnalysisVBA(Analysis):
         self.tfce_flag = tfce_flag
         self.z_flag = z_flag
 
-        # compute stat per each voxel (for every permutation)
-        self.stat = self.get_stat_perm(exp, n_perm=n_perm_fwer, children=None)
+        # compute stat per voxel: row 0 = observed, rows 1..n_perm_fwer = FL nulls
+        num_vox = exp.y.shape[2]
+        self.stat = np.full((n_perm_fwer + 1, num_vox), np.nan)
+        for k in range(n_perm_fwer + 1):
+            _exp = exp.permute(k) if k else exp
+            self.stat[k, :] = self.get_stat_perm(_exp, children=None)
 
         # z-score voxel-wise using the permutation null
         if self.z_flag:

@@ -411,7 +411,7 @@ class RunMancovaGlow(Runner):
                 np.ones(num_vox, dtype=int), children)
             for fn in stat_fns:
                 fit_sizes_all[fn].append(size.astype(float))
-                fit_stats_all[fn].append(multi[fn].ravel().astype(float))
+                fit_stats_all[fn].append(multi[fn].astype(float))
 
         mu_fns = {}
         gams = {}
@@ -435,7 +435,7 @@ class RunMancovaGlow(Runner):
 
             active = size >= min_size
             for fn in stat_fns:
-                adj = multi[fn].ravel() - mu_fns[fn](size)
+                adj = multi[fn] - mu_fns[fn](size)
                 adj = _sanitize_adjusted_stat(adj)
                 if active.any() and np.isfinite(adj[active]).any():
                     stat_max[fn].append(float(np.nanmax(adj[active])))
@@ -445,7 +445,7 @@ class RunMancovaGlow(Runner):
             if perm_idx == 0:
                 children_0 = children
                 size_0 = size
-                stat_0 = {fn: multi[fn].ravel().astype(float)
+                stat_0 = {fn: multi[fn].astype(float)
                           for fn in stat_fns}
 
         stat_max_sorted = {fn: np.sort(stat_max[fn]) for fn in stat_fns}
@@ -519,8 +519,16 @@ class RunMancovaVba(Runner):
         n_perm_fwer = ana_kw['n_perm_fwer']
         alpha_fwer = ana_kw.get('alpha_fwer', 0.05)
 
-        multi = Analysis.get_stat_perm_multi(
-            exp, stat_fns, n_perm=n_perm_fwer, children=None)
+        # row 0 = observed; rows 1..n_perm_fwer = FL nulls
+        num_vox = exp.y.shape[2]
+        multi = {fn: np.full((n_perm_fwer + 1, num_vox), np.nan)
+                 for fn in stat_fns}
+        for k in range(n_perm_fwer + 1):
+            _exp = exp.permute(k) if k else exp
+            row = Analysis.get_stat_perm_multi(
+                _exp, stat_fns, children=None)
+            for fn in stat_fns:
+                multi[fn][k, :] = row[fn]
         walk_time = time.time() - start
 
         for fn in stat_fns:

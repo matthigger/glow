@@ -56,49 +56,38 @@ def iter_size_ysum_yout(y, children=None):
         yield reg_idx, size, ysum, yout
 
 
-def iter_stat(exp, n_perm=None, **kwargs):
-    """iterate region-level MANCOVA statistics (E, H) per permutation.
+def iter_stat(exp, **kwargs):
+    """iterate region-level MANCOVA statistics (E, H).
+
+    Computes one (E, H) pair per region for the given experiment.  To
+    obtain a permutation null distribution, callers should loop
+    externally over Freedman-Lane permutations of the experiment::
+
+        for k in range(n_perm + 1):
+            _exp = exp.permute(k) if k else exp
+            for reg_idx, size, e, h in iter_stat(_exp, children=children):
+                ...
 
     Args:
         exp (Experiment): experiment data
-        n_perm (int): number of permutations (excluding unpermuted)
+        **kwargs: forwarded to ``iter_size_ysum_yout`` (notably
+            ``children`` for hierarchical regions)
 
     Yields:
         reg_idx (int): region index
         size (int): number of voxels in the region
-        e (np.array): (b, b, num_perm) error matrices
-        h (np.array): (b, b, num_perm) hypothesis matrices
+        e (np.array): (b, b) error matrix
+        h (np.array): (b, b) hypothesis matrix
     """
-
-    # get projection matrices
     q = decompose(x=exp.x, contrast=exp.contrast)
-
-    b = exp.y.shape[0]
-    if n_perm is None:
-        h = np.empty((b, b, 1))
-    else:
-        # pre compute permutations
-        h = np.empty((b, b, 1 + n_perm))
-        num_img = exp.y.shape[1]
-        img_idx_dict = {idx: np.random.default_rng(idx).permutation(num_img)
-                        for idx in range(1, n_perm + 1)}
     for reg_idx, size, ysum, yout in iter_size_ysum_yout(exp.y, **kwargs):
-        # compute t (constant under permutations)
-        a = ysum @ q[0].T
-        t = yout - a @ a.T / size
+        a0 = ysum @ q[0].T
+        t = yout - a0 @ a0.T / size
 
-        # compute h (unpermuted)
-        a = ysum @ q[1].T
-        h[:, :, 0] = a @ a.T / size
+        a1 = ysum @ q[1].T
+        h = a1 @ a1.T / size
 
-        if n_perm is not None:
-            # compute h per permutation
-            for perm_idx in range(1, n_perm + 1):
-                a = ysum[:, img_idx_dict[perm_idx]] @ q[1].T
-                h[:, :, perm_idx] = a @ a.T / size
-
-        # compute e (remainder)
-        e = t[:, :, np.newaxis] - h
+        e = t - h
 
         yield reg_idx, size, e, h
 

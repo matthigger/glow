@@ -164,8 +164,8 @@ def process_permutation(exp, ana_kwargs, perm_idx):
     stat = []
     import glow.graph
     for reg_idx, size, e, h in glow.graph.iter_stat(
-            exp=_exp, children=children, n_perm=None):
-        stat_val = get_stat(e=e[:, :, 0], h=h[:, :, 0], n=size)
+            exp=_exp, children=children):
+        stat_val = get_stat(e=e, h=h, n=size)
         stat.append(stat_val)
 
     size = glow.graph.node_sum(x=np.ones(num_vox, dtype=int),

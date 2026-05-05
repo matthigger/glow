@@ -313,7 +313,11 @@ class TestPermutationExchangeability:
                                         num_img=30, seed=seed)
             from glow.analysis.mancova import get_wilks
             ana = Analysis(exp, get_stat=get_wilks)
-            stat = ana.get_stat_perm(exp, n_perm=n_perm)
+            num_vox = exp.y.shape[2]
+            stat = np.full((n_perm + 1, num_vox), np.nan)
+            for k in range(n_perm + 1):
+                _exp = exp.permute(k) if k else exp
+                stat[k, :] = ana.get_stat_perm(_exp)
 
             max_stats = np.nanmax(stat, axis=1)
             # rank = number of permutations with max-stat >= observed

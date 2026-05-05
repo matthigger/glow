@@ -122,8 +122,7 @@ class TestLinAlgRateIntegration:
         exp = self._tiny_exp(num_img=3)
         with pytest.raises(RuntimeError, match='LinAlgError rate'):
             Analysis.get_stat_perm_multi(
-                exp=exp, get_stat_list=[get_hotel_tr], n_perm=1,
-                children=None)
+                exp=exp, get_stat_list=[get_hotel_tr], children=None)
 
     def test_healthy_run_is_silent(self):
         from glow.analysis.mancova import get_llr
@@ -131,8 +130,7 @@ class TestLinAlgRateIntegration:
         with warnings.catch_warnings():
             warnings.simplefilter('error', RuntimeWarning)
             result = Analysis.get_stat_perm_multi(
-                exp=exp, get_stat_list=[get_llr], n_perm=2,
-                children=None)
+                exp=exp, get_stat_list=[get_llr], children=None)
         assert get_llr in result
 
 

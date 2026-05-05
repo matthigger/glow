@@ -96,8 +96,13 @@ class TestRunVariant:
 
         # compute voxel-wise stat (VBA-style: no tree, just voxels)
         from glow.analysis.mancova import get_wilks
-        stat = Analysis.get_stat_perm_multi(
-            exp, [get_wilks], n_perm=10, children=None)[get_wilks]
+        n_perm = 10
+        num_vox = exp.y.shape[2]
+        stat = np.full((n_perm + 1, num_vox), np.nan)
+        for k in range(n_perm + 1):
+            _exp = exp.permute(k) if k else exp
+            stat[k, :] = Analysis.get_stat_perm_multi(
+                _exp, [get_wilks], children=None)[get_wilks]
 
         return exp, effect, config, stat, get_wilks
 

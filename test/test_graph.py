@@ -212,28 +212,24 @@ def test_iter_size_ysum_yout(exp, children):
 def test_iter_stat(exp, children):
     a = 2
     b, num_img, num_vox = exp.y.shape
-    for add_bias, n_perm in product(range(2), [None, 10]):
+    for add_bias in range(2):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', NoBiasTermWarning)
             exp = exp.sample_x(a=a, seed=0, add_bias=add_bias)
 
-            for reg_idx, size, e, h in iter_stat(exp, children=children, n_perm=n_perm):
-                # build reliable compute: get index of all voxels in region
-                vox = np.array(list(iter_topo(children=children,
-                                              num_leaf=num_vox,
-                                              node_start=reg_idx,
-                                              only_leaf=True)))
-
-                for perm_idx in range(e.shape[2]):
-                    # permute (reliable via get_freed_lane())
-                    _exp = exp.permute(perm_idx)
+            # callers loop externally over FL permutations
+            for perm_idx in range(3):
+                _exp = exp.permute(perm_idx) if perm_idx else exp
+                for reg_idx, size, e, h in iter_stat(_exp, children=children):
+                    vox = np.array(list(iter_topo(children=children,
+                                                  num_leaf=num_vox,
+                                                  node_start=reg_idx,
+                                                  only_leaf=True)))
                     e_exp, h_exp, _ = get_mancova(x=_exp.x,
                                                   y=_exp.y[:, :, vox],
                                                   contrast=_exp.contrast)
-
-                    # test mancova stats (use float32 tolerance)
-                    assert np.allclose(h[:, :, perm_idx], h_exp, rtol=1e-5, atol=1e-5)
-                    assert np.allclose(e[:, :, perm_idx], e_exp, rtol=1e-5, atol=1e-5)
+                    assert np.allclose(h, h_exp, rtol=1e-5, atol=1e-5)
+                    assert np.allclose(e, e_exp, rtol=1e-5, atol=1e-5)
 
 
 def test_get_mask_cases():

@@ -166,20 +166,22 @@ class Analysis:
         return (stat - mu) / sigma
 
     @classmethod
-    def get_stat_perm_multi(cls, exp, get_stat_list, n_perm=None,
-                            children=None):
+    def get_stat_perm_multi(cls, exp, get_stat_list, children=None):
         """compute multiple test statistics from a single tree walk.
 
         Avoids redundant E/H computation when comparing stat functions.
+        Computes one stat value per region per stat function, on the
+        given (possibly permuted) experiment.  For permutation nulls,
+        callers must loop externally over ``exp.permute(k)``.
 
         Args:
-            exp (Experiment): experiment data
+            exp (Experiment): experiment data (already permuted if
+                this is a permutation draw)
             get_stat_list (list): stat functions (each accepts e, h, n)
-            n_perm (int): number of permutations (excluding unpermuted)
             children (np.array): (num_leaf - 1, 2) child index array
 
         Returns:
-            dict mapping each stat function to (n_perm + 1, num_reg) array
+            dict mapping each stat function to (num_reg,) array
 
         Raises:
             RuntimeError: if the fraction of LinAlgError failures
@@ -191,67 +193,59 @@ class Analysis:
         if children is not None:
             num_reg += children.shape[0]
 
-        n_rows = 1 if n_perm is None else n_perm + 1
-        result = {fn: np.full((n_rows, num_reg), fill_value=np.nan)
+        result = {fn: np.full(num_reg, fill_value=np.nan)
                   for fn in get_stat_list}
 
         n_linalg_err = 0
         n_total = 0
         for reg_idx, size, e, h in glow.graph.iter_stat(
-                exp=exp, children=children, n_perm=n_perm):
-            for perm_idx in range(n_rows):
-                _e = e[:, :, perm_idx]
-                _h = h[:, :, perm_idx]
-                for fn in get_stat_list:
-                    n_total += 1
-                    try:
-                        result[fn][perm_idx, reg_idx] = fn(
-                            e=_e, h=_h, n=size)
-                    except np.linalg.LinAlgError:
-                        n_linalg_err += 1
+                exp=exp, children=children):
+            for fn in get_stat_list:
+                n_total += 1
+                try:
+                    result[fn][reg_idx] = fn(e=e, h=h, n=size)
+                except np.linalg.LinAlgError:
+                    n_linalg_err += 1
 
         _check_linalg_rate(n_linalg_err, n_total, fn_name='get_stat_perm_multi')
         return result
 
-    def get_stat_perm(self, exp, n_perm=None, children=None):
-        """compute test statistic for each region under each permutation.
+    def get_stat_perm(self, exp, children=None):
+        """compute test statistic for each region.
+
+        Computes one stat per region on the given (possibly permuted)
+        experiment.  For permutation nulls, callers must loop
+        externally over ``exp.permute(k)``.
 
         Args:
-            exp (Experiment): experiment to evaluate
-            n_perm (int): number of permutations (in addition to unpermuted)
+            exp (Experiment): experiment to evaluate (already permuted
+                if this is a permutation draw)
             children (np.array): (num_reg, 2) child index array. if None,
                 only iterates through individual voxels.
 
         Returns:
-            stat (np.array): (n_perm + 1, num_reg) test statistics
+            stat (np.array): (num_reg,) test statistics
 
         Raises:
             RuntimeError: if the fraction of LinAlgError failures
                 exceeds ``_LINALG_FAIL_RATE`` (results too unreliable
                 to proceed).
         """
-        # compute wilks per region
         b, num_img, num_vox = exp.y.shape
         num_reg = num_vox
         if children is not None:
             num_reg += children.shape[0]
 
-        n_rows = 1 if n_perm is None else n_perm + 1
-        stat = np.full((n_rows, num_reg), fill_value=np.nan)
+        stat = np.full(num_reg, fill_value=np.nan)
         n_linalg_err = 0
         n_total = 0
         for reg_idx, size, e, h in glow.graph.iter_stat(exp=exp,
-                                                       children=children,
-                                                       n_perm=n_perm):
-            for perm_idx in range(n_rows):
-                n_total += 1
-                try:
-                    stat[perm_idx, reg_idx] = self.get_stat(
-                        e=e[:, :, perm_idx],
-                        h=h[:, :, perm_idx],
-                        n=size)
-                except np.linalg.LinAlgError:
-                    n_linalg_err += 1
+                                                       children=children):
+            n_total += 1
+            try:
+                stat[reg_idx] = self.get_stat(e=e, h=h, n=size)
+            except np.linalg.LinAlgError:
+                n_linalg_err += 1
 
         _check_linalg_rate(n_linalg_err, n_total, fn_name='get_stat_perm')
         return stat
