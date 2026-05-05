@@ -63,6 +63,7 @@ class AnalysisGLOW(Analysis):
 
     def __init__(self, exp, n_perm_fwer,
                  n_perm_fwer_size_adjust=25,
+                 n_perm_inner=200,
                  alpha_fwer=.05, min_size=1, verbose=False,
                  n_jobs_perm=1, cloud_config=None, perm_dir=None,
                  cluster_mode="ward's (q1)",
@@ -85,11 +86,21 @@ class AnalysisGLOW(Analysis):
             score_method: Adjustment used for FWER threshold.
                 ``'mean_adj'`` (default) subtracts the size-conditional
                 null mean only -- this is the historical behaviour and
-                stays the default until the studentized variant is
+                stays the default until the per_region_z variant is
                 evaluated more thoroughly.  ``'z_score'`` additionally
                 divides by the fitted size-conditional null SD
-                (studentization, GAMLSS-style).  Pruning rank is on
-                raw LLR in either case.
+                (studentization, GAMLSS-style).  ``'per_region_z'``
+                drops the size-conditional GAM entirely: builds a
+                merged graph from all outer-perm trees, runs
+                ``n_perm_inner`` held-out FL permutations to estimate
+                (mu_r, std_r) per merged region, and z-scores each
+                outer perm's LLRs against its tree's regions' (mu, std)
+                via Westfall-Young max-z FWER.  Pruning rank is on raw
+                LLR in all cases.
+            n_perm_inner: number of inner FL permutations used by
+                ``score_method='per_region_z'`` to estimate per-region
+                (mu, std).  Ignored for the GAM-based methods.
+                Default 200.
             keep_fit_data: Controls retention of fit-perm (size, stat)
                 pairs for the viewer's H0 mode.  Accepts:
                   * False / None (default): nothing stored.
@@ -126,6 +137,11 @@ class AnalysisGLOW(Analysis):
         """
         super().__init__(exp, **kwargs)
         self.verbose = verbose
+        if score_method not in ('mean_adj', 'z_score', 'per_region_z'):
+            raise ValueError(
+                f'score_method must be one of '
+                f"('mean_adj', 'z_score', 'per_region_z'); "
+                f'got {score_method!r}')
         self.cluster_mode = cluster_mode
         self.score_method = score_method
         self.keep_fit_data = keep_fit_data
@@ -291,6 +307,23 @@ class AnalysisGLOW(Analysis):
                             fit_overlap.append(ov)
                 del r
 
+        # dispatch: per-region z drops the GAM and uses graph_merge +
+        # held-out inner perms instead.  Inner seeds are placed past
+        # the outer + fit ranges so they don't collide.
+        if score_method == 'per_region_z':
+            self.adj_gam = None
+            self.mu_gam = None
+            self.sigma_gam = None
+            self.size_adjusted = False
+            inner_offset = n_perm_fwer + n_perm_fwer_size_adjust + 1
+            self._finalize_per_region_z(
+                exp, perm_dir, n_perm_fwer, n_perm_inner,
+                alpha_fwer, min_size,
+                inner_seed_offset=inner_offset)
+            if _cleanup_dir:
+                shutil.rmtree(perm_dir, ignore_errors=True)
+            return
+
         # fit GAM from collected size/stat arrays
         if verbose:
             print(f'  [2/3] fitting size-adjustment GAM(s) ...')
@@ -365,6 +398,208 @@ class AnalysisGLOW(Analysis):
 
         if _cleanup_dir:
             shutil.rmtree(perm_dir, ignore_errors=True)
+
+    @classmethod
+    def from_precomputed_perms(cls, exp, *, n_perm_fwer, n_perm_inner,
+                               perm_dir, alpha_fwer=0.05, min_size=1,
+                               verbose=False,
+                               cluster_mode="ward's (q1)",
+                               inner_seed_offset=None,
+                               get_stat=None):
+        """Run per-region-z finalization on existing perm result files.
+
+        Args:
+            exp: original (unpermuted) experiment.
+            n_perm_fwer: number of outer FWER perms (file ``0..n_perm_fwer``
+                must exist in perm_dir).
+            n_perm_inner: number of inner FL perms used to estimate
+                per-region (mu, std).
+            perm_dir: directory with ``{k:06d}_result.pkl`` files
+                produced by a prior ``__init__`` run.
+            inner_seed_offset: starting seed for inner perms.  Defaults
+                to ``n_perm_fwer + 1``.  Pass a different offset when
+                the seed range is shared with another analysis (e.g.
+                ``analyze_both`` reserves ``n_perm_fwer + 1 ..
+                n_perm_fwer + n_perm_fwer_size_adjust`` for GAM fit
+                perms).
+        """
+        obj = cls.__new__(cls)
+        obj.exp = (exp if isinstance(exp, ExperimentScaled)
+                   else ExperimentScaled.from_exp(exp))
+        if get_stat is None:
+            get_stat = get_llr
+        obj.get_stat = get_stat
+        obj.cluster_mode = cluster_mode
+        obj.score_method = 'per_region_z'
+        obj.verbose = verbose
+        obj.adj_gam = None
+        obj.mu_gam = None
+        obj.sigma_gam = None
+        obj.size_adjusted = False
+        obj._gam_fit_data = None
+        obj.keep_fit_data = False
+        obj._gam_fit_target_size = None
+        obj._gam_fit_num_vox = None
+        obj._gam_fit_perm_x_corr = None
+        obj.n_jobs_perm = 1
+
+        if inner_seed_offset is None:
+            inner_seed_offset = n_perm_fwer + 1
+
+        obj._finalize_per_region_z(
+            exp, Path(perm_dir), n_perm_fwer, n_perm_inner,
+            alpha_fwer, min_size, inner_seed_offset)
+
+        return obj
+
+    @classmethod
+    def analyze_methods(cls, exp, n_perm_fwer, n_perm_fwer_size_adjust=25,
+                        n_perm_inner=200, perm_dir=None,
+                        alpha_fwer=0.05, min_size=1, verbose=False,
+                        cluster_mode="ward's (q1)",
+                        methods=('mean_adj', 'z_score', 'per_region_z'),
+                        **kwargs):
+        """Run multiple score_methods on the SAME outer permutations.
+
+        Used for head-to-head method comparison.  Phase 1 (the
+        K_outer + 1 clusterings + per-tree LLR) runs once; each
+        finalizer is a fast pass over the shared perm_dir.
+
+        Args:
+            methods: which score_methods to run.  ``'mean_adj'`` and
+                ``'z_score'`` reuse the GAM fit on held-out fit perms
+                ``n_perm_fwer + 1 .. n_perm_fwer + n_perm_fwer_size_adjust``.
+                ``'per_region_z'`` uses ``n_perm_inner`` fresh inner FL
+                perms with seeds past the fit range.
+
+        Returns:
+            dict mapping each method name to its AnalysisGLOW.
+        """
+        if perm_dir is None:
+            perm_dir = Path(tempfile.mkdtemp(prefix='glow_perm_methods_'))
+        else:
+            perm_dir = Path(perm_dir)
+            perm_dir.mkdir(parents=True, exist_ok=True)
+
+        results = {}
+        # GAM-based methods first (they share Phase 1; second call resumes)
+        for sm in ('mean_adj', 'z_score'):
+            if sm not in methods:
+                continue
+            results[sm] = cls(
+                exp, n_perm_fwer=n_perm_fwer,
+                n_perm_fwer_size_adjust=n_perm_fwer_size_adjust,
+                perm_dir=perm_dir, alpha_fwer=alpha_fwer,
+                min_size=min_size, verbose=verbose,
+                cluster_mode=cluster_mode,
+                score_method=sm,
+                **kwargs)
+
+        if 'per_region_z' in methods:
+            # ensure perm files exist; if neither GAM method was asked
+            # for, run mean_adj just for Phase 1 (cheap finalization).
+            if not results:
+                cls(exp, n_perm_fwer=n_perm_fwer,
+                    n_perm_fwer_size_adjust=n_perm_fwer_size_adjust,
+                    perm_dir=perm_dir, alpha_fwer=alpha_fwer,
+                    min_size=min_size, verbose=verbose,
+                    cluster_mode=cluster_mode,
+                    score_method='mean_adj', **kwargs)
+            results['per_region_z'] = cls.from_precomputed_perms(
+                exp, n_perm_fwer=n_perm_fwer,
+                n_perm_inner=n_perm_inner,
+                perm_dir=perm_dir,
+                alpha_fwer=alpha_fwer, min_size=min_size,
+                verbose=verbose,
+                cluster_mode=cluster_mode,
+                inner_seed_offset=n_perm_fwer + n_perm_fwer_size_adjust + 1)
+
+        return results
+
+    def _finalize_per_region_z(self, exp, perm_dir, n_perm_fwer,
+                                n_perm_inner, alpha_fwer, min_size,
+                                inner_seed_offset):
+        """Per-region permutation z-scoring with Westfall-Young FWER.
+
+        Builds the merged graph from all outer-perm trees, runs
+        ``n_perm_inner`` held-out FL permutations to estimate
+        ``(mu_r, std_r)`` per merged region, then z-scores each outer
+        perm's LLRs against its tree's regions and computes the
+        max-z null.
+        """
+        verbose = getattr(self, 'verbose', False)
+        num_vox = exp.y.shape[2]
+
+        children_list = []
+        stat_list = []
+        size_list = []
+        for k in range(n_perm_fwer + 1):
+            with open(perm_dir / f'{k:06d}_result.pkl', 'rb') as fh:
+                r = pickle.load(fh)
+            children_list.append(np.asarray(r['children']))
+            stat_list.append(np.asarray(r['stat'], dtype=float))
+            size_list.append(np.asarray(r['size'], dtype=float))
+
+        if verbose:
+            print(f'  per_region_z: merging {n_perm_fwer + 1} trees ...')
+        map_to_new, merged_children, _ = glow.graph.graph_merge(
+            n_common=num_vox, children_list=children_list)
+        num_merged = num_vox + merged_children.shape[0]
+
+        if verbose:
+            print(f'  per_region_z: {n_perm_inner} inner perms on '
+                  f'{num_merged} merged regions ...')
+        LLR_inner = np.full((n_perm_inner, num_merged), np.nan)
+        for k_inner in tqdm(range(n_perm_inner), desc='inner perms',
+                             disable=not verbose):
+            seed = inner_seed_offset + k_inner
+            _exp = exp.permute(seed)
+            LLR_inner[k_inner, :] = self.get_stat_perm(
+                _exp, children=merged_children)
+
+        mu_merged = np.nanmean(LLR_inner, axis=0)
+        sigma_merged = np.nanstd(LLR_inner, axis=0, ddof=1)
+        sigma_merged[sigma_merged < 1e-12] = 1.0
+
+        # max-z null over outer perms
+        max_z_list = []
+        for k_outer in range(n_perm_fwer + 1):
+            outer_to_merged = np.concatenate([
+                np.arange(num_vox), map_to_new[k_outer]])
+            mu_k = mu_merged[outer_to_merged]
+            sigma_k = sigma_merged[outer_to_merged]
+            z_k = (stat_list[k_outer] - mu_k) / sigma_k
+            z_k = _sanitize_adjusted_stat(z_k)
+            size_k = size_list[k_outer]
+            active = size_k >= min_size
+            if active.any() and np.isfinite(z_k[active]).any():
+                max_z_list.append(float(np.nanmax(z_k[active])))
+            else:
+                max_z_list.append(float('-inf'))
+
+        stat_max_sorted = np.sort(max_z_list)
+
+        # constant-array closures so _finalize_analysis's mu_fn/sigma_fn
+        # signature works with our per-region (mu, sigma) for T_0.
+        outer_to_merged_0 = np.concatenate([
+            np.arange(num_vox), map_to_new[0]])
+        mu_arr_0 = mu_merged[outer_to_merged_0]
+        sigma_arr_0 = sigma_merged[outer_to_merged_0]
+        mu_fn = lambda sz, _m=mu_arr_0: _m
+        sigma_fn = lambda sz, _s=sigma_arr_0: _s
+
+        self._finalize_analysis(
+            exp, n_perm_fwer,
+            stat_list[0], size_list[0], children_list[0],
+            mu_fn, stat_max_sorted,
+            alpha_fwer, min_size,
+            sigma_fn=sigma_fn)
+
+        # diagnostics
+        self._merged_children = merged_children
+        self._map_to_new = map_to_new
+        self._mu_per_region = mu_merged
+        self._sigma_per_region = sigma_merged
 
     @classmethod
     def from_precomputed(cls, *, exp, get_stat, adj_gam=None,
@@ -459,6 +694,10 @@ class AnalysisGLOW(Analysis):
             self._gam_fit_num_vox = None
         if '_gam_fit_perm_x_corr' not in self.__dict__:
             self._gam_fit_perm_x_corr = None
+        for attr in ('_merged_children', '_map_to_new',
+                     '_mu_per_region', '_sigma_per_region'):
+            if attr not in self.__dict__:
+                self.__dict__[attr] = None
 
     @classmethod
     def fit_size_gam(cls, size, stat, n_splines=None,

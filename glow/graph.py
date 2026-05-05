@@ -276,6 +276,72 @@ def get_label_map(reg_idx_list, mask_idx, children, check_disjoint=False):
     return label_map
 
 
+def graph_merge(n_common, children_list):
+    """merge many binary trees into a single graph with shared indexing.
+
+    Regions are identified by a 128-bit XOR hash of their leaf labels,
+    so identical leaf sets produce identical nodes regardless of how
+    different trees decomposed them.  When two trees both contain the
+    same region but built it from different child pairs, the merged
+    graph stores one (c0, c1) pair (the first encountered) — that's
+    enough for ``iter_size_ysum_yout`` to compute (size, ysum, yout)
+    correctly, since those quantities are functions of the leaf set
+    only and are path-independent.
+
+    Args:
+        n_common (int): number of shared leaf nodes
+        children_list (list): each element is a (num_node, 2) child
+            index array (assumes topological ordering within each tree)
+
+    Returns:
+        map_to_new (list): per-tree arrays mapping each tree's
+            non-leaf node indices (offset by n_common) to the merged
+            index space.  Leaves keep their original indices in [0, n_common).
+        children (np.array): (num_merged_nodes, 2) merged child pairs
+        size (np.array): voxel count per merged node (leaves first,
+            then internal nodes in encounter order)
+    """
+    rng = np.random.default_rng(seed=0)
+    leaf_hash = {}
+    for i in range(n_common):
+        hi = int(rng.integers(0, 2**63)) << 64
+        lo = int(rng.integers(0, 2**63))
+        leaf_hash[i] = hi | lo
+
+    node_idx = n_common
+    map_to_new = list()
+    children = list()
+    size = [1] * n_common
+    hash_to_node = dict()
+    node_to_hash = leaf_hash.copy()
+
+    for _children in children_list:
+        _map_to_new = np.full(_children.shape[0], -1, dtype=int)
+        map_to_new.append(_map_to_new)
+
+        for idx, (c0, c1) in enumerate(_children):
+            if c0 >= n_common:
+                c0 = _map_to_new[c0 - n_common]
+            if c1 >= n_common:
+                c1 = _map_to_new[c1 - n_common]
+
+            h = node_to_hash[c0] ^ node_to_hash[c1]
+
+            if h in hash_to_node:
+                _map_to_new[idx] = hash_to_node[h]
+            else:
+                size.append(size[c0] + size[c1])
+                children.append(sorted((c0, c1)))
+                _map_to_new[idx] = node_idx
+                hash_to_node[h] = node_idx
+                node_to_hash[node_idx] = h
+                node_idx += 1
+
+    size = np.array(size)
+    children = np.array(children)
+    return map_to_new, children, size
+
+
 GRAPH_EXCLUDE = -1
 
 

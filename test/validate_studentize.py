@@ -1,20 +1,21 @@
-"""Validate the studentized size-adjustment vs the legacy mean-only path.
+"""Head-to-head validation: mean_adj GAM vs z_score GAM vs per_region_z.
 
 Three side-by-side comparisons under matched seeds (same data, same
-permutation indices, only ``score_method`` differs):
+permutation indices), all three score_methods finalized from the SAME
+outer permutations via ``AnalysisGLOW.analyze_methods``:
 
     E1  Null FWER calibration on HCP and WGN.
-        Expected: rejection rate at alpha=0.05 should sit at ~5% under
-        z_score; mean_adj on HCP currently undercovers (~2-3%).
+        Expected: rejection rate at alpha=0.05 should sit at ~5%.
+        per_region_z should hold calibration without relying on a
+        size-conditional GAM.
 
     E2  LLR catastrophic-failure rate on HCP at high effect.
-        Expected: under mean_adj, ~7% of high-effect HCP seeds fail to
-        detect (Dice=0).  Under z_score, this fraction should drop.
+        Expected: per_region_z should match or beat z_score on the
+        fraction of seeds with Dice=0.
 
     E3  Detection power across an effect-strength sweep on HCP.
-        Expected: z_score should not regress mean Dice anywhere; on
-        the moderate-effect band where the LLR plateau hurts mean_adj,
-        z_score should improve.
+        Expected: per_region_z gains in the moderate-effect band where
+        size-bias hurt the GAM-based methods.
 
 Usage::
 
@@ -53,6 +54,7 @@ DEFAULTS = dict(
     effect_perc=0.1,
     n_perm_fwer=200,
     n_perm_fwer_size_adjust=50,
+    n_perm_inner=200,
     alpha_fwer=0.05,
 )
 
@@ -78,23 +80,14 @@ def _make_config(source, **overrides):
     return cfg
 
 
-def _run_one(cfg, seed, effect_llr, score_method):
-    """Run AnalysisGLOW once at fixed seed + effect_llr + mode."""
-    exp_eff, effect = cfg.get_exp_eff(seed=seed, effect_llr=effect_llr)
-    ana = AnalysisGLOW(
-        exp=exp_eff,
-        n_perm_fwer=DEFAULTS['n_perm_fwer'],
-        n_perm_fwer_size_adjust=DEFAULTS['n_perm_fwer_size_adjust'],
-        alpha_fwer=DEFAULTS['alpha_fwer'],
-        n_jobs_perm=-1,
-        score_method=score_method,
-        verbose=False,
-    )
+METHODS = ('mean_adj', 'z_score', 'per_region_z')
+
+
+def _metrics(ana, effect, exp_eff):
     if effect.mask.any():
         dice, sens, spec = glow.graph.get_dice_sens_spec(
             mask=effect.mask, mask_idx=exp_eff.mask_idx,
             children=ana.children)
-        # report best (oracle-Dice) over the discovered antichain only
         sel = [eff.reg_idx for eff in ana.effect_list]
         if sel:
             best = max(dice[r] for r in sel)
@@ -112,25 +105,44 @@ def _run_one(cfg, seed, effect_llr, score_method):
         'best_dice': float(best),
         'sens': float(best_sens),
         'spec': float(best_spec),
-        'min_pval': float(np.nanmin(ana.pval)) if np.any(np.isfinite(ana.pval)) else float('nan'),
+        'min_pval': (float(np.nanmin(ana.pval))
+                     if np.any(np.isfinite(ana.pval)) else float('nan')),
     }
 
 
+def _run_methods(cfg, seed, effect_llr):
+    """Run all three score_methods on the SAME outer perms.
+
+    Yields (score_method, metrics_dict) tuples.
+    """
+    exp_eff, effect = cfg.get_exp_eff(seed=seed, effect_llr=effect_llr)
+    methods = AnalysisGLOW.analyze_methods(
+        exp=exp_eff,
+        n_perm_fwer=DEFAULTS['n_perm_fwer'],
+        n_perm_fwer_size_adjust=DEFAULTS['n_perm_fwer_size_adjust'],
+        n_perm_inner=DEFAULTS['n_perm_inner'],
+        alpha_fwer=DEFAULTS['alpha_fwer'],
+        n_jobs_perm=-1,
+        verbose=False,
+        methods=METHODS,
+    )
+    for sm in METHODS:
+        yield sm, _metrics(methods[sm], effect, exp_eff)
+
+
 def e1_null(source, n_seed):
-    """Rejection rate under H0 — should land at alpha=0.05 with z_score."""
+    """Rejection rate under H0 — should land at alpha=0.05."""
     cfg = _make_config(source)
     rows = []
     for seed in range(n_seed):
-        for sm in ('mean_adj', 'z_score'):
-            t0 = time.time()
-            r = _run_one(cfg, seed=seed, effect_llr=0.0, score_method=sm)
-            r.update(score_method=sm, seed=seed, source=source,
-                     elapsed=time.time() - t0)
+        t0 = time.time()
+        for sm, r in _run_methods(cfg, seed=seed, effect_llr=0.0):
+            r.update(score_method=sm, seed=seed, source=source)
             rows.append(r)
-            print(f'  E1 {source} seed={seed} {sm:9s}  '
-                  f'n_sig={r["n_sig"]:3d}  '
-                  f'rejected={r["n_sig"]>0}  '
-                  f'({r["elapsed"]:.1f}s)')
+        print(f'  E1 {source} seed={seed}  '
+              + '  '.join(f'{r["score_method"]}:n_sig={r["n_sig"]}'
+                          for r in rows[-len(METHODS):])
+              + f'  ({time.time() - t0:.1f}s)')
     df = pd.DataFrame(rows)
     summary = df.groupby('score_method').agg(
         rejected_frac=('n_sig', lambda s: float((s > 0).mean())),
@@ -143,20 +155,18 @@ def e1_null(source, n_seed):
 
 
 def e2_catastrophic(n_seed):
-    """High-effect HCP: count seeds where each mode fails (Dice=0)."""
+    """High-effect HCP: fraction of seeds with Dice=0 by method."""
     cfg = _make_config('hcp')
     rows = []
     for seed in range(n_seed):
-        for sm in ('mean_adj', 'z_score'):
-            t0 = time.time()
-            r = _run_one(cfg, seed=seed, effect_llr=0.119, score_method=sm)
-            r.update(score_method=sm, seed=seed, effect_llr=0.119,
-                     elapsed=time.time() - t0)
+        t0 = time.time()
+        for sm, r in _run_methods(cfg, seed=seed, effect_llr=0.119):
+            r.update(score_method=sm, seed=seed, effect_llr=0.119)
             rows.append(r)
-            print(f'  E2 hcp seed={seed} {sm:9s}  '
-                  f'n_sig={r["n_sig"]:3d}  dice={r["best_dice"]:.3f}  '
-                  f'pval_min={r["min_pval"]:.4f}  '
-                  f'({r["elapsed"]:.1f}s)')
+        print(f'  E2 hcp seed={seed}  '
+              + '  '.join(f'{r["score_method"]}:dice={r["best_dice"]:.2f}'
+                          for r in rows[-len(METHODS):])
+              + f'  ({time.time() - t0:.1f}s)')
     df = pd.DataFrame(rows)
     summary = df.groupby('score_method').agg(
         catastrophic_frac=('best_dice', lambda s: float((s == 0).mean())),
@@ -171,21 +181,17 @@ def e2_catastrophic(n_seed):
 
 
 def e3_sweep(n_seed):
-    """Effect-strength sweep on HCP: mean Dice by mode and effect_llr."""
+    """Effect-strength sweep on HCP: mean Dice by method and effect_llr."""
     cfg = _make_config('hcp')
     llrs = cfg.effect_llr_all
     rows = []
     for seed in range(n_seed):
+        t0 = time.time()
         for llr in llrs:
-            for sm in ('mean_adj', 'z_score'):
-                t0 = time.time()
-                r = _run_one(cfg, seed=seed, effect_llr=llr,
-                             score_method=sm)
-                r.update(score_method=sm, seed=seed, effect_llr=llr,
-                         elapsed=time.time() - t0)
+            for sm, r in _run_methods(cfg, seed=seed, effect_llr=llr):
+                r.update(score_method=sm, seed=seed, effect_llr=llr)
                 rows.append(r)
-        print(f'  E3 seed={seed} done '
-              f'({sum(rr["elapsed"] for rr in rows[-len(llrs)*2:]):.1f}s)')
+        print(f'  E3 seed={seed} done ({time.time() - t0:.1f}s)')
     df = pd.DataFrame(rows)
     summary = df.groupby(['effect_llr', 'score_method'])['best_dice'].agg(
         ['mean', 'median']).round(3).unstack('score_method')
@@ -209,6 +215,8 @@ def main():
                         help='override n_perm_fwer (default 200)')
     parser.add_argument('--n-perm-fit', type=int, default=None,
                         help='override n_perm_fwer_size_adjust (default 50)')
+    parser.add_argument('--n-perm-inner', type=int, default=200,
+                        help='inner perms for per_region_z (default 200)')
     args = parser.parse_args()
 
     if args.crop_n_vox is not None:
@@ -217,6 +225,8 @@ def main():
         DEFAULTS['n_perm_fwer'] = args.n_perm
     if args.n_perm_fit is not None:
         DEFAULTS['n_perm_fwer_size_adjust'] = args.n_perm_fit
+    if args.n_perm_inner is not None:
+        DEFAULTS['n_perm_inner'] = args.n_perm_inner
 
     print(f'studentize validation @ {DEFAULTS}')
     print(f'n_seed={args.n_seed}; skipping {args.skip}\n')

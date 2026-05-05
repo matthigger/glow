@@ -1,3 +1,4 @@
+import bisect
 import warnings
 from itertools import product
 
@@ -7,6 +8,34 @@ from glow.experiment import ExperimentImageOnly
 from glow.analysis.mancova import get_mancova
 from glow.experiment.exper import NoBiasTermWarning
 from glow.graph import *
+
+
+def _binary_tree(n_node=100, seed=0, merge_smallest=True):
+    """Sample a binary tree by random agglomeration (helper for tests)."""
+    rng = np.random.default_rng(seed)
+    list_size_node = [(1, idx) for idx in range(n_node)]
+
+    children = list()
+    for node_idx in range(n_node, 2 * n_node - 1):
+        if merge_smallest:
+            _size = list_size_node[1][0]
+            idx_max = bisect.bisect(list_size_node, (_size, np.inf))
+        else:
+            idx_max = len(list_size_node)
+
+        idx0, idx1 = rng.choice(range(idx_max), replace=False, size=2)
+        idx0, idx1 = sorted((idx0, idx1))
+        size1, node1 = list_size_node.pop(idx1)
+        size0, node0 = list_size_node.pop(idx0)
+
+        children.append(sorted((node0, node1)))
+        size_node = size0 + size1, node_idx
+        idx = bisect.bisect(list_size_node, size_node)
+        list_size_node.insert(idx, size_node)
+
+    assert len(list_size_node) == 1
+    assert list_size_node[0][0] == n_node
+    return np.array(children)
 
 
 def test_iter_node_sum():
@@ -356,3 +385,84 @@ class TestSubgraph:
 
         # descendants of 6 should show 4 branch intact, 2 and 3 under 6
         assert list(g.iter_desc(6)) == [1, 5, 3]
+
+
+def test_graph_merge():
+    """Every merged node corresponds to a unique leaf set, shared across
+    any input tree that contained that leaf set."""
+    n_leaf = 20
+    n_graph = 11
+
+    seed = 0
+    for merge_smallest in (True, False):
+        children_list = [
+            _binary_tree(n_node=n_leaf, seed=seed + i,
+                         merge_smallest=merge_smallest)
+            for i in range(n_graph)
+        ]
+        seed += n_graph
+
+        map_to_new, children, size = graph_merge(n_common=n_leaf,
+                                                 children_list=children_list)
+
+        # each per-tree map should have unique target indices
+        for _map_to_new in map_to_new:
+            assert np.unique(_map_to_new).size == _map_to_new.size
+
+        # for every merged internal node, leaf set must match the
+        # corresponding node in any tree that contained it
+        n_node_twin = np.zeros(children.shape[0], dtype=int)
+        for idx in range(children.shape[0]):
+            node = idx + n_leaf
+            set_leaf = set(iter_topo(children=children, num_leaf=n_leaf,
+                                     node_start=node, only_leaf=True))
+
+            for _children, _map_to_new in zip(children_list, map_to_new):
+                matches = np.where(_map_to_new == node)[0]
+                if not len(matches):
+                    continue
+                idx_subgraph = matches[0]
+                node_subgraph = idx_subgraph + n_leaf
+                set_leaf_subgraph = set(iter_topo(children=_children,
+                                                  num_leaf=n_leaf,
+                                                  node_start=node_subgraph,
+                                                  only_leaf=True))
+                assert set_leaf == set_leaf_subgraph
+                _map_to_new[idx_subgraph] = -1
+                n_node_twin[idx] += 1
+
+        assert n_node_twin.min() >= 1, 'a merged node was not in any tree'
+        assert all((m == -1).all() for m in map_to_new), \
+            'a per-tree node was not represented in the merged graph'
+
+
+def test_iter_size_ysum_yout_on_merged_graph(exp, children):
+    """iter_size_ysum_yout on a graph_merge output must yield the same
+    (size, ysum, yout) for any region as walking the input tree directly,
+    because all three quantities are functions of the leaf set only."""
+    b, num_img, num_vox = exp.y.shape
+
+    # build a second tree by relabeling - same leaves, different decomposition
+    rng = np.random.default_rng(0)
+    permuted_y = exp.y[:, :, rng.permutation(num_vox)]
+    second_children = _binary_tree(n_node=num_vox, seed=42)
+
+    map_to_new, merged_children, _ = graph_merge(
+        n_common=num_vox,
+        children_list=[children, second_children])
+
+    # walk the merged graph: ysum/yout should match a direct compute on
+    # the leaf set for every merged region
+    for reg_idx, size, ysum, yout in iter_size_ysum_yout(
+            exp.y, children=merged_children):
+        leaf_set = sorted(iter_topo(children=merged_children,
+                                    num_leaf=num_vox,
+                                    node_start=reg_idx,
+                                    only_leaf=True))
+        ys_exp = exp.y[:, :, leaf_set].sum(axis=2)
+        yflat = exp.y[:, :, leaf_set].reshape((b, -1), order='F')
+        yout_exp = yflat @ yflat.T
+
+        assert size == len(leaf_set)
+        assert np.allclose(ysum, ys_exp)
+        assert np.allclose(yout, yout_exp)
