@@ -337,7 +337,9 @@ class Experiment(ExperimentImageOnly):
         """return a new experiment with a synthetic effect imposed.
 
         Args:
-            effect_llr (float): target size-normalized LLR
+            effect_llr (float): target size-normalized LLR (i.e. per-voxel
+                LLR contribution).  Observed LLR for the planted region
+                will be approximately ``effect_llr × |region|``.
             extenter: any glow.effect.Extenter (xor mask)
             mask (np.array): boolean effect region (xor extenter)
             seed: random seed for extent sampling

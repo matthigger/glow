@@ -9,8 +9,15 @@ from glow.analysis.mancova import decompose, get_llr
 def compute_offset(x, y, contrast, effect_llr, roughness=None):
     """Find the smallest offset to y that imposes a given effect strength.
 
-    The target is expressed as size-normalized LLR:
+    The target is expressed as **size-normalized** LLR:
     (1/2) * ln|det(I + E^{-1}H)|.
+
+    Note that ``effect_llr`` here is per-voxel-equivalent: the LLR you
+    will observe for the planted region under H1 is approximately
+    ``effect_llr * |region|`` (because the un-normalized LLR carries an
+    n-prefactor that this routine has divided out via ``size_normalize=
+    True``).  So asking for ``effect_llr=0.5`` on a 614-voxel region
+    plants a region whose downstream observed LLR is ~307, not 0.5.
 
     When *roughness* is given, a sigma_scale factor is jointly optimised
     so that the post-imposition roughness coefficient
@@ -25,6 +32,8 @@ def compute_offset(x, y, contrast, effect_llr, roughness=None):
         y (np.array): (b, num_img, num_vox) image intensities
         contrast (np.array): (a,) boolean, True for features of interest
         effect_llr (float): target size-normalized log-likelihood ratio
+            (i.e. per-voxel LLR contribution; multiply by region size to
+            get the LLR you will observe for the region)
         roughness (float | None): target roughness in [0, 1].  If None
             the original spatial covariance is left untouched.
 

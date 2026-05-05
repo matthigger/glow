@@ -12,7 +12,9 @@ class Effect:
         e (np.array): (b, b) error matrix
         h (np.array): (b, b) hypothesis matrix
         seed (int): random seed used to sample the effect extent
-        effect_llr (float): size-normalized LLR of the imposed effect
+        effect_llr (float): size-normalized LLR of the imposed effect.
+            This is the per-voxel LLR contribution; the LLR you observe
+            for the planted region is approximately ``effect_llr × |mask|``
         reg_idx (int): region index in the Ward hierarchy (discovery)
         pval_fwer (float): FWER-corrected p-value (discovery)
         meta (dict): optional metadata — not used by analysis

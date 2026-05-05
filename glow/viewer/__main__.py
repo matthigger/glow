@@ -148,6 +148,9 @@ def _choose_int(prompt, default, lo=1, hi=20):
 
 _NUM_IMG = 12
 
+# effect_llr is size-normalised: the observed region LLR is roughly
+# ``effect_llr * |region|``.  So a "medium" 0.5 effect on a 614-voxel
+# planted region produces an observed region LLR of ~307, not 0.5.
 _EFFECT_MAP = {
     'none':   0.0,
     'mild':   0.25,
@@ -204,13 +207,17 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
 
     print('  running AnalysisGLOW (n_perm_fwer=200, score_method=z_score) ...')
     # Opt into z_score so the viewer scatter renders the GAM ±sigma band.
-    # keep_fit_data=True retains the (size, stat) cloud so the viewer's
-    # H0 (Permuted Samples) toggle has data to render.  Both flags are
-    # demo-only opts; the library default stays mean_adj.
+    # keep_fit_data='all' retains every (size, stat) pair (no subsample)
+    # so the viewer's H0 mode shows the actual cloud the GAM was fit to.
+    # target_mask threads the planted-effect mask in so the H0 view
+    # gets a per-region 'target_overlap' column for colouring.
+    # All four flags are demo-only opts; library defaults stay off.
     ana = AnalysisGLOW(exp_eff, n_perm_fwer=200,
                        n_perm_fwer_size_adjust=50,
                        n_jobs_perm=-1, score_method='z_score',
-                       keep_fit_data=True, verbose=True)
+                       keep_fit_data='all',
+                       target_mask=mask_target,
+                       verbose=True)
     n_eff = len(ana.effect_list)
     print(f'  found {n_eff} effect{"s" if n_eff != 1 else ""}')
     return ana, mask_target
@@ -267,21 +274,22 @@ def _sample_dti(mean_imgs, mask, num_img=_NUM_IMG, noise_frac=0.15,
 # Demo builders (one per image-set choice)
 # ---------------------------------------------------------------------------
 
-def _demo_wgn_2d(b, effect_llr, seed=0, roughness=None):
+def _demo_wgn_2d(b, effect_llr, seed=0, roughness=None, num_img=_NUM_IMG):
     """2D White Gaussian Noise demo."""
     from glow.experiment.exper import ExperimentImageOnly
     shape = (64, 64)
-    print(f'  building 2D WGN: shape={shape}, b={b}')
+    print(f'  building 2D WGN: shape={shape}, b={b}, num_img={num_img}')
     exp_img = ExperimentImageOnly.from_gauss(
-        b=b, num_img=_NUM_IMG, shape=shape, seed=seed)
+        b=b, num_img=num_img, shape=shape, seed=seed)
     exp = _build_experiment(exp_img.y, exp_img.mask_idx,
-                            meta=exp_img.meta)
+                            num_img=num_img, meta=exp_img.meta)
     ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
                                        roughness=roughness)
     return ana, mask_target
 
 
-def _demo_mandrill(channels, effect_llr, seed=0, roughness=None):
+def _demo_mandrill(channels, effect_llr, seed=0, roughness=None,
+                   num_img=_NUM_IMG):
     """2D Mandrill RGB demo."""
     from PIL import Image
     from glow.mask import get_mask_idx
@@ -303,23 +311,24 @@ def _demo_mandrill(channels, effect_llr, seed=0, roughness=None):
     num_vox = h * w
     pixel_flat = img_arr.reshape(num_vox, 3).T  # (3, num_vox)
     rng = np.random.default_rng(seed)
-    y = np.empty((b, _NUM_IMG, num_vox))
+    y = np.empty((b, num_img, num_vox))
     for fi, ci in enumerate(feat_indices):
         base = pixel_flat[ci]
         noise_scale = 15.0
-        for i in range(_NUM_IMG):
+        for i in range(num_img):
             y[fi, i, :] = base + rng.normal(0, noise_scale, num_vox)
 
     mask_idx = get_mask_idx(np.ones((h, w), dtype=bool))
     meta = {'features': feat_names}
-    exp = _build_experiment(y, mask_idx, meta=meta)
-    print(f'  mandrill: {h}x{w}, features={feat_names}')
+    exp = _build_experiment(y, mask_idx, num_img=num_img, meta=meta)
+    print(f'  mandrill: {h}x{w}, features={feat_names}, num_img={num_img}')
     ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
                                        roughness=roughness)
     return ana, mask_target
 
 
-def _demo_dti_2d(features, effect_llr, seed=0, roughness=None):
+def _demo_dti_2d(features, effect_llr, seed=0, roughness=None,
+                 num_img=_NUM_IMG):
     """2D Axial Slice DTI demo."""
     fa, md, mask = _load_dti_mean('2d')
     mean_imgs = {}
@@ -333,30 +342,32 @@ def _demo_dti_2d(features, effect_llr, seed=0, roughness=None):
         mean_imgs[name] = arr
 
     print(f'  2D axial DTI: shape={fa.shape}, mask={mask.sum()} vox, '
-          f'features={list(mean_imgs.keys())}')
-    y, mask_idx, feat_names = _sample_dti(mean_imgs, mask, seed=seed)
+          f'features={list(mean_imgs.keys())}, num_img={num_img}')
+    y, mask_idx, feat_names = _sample_dti(mean_imgs, mask, num_img=num_img,
+                                          seed=seed)
     meta = {'features': feat_names}
-    exp = _build_experiment(y, mask_idx, meta=meta)
+    exp = _build_experiment(y, mask_idx, num_img=num_img, meta=meta)
     ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
                                        roughness=roughness)
     return ana, mask_target
 
 
-def _demo_wgn_3d(b, effect_llr, seed=0, roughness=None):
+def _demo_wgn_3d(b, effect_llr, seed=0, roughness=None, num_img=_NUM_IMG):
     """3D White Gaussian Noise demo."""
     from glow.experiment.exper import ExperimentImageOnly
     shape = (15, 15, 15)
-    print(f'  building 3D WGN: shape={shape}, b={b}')
+    print(f'  building 3D WGN: shape={shape}, b={b}, num_img={num_img}')
     exp_img = ExperimentImageOnly.from_gauss(
-        b=b, num_img=_NUM_IMG, shape=shape, seed=seed)
+        b=b, num_img=num_img, shape=shape, seed=seed)
     exp = _build_experiment(exp_img.y, exp_img.mask_idx,
-                            meta=exp_img.meta)
+                            num_img=num_img, meta=exp_img.meta)
     ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
                                        roughness=roughness)
     return ana, mask_target
 
 
-def _demo_dti_3d(features, effect_llr, seed=0, roughness=None):
+def _demo_dti_3d(features, effect_llr, seed=0, roughness=None,
+                 num_img=_NUM_IMG):
     """3D DTI demo."""
     fa, md, mask = _load_dti_mean('3d')
     mean_imgs = {}
@@ -370,10 +381,11 @@ def _demo_dti_3d(features, effect_llr, seed=0, roughness=None):
         mean_imgs[name] = arr
 
     print(f'  3D DTI: shape={fa.shape}, mask={mask.sum()} vox, '
-          f'features={list(mean_imgs.keys())}')
-    y, mask_idx, feat_names = _sample_dti(mean_imgs, mask, seed=seed)
+          f'features={list(mean_imgs.keys())}, num_img={num_img}')
+    y, mask_idx, feat_names = _sample_dti(mean_imgs, mask, num_img=num_img,
+                                          seed=seed)
     meta = {'features': feat_names}
-    exp = _build_experiment(y, mask_idx, meta=meta)
+    exp = _build_experiment(y, mask_idx, num_img=num_img, meta=meta)
     ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
                                        roughness=roughness)
     return ana, mask_target
@@ -419,11 +431,13 @@ def _run_demo():
         ], default='all')
 
     # --- 3) effect severity ---
-    severity = _choose('Effect severity to impose:', [
-        ('none',   'None'),
-        ('mild',   'Mild'),
-        ('medium', 'Medium'),
-        ('strong', 'Strong'),
+    # values are per-voxel size-normalised LLR; observed region LLR
+    # ≈ value × region_size (e.g. 0.5 × 614 ≈ 307 for medium / mandrill).
+    severity = _choose('Effect severity to impose (per-voxel LLR):', [
+        ('none',   'None     (effect_llr/vox = 0)'),
+        ('mild',   'Mild     (effect_llr/vox = 0.25)'),
+        ('medium', 'Medium   (effect_llr/vox = 0.5)'),
+        ('strong', 'Strong   (effect_llr/vox = 1.0)'),
     ], default='medium')
     effect_llr = _EFFECT_MAP[severity]
 
@@ -444,14 +458,22 @@ def _run_demo():
         }
         roughness = _ROUGH_MAP[rough_choice]
 
-    # --- 4) random seed ---
+    # --- 4) number of images (subjects) ---
+    # LLR scales roughly with sample size, so num_img controls how
+    # peaked the H0 LLR distribution is and how much the mean drifts
+    # with region size.  Default 12 is fast; production scale is 100+.
+    num_img = _choose_int('Number of images (subjects):',
+                           default=_NUM_IMG, lo=4, hi=1000)
+
+    # --- 5) random seed ---
     seed = _choose_int('Random seed:', default=0, lo=0, hi=2**31 - 1)
 
     # --- build ---
     rough_str = f', roughness={roughness}' if roughness is not None else ''
     print(f'\n  Building demo (effect_llr={effect_llr:.2g}{rough_str},'
-          f' seed={seed}) ...')
-    kw = dict(effect_llr=effect_llr, seed=seed, roughness=roughness)
+          f' num_img={num_img}, seed={seed}) ...')
+    kw = dict(effect_llr=effect_llr, seed=seed, roughness=roughness,
+              num_img=num_img)
     if image_set == 'wgn2d':
         ana, mask_target = _demo_wgn_2d(b_choice, **kw)
     elif image_set == 'mandrill':

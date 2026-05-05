@@ -68,6 +68,7 @@ class AnalysisGLOW(Analysis):
                  cluster_mode="ward's (q1)",
                  score_method='mean_adj',
                  keep_fit_data=False,
+                 target_mask=None,
                  **kwargs):
         """
         Args:
@@ -89,13 +90,27 @@ class AnalysisGLOW(Analysis):
                 divides by the fitted size-conditional null SD
                 (studentization, GAMLSS-style).  Pruning rank is on
                 raw LLR in either case.
-            keep_fit_data: When True, store a log-uniformly stratified
-                subsample of the (size, stat) pairs from the held-out
-                fit permutations on ``self._gam_fit_data`` (~2k pairs,
-                float32, ~16 KB).  Useful for the viewer's H0 mode
-                which renders this cloud as the actual data the
-                size-adjustment GAM was fit to.  Default False so
-                production analyses don't carry the diagnostic data.
+            keep_fit_data: Controls retention of fit-perm (size, stat)
+                pairs for the viewer's H0 mode.  Accepts:
+                  * False / None (default): nothing stored.
+                  * True: log-uniform stratified subsample to
+                    ``_GAM_FIT_DATA_BUDGET`` (~2k pairs, ~16 KB).
+                  * int N: subsample to N pairs.
+                  * ``'all'``: keep every valid pair.  Use only for
+                    diagnostic deep-dives -- a 4k-voxel run with 50
+                    fit perms produces ~400k pairs (~3 MB).
+                When non-False, ``perm_idx`` is also stored alongside
+                each (size, stat) pair so the viewer can colour by
+                originating permutation.
+            target_mask: Optional boolean array (same shape as
+                ``exp.mask_idx``) marking the planted-effect voxels.
+                Diagnostic only.  When provided alongside
+                ``keep_fit_data``, an extra ``target_overlap`` column
+                is computed for every retained fit-perm region (the
+                fraction of the region's voxels that fall inside the
+                target).  Lets the viewer's H0 mode show whether
+                permuted-data trails come from regions overlapping
+                the imposed effect.
             cloud_config: CloudConfig for AWS execution (if None, runs
                 locally)
             perm_dir: path for permutation result files.  If provided,
@@ -144,16 +159,77 @@ class AnalysisGLOW(Analysis):
             perm_dir = Path(perm_dir)
             perm_dir.mkdir(parents=True, exist_ok=True)
 
+        # mask-target diagnostic: when supplied, we compute per-region
+        # overlap with the target during fit-data collection and store
+        # it alongside (size, stat) for the viewer's H0 colour axis.
+        # The viewer derives dice / sens / spec on the fly from
+        # (size, target_overlap) using the stored target/total sizes.
+        target_in_valid = None
+        self._gam_fit_target_size = None
+        self._gam_fit_num_vox = None
+        self._gam_fit_perm_x_corr = None
+
+        # per-fit-perm "X correlation": how much of the contrast-of-interest
+        # subspace a given Freedman-Lane permutation preserves.  trace of
+        # q1 @ P @ q1.T / dim(q1), in [-1, 1].  Lets the H0 viewer colour
+        # by alignment with the original design so users can confirm
+        # high-LLR shadow trails are the perms with high alignment.
+        if keep_fit_data:
+            from glow.experiment.permute import get_freed_lane
+            from glow.analysis.mancova import decompose
+            q_decomp = decompose(exp.x, exp.contrast)
+            q1 = q_decomp[1]
+            voi_dim = max(q1.shape[0], 1)
+            self._gam_fit_perm_x_corr = {}
+            for k in range(fit_start, fit_end + 1):
+                P = get_freed_lane(exp.x, exp.contrast, k)
+                align = float(np.trace(q1 @ P @ q1.T) / voi_dim)
+                self._gam_fit_perm_x_corr[k] = align
+
+        if target_mask is not None and keep_fit_data:
+            tm = np.asarray(target_mask, dtype=bool)
+            if tm.shape != exp.mask_idx.shape:
+                raise ValueError(
+                    f'target_mask shape {tm.shape} does not match '
+                    f'exp.mask_idx shape {exp.mask_idx.shape}')
+            valid_voxels = exp.mask_idx >= 0
+            target_in_valid = tm[valid_voxels].astype(np.int32)
+            self._gam_fit_target_size = int(target_in_valid.sum())
+            self._gam_fit_num_vox = int(valid_voxels.sum())
+
+        def _maybe_overlap(r):
+            """Compute per-region target-overlap fraction; None when
+            target_mask wasn't provided."""
+            if target_in_valid is None:
+                return None
+            counts = glow.graph.node_sum(target_in_valid, r['children'])
+            sizes = np.asarray(r['size'], dtype=float)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                return np.where(sizes > 0, counts / sizes, 0.0)
+
         # scan for existing results (resume support)
         existing = set()
         fit_sizes, fit_stats = [], []
+        fit_perm_idx, fit_overlap = [], []
         for f in sorted(perm_dir.glob('*_result.pkl')):
             try:
                 perm_idx = int(f.name.split('_')[0])
             except ValueError:
                 continue
             existing.add(perm_idx)
-            if perm_idx >= fit_start:
+            if perm_idx >= fit_start and keep_fit_data:
+                with open(f, 'rb') as fh:
+                    r = pickle.load(fh)
+                fit_sizes.append(np.asarray(r['size'], dtype=float))
+                fit_stats.append(np.asarray(r['stat'], dtype=float))
+                fit_perm_idx.append(np.full(len(r['size']), perm_idx,
+                                             dtype=np.int32))
+                ov = _maybe_overlap(r)
+                if ov is not None:
+                    fit_overlap.append(ov)
+                del r
+            elif perm_idx >= fit_start:
+                # legacy path: GAM fit only needs size + stat
                 with open(f, 'rb') as fh:
                     r = pickle.load(fh)
                 fit_sizes.append(np.asarray(r['size'], dtype=float))
@@ -189,6 +265,12 @@ class AnalysisGLOW(Analysis):
                 if p >= fit_start:
                     fit_sizes.append(np.asarray(r['size'], dtype=float))
                     fit_stats.append(np.asarray(r['stat'], dtype=float))
+                    if keep_fit_data:
+                        fit_perm_idx.append(np.full(len(r['size']), p,
+                                                     dtype=np.int32))
+                        ov = _maybe_overlap(r)
+                        if ov is not None:
+                            fit_overlap.append(ov)
                 del r
         else:
             for perm_idx in tqdm(todo, desc='permutations',
@@ -200,6 +282,13 @@ class AnalysisGLOW(Analysis):
                 if perm_idx >= fit_start:
                     fit_sizes.append(np.asarray(r['size'], dtype=float))
                     fit_stats.append(np.asarray(r['stat'], dtype=float))
+                    if keep_fit_data:
+                        fit_perm_idx.append(np.full(len(r['size']),
+                                                     perm_idx,
+                                                     dtype=np.int32))
+                        ov = _maybe_overlap(r)
+                        if ov is not None:
+                            fit_overlap.append(ov)
                 del r
 
         # fit GAM from collected size/stat arrays
@@ -224,11 +313,22 @@ class AnalysisGLOW(Analysis):
 
         # diagnostic subsample of the fit cloud (used by viewer H0 mode)
         if keep_fit_data:
+            if keep_fit_data == 'all':
+                budget = None
+            elif keep_fit_data is True:
+                budget = self._GAM_FIT_DATA_BUDGET
+            else:
+                budget = int(keep_fit_data)
+            extras = {'perm_idx': np.concatenate(fit_perm_idx)
+                      if fit_perm_idx else None}
+            if fit_overlap:
+                extras['target_overlap'] = np.concatenate(fit_overlap)
             self._gam_fit_data = self._subsample_fit_data(
-                all_sizes, all_stats)
+                all_sizes, all_stats, budget=budget, extras=extras)
             if verbose and self._gam_fit_data is not None:
+                cols = sorted(self._gam_fit_data.keys())
                 print(f'         retained {len(self._gam_fit_data["size"])}'
-                      f' fit-cloud pairs')
+                      f' fit-cloud pairs (cols: {cols})')
 
         # load observed (perm 0) — kept permanently
         with open(perm_dir / f'{0:06d}_result.pkl', 'rb') as fh:
@@ -354,6 +454,12 @@ class AnalysisGLOW(Analysis):
             self._gam_fit_data = None
         if 'keep_fit_data' not in self.__dict__:
             self.keep_fit_data = self._gam_fit_data is not None
+        if '_gam_fit_target_size' not in self.__dict__:
+            self._gam_fit_target_size = None
+        if '_gam_fit_num_vox' not in self.__dict__:
+            self._gam_fit_num_vox = None
+        if '_gam_fit_perm_x_corr' not in self.__dict__:
+            self._gam_fit_perm_x_corr = None
 
     @classmethod
     def fit_size_gam(cls, size, stat, n_splines=None,
@@ -417,9 +523,20 @@ class AnalysisGLOW(Analysis):
         log_size = np.log10(sz[valid])
         y_valid = y[valid]
 
+        # Size weights: a Ward tree on N voxels has 2N-1 nodes, but ~N
+        # of those are leaves -- the size distribution is wildly
+        # skewed toward small sizes.  Weight each point by 1/(local
+        # log-size density) so each log-size bin contributes equally
+        # to the fit.  Without this, the spline is anchored almost
+        # entirely by small-size points and overfits at the data-poor
+        # tail (matches the size-weighted-LS prescription in the
+        # paper's section 5.3).
+        weights = cls._size_weights(log_size)
+
         # --- Stage 1: mean ---
         mu_gam = LinearGAM(s(0, n_splines=n_splines))
-        mu_gam.gridsearch(log_size, y_valid, progress=False)
+        mu_gam.gridsearch(log_size, y_valid, weights=weights,
+                          progress=False)
 
         mu_pred = mu_gam.predict(log_size)
         ss_res = np.sum((y_valid - mu_pred) ** 2)
@@ -439,7 +556,8 @@ class AnalysisGLOW(Analysis):
             log_sq = np.log(resid_sq + eps)
 
             sigma_gam = LinearGAM(s(0, n_splines=n_splines))
-            sigma_gam.gridsearch(log_size, log_sq, progress=False)
+            sigma_gam.gridsearch(log_size, log_sq, weights=weights,
+                                 progress=False)
 
         sigma_fn = cls.sigma_fn_from_gam(sigma_gam)
 
@@ -451,9 +569,57 @@ class AnalysisGLOW(Analysis):
     """Maximum number of (size, stat) pairs retained for the diagnostic
     H0 cloud render in the viewer.  ~16 KB at float32."""
 
+    _SIZE_WEIGHT_N_BINS = 30
+    """Number of log-size bins for the GAM size-weighting (stage 1+2)."""
+
     @classmethod
-    def _subsample_fit_data(cls, sizes, stats, budget=None):
-        """Log-uniform stratified subsample of the GAM fit cloud.
+    def _size_weights(cls, log_size, n_bins=None):
+        """Inverse-density weights so each log-size bin contributes equally.
+
+        A Ward tree on ``N`` voxels produces ``2N-1`` nodes whose size
+        distribution is heavily skewed toward small (about half are
+        leaves).  Without weighting, an ordinary least-squares (or
+        equivalently, equally-weighted GAM) fit is anchored almost
+        entirely by small-size points and overfits in the data-poor
+        tail.  Weighting each point by 1/(count in its log-size bin)
+        balances the loss across bins; weights are renormalised to
+        preserve the overall data scale.
+
+        Args:
+            log_size: (N,) log10 of region sizes (already cleaned of
+                non-finites and non-positives).
+            n_bins: number of histogram bins
+                (default: ``cls._SIZE_WEIGHT_N_BINS``).
+
+        Returns:
+            (N,) weight array.  Sums to len(log_size).
+        """
+        if n_bins is None:
+            n_bins = cls._SIZE_WEIGHT_N_BINS
+        log_size = np.asarray(log_size, dtype=float)
+        n = len(log_size)
+        if n == 0:
+            return np.ones(0)
+        lo, hi = log_size.min(), log_size.max()
+        if hi <= lo:
+            return np.ones(n)
+        edges = np.linspace(lo, hi, n_bins + 1)
+        counts, _ = np.histogram(log_size, bins=edges)
+        # which bin each point falls in (clamp to [0, n_bins-1])
+        bin_idx = np.clip(np.digitize(log_size, edges[1:-1]),
+                          0, n_bins - 1)
+        local_count = counts[bin_idx].astype(float)
+        # 1/density, with a guard against zero (shouldn't fire since
+        # local_count is always at least 1 for points in the data).
+        w = 1.0 / np.maximum(local_count, 1.0)
+        # rescale so weights sum to N (preserves the deviance scale
+        # gridsearch uses for smoothing-penalty selection).
+        w *= n / w.sum()
+        return w
+
+    @classmethod
+    def _subsample_fit_data(cls, sizes, stats, budget=None, extras=None):
+        """Subsample the GAM fit cloud for diagnostic viewer rendering.
 
         The raw fit data is heavily skewed toward small regions (a Ward
         tree on N voxels has 2N-1 nodes, of which N are leaves).  For a
@@ -464,24 +630,56 @@ class AnalysisGLOW(Analysis):
         Args:
             sizes: (N,) raw region sizes from fit permutations
             stats: (N,) raw stat values from fit permutations
-            budget: target number of pairs to keep
-                (default: cls._GAM_FIT_DATA_BUDGET).
+            budget: target number of pairs to keep.  ``None`` keeps
+                every valid pair (use sparingly -- the demo with 50
+                fit perms × 4k voxels is ~400k pairs / ~3 MB).
+                When an int, log-uniform stratified subsample to that
+                budget.  Defaults to cls._GAM_FIT_DATA_BUDGET when not
+                given by the caller.
+            extras: optional dict of per-pair side data
+                (e.g. ``{'perm_idx': arr, 'target_overlap': arr}``)
+                that gets subsampled in lockstep with size/stat.
+                ``None`` values are skipped.
 
         Returns:
-            dict with 'size' and 'stat' float32 arrays of length
-            <= budget, or None if input is empty.
+            dict with 'size' and 'stat' (and any extras) as float32 /
+            int32 arrays of length <= budget, or None if input is empty.
         """
-        if budget is None:
-            budget = cls._GAM_FIT_DATA_BUDGET
         sz = np.asarray(sizes, dtype=float)
         st = np.asarray(stats, dtype=float)
-        valid = np.isfinite(sz) & np.isfinite(st) & (sz > 0)
-        sz, st = sz[valid], st[valid]
-        if sz.size == 0:
+        valid_mask = np.isfinite(sz) & np.isfinite(st) & (sz > 0)
+        valid_idx = np.flatnonzero(valid_mask)
+        if valid_idx.size == 0:
             return None
+        sz_v, st_v = sz[valid_idx], st[valid_idx]
+
+        # apply same valid_idx to extras
+        extras_v = {}
+        if extras:
+            for k, arr in extras.items():
+                if arr is None:
+                    continue
+                extras_v[k] = np.asarray(arr)[valid_idx]
+
+        def _pack(keep):
+            out = {
+                'size': sz_v[keep].astype(np.float32),
+                'stat': st_v[keep].astype(np.float32),
+            }
+            for k, arr in extras_v.items():
+                # preserve int dtypes (e.g. perm_idx) but use float32
+                # for floats to keep memory small.
+                if np.issubdtype(arr.dtype, np.integer):
+                    out[k] = arr[keep].astype(np.int32)
+                else:
+                    out[k] = arr[keep].astype(np.float32)
+            return out
+
+        if budget is None:
+            return _pack(np.arange(sz_v.size))
 
         n_bins = 30
-        log_sz = np.log10(sz)
+        log_sz = np.log10(sz_v)
         edges = np.linspace(log_sz.min(), log_sz.max(), n_bins + 1)
         per_bin = max(1, budget // n_bins)
         rng = np.random.default_rng(0)
@@ -498,11 +696,7 @@ class AnalysisGLOW(Analysis):
         keep = np.concatenate(keep_idx)
         if keep.size > budget:
             keep = rng.choice(keep, size=budget, replace=False)
-
-        return {
-            'size': sz[keep].astype(np.float32),
-            'stat': st[keep].astype(np.float32),
-        }
+        return _pack(keep)
 
     @staticmethod
     def mu_fn_from_gam(gam):

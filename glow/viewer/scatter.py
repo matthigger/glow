@@ -105,9 +105,24 @@ def build_scatter_h0(df_h0, ana_glow, x_feat, y_feat, color_feat,
     color_v = None if color is None else color[vis]
 
     fig = go.Figure()
+    # Use WebGL (Scattergl) for the H0 scatter -- the cloud can be up
+    # to a few hundred thousand points when keep_fit_data='all' is
+    # used for diagnostic deep-dives.  Plain go.Scatter is slow above
+    # ~10k points; Scattergl handles 1M+.
     marker_kw = dict(size=4, opacity=0.55,
                      line=dict(width=0))
-    if color_v is not None:
+    is_categorical = color_feat == 'perm_idx'
+    if color_v is not None and is_categorical:
+        # qualitative palette so adjacent perm indices look distinct.
+        # Plotly's Alphabet palette has 26 colors; we cycle for >26
+        # perms (typical demo has 25-50 fit perms, so each colour gets
+        # used by ~2 perms -- still visually clear).
+        import plotly.colors as pc
+        palette = pc.qualitative.Alphabet
+        n_palette = len(palette)
+        marker_kw['color'] = [palette[int(p) % n_palette] for p in color_v]
+        # no colorbar for qualitative -- the legend would have 50 rows.
+    elif color_v is not None:
         marker_kw['color'] = color_v
         marker_kw['colorscale'] = 'Viridis'
         marker_kw['showscale'] = True
@@ -115,7 +130,7 @@ def build_scatter_h0(df_h0, ana_glow, x_feat, y_feat, color_feat,
                                      len=0.7)
     else:
         marker_kw['color'] = 'rgba(80,80,80,0.55)'
-    fig.add_trace(go.Scatter(
+    fig.add_trace(go.Scattergl(
         x=x_v, y=y_v,
         mode='markers',
         marker=marker_kw,

@@ -122,8 +122,12 @@ _MASK_FEATURES = {'dice', 'sens', 'spec', 'pct_max_dice',
 
 # columns that ``prep_df_h0`` exposes for the H0 (permuted samples) view.
 # Anything outside this set is hidden from the dropdown options when
-# the viewer is in H0 mode.
-H0_FEATURES = ('n_voxel', 'llr', 'llr_adjusted', 'z_score')
+# the viewer is in H0 mode.  ``dice``/``sens``/``spec`` mirror the H1
+# interface and are derived per-region from the stored target_overlap;
+# they only appear when the analysis was run with ``target_mask=...``.
+H0_FEATURES = ('n_voxel', 'llr', 'llr_adjusted', 'z_score',
+               'perm_idx', 'x_correlation',
+               'dice', 'sens', 'spec')
 
 
 def prep_df_h0(ana_glow):
@@ -132,12 +136,15 @@ def prep_df_h0(ana_glow):
     Reads the (size, stat) cloud retained by AnalysisGLOW when run with
     ``keep_fit_data=True`` and computes the size-adjusted variants on
     the fly (``llr_adjusted`` and, when ``sigma_gam`` is available,
-    ``z_score``).
+    ``z_score``).  When the analysis was run with ``target_mask``
+    supplied, the ``dice`` / ``sens`` / ``spec`` triple is derived
+    per-region from the stored target overlap so the H0 view shares
+    the same labelling as the H1 scatter.
 
     Returns:
-        df (pd.DataFrame | None): one row per retained fit-perm region,
-        with columns drawn from ``H0_FEATURES``.  Returns None if the
-        analysis was not built with ``keep_fit_data=True``.
+        df (pd.DataFrame | None): one row per retained fit-perm region.
+        Returns None if the analysis was not built with
+        ``keep_fit_data=True``.
     """
     fd = getattr(ana_glow, '_gam_fit_data', None)
     if fd is None:
@@ -165,6 +172,33 @@ def prep_df_h0(ana_glow):
         with np.errstate(divide='ignore', invalid='ignore'):
             z = np.where(sigma > 0, llr_adjusted / sigma, np.nan)
         d['z_score'] = z
+
+    if 'perm_idx' in fd:
+        d['perm_idx'] = fd['perm_idx'].astype(int)
+        # x_correlation: how much of the contrast-of-interest direction
+        # a given Freedman-Lane permutation preserved.  Stored once per
+        # perm; we broadcast to per-region rows here.
+        pxc = getattr(ana_glow, '_gam_fit_perm_x_corr', None)
+        if pxc:
+            d['x_correlation'] = np.array(
+                [pxc.get(int(p), np.nan) for p in fd['perm_idx']],
+                dtype=float)
+
+    # dice / sens / spec derived from target_overlap.  TP per region
+    # = overlap × size; rest follows from the stored target / volume
+    # totals.  Matches the H1 columns produced in ``prep_df``.
+    overlap = fd.get('target_overlap')
+    target_size = getattr(ana_glow, '_gam_fit_target_size', None)
+    num_vox = getattr(ana_glow, '_gam_fit_num_vox', None)
+    if overlap is not None and target_size and num_vox:
+        tp = overlap.astype(float) * sz
+        denom_dice = sz + target_size
+        with np.errstate(divide='ignore', invalid='ignore'):
+            d['dice'] = np.where(denom_dice > 0, 2 * tp / denom_dice, 0.0)
+            d['sens'] = tp / target_size
+            non_target = num_vox - target_size
+            tn = non_target - (sz - tp)  # not-target & not-in-region
+            d['spec'] = np.where(non_target > 0, tn / non_target, 1.0)
 
     return pd.DataFrame(d)
 
