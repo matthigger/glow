@@ -44,8 +44,8 @@ _GLOW_BASE = dict(n_perm_fwer=N_PERM_FWER,
                   alpha_fwer=ALPHA_FWER,
                   get_stat=get_llr)
 ANALYSES = {
-    'GLOW-Focus': {**_GLOW_BASE, 'cluster_mode': "ward's (q1)"},
-    'GLOW-GLM':   {**_GLOW_BASE, 'cluster_mode': "ward's (q0, q1)"},
+    'GLOW-Focus': {**_GLOW_BASE, 'cluster_mode': "q1"},
+    'GLOW-GLM':   {**_GLOW_BASE, 'cluster_mode': "q0, q1"},
     'VBA': dict(n_perm_fwer=N_PERM_FWER,
                 tfce_flag=False,
                 z_flag=True,

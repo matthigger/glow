@@ -154,7 +154,7 @@ def process_permutation(exp, ana_kwargs, perm_idx):
     from glow.analysis.mancova import get_llr
 
     get_stat = ana_kwargs.get('get_stat', get_llr)
-    cluster_mode = ana_kwargs.get('cluster_mode', "ward's (q1)")
+    cluster_mode = ana_kwargs.get('cluster_mode', "q1")
 
     _exp = exp.permute(perm_idx)
     children = cluster(exp=_exp, mode=cluster_mode)
@@ -500,7 +500,7 @@ def run_synthesis_mode(args):
     get_stat = ana_kwargs.get('get_stat', get_llr)
     alpha_fwer = ana_kwargs.get('alpha_fwer', 0.05)
     min_size = ana_kwargs.get('min_size', 1)
-    cluster_mode = ana_kwargs.get('cluster_mode', "ward's (q1)")
+    cluster_mode = ana_kwargs.get('cluster_mode', "q1")
 
     # download all per-perm result pickles into a local dir so the
     # per-region-z finalizer can read them as if they were produced by

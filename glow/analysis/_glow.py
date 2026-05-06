@@ -36,7 +36,7 @@ class AnalysisGLOW(Analysis):
                  n_perm_inner=25,
                  alpha_fwer=.05, min_size=1, verbose=False,
                  n_jobs_perm=1, cloud_config=None, perm_dir=None,
-                 cluster_mode="ward's (q1)",
+                 cluster_mode="q1",
                  **kwargs):
         """
         Args:
@@ -56,9 +56,9 @@ class AnalysisGLOW(Analysis):
                 are kept and reused on resume.
             cluster_mode: Ward projection.  Must be one of the keys in
                 ``glow.analysis.cluster._MODES``.  Default
-                ``"ward's (q1)"`` (Focus) projects onto the contrast
-                subspace; ``"ward's (q0, q1)"`` (GLM Error) keeps bias
-                + contrast; ``"ward's (all)"`` (Naive) clusters raw y.
+                ``"q1"`` (Focus) projects onto the contrast
+                subspace; ``"q0, q1"`` (GLM Error) keeps bias
+                + contrast; ``"all"`` (Naive) clusters raw y.
         """
         super().__init__(exp, **kwargs)
         self.verbose = verbose
@@ -228,7 +228,7 @@ class AnalysisGLOW(Analysis):
 
     @classmethod
     def from_precomputed(cls, *, exp, get_stat=None, verbose=False,
-                         cluster_mode="ward's (q1)"):
+                         cluster_mode="q1"):
         """Construct an empty shell without running ``__init__``.
 
         Caller is responsible for invoking ``_finalize_per_region_z()``
@@ -264,7 +264,7 @@ class AnalysisGLOW(Analysis):
 
     @classmethod
     def rerun_permutation(cls, exp, perm_idx, get_stat=get_llr,
-                          cluster_mode="ward's (q1)"):
+                          cluster_mode="q1"):
         """Re-run a single permutation for inspection.
 
         Since permutations are deterministic given ``perm_idx``, this
@@ -396,7 +396,7 @@ class AnalysisGLOW(Analysis):
                      alpha_fwer, min_size, verbose,
                      cloud_config,
                      perms_per_job=None,
-                     cluster_mode="ward's (q1)",
+                     cluster_mode="q1",
                      **kwargs):
         """Run full analysis on AWS Batch (outer perms + synthesis).
 
