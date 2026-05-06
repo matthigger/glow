@@ -120,32 +120,6 @@ _PRUNING_FEATURES = set()
 _MASK_FEATURES = {'dice', 'sens', 'spec', 'pct_max_dice',
                    'vox_in_target', 'vox_out_target'}
 
-# columns that ``prep_df_h0`` exposes for the H0 (permuted samples) view.
-# Anything outside this set is hidden from the dropdown options when
-# the viewer is in H0 mode.  ``dice``/``sens``/``spec`` mirror the H1
-# interface and are derived per-region from the stored target_overlap;
-# they only appear when the analysis was run with ``target_mask=...``.
-H0_FEATURES = ('n_voxel', 'llr', 'llr_adjusted', 'z_score',
-               'perm_idx', 'x_correlation',
-               'dice', 'sens', 'spec')
-
-
-def prep_df_h0(ana_glow):
-    """Stub: per_region_z does not retain a GAM fit cloud.
-
-    The H0 panel was historically wired up to the size-conditional GAM
-    fit cloud (``ana_glow._gam_fit_data``).  Per-region permutation
-    z-scoring no longer fits a GAM, so this returns None and the H0
-    panel renders as inert.  A per-region diagnostic (e.g. mu_r vs
-    std_r per merged region) can be added later.
-    """
-    return None
-
-
-def _compute_r2(stat, size, adj_gam):
-    """Stub: GAM R² is no longer computed (per_region_z has no GAM)."""
-    return float('nan')
-
 
 def get_feature_columns(df):
     """Return feature columns grouped by category.

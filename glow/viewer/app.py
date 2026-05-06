@@ -20,7 +20,7 @@ from dash import Dash, html, dcc, callback_context, no_update
 from dash.dependencies import Input, Output, State
 
 from .data import (prep_df, get_feature_columns, compute_backgrounds,
-                    compute_bg_ranges, compute_target_stats, _compute_r2)
+                    compute_bg_ranges, compute_target_stats)
 from .scatter import build_scatter
 from .image import (build_label_map, build_region_overlay,
                     compute_bg_volume, get_region_color,
@@ -34,16 +34,8 @@ from .regression import (build_regression_figure, build_empty_regression,
 # ---------------------------------------------------------------------------
 
 def _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
-                     default_x, default_y, log_y_default, default_color,
-                     have_fit_data=False):
-    """Build dropdowns + Log Y toggle as a narrow vertical panel.
-
-    When ``have_fit_data`` is True (analysis was built with
-    ``keep_fit_data=True``), a sample-mode radio is added at the top
-    that switches the scatter between Observed (H1) and Permuted (H0)
-    views.  When False, the radio is omitted and a hidden Store keeps
-    the rest of the wiring on the 'observed' branch.
-    """
+                     default_x, default_y, log_y_default, default_color):
+    """Build dropdowns + Log Y toggle as a narrow vertical panel."""
     _divider_style = {'color': '#999', 'fontStyle': 'italic',
                       'fontSize': '10px'}
 
@@ -62,9 +54,7 @@ def _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
         options = []
         if none_option:
             options.append({'label': 'None', 'value': '__none__'})
-        # generic columns first (no heading)
         options += [{'label': c, 'value': c} for c in generic_cols]
-        # significance columns without a heading
         options += [{'label': c, 'value': c} for c in sig_cols]
         _add_group(options, prune_cols, 'pruning')
         _add_group(options, mask_cols, 'target mask')
@@ -76,44 +66,7 @@ def _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
                          clearable=False, style={'width': '100%'}),
         ], style={'marginBottom': '6px'})
 
-    # sample-mode toggle (only when fit data is available)
-    if have_fit_data:
-        sample_mode_block = html.Div([
-            html.Label('Sample',
-                       style={'fontWeight': 'bold', 'fontSize': '12px',
-                              'marginBottom': '2px'}),
-            dcc.RadioItems(
-                id='radio-sample-mode',
-                options=[
-                    {'label': ' Observed (H₁)', 'value': 'observed'},
-                    {'label': ' Permuted (H₀)', 'value': 'h0'},
-                ],
-                value='observed',
-                style={'fontSize': '12px'},
-                inputStyle={'marginRight': '4px'},
-                labelStyle={'display': 'block'},
-            ),
-        ], style={'marginBottom': '8px',
-                  'borderBottom': '1px solid #eee',
-                  'paddingBottom': '6px'})
-        sample_mode_store = dcc.Store(id='store-sample-mode',
-                                      data='observed')
-    else:
-        sample_mode_block = html.Div(style={'display': 'none'})
-        sample_mode_store = dcc.Store(id='store-sample-mode',
-                                      data='observed')
-        # also a hidden radio so callbacks that take it as Input don't error
-        sample_mode_block = html.Div([
-            sample_mode_block,
-            dcc.RadioItems(id='radio-sample-mode',
-                           options=[{'label': '', 'value': 'observed'}],
-                           value='observed',
-                           style={'display': 'none'}),
-        ])
-
     return html.Div([
-        sample_mode_block,
-        sample_mode_store,
         _dd('dd-x', default_x, 'X feature'),
         _dd('dd-y', default_y, 'Y feature'),
         # Log Y toggle sits right below Y feature
@@ -248,7 +201,7 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                     slicer0, slicer1, slicer2,
                     x_names=None, y_names=None, num_reg=0,
                     default_reg_x=0, num_img=0, feat_names=None,
-                    subject_names=None, have_fit_data=False):
+                    subject_names=None):
     """Build layout for 3D data (with dash-slicer ortho views)."""
     all_cols, default_x, default_y, log_val, default_color = _defaults(
         generic_cols, sig_cols, prune_cols, mask_cols)
@@ -304,8 +257,7 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
         _section_header('Hierarchical Segmentation'),
         html.Div([
             _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
-                             default_x, default_y, log_val, default_color,
-                             have_fit_data=have_fit_data),
+                             default_x, default_y, log_val, default_color),
             html.Div([
                 dcc.Graph(id='scatter-plot',
                           config={'scrollZoom': True},
@@ -315,8 +267,6 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
         ], style={'display': 'flex', 'padding': '0 20px'}),
 
         # --- IMAGE + REGRESSION (side by side) ---
-        # wrapped in id='lower-panel' so H0 mode can hide it (no
-        # canonical region mapping for fit-perm samples).
         html.Div(id='lower-panel', children=[
             _region_panel(num_reg),
 
@@ -371,8 +321,7 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
 
 def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
                     x_names=None, y_names=None, num_reg=0,
-                    default_reg_x=0, num_img=0, subject_names=None,
-                    have_fit_data=False):
+                    default_reg_x=0, num_img=0, subject_names=None):
     """Build layout for 2D data (single go.Image view)."""
     all_cols, default_x, default_y, log_val, default_color = _defaults(
         generic_cols, sig_cols, prune_cols, mask_cols)
@@ -402,8 +351,7 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
         _section_header('Hierarchical Segmentation'),
         html.Div([
             _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
-                             default_x, default_y, log_val, default_color,
-                             have_fit_data=have_fit_data),
+                             default_x, default_y, log_val, default_color),
             html.Div([
                 dcc.Graph(id='scatter-plot',
                           config={'scrollZoom': True},
@@ -413,7 +361,6 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
         ], style={'display': 'flex', 'padding': '0 20px'}),
 
         # --- IMAGE + REGRESSION (side by side) ---
-        # wrapped in id='lower-panel' so H0 mode can hide it.
         html.Div(id='lower-panel', children=[
             # left panel: region selection (aligned with controls column)
             _region_panel(num_reg),
@@ -498,13 +445,7 @@ def _create_app(ana_glow, mask_target=None, y_features=None,
     if subject_names is None:
         subject_names = meta.get('subjects')
 
-    # GAM-based primary_r2 no longer applies under per_region_z;
-    # leave undefined so the viewer hides the field.
-    ana_glow._primary_r2 = float('nan')
-
     df = prep_df(ana_glow, mask_target=mask_target, extra_df=extra_df)
-    from .data import prep_df_h0
-    df_h0 = prep_df_h0(ana_glow)
     generic_cols, sig_cols, prune_cols, mask_cols = get_feature_columns(df)
     mask_idx = ana_glow.exp.mask_idx
     ndim = mask_idx.ndim
@@ -528,14 +469,12 @@ def _create_app(ana_glow, mask_target=None, y_features=None,
         _setup_3d(app, ana_glow, df,
                   generic_cols, sig_cols, prune_cols, mask_cols,
                   y_features=y_features, subject_names=subject_names,
-                  target_stats=target_stats, target_vox=target_vox,
-                  df_h0=df_h0)
+                  target_stats=target_stats, target_vox=target_vox)
     else:
         _setup_2d(app, ana_glow, df,
                   generic_cols, sig_cols, prune_cols, mask_cols,
                   y_features=y_features, subject_names=subject_names,
-                  target_stats=target_stats, target_vox=target_vox,
-                  df_h0=df_h0)
+                  target_stats=target_stats, target_vox=target_vox)
 
     return app
 
@@ -543,8 +482,7 @@ def _create_app(ana_glow, mask_target=None, y_features=None,
 def _setup_3d(app, ana_glow, df,
               generic_cols, sig_cols, prune_cols, mask_cols,
               y_features=None, subject_names=None,
-              target_stats=None, target_vox=None,
-              df_h0=None):
+              target_stats=None, target_vox=None):
     """Set up the app for 3D data using dash-slicer."""
     from dash_slicer import VolumeSlicer
 
@@ -588,8 +526,7 @@ def _setup_3d(app, ana_glow, df,
                                  num_reg=num_reg,
                                  default_reg_x=default_reg_x,
                                  num_img=num_img, feat_names=feat_names,
-                                 subject_names=subject_names,
-                                 have_fit_data=df_h0 is not None)
+                                 subject_names=subject_names)
 
     # pre-compute target mask in image space for overlays
     mask_target_img = None
@@ -601,8 +538,7 @@ def _setup_3d(app, ana_glow, df,
 
     # --- shared callbacks ---
     _register_scatter_callback(app, df, ana_glow,
-                               target_stats=target_stats,
-                               df_h0=df_h0)
+                               target_stats=target_stats)
     _register_selection_callback(app, ana_glow,
                                  mask_target_img=mask_target_img)
     _register_checklist_sync_callback(app, df,
@@ -615,7 +551,6 @@ def _setup_3d(app, ana_glow, df,
                                   subject_names=subject_names,
                                   target_vox=target_vox)
     _register_regression_click_callback(app, 'dd-image-3d')
-    _register_sample_mode_callbacks(app, df, df_h0)
 
     # --- setpos store: dash-slicer picks this up automatically ---
     setpos_store = dcc.Store(
@@ -751,8 +686,7 @@ def _build_overlay(slicer, label_map, visible_list, color_map,
 def _setup_2d(app, ana_glow, df,
               generic_cols, sig_cols, prune_cols, mask_cols,
               y_features=None, subject_names=None,
-              target_stats=None, target_vox=None,
-              df_h0=None):
+              target_stats=None, target_vox=None):
     """Set up the app for 2D data using Plotly go.Image."""
     mask_idx = ana_glow.exp.mask_idx
     bg_dict = compute_backgrounds(ana_glow, y_features=y_features)
@@ -770,8 +704,7 @@ def _setup_2d(app, ana_glow, df,
                                  num_reg=num_reg,
                                  default_reg_x=default_reg_x,
                                  num_img=num_img,
-                                 subject_names=subject_names,
-                                 have_fit_data=df_h0 is not None)
+                                 subject_names=subject_names)
 
     # pre-compute target mask in image space for overlays
     mask_target_img = None
@@ -782,8 +715,7 @@ def _setup_2d(app, ana_glow, df,
 
     # --- shared callbacks ---
     _register_scatter_callback(app, df, ana_glow,
-                               target_stats=target_stats,
-                               df_h0=df_h0)
+                               target_stats=target_stats)
     _register_selection_callback(app, ana_glow,
                                  mask_target_img=mask_target_img)
     _register_checklist_sync_callback(app, df,
@@ -791,7 +723,6 @@ def _setup_2d(app, ana_glow, df,
     _register_hover_callback(app, ana_glow,
                              mask_target_img=mask_target_img)
     _register_placeholder_callback(app)
-    _register_sample_mode_callbacks(app, df, df_h0)
     _register_regression_callback(app, ana_glow, df,
                                   y_features=y_features,
                                   subject_names=subject_names,
@@ -871,129 +802,23 @@ def _valid_reg(reg_idx, ana_glow):
     return isinstance(reg_idx, (int, np.integer)) and 0 <= reg_idx < num_reg
 
 
-def _register_scatter_callback(app, df, ana_glow, target_stats=None,
-                               df_h0=None):
-    """Scatter plot updates when axes change or selection changes.
-
-    When ``df_h0`` is provided and ``store-sample-mode`` is set to
-    ``'h0'``, dispatches to the simpler H0 (Permuted Samples) renderer.
-    """
-    from .scatter import build_scatter_h0
+def _register_scatter_callback(app, df, ana_glow, target_stats=None):
+    """Scatter plot updates when axes change or selection changes."""
     @app.callback(
         Output('scatter-plot', 'figure'),
         [Input('dd-x', 'value'),
          Input('dd-y', 'value'),
          Input('dd-color', 'value'),
          Input('store-selected', 'data'),
-         Input('log-y-switch', 'value'),
-         Input('store-sample-mode', 'data')],
+         Input('log-y-switch', 'value')],
     )
-    def update_scatter(x_feat, y_feat, color_feat, selected_json, log_y_val,
-                       sample_mode):
+    def update_scatter(x_feat, y_feat, color_feat, selected_json, log_y_val):
         log_y = 'on' in (log_y_val or [])
-        if sample_mode == 'h0' and df_h0 is not None:
-            return build_scatter_h0(df_h0, ana_glow,
-                                    x_feat, y_feat, color_feat,
-                                    log_y=log_y)
         selected = set(json.loads(selected_json))
         return build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
                              selected_reg=selected,
                              log_y=log_y,
                              target_stats=target_stats)
-
-
-def _register_sample_mode_callbacks(app, df, df_h0):
-    """Wire the sample-mode radio: store value, dropdown filtering, panel hide.
-
-    When ``df_h0`` is None (analysis built without ``keep_fit_data``),
-    only a no-op store sync is registered so existing IDs resolve.
-    """
-    from .data import H0_FEATURES, get_feature_columns
-
-    # 1. radio -> store
-    @app.callback(
-        Output('store-sample-mode', 'data'),
-        Input('radio-sample-mode', 'value'),
-    )
-    def _sync_mode(value):
-        return value or 'observed'
-
-    # 2. store -> hide/show lower panel
-    @app.callback(
-        Output('lower-panel', 'style'),
-        Input('store-sample-mode', 'data'),
-        prevent_initial_call=False,
-    )
-    def _toggle_lower_panel(mode):
-        base = {'display': 'flex',
-                'padding': '0 20px 20px 20px',
-                'borderTop': '2px solid #ccc',
-                'marginTop': '6px'}
-        if mode == 'h0':
-            base = dict(base)
-            base['display'] = 'none'
-        return base
-
-    # 3. store -> dropdown options + value
-    if df_h0 is None:
-        return
-    h0_cols = [c for c in H0_FEATURES if c in df_h0.columns]
-    obs_generic, obs_sig, obs_prune, obs_mask = get_feature_columns(df)
-    obs_all = obs_generic + obs_sig + obs_prune + obs_mask
-
-    def _options_for(mode, none_option=False):
-        if mode == 'h0':
-            opts = []
-            if none_option:
-                opts.append({'label': 'None', 'value': '__none__'})
-            opts += [{'label': c, 'value': c} for c in h0_cols]
-            return opts
-        # observed: full set as today (flattened, no group dividers; the
-        # initial layout has the dividers but on dynamic-update we
-        # provide a simple flat list).
-        opts = []
-        if none_option:
-            opts.append({'label': 'None', 'value': '__none__'})
-        opts += [{'label': c, 'value': c} for c in obs_all]
-        return opts
-
-    def _default_for(feat, mode, current, none_option=False):
-        valid_vals = {o['value'] for o in _options_for(mode, none_option)}
-        if current in valid_vals:
-            return current
-        if mode == 'h0':
-            if feat == 'x':
-                return 'n_voxel'
-            if feat == 'y':
-                return 'llr_adjusted' if 'llr_adjusted' in h0_cols else 'llr'
-            if feat == 'color':
-                return '__none__'
-        # observed
-        if feat == 'x':
-            return 'n_voxel' if 'n_voxel' in obs_all else obs_all[0]
-        if feat == 'y':
-            return 'llr' if 'llr' in obs_all else obs_all[0]
-        if feat == 'color':
-            return '__none__'
-        return current
-
-    @app.callback(
-        [Output('dd-x', 'options'), Output('dd-x', 'value'),
-         Output('dd-y', 'options'), Output('dd-y', 'value'),
-         Output('dd-color', 'options'), Output('dd-color', 'value')],
-        Input('store-sample-mode', 'data'),
-        [State('dd-x', 'value'),
-         State('dd-y', 'value'),
-         State('dd-color', 'value')],
-        prevent_initial_call=False,
-    )
-    def _retarget_dropdowns(mode, cur_x, cur_y, cur_color):
-        opts_x = _options_for(mode, none_option=False)
-        opts_y = _options_for(mode, none_option=False)
-        opts_c = _options_for(mode, none_option=True)
-        return (opts_x, _default_for('x', mode, cur_x),
-                opts_y, _default_for('y', mode, cur_y),
-                opts_c, _default_for('color', mode, cur_color, none_option=True))
 
 
 def _register_selection_callback(app, ana_glow, mask_target_img=None):

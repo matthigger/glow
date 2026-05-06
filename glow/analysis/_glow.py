@@ -33,7 +33,7 @@ class AnalysisGLOW(Analysis):
     """
 
     def __init__(self, exp, n_perm_fwer,
-                 n_perm_inner=200,
+                 n_perm_inner=25,
                  alpha_fwer=.05, min_size=1, verbose=False,
                  n_jobs_perm=1, cloud_config=None, perm_dir=None,
                  cluster_mode="ward's (q1)",
