@@ -71,6 +71,7 @@ class AnalysisGLOW(Analysis):
         super().__init__(exp, **kwargs)
         self.verbose = verbose
         self.cluster_mode = cluster_mode
+        self.min_vox = min_vox
 
         if cloud_config is not None:
             self._run_on_cloud(exp, n_perm_fwer, n_perm_inner,

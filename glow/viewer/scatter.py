@@ -386,5 +386,32 @@ def _add_threshold_lines(fig, ana_glow, x_feat, y_feat):
                               annotation_text=label,
                               annotation_position='right')
 
+    # --- min_vox gate: vertical line on the H1 z-vs-size scatter ---
+    _add_min_vox_line(fig, ana_glow, x_feat, y_feat)
+
+
+def _add_min_vox_line(fig, ana_glow, x_feat, y_feat):
+    """Draw a vertical line at ``x = ana_glow.min_vox`` on the H1 z-vs-size view.
+
+    The horizontal ``alpha_fwer`` threshold on the ``llr_z`` axis only
+    applies to regions with size >= ``min_vox`` (smaller regions are
+    excluded from the max-z null and assigned NaN p-values).  Showing
+    where that cutoff sits along the size axis makes the gating visible
+    to the viewer.
+
+    Only drawn when x is ``n_voxel`` AND y is ``llr_z`` — anywhere else
+    the cutoff isn't a meaningful reference.  Silently skipped when
+    ``min_vox`` is missing (older / partially-constructed analyses).
+    """
+    if x_feat != 'n_voxel' or y_feat != _ADJ_COL:
+        return
+    min_vox = getattr(ana_glow, 'min_vox', None)
+    if min_vox is None:
+        return
+    style = dict(color='black', dash='solid', width=1.5)
+    fig.add_vline(x=min_vox, line=style,
+                  annotation_text=f'min_vox={int(min_vox)}',
+                  annotation_position='top')
+
 
 

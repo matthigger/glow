@@ -122,6 +122,47 @@ class TestBuildScatterTraces:
                 f'customdata should be int, got {type(val)}'
 
 
+class TestMinVoxLine:
+    """Vertical line at ana.min_vox is drawn only on the H1 z-vs-size view."""
+
+    @staticmethod
+    def _vlines_at(fig, x):
+        """Return shape entries that look like a vertical line at *x*."""
+        return [s for s in fig.layout.shapes
+                if s.type == 'line'
+                and s.x0 == x and s.x1 == x]
+
+    def test_drawn_when_y_is_llr_z_x_is_n_voxel(self, df_with_target, ana):
+        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_z',
+                            '__none__')
+        vlines = self._vlines_at(fig, ana.min_vox)
+        assert len(vlines) == 1, (
+            f'expected exactly one vertical line at x={ana.min_vox}, '
+            f'got {len(vlines)}')
+
+    def test_annotation_labels_min_vox(self, df_with_target, ana):
+        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_z',
+                            '__none__')
+        labels = [a.text for a in fig.layout.annotations]
+        assert f'min_vox={int(ana.min_vox)}' in labels, (
+            f'min_vox annotation missing; got {labels}')
+
+    def test_absent_when_y_is_llr(self, df_with_target, ana):
+        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr',
+                            '__none__')
+        assert len(self._vlines_at(fig, ana.min_vox)) == 0
+
+    def test_absent_when_y_is_n_voxel(self, df_with_target, ana):
+        fig = build_scatter(df_with_target, ana, 'n_voxel', 'n_voxel',
+                            '__none__')
+        assert len(self._vlines_at(fig, ana.min_vox)) == 0
+
+    def test_absent_when_x_is_not_n_voxel(self, df_with_target, ana):
+        fig = build_scatter(df_with_target, ana, 'llr', 'llr_z',
+                            '__none__')
+        assert len(self._vlines_at(fig, ana.min_vox)) == 0
+
+
 class TestBuildScatterSelection:
     def test_selected_markers_larger(self, df_with_target, ana):
         reg0 = int(df_with_target['region_idx'].iloc[0])
