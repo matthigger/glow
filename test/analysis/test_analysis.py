@@ -388,6 +388,36 @@ class TestMinVox:
             f'min_vox=1 threshold {ana_low.adj_crit:.3f}')
 
 
+class TestPerRegionZConsistency:
+    """``llr_adjusted_0`` must equal (stat - mu_per_region) / sigma_per_region.
+
+    Catches handoff bugs between the per-worker computation and the
+    synth step's reuse of the worker's stored z-array.
+    """
+
+    def test_z_matches_stat_minus_mu_over_sigma(self):
+        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
+                                    num_img=50, seed=0)
+        exp, _ = exp.impose_effect(seed=0,
+                                   extenter=ExtenterSphere(radius=2),
+                                   effect_llr=0.5)
+        ana = AnalysisGLOW(exp, n_perm_fwer=5, n_perm_inner=20,
+                           alpha_fwer=.5, min_vox=1)
+
+        # the worker stores mu / sigma / z; synth attaches them back
+        mu = ana._mu_per_region
+        sigma = ana._sigma_per_region
+        stat = ana.stat
+        z_stored = ana.llr_adjusted_0
+
+        # only check entries where sigma is well above the floor and
+        # neither input is NaN (matches the worker's sanitisation).
+        ok = np.isfinite(stat) & np.isfinite(mu) & (sigma > 1e-9)
+        z_expected = (stat[ok] - mu[ok]) / sigma[ok]
+        np.testing.assert_allclose(z_stored[ok], z_expected,
+                                   rtol=1e-9, atol=1e-9)
+
+
 class TestNaNHandling:
     """test handling of NaN statistics"""
     

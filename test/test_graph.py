@@ -300,6 +300,64 @@ def test_compute_llr_batched_matches_iter_stat(exp, children):
                            rtol=1e-6, atol=1e-6)
 
 
+def test_compute_llr_batched_min_size_masking(exp, children):
+    """``min_size`` should NaN out regions with size < min_size; valid
+    region values must match the unmasked path."""
+    from glow.analysis.mancova import decompose
+    from glow.graph import compute_llr_batched
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', NoBiasTermWarning)
+        exp_x = exp.sample_x(a=2, seed=0, add_bias=True)
+    q0, q1, _ = decompose(x=exp_x.x, contrast=exp_x.contrast)
+
+    llr_full, size_full = compute_llr_batched(
+        exp_x, children=children, q0=q0, q1=q1)
+    for min_size in (1, 2, 3, 5):
+        llr_m, size_m = compute_llr_batched(
+            exp_x, children=children, q0=q0, q1=q1, min_size=min_size)
+
+        # size array is unaffected by masking
+        assert np.array_equal(size_m, size_full)
+
+        # below threshold must be NaN; above-threshold must match full path
+        below = size_full < min_size
+        assert np.all(np.isnan(llr_m[below])), (
+            f'min_size={min_size}: regions below threshold should be NaN')
+
+        above = ~below
+        # valid above-threshold entries must match the full-pass result
+        valid_full = above & ~np.isnan(llr_full)
+        assert np.allclose(llr_m[valid_full], llr_full[valid_full],
+                           rtol=1e-10, atol=1e-10), (
+            f'min_size={min_size}: above-threshold values diverged from full path')
+
+        # NaN pattern above threshold must match full
+        assert np.array_equal(
+            np.isnan(llr_m[above]), np.isnan(llr_full[above]))
+
+
+def test_compute_llr_batched_leaf_only_tree():
+    """Edge: empty children (every region is a leaf — no internal nodes)."""
+    from glow.experiment.exper import Experiment
+    from glow.analysis.mancova import decompose
+    from glow.graph import compute_llr_batched
+
+    exp = Experiment.from_gauss(a=2, b=1, num_img=20, shape=(4,),
+                                seed=0, add_bias=True)
+    children = np.zeros((0, 2), dtype=int)
+    q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
+
+    llr, size = compute_llr_batched(exp, children=children, q0=q0, q1=q1)
+
+    num_vox = exp.y.shape[2]
+    assert size.shape == (num_vox,)
+    assert llr.shape == (num_vox,)
+    assert np.all(size == 1)
+    # leaf LLR should be finite (or NaN) but not crash
+    assert np.all(np.isfinite(llr) | np.isnan(llr))
+
+
 def test_get_mask_cases():
     children = np.array([[0, 1],
                          [2, 3],

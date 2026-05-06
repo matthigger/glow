@@ -84,11 +84,12 @@ def batched_cloud_results():
     exp, _ = exp_orig.impose_effect(mask=mask, effect_llr=1.0, seed=42)
 
     n_perm_fwer = 5
-    n_perm_fwer_size_adjust = 25
-    n_perm_total = n_perm_fwer + n_perm_fwer_size_adjust
+    n_perm_inner = 10
+    min_vox = 1   # keep every region in the comparison so the equivalence
+                  # check covers the full pval / llr_adjusted_0 array
     ana_kwargs = dict(n_perm_fwer=n_perm_fwer,
-                      n_perm_fwer_size_adjust=n_perm_fwer_size_adjust,
-                      alpha_fwer=0.05, min_size=1, verbose=True)
+                      n_perm_inner=n_perm_inner,
+                      alpha_fwer=0.05, min_vox=min_vox, verbose=True)
 
     # local reference (fast)
     ana_local = glow.analysis.AnalysisGLOW(exp, **ana_kwargs)
@@ -101,14 +102,14 @@ def batched_cloud_results():
     perm_runner = AWSBatchRunner(perm_cfg)
     experiment_id = f'glow_{uuid.uuid4().hex[:8]}'
     cloud_ana_kwargs = {'get_stat': get_llr,
-                        'n_perm_fwer_size_adjust': n_perm_fwer_size_adjust,
-                        'alpha_fwer': 0.05, 'min_size': 1}
+                        'n_perm_inner': n_perm_inner,
+                        'alpha_fwer': 0.05, 'min_vox': min_vox}
     perm_runner.upload_experiment(exp, cloud_ana_kwargs, experiment_id)
     submission = perm_runner.submit_jobs(
-        experiment_id=experiment_id, n_perm=n_perm_total,
+        experiment_id=experiment_id, n_perm=n_perm_fwer,
         skip_completed=True)
     synth_job_id = perm_runner.submit_synthesis_job(
-        experiment_id, n_perm_total)
+        experiment_id, n_perm_fwer)
     perm_job_ids = submission['job_ids'] + [synth_job_id]
     all_job_ids.extend(perm_job_ids)
     test_meta['permutation_level'] = {
