@@ -256,14 +256,22 @@ class AnalysisGLOW(Analysis):
         _exp = exp.permute(perm_idx)
         children = cluster(exp=_exp, mode=self.cluster_mode)
 
-        # observed (for this outer perm) LLR per region
+        # observed (for this outer perm) LLR per region.  Computed
+        # for ALL regions, including size < min_vox, so the viewer's
+        # H1 scatter has full coverage (raw LLR is cheap to compute
+        # at all sizes).
         llr_outer, size = glow.graph.compute_llr_batched(
             _exp, children=children, q0=q0, q1=q1)
         del _exp
 
-        # inner FL perms against THIS tree.  Seed scheme: each outer
-        # perm reserves a 100_000-wide block, far above any realistic
-        # n_perm_inner, so seeds never collide across outer perms.
+        # inner FL perms against THIS tree.  Phase 2 of compute_llr_batched
+        # is skipped for regions with size < min_vox (they're inactive
+        # in the FWER set anyway, so their mu/sigma is unused).  This
+        # roughly halves the per-walk cost on typical neuroimaging trees
+        # at min_vox=4.
+        # Seed scheme: each outer perm reserves a 100_000-wide block,
+        # far above any realistic n_perm_inner, so seeds never collide
+        # across outer perms.
         if n_perm_inner > 0:
             num_reg = llr_outer.shape[0]
             llr_inner = np.empty((n_perm_inner, num_reg), dtype=float)
@@ -271,7 +279,8 @@ class AnalysisGLOW(Analysis):
             for i in range(n_perm_inner):
                 _exp_inner = exp.permute(base + i)
                 llr_i, _ = glow.graph.compute_llr_batched(
-                    _exp_inner, children=children, q0=q0, q1=q1)
+                    _exp_inner, children=children, q0=q0, q1=q1,
+                    min_size=min_vox)
                 llr_inner[i, :] = llr_i
                 del _exp_inner
 
