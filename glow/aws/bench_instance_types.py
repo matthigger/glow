@@ -114,8 +114,7 @@ def stage_workload(s3, bench_run_id: str, n_copies: int) -> None:
         runner=RunAna({'GLOW': (
             glow.analysis.AnalysisGLOW,
             dict(n_perm_fwer=BENCH_N_PERM,
-                 n_perm_fwer_size_adjust=BENCH_N_SA,
-                 alpha_fwer=0.05, min_size=1, get_stat=get_llr),
+                 alpha_fwer=0.05, min_vox=1, get_stat=get_llr),
         )}),
         n_seed=1,
         effect_llr_all=np.array([0.05]),

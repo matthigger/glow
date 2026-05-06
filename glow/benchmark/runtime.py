@@ -246,7 +246,7 @@ def _ana_kwargs(n_perm):
     return dict(
         get_stat=get_llr,
         alpha_fwer=0.05,
-        min_size=1,
+        min_vox=1,
     )
 
 
@@ -516,16 +516,12 @@ def _build_runtime_profile_configs(cloud_config=None):
     configs = []
     for n_perm, b, num_img, vox in product(
             n_perm_values, b_values, img_values, vox_targets):
-        n_sa = min(50, n_perm // 4)
-        n_fwer_glow = n_perm - n_sa
-
         configs.append(Config(
             label=f'rtprof_glow_{vox}v_{b}b_{num_img}i_{n_perm}p',
             runner=RunAna({'GLOW': (
                 glow.analysis.AnalysisGLOW,
-                dict(n_perm_fwer=n_fwer_glow,
-                     n_perm_fwer_size_adjust=n_sa,
-                     alpha_fwer=0.05, min_size=1),
+                dict(n_perm_fwer=n_perm,
+                     alpha_fwer=0.05, min_vox=1),
             )}),
             wgn_b=b, wgn_num_img=num_img, crop_n_vox=vox,
             **common,

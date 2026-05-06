@@ -149,34 +149,26 @@ def print_memory_profile(config=None, exp=None, ana=None):
 
 
 def process_permutation(exp, ana_kwargs, perm_idx):
-    """process a single permutation and return children + stat + size."""
-    from glow.analysis.cluster import cluster
-    from glow.analysis.mancova import get_llr
+    """Process one outer permutation: cluster, observed LLR, inner perms.
 
-    get_stat = ana_kwargs.get('get_stat', get_llr)
+    Mirrors :py:meth:`glow.analysis.AnalysisGLOW._process_permutation`
+    so that AWS Batch workers and local runs produce byte-identical
+    per-perm pickles.  Each worker is self-contained: it runs its own
+    ``n_perm_inner`` Freedman-Lane draws against this perm's tree and
+    pre-computes the worker-local max-z over (size >= min_vox) regions.
+    The synthesis job then just gathers max_z from each pickle.
+    """
+    from glow.analysis._glow import AnalysisGLOW
+
     cluster_mode = ana_kwargs.get('cluster_mode', "q1")
+    n_perm_inner = ana_kwargs.get('n_perm_inner', 200)
+    min_vox = ana_kwargs.get('min_vox', 4)
 
-    _exp = exp.permute(perm_idx)
-    children = cluster(exp=_exp, mode=cluster_mode)
-
-    b, num_img, num_vox = _exp.y.shape
-
-    stat = []
-    import glow.graph
-    for reg_idx, size, e, h in glow.graph.iter_stat(
-            exp=_exp, children=children):
-        stat_val = get_stat(e=e, h=h, n=size)
-        stat.append(stat_val)
-
-    size = glow.graph.node_sum(x=np.ones(num_vox, dtype=int),
-                               children=children)
-
-    return {
-        'perm_idx': perm_idx,
-        'children': children,
-        'stat': stat,
-        'size': size,
-    }
+    ana = AnalysisGLOW.from_precomputed(
+        exp=exp, get_stat=ana_kwargs.get('get_stat'),
+        cluster_mode=cluster_mode)
+    return ana._process_permutation(
+        exp, perm_idx, n_perm_inner, min_vox)
 
 
 def run_permutation_mode(args):
@@ -471,7 +463,6 @@ def run_synthesis_mode(args):
         sys.exit(1)
 
     n_perm_fwer = args.n_perm
-    n_perm_inner = ana_kwargs.get('n_perm_inner', 200)
     n_expected = n_perm_fwer + 1
     result_prefix = (f'{args.s3_prefix}/results/'
                      f'{args.experiment_id}/')
@@ -499,12 +490,13 @@ def run_synthesis_mode(args):
 
     get_stat = ana_kwargs.get('get_stat', get_llr)
     alpha_fwer = ana_kwargs.get('alpha_fwer', 0.05)
-    min_size = ana_kwargs.get('min_size', 1)
+    min_vox = ana_kwargs.get('min_vox', 4)
     cluster_mode = ana_kwargs.get('cluster_mode', "q1")
 
     # download all per-perm result pickles into a local dir so the
     # per-region-z finalizer can read them as if they were produced by
-    # a local run.
+    # a local run.  Each pickle already contains the worker-local
+    # mu/sigma/z + max_z; the synth step is now just FWER assembly.
     perm_dir = Path(tempfile.mkdtemp(prefix='glow_synth_'))
     print(f'\nDownloading {n_expected} perm results to {perm_dir} ...')
     perm_elapsed = [None] * n_expected
@@ -520,16 +512,13 @@ def run_synthesis_mode(args):
         except Exception:
             pass
 
-    print(f'\nRunning per_region_z synthesis '
-          f'({n_perm_inner} inner perms) ...')
+    print(f'\nRunning per_region_z synthesis (FWER assembly) ...')
     ana = AnalysisGLOW.from_precomputed(
         exp=exp, get_stat=get_stat, verbose=True,
         cluster_mode=cluster_mode)
     _t0 = time.time()
     ana._finalize_per_region_z(
-        exp, perm_dir, n_perm_fwer, n_perm_inner,
-        alpha_fwer, min_size,
-        inner_seed_offset=n_perm_fwer + 1)
+        exp, perm_dir, n_perm_fwer, alpha_fwer, min_vox)
     ana.synthesis_elapsed_sec = time.time() - _t0
     ana.perm_elapsed_sec = perm_elapsed
     print(f'  ✓ {len(ana.effect_list)} effects discovered '

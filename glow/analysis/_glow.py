@@ -12,7 +12,7 @@ import glow.effect
 import glow.graph
 from ._base import Analysis, _sanitize_adjusted_stat
 from glow.experiment.exper import ExperimentScaled
-from .mancova import get_llr
+from .mancova import decompose, get_llr
 from .prune import prune_greedy
 from .cluster import cluster
 
@@ -20,9 +20,12 @@ from .cluster import cluster
 class AnalysisGLOW(Analysis):
     """search a hierarchical segmentation for significant effects.
 
-    Uses a disk-backed streaming pipeline: each permutation result is
-    written to a temp directory, regression is accumulated online, and
-    finalization reads the results in a single sweep.
+    Uses a disk-backed streaming pipeline: each outer-perm worker is
+    self-contained — it clusters, computes the observed LLR for that
+    tree, and runs ``n_perm_inner`` fresh Freedman-Lane draws against
+    that same tree to estimate per-region (mu_r, std_r).  The synth
+    step then just gathers each worker's pre-computed max-z and runs
+    Westfall-Young FWER + pruning.
 
     Attributes:
         children (np.array): (num_leaf - 1, 2) Ward children for observed data
@@ -34,7 +37,7 @@ class AnalysisGLOW(Analysis):
 
     def __init__(self, exp, n_perm_fwer,
                  n_perm_inner=200,
-                 alpha_fwer=.05, min_size=1, verbose=False,
+                 alpha_fwer=.05, min_vox=4, verbose=False,
                  n_jobs_perm=1, cloud_config=None, perm_dir=None,
                  cluster_mode="q1",
                  **kwargs):
@@ -42,12 +45,17 @@ class AnalysisGLOW(Analysis):
         Args:
             exp: Experiment to analyze
             n_perm_fwer: number of outer FL permutations for FWER control
-            n_perm_inner: number of inner FL permutations used to
-                estimate per-region (mu, std) of the H0 LLR distribution
-                on the merged graph.  Inner seeds occupy indices
-                ``n_perm_fwer + 1 .. n_perm_fwer + n_perm_inner``.
+            n_perm_inner: number of inner FL permutations used per
+                outer-perm worker to estimate per-region (mu, std) of
+                the H0 LLR distribution against that worker's tree.
             alpha_fwer: family-wise error rate
-            min_size: minimum region size
+            min_vox: minimum region size (in voxels) admitted to the
+                FWER comparison set.  Regions smaller than this are
+                excluded from the max-z null and assigned NaN p-values.
+                Defaults to 4 — the merged-graph profiling showed that
+                regions with size < 5 are >99% tree-private and
+                contribute disproportionately to the max-z tail without
+                ever being plausible scientific findings.
             verbose: print progress
             n_jobs_perm: parallel jobs for outer perms (1=serial, -1=all)
             cloud_config: CloudConfig for AWS execution (None = local)
@@ -66,7 +74,7 @@ class AnalysisGLOW(Analysis):
 
         if cloud_config is not None:
             self._run_on_cloud(exp, n_perm_fwer, n_perm_inner,
-                              alpha_fwer, min_size, verbose,
+                              alpha_fwer, min_vox, verbose,
                               cloud_config,
                               perms_per_job=kwargs.pop('perms_per_job', None),
                               cluster_mode=cluster_mode,
@@ -75,10 +83,16 @@ class AnalysisGLOW(Analysis):
 
         b, num_img, num_vox = exp.y.shape
 
+        # decompose() depends only on (x, contrast), which permute()
+        # leaves untouched — hoist outside the per-perm loop and reuse
+        # for every outer + inner FL draw.
+        q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
+
         # Permutation index layout:
-        #   0                                    = observed data
-        #   1..n_perm_fwer                       = outer FL nulls (FWER)
-        #   n_perm_fwer+1..n_perm_fwer+n_perm_inner = held-out inner FL nulls
+        #   0                = observed data (outer perm 0)
+        #   1..n_perm_fwer   = outer FL nulls (FWER comparison set)
+        # Inner perms run inside each outer-perm worker (against that
+        # worker's tree) and are not written to disk.
         all_perm_indices = list(range(n_perm_fwer + 1))
 
         _cleanup_dir = perm_dir is None
@@ -102,9 +116,9 @@ class AnalysisGLOW(Analysis):
                   f'{len(todo)} remaining')
 
         if verbose:
-            print(f'  [1/2] outer perms: clustering {len(todo)} '
-                  f'permutations ({num_vox} voxels, '
-                  f'{n_perm_fwer} FWER) ...')
+            print(f'  [1/2] outer perms: clustering + inner perms for '
+                  f'{len(todo)} permutations ({num_vox} voxels, '
+                  f'{n_perm_fwer} FWER, {n_perm_inner} inner) ...')
 
         if n_jobs_perm not in (0, 1) and todo:
             # Pin BLAS threads to 1 inside each worker.  Without this,
@@ -115,7 +129,8 @@ class AnalysisGLOW(Analysis):
                 results = Parallel(
                     n_jobs=n_jobs_perm,
                     verbose=10 if verbose else 0,
-                )(delayed(self._process_permutation)(exp, perm_idx)
+                )(delayed(self._process_permutation)(
+                        exp, perm_idx, n_perm_inner, min_vox, q0, q1)
                   for perm_idx in todo)
             for r in results:
                 p = r['perm_idx']
@@ -125,111 +140,68 @@ class AnalysisGLOW(Analysis):
         else:
             for perm_idx in tqdm(todo, desc='outer perms',
                                  disable=not verbose):
-                r = self._process_permutation(exp, perm_idx)
+                r = self._process_permutation(
+                    exp, perm_idx, n_perm_inner, min_vox, q0, q1)
                 with open(perm_dir / f'{r["perm_idx"]:06d}_result.pkl',
                           'wb') as fh:
                     pickle.dump(r, fh)
                 del r
 
         if verbose:
-            print(f'  [2/2] per_region_z finalization '
-                  f'({n_perm_inner} inner perms) ...')
+            print(f'  [2/2] per_region_z finalization ...')
 
         self._finalize_per_region_z(
-            exp, perm_dir, n_perm_fwer, n_perm_inner,
-            alpha_fwer, min_size,
-            inner_seed_offset=n_perm_fwer + 1)
+            exp, perm_dir, n_perm_fwer, alpha_fwer, min_vox)
 
         if _cleanup_dir:
             shutil.rmtree(perm_dir, ignore_errors=True)
 
     def _finalize_per_region_z(self, exp, perm_dir, n_perm_fwer,
-                                n_perm_inner, alpha_fwer, min_size,
-                                inner_seed_offset):
+                                alpha_fwer, min_vox):
         """Per-region permutation z-scoring with Westfall-Young FWER.
 
-        Builds the merged graph from all outer-perm trees, runs
-        ``n_perm_inner`` held-out FL permutations to estimate
-        ``(mu_r, std_r)`` per merged region, then z-scores each outer
-        perm's LLRs against its tree's regions and computes the
+        Reads each outer-perm worker's pickle (which already contains
+        the worker-local mu/sigma/z + max_z), assembles the max-z null,
+        and runs the FWER + pruning pipeline on the observed tree.
+
+        With per-worker inner perms, there is no merged graph: each
+        outer perm's z-scores are computed against its own tree.  The
+        ``min_vox`` cutoff defends FWER power against the long tail of
+        small (mostly tree-private) regions whose noise dominates the
         max-z null.
         """
         verbose = getattr(self, 'verbose', False)
-        num_vox = exp.y.shape[2]
 
-        children_list = []
-        stat_list = []
-        size_list = []
+        results = []
         for k in range(n_perm_fwer + 1):
             with open(perm_dir / f'{k:06d}_result.pkl', 'rb') as fh:
-                r = pickle.load(fh)
-            children_list.append(np.asarray(r['children']))
-            stat_list.append(np.asarray(r['stat'], dtype=float))
-            size_list.append(np.asarray(r['size'], dtype=float))
+                results.append(pickle.load(fh))
+
+        r0 = results[0]
+        stat_0 = np.asarray(r0['stat'], dtype=float)
+        size_0 = np.asarray(r0['size'], dtype=float)
+        children_0 = np.asarray(r0['children'])
+        z_0 = np.asarray(r0['z'], dtype=float)
+
+        # max-z null: each outer-perm worker has already computed its
+        # own max-z over (size >= min_vox) — just gather and sort.
+        max_z_list = sorted(float(r['max_z']) for r in results)
 
         if verbose:
-            print(f'  per_region_z: merging {n_perm_fwer + 1} trees ...')
-        map_to_new, merged_children, _ = glow.graph.graph_merge(
-            n_common=num_vox, children_list=children_list)
-        num_merged = num_vox + merged_children.shape[0]
-
-        if verbose:
-            print(f'  per_region_z: {n_perm_inner} inner perms on '
-                  f'{num_merged} merged regions ...')
-        # decompose() depends only on (x, contrast), which permute()
-        # leaves untouched — hoist outside the inner loop.
-        from glow.analysis.mancova import decompose
-        q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
-        LLR_inner = np.full((n_perm_inner, num_merged), np.nan)
-        for k_inner in tqdm(range(n_perm_inner), desc='inner perms',
-                             disable=not verbose):
-            seed = inner_seed_offset + k_inner
-            _exp = exp.permute(seed)
-            llr, _ = glow.graph.compute_llr_batched(
-                _exp, children=merged_children, q0=q0, q1=q1)
-            LLR_inner[k_inner, :] = llr
-
-        mu_merged = np.nanmean(LLR_inner, axis=0)
-        sigma_merged = np.nanstd(LLR_inner, axis=0, ddof=1)
-        sigma_merged[sigma_merged < 1e-12] = 1.0
-
-        # max-z null over outer perms
-        max_z_list = []
-        for k_outer in range(n_perm_fwer + 1):
-            outer_to_merged = np.concatenate([
-                np.arange(num_vox), map_to_new[k_outer]])
-            mu_k = mu_merged[outer_to_merged]
-            sigma_k = sigma_merged[outer_to_merged]
-            z_k = (stat_list[k_outer] - mu_k) / sigma_k
-            z_k = _sanitize_adjusted_stat(z_k)
-            size_k = size_list[k_outer]
-            active = size_k >= min_size
-            if active.any() and np.isfinite(z_k[active]).any():
-                max_z_list.append(float(np.nanmax(z_k[active])))
-            else:
-                max_z_list.append(float('-inf'))
-
-        stat_max_sorted = np.sort(max_z_list)
-
-        # observed (k_outer = 0) z-scored LLR, mapped from T_0's region
-        # indexing back to merged-graph indexing.
-        outer_to_merged_0 = np.concatenate([
-            np.arange(num_vox), map_to_new[0]])
-        mu_arr_0 = mu_merged[outer_to_merged_0]
-        sigma_arr_0 = sigma_merged[outer_to_merged_0]
-        llr_adjusted_0 = (stat_list[0] - mu_arr_0) / sigma_arr_0
+            print(f'  per_region_z: assembled max-z null from '
+                  f'{len(max_z_list)} outer perms (min_vox={min_vox})')
 
         self._finalize_analysis(
             exp, n_perm_fwer,
-            stat_list[0], size_list[0], children_list[0],
-            llr_adjusted_0, stat_max_sorted,
-            alpha_fwer, min_size)
+            stat_0, size_0, children_0,
+            z_0, max_z_list,
+            alpha_fwer, min_vox)
 
-        # diagnostics
-        self._merged_children = merged_children
-        self._map_to_new = map_to_new
-        self._mu_per_region = mu_merged
-        self._sigma_per_region = sigma_merged
+        # diagnostics for the viewer (and the diag scripts).  With the
+        # per-worker pipeline these are the observed tree's per-region
+        # mu/sigma; there is no merged graph any more.
+        self._mu_per_region = np.asarray(r0['mu'], dtype=float)
+        self._sigma_per_region = np.asarray(r0['sigma'], dtype=float)
 
     @classmethod
     def from_precomputed(cls, *, exp, get_stat=None, verbose=False,
@@ -250,37 +222,108 @@ class AnalysisGLOW(Analysis):
         obj.n_jobs_perm = 1
         return obj
 
-    def _process_permutation(self, exp, perm_idx):
-        """Run one permutation: cluster, compute stats and sizes."""
+    def _process_permutation(self, exp, perm_idx, n_perm_inner, min_vox,
+                              q0=None, q1=None):
+        """Run one outer perm: cluster, observed LLR, inner perms, max_z.
+
+        Each outer perm worker is fully self-contained — the inner FL
+        permutations run against this perm's tree (not a merged graph),
+        which makes the worker embarrassingly parallel and gives a
+        bounded memory footprint.  The merged-graph approach was
+        retired after profiling showed regions with size >= 5 are
+        >99% tree-private (graph_merge bought nothing for the regions
+        that ``min_vox`` admits to the FWER comparison set).
+
+        Args:
+            exp: source experiment (NOT yet permuted; ``perm_idx==0``
+                is the observed data).
+            perm_idx: outer permutation index.
+            n_perm_inner: number of inner FL permutations to run
+                against this tree for per-region (mu, std).
+            min_vox: minimum region size for the max-z comparison set.
+            q0, q1: pre-decomposed contrast subspaces.  May be None
+                when called via ``rerun_permutation``; in that case
+                they are recomputed from ``exp``.
+
+        Returns:
+            dict with keys
+                ``perm_idx``, ``children``, ``stat`` (raw LLR),
+                ``size``, ``mu``, ``sigma``, ``z``, ``max_z``.
+        """
+        if q0 is None or q1 is None:
+            q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
+
         _exp = exp.permute(perm_idx)
         children = cluster(exp=_exp, mode=self.cluster_mode)
 
-        stat = self.get_stat_perm(exp=_exp, children=children)
-        num_vox = _exp.y.shape[2]
-        size = glow.graph.node_sum(np.ones(num_vox, dtype=int), children)
-
+        # observed (for this outer perm) LLR per region
+        llr_outer, size = glow.graph.compute_llr_batched(
+            _exp, children=children, q0=q0, q1=q1)
         del _exp
+
+        # inner FL perms against THIS tree.  Seed scheme: each outer
+        # perm reserves a 100_000-wide block, far above any realistic
+        # n_perm_inner, so seeds never collide across outer perms.
+        if n_perm_inner > 0:
+            num_reg = llr_outer.shape[0]
+            llr_inner = np.empty((n_perm_inner, num_reg), dtype=float)
+            base = (perm_idx + 1) * 100_000
+            for i in range(n_perm_inner):
+                _exp_inner = exp.permute(base + i)
+                llr_i, _ = glow.graph.compute_llr_batched(
+                    _exp_inner, children=children, q0=q0, q1=q1)
+                llr_inner[i, :] = llr_i
+                del _exp_inner
+
+            mu = np.nanmean(llr_inner, axis=0)
+            sigma = np.nanstd(llr_inner, axis=0, ddof=1)
+        else:
+            # rerun_permutation path: caller only wants children/stat/size.
+            mu = np.full_like(llr_outer, fill_value=np.nan)
+            sigma = np.full_like(llr_outer, fill_value=np.nan)
+
+        # zero-std guard (constant inner draws → divide-by-zero z).
+        sigma_safe = np.where(sigma < 1e-12, 1.0, sigma)
+        z = (llr_outer - mu) / sigma_safe
+        z = _sanitize_adjusted_stat(z)
+
+        # FWER comparison set: only regions with size >= min_vox feed
+        # the max-z null.  Inactive regions are excluded entirely.
+        active = size >= min_vox
+        if active.any() and np.isfinite(z[active]).any():
+            max_z = float(np.nanmax(z[active]))
+        else:
+            max_z = float('-inf')
+
         return {
             'perm_idx': perm_idx,
             'children': children,
-            'stat': stat,
+            'stat': llr_outer,
             'size': size,
+            'mu': mu,
+            'sigma': sigma,
+            'z': z,
+            'max_z': max_z,
         }
 
     @classmethod
     def rerun_permutation(cls, exp, perm_idx, get_stat=get_llr,
-                          cluster_mode="q1"):
-        """Re-run a single permutation for inspection.
+                          cluster_mode="q1", n_perm_inner=0, min_vox=4):
+        """Re-run a single outer permutation for inspection.
 
-        Since permutations are deterministic given ``perm_idx``, this
-        faithfully reproduces the result without needing stored data.
+        Defaults to ``n_perm_inner=0`` (skips the inner FL loop), which
+        reproduces the cheap "just give me children/stat/size" use
+        case of the old method.
 
         Returns:
-            dict with keys ``perm_idx``, ``children``, ``stat``, ``size``
+            dict — see ``_process_permutation``.  With
+            ``n_perm_inner=0`` the ``mu``/``sigma`` arrays are NaN and
+            ``z`` reduces to the (sanitised) raw LLR.
         """
         ana = cls.from_precomputed(exp=exp, get_stat=get_stat)
         ana.cluster_mode = cluster_mode
-        return ana._process_permutation(exp, perm_idx)
+        return ana._process_permutation(
+            exp, perm_idx, n_perm_inner, min_vox)
 
     def _finalize_analysis(self, exp, n_perm_fwer,
                           stat_0, size_0, children_0,
@@ -298,6 +341,8 @@ class AnalysisGLOW(Analysis):
                 tree (already adjusted by per-region (mu, std)).
             stat_max_sorted: sorted max-z null distribution from the
                 outer permutations (length n_perm_fwer + 1).
+            min_size: minimum region size for the FWER comparison set
+                (synonym for ``min_vox`` at the call site).
             prune_stat: optional override for the array used to rank
                 pruning candidates.  Defaults to ``stat_0`` (raw LLR).
                 Pass ``llr_adjusted_0`` to rank by per-region z instead.
@@ -407,18 +452,18 @@ class AnalysisGLOW(Analysis):
         return predict_runtime_sec(model, num_vox, b, num_img, n_perm=1)
 
     def _run_on_cloud(self, exp, n_perm_fwer, n_perm_inner,
-                     alpha_fwer, min_size, verbose,
+                     alpha_fwer, min_vox, verbose,
                      cloud_config,
                      perms_per_job=None,
                      cluster_mode="q1",
                      **kwargs):
         """Run full analysis on AWS Batch (outer perms + synthesis).
 
-        Submits ``n_perm_fwer + 1`` outer-perm jobs, then a synthesis
-        job that polls S3 for all results, runs ``n_perm_inner`` inner
-        FL perms locally on the synth worker, and runs the per-region-z
-        finalization.  The final pickled AnalysisGLOW is downloaded and
-        its attributes are copied onto ``self``.
+        Submits ``n_perm_fwer + 1`` outer-perm jobs (each running its
+        own inner FL loop) plus a synthesis job that gathers per-perm
+        pickles and runs the FWER + pruning pipeline.  The final
+        pickled AnalysisGLOW is downloaded and its attributes are
+        copied onto ``self``.
         """
         from glow.aws import AWSBatchRunner
         import uuid
@@ -431,7 +476,7 @@ class AnalysisGLOW(Analysis):
             'get_stat': self.get_stat,
             'n_perm_inner': n_perm_inner,
             'alpha_fwer': alpha_fwer,
-            'min_size': min_size,
+            'min_vox': min_vox,
             'cluster_mode': cluster_mode,
         }
         ana_kwargs.update(kwargs)
@@ -483,7 +528,6 @@ class AnalysisGLOW(Analysis):
             'children', 'stat', 'size', 'pval', 'llr_adjusted_0',
             'sig_reg_list', 'effect_list', 'alpha_fwer', 'adj_crit',
             'prune_info',
-            '_merged_children', '_map_to_new',
             '_mu_per_region', '_sigma_per_region',
         ]
         for attr in _COPY_ATTRS:

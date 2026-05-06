@@ -198,18 +198,18 @@ class TestAnalysisEdgeCases:
     """test edge cases and error handling"""
     
     def test_all_regions_too_small(self):
-        """test when all regions are filtered out by min_size"""
+        """test when all regions are filtered out by min_vox"""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
         exp, _ = exp.impose_effect(seed=0,
                                    extenter=ExtenterSphere(radius=1),
                                    effect_llr=0.5)
-        
-        # set min_size so large that all regions are filtered
+
+        # set min_vox so large that all regions are filtered
         analysis = AnalysisGLOW(
             exp,
             n_perm_fwer=5,
             alpha_fwer=.1,
-            min_size=1000000  # impossibly large
+            min_vox=1000000  # impossibly large
         )
         
         # should run without error
@@ -230,7 +230,7 @@ class TestAnalysisEdgeCases:
             exp,
             n_perm_fwer=3,
             alpha_fwer=.5,  # lenient for small sample
-            min_size=1
+            min_vox=1
         )
         
         # should run without error even with small size
@@ -288,8 +288,9 @@ class TestParallelExecution:
             n_jobs_perm=0  # serial execution
         )
         
-        # results should be identical
-        assert np.allclose(analysis_parallel.pval, analysis_serial.pval)
+        # results should be identical (bit-equal; NaN ↔ NaN allowed)
+        np.testing.assert_array_equal(analysis_parallel.pval,
+                                       analysis_serial.pval)
         assert len(analysis_parallel.effect_list) == len(analysis_serial.effect_list)
     
 
@@ -326,12 +327,65 @@ class TestZeroStdGuard:
                                    effect_llr=0.5)
 
         analysis = AnalysisGLOW(exp, n_perm_fwer=5, alpha_fwer=0.05,
-                                min_size=1)
+                                min_vox=1)
 
         assert not np.any(np.isinf(analysis.llr_adjusted_0)), \
             'llr_adjusted_0 contains inf (likely zero-std division)'
         assert not np.any(np.isnan(analysis.llr_adjusted_0)), \
             'llr_adjusted_0 contains nan (likely zero-std division)'
+
+
+class TestMinVox:
+    """min_vox gates the FWER comparison set."""
+
+    def test_no_significant_region_below_min_vox(self):
+        """No significant region in effect_list should have size < min_vox."""
+        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
+                                     num_img=50, seed=0)
+        exp, _ = exp.impose_effect(seed=0,
+                                    extenter=ExtenterSphere(radius=2),
+                                    effect_llr=0.5)
+
+        min_vox = 4
+        ana = AnalysisGLOW(
+            exp, n_perm_fwer=10, n_perm_inner=20,
+            alpha_fwer=.5, min_vox=min_vox)
+
+        # any sig_reg_list entry must have size >= min_vox
+        for reg_idx in ana.sig_reg_list:
+            assert ana.size[reg_idx] >= min_vox, (
+                f'reg {reg_idx} has size {ana.size[reg_idx]} '
+                f'< min_vox={min_vox} but appears in sig_reg_list')
+
+        # regions with size < min_vox must have nan p-values
+        below = ana.size < min_vox
+        assert np.all(np.isnan(ana.pval[below])), \
+            'regions below min_vox should have NaN p-values'
+
+    def test_min_vox_affects_threshold(self):
+        """Increasing min_vox should monotonically not raise the threshold.
+
+        With more small-region noise excluded from the max-z null,
+        the FWER threshold should drop or stay equal — never rise.
+        """
+        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
+                                     num_img=50, seed=0)
+        exp, _ = exp.impose_effect(seed=0,
+                                    extenter=ExtenterSphere(radius=2),
+                                    effect_llr=0.5)
+
+        ana_low = AnalysisGLOW(
+            exp, n_perm_fwer=10, n_perm_inner=20,
+            alpha_fwer=.1, min_vox=1)
+        ana_high = AnalysisGLOW(
+            exp, n_perm_fwer=10, n_perm_inner=20,
+            alpha_fwer=.1, min_vox=4)
+
+        # threshold under min_vox=4 should be <= threshold under min_vox=1
+        # (using the same outer-perm seeds → comparable max-z draws)
+        assert ana_high.adj_crit <= ana_low.adj_crit + 1e-9, (
+            f'min_vox=4 threshold {ana_high.adj_crit:.3f} > '
+            f'min_vox=1 threshold {ana_low.adj_crit:.3f}')
 
 
 class TestNaNHandling:
@@ -375,21 +429,29 @@ class TestResume:
         import pickle
         import tempfile
         n_perm_fwer = 10
+        n_perm_inner = 20
+        min_vox = 1  # tiny test exp; min_vox=4 would mask everything
 
         # full run as reference
-        ref = AnalysisGLOW(self.exp, n_perm_fwer=n_perm_fwer, alpha_fwer=.5)
+        ref = AnalysisGLOW(self.exp, n_perm_fwer=n_perm_fwer,
+                            n_perm_inner=n_perm_inner,
+                            min_vox=min_vox, alpha_fwer=.5)
 
-        # write first 5 permutations into a temp perm_dir
+        # write first 5 permutations into a temp perm_dir.  The pickle
+        # must include mu/sigma/z/max_z so the synth step can reuse it,
+        # so rerun_permutation gets the same n_perm_inner / min_vox.
         perm_dir = tempfile.mkdtemp(prefix='glow_test_resume_')
         for p in range(5):
-            r = AnalysisGLOW.rerun_permutation(self.exp, p)
+            r = AnalysisGLOW.rerun_permutation(
+                self.exp, p, n_perm_inner=n_perm_inner, min_vox=min_vox)
             with open(f'{perm_dir}/{p:06d}_result.pkl', 'wb') as f:
                 pickle.dump(r, f)
 
         # resume from partial perm_dir
         resumed = AnalysisGLOW(
-            self.exp, n_perm_fwer=n_perm_fwer, alpha_fwer=.5,
-            perm_dir=perm_dir)
+            self.exp, n_perm_fwer=n_perm_fwer,
+            n_perm_inner=n_perm_inner, min_vox=min_vox,
+            alpha_fwer=.5, perm_dir=perm_dir)
 
         np.testing.assert_array_equal(resumed.pval, ref.pval)
 
@@ -409,7 +471,7 @@ class TestResume:
         from pathlib import Path
         result_files = list(Path(perm_dir).glob('*_result.pkl'))
         # only outer perms (0..n_perm_fwer) are written to perm_dir;
-        # inner perms run on the synth side without per-perm files
+        # inner perms run inside each outer-perm worker (no per-perm files)
         assert len(result_files) == n_perm_fwer + 1
 
         import shutil

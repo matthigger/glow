@@ -35,7 +35,7 @@ _wgn_side = math.ceil(CROP_N_VOX ** (1 / 3))
 
 ana_kwargs_dict = {
     'GLOW': (glow.analysis.AnalysisGLOW,
-             dict(n_perm_fwer=N_PERM, min_size=1, alpha_fwer=0.05)),
+             dict(n_perm_fwer=N_PERM, min_vox=1, alpha_fwer=0.05)),
 }
 
 

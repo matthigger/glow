@@ -39,8 +39,8 @@ def _run_h0_trial(seed, alpha):
     exp = glow.experiment.Experiment.from_gauss(
         seed=seed, shape=(12, 12), a=2, b=2, num_img=25)
     ana = glow.analysis.AnalysisGLOW(
-        exp, n_perm_fwer=50, n_perm_fwer_size_adjust=50,
-        alpha_fwer=alpha, min_size=1, verbose=False)
+        exp, n_perm_fwer=50,
+        alpha_fwer=alpha, min_vox=1, verbose=False)
     return len(ana.effect_list) > 0
 
 

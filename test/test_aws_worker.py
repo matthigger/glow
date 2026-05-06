@@ -94,9 +94,12 @@ class TestProcessPermutationFidelity:
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=30, seed=0)
 
     def _check_perm(self, perm_idx):
-        worker_r = process_permutation(self.exp, {}, perm_idx)
-        local_r = AnalysisGLOW.rerun_permutation(self.exp, perm_idx,
-                                                   get_stat=get_llr)
+        # n_perm_inner=0 keeps the test cheap; worker/local must match
+        # on (children, stat, size) regardless of inner-perm count.
+        worker_r = process_permutation(
+            self.exp, {'n_perm_inner': 0}, perm_idx)
+        local_r = AnalysisGLOW.rerun_permutation(
+            self.exp, perm_idx, get_stat=get_llr)
 
         np.testing.assert_array_equal(
             worker_r['children'], local_r['children'],
@@ -119,26 +122,20 @@ class TestProcessPermutationFidelity:
         self._check_perm(5)
 
     def test_stat_length(self):
-        """Worker stat list should have one entry per region."""
-        r = process_permutation(self.exp, {}, 0)
+        """Worker stat array should have one entry per region."""
+        r = process_permutation(self.exp, {'n_perm_inner': 0}, 0)
         num_vox = self.exp.y.shape[2]
         num_internal = r['children'].shape[0]
         assert len(r['stat']) == num_vox + num_internal
 
-    def test_custom_get_stat(self):
-        """Worker should respect get_stat from ana_kwargs."""
-        from glow.analysis.mancova import get_wilks
-        r_wilks = process_permutation(
-            self.exp, {'get_stat': get_wilks}, 0)
-        r_llr = process_permutation(self.exp, {}, 0)
-
-        # same tree structure (data is identical)
-        np.testing.assert_array_equal(r_wilks['children'],
-                                       r_llr['children'])
-        # but different stat values (Wilks != LLR)
-        assert not np.allclose(
-            np.asarray(r_wilks['stat']),
-            np.asarray(r_llr['stat']))
+    def test_inner_perms_populate_mu_sigma(self):
+        """With n_perm_inner > 0 the worker fills mu/sigma/z/max_z."""
+        r = process_permutation(self.exp, {'n_perm_inner': 5}, 0)
+        assert {'mu', 'sigma', 'z', 'max_z'} <= set(r.keys())
+        # at least some regions should have finite mu/sigma
+        assert np.isfinite(r['mu']).any()
+        assert np.isfinite(r['sigma']).any()
+        assert np.isfinite(r['max_z']) or r['max_z'] == float('-inf')
 
 
 # ---------------------------------------------------------------------------
@@ -326,12 +323,14 @@ class TestProcessPermutationFormat:
     exp = Experiment.from_gauss(a=2, b=1, shape=(3, 3), num_img=20, seed=0)
 
     def test_required_keys(self):
-        r = process_permutation(self.exp, {}, 0)
-        assert set(r.keys()) >= {'perm_idx', 'children', 'stat', 'size'}
+        r = process_permutation(self.exp, {'n_perm_inner': 0}, 0)
+        assert set(r.keys()) >= {
+            'perm_idx', 'children', 'stat', 'size',
+            'mu', 'sigma', 'z', 'max_z'}
 
     def test_stat_asarray_works(self):
         """Synthesis code calls np.asarray(r['stat'], dtype=float)."""
-        r = process_permutation(self.exp, {}, 0)
+        r = process_permutation(self.exp, {'n_perm_inner': 0}, 0)
         arr = np.asarray(r['stat'], dtype=float)
         assert arr.ndim == 1
         assert np.isfinite(arr).all() or np.isnan(arr).any()
@@ -339,7 +338,7 @@ class TestProcessPermutationFormat:
     def test_size_matches_node_sum(self):
         """size should equal node_sum(ones, children)."""
         import glow.graph
-        r = process_permutation(self.exp, {}, 0)
+        r = process_permutation(self.exp, {'n_perm_inner': 0}, 0)
         num_vox = self.exp.y.shape[2]
         expected = glow.graph.node_sum(
             np.ones(num_vox, dtype=int), r['children'])

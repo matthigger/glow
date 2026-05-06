@@ -40,7 +40,7 @@ N_PERM_INNER = 200         # inner permutations for per-region (mu, std)
 ALPHA_FWER = 0.05
 _GLOW_BASE = dict(n_perm_fwer=N_PERM_FWER,
                   n_perm_inner=N_PERM_INNER,
-                  min_size=1,
+                  min_vox=4,
                   alpha_fwer=ALPHA_FWER,
                   get_stat=get_llr)
 ANALYSES = {
