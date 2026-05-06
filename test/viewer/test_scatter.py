@@ -24,12 +24,12 @@ class TestBuildScatterBasic:
                 assert isinstance(fig, go.Figure), f'crash on x={x}, y={y}'
 
     def test_with_color_feature(self, df_with_target, ana):
-        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_adjusted',
+        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_z',
                             'pval_fwer')
         assert isinstance(fig, go.Figure)
 
     def test_log_y(self, df_with_target, ana):
-        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_adjusted',
+        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_z',
                             '__none__', log_y=True)
         assert isinstance(fig, go.Figure)
 
@@ -37,14 +37,14 @@ class TestBuildScatterBasic:
                                          target_stats):
         """Log-y must set an explicit range derived from visible data,
         not Plotly's unbounded autorange (regression: axis went to 10^270)."""
-        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_adjusted',
+        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_z',
                             '__none__', log_y=True, target_stats=target_stats)
         yaxis = fig.layout.yaxis
         assert yaxis.type == 'log'
         assert yaxis.range is not None, 'log-y should set an explicit range'
 
         log_lo, log_hi = yaxis.range
-        pos_vals = df_with_target['llr_adjusted'].values
+        pos_vals = df_with_target['llr_z'].values
         pos_vals = pos_vals[np.isfinite(pos_vals) & (pos_vals > 0)]
         data_lo = np.log10(pos_vals.min())
         data_hi = np.log10(pos_vals.max())
@@ -125,7 +125,7 @@ class TestBuildScatterTraces:
 class TestBuildScatterSelection:
     def test_selected_markers_larger(self, df_with_target, ana):
         reg0 = int(df_with_target['region_idx'].iloc[0])
-        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_adjusted',
+        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_z',
                             '__none__', selected_reg={reg0})
         main = [t for t in fig.data
                 if t.mode == 'markers' and t.showlegend is False
@@ -140,7 +140,7 @@ class TestHoverText:
     """Verify hover text contains parent/children info."""
 
     def test_hover_has_parent_children(self, df_with_target, ana):
-        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_adjusted',
+        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_z',
                             '__none__')
         main = [t for t in fig.data
                 if t.mode == 'markers' and t.showlegend is False
@@ -153,7 +153,7 @@ class TestHoverText:
     def test_leaf_hover_says_none(self, df_with_target, ana):
         """Leaf nodes should show 'children: none (leaf)'."""
         num_vox = ana.exp.y.shape[2]
-        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_adjusted',
+        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_z',
                             '__none__')
         main = [t for t in fig.data
                 if t.mode == 'markers' and t.showlegend is False
@@ -173,7 +173,7 @@ class TestHoverText:
         parent = get_parent(ana.children, num_vox)
         roots = np.where(parent == -1)[0]
 
-        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_adjusted',
+        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_z',
                             '__none__')
         main = [t for t in fig.data
                 if t.mode == 'markers' and t.showlegend is False

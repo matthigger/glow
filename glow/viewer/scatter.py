@@ -19,7 +19,7 @@ def _ensure_1d(arr):
 # columns where a log scale is the sensible default
 _LOG_COLS = {'n_voxel', 'vox_in_target', 'vox_out_target'}
 
-_ADJ_COL = 'llr_adjusted'
+_ADJ_COL = 'llr_z'
 
 # estimate_state -> (plotly symbol, default color, legend label)
 _STATE_STYLE = {
@@ -36,9 +36,9 @@ _PVAL_THRESHOLD_MAP = {
 
 
 def _compute_adj_thresh(ana_glow):
-    """Compute the llr_adjusted value at the alpha_fwer significance boundary.
+    """Compute the llr_z value at the alpha_fwer significance boundary.
 
-    When significant regions exist, returns the minimum llr_adjusted among
+    When significant regions exist, returns the minimum llr_z among
     them (the empirical decision boundary).  Otherwise falls back to
     ``adj_crit`` — the exact critical value from the permutation null
     distribution (stored during analysis).
@@ -50,7 +50,7 @@ def _compute_adj_thresh(ana_glow):
         return None
 
     pval = getattr(ana_glow, 'pval', None)
-    adj = getattr(ana_glow, 'llr_adjusted_0', None)
+    adj = getattr(ana_glow, 'llr_z_0', None)
     if pval is None or adj is None:
         return getattr(ana_glow, 'adj_crit', None)
     if adj.ndim > 1:
@@ -135,7 +135,7 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
     symbols = np.array([_STATE_STYLE[s][0] for s in states_v])
 
     # --- build hover text ---
-    hover_cols = ['region_idx', 'n_voxel', 'llr', 'llr_adjusted',
+    hover_cols = ['region_idx', 'n_voxel', 'llr', 'llr_z',
                   'pval_fwer']
     for c in ('pval_homo',
               'dice', 'sens', 'spec', 'vox_in_target',

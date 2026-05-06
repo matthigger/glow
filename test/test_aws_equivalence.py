@@ -6,7 +6,7 @@ up repeatedly — critical for cost control.
 
 Tests:
     - test_permutation_level_equivalence: AnalysisGLOW(cloud_config=X)
-      parallel perms; compare local vs cloud pval/stat/size/llr_adjusted
+      parallel perms; compare local vs cloud pval/stat/size/llr_z
       and effect_list elementwise.
     - test_experiment_level: Config(cloud_config=X) serial perms; verify
       result files downloaded.
@@ -86,7 +86,7 @@ def batched_cloud_results():
     n_perm_fwer = 5
     n_perm_inner = 10
     min_vox = 1   # keep every region in the comparison so the equivalence
-                  # check covers the full pval / llr_adjusted_0 array
+                  # check covers the full pval / llr_z_0 array
     ana_kwargs = dict(n_perm_fwer=n_perm_fwer,
                       n_perm_inner=n_perm_inner,
                       alpha_fwer=0.05, min_vox=min_vox, verbose=True)
@@ -232,17 +232,17 @@ def test_permutation_level_equivalence(batched_cloud_results):
 
     assert ana_local.pval.shape == ana_cloud.pval.shape, \
         'pval shape mismatch'
-    assert ana_local.llr_adjusted_0.shape == ana_cloud.llr_adjusted_0.shape, \
-        'llr_adjusted_0 shape mismatch'
+    assert ana_local.llr_z_0.shape == ana_cloud.llr_z_0.shape, \
+        'llr_z_0 shape mismatch'
 
     max_pval_diff = np.max(np.abs(ana_local.pval - ana_cloud.pval))
     max_z_diff = np.max(
-        np.abs(ana_local.llr_adjusted_0 - ana_cloud.llr_adjusted_0))
+        np.abs(ana_local.llr_z_0 - ana_cloud.llr_z_0))
     max_stat_diff = np.max(np.abs(ana_local.stat - ana_cloud.stat))
     max_size_diff = np.max(np.abs(ana_local.size - ana_cloud.size))
 
     assert max_pval_diff < tol, f'pval mismatch: {max_pval_diff:.2e}'
-    assert max_z_diff < tol, f'llr_adjusted_0 mismatch: {max_z_diff:.2e}'
+    assert max_z_diff < tol, f'llr_z_0 mismatch: {max_z_diff:.2e}'
     assert max_stat_diff < tol, f'stat mismatch: {max_stat_diff:.2e}'
     assert max_size_diff < tol, f'size mismatch: {max_size_diff:.2e}'
 

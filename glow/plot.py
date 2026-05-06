@@ -131,14 +131,14 @@ def image_iter(children, mask_idx, num_vox):
 
 def prep_df(ana_glow, mask_target=None):
     df_list = list()
-    _adj = ana_glow.llr_adjusted
+    _adj = ana_glow.llr_z_0
     for perm_idx, (llr, adj, size) in enumerate(zip(ana_glow.stat,
                                                     _adj,
                                                     ana_glow.size)):
         children = ana_glow.children
         d = {'region idx': np.arange(size.size),
              'llr': llr,
-             'llr_adjusted': adj,
+             'llr_z': adj,
              'size (voxels)': size,
              'permutation': perm_idx,
              'discovered': np.zeros(adj.shape, dtype=bool)}

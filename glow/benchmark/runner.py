@@ -275,7 +275,7 @@ class RunPruneCompare(Runner):
 
     Compares two pruning gain choices on the same significant-region
     set: raw LLR (``stat``) vs the per-region z-scored LLR
-    (``llr_adjusted_0``).  Both greedy and DP-antichain are tried,
+    (``llr_z_0``).  Both greedy and DP-antichain are tried,
     giving four labels.
     """
 
@@ -308,7 +308,7 @@ class RunPruneCompare(Runner):
         children = ana.children
         llr = np.nan_to_num(ana.stat.astype(float),
                             nan=0.0, posinf=0.0, neginf=0.0)
-        llr_z = np.nan_to_num(ana.llr_adjusted_0.astype(float),
+        llr_z = np.nan_to_num(ana.llr_z_0.astype(float),
                               nan=0.0, posinf=0.0, neginf=0.0)
 
         methods = {

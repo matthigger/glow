@@ -11,8 +11,8 @@ from glow.analysis.mancova import decompose, get_llr, get_roughness
 
 
 def _get_adjusted_stat(ana_glow):
-    """Return the adjusted stat array (llr_adjusted), always 1-D."""
-    adj = getattr(ana_glow, 'llr_adjusted_0', ana_glow.llr_adjusted_0)
+    """Return the per-region z-scored LLR (llr_z), always 1-D."""
+    adj = getattr(ana_glow, 'llr_z_0', ana_glow.llr_z_0)
     return adj if adj.ndim == 1 else adj[0]
 
 
@@ -57,7 +57,7 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
         'region_idx': np.arange(num_reg),
         'n_voxel': ana_glow.size.astype(int),
         'llr': _ensure_1d(ana_glow.stat),
-        'llr_adjusted': _get_adjusted_stat(ana_glow),
+        'llr_z': _get_adjusted_stat(ana_glow),
         'pval_fwer': ana_glow.pval,
         'roughness': roughness_arr,
     }
@@ -195,11 +195,11 @@ def compute_target_stats(ana_glow, mask_target):
         'llr': llr,
     }
 
-    # llr_adjusted is the per-region z-score, which is computed on the
+    # llr_z is the per-region z-score, which is computed on the
     # merged-graph regions, not on an arbitrary user-selected mask.
     # Leave NaN here so the viewer hides the row when this stub mask
     # isn't aligned to a known merged region.
-    stats['llr_adjusted'] = np.nan
+    stats['llr_z'] = np.nan
 
     stats['dice'] = 1.0
     stats['sens'] = 1.0

@@ -336,7 +336,7 @@ class AnalysisGLOW(Analysis):
 
     def _finalize_analysis(self, exp, n_perm_fwer,
                           stat_0, size_0, children_0,
-                          llr_adjusted_0, stat_max_sorted,
+                          llr_z_0, stat_max_sorted,
                           alpha_fwer, min_size,
                           prune_stat=None,
                           ):
@@ -346,27 +346,26 @@ class AnalysisGLOW(Analysis):
             stat_0: raw LLR per region for the observed tree.
             size_0: region sizes for the observed tree.
             children_0: observed Ward children.
-            llr_adjusted_0: per-region z-scored LLR for the observed
-                tree (already adjusted by per-region (mu, std)).
+            llr_z_0: per-region z-scored LLR for the observed tree
+                (already adjusted by per-region (mu, std)).
             stat_max_sorted: sorted max-z null distribution from the
                 outer permutations (length n_perm_fwer + 1).
             min_size: minimum region size for the FWER comparison set
                 (synonym for ``min_vox`` at the call site).
             prune_stat: optional override for the array used to rank
                 pruning candidates.  Defaults to ``stat_0`` (raw LLR).
-                Pass ``llr_adjusted_0`` to rank by per-region z instead.
+                Pass ``llr_z_0`` to rank by per-region z instead.
                 See note below.
         """
         verbose = getattr(self, 'verbose', False)
         num_reg = stat_0.shape[0]
 
-        llr_adjusted_0 = _sanitize_adjusted_stat(np.asarray(llr_adjusted_0,
-                                                            dtype=float))
+        llr_z_0 = _sanitize_adjusted_stat(np.asarray(llr_z_0, dtype=float))
 
         self.alpha_fwer = alpha_fwer
         self.size = size_0
         self.stat = stat_0
-        self.llr_adjusted_0 = llr_adjusted_0
+        self.llr_z_0 = llr_z_0
         self.children = children_0
 
         reg_active = size_0 >= min_size
@@ -374,7 +373,7 @@ class AnalysisGLOW(Analysis):
             pval = np.full(num_reg, fill_value=np.nan)
         else:
             pval = np.full(num_reg, fill_value=-1.0)
-            for reg_idx, z in enumerate(llr_adjusted_0):
+            for reg_idx, z in enumerate(llr_z_0):
                 if np.isnan(z):
                     pval[reg_idx] = np.nan
                     continue
@@ -534,7 +533,7 @@ class AnalysisGLOW(Analysis):
         remote_ana = runner.download_final_analysis(experiment_id)
 
         _COPY_ATTRS = [
-            'children', 'stat', 'size', 'pval', 'llr_adjusted_0',
+            'children', 'stat', 'size', 'pval', 'llr_z_0',
             'sig_reg_list', 'effect_list', 'alpha_fwer', 'adj_crit',
             'prune_info',
             '_mu_per_region', '_sigma_per_region',

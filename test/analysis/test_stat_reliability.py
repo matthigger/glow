@@ -249,7 +249,7 @@ class TestSizeAdjustment:
     The historical "adjustment reduces size correlation" check made sense
     for the GAM smooth (which fit a function of size).  Per-region z
     doesn't model size at all — each region is z-scored against its own
-    null — so a residual size correlation in ``llr_adjusted_0`` is just
+    null — so a residual size correlation in ``llr_z_0`` is just
     a finite-sample property of which regions ended up with which sizes,
     not a statement about the method.  The real validation lives in
     null-FWER calibration runs (see ``test/validate_studentize.py``).
@@ -262,7 +262,7 @@ class TestSizeAdjustment:
                            alpha_fwer=0.05)
 
         valid = (np.isfinite(ana.stat)
-                 & np.isfinite(ana.llr_adjusted_0)
+                 & np.isfinite(ana.llr_z_0)
                  & (ana.size > 0))
         assert valid.sum() > 0, 'no valid regions'
 

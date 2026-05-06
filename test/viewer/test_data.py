@@ -14,7 +14,7 @@ class TestPrepDf:
         assert len(df_no_target) == num_reg
 
     def test_required_columns(self, df_no_target):
-        for col in ('region_idx', 'n_voxel', 'llr', 'llr_adjusted',
+        for col in ('region_idx', 'n_voxel', 'llr', 'llr_z',
                      'pval_fwer', 'significant', 'discovered',
                      'estimate_state'):
             assert col in df_no_target.columns, f'missing column: {col}'
@@ -71,7 +71,7 @@ class TestGetFeatureColumns:
     def test_llr_in_significance(self, df_no_target):
         _, sig, _, _ = get_feature_columns(df_no_target)
         assert 'llr' in sig
-        assert 'llr_adjusted' in sig
+        assert 'llr_z' in sig
 
     def test_mask_columns_present_with_target(self, df_with_target):
         _, _, _, mask_cols = get_feature_columns(df_with_target)
@@ -90,7 +90,7 @@ class TestComputeTargetStats:
         assert isinstance(target_stats, dict)
 
     def test_required_keys(self, target_stats):
-        for key in ('n_voxel', 'llr', 'llr_adjusted'):
+        for key in ('n_voxel', 'llr', 'llr_z'):
             assert key in target_stats
 
     def test_n_voxel_matches_mask(self, ana, mask_target, target_stats):

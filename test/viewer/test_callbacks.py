@@ -121,14 +121,14 @@ class TestScatterCallbackIntegration:
     def test_rebuild_all_x_features(self, df_with_target, ana, feature_cols,
                                     target_stats):
         for x_feat in sum(feature_cols, []):
-            fig = build_scatter(df_with_target, ana, x_feat, 'llr_adjusted',
+            fig = build_scatter(df_with_target, ana, x_feat, 'llr_z',
                                 '__none__', target_stats=target_stats)
             assert fig.layout.xaxis.title.text == x_feat
 
     def test_selected_round_trip(self, df_with_target, ana):
         """Select a region, rebuild figure, verify it's highlighted."""
         reg = int(df_with_target['region_idx'].iloc[5])
-        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_adjusted',
+        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_z',
                             '__none__', selected_reg={reg})
         main = [t for t in fig.data
                 if t.mode == 'markers' and t.showlegend is False

@@ -72,7 +72,7 @@ class TestBigEffect:
             f'(min={np.nanmin(ana_tfce.pval):.3f})')
 
     def test_glow_with_prune(self):
-        """test GLOW with default pruning (llr_adjusted, lam=0)"""
+        """test GLOW with default pruning (llr_z, lam=0)"""
         analysis = AnalysisGLOW(
             TestBigEffect.exp,
             n_perm_fwer=10,
@@ -329,10 +329,10 @@ class TestZeroStdGuard:
         analysis = AnalysisGLOW(exp, n_perm_fwer=5, alpha_fwer=0.05,
                                 min_vox=1)
 
-        assert not np.any(np.isinf(analysis.llr_adjusted_0)), \
-            'llr_adjusted_0 contains inf (likely zero-std division)'
-        assert not np.any(np.isnan(analysis.llr_adjusted_0)), \
-            'llr_adjusted_0 contains nan (likely zero-std division)'
+        assert not np.any(np.isinf(analysis.llr_z_0)), \
+            'llr_z_0 contains inf (likely zero-std division)'
+        assert not np.any(np.isnan(analysis.llr_z_0)), \
+            'llr_z_0 contains nan (likely zero-std division)'
 
 
 class TestMinVox:
@@ -389,7 +389,7 @@ class TestMinVox:
 
 
 class TestPerRegionZConsistency:
-    """``llr_adjusted_0`` must equal (stat - mu_per_region) / sigma_per_region.
+    """``llr_z_0`` must equal (stat - mu_per_region) / sigma_per_region.
 
     Catches handoff bugs between the per-worker computation and the
     synth step's reuse of the worker's stored z-array.
@@ -408,7 +408,7 @@ class TestPerRegionZConsistency:
         mu = ana._mu_per_region
         sigma = ana._sigma_per_region
         stat = ana.stat
-        z_stored = ana.llr_adjusted_0
+        z_stored = ana.llr_z_0
 
         # only check entries where sigma is well above the floor and
         # neither input is NaN (matches the worker's sanitisation).
