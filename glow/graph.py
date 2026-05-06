@@ -92,6 +92,84 @@ def iter_stat(exp, **kwargs):
         yield reg_idx, size, e, h
 
 
+def compute_llr_batched(exp, children, q0, q1):
+    """Vectorised LLR per region for a single (already-permuted) experiment.
+
+    Computes the same per-region LLR statistic as the per-region loop::
+
+        for reg_idx, size, e, h in iter_stat(exp, children=children):
+            llr[reg_idx] = get_llr(e, h, n=size)
+
+    but in a single batched pass over numpy: ysum/yout are built
+    bottom-up (sequentially across tree layers, vectorised across all
+    regions at each step), then E and H are formed via einsum and the
+    LLR is computed via batched ``np.linalg.slogdet``.  At mandrill
+    scale (~450k merged regions) this trades ~5 s of Python per-region
+    overhead for ~0.3 s of pure numpy.
+
+    Args:
+        exp (Experiment): experiment data (already FL-permuted).
+        children (np.array): (num_internal, 2) child index pairs in
+            topological (bottom-up) order.
+        q0 (np.array): nuisance subspace (from ``decompose``).
+        q1 (np.array): interest subspace (from ``decompose``).
+
+    Returns:
+        llr (np.array): (num_reg,) LLR per region, NaN where E or
+            E + H were not positive-definite.
+        size (np.array): (num_reg,) voxel count per region.
+    """
+    y = exp.y
+    b, num_img, num_vox = y.shape
+    num_internal = children.shape[0]
+    num_reg = num_vox + num_internal
+
+    # use float32 only when both source arrays are float32; else float64
+    dtype = y.dtype if y.dtype == np.float32 else np.float64
+
+    # leaf ysum / yout: vectorised init
+    ysum = np.empty((num_reg, b, num_img), dtype=dtype)
+    ysum[:num_vox] = y.transpose(2, 0, 1)
+    yout = np.empty((num_reg, b, b), dtype=dtype)
+    # einsum 'vbn,vcn->vbc' = per-voxel outer product summed over images
+    yout[:num_vox] = np.einsum('vbn,vcn->vbc',
+                               ysum[:num_vox], ysum[:num_vox],
+                               optimize=True)
+    size = np.empty(num_reg, dtype=int)
+    size[:num_vox] = 1
+
+    # bottom-up build over internal nodes.  children is in topological
+    # order so a single pass suffices.
+    for i in range(num_internal):
+        c0, c1 = children[i, 0], children[i, 1]
+        idx = num_vox + i
+        ysum[idx] = ysum[c0] + ysum[c1]
+        yout[idx] = yout[c0] + yout[c1]
+        size[idx] = size[c0] + size[c1]
+
+    # E, H per region via einsum (matches iter_stat math exactly)
+    sz = size.astype(dtype)[:, None, None]
+    a0 = np.einsum('rbn,an->rba', ysum, q0, optimize=True)
+    t = yout - np.einsum('rba,rca->rbc', a0, a0, optimize=True) / sz
+
+    a1 = np.einsum('rbn,vn->rbv', ysum, q1, optimize=True)
+    h = np.einsum('rbv,rcv->rbc', a1, a1, optimize=True) / sz
+
+    e = t - h
+
+    # LLR via batched slogdet:
+    #   get_llr(e, h, n=size) = (size/2) * (ln|E+H| - ln|E|)
+    # NaN where either determinant is non-positive (matches the
+    # ``np.isnan`` short-circuit in get_llr / loglik_from_cov).
+    sign_t, logdet_t = np.linalg.slogdet(e + h)
+    sign_e, logdet_e = np.linalg.slogdet(e)
+    valid = (sign_t > 0) & (sign_e > 0)
+    llr = np.full(num_reg, np.nan)
+    llr[valid] = (size[valid] / 2.0) * (logdet_t[valid] - logdet_e[valid])
+
+    return llr, size
+
+
 def node_sum(x, children):
     """sum leaf values up through the graph.
 

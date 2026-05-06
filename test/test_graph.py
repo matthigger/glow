@@ -261,6 +261,45 @@ def test_iter_stat(exp, children):
                     assert np.allclose(e, e_exp, rtol=1e-5, atol=1e-5)
 
 
+def test_compute_llr_batched_matches_iter_stat(exp, children):
+    """compute_llr_batched must agree numerically with the per-region
+    iter_stat + get_llr loop across several FL permutations."""
+    from glow.analysis.mancova import decompose, get_llr
+    from glow.graph import compute_llr_batched
+
+    a = 2
+    b, num_img, num_vox = exp.y.shape
+    num_reg = num_vox + children.shape[0]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', NoBiasTermWarning)
+        exp = exp.sample_x(a=a, seed=0, add_bias=True)
+
+    q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
+
+    # cover unpermuted (perm_idx=0) and a few FL draws
+    for perm_idx in range(4):
+        _exp = exp.permute(perm_idx) if perm_idx else exp
+
+        # reference: per-region path
+        llr_ref = np.full(num_reg, np.nan)
+        size_ref = np.zeros(num_reg, dtype=int)
+        for reg_idx, size, e, h in iter_stat(_exp, children=children):
+            size_ref[reg_idx] = size
+            llr_ref[reg_idx] = get_llr(e, h, n=size)
+
+        # batched path
+        llr_batched, size_batched = compute_llr_batched(
+            _exp, children=children, q0=q0, q1=q1)
+
+        assert np.array_equal(size_batched, size_ref)
+        # NaN locations must agree
+        assert np.array_equal(np.isnan(llr_batched), np.isnan(llr_ref))
+        valid = ~np.isnan(llr_ref)
+        assert np.allclose(llr_batched[valid], llr_ref[valid],
+                           rtol=1e-6, atol=1e-6)
+
+
 def test_get_mask_cases():
     children = np.array([[0, 1],
                          [2, 3],

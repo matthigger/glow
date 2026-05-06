@@ -176,13 +176,18 @@ class AnalysisGLOW(Analysis):
         if verbose:
             print(f'  per_region_z: {n_perm_inner} inner perms on '
                   f'{num_merged} merged regions ...')
+        # decompose() depends only on (x, contrast), which permute()
+        # leaves untouched — hoist outside the inner loop.
+        from glow.analysis.mancova import decompose
+        q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
         LLR_inner = np.full((n_perm_inner, num_merged), np.nan)
         for k_inner in tqdm(range(n_perm_inner), desc='inner perms',
                              disable=not verbose):
             seed = inner_seed_offset + k_inner
             _exp = exp.permute(seed)
-            LLR_inner[k_inner, :] = self.get_stat_perm(
-                _exp, children=merged_children)
+            llr, _ = glow.graph.compute_llr_batched(
+                _exp, children=merged_children, q0=q0, q1=q1)
+            LLR_inner[k_inner, :] = llr
 
         mu_merged = np.nanmean(LLR_inner, axis=0)
         sigma_merged = np.nanstd(LLR_inner, axis=0, ddof=1)
