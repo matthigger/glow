@@ -33,7 +33,7 @@ class AnalysisGLOW(Analysis):
     """
 
     def __init__(self, exp, n_perm_fwer,
-                 n_perm_inner=25,
+                 n_perm_inner=200,
                  alpha_fwer=.05, min_size=1, verbose=False,
                  n_jobs_perm=1, cloud_config=None, perm_dir=None,
                  cluster_mode="q1",
@@ -299,10 +299,9 @@ class AnalysisGLOW(Analysis):
             stat_max_sorted: sorted max-z null distribution from the
                 outer permutations (length n_perm_fwer + 1).
             prune_stat: optional override for the array used to rank
-                pruning candidates.  Defaults to ``llr_adjusted_0``
-                (z-scored), which makes the pruning rank consistent
-                with the FWER threshold.  Pass ``stat_0`` to rank by
-                raw LLR instead.
+                pruning candidates.  Defaults to ``stat_0`` (raw LLR).
+                Pass ``llr_adjusted_0`` to rank by per-region z instead.
+                See note below.
         """
         verbose = getattr(self, 'verbose', False)
         num_reg = stat_0.shape[0]
@@ -344,12 +343,22 @@ class AnalysisGLOW(Analysis):
         if verbose:
             print(f'  {len(self.sig_reg_list)} significant regions '
                   f'(alpha_fwer={alpha_fwer})')
-            print('  pruning (greedy on z-scored LLR) ...')
+            print('  pruning (greedy on raw LLR) ...')
 
-        # Default: rank pruning by the z-scored LLR (consistent with
-        # the FWER threshold).  Caller may override via ``prune_stat``
-        # — RunPruneCompare does this to compare raw-LLR vs LLR-z gain.
-        _prune = llr_adjusted_0 if prune_stat is None else prune_stat
+        # Rank pruning candidates by raw LLR.  z-score is right for
+        # FWER thresholding (puts different-size regions on a common
+        # scale), but it fragments under pruning: for a true effect of
+        # size n with per-voxel strength alpha, z scales as ~sqrt(n),
+        # so a small slice of the effect can outscore the whole region
+        # on z.  Greedy z-pruning then locks out the parent and emits
+        # fragments with very low Dice.  Raw LLR scales linearly with
+        # n, picks the largest coherent region, and naturally caps
+        # over-inclusion via the z-FWER filter (only z-significant
+        # regions are pruning candidates; an over-large parent
+        # typically fails z-FWER because its added voxels dilute the
+        # per-region signal).  RunPruneCompare exposes both via the
+        # greedy_llr / greedy_z labels for head-to-head benchmarking.
+        _prune = stat_0 if prune_stat is None else prune_stat
         stat_gain = np.nan_to_num(_prune.astype(float), nan=0.0,
                                   posinf=0.0, neginf=0.0)
 
