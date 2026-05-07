@@ -212,6 +212,12 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
                        verbose=True)
     n_eff = len(ana.effect_list)
     print(f'  found {n_eff} effect{"s" if n_eff != 1 else ""}')
+    # Release the joblib worker pool now that the heavy compute is done; the
+    # viewer itself does no further parallel work, so keeping ~32 idle workers
+    # alive for the lifetime of the demo just leaks RAM (and orphans them if
+    # the parent dies ungracefully).
+    from joblib.externals.loky import get_reusable_executor
+    get_reusable_executor().shutdown(wait=True)
     return ana, mask_target
 
 
