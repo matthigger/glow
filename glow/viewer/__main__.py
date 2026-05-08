@@ -159,13 +159,10 @@ _EFFECT_MAP = {
 }
 
 
-def _build_experiment(y, mask_idx, num_img=_NUM_IMG, meta=None):
-    """Wrap imaging data into an Experiment with bias + linear regressor."""
-    from glow.experiment.exper import Experiment
-    x = np.arange(num_img, dtype=float).reshape(1, -1)
-    contrast = np.array([True])
-    return Experiment(x=x, contrast=contrast, y=y, mask_idx=mask_idx,
-                      meta=meta, add_bias=True)
+# _build_experiment removed: demos go through standard factories
+# (Experiment.from_gauss / ExperimentImageOnly.from_paths) so the
+# resulting recipe describes how y was constructed and the experiment
+# can rehydrate from a slim pickle.
 
 
 def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
@@ -222,66 +219,17 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
     return ana, mask_target
 
 
-def _load_dti_mean(dim):
-    """Load pre-computed mean FA/MD images.
-
-    Args:
-        dim: '2d' or '3d'
-
-    Returns:
-        fa, md (np.array), mask (bool array)
-    """
-    import nibabel as nib
-    suffix = '_axial' if dim == '2d' else ''
-    fa = nib.load(str(_data_path(f'hcp_mean_fa{suffix}.nii.gz'))).get_fdata()
-    md = nib.load(str(_data_path(f'hcp_mean_md{suffix}.nii.gz'))).get_fdata()
-    mask = fa > 0
-    return fa.astype(np.float64), md.astype(np.float64), mask
-
-
-def _sample_dti(mean_imgs, mask, num_img=_NUM_IMG, noise_frac=0.15,
-                seed=42):
-    """Generate synthetic DTI images: mean + WGN.
-
-    Args:
-        mean_imgs: dict of feat_name -> (spatial_shape) array
-        mask: boolean mask
-        num_img: number of synthetic images
-        noise_frac: noise std as fraction of feature std within mask
-
-    Returns:
-        y (b, num_img, num_vox), mask_idx, y_features
-    """
-    from glow.mask import get_mask_idx
-    mask_idx = get_mask_idx(mask)
-    n_vox = int(mask.sum())
-    feat_names = list(mean_imgs.keys())
-    b = len(feat_names)
-
-    rng = np.random.default_rng(seed)
-    y = np.empty((b, num_img, n_vox), dtype=np.float64)
-    for fi, name in enumerate(feat_names):
-        vals = mean_imgs[name][mask]
-        sigma = max(vals.std() * noise_frac, 1e-6)
-        for i in range(num_img):
-            y[fi, i, :] = vals + rng.normal(0, sigma, n_vox)
-
-    return y, mask_idx, feat_names
-
-
 # ---------------------------------------------------------------------------
 # Demo builders (one per image-set choice)
 # ---------------------------------------------------------------------------
 
 def _demo_wgn_2d(b, effect_llr, seed=0, roughness=None, num_img=_NUM_IMG):
     """2D White Gaussian Noise demo."""
-    from glow.experiment.exper import ExperimentImageOnly
+    from glow.experiment.exper import Experiment
     shape = (64, 64)
     print(f'  building 2D WGN: shape={shape}, b={b}, num_img={num_img}')
-    exp_img = ExperimentImageOnly.from_gauss(
-        b=b, num_img=num_img, shape=shape, seed=seed)
-    exp = _build_experiment(exp_img.y, exp_img.mask_idx,
-                            num_img=num_img, meta=exp_img.meta)
+    exp = Experiment.from_gauss(a=1, b=b, num_img=num_img, shape=shape,
+                                 seed=seed, add_bias=True)
     ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
                                        roughness=roughness)
     return ana, mask_target
@@ -323,38 +271,19 @@ def _demo_mandrill(channels, effect_llr, seed=0, roughness=None,
 
 def _demo_dti_2d(features, effect_llr, seed=0, roughness=None,
                  num_img=_NUM_IMG):
-    """2D Axial Slice DTI demo."""
-    fa, md, mask = _load_dti_mean('2d')
-    mean_imgs = {}
-    feat_names_map = {'fa': ('Fractional Anisotropy', fa),
-                      'md': ('Mean Diffusivity', md)}
-    if features == 'all':
-        for key in ('fa', 'md'):
-            mean_imgs[feat_names_map[key][0]] = feat_names_map[key][1]
-    else:
-        name, arr = feat_names_map[features]
-        mean_imgs[name] = arr
-
-    print(f'  2D axial DTI: shape={fa.shape}, mask={mask.sum()} vox, '
-          f'features={list(mean_imgs.keys())}, num_img={num_img}')
-    y, mask_idx, feat_names = _sample_dti(mean_imgs, mask, num_img=num_img,
-                                          seed=seed)
-    meta = {'features': feat_names}
-    exp = _build_experiment(y, mask_idx, num_img=num_img, meta=meta)
-    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
-                                       roughness=roughness)
-    return ana, mask_target
+    """2D Axial Slice DTI demo — load mean nifti(s) via from_paths,
+    bootstrap to num_img copies with noise, attach a random design."""
+    return _build_dti_demo('2d', features, effect_llr, seed=seed,
+                           roughness=roughness, num_img=num_img)
 
 
 def _demo_wgn_3d(b, effect_llr, seed=0, roughness=None, num_img=_NUM_IMG):
     """3D White Gaussian Noise demo."""
-    from glow.experiment.exper import ExperimentImageOnly
+    from glow.experiment.exper import Experiment
     shape = (15, 15, 15)
     print(f'  building 3D WGN: shape={shape}, b={b}, num_img={num_img}')
-    exp_img = ExperimentImageOnly.from_gauss(
-        b=b, num_img=num_img, shape=shape, seed=seed)
-    exp = _build_experiment(exp_img.y, exp_img.mask_idx,
-                            num_img=num_img, meta=exp_img.meta)
+    exp = Experiment.from_gauss(a=1, b=b, num_img=num_img, shape=shape,
+                                 seed=seed, add_bias=True)
     ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
                                        roughness=roughness)
     return ana, mask_target
@@ -362,24 +291,36 @@ def _demo_wgn_3d(b, effect_llr, seed=0, roughness=None, num_img=_NUM_IMG):
 
 def _demo_dti_3d(features, effect_llr, seed=0, roughness=None,
                  num_img=_NUM_IMG):
-    """3D DTI demo."""
-    fa, md, mask = _load_dti_mean('3d')
-    mean_imgs = {}
-    feat_names_map = {'fa': ('Fractional Anisotropy', fa),
-                      'md': ('Mean Diffusivity', md)}
-    if features == 'all':
-        for key in ('fa', 'md'):
-            mean_imgs[feat_names_map[key][0]] = feat_names_map[key][1]
-    else:
-        name, arr = feat_names_map[features]
-        mean_imgs[name] = arr
+    """3D DTI demo — see _demo_dti_2d for the loading approach."""
+    return _build_dti_demo('3d', features, effect_llr, seed=seed,
+                           roughness=roughness, num_img=num_img)
 
-    print(f'  3D DTI: shape={fa.shape}, mask={mask.sum()} vox, '
-          f'features={list(mean_imgs.keys())}, num_img={num_img}')
-    y, mask_idx, feat_names = _sample_dti(mean_imgs, mask, num_img=num_img,
-                                          seed=seed)
-    meta = {'features': feat_names}
-    exp = _build_experiment(y, mask_idx, num_img=num_img, meta=meta)
+
+def _build_dti_demo(dim, features, effect_llr, seed, roughness, num_img):
+    """Shared 2D/3D DTI demo builder.  Loads mean fa/md nifti(s) via
+    from_paths (one 'mean' subject with feature-keyed paths), bootstraps
+    to num_img noisy copies via bootstrap_img, attaches a random design
+    via sample_x, then imposes an effect.  The recipe captures the
+    nifti paths + the bootstrap kwargs + sample_x kwargs in steps."""
+    from glow.experiment.exper import ExperimentImageOnly
+    suffix = '_axial' if dim == '2d' else ''
+    fa_path = _data_path(f'hcp_mean_fa{suffix}.nii.gz')
+    md_path = _data_path(f'hcp_mean_md{suffix}.nii.gz')
+    feat_path_map = {'Fractional Anisotropy': str(fa_path),
+                     'Mean Diffusivity': str(md_path)}
+    if features == 'all':
+        feat_paths = feat_path_map
+    elif features == 'fa':
+        feat_paths = {'Fractional Anisotropy': str(fa_path)}
+    elif features == 'md':
+        feat_paths = {'Mean Diffusivity': str(md_path)}
+    else:
+        raise ValueError(f'unknown DTI feature selection: {features!r}')
+
+    print(f'  {dim} DTI: loading {list(feat_paths.keys())}, num_img={num_img}')
+    img_only = ExperimentImageOnly.from_paths({'mean': feat_paths})
+    img_only = img_only.bootstrap_img(num_img, seed=seed, noise_scale=0.15)
+    exp = img_only.sample_x(a=1, seed=seed, add_bias=True)
     ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
                                        roughness=roughness)
     return ana, mask_target
