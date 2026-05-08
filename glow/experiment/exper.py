@@ -11,6 +11,8 @@ import glow.effect
 import glow.mask
 from .load_image import load_image_color, load_image_nii
 from .permute import get_freed_lane
+from .regen import (REGEN_REGISTRY, FullPickleNotice,
+                    compute_pickle_status)
 from .sigma import stretch_sigma
 from ..mask import get_mask_idx
 
@@ -34,6 +36,54 @@ class ExperimentImageOnly:
         self.y = y
         self.mask_idx = mask_idx
         self.meta = meta if meta is not None else {}
+
+    def _full_pickle_msg(self, src):
+        y_mb = self.y.nbytes / 1024**2 if self.y is not None else 0.0
+        x = getattr(self, 'x', None)
+        x_kb = x.nbytes / 1024 if x is not None else 0.0
+        if src is None:
+            head = 'Pickling Experiment without recipe tagged.'
+        else:
+            head = (f'Pickling Experiment with source={src!r} '
+                    f'(not registered).')
+        return (f'{head} Storing y ({y_mb:.1f} MB) and x ({x_kb:.1f} KB) '
+                f'inline. For slim pickles, see glow.experiment.regen.')
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        if state.get('y') is None:
+            return state
+        recipe = self.meta.get('recipe') if self.meta else None
+        src = recipe.get('source') if recipe else None
+        if src and src in REGEN_REGISTRY:
+            state['y'] = None
+            state['x'] = None
+            return state
+        msg = self._full_pickle_msg(src)
+        warnings.warn(msg, FullPickleNotice, stacklevel=2)
+        return state
+
+    def rehydrate(self):
+        """reconstruct ``y`` (and ``x`` if applicable) from the recipe.
+
+        No-op if ``y`` is already loaded.  Raises ``RuntimeError`` if
+        the recipe source is missing or unregistered.
+        """
+        if self.y is not None:
+            return
+        recipe = self.meta.get('recipe') if self.meta else None
+        src = recipe.get('source') if recipe else None
+        if not src or src not in REGEN_REGISTRY:
+            raise RuntimeError(
+                f'cannot rehydrate Experiment: source={src!r} not in '
+                f'REGEN_REGISTRY')
+        new = REGEN_REGISTRY[src](**recipe['args'])
+        self.y = new.y
+        if hasattr(self, 'x') or hasattr(new, 'x'):
+            self.x = getattr(new, 'x', None)
+
+    def pickle_status(self):
+        return compute_pickle_status(self)
 
     def _hash(self):
         """rolling SHA-256 hash over data arrays (16-char hex digest)."""
@@ -90,6 +140,17 @@ class ExperimentImageOnly:
         meta = kwargs.pop('meta', {})
         meta.setdefault('features', [f'feat_{i}' for i in range(b)])
         meta.setdefault('subjects', [f'subject_{i:03d}' for i in range(num_img)])
+        meta['recipe'] = {
+            'source': 'gauss',
+            'args': {
+                'b': b,
+                'num_img': num_img,
+                'shape': tuple(shape),
+                'seed': seed,
+                'mu': mu,
+                'cov': cov,
+            },
+        }
         return cls(y=y.reshape((b, num_img, num_vox)),
                    mask_idx=get_mask_idx(np.ones(shape)),
                    meta=meta, **kwargs)
@@ -132,6 +193,25 @@ class ExperimentImageOnly:
             Experiment built from discovered images
         """
         df = cls._search_files(folder, sbj_regex, img_glob_dict)
+        return cls.from_paths(df, **kwargs)
+
+    @classmethod
+    def from_paths(cls, paths, **kwargs):
+        """build an experiment from an explicit (subject x feature) path map.
+
+        Args:
+            paths: either a ``pandas.DataFrame`` indexed by subject with
+                feature columns whose values are file paths, or a
+                ``dict`` of the form ``{subject: {feature: path}}``.
+
+        Returns:
+            Experiment built from the listed images
+        """
+        if isinstance(paths, dict):
+            df = pd.DataFrame.from_dict(paths, orient='index')
+        else:
+            df = paths
+
         assert df.size, 'no images found'
         assert len(set(df.values.flatten())) == np.prod(df.shape), \
             'file repeated for more than one subject-feature pair'
@@ -175,6 +255,16 @@ class ExperimentImageOnly:
         if affine is not None:
             meta.setdefault('affine', affine)
 
+        # serializable form of the path table for recipe regen
+        recipe_paths = {str(sbj): {str(feat): str(p)
+                                    for feat, p in row.items()
+                                    if isinstance(p, (str, pathlib.Path))}
+                        for sbj, row in df.iterrows()}
+        meta['recipe'] = {
+            'source': 'image_paths',
+            'args': {'paths': recipe_paths},
+        }
+
         return cls(y=y, mask_idx=mask_idx, meta=meta, **kwargs)
 
     def bootstrap_img(self, n, seed=None, noise_scale=0):
@@ -206,6 +296,10 @@ class ExperimentImageOnly:
 
         exp = deepcopy(self)
         exp.y = y
+        # bootstrap-resampled images can't be regenerated by replaying
+        # the recipe; clear so __getstate__ falls back to full pickle.
+        if exp.meta and 'recipe' in exp.meta:
+            exp.meta = {k: v for k, v in exp.meta.items() if k != 'recipe'}
         return exp
 
     def sample_x(self, a=None, contrast=None, seed=None, **kwargs):
@@ -256,6 +350,12 @@ class ExperimentImageOnly:
         d = deepcopy(self.__dict__)
         d['mask_idx'] = mask_idx
         d['y'] = y
+        # the masked experiment is no longer regenerable from the recipe
+        # alone (it'd also need the mask); clear so __getstate__ falls
+        # back to full pickle.
+        meta = d.get('meta')
+        if meta and 'recipe' in meta:
+            d['meta'] = {k: v for k, v in meta.items() if k != 'recipe'}
         return type(self)(**d)
 
     def add_offset(self, offset, mask=None, vox_idx=None, sigma_scale=None):
@@ -288,6 +388,10 @@ class ExperimentImageOnly:
         # build new object
         d = deepcopy(self.__dict__)
         d['y'] = y
+        # offset mutates y; the recipe alone won't reproduce the result.
+        meta = d.get('meta')
+        if meta and 'recipe' in meta:
+            d['meta'] = {k: v for k, v in meta.items() if k != 'recipe'}
         return type(self)(**d)
 
 
@@ -303,7 +407,17 @@ class Experiment(ExperimentImageOnly):
     def from_gauss(cls, a=1, contrast=None, seed=None, add_bias=True,
                    **kwargs):
         exp = ExperimentImageOnly.from_gauss(seed=seed, **kwargs)
-        return exp.sample_x(a=a, contrast=contrast, seed=seed, add_bias=True)
+        exp = exp.sample_x(a=a, contrast=contrast, seed=seed,
+                           add_bias=add_bias)
+        # overwrite the inner image-only recipe with one that includes
+        # x-sampling kwargs so a single regen reproduces both y and x.
+        if exp.meta is not None and 'recipe' in exp.meta:
+            inner_args = dict(exp.meta['recipe']['args'])
+            inner_args['a'] = a
+            inner_args['contrast'] = contrast
+            inner_args['add_bias'] = add_bias
+            exp.meta['recipe'] = {'source': 'gauss', 'args': inner_args}
+        return exp
 
     def __init__(self, *, x, contrast=None, add_bias=False, **kwargs):
         super().__init__(**kwargs)
@@ -395,8 +509,14 @@ class Experiment(ExperimentImageOnly):
             freed_lane = get_freed_lane(self.x, self.contrast, perm_idx)
             y = np.einsum('abc,bd->adc', self.y, freed_lane, optimize=True)
 
+        # permuted y can't be reproduced from the recipe alone, so
+        # don't propagate it (avoid silently-wrong rehydration if a
+        # permuted exp is ever pickled).
+        meta = self.meta
+        if meta and 'recipe' in meta:
+            meta = {k: v for k, v in meta.items() if k != 'recipe'}
         return Experiment(x=self.x, y=y, contrast=self.contrast,
-                          mask_idx=self.mask_idx, meta=self.meta)
+                          mask_idx=self.mask_idx, meta=meta)
 
 
 class ExperimentScaled(Experiment):
@@ -413,6 +533,26 @@ class ExperimentScaled(Experiment):
     def from_exp(cls, exp):
         return cls(y=exp.y, mask_idx=exp.mask_idx, x=exp.x,
                    contrast=exp.contrast, meta=getattr(exp, 'meta', None))
+
+    def rehydrate(self):
+        """reconstruct ``y`` and re-apply the prep transform.
+
+        ``mean_orig`` and ``pre_scale`` survive serialization, so the
+        rehydrated raw y is re-prepped to match what ``__init__``
+        originally stored.
+        """
+        if self.y is not None:
+            return
+        recipe = self.meta.get('recipe') if self.meta else None
+        src = recipe.get('source') if recipe else None
+        if not src or src not in REGEN_REGISTRY:
+            raise RuntimeError(
+                f'cannot rehydrate ExperimentScaled: source={src!r} not '
+                f'in REGEN_REGISTRY')
+        new = REGEN_REGISTRY[src](**recipe['args'])
+        self.y = self.prep(new.y)
+        if hasattr(new, 'x'):
+            self.x = new.x
 
     def prep(self, y):
         """apply pre-processing: y_out = pre_scale @ (y - mean_orig)."""
