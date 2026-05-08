@@ -152,6 +152,123 @@ def _section_header(title):
               'borderTop': '2px solid #ccc', 'marginTop': '6px'})
 
 
+def _kv_row(key, val):
+    """Render a single key/value row as a flex line."""
+    return html.Div([
+        html.Span(f'{key}:',
+                  style={'fontWeight': 'bold', 'minWidth': '160px',
+                         'display': 'inline-block', 'color': '#555'}),
+        html.Span(str(val), style={'fontFamily': 'monospace'}),
+    ], style={'fontSize': '12px', 'marginBottom': '2px'})
+
+
+def _detail_panels(ana_glow):
+    """Build the experiment + analysis detail <details> panels.
+
+    Both are collapsed by default.  Values are pulled directly from
+    ``ana_glow`` and ``ana_glow.exp`` at layout time — no callbacks.
+    """
+    import numpy as np
+
+    exp = ana_glow.exp
+    meta = getattr(exp, 'meta', {}) or {}
+    recipe = meta.get('recipe')
+    src = recipe.get('source') if recipe else None
+    args = recipe.get('args') if recipe else None
+
+    y_shape = getattr(exp.y, 'shape', None) if exp.y is not None else 'slim'
+    x = getattr(exp, 'x', None)
+    x_shape = getattr(x, 'shape', None)
+    contrast = getattr(exp, 'contrast', None)
+
+    mask_idx = exp.mask_idx
+    n_active = int((mask_idx >= 0).sum())
+    n_total = int(mask_idx.size)
+
+    subjects = meta.get('subjects', [])
+    features = meta.get('features', [])
+
+    exp_rows = [
+        _kv_row('recipe source', src if src is not None else '(none)'),
+    ]
+    if args is not None:
+        # collapse args under a nested <details> so HCP image-paths
+        # manifests don't dominate the panel
+        try:
+            args_summary = ', '.join(f'{k}={type(v).__name__}'
+                                      if isinstance(v, dict)
+                                      else f'{k}={v!r}'
+                                      for k, v in args.items())
+        except Exception:
+            args_summary = '<unrenderable>'
+        exp_rows.append(html.Details([
+            html.Summary('recipe args',
+                         style={'fontSize': '12px', 'cursor': 'pointer',
+                                'color': '#555'}),
+            html.Pre(args_summary,
+                     style={'fontFamily': 'monospace', 'fontSize': '11px',
+                            'whiteSpace': 'pre-wrap',
+                            'background': '#f7f7f7',
+                            'padding': '6px', 'border': '1px solid #ddd',
+                            'maxHeight': '200px', 'overflowY': 'auto'}),
+        ], style={'marginTop': '4px', 'marginBottom': '4px'}))
+    exp_rows.extend([
+        _kv_row('y.shape', y_shape),
+        _kv_row('x.shape', x_shape),
+        _kv_row('contrast', np.asarray(contrast).tolist()
+                if contrast is not None else None),
+        _kv_row('mask active voxels', f'{n_active} / {n_total}'),
+        _kv_row('subjects', f'{len(subjects)} '
+                + (f'(first: {subjects[0]})' if subjects else '')),
+        _kv_row('features', features),
+    ])
+
+    # --- analysis detail ---
+    from glow.analysis.cluster import MODE_LABELS
+    cluster_mode = getattr(ana_glow, 'cluster_mode', None)
+    mode_label = MODE_LABELS.get(cluster_mode, '?')
+    get_stat = getattr(ana_glow, 'get_stat', None)
+    get_stat_name = getattr(get_stat, '__name__', repr(get_stat))
+    pval = getattr(ana_glow, 'pval', None)
+    if pval is not None and len(pval):
+        pval_min = float(np.nanmin(pval))
+    else:
+        pval_min = None
+
+    ana_rows = [
+        _kv_row('class', type(ana_glow).__name__),
+        _kv_row('cluster_mode',
+                f'{cluster_mode!r}  ({mode_label})'),
+        _kv_row('alpha_fwer', getattr(ana_glow, 'alpha_fwer', None)),
+        _kv_row('n_perm_fwer', getattr(ana_glow, 'n_perm_fwer', '<not stored>')),
+        _kv_row('n_perm_inner',
+                getattr(ana_glow, 'n_perm_inner', '<not stored>')),
+        _kv_row('min_vox', getattr(ana_glow, 'min_vox', None)),
+        _kv_row('adj_crit', getattr(ana_glow, 'adj_crit', None)),
+        _kv_row('get_stat', get_stat_name),
+        _kv_row('# significant regions',
+                len(getattr(ana_glow, 'sig_reg_list', []) or [])),
+        _kv_row('# discovered effects',
+                len(getattr(ana_glow, 'effect_list', []) or [])),
+        _kv_row('min p-value', pval_min),
+    ]
+
+    panel_style = {'padding': '10px 20px', 'borderTop': '1px solid #ddd'}
+    summary_style = {'fontSize': '13px', 'fontWeight': 'bold',
+                     'cursor': 'pointer', 'color': '#555',
+                     'textTransform': 'uppercase', 'letterSpacing': '1px'}
+    return html.Div([
+        html.Details([
+            html.Summary('Experiment detail', style=summary_style),
+            html.Div(exp_rows, style={'marginTop': '8px'}),
+        ], style=panel_style),
+        html.Details([
+            html.Summary('Analysis detail', style=summary_style),
+            html.Div(ana_rows, style={'marginTop': '8px'}),
+        ], style=panel_style),
+    ])
+
+
 def _regression_panel(x_names, y_names, default_x=0):
     """Build the right-hand regression scatter panel."""
     x_opts = [{'label': n, 'value': i} for i, n in enumerate(x_names)]
@@ -527,6 +644,7 @@ def _setup_3d(app, ana_glow, df,
                                  default_reg_x=default_reg_x,
                                  num_img=num_img, feat_names=feat_names,
                                  subject_names=subject_names)
+    app.layout.children.append(_detail_panels(ana_glow))
 
     # pre-compute target mask in image space for overlays
     mask_target_img = None
@@ -705,6 +823,7 @@ def _setup_2d(app, ana_glow, df,
                                  default_reg_x=default_reg_x,
                                  num_img=num_img,
                                  subject_names=subject_names)
+    app.layout.children.append(_detail_panels(ana_glow))
 
     # pre-compute target mask in image space for overlays
     mask_target_img = None
