@@ -394,3 +394,51 @@ class TestRecipeStepReplay:
         exp2 = pickle.loads(data)
         assert exp2.y is not None
         assert np.allclose(exp2.y, exp.y)
+
+
+class TestForceFullPickle:
+    """Cross-machine transfers must inline y/x even when a recipe is
+    present, otherwise the receiver can't rehydrate from the sender's
+    local paths.  force_full_pickle() is the escape hatch."""
+
+    def test_inlines_y_during_context(self):
+        from glow.experiment.regen import force_full_pickle
+        exp = Experiment.from_gauss(seed=0, shape=(4, 4), a=2, b=1, num_img=10)
+        # default behaviour: slim
+        assert pickle.loads(pickle.dumps(exp)).y is None
+        # forced full: y survives
+        with force_full_pickle(exp):
+            data = pickle.dumps(exp)
+        assert pickle.loads(data).y is not None
+
+    def test_recipe_restored_after_context(self):
+        from glow.experiment.regen import force_full_pickle
+        exp = Experiment.from_gauss(seed=0, shape=(4, 4), a=2, b=1, num_img=10)
+        with force_full_pickle(exp):
+            pickle.dumps(exp)
+        # recipe still present after exiting the context
+        assert exp.meta.get('recipe') is not None
+        # default slim behaviour still works after the context
+        assert pickle.loads(pickle.dumps(exp)).y is None
+
+    def test_recipe_restored_on_exception(self):
+        from glow.experiment.regen import force_full_pickle
+        exp = Experiment.from_gauss(seed=0, shape=(4, 4), a=2, b=1, num_img=10)
+        try:
+            with force_full_pickle(exp):
+                raise RuntimeError('boom')
+        except RuntimeError:
+            pass
+        assert exp.meta.get('recipe') is not None
+
+    def test_silences_warning(self):
+        from glow.experiment.regen import force_full_pickle
+        exp = Experiment.from_gauss(seed=0, shape=(4, 4), a=2, b=1, num_img=10)
+        warnings.simplefilter('always', FullPickleNotice)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            with force_full_pickle(exp):
+                pickle.dumps(exp)
+        full = [w for w in caught if issubclass(w.category, FullPickleNotice)]
+        assert full == []
+

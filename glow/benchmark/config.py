@@ -589,10 +589,15 @@ class Config:
                 if verbose:
                     print(f'  ✓ Found shared experiment data on S3: {exp_sig[:8]}...')
             except ClientError:
-                # Upload to S3
+                # Upload to S3 (cross-machine: force full pickle so the
+                # worker has y inline; the recipe — with the laptop's
+                # paths — is preserved and travels through to result
+                # pickles for rehydration back on the laptop).
                 if verbose:
                     print(f'  Uploading shared experiment data: {exp_sig[:8]}...')
-                exp_bytes = pickle.dumps(shared_obj)
+                from glow.experiment.regen import force_full_pickle
+                with force_full_pickle(shared_obj):
+                    exp_bytes = pickle.dumps(shared_obj)
                 runner.s3.put_object(
                     Bucket=self.cloud_config.s3_bucket,
                     Key=shared_data_key,

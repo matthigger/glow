@@ -12,10 +12,39 @@ import benchmark / experiment factories.
 
 import pickle
 import warnings
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
 import numpy as np
+
+
+@contextmanager
+def force_full_pickle(exp):
+    """Temporarily disable slim pickling so ``pickle.dumps(exp)`` inlines
+    ``y`` and ``x``.
+
+    Use for cross-machine transfers where the receiver cannot rehydrate
+    from the sender's local paths — e.g. the per-permutation AWS path
+    where ``exp`` is built on the user's laptop, uploaded to S3, and
+    pulled by Docker workers that don't have the same filesystem layout.
+
+    Removes ``meta['recipe']`` for the duration of the context, so
+    ``__getstate__`` falls into the "no recipe" branch (full pickle,
+    silenced warning).  Restores the recipe on exit, including on
+    exception paths.
+    """
+    meta = getattr(exp, 'meta', None)
+    if meta is None or 'recipe' not in meta:
+        yield exp
+        return
+    saved = meta.pop('recipe')
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', FullPickleNotice)
+            yield exp
+    finally:
+        meta['recipe'] = saved
 
 
 REGEN_REGISTRY: Dict[str, Callable] = {}

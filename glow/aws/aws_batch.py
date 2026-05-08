@@ -330,9 +330,13 @@ class AWSBatchRunner:
             'ana_kwargs': ana_kwargs,
             'experiment_id': experiment_id
         }
-        
-        # serialize
-        data_bytes = pickle.dumps(data)
+
+        # cross-machine: force full pickle so the worker has y inline.
+        # The recipe (with the laptop's paths) travels through untouched,
+        # so result pickles downloaded back are still rehydratable locally.
+        from glow.experiment.regen import force_full_pickle
+        with force_full_pickle(exp):
+            data_bytes = pickle.dumps(data)
         
         # upload to S3
         s3_key = f'{self.config.s3_prefix}/experiments/{experiment_id}/data.pkl'
