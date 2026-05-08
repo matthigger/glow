@@ -28,7 +28,7 @@ def load_cloud_config():
         region=region,
         vcpus=vcpus,
         timeout_minutes=180,  # 3 hours per experiment
-        retry_attempts=1,
+        retry_attempts=5,
     )
 
 
