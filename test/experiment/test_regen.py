@@ -197,3 +197,53 @@ class TestPickleStatus:
         assert 'PickleStatus' in s
         assert 'gauss' in s
 
+
+class TestAnalysisGLOWProvenance:
+    def test_attrs_survive_pickle(self):
+        from glow.analysis import AnalysisGLOW
+        exp = Experiment.from_gauss(seed=0, shape=(5, 5), a=2, b=1, num_img=20)
+        ana = AnalysisGLOW(exp, n_perm_fwer=5, n_perm_inner=5, min_vox=2)
+
+        assert ana.n_perm_fwer == 5
+        assert ana.n_perm_inner == 5
+        assert ana.stat_max_sorted.shape == (6,)
+
+        data = pickle.dumps(ana)
+        ana2 = pickle.loads(data)
+
+        assert ana2.n_perm_fwer == 5
+        assert ana2.n_perm_inner == 5
+        assert np.array_equal(ana2.stat_max_sorted, ana.stat_max_sorted)
+        # exp slimmed
+        assert ana2.exp.y is None
+        ana2.exp.rehydrate()
+        assert ana2.exp.y is not None
+
+
+class TestSlimAnalysisGLOWSize:
+    def test_slim_smaller_than_full(self):
+        from glow.analysis import AnalysisGLOW
+        exp = Experiment.from_gauss(seed=0, shape=(8, 8), a=2, b=1, num_img=30)
+        ana = AnalysisGLOW(exp, n_perm_fwer=5, n_perm_inner=5, min_vox=2)
+
+        slim_bytes = len(pickle.dumps(ana))
+
+        # forge a full pickle by removing the recipe
+        ana.exp.meta.pop('recipe', None)
+        warnings.simplefilter('always', FullPickleNotice)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', FullPickleNotice)
+            full_bytes = len(pickle.dumps(ana))
+
+        # the y array dominates: a (1, 30, 64) float array is ~15 KB,
+        # plus the analysis arrays.  Slim should be meaningfully smaller.
+        assert slim_bytes < full_bytes
+
+    def test_status_extra_bytes(self):
+        from glow.analysis import AnalysisGLOW
+        exp = Experiment.from_gauss(seed=0, shape=(5, 5), a=2, b=1, num_img=20)
+        ana = AnalysisGLOW(exp, n_perm_fwer=5, n_perm_inner=5, min_vox=2)
+        st_exp = exp.pickle_status()
+        st_ana = ana.pickle_status()
+        # analysis arrays add bytes
+        assert st_ana.estimated_pickle_mb >= st_exp.estimated_pickle_mb

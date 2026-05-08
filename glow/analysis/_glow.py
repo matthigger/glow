@@ -72,6 +72,8 @@ class AnalysisGLOW(Analysis):
         self.verbose = verbose
         self.cluster_mode = cluster_mode
         self.min_vox = min_vox
+        self.n_perm_fwer = n_perm_fwer
+        self.n_perm_inner = n_perm_inner
 
         if cloud_config is not None:
             self._run_on_cloud(exp, n_perm_fwer, n_perm_inner,
@@ -251,6 +253,12 @@ class AnalysisGLOW(Analysis):
                 ``perm_idx``, ``children``, ``stat`` (raw LLR),
                 ``size``, ``mu``, ``sigma``, ``z``, ``max_z``.
         """
+        # In the joblib parallel path, ``exp`` arrives via pickle which
+        # slims y/x when a recipe is registered.  Rehydrate before any
+        # further use.
+        if exp.y is None:
+            exp.rehydrate()
+
         if q0 is None or q1 is None:
             q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
 
@@ -368,6 +376,7 @@ class AnalysisGLOW(Analysis):
         self.stat = stat_0
         self.llr_z_0 = llr_z_0
         self.children = children_0
+        self.stat_max_sorted = np.asarray(stat_max_sorted)
 
         reg_active = size_0 >= min_size
         if not reg_active.any():
@@ -536,7 +545,7 @@ class AnalysisGLOW(Analysis):
         _COPY_ATTRS = [
             'children', 'stat', 'size', 'pval', 'llr_z_0',
             'sig_reg_list', 'effect_list', 'alpha_fwer', 'adj_crit',
-            'prune_info',
+            'prune_info', 'stat_max_sorted',
             '_mu_per_region', '_sigma_per_region',
         ]
         for attr in _COPY_ATTRS:
@@ -544,3 +553,22 @@ class AnalysisGLOW(Analysis):
                 setattr(self, attr, getattr(remote_ana, attr))
 
         print(f'cloud analysis complete: found {len(self.effect_list)} effects')
+
+    def pickle_status(self):
+        """Return :class:`PickleStatus` accounting for analysis arrays.
+
+        Adds the bytesize of stored arrays
+        (``pval``, ``stat``, ``size``, ``llr_z_0``, ``children``,
+        ``stat_max_sorted``) to ``estimated_pickle_mb`` so callers can
+        budget the on-disk size of the full :class:`AnalysisGLOW`.
+        """
+        from glow.experiment.regen import compute_pickle_status
+
+        extra = 0
+        for attr in ('pval', 'stat', 'size', 'llr_z_0', 'children',
+                     'stat_max_sorted', '_mu_per_region',
+                     '_sigma_per_region'):
+            arr = getattr(self, attr, None)
+            if arr is not None and hasattr(arr, 'nbytes'):
+                extra += int(arr.nbytes)
+        return compute_pickle_status(self.exp, extra_bytes=extra)
