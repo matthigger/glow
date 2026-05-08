@@ -84,8 +84,8 @@ def _worker_experiment(num_vox, b, num_img, n_perm, result_queue):
     exp_scaled = ExperimentScaled.from_exp(exp)
     effect_n_vox = max(1, int(0.2 * num_vox))
     extenter = glow.effect.ExtenterSphere(n_vox=effect_n_vox)
-    exp_eff, effect = exp_scaled.impose_effect(
-        extenter=extenter, effect_llr=0.05, seed=0
+    exp_eff, effect = glow.effect.EffectSynthetic.impose(
+        exp_scaled, effect_llr=0.05, extenter=extenter, seed=0,
     )
 
     runner = RunAna({

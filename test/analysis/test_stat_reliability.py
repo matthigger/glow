@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from scipy import stats as sp_stats
 
-from glow.effect import ExtenterSphere
+from glow.effect import ExtenterSphere, EffectSynthetic
 from glow.experiment import Experiment
 from glow.analysis import (
     Analysis, AnalysisVBA, AnalysisCET, AnalysisGLOW,
@@ -219,7 +219,8 @@ class TestPowerMonotonicity:
                 exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                             num_img=50, seed=seed)
                 if llr > 0:
-                    exp, _ = exp.impose_effect(
+                    exp, _ = EffectSynthetic.impose(
+                        exp,
                         seed=seed,
                         extenter=ExtenterSphere(radius=2),
                         effect_llr=llr)

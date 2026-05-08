@@ -6,6 +6,18 @@ import pytest
 import glow
 
 
+class TestEffectEstimateImport:
+    """verify the rename Effect -> EffectEstimate is in place."""
+
+    def test_new_name_importable(self):
+        from glow.effect import EffectEstimate
+        assert EffectEstimate is glow.effect.EffectEstimate
+
+    def test_legacy_alias(self):
+        # Effect is still exposed as a back-compat alias for the rename.
+        assert glow.effect.Effect is glow.effect.EffectEstimate
+
+
 class TestEffect:
     """test Effect class methods"""
     

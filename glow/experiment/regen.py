@@ -19,6 +19,67 @@ import numpy as np
 
 
 REGEN_REGISTRY: Dict[str, Callable] = {}
+STEP_REPLAY: Dict[str, Callable] = {}
+
+
+def register_step(name):
+    def decorator(fn):
+        STEP_REPLAY[name] = fn
+        return fn
+    return decorator
+
+
+@register_step('apply_mask')
+def _replay_apply_mask(exp, args):
+    return exp.apply_mask(args['mask'])
+
+
+@register_step('add_offset')
+def _replay_add_offset(exp, args):
+    return exp.add_offset(args['offset'], mask=args.get('mask'),
+                          sigma_scale=args.get('sigma_scale'))
+
+
+@register_step('bootstrap_img')
+def _replay_bootstrap_img(exp, args):
+    return exp.bootstrap_img(args['n'], seed=args.get('seed'),
+                             noise_scale=args.get('noise_scale', 0))
+
+
+@register_step('permute')
+def _replay_permute(exp, args):
+    return exp.permute(args['perm_idx'])
+
+
+@register_step('scale')
+def _replay_scale(exp, args):
+    """Replay a previously-recorded ExperimentScaled.from_exp transform.
+
+    The original ``mean_orig`` and ``pre_scale`` were captured at
+    ``from_exp`` time and ride in the step args.  We construct a new
+    ExperimentScaled and overwrite the freshly-derived prep with the
+    stored arrays so the result is bitwise identical to the original
+    (no drift from re-fitting).  Note that ``ExperimentScaled.from_exp``
+    itself appends a 'scale' step; we use the lower-level constructor
+    here to avoid double-appending.
+    """
+    from .exper import ExperimentScaled
+    import numpy as np
+    mean_orig = args['mean_orig']
+    pre_scale = args['pre_scale']
+    # Construct via __init__ then override the fitted transform with the
+    # stored values to guarantee determinism even on rounding-edge inputs.
+    new = ExperimentScaled(y=exp.y, x=getattr(exp, 'x', None),
+                           contrast=getattr(exp, 'contrast', None),
+                           mask_idx=exp.mask_idx,
+                           meta=dict(exp.meta) if exp.meta else None)
+    if not (np.allclose(new.mean_orig, mean_orig)
+            and np.allclose(new.pre_scale, pre_scale)):
+        # re-prep with the stored transform to stay bit-identical
+        new.mean_orig = mean_orig
+        new.pre_scale = pre_scale
+        new.y = new.prep(exp.y)
+    return new
 
 
 class FullPickleNotice(UserWarning):
@@ -47,11 +108,11 @@ def _regen_gauss(**args):
 
 
 @register_regen('image_paths')
-def _regen_image_paths(paths):
+def _regen_image_paths(paths, channel_names=None):
     from .exper import ExperimentImageOnly
     import pandas as pd
     df = pd.DataFrame.from_dict(paths, orient='index')
-    return ExperimentImageOnly.from_paths(df)
+    return ExperimentImageOnly.from_paths(df, channel_names=channel_names)
 
 
 @dataclass(frozen=True)
@@ -106,8 +167,10 @@ def compute_pickle_status(exp, extra_bytes=0):
         recipe_bytes = 0
     recipe_kb = recipe_bytes / 1024
 
+    # x is always preserved (no general regen interface for user-supplied
+    # designs); only y is dropped on slim pickle.
     if will_slim:
-        est_bytes = recipe_bytes + extra_bytes
+        est_bytes = x_bytes + recipe_bytes + extra_bytes
     else:
         est_bytes = y_bytes + x_bytes + recipe_bytes + extra_bytes
     est_mb = est_bytes / 1024**2

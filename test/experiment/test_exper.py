@@ -56,8 +56,8 @@ class TestExperimentOnlyImage:
         extenter = glow.effect.ExtenterSphere(radius=3)
 
         for effect_llr in [0, 0.5, 3]:
-            _exp, effect = exp.impose_effect(seed=seed, extenter=extenter,
-                                             effect_llr=effect_llr)
+            _exp, effect = glow.effect.EffectSynthetic.impose(
+                exp, seed=seed, extenter=extenter, effect_llr=effect_llr)
             assert np.isclose(effect.effect_llr, effect_llr)
 
     def test_sample_x(self):
@@ -142,19 +142,22 @@ class TestImposeEffectWithNoise:
     """test impose_effect with noise_scale parameter"""
     
     def test_impose_effect_with_noise(self):
-        """test that noise_scale > 0 code path executes """
+        """test that noise_scale kwarg is tolerated by EffectSynthetic.impose"""
         seed = 0
         exp = Experiment.from_gauss(seed=seed, shape=(5, 5), num_img=20)
         extenter = glow.effect.ExtenterSphere(radius=2)
-        
-        # impose effect with noise (should not raise error)
-        exp_with_noise, effect_with_noise = exp.impose_effect(
+
+        # noise_scale was previously a kwargs passthrough on impose_effect;
+        # EffectSynthetic.impose accepts (and ignores) extra kwargs the same
+        # way for backward compatibility.
+        exp_with_noise, effect_with_noise = glow.effect.EffectSynthetic.impose(
+            exp,
             seed=seed,
             extenter=extenter,
             effect_llr=0.5,
-            noise_scale=0.5
+            noise_scale=0.5,
         )
-        
+
         # should complete successfully
         assert effect_with_noise.mask.sum() > 0
         assert effect_with_noise.effect_llr > 0

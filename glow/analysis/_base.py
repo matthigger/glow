@@ -269,7 +269,7 @@ class Analysis:
         for eff_idx in range(1, num_effect + 1):
             # build effect for each contiguous effect found
             _mask = mask_est == eff_idx
-            eff = glow.effect.Effect.from_exp_mask(exp=exp, mask=_mask)
+            eff = glow.effect.EffectEstimate.from_exp_mask(exp=exp, mask=_mask)
             effect_list.append(eff)
 
         return effect_list

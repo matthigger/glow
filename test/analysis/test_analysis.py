@@ -1,4 +1,4 @@
-from glow.effect import ExtenterSphere
+from glow.effect import ExtenterSphere, EffectSynthetic
 from glow.experiment import *
 from glow.analysis import *
 from glow.graph import get_dice_sens_spec, iter_topo
@@ -21,7 +21,7 @@ class TestBigEffect:
     """ given strong effect, discover it"""
     # build experiment with strong effect to be found
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=100, seed=0)
-    exp, effect = exp.impose_effect(seed=0,
+    exp, effect = EffectSynthetic.impose(exp, seed=0,
                                     extenter=ExtenterSphere(radius=2),
                                     effect_llr=0.5)
 
@@ -200,7 +200,7 @@ class TestAnalysisEdgeCases:
     def test_all_regions_too_small(self):
         """test when all regions are filtered out by min_vox"""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
-        exp, _ = exp.impose_effect(seed=0,
+        exp, _ = EffectSynthetic.impose(exp, seed=0,
                                    extenter=ExtenterSphere(radius=1),
                                    effect_llr=0.5)
 
@@ -240,7 +240,7 @@ class TestAnalysisEdgeCases:
     def test_different_alpha_values(self):
         """test with different alpha thresholds"""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
-        exp, _ = exp.impose_effect(seed=0,
+        exp, _ = EffectSynthetic.impose(exp, seed=0,
                                    extenter=ExtenterSphere(radius=1),
                                    effect_llr=0.5)
         
@@ -268,7 +268,7 @@ class TestParallelExecution:
     def test_glow_parallel_permutations(self):
         """test parallel permutation execution in AnalysisGLOW"""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
-        exp, _ = exp.impose_effect(seed=0,
+        exp, _ = EffectSynthetic.impose(exp, seed=0,
                                    extenter=ExtenterSphere(radius=1),
                                    effect_llr=0.5)
         
@@ -322,7 +322,7 @@ class TestZeroStdGuard:
     def test_constant_stat_region(self):
         """regions with constant stat across adjustment perms should not produce inf/nan"""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
-        exp, _ = exp.impose_effect(seed=0,
+        exp, _ = EffectSynthetic.impose(exp, seed=0,
                                    extenter=ExtenterSphere(radius=1),
                                    effect_llr=0.5)
 
@@ -342,7 +342,7 @@ class TestMinVox:
         """No significant region in effect_list should have size < min_vox."""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                      num_img=50, seed=0)
-        exp, _ = exp.impose_effect(seed=0,
+        exp, _ = EffectSynthetic.impose(exp, seed=0,
                                     extenter=ExtenterSphere(radius=2),
                                     effect_llr=0.5)
 
@@ -370,7 +370,7 @@ class TestMinVox:
         """
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                      num_img=50, seed=0)
-        exp, _ = exp.impose_effect(seed=0,
+        exp, _ = EffectSynthetic.impose(exp, seed=0,
                                     extenter=ExtenterSphere(radius=2),
                                     effect_llr=0.5)
 
@@ -398,7 +398,7 @@ class TestPerRegionZConsistency:
     def test_z_matches_stat_minus_mu_over_sigma(self):
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                     num_img=50, seed=0)
-        exp, _ = exp.impose_effect(seed=0,
+        exp, _ = EffectSynthetic.impose(exp, seed=0,
                                    extenter=ExtenterSphere(radius=2),
                                    effect_llr=0.5)
         ana = AnalysisGLOW(exp, n_perm_fwer=5, n_perm_inner=20,
@@ -543,7 +543,7 @@ class TestStreamingFidelity:
     """Verify that two identical runs produce the same results."""
 
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=50, seed=0)
-    exp, effect = exp.impose_effect(seed=0,
+    exp, effect = EffectSynthetic.impose(exp, seed=0,
                                     extenter=ExtenterSphere(radius=2),
                                     effect_llr=0.5)
 
@@ -589,7 +589,7 @@ class TestFromPrecomputed:
     """Test factory classmethods for constructing analysis from pre-computed data."""
 
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=100, seed=0)
-    exp_eff, effect = exp.impose_effect(seed=0,
+    exp_eff, effect = EffectSynthetic.impose(exp, seed=0,
                                          extenter=ExtenterSphere(radius=2),
                                          effect_llr=0.5)
 

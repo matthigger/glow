@@ -47,16 +47,22 @@ def load_image_nii(df):
     return feat_sbj_img, mask_idx, affine
 
 
-def load_image_color(df):
+def load_image_color(df, channel_names=None):
     """load non-NIfTI (e.g. PNG) images from a subject x feature dataframe.
 
     Args:
         df (pd.DataFrame): index=subject, columns=feature, values=file paths
+        channel_names (dict, optional): ``{feature: [name0, name1, ...]}``
+            overriding the default ``feat0``/``feat1``/... naming for
+            multi-channel images (e.g. ``{'rgb': ['red', 'green',
+            'blue']}``).  Lengths shorter than the channel count fall
+            back to default naming for the remaining channels.
 
     Returns:
         feat_sbj_img (dict): feat -> sbj -> np.array
         mask_idx (np.array): voxel index array (all active)
     """
+    channel_names = channel_names or {}
     shape = None
     dtype = None
 
@@ -82,8 +88,12 @@ def load_image_color(df):
                 shape, dtype = check_shape_type(x, shape, dtype)
             elif x.ndim == 3:
                 # image has multiple features (e.g. RGB or RGBA)
+                names_for_feat = channel_names.get(feat, [])
                 for idx in range(x.shape[2]):
-                    _feat = feat + str(idx)
+                    if idx < len(names_for_feat):
+                        _feat = names_for_feat[idx]
+                    else:
+                        _feat = feat + str(idx)
                     _x = x[:, :, idx]
                     feat_sbj_img[_feat][sbj] = _x
 

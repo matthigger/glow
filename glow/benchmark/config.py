@@ -265,12 +265,14 @@ class Config:
             extenter = glow.effect.ExtenterSphere(n_vox=self.crop_n_vox)
             mask = extenter(mask_idx=self.exp_orig.mask_idx, seed=seed,
                             contiguous=True)
-            exp = self.exp_orig.apply_mask(mask)
+            recipe_step = {'op': 'apply_mask', 'args': {'mask': mask}}
+            exp = self.exp_orig.apply_mask(mask, recipe_step=recipe_step)
         elif radius_to_use is not None:
             extenter = glow.effect.ExtenterSphere(radius=radius_to_use)
             mask = extenter(mask_idx=self.exp_orig.mask_idx, seed=seed,
                             contiguous=True)
-            exp = self.exp_orig.apply_mask(mask)
+            recipe_step = {'op': 'apply_mask', 'args': {'mask': mask}}
+            exp = self.exp_orig.apply_mask(mask, recipe_step=recipe_step)
         else:
             exp = self.exp_orig
 
@@ -291,10 +293,9 @@ class Config:
                 f'unknown effect_extenter: {self.effect_extenter!r}')
 
         # impose effect
-        return exp.impose_effect(extenter=extenter,
-                                 seed=seed,
-                                 effect_llr=effect_llr,
-                                 roughness=roughness)
+        return glow.effect.EffectSynthetic.impose(
+            exp, effect_llr=effect_llr, extenter=extenter,
+            seed=seed, roughness=roughness)
 
     def iter_kwargs(self):
         """yield kwarg dicts for each experiment (product of iter_params)."""

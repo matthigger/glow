@@ -176,6 +176,7 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
     from glow.viewer import launch
 
     if effect_llr > 0:
+        from glow.effect import EffectSynthetic
         n_vox = (exp.mask_idx >= 0).sum()
         n_effect = max(int(0.15 * n_vox), 10)
         extenter = ExtenterMinVar(n_vox=n_effect)
@@ -183,8 +184,8 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
         print(f'  imposing effect (llr={effect_llr}{rough_str}) in ~{n_effect}'
               f' voxels ({100 * n_effect / n_vox:.0f}% of mask) ...')
         try:
-            exp_eff, effect = exp.impose_effect(
-                effect_llr=effect_llr, extenter=extenter, seed=seed,
+            exp_eff, effect = EffectSynthetic.impose(
+                exp, effect_llr=effect_llr, extenter=extenter, seed=seed,
                 roughness=roughness)
         except (ValueError, RuntimeError, np.linalg.LinAlgError, AssertionError):
             print('  (extenter failed, falling back to sphere mask)')
@@ -197,8 +198,8 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
             while (dist <= radius).sum() < target_n and radius < max(shape):
                 radius += 0.5
             sphere = (dist <= radius).reshape(shape) & (exp.mask_idx >= 0)
-            exp_eff, effect = exp.impose_effect(
-                effect_llr=effect_llr, mask=sphere, seed=seed,
+            exp_eff, effect = EffectSynthetic.impose(
+                exp, effect_llr=effect_llr, mask=sphere, seed=seed,
                 roughness=roughness)
         mask_target = effect.mask
     else:
@@ -288,38 +289,33 @@ def _demo_wgn_2d(b, effect_llr, seed=0, roughness=None, num_img=_NUM_IMG):
 
 def _demo_mandrill(channels, effect_llr, seed=0, roughness=None,
                    num_img=_NUM_IMG):
-    """2D Mandrill RGB demo."""
-    from PIL import Image
-    from glow.mask import get_mask_idx
+    """2D Mandrill RGB demo — built through the same factories real users
+    would call (from_paths + bootstrap_img + sample_x), so the resulting
+    Experiment's recipe fully describes how y was constructed and slim
+    pickling can rehydrate it from disk + recipe alone."""
+    from glow.experiment.exper import ExperimentImageOnly
 
     img_path = _data_path('mandrill_small.png')
     print(f'  loading {img_path}')
-    img_arr = np.array(Image.open(img_path)).astype(np.float64)  # (H, W, 3)
-    h, w, _ = img_arr.shape
+    # load_image_color splits an RGB PNG into 3 features automatically
+    img_only = ExperimentImageOnly.from_paths(
+        {'mandrill': {'rgb': str(img_path)}},
+        channel_names={'rgb': ['red', 'green', 'blue']})
 
-    channel_map = {'red': 0, 'green': 1, 'blue': 2}
-    if channels == 'all':
-        feat_indices = [0, 1, 2]
-        feat_names = ['red', 'green', 'blue']
-    else:
-        feat_indices = [channel_map[channels]]
-        feat_names = [channels]
-    b = len(feat_indices)
+    # bootstrap to num_img copies with noise; noise_scale is data-relative
+    # (multiplies sample-cov^0.5), so 0.3 ≈ 15 absolute units for mandrill
+    img_only = img_only.bootstrap_img(num_img, seed=seed, noise_scale=0.3)
 
-    num_vox = h * w
-    pixel_flat = img_arr.reshape(num_vox, 3).T  # (3, num_vox)
-    rng = np.random.default_rng(seed)
-    y = np.empty((b, num_img, num_vox))
-    for fi, ci in enumerate(feat_indices):
-        base = pixel_flat[ci]
-        noise_scale = 15.0
-        for i in range(num_img):
-            y[fi, i, :] = base + rng.normal(0, noise_scale, num_vox)
+    # attach a random design (sample_x); the demo's contrast is on a
+    # single feature-of-interest plus a bias column
+    exp = img_only.sample_x(a=1, seed=seed, add_bias=True)
 
-    mask_idx = get_mask_idx(np.ones((h, w), dtype=bool))
-    meta = {'features': feat_names}
-    exp = _build_experiment(y, mask_idx, num_img=num_img, meta=meta)
-    print(f'  mandrill: {h}x{w}, features={feat_names}, num_img={num_img}')
+    if channels != 'all':
+        print(f'  (note: channel selection ({channels!r}) is currently'
+              f' shown for all 3 RGB channels)')
+    h, w = exp.mask_idx.shape
+    print(f'  mandrill: {h}x{w}, features={exp.meta["features"]}, '
+          f'num_img={num_img}')
     ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
                                        roughness=roughness)
     return ana, mask_target

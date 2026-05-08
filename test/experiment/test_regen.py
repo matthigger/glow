@@ -39,7 +39,8 @@ class TestSlimPickleGauss:
         exp2 = pickle.loads(data)
 
         assert exp2.y is None
-        assert exp2.x is None
+        assert exp2.x is not None
+        assert np.allclose(exp2.x, x_orig)
         assert exp2.meta['recipe']['source'] == 'gauss'
 
         exp2.rehydrate()
@@ -67,7 +68,8 @@ class TestSlimPickleGauss:
         data = pickle.dumps(exps)
         exps2 = pickle.loads(data)
         assert exps2.y is None
-        assert exps2.x is None
+        assert exps2.x is not None
+        assert np.allclose(exps2.x, x_orig)
 
         exps2.rehydrate()
         assert np.allclose(exps2.y, y_prep)
@@ -156,7 +158,9 @@ class TestFullPickleFallback:
         exp2 = pickle.loads(data)
         assert exp2.y is not None
 
-    def test_apply_mask_clears_recipe(self):
+    def test_apply_mask_no_step_clears_recipe(self):
+        # Legacy behavior: when no recipe_step is supplied, the recipe
+        # is cleared so __getstate__ falls back to a full pickle.
         exp = Experiment.from_gauss(seed=0, shape=(5, 5), a=2, b=1, num_img=10)
         assert 'recipe' in exp.meta
         mask = np.zeros((5, 5), dtype=bool)
@@ -164,11 +168,17 @@ class TestFullPickleFallback:
         exp_masked = exp.apply_mask(mask)
         assert 'recipe' not in exp_masked.meta
 
-    def test_bootstrap_clears_recipe(self):
+    def test_bootstrap_self_recipes(self):
+        # New behavior: bootstrap_img is self-describing and extends
+        # the recipe with a 'bootstrap_img' step.
         exp = Experiment.from_gauss(seed=0, shape=(4, 4), a=2, b=1, num_img=20)
         assert 'recipe' in exp.meta
         exp_b = exp.bootstrap_img(n=5, seed=0)
-        assert 'recipe' not in exp_b.meta
+        assert 'recipe' in exp_b.meta
+        steps = exp_b.meta['recipe']['steps']
+        assert len(steps) == 1
+        assert steps[0]['op'] == 'bootstrap_img'
+        assert steps[0]['args']['n'] == 5
 
 
 class TestPickleStatus:
@@ -247,3 +257,140 @@ class TestSlimAnalysisGLOWSize:
         st_ana = ana.pickle_status()
         # analysis arrays add bytes
         assert st_ana.estimated_pickle_mb >= st_exp.estimated_pickle_mb
+
+
+class TestRecipeStepReplay:
+    """Recipe-step composition: each mutating op should be replayable
+    on slim rehydrate."""
+
+    def test_permute_self_recipe_round_trip(self):
+        exp = Experiment.from_gauss(seed=0, shape=(5, 5), a=2, b=1, num_img=20)
+        exp_p = exp.permute(perm_idx=3)
+        y_orig = exp_p.y.copy()
+        x_orig = exp_p.x.copy()
+
+        data = pickle.dumps(exp_p)
+        exp_p2 = pickle.loads(data)
+        assert exp_p2.y is None
+        assert exp_p2.meta['recipe']['steps'][-1]['op'] == 'permute'
+
+        exp_p2.rehydrate()
+        assert np.allclose(exp_p2.y, y_orig)
+        assert np.allclose(exp_p2.x, x_orig)
+
+    def test_bootstrap_self_recipe_round_trip(self):
+        exp = ExperimentImageOnly.from_gauss(seed=0, shape=(4, 4), b=1,
+                                              num_img=15)
+        exp_b = exp.bootstrap_img(n=5, seed=42)
+        y_orig = exp_b.y.copy()
+
+        data = pickle.dumps(exp_b)
+        exp_b2 = pickle.loads(data)
+        assert exp_b2.y is None
+        assert exp_b2.meta['recipe']['steps'][-1]['op'] == 'bootstrap_img'
+
+        exp_b2.rehydrate()
+        assert np.allclose(exp_b2.y, y_orig)
+
+    def test_apply_mask_with_step_round_trip(self):
+        exp = Experiment.from_gauss(seed=0, shape=(5, 5), a=2, b=1, num_img=20)
+        mask = np.zeros((5, 5), dtype=bool)
+        mask[:3, :3] = True
+        recipe_step = {'op': 'apply_mask', 'args': {'mask': mask}}
+        exp_m = exp.apply_mask(mask, recipe_step=recipe_step)
+        y_orig = exp_m.y.copy()
+        x_orig = exp_m.x.copy()
+
+        data = pickle.dumps(exp_m)
+        exp_m2 = pickle.loads(data)
+        assert exp_m2.y is None
+        assert exp_m2.meta['recipe']['steps'][-1]['op'] == 'apply_mask'
+
+        exp_m2.rehydrate()
+        assert np.allclose(exp_m2.y, y_orig)
+        assert np.allclose(exp_m2.x, x_orig)
+
+    def test_effect_synthetic_apply_round_trip(self):
+        from glow.effect import EffectSynthetic, ExtenterSphere
+        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
+                                     num_img=30, seed=0)
+        extenter = ExtenterSphere(radius=2)
+        exp_eff, _eff = EffectSynthetic.impose(
+            exp, effect_llr=0.3, extenter=extenter, seed=0)
+        y_orig = exp_eff.y.copy()
+        x_orig = exp_eff.x.copy()
+
+        data = pickle.dumps(exp_eff)
+        exp_eff2 = pickle.loads(data)
+        assert exp_eff2.y is None
+        steps = exp_eff2.meta['recipe']['steps']
+        assert steps[-1]['op'] == 'add_offset'
+
+        exp_eff2.rehydrate()
+        assert np.allclose(exp_eff2.y, y_orig)
+        assert np.allclose(exp_eff2.x, x_orig)
+
+    def test_effect_synthetic_returns_tuple(self):
+        # The new API mirrors the old (Experiment, Effect-like) tuple shape.
+        from glow.effect import EffectSynthetic, ExtenterSphere
+        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
+                                     num_img=20, seed=0)
+        result = EffectSynthetic.impose(
+            exp, effect_llr=0.2,
+            extenter=ExtenterSphere(radius=2), seed=0)
+        assert isinstance(result, tuple) and len(result) == 2
+        new_exp, synth = result
+        assert isinstance(new_exp, Experiment)
+        assert isinstance(synth, EffectSynthetic)
+        assert synth.mask.sum() > 0
+
+    def test_paper_pipeline_round_trip(self):
+        # Full paper_config-style chain: gauss -> apply_mask -> scale ->
+        # impose effect. After slim pickle + rehydrate, the final y should
+        # match the original.
+        from glow.effect import EffectSynthetic, ExtenterSphere
+        from glow.experiment.exper import ExperimentScaled
+
+        exp = Experiment.from_gauss(a=2, b=1, shape=(6, 6),
+                                     num_img=30, seed=0)
+        # crop
+        crop_mask = np.zeros((6, 6), dtype=bool)
+        crop_mask[1:5, 1:5] = True
+        exp_crop = exp.apply_mask(
+            crop_mask,
+            recipe_step={'op': 'apply_mask', 'args': {'mask': crop_mask}},
+        )
+        # scale
+        exp_scaled = ExperimentScaled.from_exp(exp_crop)
+        # impose
+        n_eff = max(1, int(0.3 * exp_scaled.y.shape[2]))
+        extenter = ExtenterSphere(n_vox=n_eff)
+        exp_eff, _ = EffectSynthetic.impose(
+            exp_scaled, effect_llr=0.2, extenter=extenter, seed=1)
+
+        y_orig = exp_eff.y.copy()
+        x_orig = exp_eff.x.copy()
+
+        data = pickle.dumps(exp_eff)
+        exp_eff2 = pickle.loads(data)
+        assert exp_eff2.y is None
+        ops = [s['op'] for s in exp_eff2.meta['recipe']['steps']]
+        assert ops == ['apply_mask', 'scale', 'add_offset']
+
+        exp_eff2.rehydrate()
+        assert np.allclose(exp_eff2.y, y_orig)
+        assert np.allclose(exp_eff2.x, x_orig)
+
+    def test_cleared_recipe_full_pickle_fallback(self):
+        # If the recipe is somehow cleared, the full-pickle warning fires
+        # and round-trip still produces correct y.
+        exp = Experiment.from_gauss(seed=0, shape=(4, 4), a=2, b=1, num_img=10)
+        exp.meta.pop('recipe', None)
+
+        warnings.simplefilter('always', FullPickleNotice)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', FullPickleNotice)
+            data = pickle.dumps(exp)
+        exp2 = pickle.loads(data)
+        assert exp2.y is not None
+        assert np.allclose(exp2.y, exp.y)

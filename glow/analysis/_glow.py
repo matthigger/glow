@@ -1,6 +1,7 @@
 import pickle
 import shutil
 import tempfile
+import warnings
 from bisect import bisect_left
 from pathlib import Path
 
@@ -293,8 +294,13 @@ class AnalysisGLOW(Analysis):
                 llr_inner[i, :] = llr_i
                 del _exp_inner
 
-            mu = np.nanmean(llr_inner, axis=0)
-            sigma = np.nanstd(llr_inner, axis=0, ddof=1)
+            # Regions excluded by min_vox have all-NaN slices; nanmean
+            # / nanstd legitimately return NaN for them but emit
+            # RuntimeWarnings.  Silence those — the NaN is the answer.
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                mu = np.nanmean(llr_inner, axis=0)
+                sigma = np.nanstd(llr_inner, axis=0, ddof=1)
         else:
             # rerun_permutation path: caller only wants children/stat/size.
             mu = np.full_like(llr_outer, fill_value=np.nan)
@@ -437,7 +443,7 @@ class AnalysisGLOW(Analysis):
                 mask_idx=exp.mask_idx,
                 children=children_0)
             pval_fwer = self.pval[reg_idx]
-            eff = glow.effect.Effect.from_exp_mask(
+            eff = glow.effect.EffectEstimate.from_exp_mask(
                 mask=label_map > -1, exp=exp,
                 reg_idx=reg_idx, pval_fwer=pval_fwer)
             self.effect_list.append(eff)

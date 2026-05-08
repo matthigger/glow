@@ -284,8 +284,8 @@ def prep_experiments(exp_orig, targets, effect_llr=0, effect_perc=0.2):
         if effect_llr > 0:
             n_eff = max(1, int(exp.y.shape[2] * effect_perc))
             eff_ext = glow.effect.ExtenterSphere(n_vox=n_eff)
-            exp, _effect = exp.impose_effect(
-                effect_llr=effect_llr, extenter=eff_ext, seed=0)
+            exp, _effect = glow.effect.EffectSynthetic.impose(
+                exp, effect_llr=effect_llr, extenter=eff_ext, seed=0)
 
         experiments.append((exp, int(exp.y.shape[2]), target))
     return experiments
