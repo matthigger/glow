@@ -91,13 +91,14 @@ class TestEstimatePermSec:
         import glow.benchmark.runtime as rt_mod
 
         # stub load_runtime_model to simulate missing model file
+        # (signature: load_runtime_model(analysis_type, platform))
         monkeypatch.setattr(rt_mod, 'load_runtime_model',
-                            lambda atype: None)
+                            lambda *a, **kw: None)
 
         exp = Experiment.from_gauss(a=2, b=1, shape=(4, 4),
                                     num_img=20, seed=0)
         with pytest.raises(FileNotFoundError,
-                           match='GLOW runtime model not found'):
+                           match='runtime model not found'):
             AnalysisGLOW._estimate_perm_sec(exp)
 
     def test_error_points_to_profile_cli(self, monkeypatch):
@@ -105,7 +106,7 @@ class TestEstimatePermSec:
         import glow.benchmark.runtime as rt_mod
 
         monkeypatch.setattr(rt_mod, 'load_runtime_model',
-                            lambda atype: None)
+                            lambda *a, **kw: None)
 
         exp = Experiment.from_gauss(a=2, b=1, shape=(4, 4),
                                     num_img=20, seed=1)

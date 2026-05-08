@@ -63,7 +63,7 @@ def _make_config(label='test_cache', ana_labels=('GLOW', 'VBA')):
         wgn_a=2, wgn_b=2, wgn_num_img=10,
         exp_seed=0,
         n_jobs=1,
-        detail_save=False,
+        
         error_save=False,
     )
 
@@ -176,12 +176,17 @@ class TestConfigHash:
         assert len(h) == 12
         assert all(ch in '0123456789abcdef' for ch in h)
 
-    def test_lazy_loads_exp_orig(self):
-        """runner.hash() auto-loads exp_orig via base_recipe if None."""
+    def test_hash_does_not_load_exp_orig(self):
+        """runner.hash() must NOT trigger an expensive prep_exp_orig load.
+
+        base_recipe() now hashes only declared config knobs (wgn_shape /
+        hcp_subjects + feats), so the hash is computable without ever
+        materializing y.  This keeps cache-key lookups fast on cloud
+        workers that haven't loaded data yet."""
         c = _make_config()
         assert c.exp_orig is None
         _label_hash(c, 'GLOW')
-        assert c.exp_orig is not None
+        assert c.exp_orig is None
 
     def test_job_hash_deterministic(self):
         """_job_hash() is deterministic."""
