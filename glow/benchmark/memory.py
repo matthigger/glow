@@ -106,7 +106,7 @@ def _worker_experiment(num_vox, b, num_img, n_perm, result_queue):
     config = MinimalConfig()
     config.runner = runner
     config.folder = Path(tempfile.mkdtemp(prefix='glow_mem_'))
-    config.detail_save = False
+    # Memory profiling: surface failures loudly rather than swallow them.
     config.error_save = False
 
     runner.run(config, seed=0, effect_llr=0.05)

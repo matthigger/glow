@@ -11,12 +11,11 @@ from glow.experiment.exper import Experiment
 from glow.analysis import AnalysisVBA, AnalysisCET, Analysis
 
 
-def _make_config(tmp_path, detail_save=False):
+def _make_config(tmp_path):
     """Build a minimal config-like object sufficient for _write_result."""
     fake_runner = SimpleNamespace(hash=lambda _cfg, _label: 'abc123')
     config = SimpleNamespace(
         folder=tmp_path,
-        detail_save=detail_save,
         runner=fake_runner,
     )
     return config
@@ -88,9 +87,9 @@ class TestRunVariant:
         """Create a small WGN experiment and compute a stat matrix."""
         exp = Experiment.from_gauss(num_img=10, shape=(3, 3), b=2, seed=0)
         # impose a trivial effect so we have a non-None effect
-        from glow.effect import ExtenterSphere
-        exp, effect = exp.impose_effect(
-            seed=0, extenter=ExtenterSphere(radius=1), effect_llr=0.3)
+        from glow.effect import ExtenterSphere, EffectSynthetic
+        exp, effect = EffectSynthetic.impose(
+            exp, seed=0, extenter=ExtenterSphere(radius=1), effect_llr=0.3)
 
         config = _make_config(tmp_path)
 

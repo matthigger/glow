@@ -63,8 +63,10 @@ class Config:
     n_jobs: int = 1
 
     # -------- persistence / debugging --------
-    detail_save: bool = True
-    error_save: bool = False
+    # error_save=True wraps Ana(...) in try/except so a single failed
+    # experiment doesn't abort the whole batch (important for AWS jobs);
+    # the trace is logged to ERROR/<uuid>.json for diagnosis.
+    error_save: bool = True
 
     # -------- source-specific --------
     # HCP

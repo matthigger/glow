@@ -125,8 +125,7 @@ def stage_workload(s3, bench_run_id: str, n_copies: int) -> None:
         wgn_num_img=BENCH_NUM_IMG,
         crop_n_vox=BENCH_NUM_VOX,
         n_jobs=1,
-        detail_save=False,
-        error_save=False,
+        error_save=False,   # AWS instance benchmarking — fail loudly
     )
 
     # Worker indexes all_kwargs[exp_idx]; identical kwargs give all

@@ -507,8 +507,7 @@ def _build_runtime_profile_configs(cloud_config=None):
         wgn_shape=(max_side, max_side, max_side),
         wgn_a=2,
         n_jobs=1,
-        detail_save=False,
-        error_save=False,
+        error_save=False,   # profiling — surface failures loudly
         cloud_config=cloud_config,
         result_dir=RUNTIME_EXPERIMENT_DIR,
     )

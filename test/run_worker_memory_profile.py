@@ -47,7 +47,7 @@ def bench_memory_profile():
         effect_llr_all=np.array([0.05]),
         effect_perc=0.2,
         n_jobs=1,
-        detail_save=False,
+        
         error_save=False
     )
     

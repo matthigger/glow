@@ -19,8 +19,6 @@ COMMON = dict(
     effect_perc=0.1,
     crop_n_vox=CROP_N_VOX,
     n_jobs=1,
-    detail_save=False,
-    error_save=False,
 )
 
 MODERATE_EFFECT_LLR = 0.03

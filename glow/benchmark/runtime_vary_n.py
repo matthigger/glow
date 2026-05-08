@@ -53,8 +53,7 @@ def _make_config(cloud_config=None):
         wgn_b=2,
         wgn_num_img=100,  # overridden by iter_params
         n_jobs=1,
-        detail_save=False,
-        error_save=False,
+        error_save=False,   # profiling — surface failures loudly
         x_param='wgn_num_img',
         iter_params={
             'wgn_num_img': NUM_IMG_VALUES.tolist(),

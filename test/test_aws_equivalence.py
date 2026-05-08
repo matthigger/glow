@@ -81,7 +81,8 @@ def batched_cloud_results():
             if (i - center[0])**2 + (j - center[1])**2 <= radius**2:
                 mask[i, j] = True
     mask = np.logical_and(mask, exp_orig.mask_idx > -1)
-    exp, _ = exp_orig.impose_effect(mask=mask, effect_llr=1.0, seed=42)
+    exp, _ = glow.effect.EffectSynthetic.impose(
+        exp_orig, mask=mask, effect_llr=1.0, seed=42)
 
     n_perm_fwer = 5
     n_perm_inner = 10
@@ -135,7 +136,7 @@ def batched_cloud_results():
         n_seed=2, effect_llr_all=np.array([0.2]),
         wgn_shape=(5, 5, 5), wgn_a=2, wgn_b=2, wgn_num_img=20,
         exp_seed=42, effect_perc=0.2, n_jobs=1,
-        detail_save=False, error_save=False)
+        error_save=False)
     job_info_el = config_el.submit_cloud_jobs(verbose=True)
     all_job_ids.extend(job_info_el['job_ids'])
     test_meta['experiment_level'] = {'job_info': job_info_el}
@@ -157,7 +158,7 @@ def batched_cloud_results():
         n_seed=1, effect_llr_all=np.array([0.2]),
         wgn_shape=(5, 5, 5), wgn_a=2, wgn_b=2, wgn_num_img=20,
         exp_seed=42, effect_perc=0.2, n_jobs=1,
-        detail_save=False, error_save=False)
+        error_save=False)
     job_info_tfce = config_tfce.submit_cloud_jobs(verbose=True)
     all_job_ids.extend(job_info_tfce['job_ids'])
     test_meta['tfce'] = {'job_info': job_info_tfce}
@@ -179,7 +180,7 @@ def batched_cloud_results():
         n_seed=1, effect_llr_all=np.array([0.2]),
         hcp_feats=['fa'], radius=5,
         effect_perc=0.2, n_jobs=1,
-        detail_save=False, error_save=False)
+        error_save=False)
     job_info_hcp = config_hcp.submit_cloud_jobs(verbose=True)
     all_job_ids.extend(job_info_hcp['job_ids'])
     test_meta['hcp'] = {'job_info': job_info_hcp}
