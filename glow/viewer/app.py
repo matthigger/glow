@@ -162,6 +162,86 @@ def _kv_row(key, val):
     ], style={'fontSize': '12px', 'marginBottom': '2px'})
 
 
+def _array_preview(arr, max_chars=600):
+    """Truncated text preview of a numpy array, suitable for nested display."""
+    import numpy as np
+    try:
+        s = np.array2string(arr, threshold=20, edgeitems=2, precision=4,
+                            max_line_width=80)
+    except Exception:
+        return '<unrenderable array>'
+    if len(s) > max_chars:
+        s = s[:max_chars] + '...'
+    return s
+
+
+def _render_value(key, val, depth=0):
+    """Recursively render a value as Dash html.
+
+    Scalars/short reprs: single key/val row.
+    numpy arrays: collapsed <details> with shape/dtype summary; expand
+        for a truncated text preview of the values.
+    dicts/lists/tuples: collapsed <details> with size summary; expand
+        to recursively render each entry.
+    """
+    import numpy as np
+
+    if val is None or isinstance(val, (bool, int, float, str)):
+        return _kv_row(key, repr(val))
+
+    indent = {'paddingLeft': f'{16 * (depth + 1)}px'}
+
+    if isinstance(val, np.ndarray):
+        return html.Details([
+            html.Summary(
+                f'{key}: ndarray shape={tuple(val.shape)} dtype={val.dtype}',
+                style={'fontSize': '12px', 'cursor': 'pointer',
+                       'fontFamily': 'monospace'}),
+            html.Pre(_array_preview(val),
+                     style={'fontFamily': 'monospace', 'fontSize': '11px',
+                            'whiteSpace': 'pre-wrap',
+                            'background': '#f7f7f7',
+                            'padding': '6px', 'border': '1px solid #ddd',
+                            'maxHeight': '240px', 'overflowY': 'auto',
+                            'marginTop': '2px', **indent}),
+        ], style={'marginBottom': '2px'})
+
+    if isinstance(val, dict):
+        children = [_render_value(repr(k), v, depth + 1)
+                    for k, v in val.items()]
+        return html.Details([
+            html.Summary(f'{key}: dict ({len(val)} entries)',
+                         style={'fontSize': '12px', 'cursor': 'pointer',
+                                'fontFamily': 'monospace'}),
+            html.Div(children, style=indent),
+        ], style={'marginBottom': '2px'})
+
+    if isinstance(val, (list, tuple)):
+        # short flat lists of scalars: render inline
+        if all(isinstance(x, (bool, int, float, str)) or x is None
+               for x in val):
+            s = repr(val)
+            if len(s) <= 120:
+                return _kv_row(key, s)
+        children = [_render_value(f'[{i}]', v, depth + 1)
+                    for i, v in enumerate(val)]
+        return html.Details([
+            html.Summary(f'{key}: {type(val).__name__} ({len(val)} items)',
+                         style={'fontSize': '12px', 'cursor': 'pointer',
+                                'fontFamily': 'monospace'}),
+            html.Div(children, style=indent),
+        ], style={'marginBottom': '2px'})
+
+    # fallback: repr (truncated)
+    try:
+        s = repr(val)
+    except Exception:
+        s = '<unrenderable>'
+    if len(s) > 200:
+        s = s[:200] + '...'
+    return _kv_row(key, s)
+
+
 def _detail_panels(ana_glow):
     """Build the experiment + analysis detail <details> panels.
 
@@ -192,28 +272,49 @@ def _detail_panels(ana_glow):
         _kv_row('recipe source', src if src is not None else '(none)'),
     ]
     if args is not None:
-        # collapse args under a nested <details> so HCP image-paths
-        # manifests don't dominate the panel
-        try:
-            args_summary = ', '.join(f'{k}={type(v).__name__}'
-                                      if isinstance(v, dict)
-                                      else f'{k}={v!r}'
-                                      for k, v in args.items())
-        except Exception:
-            args_summary = '<unrenderable>'
+        # nested expandable rendering of recipe args (debugger-style)
+        arg_children = [_render_value(repr(k), v) for k, v in args.items()]
         exp_rows.append(html.Details([
-            html.Summary('recipe args',
+            html.Summary(f'recipe args ({len(args)} entries)',
                          style={'fontSize': '12px', 'cursor': 'pointer',
                                 'color': '#555'}),
-            html.Pre(args_summary,
-                     style={'fontFamily': 'monospace', 'fontSize': '11px',
-                            'whiteSpace': 'pre-wrap',
-                            'background': '#f7f7f7',
+            html.Div(arg_children,
+                     style={'background': '#f7f7f7',
                             'padding': '6px', 'border': '1px solid #ddd',
-                            'maxHeight': '200px', 'overflowY': 'auto'}),
+                            'maxHeight': '320px', 'overflowY': 'auto',
+                            'marginTop': '2px'}),
+        ], style={'marginTop': '4px', 'marginBottom': '4px'}))
+    steps = recipe.get('steps') if recipe else None
+    if steps:
+        # one expandable per step, args rendered recursively (nested)
+        steps_summary = ' -> '.join(s.get('op', '?') for s in steps)
+        step_blocks = []
+        for i, step in enumerate(steps):
+            op = step.get('op', '?')
+            s_args = step.get('args', {}) or {}
+            inner = [_render_value(repr(k), v, depth=1)
+                     for k, v in s_args.items()]
+            step_blocks.append(html.Details([
+                html.Summary(f'[{i}] {op}',
+                             style={'fontFamily': 'monospace',
+                                    'fontSize': '12px',
+                                    'cursor': 'pointer',
+                                    'fontWeight': 'bold'}),
+                html.Div(inner, style={'paddingLeft': '16px'}),
+            ], open=True, style={'marginBottom': '4px'}))
+        exp_rows.append(html.Details([
+            html.Summary(f'recipe steps ({len(steps)}): {steps_summary}',
+                         style={'fontSize': '12px', 'cursor': 'pointer',
+                                'color': '#555'}),
+            html.Div(step_blocks,
+                     style={'background': '#f7f7f7',
+                            'padding': '6px', 'border': '1px solid #ddd',
+                            'maxHeight': '400px', 'overflowY': 'auto',
+                            'marginTop': '2px'}),
         ], style={'marginTop': '4px', 'marginBottom': '4px'}))
     exp_rows.extend([
         _kv_row('y.shape', y_shape),
+        _kv_row('image shape', tuple(mask_idx.shape)),
         _kv_row('x.shape', x_shape),
         _kv_row('contrast', np.asarray(contrast).tolist()
                 if contrast is not None else None),
@@ -222,6 +323,8 @@ def _detail_panels(ana_glow):
                 + (f'(first: {subjects[0]})' if subjects else '')),
         _kv_row('features', features),
     ])
+    if 'affine' in meta and meta['affine'] is not None:
+        exp_rows.append(_render_value('affine', meta['affine']))
 
     # --- analysis detail ---
     from glow.analysis.cluster import MODE_LABELS
