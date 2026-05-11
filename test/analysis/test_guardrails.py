@@ -57,9 +57,16 @@ class TestLinAlgRateIntegration:
         # rank-deficient setup: num_img <= b makes E singular under
         # some permutations, which raises LinAlgError in get_hotel_tr
         # / get_pillai / get_roys_root.
+        # Force float64 here: under the new float32 default, E is
+        # numerically near-zero (rather than exactly zero), so np.linalg
+        # .solve does not consistently raise LinAlgError and we cannot
+        # exercise the guardrail.  This test is specifically about the
+        # singular-matrix branch, so float64 is the appropriate dtype.
+        import numpy as np
         from glow.experiment.exper import Experiment
         return Experiment.from_gauss(a=2, b=3, shape=(4, 4),
-                                      num_img=num_img, seed=0)
+                                      num_img=num_img, seed=0,
+                                      dtype=np.float64)
 
     def test_raises_when_all_cells_fail(self):
         from glow.analysis.mancova import get_hotel_tr

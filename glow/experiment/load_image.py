@@ -8,19 +8,37 @@ import glow.mask
 from glow.mask import get_mask_idx
 
 
-def load_image_nii(df):
+def load_image_nii(df, dtype=np.float32):
     """load NIfTI images from a subject x feature dataframe.
+
+    Streams images in two passes so peak memory is one image (~30 MB for
+    HCP) rather than the full (b, num_sbj) stack.  Pass 1 walks every
+    file to accumulate a nonzero-voxel count and validate the shared
+    affine; Pass 2 walks them again, masks each image into the output
+    ``y`` array, and discards.
 
     Args:
         df (pd.DataFrame): index=subject, columns=feature, values=file paths
+        dtype: numpy dtype for the output ``y`` array.  Default
+            ``np.float32`` halves memory vs the legacy float64 and lets
+            ``compute_llr_batched`` keep its hot loop in float32 throughout.
+            ``nibabel.get_fdata(dtype=...)`` preserves precision when the
+            on-disk type is itself float32 (no upcast/downcast round-trip).
 
     Returns:
-        feat_sbj_img (dict): feat -> sbj -> np.array
+        y (np.array): (b, num_sbj, num_vox) masked image intensities.
+            Subject axis is ordered by ``sorted(df.index)``; feature axis
+            follows ``df.columns``.  Dtype matches the ``dtype`` argument.
+        y_names (list): feature names, in ``df.columns`` order
         mask_idx (np.array): voxel index array (-1 where any image is zero)
         affine (np.array): (4, 4) NIfTI affine (consistent across all images)
     """
+    y_names = list(df.columns)
+    subjects = sorted(df.index)
+
+    # ---- Pass 1: scan all files, accumulate vox_count, check affine
     affine = None
-    feat_sbj_img = defaultdict(dict)
+    vox_count = None
     for feat in df.columns:
         for sbj in df.index:
             file = df.loc[sbj, feat]
@@ -30,21 +48,32 @@ def load_image_nii(df):
                 affine = img.affine
             assert np.array_equal(img.affine,
                                   affine), 'affine mismatch'
-            feat_sbj_img[feat][sbj] = img.get_fdata()
 
-    # count nonzero voxels per position (also check images have same shape)
-    vox_count = None
-    for feat, sbj_img in feat_sbj_img.items():
-        for sbj, img in sbj_img.items():
+            arr = img.get_fdata(dtype=dtype)
             if vox_count is None:
-                vox_count = np.zeros(img.shape)
-            vox_count += img != 0
+                vox_count = np.zeros(arr.shape, dtype=np.int32)
+            vox_count += arr != 0
+            del arr, img
 
     # build mask_idx (exclude any voxel which any subject is missing)
     mask = vox_count == df.size
     mask_idx = glow.mask.get_mask_idx(mask)
+    del vox_count
 
-    return feat_sbj_img, mask_idx, affine
+    # ---- Pass 2: reload each file, mask into y, discard
+    num_vox = int(mask.sum())
+    y = np.empty((len(y_names), len(subjects), num_vox), dtype=dtype)
+    sbj_to_idx = {sbj: idx for idx, sbj in enumerate(subjects)}
+    for feat_idx, feat in enumerate(y_names):
+        for sbj in df.index:
+            file = df.loc[sbj, feat]
+
+            img = nib.load(file)
+            arr = img.get_fdata(dtype=dtype)
+            y[feat_idx, sbj_to_idx[sbj], :] = arr[mask]
+            del arr, img
+
+    return y, y_names, mask_idx, affine
 
 
 def load_image_color(df, channel_names=None):

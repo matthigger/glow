@@ -33,8 +33,11 @@ def get_freed_lane(x, contrast, perm_idx):
     rng = np.random.default_rng(perm_idx)
     perm = np.argsort(rng.permutation(num_img))
 
-    # freed_lane = P @ (I - Q0) + Q0, where P @ M = M[perm_inv, :]
-    return (np.eye(num_img) - q0)[perm, :] + q0
+    # freed_lane = P @ (I - Q0) + Q0, where P @ M = M[perm_inv, :].
+    # Match q0's dtype on np.eye so the subtraction doesn't promote a
+    # float32 q0 to float64 (which would then propagate into the
+    # permute einsum against y).
+    return (np.eye(num_img, dtype=q0.dtype) - q0)[perm, :] + q0
 
 
 class NotEnoughPermutations(Warning):

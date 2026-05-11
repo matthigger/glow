@@ -27,8 +27,11 @@ def get_mancova(*, x=None, y, contrast=None, q_tup=None):
 
     b, num_img, num_vox = y.shape
 
-    # compute sigma_sum (non-normalised spatial covariance)
-    y_mean = y.mean(axis=2)
+    # compute sigma_sum (non-normalised spatial covariance).  Pass
+    # dtype=y.dtype so numpy keeps the accumulator in y.dtype rather
+    # than silently promoting float32 -> float64 (the default for
+    # reduction-on-float32).
+    y_mean = y.mean(axis=2, dtype=y.dtype)
     yr = y.reshape((b, -1), order='F')
     sigma = yr @ yr.T - y_mean @ y_mean.T * num_vox
 
@@ -75,9 +78,16 @@ def decompose(x, contrast):
         q0 (np.array): nuisance subspace
         q1 (np.array): interest subspace
         q2 (np.array): residual subspace
+
+    Output dtype matches ``x.dtype`` — important for AnalysisGLOW's hot
+    loop, where the returned q matrices feed every-permutation einsums
+    against y and a silent float32 -> float64 promotion would erase the
+    bandwidth win from float32 y.
     """
     a = (~contrast).sum(), contrast.size
-    to_sorted = np.eye(a[1])[np.argsort(contrast), :]
+    # np.eye defaults to float64; match x.dtype so to_sorted @ x doesn't
+    # promote a float32 design matrix.
+    to_sorted = np.eye(a[1], dtype=x.dtype)[np.argsort(contrast), :]
     q, r = np.linalg.qr((to_sorted @ x).T, mode='complete')
     q = q.T
     return q[:a[0], :], q[a[0]: a[1], :], q[a[1]:, :]

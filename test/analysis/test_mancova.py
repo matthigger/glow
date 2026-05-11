@@ -45,9 +45,13 @@ def test_get_mancova():
                 h_exp = hat @ hat.T
                 e_exp = err @ err.T
 
-                # test mancova stats
-                assert np.allclose(h_obs, h_exp)
-                assert np.allclose(e_obs, e_exp)
+                # test mancova stats.  Reference path uses float64
+                # primitives (np.eye, np.linalg.pinv) while the new
+                # default experiment dtype is float32, so the comparison
+                # straddles dtypes — loosen tolerances to float32
+                # working precision.
+                assert np.allclose(h_obs, h_exp, rtol=1e-4, atol=1e-5)
+                assert np.allclose(e_obs, e_exp, rtol=1e-4, atol=1e-5)
 
 
 def test_get_hotel_tr():

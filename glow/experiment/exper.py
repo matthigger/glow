@@ -32,10 +32,28 @@ class ExperimentImageOnly:
             not used by analysis — propagated for export / display
     """
 
-    def __init__(self, *, y, mask_idx, meta=None, **kwargs):
+    def __init__(self, *, y, mask_idx, meta=None, dtype=None, **kwargs):
+        """
+        Args:
+            y (np.array): (b, num_img, num_vox) imaging features.
+            mask_idx (np.array): voxel index array (-1 outside analysis).
+            meta (dict): optional metadata.
+            dtype (np.dtype | None): if not None and ``y.dtype`` differs,
+                cast ``y`` to ``dtype`` (no copy when already matching).
+                Default ``None`` preserves ``y.dtype`` — used by internal
+                constructors and recipe-replay paths so dtype is set
+                exactly once by the public factory at top of the chain.
+        """
+        if dtype is not None and y is not None and y.dtype != dtype:
+            y = y.astype(dtype, copy=False)
         self.y = y
         self.mask_idx = mask_idx
         self.meta = meta if meta is not None else {}
+
+    @property
+    def dtype(self):
+        """dtype of the underlying ``y`` array, or None when y is slim."""
+        return self.y.dtype if self.y is not None else None
 
     def _full_pickle_msg(self, src):
         y_mb = self.y.nbytes / 1024**2 if self.y is not None else 0.0
@@ -101,7 +119,7 @@ class ExperimentImageOnly:
 
     @classmethod
     def from_gauss(cls, b=None, num_img=10, shape=(2, 3, 4), seed=None,
-                   mu=None, cov=None, **kwargs):
+                   mu=None, cov=None, dtype=np.float32, **kwargs):
         """generate Gaussian imaging data with prescribed mean and covariance.
 
         Args:
@@ -111,6 +129,9 @@ class ExperimentImageOnly:
             seed (int): random seed
             mu (np.array): target sample mean (default zeros)
             cov (np.array): target sample covariance (default identity)
+            dtype: numpy dtype for the generated ``y`` array.  Default
+                ``np.float32`` matches the HCP loader and keeps the
+                ``compute_llr_batched`` hot loop in float32.
 
         Returns:
             ExperimentImageOnly
@@ -155,9 +176,14 @@ class ExperimentImageOnly:
                 'seed': seed,
                 'mu': mu,
                 'cov': cov,
+                'dtype': dtype,
             },
         }
-        return cls(y=y.reshape((b, num_img, num_vox)),
+        # cast to target dtype here (single cast at the public factory;
+        # the constructor would also handle this but doing it explicitly
+        # documents the contract).
+        y = y.reshape((b, num_img, num_vox)).astype(dtype, copy=False)
+        return cls(y=y,
                    mask_idx=get_mask_idx(np.ones(shape)),
                    meta=meta, **kwargs)
 
@@ -187,22 +213,26 @@ class ExperimentImageOnly:
         return sorted(df.index)
 
     @classmethod
-    def from_search(cls, folder, sbj_regex, img_glob_dict, **kwargs):
+    def from_search(cls, folder, sbj_regex, img_glob_dict,
+                    dtype=np.float32, **kwargs):
         """search a folder for images and build an experiment.
 
         Args:
             folder (str): root folder to search recursively
             sbj_regex (str): regex extracting the subject id from file paths
             img_glob_dict (dict): feature_name -> glob pattern
+            dtype: numpy dtype for the loaded ``y`` array (default
+                ``np.float32``; see ``from_paths``).
 
         Returns:
             Experiment built from discovered images
         """
         df = cls._search_files(folder, sbj_regex, img_glob_dict)
-        return cls.from_paths(df, **kwargs)
+        return cls.from_paths(df, dtype=dtype, **kwargs)
 
     @classmethod
-    def from_paths(cls, paths, *, channel_names=None, **kwargs):
+    def from_paths(cls, paths, *, channel_names=None,
+                   dtype=np.float32, **kwargs):
         """build an experiment from an explicit (subject x feature) path map.
 
         Args:
@@ -234,33 +264,39 @@ class ExperimentImageOnly:
 
         nii_in_file = ['.nii' in str(file) for file in df.values.flatten()]
         affine = None
+        subjects = sorted(df.index)
         if all(nii_in_file):
-            feat_sbj_img, mask_idx, affine = load_image_nii(df)
+            # NIfTI path streams to y directly (no per-image dict held in
+            # memory).  The loader controls dtype; we pass the public
+            # factory's choice (float32 by default).
+            y, y_names, mask_idx, affine = load_image_nii(df, dtype=dtype)
         elif not any(nii_in_file):
             feat_sbj_img, mask_idx = load_image_color(
                 df, channel_names=channel_names)
+
+            # ensure all input has same data type (PNG/JPG dtype is
+            # whatever PIL reads — typically uint8; cast happens below)
+            src_dtype = None
+            for _, sbj_img in feat_sbj_img.items():
+                for _, img in sbj_img.items():
+                    if src_dtype is None:
+                        src_dtype = img.dtype
+                    else:
+                        assert src_dtype == img.dtype, 'dtype mismatch'
+
+            # mask into each image, store as y.  Preserve feature insertion
+            # order so channel_names (e.g. RGB → red, green, blue) keep the
+            # caller's intended order rather than alphabetical.  Allocate
+            # at the requested dtype so the per-image copy casts in place.
+            mask = mask_idx >= 0
+            y_names = list(feat_sbj_img.keys())
+            y = np.empty((len(feat_sbj_img), df.shape[0], mask.sum()),
+                         dtype=dtype)
+            for sbj_idx, sbj in enumerate(subjects):
+                for feat_idx, feat in enumerate(y_names):
+                    y[feat_idx, sbj_idx, :] = feat_sbj_img[feat][sbj][mask]
         else:
             raise TypeError('may not mix nifti and color images in input')
-
-        # ensure all input has same data type
-        dtype = None
-        for _, sbj_img in feat_sbj_img.items():
-            for _, img in sbj_img.items():
-                if dtype is None:
-                    dtype = img.dtype
-                else:
-                    assert dtype == img.dtype, 'dtype mismatch'
-
-        # mask into each image, store as y.  Preserve feature insertion
-        # order so channel_names (e.g. RGB → red, green, blue) keep the
-        # caller's intended order rather than alphabetical.
-        mask = mask_idx >= 0
-        y_names = list(feat_sbj_img.keys())
-        subjects = sorted(df.index)
-        y = np.empty((len(feat_sbj_img), df.shape[0], mask.sum()))
-        for sbj_idx, sbj in enumerate(subjects):
-            for feat_idx, feat in enumerate(y_names):
-                y[feat_idx, sbj_idx, :] = feat_sbj_img[feat][sbj][mask]
 
         meta = kwargs.pop('meta', {})
         meta.setdefault('subjects', [str(s) for s in subjects])
@@ -327,7 +363,11 @@ class ExperimentImageOnly:
             noise = rng.multivariate_normal(mean=np.zeros(b),
                                             cov=cov * (noise_scale ** 2),
                                             size=num_vox * n)
-            y = y + noise.T.reshape((b, n, num_vox))
+            # multivariate_normal returns float64 unconditionally; cast
+            # back so the addition doesn't silently promote y.
+            noise = noise.T.reshape((b, n, num_vox)).astype(y.dtype,
+                                                            copy=False)
+            y = y + noise
 
         # bootstrap_img is fully described by its scalar args (n, seed,
         # noise_scale) plus the upstream recipe — self-recipe so replay
@@ -361,10 +401,14 @@ class ExperimentImageOnly:
             # default contrast: all x of interest but bias term
             contrast = np.ones(a, dtype=bool)
 
-        # sample x
+        # sample x — match y's dtype so downstream decompose() / einsums
+        # don't silently upcast (numpy promotes float32 @ float64 to
+        # float64, eliminating the bandwidth win in compute_llr_batched).
         num_img = self.y.shape[1]
         rng = np.random.default_rng(seed=seed)
         x = rng.standard_normal(size=(a, num_img))
+        if self.y is not None and self.y.dtype != x.dtype:
+            x = x.astype(self.y.dtype, copy=False)
 
         return Experiment(x=x, contrast=contrast, y=self.y,
                           mask_idx=self.mask_idx,
@@ -462,9 +506,13 @@ class Experiment(ExperimentImageOnly):
         self.contrast = contrast
 
         if add_bias:
-            # append row of ones (bias term) to x
+            # append row of ones (bias term) to x.  np.ones defaults to
+            # float64, which would silently promote x if it's float32 —
+            # match x's dtype to keep the design matrix in the same
+            # precision as y (decompose() propagates x.dtype through to
+            # the q matrices used in compute_llr_batched's einsums).
             num_img = x.shape[1]
-            self.x = np.vstack([np.ones(num_img), x])
+            self.x = np.vstack([np.ones(num_img, dtype=x.dtype), x])
 
             # append leading False to contrast (it's not of interest)
             self.contrast = np.insert(self.contrast, 0, values=False)
@@ -496,6 +544,13 @@ class Experiment(ExperimentImageOnly):
             y = deepcopy(self.y)
         else:
             freed_lane = get_freed_lane(self.x, self.contrast, perm_idx)
+            # get_freed_lane uses np.eye / rng.permutation which return
+            # float64 — cast to y.dtype so the einsum preserves dtype.
+            # This is the inner loop of AnalysisGLOW: every permutation
+            # goes through here, and a silent f32 -> f64 promotion would
+            # erase the memory + speed gains of float32 y.
+            if freed_lane.dtype != self.y.dtype:
+                freed_lane = freed_lane.astype(self.y.dtype, copy=False)
             y = np.einsum('abc,bd->adc', self.y, freed_lane, optimize=True)
 
         # permute is fully described by perm_idx + the upstream recipe;
@@ -548,8 +603,17 @@ class ExperimentScaled(Experiment):
                          y) + self.mean_orig
 
     def __init__(self, y, *args, **kwargs):
-        # zero mean (and make new copy)
+        # Preserve y.dtype through the prep transform.  np.cov / eigh /
+        # mean(axis=...) all use float64 accumulators internally and
+        # return float64 regardless of input dtype, so cast back at the
+        # end — otherwise self.prep(y) silently promotes y to float64.
+        y_dtype = y.dtype
+
+        # zero mean (and make new copy).  Use dtype=float64 accumulator
+        # for numerical stability (b is small, no memory cost), then
+        # cast the (b,) result back to match y.
         self.mean_orig = y.mean(axis=(1, 2))[:, np.newaxis, np.newaxis]
+        self.mean_orig = self.mean_orig.astype(y_dtype, copy=False)
 
         # scale normalize
         b, num_img, num_vox = y.shape
@@ -567,6 +631,6 @@ class ExperimentScaled(Experiment):
 
         cov_scale = self.pre_scale @ cov @ self.pre_scale.T
         evals, evecs = np.linalg.eigh(cov_scale)
-        self.pre_scale = evecs.T @ self.pre_scale
+        self.pre_scale = (evecs.T @ self.pre_scale).astype(y_dtype, copy=False)
 
         super().__init__(y=self.prep(y), *args, **kwargs)

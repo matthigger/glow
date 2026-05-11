@@ -116,13 +116,21 @@ class TestExperimentScaled:
 
         exp_scale = ExperimentScaled.from_exp(exp)
 
-        assert np.allclose(exp_scale.y.mean(axis=(1, 2)), 0), 'non-zero mean'
+        # Tolerances loosened to atol=1e-5 since the default float32
+        # experiment dtype caps eigh / cov residuals around ~1e-7.  Under
+        # the previous float64 default these checks ran with ~1e-15
+        # off-diagonals, but the *semantic* "the basis was diagonalised
+        # to working precision" is unchanged.
+        assert np.allclose(exp_scale.y.mean(axis=(1, 2)), 0, atol=1e-5), \
+            'non-zero mean'
 
         cov_after = np.cov(exp_scale.y.reshape((b, -1), order='F'))
         off_diag = ~np.eye(b).astype(bool)
-        assert np.allclose(cov_after[off_diag], 0), 'non-zero correlation'
+        assert np.allclose(cov_after[off_diag], 0, atol=1e-5), \
+            'non-zero correlation'
 
-        assert np.allclose(exp.y, exp_scale.prep_inv(exp_scale.y))
+        assert np.allclose(exp.y, exp_scale.prep_inv(exp_scale.y),
+                           rtol=1e-4, atol=1e-5)
 
         # ensure that each pca direction is transformed properly
         cov = np.cov(exp.y.reshape(b, -1))
@@ -135,7 +143,9 @@ class TestExperimentScaled:
             e_preimage = np.diag(1 / np.diag(scale)) @ evec
             e_preimage = (e_preimage[:, np.newaxis, np.newaxis] +
                           exp_scale.mean_orig)
-            assert np.allclose(exp_scale.prep(e_preimage), e)
+            # float32 tolerance — see comment in test_init above.
+            assert np.allclose(exp_scale.prep(e_preimage), e,
+                               rtol=1e-4, atol=1e-5)
 
 
 class TestImposeEffectWithNoise:
