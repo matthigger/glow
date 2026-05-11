@@ -92,7 +92,33 @@ def iter_stat(exp, **kwargs):
         yield reg_idx, size, e, h
 
 
-def compute_llr_batched(exp, children, q0, q1, min_size=1):
+def compute_tree_layers(children, num_vox):
+    """compute per-node depth from leaves for a Ward tree.
+
+    Leaves are 0; internal nodes are ``1 + max(child depths)``.  Depends
+    only on ``children``, so callers running many ``compute_llr_batched``
+    passes against the same tree (e.g. the inner FL loop in
+    ``AnalysisGLOW``) should compute this once and pass via the
+    ``layer`` kwarg to avoid the per-pass Python loop.
+
+    Args:
+        children (np.array): (num_internal, 2) child index pairs in
+            topological (bottom-up) order.
+        num_vox (int): number of leaf voxels.
+
+    Returns:
+        layer (np.array): (num_reg,) int32 depth per region.
+    """
+    num_internal = children.shape[0]
+    layer = np.zeros(num_vox + num_internal, dtype=np.int32)
+    c0_all = children[:, 0]
+    c1_all = children[:, 1]
+    for i in range(num_internal):
+        layer[num_vox + i] = 1 + max(layer[c0_all[i]], layer[c1_all[i]])
+    return layer
+
+
+def compute_llr_batched(exp, children, q0, q1, min_size=1, layer=None):
     """Vectorised LLR per region for a single (already-permuted) experiment.
 
     Computes the same per-region LLR statistic as the per-region loop::
@@ -123,6 +149,11 @@ def compute_llr_batched(exp, children, q0, q1, min_size=1):
         min_size (int): regions with size < min_size get NaN LLR (and
             their E/H matrices are never computed).  Default 1 keeps
             every region.
+        layer (np.array | None): (num_reg,) per-node depths from
+            ``compute_tree_layers``.  Depends only on ``children``;
+            pass precomputed to skip the per-call Python loop in hot
+            inner FL loops (~34% of this function's runtime on a 5k
+            vox tree).  Computed internally if None.
 
     Returns:
         llr (np.array): (num_reg,) LLR per region.  NaN where size <
@@ -144,10 +175,8 @@ def compute_llr_batched(exp, children, q0, q1, min_size=1):
     c0_all = children[:, 0]
     c1_all = children[:, 1]
 
-    # depth from leaves: leaves are 0, internal node = 1 + max(child depths)
-    layer = np.zeros(num_reg, dtype=np.int32)
-    for i in range(num_internal):
-        layer[num_vox + i] = 1 + max(layer[c0_all[i]], layer[c1_all[i]])
+    if layer is None:
+        layer = compute_tree_layers(children, num_vox)
 
     ysum = np.empty((num_reg, b, num_img), dtype=dtype)
     ysum[:num_vox] = y.transpose(2, 0, 1)

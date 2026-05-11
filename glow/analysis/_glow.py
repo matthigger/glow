@@ -266,12 +266,19 @@ class AnalysisGLOW(Analysis):
         _exp = exp.permute(perm_idx)
         children = cluster(exp=_exp, mode=self.cluster_mode)
 
+        # Per-node tree depth depends only on `children`; precompute
+        # once and reuse across the inner-perm loop.  Without this,
+        # the Python loop inside compute_llr_batched is ~34% of its
+        # runtime on a 5k vox tree.
+        num_vox = _exp.y.shape[2]
+        layer = glow.graph.compute_tree_layers(children, num_vox)
+
         # observed (for this outer perm) LLR per region.  Computed
         # for ALL regions, including size < min_vox, so the viewer's
         # H1 scatter has full coverage (raw LLR is cheap to compute
         # at all sizes).
         llr_outer, size = glow.graph.compute_llr_batched(
-            _exp, children=children, q0=q0, q1=q1)
+            _exp, children=children, q0=q0, q1=q1, layer=layer)
         del _exp
 
         # inner FL perms against THIS tree.  Phase 2 of compute_llr_batched
@@ -290,7 +297,7 @@ class AnalysisGLOW(Analysis):
                 _exp_inner = exp.permute(base + i)
                 llr_i, _ = glow.graph.compute_llr_batched(
                     _exp_inner, children=children, q0=q0, q1=q1,
-                    min_size=min_vox)
+                    min_size=min_vox, layer=layer)
                 llr_inner[i, :] = llr_i
                 del _exp_inner
 
