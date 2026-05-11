@@ -118,6 +118,67 @@ def compute_tree_layers(children, num_vox):
     return layer
 
 
+def compute_phase1(y, children, layer=None):
+    """Bottom-up build of ``(ysum, yout, size)`` for every region.
+
+    Phase 1 of ``compute_llr_batched`` extracted as a public helper so
+    callers running many Phase 2 passes against the same data can hoist
+    Phase 1 out of their inner loop (used by AnalysisGLOW's
+    intercept-only fast path).  Depends only on ``y`` and ``children``.
+
+    Args:
+        y (np.array): (b, num_img, num_vox) imaging features.
+        children (np.array): (num_internal, 2) child index pairs in
+            topological (bottom-up) order.
+        layer (np.array | None): (num_reg,) per-node depths from
+            ``compute_tree_layers``.  Computed internally if None.
+
+    Returns:
+        ysum (np.array): (num_reg, b, num_img) — per-region image sums.
+        yout (np.array): (num_reg, b, b) — per-region ysum of y[v] @ y[v].T.
+        size (np.array): (num_reg,) — voxel count per region.
+    """
+    b, num_img, num_vox = y.shape
+    num_internal = children.shape[0]
+    num_reg = num_vox + num_internal
+
+    # use float32 only when y is float32; else float64
+    dtype = y.dtype if y.dtype == np.float32 else np.float64
+
+    # Process by layer so each layer's nodes are a single batched numpy
+    # add instead of a Python-loop iteration per node.  ~2.3x faster
+    # than the per-node loop on mandrill (5.4 ms -> 2.3 ms).
+    c0_all = children[:, 0]
+    c1_all = children[:, 1]
+
+    if layer is None:
+        layer = compute_tree_layers(children, num_vox)
+
+    ysum = np.empty((num_reg, b, num_img), dtype=dtype)
+    ysum[:num_vox] = y.transpose(2, 0, 1)
+    yout = np.empty((num_reg, b, b), dtype=dtype)
+    yout[:num_vox] = np.einsum('vbn,vcn->vbc',
+                               ysum[:num_vox], ysum[:num_vox],
+                               optimize=True)
+    size = np.empty(num_reg, dtype=int)
+    size[:num_vox] = 1
+
+    internal_layer = layer[num_vox:]
+    max_L = int(internal_layer.max()) if num_internal else 0
+    for L in range(1, max_L + 1):
+        nodes = np.where(internal_layer == L)[0]
+        if len(nodes) == 0:
+            continue
+        c0_L = c0_all[nodes]
+        c1_L = c1_all[nodes]
+        tgt = num_vox + nodes
+        ysum[tgt] = ysum[c0_L] + ysum[c1_L]
+        yout[tgt] = yout[c0_L] + yout[c1_L]
+        size[tgt] = size[c0_L] + size[c1_L]
+
+    return ysum, yout, size
+
+
 def compute_llr_batched(exp, children, q0, q1, min_size=1, layer=None):
     """Vectorised LLR per region for a single (already-permuted) experiment.
 
@@ -161,44 +222,11 @@ def compute_llr_batched(exp, children, q0, q1, min_size=1, layer=None):
         size (np.array): (num_reg,) voxel count per region.
     """
     y = exp.y
-    b, num_img, num_vox = y.shape
-    num_internal = children.shape[0]
-    num_reg = num_vox + num_internal
-
-    # use float32 only when both source arrays are float32; else float64
     dtype = y.dtype if y.dtype == np.float32 else np.float64
+    num_reg = y.shape[2] + children.shape[0]
 
     # --- Phase 1: bottom-up build of ysum / yout / size for ALL regions ---
-    # Process by layer so each layer's nodes are a single batched numpy
-    # add instead of a Python-loop iteration per node.  ~2.3x faster
-    # than the per-node loop on mandrill (5.4 ms -> 2.3 ms).
-    c0_all = children[:, 0]
-    c1_all = children[:, 1]
-
-    if layer is None:
-        layer = compute_tree_layers(children, num_vox)
-
-    ysum = np.empty((num_reg, b, num_img), dtype=dtype)
-    ysum[:num_vox] = y.transpose(2, 0, 1)
-    yout = np.empty((num_reg, b, b), dtype=dtype)
-    yout[:num_vox] = np.einsum('vbn,vcn->vbc',
-                               ysum[:num_vox], ysum[:num_vox],
-                               optimize=True)
-    size = np.empty(num_reg, dtype=int)
-    size[:num_vox] = 1
-
-    internal_layer = layer[num_vox:]
-    max_L = int(internal_layer.max()) if num_internal else 0
-    for L in range(1, max_L + 1):
-        nodes = np.where(internal_layer == L)[0]
-        if len(nodes) == 0:
-            continue
-        c0_L = c0_all[nodes]
-        c1_L = c1_all[nodes]
-        tgt = num_vox + nodes
-        ysum[tgt] = ysum[c0_L] + ysum[c1_L]
-        yout[tgt] = yout[c0_L] + yout[c1_L]
-        size[tgt] = size[c0_L] + size[c1_L]
+    ysum, yout, size = compute_phase1(y, children, layer=layer)
 
     llr = np.full(num_reg, np.nan)
 
