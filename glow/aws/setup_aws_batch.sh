@@ -15,26 +15,26 @@ MAX_VCPUS=4048              # max vCPUs for compute environment
 VCPUS_PER_JOB=1             # vCPUs per job (1 = max concurrency)
 MEMORY_PER_JOB=2000         # memory (MB) per job
 
-# allocation strategy: BEST_FIT_PROGRESSIVE biases toward the closest-fit
-# instance type and falls back to larger sizes when Spot capacity is short.
-# Trades a bit of Spot reliability for major cost+speed wins vs
-# SPOT_CAPACITY_OPTIMIZED (which would happily place a 2 GB job on r5.large
-# 16 GB and pay the unused-memory premium).  This is immutable on a CE; the
-# script triggers a teardown+recreate when it drifts.
-ALLOC_STRATEGY="BEST_FIT_PROGRESSIVE"
+# allocation strategy: SPOT_PRICE_CAPACITY_OPTIMIZED picks Spot pools with
+# the most available capacity at the lowest price -- AWS's recommended
+# strategy for Spot workloads.  Switched from BEST_FIT_PROGRESSIVE on
+# 2026-05-11 after observing 80-90% reclamation rates on c7i/c7a in a
+# heavy paper-config run.  SPOT_PRICE_CAPACITY_OPTIMIZED requires the
+# Batch Service Linked Role (AWSServiceRoleForBatch), so the CE must
+# be created with that service role -- not a user-managed role.  This
+# is immutable on a CE; the script tears down + recreates when it drifts.
+ALLOC_STRATEGY="SPOT_PRICE_CAPACITY_OPTIMIZED"
 
 # instance type list -- pruned to drop 5-series only.  bench_instance_types.py
-# (2026-04-28 sweep) showed:
-#   * 5-series (Skylake/Naples, 2017) is 2x slower per core than 7-series
-#     (Sapphire Rapids/Genoa, 2023) on BLAS-heavy permutation work, and
-#     usually CHEAPER hourly than 6/7-series within the same family.
-#     BEST_FIT_PROGRESSIVE picks lowest-$/vCPU first, so leaving 5-series in
-#     the list locks the queue into the slow tier even when faster types
-#     have capacity.  Drop them.
-#   * r-series stays in the list: BEST_FIT_PROGRESSIVE prefers c then m then
-#     r (cheapest $/vCPU first), so r-only ever runs as a capacity fallback
-#     when c/m Spot is tight.  No cost penalty in the common path; useful
-#     reliability cushion for high-pressure submissions.
+# (2026-04-28 sweep) showed 5-series (Skylake/Naples, 2017) is 2x slower per
+# core than 7-series (Sapphire Rapids/Genoa, 2023) on BLAS-heavy permutation
+# work; drop it from the pool.
+#
+# Under SPOT_PRICE_CAPACITY_OPTIMIZED (current allocation strategy) the
+# scheduler picks the cheapest pool with available Spot capacity from the
+# whole list -- so r-series effectively gets used only when c/m Spot is
+# tight, and 7-series gets used when its reclaim rate is low enough that
+# capacity stays available.  No need to manually prune by family.
 # Rerun bench_instance_types.py if the workload memory profile changes
 # (e.g. mancova at 30k+ voxels actually needs >4 GB/vCPU).
 INSTANCE_TYPES='[
@@ -143,11 +143,19 @@ create_or_update_role() {
     fi
 }
 
-# batch service role
+# batch service-linked role (AWSServiceRoleForBatch) is required for
+# SPOT_PRICE_CAPACITY_OPTIMIZED.  Idempotent create -- succeeds whether
+# the role already exists or not.
+aws iam create-service-linked-role \
+    --aws-service-name batch.amazonaws.com 2>/dev/null || true
+
+# legacy GlowBatchServiceRole -- no longer attached to the CE (the SLR
+# is used instead).  Kept here for backward compatibility with anything
+# else that may reference it.
 BATCH_TRUST_POLICY='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"batch.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
 create_or_update_role "GlowBatchServiceRole" "$BATCH_TRUST_POLICY" \
     "arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole" \
-    "AWS Batch service role for GLOW"
+    "AWS Batch service role for GLOW (legacy; CE now uses SLR)"
 
 # ecs task execution role
 ECS_TRUST_POLICY='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
@@ -288,7 +296,7 @@ create_compute_environment() {
         --type MANAGED \
         --state ENABLED \
         --region $REGION \
-        --service-role "arn:aws:iam::${ACCOUNT_ID}:role/GlowBatchServiceRole" \
+        --service-role "arn:aws:iam::${ACCOUNT_ID}:role/aws-service-role/batch.amazonaws.com/AWSServiceRoleForBatch" \
         --compute-resources "{
             \"type\": \"SPOT\",
             \"allocationStrategy\": \"${ALLOC_STRATEGY}\",
