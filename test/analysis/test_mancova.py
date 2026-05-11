@@ -1,8 +1,12 @@
 import warnings
 
+import numpy as np
+import pytest
+
 from glow.experiment import ExperimentImageOnly
 from glow.experiment.exper import NoBiasTermWarning
 from glow.analysis.mancova import *
+from glow.analysis.mancova import is_intercept_only_nuisance
 from glow.graph import iter_topo
 
 
@@ -204,3 +208,26 @@ def test_get_llr_fidelity():
     sn = get_llr(e, h, size_normalize=True)
     ref_sn = _get_llr_reference(e, h, n=1)
     assert np.isclose(sn, ref_sn, rtol=1e-10)
+
+
+@pytest.mark.parametrize('x, contrast, expected', [
+    # bias-only nuisance: single all-ones row, rest interest
+    (np.array([[1., 1., 1., 1., 1.],
+               [0.3, -0.1, 0.8, -0.2, 0.5]]),
+     np.array([False, True]), True),
+    # bias + a second constant nuisance column: still intercept-only
+    (np.array([[1., 1., 1., 1., 1.],
+               [4., 4., 4., 4., 4.],
+               [0.3, -0.1, 0.8, -0.2, 0.5]]),
+     np.array([False, False, True]), True),
+    # bias + a non-constant nuisance column (e.g. age covariate) — NOT intercept-only
+    (np.array([[1., 1., 1., 1., 1.],
+               [20., 25., 30., 35., 40.],
+               [0.3, -0.1, 0.8, -0.2, 0.5]]),
+     np.array([False, False, True]), False),
+    # no nuisance at all (every column is of-interest)
+    (np.array([[0.3, -0.1, 0.8, -0.2, 0.5]]),
+     np.array([True]), True),
+])
+def test_is_intercept_only_nuisance(x, contrast, expected):
+    assert is_intercept_only_nuisance(x, contrast) is expected

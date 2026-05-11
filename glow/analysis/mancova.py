@@ -93,6 +93,37 @@ def decompose(x, contrast):
     return q[:a[0], :], q[a[0]: a[1], :], q[a[1]:, :]
 
 
+def is_intercept_only_nuisance(x, contrast):
+    """True when the nuisance projection Q0 commutes with every permutation.
+
+    Q0 commutes with all permutation matrices iff its column space is a
+    permutation-invariant subspace.  Over the full symmetric group on
+    num_img coordinates, the only such subspaces are spanned by the
+    all-ones vector — i.e., the nuisance must be "intercept-only":
+    every nuisance column is constant across images.
+
+    When this holds, several quantities computed inside the FL inner
+    loop become deterministically invariant under permutation
+    (notably ``yout`` and ``t = yout - a0 a0.T / size``), enabling a
+    Phase-1-precompute fast path in ``AnalysisGLOW``.  For non-constant
+    nuisance columns Q0 does not commute and the fast path is invalid.
+
+    Args:
+        x (np.array): (a, num_img) design matrix
+        contrast (np.array): (a,) boolean, True for features of interest
+
+    Returns:
+        bool — True iff every nuisance column (x rows where contrast is
+        False) is constant across its num_img entries.
+    """
+    x_nuis = x[~contrast]
+    if x_nuis.shape[0] == 0:
+        return True
+    # Use a relative tolerance keyed to the largest entry in each column,
+    # so this works for x in either float32 or float64.
+    return all(np.allclose(row, row[0]) for row in x_nuis)
+
+
 # ---------------------------------------------------------------------------
 # shared log-likelihood primitive
 # ---------------------------------------------------------------------------
