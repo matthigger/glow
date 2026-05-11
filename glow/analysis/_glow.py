@@ -13,7 +13,7 @@ import glow.effect
 import glow.graph
 from ._base import Analysis, _sanitize_adjusted_stat
 from glow.experiment.exper import ExperimentScaled
-from .mancova import decompose, get_llr
+from .mancova import decompose, get_llr, is_intercept_only_nuisance
 from .prune import prune_greedy
 from .cluster import cluster
 
@@ -293,13 +293,41 @@ class AnalysisGLOW(Analysis):
             num_reg = llr_outer.shape[0]
             llr_inner = np.empty((n_perm_inner, num_reg), dtype=float)
             base = (perm_idx + 1) * 100_000
-            for i in range(n_perm_inner):
-                _exp_inner = exp.permute(base + i)
-                llr_i, _ = glow.graph.compute_llr_batched(
-                    _exp_inner, children=children, q0=q0, q1=q1,
-                    min_size=min_vox, layer=layer)
-                llr_inner[i, :] = llr_i
-                del _exp_inner
+
+            # Fast path: when Q0 commutes with permutations (every
+            # nuisance column is constant — bias-only is the common
+            # case), t = yout - a0 a0.T / size is FL-invariant.  We can
+            # precompute Phase 1 once on the original (un-inner-permed)
+            # exp.y against the outer tree, then per inner perm only
+            # need to row-permute q1.T and do a Phase-2-only pass.
+            # ~3x faster on the inner loop at paper-config scale.  See
+            # test_compute_llr_inner_fast_matches_compute_llr_batched
+            # for the bit-exact-equivalence proof under intercept-only.
+            if is_intercept_only_nuisance(exp.x, exp.contrast):
+                dtype = exp.y.dtype if exp.y.dtype == np.float32 else np.float64
+                ysum_u, yout_u, _ = glow.graph.compute_phase1(
+                    exp.y, children, layer=layer)
+                sz_3d = size.astype(dtype)[:, None, None]
+                a0 = np.einsum('rbn,an->rba', ysum_u, q0, optimize=True)
+                t_u = (yout_u - np.einsum('rba,rca->rbc', a0, a0,
+                                           optimize=True) / sz_3d)
+                del a0
+                n_img = exp.y.shape[1]
+                for i in range(n_perm_inner):
+                    rng = np.random.default_rng(base + i)
+                    perm = np.argsort(rng.permutation(n_img))
+                    q1_T_perm = q1.T[perm, :].astype(dtype, copy=False)
+                    llr_i, _ = glow.graph.compute_llr_inner_fast(
+                        t_u, ysum_u, size, q1_T_perm, min_size=min_vox)
+                    llr_inner[i, :] = llr_i
+            else:
+                for i in range(n_perm_inner):
+                    _exp_inner = exp.permute(base + i)
+                    llr_i, _ = glow.graph.compute_llr_batched(
+                        _exp_inner, children=children, q0=q0, q1=q1,
+                        min_size=min_vox, layer=layer)
+                    llr_inner[i, :] = llr_i
+                    del _exp_inner
 
             # Regions excluded by min_vox have all-NaN slices; nanmean
             # / nanstd legitimately return NaN for them but emit
