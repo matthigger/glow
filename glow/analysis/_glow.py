@@ -41,6 +41,7 @@ class AnalysisGLOW(Analysis):
                  alpha_fwer=.05, min_vox=4, verbose=False,
                  n_jobs_perm=1, cloud_config=None, perm_dir=None,
                  cluster_mode="q1",
+                 use_fast_path=True,
                  **kwargs):
         """
         Args:
@@ -68,6 +69,12 @@ class AnalysisGLOW(Analysis):
                 ``"q1"`` (Focus) projects onto the contrast
                 subspace; ``"q0, q1"`` (GLM Error) keeps bias
                 + contrast; ``"all"`` (Naive) clusters raw y.
+            use_fast_path: when True (default), enable the
+                intercept-only Phase-1-precompute fast path in the
+                inner FL loop when ``is_intercept_only_nuisance`` holds
+                for ``exp``.  Set False to force the original Phase-1-
+                per-inner-perm slow path — used by the runtime
+                benchmark to measure the speedup factor.
         """
         super().__init__(exp, **kwargs)
         self.verbose = verbose
@@ -75,6 +82,7 @@ class AnalysisGLOW(Analysis):
         self.min_vox = min_vox
         self.n_perm_fwer = n_perm_fwer
         self.n_perm_inner = n_perm_inner
+        self.use_fast_path = use_fast_path
 
         if cloud_config is not None:
             self._run_on_cloud(exp, n_perm_fwer, n_perm_inner,
@@ -303,7 +311,8 @@ class AnalysisGLOW(Analysis):
             # ~3x faster on the inner loop at paper-config scale.  See
             # test_compute_llr_inner_fast_matches_compute_llr_batched
             # for the bit-exact-equivalence proof under intercept-only.
-            if is_intercept_only_nuisance(exp.x, exp.contrast):
+            if (getattr(self, 'use_fast_path', True)
+                    and is_intercept_only_nuisance(exp.x, exp.contrast)):
                 dtype = exp.y.dtype if exp.y.dtype == np.float32 else np.float64
                 ysum_u, yout_u, _ = glow.graph.compute_phase1(
                     exp.y, children, layer=layer)

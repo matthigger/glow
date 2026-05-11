@@ -63,7 +63,17 @@ RUNTIME_MODEL_PATHS = {
         'VBA-TFCE': RUNTIME_MODEL_DIR / 'local' / 'runtime_vba_tfce.json',
     },
 }
-RUNTIME_FEATURE_COLS = ['num_vox', 'b', 'num_img', 'n_perm']
+# Per-analysis-type feature lists. GLOW adds n_perm_inner (its inner FL
+# loop is multiplicative with n_perm_fwer) and a binary fast_path flag
+# (whether the intercept-only Phase-1-precompute fast path is active);
+# VBA / VBA-TFCE only have one perm axis and no fast path.  The model
+# JSON saves its own feature_cols so callers stay decoupled from this dict.
+RUNTIME_FEATURE_COLS_BY_TYPE = {
+    'GLOW':     ['num_vox', 'b', 'num_img', 'n_perm', 'n_perm_inner', 'fast_path'],
+    'VBA':      ['num_vox', 'b', 'num_img', 'n_perm'],
+    'VBA-TFCE': ['num_vox', 'b', 'num_img', 'n_perm'],
+}
+RUNTIME_FEATURE_COLS = RUNTIME_FEATURE_COLS_BY_TYPE['VBA']  # legacy default
 
 
 # ---------------------------------------------------------------------------
@@ -85,13 +95,30 @@ def load_runtime_model(analysis_type, platform):
     return load_model(path)
 
 
-def predict_runtime_sec(model, num_vox, b, num_img, n_perm):
-    """Predict runtime in seconds from a fitted runtime model dict."""
+def predict_runtime_sec(model, num_vox, b, num_img, n_perm,
+                        n_perm_inner=None, fast_path=None):
+    """Predict runtime in seconds from a fitted runtime model dict.
+
+    ``n_perm_inner`` is the inner FL loop size for GLOW.  ``fast_path``
+    is the GLOW intercept-only fast-path flag (1 for fast, 0 for slow);
+    cast to int before insertion so polynomial features are clean.  Both
+    default to ``None`` for VBA / VBA-TFCE models whose feature lists
+    omit them.
+    """
     from glow.benchmark.memory import _apply_poly_model
-    return _apply_poly_model(
-        model, RUNTIME_FEATURE_COLS,
-        num_vox=num_vox, b=b, num_img=num_img, n_perm=n_perm,
-    )
+    feature_cols = model.get('feature_cols', RUNTIME_FEATURE_COLS)
+    kwargs = dict(num_vox=num_vox, b=b, num_img=num_img, n_perm=n_perm)
+    if 'n_perm_inner' in feature_cols:
+        if n_perm_inner is None:
+            raise ValueError(
+                'model expects n_perm_inner feature but caller passed None')
+        kwargs['n_perm_inner'] = n_perm_inner
+    if 'fast_path' in feature_cols:
+        if fast_path is None:
+            raise ValueError(
+                'model expects fast_path feature but caller passed None')
+        kwargs['fast_path'] = int(bool(fast_path))
+    return _apply_poly_model(model, feature_cols, **kwargs)
 
 
 def _get_analysis_type(Ana, ana_kw):
@@ -112,6 +139,29 @@ def _get_total_perms(Ana, ana_kw):
     if Ana.__name__ == 'AnalysisGLOW':
         n += ana_kw.get('n_perm_fwer_size_adjust', 0)
     return n
+
+
+def _get_n_perm_inner(Ana, ana_kw):
+    """Inner-perm count for GLOW (drives the FL inner loop); None otherwise."""
+    if Ana.__name__ != 'AnalysisGLOW':
+        return None
+    return ana_kw.get('n_perm_inner', 200)
+
+
+def _get_fast_path_flag(Ana, ana_kw, config):
+    """Intercept-only fast-path flag for GLOW; None for VBA / VBA-TFCE.
+
+    Reflects whether the runtime measurement actually exercised the
+    fast path.  Requires BOTH the AnalysisGLOW kwarg ``use_fast_path``
+    (default True) AND ``is_intercept_only_nuisance`` to hold on the
+    config's design matrix.  For runtime profiling, the config's design
+    is the standard ``sample_x(a=wgn_a, add_bias=True)`` → bias-only
+    nuisance → intercept-only is True, so the flag is driven by the
+    kwarg alone.
+    """
+    if Ana.__name__ != 'AnalysisGLOW':
+        return None
+    return int(bool(ana_kw.get('use_fast_path', True)))
 
 
 def _get_config_dimensions(config):
@@ -180,8 +230,11 @@ def estimate_timeout_minutes(config, platform, safety_factor=None):
             if model is None:
                 return None
             n_perm = _get_total_perms(Ana, ana_kw)
+            n_perm_inner = _get_n_perm_inner(Ana, ana_kw)
+            fast_path = _get_fast_path_flag(Ana, ana_kw, config)
             total_sec += max(0.0, predict_runtime_sec(
-                model, num_vox, b, num_img, n_perm))
+                model, num_vox, b, num_img, n_perm,
+                n_perm_inner=n_perm_inner, fast_path=fast_path))
             _apply_model(model)
 
     elif isinstance(runner, RunPruneCompare):
@@ -191,8 +244,11 @@ def estimate_timeout_minutes(config, platform, safety_factor=None):
         if model is None:
             return None
         n_perm = _get_total_perms(Ana, ana_kw)
+        n_perm_inner = _get_n_perm_inner(Ana, ana_kw)
+        fast_path = _get_fast_path_flag(Ana, ana_kw, config)
         total_sec = max(0.0, predict_runtime_sec(
-            model, num_vox, b, num_img, n_perm))
+            model, num_vox, b, num_img, n_perm,
+            n_perm_inner=n_perm_inner, fast_path=fast_path))
         _apply_model(model)
 
     elif isinstance(runner, RunMancovaGlow):
@@ -201,9 +257,13 @@ def estimate_timeout_minutes(config, platform, safety_factor=None):
         if model is None:
             return None
         n_perm = _get_total_perms(Ana, ana_kw)
+        n_perm_inner = _get_n_perm_inner(Ana, ana_kw)
+        fast_path = _get_fast_path_flag(Ana, ana_kw, config)
         # runtime model is for 1 stat; mancova evaluates all stats per walk
         total_sec = max(0.0, predict_runtime_sec(
-            model, num_vox, b, num_img, n_perm)) * len(stat_dict)
+            model, num_vox, b, num_img, n_perm,
+            n_perm_inner=n_perm_inner,
+            fast_path=fast_path)) * len(stat_dict)
         is_upper_bound = True
         _apply_model(model)
 
@@ -220,12 +280,14 @@ def estimate_timeout_minutes(config, platform, safety_factor=None):
 
     elif isinstance(runner, RunSegment):
         # RunSegment does Ward's clustering, no permutations. No dedicated
-        # runtime model; we use GLOW @ 100 perms as a loose upper bound.
+        # runtime model; we use GLOW @ 100 outer / 200 inner / fast=1 as
+        # a loose upper bound (fast path is the production default).
         model = load_runtime_model('GLOW', platform)
         if model is None:
             return None
         total_sec = max(0.0, predict_runtime_sec(
-            model, num_vox, b, num_img, 100))
+            model, num_vox, b, num_img, 100,
+            n_perm_inner=200, fast_path=1))
         is_upper_bound = True
         _apply_model(model)
 
@@ -481,19 +543,25 @@ def _build_runtime_profile_configs(cloud_config=None):
     from glow.benchmark.runner import RunAna
 
     if cloud_config is not None:
-        # reduced grid for cloud: cap voxels at 30k and drop 1050-perm
-        # to avoid OOM (previous runs hit 16 GB ceiling at 50k x 1050).
-        # 5 * 2 * 3 * 3 = 90 grid points (x3 analysis types = 270 jobs),
-        # still plenty for Lasso.  The polynomial model + 2.5x safety
-        # factor in estimate_timeout_minutes covers extrapolation.
+        # cloud grid: 5 vox * 3 b * 3 img * 2 n_perm = 90 grid points.
+        # GLOW expands by n_perm_inner (x2) AND use_fast_path (x2),
+        # so 360 GLOW configs.  VBA / VBA-TFCE: 90 + 90.  Total: 540
+        # cloud jobs.  Polynomial model + safety factor covers
+        # extrapolation past the grid.
         vox_targets = np.geomspace(500, 30_000, 5).round().astype(int).tolist()
-        n_perm_values = [100, 500]
+        n_perm_values = [25, 100]
     else:
-        # reduced grid for local: drop expensive 50k-vox and 1050-perm
-        # configs.  The polynomial model extrapolates; the 2.5x safety
-        # factor in estimate_timeout_minutes covers the gap.
+        # local grid: 4 vox * 2 b * 2 img * 2 n_perm = 32 grid points.
+        # GLOW expands by n_perm_inner (x2) AND use_fast_path (x2),
+        # so 128 GLOW configs.  VBA / VBA-TFCE: 32 + 32.  Total: 192
+        # local jobs.
         vox_targets = np.geomspace(500, 20_000, 4).round().astype(int).tolist()
-        n_perm_values = [100, 500]
+        n_perm_values = [25, 100]
+    n_perm_inner_values = [20, 50]
+    # Sweep fast_path so the GLOW model learns its (multiplicative) effect
+    # on inner-loop runtime.  True is the production default; False forces
+    # the original Phase-1-per-inner slow path.
+    fast_path_values = [True, False]
     b_values = [1, 4] if cloud_config is None else [1, 2, 4]
     img_values = [25, 100] if cloud_config is None else [25, 50, 100]
 
@@ -513,19 +581,29 @@ def _build_runtime_profile_configs(cloud_config=None):
     )
 
     configs = []
-    for n_perm, b, num_img, vox in product(
-            n_perm_values, b_values, img_values, vox_targets):
+    # GLOW: sweeps n_perm_inner AND use_fast_path in addition to the
+    # shared grid axes
+    for n_perm, n_perm_inner, fast_path, b, num_img, vox in product(
+            n_perm_values, n_perm_inner_values, fast_path_values,
+            b_values, img_values, vox_targets):
+        fp_tag = 'fast' if fast_path else 'slow'
         configs.append(Config(
-            label=f'rtprof_glow_{vox}v_{b}b_{num_img}i_{n_perm}p',
+            label=f'rtprof_glow_{vox}v_{b}b_{num_img}i_'
+                  f'{n_perm}p_{n_perm_inner}ip_{fp_tag}',
             runner=RunAna({'GLOW': (
                 glow.analysis.AnalysisGLOW,
                 dict(n_perm_fwer=n_perm,
+                     n_perm_inner=n_perm_inner,
+                     use_fast_path=fast_path,
                      alpha_fwer=0.05, min_vox=1),
             )}),
             wgn_b=b, wgn_num_img=num_img, crop_n_vox=vox,
             **common,
         ))
 
+    # VBA / VBA-TFCE: no n_perm_inner — one config per grid point
+    for n_perm, b, num_img, vox in product(
+            n_perm_values, b_values, img_values, vox_targets):
         configs.append(Config(
             label=f'rtprof_vba_{vox}v_{b}b_{num_img}i_{n_perm}p',
             runner=RunAna({'VBA': (
@@ -564,12 +642,18 @@ def _collect_runtime_results(configs):
             continue
         _label, (Ana, ana_kw) = next(iter(config.runner.iter_ana_kwargs()))
         n_perm = _get_total_perms(Ana, ana_kw)
+        n_perm_inner = _get_n_perm_inner(Ana, ana_kw)
+        fast_path = _get_fast_path_flag(Ana, ana_kw, config)
         for _, row in df.iterrows():
             rows.append({
                 'num_vox': int(row.get('vox_total', 0)),
                 'b': config.wgn_b,
                 'num_img': config.wgn_num_img,
                 'n_perm': n_perm,
+                # GLOW-only columns; pandas tolerates the mixed-presence
+                # because the model fit selects features by analysis type.
+                'n_perm_inner': n_perm_inner,
+                'fast_path': fast_path,
                 'analysis_type': str(row['label']),
                 'time_sec': float(row['time_sec']),
             })
@@ -587,11 +671,20 @@ def _fit_runtime_models(df, platform):
         if df_type.empty:
             print(f'  no data for {analysis_type}, skipping')
             continue
-        print(f'\n  Fitting {analysis_type} model ({len(df_type)} points)...')
+        feature_cols = RUNTIME_FEATURE_COLS_BY_TYPE[analysis_type]
+        # Drop rows missing any required feature (e.g. old GLOW data that
+        # predates the n_perm_inner column).
+        df_type = df_type.dropna(subset=feature_cols)
+        if df_type.empty:
+            print(f'  no rows for {analysis_type} carry all required '
+                  f'features ({feature_cols}), skipping')
+            continue
+        print(f'\n  Fitting {analysis_type} model ({len(df_type)} points, '
+              f'features={feature_cols})...')
         path.parent.mkdir(parents=True, exist_ok=True)
         models[analysis_type] = fit_poly_lasso(
             df_type,
-            feature_cols=RUNTIME_FEATURE_COLS,
+            feature_cols=feature_cols,
             target_col='time_sec',
             model_path=path,
             log_target=True,
@@ -704,7 +797,19 @@ def main_experiment_profile(cloud=False, n_jobs=-1):
         print('\n  Sample predictions:')
         for atype in ['GLOW', 'VBA', 'VBA-TFCE']:
             model = load_runtime_model(atype, platform)
-            if model:
+            if model is None:
+                continue
+            # GLOW model expects n_perm_inner + fast_path; VBA does not.
+            if atype == 'GLOW':
+                for fp in (1, 0):
+                    pred = predict_runtime_sec(
+                        model, 50000, 2, 100, 1050,
+                        n_perm_inner=200, fast_path=fp)
+                    tag = 'fast' if fp else 'slow'
+                    print(f'    {atype} ({tag}): (50k vox, b=2, 100 img, '
+                          f'1050 perm, 200ip) -> {pred:.0f}s '
+                          f'({pred / 60:.1f} min)')
+            else:
                 pred = predict_runtime_sec(model, 50000, 2, 100, 1050)
                 print(f'    {atype}: (50k vox, b=2, 100 img, '
                       f'1050 perm) -> {pred:.0f}s ({pred / 60:.1f} min)')
