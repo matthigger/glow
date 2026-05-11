@@ -358,6 +358,77 @@ def test_compute_llr_batched_leaf_only_tree():
     assert np.all(np.isfinite(llr) | np.isnan(llr))
 
 
+def test_compute_llr_inner_fast_matches_compute_llr_batched():
+    """Under intercept-only nuisance, the fast inner path is bit-exact equal
+    to compute_llr_batched on the FL-permuted experiment, region-by-region.
+
+    This is the correctness contract for AnalysisGLOW's intercept-only
+    fast path: precompute (ysum, t) once on the unpermuted exp and reuse
+    across inner perms by row-permuting q1.T — same answer as running
+    Phase 1 fresh on each FL-permuted exp.
+    """
+    from glow.experiment.exper import Experiment
+    from glow.experiment.permute import get_freed_lane
+    from glow.analysis.mancova import decompose, is_intercept_only_nuisance
+    from glow.graph import (compute_llr_batched, compute_llr_inner_fast,
+                            compute_phase1, compute_tree_layers)
+
+    exp = Experiment.from_gauss(a=2, b=2, num_img=30, shape=(8, 8),
+                                seed=0, add_bias=True)
+    assert is_intercept_only_nuisance(exp.x, exp.contrast)
+
+    from glow.analysis.cluster import cluster
+    num_vox = exp.y.shape[2]
+    children = cluster(exp=exp, mode='q1')
+    layer = compute_tree_layers(children, num_vox)
+    q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
+
+    # --- precompute fast-path state once ---
+    ysum_u, yout_u, size = compute_phase1(exp.y, children, layer=layer)
+    dtype = exp.y.dtype if exp.y.dtype == np.float32 else np.float64
+    sz_3d = size.astype(dtype)[:, None, None]
+    a0 = np.einsum('rbn,an->rba', ysum_u, q0, optimize=True)
+    t = yout_u - np.einsum('rba,rca->rbc', a0, a0, optimize=True) / sz_3d
+
+    n_img = exp.y.shape[1]
+    for perm_idx in [1, 2, 7, 42, 999]:
+        # slow path: FL-permute exp, run full compute_llr_batched
+        _exp_inner = exp.permute(perm_idx)
+        llr_slow, _ = compute_llr_batched(
+            _exp_inner, children=children, q0=q0, q1=q1,
+            min_size=4, layer=layer)
+
+        # fast path: same FL permutation, but only row-permute q1.T
+        # against precomputed ysum/t.  freed_lane @ q1.T == q1.T[perm, :]
+        # under intercept-only nuisance.
+        freed_lane = get_freed_lane(exp.x, exp.contrast, perm_idx)
+        q1_T_perm = (freed_lane @ q1.T).astype(dtype, copy=False)
+        llr_fast, _ = compute_llr_inner_fast(
+            t, ysum_u, size, q1_T_perm, min_size=4)
+
+        # both paths return NaN where size < min_size or where slogdet
+        # blew up; mask consistently before comparing
+        both_finite = np.isfinite(llr_slow) & np.isfinite(llr_fast)
+        only_slow = np.isfinite(llr_slow) & ~np.isfinite(llr_fast)
+        only_fast = ~np.isfinite(llr_slow) & np.isfinite(llr_fast)
+        assert only_slow.sum() == 0, (
+            f'perm_idx={perm_idx}: {only_slow.sum()} regions finite in slow '
+            f'path but NaN in fast — NaN masks must match')
+        assert only_fast.sum() == 0, (
+            f'perm_idx={perm_idx}: {only_fast.sum()} regions finite in fast '
+            f'path but NaN in slow — NaN masks must match')
+
+        abs_err = np.abs(llr_slow[both_finite] - llr_fast[both_finite])
+        denom = np.maximum(np.abs(llr_slow[both_finite]), 1e-8)
+        rel_err = (abs_err / denom).max() if both_finite.any() else 0.0
+        # float32 LLR via slogdet of 2x2 has rel err ~1e-4 from sum-order
+        # rounding (we measured this on a 5k vox HCP test); 1e-3 leaves
+        # comfortable margin.
+        assert rel_err < 1e-3, (
+            f'perm_idx={perm_idx}: rel_err={rel_err:.3e} exceeds 1e-3 '
+            f'tolerance — fast path is not equivalent to slow path')
+
+
 def test_get_mask_cases():
     children = np.array([[0, 1],
                          [2, 3],

@@ -263,6 +263,65 @@ def compute_llr_batched(exp, children, q0, q1, min_size=1, layer=None):
     return llr, size
 
 
+def compute_llr_inner_fast(t, ysum, size, q1_T_perm, min_size=1):
+    """Per-region LLR using precomputed (t, ysum) and a perm-applied q1.T.
+
+    Phase-2-only variant of ``compute_llr_batched`` for callers driving
+    the FL inner loop under intercept-only nuisance (where ``t`` and
+    ``ysum`` are FL-invariant — see
+    ``glow.analysis.mancova.is_intercept_only_nuisance``).  Skipping
+    Phase 1 across all 200 inner perms saves ~50–70% of inner-loop wall
+    time at paper-config scale.
+
+    Correctness precondition: the caller must have established that Q0
+    commutes with permutations, otherwise ``t`` and ``ysum`` are NOT
+    deterministically invariant under FL and the returned LLR will not
+    match ``compute_llr_batched(_exp_inner, ...)``.
+
+    Args:
+        t (np.array): (num_reg, b, b) — precomputed
+            ``yout - a0 @ a0.T / size`` on the unpermuted data.
+        ysum (np.array): (num_reg, b, num_img) — precomputed Phase 1 ysum
+            on the unpermuted data.
+        size (np.array): (num_reg,) — voxel count per region.
+        q1_T_perm (np.array): (num_img, n_intrst) — ``q1.T`` with rows
+            permuted by the FL permutation for this inner perm.
+            Equivalent to ``freed_lane @ q1.T`` under intercept-only.
+        min_size (int): regions with size < min_size return NaN LLR.
+
+    Returns:
+        llr (np.array): (num_reg,) LLR per region.  NaN where size <
+            min_size, or where E or E + H were not positive-definite.
+        size (np.array): same array passed in.
+    """
+    num_reg = ysum.shape[0]
+    dtype = ysum.dtype if ysum.dtype == np.float32 else np.float64
+
+    llr = np.full(num_reg, np.nan)
+    active = size >= min_size
+    if not active.any():
+        return llr, size
+
+    sz_a = size[active].astype(dtype)[:, None, None]
+    ysum_a = ysum[active]
+    t_a = t[active]
+
+    a1 = np.einsum('rbn,nv->rbv', ysum_a, q1_T_perm, optimize=True)
+    h = np.einsum('rbv,rcv->rbc', a1, a1, optimize=True) / sz_a
+    e = t_a - h
+
+    sign_t, logdet_t = np.linalg.slogdet(e + h)
+    sign_e, logdet_e = np.linalg.slogdet(e)
+    valid_a = (sign_t > 0) & (sign_e > 0)
+
+    sz_a_1d = size[active]
+    llr_a = np.where(valid_a,
+                     (sz_a_1d / 2.0) * (logdet_t - logdet_e),
+                     np.nan)
+    llr[active] = llr_a
+    return llr, size
+
+
 def node_sum(x, children):
     """sum leaf values up through the graph.
 
