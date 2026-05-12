@@ -18,6 +18,151 @@ from .prune import prune_greedy
 from .cluster import cluster
 
 
+def _run_inner_race(draw_one, n_max, llr_outer, size, min_vox,
+                    race_init=50, race_batch=25, race_k_sigma=3.0,
+                    z_threshold=None):
+    """Adaptive inner-perm loop: drop decided regions, stop when none remain.
+
+    Computational, not statistical: regions whose interim z is far
+    enough from the decision boundary can't plausibly cross it, so
+    they stop competing.  After each batch we update per-region z and
+    an asymptotic Wald SE (``sqrt((1 + z^2/2)/n)``) and drop every
+    active region whose ``±k*SE`` band already commits to a side of
+    the boundary.
+
+    Two modes (selected by ``z_threshold``):
+
+    - **Leader race** (``z_threshold=None``): drop region r if
+      ``z[r] + k*SE[r] < z[leader] - k*SE[leader]``.  Loop ends when
+      only the leader is left in the active set.
+    - **Threshold race** (``z_threshold=value``): drop region r if
+      ``z[r] + k*SE[r] < value`` (clearly below) or
+      ``z[r] - k*SE[r] > value`` (clearly above).  Loop ends when no
+      region is still ambiguous.
+
+    Per-region (mu, M2, n_per_reg) is updated online via Welford's
+    algorithm — O(num_reg) per inner perm regardless of n_run, no
+    growing buffer.  In Phase A, ``draw_one`` still returns LLR for
+    every region per inner perm, so ``n_per_reg`` equals
+    ``n_inner_used`` for every initially-active region; the field
+    becomes meaningful in a future Phase-B kernel that learns to skip
+    inactive regions per inner perm.
+
+    Returns:
+        dict with
+            ``mu``, ``sigma`` (num_reg,) float — final per-region stats
+            ``n_per_reg`` (num_reg,) int — n inner draws each region got
+            ``n_inner_used`` int — total inner perms run
+            ``leader`` int (leader mode only) — region with current max z
+            ``sig_regions`` (num_sig,) int (threshold mode only) —
+                indices of regions confidently above ``z_threshold``
+    """
+    num_reg = llr_outer.shape[0]
+
+    # Welford running stats (per region)
+    mean = np.zeros(num_reg, dtype=float)
+    M2 = np.zeros(num_reg, dtype=float)
+    n_per_reg = np.zeros(num_reg, dtype=np.int64)
+
+    def update(x):
+        # Online update for one inner-perm draw across all regions.
+        finite = np.isfinite(x)
+        n_per_reg[finite] += 1
+        # Welford recurrence: mean_new = mean + (x - mean)/n_new
+        delta = np.empty_like(mean)
+        delta[finite] = x[finite] - mean[finite]
+        mean[finite] += delta[finite] / n_per_reg[finite]
+        delta2 = np.empty_like(mean)
+        delta2[finite] = x[finite] - mean[finite]
+        M2[finite] += delta[finite] * delta2[finite]
+
+    def current_z_se(n_run):
+        # Sample std via M2/(n-1); regions with n<2 → sigma=NaN → z=NaN.
+        with np.errstate(invalid='ignore', divide='ignore'):
+            var = np.where(n_per_reg >= 2, M2 / (n_per_reg - 1), np.nan)
+        sigma = np.sqrt(var)
+        sigma_safe = np.where(sigma < 1e-12, 1.0, sigma)
+        z = (llr_outer - mean) / sigma_safe
+        # Wald SE depends on n_per_reg (per-region count) and z itself.
+        se = np.sqrt((1 + z ** 2 / 2) / np.maximum(n_per_reg, 1))
+        return z, sigma, se
+
+    n_run = 0
+    init_n = min(race_init, n_max)
+    for i in range(init_n):
+        update(draw_one(i))
+    n_run = init_n
+
+    active = (size >= min_vox).copy()
+    leader_idx = -1
+
+    while n_run < n_max:
+        z, _, se = current_z_se(n_run)
+        eligible = active & np.isfinite(z)
+
+        if z_threshold is None:
+            if eligible.sum() <= 1:
+                break
+            z_for_max = np.where(eligible, z, -np.inf)
+            leader_idx = int(np.argmax(z_for_max))
+            leader_lower = z[leader_idx] - race_k_sigma * se[leader_idx]
+            upper = z + race_k_sigma * se
+            cant_catch = eligible & (upper < leader_lower)
+            cant_catch[leader_idx] = False
+            if cant_catch.any():
+                active &= ~cant_catch
+                if (active & np.isfinite(z)).sum() <= 1:
+                    break
+        else:
+            if eligible.sum() == 0:
+                break
+            upper = z + race_k_sigma * se
+            lower = z - race_k_sigma * se
+            decided = eligible & ((upper < z_threshold) |
+                                  (lower > z_threshold))
+            if decided.any():
+                active &= ~decided
+                if (active & np.isfinite(z)).sum() == 0:
+                    break
+
+        n_batch = min(race_batch, n_max - n_run)
+        for i in range(n_run, n_run + n_batch):
+            update(draw_one(i))
+        n_run += n_batch
+
+    # Finalize stats
+    with np.errstate(invalid='ignore', divide='ignore'):
+        var_final = np.where(n_per_reg >= 2, M2 / (n_per_reg - 1), np.nan)
+    sigma_final = np.sqrt(var_final)
+
+    out = {
+        'mu': mean,
+        'sigma': sigma_final,
+        'n_per_reg': n_per_reg,
+        'n_inner_used': n_run,
+    }
+    if z_threshold is None:
+        # Recompute leader at exit on final stats (might not match the
+        # last race-loop leader if no further drop checks happened).
+        sigma_safe = np.where(sigma_final < 1e-12, 1.0, sigma_final)
+        z_final = (llr_outer - mean) / sigma_safe
+        eligible_final = (size >= min_vox) & np.isfinite(z_final)
+        if eligible_final.any():
+            out['leader'] = int(np.argmax(np.where(eligible_final, z_final,
+                                                    -np.inf)))
+        else:
+            out['leader'] = -1
+    else:
+        sigma_safe = np.where(sigma_final < 1e-12, 1.0, sigma_final)
+        z_final = (llr_outer - mean) / sigma_safe
+        se_final = np.sqrt((1 + z_final ** 2 / 2)
+                            / np.maximum(n_per_reg, 1))
+        sig_mask = ((size >= min_vox) & np.isfinite(z_final)
+                    & ((z_final - race_k_sigma * se_final) > z_threshold))
+        out['sig_regions'] = np.where(sig_mask)[0]
+    return out
+
+
 class AnalysisGLOW(Analysis):
     """search a hierarchical segmentation for significant effects.
 
@@ -297,9 +442,11 @@ class AnalysisGLOW(Analysis):
         # Seed scheme: each outer perm reserves a 100_000-wide block,
         # far above any realistic n_perm_inner, so seeds never collide
         # across outer perms.
+        n_inner_used = 0
+        race_extra = {}
+        llr_inner = None  # populated only by the buffer (non-race) path
         if n_perm_inner > 0:
             num_reg = llr_outer.shape[0]
-            llr_inner = np.empty((n_perm_inner, num_reg), dtype=float)
             base = (perm_idx + 1) * 100_000
 
             # Fast path: when Q0 commutes with permutations (every
@@ -322,33 +469,58 @@ class AnalysisGLOW(Analysis):
                                            optimize=True) / sz_3d)
                 del a0
                 n_img = exp.y.shape[1]
-                for i in range(n_perm_inner):
+
+                def draw_one(i):
                     rng = np.random.default_rng(base + i)
                     perm = np.argsort(rng.permutation(n_img))
                     q1_T_perm = q1.T[perm, :].astype(dtype, copy=False)
                     llr_i, _ = glow.graph.compute_llr_inner_fast(
                         t_u, ysum_u, size, q1_T_perm, min_size=min_vox)
-                    llr_inner[i, :] = llr_i
+                    return llr_i
             else:
-                for i in range(n_perm_inner):
+                def draw_one(i):
                     _exp_inner = exp.permute(base + i)
                     llr_i, _ = glow.graph.compute_llr_batched(
                         _exp_inner, children=children, q0=q0, q1=q1,
                         min_size=min_vox, layer=layer)
-                    llr_inner[i, :] = llr_i
-                    del _exp_inner
+                    return llr_i
 
-            # Regions excluded by min_vox have all-NaN slices; nanmean
-            # / nanstd legitimately return NaN for them but emit
-            # RuntimeWarnings.  Silence those — the NaN is the answer.
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore', RuntimeWarning)
-                mu = np.nanmean(llr_inner, axis=0)
-                sigma = np.nanstd(llr_inner, axis=0, ddof=1)
+            if getattr(self, 'race_inner_perm', False):
+                race_out = _run_inner_race(
+                    draw_one, n_perm_inner, llr_outer, size, min_vox,
+                    race_init=getattr(self, 'race_init', 50),
+                    race_batch=getattr(self, 'race_batch', 25),
+                    race_k_sigma=getattr(self, 'race_k_sigma', 3.0),
+                    z_threshold=getattr(self, 'race_z_threshold', None))
+                mu = race_out['mu']
+                sigma = race_out['sigma']
+                n_per_reg = race_out['n_per_reg']
+                n_inner_used = race_out['n_inner_used']
+                for k in ('leader', 'sig_regions'):
+                    if k in race_out:
+                        race_extra[k] = race_out[k]
+            else:
+                llr_inner = np.empty((n_perm_inner, num_reg), dtype=float)
+                for i in range(n_perm_inner):
+                    llr_inner[i, :] = draw_one(i)
+                n_inner_used = n_perm_inner
+                # Regions excluded by min_vox have all-NaN slices;
+                # nanmean / nanstd legitimately return NaN for them
+                # but emit RuntimeWarnings.  Silence those — the NaN
+                # is the answer.
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', RuntimeWarning)
+                    mu = np.nanmean(llr_inner, axis=0)
+                    sigma = np.nanstd(llr_inner, axis=0, ddof=1)
+                # In the buffer path every region got the full budget
+                # (or zero, if size<min_vox kept it all-NaN).
+                n_per_reg = np.where(np.isfinite(mu), n_inner_used, 0
+                                      ).astype(np.int64)
         else:
             # rerun_permutation path: caller only wants children/stat/size.
             mu = np.full_like(llr_outer, fill_value=np.nan)
             sigma = np.full_like(llr_outer, fill_value=np.nan)
+            n_per_reg = np.zeros_like(llr_outer, dtype=np.int64)
 
         # zero-std guard (constant inner draws → divide-by-zero z).
         sigma_safe = np.where(sigma < 1e-12, 1.0, sigma)
@@ -363,7 +535,7 @@ class AnalysisGLOW(Analysis):
         else:
             max_z = float('-inf')
 
-        return {
+        result = {
             'perm_idx': perm_idx,
             'children': children,
             'stat': llr_outer,
@@ -372,7 +544,13 @@ class AnalysisGLOW(Analysis):
             'sigma': sigma,
             'z': z,
             'max_z': max_z,
+            'n_inner_used': n_inner_used,
+            'n_per_reg': n_per_reg,
         }
+        result.update(race_extra)
+        if (getattr(self, 'store_llr_inner', False) and llr_inner is not None):
+            result['llr_inner'] = llr_inner
+        return result
 
     @classmethod
     def rerun_permutation(cls, exp, perm_idx, get_stat=get_llr,
