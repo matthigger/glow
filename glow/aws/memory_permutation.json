@@ -1,0 +1,30 @@
+{
+  "feature_cols": [
+    "num_vox",
+    "b",
+    "num_img"
+  ],
+  "feature_names": [
+    "num_vox",
+    "b",
+    "num_img",
+    "num_vox b",
+    "num_vox num_img",
+    "b num_img"
+  ],
+  "intercept": 151.8337,
+  "coefficients": [
+    0.0083285263,
+    -2.6827114845,
+    -0.1539451813,
+    0.0009575704,
+    4.95045e-05,
+    0.0853078051
+  ],
+  "r2": 0.9862,
+  "alpha": 0.186163,
+  "safety_factor": 1.0844,
+  "residual_mean": 0.9997,
+  "residual_std": 0.0228,
+  "residual_max_ratio": 1.0512
+}

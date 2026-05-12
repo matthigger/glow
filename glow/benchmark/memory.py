@@ -103,6 +103,13 @@ def _worker_experiment(num_vox, b, num_img, n_perm, result_queue):
         def get_exp_eff(self, **kwargs):
             return exp_eff, effect
 
+        def base_recipe(self):
+            # Memory profiling runs one-shot; hash content is irrelevant
+            # beyond being stable for the single label.  An empty dict
+            # is enough — Runner.hash() will still produce a label-only
+            # digest that lets results.json get written.
+            return {}
+
     config = MinimalConfig()
     config.runner = runner
     config.folder = Path(tempfile.mkdtemp(prefix='glow_mem_'))
@@ -235,6 +242,7 @@ def fit_poly_lasso(df, feature_cols, target_col='peak_rss_mb', model_path=None,
         factor, mu_r, sd_r, max_ratio = None, None, None, None
 
     model = {
+        'feature_cols': list(feature_cols),
         'feature_names': surviving_names,
         'intercept': round(intercept_original, 4),
         'coefficients': [round(c, 10) for c in surviving_coefs],
