@@ -9,8 +9,7 @@ from glow.benchmark.runner import (RunAna, RunSegment, RunPruneCompare,
 from glow.analysis.mancova import get_hotel_tr, get_llr, get_wilks
 
 # ---------- common parameters ----------
-# CROP_N_VOX = 25_000
-CROP_N_VOX = 1_000
+CROP_N_VOX = 25_000
 
 COMMON = dict(
     n_seed=10,
@@ -91,12 +90,13 @@ config_list = []
 
 # ---------- A. type I error (null) ----------
 # effect_llr=0, 500 seeds — produces calibration curves via min_pval
+n_seed_null=100 # tmp
 config_list.append(make_config(
     'null_hcp', 'hcp', RunAna(ana_kwargs_dict_vba),
-    effect_llr_all=np.array([0.0]), n_seed=500))
+    effect_llr_all=np.array([0.0]), n_seed=n_seed_null))
 config_list.append(make_config(
     'null_wgn', 'wgn', RunAna(ana_kwargs_dict_vba),
-    effect_llr_all=np.array([0.0]), n_seed=500))
+    effect_llr_all=np.array([0.0]), n_seed=n_seed_null))
 
 # ---------- B. VBA comparison split by feature count ----------
 # HCP: FA only (b=1) and FA+MD (b=2)
