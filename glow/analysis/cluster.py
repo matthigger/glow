@@ -1,10 +1,10 @@
 import numpy as np
 from scipy.ndimage import label, generate_binary_structure
-from sklearn.cluster import ward_tree
 from sklearn.feature_extraction.image import grid_to_graph
 
 from glow.mask import bbox_crop
 from .mancova import decompose
+from .ward import ward_tree
 
 _MODES = ('all', 'q0, q1', 'q1')
 
