@@ -20,7 +20,7 @@ from .cluster import cluster
 
 def _run_inner_race(draw_one, n_max, llr_outer, size, min_vox,
                     race_init=50, race_batch=25, race_k_sigma=3.0,
-                    z_threshold=None):
+                    z_threshold=None, on_warmup_done=None):
     """Adaptive inner-perm loop: drop decided regions, stop when none remain.
 
     Computational, not statistical: regions whose interim z is far
@@ -56,6 +56,15 @@ def _run_inner_race(draw_one, n_max, llr_outer, size, min_vox,
             ``leader`` int (leader mode only) — region with current max z
             ``sig_regions`` (num_sig,) int (threshold mode only) —
                 indices of regions confidently above ``z_threshold``
+
+    Args (callback):
+        on_warmup_done (callable | None): one-shot hook called after
+            warmup + the first trim, before the first batch.  Signature
+            ``f(active) -> draw_one_post | None``.  If it returns a
+            non-None callable, that callable replaces ``draw_one`` for
+            the rest of the race.  Used by AnalysisGLOW to build
+            M_{ij} kernels for the post-warmup survivor set and switch
+            to a cheap survivor-only inner-perm draw.
     """
     num_reg = llr_outer.shape[0]
 
@@ -95,6 +104,7 @@ def _run_inner_race(draw_one, n_max, llr_outer, size, min_vox,
 
     active = (size >= min_vox).copy()
     leader_idx = -1
+    warmup_hook_pending = on_warmup_done is not None
 
     while n_run < n_max:
         z, _, se = current_z_se(n_run)
@@ -124,6 +134,16 @@ def _run_inner_race(draw_one, n_max, llr_outer, size, min_vox,
                 active &= ~decided
                 if (active & np.isfinite(z)).sum() == 0:
                     break
+
+        # First-time survivor freeze: hand the survivor mask to the
+        # caller so it can swap in a kernel-based draw_one.  Fires
+        # after the first post-warmup trim; from here on the active
+        # set only ever shrinks.
+        if warmup_hook_pending:
+            replacement = on_warmup_done(active)
+            if replacement is not None:
+                draw_one = replacement
+            warmup_hook_pending = False
 
         n_batch = min(race_batch, n_max - n_run)
         for i in range(n_run, n_run + n_batch):
@@ -448,42 +468,48 @@ class AnalysisGLOW(Analysis):
         if n_perm_inner > 0:
             num_reg = llr_outer.shape[0]
             base = (perm_idx + 1) * 100_000
+            n_img = exp.y.shape[1]
+            q0_proj = q0.T @ q0                       # (N, N) nuisance projector
+            eye_n = np.eye(n_img, dtype=q0.dtype)
 
-            # Fast path: when Q0 commutes with permutations (every
-            # nuisance column is constant — bias-only is the common
-            # case), t = yout - a0 a0.T / size is FL-invariant.  We can
-            # precompute Phase 1 once on the original (un-inner-permed)
-            # exp.y against the outer tree, then per inner perm only
-            # need to row-permute q1.T and do a Phase-2-only pass.
-            # ~3x faster on the inner loop at paper-config scale.  See
-            # test_compute_llr_inner_fast_matches_compute_llr_batched
-            # for the bit-exact-equivalence proof under intercept-only.
-            if (getattr(self, 'use_fast_path', True)
-                    and is_intercept_only_nuisance(exp.x, exp.contrast)):
-                dtype = exp.y.dtype if exp.y.dtype == np.float32 else np.float64
-                ysum_u, yout_u, _ = glow.graph.compute_phase1(
-                    exp.y, children, layer=layer)
-                sz_3d = size.astype(dtype)[:, None, None]
-                a0 = np.einsum('rbn,an->rba', ysum_u, q0, optimize=True)
-                t_u = (yout_u - np.einsum('rba,rca->rbc', a0, a0,
-                                           optimize=True) / sz_3d)
-                del a0
-                n_img = exp.y.shape[1]
+            # Warmup draw: general slow path (works for any Q0).  Used
+            # for the first race_init perms, after which the race trims
+            # decided regions and we swap in the kernel-based draw_one
+            # for the surviving subset via `on_warmup_done` below.
+            #
+            # The intercept-only Phase-1-precompute fast path used to
+            # live here as a separate branch; it's been collapsed in
+            # favour of the unified kernel path.  See
+            # `glow.graph.build_survivor_kernels` and
+            # `glow.graph.compute_llr_inner_kernel`.
+            def draw_one(i):
+                _exp_inner = exp.permute(base + i)
+                llr_i, _ = glow.graph.compute_llr_batched(
+                    _exp_inner, children=children, q0=q0, q1=q1,
+                    min_size=min_vox, layer=layer)
+                return llr_i
 
-                def draw_one(i):
+            def make_kernel_draw_one(active):
+                # Build M_{ij} kernels once for the survivor set, then
+                # serve every subsequent inner perm via a cheap
+                # survivor-only gather instead of a fresh full-tree
+                # Phase 1.  See graph.compute_llr_inner_kernel for the
+                # algebra.
+                survivor_idx = np.where(active)[0]
+                if survivor_idx.size == 0:
+                    return None
+                kernels = glow.graph.build_survivor_kernels(
+                    exp.y, children, survivor_idx, q0)
+
+                def draw_one_kernel(i):
                     rng = np.random.default_rng(base + i)
                     perm = np.argsort(rng.permutation(n_img))
-                    q1_T_perm = q1.T[perm, :].astype(dtype, copy=False)
-                    llr_i, _ = glow.graph.compute_llr_inner_fast(
-                        t_u, ysum_u, size, q1_T_perm, min_size=min_vox)
-                    return llr_i
-            else:
-                def draw_one(i):
-                    _exp_inner = exp.permute(base + i)
-                    llr_i, _ = glow.graph.compute_llr_batched(
-                        _exp_inner, children=children, q0=q0, q1=q1,
-                        min_size=min_vox, layer=layer)
-                    return llr_i
+                    freed_lane = (eye_n - q0_proj)[perm, :] + q0_proj
+                    return glow.graph.compute_llr_inner_kernel(
+                        kernels, q0, q1, freed_lane, perm, num_reg,
+                        min_size=min_vox)
+
+                return draw_one_kernel
 
             if getattr(self, 'race_inner_perm', False):
                 race_out = _run_inner_race(
@@ -491,7 +517,8 @@ class AnalysisGLOW(Analysis):
                     race_init=getattr(self, 'race_init', 50),
                     race_batch=getattr(self, 'race_batch', 25),
                     race_k_sigma=getattr(self, 'race_k_sigma', 3.0),
-                    z_threshold=getattr(self, 'race_z_threshold', None))
+                    z_threshold=getattr(self, 'race_z_threshold', None),
+                    on_warmup_done=make_kernel_draw_one)
                 mu = race_out['mu']
                 sigma = race_out['sigma']
                 n_per_reg = race_out['n_per_reg']

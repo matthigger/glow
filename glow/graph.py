@@ -322,6 +322,170 @@ def compute_llr_inner_fast(t, ysum, size, q1_T_perm, min_size=1):
     return llr, size
 
 
+def _subtree_leaves(region_idx, children, num_vox):
+    """Return the leaf voxel indices below ``region_idx`` (iterative DFS)."""
+    if region_idx < num_vox:
+        return np.array([region_idx], dtype=np.int64)
+    stack = [region_idx]
+    out = []
+    while stack:
+        node = stack.pop()
+        if node < num_vox:
+            out.append(node)
+        else:
+            c0, c1 = children[node - num_vox]
+            stack.append(int(c0))
+            stack.append(int(c1))
+    return np.asarray(out, dtype=np.int64)
+
+
+def build_survivor_kernels(y, children, survivor_idx, q0):
+    """Per-survivor Freedman-Lane outer-product kernels.
+
+    For each region ``r`` in ``survivor_idx``, sums per-voxel rank-1
+    contributions to form the kernel
+        M_r[i, j, k, l] = sum_{v in leaves(r)} y[i, k, v] * y[j, l, v]
+    of shape ``(b, b, N, N)`` and the permutation-invariant pieces
+
+        ysum_u[r]   = sum_v y[:, :, v]                         (b, N)
+        yout_u[r]   = sum_v y[:, :, v] @ y[:, :, v].T         (b, b)
+        c0[r][i,j]  = <Q0Q0T, M_r[i,j,:,:]>_F                  (b, b)
+
+    so that an inner-perm step needs only ``q0_perm = q0[:, perm]``,
+    ``freed_lane``, and an ``O(b^2 a0 N^2)`` reduction per survivor (see
+    ``compute_llr_inner_kernel``).
+
+    Memory: ``num_surv * b^2 * N^2`` floats for ``M``.  At paper config
+    (``b=2``, ``N≈30``, ~100 survivors) this is ~3 MB.
+
+    Args:
+        y (np.array): (b, N, num_vox) raw voxel data, unpermuted.
+        children (np.array): (num_internal, 2) tree.
+        survivor_idx (np.array): (num_surv,) region indices to keep.
+        q0 (np.array): (a0, N) nuisance subspace basis (rows).
+
+    Returns:
+        dict with keys
+            M           : (num_surv, b, b, N, N)
+            ysum_u_S    : (num_surv, b, N)
+            yout_u_S    : (num_surv, b, b)
+            size_S      : (num_surv,)
+            c0          : (num_surv, b, b)
+            survivor_idx: pass-through (num_surv,)
+    """
+    b, num_img, num_vox = y.shape
+    num_surv = len(survivor_idx)
+    dtype = y.dtype if y.dtype == np.float32 else np.float64
+
+    M = np.empty((num_surv, b, b, num_img, num_img), dtype=dtype)
+    ysum_u_S = np.empty((num_surv, b, num_img), dtype=dtype)
+    yout_u_S = np.empty((num_surv, b, b), dtype=dtype)
+    size_S = np.empty(num_surv, dtype=np.int64)
+
+    for s_idx, r in enumerate(survivor_idx):
+        leaves = _subtree_leaves(int(r), children, num_vox)
+        y_sub = y[:, :, leaves]                          # (b, N, |r|)
+        size_S[s_idx] = leaves.size
+        M[s_idx] = np.einsum('ikv,jlv->ijkl', y_sub, y_sub, optimize=True)
+        ysum_u_S[s_idx] = y_sub.sum(axis=2)
+        yout_u_S[s_idx] = np.einsum('inv,jnv->ij', y_sub, y_sub,
+                                     optimize=True)
+
+    # c0[r, i, j] = <Q0 Q0^T, M_r[i, j]>_F
+    #            = sum_a q0[a] @ M_r[i, j] @ q0[a]^T
+    # Computed as a 2-step einsum: q0 (a0, N) against M_r (b, b, N, N).
+    tmp = np.einsum('an,sijnl->sijal', q0, M, optimize=True)
+    c0 = np.einsum('sijal,al->sij', tmp, q0, optimize=True)
+
+    return dict(M=M, ysum_u_S=ysum_u_S, yout_u_S=yout_u_S,
+                size_S=size_S, c0=c0,
+                survivor_idx=np.asarray(survivor_idx, dtype=np.int64))
+
+
+def compute_llr_inner_kernel(kernels, q0, q1, freed_lane, perm, num_reg,
+                             min_size=1):
+    """Per-perm LLR for survivors only, using M_{ij} kernels.
+
+    For each survivor ``r``:
+
+        yout_perm[r] = yout_u[r] + c0[r] - c_perm[r]
+        ysum_perm[r] = ysum_u[r] @ freed_lane            (along image axis)
+
+    where ``c_perm[r][i, j] = <Q0Q0T[perm, :][:, perm], M_r[i, j]>_F``
+    is computed from ``q0_perm = q0[:, perm]`` in ``O(b^2 a0 N^2)`` per
+    survivor.  Then Phase 2 (E, H, slogdet, LLR) runs over survivors.
+
+    Args:
+        kernels (dict): output of :func:`build_survivor_kernels`.
+        q0 (np.array): (a0, N) nuisance basis (rows).
+        q1 (np.array): (a1, N) interest basis (rows).
+        freed_lane (np.array): (N, N) FL matrix from ``get_freed_lane``.
+            Applied along the image axis as ``ysum @ freed_lane``.
+        perm (np.array): (N,) the same index array used to build
+            ``freed_lane``.  Caller has it for free.
+        num_reg (int): total region count (for output array sizing).
+        min_size (int): survivors with size < min_size get NaN LLR.
+
+    Returns:
+        llr (np.array): (num_reg,) LLR — NaN for non-survivors and
+            small survivors.
+    """
+    M = kernels['M']
+    ysum_u_S = kernels['ysum_u_S']
+    yout_u_S = kernels['yout_u_S']
+    size_S = kernels['size_S']
+    c0 = kernels['c0']
+    survivor_idx = kernels['survivor_idx']
+
+    dtype = M.dtype
+    num_surv = survivor_idx.size
+
+    llr = np.full(num_reg, np.nan, dtype=np.float64)
+    if num_surv == 0:
+        return llr
+
+    active_S = size_S >= min_size
+    if not active_S.any():
+        return llr
+
+    # ---- ysum_perm = ysum_u @ freed_lane along the image axis ----
+    ysum_perm_S = np.einsum('sbm,mn->sbn', ysum_u_S, freed_lane,
+                             optimize=True)
+
+    # ---- yout_perm = yout_u + c0 - c_perm  via permuted Q0 ----
+    q0_perm = q0[:, perm]                                # (a0, N)
+    tmp = np.einsum('an,sijnl->sijal', q0_perm, M, optimize=True)
+    c_perm = np.einsum('sijal,al->sij', tmp, q0_perm, optimize=True)
+    yout_perm_S = yout_u_S + c0 - c_perm                 # (num_surv, b, b)
+
+    # ---- Phase 2: E, H, LLR on active survivors ----
+    sz_a = size_S[active_S].astype(dtype)[:, None, None]
+    ysum_a = ysum_perm_S[active_S]
+    yout_a = yout_perm_S[active_S]
+
+    a0_S = np.einsum('sbn,an->sba', ysum_a, q0, optimize=True)
+    t_S = yout_a - np.einsum('sba,sca->sbc', a0_S, a0_S,
+                              optimize=True) / sz_a
+
+    a1_S = np.einsum('sbn,vn->sbv', ysum_a, q1, optimize=True)
+    h_S = np.einsum('sbv,scv->sbc', a1_S, a1_S, optimize=True) / sz_a
+
+    e_S = t_S - h_S
+
+    sign_t, logdet_t = np.linalg.slogdet(e_S + h_S)
+    sign_e, logdet_e = np.linalg.slogdet(e_S)
+    valid_a = (sign_t > 0) & (sign_e > 0)
+
+    sz_a_1d = size_S[active_S]
+    llr_a = np.where(valid_a,
+                     (sz_a_1d / 2.0) * (logdet_t - logdet_e),
+                     np.nan)
+
+    out_idx = survivor_idx[active_S]
+    llr[out_idx] = llr_a
+    return llr
+
+
 def node_sum(x, children):
     """sum leaf values up through the graph.
 

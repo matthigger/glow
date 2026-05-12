@@ -429,6 +429,131 @@ def test_compute_llr_inner_fast_matches_compute_llr_batched():
             f'tolerance — fast path is not equivalent to slow path')
 
 
+def test_compute_llr_inner_kernel_matches_compute_llr_batched_intercept_only():
+    """Survivor-only kernel path matches compute_llr_batched on FL-permuted
+    exp under intercept-only nuisance, region-by-region for survivors.
+
+    Mirrors the contract for the AnalysisGLOW kernel path: build M_{ij}
+    once on the unpermuted exp, then serve each inner perm via a
+    survivor-only gather instead of re-running Phase 1.
+    """
+    from glow.experiment.exper import Experiment
+    from glow.experiment.permute import get_freed_lane
+    from glow.analysis.mancova import decompose
+    from glow.analysis.cluster import cluster
+    from glow.graph import (compute_llr_batched, compute_llr_inner_kernel,
+                            build_survivor_kernels, compute_tree_layers)
+
+    exp = Experiment.from_gauss(a=2, b=2, num_img=30, shape=(8, 8),
+                                seed=0, add_bias=True)
+    num_vox = exp.y.shape[2]
+    children = cluster(exp=exp, mode='q1')
+    layer = compute_tree_layers(children, num_vox)
+    q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
+
+    # full-tree size for survivor selection
+    _, _, size_all = compute_llr_batched(
+        exp, children=children, q0=q0, q1=q1, min_size=1, layer=layer
+    )[0], None, None
+    # actually take size from compute_phase1
+    from glow.graph import compute_phase1
+    _, _, size_all = compute_phase1(exp.y, children, layer=layer)
+    num_reg = size_all.size
+
+    survivor_idx = np.where(size_all >= 4)[0]
+    kernels = build_survivor_kernels(exp.y, children, survivor_idx, q0)
+
+    n_img = exp.y.shape[1]
+    for perm_idx in [1, 2, 7, 42, 999]:
+        _exp_inner = exp.permute(perm_idx)
+        llr_slow, _ = compute_llr_batched(
+            _exp_inner, children=children, q0=q0, q1=q1,
+            min_size=4, layer=layer)
+
+        freed_lane = get_freed_lane(exp.x, exp.contrast, perm_idx)
+        perm = np.argsort(np.random.default_rng(perm_idx).permutation(n_img))
+        llr_kernel = compute_llr_inner_kernel(
+            kernels, q0, q1, freed_lane, perm, num_reg, min_size=4)
+
+        # kernel path leaves non-survivors as NaN; only compare survivors
+        both_finite = (np.isfinite(llr_slow)
+                       & np.isfinite(llr_kernel)
+                       & (size_all >= 4))
+        assert both_finite.any(), 'no survivor regions to compare'
+
+        abs_err = np.abs(llr_slow[both_finite] - llr_kernel[both_finite])
+        denom = np.maximum(np.abs(llr_slow[both_finite]), 1e-8)
+        rel_err = float((abs_err / denom).max())
+        assert rel_err < 1e-3, (
+            f'perm_idx={perm_idx}: rel_err={rel_err:.3e} exceeds 1e-3 '
+            f'tolerance — kernel path is not equivalent to batched path')
+
+
+def test_compute_llr_inner_kernel_matches_compute_llr_batched_general_q0():
+    """Same as above but with non-trivial Q0 (multiple nuisance regressors)
+    — covers the general FL case where the intercept-only fast path
+    invariance does not hold.
+    """
+    from glow.experiment.exper import Experiment
+    from glow.experiment.permute import get_freed_lane
+    from glow.analysis.mancova import decompose
+    from glow.analysis.cluster import cluster
+    from glow.graph import (compute_llr_batched, compute_llr_inner_kernel,
+                            build_survivor_kernels, compute_tree_layers,
+                            compute_phase1)
+
+    rng = np.random.default_rng(0)
+    num_img, b = 30, 2
+    n_nuis_extra = 2
+    n_intrst = 2
+    # Build x with bias + extra-nuisance + interest; add_bias=False so we
+    # supply the bias ourselves and Q0 ends up rank > 1.
+    x = np.empty((1 + n_nuis_extra + n_intrst, num_img))
+    x[0] = 1.0
+    x[1:1 + n_nuis_extra] = rng.standard_normal((n_nuis_extra, num_img))
+    x[1 + n_nuis_extra:] = rng.standard_normal((n_intrst, num_img))
+    contrast = np.array([False] * (1 + n_nuis_extra) + [True] * n_intrst)
+    y = rng.standard_normal((b, num_img, 64)).astype(np.float64)
+    mask_idx = np.arange(64).reshape(1, 1, 64)
+    exp = Experiment(x=x, y=y, contrast=contrast, mask_idx=mask_idx,
+                     add_bias=False)
+
+    children = cluster(exp=exp, mode='q1')
+    layer = compute_tree_layers(children, exp.y.shape[2])
+    q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
+    assert q0.shape[0] >= 2, 'expected non-trivial Q0 for this test'
+
+    _, _, size_all = compute_phase1(exp.y, children, layer=layer)
+    num_reg = size_all.size
+
+    survivor_idx = np.where(size_all >= 4)[0]
+    kernels = build_survivor_kernels(exp.y, children, survivor_idx, q0)
+
+    n_img = exp.y.shape[1]
+    for perm_idx in [1, 2, 7, 42, 999]:
+        _exp_inner = exp.permute(perm_idx)
+        llr_slow, _ = compute_llr_batched(
+            _exp_inner, children=children, q0=q0, q1=q1,
+            min_size=4, layer=layer)
+
+        freed_lane = get_freed_lane(exp.x, exp.contrast, perm_idx)
+        perm = np.argsort(np.random.default_rng(perm_idx).permutation(n_img))
+        llr_kernel = compute_llr_inner_kernel(
+            kernels, q0, q1, freed_lane, perm, num_reg, min_size=4)
+
+        both_finite = (np.isfinite(llr_slow)
+                       & np.isfinite(llr_kernel)
+                       & (size_all >= 4))
+        assert both_finite.any()
+
+        abs_err = np.abs(llr_slow[both_finite] - llr_kernel[both_finite])
+        denom = np.maximum(np.abs(llr_slow[both_finite]), 1e-8)
+        rel_err = float((abs_err / denom).max())
+        assert rel_err < 1e-9, (
+            f'perm_idx={perm_idx}: rel_err={rel_err:.3e} exceeds 1e-9 '
+            f'(float64 expected to be near machine precision)')
+
+
 def test_get_mask_cases():
     children = np.array([[0, 1],
                          [2, 3],
