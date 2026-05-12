@@ -25,9 +25,10 @@ Per-merge work:
 - For each neighbour n: if n's NN was i/j (now dead), rescan n's adj;
   else update n's NN only if the new cluster is closer than its current.
 
-``b`` (the feature dimension) follows the GLOW convention — the batch
-axis of ``y`` flattened with any projection.  See ``compute_llr_batched``
-einsum patterns (``'rbn,...'``).
+``a`` is the feature dimension (number of independent variables), matching
+the GLOW convention for ``x.shape == (a, n_subjects)``.  When called from
+``cluster()`` it equals ``n_batch × projection_dim`` (the einsum-``'b,a'``
+axes of ``y`` after projection, flattened).
 """
 from __future__ import annotations
 
@@ -41,9 +42,9 @@ from scipy.sparse.csgraph import connected_components
 
 
 @njit(cache=True, boundscheck=False)
-def _ward_dist(centroid, size, b, i, j):
+def _ward_dist(centroid, size, a, i, j):
     pa = 0.0
-    for f in range(b):
+    for f in range(a):
         d = centroid[i, f] - centroid[j, f]
         pa += d * d
     sa = size[i]
@@ -139,7 +140,7 @@ def _adj_prepend(adj_head, adj_cluster, adj_next, pool_top, c, x):
 
 
 @njit(cache=True, boundscheck=False)
-def _scan_nn(centroid, size, alive, b, c,
+def _scan_nn(centroid, size, alive, a, c,
              adj_head, adj_cluster, adj_next):
     """Linear scan of c's adjacency for its current alive nearest neighbour.
 
@@ -152,7 +153,7 @@ def _scan_nn(centroid, size, alive, b, c,
         x = adj_cluster[nid]
         nxt = adj_next[nid]
         if alive[x]:
-            d = _ward_dist(centroid, size, b, c, x)
+            d = _ward_dist(centroid, size, a, c, x)
             # Lex tie-break: prefer smaller index on ties (matches sklearn's
             # global-heap behaviour which orders by (d, k, c) tuples).
             if d < best_d or (d == best_d and (best < 0 or x < best)):
@@ -172,7 +173,7 @@ def _mullner_loop(
     heap_d, heap_c, heap_size,
     nn, nn_d,
     not_visited,
-    out_a, out_b, out_d, b, n_samples, n_merges,
+    out_a, out_b, out_d, a, n_samples, n_merges,
 ):
     """Mullner NN-array main loop.
 
@@ -180,7 +181,7 @@ def _mullner_loop(
     """
     # Initial NN per leaf
     for c in range(n_samples):
-        x, d = _scan_nn(centroid, size, alive, b, c,
+        x, d = _scan_nn(centroid, size, alive, a, c,
                         adj_head, adj_cluster, adj_next)
         nn[c] = x
         nn_d[c] = d
@@ -201,7 +202,7 @@ def _mullner_loop(
             x = nn[c_popped]
             if x < 0 or not alive[x]:
                 # nn died between push and pop; rescan
-                new_x, new_d = _scan_nn(centroid, size, alive, b,
+                new_x, new_d = _scan_nn(centroid, size, alive, a,
                                         c_popped, adj_head, adj_cluster,
                                         adj_next)
                 nn[c_popped] = new_x
@@ -231,7 +232,7 @@ def _mullner_loop(
         si = size[i]
         sj = size[j]
         st = si + sj
-        for f in range(b):
+        for f in range(a):
             centroid[k, f] = (si * centroid[i, f] + sj * centroid[j, f]) / st
         size[k] = st
         alive[k] = True
@@ -282,7 +283,7 @@ def _mullner_loop(
             nid = adj_next[nid]
             not_visited[n] = True
 
-            d_kn = _ward_dist(centroid, size, b, k, n)
+            d_kn = _ward_dist(centroid, size, a, k, n)
             if d_kn < best_d or (d_kn == best_d and (best < 0 or n < best)):
                 best_d = d_kn
                 best = n
@@ -290,7 +291,7 @@ def _mullner_loop(
             n_nn = nn[n]
             if n_nn == i or n_nn == j or n_nn < 0 or not alive[n_nn]:
                 # n's old NN died → rescan n's adj
-                new_x, new_d = _scan_nn(centroid, size, alive, b,
+                new_x, new_d = _scan_nn(centroid, size, alive, a,
                                         n, adj_head, adj_cluster, adj_next)
                 nn[n] = new_x
                 nn_d[n] = new_d
@@ -325,7 +326,7 @@ def ward_tree(X, connectivity, return_distance=False):
     ``sklearn.cluster.ward_tree(X, connectivity=...)``.
 
     Args:
-        X (np.ndarray): (n_samples, b) feature matrix where ``b`` is the
+        X (np.ndarray): (n_samples, a) feature matrix where ``a`` is the
             feature/batch dimension.
         connectivity: scipy sparse matrix of shape (n_samples, n_samples).
             Symmetrised internally; non-zero entries define graph neighbours.
@@ -342,7 +343,7 @@ def ward_tree(X, connectivity, return_distance=False):
         distances (np.ndarray, optional): per-merge sqrt(2 * raw_ward).
     """
     X = np.ascontiguousarray(X, dtype=np.float64)
-    n_samples, b = X.shape
+    n_samples, a = X.shape
 
     A = sparse.csr_matrix(connectivity)
     A = (A + A.T).tocsr()
@@ -353,7 +354,7 @@ def ward_tree(X, connectivity, return_distance=False):
     n_merges_total = n_samples - n_components
     n_nodes = n_samples + n_merges_total
 
-    centroid = np.zeros((n_nodes, b), dtype=np.float64)
+    centroid = np.zeros((n_nodes, a), dtype=np.float64)
     centroid[:n_samples] = X
     size = np.zeros(n_nodes, dtype=np.float64)
     size[:n_samples] = 1.0
@@ -423,7 +424,7 @@ def ward_tree(X, connectivity, return_distance=False):
                 heap_d, heap_c, heap_size,
                 nn, nn_d,
                 not_visited,
-                out_a, out_b, out_d, b, n_samples, n_merges_total,
+                out_a, out_b, out_d, a, n_samples, n_merges_total,
             )
             if status == -1:
                 heap_cap *= 2

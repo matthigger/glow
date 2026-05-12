@@ -27,10 +27,10 @@ def time_call(fn, n_warmup=1, n_reps=3):
     return min(times)
 
 
-def bench_one(shape, b, seed=0):
+def bench_one(shape, a, seed=0):
     rng = np.random.default_rng(seed)
     n = int(np.prod(shape))
-    X = rng.standard_normal((n, b)).astype(np.float64)
+    X = rng.standard_normal((n, a)).astype(np.float64)
     conn = grid_to_graph(*shape)
 
     t_ours = time_call(lambda: our_ward_tree(X, conn))
@@ -39,7 +39,7 @@ def bench_one(shape, b, seed=0):
 
 
 def main():
-    print(f'{"shape":<15} {"n_vox":<8} {"b":<5} {"sklearn":<12} {"ours":<12} {"speedup":<10}')
+    print(f'{"shape":<15} {"n_vox":<8} {"a":<5} {"sklearn":<12} {"ours":<12} {"speedup":<10}')
     print('-' * 70)
     cases = [
         ((10, 10, 10), 8),
@@ -49,9 +49,9 @@ def main():
         ((30, 30, 30), 8),
         ((30, 30, 30), 30),
     ]
-    for shape, b in cases:
-        n, t_sk, t_ours, sp = bench_one(shape, b)
-        print(f'{str(shape):<15} {n:<8} {b:<5} {t_sk*1000:<12.1f} '
+    for shape, a in cases:
+        n, t_sk, t_ours, sp = bench_one(shape, a)
+        print(f'{str(shape):<15} {n:<8} {a:<5} {t_sk*1000:<12.1f} '
               f'{t_ours*1000:<12.1f} {sp:<10.2f}')
 
 

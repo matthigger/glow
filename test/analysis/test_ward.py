@@ -25,18 +25,18 @@ def _raw_ward_sum(distances):
 def _merge_leaf_sets(children, n_samples):
     desc = [frozenset([i]) for i in range(n_samples)]
     out = []
-    for a, b in children:
-        s = desc[a] | desc[b]
+    for ca, cb in children:
+        s = desc[ca] | desc[cb]
         out.append(s)
         desc.append(s)
     return out
 
 
 def _is_topologically_valid(children, n_samples):
-    for i, (a, b) in enumerate(children):
-        if a >= n_samples + i or b >= n_samples + i:
+    for i, (ca, cb) in enumerate(children):
+        if ca >= n_samples + i or cb >= n_samples + i:
             return False
-        if a < 0 or b < 0:
+        if ca < 0 or cb < 0:
             return False
     return True
 
@@ -45,18 +45,18 @@ def _is_topologically_valid(children, n_samples):
 
 
 @pytest.mark.parametrize('seed', [0, 1, 2, 3])
-@pytest.mark.parametrize('shape,b', [
+@pytest.mark.parametrize('shape,a', [
     ((4, 4, 4), 8),
     ((5, 5, 5), 8),
     ((6, 6, 6), 12),
     ((8, 8, 8), 8),
     ((10, 10, 10), 8),
 ])
-def test_constrained_children_match_sklearn(seed, shape, b):
+def test_constrained_children_match_sklearn(seed, shape, a):
     """Heap-greedy reproduces sklearn's children array exactly."""
     rng = np.random.default_rng(seed)
     n = int(np.prod(shape))
-    X = rng.standard_normal((n, b)).astype(np.float64)
+    X = rng.standard_normal((n, a)).astype(np.float64)
     conn = grid_to_graph(*shape)
 
     ours = our_ward_tree(X, conn, return_distance=True)
@@ -73,8 +73,8 @@ def test_constrained_partitions_match_sklearn(seed, shape):
     children match, but spot-checks the dendrogram semantics)."""
     rng = np.random.default_rng(seed)
     n = int(np.prod(shape))
-    b = 8
-    X = rng.standard_normal((n, b)).astype(np.float64)
+    a = 8
+    X = rng.standard_normal((n, a)).astype(np.float64)
     conn = grid_to_graph(*shape)
 
     ours = our_ward_tree(X, conn)
@@ -89,18 +89,18 @@ def test_constrained_partitions_match_sklearn(seed, shape):
 
 
 @pytest.mark.parametrize('seed', [0, 1, 2, 3, 4])
-@pytest.mark.parametrize('shape,b', [
+@pytest.mark.parametrize('shape,a', [
     ((4, 4, 4), 8),
     ((5, 5, 5), 8),
     ((6, 6, 6), 12),
     ((8, 8, 8), 8),
 ])
-def test_fisher_invariant(seed, shape, b):
+def test_fisher_invariant(seed, shape, a):
     """Sum of raw Ward distances equals the data invariant
     ``||X - mean||²``. Holds for any complete hierarchical merge."""
     rng = np.random.default_rng(seed)
     n = int(np.prod(shape))
-    X = rng.standard_normal((n, b)).astype(np.float64)
+    X = rng.standard_normal((n, a)).astype(np.float64)
     conn = grid_to_graph(*shape)
 
     ours = our_ward_tree(X, conn, return_distance=True)
@@ -113,8 +113,8 @@ def test_fisher_invariant(seed, shape, b):
 def test_tree_well_formed(seed, shape):
     rng = np.random.default_rng(seed)
     n = int(np.prod(shape))
-    b = 8
-    X = rng.standard_normal((n, b)).astype(np.float64)
+    a = 8
+    X = rng.standard_normal((n, a)).astype(np.float64)
     conn = grid_to_graph(*shape)
 
     children, n_comp, n_leaves, parents = our_ward_tree(X, conn)
@@ -144,8 +144,8 @@ def test_forest_multiple_components():
     """
     rng = np.random.default_rng(0)
     n_per = 30
-    b = 4
-    X = rng.standard_normal((2 * n_per, b)).astype(np.float64)
+    a = 4
+    X = rng.standard_normal((2 * n_per, a)).astype(np.float64)
     conn = sparse.lil_matrix((2 * n_per, 2 * n_per))
     for i in range(n_per - 1):
         conn[i, i + 1] = 1
@@ -187,10 +187,10 @@ def test_speed_vs_sklearn_at_5k():
     import time
 
     shape = (17, 17, 17)  # 4913 voxels
-    b = 8
+    a = 8
     rng = np.random.default_rng(0)
     n = int(np.prod(shape))
-    X = rng.standard_normal((n, b)).astype(np.float64)
+    X = rng.standard_normal((n, a)).astype(np.float64)
     conn = grid_to_graph(*shape)
 
     # warm up (JIT)
