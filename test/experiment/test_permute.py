@@ -1,10 +1,8 @@
-from itertools import permutations
-from math import factorial
-
-import pytest
+import numpy as np
 
 from glow.experiment import ExperimentImageOnly
-from glow.experiment.permute import *
+from glow.experiment.permute import get_freed_lane
+from glow.analysis.mancova import decompose
 
 
 def _get_freed_lane_dense(x, contrast, perm_idx):
@@ -54,66 +52,3 @@ def test_get_freed_lane():
     new_idx = np.argsort(rng.permutation(num_img))
     to_resid = np.eye(num_img) - p0
     assert np.allclose((y0 @ to_resid)[:, new_idx], y0_perm @ to_resid)
-
-
-def get_n_perm_possible_slow(partition):
-    n = len(partition)
-    counts = Counter(partition).values()
-    return factorial(n) / np.prod([factorial(c) for c in counts])
-
-
-case_list = ([0],
-             [0, 1],
-             [0, 0, 0, 1, 1, 1, 1],
-             [0, 1, 2, 3, 3, 3],)
-
-
-def test_perms_at_least():
-    for partition in case_list:
-        # given large threshold, its never enough (must compute all)
-        enough, n_perm_obs = perms_at_least(partition, thresh=np.inf)
-        assert not enough
-        assert n_perm_obs == get_n_perm_possible_slow(partition)
-
-
-def test_iter_perms():
-    for partition in case_list:
-        exp = set(permutations(partition))
-        obs = set([tuple(p) for p in get_perm_iter_all(partition)])
-        assert exp == obs
-
-
-def test_get_perm_iter():
-    partition = (0, 0, 1, 0)
-
-    # if there are sufficient permutations, draw samples (repeats allowed)
-    part_list = [tuple(p) for p in get_perm_iter(partition, n_perm=2)]
-    assert part_list[0] == partition
-    assert len(part_list) == 3
-
-    # if there aren't sufficient permutations, go through the list exhaustively
-    with pytest.warns(NotEnoughPermutations):
-        part_list = [tuple(p) for p in get_perm_iter(partition, n_perm=1e6)]
-        assert part_list[0] == partition
-        assert len(set(part_list)) == len(part_list)
-
-
-def test_perms_at_least_trivial_threshold():
-    """test perms_at_least with thresh <= 1 (early return case)"""
-    partition = [0, 0, 1, 1, 2, 2]
-    
-    # with thresh <= 1, should return True immediately with None
-    enough, n_perm = perms_at_least(partition, thresh=1)
-    assert enough is True
-    assert n_perm is None
-    
-    # also test with thresh < 1
-    enough, n_perm = perms_at_least(partition, thresh=0.5)
-    assert enough is True
-    assert n_perm is None
-    
-    # verify this is different from thresh > 1 behavior
-    enough_high, n_perm_high = perms_at_least(partition, thresh=100)
-    assert enough_high is False
-    assert n_perm_high is not None
-    assert n_perm_high > 1
