@@ -851,8 +851,11 @@ class TestInnerPermRace:
 
 
 class TestUnpermutedRefinement:
-    """``max_inner_unpermuted`` re-races perm 0 in threshold mode
-    against the FWER threshold T, with an outer loop guarding T-shift.
+    """Threshold-mode refinement on perm 0 (the unpermuted) runs
+    inside ``_finalize_per_region_z``, resuming the inner race from
+    the outer-perm Welford state, against ``T = self.adj_crit``.
+    Cap is the same ``n_perm_inner`` parameter — tournament-mode
+    typically exits early, leaving budget for refinement.
     """
 
     @staticmethod
@@ -866,21 +869,20 @@ class TestUnpermutedRefinement:
         return exp
 
     def test_refinement_runs_and_terminates(self):
-        """Smoke test: with max_inner_unpermuted set, analysis completes
-        with a usable sig_reg_list, adj_crit, and effect_list."""
+        """Analysis completes with usable adj_crit, sig_reg_list, and
+        effect_list — refinement is in the default path."""
         exp = self._make_exp()
         ana = AnalysisGLOW(
-            exp, n_perm_fwer=10, n_perm_inner=30,
-            max_inner_unpermuted=150,
+            exp, n_perm_fwer=10, n_perm_inner=150,
             alpha_fwer=.2, min_vox=1)
 
         assert ana.adj_crit is not None
         assert isinstance(ana.sig_reg_list, list)
         assert hasattr(ana, 'effect_list')
 
-    def test_refinement_increases_unpermuted_budget(self):
-        """After refinement, the saved perm 0 inner-perm count should
-        exceed the baseline ``n_perm_inner``."""
+    def test_perm_0_has_m2_in_pickle(self):
+        """Perm-0 pickle carries ``M2`` so the refinement resume can
+        rehydrate Welford state."""
         import pickle
         import tempfile
         from pathlib import Path
@@ -888,50 +890,98 @@ class TestUnpermutedRefinement:
         exp = self._make_exp()
         with tempfile.TemporaryDirectory(prefix='glow_test_') as td:
             perm_dir = Path(td)
-            ana = AnalysisGLOW(
-                exp, n_perm_fwer=8, n_perm_inner=30,
-                max_inner_unpermuted=200,
+            AnalysisGLOW(
+                exp, n_perm_fwer=8, n_perm_inner=100,
                 alpha_fwer=.2, min_vox=1,
                 perm_dir=perm_dir)
-
             with open(perm_dir / '000000_result.pkl', 'rb') as fh:
                 r0 = pickle.load(fh)
-
-            # Threshold-mode race for perm 0 should have consumed at
-            # least the warmup batch.  In practice, with a strong
-            # synthetic effect the borderline set is small and the
-            # race exits well before max_inner_unpermuted — but it
-            # should always be >= the warmup (_RACE_INIT = 50).
-            assert r0['n_inner_used'] >= 50, (
-                f"refined perm 0 used only {r0['n_inner_used']} inner "
-                f"perms; expected at least the warmup batch")
-
-    def test_refinement_no_op_when_budget_not_exceeded(self):
-        """If ``max_inner_unpermuted`` <= ``n_perm_inner``, no refinement
-        runs (baseline result preserved)."""
-        exp = self._make_exp()
-
-        ana_baseline = AnalysisGLOW(
-            exp, n_perm_fwer=8, n_perm_inner=30,
-            alpha_fwer=.2, min_vox=1)
-        ana_noop = AnalysisGLOW(
-            exp, n_perm_fwer=8, n_perm_inner=30,
-            max_inner_unpermuted=30,
-            alpha_fwer=.2, min_vox=1)
-
-        # Same outer-perm seeds → identical max-z list → identical
-        # threshold and sig_reg_list.
-        assert ana_noop.adj_crit == ana_baseline.adj_crit
-        assert ana_noop.sig_reg_list == ana_baseline.sig_reg_list
+        assert 'M2' in r0, '_process_permutation must emit M2 for resume'
+        assert r0['M2'].shape == r0['mu'].shape
+        assert r0['n_inner_used'] >= 50, \
+            f"warmup not run? n_inner_used={r0['n_inner_used']}"
 
     def test_refinement_preserves_strong_effect_discovery(self):
         """Strong synthetic effect should still be discovered after
         refinement — refinement may shift borderline calls but
         shouldn't drop a clear effect."""
-        exp = TestBigEffect.exp
         ana = AnalysisGLOW(
-            exp, n_perm_fwer=25, n_perm_inner=50,
-            max_inner_unpermuted=200,
+            TestBigEffect.exp, n_perm_fwer=25, n_perm_inner=200,
             alpha_fwer=.1)
         assert len(ana.effect_list) >= 1, \
             'refined run failed to discover strong synthetic effect'
+
+
+class TestInnerRaceResume:
+    """``_run_inner_race`` resumes bit-exactly from an ``init_state``
+    when the same ``draw_one`` is used and no kernel swap intervenes.
+    """
+
+    def test_resume_bit_exact(self):
+        """A fresh race to n_max == a fresh race to n_max/2 followed
+        by a resume to n_max, when seeds and draw_one match and no
+        regions are dropped (high k_sigma)."""
+        from glow.analysis._glow import _run_inner_race
+
+        num_reg = 30
+        rng = np.random.default_rng(0)
+        llr_outer = rng.uniform(0.5, 2.5, num_reg)
+        size = np.full(num_reg, 10, dtype=np.int64)
+
+        def make_draw():
+            return lambda i: np.random.default_rng(i).normal(0, 1, num_reg)
+
+        common = dict(llr_outer=llr_outer, size=size, min_vox=4,
+                       race_init=50, race_batch=25, race_k_sigma=20.0)
+
+        out_full = _run_inner_race(make_draw(), n_max=200, **common)
+
+        out_half = _run_inner_race(make_draw(), n_max=100, **common)
+        out_resume = _run_inner_race(
+            make_draw(), n_max=200, **common,
+            init_state={'mean':         out_half['mu'],
+                        'M2':           out_half['M2'],
+                        'n_per_reg':    out_half['n_per_reg'],
+                        'n_inner_used': out_half['n_inner_used']})
+
+        assert out_resume['n_inner_used'] == out_full['n_inner_used']
+        np.testing.assert_array_equal(out_resume['n_per_reg'],
+                                       out_full['n_per_reg'])
+        np.testing.assert_allclose(out_resume['mu'], out_full['mu'],
+                                    rtol=0, atol=1e-12)
+        np.testing.assert_allclose(out_resume['M2'], out_full['M2'],
+                                    rtol=0, atol=1e-12)
+        np.testing.assert_allclose(out_resume['sigma'], out_full['sigma'],
+                                    rtol=0, atol=1e-12)
+
+    def test_resume_at_cap_is_noop(self):
+        """If ``init_state['n_inner_used']`` already equals ``n_max``,
+        the resume does no new draws."""
+        from glow.analysis._glow import _run_inner_race
+
+        num_reg = 20
+        llr_outer = np.full(num_reg, 1.0)
+        size = np.full(num_reg, 10, dtype=np.int64)
+        calls = {'n': 0}
+
+        def draw_one(i):
+            calls['n'] += 1
+            return np.random.default_rng(i).normal(0, 1, num_reg)
+
+        # prime: run to 100 perms
+        primed = _run_inner_race(
+            draw_one, n_max=100, llr_outer=llr_outer, size=size,
+            min_vox=4, race_init=50, race_batch=25, race_k_sigma=10.0)
+        primed_calls = calls['n']
+
+        # resume with cap = 100 (already reached): no new draws
+        _ = _run_inner_race(
+            draw_one, n_max=100, llr_outer=llr_outer, size=size,
+            min_vox=4, race_init=50, race_batch=25, race_k_sigma=10.0,
+            init_state={'mean':         primed['mu'],
+                        'M2':           primed['M2'],
+                        'n_per_reg':    primed['n_per_reg'],
+                        'n_inner_used': primed['n_inner_used']})
+        assert calls['n'] == primed_calls, (
+            f'resume drew {calls["n"] - primed_calls} extra perms '
+            f'when init_state already at cap')
