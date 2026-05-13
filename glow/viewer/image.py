@@ -108,42 +108,6 @@ def compute_bg_volume(ana_glow, feature_idx=0, image_idx=None):
 # 3D: dash-slicer overlay
 # ---------------------------------------------------------------------------
 
-def build_region_overlay(slicer, label_map, reg_idx_list, alpha=160):
-    """Build overlay data for one VolumeSlicer showing selected regions.
-
-    Regions are rendered as semi-transparent coloured masks over the
-    slicer's base volume (which shows the anatomical background).
-
-    Args:
-        slicer (VolumeSlicer): the slicer instance (used to encode the
-            overlay for the correct axis)
-        label_map (np.array): spatial label map (-1 outside regions)
-        reg_idx_list (list[int]): ordered list of selected region indices
-        alpha (int): overlay opacity 0-255
-
-    Returns:
-        overlay data suitable for the slicer's overlay_data Store
-    """
-    mask = np.zeros(label_map.shape, dtype=np.uint8)
-
-    # build color list: label 1 -> first color, label 2 -> second, ...
-    # (label 0 is auto-inserted as transparent by dash-slicer)
-    colors = []
-    for color_idx, reg_idx in enumerate(reg_idx_list):
-        label = color_idx + 1  # 1-based (0 = no overlay)
-        region_voxels = label_map == reg_idx
-        if region_voxels.any():
-            mask[region_voxels] = label
-        r, g, b = get_region_color(color_idx)
-        colors.append((r, g, b, alpha))
-
-    if not colors:
-        # no regions selected — return empty overlay
-        return slicer.create_overlay_data(mask, (0, 0, 0, 0))
-
-    return slicer.create_overlay_data(mask, colors)
-
-
 # ---------------------------------------------------------------------------
 # 2D: Plotly go.Image fallback
 # ---------------------------------------------------------------------------
@@ -223,21 +187,6 @@ def _rgb_to_rgba(rgb_slice, vmin=None, vmax=None):
     any_valid = ~np.isnan(rgb_slice).all(axis=2)
     rgba[any_valid, 3] = 255
     return rgba
-
-
-def _overlay_regions(rgba, label_slice, reg_idx_list, alpha=0.55):
-    """Overlay coloured regions onto an RGBA image (mutates in-place)."""
-    for color_idx, reg_idx in enumerate(reg_idx_list):
-        mask = label_slice == reg_idx
-        if not mask.any():
-            continue
-        r, g, b = get_region_color(color_idx)
-        rgba[mask, 0] = np.clip(
-            rgba[mask, 0] * (1 - alpha) + r * alpha, 0, 255).astype(np.uint8)
-        rgba[mask, 1] = np.clip(
-            rgba[mask, 1] * (1 - alpha) + g * alpha, 0, 255).astype(np.uint8)
-        rgba[mask, 2] = np.clip(
-            rgba[mask, 2] * (1 - alpha) + b * alpha, 0, 255).astype(np.uint8)
 
 
 def _overlay_mask(rgba, bool_mask, color, alpha=0.55):

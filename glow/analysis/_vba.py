@@ -7,7 +7,7 @@ from ._base import Analysis
 
 class AnalysisVBA(Analysis):
     def __init__(self, exp, n_perm_fwer, alpha_fwer=.05, verbose=False,
-                 tfce_flag=False, z_flag=False, conn=None, n_jobs_perm=1,
+                 tfce_flag=False, z_flag=False, n_jobs_perm=1,
                  get_stat=None, **kwargs):
         """
         Args:
@@ -19,7 +19,6 @@ class AnalysisVBA(Analysis):
             z_flag: Z-score voxel-wise using the permutation null before
                 TFCE.  Makes the null distribution spatially homogeneous
                 (pivotal), improving power under max-stat correction.
-            conn: Connectivity for clustering
             n_jobs_perm: Number of parallel jobs for permutations (1=serial, -1=all cores)
         """
         if get_stat is None:

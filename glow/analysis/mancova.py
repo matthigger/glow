@@ -270,29 +270,6 @@ def get_roys_root(e, h, n=None):
     return float(np.max(np.real(eigvals)))
 
 
-def llr_from_ysum_yout(ysum, yout, size, q_tup):
-    """Compute LLR from pre-aggregated sufficient statistics.
-
-    Avoids a full tree walk when only a single region's LLR is needed
-    (e.g. for random re-partitions in the pruning permutation test).
-
-    Args:
-        ysum (np.array): (b, num_img) sum of y across voxels in the region
-        yout (np.array): (b, b) sum of y @ y.T across voxels
-        size (int): number of voxels in the region
-        q_tup: (q0, q1, q2) from decompose()
-
-    Returns:
-        float: log-likelihood ratio
-    """
-    a0 = ysum @ q_tup[0].T
-    t = yout - a0 @ a0.T / size
-    a1 = ysum @ q_tup[1].T
-    h = a1 @ a1.T / size
-    e = t - h
-    return get_llr(e, h, n=size)
-
-
 stat_dict = {
     'llr': get_llr,
     'wilks': get_wilks,

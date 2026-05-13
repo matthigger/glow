@@ -42,7 +42,6 @@ scikit-learn = ">=1.3"
 scipy = ">=1.11"
 seaborn = ">=0.13"
 tqdm = ">=4.66"
-pygam = {version = ">=0.9,<1.0", python = ">=3.12,<3.15"}
 
 
 [build-system]

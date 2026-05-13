@@ -7,7 +7,6 @@ from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
-from contextlib import contextmanager
 
 import boto3
 import cloudpickle as pickle
@@ -1143,9 +1142,6 @@ class AWSBatchRunner:
                                 log_stream = container["logStreamName"]
                                 print(f'   Logs: aws logs get-log-events --log-group-name /aws/batch/job --log-stream-name {log_stream} --limit 50 --output text | tail -30')
 
-                    # expose timestamps so callers can write a post-hoc
-                    # runtime_history record (predicted vs actual)
-                    self.last_job_timestamps = dict(job_timestamps)
                     break
 
                 # heartbeat: tick every second during poll sleep
@@ -1216,77 +1212,6 @@ class AWSBatchRunner:
 
         return {'canceled': canceled, 'failed': failed, 'skipped': skipped}
 
-    @contextmanager
-    def cancel_on_exit(self, job_ids: list, reason: str = 'Canceled on exit'):
-        """context manager to cancel jobs on exit"""
-        try:
-            yield
-        except KeyboardInterrupt:
-            print('\n\nMonitoring interrupted by user')
-            print('cancelling AWS jobs')
-            summary = self.cancel_jobs(job_ids, reason=reason)
-            print(f'✓ Canceled: {summary["canceled"]}')
-            if summary['failed']:
-                print(f'✗ Failed to cancel: {summary["failed"]}')
-            raise
-        except Exception:
-            summary = self.cancel_jobs(job_ids, reason=reason)
-            print(f'✓ Canceled: {summary["canceled"]}')
-            if summary['failed']:
-                print(f'✗ Failed to cancel: {summary["failed"]}')
-            raise
-    
-    def get_failure_details(self, job_ids):
-        """return detailed failure information for failed jobs.
-        
-        Args:
-            job_ids: list of AWS Batch job IDs to check
-        
-        Returns:
-            list of dicts with failure details
-        """
-        failed_jobs = []
-        
-        # batch describe in chunks of 100
-        for i in range(0, len(job_ids), 100):
-            chunk = job_ids[i:i+100]
-            try:
-                response = self.batch.describe_jobs(jobs=chunk)
-                for job in response['jobs']:
-                    if job['status'] == 'FAILED':
-                        failed_jobs.append({
-                            'jobId': job['jobId'],
-                            'jobName': job['jobName'],
-                            'statusReason': job.get('statusReason', 'Unknown'),
-                            'container': job.get('container', {}),
-                            'createdAt': job.get('createdAt'),
-                            'stoppedAt': job.get('stoppedAt')
-                        })
-            except ClientError as e:
-                print(f'error checking jobs: {e}')
-                continue
-        
-        # print detailed failure reasons
-        if failed_jobs:
-            print(f'\n{"="*60}')
-            print('FAILURE DETAILS:')
-            print(f'{"="*60}')
-            for i, job in enumerate(failed_jobs, 1):
-                print(f'\n{i}. Job: {job["jobName"]} ({job["jobId"]})')
-                print(f'   Reason: {job["statusReason"]}')
-                container = job.get('container', {})
-                if 'reason' in container:
-                    print(f'   Container: {container["reason"]}')
-                if 'exitCode' in container:
-                    print(f'   Exit Code: {container["exitCode"]}')
-                if 'logStreamName' in container:
-                    log_stream = container["logStreamName"]
-                    print(f'   Logs: aws logs get-log-events --log-group-name /aws/batch/job --log-stream-name {log_stream} --limit 50 --output text | tail -30')
-        else:
-            print('no failed jobs found')
-        
-        return failed_jobs
-    
     def download_results(self, experiment_id, n_perm, output_dir):
         """download permutation results from S3 to a local directory."""
         output_dir = Path(output_dir)

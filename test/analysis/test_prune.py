@@ -1,5 +1,5 @@
 import numpy as np
-from glow.analysis.prune import prune_greedy, prune_dp, prune_greedy_full_adjust
+from glow.analysis.prune import prune_greedy, prune_dp
 
 
 def _make_tree_8():
@@ -172,56 +172,3 @@ class TestPruneDp:
         assert 12 not in reg_out
 
 
-class TestPruneGreedyFullAdjust:
-    """Test tree-wide adjusted-LL greedy pruning."""
-
-    @staticmethod
-    def _make_exp(num_vox=8, num_img=20, b=2, seed=42):
-        """Build a minimal Experiment for testing."""
-        from glow.experiment.exper import Experiment
-        rng = np.random.RandomState(seed)
-        y = rng.randn(b, num_img, num_vox)
-        x = np.vstack([np.ones(num_img), rng.randn(num_img)])
-        contrast = np.array([False, True])
-        mask_idx = np.arange(num_vox)
-        return Experiment(y=y, x=x, contrast=contrast, mask_idx=mask_idx)
-
-    def test_empty_sig_list(self):
-        exp = self._make_exp()
-        children = _make_tree_8()
-        reg_out, info = prune_greedy_full_adjust([], children, exp)
-        assert reg_out == []
-        assert 'sig_reg_list' in info
-
-    def test_output_is_antichain(self):
-        exp = self._make_exp()
-        children = _make_tree_8()
-        sig_all = [8, 9, 10, 11, 12, 13, 14]
-        reg_out, _ = prune_greedy_full_adjust(sig_all, children, exp)
-
-        from glow.graph import get_parent
-        parent = get_parent(children, num_leaf=8)
-        selected = set(reg_out)
-        for node in selected:
-            p = parent[node]
-            while p != -1:
-                assert p not in selected, \
-                    f'node {node} and ancestor {p} both selected'
-                p = parent[p]
-
-    def test_cost_history_monotonic(self):
-        """Each greedy step should increase (or maintain) the cost."""
-        exp = self._make_exp()
-        children = _make_tree_8()
-        sig_all = [8, 9, 10, 11, 12, 13, 14]
-        _, info = prune_greedy_full_adjust(sig_all, children, exp)
-        history = info['cost_history']
-        for i in range(1, len(history)):
-            assert history[i] >= history[i - 1]
-
-    def test_single_significant_region(self):
-        """Single significant region should be selected."""
-        exp = self._make_exp()
-        children = _make_tree_8()
-        reg_out, _ = prune_greedy_full_adjust([12], children, exp)
-        assert reg_out == [12]

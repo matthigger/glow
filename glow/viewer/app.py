@@ -22,8 +22,7 @@ from dash.dependencies import Input, Output, State
 from .data import (prep_df, get_feature_columns, compute_backgrounds,
                     compute_bg_ranges, compute_target_stats)
 from .scatter import build_scatter
-from .image import (build_label_map, build_region_overlay,
-                    compute_bg_volume, get_region_color,
+from .image import (build_label_map, compute_bg_volume, get_region_color,
                     compute_region_center)
 from .regression import (build_regression_figure, build_empty_regression,
                          _get_x_labels, _get_y_labels)
@@ -766,7 +765,6 @@ def _setup_3d(app, ana_glow, df,
                                       target_stats=target_stats)
     _register_hover_callback(app, ana_glow,
                              mask_target_img=mask_target_img)
-    _register_placeholder_callback(app)
     _register_regression_callback(app, ana_glow, df,
                                   y_features=y_features,
                                   subject_names=subject_names,
@@ -944,7 +942,6 @@ def _setup_2d(app, ana_glow, df,
                                       target_stats=target_stats)
     _register_hover_callback(app, ana_glow,
                              mask_target_img=mask_target_img)
-    _register_placeholder_callback(app)
     _register_regression_callback(app, ana_glow, df,
                                   y_features=y_features,
                                   subject_names=subject_names,
@@ -986,7 +983,7 @@ def _setup_2d(app, ana_glow, df,
         tree_regs = [r for r in show_list if r != 'target']
         label_map = build_label_map(tree_regs, ana_glow)
 
-        from .image import _bg_to_rgba, _overlay_regions, _overlay_mask
+        from .image import _bg_to_rgba, _overlay_mask
         gmin, gmax = bg_ranges.get(bg_name, (None, None))
         rgba = _bg_to_rgba(bg_img, channel=bg_name, vmin=gmin, vmax=gmax)
         # overlay each entry in order, using palette color from position
@@ -1206,12 +1203,6 @@ def _register_hover_callback(app, ana_glow, mask_target_img=None):
             center = compute_region_center(reg_idx, ana_glow)
         center_json = json.dumps(center) if center else 'null'
         return json.dumps(reg_idx), center_json, new_options
-
-
-def _register_placeholder_callback(app):
-    """The placeholder hint is static -- always visible below the checklist."""
-    # No dynamic callback needed; the text is set in _region_panel().
-    pass
 
 
 def _register_regression_callback(app, ana_glow, df, y_features=None,
