@@ -199,15 +199,85 @@ class RunAna(Runner):
             yield label, entry
 
     def run(self, config, _skip_labels=None, **iter_kw):
+        from collections import defaultdict
+        from glow.analysis import AnalysisVBA, AnalysisCET
+
         exp, effect = config.get_exp_eff(**iter_kw)
 
+        # VBA / VBA-TFCE / CET share the per-perm voxel stat walk
+        # (the bulk of total cost).  Group by n_perm_fwer, run one
+        # multi-stat walk per group, then dispatch each label via
+        # Ana.from_precomputed.  Other analyses (e.g. AnalysisGLOW)
+        # fall through to per-entry construction.
+        shared = defaultdict(list)
+        other = []
         for ana_label, (Ana, ana_kw) in self.ana_kwargs_dict.items():
             if _skip_labels and ana_label in _skip_labels:
                 continue
-            start = time.time()
+            if Ana in (AnalysisVBA, AnalysisCET):
+                shared[ana_kw['n_perm_fwer']].append(
+                    (ana_label, Ana, ana_kw))
+            else:
+                other.append((ana_label, Ana, ana_kw))
+
+        for _n_perm, members in shared.items():
+            self._run_shared_group(config, exp, effect, members, iter_kw)
+
+        for ana_label, Ana, ana_kw in other:
+            self._run_single(config, exp, effect, ana_label, Ana, ana_kw,
+                             iter_kw)
+
+    @staticmethod
+    def _run_single(config, exp, effect, ana_label, Ana, ana_kw, iter_kw):
+        start = time.time()
+        if config.error_save:
+            try:
+                ana = Ana(exp=exp, **ana_kw)
+            except Exception:
+                d = {'error_msg': traceback.format_exc(),
+                     'label': ana_label,
+                     'method': Ana.__name__,
+                     'effect_llr': effect.effect_llr,
+                     'seed': int(effect.seed)}
+                print(f'error: {d}')
+                _write_result(config, d, subfolder=ERROR)
+                return
+        else:
+            ana = Ana(exp=exp, **ana_kw)
+        total_time_sec = time.time() - start
+        _score_and_emit(ana, effect, config, ana_label, total_time_sec,
+                        iter_kw)
+
+    @staticmethod
+    def _run_shared_group(config, exp, effect, members, iter_kw):
+        """Run one shared voxel-stat walk and dispatch each member.
+
+        Each member's reported ``time_sec`` is ``walk_time + own_post``
+        — the cost it would incur run in isolation — matching the
+        existing ``RunMancovaVba`` convention.
+        """
+        try:
+            stat_by_fn, walk_time = _run_shared_voxel_walk(exp, members)
+        except Exception:
+            if not config.error_save:
+                raise
+            tb = traceback.format_exc()
+            for ana_label, Ana, _kw in members:
+                d = {'error_msg': tb,
+                     'label': ana_label,
+                     'method': Ana.__name__,
+                     'effect_llr': effect.effect_llr,
+                     'seed': int(effect.seed)}
+                print(f'error: {d}')
+                _write_result(config, d, subfolder=ERROR)
+            return
+
+        for ana_label, Ana, ana_kw in members:
+            post_start = time.time()
             if config.error_save:
                 try:
-                    ana = Ana(exp=exp, **ana_kw)
+                    ana = _dispatch_shared(Ana=Ana, exp=exp, ana_kw=ana_kw,
+                                           stat_by_fn=stat_by_fn)
                 except Exception:
                     d = {'error_msg': traceback.format_exc(),
                          'label': ana_label,
@@ -218,11 +288,84 @@ class RunAna(Runner):
                     _write_result(config, d, subfolder=ERROR)
                     continue
             else:
-                ana = Ana(exp=exp, **ana_kw)
-            total_time_sec = time.time() - start
-
+                ana = _dispatch_shared(Ana=Ana, exp=exp, ana_kw=ana_kw,
+                                       stat_by_fn=stat_by_fn)
+            total_time_sec = walk_time + (time.time() - post_start)
             _score_and_emit(ana, effect, config, ana_label,
                             total_time_sec, iter_kw)
+
+
+def _run_shared_voxel_walk(exp, members):
+    """Compute one (n_perm+1, num_vox) stat matrix per unique get_stat fn.
+
+    Args:
+        exp: Experiment (unscaled or scaled; permute() works on both).
+        members: list of (label, Ana, ana_kw).  All entries share the
+            same ``n_perm_fwer``; ``get_stat`` may differ — multiple stats
+            share one E/H tree walk via ``get_stat_perm_multi``.
+
+    Returns:
+        (stat_by_fn, walk_time): dict mapping each stat fn to its
+        (n_perm+1, num_vox) matrix, and the wall-clock seconds spent.
+    """
+    from glow.analysis import Analysis
+    from glow.analysis.mancova import get_wilks
+
+    n_perm_fwer = members[0][2]['n_perm_fwer']
+
+    stat_fns = []
+    for _, _, kw in members:
+        fn = kw.get('get_stat') or get_wilks
+        if fn not in stat_fns:
+            stat_fns.append(fn)
+
+    walk_start = time.time()
+    num_vox = exp.y.shape[2]
+    stat_by_fn = {fn: np.full((n_perm_fwer + 1, num_vox), np.nan)
+                  for fn in stat_fns}
+    for k in range(n_perm_fwer + 1):
+        _exp = exp.permute(k) if k else exp
+        row = Analysis.get_stat_perm_multi(_exp, stat_fns, children=None)
+        for fn in stat_fns:
+            stat_by_fn[fn][k, :] = row[fn]
+    return stat_by_fn, time.time() - walk_start
+
+
+def _dispatch_shared(*, Ana, exp, ana_kw, stat_by_fn):
+    """Apply per-label post-processing and call Ana.from_precomputed.
+
+    z_flag is honored before TFCE (matching AnalysisVBA.__init__) and
+    before CFT computation (matching AnalysisCET.__init__).
+    """
+    from glow.analysis import Analysis, AnalysisVBA, AnalysisCET
+    from glow.analysis.mancova import get_wilks
+
+    get_stat = ana_kw.get('get_stat') or get_wilks
+    alpha_fwer = ana_kw.get('alpha_fwer', 0.05)
+    z_flag = ana_kw.get('z_flag', False)
+
+    stat = stat_by_fn[get_stat].copy()
+    if z_flag:
+        stat = Analysis.z_score_stat(stat)
+
+    if Ana is AnalysisVBA:
+        if ana_kw.get('tfce_flag', False):
+            stat = AnalysisVBA.apply_tfce(
+                stat=stat, mask_idx=exp.mask_idx,
+                verbose=ana_kw.get('verbose', False),
+                n_jobs_perm=ana_kw.get('n_jobs_perm', 1))
+        return AnalysisVBA.from_precomputed(
+            exp=exp, get_stat=get_stat, stat=stat, alpha_fwer=alpha_fwer)
+
+    if Ana is AnalysisCET:
+        cft_pval = ana_kw.get('cft_pval', 0.001)
+        null_pool = stat[1:, :].ravel()
+        cft = np.quantile(null_pool, 1 - cft_pval)
+        return AnalysisCET.from_precomputed(
+            exp=exp, get_stat=get_stat, stat=stat, cft=cft,
+            cft_pval=cft_pval, alpha_fwer=alpha_fwer, z_flag=z_flag)
+
+    raise AssertionError(f'unexpected Ana class: {Ana}')
 
 
 # ---------------------------------------------------------------------------

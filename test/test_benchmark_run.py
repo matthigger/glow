@@ -6,7 +6,9 @@ import numpy as np
 import pytest
 
 from glow.benchmark.file import OUT, ERROR
-from glow.benchmark.runner import _write_result, _score_and_emit, RunMancovaVba
+from glow.benchmark.runner import (_write_result, _score_and_emit,
+                                    _run_shared_voxel_walk, _dispatch_shared,
+                                    RunMancovaVba, RunAna)
 from glow.experiment.exper import Experiment
 from glow.analysis import AnalysisVBA, AnalysisCET, Analysis
 
@@ -142,6 +144,128 @@ class TestRunVariant:
             d = json.load(f)
         assert d['label'] == 'CET-wilks'
         assert d['Analysis'] == 'AnalysisCET'
+
+
+# -----------------------------------------------------------------------
+# RunAna shared voxel-stat walk
+# -----------------------------------------------------------------------
+
+class TestRunAnaShared:
+    """Sharing the per-perm voxel stat walk across VBA/VBA-TFCE/CET must
+    produce the same pval / effect arrays as running each analysis
+    standalone."""
+
+    @pytest.fixture()
+    def exp(self):
+        from glow.experiment.exper import Experiment
+        from glow.effect import ExtenterSphere, EffectSynthetic
+        exp = Experiment.from_gauss(num_img=20, shape=(6, 6), b=2, seed=0)
+        exp, _ = EffectSynthetic.impose(
+            exp, seed=0, extenter=ExtenterSphere(radius=1), effect_llr=0.3)
+        return exp
+
+    def test_dispatch_matches_standalone(self, exp):
+        from glow.analysis.mancova import get_wilks
+        n_perm = 8
+        common = dict(n_perm_fwer=n_perm, alpha_fwer=0.05,
+                      get_stat=get_wilks)
+        members = [
+            ('VBA',      AnalysisVBA, {**common}),
+            ('VBA-z',    AnalysisVBA, {**common, 'z_flag': True}),
+            ('VBA-TFCE', AnalysisVBA, {**common, 'tfce_flag': True}),
+            ('CET',      AnalysisCET, {**common, 'cft_pval': 0.05}),
+            ('CET-z',    AnalysisCET, {**common, 'cft_pval': 0.05,
+                                       'z_flag': True}),
+        ]
+
+        stat_by_fn, _walk_time = _run_shared_voxel_walk(exp, members)
+        # Only one stat fn → one entry; matrix shape (n_perm+1, num_vox).
+        assert list(stat_by_fn.keys()) == [get_wilks]
+        assert stat_by_fn[get_wilks].shape == (n_perm + 1, exp.y.shape[2])
+
+        for label, Ana, kw in members:
+            ana_shared = _dispatch_shared(
+                Ana=Ana, exp=exp, ana_kw=kw, stat_by_fn=stat_by_fn)
+            ana_baseline = Ana(exp=exp, **kw)
+            np.testing.assert_array_equal(
+                ana_shared.pval, ana_baseline.pval,
+                err_msg=f'pval mismatch for {label}')
+
+    def test_multi_stat_walk_runs_once(self, exp, monkeypatch):
+        """If the dict spans multiple stat fns, get_stat_perm_multi must
+        be called once per permutation (n_perm+1 times total), not per
+        (stat, perm)."""
+        from glow.analysis import Analysis
+        from glow.analysis.mancova import get_wilks, get_pillai
+
+        calls = []
+        orig = Analysis.get_stat_perm_multi.__func__
+
+        def spy(cls, exp, get_stat_list, children=None):
+            calls.append(tuple(get_stat_list))
+            return orig(cls, exp, get_stat_list, children=children)
+
+        monkeypatch.setattr(Analysis, 'get_stat_perm_multi',
+                            classmethod(spy))
+
+        n_perm = 5
+        members = [
+            ('VBA-wilks',  AnalysisVBA, {'n_perm_fwer': n_perm,
+                                         'get_stat': get_wilks}),
+            ('VBA-pillai', AnalysisVBA, {'n_perm_fwer': n_perm,
+                                         'get_stat': get_pillai}),
+            ('CET-wilks',  AnalysisCET, {'n_perm_fwer': n_perm,
+                                         'get_stat': get_wilks,
+                                         'cft_pval': 0.05}),
+        ]
+        _run_shared_voxel_walk(exp, members)
+
+        # one call per permutation (incl. observed), each with both fns
+        assert len(calls) == n_perm + 1
+        assert all(set(c) == {get_wilks, get_pillai} for c in calls)
+
+    def test_runana_groups_shareable(self, exp, tmp_path):
+        """End-to-end: RunAna.run with a mixed dict produces one result
+        row per label, with correct Analysis types."""
+        from glow.analysis.mancova import get_wilks
+
+        ana_dict = {
+            'VBA':      (AnalysisVBA, {'n_perm_fwer': 8,
+                                       'get_stat': get_wilks}),
+            'VBA-TFCE': (AnalysisVBA, {'n_perm_fwer': 8,
+                                       'get_stat': get_wilks,
+                                       'tfce_flag': True}),
+            'CET':      (AnalysisCET, {'n_perm_fwer': 8,
+                                       'get_stat': get_wilks,
+                                       'cft_pval': 0.05}),
+        }
+        runner = RunAna(ana_dict)
+
+        # Build a stand-in config.  get_exp_eff returns (exp, effect);
+        # we already have both via the fixture + a fresh effect.
+        from glow.effect import ExtenterSphere, EffectSynthetic
+        _, effect = EffectSynthetic.impose(
+            exp, seed=1, extenter=ExtenterSphere(radius=1), effect_llr=0.3)
+
+        fake_runner = SimpleNamespace(hash=lambda _c, _l: 'abc123')
+        config = SimpleNamespace(
+            folder=tmp_path,
+            runner=fake_runner,
+            error_save=False,
+            get_exp_eff=lambda **_kw: (exp, effect),
+        )
+
+        runner.run(config)
+
+        result_files = list((tmp_path / OUT).glob('*_result.json'))
+        assert len(result_files) == 3
+        labels = set()
+        for path in result_files:
+            with open(path) as f:
+                d = json.load(f)
+            labels.add(d['label'])
+            assert d['Analysis'] in {'AnalysisVBA', 'AnalysisCET'}
+        assert labels == {'VBA', 'VBA-TFCE', 'CET'}
 
 
 # -----------------------------------------------------------------------
