@@ -673,9 +673,7 @@ class AWSBatchRunner:
         first_check = True  # track if this is the first instance type check
         had_running_jobs = False  # track if we've seen running jobs (for immediate check)
         downloaded_jobs = set()  # track which jobs have been downloaded
-        start_time = time.time()
         last_done_count = 0
-        last_done_time = start_time
         resubmitted_total = 0
         last_status_print = 0  # track when we last printed status
         
@@ -930,27 +928,10 @@ class AWSBatchRunner:
                 submitted = statuses['SUBMITTED']
                 starting = statuses['STARTING']
                 
-                # estimate remaining time
-                eta_str = '?'
+                # bookkeeping for should_print gating below
                 if done > last_done_count:
-                    elapsed = current_time - last_done_time
-                    rate = (done - last_done_count) / elapsed if elapsed > 0 else 0
-                    remaining = total - done
-                    if rate > 0:
-                        eta_seconds = remaining / rate
-                        eta_str = f'{eta_seconds/60:.1f}m' if eta_seconds > 60 else f'{eta_seconds:.0f}s'
-                    
                     last_done_count = done
-                    last_done_time = current_time
-                elif done > 0:
-                    # reuse previous ETA calculation if no new completions
-                    elapsed = current_time - last_done_time
-                    rate = done / elapsed if elapsed > 0 else 0
-                    remaining = total - done
-                    if rate > 0:
-                        eta_seconds = remaining / rate
-                        eta_str = f'{eta_seconds/60:.1f}m' if eta_seconds > 60 else f'{eta_seconds:.0f}s'
-                
+
                 # print status update (scrolls above progress bars)
                 should_print = (current_time - last_status_print >= poll_interval or
                                done > last_done_count or
