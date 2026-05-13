@@ -848,3 +848,90 @@ class TestInnerPermRace:
             f'expected {race_init}')
         assert calls['post'] > 0, \
             'post-warmup draw_one never called; hook did not swap'
+
+
+class TestUnpermutedRefinement:
+    """``max_inner_unpermuted`` re-races perm 0 in threshold mode
+    against the FWER threshold T, with an outer loop guarding T-shift.
+    """
+
+    @staticmethod
+    def _make_exp(seed=0):
+        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
+                                     num_img=50, seed=seed)
+        exp, _ = EffectSynthetic.impose(
+            exp, seed=seed,
+            extenter=ExtenterSphere(radius=2),
+            effect_llr=0.5)
+        return exp
+
+    def test_refinement_runs_and_terminates(self):
+        """Smoke test: with max_inner_unpermuted set, analysis completes
+        with a usable sig_reg_list, adj_crit, and effect_list."""
+        exp = self._make_exp()
+        ana = AnalysisGLOW(
+            exp, n_perm_fwer=10, n_perm_inner=30,
+            max_inner_unpermuted=150,
+            alpha_fwer=.2, min_vox=1)
+
+        assert ana.adj_crit is not None
+        assert isinstance(ana.sig_reg_list, list)
+        assert hasattr(ana, 'effect_list')
+
+    def test_refinement_increases_unpermuted_budget(self):
+        """After refinement, the saved perm 0 inner-perm count should
+        exceed the baseline ``n_perm_inner``."""
+        import pickle
+        import tempfile
+        from pathlib import Path
+
+        exp = self._make_exp()
+        with tempfile.TemporaryDirectory(prefix='glow_test_') as td:
+            perm_dir = Path(td)
+            ana = AnalysisGLOW(
+                exp, n_perm_fwer=8, n_perm_inner=30,
+                max_inner_unpermuted=200,
+                alpha_fwer=.2, min_vox=1,
+                perm_dir=perm_dir)
+
+            with open(perm_dir / '000000_result.pkl', 'rb') as fh:
+                r0 = pickle.load(fh)
+
+            # Threshold-mode race for perm 0 should have consumed at
+            # least the warmup batch.  In practice, with a strong
+            # synthetic effect the borderline set is small and the
+            # race exits well before max_inner_unpermuted — but it
+            # should always be >= the warmup (_RACE_INIT = 50).
+            assert r0['n_inner_used'] >= 50, (
+                f"refined perm 0 used only {r0['n_inner_used']} inner "
+                f"perms; expected at least the warmup batch")
+
+    def test_refinement_no_op_when_budget_not_exceeded(self):
+        """If ``max_inner_unpermuted`` <= ``n_perm_inner``, no refinement
+        runs (baseline result preserved)."""
+        exp = self._make_exp()
+
+        ana_baseline = AnalysisGLOW(
+            exp, n_perm_fwer=8, n_perm_inner=30,
+            alpha_fwer=.2, min_vox=1)
+        ana_noop = AnalysisGLOW(
+            exp, n_perm_fwer=8, n_perm_inner=30,
+            max_inner_unpermuted=30,
+            alpha_fwer=.2, min_vox=1)
+
+        # Same outer-perm seeds → identical max-z list → identical
+        # threshold and sig_reg_list.
+        assert ana_noop.adj_crit == ana_baseline.adj_crit
+        assert ana_noop.sig_reg_list == ana_baseline.sig_reg_list
+
+    def test_refinement_preserves_strong_effect_discovery(self):
+        """Strong synthetic effect should still be discovered after
+        refinement — refinement may shift borderline calls but
+        shouldn't drop a clear effect."""
+        exp = TestBigEffect.exp
+        ana = AnalysisGLOW(
+            exp, n_perm_fwer=25, n_perm_inner=50,
+            max_inner_unpermuted=200,
+            alpha_fwer=.1)
+        assert len(ana.effect_list) >= 1, \
+            'refined run failed to discover strong synthetic effect'

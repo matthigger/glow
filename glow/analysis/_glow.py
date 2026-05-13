@@ -215,6 +215,7 @@ class AnalysisGLOW(Analysis):
                  n_jobs_perm=1, cloud_config=None, perm_dir=None,
                  cluster_mode="q1",
                  use_fast_path=True,
+                 max_inner_unpermuted=None,
                  **kwargs):
         """
         Args:
@@ -248,6 +249,14 @@ class AnalysisGLOW(Analysis):
                 for ``exp``.  Set False to force the original Phase-1-
                 per-inner-perm slow path — used by the runtime
                 benchmark to measure the speedup factor.
+            max_inner_unpermuted: when set and greater than
+                ``n_perm_inner``, run a post-pass that re-races the
+                unpermuted (perm 0) inner draws in threshold mode
+                against the FWER threshold T, up to this budget.
+                Concentrates inner-perm budget on borderline regions
+                whose sig/not-sig call is uncertain at the flat
+                ``n_perm_inner`` budget.  Local-path only (ignored
+                under ``cloud_config``).
         """
         super().__init__(exp, **kwargs)
         self.verbose = verbose
@@ -256,6 +265,7 @@ class AnalysisGLOW(Analysis):
         self.n_perm_fwer = n_perm_fwer
         self.n_perm_inner = n_perm_inner
         self.use_fast_path = use_fast_path
+        self.max_inner_unpermuted = max_inner_unpermuted
 
         if cloud_config is not None:
             self._run_on_cloud(exp, n_perm_fwer, n_perm_inner,
@@ -338,6 +348,12 @@ class AnalysisGLOW(Analysis):
         self._finalize_per_region_z(
             exp, perm_dir, n_perm_fwer, alpha_fwer, min_vox)
 
+        if (max_inner_unpermuted is not None
+                and max_inner_unpermuted > n_perm_inner):
+            self._refine_unpermuted(
+                exp, perm_dir, q0, q1, n_perm_fwer,
+                max_inner_unpermuted, alpha_fwer, min_vox)
+
         if _cleanup_dir:
             shutil.rmtree(perm_dir, ignore_errors=True)
 
@@ -388,6 +404,63 @@ class AnalysisGLOW(Analysis):
         self._mu_per_region = np.asarray(r0['mu'], dtype=float)
         self._sigma_per_region = np.asarray(r0['sigma'], dtype=float)
 
+    def _refine_unpermuted(self, exp, perm_dir, q0, q1, n_perm_fwer,
+                            max_inner_unpermuted, alpha_fwer, min_vox,
+                            max_iter=5):
+        """Race the unpermuted (perm 0) inner draws against the FWER
+        threshold T.
+
+        After the initial outer-perm run, T = ``self.adj_crit`` is the
+        (1-alpha_fwer) quantile of the max-z null.  For each region in
+        the observed tree, the sig/not-sig call only requires its z-CI
+        to be safely above or below T — it doesn't need to be tight on
+        either side.  Re-race perm 0 in threshold mode against T, up
+        to ``max_inner_unpermuted`` inner draws, so ambiguous regions
+        get extra precision and unambiguous ones cost no extra work.
+
+        Outer loop guards the rare case where refining perm 0's z
+        shifts its max_z enough to move T (since the unpermuted IS
+        included in the max-z null in GLOW's current convention).  If
+        T moves, re-race; thaw is implicit because the threshold-mode
+        race always starts from scratch each iteration.  Convergence
+        is detected as ``sig_reg_list`` stabilising; in practice this
+        should iterate exactly once given the non-overlap stop rule
+        bounds the leader's overtake probability.
+        """
+        verbose = getattr(self, 'verbose', False)
+        sig_prev = None
+        for it in range(max_iter):
+            T = self.adj_crit
+            if T is None:
+                if verbose:
+                    print('  [refine] no adj_crit available; skipping')
+                return
+            T = float(T)
+            if verbose:
+                print(f'  [refine] iter {it}: T={T:.4f}, '
+                      f'racing perm 0 to max_inner={max_inner_unpermuted}')
+            r = self._process_permutation(
+                exp, perm_idx=0, n_perm_inner=max_inner_unpermuted,
+                min_vox=min_vox, q0=q0, q1=q1, z_threshold=T)
+            with open(perm_dir / f'{0:06d}_result.pkl', 'wb') as fh:
+                pickle.dump(r, fh)
+            self._finalize_per_region_z(
+                exp, perm_dir, n_perm_fwer, alpha_fwer, min_vox)
+            sig_now = set(self.sig_reg_list)
+            if verbose:
+                n_inner_used = int(r.get('n_inner_used', 0))
+                print(f'  [refine] iter {it} done: n_inner_used='
+                      f'{n_inner_used}, sig={len(sig_now)}, '
+                      f'new T={self.adj_crit:.4f}')
+            if sig_now == sig_prev:
+                if verbose:
+                    print(f'  [refine] converged at iter {it}')
+                return
+            sig_prev = sig_now
+        if verbose:
+            print(f'  [refine] max_iter={max_iter} reached without '
+                  f'sig_reg_list convergence')
+
     @classmethod
     def from_precomputed(cls, *, exp, get_stat=None, verbose=False,
                          cluster_mode="q1"):
@@ -408,7 +481,7 @@ class AnalysisGLOW(Analysis):
         return obj
 
     def _process_permutation(self, exp, perm_idx, n_perm_inner, min_vox,
-                              q0=None, q1=None):
+                              q0=None, q1=None, z_threshold=None):
         """Run one outer perm: cluster, observed LLR, inner perms, max_z.
 
         Each outer perm worker is fully self-contained — the inner FL
@@ -429,6 +502,12 @@ class AnalysisGLOW(Analysis):
             q0, q1: pre-decomposed contrast subspaces.  May be None
                 when called via ``rerun_permutation``; in that case
                 they are recomputed from ``exp``.
+            z_threshold: when set, run the inner race in threshold
+                mode — each region drops out as soon as its z-CI is
+                fully above or below the threshold (sig/not-sig).
+                Used by the unpermuted-refinement pass (perm 0) to
+                race against the FWER threshold T.  When None
+                (default), tournament mode is used (race for max-z).
 
         Returns:
             dict with keys
@@ -544,7 +623,7 @@ class AnalysisGLOW(Analysis):
                 race_init=_RACE_INIT,
                 race_batch=_RACE_BATCH,
                 race_k_sigma=_RACE_K_SIGMA,
-                z_threshold=None,
+                z_threshold=z_threshold,
                 on_warmup_done=make_kernel_draw_one)
             mu = race_out['mu']
             sigma = race_out['sigma']
