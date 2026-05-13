@@ -987,7 +987,6 @@ def _setup_2d(app, ana_glow, df,
         gmin, gmax = bg_ranges.get(bg_name, (None, None))
         rgba = _bg_to_rgba(bg_img, channel=bg_name, vmin=gmin, vmax=gmax)
         # overlay each entry in order, using palette color from position
-        selected_json_val = None  # not available here; use show_list order
         for color_idx, reg_idx in enumerate(show_list):
             if reg_idx == 'target' and mask_target_img is not None:
                 r, g, b = get_region_color(color_idx)
@@ -1306,7 +1305,6 @@ def _check_port(port):
 
     import subprocess
     import sys
-    import time
 
     pids = _find_pids_on_port(port)
     if not pids:

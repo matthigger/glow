@@ -1164,7 +1164,7 @@ class AWSBatchRunner:
             if cancel_summary['failed']:
                 print(f'✗ Failed to cancel: {cancel_summary["failed"]}')
             raise
-        except Exception as e:
+        except Exception:
             _clear_heartbeat()
             for pb in config_pbars.values():
                 pb.close()

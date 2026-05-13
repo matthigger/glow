@@ -18,7 +18,6 @@ import argparse
 import gzip
 import pathlib
 import pickle
-import sys
 import warnings
 
 import numpy as np
@@ -170,7 +169,6 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
     """Optionally impose an effect, run AnalysisGLOW, and launch the viewer."""
     from glow.effect.extent import ExtenterMinVar
     from glow.analysis import AnalysisGLOW
-    from glow.viewer import launch
 
     if effect_llr > 0:
         from glow.effect import EffectSynthetic

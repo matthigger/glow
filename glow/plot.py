@@ -1,9 +1,6 @@
 from copy import copy
 
 import numpy as np
-import pandas as pd
-
-import glow.graph
 
 
 def image_iter(children, mask_idx, num_vox):
@@ -85,45 +82,3 @@ def image_iter(children, mask_idx, num_vox):
         if mask[1].any():
             # only pass a new image if its changed
             yield image, mask_idx_current, color_dict
-
-
-def prep_df(ana_glow, mask_target=None):
-    df_list = list()
-    _adj = ana_glow.llr_z_0
-    for perm_idx, (llr, adj, size) in enumerate(zip(ana_glow.stat,
-                                                    _adj,
-                                                    ana_glow.size)):
-        children = ana_glow.children
-        d = {'region idx': np.arange(size.size),
-             'llr': llr,
-             'llr_z': adj,
-             'size (voxels)': size,
-             'permutation': perm_idx,
-             'discovered': np.zeros(adj.shape, dtype=bool)}
-
-        if not perm_idx:
-            # add stats specific to unpermuted data
-            d['p-val (FWER control)'] = ana_glow.pval
-
-            # compute Dice score with mask_target
-            if mask_target is not None:
-                d['dice'], d['sens'], d['spec'] = \
-                    glow.graph.get_dice_sens_spec(
-                        children=ana_glow.children,
-                        mask_idx=ana_glow.exp.mask_idx,
-                        mask=mask_target)
-
-                miss, hits = glow.graph.get_miss_hits(children=children,
-                                                      mask_idx=ana_glow.exp.mask_idx,
-                                                      mask=mask_target)
-                d['False-Pos (voxels)'] = miss
-                d['True-Pos (voxels)'] = hits
-
-            # mark any regions as discovered
-            for effect in ana_glow.effect_list:
-                d['discovered'][effect.reg_idx] = True
-        df_list.append(pd.DataFrame(d))
-
-    df = pd.concat(df_list)
-
-    return df

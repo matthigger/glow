@@ -22,13 +22,11 @@ Usage:
 
 import argparse
 import boto3
-import io
 import json
 import sys
-import tarfile
 import time
 import uuid
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 
 # ---- workload --------------------------------------------------------------

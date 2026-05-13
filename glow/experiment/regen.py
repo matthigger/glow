@@ -16,8 +16,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
-import numpy as np
-
 
 @contextmanager
 def force_full_pickle(exp):

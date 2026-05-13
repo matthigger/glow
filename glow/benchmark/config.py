@@ -16,7 +16,7 @@ from botocore.exceptions import ClientError
 import cloudpickle as pickle
 
 import glow
-from glow.benchmark.hcp_data import DEFAULT_HCP_PATH, get_hcp_path
+from glow.benchmark.hcp_data import get_hcp_path
 
 base = Path(user_data_dir('glow', 'glow_author'))
 path_result = base / 'results'
