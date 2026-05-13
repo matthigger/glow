@@ -1266,14 +1266,28 @@ class AWSBatchRunner:
     
     def upload_config(self, config, run_id: str):
         """upload config object to S3 for experiment-level execution
-        
+
+        Cross-machine: ``config.exp_orig`` (when present) is wrapped in
+        ``force_full_pickle`` so y travels inline.  Without this the
+        worker downloads a slim Experiment with y=None and never
+        rehydrates (no rehydrate call in the worker path), so
+        ``exp.y.shape`` crashes immediately and the job dies silently.
+
         Args:
             config: Config object to upload
             run_id: unique run identifier
         """
+        from glow.experiment.regen import force_full_pickle
+
         config_key = f'{self.config.s3_prefix}/{run_id}/config.pkl'
-        config_bytes = pickle.dumps(config)
-        
+
+        exp_orig = getattr(config, 'exp_orig', None)
+        if exp_orig is not None:
+            with force_full_pickle(exp_orig):
+                config_bytes = pickle.dumps(config)
+        else:
+            config_bytes = pickle.dumps(config)
+
         try:
             self.s3.put_object(
                 Bucket=self.config.s3_bucket,
