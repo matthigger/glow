@@ -69,6 +69,21 @@ class AnalysisCET(Analysis):
         obj.effect_list = cls.discover_mask(mask=mask, exp=exp)
         return obj
 
+    def rethreshold(self, alpha_fwer, cft_pval=None):
+        """Re-apply alpha (and optionally a new cluster-forming threshold).
+
+        ``cft_pval`` is alpha-independent but requires ``self.stat`` to
+        redo ``_get_pval_cet``.  When omitted, the stored CFT and pval
+        are reused and only the alpha cutoff is re-applied.
+        """
+        if cft_pval is not None and cft_pval != self.cft_pval:
+            null_pool = self.stat[1:, :].ravel()
+            self.cft_pval = cft_pval
+            self.cft = np.quantile(null_pool, 1 - cft_pval)
+            self.pval = self._get_pval_cet(
+                self.stat, self.exp.mask_idx, self.cft)
+        return super().rethreshold(alpha_fwer)
+
     @staticmethod
     def _get_pval_cet(stat, mask_idx, cft):
         """FWER via permutation null of max cluster sizes.

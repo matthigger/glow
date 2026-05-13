@@ -273,3 +273,16 @@ class Analysis:
             effect_list.append(eff)
 
         return effect_list
+
+    def rethreshold(self, alpha_fwer):
+        """Re-apply the FWER cutoff to stored per-voxel p-values.
+
+        Uses ``self.pval`` (alpha-independent) to rebuild the discovery
+        mask and ``self.effect_list``.  Subclasses with an additional
+        alpha-dependent step (e.g. GLOW pruning) override this.
+        """
+        self.alpha_fwer = alpha_fwer
+        mask = np.zeros(self.exp.mask_idx.shape, dtype=bool)
+        mask[self.exp.mask_idx > -1] = self.pval <= alpha_fwer
+        self.effect_list = self.discover_mask(mask=mask, exp=self.exp)
+        return self

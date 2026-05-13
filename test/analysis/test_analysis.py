@@ -630,3 +630,277 @@ class TestFromPrecomputed:
         effects = Analysis.discover_mask(mask=mask, exp=exp)
         assert len(effects) == 1
         np.testing.assert_array_equal(effects[0].mask, mask)
+
+
+class TestRethreshold:
+    """Post-hoc alpha_FWER (and CET cft_pval) re-application."""
+
+    exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=100, seed=0)
+    exp_eff, effect = EffectSynthetic.impose(
+        exp, seed=0, extenter=ExtenterSphere(radius=2), effect_llr=0.5)
+
+    @staticmethod
+    def _masks(ana):
+        return [eff.mask.copy() for eff in ana.effect_list]
+
+    def test_glow_roundtrip(self):
+        """rethreshold(stored_alpha) reproduces the original state."""
+        ana = AnalysisGLOW(self.exp_eff, n_perm_fwer=10, alpha_fwer=.3)
+        pval_orig = ana.pval.copy()
+        sig_orig = list(ana.sig_reg_list)
+        masks_orig = self._masks(ana)
+        adj_crit_orig = ana.adj_crit
+
+        ana.rethreshold(0.3)
+
+        np.testing.assert_array_equal(ana.pval, pval_orig)
+        assert ana.sig_reg_list == sig_orig
+        assert ana.adj_crit == adj_crit_orig
+        assert len(ana.effect_list) == len(masks_orig)
+        for new, old in zip(self._masks(ana), masks_orig):
+            np.testing.assert_array_equal(new, old)
+
+    def test_glow_alpha_change_consistent(self):
+        """A new alpha re-derives sig_reg_list from the unchanged pval."""
+        ana = AnalysisGLOW(self.exp_eff, n_perm_fwer=10, alpha_fwer=.05)
+        pval_before = ana.pval.copy()
+
+        ana.rethreshold(0.5)
+
+        np.testing.assert_array_equal(ana.pval, pval_before)
+        expected_sig = list(np.where(ana.pval <= 0.5)[0])
+        assert ana.sig_reg_list == expected_sig
+        # every emitted effect's region is in sig_reg_list
+        for eff in ana.effect_list:
+            assert eff.reg_idx in ana.sig_reg_list
+
+    def test_vba_roundtrip(self):
+        ana = AnalysisVBA(self.exp_eff, n_perm_fwer=25, alpha_fwer=.3)
+        pval_orig = ana.pval.copy()
+        masks_orig = self._masks(ana)
+
+        ana.rethreshold(0.3)
+
+        np.testing.assert_array_equal(ana.pval, pval_orig)
+        assert len(ana.effect_list) == len(masks_orig)
+        for new, old in zip(self._masks(ana), masks_orig):
+            np.testing.assert_array_equal(new, old)
+
+    def test_vba_alpha_change_matches_fresh(self):
+        """rethreshold(A1) matches a fresh AnalysisVBA at A1 (same pval)."""
+        ana = AnalysisVBA(self.exp_eff, n_perm_fwer=25, alpha_fwer=.1)
+        ana.rethreshold(0.5)
+
+        fresh = AnalysisVBA(self.exp_eff, n_perm_fwer=25, alpha_fwer=0.5)
+        np.testing.assert_array_equal(ana.pval, fresh.pval)
+        assert len(ana.effect_list) == len(fresh.effect_list)
+        for a, b in zip(self._masks(ana), self._masks(fresh)):
+            np.testing.assert_array_equal(a, b)
+
+    def test_vba_tfce_roundtrip(self):
+        ana = AnalysisVBA(self.exp_eff, n_perm_fwer=25, alpha_fwer=.3,
+                          tfce_flag=True)
+        pval_orig = ana.pval.copy()
+        masks_orig = self._masks(ana)
+
+        ana.rethreshold(0.3)
+
+        np.testing.assert_array_equal(ana.pval, pval_orig)
+        assert len(ana.effect_list) == len(masks_orig)
+        for new, old in zip(self._masks(ana), masks_orig):
+            np.testing.assert_array_equal(new, old)
+
+    def test_cet_roundtrip(self):
+        ana = AnalysisCET(self.exp_eff, n_perm_fwer=25, alpha_fwer=.3,
+                          cft_pval=0.01)
+        pval_orig = ana.pval.copy()
+        cft_orig = ana.cft
+        masks_orig = self._masks(ana)
+
+        ana.rethreshold(0.3)
+
+        np.testing.assert_array_equal(ana.pval, pval_orig)
+        assert ana.cft == cft_orig
+        assert ana.cft_pval == 0.01
+        assert len(ana.effect_list) == len(masks_orig)
+        for new, old in zip(self._masks(ana), masks_orig):
+            np.testing.assert_array_equal(new, old)
+
+    def test_cet_cft_pval_matches_fresh(self):
+        """rethreshold(cft_pval=C') matches a fresh CET at C'."""
+        ana = AnalysisCET(self.exp_eff, n_perm_fwer=25, alpha_fwer=.5,
+                          cft_pval=0.05)
+        ana.rethreshold(0.5, cft_pval=0.01)
+
+        fresh = AnalysisCET(self.exp_eff, n_perm_fwer=25, alpha_fwer=.5,
+                            cft_pval=0.01)
+        np.testing.assert_allclose(ana.cft, fresh.cft)
+        assert ana.cft_pval == 0.01
+        np.testing.assert_array_equal(ana.pval, fresh.pval)
+        assert len(ana.effect_list) == len(fresh.effect_list)
+        for a, b in zip(self._masks(ana), self._masks(fresh)):
+            np.testing.assert_array_equal(a, b)
+
+
+class TestInnerPermRace:
+    """Lockstep inner-FL race over a pre-built survivor kernel."""
+
+    @staticmethod
+    def _setup(num_img=40, shape=(8, 8), effect_llr=0.6, radius=3,
+                seed=0):
+        import glow.graph
+        from glow.analysis.cluster import cluster
+        from glow.analysis.mancova import decompose
+
+        exp = Experiment.from_gauss(a=2, b=1, shape=shape,
+                                    num_img=num_img, seed=seed)
+        exp, _ = EffectSynthetic.impose(
+            exp, seed=seed,
+            extenter=ExtenterSphere(radius=radius),
+            effect_llr=effect_llr)
+
+        children = cluster(exp=exp, mode='q1')
+        num_vox = exp.y.shape[2]
+        layer = glow.graph.compute_tree_layers(children, num_vox)
+        q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
+        llr_outer, size = glow.graph.compute_llr_batched(
+            exp, children=children, q0=q0, q1=q1, layer=layer)
+        return exp, children, q0, q1, llr_outer, size
+
+    @staticmethod
+    def _make_draw_one(exp, children, q0, q1, size, min_vox=4,
+                       base=100_000):
+        import glow.graph
+
+        q0_proj = q0.T @ q0
+        n_img = exp.y.shape[1]
+        eye_n = np.eye(n_img, dtype=exp.y.dtype)
+        num_reg = children.shape[0] + exp.y.shape[2]
+
+        survivor_idx = np.where(size >= min_vox)[0]
+        kernels = glow.graph.build_survivor_kernels(
+            exp.y, children, survivor_idx, q0)
+
+        def draw_one(i):
+            rng = np.random.default_rng(base + i)
+            perm = np.argsort(rng.permutation(n_img))
+            freed_lane = (eye_n - q0_proj)[:, perm] + q0_proj
+            return glow.graph.compute_llr_inner_kernel(
+                kernels, q0, q1, freed_lane, perm, num_reg,
+                min_size=min_vox)
+
+        return draw_one
+
+    def test_leader_is_argmax_z(self):
+        """Tournament leader equals argmax of final z on the active set."""
+        from glow.analysis._glow import _run_inner_race
+
+        exp, children, q0, q1, llr_outer, size = self._setup()
+        draw_one = self._make_draw_one(exp, children, q0, q1, size)
+
+        out = _run_inner_race(
+            draw_one, n_max=100, llr_outer=llr_outer, size=size,
+            min_vox=4, race_batch=25, race_k_sigma=3.0,
+            z_threshold=None)
+
+        assert out['leader'] >= 0, 'leader not assigned'
+
+        sigma_safe = np.where(out['sigma'] < 1e-12, 1.0, out['sigma'])
+        z = (llr_outer - out['mu']) / sigma_safe
+        eligible = (size >= 4) & np.isfinite(z)
+        expected = int(np.argmax(np.where(eligible, z, -np.inf)))
+        assert out['leader'] == expected, (
+            f"leader={out['leader']} but argmax z = {expected}")
+
+    def test_max_z_matches_no_race_reference(self):
+        """Race's leader z exactly matches a buffer reference over
+        the same number of perms (lockstep perms are bit-identical)."""
+        from glow.analysis._glow import _run_inner_race
+
+        exp, children, q0, q1, llr_outer, size = self._setup()
+        draw_one = self._make_draw_one(exp, children, q0, q1, size)
+
+        out = _run_inner_race(
+            draw_one, n_max=100, llr_outer=llr_outer, size=size,
+            min_vox=4, race_batch=25, race_k_sigma=4.0)
+        leader = out['leader']
+        n_used = out['n_inner_used']
+        z_race = ((llr_outer[leader] - out['mu'][leader])
+                   / max(out['sigma'][leader], 1e-12))
+
+        # Reference: rerun the same first n_used perms, take mean /
+        # std at the leader.
+        draws = np.array([draw_one(i)[leader] for i in range(n_used)])
+        finite = np.isfinite(draws)
+        mu_ref = draws[finite].mean()
+        sigma_ref = draws[finite].std(ddof=1)
+        z_ref = (llr_outer[leader] - mu_ref) / max(sigma_ref, 1e-12)
+
+        np.testing.assert_allclose(z_race, z_ref, rtol=1e-10,
+                                    atol=1e-10)
+
+    def test_threshold_mode_sig_regions_above_threshold(self):
+        """Threshold mode: every flagged region has final z > threshold."""
+        from glow.analysis._glow import _run_inner_race
+
+        exp, children, q0, q1, llr_outer, size = self._setup()
+        draw_one = self._make_draw_one(exp, children, q0, q1, size)
+
+        z_thresh = 2.0
+        out = _run_inner_race(
+            draw_one, n_max=80, llr_outer=llr_outer, size=size,
+            min_vox=4, race_batch=10, race_k_sigma=4.0,
+            z_threshold=z_thresh)
+
+        sigma_safe = np.where(out['sigma'] < 1e-12, 1.0, out['sigma'])
+        z_final = (llr_outer - out['mu']) / sigma_safe
+        for r in out['sig_regions']:
+            assert z_final[r] > z_thresh, (
+                f'sig region {r} has final z={z_final[r]:.3f} '
+                f'≤ threshold {z_thresh}')
+
+    def test_glow_end_to_end_with_race(self):
+        """Race-on AnalysisGLOW discovers the synthetic effect."""
+        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
+                                    num_img=80, seed=0)
+        exp, effect = EffectSynthetic.impose(
+            exp, seed=0, extenter=ExtenterSphere(radius=2),
+            effect_llr=0.5)
+
+        # default race_inner_perm=True; no subclass needed.
+        analysis = AnalysisGLOW(exp, n_perm_fwer=25, alpha_fwer=0.1)
+        assert len(analysis.effect_list) >= 1, \
+            'race-on found no effects despite strong signal'
+
+    def test_warmup_hook_swaps_draw_one(self):
+        """on_warmup_done's returned callable replaces draw_one after
+        the first post-warmup trim — that's the 2-stage swap that
+        makes the race cheap at large num_vox."""
+        from glow.analysis._glow import _run_inner_race
+
+        num_reg = 50
+        rng = np.random.default_rng(0)
+        llr_outer = rng.uniform(0.0, 3.0, num_reg)
+        size = np.full(num_reg, 10, dtype=np.int64)
+        calls = {'init': 0, 'post': 0}
+
+        def draw_init(i):
+            calls['init'] += 1
+            return np.random.default_rng(i).normal(0, 1, num_reg)
+
+        def draw_post(i):
+            calls['post'] += 1
+            return np.random.default_rng(i + 100000).normal(0, 1, num_reg)
+
+        race_init = 20
+        out = _run_inner_race(
+            draw_init, n_max=200, llr_outer=llr_outer, size=size,
+            min_vox=4, race_init=race_init, race_batch=25,
+            race_k_sigma=3.0,
+            on_warmup_done=lambda active: draw_post)
+
+        assert calls['init'] == race_init, (
+            f'warmup draw_one called {calls["init"]} times, '
+            f'expected {race_init}')
+        assert calls['post'] > 0, \
+            'post-warmup draw_one never called; hook did not swap'

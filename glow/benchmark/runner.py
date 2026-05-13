@@ -65,7 +65,18 @@ def _write_result(config, d, *, subfolder=OUT):
     return uuid_str
 
 
-def _score_and_emit(ana, effect, config, label, total_time_sec, iter_kw):
+def score_ana(ana, effect):
+    """Score an analysis's discovered effects against a target effect.
+
+    Pure function over ``(ana, effect)`` — no config, label, or timing.
+    Reads only ``ana.exp.mask_idx``, ``ana.effect_list``, and
+    (optionally) ``ana.sig_reg_list`` / ``ana.children`` / ``ana.pval``,
+    so it works on slim-pickled analyses where ``exp.y`` was dropped.
+
+    Returns:
+        dict with keys: dice, sens, spec, pct_max_dice, min_pval,
+        vox_total, vox_effect.
+    """
     exp = ana.exp
 
     mask_pred = np.zeros(exp.mask_idx.shape, dtype=bool)
@@ -92,18 +103,26 @@ def _score_and_emit(ana, effect, config, label, total_time_sec, iter_kw):
 
     min_pval = float(np.nanmin(ana.pval)) if hasattr(ana, 'pval') else None
 
+    return {
+        'dice': dice,
+        'sens': sens,
+        'spec': spec,
+        'pct_max_dice': pct_max_dice,
+        'min_pval': min_pval,
+        'vox_total': int(mask_active.sum()),
+        'vox_effect': int(effect.mask.sum()),
+    }
+
+
+def _score_and_emit(ana, effect, config, label, total_time_sec, iter_kw):
+    scores = score_ana(ana, effect)
+
     d = {'effect_llr': effect.effect_llr,
          'seed': int(effect.seed),
          'stat': ana.get_stat.__name__.replace('get_', ''),
          'label': label,
          'Analysis': type(ana).__name__,
-         'dice': dice,
-         'sens': sens,
-         'spec': spec,
-         'pct_max_dice': pct_max_dice,
-         'min_pval': min_pval,
-         'vox_total': int(exp.y.shape[2]),
-         'vox_effect': int(effect.mask.sum()),
+         **scores,
          'time_sec': total_time_sec,
          'config_hash': config.runner.hash(config, label)}
     _merge_iter_kw(d, iter_kw)
