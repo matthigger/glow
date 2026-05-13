@@ -636,6 +636,7 @@ class AnalysisGLOW(Analysis):
                           stat_0, size_0, children_0,
                           llr_z_0, stat_max_sorted,
                           alpha_fwer, min_size,
+                          prune_stat=None,
                           ):
         """Compute p-values from the max-z null and prune.
 
@@ -649,11 +650,17 @@ class AnalysisGLOW(Analysis):
                 outer permutations (length n_perm_fwer + 1).
             min_size: minimum region size for the FWER comparison set
                 (synonym for ``min_vox`` at the call site).
+            prune_stat: optional override for the array used to rank
+                pruning candidates.  Defaults to ``stat_0`` (raw LLR).
+                Pass ``llr_z_0`` to rank by per-region z instead.
+                See note below.
         """
+        verbose = getattr(self, 'verbose', False)
         num_reg = stat_0.shape[0]
 
         llr_z_0 = _sanitize_adjusted_stat(np.asarray(llr_z_0, dtype=float))
 
+        self.alpha_fwer = alpha_fwer
         self.size = size_0
         self.stat = stat_0
         self.llr_z_0 = llr_z_0
@@ -676,25 +683,11 @@ class AnalysisGLOW(Analysis):
             pval[~reg_active] = np.nan
         self.pval = pval
 
-        self.rethreshold(alpha_fwer)
-
-    def rethreshold(self, alpha_fwer):
-        """Re-apply the FWER cutoff using stored permutation stats.
-
-        Recomputes the alpha-dependent tail of the analysis from
-        ``self.pval``, ``self.stat``, ``self.children``, and
-        ``self.stat_max_sorted``: ``adj_crit``, ``sig_reg_list``,
-        the greedy prune, and ``effect_list``.  No permutation work
-        is re-run.
-        """
-        verbose = getattr(self, 'verbose', False)
-        self.alpha_fwer = alpha_fwer
-
-        n_total = len(self.stat_max_sorted)
+        n_total = len(stat_max_sorted)
         if n_total > 0:
             crit_idx = min(int(np.ceil(n_total * (1 - alpha_fwer))),
                            n_total - 1)
-            self.adj_crit = float(self.stat_max_sorted[crit_idx])
+            self.adj_crit = float(stat_max_sorted[crit_idx])
         else:
             self.adj_crit = None
 
@@ -717,23 +710,24 @@ class AnalysisGLOW(Analysis):
         # typically fails z-FWER because its added voxels dilute the
         # per-region signal).  RunPruneCompare exposes both via the
         # greedy_llr / greedy_z labels for head-to-head benchmarking.
-        stat_gain = np.nan_to_num(self.stat.astype(float), nan=0.0,
+        _prune = stat_0 if prune_stat is None else prune_stat
+        stat_gain = np.nan_to_num(_prune.astype(float), nan=0.0,
                                   posinf=0.0, neginf=0.0)
 
         reg_out_list, self.prune_info = prune_greedy(
             sig_reg_list=self.sig_reg_list,
-            children=self.children,
+            children=children_0,
             stat=stat_gain)
 
         self.effect_list = list()
         for reg_idx in reg_out_list:
             label_map = glow.graph.get_label_map(
                 reg_idx_list=[reg_idx],
-                mask_idx=self.exp.mask_idx,
-                children=self.children)
+                mask_idx=exp.mask_idx,
+                children=children_0)
             pval_fwer = self.pval[reg_idx]
             eff = glow.effect.EffectEstimate.from_exp_mask(
-                mask=label_map > -1, exp=self.exp,
+                mask=label_map > -1, exp=exp,
                 reg_idx=reg_idx, pval_fwer=pval_fwer)
             self.effect_list.append(eff)
 
@@ -741,8 +735,6 @@ class AnalysisGLOW(Analysis):
             n_disc = len(self.effect_list)
             n_pruned = len(self.sig_reg_list) - n_disc
             print(f'  done: {n_disc} discovered, {n_pruned} pruned')
-
-        return self
 
     @staticmethod
     def _estimate_perm_sec(exp):
