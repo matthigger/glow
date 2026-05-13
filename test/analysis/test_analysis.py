@@ -729,6 +729,61 @@ class TestInnerPermRace:
         np.testing.assert_allclose(z_race, z_ref, rtol=1e-10,
                                     atol=1e-10)
 
+    def test_race_vs_slow_mu_sigma(self):
+        """Race-with-no-trim matches a slow buffer pass over the same
+        seeds.  Replaces the deleted Path-C reference in
+        ``AnalysisGLOW._process_permutation`` — proves the race's
+        Welford accounting equals nanmean / nanstd over a materialised
+        ``(n_perm_inner, num_reg)`` buffer."""
+        from glow.analysis._glow import _run_inner_race
+        from ._slow_inner import compute_slow_inner
+        import glow.graph
+
+        exp, children, q0, q1, llr_outer, size = self._setup()
+        num_vox = exp.y.shape[2]
+        layer = glow.graph.compute_tree_layers(children, num_vox)
+
+        n_perm_inner = 30
+        base = 100_000
+        min_vox = 4
+
+        slow = compute_slow_inner(
+            exp, children, q0, q1, layer,
+            n_perm_inner=n_perm_inner, base_seed=base, min_vox=min_vox)
+
+        # race_init = n_max forces every perm through draw_one_slow
+        # during warmup; the trim/swap loop never executes.
+        def draw_one(i):
+            _exp_i = exp.permute(base + i)
+            llr_i, _ = glow.graph.compute_llr_batched(
+                _exp_i, children=children, q0=q0, q1=q1,
+                min_size=min_vox, layer=layer)
+            return llr_i
+
+        race = _run_inner_race(
+            draw_one, n_max=n_perm_inner, llr_outer=llr_outer,
+            size=size, min_vox=min_vox,
+            race_init=n_perm_inner, race_batch=25, race_k_sigma=3.0,
+            z_threshold=None, on_warmup_done=None)
+
+        assert race['n_inner_used'] == n_perm_inner, (
+            f'race ran {race["n_inner_used"]} perms; expected '
+            f'{n_perm_inner} (race_init = n_max should warmup all)')
+
+        finite_mu = np.isfinite(slow['mu']) & np.isfinite(race['mu'])
+        assert finite_mu.any(), 'no finite mu cells to compare'
+        np.testing.assert_allclose(
+            race['mu'][finite_mu], slow['mu'][finite_mu],
+            rtol=1e-10, atol=1e-12,
+            err_msg='race mu disagrees with buffer reference')
+
+        finite_sigma = (np.isfinite(slow['sigma'])
+                        & np.isfinite(race['sigma']))
+        np.testing.assert_allclose(
+            race['sigma'][finite_sigma], slow['sigma'][finite_sigma],
+            rtol=1e-8, atol=1e-10,
+            err_msg='race sigma disagrees with buffer reference')
+
     def test_threshold_mode_sig_regions_above_threshold(self):
         """Threshold mode: every flagged region has final z > threshold."""
         from glow.analysis._glow import _run_inner_race
@@ -757,7 +812,6 @@ class TestInnerPermRace:
             exp, seed=0, extenter=ExtenterSphere(radius=2),
             effect_llr=0.5)
 
-        # default race_inner_perm=True; no subclass needed.
         analysis = AnalysisGLOW(exp, n_perm_fwer=25, alpha_fwer=0.1)
         assert len(analysis.effect_list) >= 1, \
             'race-on found no effects despite strong signal'
