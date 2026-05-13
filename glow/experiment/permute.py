@@ -10,11 +10,20 @@ from glow.analysis.mancova import decompose
 
 
 def get_freed_lane(x, contrast, perm_idx):
-    """build Freedman-Lane permutation matrix.
+    """build Freedman-Lane permutation matrix (standard textbook convention).
 
-    uses index-based row selection instead of constructing a dense
-    (num_img, num_img) permutation matrix P, avoiding O(num_img^3)
-    matrix multiply.
+    Column-layout: ``Y_v* = P A Y_v + B Y_v`` where A = I - Q0Q0T,
+    B = Q0Q0T.  I.e., compute residuals A Y_v, permute them by P, then
+    add the original fitted part B Y_v back.
+
+    Applied along glow's row-layout image axis as ``y_perm = y @ freed_lane``,
+    so the matrix returned is the column-layout transpose ``M.T = A P.T + B``,
+    which in index form is ``(I - Q0Q0T)[:, perm] + Q0Q0T``.
+
+    (Previous versions returned ``[perm, :]``, which corresponds to
+    permuting Y_v BEFORE projection — statistically equivalent under H0
+    by row-exchangeability, but doesn't expose the O(N) survivor-kernel
+    gather used by ``glow.graph.compute_llr_inner_kernel``.)
 
     Args:
         x (np.array): (a, num_img) design matrix
@@ -22,22 +31,21 @@ def get_freed_lane(x, contrast, perm_idx):
         perm_idx (int): permutation seed (0 reserved for unpermuted data)
 
     Returns:
-        freed_lane (np.array): (num_img, num_img) permutation matrix
+        freed_lane (np.array): (num_img, num_img) Freedman-Lane matrix
     """
     assert perm_idx, 'perm_idx = 0 reserved for unpermuted data'
 
     q = decompose(x, contrast)
-    q0 = q[0].T @ q[0]  # (num_img, num_img) projection
+    q0 = q[0].T @ q[0]  # (num_img, num_img) nuisance projector Q0Q0T
 
     num_img = x.shape[1]
     rng = np.random.default_rng(perm_idx)
     perm = np.argsort(rng.permutation(num_img))
 
-    # freed_lane = P @ (I - Q0) + Q0, where P @ M = M[perm_inv, :].
     # Match q0's dtype on np.eye so the subtraction doesn't promote a
     # float32 q0 to float64 (which would then propagate into the
     # permute einsum against y).
-    return (np.eye(num_img, dtype=q0.dtype) - q0)[perm, :] + q0
+    return (np.eye(num_img, dtype=q0.dtype) - q0)[:, perm] + q0
 
 
 class NotEnoughPermutations(Warning):

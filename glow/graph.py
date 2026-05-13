@@ -322,38 +322,101 @@ def compute_llr_inner_fast(t, ysum, size, q1_T_perm, min_size=1):
     return llr, size
 
 
-def _subtree_leaves(region_idx, children, num_vox):
-    """Return the leaf voxel indices below ``region_idx`` (iterative DFS)."""
-    if region_idx < num_vox:
-        return np.array([region_idx], dtype=np.int64)
-    stack = [region_idx]
-    out = []
-    while stack:
-        node = stack.pop()
-        if node < num_vox:
-            out.append(node)
-        else:
-            c0, c1 = children[node - num_vox]
-            stack.append(int(c0))
-            stack.append(int(c1))
-    return np.asarray(out, dtype=np.int64)
+def _leaves_per_region(target_idx, children, num_vox):
+    """Vectorised leaves-per-region for many target regions at once.
+
+    Uses a single lockstep climb up the parent pointers from each
+    leaf voxel.  At every depth, leaves whose current ancestor is in
+    ``target_idx`` emit a (target_position, leaf_index) pair; pairs
+    are then grouped by target position via one argsort.
+
+    Output ordering: leaves within each target are returned in the
+    order they first hit the target during the climb (by increasing
+    climb depth, then by leaf index).  The order is deterministic;
+    callers that aggregate (einsum / sum) over the leaves are
+    insensitive to order, callers that depend on order should sort
+    explicitly.
+
+    Handles overlapping targets (a target and its ancestor both in
+    ``target_idx``) correctly: each leaf emits one pair per ancestor
+    target in the chain.
+
+    Args:
+        target_idx (np.array): (n_target,) region indices.
+        children (np.array): (num_internal, 2) tree.
+        num_vox (int): leaf count.
+
+    Returns:
+        list[np.array] of length ``len(target_idx)``; element ``i``
+        is the leaf voxel indices in subtree(target_idx[i]).
+    """
+    target_idx = np.asarray(target_idx, dtype=np.int64)
+    n_target = target_idx.size
+    if n_target == 0:
+        return []
+
+    num_internal = children.shape[0]
+    num_reg = num_vox + num_internal
+
+    target_pos = np.full(num_reg, -1, dtype=np.int64)
+    target_pos[target_idx] = np.arange(n_target, dtype=np.int64)
+
+    parent = get_parent(children, num_vox)
+
+    pos_chunks, leaf_chunks = [], []
+    current = np.arange(num_vox, dtype=np.int64)
+    leaf_iota = current.copy()
+    while current.size:
+        pos_now = target_pos[current]
+        hit = pos_now >= 0
+        if hit.any():
+            pos_chunks.append(pos_now[hit])
+            leaf_chunks.append(leaf_iota[hit])
+
+        # Advance to parent; voxels that hit the root drop out of
+        # the working set so they cannot be recorded twice.
+        next_current = parent[current]
+        keep = next_current >= 0
+        if not keep.any():
+            break
+        current = next_current[keep]
+        leaf_iota = leaf_iota[keep]
+
+    if not pos_chunks:
+        return [np.zeros(0, dtype=np.int64) for _ in range(n_target)]
+
+    all_pos = np.concatenate(pos_chunks)
+    all_leaf = np.concatenate(leaf_chunks)
+
+    order = np.argsort(all_pos, kind='stable')
+    sorted_pos = all_pos[order]
+    sorted_leaf = all_leaf[order]
+    counts = np.bincount(sorted_pos, minlength=n_target)
+    starts = np.empty(n_target + 1, dtype=np.int64)
+    starts[0] = 0
+    np.cumsum(counts, out=starts[1:])
+    return [sorted_leaf[starts[i]:starts[i + 1]] for i in range(n_target)]
 
 
 def build_survivor_kernels(y, children, survivor_idx, q0):
-    """Per-survivor Freedman-Lane outer-product kernels.
+    """Per-survivor Freedman-Lane outer-product kernels (par/perp form).
 
-    For each region ``r`` in ``survivor_idx``, sums per-voxel rank-1
-    contributions to form the kernel
-        M_r[i, j, k, l] = sum_{v in leaves(r)} y[i, k, v] * y[j, l, v]
-    of shape ``(b, b, N, N)`` and the permutation-invariant pieces
+    Under Freedman-Lane (Y_v* = P A Y_v + B Y_v, A = I - Q0Q0T,
+    B = Q0Q0T — see ``glow.experiment.permute.get_freed_lane``) the
+    sum-over-voxels b x b outer product decomposes as
 
-        ysum_u[r]   = sum_v y[:, :, v]                         (b, N)
-        yout_u[r]   = sum_v y[:, :, v] @ y[:, :, v].T         (b, b)
-        c0[r][i,j]  = <Q0Q0T, M_r[i,j,:,:]>_F                  (b, b)
+        yout_perm[r] = yout_u[r] + C[r] + C[r]^T,
+        C[r][i, j]   = <P, M_r[i, j]>_F = sum_k M_r[i, j, k, perm[k]]
 
-    so that an inner-perm step needs only ``q0_perm = q0[:, perm]``,
-    ``freed_lane``, and an ``O(b^2 a0 N^2)`` reduction per survivor (see
-    ``compute_llr_inner_kernel``).
+    where the per-region par/perp **cross** kernel is
+
+        M_r[i, j, k, l] = sum_{v in leaves(r)} (y_par)[i, k, v] (y_perp)[j, l, v]
+
+    with y_par = (Q0Q0T y) and y_perp = y - y_par along the image axis.
+    P is the permutation matrix used by ``get_freed_lane``; because it
+    has a single 1 per row at column ``perm[k]``, the Frobenius inner
+    product collapses to an N-element gather — see
+    ``compute_llr_inner_kernel``.
 
     Memory: ``num_surv * b^2 * N^2`` floats for ``M``.  At paper config
     (``b=2``, ``N≈30``, ~100 survivors) this is ~3 MB.
@@ -366,54 +429,91 @@ def build_survivor_kernels(y, children, survivor_idx, q0):
 
     Returns:
         dict with keys
-            M           : (num_surv, b, b, N, N)
-            ysum_u_S    : (num_surv, b, N)
-            yout_u_S    : (num_surv, b, b)
+            M           : (num_surv, b, b, N, N) par/perp cross kernel
+            ysum_u_S    : (num_surv, b, N)       unpermuted per-region ysum
+            yout_u_S    : (num_surv, b, b)       unpermuted per-region yout
             size_S      : (num_surv,)
-            c0          : (num_surv, b, b)
             survivor_idx: pass-through (num_surv,)
     """
+    q0_proj = q0.T @ q0                                  # (N, N) Q0Q0T
+    y_par = np.einsum('nm,bmv->bnv', q0_proj, y, optimize=True)
+    y_perp = y - y_par
+    return _build_kernels_from_decomposed(y, y_par, y_perp, children,
+                                          survivor_idx)
+
+
+def _build_kernels_from_decomposed(y, y_par, y_perp, children, survivor_idx,
+                                    layer=None):
+    """Build per-survivor M kernels via direct gather + einsum.
+
+    For each survivor region $r$ we gather its leaf voxels once and
+    compute the four per-region quantities ($M_r$, $\\mathrm{ysum}_r$,
+    $\\mathrm{yout}_r$, size) by a single BLAS-backed einsum over the
+    leaf block, with no intermediate per-region tensors.
+
+    This replaces the prior bottom-up tree walk, which had to build
+    $M$ for every descendant of every survivor (typically ~60 % of
+    the tree even for small survivor counts) and was memory-
+    bandwidth bound on a ~4 GB working set.  The direct path
+    touches only ``sum_r |leaves(r)|`` voxels of $y$, $y^{\\parallel}$,
+    $y^{\\perp}$ once each and writes only the $|S| \\cdot b^2 N^2$
+    output tensor.
+
+    ``layer`` is accepted for API compatibility; it is no longer
+    used by this implementation.
+    """
+    del layer  # no longer required — kept for backwards-compatible signature
     b, num_img, num_vox = y.shape
-    num_surv = len(survivor_idx)
     dtype = y.dtype if y.dtype == np.float32 else np.float64
 
-    M = np.empty((num_surv, b, b, num_img, num_img), dtype=dtype)
-    ysum_u_S = np.empty((num_surv, b, num_img), dtype=dtype)
-    yout_u_S = np.empty((num_surv, b, b), dtype=dtype)
-    size_S = np.empty(num_surv, dtype=np.int64)
+    survivor_idx = np.asarray(survivor_idx, dtype=np.int64)
+    n_surv = survivor_idx.size
 
-    for s_idx, r in enumerate(survivor_idx):
-        leaves = _subtree_leaves(int(r), children, num_vox)
-        y_sub = y[:, :, leaves]                          # (b, N, |r|)
-        size_S[s_idx] = leaves.size
-        M[s_idx] = np.einsum('ikv,jlv->ijkl', y_sub, y_sub, optimize=True)
-        ysum_u_S[s_idx] = y_sub.sum(axis=2)
-        yout_u_S[s_idx] = np.einsum('inv,jnv->ij', y_sub, y_sub,
-                                     optimize=True)
+    M_buf = np.empty((n_surv, b, b, num_img, num_img), dtype=dtype)
+    ysum_buf = np.empty((n_surv, b, num_img), dtype=dtype)
+    yout_buf = np.empty((n_surv, b, b), dtype=dtype)
+    size_buf = np.empty(n_surv, dtype=np.int64)
 
-    # c0[r, i, j] = <Q0 Q0^T, M_r[i, j]>_F
-    #            = sum_a q0[a] @ M_r[i, j] @ q0[a]^T
-    # Computed as a 2-step einsum: q0 (a0, N) against M_r (b, b, N, N).
-    tmp = np.einsum('an,sijnl->sijal', q0, M, optimize=True)
-    c0 = np.einsum('sijal,al->sij', tmp, q0, optimize=True)
+    # One vectorised climb up the parent chain yields the leaf set
+    # for every survivor in O(depth) numpy ops, replacing |S|
+    # separate Python DFS walks.
+    leaves_per_surv = _leaves_per_region(survivor_idx, children, num_vox)
+    for s_idx, leaves in enumerate(leaves_per_surv):
+        y_par_s = y_par[:, :, leaves]
+        y_perp_s = y_perp[:, :, leaves]
+        y_s = y[:, :, leaves]
 
-    return dict(M=M, ysum_u_S=ysum_u_S, yout_u_S=yout_u_S,
-                size_S=size_S, c0=c0,
-                survivor_idx=np.asarray(survivor_idx, dtype=np.int64))
+        # M[s, i, j, k, l] = sum_{v in leaves(r)} y_par[i,k,v]*y_perp[j,l,v]
+        np.einsum('ikv,jlv->ijkl', y_par_s, y_perp_s,
+                  out=M_buf[s_idx], optimize=True)
+        # ysum_u[s, b, n] = sum_{v in leaves(r)} y[b, n, v]
+        np.sum(y_s, axis=2, out=ysum_buf[s_idx])
+        # yout_u[s, b, c] = sum_{v in leaves(r)} sum_n y[b,n,v]*y[c,n,v]
+        np.einsum('bnv,cnv->bc', y_s, y_s,
+                  out=yout_buf[s_idx], optimize=True)
+        size_buf[s_idx] = leaves.size
+
+    return dict(M=M_buf,
+                ysum_u_S=ysum_buf,
+                yout_u_S=yout_buf,
+                size_S=size_buf,
+                survivor_idx=survivor_idx)
 
 
 def compute_llr_inner_kernel(kernels, q0, q1, freed_lane, perm, num_reg,
                              min_size=1):
-    """Per-perm LLR for survivors only, using M_{ij} kernels.
+    """Per-perm LLR for survivors only, using the par/perp gather kernel.
 
     For each survivor ``r``:
 
-        yout_perm[r] = yout_u[r] + c0[r] - c_perm[r]
-        ysum_perm[r] = ysum_u[r] @ freed_lane            (along image axis)
+        C[r][i, j]   = sum_k M_r[i, j, k, perm[k]]          (N-element gather)
+        yout_perm[r] = yout_u[r] + C[r] + C[r]^T
+        ysum_perm[r] = ysum_u[r] @ freed_lane               (along image axis)
 
-    where ``c_perm[r][i, j] = <Q0Q0T[perm, :][:, perm], M_r[i, j]>_F``
-    is computed from ``q0_perm = q0[:, perm]`` in ``O(b^2 a0 N^2)`` per
-    survivor.  Then Phase 2 (E, H, slogdet, LLR) runs over survivors.
+    Per-survivor per-perm cost is O(b^2 N) for the gather plus
+    O(b^2 N^2) for the ysum apply — no dense matvec on the kernel.
+    Then Phase 2 (E, H, slogdet, LLR) runs over the active survivor
+    subset.  See ``build_survivor_kernels`` for M's definition.
 
     Args:
         kernels (dict): output of :func:`build_survivor_kernels`.
@@ -422,7 +522,8 @@ def compute_llr_inner_kernel(kernels, q0, q1, freed_lane, perm, num_reg,
         freed_lane (np.array): (N, N) FL matrix from ``get_freed_lane``.
             Applied along the image axis as ``ysum @ freed_lane``.
         perm (np.array): (N,) the same index array used to build
-            ``freed_lane``.  Caller has it for free.
+            ``freed_lane`` (so ``freed_lane = (I - Q0Q0T)[:, perm] +
+            Q0Q0T``).  Caller already has it.
         num_reg (int): total region count (for output array sizing).
         min_size (int): survivors with size < min_size get NaN LLR.
 
@@ -434,7 +535,6 @@ def compute_llr_inner_kernel(kernels, q0, q1, freed_lane, perm, num_reg,
     ysum_u_S = kernels['ysum_u_S']
     yout_u_S = kernels['yout_u_S']
     size_S = kernels['size_S']
-    c0 = kernels['c0']
     survivor_idx = kernels['survivor_idx']
 
     dtype = M.dtype
@@ -452,11 +552,14 @@ def compute_llr_inner_kernel(kernels, q0, q1, freed_lane, perm, num_reg,
     ysum_perm_S = np.einsum('sbm,mn->sbn', ysum_u_S, freed_lane,
                              optimize=True)
 
-    # ---- yout_perm = yout_u + c0 - c_perm  via permuted Q0 ----
-    q0_perm = q0[:, perm]                                # (a0, N)
-    tmp = np.einsum('an,sijnl->sijal', q0_perm, M, optimize=True)
-    c_perm = np.einsum('sijal,al->sij', tmp, q0_perm, optimize=True)
-    yout_perm_S = yout_u_S + c0 - c_perm                 # (num_surv, b, b)
+    # ---- yout_perm = yout_u + C + C^T via N-element gather on M -----
+    # C[s, i, j] = <P, M[s, i, j]>_F = sum_k M[s, i, j, k, perm[k]].
+    # Advanced indexing: pulls out the N entries along the permutation
+    # diagonal of the last two axes of M, in O(N b^2) per survivor.
+    N = M.shape[-1]
+    k_idx = np.arange(N)
+    C = M[:, :, :, k_idx, perm].sum(axis=-1)             # (num_surv, b, b)
+    yout_perm_S = yout_u_S + C + C.transpose(0, 2, 1)
 
     # ---- Phase 2: E, H, LLR on active survivors ----
     sz_a = size_S[active_S].astype(dtype)[:, None, None]
