@@ -122,7 +122,7 @@ def batched_cloud_results():
     # --- Experiment-level ---
     el_ana_dict = {
         'GLOW': (glow.analysis.AnalysisGLOW,
-                 dict(n_perm_fwer=5, alpha_fwer=0.05, min_size=1,
+                 dict(n_perm_fwer=5, alpha_fwer=0.05, min_vox=1,
                       n_jobs_perm=1)),
     }
     el_cloud_cfg = CloudConfig(
@@ -166,7 +166,7 @@ def batched_cloud_results():
     # --- HCP ---
     hcp_ana_dict = {
         'GLOW': (glow.analysis.AnalysisGLOW,
-                 dict(n_perm_fwer=5, alpha_fwer=0.05, min_size=1,
+                 dict(n_perm_fwer=5, alpha_fwer=0.05, min_vox=1,
                       n_jobs_perm=1)),
     }
     hcp_cloud_cfg = CloudConfig(

@@ -48,7 +48,7 @@ def _make_config(label='test_cache', ana_labels=('GLOW', 'VBA')):
     ana_kwargs_dict = {
         lbl: (glow.analysis.AnalysisGLOW, {
             'n_perm_fwer': 1,
-            'min_size': 1, 'alpha_fwer': 0.05,
+            'min_vox': 1, 'alpha_fwer': 0.05,
             'n_jobs_perm': 1,
         })
         for lbl in ana_labels
@@ -217,7 +217,7 @@ class TestRunnerLabels:
     def test_run_prune_compare_labels(self):
         import glow
         runner = RunPruneCompare({'n_perm_fwer': 1, 'alpha_fwer': 0.05,
-                                  'min_size': 1, 'n_jobs_perm': 1})
+                                  'min_vox': 1, 'n_jobs_perm': 1})
         config = Config(label='p', runner=runner, source='wgn')
         labels = set(config.runner.labels)
         assert labels == {'greedy_llr', 'greedy_z', 'dp_llr', 'dp_z'}
