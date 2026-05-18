@@ -32,8 +32,10 @@ SOURCES = {
 }
 
 # ---------- analysis parameters ----------
-N_PERM_FWER = 250          # outer permutations for FWER
-N_PERM_INNER = 200         # inner permutations for per-region (mu, std)
+N_PERM_FWER = 250           # outer permutations for FWER
+N_PERM_INNER = 250          # inner permutations per outer-perm worker;
+                            # matched to N_PERM_FWER per the noise-decomp
+                            # analysis (σ_inner < σ_X / 2 at this n)
 ALPHA_FWER = 0.05
 _GLOW_BASE = dict(n_perm_fwer=N_PERM_FWER,
                   n_perm_inner=N_PERM_INNER,
