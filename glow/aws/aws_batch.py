@@ -1083,21 +1083,31 @@ class AWSBatchRunner:
                     _clear_heartbeat()
                     for pb in config_pbars.values():
                         pb.close()
-                    n_perm_failed = len(permanently_failed_jobs)
+                    # split by reason so the summary doesn't mislabel timeouts as OOMs
+                    perm_timeout = [j for j in permanently_failed_jobs
+                                    if j['reason'].startswith('timeout')]
+                    perm_oom = [j for j in permanently_failed_jobs
+                                if j not in perm_timeout]
                     print(f'\nall jobs complete!')
                     print(f'  succeeded: {statuses["SUCCEEDED"]}')
                     print(f'  failed: {statuses["FAILED"]}')
-                    if n_perm_failed:
-                        print(f'  permanently failed (max OOM): {n_perm_failed}')
+                    if perm_oom:
+                        print(f'  permanently failed (max OOM): {len(perm_oom)}')
+                    if perm_timeout:
+                        print(f'  permanently failed (timeout): {len(perm_timeout)}')
                     print(f'  results downloaded: {len(downloaded_jobs)}/{statuses["SUCCEEDED"]}')
                     print(f'  total vCPU-hours: {vcpu_hours:.2f}')
 
-                    # print permanently failed OOM jobs
-                    if permanently_failed_jobs:
+                    # print permanently failed jobs, grouped by reason
+                    for label, group in (
+                            ('exceeded max memory tier', perm_oom),
+                            ('exceeded timeout', perm_timeout)):
+                        if not group:
+                            continue
                         print(f'\n{"="*60}')
-                        print('PERMANENTLY FAILED (exceeded max memory tier):')
+                        print(f'PERMANENTLY FAILED ({label}):')
                         print(f'{"="*60}')
-                        for i, job in enumerate(permanently_failed_jobs, 1):
+                        for i, job in enumerate(group, 1):
                             print(f'  {i}. {job["jobName"]}: {job["reason"]}')
 
                     # print detailed failure reasons (exclude resubmitted
