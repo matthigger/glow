@@ -248,8 +248,7 @@ def compute_llr_batched(exp, children, q0, q1, min_size=1, layer=None):
     e = t - h
 
     # LLR = (size/2) * (ln|E+H| - ln|E|).  NaN where either determinant
-    # is non-positive (matches the ``np.isnan`` short-circuit in
-    # get_llr / loglik_from_cov).
+    # is non-positive (matches the sign-check short-circuit in get_llr).
     sign_t, logdet_t = np.linalg.slogdet(e + h)
     sign_e, logdet_e = np.linalg.slogdet(e)
     valid_a = (sign_t > 0) & (sign_e > 0)

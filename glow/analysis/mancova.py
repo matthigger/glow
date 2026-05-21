@@ -125,29 +125,6 @@ def is_intercept_only_nuisance(x, contrast):
 
 
 # ---------------------------------------------------------------------------
-# shared log-likelihood primitive
-# ---------------------------------------------------------------------------
-
-def loglik_from_cov(cov, n):
-    """Gaussian profile log-likelihood from a covariance matrix.
-
-    Returns -(n/2) * log|det(cov/n)|.  Additive constants (that
-    cancel in all ratios) are omitted.
-
-    Args:
-        cov (np.array): (b, b) un-normalised covariance (e.g. E or E+H)
-        n (int): number of voxels
-
-    Returns:
-        float: profile log-likelihood (higher = better fit)
-    """
-    s, logdet = np.linalg.slogdet(cov / n)
-    if s <= 0:
-        return np.nan
-    return -0.5 * logdet * n
-
-
-# ---------------------------------------------------------------------------
 # five MANCOVA test statistics
 # ---------------------------------------------------------------------------
 
@@ -171,11 +148,11 @@ def get_llr(e, h, n=None, *, size_normalize=False):
         float
     """
     _n = 1 if size_normalize else n
-    ll_alt = loglik_from_cov(e, _n)
-    ll_null = loglik_from_cov(e + h, _n)
-    if np.isnan(ll_alt) or np.isnan(ll_null):
+    sign_e, logdet_e = np.linalg.slogdet(e)
+    sign_t, logdet_t = np.linalg.slogdet(e + h)
+    if sign_e <= 0 or sign_t <= 0:
         return np.nan
-    return ll_alt - ll_null
+    return 0.5 * _n * (logdet_t - logdet_e)
 
 
 def get_wilks(e, h, n=None):
