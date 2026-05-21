@@ -122,8 +122,7 @@ def batched_cloud_results():
     # --- Experiment-level ---
     el_ana_dict = {
         'GLOW': (glow.analysis.AnalysisGLOW,
-                 dict(n_perm_fwer=5, alpha_fwer=0.05, min_vox=1,
-                      n_jobs_perm=1)),
+                 dict(n_perm_fwer=5, alpha_fwer=0.05, min_vox=1)),
     }
     el_cloud_cfg = CloudConfig(
         s3_bucket=s3_bucket, s3_prefix='test/experiment_level',
@@ -145,7 +144,7 @@ def batched_cloud_results():
     tfce_ana_dict = {
         'VBA-TFCE': (glow.analysis.AnalysisVBA,
                      dict(n_perm_fwer=5, tfce_flag=True,
-                          alpha_fwer=0.05, n_jobs_perm=1)),
+                          alpha_fwer=0.05)),
     }
     tfce_cloud_cfg = CloudConfig(
         s3_bucket=s3_bucket, s3_prefix='test/tfce',
@@ -166,8 +165,7 @@ def batched_cloud_results():
     # --- HCP ---
     hcp_ana_dict = {
         'GLOW': (glow.analysis.AnalysisGLOW,
-                 dict(n_perm_fwer=5, alpha_fwer=0.05, min_vox=1,
-                      n_jobs_perm=1)),
+                 dict(n_perm_fwer=5, alpha_fwer=0.05, min_vox=1)),
     }
     hcp_cloud_cfg = CloudConfig(
         s3_bucket=s3_bucket, s3_prefix='test/hcp',

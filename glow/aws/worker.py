@@ -372,12 +372,6 @@ def run_experiment_mode(args):
     print(f'  Source: {config.source}')
     print(f'  Runner: {type(config.runner).__name__ if config.runner else "N/A"}')
 
-    if config.runner is not None:
-        for label, (_Ana, ana_kwargs) in config.runner.iter_ana_kwargs():
-            if 'n_jobs_perm' in ana_kwargs:
-                ana_kwargs['n_jobs_perm'] = 1
-                print(f'  Setting n_jobs_perm=1 for {label}')
-
     # run experiment with memory profiling on error
     try:
         # Start tracemalloc for memory tracking
@@ -436,7 +430,6 @@ def run_experiment_mode(args):
 
 def run_synthesis_mode(args):
     """Collect outer-perm results from S3 and run per_region_z synthesis."""
-    import tempfile
     import time
     from glow.analysis import AnalysisGLOW
     from glow.analysis.mancova import get_llr
@@ -493,24 +486,19 @@ def run_synthesis_mode(args):
     min_vox = ana_kwargs.get('min_vox', 4)
     cluster_mode = ana_kwargs.get('cluster_mode', "q1")
 
-    # download all per-perm result pickles into a local dir so the
-    # per-region-z finalizer can read them as if they were produced by
-    # a local run.  Each pickle already contains the worker-local
+    # download all per-perm result pickles into an in-memory dict so
+    # the per-region-z finalizer can read them as if they were produced
+    # by a local run.  Each pickle already contains the worker-local
     # mu/sigma/z + max_z; the synth step is now just FWER assembly.
-    perm_dir = Path(tempfile.mkdtemp(prefix='glow_synth_'))
-    print(f'\nDownloading {n_expected} perm results to {perm_dir} ...')
+    print(f'\nDownloading {n_expected} perm results ...')
+    results = {}
     perm_elapsed = [None] * n_expected
     for perm_idx in range(n_expected):
         key = f'{result_prefix}{perm_idx:06d}_result.pkl'
         response = s3.get_object(Bucket=args.s3_bucket, Key=key)
-        body = response['Body'].read()
-        with open(perm_dir / f'{perm_idx:06d}_result.pkl', 'wb') as fh:
-            fh.write(body)
-        try:
-            r = pickle.loads(body)
-            perm_elapsed[perm_idx] = r.get('elapsed_sec')
-        except Exception:
-            pass
+        r = pickle.loads(response['Body'].read())
+        results[perm_idx] = r
+        perm_elapsed[perm_idx] = r.get('elapsed_sec')
 
     print(f'\nRunning per_region_z synthesis (FWER assembly) ...')
     ana = AnalysisGLOW.from_precomputed(
@@ -518,7 +506,7 @@ def run_synthesis_mode(args):
         cluster_mode=cluster_mode)
     _t0 = time.time()
     ana._finalize_per_region_z(
-        exp, perm_dir, n_perm_fwer, alpha_fwer, min_vox)
+        exp, results, n_perm_fwer, alpha_fwer, min_vox)
     ana.synthesis_elapsed_sec = time.time() - _t0
     ana.perm_elapsed_sec = perm_elapsed
     print(f'  ✓ {len(ana.effect_list)} effects discovered '

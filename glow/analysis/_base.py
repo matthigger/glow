@@ -12,11 +12,9 @@ class Analysis:
 
     Attributes:
         exp (Experiment): source data
-        get_stat (callable): accepts (e, h, n) and returns a scalar
-            statistic (see mancova.py)
     """
 
-    def __init__(self, exp, get_stat=None, n_jobs_perm=1):
+    def __init__(self, exp, get_stat=None):
         if get_stat is None:
             from .mancova import get_llr
             get_stat = get_llr
@@ -26,7 +24,6 @@ class Analysis:
             exp = ExperimentScaled.from_exp(exp)
         self.exp = exp
         self.get_stat = get_stat
-        self.n_jobs_perm = n_jobs_perm
 
     @classmethod
     def get_pval(cls, stat, reg_active=None):
@@ -140,8 +137,6 @@ class Analysis:
                 except np.linalg.LinAlgError:
                     n_linalg_err += 1
 
-        _check_linalg_rate(n_linalg_err, n_total,
-                           fn_name='get_stat_perm_multi')
         return result
 
     def get_stat_perm(self, exp, children=None):

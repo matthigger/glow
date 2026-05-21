@@ -18,13 +18,12 @@ class AnalysisCET(Analysis):
     """
 
     def __init__(self, exp, n_perm_fwer, alpha_fwer=.05,
-                 cft_pval=DEFAULT_CET_CFT_PVAL, z_flag=False, n_jobs_perm=1,
+                 cft_pval=DEFAULT_CET_CFT_PVAL, z_flag=False,
                  get_stat=None, **kwargs):
         if get_stat is None:
             from .mancova import get_wilks
             get_stat = get_wilks
-        super().__init__(exp, get_stat=get_stat, n_jobs_perm=n_jobs_perm,
-                         **kwargs)
+        super().__init__(exp, get_stat=get_stat, **kwargs)
         self.cft_pval = cft_pval
         self.z_flag = z_flag
 
@@ -60,9 +59,11 @@ class AnalysisCET(Analysis):
         """
         from glow.experiment.exper import ExperimentScaled
         obj = cls.__new__(cls)
-        obj.exp = exp if isinstance(exp,
-                                    ExperimentScaled) else ExperimentScaled.from_exp(
-            exp)
+        if isinstance(exp, ExperimentScaled):
+            obj.exp = exp
+        else:
+            obj.exp = ExperimentScaled.from_exp(exp)
+
         obj.get_stat = get_stat
         obj.stat = stat
         obj.cft_pval = cft_pval

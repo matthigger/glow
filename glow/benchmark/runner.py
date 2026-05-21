@@ -24,15 +24,10 @@ from glow.benchmark.file import OUT, ERROR, short_uuid
 # shared helpers
 # ---------------------------------------------------------------------------
 
-_RUNTIME_ANA_KEYS = {'perm_dir', 'n_jobs_perm'}
-
-
 def ana_entry(cls, kw):
     """Canonical, hashable representation of an analysis kwargs tuple."""
     entry = {'class': cls.__name__}
     for k, v in sorted(kw.items()):
-        if k in _RUNTIME_ANA_KEYS:
-            continue
         entry[k] = v.__name__ if callable(v) else v
     return entry
 
@@ -148,10 +143,10 @@ class Runner(ABC):
         return hashlib.sha256(sig.encode()).hexdigest()[:12]
 
     def iter_ana_kwargs(self):
-        """Yield (label, ana_kwargs) for worker-side mutation (n_jobs_perm=1).
+        """Yield (label, ana_kwargs) entries this runner would run.
 
         Default: no analyses.  Overridden by subclasses that hold
-        ana_kwargs dicts that need runtime knob patching.
+        ana_kwargs dicts.
         """
         return iter(())
 
@@ -352,8 +347,7 @@ def _dispatch_shared(*, Ana, exp, ana_kw, stat_by_fn):
         if ana_kw.get('tfce_flag', False):
             stat = AnalysisVBA.apply_tfce(
                 stat=stat, mask_idx=exp.mask_idx,
-                verbose=ana_kw.get('verbose', False),
-                n_jobs_perm=ana_kw.get('n_jobs_perm', 1))
+                verbose=ana_kw.get('verbose', False))
         return AnalysisVBA.from_precomputed(
             exp=exp, get_stat=get_stat, stat=stat, alpha_fwer=alpha_fwer)
 

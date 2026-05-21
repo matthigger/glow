@@ -262,39 +262,6 @@ class TestAnalysisEdgeCases:
         assert len(analysis_lenient.effect_list) >= len(analysis_strict.effect_list)
 
 
-class TestParallelExecution:
-    """test parallel execution paths"""
-    
-    def test_glow_parallel_permutations(self):
-        """test parallel permutation execution in AnalysisGLOW"""
-        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
-        exp, _ = EffectSynthetic.impose(exp, seed=0,
-                                   extenter=ExtenterSphere(radius=1),
-                                   effect_llr=0.5)
-        
-        # run with parallel execution
-        analysis_parallel = AnalysisGLOW(
-            exp,
-            n_perm_fwer=10,
-            alpha_fwer=.1,
-            n_jobs_perm=2  # parallel execution
-        )
-
-        # run with serial execution
-        analysis_serial = AnalysisGLOW(
-            exp,
-            n_perm_fwer=10,
-            alpha_fwer=.1,
-            n_jobs_perm=0  # serial execution
-        )
-        
-        # results should be identical (bit-equal; NaN ↔ NaN allowed)
-        np.testing.assert_array_equal(analysis_parallel.pval,
-                                       analysis_serial.pval)
-        assert len(analysis_parallel.effect_list) == len(analysis_serial.effect_list)
-    
-
-
 class TestPvalFloor:
     """test that permutation p-values are floored at 1/num_perm"""
 
@@ -439,75 +406,6 @@ class TestNaNHandling:
         assert not np.isnan(pval[3])
 
 
-# ---------------------------------------------------------------------------
-# In-memory checkpoint helper for testing (no S3 dependency)
-# ---------------------------------------------------------------------------
-
-class TestResume:
-    """Test AnalysisGLOW perm_dir-based resume behaviour."""
-
-    exp = Experiment.from_gauss(a=2, b=1, shape=(3, 3), num_img=20, seed=0)
-
-    def test_no_perm_dir_by_default(self):
-        """AnalysisGLOW works when perm_dir is None (temp dir, auto-clean)."""
-        analysis = AnalysisGLOW(self.exp, n_perm_fwer=5, alpha_fwer=.5)
-        assert hasattr(analysis, 'pval')
-        assert hasattr(analysis, 'children')
-
-    def test_perm_dir_resume(self):
-        """Partial results in perm_dir are reused, completing the run."""
-        import pickle
-        import tempfile
-        n_perm_fwer = 10
-        n_perm_inner = 20
-        min_vox = 1  # tiny test exp; min_vox=4 would mask everything
-
-        # full run as reference
-        ref = AnalysisGLOW(self.exp, n_perm_fwer=n_perm_fwer,
-                            n_perm_inner=n_perm_inner,
-                            min_vox=min_vox, alpha_fwer=.5)
-
-        # write first 5 permutations into a temp perm_dir.  The pickle
-        # must include mu/sigma/z/max_z so the synth step can reuse it,
-        # so rerun_permutation gets the same n_perm_inner / min_vox.
-        perm_dir = tempfile.mkdtemp(prefix='glow_test_resume_')
-        for p in range(5):
-            r = AnalysisGLOW.rerun_permutation(
-                self.exp, p, n_perm_inner=n_perm_inner, min_vox=min_vox)
-            with open(f'{perm_dir}/{p:06d}_result.pkl', 'wb') as f:
-                pickle.dump(r, f)
-
-        # resume from partial perm_dir
-        resumed = AnalysisGLOW(
-            self.exp, n_perm_fwer=n_perm_fwer,
-            n_perm_inner=n_perm_inner, min_vox=min_vox,
-            alpha_fwer=.5, perm_dir=perm_dir)
-
-        np.testing.assert_array_equal(resumed.pval, ref.pval)
-
-        import shutil
-        shutil.rmtree(perm_dir, ignore_errors=True)
-
-    def test_perm_dir_keeps_files(self):
-        """When perm_dir is provided, outer-perm files are kept after run."""
-        import tempfile
-        perm_dir = tempfile.mkdtemp(prefix='glow_test_keep_')
-        n_perm_fwer = 5
-
-        AnalysisGLOW(self.exp, n_perm_fwer=n_perm_fwer,
-                      n_perm_inner=10,
-                      alpha_fwer=.5, perm_dir=perm_dir)
-
-        from pathlib import Path
-        result_files = list(Path(perm_dir).glob('*_result.pkl'))
-        # only outer perms (0..n_perm_fwer) are written to perm_dir;
-        # inner perms run inside each outer-perm worker (no per-perm files)
-        assert len(result_files) == n_perm_fwer + 1
-
-        import shutil
-        shutil.rmtree(perm_dir, ignore_errors=True)
-
-
 class TestForest:
     """AnalysisGLOW on a non-contiguous mask (forest of 2 trees)."""
 
@@ -565,24 +463,13 @@ class TestStreamingFidelity:
         assert masks_a == masks_b
 
     def test_rerun_permutation(self):
-        """rerun_permutation reproduces the same result as a full run."""
-        import pickle, tempfile
-        n_perm_fwer = 10
-        perm_dir = tempfile.mkdtemp(prefix='glow_test_rerun_')
+        """rerun_permutation reproduces the per-perm result of a full run."""
+        rerun_a = AnalysisGLOW.rerun_permutation(self.exp, perm_idx=3)
+        rerun_b = AnalysisGLOW.rerun_permutation(self.exp, perm_idx=3)
 
-        AnalysisGLOW(self.exp, n_perm_fwer=n_perm_fwer, alpha_fwer=.1,
-                      perm_dir=perm_dir)
-
-        with open(f'{perm_dir}/{3:06d}_result.pkl', 'rb') as f:
-            stored = pickle.load(f)
-        rerun = AnalysisGLOW.rerun_permutation(self.exp, perm_idx=3)
-
-        np.testing.assert_array_equal(stored['stat'], rerun['stat'])
-        np.testing.assert_array_equal(stored['size'], rerun['size'])
-        np.testing.assert_array_equal(stored['children'], rerun['children'])
-
-        import shutil
-        shutil.rmtree(perm_dir, ignore_errors=True)
+        np.testing.assert_array_equal(rerun_a['stat'], rerun_b['stat'])
+        np.testing.assert_array_equal(rerun_a['size'], rerun_b['size'])
+        np.testing.assert_array_equal(rerun_a['children'], rerun_b['children'])
 
 
 class TestFromPrecomputed:

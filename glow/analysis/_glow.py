@@ -1,17 +1,12 @@
-import pickle
-import shutil
-import tempfile
 from bisect import bisect_left
-from pathlib import Path
 
 import numpy as np
-from joblib import Parallel, delayed, parallel_config
 from tqdm import tqdm
 
 import glow.effect
 import glow.graph
 from glow.experiment.exper import ExperimentScaled
-from . import inner_perm
+from . import inner_perm, Analysis
 from .mancova import decompose, get_llr, is_intercept_only_nuisance
 from .prune import prune_greedy
 from .cluster import cluster
@@ -38,9 +33,8 @@ class AnalysisGLOW(Analysis):
     def __init__(self, exp, n_perm_fwer,
                  n_perm_inner=200,
                  alpha_fwer=.05, min_vox=4, verbose=False,
-                 n_jobs_perm=1, cloud_config=None, perm_dir=None,
+                 cloud_config=None,
                  cluster_mode="q1",
-                 use_fast_path=True,
                  **kwargs):
         """
         Args:
@@ -59,22 +53,12 @@ class AnalysisGLOW(Analysis):
                 contribute disproportionately to the max-z tail without
                 ever being plausible scientific findings.
             verbose: print progress
-            n_jobs_perm: parallel jobs for outer perms (1=serial, -1=all)
             cloud_config: CloudConfig for AWS execution (None = local)
-            perm_dir: directory for per-perm result pickles.  If None
-                a temp dir is created and cleaned up; if given, files
-                are kept and reused on resume.
             cluster_mode: Ward projection.  Must be one of the keys in
                 ``glow.analysis.cluster._MODES``.  Default
                 ``"q1"`` (Focus) projects onto the contrast
                 subspace; ``"q0, q1"`` (GLM Error) keeps bias
                 + contrast; ``"all"`` (Naive) clusters raw y.
-            use_fast_path: when True (default), enable the
-                intercept-only Phase-1-precompute fast path in the
-                inner FL loop when ``is_intercept_only_nuisance`` holds
-                for ``exp``.  Set False to force the original Phase-1-
-                per-inner-perm slow path — used by the runtime
-                benchmark to measure the speedup factor.
         """
         super().__init__(exp, **kwargs)
         self.verbose = verbose
@@ -82,16 +66,6 @@ class AnalysisGLOW(Analysis):
         self.min_vox = min_vox
         self.n_perm_fwer = n_perm_fwer
         self.n_perm_inner = n_perm_inner
-        self.use_fast_path = use_fast_path
-
-        if cloud_config is not None:
-            self._run_on_cloud(exp, n_perm_fwer, n_perm_inner,
-                              alpha_fwer, min_vox, verbose,
-                              cloud_config,
-                              perms_per_job=kwargs.pop('perms_per_job', None),
-                              cluster_mode=cluster_mode,
-                              **kwargs)
-            return
 
         b, num_img, num_vox = exp.y.shape
 
@@ -104,90 +78,46 @@ class AnalysisGLOW(Analysis):
         #   0                = observed data (outer perm 0)
         #   1..n_perm_fwer   = outer FL nulls (FWER comparison set)
         # Inner perms run inside each outer-perm worker (against that
-        # worker's tree) and are not written to disk.
+        # worker's tree) and stay in memory.
         all_perm_indices = list(range(n_perm_fwer + 1))
-
-        _cleanup_dir = perm_dir is None
-        if perm_dir is None:
-            perm_dir = Path(tempfile.mkdtemp(prefix='glow_perm_'))
-        else:
-            perm_dir = Path(perm_dir)
-            perm_dir.mkdir(parents=True, exist_ok=True)
-
-        # scan for existing per-perm result files (resume support)
-        existing = set()
-        for f in sorted(perm_dir.glob('*_result.pkl')):
-            try:
-                existing.add(int(f.name.split('_')[0]))
-            except ValueError:
-                continue
-
-        todo = [i for i in all_perm_indices if i not in existing]
-        if existing and verbose:
-            print(f'  resumed: {len(existing)} permutations on disk, '
-                  f'{len(todo)} remaining')
 
         if verbose:
             print(f'  [1/2] outer perms: clustering + inner perms for '
-                  f'{len(todo)} permutations ({num_vox} voxels, '
+                  f'{len(all_perm_indices)} permutations ({num_vox} voxels, '
                   f'{n_perm_fwer} FWER, {n_perm_inner} inner) ...')
 
-        if n_jobs_perm not in (0, 1) and todo:
-            # Pin BLAS threads to 1 inside each worker.  Without this,
-            # numpy / scipy / sklearn each spawn O(N_cores) BLAS threads
-            # inside every joblib worker, leading to thread-pool
-            # explosion and occasional SIGSEGV on large WGN volumes.
-            with parallel_config(backend='loky', inner_max_num_threads=1):
-                results = Parallel(
-                    n_jobs=n_jobs_perm,
-                    verbose=10 if verbose else 0,
-                )(delayed(self._process_permutation)(
-                        exp, perm_idx, n_perm_inner, min_vox, q0, q1)
-                  for perm_idx in todo)
-            for r in results:
-                p = r['perm_idx']
-                with open(perm_dir / f'{p:06d}_result.pkl', 'wb') as fh:
-                    pickle.dump(r, fh)
-                del r
-        else:
-            for perm_idx in tqdm(todo, desc='outer perms',
-                                 disable=not verbose):
-                r = self._process_permutation(
-                    exp, perm_idx, n_perm_inner, min_vox, q0, q1)
-                with open(perm_dir / f'{r["perm_idx"]:06d}_result.pkl',
-                          'wb') as fh:
-                    pickle.dump(r, fh)
-                del r
+        results = {}
+        for perm_idx in tqdm(all_perm_indices, desc='outer perms',
+                             disable=not verbose):
+            results[perm_idx] = self._process_permutation(
+                exp, perm_idx, n_perm_inner, min_vox, q0, q1)
 
         if verbose:
             print(f'  [2/2] per_region_z finalization ...')
 
         self._finalize_per_region_z(
-            exp, perm_dir, n_perm_fwer, alpha_fwer, min_vox)
+            exp, results, n_perm_fwer, alpha_fwer, min_vox)
 
-        if _cleanup_dir:
-            shutil.rmtree(perm_dir, ignore_errors=True)
-
-    def _finalize_per_region_z(self, exp, perm_dir, n_perm_fwer,
-                                alpha_fwer, min_vox):
+    def _finalize_per_region_z(self, exp, results, n_perm_fwer,
+                               alpha_fwer, min_vox):
         """Per-region permutation z-scoring with Westfall-Young FWER.
 
-        Reads each outer-perm worker's pickle (which already contains
+        Reads each outer-perm worker's result (which already contains
         the worker-local mu/sigma/z + max_z), assembles the max-z null,
         and runs the FWER + pruning pipeline on the observed tree.
         The ``min_vox`` cutoff defends FWER power against the long
         tail of small (mostly tree-private) regions whose noise
         dominates the max-z null.
+
+        Args:
+            results: dict mapping perm_idx → result dict (see
+                ``_process_permutation``).  Must contain keys 0..n_perm_fwer.
         """
         verbose = getattr(self, 'verbose', False)
 
-        max_z_outer = []
-        for k in range(1, n_perm_fwer + 1):
-            with open(perm_dir / f'{k:06d}_result.pkl', 'rb') as fh:
-                max_z_outer.append(float(pickle.load(fh)['max_z']))
-
-        with open(perm_dir / '000000_result.pkl', 'rb') as fh:
-            r0 = pickle.load(fh)
+        max_z_outer = [float(results[k]['max_z'])
+                       for k in range(1, n_perm_fwer + 1)]
+        r0 = results[0]
 
         if verbose:
             print(f'  per_region_z: assembled max-z null from '
@@ -220,11 +150,10 @@ class AnalysisGLOW(Analysis):
         obj.get_stat = get_stat
         obj.verbose = verbose
         obj.cluster_mode = cluster_mode
-        obj.n_jobs_perm = 1
         return obj
 
     def _process_permutation(self, exp, perm_idx, n_perm_inner, min_vox,
-                              q0=None, q1=None):
+                             q0=None, q1=None):
         """Run one outer perm: cluster, observed LLR, inner perms, max_z.
 
         Each outer perm worker is fully self-contained — the inner FL
@@ -356,11 +285,11 @@ class AnalysisGLOW(Analysis):
             exp, perm_idx, n_perm_inner, min_vox)
 
     def _finalize_analysis(self, exp, n_perm_fwer,
-                          stat_0, size_0, children_0,
-                          llr_z_0, stat_max_sorted,
-                          alpha_fwer, min_size,
-                          prune_stat=None,
-                          ):
+                           stat_0, size_0, children_0,
+                           llr_z_0, stat_max_sorted,
+                           alpha_fwer, min_size,
+                           prune_stat=None,
+                           ):
         """Compute p-values from the max-z null and prune.
 
         Args:
@@ -483,11 +412,11 @@ class AnalysisGLOW(Analysis):
         return predict_runtime_sec(model, num_vox, b, num_img, n_perm=1)
 
     def _run_on_cloud(self, exp, n_perm_fwer, n_perm_inner,
-                     alpha_fwer, min_vox, verbose,
-                     cloud_config,
-                     perms_per_job=None,
-                     cluster_mode="q1",
-                     **kwargs):
+                      alpha_fwer, min_vox, verbose,
+                      cloud_config,
+                      perms_per_job=None,
+                      cluster_mode="q1",
+                      **kwargs):
         """Run full analysis on AWS Batch (outer perms + synthesis).
 
         Submits ``n_perm_fwer + 1`` outer-perm jobs (each running its
@@ -565,7 +494,8 @@ class AnalysisGLOW(Analysis):
             if hasattr(remote_ana, attr):
                 setattr(self, attr, getattr(remote_ana, attr))
 
-        print(f'cloud analysis complete: found {len(self.effect_list)} effects')
+        print(
+            f'cloud analysis complete: found {len(self.effect_list)} effects')
 
     def pickle_status(self):
         """Return :class:`PickleStatus` accounting for analysis arrays.
