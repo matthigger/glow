@@ -344,7 +344,8 @@ def _dispatch_shared(*, Ana, exp, ana_kw, stat_by_fn):
     z_flag is honored before TFCE (matching AnalysisVBA.__init__) and
     before CFT computation (matching AnalysisCET.__init__).
     """
-    from glow.analysis import Analysis, AnalysisVBA, AnalysisCET
+    from glow.analysis import (
+        Analysis, AnalysisVBA, AnalysisCET, DEFAULT_CET_CFT_PVAL)
     from glow.analysis.mancova import get_wilks
 
     get_stat = ana_kw.get('get_stat') or get_wilks
@@ -364,7 +365,7 @@ def _dispatch_shared(*, Ana, exp, ana_kw, stat_by_fn):
             exp=exp, get_stat=get_stat, stat=stat, alpha_fwer=alpha_fwer)
 
     if Ana is AnalysisCET:
-        cft_pval = ana_kw.get('cft_pval', 0.001)
+        cft_pval = ana_kw.get('cft_pval', DEFAULT_CET_CFT_PVAL)
         null_pool = stat[1:, :].ravel()
         cft = np.quantile(null_pool, 1 - cft_pval)
         return AnalysisCET.from_precomputed(

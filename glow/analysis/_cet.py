@@ -6,7 +6,7 @@ from scipy.ndimage import label
 from glow.experiment.exper import ExperimentScaled
 from ._base import AnalysisVoxel
 
-DEFAULT_CET_CFT_PVAL = 0.0001
+DEFAULT_CET_CFT_PVAL = 0.001
 
 
 class AnalysisCET(AnalysisVoxel):

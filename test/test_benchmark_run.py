@@ -284,7 +284,7 @@ class TestMagicConstants:
 
     def test_default_cet_cft_pval(self):
         from glow.analysis import DEFAULT_CET_CFT_PVAL
-        assert DEFAULT_CET_CFT_PVAL == 0.0001
+        assert DEFAULT_CET_CFT_PVAL == 0.001
 
 
 # -----------------------------------------------------------------------
