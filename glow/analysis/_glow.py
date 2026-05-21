@@ -1,7 +1,6 @@
 import pickle
 import shutil
 import tempfile
-import warnings
 from bisect import bisect_left
 from pathlib import Path
 
@@ -13,6 +12,7 @@ import glow.effect
 import glow.graph
 from ._base import Analysis, _sanitize_adjusted_stat
 from glow.experiment.exper import ExperimentScaled
+from .inner_perm import draw_llr_samples
 from .mancova import decompose, get_llr, is_intercept_only_nuisance
 from .prune import prune_greedy
 from .cluster import cluster
@@ -280,79 +280,43 @@ class AnalysisGLOW(Analysis):
         # at all sizes).
         llr_outer, size = glow.graph.compute_llr_batched(
             _exp, children=children, q0=q0, q1=q1, layer=layer)
-        del _exp
 
-        # inner FL perms against THIS tree.  Phase 2 of compute_llr_batched
-        # is skipped for regions with size < min_vox (they're inactive
-        # in the FWER set anyway, so their mu/sigma is unused).  This
-        # roughly halves the per-walk cost on typical neuroimaging trees
-        # at min_vox=4.
-        # Seed scheme: each outer perm reserves a 100_000-wide block,
-        # far above any realistic n_perm_inner, so seeds never collide
-        # across outer perms.
-        n_inner_used = 0
-        num_reg = llr_outer.shape[0]
+        # Dispatch inner FL perms across the (cpu vs gpu) x (fast vs
+        # slow) grid.  Fast = intercept-only Phase-1 hoist; slow =
+        # general-Q0 full recompute per draw.  See
+        # ``glow.analysis.inner_perm.draw_llr_samples`` for the leaves.
+        # Seed scheme: each outer perm reserves a 100_000-wide block
+        # (handled inside the dispatcher).
         if n_perm_inner > 0:
-            base = (perm_idx + 1) * 100_000
-            n_img = exp.y.shape[1]
-            q0_proj = q0.T @ q0                       # (N, N) nuisance projector
-            eye_n = np.eye(n_img, dtype=q0.dtype)
-
-            # Intercept-only fast path: when Q0 is constant across
-            # images, ``yout`` (and hence ``t = yout - a0 a0.T / size``)
-            # is FL-invariant, so Phase 1 hoists out of the inner loop
-            # and each draw reduces to a row permutation of ``q1.T``
-            # plus Phase 2.  See ``is_intercept_only_nuisance`` for the
-            # precondition and ``compute_llr_inner_fast`` for the
-            # kernel.
-            if (getattr(self, 'use_fast_path', True)
-                    and is_intercept_only_nuisance(exp.x, exp.contrast)):
-                ysum_u, yout_u, size_u = glow.graph.compute_phase1(
-                    exp.y, children, layer=layer)
-                _dtype = (exp.y.dtype if exp.y.dtype == np.float32
-                          else np.float64)
-                _sz_3d = size_u.astype(_dtype)[:, None, None]
-                _a0 = np.einsum('rbn,an->rba', ysum_u, q0,
-                                optimize=True)
-                t_u = yout_u - np.einsum('rba,rca->rbc', _a0, _a0,
-                                          optimize=True) / _sz_3d
-                del _a0, _sz_3d
-
-                def draw_one(i):
-                    rng = np.random.default_rng(base + i)
-                    perm = np.argsort(rng.permutation(n_img))
-                    freed_lane = (eye_n - q0_proj)[:, perm] + q0_proj
-                    q1_T_perm = (freed_lane @ q1.T).astype(
-                        _dtype, copy=False)
-                    llr_i, _ = glow.graph.compute_llr_inner_fast(
-                        t_u, ysum_u, size_u, q1_T_perm,
-                        min_size=min_vox)
-                    return llr_i
+            use_fast = (getattr(self, 'use_fast_path', True)
+                        and is_intercept_only_nuisance(exp.x, exp.contrast))
+            use_gpu = getattr(self, 'use_gpu', False)
+            if use_gpu:
+                backend = 'gpu_fast' if use_fast else 'gpu_slow'
             else:
-                def draw_one(i):
-                    _exp_inner = exp.permute(base + i)
-                    llr_i, _ = glow.graph.compute_llr_batched(
-                        _exp_inner, children=children, q0=q0, q1=q1,
-                        min_size=min_vox, layer=layer)
-                    return llr_i
+                backend = 'cpu_fast' if use_fast else 'cpu_slow'
 
-            # Collect every draw then compute moments in one shot.
-            # Phase 2 skips size < min_vox, so those columns stay NaN
-            # and nanmean / nanstd ignore them.
-            draws = np.empty((n_perm_inner, num_reg), dtype=float)
-            for i in range(n_perm_inner):
-                draws[i] = draw_one(i)
-            n_per_reg = np.isfinite(draws).sum(axis=0).astype(np.int64)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore', RuntimeWarning)
-                mu = np.nanmean(draws, axis=0)
-                sigma = np.nanstd(draws, axis=0, ddof=1)
+            # CPU paths reuse the unpermuted exp.y; drop the outer-perm
+            # copy (~1 GB at HCP-full scale) before the inner loop.
+            exp_perm = _exp if use_gpu else None
+            del _exp
+
+            moments = draw_llr_samples(
+                exp=exp, exp_perm=exp_perm, perm_idx=perm_idx,
+                q0=q0, q1=q1, children=children, layer=layer,
+                n_perm_inner=n_perm_inner, min_vox=min_vox,
+                backend=backend)
+            mu = moments['mu']
+            sigma = moments['sigma']
+            n_per_reg = moments['n_per_reg']
             n_inner_used = n_perm_inner
         else:
             # rerun_permutation path: caller only wants children/stat/size.
+            del _exp
             mu = np.full_like(llr_outer, fill_value=np.nan)
             sigma = np.full_like(llr_outer, fill_value=np.nan)
             n_per_reg = np.zeros_like(llr_outer, dtype=np.int64)
+            n_inner_used = 0
 
         # zero-std guard (constant inner draws → divide-by-zero z).
         sigma_safe = np.where(sigma < 1e-12, 1.0, sigma)
