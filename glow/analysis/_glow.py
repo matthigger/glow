@@ -12,7 +12,7 @@ import glow.effect
 import glow.graph
 from ._base import Analysis, _sanitize_adjusted_stat
 from glow.experiment.exper import ExperimentScaled
-from .inner_perm import draw_llr_samples
+from . import inner_perm
 from .mancova import decompose, get_llr, is_intercept_only_nuisance
 from .prune import prune_greedy
 from .cluster import cluster
@@ -284,28 +284,27 @@ class AnalysisGLOW(Analysis):
         # Dispatch inner FL perms across the (cpu vs gpu) x (fast vs
         # slow) grid.  Fast = intercept-only Phase-1 hoist; slow =
         # general-Q0 full recompute per draw.  See
-        # ``glow.analysis.inner_perm.draw_llr_samples`` for the leaves.
-        # Seed scheme: each outer perm reserves a 100_000-wide block
-        # (handled inside the dispatcher).
+        # ``glow.analysis.inner_perm`` for the four backends; they
+        # share one keyword signature.  Seed scheme: each outer perm
+        # reserves a 100_000-wide block (handled inside each backend).
         if n_perm_inner > 0:
             use_fast = (getattr(self, 'use_fast_path', True)
                         and is_intercept_only_nuisance(exp.x, exp.contrast))
             use_gpu = getattr(self, 'use_gpu', False)
             if use_gpu:
-                backend = 'gpu_fast' if use_fast else 'gpu_slow'
+                run = inner_perm.gpu_fast if use_fast else inner_perm.gpu_slow
             else:
-                backend = 'cpu_fast' if use_fast else 'cpu_slow'
+                run = inner_perm.cpu_fast if use_fast else inner_perm.cpu_slow
 
             # CPU paths reuse the unpermuted exp.y; drop the outer-perm
             # copy (~1 GB at HCP-full scale) before the inner loop.
             exp_perm = _exp if use_gpu else None
             del _exp
 
-            moments = draw_llr_samples(
+            moments = run(
                 exp=exp, exp_perm=exp_perm, perm_idx=perm_idx,
                 q0=q0, q1=q1, children=children, layer=layer,
-                n_perm_inner=n_perm_inner, min_vox=min_vox,
-                backend=backend)
+                n_perm_inner=n_perm_inner, min_vox=min_vox)
             mu = moments['mu']
             sigma = moments['sigma']
             n_per_reg = moments['n_per_reg']
