@@ -1,10 +1,11 @@
 import numpy as np
 from tqdm import tqdm
 
-from ._base import Analysis
+from glow.experiment.exper import ExperimentScaled
+from ._base import AnalysisVoxel
 
 
-class AnalysisVBA(Analysis):
+class AnalysisVBA(AnalysisVoxel):
     def __init__(self, exp, n_perm_fwer, alpha_fwer=.05, verbose=False,
                  tfce_flag=False, z_flag=False,
                  get_stat=None, **kwargs):
@@ -58,7 +59,6 @@ class AnalysisVBA(Analysis):
 
         Computes p-values and discovers effects from the given stat matrix.
         """
-        from glow.experiment.exper import ExperimentScaled
         obj = cls.__new__(cls)
         obj.exp = exp if isinstance(exp, ExperimentScaled) else ExperimentScaled.from_exp(exp)
         obj.get_stat = get_stat

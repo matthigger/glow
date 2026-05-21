@@ -329,8 +329,6 @@ def _detail_panels(ana_glow):
     from glow.analysis.cluster import MODE_LABELS
     cluster_mode = getattr(ana_glow, 'cluster_mode', None)
     mode_label = MODE_LABELS.get(cluster_mode, '?')
-    get_stat = getattr(ana_glow, 'get_stat', None)
-    get_stat_name = getattr(get_stat, '__name__', repr(get_stat))
     pval = getattr(ana_glow, 'pval', None)
     if pval is not None and len(pval):
         pval_min = float(np.nanmin(pval))
@@ -347,7 +345,6 @@ def _detail_panels(ana_glow):
                 getattr(ana_glow, 'n_perm_inner', '<not stored>')),
         _kv_row('min_vox', getattr(ana_glow, 'min_vox', None)),
         _kv_row('adj_crit', getattr(ana_glow, 'adj_crit', None)),
-        _kv_row('get_stat', get_stat_name),
         _kv_row('# significant regions',
                 len(getattr(ana_glow, 'sig_reg_list', []) or [])),
         _kv_row('# discovered effects',

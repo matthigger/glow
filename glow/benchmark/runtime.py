@@ -43,7 +43,6 @@ from platformdirs import user_data_dir
 
 import glow
 from glow.aws.aws_batch import AWSBatchRunner, CloudConfig
-from glow.analysis.mancova import get_llr
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +205,7 @@ def estimate_timeout_minutes(config, platform, safety_factor=None):
     value applies uniformly.
     """
     from glow.benchmark.runner import (RunAna, RunSegment, RunPruneCompare,
-                                       RunMancovaGlow, RunMancovaVba)
+                                       RunMancovaVba)
     from glow.analysis.mancova import stat_dict
 
     num_vox, b, num_img = _get_config_dimensions(config)
@@ -251,22 +250,6 @@ def estimate_timeout_minutes(config, platform, safety_factor=None):
             n_perm_inner=n_perm_inner, fast_path=fast_path))
         _apply_model(model)
 
-    elif isinstance(runner, RunMancovaGlow):
-        Ana, ana_kw = next(iter(runner.iter_ana_kwargs()))[1]
-        model = load_runtime_model('GLOW', platform)
-        if model is None:
-            return None
-        n_perm = _get_total_perms(Ana, ana_kw)
-        n_perm_inner = _get_n_perm_inner(Ana, ana_kw)
-        fast_path = _get_fast_path_flag(Ana, ana_kw, config)
-        # runtime model is for 1 stat; mancova evaluates all stats per walk
-        total_sec = max(0.0, predict_runtime_sec(
-            model, num_vox, b, num_img, n_perm,
-            n_perm_inner=n_perm_inner,
-            fast_path=fast_path)) * len(stat_dict)
-        is_upper_bound = True
-        _apply_model(model)
-
     elif isinstance(runner, RunMancovaVba):
         Ana, ana_kw = next(iter(runner.iter_ana_kwargs()))[1]
         model = load_runtime_model('VBA-TFCE', platform)
@@ -306,7 +289,6 @@ def estimate_timeout_minutes(config, platform, safety_factor=None):
 
 def _ana_kwargs(n_perm):
     return dict(
-        get_stat=get_llr,
         alpha_fwer=0.05,
         min_vox=1,
     )

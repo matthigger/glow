@@ -165,8 +165,7 @@ def process_permutation(exp, ana_kwargs, perm_idx):
     min_vox = ana_kwargs.get('min_vox', 4)
 
     ana = AnalysisGLOW.from_precomputed(
-        exp=exp, get_stat=ana_kwargs.get('get_stat'),
-        cluster_mode=cluster_mode)
+        exp=exp, cluster_mode=cluster_mode)
     return ana._process_permutation(
         exp, perm_idx, n_perm_inner, min_vox)
 
@@ -432,7 +431,6 @@ def run_synthesis_mode(args):
     """Collect outer-perm results from S3 and run per_region_z synthesis."""
     import time
     from glow.analysis import AnalysisGLOW
-    from glow.analysis.mancova import get_llr
 
     print('=' * 60)
     print('GLOW Worker - SYNTHESIS MODE')
@@ -481,7 +479,6 @@ def run_synthesis_mode(args):
             break
         time.sleep(30)
 
-    get_stat = ana_kwargs.get('get_stat', get_llr)
     alpha_fwer = ana_kwargs.get('alpha_fwer', 0.05)
     min_vox = ana_kwargs.get('min_vox', 4)
     cluster_mode = ana_kwargs.get('cluster_mode', "q1")
@@ -502,8 +499,7 @@ def run_synthesis_mode(args):
 
     print(f'\nRunning per_region_z synthesis (FWER assembly) ...')
     ana = AnalysisGLOW.from_precomputed(
-        exp=exp, get_stat=get_stat, verbose=True,
-        cluster_mode=cluster_mode)
+        exp=exp, verbose=True, cluster_mode=cluster_mode)
     _t0 = time.time()
     ana._finalize_per_region_z(
         exp, results, n_perm_fwer, alpha_fwer, min_vox)

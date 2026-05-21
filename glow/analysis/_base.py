@@ -5,6 +5,7 @@ from scipy.ndimage import label
 
 import glow.effect
 import glow.graph
+from glow.experiment.exper import ExperimentScaled
 
 
 class Analysis:
@@ -14,16 +15,11 @@ class Analysis:
         exp (Experiment): source data
     """
 
-    def __init__(self, exp, get_stat=None):
-        if get_stat is None:
-            from .mancova import get_llr
-            get_stat = get_llr
-        from glow.experiment.exper import ExperimentScaled
+    def __init__(self, exp):
         if not isinstance(exp, ExperimentScaled):
             # pre-process
             exp = ExperimentScaled.from_exp(exp)
         self.exp = exp
-        self.get_stat = get_stat
 
     @classmethod
     def get_pval(cls, stat, reg_active=None):
@@ -96,89 +92,6 @@ class Analysis:
         return (stat - mu) / sigma
 
     @classmethod
-    def get_stat_perm_multi(cls, exp, get_stat_list, children=None):
-        """compute multiple test statistics from a single tree walk.
-
-        Avoids redundant E/H computation when comparing stat functions.
-        Computes one stat value per region per stat function, on the
-        given (possibly permuted) experiment.  For permutation nulls,
-        callers must loop externally over ``exp.permute(k)``.
-
-        Args:
-            exp (Experiment): experiment data (already permuted if
-                this is a permutation draw)
-            get_stat_list (list): stat functions (each accepts e, h, n)
-            children (np.array): (num_leaf - 1, 2) child index array
-
-        Returns:
-            dict mapping each stat function to (num_reg,) array
-
-        Raises:
-            RuntimeError: if the fraction of LinAlgError failures
-                exceeds ``_LINALG_FAIL_RATE`` (results too unreliable
-                to proceed).
-        """
-        b, num_img, num_vox = exp.y.shape
-        num_reg = num_vox
-        if children is not None:
-            num_reg += children.shape[0]
-
-        result = {fn: np.full(num_reg, fill_value=np.nan)
-                  for fn in get_stat_list}
-
-        n_linalg_err = 0
-        n_total = 0
-        for reg_idx, size, e, h in glow.graph.iter_stat(
-                exp=exp, children=children):
-            for fn in get_stat_list:
-                n_total += 1
-                try:
-                    result[fn][reg_idx] = fn(e=e, h=h, n=size)
-                except np.linalg.LinAlgError:
-                    n_linalg_err += 1
-
-        return result
-
-    def get_stat_perm(self, exp, children=None):
-        """compute test statistic for each region.
-
-        Computes one stat per region on the given (possibly permuted)
-        experiment.  For permutation nulls, callers must loop
-        externally over ``exp.permute(k)``.
-
-        Args:
-            exp (Experiment): experiment to evaluate (already permuted
-                if this is a permutation draw)
-            children (np.array): (num_reg, 2) child index array. if None,
-                only iterates through individual voxels.
-
-        Returns:
-            stat (np.array): (num_reg,) test statistics
-
-        Raises:
-            RuntimeError: if the fraction of LinAlgError failures
-                exceeds ``_LINALG_FAIL_RATE`` (results too unreliable
-                to proceed).
-        """
-        b, num_img, num_vox = exp.y.shape
-        num_reg = num_vox
-        if children is not None:
-            num_reg += children.shape[0]
-
-        stat = np.full(num_reg, fill_value=np.nan)
-        n_linalg_err = 0
-        n_total = 0
-        for reg_idx, size, e, h in glow.graph.iter_stat(exp=exp,
-                                                        children=children):
-            n_total += 1
-            try:
-                stat[reg_idx] = self.get_stat(e=e, h=h, n=size)
-            except np.linalg.LinAlgError:
-                n_linalg_err += 1
-
-        return stat
-
-    @classmethod
     def discover_mask(cls, mask, exp):
         """split a boolean mask into connected-component effects.
 
@@ -201,3 +114,86 @@ class Analysis:
             effect_list.append(eff)
 
         return effect_list
+
+
+class AnalysisVoxel(Analysis):
+    """Analysis with a pluggable per-region stat function.
+
+    VBA and CET compute one stat per voxel via ``get_stat`` (Wilks,
+    Hotelling-Lawley-trace, etc.).  AnalysisGLOW does not subclass
+    this — its inner kernel hard-codes LLR.
+    """
+
+    def __init__(self, exp, get_stat=None):
+        super().__init__(exp)
+        if get_stat is None:
+            from .mancova import get_wilks
+            get_stat = get_wilks
+        self.get_stat = get_stat
+
+    @classmethod
+    def get_stat_perm_multi(cls, exp, get_stat_list, children=None):
+        """compute multiple test statistics from a single tree walk.
+
+        Avoids redundant E/H computation when comparing stat functions.
+        Computes one stat value per region per stat function, on the
+        given (possibly permuted) experiment.  For permutation nulls,
+        callers must loop externally over ``exp.permute(k)``.
+
+        Args:
+            exp (Experiment): experiment data (already permuted if
+                this is a permutation draw)
+            get_stat_list (list): stat functions (each accepts e, h, n)
+            children (np.array): (num_leaf - 1, 2) child index array
+
+        Returns:
+            dict mapping each stat function to (num_reg,) array
+        """
+        b, num_img, num_vox = exp.y.shape
+        num_reg = num_vox
+        if children is not None:
+            num_reg += children.shape[0]
+
+        result = {fn: np.full(num_reg, fill_value=np.nan)
+                  for fn in get_stat_list}
+
+        for reg_idx, size, e, h in glow.graph.iter_stat(
+                exp=exp, children=children):
+            for fn in get_stat_list:
+                try:
+                    result[fn][reg_idx] = fn(e=e, h=h, n=size)
+                except np.linalg.LinAlgError:
+                    pass
+
+        return result
+
+    def get_stat_perm(self, exp, children=None):
+        """compute test statistic for each region.
+
+        Computes one stat per region on the given (possibly permuted)
+        experiment.  For permutation nulls, callers must loop
+        externally over ``exp.permute(k)``.
+
+        Args:
+            exp (Experiment): experiment to evaluate (already permuted
+                if this is a permutation draw)
+            children (np.array): (num_reg, 2) child index array. if None,
+                only iterates through individual voxels.
+
+        Returns:
+            stat (np.array): (num_reg,) test statistics
+        """
+        b, num_img, num_vox = exp.y.shape
+        num_reg = num_vox
+        if children is not None:
+            num_reg += children.shape[0]
+
+        stat = np.full(num_reg, fill_value=np.nan)
+        for reg_idx, size, e, h in glow.graph.iter_stat(exp=exp,
+                                                        children=children):
+            try:
+                stat[reg_idx] = self.get_stat(e=e, h=h, n=size)
+            except np.linalg.LinAlgError:
+                pass
+
+        return stat

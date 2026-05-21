@@ -103,7 +103,6 @@ def stage_workload(s3, bench_run_id: str, n_copies: int) -> None:
     import glow
     from glow.benchmark.config import Config
     from glow.benchmark.runner import RunAna
-    from glow.analysis.mancova import get_llr
 
     side = max(2, math.ceil(BENCH_NUM_VOX ** (1 / 3)))
     config = Config(
@@ -112,7 +111,7 @@ def stage_workload(s3, bench_run_id: str, n_copies: int) -> None:
         runner=RunAna({'GLOW': (
             glow.analysis.AnalysisGLOW,
             dict(n_perm_fwer=BENCH_N_PERM,
-                 alpha_fwer=0.05, min_vox=1, get_stat=get_llr),
+                 alpha_fwer=0.05, min_vox=1),
         )}),
         n_seed=1,
         effect_llr_all=np.array([0.05]),

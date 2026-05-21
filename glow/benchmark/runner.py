@@ -24,6 +24,18 @@ from glow.benchmark.file import OUT, ERROR, short_uuid
 # shared helpers
 # ---------------------------------------------------------------------------
 
+def _stat_name(ana):
+    """Stat-function label for a result row.
+
+    AnalysisGLOW is LLR-only and has no ``get_stat`` attribute; the
+    voxel-stat analyses (VBA, CET) expose the pluggable function.
+    """
+    fn = getattr(ana, 'get_stat', None)
+    if fn is None:
+        return 'llr'
+    return fn.__name__.replace('get_', '')
+
+
 def ana_entry(cls, kw):
     """Canonical, hashable representation of an analysis kwargs tuple."""
     entry = {'class': cls.__name__}
@@ -89,7 +101,7 @@ def _score_and_emit(ana, effect, config, label, total_time_sec, iter_kw):
 
     d = {'effect_llr': effect.effect_llr,
          'seed': int(effect.seed),
-         'stat': ana.get_stat.__name__.replace('get_', ''),
+         'stat': _stat_name(ana),
          'label': label,
          'Analysis': type(ana).__name__,
          'dice': dice,
@@ -303,7 +315,7 @@ def _run_shared_voxel_walk(exp, members):
         (stat_by_fn, walk_time): dict mapping each stat fn to its
         (n_perm+1, num_vox) matrix, and the wall-clock seconds spent.
     """
-    from glow.analysis import Analysis
+    from glow.analysis import AnalysisVoxel
     from glow.analysis.mancova import get_wilks
 
     n_perm_fwer = members[0][2]['n_perm_fwer']
@@ -320,7 +332,7 @@ def _run_shared_voxel_walk(exp, members):
                   for fn in stat_fns}
     for k in range(n_perm_fwer + 1):
         _exp = exp.permute(k) if k else exp
-        row = Analysis.get_stat_perm_multi(_exp, stat_fns, children=None)
+        row = AnalysisVoxel.get_stat_perm_multi(_exp, stat_fns, children=None)
         for fn in stat_fns:
             stat_by_fn[fn][k, :] = row[fn]
     return stat_by_fn, time.time() - walk_start
@@ -473,7 +485,7 @@ class RunPruneCompare(Runner):
                                                    mask_active=mask_active)
             d = {'effect_llr': effect.effect_llr,
                  'seed': int(effect.seed),
-                 'stat': ana.get_stat.__name__.replace('get_', ''),
+                 'stat': _stat_name(ana),
                  'label': prune_label,
                  'Analysis': type(ana).__name__,
                  'dice': dice,
@@ -487,54 +499,6 @@ class RunPruneCompare(Runner):
                  'config_hash': config.runner.hash(config, prune_label)}
             _merge_iter_kw(d, iter_kw)
             _write_result(config, d)
-
-
-# ---------------------------------------------------------------------------
-# run-mancova-glow: all MANCOVA stats sharing one E/H walk
-# ---------------------------------------------------------------------------
-
-class RunMancovaGlow(Runner):
-    """Run GLOW with all MANCOVA stats, sharing E/H across stats."""
-
-    def __init__(self, glow_ana_kwargs):
-        self.glow_ana_kwargs = glow_ana_kwargs
-
-    @property
-    def labels(self):
-        from glow.analysis.mancova import stat_dict
-        return {f'GLOW-{name}' for name in stat_dict}
-
-    def label_recipe(self, label):
-        stat_name = label.split('-', 1)[1]
-        return {'ana': ana_entry(glow.analysis.AnalysisGLOW,
-                                 self.glow_ana_kwargs),
-                'stat': stat_name}
-
-    def iter_ana_kwargs(self):
-        yield 'GLOW', (glow.analysis.AnalysisGLOW, self.glow_ana_kwargs)
-
-    def run(self, config, **iter_kw):
-        from glow.analysis import AnalysisGLOW
-        from glow.analysis.mancova import stat_dict, stat_dict_inv
-
-        exp, effect = config.get_exp_eff(**iter_kw)
-
-        # Run a separate AnalysisGLOW per stat function.  The outer-perm
-        # Ward clusterings depend on the stat function only through the
-        # Y projection of cluster_mode (they don't), so in principle
-        # Phase 1 could be shared across stats — but the per_region_z
-        # finalization (inner perms + (mu, std) per merged region) is
-        # stat-specific.  Sharing would require a per-merged-region
-        # array of (mu, std) per stat function from a single E/H walk,
-        # which is a useful future optimization but not done here.
-        for fn in stat_dict.values():
-            name = stat_dict_inv[fn]
-            ana_kw = {**self.glow_ana_kwargs, 'get_stat': fn}
-            start = time.time()
-            ana = AnalysisGLOW(exp=exp, **ana_kw)
-            elapsed = time.time() - start
-            _score_and_emit(ana, effect, config,
-                            f'GLOW-{name}', elapsed, iter_kw)
 
 
 # ---------------------------------------------------------------------------
@@ -577,7 +541,8 @@ class RunMancovaVba(Runner):
 
     def run(self, config, **iter_kw):
         from glow.analysis import (
-            Analysis, AnalysisVBA, AnalysisCET, DEFAULT_CET_CFT_PVAL)
+            Analysis, AnalysisVoxel, AnalysisVBA, AnalysisCET,
+            DEFAULT_CET_CFT_PVAL)
         from glow.analysis.mancova import stat_dict, stat_dict_inv
 
         exp, effect = config.get_exp_eff(**iter_kw)
@@ -594,7 +559,7 @@ class RunMancovaVba(Runner):
                  for fn in stat_fns}
         for k in range(n_perm_fwer + 1):
             _exp = exp.permute(k) if k else exp
-            row = Analysis.get_stat_perm_multi(
+            row = AnalysisVoxel.get_stat_perm_multi(
                 _exp, stat_fns, children=None)
             for fn in stat_fns:
                 multi[fn][k, :] = row[fn]

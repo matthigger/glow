@@ -10,7 +10,7 @@ from glow.benchmark.runner import (_write_result, _score_and_emit,
                                     _run_shared_voxel_walk, _dispatch_shared,
                                     RunMancovaVba, RunAna)
 from glow.experiment.exper import Experiment
-from glow.analysis import AnalysisVBA, AnalysisCET, Analysis
+from glow.analysis import AnalysisVBA, AnalysisCET, AnalysisVoxel
 
 
 def _make_config(tmp_path):
@@ -102,7 +102,7 @@ class TestRunVariant:
         stat = np.full((n_perm + 1, num_vox), np.nan)
         for k in range(n_perm + 1):
             _exp = exp.permute(k) if k else exp
-            stat[k, :] = Analysis.get_stat_perm_multi(
+            stat[k, :] = AnalysisVoxel.get_stat_perm_multi(
                 _exp, [get_wilks], children=None)[get_wilks]
 
         return exp, effect, config, stat, get_wilks
@@ -195,17 +195,17 @@ class TestRunAnaShared:
         """If the dict spans multiple stat fns, get_stat_perm_multi must
         be called once per permutation (n_perm+1 times total), not per
         (stat, perm)."""
-        from glow.analysis import Analysis
+        from glow.analysis import AnalysisVoxel
         from glow.analysis.mancova import get_wilks, get_pillai
 
         calls = []
-        orig = Analysis.get_stat_perm_multi.__func__
+        orig = AnalysisVoxel.get_stat_perm_multi.__func__
 
         def spy(cls, exp, get_stat_list, children=None):
             calls.append(tuple(get_stat_list))
             return orig(cls, exp, get_stat_list, children=children)
 
-        monkeypatch.setattr(Analysis, 'get_stat_perm_multi',
+        monkeypatch.setattr(AnalysisVoxel, 'get_stat_perm_multi',
                             classmethod(spy))
 
         n_perm = 5

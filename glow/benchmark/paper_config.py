@@ -5,8 +5,8 @@ import numpy as np
 import glow
 from glow.benchmark.config import Config
 from glow.benchmark.runner import (RunAna, RunSegment, RunPruneCompare,
-                                   RunMancovaGlow, RunMancovaVba)
-from glow.analysis.mancova import get_hotel_tr, get_llr, get_wilks
+                                   RunMancovaVba)
+from glow.analysis.mancova import get_hotel_tr, get_wilks
 
 # ---------- common parameters ----------
 CROP_N_VOX = 25_000
@@ -40,8 +40,7 @@ ALPHA_FWER = 0.05
 _GLOW_BASE = dict(n_perm_fwer=N_PERM_FWER,
                   n_perm_inner=N_PERM_INNER,
                   min_vox=4,
-                  alpha_fwer=ALPHA_FWER,
-                  get_stat=get_llr)
+                  alpha_fwer=ALPHA_FWER)
 ANALYSES = {
     'GLOW-Focus': {**_GLOW_BASE, 'cluster_mode': "q1"},
     'GLOW-GLM':   {**_GLOW_BASE, 'cluster_mode': "q0, q1"},
@@ -153,13 +152,7 @@ config_list.append(make_config(
 config_list.append(make_config(
     'prune_method_wgn', 'wgn', RunPruneCompare(ANALYSES['GLOW-GLM'])))
 
-# ---------- H. MANCOVA stat comparison (GLOW) ----------
-config_list.append(make_config(
-    'mancova_glow_wgn', 'wgn', RunMancovaGlow(ANALYSES['GLOW-GLM'])))
-config_list.append(make_config(
-    'mancova_glow_hcp', 'hcp', RunMancovaGlow(ANALYSES['GLOW-GLM'])))
-
-# ---------- I. MANCOVA stat comparison (VBA / VBA-TFCE / CET) ----------
+# ---------- H. MANCOVA stat comparison (VBA / VBA-TFCE / CET) ----------
 config_list.append(make_config(
     'mancova_vba_wgn', 'wgn', RunMancovaVba(ANALYSES['VBA-TFCE'])))
 config_list.append(make_config(

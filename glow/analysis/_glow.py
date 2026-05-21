@@ -7,7 +7,7 @@ import glow.effect
 import glow.graph
 from glow.experiment.exper import ExperimentScaled
 from . import inner_perm, Analysis
-from .mancova import decompose, get_llr, is_intercept_only_nuisance
+from .mancova import decompose, is_intercept_only_nuisance
 from .prune import prune_greedy
 from .cluster import cluster
 
@@ -34,8 +34,7 @@ class AnalysisGLOW(Analysis):
                  n_perm_inner=200,
                  alpha_fwer=.05, min_vox=4, verbose=False,
                  cloud_config=None,
-                 cluster_mode="q1",
-                 **kwargs):
+                 cluster_mode="q1"):
         """
         Args:
             exp: Experiment to analyze
@@ -60,7 +59,7 @@ class AnalysisGLOW(Analysis):
                 subspace; ``"q0, q1"`` (GLM Error) keeps bias
                 + contrast; ``"all"`` (Naive) clusters raw y.
         """
-        super().__init__(exp, **kwargs)
+        super().__init__(exp)
         self.verbose = verbose
         self.cluster_mode = cluster_mode
         self.min_vox = min_vox
@@ -135,8 +134,7 @@ class AnalysisGLOW(Analysis):
         self._sigma_per_region = np.asarray(r0['sigma'], dtype=float)
 
     @classmethod
-    def from_precomputed(cls, *, exp, get_stat=None, verbose=False,
-                         cluster_mode="q1"):
+    def from_precomputed(cls, *, exp, verbose=False, cluster_mode="q1"):
         """Construct an empty shell without running ``__init__``.
 
         Caller is responsible for invoking ``_finalize_per_region_z()``
@@ -145,9 +143,6 @@ class AnalysisGLOW(Analysis):
         obj = cls.__new__(cls)
         obj.exp = (exp if isinstance(exp, ExperimentScaled)
                    else ExperimentScaled.from_exp(exp))
-        if get_stat is None:
-            get_stat = get_llr
-        obj.get_stat = get_stat
         obj.verbose = verbose
         obj.cluster_mode = cluster_mode
         return obj
@@ -266,7 +261,7 @@ class AnalysisGLOW(Analysis):
         return result
 
     @classmethod
-    def rerun_permutation(cls, exp, perm_idx, get_stat=get_llr,
+    def rerun_permutation(cls, exp, perm_idx,
                           cluster_mode="q1", n_perm_inner=0, min_vox=4):
         """Re-run a single outer permutation for inspection.
 
@@ -279,7 +274,7 @@ class AnalysisGLOW(Analysis):
             ``n_perm_inner=0`` the ``mu``/``sigma`` arrays are NaN and
             ``z`` reduces to the (sanitised) raw LLR.
         """
-        ana = cls.from_precomputed(exp=exp, get_stat=get_stat)
+        ana = cls.from_precomputed(exp=exp)
         ana.cluster_mode = cluster_mode
         return ana._process_permutation(
             exp, perm_idx, n_perm_inner, min_vox)
@@ -433,7 +428,6 @@ class AnalysisGLOW(Analysis):
         experiment_id = f'glow_{uuid.uuid4().hex[:8]}'
 
         ana_kwargs = {
-            'get_stat': self.get_stat,
             'n_perm_inner': n_perm_inner,
             'alpha_fwer': alpha_fwer,
             'min_vox': min_vox,

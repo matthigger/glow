@@ -3,12 +3,13 @@ from bisect import bisect_left
 import numpy as np
 from scipy.ndimage import label
 
-from ._base import Analysis
+from glow.experiment.exper import ExperimentScaled
+from ._base import AnalysisVoxel
 
 DEFAULT_CET_CFT_PVAL = 0.0001
 
 
-class AnalysisCET(Analysis):
+class AnalysisCET(AnalysisVoxel):
     """Cluster Extent Thresholding with permutation-based FWER.
 
     Thresholds voxel-wise stats at a cluster forming threshold (CFT)
@@ -57,7 +58,6 @@ class AnalysisCET(Analysis):
 
         Computes cluster-extent p-values and discovers effects.
         """
-        from glow.experiment.exper import ExperimentScaled
         obj = cls.__new__(cls)
         if isinstance(exp, ExperimentScaled):
             obj.exp = exp
