@@ -17,209 +17,6 @@ from .prune import prune_greedy
 from .cluster import cluster
 
 
-# Inner-perm race tuning.  These are the same values the race helper
-# defaults to; lifted here so the call site in ``_process_permutation``
-# names them honestly instead of hiding them behind ``getattr``.
-# Calibrated empirically — see ``docs/dynamic_inner_perm_plan.md`` for
-# the warmup/kernel-amortization tradeoff that picks these numbers.
-_RACE_INIT = 50      # warmup perms before first trim + survivor-kernel build
-_RACE_BATCH = 25     # re-check decisions every N perms after warmup
-_RACE_K_SIGMA = 3.0  # confidence multiplier on the Wald SE
-
-
-def _run_inner_race(draw_one, n_max, llr_outer, size, min_vox,
-                    race_init=50, race_batch=25, race_k_sigma=3.0,
-                    z_threshold=None, on_warmup_done=None,
-                    init_state=None):
-    """2-stage lockstep race for inner FL null sampling.
-
-    Stage 1 — warmup: run ``race_init`` perms via the supplied
-    ``draw_one`` (typically the slow full-tree path so it works for
-    any kernel; cheap because race_init is small).  Accumulate
-    per-region Welford stats over all active regions.
-
-    Stage 2 — trim + swap: after the first batch we compute interim
-    ``z ± k*SE`` per region.  Regions whose upper CI is below the
-    leader's lower CI (tournament mode) or whose CI clears the
-    threshold one way or the other (threshold mode) drop out.  Then
-    ``on_warmup_done(active)`` fires once with the surviving mask; if
-    it returns a callable, that callable replaces ``draw_one`` for
-    the rest of the race.  AnalysisGLOW uses this hook to build a
-    survivor kernel once and switch to the cheap kernel draw for the
-    remaining perms — that combination of warmup-pruning + kernel-on-
-    survivors is what makes the race a clear win at large num_vox.
-
-    Stage 3 — continue lockstep race; re-trim every ``race_batch``
-    perms until only the leader remains / no ambiguous region remains
-    / ``n_max`` is hit.
-
-    Resume: when ``init_state`` is provided, the warmup loop is
-    skipped and the race resumes from the supplied Welford state.
-    The first stop-check uses the loaded ``mean``/``M2``/``n_per_reg``
-    against the (possibly new) ``z_threshold`` — this is where thaw
-    happens, when a previously frozen region's CI now straddles a
-    moved threshold.  ``on_warmup_done`` then fires (before any new
-    draws) so the caller can rebuild the survivor kernel for the
-    current active set, which may include thawed regions.
-
-    Args:
-        draw_one: callable(perm_i) -> (num_reg,) LLR.  Initially the
-            slow path; ``on_warmup_done`` may replace it with a
-            kernel-based draw_one after the first trim.
-        n_max: cap on total ``n_inner_used`` (resume counts toward
-            this; if ``init_state['n_inner_used'] >= n_max`` the race
-            does no new draws).
-        llr_outer: (num_reg,) observed LLR per region.
-        size: (num_reg,) region sizes (for ``min_vox`` gating).
-        min_vox: skip regions with size < ``min_vox``.
-        race_init: # warmup perms before the first trim/swap.
-        race_batch: re-check decisions every this many perms.
-        race_k_sigma: confidence multiplier on the Wald SE
-            ``sqrt((1 + z^2/2) / n)``.
-        z_threshold: float | None.  Tournament mode if None; threshold
-            mode otherwise.
-        on_warmup_done: optional callable(active) -> draw_one' | None
-            fired after the first post-warmup (or first resume) trim.
-        init_state: optional dict from a prior race output containing
-            ``mean``, ``M2``, ``n_per_reg``, ``n_inner_used``.  When
-            given, the warmup is skipped and the race resumes.
-
-    Returns:
-        dict with
-            ``mu``, ``sigma``, ``M2`` (num_reg,) float
-            ``n_per_reg`` (num_reg,) int
-            ``n_inner_used`` int — total perms run (cumulative across
-                resumes)
-            ``leader`` int (tournament mode) — region with max final z
-            ``sig_regions`` (num_sig,) int (threshold mode)
-    """
-    num_reg = llr_outer.shape[0]
-
-    # Welford per-region online stats.
-    if init_state is None:
-        mean = np.zeros(num_reg, dtype=float)
-        M2 = np.zeros(num_reg, dtype=float)
-        n_per_reg = np.zeros(num_reg, dtype=np.int64)
-    else:
-        mean = np.asarray(init_state['mean'], dtype=float).copy()
-        M2 = np.asarray(init_state['M2'], dtype=float).copy()
-        n_per_reg = np.asarray(init_state['n_per_reg'],
-                                dtype=np.int64).copy()
-
-    def update(x):
-        # One inner-perm draw across all regions; updates active +
-        # already-dropped regions alike (no extra bookkeeping needed
-        # because dropped regions just stop having their LLR fed in
-        # after the active-mask narrows below).
-        finite = np.isfinite(x)
-        n_per_reg[finite] += 1
-        delta = np.empty_like(mean)
-        delta[finite] = x[finite] - mean[finite]
-        mean[finite] += delta[finite] / n_per_reg[finite]
-        delta2 = np.empty_like(mean)
-        delta2[finite] = x[finite] - mean[finite]
-        M2[finite] += delta[finite] * delta2[finite]
-
-    def current_z_se():
-        with np.errstate(invalid='ignore', divide='ignore'):
-            var = np.where(n_per_reg >= 2, M2 / (n_per_reg - 1), np.nan)
-        sigma = np.sqrt(var)
-        sigma_safe = np.where(sigma < 1e-12, 1.0, sigma)
-        z = (llr_outer - mean) / sigma_safe
-        se = np.sqrt((1 + z ** 2 / 2) / np.maximum(n_per_reg, 1))
-        return z, sigma, se
-
-    active = (size >= min_vox) & np.isfinite(llr_outer)
-    leader_idx = -1
-
-    if init_state is None:
-        # Stage 1: warmup via supplied (typically slow-path) draw_one.
-        n_init = min(race_init, n_max)
-        for i in range(n_init):
-            update(draw_one(i))
-        n_run = n_init
-    else:
-        # Resume path: state already has samples; skip warmup.
-        # Active mask is recomputed from current state on first
-        # stop-check, so thaw against a moved threshold is automatic.
-        n_run = int(init_state['n_inner_used'])
-
-    warmup_hook_pending = on_warmup_done is not None
-
-    while n_run < n_max:
-        z, _, se = current_z_se()
-        eligible = active & np.isfinite(z) & (n_per_reg >= 2)
-
-        if z_threshold is None:
-            if eligible.sum() <= 1:
-                break
-            z_for_max = np.where(eligible, z, -np.inf)
-            leader_idx = int(np.argmax(z_for_max))
-            leader_lower = z[leader_idx] - race_k_sigma * se[leader_idx]
-            upper = z + race_k_sigma * se
-            cant_catch = eligible & (upper < leader_lower)
-            cant_catch[leader_idx] = False
-            if cant_catch.any():
-                active &= ~cant_catch
-                if (active & np.isfinite(z)).sum() <= 1:
-                    break
-        else:
-            if eligible.sum() == 0:
-                break
-            upper = z + race_k_sigma * se
-            lower = z - race_k_sigma * se
-            decided = eligible & ((upper < z_threshold) |
-                                  (lower > z_threshold))
-            if decided.any():
-                active &= ~decided
-                if (active & np.isfinite(z)).sum() == 0:
-                    break
-
-        # First post-warmup trim: hand the survivor mask to the caller
-        # so it can build kernels for just that subset and swap to a
-        # cheap kernel-based draw_one for the rest of the race.
-        if warmup_hook_pending:
-            replacement = on_warmup_done(active)
-            if replacement is not None:
-                draw_one = replacement
-            warmup_hook_pending = False
-
-        n_batch = min(race_batch, n_max - n_run)
-        for i in range(n_run, n_run + n_batch):
-            update(draw_one(i))
-        n_run += n_batch
-
-    with np.errstate(invalid='ignore', divide='ignore'):
-        var_final = np.where(n_per_reg >= 2, M2 / (n_per_reg - 1), np.nan)
-    sigma_final = np.sqrt(var_final)
-
-    out = {
-        'mu': mean,
-        'sigma': sigma_final,
-        'M2': M2,
-        'n_per_reg': n_per_reg,
-        'n_inner_used': n_run,
-    }
-    if z_threshold is None:
-        sigma_safe = np.where(sigma_final < 1e-12, 1.0, sigma_final)
-        z_final = (llr_outer - mean) / sigma_safe
-        eligible_final = (size >= min_vox) & np.isfinite(z_final)
-        if eligible_final.any():
-            out['leader'] = int(np.argmax(np.where(eligible_final, z_final,
-                                                    -np.inf)))
-        else:
-            out['leader'] = -1
-    else:
-        sigma_safe = np.where(sigma_final < 1e-12, 1.0, sigma_final)
-        z_final = (llr_outer - mean) / sigma_safe
-        se_final = np.sqrt((1 + z_final ** 2 / 2)
-                            / np.maximum(n_per_reg, 1))
-        sig_mask = ((size >= min_vox) & np.isfinite(z_final)
-                    & ((z_final - race_k_sigma * se_final) > z_threshold))
-        out['sig_regions'] = np.where(sig_mask)[0]
-    return out
-
-
 class AnalysisGLOW(Analysis):
     """search a hierarchical segmentation for significant effects.
 
@@ -249,16 +46,10 @@ class AnalysisGLOW(Analysis):
         Args:
             exp: Experiment to analyze
             n_perm_fwer: number of outer FL permutations for FWER control
-            n_perm_inner: cap on inner FL permutations per outer-perm
-                worker.  Each outer perm's race (tournament-mode for
-                perms 1..N, then a threshold-mode refinement for perm
-                0 against the FWER threshold T) is capped at this
-                many total samples.  Tournament-mode typically exits
-                well below the cap; the leftover budget is what
-                perm 0's refinement draws from.  Cranking this gives
-                tighter z's on borderline regions of the unpermuted
-                tree essentially for free, because non-borderline
-                regions freeze early.
+            n_perm_inner: number of inner FL permutations run per
+                outer-perm worker.  Every active region (size >=
+                min_vox) gets exactly this many draws — no CI-based
+                dropout, no adaptive resampling.
             alpha_fwer: family-wise error rate
             min_vox: minimum region size (in voxels) admitted to the
                 FWER comparison set.  Regions smaller than this are
@@ -372,18 +163,14 @@ class AnalysisGLOW(Analysis):
             print(f'  [2/2] per_region_z finalization ...')
 
         self._finalize_per_region_z(
-            exp, perm_dir, n_perm_fwer, alpha_fwer, min_vox,
-            n_perm_inner=n_perm_inner, q0=q0, q1=q1)
+            exp, perm_dir, n_perm_fwer, alpha_fwer, min_vox)
 
         if _cleanup_dir:
             shutil.rmtree(perm_dir, ignore_errors=True)
 
     def _finalize_per_region_z(self, exp, perm_dir, n_perm_fwer,
-                                alpha_fwer, min_vox,
-                                n_perm_inner=None, q0=None, q1=None,
-                                max_refine_iter=5):
-        """Per-region permutation z-scoring with Westfall-Young FWER,
-        plus optional threshold-mode refinement of perm 0.
+                                alpha_fwer, min_vox):
+        """Per-region permutation z-scoring with Westfall-Young FWER.
 
         Reads each outer-perm worker's pickle (which already contains
         the worker-local mu/sigma/z + max_z), assembles the max-z null,
@@ -391,33 +178,14 @@ class AnalysisGLOW(Analysis):
         The ``min_vox`` cutoff defends FWER power against the long
         tail of small (mostly tree-private) regions whose noise
         dominates the max-z null.
-
-        When ``n_perm_inner`` and ``q0``/``q1`` are supplied, the
-        unpermuted (perm 0) is then refined in threshold mode against
-        the FWER threshold ``T = self.adj_crit``: each region's race
-        resumes from its initial Welford state and accumulates more
-        samples until its z-CI is safely above or below T.  The race
-        cap is ``n_perm_inner`` (same parameter as the initial
-        budget) — tournament mode typically exits well before the
-        cap, so the leftover budget is what refinement draws from.
-
-        An outer while-loop guards the rare case where refining perm
-        0 shifts its ``max_z`` enough to move T (since perm 0 IS
-        included in the max-z null).  Outer-perm ``max_z`` values
-        don't change across refinement iterations and are read once.
-        Convergence is detected as ``sig_reg_list`` stabilising;
-        bounded by ``max_refine_iter`` (should iterate at most once
-        in practice given the race's non-overlap stop rule).
         """
         verbose = getattr(self, 'verbose', False)
 
-        # outer perm max_z values: immutable during refinement.
         max_z_outer = []
         for k in range(1, n_perm_fwer + 1):
             with open(perm_dir / f'{k:06d}_result.pkl', 'rb') as fh:
                 max_z_outer.append(float(pickle.load(fh)['max_z']))
 
-        # perm 0: mutated by the refinement loop.
         with open(perm_dir / '000000_result.pkl', 'rb') as fh:
             r0 = pickle.load(fh)
 
@@ -425,65 +193,6 @@ class AnalysisGLOW(Analysis):
             print(f'  per_region_z: assembled max-z null from '
                   f'{n_perm_fwer + 1} outer perms (min_vox={min_vox})')
 
-        refine = (n_perm_inner is not None and q0 is not None
-                  and q1 is not None)
-
-        sig_prev = None
-        for it in range(max_refine_iter if refine else 1):
-            self._apply_unpermuted(
-                exp, r0, max_z_outer, n_perm_fwer, alpha_fwer, min_vox)
-
-            if not refine:
-                return
-
-            sig_now = set(self.sig_reg_list)
-            n_used = int(r0.get('n_inner_used', 0))
-            if verbose:
-                print(f'  [refine] iter {it}: T={self.adj_crit:.4f}, '
-                      f'n_inner_used={n_used}, sig={len(sig_now)}')
-
-            if sig_now == sig_prev:
-                if verbose:
-                    print(f'  [refine] converged at iter {it}')
-                return
-            sig_prev = sig_now
-
-            if n_used >= n_perm_inner:
-                # cap already reached; no room to add samples.
-                if verbose:
-                    print(f'  [refine] n_inner_used={n_used} already '
-                          f'at cap {n_perm_inner}')
-                return
-
-            init_state = {
-                'mean':         np.asarray(r0['mu'], dtype=float),
-                'M2':           np.asarray(r0['M2'], dtype=float),
-                'n_per_reg':    np.asarray(r0['n_per_reg'],
-                                            dtype=np.int64),
-                'n_inner_used': n_used,
-            }
-            r0 = self._process_permutation(
-                exp, perm_idx=0, n_perm_inner=n_perm_inner,
-                min_vox=min_vox, q0=q0, q1=q1,
-                z_threshold=float(self.adj_crit),
-                init_state=init_state)
-            with open(perm_dir / '000000_result.pkl', 'wb') as fh:
-                pickle.dump(r0, fh)
-
-        if verbose:
-            print(f'  [refine] max_refine_iter={max_refine_iter} '
-                  f'reached without convergence')
-
-    def _apply_unpermuted(self, exp, r0, max_z_outer, n_perm_fwer,
-                           alpha_fwer, min_vox):
-        """Run ``_finalize_analysis`` for a given perm-0 result against
-        cached outer-perm max_z values, and attach the perm-0
-        ``mu``/``sigma`` to ``self`` as the diagnostic arrays.
-
-        Factored out so the refinement loop in
-        ``_finalize_per_region_z`` can re-run finalize cheaply across
-        iterations without re-reading every per-perm pickle.
-        """
         max_z_list = sorted(max_z_outer + [float(r0['max_z'])])
         self._finalize_analysis(
             exp, n_perm_fwer,
@@ -515,8 +224,7 @@ class AnalysisGLOW(Analysis):
         return obj
 
     def _process_permutation(self, exp, perm_idx, n_perm_inner, min_vox,
-                              q0=None, q1=None, z_threshold=None,
-                              init_state=None):
+                              q0=None, q1=None):
         """Run one outer perm: cluster, observed LLR, inner perms, max_z.
 
         Each outer perm worker is fully self-contained — the inner FL
@@ -531,22 +239,14 @@ class AnalysisGLOW(Analysis):
             exp: source experiment (NOT yet permuted; ``perm_idx==0``
                 is the observed data).
             perm_idx: outer permutation index.
-            n_perm_inner: cap on total ``n_inner_used`` after this
-                call (resume from ``init_state`` counts toward it).
+            n_perm_inner: number of inner FL draws to run against
+                this outer perm's tree.  Every active region gets
+                exactly this many samples — no CI-based dropout, no
+                resume.
             min_vox: minimum region size for the max-z comparison set.
             q0, q1: pre-decomposed contrast subspaces.  May be None
                 when called via ``rerun_permutation``; in that case
                 they are recomputed from ``exp``.
-            z_threshold: when set, run the inner race in threshold
-                mode — each region drops out as soon as its z-CI is
-                fully above or below the threshold (sig/not-sig).
-                Used by the unpermuted-refinement pass (perm 0) to
-                race against the FWER threshold T.  When None
-                (default), tournament mode is used (race for max-z).
-            init_state: optional Welford state from a prior race
-                (dict with ``mean``, ``M2``, ``n_per_reg``,
-                ``n_inner_used``).  Resumes the race instead of
-                starting fresh.
 
         Returns:
             dict with keys
@@ -590,22 +290,16 @@ class AnalysisGLOW(Analysis):
         # far above any realistic n_perm_inner, so seeds never collide
         # across outer perms.
         n_inner_used = 0
-        race_extra = {}
+        num_reg = llr_outer.shape[0]
         if n_perm_inner > 0:
-            num_reg = llr_outer.shape[0]
             base = (perm_idx + 1) * 100_000
             n_img = exp.y.shape[1]
             q0_proj = q0.T @ q0                       # (N, N) nuisance projector
             eye_n = np.eye(n_img, dtype=q0.dtype)
 
-            # 2-stage race: warm up with the slow full-tree path for
-            # ``_RACE_INIT`` perms, then trim the active set and build
-            # survivor kernels (much smaller M tensor than if we'd
-            # built for all active regions up front).
-            #
             # Intercept-only fast path: when Q0 is constant across
             # images, ``yout`` (and hence ``t = yout - a0 a0.T / size``)
-            # is FL-invariant, so Phase 1 hoists out of the warmup loop
+            # is FL-invariant, so Phase 1 hoists out of the inner loop
             # and each draw reduces to a row permutation of ``q1.T``
             # plus Phase 2.  See ``is_intercept_only_nuisance`` for the
             # precondition and ``compute_llr_inner_fast`` for the
@@ -623,7 +317,7 @@ class AnalysisGLOW(Analysis):
                                           optimize=True) / _sz_3d
                 del _a0, _sz_3d
 
-                def draw_one_slow(i):
+                def draw_one(i):
                     rng = np.random.default_rng(base + i)
                     perm = np.argsort(rng.permutation(n_img))
                     freed_lane = (eye_n - q0_proj)[:, perm] + q0_proj
@@ -634,46 +328,35 @@ class AnalysisGLOW(Analysis):
                         min_size=min_vox)
                     return llr_i
             else:
-                def draw_one_slow(i):
+                def draw_one(i):
                     _exp_inner = exp.permute(base + i)
                     llr_i, _ = glow.graph.compute_llr_batched(
                         _exp_inner, children=children, q0=q0, q1=q1,
                         min_size=min_vox, layer=layer)
                     return llr_i
 
-            def make_kernel_draw_one(active):
-                survivor_idx = np.where(active)[0]
-                if survivor_idx.size == 0:
-                    return None
-                kernels = glow.graph.build_survivor_kernels(
-                    exp.y, children, survivor_idx, q0)
-
-                def draw_one_kernel(i):
-                    rng = np.random.default_rng(base + i)
-                    perm = np.argsort(rng.permutation(n_img))
-                    freed_lane = (eye_n - q0_proj)[:, perm] + q0_proj
-                    return glow.graph.compute_llr_inner_kernel(
-                        kernels, q0, q1, freed_lane, perm, num_reg,
-                        min_size=min_vox)
-
-                return draw_one_kernel
-
-            race_out = _run_inner_race(
-                draw_one_slow, n_perm_inner, llr_outer, size, min_vox,
-                race_init=_RACE_INIT,
-                race_batch=_RACE_BATCH,
-                race_k_sigma=_RACE_K_SIGMA,
-                z_threshold=z_threshold,
-                on_warmup_done=make_kernel_draw_one,
-                init_state=init_state)
-            mu = race_out['mu']
-            sigma = race_out['sigma']
-            M2 = race_out['M2']
-            n_per_reg = race_out['n_per_reg']
-            n_inner_used = race_out['n_inner_used']
-            for k in ('leader', 'sig_regions'):
-                if k in race_out:
-                    race_extra[k] = race_out[k]
+            # Welford online (mu, M2) accumulated across all n_perm_inner
+            # draws, ignoring non-finite entries (Phase 2 skips
+            # size < min_vox, so those regions stay NaN).
+            mean = np.zeros(num_reg, dtype=float)
+            M2 = np.zeros(num_reg, dtype=float)
+            n_per_reg = np.zeros(num_reg, dtype=np.int64)
+            for i in range(n_perm_inner):
+                x = draw_one(i)
+                finite = np.isfinite(x)
+                n_per_reg[finite] += 1
+                delta = np.empty_like(mean)
+                delta[finite] = x[finite] - mean[finite]
+                mean[finite] += delta[finite] / n_per_reg[finite]
+                delta2 = np.empty_like(mean)
+                delta2[finite] = x[finite] - mean[finite]
+                M2[finite] += delta[finite] * delta2[finite]
+            mu = mean
+            with np.errstate(invalid='ignore', divide='ignore'):
+                var = np.where(n_per_reg >= 2, M2 / (n_per_reg - 1),
+                               np.nan)
+            sigma = np.sqrt(var)
+            n_inner_used = n_perm_inner
         else:
             # rerun_permutation path: caller only wants children/stat/size.
             mu = np.full_like(llr_outer, fill_value=np.nan)
@@ -707,7 +390,6 @@ class AnalysisGLOW(Analysis):
             'n_inner_used': n_inner_used,
             'n_per_reg': n_per_reg,
         }
-        result.update(race_extra)
         return result
 
     @classmethod
