@@ -1,6 +1,7 @@
 import pickle
 import shutil
 import tempfile
+import warnings
 from bisect import bisect_left
 from pathlib import Path
 
@@ -251,7 +252,7 @@ class AnalysisGLOW(Analysis):
         Returns:
             dict with keys
                 ``perm_idx``, ``children``, ``stat`` (raw LLR),
-                ``size``, ``mu``, ``sigma``, ``M2``, ``n_per_reg``,
+                ``size``, ``mu``, ``sigma``, ``n_per_reg``,
                 ``n_inner_used``, ``z``, ``max_z``.
         """
         # In the joblib parallel path, ``exp`` arrives via pickle which
@@ -335,33 +336,22 @@ class AnalysisGLOW(Analysis):
                         min_size=min_vox, layer=layer)
                     return llr_i
 
-            # Welford online (mu, M2) accumulated across all n_perm_inner
-            # draws, ignoring non-finite entries (Phase 2 skips
-            # size < min_vox, so those regions stay NaN).
-            mean = np.zeros(num_reg, dtype=float)
-            M2 = np.zeros(num_reg, dtype=float)
-            n_per_reg = np.zeros(num_reg, dtype=np.int64)
+            # Collect every draw then compute moments in one shot.
+            # Phase 2 skips size < min_vox, so those columns stay NaN
+            # and nanmean / nanstd ignore them.
+            draws = np.empty((n_perm_inner, num_reg), dtype=float)
             for i in range(n_perm_inner):
-                x = draw_one(i)
-                finite = np.isfinite(x)
-                n_per_reg[finite] += 1
-                delta = np.empty_like(mean)
-                delta[finite] = x[finite] - mean[finite]
-                mean[finite] += delta[finite] / n_per_reg[finite]
-                delta2 = np.empty_like(mean)
-                delta2[finite] = x[finite] - mean[finite]
-                M2[finite] += delta[finite] * delta2[finite]
-            mu = mean
-            with np.errstate(invalid='ignore', divide='ignore'):
-                var = np.where(n_per_reg >= 2, M2 / (n_per_reg - 1),
-                               np.nan)
-            sigma = np.sqrt(var)
+                draws[i] = draw_one(i)
+            n_per_reg = np.isfinite(draws).sum(axis=0).astype(np.int64)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                mu = np.nanmean(draws, axis=0)
+                sigma = np.nanstd(draws, axis=0, ddof=1)
             n_inner_used = n_perm_inner
         else:
             # rerun_permutation path: caller only wants children/stat/size.
             mu = np.full_like(llr_outer, fill_value=np.nan)
             sigma = np.full_like(llr_outer, fill_value=np.nan)
-            M2 = np.zeros_like(llr_outer)
             n_per_reg = np.zeros_like(llr_outer, dtype=np.int64)
 
         # zero-std guard (constant inner draws → divide-by-zero z).
@@ -384,7 +374,6 @@ class AnalysisGLOW(Analysis):
             'size': size,
             'mu': mu,
             'sigma': sigma,
-            'M2': M2,
             'z': z,
             'max_z': max_z,
             'n_inner_used': n_inner_used,
