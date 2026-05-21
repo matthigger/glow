@@ -5,6 +5,8 @@ from scipy.ndimage import label
 
 from ._base import Analysis
 
+DEFAULT_CET_CFT_PVAL = 0.0001
+
 
 class AnalysisCET(Analysis):
     """Cluster Extent Thresholding with permutation-based FWER.
@@ -16,7 +18,7 @@ class AnalysisCET(Analysis):
     """
 
     def __init__(self, exp, n_perm_fwer, alpha_fwer=.05,
-                 cft_pval=0.001, z_flag=False, n_jobs_perm=1,
+                 cft_pval=DEFAULT_CET_CFT_PVAL, z_flag=False, n_jobs_perm=1,
                  get_stat=None, **kwargs):
         if get_stat is None:
             from .mancova import get_wilks
@@ -50,14 +52,17 @@ class AnalysisCET(Analysis):
         self.effect_list = self.discover_mask(mask=mask, exp=exp)
 
     @classmethod
-    def from_precomputed(cls, *, exp, get_stat, stat, cft, cft_pval, alpha_fwer, z_flag=False):
+    def from_precomputed(cls, *, exp, get_stat, stat, cft, cft_pval,
+                         alpha_fwer, z_flag=False):
         """Construct from pre-computed stat matrix without running __init__.
 
         Computes cluster-extent p-values and discovers effects.
         """
         from glow.experiment.exper import ExperimentScaled
         obj = cls.__new__(cls)
-        obj.exp = exp if isinstance(exp, ExperimentScaled) else ExperimentScaled.from_exp(exp)
+        obj.exp = exp if isinstance(exp,
+                                    ExperimentScaled) else ExperimentScaled.from_exp(
+            exp)
         obj.get_stat = get_stat
         obj.stat = stat
         obj.cft_pval = cft_pval
@@ -113,8 +118,9 @@ class AnalysisCET(Analysis):
         if len(obs_sizes) > 0:
             obs_flat = obs_labels[vox_mask]
             for cid in range(1, len(obs_sizes) + 1):
-                p = max(1 - bisect_left(null_sorted, obs_sizes[cid - 1]) / n_perm,
-                        1 / n_perm)
+                p = max(
+                    1 - bisect_left(null_sorted, obs_sizes[cid - 1]) / n_perm,
+                    1 / n_perm)
                 pval[obs_flat == cid] = p
 
         return pval

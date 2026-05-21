@@ -7,9 +7,6 @@ from scipy.ndimage import label
 import glow.effect
 import glow.graph
 
-DEFAULT_CET_CFT_PVAL = 0.0001
-"""Default cluster-forming-threshold p-value used for CET variants."""
-
 # Fraction of (perm, region, stat) cells that can fail with
 # LinAlgError before we warn / raise.  Tuned so that the typical
 # near-singular-matrix boundary case (a handful of bad regions) does
