@@ -1,38 +1,44 @@
 """Inner Freedman-Lane permutation drivers.
 
 For one outer permutation: given the outer-perm tree (Ward children)
-and the source experiment, draw ``n_perm_inner`` inner-perm LLR samples
-and reduce them to per-region ``(mu, sigma, n_per_reg)``.  Four backends
-cover the (cpu vs gpu) x (intercept-only fast vs general slow) grid:
+and an experiment, draw ``n_perm`` inner-perm LLR samples and reduce
+them to per-region ``(mu, sigma)``.  Four backends cover the
+(cpu vs gpu) x (intercept-only fast vs general slow) grid:
 
   - :func:`cpu_fast` -- intercept-only.  Q0 commutes with permutations,
     so Phase-1 (yout/ysum/T_u) hoists out of the inner loop and each
     draw is a row-permuted ``q1.T`` against per-region precomputes.
   - :func:`cpu_slow` -- general-Q0.  Full ``compute_llr_batched`` per
-    draw, against a fresh ``exp.permute(base + i)``.
+    draw, against a fresh ``exp.permute(base_seed + i)``.
   - :func:`gpu_fast` -- intercept-only on GPU (single-batch CUDA Graph,
     closed-form 2x2 LLR).
   - :func:`gpu_slow` -- general-Q0 on GPU (multi-batch CUDA Graph with
     Chan-merged moments).
 
-All four share a single keyword-only signature so the caller just picks
-one and calls it::
+All four share a single keyword-only signature and return ``(mu,
+sigma)``::
 
     run = inner_perm.gpu_fast if use_gpu and use_fast else ...
-    moments = run(exp=exp, exp_perm=exp_perm, perm_idx=perm_idx,
-                  q0=q0, q1=q1, children=children, layer=layer,
-                  n_perm_inner=n_perm_inner, min_vox=min_vox)
+    mu, sigma = run(
+        exp=exp, base_seed=base_seed, n_perm=n_perm,
+        q0=q0, q1=q1, children=children, layer=layer, min_vox=min_vox)
 
-CPU backends read ``exp.y`` (and ignore ``exp_perm``); GPU backends
-read ``exp_perm.y`` (and ignore ``exp``).  The caller is responsible
-for outer-permuting via ``exp.permute(perm_idx)`` and passing the
-result as ``exp_perm``.
+``exp`` is whatever experiment the inner perms should operate on -- the
+backends don't need to know whether it carries an outer permutation;
+they just sample iid permutations from it.
 
-CPU backends honour ``keep_draws=True`` to additionally return the raw
-``(n_perm_inner, num_reg)`` LLR matrix; GPU backends raise on it
-because moments are reduced on-device and the per-draw LLR is never
-materialised on the host.
+``base_seed`` is the starting RNG seed: each draw ``i`` uses
+``base_seed + i``.  The caller is responsible for choosing a
+non-colliding base across outer perms (``_glow.py`` reserves a
+100_000-wide block per outer perm).
+
+CPU backends are thin wrappers over :func:`cpu_fast_full` /
+:func:`cpu_slow_full`, which return the raw ``(n_perm, num_reg)`` LLR
+draws matrix; tests that want to inspect individual draws call those
+directly.  GPU backends reduce moments on-device, so the raw draws
+matrix is never materialised on the host.
 """
+import functools
 import warnings
 
 import numpy as np
@@ -40,18 +46,32 @@ import numpy as np
 import glow.graph
 
 
-def cpu_fast(*, exp, exp_perm, perm_idx, q0, q1, children, layer,
-              n_perm_inner, min_vox, keep_draws=False):
-    """Intercept-only CPU fast path.
+def moments_from_draws(fn):
+    """Decorator: wraps a fn returning ``(n_perm, num_reg)`` draws into
+    one returning ``(mu, sigma)``.  Phase-2 leaves draws NaN for
+    size < min_vox regions; ``nanmean`` / ``nanstd`` ignore them.
+    """
+    @functools.wraps(fn)
+    def wrapper(**kwargs):
+        draws = fn(**kwargs)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            mu = np.nanmean(draws, axis=0)
+            sigma = np.nanstd(draws, axis=0, ddof=1)
+        return mu, sigma
+    return wrapper
+
+
+def cpu_fast_full(*, exp, base_seed, n_perm,
+                   q0, q1, children, layer, min_vox):
+    """Intercept-only CPU fast path -- returns ``(n_perm, num_reg)`` draws.
 
     Q0 commutes with the FL permutation so Phase-1 (``yout``, ``ysum``,
     ``T_u``) is permutation-invariant and hoists out of the inner loop.
     Each draw is then a row-permuted ``q1.T`` against the per-region
     precomputes, run through ``compute_llr_inner_fast``.
     """
-    del exp_perm  # GPU backends read this; CPU paths reuse exp.y
     n_img = exp.y.shape[1]
-    base = (perm_idx + 1) * 100_000
     q0_proj = q0.T @ q0
     eye_n = np.eye(n_img, dtype=q0.dtype)
 
@@ -64,84 +84,70 @@ def cpu_fast(*, exp, exp_perm, perm_idx, q0, q1, children, layer,
     del _a0
 
     num_reg = ysum_u.shape[0]
-    draws = np.empty((n_perm_inner, num_reg), dtype=float)
-    for i in range(n_perm_inner):
-        rng = np.random.default_rng(base + i)
+    draws = np.empty((n_perm, num_reg), dtype=float)
+    for i in range(n_perm):
+        rng = np.random.default_rng(base_seed + i)
         perm = np.argsort(rng.permutation(n_img))
         freed_lane = (eye_n - q0_proj)[:, perm] + q0_proj
         q1_T_perm = (freed_lane @ q1.T).astype(_dtype, copy=False)
         llr_i, _ = glow.graph.compute_llr_inner_fast(
             t_u, ysum_u, size_u, q1_T_perm, min_size=min_vox)
         draws[i] = llr_i
-    return _moments_from_draws(draws, keep_draws=keep_draws)
+    return draws
 
 
-def cpu_slow(*, exp, exp_perm, perm_idx, q0, q1, children, layer,
-              n_perm_inner, min_vox, keep_draws=False):
-    """General-Q0 CPU slow path: full ``compute_llr_batched`` per draw."""
-    del exp_perm
-    base = (perm_idx + 1) * 100_000
+def cpu_slow_full(*, exp, base_seed, n_perm,
+                   q0, q1, children, layer, min_vox):
+    """General-Q0 CPU slow path -- returns ``(n_perm, num_reg)`` draws.
+
+    Full ``compute_llr_batched`` per draw, each against a fresh
+    ``exp.permute(base_seed + i)``.
+    """
     num_vox = exp.y.shape[2]
     num_reg = num_vox + children.shape[0]
-    draws = np.empty((n_perm_inner, num_reg), dtype=float)
-    for i in range(n_perm_inner):
-        _exp_inner = exp.permute(base + i)
+    draws = np.empty((n_perm, num_reg), dtype=float)
+    for i in range(n_perm):
+        _exp_inner = exp.permute(base_seed + i)
         llr_i, _ = glow.graph.compute_llr_batched(
             _exp_inner, children=children, q0=q0, q1=q1,
             min_size=min_vox, layer=layer)
         draws[i] = llr_i
-    return _moments_from_draws(draws, keep_draws=keep_draws)
+    return draws
 
 
-def gpu_fast(*, exp, exp_perm, perm_idx, q0, q1, children, layer,
-              n_perm_inner, min_vox, keep_draws=False):
-    """Intercept-only GPU path -- closed-form 2x2 LLR, single CUDA Graph."""
-    del exp  # CPU backends read this; GPU paths consume exp_perm
-    _reject_keep_draws_on_gpu(keep_draws)
+cpu_fast = moments_from_draws(cpu_fast_full)
+cpu_slow = moments_from_draws(cpu_slow_full)
+
+
+def gpu_fast(*, exp, base_seed, n_perm,
+              q0, q1, children, layer, min_vox):
+    """Intercept-only GPU path -- returns ``(mu, sigma)``.
+
+    Closed-form 2x2 LLR, single CUDA Graph.
+    """
     from glow.analysis.inner_perm_gpu import _run_intercept
+    # ``perm_idx`` is only used by the GPU helper to derive a default
+    # base_seed when base_seed is None; we always pass base_seed so
+    # the value here is irrelevant.
     out = _run_intercept(
-        exp_perm, perm_idx, q0=q0, q1=q1, children=children, layer=layer,
-        n_perm_inner=n_perm_inner, min_vox=min_vox,
-        base_seed=None, device='cuda')
-    return {'mu': out['mu'], 'sigma': out['sigma'],
-            'n_per_reg': out['n_per_reg']}
+        exp, perm_idx=0,
+        q0=q0, q1=q1, children=children, layer=layer,
+        n_perm_inner=n_perm, min_vox=min_vox,
+        base_seed=base_seed, device='cuda')
+    return out['mu'], out['sigma']
 
 
-def gpu_slow(*, exp, exp_perm, perm_idx, q0, q1, children, layer,
-              n_perm_inner, min_vox, keep_draws=False):
-    """General-Q0 GPU path -- alpha/beta decomposition, Chan-merged moments."""
-    del exp
-    _reject_keep_draws_on_gpu(keep_draws)
+def gpu_slow(*, exp, base_seed, n_perm,
+              q0, q1, children, layer, min_vox):
+    """General-Q0 GPU path -- returns ``(mu, sigma)``.
+
+    Alpha/beta decomposition, multi-batch CUDA Graph with Chan-merged
+    moments.
+    """
     from glow.analysis.inner_perm_gpu import _run_general
     out = _run_general(
-        exp_perm, perm_idx, q0=q0, q1=q1, children=children, layer=layer,
-        n_perm_inner=n_perm_inner, min_vox=min_vox,
-        base_seed=None, device='cuda')
-    return {'mu': out['mu'], 'sigma': out['sigma'],
-            'n_per_reg': out['n_per_reg']}
-
-
-def _reject_keep_draws_on_gpu(keep_draws):
-    if keep_draws:
-        raise NotImplementedError(
-            'keep_draws=True is not supported on GPU backends: '
-            'moments are reduced on-device and the per-draw LLR '
-            'matrix is never materialised on the host.')
-
-
-def _moments_from_draws(draws, *, keep_draws):
-    """Reduce ``(n_perm_inner, num_reg)`` draws to per-region moments.
-
-    Phase-2 skips regions with ``size < min_vox`` so those columns stay
-    NaN; ``nanmean`` / ``nanstd`` ignore them and ``n_per_reg`` records
-    the finite count.
-    """
-    n_per_reg = np.isfinite(draws).sum(axis=0).astype(np.int64)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', RuntimeWarning)
-        mu = np.nanmean(draws, axis=0)
-        sigma = np.nanstd(draws, axis=0, ddof=1)
-    out = {'mu': mu, 'sigma': sigma, 'n_per_reg': n_per_reg}
-    if keep_draws:
-        out['draws'] = draws
-    return out
+        exp, perm_idx=0,
+        q0=q0, q1=q1, children=children, layer=layer,
+        n_perm_inner=n_perm, min_vox=min_vox,
+        base_seed=base_seed, device='cuda')
+    return out['mu'], out['sigma']

@@ -252,7 +252,7 @@ class AnalysisGLOW(Analysis):
         Returns:
             dict with keys
                 ``perm_idx``, ``children``, ``stat`` (raw LLR),
-                ``size``, ``mu``, ``sigma``, ``n_per_reg``,
+                ``size``, ``mu``, ``sigma``,
                 ``n_inner_used``, ``z``, ``max_z``.
         """
         # In the joblib parallel path, ``exp`` arrives via pickle which
@@ -285,8 +285,7 @@ class AnalysisGLOW(Analysis):
         # slow) grid.  Fast = intercept-only Phase-1 hoist; slow =
         # general-Q0 full recompute per draw.  See
         # ``glow.analysis.inner_perm`` for the four backends; they
-        # share one keyword signature.  Seed scheme: each outer perm
-        # reserves a 100_000-wide block (handled inside each backend).
+        # share one keyword signature.
         if n_perm_inner > 0:
             use_fast = (getattr(self, 'use_fast_path', True)
                         and is_intercept_only_nuisance(exp.x, exp.contrast))
@@ -296,26 +295,21 @@ class AnalysisGLOW(Analysis):
             else:
                 run = inner_perm.cpu_fast if use_fast else inner_perm.cpu_slow
 
-            # CPU paths reuse the unpermuted exp.y; drop the outer-perm
-            # copy (~1 GB at HCP-full scale) before the inner loop.
-            exp_perm = _exp if use_gpu else None
-            del _exp
-
-            moments = run(
-                exp=exp, exp_perm=exp_perm, perm_idx=perm_idx,
+            # Seed scheme: each outer perm reserves a 100_000-wide
+            # block, far above any realistic n_perm_inner, so inner
+            # seeds never collide across outer perms.
+            mu, sigma = run(
+                exp=_exp, base_seed=(perm_idx + 1) * 100_000,
+                n_perm=n_perm_inner,
                 q0=q0, q1=q1, children=children, layer=layer,
-                n_perm_inner=n_perm_inner, min_vox=min_vox)
-            mu = moments['mu']
-            sigma = moments['sigma']
-            n_per_reg = moments['n_per_reg']
+                min_vox=min_vox)
             n_inner_used = n_perm_inner
         else:
             # rerun_permutation path: caller only wants children/stat/size.
-            del _exp
             mu = np.full_like(llr_outer, fill_value=np.nan)
             sigma = np.full_like(llr_outer, fill_value=np.nan)
-            n_per_reg = np.zeros_like(llr_outer, dtype=np.int64)
             n_inner_used = 0
+        del _exp
 
         # zero-std guard (constant inner draws → divide-by-zero z).
         sigma_safe = np.where(sigma < 1e-12, 1.0, sigma)
@@ -340,7 +334,6 @@ class AnalysisGLOW(Analysis):
             'z': z,
             'max_z': max_z,
             'n_inner_used': n_inner_used,
-            'n_per_reg': n_per_reg,
         }
         return result
 
