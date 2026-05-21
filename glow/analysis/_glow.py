@@ -10,7 +10,6 @@ from tqdm import tqdm
 
 import glow.effect
 import glow.graph
-from ._base import Analysis, _sanitize_adjusted_stat
 from glow.experiment.exper import ExperimentScaled
 from . import inner_perm
 from .mancova import decompose, get_llr, is_intercept_only_nuisance
@@ -314,7 +313,7 @@ class AnalysisGLOW(Analysis):
         # zero-std guard (constant inner draws → divide-by-zero z).
         sigma_safe = np.where(sigma < 1e-12, 1.0, sigma)
         z = (llr_outer - mu) / sigma_safe
-        z = _sanitize_adjusted_stat(z)
+        z = np.nan_to_num(z, nan=0.0, posinf=0.0, neginf=np.nan)
 
         # FWER comparison set: only regions with size >= min_vox feed
         # the max-z null.  Inactive regions are excluded entirely.
@@ -382,7 +381,8 @@ class AnalysisGLOW(Analysis):
         verbose = getattr(self, 'verbose', False)
         num_reg = stat_0.shape[0]
 
-        llr_z_0 = _sanitize_adjusted_stat(np.asarray(llr_z_0, dtype=float))
+        llr_z_0 = np.nan_to_num(np.asarray(llr_z_0, dtype=float), nan=0.0,
+                                posinf=0.0, neginf=np.nan)
 
         self.alpha_fwer = alpha_fwer
         self.size = size_0

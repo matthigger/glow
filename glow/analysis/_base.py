@@ -1,4 +1,3 @@
-import warnings
 from bisect import bisect_left
 
 import numpy as np
@@ -6,69 +5,6 @@ from scipy.ndimage import label
 
 import glow.effect
 import glow.graph
-
-# Fraction of (perm, region, stat) cells that can fail with
-# LinAlgError before we warn / raise.  Tuned so that the typical
-# near-singular-matrix boundary case (a handful of bad regions) does
-# not trigger, but systemic failure (num_img too small for b) does.
-_LINALG_WARN_RATE = 0.01   # emit RuntimeWarning above this
-_LINALG_FAIL_RATE = 0.10   # raise RuntimeError above this
-
-
-def _check_linalg_rate(n_err, n_total, *, fn_name):
-    """Warn / raise based on LinAlgError fraction in a permutation run.
-
-    Args:
-        n_err (int): count of np.linalg.LinAlgError swallowed into NaN
-        n_total (int): total (perm, region, stat) cells attempted
-        fn_name (str): caller identity, used in the message
-
-    Raises:
-        RuntimeError: if ``n_err / n_total`` exceeds
-            ``_LINALG_FAIL_RATE``.
-    """
-    if n_total == 0:
-        return
-    rate = n_err / n_total
-    if rate > _LINALG_FAIL_RATE:
-        raise RuntimeError(
-            f'{fn_name}: LinAlgError rate {rate:.1%} '
-            f'({n_err}/{n_total}) exceeds {_LINALG_FAIL_RATE:.0%} fail '
-            f'threshold.  Likely cause: num_img is too small relative '
-            f'to b (the E or H + E matrix is systematically singular).  '
-            f'Consider reducing b (fewer response features) or adding '
-            f'more images.')
-    if rate > _LINALG_WARN_RATE:
-        warnings.warn(
-            f'{fn_name}: LinAlgError rate {rate:.1%} '
-            f'({n_err}/{n_total}) exceeds {_LINALG_WARN_RATE:.0%} warn '
-            f'threshold.  The affected (region, permutation) cells '
-            f'were filled with NaN and will be ignored downstream.  '
-            f'If this rate climbs further, consider reducing b or '
-            f'adding more images.',
-            RuntimeWarning,
-            stacklevel=3,
-        )
-
-
-def _sanitize_adjusted_stat(adj):
-    """Replace non-finite values in an adjusted stat array.
-
-    nan -> 0.0, posinf -> 0.0, neginf -> nan.
-
-    Rationale: nan/posinf come from well-understood numerical paths
-    (NaN stats from singular covariance, posinf rare floating-point
-    overflow on well-behaved stats) and can safely be treated as "no
-    evidence" (0.0).  neginf can arise from stats like Wilks' Lambda
-    in degenerate numerical regimes (overflow in ``exp(logdet_e -
-    logdet_t)``); previous code clipped to the magic value -30.0,
-    which silently contaminates the max-stat null distribution.
-    NaN propagates through ``nanmax`` (the region is ignored in the
-    FWER null) and through the per-region p-value loop (the region
-    gets a NaN p-value), which is the correct "invalid / unknown"
-    handling.
-    """
-    return np.nan_to_num(adj, nan=0.0, posinf=0.0, neginf=np.nan)
 
 
 class Analysis:
@@ -126,7 +62,7 @@ class Analysis:
                 pval[reg_idx] = np.nan
                 continue
             pval[reg_idx] = max(1 - bisect_left(stat_max, z) / num_perm,
-                               1 / num_perm)
+                                1 / num_perm)
 
         # inactive regions get no pvalue (otherwise we don't control FWER!)
         pval[~reg_active] = np.nan
@@ -204,7 +140,8 @@ class Analysis:
                 except np.linalg.LinAlgError:
                     n_linalg_err += 1
 
-        _check_linalg_rate(n_linalg_err, n_total, fn_name='get_stat_perm_multi')
+        _check_linalg_rate(n_linalg_err, n_total,
+                           fn_name='get_stat_perm_multi')
         return result
 
     def get_stat_perm(self, exp, children=None):
@@ -237,14 +174,13 @@ class Analysis:
         n_linalg_err = 0
         n_total = 0
         for reg_idx, size, e, h in glow.graph.iter_stat(exp=exp,
-                                                       children=children):
+                                                        children=children):
             n_total += 1
             try:
                 stat[reg_idx] = self.get_stat(e=e, h=h, n=size)
             except np.linalg.LinAlgError:
                 n_linalg_err += 1
 
-        _check_linalg_rate(n_linalg_err, n_total, fn_name='get_stat_perm')
         return stat
 
     @classmethod
