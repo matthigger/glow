@@ -159,8 +159,9 @@ def process_permutation(exp, ana_kwargs, perm_idx):
     The synthesis job then just gathers max_z from each pickle.
     """
     from glow.analysis._glow import AnalysisGLOW
+    from glow.analysis.cluster import ClusterMode
 
-    cluster_mode = ana_kwargs.get('cluster_mode', "q1")
+    cluster_mode = ana_kwargs.get('cluster_mode', ClusterMode.FOCUS)
     n_perm_inner = ana_kwargs.get('n_perm_inner', 200)
     min_vox = ana_kwargs.get('min_vox', 4)
 
@@ -479,9 +480,11 @@ def run_synthesis_mode(args):
             break
         time.sleep(30)
 
+    from glow.analysis.cluster import ClusterMode
+
     alpha_fwer = ana_kwargs.get('alpha_fwer', 0.05)
     min_vox = ana_kwargs.get('min_vox', 4)
-    cluster_mode = ana_kwargs.get('cluster_mode', "q1")
+    cluster_mode = ana_kwargs.get('cluster_mode', ClusterMode.FOCUS)
 
     # download all per-perm result pickles into an in-memory dict so
     # the per-region-z finalizer can read them as if they were produced

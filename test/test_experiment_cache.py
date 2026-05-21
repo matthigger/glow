@@ -210,8 +210,8 @@ class TestRunnerLabels:
 
     def test_run_segment_labels(self):
         config = Config(label='seg', runner=RunSegment(), source='wgn')
-        from glow.analysis.cluster import MODE_LABELS
-        assert set(config.runner.labels) == set(MODE_LABELS.values())
+        from glow.analysis.cluster import ClusterMode
+        assert set(config.runner.labels) == set(map(str, ClusterMode))
 
     def test_run_prune_compare_labels(self):
         import glow

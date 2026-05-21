@@ -377,9 +377,9 @@ def test_compute_llr_inner_fast_matches_compute_llr_batched():
                                 seed=0, add_bias=True)
     assert is_intercept_only_nuisance(exp.x, exp.contrast)
 
-    from glow.analysis.cluster import cluster
+    from glow.analysis.cluster import cluster, ClusterMode
     num_vox = exp.y.shape[2]
-    children = cluster(exp=exp, mode='q1')
+    children = cluster(exp=exp, mode=ClusterMode.FOCUS)
     layer = compute_tree_layers(children, num_vox)
     q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
 
@@ -440,14 +440,14 @@ def test_compute_llr_inner_kernel_matches_compute_llr_batched_intercept_only():
     from glow.experiment.exper import Experiment
     from glow.experiment.permute import get_freed_lane
     from glow.analysis.mancova import decompose
-    from glow.analysis.cluster import cluster
+    from glow.analysis.cluster import cluster, ClusterMode
     from glow.graph import (compute_llr_batched, compute_llr_inner_kernel,
                             build_survivor_kernels, compute_tree_layers)
 
     exp = Experiment.from_gauss(a=2, b=2, num_img=30, shape=(8, 8),
                                 seed=0, add_bias=True)
     num_vox = exp.y.shape[2]
-    children = cluster(exp=exp, mode='q1')
+    children = cluster(exp=exp, mode=ClusterMode.FOCUS)
     layer = compute_tree_layers(children, num_vox)
     q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
 
@@ -499,7 +499,7 @@ def test_compute_llr_inner_kernel_matches_compute_llr_batched_general_q0():
     from glow.experiment.exper import Experiment
     from glow.experiment.permute import get_freed_lane
     from glow.analysis.mancova import decompose
-    from glow.analysis.cluster import cluster
+    from glow.analysis.cluster import cluster, ClusterMode
     from glow.graph import (compute_llr_batched, compute_llr_inner_kernel,
                             build_survivor_kernels, compute_tree_layers,
                             compute_phase1)
@@ -520,7 +520,7 @@ def test_compute_llr_inner_kernel_matches_compute_llr_batched_general_q0():
     exp = Experiment(x=x, y=y, contrast=contrast, mask_idx=mask_idx,
                      add_bias=False)
 
-    children = cluster(exp=exp, mode='q1')
+    children = cluster(exp=exp, mode=ClusterMode.FOCUS)
     layer = compute_tree_layers(children, exp.y.shape[2])
     q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
     assert q0.shape[0] >= 2, 'expected non-trivial Q0 for this test'

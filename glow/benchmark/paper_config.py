@@ -7,6 +7,7 @@ from glow.benchmark.config import Config
 from glow.benchmark.runner import (RunAna, RunSegment, RunPruneCompare,
                                    RunMancovaVba)
 from glow.analysis.mancova import get_hotel_tr, get_wilks
+from glow.analysis.cluster import ClusterMode
 
 # ---------- common parameters ----------
 CROP_N_VOX = 25_000
@@ -42,8 +43,8 @@ _GLOW_BASE = dict(n_perm_fwer=N_PERM_FWER,
                   min_vox=4,
                   alpha_fwer=ALPHA_FWER)
 ANALYSES = {
-    'GLOW-Focus': {**_GLOW_BASE, 'cluster_mode': "q1"},
-    'GLOW-GLM':   {**_GLOW_BASE, 'cluster_mode': "q0, q1"},
+    'GLOW-Focus': {**_GLOW_BASE, 'cluster_mode': ClusterMode.FOCUS},
+    'GLOW-GLM':   {**_GLOW_BASE, 'cluster_mode': ClusterMode.GLM_ERROR},
     'VBA': dict(n_perm_fwer=N_PERM_FWER,
                 tfce_flag=False,
                 z_flag=True,

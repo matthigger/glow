@@ -9,7 +9,7 @@ from glow.experiment.exper import ExperimentScaled
 from . import inner_perm, Analysis
 from .mancova import decompose, is_intercept_only_nuisance
 from .prune import prune_greedy
-from .cluster import cluster
+from .cluster import cluster, ClusterMode
 
 
 class AnalysisGLOW(Analysis):
@@ -34,7 +34,7 @@ class AnalysisGLOW(Analysis):
                  n_perm_inner=200,
                  alpha_fwer=.05, min_vox=4, verbose=False,
                  cloud_config=None,
-                 cluster_mode="q1"):
+                 cluster_mode=ClusterMode.FOCUS):
         """
         Args:
             exp: Experiment to analyze
@@ -53,11 +53,10 @@ class AnalysisGLOW(Analysis):
                 ever being plausible scientific findings.
             verbose: print progress
             cloud_config: CloudConfig for AWS execution (None = local)
-            cluster_mode: Ward projection.  Must be one of the keys in
-                ``glow.analysis.cluster._MODES``.  Default
-                ``"q1"`` (Focus) projects onto the contrast
-                subspace; ``"q0, q1"`` (GLM Error) keeps bias
-                + contrast; ``"all"`` (Naive) clusters raw y.
+            cluster_mode (ClusterMode): Ward projection.  Default
+                ``ClusterMode.FOCUS`` projects onto the contrast
+                subspace; ``ClusterMode.GLM_ERROR`` keeps bias +
+                contrast; ``ClusterMode.NAIVE`` clusters raw y.
         """
         super().__init__(exp)
         self.verbose = verbose
@@ -134,7 +133,7 @@ class AnalysisGLOW(Analysis):
         self._sigma_per_region = np.asarray(r0['sigma'], dtype=float)
 
     @classmethod
-    def from_precomputed(cls, *, exp, verbose=False, cluster_mode="q1"):
+    def from_precomputed(cls, *, exp, verbose=False, cluster_mode=ClusterMode.FOCUS):
         """Construct an empty shell without running ``__init__``.
 
         Caller is responsible for invoking ``_finalize_per_region_z()``
@@ -262,7 +261,7 @@ class AnalysisGLOW(Analysis):
 
     @classmethod
     def rerun_permutation(cls, exp, perm_idx,
-                          cluster_mode="q1", n_perm_inner=0, min_vox=4):
+                          cluster_mode=ClusterMode.FOCUS, n_perm_inner=0, min_vox=4):
         """Re-run a single outer permutation for inspection.
 
         Defaults to ``n_perm_inner=0`` (skips the inner FL loop), which
@@ -410,7 +409,7 @@ class AnalysisGLOW(Analysis):
                       alpha_fwer, min_vox, verbose,
                       cloud_config,
                       perms_per_job=None,
-                      cluster_mode="q1",
+                      cluster_mode=ClusterMode.FOCUS,
                       **kwargs):
         """Run full analysis on AWS Batch (outer perms + synthesis).
 

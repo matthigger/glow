@@ -384,15 +384,15 @@ class RunSegment(Runner):
 
     @property
     def labels(self):
-        from glow.analysis.cluster import MODE_LABELS
-        return set(MODE_LABELS.values())
+        from glow.analysis.cluster import ClusterMode
+        return set(map(str, ClusterMode))
 
     def run(self, config, **iter_kw):
-        from glow.analysis.cluster import _MODES, MODE_LABELS, cluster
+        from glow.analysis.cluster import ClusterMode, cluster
 
         exp, effect = config.get_exp_eff(**iter_kw)
 
-        for mode in _MODES:
+        for mode in ClusterMode:
             start = time.time()
             children = cluster(exp, mode=mode)
             total_time_sec = time.time() - start
@@ -403,7 +403,7 @@ class RunSegment(Runner):
                 children=children)
             idx = np.argmax(dice)
 
-            label = MODE_LABELS[mode]
+            label = str(mode)
             d = {'effect_llr': effect.effect_llr,
                  'seed': int(effect.seed),
                  'dice': dice[idx],

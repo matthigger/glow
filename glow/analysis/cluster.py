@@ -1,3 +1,5 @@
+from enum import StrEnum
+
 import numpy as np
 from scipy.ndimage import label, generate_binary_structure
 from sklearn.feature_extraction.image import grid_to_graph
@@ -6,16 +8,20 @@ from glow.mask import bbox_crop
 from .mancova import decompose
 from .ward import ward_tree
 
-_MODES = ('all', 'q0, q1', 'q1')
 
-MODE_LABELS = {
-    'all': 'Naive',
-    'q0, q1': 'GLM Error',
-    'q1': 'Focus',
-}
+class ClusterMode(StrEnum):
+    """Ward projection mode.
+
+    NAIVE: cluster raw y (no projection).
+    GLM_ERROR: project onto full design space (q0 + q1).
+    FOCUS: project onto contrast-of-interest subspace (q1) only.
+    """
+    NAIVE = 'Naive'
+    GLM_ERROR = 'GLM Error'
+    FOCUS = 'Focus'
 
 
-def cluster(exp, mode='q1'):
+def cluster(exp, mode=ClusterMode.FOCUS):
     """hierarchical segmentation via Ward's method (6-connectivity in 3d).
 
     Supports non-contiguous masks: each connected component is clustered
@@ -23,10 +29,7 @@ def cluster(exp, mode='q1'):
 
     Args:
         exp (Experiment): experiment providing y and mask_idx
-        mode (str): which Y projection to cluster on.
-            ``'all'`` clusters raw y,
-            ``'q0, q1'`` projects onto the full design space,
-            ``'q1'`` projects onto the contrast-of-interest subspace only
+        mode (ClusterMode): which Y projection to cluster on.
 
     Returns:
         children (np.array): (num_internal, 2) child index pairs.
@@ -34,11 +37,11 @@ def cluster(exp, mode='q1'):
             For k components, num_internal = num_vox - k.
     """
     assert exp.mask_idx.ndim in (2, 3), 'mask must be 2d or 3d'
-    assert mode in _MODES, f'mode not recognized: {mode}'
+    mode = ClusterMode(mode)
 
-    if mode == 'all':
+    if mode is ClusterMode.NAIVE:
         y = exp.y
-    elif mode == 'q0, q1':
+    elif mode is ClusterMode.GLM_ERROR:
         q, r = np.linalg.qr(exp.x.T)
         q = q.T
         y = np.einsum('bnr,na->bar', exp.y, q.T, optimize=True)

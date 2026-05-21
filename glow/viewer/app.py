@@ -326,9 +326,8 @@ def _detail_panels(ana_glow):
         exp_rows.append(_render_value('affine', meta['affine']))
 
     # --- analysis detail ---
-    from glow.analysis.cluster import MODE_LABELS
     cluster_mode = getattr(ana_glow, 'cluster_mode', None)
-    mode_label = MODE_LABELS.get(cluster_mode, '?')
+    mode_label = str(cluster_mode) if cluster_mode is not None else '?'
     pval = getattr(ana_glow, 'pval', None)
     if pval is not None and len(pval):
         pval_min = float(np.nanmin(pval))
