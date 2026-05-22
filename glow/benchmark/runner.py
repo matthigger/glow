@@ -85,11 +85,11 @@ def _score_and_emit(ana, effect, config, label, total_time_sec, iter_kw):
                                            mask_active=mask_active)
 
     pct_max_dice = 0.0
-    if hasattr(ana, 'sig_reg_list') and hasattr(ana, 'children'):
+    if hasattr(ana, 'pval') and hasattr(ana, 'children'):
         dice_all, _, _ = glow.graph.get_dice_sens_spec(
             mask=effect.mask, mask_idx=exp.mask_idx,
             children=ana.children)
-        sig = ana.sig_reg_list
+        sig = np.where(ana.pval <= ana.alpha_fwer)[0]
         max_dice_sig = max((dice_all[i] for i in sig), default=0.0)
         if max_dice_sig > 0:
             out_regs = [eff.reg_idx for eff in ana.effect_list]
@@ -393,6 +393,7 @@ class RunSegment(Runner):
         exp, effect = config.get_exp_eff(**iter_kw)
 
         for mode in ClusterMode:
+            label = str(mode)
             start = time.time()
             children = cluster(exp, mode=mode)
             total_time_sec = time.time() - start
@@ -403,7 +404,6 @@ class RunSegment(Runner):
                 children=children)
             idx = np.argmax(dice)
 
-            label = str(mode)
             d = {'effect_llr': effect.effect_llr,
                  'seed': int(effect.seed),
                  'dice': dice[idx],
@@ -453,14 +453,15 @@ class RunPruneCompare(Runner):
         exp, effect = config.get_exp_eff(**iter_kw)
 
         start = time.time()
-        ana = glow.analysis.AnalysisGLOW(exp=exp, **self.glow_ana_kwargs)
+        ana = glow.analysis.AnalysisGLOW(
+            exp=exp, **self.glow_ana_kwargs).fit()
         total_time_sec = time.time() - start
 
-        sig = ana.sig_reg_list
+        sig = list(np.where(ana.pval <= ana.alpha_fwer)[0])
         children = ana.children
-        llr = np.nan_to_num(ana.stat.astype(float),
+        llr = np.nan_to_num(ana.llr.astype(float),
                             nan=0.0, posinf=0.0, neginf=0.0)
-        llr_z = np.nan_to_num(ana.llr_z_0.astype(float),
+        llr_z = np.nan_to_num(ana.z.astype(float),
                               nan=0.0, posinf=0.0, neginf=0.0)
 
         methods = {

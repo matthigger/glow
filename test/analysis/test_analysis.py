@@ -26,7 +26,7 @@ class TestBigEffect:
                                     effect_llr=0.5)
 
     def test_glow(self):
-        analysis = AnalysisGLOW(TestBigEffect.exp, n_perm_fwer=25, alpha_fwer=.1)
+        analysis = AnalysisGLOW(TestBigEffect.exp, n_perm_fwer=25, alpha_fwer=.1).fit()
 
         # check that target region segmented properly
         dice = get_dice_sens_spec(mask=TestBigEffect.effect.mask,
@@ -77,7 +77,7 @@ class TestBigEffect:
             TestBigEffect.exp,
             n_perm_fwer=10,
             alpha_fwer=.1,
-        )
+        ).fit()
 
         # should still find the effect
         assert len(analysis.effect_list) > 0
@@ -88,38 +88,21 @@ class TestBigEffect:
             TestBigEffect.exp,
             n_perm_fwer=25,
             alpha_fwer=.1,
-        )
+        ).fit()
 
-        assert hasattr(analysis, 'prune_info')
         assert len(analysis.effect_list) >= 1, \
             f'expected at least 1 effect, got {len(analysis.effect_list)}'
-    
+
     def test_glow_with_adjustment(self):
         """test GLOW with adjustment permutations"""
         analysis = AnalysisGLOW(
             TestBigEffect.exp,
             n_perm_fwer=10,
             alpha_fwer=.1
-        )
-        
+        ).fit()
+
         assert hasattr(analysis, 'children')
         assert hasattr(analysis, 'pval')
-    
-    def test_analysis_get_stat(self):
-        """test custom get_stat function"""
-        from glow.analysis.mancova import get_pillai
-        
-        # use pillai instead of default hotelling
-        analysis = AnalysisGLOW(
-            TestBigEffect.exp,
-            n_perm_fwer=5,
-            alpha_fwer=.1,
-            get_stat=get_pillai
-        )
-        
-        # should still work
-        assert hasattr(analysis, 'effect_list')
-        assert hasattr(analysis, 'stat')
 
 
 class TestZScoreStat:
@@ -210,7 +193,7 @@ class TestAnalysisEdgeCases:
             n_perm_fwer=5,
             alpha_fwer=.1,
             min_vox=1000000  # impossibly large
-        )
+        ).fit()
         
         # should run without error
         assert hasattr(analysis, 'pval')
@@ -231,7 +214,7 @@ class TestAnalysisEdgeCases:
             n_perm_fwer=3,
             alpha_fwer=.5,  # lenient for small sample
             min_vox=1
-        )
+        ).fit()
         
         # should run without error even with small size
         assert hasattr(analysis, 'pval')
@@ -249,14 +232,14 @@ class TestAnalysisEdgeCases:
             exp,
             n_perm_fwer=5,
             alpha_fwer=.01
-        )
+        ).fit()
 
         # lenient alpha
         analysis_lenient = AnalysisGLOW(
             exp,
             n_perm_fwer=5,
             alpha_fwer=.5
-        )
+        ).fit()
         
         # lenient should find same or more effects
         assert len(analysis_lenient.effect_list) >= len(analysis_strict.effect_list)
@@ -294,12 +277,12 @@ class TestZeroStdGuard:
                                    effect_llr=0.5)
 
         analysis = AnalysisGLOW(exp, n_perm_fwer=5, alpha_fwer=0.05,
-                                min_vox=1)
+                                min_vox=1).fit()
 
-        assert not np.any(np.isinf(analysis.llr_z_0)), \
-            'llr_z_0 contains inf (likely zero-std division)'
-        assert not np.any(np.isnan(analysis.llr_z_0)), \
-            'llr_z_0 contains nan (likely zero-std division)'
+        assert not np.any(np.isinf(analysis.z)), \
+            'z contains inf (likely zero-std division)'
+        assert not np.any(np.isnan(analysis.z)), \
+            'z contains nan (likely zero-std division)'
 
 
 class TestMinVox:
@@ -316,13 +299,14 @@ class TestMinVox:
         min_vox = 4
         ana = AnalysisGLOW(
             exp, n_perm_fwer=10, n_perm_inner=20,
-            alpha_fwer=.5, min_vox=min_vox)
+            alpha_fwer=.5, min_vox=min_vox).fit()
 
-        # any sig_reg_list entry must have size >= min_vox
-        for reg_idx in ana.sig_reg_list:
+        # every significant region must have size >= min_vox
+        sig = np.where(ana.pval <= ana.alpha_fwer)[0]
+        for reg_idx in sig:
             assert ana.size[reg_idx] >= min_vox, (
                 f'reg {reg_idx} has size {ana.size[reg_idx]} '
-                f'< min_vox={min_vox} but appears in sig_reg_list')
+                f'< min_vox={min_vox} but appears significant')
 
         # regions with size < min_vox must have nan p-values
         below = ana.size < min_vox
@@ -343,24 +327,24 @@ class TestMinVox:
 
         ana_low = AnalysisGLOW(
             exp, n_perm_fwer=10, n_perm_inner=20,
-            alpha_fwer=.1, min_vox=1)
+            alpha_fwer=.1, min_vox=1).fit()
         ana_high = AnalysisGLOW(
             exp, n_perm_fwer=10, n_perm_inner=20,
-            alpha_fwer=.1, min_vox=4)
+            alpha_fwer=.1, min_vox=4).fit()
 
         # threshold under min_vox=4 should be <= threshold under min_vox=1
         # (using the same outer-perm seeds → comparable max-z draws)
-        assert ana_high.adj_crit <= ana_low.adj_crit + 1e-9, (
-            f'min_vox=4 threshold {ana_high.adj_crit:.3f} > '
-            f'min_vox=1 threshold {ana_low.adj_crit:.3f}')
+        crit_high = np.quantile(ana_high.max_z_null, 1 - ana_high.alpha_fwer,
+                                method='higher')
+        crit_low = np.quantile(ana_low.max_z_null, 1 - ana_low.alpha_fwer,
+                               method='higher')
+        assert crit_high <= crit_low + 1e-9, (
+            f'min_vox=4 threshold {crit_high:.3f} > '
+            f'min_vox=1 threshold {crit_low:.3f}')
 
 
 class TestPerRegionZConsistency:
-    """``llr_z_0`` must equal (stat - mu_per_region) / sigma_per_region.
-
-    Catches handoff bugs between the per-worker computation and the
-    synth step's reuse of the worker's stored z-array.
-    """
+    """z must equal (stat - mu) / sigma on the observed tree."""
 
     def test_z_matches_stat_minus_mu_over_sigma(self):
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
@@ -369,18 +353,17 @@ class TestPerRegionZConsistency:
                                    extenter=ExtenterSphere(radius=2),
                                    effect_llr=0.5)
         ana = AnalysisGLOW(exp, n_perm_fwer=5, n_perm_inner=20,
-                           alpha_fwer=.5, min_vox=1)
+                           alpha_fwer=.5, min_vox=1).fit()
 
-        # the worker stores mu / sigma / z; synth attaches them back
-        mu = ana._mu_per_region
-        sigma = ana._sigma_per_region
-        stat = ana.stat
-        z_stored = ana.llr_z_0
+        mu = ana.mu
+        sigma = ana.sigma
+        llr = ana.llr
+        z_stored = ana.z
 
         # only check entries where sigma is well above the floor and
         # neither input is NaN (matches the worker's sanitisation).
-        ok = np.isfinite(stat) & np.isfinite(mu) & (sigma > 1e-9)
-        z_expected = (stat[ok] - mu[ok]) / sigma[ok]
+        ok = np.isfinite(llr) & np.isfinite(mu) & (sigma > 1e-9)
+        z_expected = (llr[ok] - mu[ok]) / sigma[ok]
         np.testing.assert_allclose(z_stored[ok], z_expected,
                                    rtol=1e-9, atol=1e-9)
 
@@ -425,7 +408,7 @@ class TestForest:
 
         exp = Experiment(x=x, contrast=contrast, y=y,
                          mask_idx=mask_idx, add_bias=True)
-        ana = AnalysisGLOW(exp, n_perm_fwer=10, alpha_fwer=.5)
+        ana = AnalysisGLOW(exp, n_perm_fwer=10, alpha_fwer=.5).fit()
 
         children = ana.children
         assert children.shape == (num_vox - 2, 2), \
@@ -451,25 +434,16 @@ class TestStreamingFidelity:
         alpha_fwer = 0.1
 
         ana_a = AnalysisGLOW(self.exp, n_perm_fwer=n_perm_fwer,
-                             alpha_fwer=alpha_fwer, verbose=False)
+                             alpha_fwer=alpha_fwer).fit()
         ana_b = AnalysisGLOW(self.exp, n_perm_fwer=n_perm_fwer,
-                             alpha_fwer=alpha_fwer, verbose=False)
+                             alpha_fwer=alpha_fwer).fit()
 
         np.testing.assert_array_equal(ana_a.pval, ana_b.pval)
-        assert set(ana_a.sig_reg_list) == set(ana_b.sig_reg_list)
+        np.testing.assert_array_equal(ana_a.max_z_null, ana_b.max_z_null)
 
         masks_a = sorted([e.mask.tobytes() for e in ana_a.effect_list])
         masks_b = sorted([e.mask.tobytes() for e in ana_b.effect_list])
         assert masks_a == masks_b
-
-    def test_rerun_permutation(self):
-        """rerun_permutation reproduces the per-perm result of a full run."""
-        rerun_a = AnalysisGLOW.rerun_permutation(self.exp, perm_idx=3)
-        rerun_b = AnalysisGLOW.rerun_permutation(self.exp, perm_idx=3)
-
-        np.testing.assert_array_equal(rerun_a['stat'], rerun_b['stat'])
-        np.testing.assert_array_equal(rerun_a['size'], rerun_b['size'])
-        np.testing.assert_array_equal(rerun_a['children'], rerun_b['children'])
 
 
 class TestFromPrecomputed:
@@ -499,14 +473,6 @@ class TestFromPrecomputed:
             stat=ana.stat, cft=ana.cft, cft_pval=ana.cft_pval,
             alpha_fwer=.5)
         np.testing.assert_array_equal(ana2.pval, ana.pval)
-
-    def test_glow_from_precomputed_has_attrs(self):
-        from glow.analysis.mancova import get_llr
-        ana = AnalysisGLOW.from_precomputed(
-            exp=self.exp_eff, get_stat=get_llr, verbose=True)
-        assert hasattr(ana, 'exp')
-        assert ana.get_stat is get_llr
-        assert ana.verbose is True
 
     def test_discover_mask_on_base(self):
         """Verify Analysis.discover_mask works (it was moved from AnalysisVBA)."""

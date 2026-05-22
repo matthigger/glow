@@ -11,8 +11,8 @@ from glow.analysis.mancova import decompose, get_llr, get_roughness
 
 
 def _get_adjusted_stat(ana_glow):
-    """Return the per-region z-scored LLR (llr_z), always 1-D."""
-    adj = getattr(ana_glow, 'llr_z_0', ana_glow.llr_z_0)
+    """Return the per-region z-scored LLR, always 1-D."""
+    adj = ana_glow.z
     return adj if adj.ndim == 1 else adj[0]
 
 
@@ -56,7 +56,7 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
     d = {
         'region_idx': np.arange(num_reg),
         'n_voxel': ana_glow.size.astype(int),
-        'llr': _ensure_1d(ana_glow.stat),
+        'llr': _ensure_1d(ana_glow.llr),
         'llr_z': _get_adjusted_stat(ana_glow),
         'pval_fwer': ana_glow.pval,
         'roughness': roughness_arr,

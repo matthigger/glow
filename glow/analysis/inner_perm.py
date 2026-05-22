@@ -21,7 +21,7 @@ sigma)``::
     run = inner_perm.gpu_fast if use_gpu and use_fast else ...
     mu, sigma = run(
         exp=exp, base_seed=base_seed, n_perm=n_perm,
-        q0=q0, q1=q1, children=children, layer=layer, min_vox=min_vox)
+        q0=q0, q1=q1, children=children, min_vox=min_vox)
 
 ``exp`` is whatever experiment the inner perms should operate on -- the
 backends don't need to know whether it carries an outer permutation;
@@ -63,7 +63,7 @@ def moments_from_draws(fn):
 
 
 def cpu_fast_full(*, exp, base_seed, n_perm,
-                   q0, q1, children, layer, min_vox):
+                   q0, q1, children, min_vox):
     """Intercept-only CPU fast path -- returns ``(n_perm, num_reg)`` draws.
 
     Q0 commutes with the FL permutation so Phase-1 (``yout``, ``ysum``,
@@ -76,7 +76,7 @@ def cpu_fast_full(*, exp, base_seed, n_perm,
     eye_n = np.eye(n_img, dtype=q0.dtype)
 
     ysum_u, yout_u, size_u = glow.graph.compute_phase1(
-        exp.y, children, layer=layer)
+        exp.y, children)
     _dtype = exp.y.dtype if exp.y.dtype == np.float32 else np.float64
     _sz_3d = size_u.astype(_dtype)[:, None, None]
     _a0 = np.einsum('rbn,an->rba', ysum_u, q0, optimize=True)
@@ -97,7 +97,7 @@ def cpu_fast_full(*, exp, base_seed, n_perm,
 
 
 def cpu_slow_full(*, exp, base_seed, n_perm,
-                   q0, q1, children, layer, min_vox):
+                   q0, q1, children, min_vox):
     """General-Q0 CPU slow path -- returns ``(n_perm, num_reg)`` draws.
 
     Full ``compute_llr_batched`` per draw, each against a fresh
@@ -105,6 +105,10 @@ def cpu_slow_full(*, exp, base_seed, n_perm,
     """
     num_vox = exp.y.shape[2]
     num_reg = num_vox + children.shape[0]
+    # Per-node tree depth depends only on `children`; precompute once
+    # and reuse across the inner-perm loop (otherwise compute_llr_batched
+    # walks the tree per draw, ~34% overhead on a 5k vox tree).
+    layer = glow.graph.compute_tree_layers(children, num_vox)
     draws = np.empty((n_perm, num_reg), dtype=float)
     for i in range(n_perm):
         _exp_inner = exp.permute(base_seed + i)
@@ -120,15 +124,14 @@ cpu_slow = moments_from_draws(cpu_slow_full)
 
 
 def gpu_fast(*, exp, base_seed, n_perm,
-              q0, q1, children, layer, min_vox):
+              q0, q1, children, min_vox):
     """Intercept-only GPU path -- returns ``(mu, sigma)``.
 
     Closed-form 2x2 LLR, single CUDA Graph.
     """
     from glow.analysis.inner_perm_gpu import _run_intercept
-    # ``perm_idx`` is only used by the GPU helper to derive a default
-    # base_seed when base_seed is None; we always pass base_seed so
-    # the value here is irrelevant.
+    num_vox = exp.y.shape[2]
+    layer = glow.graph.compute_tree_layers(children, num_vox)
     out = _run_intercept(
         exp, perm_idx=0,
         q0=q0, q1=q1, children=children, layer=layer,
@@ -138,13 +141,15 @@ def gpu_fast(*, exp, base_seed, n_perm,
 
 
 def gpu_slow(*, exp, base_seed, n_perm,
-              q0, q1, children, layer, min_vox):
+              q0, q1, children, min_vox):
     """General-Q0 GPU path -- returns ``(mu, sigma)``.
 
     Alpha/beta decomposition, multi-batch CUDA Graph with Chan-merged
     moments.
     """
     from glow.analysis.inner_perm_gpu import _run_general
+    num_vox = exp.y.shape[2]
+    layer = glow.graph.compute_tree_layers(children, num_vox)
     out = _run_general(
         exp, perm_idx=0,
         q0=q0, q1=q1, children=children, layer=layer,

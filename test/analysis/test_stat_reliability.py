@@ -17,7 +17,7 @@ from scipy import stats as sp_stats
 from glow.effect import ExtenterSphere, EffectSynthetic
 from glow.experiment import Experiment
 from glow.analysis import (
-    Analysis, AnalysisVBA, AnalysisCET, AnalysisGLOW,
+    Analysis, AnalysisVBA, AnalysisCET, AnalysisGLOW, AnalysisVoxel,
 )
 
 
@@ -260,10 +260,10 @@ class TestSizeAdjustment:
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                     num_img=50, seed=42)
         ana = AnalysisGLOW(exp, n_perm_fwer=20, n_perm_inner=50,
-                           alpha_fwer=0.05)
+                           alpha_fwer=0.05).fit()
 
-        valid = (np.isfinite(ana.stat)
-                 & np.isfinite(ana.llr_z_0)
+        valid = (np.isfinite(ana.llr)
+                 & np.isfinite(ana.z)
                  & (ana.size > 0))
         assert valid.sum() > 0, 'no valid regions'
 
@@ -285,7 +285,7 @@ class TestPermutationExchangeability:
             exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                         num_img=30, seed=seed)
             from glow.analysis.mancova import get_wilks
-            ana = Analysis(exp, get_stat=get_wilks)
+            ana = AnalysisVoxel(exp, get_stat=get_wilks)
             num_vox = exp.y.shape[2]
             stat = np.full((n_perm + 1, num_vox), np.nan)
             for k in range(n_perm + 1):

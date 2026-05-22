@@ -269,25 +269,6 @@ class TestRunAnaShared:
 
 
 # -----------------------------------------------------------------------
-# _sanitize_adjusted_stat / DEFAULT_CET_CFT_PVAL
-# -----------------------------------------------------------------------
-
-class TestMagicConstants:
-    def test_sanitize_adjusted_stat(self):
-        from glow.analysis import _sanitize_adjusted_stat
-        arr = np.array([1.0, np.nan, np.inf, -np.inf, 2.0])
-        result = _sanitize_adjusted_stat(arr)
-        # nan/posinf -> 0 (treated as no evidence);
-        # neginf -> nan (invalid, propagates to NaN p-value)
-        expected = np.array([1.0, 0.0, 0.0, np.nan, 2.0])
-        np.testing.assert_array_equal(result, expected)
-
-    def test_default_cet_cft_pval(self):
-        from glow.analysis import DEFAULT_CET_CFT_PVAL
-        assert DEFAULT_CET_CFT_PVAL == 0.001
-
-
-# -----------------------------------------------------------------------
 # short_uuid
 # -----------------------------------------------------------------------
 

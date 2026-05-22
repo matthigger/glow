@@ -165,7 +165,7 @@ class TestLayout3DMultiFeature:
         exp = Experiment(x=x, contrast=np.array([True]),
                          y=exp_img.y, mask_idx=exp_img.mask_idx,
                          add_bias=True)
-        ana = AnalysisGLOW(exp, n_perm_fwer=3, verbose=False)
+        ana = AnalysisGLOW(exp, n_perm_fwer=3).fit()
         return _create_app(ana, y_features=['feat_A', 'feat_B'])
 
     @pytest.fixture(scope='class')

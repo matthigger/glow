@@ -169,9 +169,7 @@ def compute_pickle_status(exp, extra_bytes=0):
 
     Args:
         exp: an Experiment (or ExperimentImageOnly).
-        extra_bytes: additional bytes counted against
-            ``estimated_pickle_mb`` (used by
-            :meth:`AnalysisGLOW.pickle_status` to add analysis arrays).
+        extra_bytes: additional bytes to count toward the estimate.
     """
     y = getattr(exp, 'y', None)
     x = getattr(exp, 'x', None)
