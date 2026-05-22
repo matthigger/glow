@@ -1,6 +1,5 @@
 import bisect
 import warnings
-from itertools import product
 
 import pytest
 
@@ -194,7 +193,7 @@ def test_iter_size_ysum_yout(exp, children):
         assert np.allclose(yout_exp, yout)
 
 
-def test_iter_stat(exp, children):
+def test_iter_mancova(exp, children):
     a = 2
     b, num_img, num_vox = exp.y.shape
     for add_bias in range(2):
@@ -205,7 +204,7 @@ def test_iter_stat(exp, children):
             # callers loop externally over FL permutations
             for perm_idx in range(3):
                 _exp = exp.permute(perm_idx) if perm_idx else exp
-                for reg_idx, size, e, h in iter_stat(_exp, children=children):
+                for reg_idx, size, e, h in iter_mancova(_exp, children=children):
                     vox = np.array(list(iter_topo(children=children,
                                                   num_leaf=num_vox,
                                                   node_start=reg_idx,
@@ -217,9 +216,9 @@ def test_iter_stat(exp, children):
                     assert np.allclose(e, e_exp, rtol=1e-5, atol=1e-5)
 
 
-def test_compute_llr_batched_matches_iter_stat(exp, children):
+def test_compute_llr_batched_matches_iter_mancova(exp, children):
     """compute_llr_batched must agree numerically with the per-region
-    iter_stat + get_llr loop across several FL permutations."""
+    iter_mancova + get_llr loop across several FL permutations."""
     from glow.analysis.mancova import decompose, get_llr
     from glow.graph import compute_llr_batched
 
@@ -240,7 +239,7 @@ def test_compute_llr_batched_matches_iter_stat(exp, children):
         # reference: per-region path
         llr_ref = np.full(num_reg, np.nan)
         size_ref = np.zeros(num_reg, dtype=int)
-        for reg_idx, size, e, h in iter_stat(_exp, children=children):
+        for reg_idx, size, e, h in iter_mancova(_exp, children=children):
             size_ref[reg_idx] = size
             llr_ref[reg_idx] = get_llr(e, h, n=size)
 

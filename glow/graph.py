@@ -56,7 +56,7 @@ def iter_size_ysum_yout(y, children=None):
         yield reg_idx, size, ysum, yout
 
 
-def iter_stat(exp, **kwargs):
+def iter_mancova(exp, **kwargs):
     """iterate region-level MANCOVA statistics (E, H).
 
     Computes one (E, H) pair per region for the given experiment.  To
@@ -65,7 +65,7 @@ def iter_stat(exp, **kwargs):
 
         for k in range(n_perm + 1):
             _exp = exp.permute(k) if k else exp
-            for reg_idx, size, e, h in iter_stat(_exp, children=children):
+            for reg_idx, size, e, h in iter_mancova(_exp, children=children):
                 ...
 
     Args:
@@ -184,7 +184,7 @@ def compute_llr_batched(exp, children, q0, q1, min_size=1, layer=None):
 
     Computes the same per-region LLR statistic as the per-region loop::
 
-        for reg_idx, size, e, h in iter_stat(exp, children=children):
+        for reg_idx, size, e, h in iter_mancova(exp, children=children):
             llr[reg_idx] = get_llr(e, h, n=size)
 
     but in a single batched pass over numpy.  Two phases:

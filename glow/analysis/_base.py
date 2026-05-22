@@ -164,7 +164,7 @@ class AnalysisVoxel(Analysis):
         result = {fn: np.full(num_reg, fill_value=np.nan)
                   for fn in get_stat_list}
 
-        for reg_idx, size, e, h in glow.graph.iter_stat(
+        for reg_idx, size, e, h in glow.graph.iter_mancova(
                 exp=exp, children=children):
             for fn in get_stat_list:
                 try:
@@ -196,8 +196,8 @@ class AnalysisVoxel(Analysis):
             num_reg += children.shape[0]
 
         stat = np.full(num_reg, fill_value=np.nan)
-        for reg_idx, size, e, h in glow.graph.iter_stat(exp=exp,
-                                                        children=children):
+        for reg_idx, size, e, h in glow.graph.iter_mancova(exp=exp,
+                                                           children=children):
             try:
                 stat[reg_idx] = self.get_stat(e=e, h=h, n=size)
             except np.linalg.LinAlgError:
