@@ -64,7 +64,7 @@ COMBOS = [
 ]
 
 # all combos use these defaults unless overridden in the dict above
-_DEFAULTS = {'seed': 0, 'roughness': None}
+_DEFAULTS = {'seed': 0}
 
 
 # ---------------------------------------------------------------------------
@@ -79,9 +79,6 @@ def canonical_key(combo):
     if 'features' in combo:
         parts.append(combo['features'])
     parts.append(combo['severity'])
-    rough = combo.get('roughness', _DEFAULTS['roughness'])
-    if rough is not None:
-        parts.append(f'r{rough}')
     parts.append(f"s{combo.get('seed', _DEFAULTS['seed'])}")
     return '_'.join(parts)
 
@@ -94,9 +91,8 @@ def _build_combo(combo):
     """Resolve a combo dict to (ana, mask_target) by calling the right builder."""
     image_set = combo['image_set']
     seed = combo.get('seed', _DEFAULTS['seed'])
-    roughness = combo.get('roughness', _DEFAULTS['roughness'])
     effect_llr = _EFFECT_MAP[combo['severity']]
-    kw = dict(effect_llr=effect_llr, seed=seed, roughness=roughness)
+    kw = dict(effect_llr=effect_llr, seed=seed)
 
     if image_set == 'wgn2d':
         return _demo_wgn_2d(combo['b'], **kw)

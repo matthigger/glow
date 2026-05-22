@@ -216,8 +216,7 @@ class Config:
                 num_img=num_img)
 
     def get_exp_eff(self, seed, effect_llr, radius=None, hcp_feats=None,
-                    wgn_b=None, wgn_num_img=None, effect_perc=None,
-                    roughness=None):
+                    wgn_b=None, wgn_num_img=None, effect_perc=None):
         """return an experiment with a synthetic effect imposed."""
         # Re-prepare exp_orig if dataset parameters changed or if not yet created
         # Note: On cloud workers, exp_orig should already be loaded from shared cache
@@ -295,7 +294,7 @@ class Config:
         # impose effect
         return glow.effect.EffectSynthetic.impose(
             exp, effect_llr=effect_llr, extenter=extenter,
-            seed=seed, roughness=roughness)
+            seed=seed)
 
     def iter_kwargs(self):
         """yield kwarg dicts for each experiment (product of iter_params)."""

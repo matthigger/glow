@@ -54,17 +54,16 @@ class EffectEstimate:
             return False
         if not np.array_equal(self.mask, other.mask):
             return False
+
         if self.y_mean.shape != other.y_mean.shape:
             return False
         if not np.allclose(self.y_mean, other.y_mean, rtol=rtol, atol=atol):
             return False
         return True
 
-
 # Back-compat alias: existing call sites and external users may still reference
 # ``Effect``.  Discovery code paths should migrate to ``EffectEstimate`` directly.
 Effect = EffectEstimate
-
 
 class EffectSynthetic:
     """A planted (synthetic) effect: realized mask + offset values, with
@@ -97,6 +96,7 @@ class EffectSynthetic:
         The recipe step preserves both literal arrays so rehydration is
         exact (decision: reproducibility > marginal storage savings).
         """
+        # clause item: lets explore removing all these recipe step things.  remind me what purpose they serve (its not clear to me) and, if it doesn't merit the complication, then we can get rid of it.  at the very least, could we use a decorator pattern to do this more gracefully?
         recipe_step = {
             'op': 'add_offset',
             'args': {'mask': self.mask,
@@ -107,9 +107,10 @@ class EffectSynthetic:
                               sigma_scale=self.sigma_scale,
                               recipe_step=recipe_step)
 
+    # clause item: question: to make this simpler, maybe we shouldn't support the mask xor extenter pattern, if the user already has an extenter its only 1 line for them to ask before calling this function while its many to run it inside ... seems simpler, right?
     @classmethod
     def impose(cls, exp, *, effect_llr, extenter=None, mask=None,
-               seed=None, roughness=None, **kwargs):
+               seed=None, **kwargs):
         """Synthesize and apply a new effect.
 
         Optimization runs once; the realized (mask, offset) are captured
@@ -134,7 +135,7 @@ class EffectSynthetic:
         y = exp.y[:, :, effect_idx]
         offset, sigma_scale = compute_offset(
             x=exp.x, y=y, contrast=exp.contrast,
-            effect_llr=effect_llr, roughness=roughness)
+            effect_llr=effect_llr)
 
         synth = cls(
             mask=mask, offset=offset, sigma_scale=sigma_scale,

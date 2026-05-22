@@ -164,8 +164,7 @@ _EFFECT_MAP = {
 # can rehydrate from a slim pickle.
 
 
-def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
-                    roughness=None):
+def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
     """Optionally impose an effect, run AnalysisGLOW, and launch the viewer."""
     from glow.effect.extent import ExtenterMinVar
     from glow.analysis import AnalysisGLOW
@@ -175,13 +174,11 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
         n_vox = (exp.mask_idx >= 0).sum()
         n_effect = max(int(0.15 * n_vox), 10)
         extenter = ExtenterMinVar(n_vox=n_effect)
-        rough_str = f', roughness={roughness}' if roughness is not None else ''
-        print(f'  imposing effect (llr={effect_llr}{rough_str}) in ~{n_effect}'
+        print(f'  imposing effect (llr={effect_llr}) in ~{n_effect}'
               f' voxels ({100 * n_effect / n_vox:.0f}% of mask) ...')
         try:
             exp_eff, effect = EffectSynthetic.impose(
-                exp, effect_llr=effect_llr, extenter=extenter, seed=seed,
-                roughness=roughness)
+                exp, effect_llr=effect_llr, extenter=extenter, seed=seed)
         except (ValueError, RuntimeError, np.linalg.LinAlgError, AssertionError):
             print('  (extenter failed, falling back to sphere mask)')
             shape = exp.mask_idx.shape
@@ -194,8 +191,7 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
                 radius += 0.5
             sphere = (dist <= radius).reshape(shape) & (exp.mask_idx >= 0)
             exp_eff, effect = EffectSynthetic.impose(
-                exp, effect_llr=effect_llr, mask=sphere, seed=seed,
-                roughness=roughness)
+                exp, effect_llr=effect_llr, mask=sphere, seed=seed)
         mask_target = effect.mask
     else:
         exp_eff = exp
@@ -213,20 +209,18 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42,
 # Demo builders (one per image-set choice)
 # ---------------------------------------------------------------------------
 
-def _demo_wgn_2d(b, effect_llr, seed=0, roughness=None, num_img=_NUM_IMG):
+def _demo_wgn_2d(b, effect_llr, seed=0, num_img=_NUM_IMG):
     """2D White Gaussian Noise demo."""
     from glow.experiment.exper import Experiment
     shape = (64, 64)
     print(f'  building 2D WGN: shape={shape}, b={b}, num_img={num_img}')
     exp = Experiment.from_gauss(a=1, b=b, num_img=num_img, shape=shape,
                                  seed=seed, add_bias=True)
-    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
-                                       roughness=roughness)
+    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
     return ana, mask_target
 
 
-def _demo_mandrill(channels, effect_llr, seed=0, roughness=None,
-                   num_img=_NUM_IMG):
+def _demo_mandrill(channels, effect_llr, seed=0, num_img=_NUM_IMG):
     """2D Mandrill RGB demo — built through the same factories real users
     would call (from_paths + bootstrap_img + sample_x), so the resulting
     Experiment's recipe fully describes how y was constructed and slim
@@ -254,39 +248,35 @@ def _demo_mandrill(channels, effect_llr, seed=0, roughness=None,
     h, w = exp.mask_idx.shape
     print(f'  mandrill: {h}x{w}, features={exp.meta["features"]}, '
           f'num_img={num_img}')
-    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
-                                       roughness=roughness)
+    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
     return ana, mask_target
 
 
-def _demo_dti_2d(features, effect_llr, seed=0, roughness=None,
-                 num_img=_NUM_IMG):
+def _demo_dti_2d(features, effect_llr, seed=0, num_img=_NUM_IMG):
     """2D Axial Slice DTI demo — load mean nifti(s) via from_paths,
     bootstrap to num_img copies with noise, attach a random design."""
     return _build_dti_demo('2d', features, effect_llr, seed=seed,
-                           roughness=roughness, num_img=num_img)
+                           num_img=num_img)
 
 
-def _demo_wgn_3d(b, effect_llr, seed=0, roughness=None, num_img=_NUM_IMG):
+def _demo_wgn_3d(b, effect_llr, seed=0, num_img=_NUM_IMG):
     """3D White Gaussian Noise demo."""
     from glow.experiment.exper import Experiment
     shape = (15, 15, 15)
     print(f'  building 3D WGN: shape={shape}, b={b}, num_img={num_img}')
     exp = Experiment.from_gauss(a=1, b=b, num_img=num_img, shape=shape,
                                  seed=seed, add_bias=True)
-    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
-                                       roughness=roughness)
+    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
     return ana, mask_target
 
 
-def _demo_dti_3d(features, effect_llr, seed=0, roughness=None,
-                 num_img=_NUM_IMG):
+def _demo_dti_3d(features, effect_llr, seed=0, num_img=_NUM_IMG):
     """3D DTI demo — see _demo_dti_2d for the loading approach."""
     return _build_dti_demo('3d', features, effect_llr, seed=seed,
-                           roughness=roughness, num_img=num_img)
+                           num_img=num_img)
 
 
-def _build_dti_demo(dim, features, effect_llr, seed, roughness, num_img):
+def _build_dti_demo(dim, features, effect_llr, seed, num_img):
     """Shared 2D/3D DTI demo builder.  Loads mean fa/md nifti(s) via
     from_paths (one 'mean' subject with feature-keyed paths), bootstraps
     to num_img noisy copies via bootstrap_img, attaches a random design
@@ -311,8 +301,7 @@ def _build_dti_demo(dim, features, effect_llr, seed, roughness, num_img):
     img_only = ExperimentImageOnly.from_paths({'mean': feat_paths})
     img_only = img_only.bootstrap_img(num_img, seed=seed, noise_scale=0.15)
     exp = img_only.sample_x(a=1, seed=seed, add_bias=True)
-    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed,
-                                       roughness=roughness)
+    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
     return ana, mask_target
 
 
@@ -366,23 +355,6 @@ def _run_demo():
     ], default='medium')
     effect_llr = _EFFECT_MAP[severity]
 
-    # --- 3b) roughness (only when an effect is imposed) ---
-    roughness = None
-    if effect_llr > 0:
-        rough_choice = _choose('Roughness (spatial covariance fraction):', [
-            ('natural', 'Natural (no roughness control)'),
-            ('smooth',  'Smooth (0.0 — all residual mean)'),
-            ('low',     'Low   (0.25)'),
-            ('mid',     'Mid   (0.50)'),
-            ('high',    'High  (0.75)'),
-            ('rough',   'Rough (1.0 — all spatial covariance)'),
-        ], default='natural')
-        _ROUGH_MAP = {
-            'natural': None, 'smooth': 0.0, 'low': 0.25,
-            'mid': 0.5, 'high': 0.75, 'rough': 1.0,
-        }
-        roughness = _ROUGH_MAP[rough_choice]
-
     # --- 4) number of images (subjects) ---
     # LLR scales roughly with sample size, so num_img controls how
     # peaked the H0 LLR distribution is and how much the mean drifts
@@ -394,11 +366,9 @@ def _run_demo():
     seed = _choose_int('Random seed:', default=0, lo=0, hi=2**31 - 1)
 
     # --- build ---
-    rough_str = f', roughness={roughness}' if roughness is not None else ''
-    print(f'\n  Building demo (effect_llr={effect_llr:.2g}{rough_str},'
+    print(f'\n  Building demo (effect_llr={effect_llr:.2g},'
           f' num_img={num_img}, seed={seed}) ...')
-    kw = dict(effect_llr=effect_llr, seed=seed, roughness=roughness,
-              num_img=num_img)
+    kw = dict(effect_llr=effect_llr, seed=seed, num_img=num_img)
     if image_set == 'wgn2d':
         ana, mask_target = _demo_wgn_2d(b_choice, **kw)
     elif image_set == 'mandrill':
