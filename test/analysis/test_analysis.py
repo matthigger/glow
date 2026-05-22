@@ -43,7 +43,7 @@ class TestBigEffect:
                        dict(tfce_flag=True)]
         for kwargs in kwargs_list:
             analysis = AnalysisVBA(TestBigEffect.exp, n_perm_fwer=25,
-                                   alpha_fwer=.1, **kwargs)
+                                   alpha_fwer=.1, **kwargs).fit()
         mask_all = sum(eff.mask for eff in analysis.effect_list)
         np.testing.assert_allclose(mask_all,
                                    TestBigEffect.effect.mask)
@@ -58,7 +58,7 @@ class TestBigEffect:
         # non-TFCE
         ana = AnalysisVBA(TestBigEffect.exp, n_perm_fwer=25,
                           alpha_fwer=.5, tfce_flag=False,
-                          get_stat=get_wilks)
+                          get_stat=get_wilks).fit()
         assert np.nanmin(ana.pval) <= 0.5, (
             f'Wilks VBA produced no small p-values '
             f'(min={np.nanmin(ana.pval):.3f})')
@@ -66,7 +66,7 @@ class TestBigEffect:
         # TFCE: 1-Wilks is non-negative, so TFCE works directly
         ana_tfce = AnalysisVBA(TestBigEffect.exp, n_perm_fwer=25,
                                alpha_fwer=.5, tfce_flag=True,
-                               get_stat=get_wilks)
+                               get_stat=get_wilks).fit()
         assert np.nanmin(ana_tfce.pval) <= 0.5, (
             f'Wilks VBA-TFCE produced no small p-values '
             f'(min={np.nanmin(ana_tfce.pval):.3f})')
@@ -142,13 +142,13 @@ class TestCET:
     def test_big_effect(self):
         """CET discovers the strong effect."""
         ana = AnalysisCET(TestBigEffect.exp, n_perm_fwer=25,
-                          alpha_fwer=.1, cft_pval=0.01)
+                          alpha_fwer=.1, cft_pval=0.01).fit()
         assert len(ana.effect_list) >= 1
 
     def test_big_effect_z(self):
         """CET with z_flag runs without error and sets the flag."""
         ana = AnalysisCET(TestBigEffect.exp, n_perm_fwer=25,
-                          alpha_fwer=.5, cft_pval=0.05, z_flag=True)
+                          alpha_fwer=.5, cft_pval=0.05, z_flag=True).fit()
         assert ana.z_flag is True
         assert hasattr(ana, 'pval')
         assert hasattr(ana, 'effect_list')
@@ -157,20 +157,20 @@ class TestCET:
         """Under the null (no effect), CET should not discover at alpha=0.05."""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                     num_img=100, seed=0)
-        ana = AnalysisCET(exp, n_perm_fwer=25, alpha_fwer=.05)
+        ana = AnalysisCET(exp, n_perm_fwer=25, alpha_fwer=.05).fit()
         assert len(ana.effect_list) == 0
 
     def test_pval_bounds(self):
         """p-values in [1/n_perm, 1]."""
         n = 25
-        ana = AnalysisCET(TestBigEffect.exp, n_perm_fwer=n, alpha_fwer=.1)
+        ana = AnalysisCET(TestBigEffect.exp, n_perm_fwer=n, alpha_fwer=.1).fit()
         assert (ana.pval >= 1 / n).all()
         assert (ana.pval <= 1.0).all()
 
     def test_cluster_members_share_pval(self):
         """All voxels in a discovered cluster should have the same p-value."""
         ana = AnalysisCET(TestBigEffect.exp, n_perm_fwer=25,
-                          alpha_fwer=.5, cft_pval=0.01)
+                          alpha_fwer=.5, cft_pval=0.01).fit()
         for eff in ana.effect_list:
             vox_idx = ana.exp.mask_idx[eff.mask]
             pvals = ana.pval[vox_idx]
@@ -453,26 +453,6 @@ class TestFromPrecomputed:
     exp_eff, effect = EffectSynthetic.impose(exp, seed=0,
                                          extenter=ExtenterSphere(radius=2),
                                          effect_llr=0.5)
-
-    def test_vba_from_precomputed(self):
-        from glow.analysis.mancova import get_wilks
-        ana = AnalysisVBA(self.exp_eff, n_perm_fwer=25, alpha_fwer=.5,
-                          get_stat=get_wilks)
-        ana2 = AnalysisVBA.from_precomputed(
-            exp=self.exp_eff, get_stat=get_wilks,
-            stat=ana.stat, alpha_fwer=.5)
-        np.testing.assert_array_equal(ana2.pval, ana.pval)
-        assert len(ana2.effect_list) == len(ana.effect_list)
-
-    def test_cet_from_precomputed(self):
-        from glow.analysis.mancova import get_wilks
-        ana = AnalysisCET(self.exp_eff, n_perm_fwer=25, alpha_fwer=.5,
-                          cft_pval=0.01, get_stat=get_wilks)
-        ana2 = AnalysisCET.from_precomputed(
-            exp=self.exp_eff, get_stat=get_wilks,
-            stat=ana.stat, cft=ana.cft, cft_pval=ana.cft_pval,
-            alpha_fwer=.5)
-        np.testing.assert_array_equal(ana2.pval, ana.pval)
 
     def test_discover_mask_on_base(self):
         """Verify Analysis.discover_mask works (it was moved from AnalysisVBA)."""

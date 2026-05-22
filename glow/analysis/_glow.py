@@ -68,8 +68,6 @@ class AnalysisGLOW(Analysis):
         self.sigma = None
         self.z = None
         self.max_z_null = None
-        self.pval = None
-        self.effect_list = None
 
     @classmethod
     def run_inner_perm(cls, exp, children, n_perm, *, q0, q1,

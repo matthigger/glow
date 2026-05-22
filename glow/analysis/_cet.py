@@ -3,7 +3,6 @@ from bisect import bisect_left
 import numpy as np
 from scipy.ndimage import label
 
-from glow.experiment.exper import ExperimentScaled
 from ._base import AnalysisVoxel
 
 DEFAULT_CET_CFT_PVAL = 0.001
@@ -20,60 +19,46 @@ class AnalysisCET(AnalysisVoxel):
 
     def __init__(self, exp, n_perm_fwer, alpha_fwer=.05,
                  cft_pval=DEFAULT_CET_CFT_PVAL, z_flag=False,
-                 get_stat=None, **kwargs):
-        if get_stat is None:
-            from .mancova import get_wilks
-            get_stat = get_wilks
-        super().__init__(exp, get_stat=get_stat, **kwargs)
+                 get_stat=None):
+        super().__init__(exp, get_stat=get_stat)
+        self.n_perm_fwer = n_perm_fwer
+        self.alpha_fwer = alpha_fwer
         self.cft_pval = cft_pval
         self.z_flag = z_flag
+        self.cft = None
 
-        # voxel-wise stats: row 0 = observed, rows 1..n_perm_fwer = FL nulls
-        num_vox = exp.y.shape[2]
-        self.stat = np.full((n_perm_fwer + 1, num_vox), np.nan)
-        for k in range(n_perm_fwer + 1):
-            _exp = exp.permute(k) if k else exp
-            self.stat[k, :] = self.get_stat_perm(_exp, children=None)
+    def fit(self, _stat=None):
+        """Run the permutation walk and compute cluster-extent p-values.
 
-        # z-score voxel-wise using the permutation null
+        Args:
+            _stat: optional (n_perm_fwer+1, num_vox) pre-computed stat matrix
+                (raw, before z-scoring). Caller is responsible for passing a
+                copy. Must match n_perm_fwer.
+
+        Returns:
+            self
+        """
+        if _stat is None:
+            num_vox = self.exp.y.shape[2]
+            _stat = np.full((self.n_perm_fwer + 1, num_vox), np.nan)
+            for k in range(self.n_perm_fwer + 1):
+                _exp = self.exp.permute(k) if k else self.exp
+                _stat[k, :] = self.get_stat_perm(_exp, children=None)
+        elif _stat.shape[0] - 1 != self.n_perm_fwer:
+            raise ValueError(
+                f'_stat has {_stat.shape[0] - 1} permutations but '
+                f'n_perm_fwer={self.n_perm_fwer}')
+
+        self.stat = _stat
         if self.z_flag:
             self.stat = self.z_score_stat(self.stat)
-
-        # CFT from empirical null: pool all permutation stats
         null_pool = self.stat[1:, :].ravel()
         self.cft = np.quantile(null_pool, 1 - self.cft_pval)
-
-        # cluster-extent FWER
-        self.pval = self._get_pval_cet(self.stat, exp.mask_idx, self.cft)
-
-        # discover effects
-        mask = np.zeros(exp.mask_idx.shape, dtype=bool)
-        mask[exp.mask_idx > -1] = self.pval <= alpha_fwer
-        self.effect_list = self.discover_mask(mask=mask, exp=exp)
-
-    @classmethod
-    def from_precomputed(cls, *, exp, get_stat, stat, cft, cft_pval,
-                         alpha_fwer, z_flag=False):
-        """Construct from pre-computed stat matrix without running __init__.
-
-        Computes cluster-extent p-values and discovers effects.
-        """
-        obj = cls.__new__(cls)
-        if isinstance(exp, ExperimentScaled):
-            obj.exp = exp
-        else:
-            obj.exp = ExperimentScaled.from_exp(exp)
-
-        obj.get_stat = get_stat
-        obj.stat = stat
-        obj.cft_pval = cft_pval
-        obj.cft = cft
-        obj.z_flag = z_flag
-        obj.pval = cls._get_pval_cet(stat, exp.mask_idx, cft)
-        mask = np.zeros(exp.mask_idx.shape, dtype=bool)
-        mask[exp.mask_idx > -1] = obj.pval <= alpha_fwer
-        obj.effect_list = cls.discover_mask(mask=mask, exp=exp)
-        return obj
+        self.pval = self._get_pval_cet(self.stat, self.exp.mask_idx, self.cft)
+        mask = np.zeros(self.exp.mask_idx.shape, dtype=bool)
+        mask[self.exp.mask_idx > -1] = self.pval <= self.alpha_fwer
+        self.effect_list = self.discover_mask(mask=mask, exp=self.exp)
+        return self
 
     @staticmethod
     def _get_pval_cet(stat, mask_idx, cft):
@@ -96,8 +81,8 @@ class AnalysisCET(AnalysisVoxel):
         vox_mask = mask_idx > -1
 
         max_sizes = np.zeros(n_rows)
-        obs_labels = None
-        obs_sizes = None
+        obs_labels = np.zeros(mask_idx.shape, dtype=int)
+        obs_sizes = np.array([])
 
         for i in range(n_rows):
             vol = np.zeros(mask_idx.shape)

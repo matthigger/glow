@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 from bisect import bisect_left
 
 import numpy as np
@@ -8,7 +9,7 @@ import glow.graph
 from glow.experiment.exper import ExperimentScaled
 
 
-class Analysis:
+class Analysis(ABC):
     """performs effect discovery (glow or TFCE) and computes FWER p-values.
 
     Attributes:
@@ -17,9 +18,14 @@ class Analysis:
 
     def __init__(self, exp):
         if not isinstance(exp, ExperimentScaled):
-            # pre-process
             exp = ExperimentScaled.from_exp(exp)
         self.exp = exp
+        self.effect_list = None
+        self.pval = None
+
+    @abstractmethod
+    def fit(self):
+        """Run the analysis computation and return self."""
 
     @classmethod
     def get_pval(cls, stat, reg_active=None):
@@ -130,6 +136,7 @@ class AnalysisVoxel(Analysis):
             from .mancova import get_wilks
             get_stat = get_wilks
         self.get_stat = get_stat
+        self.stat = None
 
     @classmethod
     def get_stat_perm_multi(cls, exp, get_stat_list, children=None):

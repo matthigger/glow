@@ -239,7 +239,7 @@ class RunAna(Runner):
         start = time.time()
         if config.error_save:
             try:
-                ana = Ana(exp=exp, **ana_kw)
+                ana = Ana(exp=exp, **ana_kw).fit()
             except Exception:
                 d = {'error_msg': traceback.format_exc(),
                      'label': ana_label,
@@ -250,7 +250,7 @@ class RunAna(Runner):
                 _write_result(config, d, subfolder=ERROR)
                 return
         else:
-            ana = Ana(exp=exp, **ana_kw)
+            ana = Ana(exp=exp, **ana_kw).fit()
         total_time_sec = time.time() - start
         _score_and_emit(ana, effect, config, ana_label, total_time_sec,
                         iter_kw)
@@ -339,40 +339,11 @@ def _run_shared_voxel_walk(exp, members):
 
 
 def _dispatch_shared(*, Ana, exp, ana_kw, stat_by_fn):
-    """Apply per-label post-processing and call Ana.from_precomputed.
-
-    z_flag is honored before TFCE (matching AnalysisVBA.__init__) and
-    before CFT computation (matching AnalysisCET.__init__).
-    """
-    from glow.analysis import (
-        Analysis, AnalysisVBA, AnalysisCET, DEFAULT_CET_CFT_PVAL)
+    """Pass a copy of the shared stat to Ana.fit() for post-processing."""
     from glow.analysis.mancova import get_wilks
-
     get_stat = ana_kw.get('get_stat') or get_wilks
-    alpha_fwer = ana_kw.get('alpha_fwer', 0.05)
-    z_flag = ana_kw.get('z_flag', False)
-
     stat = stat_by_fn[get_stat].copy()
-    if z_flag:
-        stat = Analysis.z_score_stat(stat)
-
-    if Ana is AnalysisVBA:
-        if ana_kw.get('tfce_flag', False):
-            stat = AnalysisVBA.apply_tfce(
-                stat=stat, mask_idx=exp.mask_idx,
-                verbose=ana_kw.get('verbose', False))
-        return AnalysisVBA.from_precomputed(
-            exp=exp, get_stat=get_stat, stat=stat, alpha_fwer=alpha_fwer)
-
-    if Ana is AnalysisCET:
-        cft_pval = ana_kw.get('cft_pval', DEFAULT_CET_CFT_PVAL)
-        null_pool = stat[1:, :].ravel()
-        cft = np.quantile(null_pool, 1 - cft_pval)
-        return AnalysisCET.from_precomputed(
-            exp=exp, get_stat=get_stat, stat=stat, cft=cft,
-            cft_pval=cft_pval, alpha_fwer=alpha_fwer, z_flag=z_flag)
-
-    raise AssertionError(f'unexpected Ana class: {Ana}')
+    return Ana(exp=exp, **ana_kw).fit(_stat=stat)
 
 
 # ---------------------------------------------------------------------------
@@ -543,8 +514,7 @@ class RunMancovaVba(Runner):
 
     def run(self, config, **iter_kw):
         from glow.analysis import (
-            Analysis, AnalysisVoxel, AnalysisVBA, AnalysisCET,
-            DEFAULT_CET_CFT_PVAL)
+            AnalysisVoxel, AnalysisVBA, AnalysisCET, DEFAULT_CET_CFT_PVAL)
         from glow.analysis.mancova import stat_dict, stat_dict_inv
 
         exp, effect = config.get_exp_eff(**iter_kw)
@@ -571,49 +541,38 @@ class RunMancovaVba(Runner):
             name = stat_dict_inv[fn]
 
             for z_flag in (False, True):
-                variant_start = time.time()
-                stat = multi[fn].copy()
-                if z_flag:
-                    stat = Analysis.z_score_stat(stat)
                 suffix = '-z' if z_flag else ''
 
                 self._emit_variant(
                     config, effect, exp, fn, f'VBA-{name}{suffix}',
-                    stat, alpha_fwer, walk_time, iter_kw, variant_start,
-                    AnalysisVBA)
+                    multi[fn].copy(), alpha_fwer, n_perm_fwer,
+                    walk_time, iter_kw, time.time(),
+                    AnalysisVBA, z_flag=z_flag, tfce_flag=False)
 
-                stat_tfce = AnalysisVBA.apply_tfce(
-                    stat=stat, mask_idx=exp.mask_idx)
                 self._emit_variant(
                     config, effect, exp, fn, f'VBA-TFCE-{name}{suffix}',
-                    stat_tfce, alpha_fwer, walk_time, iter_kw, variant_start,
-                    AnalysisVBA)
+                    multi[fn].copy(), alpha_fwer, n_perm_fwer,
+                    walk_time, iter_kw, time.time(),
+                    AnalysisVBA, z_flag=z_flag, tfce_flag=True)
 
         cft_pval = DEFAULT_CET_CFT_PVAL
         for fn in stat_fns:
             name = stat_dict_inv[fn]
 
             for z_flag in (False, True):
-                variant_start = time.time()
-                stat = multi[fn].copy()
-                if z_flag:
-                    stat = Analysis.z_score_stat(stat)
                 suffix = '-z' if z_flag else ''
-
-                null_pool = stat[1:, :].ravel()
-                cft = np.quantile(null_pool, 1 - cft_pval)
 
                 self._emit_variant(
                     config, effect, exp, fn, f'CET-{name}{suffix}',
-                    stat, alpha_fwer, walk_time, iter_kw, variant_start,
-                    AnalysisCET, cft=cft, cft_pval=cft_pval, z_flag=z_flag)
+                    multi[fn].copy(), alpha_fwer, n_perm_fwer,
+                    walk_time, iter_kw, time.time(),
+                    AnalysisCET, z_flag=z_flag, cft_pval=cft_pval)
 
     @staticmethod
     def _emit_variant(config, effect, exp, fn, label, stat, alpha_fwer,
-                      walk_time, iter_kw, variant_start, AnalysisCls,
-                      **factory_kw):
-        ana = AnalysisCls.from_precomputed(
-            exp=exp, get_stat=fn, stat=stat, alpha_fwer=alpha_fwer,
-            **factory_kw)
+                      n_perm_fwer, walk_time, iter_kw, variant_start,
+                      AnalysisCls, **init_kw):
+        ana = AnalysisCls(exp=exp, get_stat=fn, n_perm_fwer=n_perm_fwer,
+                          alpha_fwer=alpha_fwer, **init_kw).fit(_stat=stat)
         _score_and_emit(ana, effect, config, label,
                         walk_time + (time.time() - variant_start), iter_kw)

@@ -1,14 +1,13 @@
 import numpy as np
 from tqdm import tqdm
 
-from glow.experiment.exper import ExperimentScaled
 from ._base import AnalysisVoxel
 
 
 class AnalysisVBA(AnalysisVoxel):
     def __init__(self, exp, n_perm_fwer, alpha_fwer=.05, verbose=False,
                  tfce_flag=False, z_flag=False,
-                 get_stat=None, **kwargs):
+                 get_stat=None):
         """
         Args:
             exp: Experiment to analyze
@@ -20,54 +19,48 @@ class AnalysisVBA(AnalysisVoxel):
                 TFCE.  Makes the null distribution spatially homogeneous
                 (pivotal), improving power under max-stat correction.
         """
-        if get_stat is None:
-            from .mancova import get_wilks
-            get_stat = get_wilks
-        super().__init__(exp, get_stat=get_stat, **kwargs)
+        super().__init__(exp, get_stat=get_stat)
+        self.n_perm_fwer = n_perm_fwer
+        self.alpha_fwer = alpha_fwer
         self.tfce_flag = tfce_flag
         self.z_flag = z_flag
+        self.verbose = verbose
 
-        # compute stat per voxel: row 0 = observed, rows 1..n_perm_fwer = FL nulls
-        num_vox = exp.y.shape[2]
-        self.stat = np.full((n_perm_fwer + 1, num_vox), np.nan)
-        for k in range(n_perm_fwer + 1):
-            _exp = exp.permute(k) if k else exp
-            self.stat[k, :] = self.get_stat_perm(_exp, children=None)
+    def fit(self, _stat=None):
+        """Run the permutation walk and compute p-values.
 
-        # z-score voxel-wise using the permutation null
+        Args:
+            _stat: optional (n_perm_fwer+1, num_vox) pre-computed stat matrix
+                (raw, before z-scoring or TFCE). Caller is responsible for
+                passing a copy. Must match n_perm_fwer.
+
+        Returns:
+            self
+        """
+        exp = self.exp
+        if _stat is None:
+            num_vox = exp.y.shape[2]
+            _stat = np.full((self.n_perm_fwer + 1, num_vox), np.nan)
+            for k in range(self.n_perm_fwer + 1):
+                _exp = exp.permute(k) if k else exp
+                _stat[k, :] = self.get_stat_perm(_exp, children=None)
+        elif _stat.shape[0] - 1 != self.n_perm_fwer:
+            raise ValueError(
+                f'_stat has {_stat.shape[0] - 1} permutations but '
+                f'n_perm_fwer={self.n_perm_fwer}')
+
+        self.stat = _stat
         if self.z_flag:
             self.stat = self.z_score_stat(self.stat)
-
-        # apply TFCE per image
         if self.tfce_flag:
             self.stat = self.apply_tfce(stat=self.stat,
                                         mask_idx=exp.mask_idx,
-                                        verbose=verbose)
-
-        # compute p-values
+                                        verbose=self.verbose)
         self.pval = self.get_pval(self.stat)
-
-        # discover effects
         mask = np.zeros(exp.mask_idx.shape, dtype=bool)
-        mask[exp.mask_idx > -1] = self.pval <= alpha_fwer
-
+        mask[exp.mask_idx > -1] = self.pval <= self.alpha_fwer
         self.effect_list = self.discover_mask(mask=mask, exp=exp)
-
-    @classmethod
-    def from_precomputed(cls, *, exp, get_stat, stat, alpha_fwer):
-        """Construct from pre-computed stat matrix without running __init__.
-
-        Computes p-values and discovers effects from the given stat matrix.
-        """
-        obj = cls.__new__(cls)
-        obj.exp = exp if isinstance(exp, ExperimentScaled) else ExperimentScaled.from_exp(exp)
-        obj.get_stat = get_stat
-        obj.stat = stat
-        obj.pval = cls.get_pval(stat)
-        mask = np.zeros(exp.mask_idx.shape, dtype=bool)
-        mask[exp.mask_idx > -1] = obj.pval <= alpha_fwer
-        obj.effect_list = cls.discover_mask(mask=mask, exp=exp)
-        return obj
+        return self
 
     @classmethod
     def apply_tfce(cls, stat, mask_idx, verbose=False):

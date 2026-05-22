@@ -112,7 +112,7 @@ class TestRunVariant:
         import time
         RunMancovaVba._emit_variant(
             config, effect, exp, get_wilks, 'VBA-wilks',
-            stat, 0.05, 0.0, {}, time.time(), AnalysisVBA)
+            stat, 0.05, stat.shape[0] - 1, 0.0, {}, time.time(), AnalysisVBA)
 
         # verify a result JSON was written
         result_files = list((config.folder / OUT).glob('*_result.json'))
@@ -134,8 +134,8 @@ class TestRunVariant:
 
         RunMancovaVba._emit_variant(
             config, effect, exp, get_wilks, 'CET-wilks',
-            stat, 0.05, 0.0, {}, time.time(), AnalysisCET,
-            cft=cft, cft_pval=cft_pval, z_flag=False)
+            stat, 0.05, stat.shape[0] - 1, 0.0, {}, time.time(), AnalysisCET,
+            cft_pval=cft_pval, z_flag=False)
 
         result_files = list((config.folder / OUT).glob('*_result.json'))
         assert len(result_files) == 1
@@ -186,7 +186,7 @@ class TestRunAnaShared:
         for label, Ana, kw in members:
             ana_shared = _dispatch_shared(
                 Ana=Ana, exp=exp, ana_kw=kw, stat_by_fn=stat_by_fn)
-            ana_baseline = Ana(exp=exp, **kw)
+            ana_baseline = Ana(exp=exp, **kw).fit()
             np.testing.assert_array_equal(
                 ana_shared.pval, ana_baseline.pval,
                 err_msg=f'pval mismatch for {label}')
