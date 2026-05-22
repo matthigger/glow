@@ -1,7 +1,7 @@
 import numpy as np
 from tqdm import tqdm
 
-from ._base import AnalysisVoxel
+from .._base import AnalysisVoxel
 
 
 class AnalysisVBA(AnalysisVoxel):

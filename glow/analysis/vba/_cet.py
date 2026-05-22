@@ -3,7 +3,7 @@ from bisect import bisect_left
 import numpy as np
 from scipy.ndimage import label
 
-from ._base import AnalysisVoxel
+from .._base import AnalysisVoxel
 
 DEFAULT_CET_CFT_PVAL = 0.001
 

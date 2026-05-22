@@ -11,7 +11,7 @@ Verifies:
 import numpy as np
 import pytest
 
-from glow.analysis._tfce import apply_tfce_img, apply_tfce_x
+from glow.analysis.vba._tfce import apply_tfce_img, apply_tfce_x
 
 
 # ---------------------------------------------------------------------------
