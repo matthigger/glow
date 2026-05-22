@@ -57,11 +57,6 @@ def cluster(exp, mode=ClusterMode.FOCUS):
     structure = generate_binary_structure(mask.ndim, 1)
     labeled, num_components = label(mask_bb, structure=structure)
 
-    if num_components == 1:
-        connectivity = grid_to_graph(*mask_bb.shape, mask=mask_bb)
-        children = ward_tree(X=y.T, connectivity=connectivity)[0]
-        return children
-
     # global indices of active voxels, ordered by raster scan of the bbox
     global_idx = exp.mask_idx[bb_slices][mask_bb]
 
