@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 import glow.graph
-from glow.analysis.mancova import decompose, get_llr, get_roughness
+from glow.analysis.mancova import decompose, get_llr, get_mancova, get_roughness
 
 
 def _get_adjusted_stat(ana_glow):
@@ -178,15 +178,9 @@ def compute_target_stats(ana_glow, mask_target):
         return None
 
     y_sub = y[:, :, vox_indices]  # (b, num_img, n_vox)
-    ysum = y_sub.sum(axis=2)  # (b, num_img)
-    yout = np.einsum('bin,cin->bc', y_sub, y_sub)  # (b, b)
 
     q = decompose(x=exp.x, contrast=exp.contrast)
-    a0 = ysum @ q[0].T
-    t = yout - a0 @ a0.T / n_voxel
-    a1 = ysum @ q[1].T
-    h = a1 @ a1.T / n_voxel
-    e = t - h
+    e, h, _ = get_mancova(y=y_sub, q_tup=q)
 
     llr = get_llr(e, h, n=n_voxel)
 
