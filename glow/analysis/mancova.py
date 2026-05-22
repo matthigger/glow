@@ -128,31 +128,28 @@ def is_intercept_only_nuisance(x, contrast):
 # five MANCOVA test statistics
 # ---------------------------------------------------------------------------
 
-def get_llr(e, h, n=None, *, size_normalize=False):
+def get_llr(e, h, n=None):
     """Log-likelihood ratio: (n/2) * ln|det(I + E^{-1}H)|.
 
     Equivalent to LL_full - LL_null where both likelihoods are
     Gaussian profile log-likelihoods on the same region.  The (n/2)
     prefactor makes LLR scale linearly with region size under H0.
-
-    When size_normalize=True, returns (1/2) * ln|det(I + E^{-1}H)|
-    instead (size-independent).
+    Pass ``n=1`` for a size-independent (per-voxel) LLR.
 
     Args:
         e (np.array): (b, b) error matrix
         h (np.array): (b, b) hypothesis matrix
-        n (int): number of voxels in the region (unused when size_normalize)
-        size_normalize (bool): if True, return size-independent LLR
+        n (int): number of voxels in the region; use ``n=1`` for a
+            size-independent result
 
     Returns:
         float
     """
-    _n = 1 if size_normalize else n
     sign_e, logdet_e = np.linalg.slogdet(e)
     sign_t, logdet_t = np.linalg.slogdet(e + h)
     if sign_e <= 0 or sign_t <= 0:
         return np.nan
-    return 0.5 * _n * (logdet_t - logdet_e)
+    return 0.5 * n * (logdet_t - logdet_e)
 
 
 def get_wilks(e, h, n=None):

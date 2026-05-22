@@ -15,9 +15,10 @@ def compute_offset(x, y, contrast, effect_llr, roughness=None):
     Note that ``effect_llr`` here is per-voxel-equivalent: the LLR you
     will observe for the planted region under H1 is approximately
     ``effect_llr * |region|`` (because the un-normalized LLR carries an
-    n-prefactor that this routine has divided out via ``size_normalize=
-    True``).  So asking for ``effect_llr=0.5`` on a 614-voxel region
-    plants a region whose downstream observed LLR is ~307, not 0.5.
+    n-prefactor that this routine divides out by calling
+    ``get_llr(e, h, n=1)``).  So asking for ``effect_llr=0.5`` on a
+    614-voxel region plants a region whose downstream observed LLR is
+    ~307, not 0.5.
 
     When *roughness* is given, a sigma_scale factor is jointly optimised
     so that the post-imposition roughness coefficient
@@ -83,7 +84,7 @@ def _solve_offset_only(y_mean, q, yq1_norm2, yq2_norm2, yq1q1y, yq2q2y,
 
     def constraint(alpha):
         e, h = get_e_h(alpha)
-        return get_llr(e, h, size_normalize=True) - effect_llr
+        return get_llr(e, h, n=1) - effect_llr
 
     def obj(alpha):
         a1, a2 = alpha
@@ -119,7 +120,7 @@ def _solve_joint(y_mean, q, yq1_norm2, yq2_norm2, yq1q1y, yq2q2y,
 
     def con_llr(params):
         e, h = get_e_h(params)
-        return get_llr(e, h, size_normalize=True) - effect_llr
+        return get_llr(e, h, n=1) - effect_llr
 
     def con_rough(params):
         _, alpha2, s = params

@@ -21,7 +21,7 @@ def test_compute_offset():
 
             _y = y + offset[..., np.newaxis]
             e, h, _ = get_mancova(x=x, y=_y, contrast=contrast)
-            effect_llr_obs = get_llr(e, h, size_normalize=True)
+            effect_llr_obs = get_llr(e, h, n=1)
 
             assert np.isclose(effect_llr_exp, effect_llr_obs)
 
@@ -38,7 +38,7 @@ def _verify_offset_roughness(x, y, contrast, target_llr, target_rough):
     y_new = stretch_sigma(y_new, sigma_scale)
     e, h, sigma = get_mancova(x=x, y=y_new, contrast=contrast)
 
-    llr_obs = get_llr(e, h, size_normalize=True)
+    llr_obs = get_llr(e, h, n=1)
     rough_obs = get_roughness(e, sigma)
 
     assert np.isclose(target_llr, llr_obs, atol=1e-3), \

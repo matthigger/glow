@@ -200,12 +200,12 @@ def test_get_llr_fidelity():
             assert np.isclose(ref, new, rtol=1e-10), \
                 f'b={b}, n={n}: ref={ref}, new={new}'
 
-    # size_normalize=True should equal get_llr(e, h, n=1)
+    # n=1 is the size-independent form
     A = rng.standard_normal((2, 2))
     e = A @ A.T + np.eye(2) * 0.1
     B = rng.standard_normal((2, 2))
     h = B @ B.T
-    sn = get_llr(e, h, size_normalize=True)
+    sn = get_llr(e, h, n=1)
     ref_sn = _get_llr_reference(e, h, n=1)
     assert np.isclose(sn, ref_sn, rtol=1e-10)
 
