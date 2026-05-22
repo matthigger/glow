@@ -841,60 +841,6 @@ def graph_merge(n_common, children_list):
 GRAPH_EXCLUDE = -1
 
 
-def dp_antichain(nodes, children_map, gain, lam=0.0):
-    """Bottom-up DP finding the antichain that maximises total gain.
-
-    Maximises ``sum_{i in E} [gain(i) - lam(i)]`` over antichains E
-    of the tree defined by *children_map*.
-
-    Args:
-        nodes: node indices in ascending (bottom-up) order
-        children_map (dict): node -> list of child nodes in *nodes*.
-            Nodes absent from the dict (or with empty list) are leaves.
-        gain: array-like or dict mapping node -> gain value
-        lam (float or dict): penalty per region — scalar or per-node dict.
-
-    Returns:
-        selected (list[int]): sorted indices of antichain regions
-        info (dict): diagnostic keys ``best``, ``chose``
-    """
-    _lam_is_dict = isinstance(lam, dict)
-    best = {}
-    chose = {}
-
-    for node in nodes:
-        kids = children_map.get(node, [])
-        lam_node = lam[node] if _lam_is_dict else lam
-        g_net = gain[node] - lam_node
-
-        if not kids:
-            best[node] = max(g_net, 0.0)
-            chose[node] = g_net > 0
-        else:
-            split_val = sum(best[k] for k in kids)
-            best[node] = max(g_net, split_val)
-            chose[node] = g_net >= split_val
-
-    all_children = set()
-    for kids in children_map.values():
-        all_children.update(kids)
-    roots = sorted(n for n in nodes if n not in all_children)
-
-    selected = []
-
-    def _bt(node):
-        if chose[node]:
-            selected.append(node)
-        else:
-            for kid in children_map.get(node, []):
-                _bt(kid)
-
-    for root in roots:
-        _bt(root)
-
-    return sorted(selected), dict(best=best, chose=chose)
-
-
 class SCGraph:
     """graph with short-circuited parent/child relations.
 

@@ -219,7 +219,7 @@ class TestRunnerLabels:
                                   'min_vox': 1})
         config = Config(label='p', runner=runner, source='wgn')
         labels = set(config.runner.labels)
-        assert labels == {'greedy_llr', 'greedy_z', 'dp_llr', 'dp_z'}
+        assert labels == {'greedy_llr', 'greedy_z'}
 
 
 # ---------------------------------------------------------------------------

@@ -398,11 +398,10 @@ class RunPruneCompare(Runner):
 
     Compares two pruning gain choices on the same significant-region
     set: raw LLR (``stat``) vs the per-region z-scored LLR
-    (``llr_z_0``).  Both greedy and DP-antichain are tried,
-    giving four labels.
+    (``llr_z_0``).  Both greedy methods are tried, giving two labels.
     """
 
-    PRUNE_LABELS = ('greedy_llr', 'greedy_z', 'dp_llr', 'dp_z')
+    PRUNE_LABELS = ('greedy_llr', 'greedy_z')
 
     def __init__(self, glow_ana_kwargs):
         self.glow_ana_kwargs = glow_ana_kwargs
@@ -419,7 +418,7 @@ class RunPruneCompare(Runner):
         yield 'GLOW', (glow.analysis.AnalysisGLOW, self.glow_ana_kwargs)
 
     def run(self, config, **iter_kw):
-        from glow.analysis.prune import prune_greedy, prune_dp
+        from glow.analysis.prune import prune_greedy
 
         exp, effect = config.get_exp_eff(**iter_kw)
 
@@ -438,8 +437,6 @@ class RunPruneCompare(Runner):
         methods = {
             'greedy_llr': prune_greedy(sig, children, llr),
             'greedy_z':   prune_greedy(sig, children, llr_z),
-            'dp_llr':     prune_dp(sig, children, llr, lam=0.0),
-            'dp_z':       prune_dp(sig, children, llr_z, lam=0.0),
         }
 
         mask_active = exp.mask_idx > -1

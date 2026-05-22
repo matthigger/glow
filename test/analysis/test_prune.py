@@ -1,5 +1,5 @@
 import numpy as np
-from glow.analysis.prune import prune_greedy, prune_dp
+from glow.analysis.prune import prune_greedy
 
 
 def _make_tree_8():
@@ -106,69 +106,5 @@ class TestPruneGreedy:
         assert 8 in reg_out
         assert 12 not in reg_out
         assert 10 in reg_out
-
-
-class TestPruneDp:
-    """Test DP antichain pruning."""
-
-    def test_empty_sig_list(self):
-        children = _make_tree_8()
-        llr = _make_llr_8()
-        reg_out, _ = prune_dp([], children, llr)
-        assert reg_out == []
-
-    def test_output_is_antichain(self):
-        children = _make_tree_8()
-        llr = _make_llr_8()
-        sig_all = [8, 9, 10, 11, 12, 13, 14]
-        reg_out, _ = prune_dp(sig_all, children, llr, lam=0.0)
-
-        from glow.graph import get_parent
-        parent = get_parent(children, num_leaf=8)
-        selected = set(reg_out)
-        for node in selected:
-            p = parent[node]
-            while p != -1:
-                assert p not in selected, \
-                    f'node {node} and ancestor {p} both selected'
-                p = parent[p]
-
-    def test_dp_at_least_as_good_as_greedy(self):
-        """DP total stat >= greedy total stat (globally optimal)."""
-        children = _make_tree_8()
-        llr = _make_llr_8()
-        sig_all = [8, 9, 10, 11, 12, 13, 14]
-        greedy_out, _ = prune_greedy(sig_all, children, llr)
-        dp_out, _ = prune_dp(sig_all, children, llr, lam=0.0)
-        assert sum(llr[r] for r in dp_out) >= sum(llr[r] for r in greedy_out)
-
-    def test_penalty_reduces_selection(self):
-        """Higher lam should select fewer or equal regions."""
-        children = _make_tree_8()
-        llr = _make_llr_8()
-        sig_all = [8, 9, 10, 11, 12, 13, 14]
-        out_0, _ = prune_dp(sig_all, children, llr, lam=0.0)
-        out_big, _ = prune_dp(sig_all, children, llr, lam=100.0)
-        assert len(out_big) <= len(out_0)
-
-    def test_exp_n_eff_overrides_lam(self):
-        """exp_n_eff=3 should use lam=log(1+1/3)."""
-        children = _make_tree_8()
-        llr = _make_llr_8()
-        sig_all = [8, 9, 10, 11, 12, 13, 14]
-        out_eff, _ = prune_dp(sig_all, children, llr, exp_n_eff=3.0)
-        out_lam, _ = prune_dp(sig_all, children, llr,
-                              lam=np.log(1 + 1.0 / 3.0))
-        assert out_eff == out_lam
-
-    def test_splits_when_children_beat_parent(self):
-        """When children sum > parent, DP should split."""
-        children = _make_tree_8()
-        llr = np.zeros(15)
-        llr[8], llr[9] = 5.0, 4.0  # sum = 9
-        llr[12] = 8.0               # parent < sum
-        reg_out, _ = prune_dp([8, 9, 12], children, llr, lam=0.0)
-        assert 8 in reg_out and 9 in reg_out
-        assert 12 not in reg_out
 
 
