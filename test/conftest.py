@@ -15,11 +15,7 @@ if _FSL_DIR.is_dir():
 
 
 def pytest_addoption(parser):
-    """Register --runaws and --runslow CLI flags."""
-    parser.addoption(
-        '--runaws', action='store_true', default=False,
-        help='Run tests that submit real AWS Batch jobs (costs money)',
-    )
+    """Register --runslow CLI flag."""
     parser.addoption(
         '--runslow', action='store_true', default=False,
         help='Run heavyweight tests (calibration, long-running simulations)',
@@ -30,24 +26,16 @@ def pytest_configure(config):
     """Register custom markers so --strict-markers accepts them."""
     config.addinivalue_line(
         'markers',
-        'aws: test requires live AWS Batch resources (use --runaws)',
-    )
-    config.addinivalue_line(
-        'markers',
         'slow: heavyweight test, skipped by default (use --runslow)',
     )
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip aws/slow tests unless their opt-in flag is passed."""
-    run_aws = config.getoption('--runaws')
+    """Skip slow tests unless --runslow is passed."""
     run_slow = config.getoption('--runslow')
 
-    skip_aws = pytest.mark.skip(reason='needs --runaws to run')
     skip_slow = pytest.mark.skip(reason='needs --runslow to run')
 
     for item in items:
-        if 'aws' in item.keywords and not run_aws:
-            item.add_marker(skip_aws)
         if 'slow' in item.keywords and not run_slow:
             item.add_marker(skip_slow)

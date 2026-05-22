@@ -420,61 +420,6 @@ class TestFilterUncached:
 
 
 # ---------------------------------------------------------------------------
-# submit_cloud_jobs interface
-# ---------------------------------------------------------------------------
-
-class TestSubmitCloudJobs:
-    """Verify submit_cloud_jobs passes correct data shapes to AWSBatchRunner."""
-
-    def test_upload_receives_2tuples(self, tmp_path):
-        """upload_all_kwargs must get list of (int, dict), not 3-tuples."""
-        from glow.aws.aws_batch import CloudConfig
-
-        config = _make_config(ana_labels=('A',))
-        config.n_seed = 1
-        config.effect_llr_all = np.array([0.05])
-        config.cloud_config = CloudConfig(
-            s3_bucket='fake', s3_prefix='fake',
-            job_queue='fake', job_definition='fake',
-        )
-
-        with (
-            patch('glow.benchmark.file.get_path_result',
-                  return_value=tmp_path),
-            patch('glow.aws.aws_batch.boto3'),
-            patch('glow.benchmark.config.path_result', tmp_path),
-        ):
-            # prep so exp_orig exists (needed for memory estimation)
-            config.prep_exp_orig()
-
-            # mock the runner methods called by submit_cloud_jobs
-            with patch('glow.aws.aws_batch.AWSBatchRunner') as MockRunner:
-                runner = MockRunner.return_value
-                runner.config = config.cloud_config
-                runner.estimate_experiment_memory_mb.return_value = None
-                runner.submit_array_job.return_value = {
-                    'child_job_ids': ['job-1'],
-                    'index_map': {'job-1': 0},
-                }
-
-                config.submit_cloud_jobs(verbose=False)
-
-                # verify upload_all_kwargs got (int, dict) pairs
-                args = runner.upload_all_kwargs.call_args[0]
-                kwargs_list = args[1]
-                assert len(kwargs_list) >= 1
-                for item in kwargs_list:
-                    assert len(item) == 2, f'expected 2-tuple, got {len(item)}'
-                    assert isinstance(item[0], (int, np.integer))
-                    assert isinstance(item[1], dict)
-
-                # verify submit_array_job got integer indices
-                sa_kwargs = runner.submit_array_job.call_args[1]
-                for idx in sa_kwargs['indices']:
-                    assert isinstance(idx, (int, np.integer))
-
-
-# ---------------------------------------------------------------------------
 # prep_folder
 # ---------------------------------------------------------------------------
 
