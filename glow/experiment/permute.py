@@ -16,11 +16,6 @@ def get_freed_lane(x, contrast, perm_idx):
     so the matrix returned is the column-layout transpose ``M.T = A P.T + B``,
     which in index form is ``(I - Q0Q0T)[:, perm] + Q0Q0T``.
 
-    (Previous versions returned ``[perm, :]``, which corresponds to
-    permuting Y_v BEFORE projection — statistically equivalent under H0
-    by row-exchangeability, but doesn't expose the O(N) survivor-kernel
-    gather used by ``glow.graph.compute_llr_inner_kernel``.)
-
     Args:
         x (np.array): (a, num_img) design matrix
         contrast (np.array): (a,) boolean, True for features of interest
