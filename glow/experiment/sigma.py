@@ -37,20 +37,3 @@ def stretch_sigma(y, scale):
     y_demean = y - mean[:, :, np.newaxis]
     y_demean *= scale
     return y_demean + mean[:, :, np.newaxis]
-
-
-def get_size_yout_ymean(y):
-    """compute size, outer-product sum, and mean from image data.
-
-    Args:
-        y (np.array): (b, num_img, num_vox) imaging features
-
-    Returns:
-        size (int): number of voxels
-        yout (np.array): (b, b) sum of yv @ yv.T across all voxels
-        ymean (np.array): (b, num_img) mean across voxels per feature
-    """
-    size = y.shape[2]
-    yout = np.einsum('bnr,anr->ba', y, y, optimize=True)
-    ymean = y.mean(axis=2)
-    return size, yout, ymean

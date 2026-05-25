@@ -344,9 +344,9 @@ class TestMinVox:
 
 
 class TestPerRegionZConsistency:
-    """z must equal (stat - mu) / sigma on the observed tree."""
+    """z must equal (stat - mu) / std on the observed tree."""
 
-    def test_z_matches_stat_minus_mu_over_sigma(self):
+    def test_z_matches_stat_minus_mu_over_std(self):
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                     num_img=50, seed=0)
         exp, _ = EffectSynthetic.impose(exp, seed=0,
@@ -356,14 +356,14 @@ class TestPerRegionZConsistency:
                            alpha_fwer=.5, min_vox=1).fit()
 
         mu = ana.mu
-        sigma = ana.sigma
+        std = ana.std
         llr = ana.llr
         z_stored = ana.z
 
-        # only check entries where sigma is well above the floor and
+        # only check entries where std is well above the floor and
         # neither input is NaN (matches the worker's sanitisation).
-        ok = np.isfinite(llr) & np.isfinite(mu) & (sigma > 1e-9)
-        z_expected = (llr[ok] - mu[ok]) / sigma[ok]
+        ok = np.isfinite(llr) & np.isfinite(mu) & (std > 1e-9)
+        z_expected = (llr[ok] - mu[ok]) / std[ok]
         np.testing.assert_allclose(z_stored[ok], z_expected,
                                    rtol=1e-9, atol=1e-9)
 

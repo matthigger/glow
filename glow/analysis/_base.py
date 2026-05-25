@@ -81,8 +81,8 @@ class Analysis(ABC):
         Under H0 the observed row is exchangeable with the permuted rows
         (Phipson & Smyth 2010; Winkler et al. 2014), so it must contribute
         to the standardization on equal footing — otherwise row 0 is
-        divided by a sigma it did not contribute to while rows 1: are
-        divided by a sigma they did, and max-stat FWER drifts above
+        divided by a std it did not contribute to while rows 1: are
+        divided by a std they did, and max-stat FWER drifts above
         nominal at finite B (see test_stat_reliability.py).
 
         Args:
@@ -93,9 +93,9 @@ class Analysis(ABC):
             z (np.array): same shape, voxel-wise z-scored
         """
         mu = np.nanmean(stat, axis=0)
-        sigma = np.nanstd(stat, axis=0, ddof=1)
-        sigma[sigma < 1e-12] = 1.0
-        return (stat - mu) / sigma
+        std = np.nanstd(stat, axis=0, ddof=1)
+        std[std < 1e-12] = 1.0
+        return (stat - mu) / std
 
     @classmethod
     def discover_mask(cls, mask, exp):

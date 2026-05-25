@@ -27,8 +27,8 @@ class AnalysisGLOW(Analysis):
             (k=0) pass.
         size: (num_reg,) region sizes for the observed tree.
         llr: (num_reg,) observed LLR per region.
-        mu, sigma, z: (num_reg,) inner-null mean, std, and per-region
-            z-score (llr - mu)/sigma, observed tree.
+        mu, std, z: (num_reg,) inner-null mean, std, and per-region
+            z-score (llr - mu)/std, observed tree.
         max_z_null: (n_perm_fwer + 1,) max-z per outer perm, indexed by
             outer-perm number; max_z_null[0] is the observed max-z.
         pval: (num_reg,) FWER-controlled p-values.
@@ -65,7 +65,7 @@ class AnalysisGLOW(Analysis):
         self.size = None
         self.llr = None
         self.mu = None
-        self.sigma = None
+        self.std = None
         self.z = None
         self.max_z_null = None
 
@@ -109,7 +109,7 @@ class AnalysisGLOW(Analysis):
         """Run the analysis.
 
         Populates the observed-tree attributes (children, size, llr,
-        mu, sigma, z), the FWER null (max_z_null), and the synthesis
+        mu, std, z), the FWER null (max_z_null), and the synthesis
         output (pval, effect_list).
         """
         n_total = self.n_perm_fwer + 1
@@ -130,14 +130,14 @@ class AnalysisGLOW(Analysis):
                 _exp, children=children,
                 q0=self._q0, q1=self._q1)
 
-            mu, sigma = self.run_inner_perm(
+            mu, std = self.run_inner_perm(
                 _exp, children, self.n_perm_inner,
                 q0=self._q0, q1=self._q1,
                 use_gpu=use_gpu, min_vox=self.min_vox,
                 base_seed=(k + 1) * _INNER_SEED_BLOCK)
 
-            sigma_safe = np.where(sigma < 1e-12, 1.0, sigma)
-            z = np.nan_to_num((llr - mu) / sigma_safe,
+            std_safe = np.where(std < 1e-12, 1.0, std)
+            z = np.nan_to_num((llr - mu) / std_safe,
                               nan=0.0, posinf=0.0, neginf=np.nan)
 
             active = size >= self.min_vox
@@ -151,7 +151,7 @@ class AnalysisGLOW(Analysis):
                 self.size = size
                 self.llr = llr
                 self.mu = mu
-                self.sigma = sigma
+                self.std = std
                 self.z = z
 
         if verbose:

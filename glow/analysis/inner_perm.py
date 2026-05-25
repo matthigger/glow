@@ -2,7 +2,7 @@
 
 For one outer permutation: given the outer-perm tree (Ward children)
 and an experiment, draw ``n_perm`` inner-perm LLR samples and reduce
-them to per-region ``(mu, sigma)``.  Four backends cover the
+them to per-region ``(mu, std)``.  Four backends cover the
 (cpu vs gpu) x (intercept-only fast vs general slow) grid:
 
   - :func:`cpu_fast` -- intercept-only.  Q0 commutes with permutations,
@@ -16,10 +16,10 @@ them to per-region ``(mu, sigma)``.  Four backends cover the
     Chan-merged moments).
 
 All four share a single keyword-only signature and return ``(mu,
-sigma)``::
+std)``::
 
     run = inner_perm.gpu_fast if use_gpu and use_fast else ...
-    mu, sigma = run(
+    mu, std = run(
         exp=exp, base_seed=base_seed, n_perm=n_perm,
         q0=q0, q1=q1, children=children, min_vox=min_vox)
 
@@ -48,7 +48,7 @@ import glow.graph
 
 def moments_from_draws(fn):
     """Decorator: wraps a fn returning ``(n_perm, num_reg)`` draws into
-    one returning ``(mu, sigma)``.  Phase-2 leaves draws NaN for
+    one returning ``(mu, std)``.  Phase-2 leaves draws NaN for
     size < min_vox regions; ``nanmean`` / ``nanstd`` ignore them.
     """
     @functools.wraps(fn)
@@ -57,8 +57,8 @@ def moments_from_draws(fn):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)
             mu = np.nanmean(draws, axis=0)
-            sigma = np.nanstd(draws, axis=0, ddof=1)
-        return mu, sigma
+            std = np.nanstd(draws, axis=0, ddof=1)
+        return mu, std
     return wrapper
 
 
@@ -125,7 +125,7 @@ cpu_slow = moments_from_draws(cpu_slow_full)
 
 def gpu_fast(*, exp, base_seed, n_perm,
               q0, q1, children, min_vox):
-    """Intercept-only GPU path -- returns ``(mu, sigma)``.
+    """Intercept-only GPU path -- returns ``(mu, std)``.
 
     Closed-form 2x2 LLR, single CUDA Graph.
     """
@@ -142,7 +142,7 @@ def gpu_fast(*, exp, base_seed, n_perm,
 
 def gpu_slow(*, exp, base_seed, n_perm,
               q0, q1, children, min_vox):
-    """General-Q0 GPU path -- returns ``(mu, sigma)``.
+    """General-Q0 GPU path -- returns ``(mu, std)``.
 
     Alpha/beta decomposition, multi-batch CUDA Graph with Chan-merged
     moments.
