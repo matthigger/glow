@@ -109,11 +109,15 @@ class ExperimentImageOnly:
     def pickle_status(self):
         return compute_pickle_status(self)
 
+    @property
+    def _hash_arrays(self):
+        return (self.y, self.mask_idx)
+
     def _hash(self):
         """rolling SHA-256 hash over data arrays (16-char hex digest)."""
         import hashlib
         h = hashlib.sha256()
-        for arr in (self.y, self.mask_idx):
+        for arr in self._hash_arrays:
             h.update(np.ascontiguousarray(arr).tobytes())
         return h.hexdigest()[:16]
 
@@ -522,13 +526,9 @@ class Experiment(ExperimentImageOnly):
                           'origin (consider add_bias=True)',
                           NoBiasTermWarning)
 
-    def _hash(self):
-        """rolling SHA-256 hash over all data arrays (16-char hex digest)."""
-        import hashlib
-        h = hashlib.sha256()
-        for arr in (self.y, self.mask_idx, self.x, self.contrast):
-            h.update(np.ascontiguousarray(arr).tobytes())
-        return h.hexdigest()[:16]
+    @property
+    def _hash_arrays(self):
+        return (*super()._hash_arrays, self.x, self.contrast)
 
     def permute(self, perm_idx):
         """return a new experiment with Freedman-Lane permuted images.
