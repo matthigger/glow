@@ -90,21 +90,21 @@ def test_get_miss_hit():
     assert np.allclose(hit, hit_exp)
 
 
-def test_topo_iter():
+def test_iter_postorder():
     # complete tree
     children = np.array([[0, 1],
                          [2, 3],
                          [4, 5]])
 
-    assert list(iter_topo(children=children,
+    assert list(iter_postorder(children=children,
                           num_leaf=4,
                           node_start=4)) == [0, 1, 4]
-    assert list(iter_topo(children=children,
+    assert list(iter_postorder(children=children,
                           num_leaf=4,
                           node_start=5)) == [2, 3, 5]
-    assert list(iter_topo(children=children,
+    assert list(iter_postorder(children=children,
                           num_leaf=4)) == [0, 1, 4, 2, 3, 5, 6]
-    assert list(iter_topo(children=children,
+    assert list(iter_postorder(children=children,
                           num_leaf=4,
                           only_leaf=True)) == [0, 1, 2,
                                                3]
@@ -113,19 +113,19 @@ def test_topo_iter():
     children = np.array([[0, 1],
                          [2, 3]])
 
-    assert list(iter_topo(children=children,
+    assert list(iter_postorder(children=children,
                           num_leaf=4,
                           node_start=4)) == [0, 1, 4]
-    assert list(iter_topo(children=children,
+    assert list(iter_postorder(children=children,
                           num_leaf=4,
                           node_start=5)) == [2, 3, 5]
-    assert list(iter_topo(children=children,
+    assert list(iter_postorder(children=children,
                           num_leaf=4,
                           node_start=5,
                           only_leaf=True)) == [2, 3]
 
     # no graph passed (iterate through leafs one by one)
-    assert list(iter_topo(num_leaf=4)) == [0, 1, 2, 3]
+    assert list(iter_postorder(num_leaf=4)) == [0, 1, 2, 3]
 
 
 def test_get_parent():
@@ -149,7 +149,7 @@ def test_iter_size_ysum_yout(exp, children):
     b, num_img, num_vox = exp.y.shape
     for reg_idx, size, ysum, yout in iter_size_ysum_yout(exp.y, children=children):
         # build reliable compute: get index of all voxels in region
-        vox = np.array(list(iter_topo(children=children,
+        vox = np.array(list(iter_postorder(children=children,
                                       num_leaf=num_vox,
                                       node_start=reg_idx,
                                       only_leaf=True)))
@@ -176,7 +176,7 @@ def test_iter_mancova(exp, children):
             for perm_idx in range(3):
                 _exp = exp.permute(perm_idx) if perm_idx else exp
                 for reg_idx, size, e, h in iter_mancova(_exp, children=children):
-                    vox = np.array(list(iter_topo(children=children,
+                    vox = np.array(list(iter_postorder(children=children,
                                                   num_leaf=num_vox,
                                                   node_start=reg_idx,
                                                   only_leaf=True)))

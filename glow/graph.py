@@ -410,8 +410,8 @@ def get_miss_hits(mask, mask_idx, children):
 
 
 
-def iter_topo(*, children=None, num_leaf, node_start=None, only_leaf=False):
-    """topological sort, leaves to root.
+def iter_postorder(*, children=None, num_leaf, node_start=None, only_leaf=False):
+    """DFS post-order traversal; yields nodes in topological order (leaves to root).
 
     Supports forests: when ``node_start`` is None, iterates from every
     root (nodes with no parent).
@@ -433,14 +433,14 @@ def iter_topo(*, children=None, num_leaf, node_start=None, only_leaf=False):
         parent = get_parent(children, num_leaf)
         roots = np.where(parent == -1)[0]
         for root in roots:
-            yield from iter_topo(children=children, num_leaf=num_leaf,
-                                 node_start=root, only_leaf=only_leaf)
+            yield from iter_postorder(children=children, num_leaf=num_leaf,
+                                      node_start=root, only_leaf=only_leaf)
         return
 
     if node_start >= num_leaf:
         for child in children[int(node_start - num_leaf), :]:
-            yield from iter_topo(children=children, num_leaf=num_leaf,
-                                 node_start=child, only_leaf=only_leaf)
+            yield from iter_postorder(children=children, num_leaf=num_leaf,
+                                      node_start=child, only_leaf=only_leaf)
 
     if not only_leaf or node_start < num_leaf:
         yield node_start
@@ -491,10 +491,10 @@ def get_label_map(reg_idx_list, mask_idx, children, check_disjoint=False):
     label_map = np.full(mask_idx.shape, -1, dtype=int)
 
     for reg_idx in reg_idx_list:
-        for vox in iter_topo(children=children,
-                             num_leaf=num_vox,
-                             node_start=reg_idx,
-                             only_leaf=True):
+        for vox in iter_postorder(children=children,
+                                  num_leaf=num_vox,
+                                  node_start=reg_idx,
+                                  only_leaf=True):
             target_voxels = (mask_idx == vox)
             if check_disjoint and np.any(label_map[target_voxels] != -1):
                 reg_idx_list = np.unique(label_map[target_voxels])

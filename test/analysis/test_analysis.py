@@ -1,7 +1,7 @@
 from glow.effect import ExtenterSphere, EffectSynthetic
 from glow.experiment import *
 from glow.analysis import *
-from glow.graph import get_dice_sens_spec, iter_topo
+from glow.graph import get_dice_sens_spec, iter_postorder
 from glow.mask import get_mask_idx
 
 
@@ -414,10 +414,10 @@ class TestForest:
         assert children.shape == (num_vox - 2, 2), \
             f'expected {num_vox - 2} internal nodes, got {children.shape[0]}'
 
-        all_nodes = list(iter_topo(children=children, num_leaf=num_vox))
+        all_nodes = list(iter_postorder(children=children, num_leaf=num_vox))
         expected_total = num_vox + children.shape[0]
         assert len(all_nodes) == expected_total, \
-            f'iter_topo yielded {len(all_nodes)}, expected {expected_total}'
+            f'iter_postorder yielded {len(all_nodes)}, expected {expected_total}'
 
 
 class TestStreamingFidelity:

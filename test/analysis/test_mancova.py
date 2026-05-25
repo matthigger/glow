@@ -7,7 +7,7 @@ from glow.experiment import ExperimentImageOnly
 from glow.experiment.exper import NoBiasTermWarning
 from glow.analysis.mancova import *
 from glow.analysis.mancova import is_intercept_only_nuisance
-from glow.graph import iter_topo
+from glow.graph import iter_postorder
 
 
 def test_get_mancova():
@@ -23,8 +23,8 @@ def test_get_mancova():
             warnings.simplefilter('ignore', NoBiasTermWarning)
             exp = exp.sample_x(a=a, seed=seed, add_bias=add_bias)
 
-            for reg_idx in iter_topo(children=children, num_leaf=num_vox):
-                vox = np.array(list(iter_topo(children=children,
+            for reg_idx in iter_postorder(children=children, num_leaf=num_vox):
+                vox = np.array(list(iter_postorder(children=children,
                                               num_leaf=num_vox,
                                               node_start=reg_idx,
                                               only_leaf=True)))

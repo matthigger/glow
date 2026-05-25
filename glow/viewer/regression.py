@@ -17,7 +17,7 @@ from .image import get_region_color
 
 def _get_voxel_indices(reg_idx, children, num_vox):
     """Return a list of leaf (voxel) indices belonging to *reg_idx*."""
-    return list(glow.graph.iter_topo(
+    return list(glow.graph.iter_postorder(
         children=children, num_leaf=num_vox,
         node_start=reg_idx, only_leaf=True))
 
