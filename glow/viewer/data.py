@@ -73,15 +73,15 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
             children=children,
             mask_idx=ana_glow.exp.mask_idx,
             mask=mask_target)
-        miss, hits = glow.graph.get_miss_hits(
+        fp, tp = glow.graph.get_fp_tp(
             children=children,
             mask_idx=ana_glow.exp.mask_idx,
             mask=mask_target)
         d['dice'] = dice
         d['sens'] = sens
         d['spec'] = spec
-        d['vox_in_target'] = hits.astype(int)
-        d['vox_out_target'] = miss.astype(int)
+        d['vox_in_target'] = tp.astype(int)
+        d['vox_out_target'] = fp.astype(int)
 
         sig_mask = ~np.isnan(ana_glow.pval) & (ana_glow.pval <= alpha_fwer)
         max_dice_sig = float(dice[sig_mask].max()) if sig_mask.any() else 0.0

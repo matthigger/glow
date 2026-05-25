@@ -359,10 +359,7 @@ def get_dice_sens_spec(mask, mask_idx, children):
         sens (np.array): TP / (TP + FN) per region
         spec (np.array): TN / (TN + FP) per region
     """
-    # compute misses & hits per region
-    # true positive: target voxels in estimated region
-    # false positive: in estimated region but not in target mask
-    fp, tp = get_miss_hits(mask, mask_idx, children)
+    fp, tp = get_fp_tp(mask, mask_idx, children)
 
     # false negative: targets outside of estimated region
     fn = mask.sum() - tp
@@ -384,8 +381,10 @@ def get_dice_sens_spec(mask, mask_idx, children):
     return dice, sens, spec
 
 
-def get_miss_hits(mask, mask_idx, children):
-    """count target (hit) and non-target (miss) voxels per node.
+def get_fp_tp(mask, mask_idx, children):
+    """count false-positive and true-positive voxels per node.
+
+    Treats each region as a predictor of the target mask.
 
     Args:
         mask (np.array): target mask (boolean, same shape as mask_idx)
@@ -393,20 +392,18 @@ def get_miss_hits(mask, mask_idx, children):
         children (np.array): (num_leaf - 1, 2) child index pairs
 
     Returns:
-        miss (np.array): non-target voxels per node
-        hit (np.array): target voxels per node
+        fp (np.array): non-target voxels per node (in region, not in target)
+        tp (np.array): target voxels per node (in region and in target)
     """
-    # build miss and hit for leaf nodes
     num_vox = (mask_idx >= 0).sum()
-    hit = np.zeros(num_vox)
-    hit[mask_idx[mask.astype(bool)]] = 1
-    miss = np.ones(num_vox) - hit
+    tp = np.zeros(num_vox)
+    tp[mask_idx[mask.astype(bool)]] = 1
+    fp = np.ones(num_vox) - tp
 
-    # sum to all other regions
-    miss = node_sum(miss, children=children)
-    hit = node_sum(hit, children=children)
+    fp = node_sum(fp, children=children)
+    tp = node_sum(tp, children=children)
 
-    return miss, hit
+    return fp, tp
 
 
 

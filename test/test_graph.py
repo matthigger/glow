@@ -66,28 +66,28 @@ def test_get_dice_sens_spec_with_inactive_voxels():
     assert spec[4] == 0.0
 
 
-def test_get_miss_hit():
+def test_get_fp_tp():
     mask = np.array([0, 0, 1, 1])
     mask_idx = np.arange(4)
     children = np.array([[0, 1],
                          [2, 3],
                          [4, 5]])
 
-    miss_exp = np.array([1, 1, 0, 0, 2, 0, 2])
-    hit_exp = np.array([0, 0, 1, 1, 0, 2, 2])
+    fp_exp = np.array([1, 1, 0, 0, 2, 0, 2])
+    tp_exp = np.array([0, 0, 1, 1, 0, 2, 2])
 
-    miss, hit = get_miss_hits(mask=mask, mask_idx=mask_idx, children=children)
-    assert np.allclose(miss, miss_exp)
-    assert np.allclose(hit, hit_exp)
+    fp, tp = get_fp_tp(mask=mask, mask_idx=mask_idx, children=children)
+    assert np.allclose(fp, fp_exp)
+    assert np.allclose(tp, tp_exp)
 
     # test incomplete tree
     children = children[:-1, :]
-    miss_exp = miss_exp[:-1]
-    hit_exp = hit_exp[:-1]
+    fp_exp = fp_exp[:-1]
+    tp_exp = tp_exp[:-1]
 
-    miss, hit = get_miss_hits(mask=mask, mask_idx=mask_idx, children=children)
-    assert np.allclose(miss, miss_exp)
-    assert np.allclose(hit, hit_exp)
+    fp, tp = get_fp_tp(mask=mask, mask_idx=mask_idx, children=children)
+    assert np.allclose(fp, fp_exp)
+    assert np.allclose(tp, tp_exp)
 
 
 def test_iter_postorder():
