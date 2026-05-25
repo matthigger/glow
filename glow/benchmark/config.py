@@ -16,7 +16,7 @@ from botocore.exceptions import ClientError
 import cloudpickle as pickle
 
 import glow
-from glow.benchmark.hcp_data import get_hcp_path
+from brainjar import hcp_ya_open
 
 base = Path(user_data_dir('glow', 'glow_author'))
 path_result = base / 'results'
@@ -122,7 +122,7 @@ class Config:
             img_glob_dict = {feat: f'*_{feat}.nii.gz' for feat in feats}
             self._hcp_subjects = tuple(
                 glow.experiment.ExperimentImageOnly.list_subjects(
-                    folder=get_hcp_path(),
+                    folder=hcp_ya_open.process(),
                     sbj_regex=self.hcp_sbj_regex,
                     img_glob_dict=img_glob_dict))
         return self._hcp_subjects
@@ -181,7 +181,7 @@ class Config:
         """prepare the base experiment (HCP or WGN)."""
         if self.source == 'hcp':
             if self._exp_img_only is None:
-                path = get_hcp_path()
+                path = hcp_ya_open.process()
                 feats = hcp_feats if hcp_feats is not None else self.hcp_feats
                 img_glob_dict = {feat: f'*_{feat}.nii.gz' for feat in feats}
                 self._exp_img_only = (

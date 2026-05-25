@@ -400,8 +400,8 @@ def main_permutation(args):
     runner = AWSBatchRunner(cloud_config)
 
     print('Loading HCP data...')
-    from glow.benchmark.hcp_data import get_hcp_path
-    path = get_hcp_path()
+    from brainjar import hcp_ya_open
+    path = hcp_ya_open.process()
     exp_orig = glow.experiment.ExperimentImageOnly.from_search(
         folder=path,
         sbj_regex=r'[\d]{6}',
