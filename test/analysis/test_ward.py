@@ -44,16 +44,14 @@ def _is_topologically_valid(children, n_samples):
 # -------------------------------------------------------- exact sklearn match
 
 
-@pytest.mark.parametrize('seed', [0, 1, 2, 3])
+@pytest.mark.parametrize('seed', list(range(8)))
 @pytest.mark.parametrize('shape,a', [
-    ((4, 4, 4), 8),
-    ((5, 5, 5), 8),
-    ((6, 6, 6), 12),
+    ((6, 6, 6), 8),
     ((8, 8, 8), 8),
-    ((10, 10, 10), 8),
+    ((10, 10, 10), 12),
 ])
 def test_constrained_children_match_sklearn(seed, shape, a):
-    """Heap-greedy reproduces sklearn's children array exactly."""
+    """Heap-greedy reproduces sklearn's children/distances exactly."""
     rng = np.random.default_rng(seed)
     n = int(np.prod(shape))
     X = rng.standard_normal((n, a)).astype(np.float64)
@@ -64,25 +62,6 @@ def test_constrained_children_match_sklearn(seed, shape, a):
 
     assert np.array_equal(ours[0], sk[0]), 'children must match sklearn exactly'
     np.testing.assert_allclose(ours[4], sk[4], atol=1e-12, rtol=1e-12)
-
-
-@pytest.mark.parametrize('seed', [0, 1, 2])
-@pytest.mark.parametrize('shape', [(4, 4, 4), (6, 6, 6), (8, 8, 8)])
-def test_constrained_partitions_match_sklearn(seed, shape):
-    """Same set of leaf-set partitions as sklearn (subsumed by exact
-    children match, but spot-checks the dendrogram semantics)."""
-    rng = np.random.default_rng(seed)
-    n = int(np.prod(shape))
-    a = 8
-    X = rng.standard_normal((n, a)).astype(np.float64)
-    conn = grid_to_graph(*shape)
-
-    ours = our_ward_tree(X, conn)
-    sk = sk_ward_tree(X=X, connectivity=conn)
-
-    lo = set(_merge_leaf_sets(ours[0], n))
-    ls = set(_merge_leaf_sets(sk[0], n))
-    assert lo == ls
 
 
 # ------------------------------------------------------------------ validity
