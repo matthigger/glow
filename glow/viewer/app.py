@@ -251,11 +251,8 @@ def _detail_panels(ana_glow):
 
     exp = ana_glow.exp
     meta = getattr(exp, 'meta', {}) or {}
-    recipe = meta.get('recipe')
-    src = recipe.get('source') if recipe else None
-    args = recipe.get('args') if recipe else None
 
-    y_shape = getattr(exp.y, 'shape', None) if exp.y is not None else 'slim'
+    y_shape = getattr(exp.y, 'shape', None) if exp.y is not None else '(unset)'
     x = getattr(exp, 'x', None)
     x_shape = getattr(x, 'shape', None)
     contrast = getattr(exp, 'contrast', None)
@@ -268,50 +265,6 @@ def _detail_panels(ana_glow):
     features = meta.get('features', [])
 
     exp_rows = [
-        _kv_row('recipe source', src if src is not None else '(none)'),
-    ]
-    if args is not None:
-        # nested expandable rendering of recipe args (debugger-style)
-        arg_children = [_render_value(repr(k), v) for k, v in args.items()]
-        exp_rows.append(html.Details([
-            html.Summary(f'recipe args ({len(args)} entries)',
-                         style={'fontSize': '12px', 'cursor': 'pointer',
-                                'color': '#555'}),
-            html.Div(arg_children,
-                     style={'background': '#f7f7f7',
-                            'padding': '6px', 'border': '1px solid #ddd',
-                            'maxHeight': '320px', 'overflowY': 'auto',
-                            'marginTop': '2px'}),
-        ], style={'marginTop': '4px', 'marginBottom': '4px'}))
-    steps = recipe.get('steps') if recipe else None
-    if steps:
-        # one expandable per step, args rendered recursively (nested)
-        steps_summary = ' -> '.join(s.get('op', '?') for s in steps)
-        step_blocks = []
-        for i, step in enumerate(steps):
-            op = step.get('op', '?')
-            s_args = step.get('args', {}) or {}
-            inner = [_render_value(repr(k), v, depth=1)
-                     for k, v in s_args.items()]
-            step_blocks.append(html.Details([
-                html.Summary(f'[{i}] {op}',
-                             style={'fontFamily': 'monospace',
-                                    'fontSize': '12px',
-                                    'cursor': 'pointer',
-                                    'fontWeight': 'bold'}),
-                html.Div(inner, style={'paddingLeft': '16px'}),
-            ], open=True, style={'marginBottom': '4px'}))
-        exp_rows.append(html.Details([
-            html.Summary(f'recipe steps ({len(steps)}): {steps_summary}',
-                         style={'fontSize': '12px', 'cursor': 'pointer',
-                                'color': '#555'}),
-            html.Div(step_blocks,
-                     style={'background': '#f7f7f7',
-                            'padding': '6px', 'border': '1px solid #ddd',
-                            'maxHeight': '400px', 'overflowY': 'auto',
-                            'marginTop': '2px'}),
-        ], style={'marginTop': '4px', 'marginBottom': '4px'}))
-    exp_rows.extend([
         _kv_row('y.shape', y_shape),
         _kv_row('image shape', tuple(mask_idx.shape)),
         _kv_row('x.shape', x_shape),
@@ -321,7 +274,7 @@ def _detail_panels(ana_glow):
         _kv_row('subjects', f'{len(subjects)} '
                 + (f'(first: {subjects[0]})' if subjects else '')),
         _kv_row('features', features),
-    ])
+    ]
     if 'affine' in meta and meta['affine'] is not None:
         exp_rows.append(_render_value('affine', meta['affine']))
 

@@ -116,10 +116,11 @@ def _score_and_emit(ana, effect, config, label, total_time_sec, iter_kw):
     _merge_iter_kw(d, iter_kw)
     uuid_str = _write_result(config, d)
 
-    # Always save the analysis pickle.  Slim pickling drops y while
-    # preserving the recipe; ~100 KB per (ana, effect) is well within
-    # any reasonable per-experiment budget.
+    # Save the analysis pickle.  Drop the experiment's y (the large
+    # data array) before pickling; per-trial detail files are for
+    # post-hoc inspection and don't need to carry the full dataset.
     file_out = config.folder / OUT / f'{uuid_str}_detail.p.gz'
+    ana.exp.y = None
     with gzip.open(file_out, 'wb') as f:
         pickle.dump((ana, effect), f)
 

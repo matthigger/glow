@@ -264,14 +264,12 @@ class Config:
             extenter = glow.effect.ExtenterSphere(n_vox=self.crop_n_vox)
             mask = extenter(mask_idx=self.exp_orig.mask_idx, seed=seed,
                             contiguous=True)
-            recipe_step = {'op': 'apply_mask', 'args': {'mask': mask}}
-            exp = self.exp_orig.apply_mask(mask, recipe_step=recipe_step)
+            exp = self.exp_orig.apply_mask(mask)
         elif radius_to_use is not None:
             extenter = glow.effect.ExtenterSphere(radius=radius_to_use)
             mask = extenter(mask_idx=self.exp_orig.mask_idx, seed=seed,
                             contiguous=True)
-            recipe_step = {'op': 'apply_mask', 'args': {'mask': mask}}
-            exp = self.exp_orig.apply_mask(mask, recipe_step=recipe_step)
+            exp = self.exp_orig.apply_mask(mask)
         else:
             exp = self.exp_orig
 
@@ -588,15 +586,9 @@ class Config:
                 if verbose:
                     print(f'  ✓ Found shared experiment data on S3: {exp_sig[:8]}...')
             except ClientError:
-                # Upload to S3 (cross-machine: force full pickle so the
-                # worker has y inline; the recipe — with the laptop's
-                # paths — is preserved and travels through to result
-                # pickles for rehydration back on the laptop).
                 if verbose:
                     print(f'  Uploading shared experiment data: {exp_sig[:8]}...')
-                from glow.experiment.regen import force_full_pickle
-                with force_full_pickle(shared_obj):
-                    exp_bytes = pickle.dumps(shared_obj)
+                exp_bytes = pickle.dumps(shared_obj)
                 runner.s3.put_object(
                     Bucket=self.cloud_config.s3_bucket,
                     Key=shared_data_key,

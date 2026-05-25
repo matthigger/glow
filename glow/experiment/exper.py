@@ -11,8 +11,6 @@ import glow.effect
 import glow.mask
 from .load_image import load_image_color, load_image_nii
 from .permute import get_freed_lane
-from .regen import (REGEN_REGISTRY, STEP_REPLAY, FullPickleNotice,
-                    compute_pickle_status)
 from .sigma import stretch_sigma
 from ..mask import get_mask_idx
 
@@ -48,8 +46,8 @@ class ExperimentImageOnly:
             dtype (np.dtype | None): if not None and ``y.dtype`` differs,
                 cast ``y`` to ``dtype`` (no copy when already matching).
                 Default ``None`` preserves ``y.dtype`` — used by internal
-                constructors and recipe-replay paths so dtype is set
-                exactly once by the public factory at top of the chain.
+                constructors so dtype is set exactly once by the public
+                factory at top of the chain.
         """
         if dtype is not None and y is not None and y.dtype != dtype:
             y = y.astype(dtype, copy=False)
@@ -59,66 +57,12 @@ class ExperimentImageOnly:
 
     @property
     def dtype(self):
-        """dtype of the underlying ``y`` array, or None when y is slim."""
+        """dtype of the underlying ``y`` array, or None when y is unset."""
         return self.y.dtype if self.y is not None else None
 
     @property
     def _hash_arrays(self):
         return (self.y, self.mask_idx)
-
-    def _full_pickle_msg(self, src):
-        y_mb = self.y.nbytes / 1024**2 if self.y is not None else 0.0
-        if src is None:
-            head = 'Pickling Experiment without recipe tagged.'
-        else:
-            head = (f'Pickling Experiment with source={src!r} '
-                    f'(not registered).')
-        return (f'{head} Storing y ({y_mb:.1f} MB) inline. '
-                f'For slim pickles, see glow.experiment.regen.')
-
-    def __getstate__(self):
-        # x is always preserved (small; no general regen interface for
-        # user-supplied designs).  Only y is droppable on slim pickle.
-        state = self.__dict__.copy()
-        if state.get('y') is None:
-            return state
-        recipe = self.meta.get('recipe') if self.meta else None
-        src = recipe.get('source') if recipe else None
-        if src and src in REGEN_REGISTRY:
-            state['y'] = None
-            return state
-        msg = self._full_pickle_msg(src)
-        warnings.warn(msg, FullPickleNotice, stacklevel=2)
-        return state
-
-    def rehydrate(self):
-        """reconstruct ``y`` from the recipe.
-
-        Builds the base experiment from ``recipe['source']`` then replays
-        each step in ``recipe['steps']``.  No-op if ``y`` is already
-        loaded.  ``x`` is preserved through pickling and is not modified
-        here.  Raises ``RuntimeError`` if the recipe source or any step
-        op is unregistered.
-        """
-        if self.y is not None:
-            return
-        recipe = self.meta.get('recipe') if self.meta else None
-        src = recipe.get('source') if recipe else None
-        if not src or src not in REGEN_REGISTRY:
-            raise RuntimeError(
-                f'cannot rehydrate Experiment: source={src!r} not in '
-                f'REGEN_REGISTRY')
-        base = REGEN_REGISTRY[src](**recipe['args'])
-        for step in recipe.get('steps', []):
-            op = step['op']
-            if op not in STEP_REPLAY:
-                raise RuntimeError(
-                    f'cannot replay step: op={op!r} not in STEP_REPLAY')
-            base = STEP_REPLAY[op](base, step['args'])
-        self.y = base.y
-
-    def pickle_status(self):
-        return compute_pickle_status(self)
 
     def _hash(self):
         """probabilistic SHA-256 hash over data arrays (16-char hex digest).
@@ -200,18 +144,6 @@ class ExperimentImageOnly:
         meta = kwargs.pop('meta', {})
         meta.setdefault('features', [f'feat_{i}' for i in range(b)])
         meta.setdefault('subjects', [f'subject_{i:03d}' for i in range(num_img)])
-        meta['recipe'] = {
-            'source': 'gauss',
-            'args': {
-                'b': b,
-                'num_img': num_img,
-                'shape': tuple(shape),
-                'seed': seed,
-                'mu': mu,
-                'cov': cov,
-                'dtype': dtype,
-            },
-        }
         # cast to target dtype here (single cast at the public factory;
         # the constructor would also handle this but doing it explicitly
         # documents the contract).
@@ -337,39 +269,7 @@ class ExperimentImageOnly:
         if affine is not None:
             meta.setdefault('affine', affine)
 
-        # serializable form of the path table for recipe regen
-        recipe_paths = {str(sbj): {str(feat): str(p)
-                                    for feat, p in row.items()
-                                    if isinstance(p, (str, pathlib.Path))}
-                        for sbj, row in df.iterrows()}
-        recipe_args = {'paths': recipe_paths}
-        if channel_names:
-            recipe_args['channel_names'] = channel_names
-        meta['recipe'] = {
-            'source': 'image_paths',
-            'args': recipe_args,
-        }
-
         return cls(y=y, mask_idx=mask_idx, meta=meta, **kwargs)
-
-    def _propagate_recipe(self, recipe_step):
-        """Return a fresh meta dict for a derived experiment.
-
-        - If ``recipe_step`` is given and the current recipe exists, append
-          the step to ``meta['recipe']['steps']``.
-        - If ``recipe_step`` is None and a recipe exists, drop it (legacy
-          fallback so ``__getstate__`` does a full pickle).
-        - Otherwise pass meta through unchanged.
-        """
-        meta = dict(self.meta) if self.meta else {}
-        recipe = meta.get('recipe')
-        if recipe_step is not None and recipe is not None:
-            new_recipe = dict(recipe)
-            new_recipe['steps'] = list(recipe.get('steps', [])) + [recipe_step]
-            meta['recipe'] = new_recipe
-        elif recipe_step is None and recipe is not None:
-            meta = {k: v for k, v in meta.items() if k != 'recipe'}
-        return meta
 
     def bootstrap_img(self, n, seed=None, noise_scale=0):
         """return a new experiment with bootstrap-resampled images.
@@ -402,16 +302,8 @@ class ExperimentImageOnly:
                                                             copy=False)
             y = y + noise
 
-        # bootstrap_img is fully described by its scalar args (n, seed,
-        # noise_scale) plus the upstream recipe — self-recipe so replay
-        # reproduces y exactly.
-        step = {'op': 'bootstrap_img',
-                'args': {'n': n, 'seed': seed, 'noise_scale': noise_scale}}
-        new_meta = self._propagate_recipe(step)
-
         exp = deepcopy(self)
         exp.y = y
-        exp.meta = new_meta
         return exp
 
     def sample_x(self, a=None, contrast=None, seed=None, **kwargs):
@@ -447,13 +339,11 @@ class ExperimentImageOnly:
                           mask_idx=self.mask_idx,
                           meta=self.meta, **kwargs)
 
-    def apply_mask(self, mask, *, recipe_step=None):
+    def apply_mask(self, mask):
         """return a new experiment restricted to voxels where mask is True.
 
         Args:
             mask (np.array): boolean mask, same shape as self.mask_idx
-            recipe_step (dict | None): if given, append this step to the
-                propagated recipe instead of clearing it.
 
         Returns:
             new experiment restricted to the intersection of mask and self
@@ -468,11 +358,9 @@ class ExperimentImageOnly:
         d = deepcopy(self.__dict__)
         d['mask_idx'] = mask_idx
         d['y'] = y
-        d['meta'] = self._propagate_recipe(recipe_step)
         return type(self)(**d)
 
-    def add_offset(self, offset, mask=None, vox_idx=None, sigma_scale=None,
-                   *, recipe_step=None):
+    def add_offset(self, offset, mask=None, vox_idx=None, sigma_scale=None):
         """return a new experiment with a constant offset added to y.
 
         Args:
@@ -480,8 +368,6 @@ class ExperimentImageOnly:
             mask (np.array): boolean region to apply offset (xor vox_idx)
             vox_idx (list): voxel indices to apply offset (xor mask)
             sigma_scale (float): optional sigma stretch factor
-            recipe_step (dict | None): if given, append this step to the
-                propagated recipe instead of clearing it.
 
         Returns:
             new experiment with offset applied
@@ -504,7 +390,6 @@ class ExperimentImageOnly:
         # build new object
         d = deepcopy(self.__dict__)
         d['y'] = y
-        d['meta'] = self._propagate_recipe(recipe_step)
         return type(self)(**d)
 
 
@@ -520,17 +405,8 @@ class Experiment(ExperimentImageOnly):
     def from_gauss(cls, a=1, contrast=None, seed=None, add_bias=True,
                    **kwargs):
         exp = ExperimentImageOnly.from_gauss(seed=seed, **kwargs)
-        exp = exp.sample_x(a=a, contrast=contrast, seed=seed,
-                           add_bias=add_bias)
-        # overwrite the inner image-only recipe with one that includes
-        # x-sampling kwargs so a single regen reproduces both y and x.
-        if exp.meta is not None and 'recipe' in exp.meta:
-            inner_args = dict(exp.meta['recipe']['args'])
-            inner_args['a'] = a
-            inner_args['contrast'] = contrast
-            inner_args['add_bias'] = add_bias
-            exp.meta['recipe'] = {'source': 'gauss', 'args': inner_args}
-        return exp
+        return exp.sample_x(a=a, contrast=contrast, seed=seed,
+                            add_bias=add_bias)
 
     def __init__(self, *, x, contrast=None, add_bias=False, **kwargs):
         super().__init__(**kwargs)
@@ -582,13 +458,8 @@ class Experiment(ExperimentImageOnly):
                 freed_lane = freed_lane.astype(self.y.dtype, copy=False)
             y = np.einsum('abc,bd->adc', self.y, freed_lane, optimize=True)
 
-        # permute is fully described by perm_idx + the upstream recipe;
-        # self-recipe so replay reproduces y exactly.
-        step = {'op': 'permute', 'args': {'perm_idx': perm_idx}}
-        meta = self._propagate_recipe(step)
-
         return Experiment(x=self.x, y=y, contrast=self.contrast,
-                          mask_idx=self.mask_idx, meta=meta)
+                          mask_idx=self.mask_idx, meta=deepcopy(self.meta))
 
 
 class ExperimentScaled(Experiment):
@@ -603,21 +474,9 @@ class ExperimentScaled(Experiment):
 
     @classmethod
     def from_exp(cls, exp):
-        new = cls(y=exp.y, mask_idx=exp.mask_idx, x=exp.x,
-                  contrast=exp.contrast,
-                  meta=dict(exp.meta) if getattr(exp, 'meta', None) else None)
-        # Record a 'scale' step in the recipe so a slim rehydrate replays
-        # the exact same prep transform (mean_orig + pre_scale survive
-        # the slim pickle as ndarray attributes).
-        if new.meta and new.meta.get('recipe') is not None:
-            recipe = dict(new.meta['recipe'])
-            recipe['steps'] = list(recipe.get('steps', [])) + [
-                {'op': 'scale',
-                 'args': {'mean_orig': new.mean_orig,
-                          'pre_scale': new.pre_scale}},
-            ]
-            new.meta['recipe'] = recipe
-        return new
+        return cls(y=exp.y, mask_idx=exp.mask_idx, x=exp.x,
+                   contrast=exp.contrast,
+                   meta=dict(exp.meta) if getattr(exp, 'meta', None) else None)
 
     def prep(self, y):
         """apply pre-processing: y_out = pre_scale @ (y - mean_orig)."""

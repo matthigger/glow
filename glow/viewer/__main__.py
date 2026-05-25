@@ -158,12 +158,6 @@ _EFFECT_MAP = {
 }
 
 
-# _build_experiment removed: demos go through standard factories
-# (Experiment.from_gauss / ExperimentImageOnly.from_paths) so the
-# resulting recipe describes how y was constructed and the experiment
-# can rehydrate from a slim pickle.
-
-
 def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
     """Optionally impose an effect, run AnalysisGLOW, and launch the viewer."""
     from glow.effect.extent import ExtenterMinVar
@@ -222,9 +216,7 @@ def _demo_wgn_2d(b, effect_llr, seed=0, num_img=_NUM_IMG):
 
 def _demo_mandrill(channels, effect_llr, seed=0, num_img=_NUM_IMG):
     """2D Mandrill RGB demo — built through the same factories real users
-    would call (from_paths + bootstrap_img + sample_x), so the resulting
-    Experiment's recipe fully describes how y was constructed and slim
-    pickling can rehydrate it from disk + recipe alone."""
+    would call (from_paths + bootstrap_img + sample_x)."""
     from glow.experiment.exper import ExperimentImageOnly
 
     img_path = _data_path('mandrill_small.png')
@@ -280,8 +272,7 @@ def _build_dti_demo(dim, features, effect_llr, seed, num_img):
     """Shared 2D/3D DTI demo builder.  Loads mean fa/md nifti(s) via
     from_paths (one 'mean' subject with feature-keyed paths), bootstraps
     to num_img noisy copies via bootstrap_img, attaches a random design
-    via sample_x, then imposes an effect.  The recipe captures the
-    nifti paths + the bootstrap kwargs + sample_x kwargs in steps."""
+    via sample_x, then imposes an effect."""
     from glow.experiment.exper import ExperimentImageOnly
     suffix = '_axial' if dim == '2d' else ''
     fa_path = _data_path(f'hcp_mean_fa{suffix}.nii.gz')

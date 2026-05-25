@@ -91,21 +91,9 @@ class EffectSynthetic:
         self.extenter_args = extenter_args
 
     def apply(self, exp):
-        """Apply this synthetic effect's mask + offset to ``exp``.
-
-        The recipe step preserves both literal arrays so rehydration is
-        exact (decision: reproducibility > marginal storage savings).
-        """
-        # clause item: lets explore removing all these recipe step things.  remind me what purpose they serve (its not clear to me) and, if it doesn't merit the complication, then we can get rid of it.  at the very least, could we use a decorator pattern to do this more gracefully?
-        recipe_step = {
-            'op': 'add_offset',
-            'args': {'mask': self.mask,
-                     'offset': self.offset,
-                     'sigma_scale': self.sigma_scale},
-        }
+        """Apply this synthetic effect's mask + offset to ``exp``."""
         return exp.add_offset(self.offset, mask=self.mask,
-                              sigma_scale=self.sigma_scale,
-                              recipe_step=recipe_step)
+                              sigma_scale=self.sigma_scale)
 
     # clause item: question: to make this simpler, maybe we shouldn't support the mask xor extenter pattern, if the user already has an extenter its only 1 line for them to ask before calling this function while its many to run it inside ... seems simpler, right?
     @classmethod

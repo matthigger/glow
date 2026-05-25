@@ -85,9 +85,6 @@ class AnalysisGLOW(Analysis):
             min_vox: regions smaller than this are left NaN.
             base_seed: draw uses base_seed + i.
         """
-        if exp.y is None:
-            exp.rehydrate()
-
         use_fast = is_intercept_only_nuisance(exp.x, exp.contrast)
         if use_gpu:
             if use_fast:
