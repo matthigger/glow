@@ -188,11 +188,13 @@ def _slogdet_batched(M):
     b = M.shape[-1]
     if b == 1:
         d = M[..., 0, 0]
-        return np.sign(d), np.log(np.abs(d))
+        with np.errstate(divide='ignore'):
+            return np.sign(d), np.log(np.abs(d))
     if b == 2:
         det = (M[..., 0, 0] * M[..., 1, 1]
                - M[..., 0, 1] * M[..., 1, 0])
-        return np.sign(det), np.log(np.abs(det))
+        with np.errstate(divide='ignore'):
+            return np.sign(det), np.log(np.abs(det))
     return np.linalg.slogdet(M)
 
 
