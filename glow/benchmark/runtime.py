@@ -23,6 +23,9 @@ import json
 import time
 from pathlib import Path
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import numpy as np
 from platformdirs import user_data_dir
 from scipy.ndimage import generate_binary_structure, label
@@ -128,6 +131,43 @@ def write_results(path, results):
     tmp.replace(path)
 
 
+_PLOT_SERIES = [
+    ('glow_ward_sec', 'glow.ward_tree', 'C0', 'o'),
+    ('sklearn_ward_sec', 'sklearn.ward_tree', 'C1', 's'),
+    ('cpu_perm_sec', 'cpu_perm', 'C2', '^'),
+]
+
+
+def write_plot(path, results):
+    """Save a log-log plot of num_vox vs. time for all backends."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = sorted(results, key=lambda r: r['num_vox'])
+    nv = np.array([r['num_vox'] for r in rows])
+
+    fig, ax = plt.subplots(figsize=(6, 4.5))
+    for key, label, color, marker in _PLOT_SERIES:
+        ys = np.array([r.get(key, np.nan) for r in rows], dtype=float)
+        mask = np.isfinite(ys)
+        if not mask.any():
+            continue
+        ax.plot(nv[mask], ys[mask], marker=marker, color=color, label=label,
+                lw=1.5, ms=5)
+
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+    ax.set_xlabel('num_vox')
+    ax.set_ylabel('time (sec)')
+    ax.set_title('runtime vs. num_vox')
+    ax.grid(True, which='both', alpha=0.3)
+    ax.legend(frameon=False)
+    fig.tight_layout()
+
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    fig.savefig(tmp, bbox_inches='tight', format=path.suffix.lstrip('.'))
+    plt.close(fig)
+    tmp.replace(path)
+
+
 def run_one(exp, n_perm, base_seed):
     """Time all backends on one ``exp``; returns a result dict."""
     actual_vox = int(exp.y.shape[2])
@@ -204,12 +244,15 @@ def main():
         results.append(row)
 
         write_results(args.output, results)
+        plot_path = args.output.with_suffix('.pdf')
+        write_plot(plot_path, results)
 
         print(f'  num_vox={row["num_vox"]:>7,}'
               f'   glow_ward={row["glow_ward_sec"]:8.2f}s'
               f'   sklearn_ward={row["sklearn_ward_sec"]:8.2f}s'
               f'   cpu_perm={row["cpu_perm_sec"]:8.2f}s')
         print(f'  wrote: {args.output}')
+        print(f'  wrote: {plot_path}')
 
     print(f'\nDone. {len(results)} rows -> {args.output}')
 
