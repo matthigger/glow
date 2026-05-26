@@ -18,10 +18,25 @@ Run::
     python -m glow.benchmark.runtime               # defaults (1k..600k, 20 steps)
     python -m glow.benchmark.runtime --n-perm 1    # quicker
 """
+import os
+
+# Pin BLAS / OpenMP / numba to a single thread so the timing reflects
+# single-CPU work.  Env vars cover numba (read at JIT-compile time) and
+# any BLAS that has not been loaded yet; threadpool_limits below clamps
+# BLAS pools that are already live by the time we get here.
+for _var in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
+             'BLIS_NUM_THREADS', 'NUMEXPR_NUM_THREADS', 'NUMBA_NUM_THREADS',
+             'VECLIB_MAXIMUM_THREADS'):
+    os.environ.setdefault(_var, '1')
+
 import argparse
 import json
 import time
 from pathlib import Path
+
+from threadpoolctl import threadpool_limits
+
+threadpool_limits(limits=1)
 
 import matplotlib
 matplotlib.use('Agg')
