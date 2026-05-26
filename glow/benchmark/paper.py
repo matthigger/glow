@@ -1,7 +1,5 @@
 import argparse
-import json
 
-from glow.aws.pricing import COST_PER_VCPU_HOUR
 from glow.benchmark.paper_config import CONFIG_BY_LABEL
 
 
@@ -117,81 +115,22 @@ def _count_uncached_jobs(config):
 
 
 def _print_cost_summary(configs, cloud_config):
-    """Print estimated runtime/cost table and return True if user confirms."""
-    from glow.benchmark.runtime import estimate_timeout_minutes
-
-    vcpus = cloud_config.vcpus
-    has_models = True
-    rows = []
-    upper_bound_labels = set()
-
-    for config in configs:
-        n_jobs = _count_uncached_jobs(config)
-        est = None
-        try:
-            est = estimate_timeout_minutes(config, platform='aws')
-        except (ImportError, FileNotFoundError, json.JSONDecodeError,
-                KeyError, ValueError, TypeError):
-            pass
-
-        if est is None:
-            has_models = False
-            rows.append((config.label, n_jobs, None, None, None))
-        else:
-            timeout_min, est_min, is_ub = est
-            cost = n_jobs * (est_min / 60.0) * vcpus * COST_PER_VCPU_HOUR
-            rows.append((config.label, n_jobs, est_min, timeout_min, cost))
-            if is_ub:
-                upper_bound_labels.add(config.label)
-
-    total_jobs = sum(r[1] for r in rows)
-    total_cost = sum(r[4] for r in rows if r[4] is not None)
+    """Print uncached job counts and return True if user confirms."""
+    rows = [(c.label, _count_uncached_jobs(c)) for c in configs]
+    total_jobs = sum(n for _, n in rows)
     default_timeout = cloud_config.timeout_minutes
 
-    # header
-    print('\n' + '=' * 72)
-    print('  ESTIMATED COST SUMMARY')
-    print('=' * 72)
-
-    if not has_models:
-        print(f'\n  No runtime models found. Using default timeout '
-              f'({default_timeout} min).')
-        print('  Run: python -m glow.benchmark.runtime --profile experiment')
-        print()
-
-    hdr = f'  {"Config":<24} {"Jobs":>5}  {"Est/job":>10}  ' \
-          f'{"Timeout":>10}  {"Est. cost":>10}'
-    print(hdr)
-    print('  ' + '-' * 68)
-
-    for label, n_jobs, est_min, timeout_min, cost in rows:
-        ub = ' *' if label in upper_bound_labels else '  '
-        if est_min is not None:
-            prefix = '<' if label in upper_bound_labels else '~'
-            est_str = f'{prefix}{est_min:>5.0f} min'
-            to_str = f'{timeout_min:>5.0f} min'
-            cost_str = f'${cost:>7.2f}'
-        else:
-            est_str = f'{"?":>9}'
-            to_str = f'{default_timeout:>5} min'
-            cost_str = f'{"?":>8}'
-        print(f'  {label:<24} {n_jobs:>5}  {est_str:>10}  '
-              f'{to_str:>10}  {cost_str:>10}{ub}')
-
-    print('  ' + '-' * 68)
-    cost_total_str = f'${total_cost:>.2f}' if has_models else '?'
-    print(f'  {"Total":<24} {total_jobs:>5}  '
-          f'{"":>10}  {"":>10}  {cost_total_str:>10}')
-
-    if upper_bound_labels:
-        print('\n  * upper bound — mancova stats share a tree walk and '
-              'run_segment uses the GLOW model as a proxy; actual runtime '
-              'is typically shorter.')
-
-    print('  Model fit on 500-30k vox, 100-500 perms (WGN); '
-          'HCP or out-of-range data may differ.')
-
-    print('=' * 72)
+    print('\n' + '=' * 60)
+    print('  JOB SUMMARY')
+    print('=' * 60)
+    print(f'  Default per-job timeout: {default_timeout} min\n')
+    print(f'  {"Config":<32} {"Jobs":>6}')
+    print('  ' + '-' * 56)
+    for label, n_jobs in rows:
+        print(f'  {label:<32} {n_jobs:>6}')
+    print('  ' + '-' * 56)
+    print(f'  {"Total":<32} {total_jobs:>6}')
+    print('=' * 60)
 
     resp = input('\n  Proceed? [y/N] ').strip().lower()
     return resp == 'y'

@@ -221,8 +221,7 @@ def fit_poly_lasso(df, feature_cols, target_col='peak_rss_mb', model_path=None,
         print(f'\n  zeroed out: {", ".join(zeroed)}')
 
     # Safety-factor calibration: fit Gaussian to actual/predicted ratios,
-    # use 99.99% quantile (z=3.7190). Exposed so downstream callers
-    # (estimate_timeout_minutes) can size timeouts without hardcoding 2.5x.
+    # use 99.99% quantile (z=3.7190).
     Z_99_99 = 3.7190
     y_pred_linear = np.exp(y_pred_fit) if log_target else y_pred_fit
     valid = y_pred_linear > 0
