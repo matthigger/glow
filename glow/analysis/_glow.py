@@ -9,7 +9,7 @@ import glow.graph
 from ._base import Analysis
 from . import inner_perm
 from .cluster import cluster, ClusterMode
-from .mancova import decompose, is_intercept_only_nuisance
+from .mancova import decompose
 from .prune import prune_greedy
 
 
@@ -85,12 +85,7 @@ class AnalysisGLOW(Analysis):
             min_vox: regions smaller than this are left NaN.
             base_seed: draw uses base_seed + i.
         """
-        if is_intercept_only_nuisance(exp.x, exp.contrast):
-            run = inner_perm.cpu_fast
-        else:
-            run = inner_perm.cpu_slow
-
-        return run(
+        return inner_perm.cpu_perm(
             exp=exp, base_seed=base_seed, n_perm=n_perm,
             q0=q0, q1=q1, children=children,
             min_vox=min_vox)

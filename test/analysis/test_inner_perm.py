@@ -3,9 +3,9 @@
 ``cpu_reliable`` is the trust anchor: a thin wrapper over
 ``iter_mancova`` + ``get_llr`` per region, per draw.  Slow but
 unambiguous, and an independent code path from the batched
-``compute_llr_batched`` that the production backends share.  Both
-production backends (``cpu_fast``, ``cpu_slow``) are validated
-against it here -- agreement is fp64 round-off (~1e-10).
+``compute_llr_batched`` that ``cpu_perm`` shares.  Both intercept-only
+and general-Q0 inputs to ``cpu_perm`` are validated here -- agreement
+is fp64 round-off (~1e-10).
 
 Run:
     ~/venv_glow/bin/pytest test/analysis/test_inner_perm.py -v
@@ -29,7 +29,7 @@ from glow.experiment.exper import Experiment
 # Synthetic experiment builders
 
 def _intercept_only_exp(seed=0, n_img=24, shape=(2, 3, 5)):
-    """Intercept-only nuisance (Q0 = span(1)) -- exercises the fast path."""
+    """Intercept-only nuisance (Q0 = span(1))."""
     rng = np.random.default_rng(seed)
     V = int(np.prod(shape))
     mask_idx = np.arange(V, dtype=np.int64).reshape(shape)
@@ -44,7 +44,7 @@ def _intercept_only_exp(seed=0, n_img=24, shape=(2, 3, 5)):
 
 
 def _general_q0_exp(seed=0, n_img=24, shape=(3, 4, 4)):
-    """Non-constant nuisance columns -- forces the general-Q0 path."""
+    """Non-constant nuisance columns (Q0 does not commute with P)."""
     rng = np.random.default_rng(seed)
     rows = [np.ones(n_img, dtype=np.float64)]
     contrast = [False]
@@ -114,40 +114,35 @@ def _assert_draws_match(draws, ref, *, atol):
 
 
 # ---------------------------------------------------------------------------
-# Pin the dispatcher preconditions cpu_fast / cpu_slow assume.
+# Pin the regimes each fixture exercises (intercept-only Q0 commutes with
+# P; general Q0 does not -- both must produce identical answers under
+# cpu_perm because the algorithm is unified).
 
-def test_intercept_only_fixture_picks_fast_path(prep_intercept_fp64):
+def test_intercept_only_fixture_is_intercept_only(prep_intercept_fp64):
     exp = prep_intercept_fp64['exp']
     assert is_intercept_only_nuisance(exp.x, exp.contrast)
 
 
-def test_general_q0_fixture_picks_slow_path(prep_general_fp64):
+def test_general_q0_fixture_is_general(prep_general_fp64):
     exp = prep_general_fp64['exp']
     assert not is_intercept_only_nuisance(exp.x, exp.contrast)
 
 
 # ---------------------------------------------------------------------------
-# CPU backends vs cpu_reliable -- fp64 round-off
+# cpu_perm vs cpu_reliable -- fp64 round-off
 
-def test_cpu_fast_matches_reliable(prep_intercept_fp64):
-    """``cpu_fast`` (intercept-only Phase-1 hoist) matches ``cpu_reliable``."""
-    draws_fast = _draws(inner_perm.cpu_fast_full, prep_intercept_fp64)
+def test_cpu_perm_matches_reliable_intercept(prep_intercept_fp64):
+    """``cpu_perm`` matches ``cpu_reliable`` on intercept-only nuisance."""
+    draws_perm = _draws(inner_perm.cpu_perm_full, prep_intercept_fp64)
     draws_ref = _draws(inner_perm.cpu_reliable_full, prep_intercept_fp64)
-    _assert_draws_match(draws_fast, draws_ref, atol=1e-10)
+    _assert_draws_match(draws_perm, draws_ref, atol=1e-10)
 
 
-def test_cpu_slow_matches_reliable_intercept(prep_intercept_fp64):
-    """``cpu_slow`` (batched einsum) matches ``cpu_reliable`` on intercept-only."""
-    draws_slow = _draws(inner_perm.cpu_slow_full, prep_intercept_fp64)
-    draws_ref = _draws(inner_perm.cpu_reliable_full, prep_intercept_fp64)
-    _assert_draws_match(draws_slow, draws_ref, atol=1e-10)
-
-
-def test_cpu_slow_matches_reliable_general(prep_general_fp64):
-    """``cpu_slow`` matches ``cpu_reliable`` on general-Q0 too."""
-    draws_slow = _draws(inner_perm.cpu_slow_full, prep_general_fp64)
+def test_cpu_perm_matches_reliable_general(prep_general_fp64):
+    """``cpu_perm`` matches ``cpu_reliable`` on general Q0 too."""
+    draws_perm = _draws(inner_perm.cpu_perm_full, prep_general_fp64)
     draws_ref = _draws(inner_perm.cpu_reliable_full, prep_general_fp64)
-    _assert_draws_match(draws_slow, draws_ref, atol=1e-10)
+    _assert_draws_match(draws_perm, draws_ref, atol=1e-10)
 
 
 # ---------------------------------------------------------------------------
@@ -171,8 +166,7 @@ def test_moments_wrapper_matches_draws(prep_general_fp64):
 # min_vox NaN handling -- small regions must drop out of every backend.
 
 @pytest.mark.parametrize('backend_full', [
-    inner_perm.cpu_fast_full,
-    inner_perm.cpu_slow_full,
+    inner_perm.cpu_perm_full,
     inner_perm.cpu_reliable_full,
 ])
 def test_min_vox_drops_small_regions(prep_intercept_fp64, backend_full):

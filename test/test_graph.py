@@ -284,80 +284,119 @@ def test_compute_llr_batched_leaf_only_tree():
     assert np.all(np.isfinite(llr) | np.isnan(llr))
 
 
-def test_compute_llr_inner_fast_matches_compute_llr_batched():
-    """Under intercept-only nuisance, the fast inner path is bit-exact equal
-    to compute_llr_batched on the FL-permuted experiment, region-by-region.
+def test_build_dfs_preorder_single_tree():
+    """A single 4-leaf tree -- region ranges should cover the full leaf set."""
+    # leaves 0..3; internals: 4=[0,1], 5=[2,3], 6=[4,5] (root)
+    children = np.array([[0, 1], [2, 3], [4, 5]])
+    leaf_ord, region_l, region_h = build_dfs_preorder(children, num_vox=4)
+    # Every leaf appears exactly once
+    assert sorted(leaf_ord.tolist()) == [0, 1, 2, 3]
+    # Each leaf occupies a unit range at its DFS position
+    for v in range(4):
+        pos = region_l[v]
+        assert leaf_ord[pos] == v
+        assert region_h[v] - region_l[v] == 1
+    # Each internal node spans the union of its children's ranges
+    assert region_l[4] == min(region_l[0], region_l[1])
+    assert region_h[4] == max(region_h[0], region_h[1])
+    assert region_l[5] == min(region_l[2], region_l[3])
+    assert region_h[5] == max(region_h[2], region_h[3])
+    # Root covers all leaves
+    assert (region_l[6], region_h[6]) == (0, 4)
 
-    This is the correctness contract for AnalysisGLOW's intercept-only
-    fast path: precompute (ysum, t) once on the unpermuted exp and reuse
-    across inner perms by row-permuting q1.T — same answer as running
-    Phase 1 fresh on each FL-permuted exp.
+
+def test_build_dfs_preorder_forest():
+    """A forest of two disjoint 2-leaf trees -- roots must lie end-to-end."""
+    # leaves 0..3; internals: 4=[0,1], 5=[2,3] (two disjoint roots)
+    children = np.array([[0, 1], [2, 3]])
+    leaf_ord, region_l, region_h = build_dfs_preorder(children, num_vox=4)
+    assert sorted(leaf_ord.tolist()) == [0, 1, 2, 3]
+    # Two roots should partition the leaf axis into two contiguous slices
+    root_ranges = sorted([
+        (int(region_l[4]), int(region_h[4])),
+        (int(region_l[5]), int(region_h[5])),
+    ])
+    assert root_ranges == [(0, 2), (2, 4)]
+
+
+def test_reg_sum_cumsum_recovers_per_region_sum():
+    """cumsum-and-diff over DFS order must match brute-force per-region sums."""
+    from glow.graph import _reg_sum_cumsum
+    children = np.array([[0, 1], [2, 3], [4, 5]])
+    num_vox = 4
+    leaf_ord, region_l, region_h = build_dfs_preorder(children, num_vox=num_vox)
+    # arbitrary per-voxel values in DFS order
+    x_orig = np.array([10.0, 20.0, 30.0, 40.0])
+    x_dfs = x_orig[leaf_ord]
+    sums = _reg_sum_cumsum(x_dfs, axis=0,
+                           region_l=region_l, region_h=region_h)
+    # Single-voxel regions
+    for v in range(4):
+        assert sums[v] == x_orig[v]
+    # Internal nodes (manual reference via node_sum)
+    expected = node_sum(x_orig, children)
+    assert np.allclose(sums, expected)
+
+
+def test_compute_llr_perm_full_matches_compute_llr_batched():
+    """Per-perm draws from ``compute_llr_perm_full`` match the row-by-row
+    output of ``compute_llr_batched`` on the FL-permuted experiment.
+
+    The unified perm-LLR backend hoists Phase 1 out of the inner loop
+    and emits one row of draws per FL permutation; the contract is that
+    each row equals what ``compute_llr_batched`` would have produced
+    had it been re-run on the freshly permuted experiment.
     """
     from glow.experiment.exper import Experiment
-    from glow.experiment.permute import get_freed_lane
     from glow.analysis.mancova import decompose, is_intercept_only_nuisance
-    from glow.graph import (compute_llr_batched, compute_llr_inner_fast,
-                            iter_size_ysum_yout)
+    from glow.graph import (compute_llr_batched, compute_llr_perm_full,
+                            build_dfs_preorder)
 
     exp = Experiment.from_gauss(a=2, b=2, num_img=30, shape=(8, 8),
                                 seed=0, add_bias=True)
     assert is_intercept_only_nuisance(exp.x, exp.contrast)
 
     from glow.analysis.cluster import cluster, ClusterMode
-    b, n_img, num_vox = exp.y.shape
     children = cluster(exp=exp, mode=ClusterMode.FOCUS)
     q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
+    num_vox = exp.y.shape[2]
+    leaf_ord, region_l, region_h = build_dfs_preorder(
+        children=children, num_vox=num_vox)
 
-    # --- precompute fast-path state once ---
-    dtype = exp.y.dtype if exp.y.dtype == np.float32 else np.float64
-    num_reg = num_vox + children.shape[0]
-    ysum_u = np.empty((num_reg, b, n_img), dtype=dtype)
-    yout_u = np.empty((num_reg, b, b), dtype=dtype)
-    size = np.empty(num_reg, dtype=int)
-    for reg_idx, sz, ys, yo in iter_size_ysum_yout(exp.y, children=children):
-        ysum_u[reg_idx] = ys
-        yout_u[reg_idx] = yo
-        size[reg_idx] = sz
-    sz_3d = size.astype(dtype)[:, None, None]
-    a0 = np.einsum('rbn,an->rba', ysum_u, q0, optimize=True)
-    t = yout_u - np.einsum('rba,rca->rbc', a0, a0, optimize=True) / sz_3d
+    perm_idxs = [1, 2, 7, 42, 999]
+    perms = np.empty((len(perm_idxs), exp.y.shape[1]), dtype=np.int64)
+    for i, perm_idx in enumerate(perm_idxs):
+        rng = np.random.default_rng(perm_idx)
+        perms[i] = np.argsort(rng.permutation(exp.y.shape[1]))
 
-    for perm_idx in [1, 2, 7, 42, 999]:
-        # slow path: FL-permute exp, run full compute_llr_batched
+    draws = compute_llr_perm_full(
+        y=exp.y, q0=q0, q1=q1, perms=perms,
+        leaf_ord=leaf_ord, region_l=region_l, region_h=region_h,
+        min_size=4)
+
+    for i, perm_idx in enumerate(perm_idxs):
         _exp_inner = exp.permute(perm_idx)
-        llr_slow, _ = compute_llr_batched(
+        llr_ref, _ = compute_llr_batched(
             _exp_inner, children=children, q0=q0, q1=q1,
             min_size=4)
+        llr_new = draws[i]
 
-        # fast path: same FL permutation, but only row-permute q1.T
-        # against precomputed ysum/t.  freed_lane @ q1.T == q1.T[perm, :]
-        # under intercept-only nuisance.
-        freed_lane = get_freed_lane(exp.x, exp.contrast, perm_idx)
-        q1_T_perm = (freed_lane @ q1.T).astype(dtype, copy=False)
-        llr_fast, _ = compute_llr_inner_fast(
-            t, ysum_u, size, q1_T_perm, min_size=4)
+        both_finite = np.isfinite(llr_ref) & np.isfinite(llr_new)
+        only_ref = np.isfinite(llr_ref) & ~np.isfinite(llr_new)
+        only_new = ~np.isfinite(llr_ref) & np.isfinite(llr_new)
+        assert only_ref.sum() == 0, (
+            f'perm_idx={perm_idx}: {only_ref.sum()} regions finite in batched '
+            f'path but NaN in perm-full — NaN masks must match')
+        assert only_new.sum() == 0, (
+            f'perm_idx={perm_idx}: {only_new.sum()} regions finite in perm-full '
+            f'path but NaN in batched — NaN masks must match')
 
-        # both paths return NaN where size < min_size or where slogdet
-        # blew up; mask consistently before comparing
-        both_finite = np.isfinite(llr_slow) & np.isfinite(llr_fast)
-        only_slow = np.isfinite(llr_slow) & ~np.isfinite(llr_fast)
-        only_fast = ~np.isfinite(llr_slow) & np.isfinite(llr_fast)
-        assert only_slow.sum() == 0, (
-            f'perm_idx={perm_idx}: {only_slow.sum()} regions finite in slow '
-            f'path but NaN in fast — NaN masks must match')
-        assert only_fast.sum() == 0, (
-            f'perm_idx={perm_idx}: {only_fast.sum()} regions finite in fast '
-            f'path but NaN in slow — NaN masks must match')
-
-        abs_err = np.abs(llr_slow[both_finite] - llr_fast[both_finite])
-        denom = np.maximum(np.abs(llr_slow[both_finite]), 1e-8)
+        abs_err = np.abs(llr_ref[both_finite] - llr_new[both_finite])
+        denom = np.maximum(np.abs(llr_ref[both_finite]), 1e-8)
         rel_err = (abs_err / denom).max() if both_finite.any() else 0.0
-        # float32 LLR via slogdet of 2x2 has rel err ~1e-4 from sum-order
-        # rounding; 5e-3 leaves comfortable margin for the occasional
-        # near-singular perm (perm_idx=42 measured at 1.05e-3, e.g.).
         assert rel_err < 5e-3, (
             f'perm_idx={perm_idx}: rel_err={rel_err:.3e} exceeds 5e-3 '
-            f'tolerance — fast path is not equivalent to slow path')
+            f'tolerance — perm-full path is not equivalent to batched path')
 
 
 def test_get_mask_cases():

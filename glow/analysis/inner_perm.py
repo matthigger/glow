@@ -2,25 +2,23 @@
 
 For one outer permutation: given the outer-perm tree (Ward children)
 and an experiment, draw ``n_perm`` inner-perm LLR samples and reduce
-them to per-region ``(mu, std)``.  Two production backends split on
-whether Q0 commutes with permutations:
+them to per-region ``(mu, std)``.  Two production backends:
 
-  - :func:`cpu_fast` -- intercept-only.  Q0 commutes with permutations,
-    so Phase-1 (yout/ysum/T_u) hoists out of the inner loop and each
-    draw is a row-permuted ``q1.T`` against per-region precomputes.
-  - :func:`cpu_slow` -- general-Q0.  Full ``compute_llr_batched`` per
-    draw, against a fresh ``exp.permute(base_seed + i)``.
+  - :func:`cpu_perm` -- the working horse.  Rides
+    ``glow.graph.compute_llr_perm_full``: per-voxel sufficient
+    statistics are computed once; per perm the only work is one big
+    ``Q^T P r_v`` GEMM plus cumsum-and-diff aggregation on the DFS
+    pre-order axis.  Handles intercept-only and general-Q0 nuisance on
+    the same code path -- under intercept-only Q0 commutes with P, so
+    the ``rho`` and ``X_v`` terms come out numerically zero and the
+    rest of the algorithm is unaffected.
+  - :func:`cpu_reliable` -- trust anchor for tests.  Drives the
+    per-region ``iter_mancova`` + ``get_llr`` path per draw -- an
+    independent code path used to cross-validate ``cpu_perm``.
 
-A third backend, :func:`cpu_reliable`, drives the per-region
-``iter_mancova`` + ``get_llr`` path per draw -- a different code path
-from ``compute_llr_batched``, used as the trust anchor in tests of
-the optimised backends above.
+Both share a single keyword-only signature and return ``(mu, std)``::
 
-All three share a single keyword-only signature and return ``(mu,
-std)``::
-
-    run = inner_perm.cpu_fast if use_fast else inner_perm.cpu_slow
-    mu, std = run(
+    mu, std = inner_perm.cpu_perm(
         exp=exp, base_seed=base_seed, n_perm=n_perm,
         q0=q0, q1=q1, children=children, min_vox=min_vox)
 
@@ -62,64 +60,43 @@ def moments_from_draws(fn):
     return wrapper
 
 
-def cpu_fast_full(*, exp, base_seed, n_perm,
-                   q0, q1, children, min_vox):
-    """Intercept-only CPU fast path -- returns ``(n_perm, num_reg)`` draws.
+def _build_perms(*, base_seed, n_perm, num_img):
+    """One ``(n_perm, num_img)`` int array of FL permutations.
 
-    Q0 commutes with the FL permutation so Phase-1 (``yout``, ``ysum``,
-    ``T_u``) is permutation-invariant and hoists out of the inner loop.
-    Each draw is then a row-permuted ``q1.T`` against the per-region
-    precomputes, run through ``compute_llr_inner_fast``.
+    Mirrors ``glow.experiment.permute.get_freed_lane`` so that the
+    seed-to-perm mapping is identical to ``exp.permute(base_seed +
+    i)``.  Each row is the index array such that
+    ``y_perm[..., k] = y[..., perm[k]]``.
     """
-    b, n_img, num_vox = exp.y.shape
-    q0_proj = q0.T @ q0
-    eye_n = np.eye(n_img, dtype=q0.dtype)
-
-    _dtype = exp.y.dtype if exp.y.dtype == np.float32 else np.float64
-    num_reg = num_vox + children.shape[0]
-    ysum_u = np.empty((num_reg, b, n_img), dtype=_dtype)
-    yout_u = np.empty((num_reg, b, b), dtype=_dtype)
-    size_u = np.empty(num_reg, dtype=int)
-    for reg_idx, sz, ys, yo in glow.graph.iter_size_ysum_yout(
-            exp.y, children=children):
-        ysum_u[reg_idx] = ys
-        yout_u[reg_idx] = yo
-        size_u[reg_idx] = sz
-    _sz_3d = size_u.astype(_dtype)[:, None, None]
-    _a0 = np.einsum('rbn,an->rba', ysum_u, q0, optimize=True)
-    t_u = yout_u - np.einsum('rba,rca->rbc', _a0, _a0, optimize=True) / _sz_3d
-    del _a0
-
-    num_reg = ysum_u.shape[0]
-    draws = np.empty((n_perm, num_reg), dtype=float)
+    perms = np.empty((n_perm, num_img), dtype=np.int64)
     for i in range(n_perm):
         rng = np.random.default_rng(base_seed + i)
-        perm = np.argsort(rng.permutation(n_img))
-        freed_lane = (eye_n - q0_proj)[:, perm] + q0_proj
-        q1_T_perm = (freed_lane @ q1.T).astype(_dtype, copy=False)
-        llr_i, _ = glow.graph.compute_llr_inner_fast(
-            t_u, ysum_u, size_u, q1_T_perm, min_size=min_vox)
-        draws[i] = llr_i
-    return draws
+        perms[i] = np.argsort(rng.permutation(num_img))
+    return perms
 
 
-def cpu_slow_full(*, exp, base_seed, n_perm,
-                   q0, q1, children, min_vox):
-    """General-Q0 CPU slow path -- returns ``(n_perm, num_reg)`` draws.
+def cpu_perm_full(*, exp, base_seed, n_perm,
+                  q0, q1, children, min_vox):
+    """Inner-perm draws via the unified perm-LLR backend.
 
-    Full ``compute_llr_batched`` per draw, each against a fresh
-    ``exp.permute(base_seed + i)``.
+    Computes per-voxel sufficient statistics once and runs ``n_perm``
+    Freedman-Lane permutations through one ``Q^T P r_v`` GEMM each.
+    Compared to the prior implementations, Phase 1 of
+    ``compute_llr_batched`` (Python tree walk over Ward internals) is
+    hoisted out of the inner loop entirely.
+
+    Handles intercept-only and general-Q0 nuisance on the same code
+    path.  Returns ``(n_perm, num_reg)`` draws.
     """
     num_vox = exp.y.shape[2]
-    num_reg = num_vox + children.shape[0]
-    draws = np.empty((n_perm, num_reg), dtype=float)
-    for i in range(n_perm):
-        _exp_inner = exp.permute(base_seed + i)
-        llr_i, _ = glow.graph.compute_llr_batched(
-            _exp_inner, children=children, q0=q0, q1=q1,
-            min_size=min_vox)
-        draws[i] = llr_i
-    return draws
+    leaf_ord, region_l, region_h = glow.graph.build_dfs_preorder(
+        children=children, num_vox=num_vox)
+    perms = _build_perms(base_seed=base_seed, n_perm=n_perm,
+                         num_img=exp.y.shape[1])
+    return glow.graph.compute_llr_perm_full(
+        y=exp.y, q0=q0, q1=q1, perms=perms,
+        leaf_ord=leaf_ord, region_l=region_l, region_h=region_h,
+        min_size=min_vox)
 
 
 def cpu_reliable_full(*, exp, base_seed, n_perm,
@@ -151,6 +128,5 @@ def cpu_reliable_full(*, exp, base_seed, n_perm,
     return draws
 
 
-cpu_fast = moments_from_draws(cpu_fast_full)
-cpu_slow = moments_from_draws(cpu_slow_full)
+cpu_perm = moments_from_draws(cpu_perm_full)
 cpu_reliable = moments_from_draws(cpu_reliable_full)

@@ -1,14 +1,13 @@
-"""Local runtime benchmark for ward_tree + inner-perm CPU backends.
+"""Local runtime benchmark for ward_tree + inner-perm CPU backend.
 
 Sweeps HCP voxel counts at ``--n-steps`` log-spaced points between
-``--min-voxels`` and ``--max-voxels`` and, for each, times four
+``--min-voxels`` and ``--max-voxels`` and, for each, times three
 functions on the same (X, connectivity, exp, children) inputs:
 
   - ``glow.analysis.ward.ward_tree``
   - ``sklearn.cluster.ward_tree``
-  - ``glow.analysis.inner_perm.cpu_fast``  (intercept-only Phase-1 hoist)
-  - ``glow.analysis.inner_perm.cpu_slow``  (full ``compute_llr_batched``
-    per draw; skipped above ``--max-slow-vox`` since it scales poorly)
+  - ``glow.analysis.inner_perm.cpu_perm``  (unified perm-LLR backend;
+    handles intercept-only and general Q0 on the same code path)
 
 Results are appended to a JSON file after every voxel count so you can
 follow progress live (``tail -f`` the output path, or just rerun this
@@ -18,7 +17,6 @@ Run::
 
     python -m glow.benchmark.runtime               # defaults (1k..600k, 20 steps)
     python -m glow.benchmark.runtime --n-perm 1    # quicker
-    python -m glow.benchmark.runtime --max-slow-vox 0   # skip cpu_slow entirely
 """
 import argparse
 import json
@@ -130,8 +128,8 @@ def write_results(path, results):
     tmp.replace(path)
 
 
-def run_one(exp, n_perm, run_slow, base_seed):
-    """Time all four backends on one ``exp``; returns a result dict."""
+def run_one(exp, n_perm, base_seed):
+    """Time all backends on one ``exp``; returns a result dict."""
     actual_vox = int(exp.y.shape[2])
     row = {'num_vox': actual_vox,
            'b': int(exp.y.shape[0]),
@@ -154,20 +152,11 @@ def run_one(exp, n_perm, run_slow, base_seed):
     children = glow_cluster(exp, mode='Focus')
     q0, q1, _ = decompose(exp.x, exp.contrast)
 
-    fast_sec, _ = time_call(
-        inner_perm.cpu_fast,
+    perm_sec, _ = time_call(
+        inner_perm.cpu_perm,
         exp=exp, base_seed=base_seed, n_perm=n_perm,
         q0=q0, q1=q1, children=children, min_vox=1)
-    row['cpu_fast_sec'] = fast_sec
-
-    if run_slow:
-        slow_sec, _ = time_call(
-            inner_perm.cpu_slow,
-            exp=exp, base_seed=base_seed, n_perm=n_perm,
-            q0=q0, q1=q1, children=children, min_vox=1)
-        row['cpu_slow_sec'] = slow_sec
-    else:
-        row['cpu_slow_sec'] = None
+    row['cpu_perm_sec'] = perm_sec
 
     return row
 
@@ -180,9 +169,7 @@ def parse_args():
     p.add_argument('--max-voxels', type=int, default=600_000)
     p.add_argument('--n-steps', type=int, default=20)
     p.add_argument('--n-perm', type=int, default=250,
-                   help='inner permutations for cpu_fast / cpu_slow')
-    p.add_argument('--max-slow-vox', type=int, default=100_000,
-                   help='skip cpu_slow above this voxel count (0 = always skip)')
+                   help='inner permutations for cpu_perm')
     p.add_argument('--seed', type=int, default=0,
                    help='RNG seed for extenter + inner-perm base')
     p.add_argument('--output', type=Path, default=DEFAULT_OUTPUT)
@@ -201,7 +188,7 @@ def main():
     targets = np.geomspace(args.min_voxels, max_target, args.n_steps)
     targets = np.unique(targets.round().astype(int))
     print(f'  {len(targets)} targets: {targets[0]:,} .. {targets[-1]:,}')
-    print(f'  n_perm={args.n_perm}   max_slow_vox={args.max_slow_vox:,}')
+    print(f'  n_perm={args.n_perm}')
     print(f'  output: {args.output}')
 
     print('\nWarming up numba JIT...')
@@ -209,25 +196,19 @@ def main():
 
     results = []
     for i, target in enumerate(targets, 1):
-        run_slow = args.max_slow_vox > 0 and int(target) <= args.max_slow_vox
-        print(f'\n[{i}/{len(targets)}] target={int(target):,} voxels'
-              f'   cpu_slow={"yes" if run_slow else "skip"}')
+        print(f'\n[{i}/{len(targets)}] target={int(target):,} voxels')
         exp = subsample(exp_orig, int(target), seed=args.seed)
 
-        row = run_one(exp, n_perm=args.n_perm, run_slow=run_slow,
-                      base_seed=args.seed)
+        row = run_one(exp, n_perm=args.n_perm, base_seed=args.seed)
         row['target_vox'] = int(target)
         results.append(row)
 
         write_results(args.output, results)
 
-        slow_str = (f'{row["cpu_slow_sec"]:8.2f}s'
-                    if row['cpu_slow_sec'] is not None else '   (skip)')
         print(f'  num_vox={row["num_vox"]:>7,}'
               f'   glow_ward={row["glow_ward_sec"]:8.2f}s'
               f'   sklearn_ward={row["sklearn_ward_sec"]:8.2f}s'
-              f'   cpu_fast={row["cpu_fast_sec"]:8.2f}s'
-              f'   cpu_slow={slow_str}')
+              f'   cpu_perm={row["cpu_perm_sec"]:8.2f}s')
         print(f'  wrote: {args.output}')
 
     print(f'\nDone. {len(results)} rows -> {args.output}')

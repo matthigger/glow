@@ -177,63 +177,272 @@ def compute_llr_batched(exp, children, q0, q1, min_size=1):
     return llr, size
 
 
-def compute_llr_inner_fast(t, ysum, size, q1_T_perm, min_size=1):
-    """Per-region LLR using precomputed (t, ysum) and a perm-applied q1.T.
+def _slogdet_batched(M):
+    """Batched ``log|det(M)|`` for the small symmetric matrices in LLR.
 
-    Phase-2-only variant of ``compute_llr_batched`` for callers driving
-    the FL inner loop under intercept-only nuisance (where ``t`` and
-    ``ysum`` are FL-invariant — see
-    ``glow.analysis.mancova.is_intercept_only_nuisance``).  Skipping
-    Phase 1 across all 200 inner perms saves ~50–70% of inner-loop wall
-    time at paper-config scale.
+    Closed-form for ``b in {1, 2}`` -- significantly cheaper than
+    ``np.linalg.slogdet``'s LU dispatch, which dominates the per-perm
+    cost at ``b=2`` in glow's inner loop.  Falls back to numpy for
+    larger ``b``.  Returns ``(sign, log|det|)`` matching numpy's API.
+    """
+    b = M.shape[-1]
+    if b == 1:
+        d = M[..., 0, 0]
+        return np.sign(d), np.log(np.abs(d))
+    if b == 2:
+        det = (M[..., 0, 0] * M[..., 1, 1]
+               - M[..., 0, 1] * M[..., 1, 0])
+        return np.sign(det), np.log(np.abs(det))
+    return np.linalg.slogdet(M)
 
-    Correctness precondition: the caller must have established that Q0
-    commutes with permutations, otherwise ``t`` and ``ysum`` are NOT
-    deterministically invariant under FL and the returned LLR will not
-    match ``compute_llr_batched(_exp_inner, ...)``.
+
+def build_dfs_preorder(children, num_vox):
+    """DFS pre-order leaf permutation and per-region leaf ranges.
+
+    Given a (forest of) binary tree(s) on ``num_vox`` leaves in
+    topological (bottom-up) order, this returns a permutation
+    ``leaf_ord`` of the original voxel indices such that every region's
+    leaves occupy a contiguous range ``[region_l[r], region_h[r])`` on
+    the permuted leaf axis.  That is the prerequisite for cumsum-and-
+    diff region aggregation (see ``_reg_sum_cumsum`` and
+    ``compute_optimize/perm_llr_compute.tex``).
+
+    Roots are laid out end-to-end -- the first root takes positions
+    ``[0, size_root_0)``, the next takes ``[size_root_0, ...)``, etc.
 
     Args:
-        t (np.array): (num_reg, b, b) — precomputed
-            ``yout - a0 @ a0.T / size`` on the unpermuted data.
-        ysum (np.array): (num_reg, b, num_img) — precomputed Phase 1 ysum
-            on the unpermuted data.
-        size (np.array): (num_reg,) — voxel count per region.
-        q1_T_perm (np.array): (num_img, n_intrst) — ``q1.T`` with rows
-            permuted by the FL permutation for this inner perm.
-            Equivalent to ``freed_lane @ q1.T`` under intercept-only.
-        min_size (int): regions with size < min_size return NaN LLR.
+        children (np.array): (num_internal, 2) child index pairs in
+            topological order -- each row references indices ``< num_vox
+            + row_idx``.
+        num_vox (int): number of leaves.
 
     Returns:
-        llr (np.array): (num_reg,) LLR per region.  NaN where size <
-            min_size, or where E or E + H were not positive-definite.
-        size (np.array): same array passed in.
+        leaf_ord (np.array): (num_vox,) original voxel index visited at
+            each DFS position -- i.e. ``y_dfs[..., k] = y[..., leaf_ord[k]]``.
+        region_l (np.array): (num_reg,) leaf range start per region.
+        region_h (np.array): (num_reg,) leaf range end per region.
     """
-    num_reg = ysum.shape[0]
-    dtype = ysum.dtype if ysum.dtype == np.float32 else np.float64
+    num_internal = int(children.shape[0])
+    num_reg = num_vox + num_internal
 
-    llr = np.full(num_reg, np.nan)
-    active = size >= min_size
-    if not active.any():
-        return llr, size
+    # bottom-up region sizes
+    size = node_sum(np.ones(num_vox, dtype=np.int64), children=children)
 
-    sz_a = size[active].astype(dtype)[:, None, None]
-    ysum_a = ysum[active]
-    t_a = t[active]
+    # find roots (no parent)
+    parent = get_parent(children, num_vox)
+    roots = np.where(parent == -1)[0]
 
-    a1 = np.einsum('rbn,nv->rbv', ysum_a, q1_T_perm, optimize=True)
-    h = np.einsum('rbv,rcv->rbc', a1, a1, optimize=True) / sz_a
-    e = t_a - h
+    # top-down range assignment.  Lay roots end-to-end, then propagate
+    # to each internal node's two children: left child gets the front
+    # slice, right child gets the back slice.  Processing internal
+    # nodes in reverse topological order guarantees the parent's range
+    # is filled before its children's.
+    region_l = np.empty(num_reg, dtype=np.int64)
+    region_h = np.empty(num_reg, dtype=np.int64)
+    offset = 0
+    for root in roots:
+        region_l[root] = offset
+        region_h[root] = offset + size[root]
+        offset += int(size[root])
 
-    sign_t, logdet_t = np.linalg.slogdet(e + h)
-    sign_e, logdet_e = np.linalg.slogdet(e)
-    valid_a = (sign_t > 0) & (sign_e > 0)
+    for i in range(num_internal - 1, -1, -1):
+        node = num_vox + i
+        c0, c1 = children[i]
+        l = region_l[node]
+        sz0 = size[c0]
+        region_l[c0] = l
+        region_h[c0] = l + sz0
+        region_l[c1] = l + sz0
+        region_h[c1] = region_h[node]
 
-    sz_a_1d = size[active]
-    llr_a = np.where(valid_a,
-                     (sz_a_1d / 2.0) * (logdet_t - logdet_e),
-                     np.nan)
-    llr[active] = llr_a
-    return llr, size
+    # The leaf at original index v lives at DFS position region_l[v];
+    # inverting gives leaf_ord[position] = v.
+    leaf_ord = np.empty(num_vox, dtype=np.int64)
+    leaf_ord[region_l[:num_vox]] = np.arange(num_vox)
+    return leaf_ord, region_l, region_h
+
+
+def _reg_sum_cumsum(x_dfs, axis, region_l, region_h):
+    """Per-region sums via cumsum-and-diff along ``axis``.
+
+    ``x_dfs`` is laid out in DFS pre-order along ``axis`` (length V),
+    so every region's voxels form a contiguous range.  We prepend a
+    zero slice along ``axis`` and cumsum into the rest, then index at
+    ``region_h`` and ``region_l`` to read out half-open range sums.
+    The ``l = 0`` case is handled correctly because we left a zero in
+    the prepended slot.
+
+    Output length along ``axis`` is ``len(region_l) == num_reg``.
+    """
+    out_shape = list(x_dfs.shape)
+    out_shape[axis] = x_dfs.shape[axis] + 1
+    c = np.empty(out_shape, dtype=x_dfs.dtype)
+    head = [slice(None)] * x_dfs.ndim
+    head[axis] = 0
+    c[tuple(head)] = 0
+    tail = [slice(None)] * x_dfs.ndim
+    tail[axis] = slice(1, None)
+    np.cumsum(x_dfs, axis=axis, out=c[tuple(tail)])
+    return (np.take(c, region_h, axis=axis)
+            - np.take(c, region_l, axis=axis))
+
+
+def compute_llr_perm_full(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
+                          min_size=1, perm_chunk=8):
+    """Per-region LLR for many Freedman-Lane permutations in one sweep.
+
+    Algorithm (see ``compute_optimize/perm_llr_compute.tex``):
+
+      1.  *Phase 1 (once)* -- per-voxel sufficient statistics:
+
+              T_v   = Y_v Y_v^T               (b, b)
+              S0_v  = Q0 Y_v                  (a0, b)
+              r_v   = (I - Q0 Q0^T) Y_v       (N, b)   FL residuals
+
+          Aggregated over each region via cumsum-and-diff on the DFS
+          pre-order axis -- no tree walk in the inner loop.
+
+      2.  *Phase 2 (per perm)* -- one ``(a, N) @ (N, V*b)`` GEMM
+          assembles ``gamma_v = Q^T P r_v`` for every voxel and feature.
+          From ``gamma`` we read the FL-shifted ``rho`` (Q0 part) and
+          ``beta`` (Q1 part) needed to assemble ``E*``, ``H*`` and
+          finally the per-region LLR.
+
+    Both intercept-only and general-Q0 nuisance ride this same code
+    path: under intercept-only Q0 commutes with P, so ``rho`` is
+    numerically zero (and the ``X_v`` cross-correction below vanishes
+    up to roundoff).  The waste is ``O(V a0 b^2)`` FLOPs, dwarfed by
+    the dominant ``O(V N a b)`` gamma GEMM.
+
+    Args:
+        y (np.array): (b, num_img, num_vox) imaging features.  The
+            caller's original (unpermuted) data -- permutations are
+            applied to ``q0/q1`` instead.
+        q0 (np.array): (a0, num_img) nuisance subspace from
+            ``decompose``.
+        q1 (np.array): (a1, num_img) interest subspace.
+        perms (np.array): (n_perm, num_img) int -- ``perms[p, k]``
+            gives the original-image index that the FL-permuted data
+            puts at position ``k``.  Matches glow's
+            ``get_freed_lane`` convention so callers can build this as
+            ``np.argsort(rng.permutation(num_img))`` per draw.
+        leaf_ord, region_l, region_h: from ``build_dfs_preorder``.
+        min_size (int): regions with ``size < min_size`` return NaN
+            draws.
+        perm_chunk (int): number of perms to batch through one gamma
+            GEMM.  Trade-off: larger chunks reduce Python / BLAS call
+            overhead but multiply the (Pc, V, ...) temporary memory.
+            Default 8 is the sweet spot empirically at V in [25k,
+            55k] for both intercept-only and general-Q0.
+
+    Returns:
+        draws (np.array): (n_perm, num_reg) LLR per region per perm.
+            NaN for ``size < min_size`` or non-positive-definite
+            ``E``/``E + H``.
+    """
+    b, num_img, num_vox = y.shape
+    n_perm = int(perms.shape[0])
+    num_reg = int(region_l.shape[0])
+    a0 = int(q0.shape[0])
+    a1 = int(q1.shape[0])
+    a = a0 + a1
+
+    # match glow's existing dtype policy: float32 stays float32, else
+    # float64.  Cumsums over ~10^6 entries are stable enough in fp32
+    # for our purposes (see perm_llr_compute.tex, "Numerical care").
+    dtype = y.dtype if y.dtype == np.float32 else np.float64
+
+    # -------------------- Phase 1: per-voxel state --------------------
+    # Reorder y so its voxel axis is DFS pre-order; downstream cumsums
+    # along that axis then deliver region sums via two index reads.
+    y_dfs = np.ascontiguousarray(y[:, :, leaf_ord]).astype(dtype, copy=False)
+
+    # S0_v[v, a, j] = Q0 Y_v in math = sum_n q0[a, n] * y_dfs[j, n, v]
+    S0_v = np.einsum('an,jnv->vaj', q0, y_dfs, optimize=True)
+
+    # T_v[v, i, j] = Y_v^T Y_v in math = sum_n y_dfs[i, n, v] * y_dfs[j, n, v]
+    T_v = np.einsum('inv,jnv->vij', y_dfs, y_dfs, optimize=True)
+
+    # Build the FL residuals r_v = (I - Q0 Q0^T) Y_v directly in the
+    # (N, V, b) layout the dominant GEMM needs, then reshape to
+    # (N, V*b) for free.  Holding r_v in (V, N, b) instead would force
+    # a non-contiguous transpose + copy at reshape time, doubling peak
+    # memory at the 600k-voxel scale.
+    r_v_nvb = np.ascontiguousarray(y_dfs.transpose(1, 2, 0))           # (N, V, b)
+    del y_dfs
+    r_v_nvb -= np.einsum('an,vaj->nvj', q0, S0_v, optimize=True)       # in-place
+    r_v_flat = r_v_nvb.reshape(num_img, num_vox * b)                   # (N, V*b)
+
+    # one-time region statistics (perm-invariant)
+    S0_r = _reg_sum_cumsum(S0_v, axis=0,
+                           region_l=region_l, region_h=region_h)   # (R, a0, b)
+    T_r = _reg_sum_cumsum(T_v, axis=0,
+                          region_l=region_l, region_h=region_h)    # (R, b, b)
+
+    sz_1d = (region_h - region_l).astype(dtype)
+    inv_sz = np.empty_like(sz_1d)
+    np.divide(1.0, sz_1d, out=inv_sz, where=sz_1d > 0)
+    inv_sz_3d = inv_sz[:, None, None]
+    active = (region_h - region_l) >= min_size
+
+    Q = np.vstack([q0, q1]).astype(dtype, copy=False)              # (a, N)
+    draws = np.full((n_perm, num_reg), np.nan, dtype=np.float64)
+
+    # -------------------- Phase 2: per-perm hot loop -----------------
+    for s in range(0, n_perm, perm_chunk):
+        chunk = perms[s:s + perm_chunk]
+        Pc = int(chunk.shape[0])
+
+        # Match glow's FL convention: a permutation acts on the image
+        # axis as ``y_perm[..., k] = y[..., perm[k]]``.  Then
+        # ``(Q^T P r_v)[a, j] = sum_n Q[n, a] * r_v[perm[n], j]``,
+        # which after substitution m = perm[n] reads off rows of Q at
+        # ``perm^{-1}``.  ``argsort`` inverts the perm.
+        pi_inv = np.argsort(chunk, axis=1)
+        tQ = Q[:, pi_inv].transpose(1, 0, 2)                       # (Pc, a, N)
+
+        # Dominant compute: (Pc*a, N) @ (N, V*b) -> (Pc*a, V*b).
+        # Reshape lands gamma in (Pc, V, a, b).
+        gamma = (tQ.reshape(Pc * a, num_img) @ r_v_flat
+                 ).reshape(Pc, a, num_vox, b).transpose(0, 2, 1, 3)
+
+        rho = gamma[..., :a0, :]                                   # (Pc, V, a0, b)
+        beta = gamma[..., a0:, :]                                  # (Pc, V, a1, b)
+
+        # T_v's permutation-dependent correction: X_v = rho^T S0_v
+        # in math; in our (V, a, b) indexing that's an einsum over a.
+        X_v = np.einsum('pvai,vaj->pvij', rho, S0_v, optimize=True)  # (Pc, V, b, b)
+
+        # Region aggregation via cumsum-and-diff on the V axis.
+        rho_r = _reg_sum_cumsum(rho, axis=1,
+                                region_l=region_l, region_h=region_h)  # (Pc, R, a0, b)
+        beta_r = _reg_sum_cumsum(beta, axis=1,
+                                 region_l=region_l, region_h=region_h)  # (Pc, R, a1, b)
+        X_r = _reg_sum_cumsum(X_v, axis=1,
+                              region_l=region_l, region_h=region_h)    # (Pc, R, b, b)
+
+        # FL-shifted sufficient statistics per region.
+        S0_star = rho_r + S0_r                                     # (Pc, R, a0, b)
+        S1_star = beta_r                                           # (Pc, R, a1, b)
+        T_star = T_r + X_r + X_r.swapaxes(-1, -2)                  # (Pc, R, b, b)
+
+        # E + H = T* - (1/|r|) S0*^T S0*;  H = (1/|r|) S1*^T S1*.
+        EH = T_star - np.einsum('prai,praj->prij',
+                                S0_star, S0_star,
+                                optimize=True) * inv_sz_3d
+        E = EH - np.einsum('prai,praj->prij',
+                           S1_star, S1_star,
+                           optimize=True) * inv_sz_3d
+
+        sign_EH, ld_EH = _slogdet_batched(EH)
+        sign_E, ld_E = _slogdet_batched(E)
+        valid = (sign_EH > 0) & (sign_E > 0) & active[None]
+        llr_chunk = np.where(valid,
+                             0.5 * sz_1d[None] * (ld_EH - ld_E),
+                             np.nan)
+        draws[s:s + Pc] = llr_chunk
+
+    return draws
 
 
 def node_sum(x, children):
