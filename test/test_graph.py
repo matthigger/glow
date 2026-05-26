@@ -297,32 +297,37 @@ def test_compute_llr_inner_fast_matches_compute_llr_batched():
     from glow.experiment.permute import get_freed_lane
     from glow.analysis.mancova import decompose, is_intercept_only_nuisance
     from glow.graph import (compute_llr_batched, compute_llr_inner_fast,
-                            compute_phase1, compute_tree_layers)
+                            iter_size_ysum_yout)
 
     exp = Experiment.from_gauss(a=2, b=2, num_img=30, shape=(8, 8),
                                 seed=0, add_bias=True)
     assert is_intercept_only_nuisance(exp.x, exp.contrast)
 
     from glow.analysis.cluster import cluster, ClusterMode
-    num_vox = exp.y.shape[2]
+    b, n_img, num_vox = exp.y.shape
     children = cluster(exp=exp, mode=ClusterMode.FOCUS)
-    layer = compute_tree_layers(children, num_vox)
     q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
 
     # --- precompute fast-path state once ---
-    ysum_u, yout_u, size = compute_phase1(exp.y, children, layer=layer)
     dtype = exp.y.dtype if exp.y.dtype == np.float32 else np.float64
+    num_reg = num_vox + children.shape[0]
+    ysum_u = np.empty((num_reg, b, n_img), dtype=dtype)
+    yout_u = np.empty((num_reg, b, b), dtype=dtype)
+    size = np.empty(num_reg, dtype=int)
+    for reg_idx, sz, ys, yo in iter_size_ysum_yout(exp.y, children=children):
+        ysum_u[reg_idx] = ys
+        yout_u[reg_idx] = yo
+        size[reg_idx] = sz
     sz_3d = size.astype(dtype)[:, None, None]
     a0 = np.einsum('rbn,an->rba', ysum_u, q0, optimize=True)
     t = yout_u - np.einsum('rba,rca->rbc', a0, a0, optimize=True) / sz_3d
 
-    n_img = exp.y.shape[1]
     for perm_idx in [1, 2, 7, 42, 999]:
         # slow path: FL-permute exp, run full compute_llr_batched
         _exp_inner = exp.permute(perm_idx)
         llr_slow, _ = compute_llr_batched(
             _exp_inner, children=children, q0=q0, q1=q1,
-            min_size=4, layer=layer)
+            min_size=4)
 
         # fast path: same FL permutation, but only row-permute q1.T
         # against precomputed ysum/t.  freed_lane @ q1.T == q1.T[perm, :]

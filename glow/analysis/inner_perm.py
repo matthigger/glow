@@ -71,13 +71,20 @@ def cpu_fast_full(*, exp, base_seed, n_perm,
     Each draw is then a row-permuted ``q1.T`` against the per-region
     precomputes, run through ``compute_llr_inner_fast``.
     """
-    n_img = exp.y.shape[1]
+    b, n_img, num_vox = exp.y.shape
     q0_proj = q0.T @ q0
     eye_n = np.eye(n_img, dtype=q0.dtype)
 
-    ysum_u, yout_u, size_u = glow.graph.compute_phase1(
-        exp.y, children)
     _dtype = exp.y.dtype if exp.y.dtype == np.float32 else np.float64
+    num_reg = num_vox + children.shape[0]
+    ysum_u = np.empty((num_reg, b, n_img), dtype=_dtype)
+    yout_u = np.empty((num_reg, b, b), dtype=_dtype)
+    size_u = np.empty(num_reg, dtype=int)
+    for reg_idx, sz, ys, yo in glow.graph.iter_size_ysum_yout(
+            exp.y, children=children):
+        ysum_u[reg_idx] = ys
+        yout_u[reg_idx] = yo
+        size_u[reg_idx] = sz
     _sz_3d = size_u.astype(_dtype)[:, None, None]
     _a0 = np.einsum('rbn,an->rba', ysum_u, q0, optimize=True)
     t_u = yout_u - np.einsum('rba,rca->rbc', _a0, _a0, optimize=True) / _sz_3d
@@ -105,16 +112,12 @@ def cpu_slow_full(*, exp, base_seed, n_perm,
     """
     num_vox = exp.y.shape[2]
     num_reg = num_vox + children.shape[0]
-    # Per-node tree depth depends only on `children`; precompute once
-    # and reuse across the inner-perm loop (otherwise compute_llr_batched
-    # walks the tree per draw, ~34% overhead on a 5k vox tree).
-    layer = glow.graph.compute_tree_layers(children, num_vox)
     draws = np.empty((n_perm, num_reg), dtype=float)
     for i in range(n_perm):
         _exp_inner = exp.permute(base_seed + i)
         llr_i, _ = glow.graph.compute_llr_batched(
             _exp_inner, children=children, q0=q0, q1=q1,
-            min_size=min_vox, layer=layer)
+            min_size=min_vox)
         draws[i] = llr_i
     return draws
 
