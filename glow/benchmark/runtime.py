@@ -179,7 +179,7 @@ def parse_args():
     p.add_argument('--min-voxels', type=int, default=1_000)
     p.add_argument('--max-voxels', type=int, default=600_000)
     p.add_argument('--n-steps', type=int, default=20)
-    p.add_argument('--n-perm', type=int, default=5,
+    p.add_argument('--n-perm', type=int, default=250,
                    help='inner permutations for cpu_fast / cpu_slow')
     p.add_argument('--max-slow-vox', type=int, default=100_000,
                    help='skip cpu_slow above this voxel count (0 = always skip)')
