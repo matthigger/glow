@@ -15,6 +15,11 @@ them to per-region ``(mu, std)``.  Four backends cover the
   - :func:`gpu_slow` -- general-Q0 on GPU (multi-batch CUDA Graph with
     Chan-merged moments).
 
+A fifth backend, :func:`cpu_reliable`, drives the per-region
+``iter_mancova`` + ``get_llr`` path per draw -- a different code path
+from ``compute_llr_batched``, used as the trust anchor in tests of
+the optimised backends above.
+
 All four share a single keyword-only signature and return ``(mu,
 std)``::
 
@@ -44,6 +49,7 @@ import warnings
 import numpy as np
 
 import glow.graph
+from glow.analysis import mancova
 
 
 def moments_from_draws(fn):
@@ -119,8 +125,38 @@ def cpu_slow_full(*, exp, base_seed, n_perm,
     return draws
 
 
+def cpu_reliable_full(*, exp, base_seed, n_perm,
+                      q0, q1, children, min_vox):
+    """Trust-anchor CPU path -- returns ``(n_perm, num_reg)`` draws.
+
+    Thin wrapper over the per-region ``iter_mancova`` + ``get_llr``
+    path: for each draw, FL-permute via ``exp.permute(base_seed + i)``,
+    then iterate ``(reg_idx, size, e, h)`` per region and finish with
+    ``get_llr(e, h, n=size)``.  No batching, no closed-form 2x2 slogdet,
+    no Phase-1 hoisting -- an independent code path from
+    ``compute_llr_batched`` for cross-validating the optimised backends.
+
+    ``q0`` / ``q1`` are accepted for interface parity but unused:
+    ``iter_mancova`` recomputes them internally via
+    ``decompose(exp.x, exp.contrast)``, which is exactly the same
+    ``(q0, q1)`` the caller would have passed in.
+    """
+    del q0, q1
+    num_reg = exp.y.shape[2] + children.shape[0]
+    draws = np.full((n_perm, num_reg), np.nan, dtype=np.float64)
+    for i in range(n_perm):
+        _exp = exp.permute(base_seed + i)
+        for reg_idx, size, e, h in glow.graph.iter_mancova(
+                _exp, children=children):
+            if size < min_vox:
+                continue
+            draws[i, reg_idx] = mancova.get_llr(e, h, n=size)
+    return draws
+
+
 cpu_fast = moments_from_draws(cpu_fast_full)
 cpu_slow = moments_from_draws(cpu_slow_full)
+cpu_reliable = moments_from_draws(cpu_reliable_full)
 
 
 def gpu_fast(*, exp, base_seed, n_perm,
