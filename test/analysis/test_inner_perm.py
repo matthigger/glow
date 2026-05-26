@@ -3,13 +3,9 @@
 ``cpu_reliable`` is the trust anchor: a thin wrapper over
 ``iter_mancova`` + ``get_llr`` per region, per draw.  Slow but
 unambiguous, and an independent code path from the batched
-``compute_llr_batched`` that the production backends share.  Every
-other inner-perm backend (``cpu_fast``, ``cpu_slow``, ``gpu_fast``,
-``gpu_slow``) is validated against it here.
-
-CPU equivalence is fp64 round-off (~1e-10).  GPU paths accumulate
-in fp32, so we apply a magnitude-aware tolerance on active regions
-and skip when CUDA isn't available.
+``compute_llr_batched`` that the production backends share.  Both
+production backends (``cpu_fast``, ``cpu_slow``) are validated
+against it here -- agreement is fp64 round-off (~1e-10).
 
 Run:
     ~/venv_glow/bin/pytest test/analysis/test_inner_perm.py -v
@@ -32,36 +28,32 @@ from glow.experiment.exper import Experiment
 # ---------------------------------------------------------------------------
 # Synthetic experiment builders
 
-def _intercept_only_exp(seed=0, n_img=24, shape=(2, 3, 5), dtype=np.float64):
-    """Intercept-only nuisance (Q0 = span(1)) -- exercises the fast path.
-
-    Two interest columns (k=2) so the GPU intercept kernel's
-    closed-form 2x2 indexing is exercised.
-    """
+def _intercept_only_exp(seed=0, n_img=24, shape=(2, 3, 5)):
+    """Intercept-only nuisance (Q0 = span(1)) -- exercises the fast path."""
     rng = np.random.default_rng(seed)
     V = int(np.prod(shape))
     mask_idx = np.arange(V, dtype=np.int64).reshape(shape)
-    y = rng.standard_normal((2, n_img, V)).astype(dtype)
+    y = rng.standard_normal((2, n_img, V)).astype(np.float64)
     x = np.vstack([
-        np.ones(n_img, dtype=dtype),
-        rng.standard_normal(n_img).astype(dtype),
-        rng.standard_normal(n_img).astype(dtype),
+        np.ones(n_img, dtype=np.float64),
+        rng.standard_normal(n_img).astype(np.float64),
+        rng.standard_normal(n_img).astype(np.float64),
     ])
     contrast = np.array([False, True, True])
     return Experiment(x=x, y=y, contrast=contrast, mask_idx=mask_idx)
 
 
-def _general_q0_exp(seed=0, n_img=24, shape=(3, 4, 4), dtype=np.float64):
+def _general_q0_exp(seed=0, n_img=24, shape=(3, 4, 4)):
     """Non-constant nuisance columns -- forces the general-Q0 path."""
     rng = np.random.default_rng(seed)
-    rows = [np.ones(n_img, dtype=dtype)]
+    rows = [np.ones(n_img, dtype=np.float64)]
     contrast = [False]
     for _ in range(2):
-        c = rng.standard_normal(n_img).astype(dtype)
+        c = rng.standard_normal(n_img).astype(np.float64)
         c -= c.mean(); c /= c.std() + 1e-9
         rows.append(c); contrast.append(False)
     for _ in range(2):
-        c = rng.standard_normal(n_img).astype(dtype)
+        c = rng.standard_normal(n_img).astype(np.float64)
         c -= c.mean(); c /= c.std() + 1e-9
         rows.append(c); contrast.append(True)
     x = np.vstack(rows)
@@ -69,7 +61,7 @@ def _general_q0_exp(seed=0, n_img=24, shape=(3, 4, 4), dtype=np.float64):
 
     V = int(np.prod(shape))
     mask = np.zeros(shape, dtype=bool); mask.reshape(-1)[:V] = True
-    y = rng.standard_normal((2, n_img, V)).astype(dtype)
+    y = rng.standard_normal((2, n_img, V)).astype(np.float64)
     return Experiment(x=x, y=y, contrast=contrast,
                       mask_idx=glow.mask.get_mask_idx(mask))
 
@@ -86,22 +78,12 @@ def _prep(exp, *, min_vox=2):
 
 @pytest.fixture(scope='module')
 def prep_intercept_fp64():
-    return _prep(_intercept_only_exp(seed=0, dtype=np.float64))
+    return _prep(_intercept_only_exp(seed=0))
 
 
 @pytest.fixture(scope='module')
 def prep_general_fp64():
-    return _prep(_general_q0_exp(seed=0, dtype=np.float64))
-
-
-@pytest.fixture(scope='module')
-def prep_intercept_fp32():
-    return _prep(_intercept_only_exp(seed=0, dtype=np.float32))
-
-
-@pytest.fixture(scope='module')
-def prep_general_fp32():
-    return _prep(_general_q0_exp(seed=0, dtype=np.float32))
+    return _prep(_general_q0_exp(seed=0))
 
 
 # ---------------------------------------------------------------------------
@@ -129,15 +111,6 @@ def _assert_draws_match(draws, ref, *, atol):
     assert finite.any(), 'no finite cells to compare'
     diff = np.abs(draws[finite] - ref[finite]).max()
     assert diff < atol, f'max abs diff {diff:.3e} > {atol:.3e}'
-
-
-def _assert_mu_close(mu, ref, *, rtol):
-    """Magnitude-aware tolerance on active regions only."""
-    finite = np.isfinite(mu) & np.isfinite(ref)
-    assert finite.any(), 'no overlapping finite regions'
-    scale = max(np.abs(ref[finite]).max(), 1.0)
-    rel = np.abs(mu[finite] - ref[finite]).max() / scale
-    assert rel < rtol, f'max rel diff {rel:.3e} > {rtol:.3e}'
 
 
 # ---------------------------------------------------------------------------
@@ -213,46 +186,3 @@ def test_min_vox_drops_small_regions(prep_intercept_fp64, backend_full):
     assert small.any(), 'fixture has no size<4 regions; raise min_vox'
     assert np.isnan(draws[:, small]).all(), \
         f'{backend_full.__name__}: size<min_vox cells leaked finite values'
-
-
-# ===========================================================================
-# GPU backends vs cpu_reliable -- CUDA-gated.
-#
-# cpu_reliable on the same fp32 fixture is itself fp32-tinged
-# (iter_mancova uses exp.y as-is), so the comparison cross-validates
-# the GPU batched closed-form against per-region scalar slogdet --
-# both seeing the same fp32 input.
-
-pytest.importorskip('torch')
-inner_perm_gpu = pytest.importorskip('glow.analysis.inner_perm_gpu')
-
-gpu_required = pytest.mark.skipif(
-    not inner_perm_gpu.is_available(),
-    reason='CUDA not available; skipping GPU equivalence tests.')
-
-
-@gpu_required
-def test_gpu_fast_matches_reliable(prep_intercept_fp32):
-    """GPU intercept-only path mu agrees with cpu_reliable mu.
-
-    Both backends see the same fp32 input and the same FL sigmas, but
-    accumulate in different orders (GPU batched closed-form 2x2 vs
-    per-region scalar slogdet), so we use a magnitude-aware tolerance
-    rather than bit equivalence.
-    """
-    mu_gpu, _ = _moments(inner_perm.gpu_fast, prep_intercept_fp32)
-    mu_ref, _ = _moments(inner_perm.cpu_reliable, prep_intercept_fp32)
-    _assert_mu_close(mu_gpu, mu_ref, rtol=0.1)
-
-
-@gpu_required
-def test_gpu_slow_matches_reliable(prep_general_fp32):
-    """GPU general-Q0 path mu agrees with cpu_reliable mu.
-
-    Same magnitude-aware tolerance reasoning as the fast variant; the
-    general path has more cumulative fp32 ops (alpha matmul + sweep +
-    Phase 2) so the bound is a touch looser.
-    """
-    mu_gpu, _ = _moments(inner_perm.gpu_slow, prep_general_fp32)
-    mu_ref, _ = _moments(inner_perm.cpu_reliable, prep_general_fp32)
-    _assert_mu_close(mu_gpu, mu_ref, rtol=0.15)

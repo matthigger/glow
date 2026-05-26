@@ -71,7 +71,7 @@ class AnalysisGLOW(Analysis):
 
     @classmethod
     def run_inner_perm(cls, exp, children, n_perm, *, q0, q1,
-                       use_gpu=False, min_vox=4, base_seed=0):
+                       min_vox=4, base_seed=0):
         """Inner-null mean and std per region, from n_perm Freedman-Lane
         draws against children.
 
@@ -81,28 +81,20 @@ class AnalysisGLOW(Analysis):
             n_perm: number of inner FL draws.
             q0: nuisance subspace.
             q1: interest subspace.
-            use_gpu: run inner draws on GPU if available.
             min_vox: regions smaller than this are left NaN.
             base_seed: draw uses base_seed + i.
         """
-        use_fast = is_intercept_only_nuisance(exp.x, exp.contrast)
-        if use_gpu:
-            if use_fast:
-                run = inner_perm.gpu_fast
-            else:
-                run = inner_perm.gpu_slow
+        if is_intercept_only_nuisance(exp.x, exp.contrast):
+            run = inner_perm.cpu_fast
         else:
-            if use_fast:
-                run = inner_perm.cpu_fast
-            else:
-                run = inner_perm.cpu_slow
+            run = inner_perm.cpu_slow
 
         return run(
             exp=exp, base_seed=base_seed, n_perm=n_perm,
             q0=q0, q1=q1, children=children,
             min_vox=min_vox)
 
-    def fit(self, *, use_gpu=False, verbose=False):
+    def fit(self, *, verbose=False):
         """Run the analysis.
 
         Populates the observed-tree attributes (children, size, llr,
@@ -130,7 +122,7 @@ class AnalysisGLOW(Analysis):
             mu, std = self.run_inner_perm(
                 _exp, children, self.n_perm_inner,
                 q0=self._q0, q1=self._q1,
-                use_gpu=use_gpu, min_vox=self.min_vox,
+                min_vox=self.min_vox,
                 base_seed=(k + 1) * _INNER_SEED_BLOCK)
 
             std_safe = np.where(std < 1e-12, 1.0, std)

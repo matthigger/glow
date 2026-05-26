@@ -2,28 +2,24 @@
 
 For one outer permutation: given the outer-perm tree (Ward children)
 and an experiment, draw ``n_perm`` inner-perm LLR samples and reduce
-them to per-region ``(mu, std)``.  Four backends cover the
-(cpu vs gpu) x (intercept-only fast vs general slow) grid:
+them to per-region ``(mu, std)``.  Two production backends split on
+whether Q0 commutes with permutations:
 
   - :func:`cpu_fast` -- intercept-only.  Q0 commutes with permutations,
     so Phase-1 (yout/ysum/T_u) hoists out of the inner loop and each
     draw is a row-permuted ``q1.T`` against per-region precomputes.
   - :func:`cpu_slow` -- general-Q0.  Full ``compute_llr_batched`` per
     draw, against a fresh ``exp.permute(base_seed + i)``.
-  - :func:`gpu_fast` -- intercept-only on GPU (single-batch CUDA Graph,
-    closed-form 2x2 LLR).
-  - :func:`gpu_slow` -- general-Q0 on GPU (multi-batch CUDA Graph with
-    Chan-merged moments).
 
-A fifth backend, :func:`cpu_reliable`, drives the per-region
+A third backend, :func:`cpu_reliable`, drives the per-region
 ``iter_mancova`` + ``get_llr`` path per draw -- a different code path
 from ``compute_llr_batched``, used as the trust anchor in tests of
 the optimised backends above.
 
-All four share a single keyword-only signature and return ``(mu,
+All three share a single keyword-only signature and return ``(mu,
 std)``::
 
-    run = inner_perm.gpu_fast if use_gpu and use_fast else ...
+    run = inner_perm.cpu_fast if use_fast else inner_perm.cpu_slow
     mu, std = run(
         exp=exp, base_seed=base_seed, n_perm=n_perm,
         q0=q0, q1=q1, children=children, min_vox=min_vox)
@@ -37,11 +33,9 @@ they just sample iid permutations from it.
 non-colliding base across outer perms (``_glow.py`` reserves a
 100_000-wide block per outer perm).
 
-CPU backends are thin wrappers over :func:`cpu_fast_full` /
-:func:`cpu_slow_full`, which return the raw ``(n_perm, num_reg)`` LLR
-draws matrix; tests that want to inspect individual draws call those
-directly.  GPU backends reduce moments on-device, so the raw draws
-matrix is never materialised on the host.
+Each backend is a thin wrapper over its ``*_full`` variant, which
+returns the raw ``(n_perm, num_reg)`` LLR draws matrix; tests that
+want to inspect individual draws call those directly.
 """
 import functools
 import warnings
@@ -157,38 +151,3 @@ def cpu_reliable_full(*, exp, base_seed, n_perm,
 cpu_fast = moments_from_draws(cpu_fast_full)
 cpu_slow = moments_from_draws(cpu_slow_full)
 cpu_reliable = moments_from_draws(cpu_reliable_full)
-
-
-def gpu_fast(*, exp, base_seed, n_perm,
-              q0, q1, children, min_vox):
-    """Intercept-only GPU path -- returns ``(mu, std)``.
-
-    Closed-form 2x2 LLR, single CUDA Graph.
-    """
-    from glow.analysis.inner_perm_gpu import _run_intercept
-    num_vox = exp.y.shape[2]
-    layer = glow.graph.compute_tree_layers(children, num_vox)
-    out = _run_intercept(
-        exp, perm_idx=0,
-        q0=q0, q1=q1, children=children, layer=layer,
-        n_perm_inner=n_perm, min_vox=min_vox,
-        base_seed=base_seed, device='cuda')
-    return out['mu'], out['sigma']
-
-
-def gpu_slow(*, exp, base_seed, n_perm,
-              q0, q1, children, min_vox):
-    """General-Q0 GPU path -- returns ``(mu, std)``.
-
-    Alpha/beta decomposition, multi-batch CUDA Graph with Chan-merged
-    moments.
-    """
-    from glow.analysis.inner_perm_gpu import _run_general
-    num_vox = exp.y.shape[2]
-    layer = glow.graph.compute_tree_layers(children, num_vox)
-    out = _run_general(
-        exp, perm_idx=0,
-        q0=q0, q1=q1, children=children, layer=layer,
-        n_perm_inner=n_perm, min_vox=min_vox,
-        base_seed=base_seed, device='cuda')
-    return out['mu'], out['sigma']
