@@ -1,6 +1,7 @@
 from bisect import bisect_left
 
 import numpy as np
+from joblib import Parallel, delayed
 from tqdm import tqdm
 
 import glow.effect
@@ -94,12 +95,37 @@ class AnalysisGLOW(Analysis):
             q0=q0, q1=q1, children=children,
             min_vox=min_vox)
 
-    def fit(self, *, verbose=False):
+    @classmethod
+    def _run_outer(cls, exp, k, *, q0, q1, n_perm_inner, min_vox,
+                   cluster_mode):
+        """One outer perm: cluster, observed LLR, inner-perm mu/std.
+
+        Pure (no self, no shared state) so joblib workers can run it.
+        Returns (children, size, llr, mu, std) for outer-perm index k.
+        """
+        _exp = exp.permute(k) if k else exp
+        children = cluster(_exp, mode=cluster_mode)
+        llr, size = glow.graph.compute_llr_batched(
+            _exp, children=children, q0=q0, q1=q1)
+        mu, std = cls.run_inner_perm(
+            _exp, children, n_perm_inner, q0=q0, q1=q1,
+            min_vox=min_vox,
+            base_seed=(k + 1) * _INNER_SEED_BLOCK)
+        return children, size, llr, mu, std
+
+    def fit(self, *, n_jobs=1, verbose=False):
         """Run the analysis.
 
         Populates the observed-tree attributes (children, size, llr,
         mu, std, z), the FWER null (max_z_null), and the synthesis
         output (pval, effect_list).
+
+        Args:
+            n_jobs: outer-perm parallelism via joblib.  1 (default)
+                runs in-process; -1 uses all cores.  Results are
+                identical regardless of n_jobs (seed is derived from
+                outer-perm index).
+            verbose: print progress and show tqdm bar.
         """
         n_total = self.n_perm_fwer + 1
         self.max_z_null = np.empty(n_total)
@@ -108,22 +134,19 @@ class AnalysisGLOW(Analysis):
             num_vox = self.exp.y.shape[2]
             print(f'  [1/2] outer perms: {n_total} perms '
                   f'({num_vox} voxels, {self.n_perm_fwer} FWER, '
-                  f'{self.n_perm_inner} inner) ...')
+                  f'{self.n_perm_inner} inner, n_jobs={n_jobs}) ...')
 
-        for k in tqdm(range(n_total), desc='outer perms',
-                      disable=not verbose):
-            _exp = self.exp.permute(k) if k else self.exp
-            children = cluster(_exp, mode=self.cluster_mode)
-
-            llr, size = glow.graph.compute_llr_batched(
-                _exp, children=children,
-                q0=self._q0, q1=self._q1)
-
-            mu, std = self.run_inner_perm(
-                _exp, children, self.n_perm_inner,
-                q0=self._q0, q1=self._q1,
+        results = Parallel(n_jobs=n_jobs, return_as='generator')(
+            delayed(self._run_outer)(
+                self.exp, k, q0=self._q0, q1=self._q1,
+                n_perm_inner=self.n_perm_inner,
                 min_vox=self.min_vox,
-                base_seed=(k + 1) * _INNER_SEED_BLOCK)
+                cluster_mode=self.cluster_mode)
+            for k in range(n_total))
+
+        for k, (children, size, llr, mu, std) in enumerate(
+                tqdm(results, total=n_total, desc='outer perms',
+                     disable=not verbose)):
 
             std_safe = np.where(std < 1e-12, 1.0, std)
             z = np.nan_to_num((llr - mu) / std_safe,
