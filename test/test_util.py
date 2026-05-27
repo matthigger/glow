@@ -188,3 +188,71 @@ class TestHashBySlotsMutation:
         t.a = 99
         h1 = hash(t)
         assert h0 != h1
+
+
+# Subclass hierarchy + a class with an underscore slot, used to exercise
+# the MRO walk and the _-prefix skip in HashBySlots._identity_dict.
+class _ToyBase(HashBySlots):
+    __slots__ = ('a',)
+
+    def __init__(self, a):
+        self.a = a
+
+
+class _ToySub(_ToyBase):
+    __slots__ = ('b',)
+
+    def __init__(self, a, b):
+        super().__init__(a)
+        self.b = b
+
+
+class TestHashBySlotsMroWalk:
+    """_identity_dict walks the full MRO so subclass identity covers base
+    slots (otherwise a subclass with extra slots would silently drop its
+    base identity)."""
+
+    def test_base_slot_in_subclass_identity(self):
+        d = _ToySub(1, 2)._identity_dict()
+        assert d['a'] == 1
+        assert d['b'] == 2
+
+    def test_base_slot_change_changes_hash(self):
+        assert _ToySub(1, 2) != _ToySub(9, 2)
+        assert hash(_ToySub(1, 2)) != hash(_ToySub(9, 2))
+
+    def test_kind_is_concrete_class(self):
+        # the class name in identity uses type(self), not the slot's owner
+        assert _ToySub(1, 2)._identity_dict()['kind'] == '_ToySub'
+
+    def test_base_and_subclass_distinct(self):
+        # _ToyBase(1) and _ToySub(1, 2) must not collide even when their
+        # base slot agrees — class name differs, and __eq__ checks type
+        assert _ToyBase(1) != _ToySub(1, 2)
+        assert hash(_ToyBase(1)) != hash(_ToySub(1, 2))
+
+
+class TestHashBySlotsRequiresSlots:
+    """__init_subclass__ rejects subclasses that don't declare __slots__,
+    so identity is never silently empty."""
+
+    def test_subclass_without_slots_errors(self):
+        with pytest.raises(TypeError, match='__slots__'):
+            class _NoSlots(HashBySlots):
+                pass
+
+    def test_subclass_with_empty_slots_ok(self):
+        # explicit empty tuple is the documented opt-out for "no new
+        # slots at this layer"
+        class _Empty(HashBySlots):
+            __slots__ = ()
+
+        assert hash(_Empty()) == hash(_Empty())
+
+    def test_nested_subclass_also_checked(self):
+        class _Mid(HashBySlots):
+            __slots__ = ('x',)
+
+        with pytest.raises(TypeError, match='__slots__'):
+            class _Leaf(_Mid):
+                pass

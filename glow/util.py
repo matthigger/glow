@@ -48,25 +48,42 @@ def hash_array(*arrs):
 class HashBySlots:
     """Mixin: ``__hash__`` / ``__eq__`` derived from ``__slots__``.
 
-    Subclasses declare ``__slots__`` as the canonical attribute list;
-    every slot participates in identity. Non-JSON-friendly slot values
-    are canonicalized inside ``_canon`` (ndarrays → ``hash_array``,
-    nested ``HashBySlots`` instances → their own identity dict).
+    Every slot listed in ``__slots__`` is part of identity — there is no
+    private / non-identity slot convention. Non-identity state (memo
+    caches, etc.) lives off the instance, typically as a class attribute.
 
-    Hash is NOT stable across mutating method calls — if a subclass
-    writes to a slot after construction (e.g. an sklearn-style
-    ``.fit()`` that populates result attrs), its hash will change.
-    Callers that put mutated instances in dicts/sets are responsible
-    for that contract.
+    Subclasses MUST declare ``__slots__`` (use ``()`` if no new slots
+    are added); enforced at class-creation time by ``__init_subclass__``.
+
+    Non-JSON-friendly slot values are canonicalised in ``_canon``
+    (ndarrays → ``hash_array``, nested ``HashBySlots`` instances → their
+    own identity dict). Hash is NOT stable across mutating method calls
+    — if a subclass writes to a slot after construction (e.g. an
+    sklearn-style ``.fit()`` that populates result attrs), its hash will
+    change. Callers that put mutated instances in dicts/sets are
+    responsible for that contract.
     """
 
     __slots__ = ()
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if '__slots__' not in cls.__dict__:
+            raise TypeError(
+                f'{cls.__name__}: HashBySlots subclasses must declare '
+                '__slots__ (use () if no new slots are added)')
+
     def _identity_dict(self):
-        """JSON-friendly identity dict used by __hash__ / __eq__."""
-        return {'kind': type(self).__name__,
-                **{f: self._canon(getattr(self, f))
-                   for f in type(self).__slots__}}
+        """JSON-friendly identity dict used by __hash__ / __eq__.
+
+        Walks the full MRO so subclass identity covers every slot
+        declared along the inheritance chain.
+        """
+        out = {'kind': type(self).__name__}
+        for cls in reversed(type(self).__mro__):
+            for slot in getattr(cls, '__slots__', ()):
+                out[slot] = self._canon(getattr(self, slot))
+        return out
 
     @staticmethod
     def _canon(v):
