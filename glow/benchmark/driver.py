@@ -18,9 +18,7 @@ def driver_local(trial_cache, run_fnc, n_jobs=1, verbose=True):
     if not trials:
         return
 
-    n_total = len(trial_cache)
-    bar = tqdm(total=n_total, initial=n_total - len(trials),
-               disable=not verbose, desc='trials')
+    bar = tqdm(total=len(trials), disable=not verbose, desc='trials')
 
     if n_jobs in (0, 1):
         results = (run_fnc(**trial) for trial in trials)
