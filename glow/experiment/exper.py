@@ -13,13 +13,7 @@ from .load_image import load_image_color, load_image_nii
 from .permute import get_freed_lane
 from .sigma import stretch_sigma
 from ..mask import get_mask_idx
-
-
-# number of elements to sample from arrays larger than this when computing
-# _hash().  full hashing of an 18 GB experiment takes ~11s; sampling 10k
-# elements drops that to ~0.1ms with negligible collision risk for the
-# S3 shared-data cache use case (distinct experiments differ globally).
-HASH_SAMPLE_SIZE = 10_000
+from ..util import hash_array
 
 
 class NoBiasTermWarning(UserWarning):
@@ -68,31 +62,9 @@ class ExperimentImageOnly:
         """probabilistic SHA-256 hash over data arrays (16-char hex digest).
 
         Used as an S3 cache key (see Config.run_cloud) to dedup uploads
-        of identical experiment data.  For large arrays we sample
-        ``HASH_SAMPLE_SIZE`` deterministic indices rather than hashing
-        every byte — turns ~11s on an 18 GB experiment into ~0.1ms.
-        Shape + dtype are mixed in so reshapes / dtype changes register
-        even when the sampled values happen to coincide.
+        of identical experiment data. See ``glow.util.hash_array``.
         """
-        import hashlib
-        h = hashlib.sha256()
-        for arr in self._hash_arrays:
-            a = np.ascontiguousarray(arr)
-            # shape + dtype catch differences a content sample would miss
-            h.update(str(a.shape).encode())
-            h.update(str(a.dtype).encode())
-            flat = a.ravel()
-            if flat.size > HASH_SAMPLE_SIZE:
-                # reseed per-array so each array's sample positions are
-                # a pure function of its own size (independent of order
-                # / membership of _hash_arrays)
-                idx = np.random.default_rng(0).integers(
-                    0, flat.size, HASH_SAMPLE_SIZE)
-                sample = np.ascontiguousarray(flat[idx])
-            else:
-                sample = flat
-            h.update(memoryview(sample).cast('B'))
-        return h.hexdigest()[:16]
+        return hash_array(*self._hash_arrays)
 
     @classmethod
     def from_gauss(cls, b=None, num_img=10, shape=(2, 3, 4), seed=None,
