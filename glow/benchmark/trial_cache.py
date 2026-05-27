@@ -10,6 +10,7 @@ A ``TrialCache`` owns a results csv and answers three questions:
 """
 
 from itertools import product
+from math import prod
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -77,6 +78,10 @@ class TrialCache:
 
     def _cached_hashes(self) -> set:
         return set(self.df.index.astype(str))
+
+    def __len__(self) -> int:
+        """Total trial count yielded by ``iter_trial`` (cached + uncached)."""
+        return prod(len(list(v)) for v in (self.iter_kwargs or {}).values())
 
     def iter_trial(self) -> Iterator[dict]:
         """Yield one merged kwarg dict per trial."""
