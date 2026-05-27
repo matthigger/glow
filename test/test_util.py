@@ -3,7 +3,9 @@
 import numpy as np
 import pytest
 
-from glow.util import HASH_SAMPLE_SIZE, HashBySlots, hash_array
+from glow.util import (
+    HASH_SAMPLE_SIZE, HashBySlots, hash_array, stable_hash, value_id,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +191,61 @@ class TestHashBySlotsMutation:
         h1 = hash(t)
         assert h0 != h1
 
+
+class TestValueId:
+    def test_simple_passthrough(self):
+        assert value_id(0) == 0
+        assert value_id('x') == 'x'
+        assert value_id(None) is None
+        assert value_id(True) is True
+
+    def test_numpy_scalar_unboxed(self):
+        v = value_id(np.float64(1.5))
+        assert v == 1.5
+        assert not isinstance(v, np.floating)
+
+    def test_ndarray_returns_hash(self):
+        h = value_id(np.arange(10))
+        assert isinstance(h, str) and len(h) == 16
+
+    def test_ndarray_content_changes_hash(self):
+        assert value_id(np.arange(10)) != value_id(np.arange(11))
+
+    def test_hashbyslots_stable_across_instances(self):
+        assert value_id(_Toy(1, 2)) == value_id(_Toy(1, 2))
+        assert value_id(_Toy(1, 2)) != value_id(_Toy(1, 3))
+
+    def test_unknown_type_falls_back_to_repr(self):
+        class Other:
+            def __repr__(self):
+                return 'OTHER'
+        assert value_id(Other()) == 'OTHER'
+
+
+class TestStableHash:
+    def test_same_dict_same_hash(self):
+        d = {'seed': 0, 'llr': 0.1}
+        assert stable_hash(d) == stable_hash(d)
+
+    def test_key_order_independent(self):
+        a = {'seed': 0, 'llr': 0.1}
+        b = {'llr': 0.1, 'seed': 0}
+        assert stable_hash(a) == stable_hash(b)
+
+    def test_different_values_different_hash(self):
+        assert stable_hash({'seed': 0}) != stable_hash({'seed': 1})
+
+    def test_hashbyslots_identity(self):
+        assert stable_hash({'ds': _Toy(1, 2)}) == stable_hash({'ds': _Toy(1, 2)})
+        assert stable_hash({'ds': _Toy(1, 2)}) != stable_hash({'ds': _Toy(1, 3)})
+
+    def test_numpy_scalar_matches_python_scalar(self):
+        assert stable_hash({'seed': np.int64(0)}) == stable_hash({'seed': 0})
+
+    def test_returns_8_hex(self):
+        h = stable_hash({'seed': 0})
+        assert len(h) == 8
+        assert all(c in '0123456789abcdef' for c in h)
 
 # Subclass hierarchy + a class with an underscore slot, used to exercise
 # the MRO walk and the _-prefix skip in HashBySlots._identity_dict.

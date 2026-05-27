@@ -99,3 +99,36 @@ class HashBySlots:
     def __eq__(self, other):
         return (type(self) is type(other)
                 and self._identity_dict() == other._identity_dict())
+
+
+def value_id(v):
+    """Stable, JSON-friendly identity for one value.
+
+    Simple scalars pass through; ndarrays and ``HashBySlots`` instances
+    get a stable hash; anything else falls back to ``repr``.  Unlike
+    Python's builtin ``hash``, the output is the same across processes.
+    """
+    if isinstance(v, np.ndarray):
+        return hash_array(v)
+    if isinstance(v, HashBySlots):
+        return hashlib.sha256(
+            json.dumps(v._identity_dict(), sort_keys=True).encode()
+        ).hexdigest()[:16]
+    if isinstance(v, np.generic):
+        return v.item()
+    if isinstance(v, (str, int, float, bool)) or v is None:
+        return v
+    return repr(v)
+
+
+def stable_hash(d):
+    """8-hex digest of a dict's contents, stable across Python processes.
+
+    Unlike Python's builtin ``hash``, the output does not depend on
+    ``PYTHONHASHSEED``, so it's safe to embed in cached filenames or
+    CSV columns and compare across runs.  8 hex chars (~32 bits) is
+    plenty for our trial-cache scale.
+    """
+    sig = json.dumps({k: value_id(d[k]) for k in sorted(d)},
+                     sort_keys=True)
+    return hashlib.sha256(sig.encode()).hexdigest()[-8:]
