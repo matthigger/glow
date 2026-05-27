@@ -1,6 +1,7 @@
 import numpy as np
 
 from glow.analysis.mancova import get_mancova
+from glow.util import HashBySlots
 
 
 class EffectEstimate:
@@ -65,71 +66,68 @@ class EffectEstimate:
 # ``Effect``.  Discovery code paths should migrate to ``EffectEstimate`` directly.
 Effect = EffectEstimate
 
-class EffectSynthetic:
-    """A planted (synthetic) effect: realized mask + offset values, with
-    provenance for replay during slim-pickle rehydration.
+class EffectSynthetic(HashBySlots):
+    """A planted (synthetic) effect.
 
-    Attributes:
-        mask (np.array): boolean, True inside the planted region
-        offset (np.array): (b, num_img) offset added per voxel in mask
-        sigma_scale (float | None): factor applied to within-region sigma
-        seed (int): provenance — seed used to draw the extenter
-        effect_llr (float): provenance — per-voxel LLR target requested
-        extenter_kind (str | None): provenance — extenter class name
-        extenter_args (dict | None): provenance — extenter constructor args
+    Operation parameters (set at __init__):
+        extenter (Extenter | None): how to sample the support. XOR
+            with ``mask``.
+        mask (np.array | None): pre-known boolean support. XOR with
+            ``extenter``. Frozen on assignment so the hash is stable.
+        effect_llr (float): per-voxel LLR target.
+        seed (int | None): RNG seed for extenter sampling.
+
+    Fit outputs (populated by .fit()):
+        mask_ (np.array): realized boolean support.
+        offset_ (np.array): (b, num_img) offset added per voxel.
+        sigma_scale_ (float | None): factor applied to within-region
+            sigma.
     """
 
-    def __init__(self, mask, offset, *, sigma_scale=None,
-                 seed=None, effect_llr=None,
-                 extenter_kind=None, extenter_args=None):
+    __slots__ = ('extenter', 'mask', 'effect_llr', 'seed',
+                 'mask_', 'offset_', 'sigma_scale_')
+
+    def __init__(self, *, extenter=None, mask=None, effect_llr,
+                 seed=None):
+        if (extenter is None) == (mask is None):
+            raise ValueError('extenter xor mask required')
+        self.extenter = extenter
+        if mask is not None:
+            mask = np.ascontiguousarray(mask, dtype=bool)
+            mask.flags.writeable = False
         self.mask = mask
-        self.offset = offset
-        self.sigma_scale = sigma_scale
-        self.seed = seed
-        self.effect_llr = effect_llr
-        self.extenter_kind = extenter_kind
-        self.extenter_args = extenter_args
+        self.effect_llr = float(effect_llr)
+        self.seed = None if seed is None else int(seed)
+        # fit outputs (sklearn trailing underscore convention)
+        self.mask_ = None
+        self.offset_ = None
+        self.sigma_scale_ = None
 
-    def apply(self, exp):
-        """Apply this synthetic effect's mask + offset to ``exp``."""
-        return exp.add_offset(self.offset, mask=self.mask,
-                              sigma_scale=self.sigma_scale)
-
-    # clause item: question: to make this simpler, maybe we shouldn't support the mask xor extenter pattern, if the user already has an extenter its only 1 line for them to ask before calling this function while its many to run it inside ... seems simpler, right?
-    @classmethod
-    def impose(cls, exp, *, effect_llr, extenter=None, mask=None,
-               seed=None, **kwargs):
-        """Synthesize and apply a new effect.
-
-        Optimization runs once; the realized (mask, offset) are captured
-        in the returned EffectSynthetic so later replay reproduces the
-        post-imposition y exactly.
-
-        Returns:
-            (Experiment, EffectSynthetic): post-imposition experiment and
-                the synthetic effect that was applied.
-        """
+    def fit(self, exp):
+        """Sample support, compute offset, populate *_ attrs, return
+        the experiment with effect imposed."""
         # local import keeps glow.effect import-time cycle-free
         from .impose import compute_offset
 
         assert exp.x is not None, 'x/contrast needed; call .sample_x()'
-        assert (mask is None) != (extenter is None), \
-            'either mask xor extenter required'
 
-        if mask is None:
-            mask = extenter(y=exp.y, mask_idx=exp.mask_idx, seed=seed)
+        if self.mask is not None:
+            mask = self.mask
+        else:
+            mask = self.extenter(
+                y=exp.y, mask_idx=exp.mask_idx, seed=self.seed)
 
         effect_idx = exp.mask_idx[mask]
         y = exp.y[:, :, effect_idx]
         offset, sigma_scale = compute_offset(
             x=exp.x, y=y, contrast=exp.contrast,
-            effect_llr=effect_llr)
+            effect_llr=self.effect_llr)
 
-        synth = cls(
-            mask=mask, offset=offset, sigma_scale=sigma_scale,
-            seed=seed, effect_llr=effect_llr,
-            extenter_kind=type(extenter).__name__ if extenter else None,
-            extenter_args=(dict(extenter.__dict__) if extenter is not None
-                           else None),
-        )
-        return synth.apply(exp), synth
+        self.mask_ = mask
+        self.offset_ = offset
+        self.sigma_scale_ = sigma_scale
+        return self.apply(exp)
+
+    def apply(self, exp):
+        return exp.add_offset(self.offset_, mask=self.mask_,
+                              sigma_scale=self.sigma_scale_)

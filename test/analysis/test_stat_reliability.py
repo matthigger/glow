@@ -219,11 +219,9 @@ class TestPowerMonotonicity:
                 exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                             num_img=50, seed=seed)
                 if llr > 0:
-                    exp, _ = EffectSynthetic.impose(
-                        exp,
-                        seed=seed,
+                    exp = EffectSynthetic(
                         extenter=ExtenterSphere(radius=2),
-                        effect_llr=llr)
+                        effect_llr=llr, seed=seed).fit(exp)
                 ana = AnalysisVBA(exp, n_perm_fwer=n_perm,
                                   alpha_fwer=alpha).fit()
                 if len(ana.effect_list) > 0:

@@ -21,15 +21,15 @@ class TestBigEffect:
     """ given strong effect, discover it"""
     # build experiment with strong effect to be found
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=100, seed=0)
-    exp, effect = EffectSynthetic.impose(exp, seed=0,
-                                    extenter=ExtenterSphere(radius=2),
-                                    effect_llr=0.5)
+    effect = EffectSynthetic(extenter=ExtenterSphere(radius=2),
+                             effect_llr=0.5, seed=0)
+    exp = effect.fit(exp)
 
     def test_glow(self):
         analysis = AnalysisGLOW(TestBigEffect.exp, n_perm_fwer=25, alpha_fwer=.1).fit()
 
         # check that target region segmented properly
-        dice = get_dice_sens_spec(mask=TestBigEffect.effect.mask,
+        dice = get_dice_sens_spec(mask=TestBigEffect.effect.mask_,
                               mask_idx=analysis.exp.mask_idx,
                               children=analysis.children)[0]
         assert np.isclose(dice.max(), 1), 'target region not segmented'
@@ -46,7 +46,7 @@ class TestBigEffect:
                                    alpha_fwer=.1, **kwargs).fit()
         mask_all = sum(eff.mask for eff in analysis.effect_list)
         np.testing.assert_allclose(mask_all,
-                                   TestBigEffect.effect.mask)
+                                   TestBigEffect.effect.mask_)
     
     def test_vba_wilks(self):
         """VBA with Wilks' Lambda (1 - Wilks) should detect effects.
@@ -183,9 +183,8 @@ class TestAnalysisEdgeCases:
     def test_all_regions_too_small(self):
         """test when all regions are filtered out by min_vox"""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
-        exp, _ = EffectSynthetic.impose(exp, seed=0,
-                                   extenter=ExtenterSphere(radius=1),
-                                   effect_llr=0.5)
+        exp = EffectSynthetic(extenter=ExtenterSphere(radius=1),
+                              effect_llr=0.5, seed=0).fit(exp)
 
         # set min_vox so large that all regions are filtered
         analysis = AnalysisGLOW(
@@ -223,9 +222,8 @@ class TestAnalysisEdgeCases:
     def test_different_alpha_values(self):
         """test with different alpha thresholds"""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
-        exp, _ = EffectSynthetic.impose(exp, seed=0,
-                                   extenter=ExtenterSphere(radius=1),
-                                   effect_llr=0.5)
+        exp = EffectSynthetic(extenter=ExtenterSphere(radius=1),
+                              effect_llr=0.5, seed=0).fit(exp)
         
         # strict alpha
         analysis_strict = AnalysisGLOW(
@@ -272,9 +270,8 @@ class TestZeroStdGuard:
     def test_constant_stat_region(self):
         """regions with constant stat across adjustment perms should not produce inf/nan"""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
-        exp, _ = EffectSynthetic.impose(exp, seed=0,
-                                   extenter=ExtenterSphere(radius=1),
-                                   effect_llr=0.5)
+        exp = EffectSynthetic(extenter=ExtenterSphere(radius=1),
+                              effect_llr=0.5, seed=0).fit(exp)
 
         analysis = AnalysisGLOW(exp, n_perm_fwer=5, alpha_fwer=0.05,
                                 min_vox=1).fit()
@@ -292,9 +289,8 @@ class TestMinVox:
         """No significant region in effect_list should have size < min_vox."""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                      num_img=50, seed=0)
-        exp, _ = EffectSynthetic.impose(exp, seed=0,
-                                    extenter=ExtenterSphere(radius=2),
-                                    effect_llr=0.5)
+        exp = EffectSynthetic(extenter=ExtenterSphere(radius=2),
+                              effect_llr=0.5, seed=0).fit(exp)
 
         min_vox = 4
         ana = AnalysisGLOW(
@@ -321,9 +317,8 @@ class TestMinVox:
         """
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                      num_img=50, seed=0)
-        exp, _ = EffectSynthetic.impose(exp, seed=0,
-                                    extenter=ExtenterSphere(radius=2),
-                                    effect_llr=0.5)
+        exp = EffectSynthetic(extenter=ExtenterSphere(radius=2),
+                              effect_llr=0.5, seed=0).fit(exp)
 
         ana_low = AnalysisGLOW(
             exp, n_perm_fwer=10, n_perm_inner=20,
@@ -349,9 +344,8 @@ class TestPerRegionZConsistency:
     def test_z_matches_stat_minus_mu_over_std(self):
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                     num_img=50, seed=0)
-        exp, _ = EffectSynthetic.impose(exp, seed=0,
-                                   extenter=ExtenterSphere(radius=2),
-                                   effect_llr=0.5)
+        exp = EffectSynthetic(extenter=ExtenterSphere(radius=2),
+                              effect_llr=0.5, seed=0).fit(exp)
         ana = AnalysisGLOW(exp, n_perm_fwer=5, n_perm_inner=20,
                            alpha_fwer=.5, min_vox=1).fit()
 
@@ -424,9 +418,9 @@ class TestStreamingFidelity:
     """Verify that two identical runs produce the same results."""
 
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=50, seed=0)
-    exp, effect = EffectSynthetic.impose(exp, seed=0,
-                                    extenter=ExtenterSphere(radius=2),
-                                    effect_llr=0.5)
+    effect = EffectSynthetic(extenter=ExtenterSphere(radius=2),
+                             effect_llr=0.5, seed=0)
+    exp = effect.fit(exp)
 
     def test_reproducible(self):
         """Two runs with the same data must produce identical p-values."""
@@ -450,9 +444,9 @@ class TestFromPrecomputed:
     """Test factory classmethods for constructing analysis from pre-computed data."""
 
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=100, seed=0)
-    exp_eff, effect = EffectSynthetic.impose(exp, seed=0,
-                                         extenter=ExtenterSphere(radius=2),
-                                         effect_llr=0.5)
+    effect = EffectSynthetic(extenter=ExtenterSphere(radius=2),
+                             effect_llr=0.5, seed=0)
+    exp_eff = effect.fit(exp)
 
     def test_discover_mask_on_base(self):
         """Verify Analysis.discover_mask works (it was moved from AnalysisVBA)."""

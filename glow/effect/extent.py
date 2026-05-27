@@ -6,6 +6,8 @@ from scipy.ndimage import label
 from scipy.ndimage import binary_dilation, generate_binary_structure
 from tqdm import tqdm
 
+from ..util import HashBySlots
+
 # Connectivity: 6-connectivity (face neighbors only) for 3D, matching Ward clustering
 # This ensures effects grow and clustering merges using the same neighbor definition
 CONNECTIVITY_3D = generate_binary_structure(3, 1)  # 6-connectivity (faces only)
@@ -60,17 +62,19 @@ def resample_to_contiguous(fnc):
     return wrapped
 
 
-class ExtenterSphere:
+class ExtenterSphere(HashBySlots):
     """build effect extent as a randomly placed sphere."""
+
+    __slots__ = ('radius', 'n_vox', 'connected')
 
     def __init__(self, radius=None, n_vox=None, connected=False):
         if radius is None and n_vox is None:
             raise ValueError('radius or n_vox required')
         if radius is not None and n_vox is not None:
             raise ValueError('specify radius or n_vox, not both')
-        self.radius = radius
-        self.n_vox = n_vox
-        self.connected = connected
+        self.radius = None if radius is None else int(radius)
+        self.n_vox = None if n_vox is None else int(n_vox)
+        self.connected = bool(connected)
 
     @resample_to_contiguous
     def __call__(self, mask_idx, y=None, seed=None, vox_init=None):
@@ -167,8 +171,10 @@ def iter_vox_neighbor(mask, mask_idx):
             yield vox_idx
 
 
-class ExtenterMinVar:
+class ExtenterMinVar(HashBySlots):
     """grow effect extent from a seed voxel to greedily minimise variance."""
+
+    __slots__ = ('n_vox',)
 
     def __init__(self, n_vox):
         self.n_vox = int(n_vox)
