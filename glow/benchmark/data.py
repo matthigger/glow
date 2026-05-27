@@ -113,7 +113,9 @@ class DataSourceDataFrame(DataSource):
 
     def __init__(self, *, df, **kwargs):
         super().__init__(**kwargs)
-        self.df = df
+        # sort by index so identity is order-invariant and downstream
+        # subject iteration is deterministic
+        self.df = df.sort_index()
 
     def _get(self):
         exp_img = glow.experiment.ExperimentImageOnly.from_paths(self.df)

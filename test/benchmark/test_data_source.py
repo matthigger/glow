@@ -376,9 +376,25 @@ class TestDataSourceDataFrame:
             DataSourceDataFrame()           # missing required df=
 
     def test_df_stored(self):
-        df = self._df()
+        df = self._df()                      # already sorted
         ds = DataSourceDataFrame(df=df)
-        assert ds.df is df
+        pd.testing.assert_frame_equal(ds.df, df)
+
+    def test_df_stored_sorted_by_index(self):
+        # construct a df with shuffled index
+        unsorted = pd.DataFrame(
+            {'fa': ['/tmp/c.nii', '/tmp/a.nii', '/tmp/b.nii']},
+            index=['sbj2', 'sbj0', 'sbj1'])
+        ds = DataSourceDataFrame(df=unsorted)
+        assert list(ds.df.index) == ['sbj0', 'sbj1', 'sbj2']
+
+    def test_input_order_does_not_affect_identity(self):
+        # same content in two different row orders → equal sources
+        a = pd.DataFrame({'fa': ['x', 'y']}, index=['s1', 's0'])
+        b = pd.DataFrame({'fa': ['y', 'x']}, index=['s0', 's1'])
+        assert DataSourceDataFrame(df=a) == DataSourceDataFrame(df=b)
+        assert hash(DataSourceDataFrame(df=a)) \
+            == hash(DataSourceDataFrame(df=b))
 
     def test_df_in_identity(self):
         a = DataSourceDataFrame(df=self._df())
@@ -405,7 +421,7 @@ class TestDataSourceDataFrame:
         df = self._df()
         ds = DataSourceDataFrame(df=df)
         _ = ds.exp
-        assert called['paths'] is df
+        pd.testing.assert_frame_equal(called['paths'], df)
 
 
 # ---------------------------------------------------------------------------
