@@ -99,6 +99,7 @@ def run_ana(*, ds, extenter, effect_llr: float, seed: int,
         row = {
             'label': label,
             'analysis_cls': Ana.__name__,
+            'num_img': int(exp.y.shape[1]),
             'vox_total': int(exp.y.shape[2]),
             'vox_effect': int(mask_target.sum()),
         }
@@ -218,6 +219,7 @@ def run_mancova(*, ds, extenter, effect_llr: float, seed: int,
             'analysis_cls': Ana.__name__,
             'stat': stat_dict_inv[fn],
             'z_flag': kw['z_flag'],
+            'num_img': int(exp.y.shape[1]),
             'vox_total': int(exp.y.shape[2]),
             'vox_effect': int(mask_target.sum()),
         }

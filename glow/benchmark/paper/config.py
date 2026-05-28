@@ -101,15 +101,26 @@ CACHE_BY_LABEL = {}
 
 def _make_cache(label: str, *, ds, extenter, effect_llr_all,
                 n_seed: int) -> TrialCache:
-    """Build a TrialCache over the seed x effect_llr grid for one (ds, extenter)."""
-    return TrialCache(
-        name=label,
-        iter_kwargs={
-            'seed': list(range(n_seed)),
-            'effect_llr': [float(x) for x in effect_llr_all],
-        },
-        kwargs={'ds': ds, 'extenter': extenter},
-    )
+    """Build a TrialCache over the seed x effect_llr grid for one (ds, extenter).
+
+    Either ds or extenter may be passed as a list to sweep that structural
+    parameter inside this single cache (its values go to iter_kwargs)
+    rather than emitting one cache per value; the non-list one is held
+    constant in kwargs. A swept object stays a real trial kwarg, so its
+    trial_hash is identical to the per-value-folder layout — the two are
+    interchangeable on disk.
+    """
+    iter_kwargs = {
+        'seed': list(range(n_seed)),
+        'effect_llr': [float(x) for x in effect_llr_all],
+    }
+    kwargs = {}
+    for key, val in (('ds', ds), ('extenter', extenter)):
+        if isinstance(val, (list, tuple)):
+            iter_kwargs[key] = list(val)
+        else:
+            kwargs[key] = val
+    return TrialCache(name=label, iter_kwargs=iter_kwargs, kwargs=kwargs)
 
 
 def _add_ana(label: str, *, ds, extenter=None, effect_llr_all=None,
@@ -177,24 +188,24 @@ _add_ana('vba_hcp_famd', ds=_ds_hcp(hcp_feats=('fa', 'md')))
 _add_ana('vba_wgn_b1',   ds=_ds_wgn(b=1))
 _add_ana('vba_wgn_b2',   ds=_ds_wgn(b=2))
 
-# C. effect-extent sweep — one cache per n_vox, both data sources
+# C. effect-extent sweep — one cache per data source; the n_vox grid is
+#    swept inside each cache (each row records its realized support as
+#    vox_effect), so HCP and WGN are two folders instead of 2 * len(grid).
 _EFFECT_N_VOX_GRID = [int(round(p * CROP_N_VOX))
                       for p in np.geomspace(0.01, 1.0, 15)]
-for _n_vox in _EFFECT_N_VOX_GRID:
-    _add_ana(f'sweep_extent_hcp_n{_n_vox}',
-             ds=_ds_hcp(),
-             extenter=ExtenterMinVar(n_vox=_n_vox),
-             effect_llr_all=[MODERATE_EFFECT_LLR])
-    _add_ana(f'sweep_extent_wgn_n{_n_vox}',
-             ds=_ds_wgn(),
-             extenter=ExtenterMinVar(n_vox=_n_vox),
-             effect_llr_all=[MODERATE_EFFECT_LLR])
+_EXTENT_EXTENTERS = [ExtenterMinVar(n_vox=_n_vox)
+                     for _n_vox in _EFFECT_N_VOX_GRID]
+_add_ana('sweep_extent_hcp', ds=_ds_hcp(), extenter=_EXTENT_EXTENTERS,
+         effect_llr_all=[MODERATE_EFFECT_LLR])
+_add_ana('sweep_extent_wgn', ds=_ds_wgn(), extenter=_EXTENT_EXTENTERS,
+         effect_llr_all=[MODERATE_EFFECT_LLR])
 
-# D. num_img sweep (WGN only)
-for _n in (10, 18, 30, 55, 100, 180, 300):
-    _add_ana(f'sweep_nimg_wgn_n{_n}',
-             ds=_ds_wgn(num_img=_n),
-             effect_llr_all=[MODERATE_EFFECT_LLR])
+# D. num_img sweep (WGN only) — one cache; num_img is swept inside it (each
+#    row records its num_img), so it's one folder instead of len(grid).
+_NIMG_GRID = (10, 18, 30, 55, 100, 180, 300)
+_add_ana('sweep_nimg_wgn',
+         ds=[_ds_wgn(num_img=_n) for _n in _NIMG_GRID],
+         effect_llr_all=[MODERATE_EFFECT_LLR])
 
 # E. 2D images (WGN, no 3D crop)
 _add_ana('vba_wgn_2d',
