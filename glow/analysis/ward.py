@@ -150,6 +150,7 @@ def _scan_nn(centroid, size, alive, a, c,
     """
     best_d = np.inf
     best = np.int64(-1)
+    prev = np.int64(-1)
     nid = adj_head[c]
     while nid >= 0:
         x = adj_cluster[nid]
@@ -161,11 +162,44 @@ def _scan_nn(centroid, size, alive, a, c,
             if d < best_d or (d == best_d and (best < 0 or x < best)):
                 best_d = d
                 best = x
+            prev = nid
+        else:
+            # Unlink dead node so future scans don't re-walk it.  The pool
+            # node is abandoned (append-only pool, no free list).
+            if prev < 0:
+                adj_head[c] = nxt
+            else:
+                adj_next[prev] = nxt
         nid = nxt
     return best, best_d
 
 
 # ---------------------------------------------------------------- main loop --
+
+
+@njit(cache=True, inline='always', boundscheck=False)
+def _merge_adj_into(adj_head, adj_cluster, adj_next, pool_top,
+                    parent, not_visited, src_head, k):
+    """Splice src's adjacency list into cluster k's, dedup via not_visited.
+
+    For each node in src's list, resolve its current root via union-find
+    and, if not already attached to k, add the symmetric edge (root<->k).
+    Returns False on pool overflow, True otherwise.
+    """
+    nid = src_head
+    while nid >= 0:
+        yy = adj_cluster[nid]
+        nid = adj_next[nid]
+        root = _find_root(parent, yy)
+        if not_visited[root]:
+            not_visited[root] = False
+            if not _adj_prepend(adj_head, adj_cluster, adj_next,
+                                pool_top, root, k):
+                return False
+            if not _adj_prepend(adj_head, adj_cluster, adj_next,
+                                pool_top, k, root):
+                return False
+    return True
 
 
 @njit(cache=True, boundscheck=False)
@@ -247,32 +281,12 @@ def _mullner_loop(
         # Build k's adjacency from i's and j's via union-find with
         # path compression.  Dedup via not_visited[].
         not_visited[k] = False
-        nid = adj_head[i]
-        while nid >= 0:
-            yy = adj_cluster[nid]
-            nid = adj_next[nid]
-            root = _find_root(parent, yy)
-            if not_visited[root]:
-                not_visited[root] = False
-                if not _adj_prepend(adj_head, adj_cluster, adj_next,
-                                     pool_top, root, k):
-                    return -2
-                if not _adj_prepend(adj_head, adj_cluster, adj_next,
-                                     pool_top, k, root):
-                    return -2
-        nid = adj_head[j]
-        while nid >= 0:
-            yy = adj_cluster[nid]
-            nid = adj_next[nid]
-            root = _find_root(parent, yy)
-            if not_visited[root]:
-                not_visited[root] = False
-                if not _adj_prepend(adj_head, adj_cluster, adj_next,
-                                     pool_top, root, k):
-                    return -2
-                if not _adj_prepend(adj_head, adj_cluster, adj_next,
-                                     pool_top, k, root):
-                    return -2
+        if not _merge_adj_into(adj_head, adj_cluster, adj_next, pool_top,
+                               parent, not_visited, adj_head[i], k):
+            return -2
+        if not _merge_adj_into(adj_head, adj_cluster, adj_next, pool_top,
+                               parent, not_visited, adj_head[j], k):
+            return -2
 
         # One pass over k's adjacency:
         # - reset not_visited
