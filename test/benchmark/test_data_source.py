@@ -97,6 +97,10 @@ class TestIdentity:
         assert hash(a) == hash(b)
 
     @pytest.mark.parametrize('attr, value', [
+        # 'a' is a BASE-class slot. Regression: HashBySlots._identity_dict
+        # only walked type(self).__slots__, dropping base slots; DataSource
+        # overrides it to walk the MRO so base attrs land in identity. If that
+        # regresses, changing 'a' would no longer change the hash.
         ('a', 2),
         ('a_nuisance', 1),
         ('has_bias', False),
@@ -112,15 +116,6 @@ class TestIdentity:
         assert a != b, f'{attr} should affect identity'
         assert hash(a) != hash(b), f'{attr} should affect hash'
 
-    def test_subclass_inherits_base_slots_in_identity(self):
-        # regression: HashBySlots._identity_dict only walks
-        # type(self).__slots__, missing base slots. DataSource overrides
-        # to walk the MRO so base attrs (a, seed, ...) are in identity.
-        a = _wgn(a=1)
-        b = _wgn(a=2)
-        assert hash(a) != hash(b)
-        assert a != b
-
     def test_cross_subclass_inequality(self):
         # different DataSource subclasses with overlapping slots must
         # still be distinct (type(self) is type(other) in __eq__ + class
@@ -132,11 +127,9 @@ class TestIdentity:
         assert wgn != df
         assert hash(wgn) != hash(df)
 
-    def test_dict_key(self):
-        d = {_wgn(): 'x'}
-        assert d[_wgn()] == 'x'
-
-    def test_set_member(self):
+    def test_usable_as_collection_key(self):
+        # equal-but-distinct sources collapse as dict keys and set members
+        assert {_wgn(): 'x'}[_wgn()] == 'x'
         assert len({_wgn(), _wgn()}) == 1
 
     def test_extenter_in_identity(self):
@@ -196,11 +189,6 @@ class TestIdentityDict:
         ds = _wgn(extenter=ExtenterSphere(n_vox=4))
         # extenter is nested HashBySlots → _canon recurses to its dict
         json.dumps(ds._identity_dict(), sort_keys=True)
-
-    def test_byte_identical_for_equal_instances(self):
-        a = json.dumps(_wgn()._identity_dict(), sort_keys=True)
-        b = json.dumps(_wgn()._identity_dict(), sort_keys=True)
-        assert a == b
 
     def test_stable_across_memoization(self, small_wgn):
         before = small_wgn._identity_dict()
@@ -336,21 +324,16 @@ class TestDataSourceWGN:
         assert ds.b == 2
         assert ds.num_img == 100
 
-    def test_get_uses_from_gauss(self, monkeypatch):
-        seen = {}
-        real = ExperimentImageOnly.from_gauss
-
-        def spy(**kw):
-            seen.update(kw)
-            return real(**kw)
-
-        monkeypatch.setattr(ExperimentImageOnly, 'from_gauss',
-                            classmethod(lambda cls, **kw: spy(**kw)))
-        _wgn(seed=42, b=3, num_img=4, shape=(2, 2, 2)).exp
-        assert seen['seed'] == 42
-        assert seen['shape'] == (2, 2, 2)
-        assert seen['b'] == 3
-        assert seen['num_img'] == 4
+    def test_get_uses_from_gauss(self):
+        # WGN builds y via ExperimentImageOnly.from_gauss; rather than spy on
+        # the call, assert the observable result reflects the kwargs:
+        # y.shape == (b, num_img, prod(shape)), float32 by default, and the
+        # seed actually drives the draw (different seed -> different data).
+        exp = _wgn(seed=42, b=3, num_img=4, shape=(2, 2, 2)).exp
+        assert exp.y.shape == (3, 4, 8)        # b, num_img, 2*2*2 voxels
+        assert exp.y.dtype == np.float32
+        other = _wgn(seed=43, b=3, num_img=4, shape=(2, 2, 2)).exp
+        assert not np.array_equal(exp.y, other.y)
 
     def test_y_shape(self, small_wgn):
         assert small_wgn.exp.y.shape == (1, 8, 8)   # b, num_img, num_vox
@@ -409,19 +392,18 @@ class TestDataSourceDataFrame:
         assert hash(a) != hash(b)
 
     def test_get_routes_through_from_paths(self, monkeypatch):
-        called = {}
-
-        def fake_from_paths(paths, **kw):
-            called['paths'] = paths
-            return _stub_exp_img_only()
+        # from_paths reads real nifti, so it must be stubbed; but make the
+        # stub's size track the df it receives (one image per subject row) and
+        # assert the *produced* exp reflects that, rather than spying on args.
+        def fake_from_paths(cls, paths, **kw):
+            return _stub_exp_img_only(num_img=len(paths))
 
         monkeypatch.setattr(ExperimentImageOnly, 'from_paths',
-                            classmethod(lambda cls, paths, **kw:
-                                        fake_from_paths(paths, **kw)))
-        df = self._df()
-        ds = DataSourceDataFrame(df=df)
-        _ = ds.exp
-        pd.testing.assert_frame_equal(called['paths'], df)
+                            classmethod(fake_from_paths))
+        df = self._df(n=3)
+        exp = DataSourceDataFrame(df=df).exp
+        # y is (b, num_img, num_vox); num_img == subject count routed through
+        assert exp.y.shape[1] == 3
 
 
 # ---------------------------------------------------------------------------

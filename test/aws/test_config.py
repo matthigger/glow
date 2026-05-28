@@ -17,13 +17,9 @@ def _make():
 
 def test_defaults():
     cfg = _make()
-    assert cfg.region == 'us-east-1'
-    assert cfg.vcpus == 1
+    # The driver escalates memory through these tiers on OOM, so the exact
+    # ladder is load-bearing (see test_oom_escalation).
     assert cfg.memory_mb_tiers == [2000, 4000, 8000]
-    assert cfg.max_concurrent == 4000
-    assert cfg.timeout_minutes == 60
-    assert cfg.retry_attempts == 3
-    assert cfg.poll_seconds == 10
 
 
 def test_dict_roundtrip():

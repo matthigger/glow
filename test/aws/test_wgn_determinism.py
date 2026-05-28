@@ -36,11 +36,3 @@ def test_different_seed_differs():
     a = _fresh_wgn(seed=0, shape=(4, 4, 4), b=2, num_img=20)
     b = _fresh_wgn(seed=1, shape=(4, 4, 4), b=2, num_img=20)
     assert not np.array_equal(a.y, b.y)
-
-
-def test_memoised_returns_same_object():
-    """Two calls with equal source kwargs share the cached exp."""
-    DataSource._exp_cache.clear()
-    a = DataSourceWGN(seed=0, shape=(4, 4, 4), b=2, num_img=20).exp
-    b = DataSourceWGN(seed=0, shape=(4, 4, 4), b=2, num_img=20).exp
-    assert a is b

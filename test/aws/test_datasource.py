@@ -9,7 +9,6 @@ import uuid
 from unittest.mock import patch
 
 import boto3
-import cloudpickle
 import numpy as np
 import pytest
 from botocore.exceptions import ClientError
@@ -104,36 +103,32 @@ def test_exp_cached_per_uri():
     DataSourceS3._exp_cache.clear()
     with patch('glow.aws.datasource.boto3.client', return_value=fake):
         a = wrap.exp
-        get_calls_after_first = sum(
-            1 for c in fake.calls if c[0] == 'get')
         b = wrap.exp
-        get_calls_after_second = sum(
-            1 for c in fake.calls if c[0] == 'get')
 
     assert a is b
-    assert get_calls_after_first == 1
-    assert get_calls_after_second == 1
+    assert sum(1 for c in fake.calls if c[0] == 'get') == 1
 
 
-def test_content_addressed_key_matches_inner_value_id():
-    """Same inner ds → same S3 key, even across separate fakes."""
+@pytest.mark.parametrize('seed_a, seed_b, same_key', [
+    # content-addressed key is derived from the inner value's identity, so
+    # equal inner sources map to the same S3 key (even across separate fakes).
+    (0, 0, True),
+    (0, 1, False),
+])
+def test_different_inner_ds_different_key(seed_a, seed_b, same_key):
     fake1, fake2 = FakeS3(), FakeS3()
-    a = DataSourceS3.from_source(_wgn(), bucket='b', prefix='pre', s3=fake1)
-    b = DataSourceS3.from_source(_wgn(), bucket='b', prefix='pre', s3=fake2)
-    assert a.s3_uri == b.s3_uri
-
-
-def test_different_inner_ds_different_key():
-    fake = FakeS3()
     DataSource._exp_cache.clear()
     a = DataSourceS3.from_source(
-        DataSourceWGN(seed=0, shape=(3, 3, 3), b=1, num_img=10),
-        bucket='b', prefix='pre', s3=fake)
+        DataSourceWGN(seed=seed_a, shape=(3, 3, 3), b=1, num_img=10),
+        bucket='b', prefix='pre', s3=fake1)
     DataSource._exp_cache.clear()
     b = DataSourceS3.from_source(
-        DataSourceWGN(seed=1, shape=(3, 3, 3), b=1, num_img=10),
-        bucket='b', prefix='pre', s3=fake)
-    assert a.s3_uri != b.s3_uri
+        DataSourceWGN(seed=seed_b, shape=(3, 3, 3), b=1, num_img=10),
+        bucket='b', prefix='pre', s3=fake2)
+    if same_key:
+        assert a.s3_uri == b.s3_uri
+    else:
+        assert a.s3_uri != b.s3_uri
 
 
 # ---------- real-AWS test ---------------------------------------------------

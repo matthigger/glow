@@ -29,41 +29,43 @@ def _seed(fake, *, bucket, manifest_key, trial_hash, run_fnc, trial):
     return job_key
 
 
-def test_worker_dict_result_roundtrip():
+def _check_dict(result):
+    assert result == {'sum': 7}
+
+
+def _check_df(result):
+    assert isinstance(result, pd.DataFrame)
+    assert result['sq'].tolist() == [9, 10]
+
+
+@pytest.mark.parametrize('trial_hash, run_fnc, trial, check', [
+    # worker cloudpickles whatever run_fnc returns — no type branching
+    ('deadbeef', _run_fnc, {'x': 2, 'y': 5}, _check_dict),
+    ('cafebabe', _run_fnc_df, {'x': 3}, _check_df),
+])
+def test_worker_result_roundtrip(trial_hash, run_fnc, trial, check):
     fake = FakeS3()
     bucket = 'b'
-    manifest_key = 'pre/jobs/run-abc/manifest.pkl'
+    manifest_key = f'pre/jobs/run-{trial_hash}/manifest.pkl'
     job_key = _seed(fake, bucket=bucket, manifest_key=manifest_key,
-                    trial_hash='deadbeef', run_fnc=_run_fnc,
-                    trial={'x': 2, 'y': 5})
+                    trial_hash=trial_hash, run_fnc=run_fnc, trial=trial)
 
     with patch('glow.aws.worker.boto3.client', return_value=fake), \
          patch.dict(os.environ, {'AWS_BATCH_JOB_ARRAY_INDEX': '0'}):
         worker.main(f's3://{bucket}/{manifest_key}')
 
     result_key = job_key.rsplit('/', 1)[0] + '/result.pkl'
-    assert cloudpickle.loads(fake.store[(bucket, result_key)]) == {'sum': 7}
+    check(cloudpickle.loads(fake.store[(bucket, result_key)]))
 
 
-def test_worker_df_result_roundtrip():
-    fake = FakeS3()
-    bucket = 'b'
-    manifest_key = 'pre/jobs/run-xyz/manifest.pkl'
-    job_key = _seed(fake, bucket=bucket, manifest_key=manifest_key,
-                    trial_hash='cafebabe', run_fnc=_run_fnc_df,
-                    trial={'x': 3})
-
-    with patch('glow.aws.worker.boto3.client', return_value=fake), \
-         patch.dict(os.environ, {'AWS_BATCH_JOB_ARRAY_INDEX': '0'}):
-        worker.main(f's3://{bucket}/{manifest_key}')
-
-    result_key = job_key.rsplit('/', 1)[0] + '/result.pkl'
-    df = cloudpickle.loads(fake.store[(bucket, result_key)])
-    assert isinstance(df, pd.DataFrame)
-    assert df['sq'].tolist() == [9, 10]
-
-
-def test_worker_picks_correct_array_index():
+@pytest.mark.parametrize('env_index, expected_hash, expected_sum', [
+    # AWS_BATCH_JOB_ARRAY_INDEX selects the manifest entry to run
+    ('1', 'hash_b', 21),
+    # env missing -> worker defaults to index 0 (the single-job case)
+    (None, 'hash_a', 11),
+])
+def test_worker_picks_correct_array_index(env_index, expected_hash,
+                                          expected_sum):
     fake = FakeS3()
     bucket = 'b'
     manifest_key = 'pre/jobs/run-multi/manifest.pkl'
@@ -76,26 +78,16 @@ def test_worker_picks_correct_array_index():
             (_run_fnc, {'x': val, 'y': 1}))
 
     with patch('glow.aws.worker.boto3.client', return_value=fake), \
-         patch.dict(os.environ, {'AWS_BATCH_JOB_ARRAY_INDEX': '1'}):
-        worker.main(f's3://{bucket}/{manifest_key}')
-
-    result_key = 'pre/jobs/hash_b/result.pkl'
-    assert cloudpickle.loads(fake.store[(bucket, result_key)]) == {'sum': 21}
-
-
-def test_worker_default_index_zero_when_env_missing():
-    fake = FakeS3()
-    bucket = 'b'
-    manifest_key = 'pre/jobs/run-single/manifest.pkl'
-    _seed(fake, bucket=bucket, manifest_key=manifest_key,
-          trial_hash='lone', run_fnc=_run_fnc, trial={'x': 1, 'y': 1})
-
-    with patch('glow.aws.worker.boto3.client', return_value=fake), \
          patch.dict(os.environ, {}, clear=False):
-        os.environ.pop('AWS_BATCH_JOB_ARRAY_INDEX', None)
+        if env_index is None:
+            os.environ.pop('AWS_BATCH_JOB_ARRAY_INDEX', None)
+        else:
+            os.environ['AWS_BATCH_JOB_ARRAY_INDEX'] = env_index
         worker.main(f's3://{bucket}/{manifest_key}')
 
-    assert (bucket, 'pre/jobs/lone/result.pkl') in fake.store
+    result_key = f'pre/jobs/{expected_hash}/result.pkl'
+    assert cloudpickle.loads(fake.store[(bucket, result_key)]) \
+        == {'sum': expected_sum}
 
 
 def test_worker_propagates_run_fnc_exception():

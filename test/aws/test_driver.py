@@ -5,19 +5,14 @@ exercised without provisioning AWS.  A separate @pytest.mark.runaws
 test exercises the same flow against real AWS.
 """
 
-import os
-import uuid
 from unittest.mock import patch
 
-import boto3
 import cloudpickle
-import pandas as pd
 import pytest
 
 from glow.aws.config import AWSConfig
 from glow.aws.driver import (
     _is_oom, driver_aws)
-from glow.aws.datasource import _parse_s3_uri
 from glow.benchmark.data import DataSource, DataSourceWGN
 from glow.benchmark.trial_cache import TrialCache
 from glow.util import stable_hash
@@ -33,6 +28,20 @@ class FakeBatch:
     ``submit_then`` is a list of ``[(per_child_status_dict_or_callable), ...]``
     indexed by submission order.  Each entry decides what each child
     looks like when described.
+
+    Worked example — one OOM-then-success scenario across two memory tiers::
+
+        FakeBatch(submit_then=[
+            # submission 0 (tier 0, e.g. 2000 MB): child 0 OOMs, child 1 ok
+            [{'status': 'FAILED',
+              'container': {'exitCode': 137, 'reason': 'OutOfMemoryError'}},
+             {'status': 'SUCCEEDED'}],
+            # submission 1 (tier 1, e.g. 4000 MB): only the OOM child retried
+            [{'status': 'SUCCEEDED'}],
+        ])
+
+    The driver makes one ``submit_job`` per tier attempt, so ``submit_then[i]``
+    is the scripted outcome of the i-th tier the driver escalates through.
     """
 
     def __init__(self, submit_then):
@@ -101,37 +110,22 @@ def _seed_results(fake_s3, *, bucket, prefix, manifest, results):
         fake_s3.store[(bucket, key)] = cloudpickle.dumps(payload)
 
 
-def _manifest_from_batch(fake_s3, parent_id_to_manifest_key):
-    """Extract the trial_hash list a manifest was built from."""
-    out = {}
-    for parent_id, key in parent_id_to_manifest_key.items():
-        out[parent_id] = cloudpickle.loads(fake_s3.store[('b', key)])
-    return out
-
-
 # ---------- _is_oom ---------------------------------------------------------
 
 
-def test_is_oom_exit_137_without_timeout_text():
-    assert _is_oom({'container': {'exitCode': 137}})
-
-
-def test_is_oom_falsey_on_timeout_137():
-    job = {
-        'statusReason': 'Job attempt duration exceeded timeout',
-        'container': {'exitCode': 137},
-    }
-    assert not _is_oom(job)
-
-
-def test_is_oom_matches_text():
-    assert _is_oom({'container': {'reason': 'OutOfMemoryError'}})
-    assert _is_oom({'statusReason': 'OutOfMemory: killed by oom-killer'})
-
-
-def test_is_oom_falsey_on_clean_failure():
-    assert not _is_oom({'container': {'exitCode': 1,
-                                      'reason': 'application error'}})
+@pytest.mark.parametrize('job, expected', [
+    # exit 137 with no timeout phrasing -> OOM
+    ({'container': {'exitCode': 137}}, True),
+    # exit 137 but reason names a timeout -> NOT OOM (don't escalate timeouts)
+    ({'statusReason': 'Job attempt duration exceeded timeout',
+      'container': {'exitCode': 137}}, False),
+    # text match on the reason -> OOM
+    ({'container': {'reason': 'OutOfMemoryError'}}, True),
+    # clean non-OOM failure (exit 1) -> NOT OOM
+    ({'container': {'exitCode': 1, 'reason': 'application error'}}, False),
+])
+def test_is_oom(job, expected):
+    assert _is_oom(job) is expected
 
 
 # ---------- driver_aws happy path ------------------------------------------
@@ -158,7 +152,9 @@ def test_happy_path_single_tier(tmp_path):
                fake_s3 if kind == 's3' else fake_batch):
         driver_aws(cache, _run_fnc, _cfg(), verbose=False)
 
-    # results.csv populated with all 3 trial hashes
+    # results.csv populated with all 3 trial hashes.  The saved index must
+    # equal the LOCAL stable_hash values: local and AWS runs share results.csv
+    # keying, so a trial run on AWS is later seen as cached locally.
     assert len(cache._load_results()) == 3
     assert set(cache._load_results().index.astype(str)) == set(hashes)
 
@@ -264,9 +260,9 @@ def test_no_uncached_trials_short_circuits(tmp_path):
 
     with patch('glow.aws.driver.boto3.client') as client:
         driver_aws(cache, _run_fnc, _cfg(), verbose=False)
-    # We touch boto3.client for s3 and batch even with no work; ok
-    # but no submit_job should happen.  Easier: just check the cache wasn't
-    # corrupted.
+    # The real short-circuit guarantee: with nothing uncached, the driver
+    # returns before touching AWS at all (no s3/batch client, no submit_job).
+    client.assert_not_called()
     assert len(cache._load_results()) == 2
 
 
@@ -289,31 +285,6 @@ def test_single_trial_uses_non_array_submit(tmp_path):
     # For n=1, arrayProperties must NOT be passed to submit_job
     assert 'arrayProperties' not in fake_batch.submitted[0]
     assert len(cache._load_results()) == 1
-
-
-def test_save_result_uses_original_trial_hash(tmp_path):
-    """Local + AWS share results.csv keying — confirms via trial_hash."""
-    cache = _make_cache(tmp_path, n_trials=2)
-    trials = list(cache.iter_trial_no_repeat())
-    local_hashes = {stable_hash(t) for t in trials}
-
-    fake_s3 = FakeS3()
-    _seed_results(
-        fake_s3, bucket='b', prefix='pre',
-        manifest=sorted(local_hashes),
-        results=[{'shape': 'x'} for _ in range(2)])
-
-    fake_batch = FakeBatch(submit_then=[
-        [{'status': 'SUCCEEDED'}] * 2,
-    ])
-
-    with patch('glow.aws.driver.boto3.client',
-               side_effect=lambda kind, **_:
-               fake_s3 if kind == 's3' else fake_batch):
-        driver_aws(cache, _run_fnc, _cfg(), verbose=False)
-
-    saved_hashes = set(cache._load_results().index.astype(str))
-    assert saved_hashes == local_hashes
 
 
 # ---------- real-AWS smoke test --------------------------------------------
