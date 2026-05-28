@@ -1,17 +1,28 @@
+"""driver_local: in-process runner for a TrialCache.
+
+Pulls the uncached trials from a TrialCache, runs each through run_fnc
+(serially or across a joblib pool), and saves every result back through
+trial_cache.save_result. Mirror of glow.aws.driver.driver_aws, which
+runs the same trials on AWS Batch.
+"""
+
+from typing import Callable
+
 from joblib import Parallel, delayed
 from tqdm import tqdm
 
 
-def driver_local(trial_cache, run_fnc, n_jobs=1, verbose=True):
-    """Run every uncached trial in ``trial_cache``, save results.
+def driver_local(trial_cache, run_fnc: Callable, n_jobs: int = 1,
+                 verbose: bool = True) -> None:
+    """Run every uncached trial in trial_cache, save results.
 
     Args:
         trial_cache (TrialCache): trial spec + cache.
-        run_fnc: callable accepting ``**trial`` and returning a dict
-            or DataFrame to be persisted by ``trial_cache.save_result``.
-        n_jobs (int): worker count.  ``0`` or ``1`` runs serially; any
-            other value spawns a joblib pool whose results stream back
-            in submission order (csv writes stay on the main thread).
+        run_fnc (Callable): accepts **trial and returns a dict or
+            DataFrame to be persisted by trial_cache.save_result.
+        n_jobs (int): worker count. 0 or 1 runs serially; any other
+            value spawns a joblib pool whose results stream back in
+            submission order (csv writes stay on the main thread).
         verbose (bool): show a tqdm progress bar.
     """
     trials = list(trial_cache.iter_trial_no_repeat())

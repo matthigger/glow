@@ -3,10 +3,10 @@
 import numpy as np
 
 
-def get_sigma(size, yout, ymean):
-    """compute pooled spatial covariance from pre-aggregated statistics.
+def get_sigma(size: int, yout, ymean):
+    """Compute pooled spatial covariance from pre-aggregated statistics.
 
-    inputs are efficiently computed for hierarchical regions; see
+    Inputs are efficiently computed for hierarchical regions; see
     glow.graph.iter_size_ysum_yout.
 
     Args:
@@ -21,10 +21,10 @@ def get_sigma(size, yout, ymean):
     return (yout / size - ymean @ ymean.T) / num_img
 
 
-def stretch_sigma(y, scale):
-    """scale spatial covariance of y by a constant factor.
+def stretch_sigma(y, scale: float):
+    """Scale spatial covariance of y by a constant factor.
 
-    de-means across voxels, multiplies by scale, then re-means.
+    De-means across voxels, multiplies by scale, then re-means.
 
     Args:
         y (np.array): (b, num_img, num_vox) image intensities

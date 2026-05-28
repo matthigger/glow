@@ -1,3 +1,12 @@
+"""Experiment classes: imaging data, design matrix, and pre-scaling.
+
+ExperimentImageOnly holds the imaging data (y plus a voxel mask) and the
+factories that build it (from Gaussian samples, from a folder search, or
+from an explicit path map).  Experiment adds a design matrix x and a
+contrast, plus Freedman-Lane permutation.  ExperimentScaled pre-processes
+y (zero-mean, variance-normalise, PCA) before analysis.
+"""
+
 import pathlib
 import re
 import warnings
@@ -17,12 +26,12 @@ from ..util import hash_array
 
 
 class NoBiasTermWarning(UserWarning):
-    """raised when regression is constrained to origin without bias term."""
+    """Warn when regression is constrained to origin without a bias term."""
     pass
 
 
 class ExperimentImageOnly:
-    """imaging data for an experiment (no design matrix).
+    """Imaging data for an experiment (no design matrix).
 
     Attributes:
         y (np.array): (b, num_img, num_vox) image intensities
@@ -31,17 +40,18 @@ class ExperimentImageOnly:
             not used by analysis — propagated for export / display
     """
 
-    def __init__(self, *, y, mask_idx, meta=None, dtype=None, **kwargs):
-        """
+    def __init__(self, *, y, mask_idx, meta: dict = None, dtype=None,
+                 **kwargs):
+        """Store imaging data, optionally casting y to a target dtype.
+
         Args:
-            y (np.array): (b, num_img, num_vox) imaging features.
-            mask_idx (np.array): voxel index array (-1 outside analysis).
-            meta (dict): optional metadata.
-            dtype (np.dtype | None): if not None and ``y.dtype`` differs,
-                cast ``y`` to ``dtype`` (no copy when already matching).
-                Default ``None`` preserves ``y.dtype`` — used by internal
-                constructors so dtype is set exactly once by the public
-                factory at top of the chain.
+            y (np.array): (b, num_img, num_vox) imaging features
+            mask_idx (np.array): voxel index array (-1 outside analysis)
+            meta (dict): optional metadata
+            dtype: if not None and y.dtype differs, cast y to dtype (no
+                copy when already matching).  Default None preserves
+                y.dtype — used by internal constructors so dtype is set
+                exactly once by the public factory at the top of the chain.
         """
         if dtype is not None and y is not None and y.dtype != dtype:
             y = y.astype(dtype, copy=False)
@@ -51,39 +61,41 @@ class ExperimentImageOnly:
 
     @property
     def dtype(self):
-        """dtype of the underlying ``y`` array, or None when y is unset."""
+        """Return the dtype of the underlying y array, or None when unset."""
         return self.y.dtype if self.y is not None else None
 
     @property
     def _hash_arrays(self):
+        """Tuple of arrays that define this object's identity for hashing."""
         return (self.y, self.mask_idx)
 
-    def _hash(self):
-        """probabilistic SHA-256 hash over data arrays (16-char hex digest).
+    def _hash(self) -> str:
+        """Probabilistic SHA-256 hash over data arrays (16-char hex digest).
 
         Used as an S3 cache key (see Config.run_cloud) to dedup uploads
-        of identical experiment data. See ``glow.util.hash_array``.
+        of identical experiment data.  See glow.util.hash_array.
         """
         return hash_array(*self._hash_arrays)
 
     @classmethod
-    def from_gauss(cls, b=None, num_img=10, shape=(2, 3, 4), seed=None,
+    def from_gauss(cls, b: int = None, num_img: int = 10,
+                   shape: tuple = (2, 3, 4), seed: int = None,
                    mu=None, cov=None, dtype=np.float32, **kwargs):
-        """generate Gaussian imaging data with prescribed mean and covariance.
+        """Generate Gaussian imaging data with prescribed mean and covariance.
 
         Args:
             b (int): number of imaging features (default 1)
             num_img (int): number of images to sample
             shape (tuple): spatial shape of each image
             seed (int): random seed
-            mu (np.array): target sample mean (default zeros)
-            cov (np.array): target sample covariance (default identity)
-            dtype: numpy dtype for the generated ``y`` array.  Default
-                ``np.float32`` matches the HCP loader and keeps the
-                ``compute_llr_batched`` hot loop in float32.
+            mu (np.array): (b,) target sample mean (default zeros)
+            cov (np.array): (b, b) target sample covariance (default identity)
+            dtype: numpy dtype for the generated y array.  Default
+                np.float32 matches the HCP loader and keeps the
+                compute_llr_batched hot loop in float32.
 
         Returns:
-            ExperimentImageOnly
+            ExperimentImageOnly with sampled y
         """
         if b is None:
             if mu is not None:
@@ -97,7 +109,6 @@ class ExperimentImageOnly:
         rng = np.random.default_rng(seed=seed)
         y = rng.multivariate_normal(np.zeros(b), np.eye(b), num_img * num_vox)
 
-        # reshape, de-mean, reshape
         y = y.reshape((b, num_img, num_vox))
         y = y - y.mean(axis=(1, 2))[:, np.newaxis, np.newaxis]
         y = y.reshape((b, -1))
@@ -116,18 +127,27 @@ class ExperimentImageOnly:
         meta = kwargs.pop('meta', {})
         meta.setdefault('features', [f'feat_{i}' for i in range(b)])
         meta.setdefault('subjects', [f'subject_{i:03d}' for i in range(num_img)])
-        # cast to target dtype here (single cast at the public factory;
-        # the constructor would also handle this but doing it explicitly
-        # documents the contract).
+        # single cast at the public factory; the constructor would also
+        # handle this but doing it explicitly documents the contract.
         y = y.reshape((b, num_img, num_vox)).astype(dtype, copy=False)
         return cls(y=y,
                    mask_idx=get_mask_idx(np.ones(shape)),
                    meta=meta, **kwargs)
 
     @classmethod
-    def _search_files(cls, folder, sbj_regex, img_glob_dict):
-        """scan folder for feature files and return a (subject x feature)
-        DataFrame of file paths.  No image data is loaded."""
+    def _search_files(cls, folder, sbj_regex: str, img_glob_dict: dict):
+        """Scan a folder for feature files into a subject x feature table.
+
+        Returns a DataFrame of file paths; no image data is loaded.
+
+        Args:
+            folder: root folder to search
+            sbj_regex (str): regex extracting the subject id from file paths
+            img_glob_dict (dict): feature_name -> glob pattern
+
+        Returns:
+            df (pd.DataFrame): index=subject, columns=feature, values=paths
+        """
         folder = pathlib.Path(folder)
         df = pd.DataFrame()
         for y_feat, y_glob in img_glob_dict.items():
@@ -140,26 +160,35 @@ class ExperimentImageOnly:
         return df
 
     @classmethod
-    def list_subjects(cls, folder, sbj_regex, img_glob_dict):
-        """return the sorted list of subject ids discovered under folder.
+    def list_subjects(cls, folder, sbj_regex: str, img_glob_dict: dict) -> list:
+        """Return the sorted list of subject ids discovered under folder.
 
         Canonical across regex rewrites that select the same files — useful
-        as a stable identity for caching / hashing."""
+        as a stable identity for caching / hashing.
+
+        Args:
+            folder: root folder to search
+            sbj_regex (str): regex extracting the subject id from file paths
+            img_glob_dict (dict): feature_name -> glob pattern
+
+        Returns:
+            subjects (list): sorted subject ids
+        """
         df = cls._search_files(folder, sbj_regex, img_glob_dict)
         assert df.size, 'no images found'
         return sorted(df.index)
 
     @classmethod
-    def from_search(cls, folder, sbj_regex, img_glob_dict,
+    def from_search(cls, folder, sbj_regex: str, img_glob_dict: dict,
                     dtype=np.float32, **kwargs):
-        """search a folder for images and build an experiment.
+        """Search a folder for images and build an experiment.
 
         Args:
-            folder (str): root folder to search recursively
+            folder: root folder to search recursively
             sbj_regex (str): regex extracting the subject id from file paths
             img_glob_dict (dict): feature_name -> glob pattern
-            dtype: numpy dtype for the loaded ``y`` array (default
-                ``np.float32``; see ``from_paths``).
+            dtype: numpy dtype for the loaded y array (default np.float32;
+                see from_paths)
 
         Returns:
             Experiment built from discovered images
@@ -168,18 +197,19 @@ class ExperimentImageOnly:
         return cls.from_paths(df, dtype=dtype, **kwargs)
 
     @classmethod
-    def from_paths(cls, paths, *, channel_names=None,
+    def from_paths(cls, paths, *, channel_names: dict = None,
                    dtype=np.float32, **kwargs):
-        """build an experiment from an explicit (subject x feature) path map.
+        """Build an experiment from an explicit (subject x feature) path map.
 
         Args:
-            paths: either a ``pandas.DataFrame`` indexed by subject with
-                feature columns whose values are file paths, or a
-                ``dict`` of the form ``{subject: {feature: path}}``.
-            channel_names: optional ``{feature: [name0, ...]}`` overriding
-                the default ``feat0``/``feat1``/... naming when a non-NIfTI
-                image splits into multiple channels (e.g. RGB →
-                ``{'rgb': ['red', 'green', 'blue']}``).
+            paths: either a pandas.DataFrame indexed by subject with
+                feature columns whose values are file paths, or a dict of
+                the form {subject: {feature: path}}
+            channel_names (dict): optional {feature: [name0, ...]} overriding
+                the default feat0/feat1/... naming when a non-NIfTI image
+                splits into multiple channels (e.g. RGB ->
+                {'rgb': ['red', 'green', 'blue']})
+            dtype: numpy dtype for the loaded y array (default np.float32)
 
         Returns:
             Experiment built from the listed images
@@ -243,25 +273,24 @@ class ExperimentImageOnly:
 
         return cls(y=y, mask_idx=mask_idx, meta=meta, **kwargs)
 
-    def bootstrap_img(self, n, seed=None, noise_scale=0):
-        """return a new experiment with bootstrap-resampled images.
+    def bootstrap_img(self, n: int, seed: int = None,
+                      noise_scale: float = 0):
+        """Return a new experiment with bootstrap-resampled images.
 
         Args:
             n (int): number of images in the output
-            seed: random seed
+            seed (int): random seed
             noise_scale (float): std-dev multiplier for additive noise
                 (drawn per-voxel from the sample covariance)
 
         Returns:
             ExperimentImageOnly: new object with resampled y
         """
-        # bootstrap sample images
         rng = np.random.default_rng(seed=seed)
         b, num_img_init, num_vox = self.y.shape
         img_idx = rng.choice(num_img_init, n, replace=True)
         y = self.y[:, img_idx, :].copy()
 
-        # add noise
         assert noise_scale >= 0, 'snr cannot be negative'
         if noise_scale > 0:
             cov = np.atleast_2d(np.cov(y.reshape((b, -1))))
@@ -278,13 +307,14 @@ class ExperimentImageOnly:
         exp.y = y
         return exp
 
-    def sample_x(self, a=None, contrast=None, seed=None, **kwargs):
-        """return a new Experiment with random standard-normal design matrix.
+    def sample_x(self, a: int = None, contrast=None, seed: int = None,
+                 **kwargs):
+        """Return a new Experiment with random standard-normal design matrix.
 
         Args:
             a (int): number of features (exactly one of a / contrast required)
             contrast (np.array): (a,) boolean, True for features of interest
-            seed: random seed
+            seed (int): random seed
 
         Returns:
             Experiment with sampled x
@@ -292,15 +322,14 @@ class ExperimentImageOnly:
         assert (a is None) != (contrast is None), 'a xor contrast required'
 
         if a is None:
-            # contrast specified, extract a from it
             a = contrast.size
         else:
             # default contrast: all x of interest but bias term
             contrast = np.ones(a, dtype=bool)
 
-        # sample x — match y's dtype so downstream decompose() / einsums
-        # don't silently upcast (numpy promotes float32 @ float64 to
-        # float64, eliminating the bandwidth win in compute_llr_batched).
+        # match y's dtype so downstream decompose() / einsums don't
+        # silently upcast (numpy promotes float32 @ float64 to float64,
+        # eliminating the bandwidth win in compute_llr_batched).
         num_img = self.y.shape[1]
         rng = np.random.default_rng(seed=seed)
         x = rng.standard_normal(size=(a, num_img))
@@ -312,7 +341,7 @@ class ExperimentImageOnly:
                           meta=self.meta, **kwargs)
 
     def apply_mask(self, mask):
-        """return a new experiment restricted to voxels where mask is True.
+        """Return a new experiment restricted to voxels where mask is True.
 
         Args:
             mask (np.array): boolean mask, same shape as self.mask_idx
@@ -320,20 +349,19 @@ class ExperimentImageOnly:
         Returns:
             new experiment restricted to the intersection of mask and self
         """
-        # apply mask to data
         mask = np.logical_and(mask, self.mask_idx > -1)
         assert mask.sum(), 'mask has no intersection with mask_idx'
         mask_idx = glow.mask.get_mask_idx(mask)
         y = self.y[:, :, self.mask_idx[mask]]
 
-        # build new object identical as self
         d = deepcopy(self.__dict__)
         d['mask_idx'] = mask_idx
         d['y'] = y
         return type(self)(**d)
 
-    def add_offset(self, offset, mask=None, vox_idx=None, sigma_scale=None):
-        """return a new experiment with a constant offset added to y.
+    def add_offset(self, offset, mask=None, vox_idx=None,
+                   sigma_scale: float = None):
+        """Return a new experiment with a constant offset added to y.
 
         Args:
             offset (np.array): (b, num_img) offset per voxel
@@ -350,37 +378,60 @@ class ExperimentImageOnly:
         if vox_idx is None:
             vox_idx = self.mask_idx[mask]
 
-        # build new y
         y = deepcopy(self.y)
         y[:, :, vox_idx] += offset[..., np.newaxis]
 
         if sigma_scale is not None:
-            # scale sigma within mask, if passed
             y[:, :, vox_idx] = stretch_sigma(y=y[:, :, vox_idx],
                                              scale=sigma_scale)
 
-        # build new object
         d = deepcopy(self.__dict__)
         d['y'] = y
         return type(self)(**d)
 
 
 class Experiment(ExperimentImageOnly):
-    """imaging data plus design matrix and contrast.
+    """Imaging data plus design matrix and contrast.
 
     Attributes:
+        y (np.array): (b, num_img, num_vox) image intensities
+        mask_idx (np.array): voxel index array (-1 outside analysis)
         x (np.array): (a, num_img) design matrix
         contrast (np.array): (a,) boolean, True for features of interest
     """
 
     @classmethod
-    def from_gauss(cls, a=1, contrast=None, seed=None, add_bias=True,
-                   **kwargs):
+    def from_gauss(cls, a: int = 1, contrast=None, seed: int = None,
+                   add_bias: bool = True, **kwargs):
+        """Generate Gaussian imaging data and a sampled design matrix.
+
+        Args:
+            a (int): number of design-matrix features
+            contrast (np.array): (a,) boolean, True for features of interest
+            seed (int): random seed (shared by y and x sampling)
+            add_bias (bool): prepend a bias (all-ones) row to x
+
+        Returns:
+            Experiment with sampled y and x
+        """
         exp = ExperimentImageOnly.from_gauss(seed=seed, **kwargs)
         return exp.sample_x(a=a, contrast=contrast, seed=seed,
                             add_bias=add_bias)
 
-    def __init__(self, *, x, contrast=None, add_bias=False, **kwargs):
+    def __init__(self, *, x, contrast=None, add_bias: bool = False,
+                 **kwargs):
+        """Store the design matrix and contrast, optionally adding a bias row.
+
+        Args:
+            x (np.array): (a, num_img) design matrix
+            contrast (np.array): (a,) boolean, True for features of interest
+            add_bias (bool): prepend a bias (all-ones) row to x and a
+                leading False to contrast
+
+        Raises:
+            NoBiasTermWarning: if x has no all-ones row (regression
+                constrained to origin)
+        """
         super().__init__(**kwargs)
 
         self.x = x
@@ -405,10 +456,11 @@ class Experiment(ExperimentImageOnly):
 
     @property
     def _hash_arrays(self):
+        """Tuple of arrays that define this object's identity for hashing."""
         return (*super()._hash_arrays, self.x, self.contrast)
 
-    def permute(self, perm_idx):
-        """return a new experiment with Freedman-Lane permuted images.
+    def permute(self, perm_idx: int):
+        """Return a new experiment with Freedman-Lane permuted images.
 
         Args:
             perm_idx (int): permutation index (0 = unpermuted)
@@ -435,34 +487,68 @@ class Experiment(ExperimentImageOnly):
 
 
 class ExperimentScaled(Experiment):
-    """pre-processed experiment: zero-mean, variance-normalise, then PCA.
+    """Pre-processed experiment: zero-mean, variance-normalise, then PCA.
 
     y_out = pre_scale @ (y_in - mean_orig)
 
     Attributes:
+        y (np.array): (b, num_img, num_vox) pre-processed image intensities
+        mask_idx (np.array): voxel index array (-1 outside analysis)
+        x (np.array): (a, num_img) design matrix
+        contrast (np.array): (a,) boolean, True for features of interest
         mean_orig (np.array): (b, 1, 1) original grand mean
         pre_scale (np.array): (b, b) pre-processing matrix
     """
 
     @classmethod
     def from_exp(cls, exp):
+        """Build an ExperimentScaled from an existing Experiment.
+
+        Args:
+            exp: source Experiment (provides y, mask_idx, x, contrast, meta)
+
+        Returns:
+            ExperimentScaled with pre-processing applied to exp.y
+        """
         return cls(y=exp.y, mask_idx=exp.mask_idx, x=exp.x,
                    contrast=exp.contrast,
                    meta=dict(exp.meta) if getattr(exp, 'meta', None) else None)
 
     def prep(self, y):
-        """apply pre-processing: y_out = pre_scale @ (y - mean_orig)."""
+        """Apply pre-processing: y_out = pre_scale @ (y - mean_orig).
+
+        Args:
+            y (np.array): (b, num_img, num_vox) raw image intensities
+
+        Returns:
+            y (np.array): (b, num_img, num_vox) pre-processed intensities
+        """
         return np.einsum('ij,jkl->ikl',
                          self.pre_scale,
                          y - self.mean_orig)
 
     def prep_inv(self, y):
-        """invert pre-processing: y_out = pre_scale^-1 @ y + mean_orig."""
+        """Invert pre-processing: y_out = pre_scale^-1 @ y + mean_orig.
+
+        Args:
+            y (np.array): (b, num_img, num_vox) pre-processed intensities
+
+        Returns:
+            y (np.array): (b, num_img, num_vox) raw image intensities
+        """
         return np.einsum('ij,jkl->ikl',
                          np.linalg.inv(self.pre_scale),
                          y) + self.mean_orig
 
     def __init__(self, y, *args, **kwargs):
+        """Fit the pre-processing transform on y, then store the scaled y.
+
+        Args:
+            y (np.array): (b, num_img, num_vox) raw image intensities
+
+        Raises:
+            ValueError: if any feature has zero variance
+        """
         # Preserve y.dtype through the prep transform.  np.cov / eigh /
         # mean(axis=...) all use float64 accumulators internally and
         # return float64 regardless of input dtype, so cast back at the
@@ -475,7 +561,6 @@ class ExperimentScaled(Experiment):
         self.mean_orig = y.mean(axis=(1, 2))[:, np.newaxis, np.newaxis]
         self.mean_orig = self.mean_orig.astype(y_dtype, copy=False)
 
-        # scale normalize
         b, num_img, num_vox = y.shape
         cov = np.cov(y.reshape((b, -1), order='F'))
         cov = np.atleast_2d(cov)

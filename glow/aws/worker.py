@@ -1,14 +1,14 @@
 """AWS Batch worker entrypoint.
 
-Invoked inside the container as::
+Invoked inside the container as:
 
     python -m glow.aws.worker s3://bucket/prefix/jobs/<run_id>/manifest.pkl
 
-Reads ``AWS_BATCH_JOB_ARRAY_INDEX`` to pick its slot in the manifest,
-downloads the matching ``job.pkl``, runs ``run_fnc(**trial)`` (where
-``trial['ds']`` is either a ``DataSourceS3`` that downloads its exp,
-or a deterministic ``DataSource`` rebuilt locally from its seed), and
-uploads ``result.pkl`` next to the job pickle.
+Reads AWS_BATCH_JOB_ARRAY_INDEX to pick its slot in the manifest,
+downloads the matching job.pkl, runs run_fnc(**trial) (where
+trial['ds'] is either a DataSourceS3 that downloads its exp, or a
+deterministic DataSource rebuilt locally from its seed), and uploads
+result.pkl next to the job pickle.
 
 Non-zero exit on any exception so AWS Batch marks the child FAILED.
 """
@@ -23,16 +23,24 @@ from glow.aws.datasource import _parse_s3_uri
 
 
 def _result_key_for(job_key: str) -> str:
-    """``.../jobs/<trial_hash>/job.pkl`` → ``.../jobs/<trial_hash>/result.pkl``."""
+    """Map a job.pkl key to its sibling result.pkl key."""
     return job_key.rsplit('/', 1)[0] + '/result.pkl'
 
 
 def _job_key_for(manifest_key: str, trial_hash: str) -> str:
-    """``.../jobs/<run_id>/manifest.pkl`` → ``.../jobs/<trial_hash>/job.pkl``."""
+    """Map a manifest.pkl key + trial_hash to that trial's job.pkl key."""
     return f'{manifest_key.rsplit("/", 2)[0]}/{trial_hash}/job.pkl'
 
 
 def main(manifest_uri: str) -> None:
+    """Run this array child's trial and upload its result.
+
+    Picks the manifest slot from AWS_BATCH_JOB_ARRAY_INDEX, downloads
+    the trial's job.pkl, runs run_fnc(**trial), and uploads result.pkl.
+
+    Args:
+        manifest_uri (str): s3:// URI of the run's manifest.pkl.
+    """
     bucket, manifest_key = _parse_s3_uri(manifest_uri)
     s3 = boto3.client('s3')
 

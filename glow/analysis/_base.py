@@ -1,5 +1,8 @@
+"""Analysis ABC and shared FWER / effect-discovery machinery."""
+
 from abc import ABC, abstractmethod
 from bisect import bisect_left
+from typing import Callable
 
 import numpy as np
 from scipy.ndimage import label
@@ -10,10 +13,12 @@ from glow.experiment.exper import ExperimentScaled
 
 
 class Analysis(ABC):
-    """performs effect discovery (glow or TFCE) and computes FWER p-values.
+    """Perform effect discovery (GLOW or TFCE) and compute FWER p-values.
 
     Attributes:
         exp (Experiment): source data
+        effect_list (list): discovered Effect objects (populated by fit)
+        pval (np.array): (num_reg,) FWER-controlled p-values (set by fit)
     """
 
     def __init__(self, exp):
@@ -29,31 +34,35 @@ class Analysis(ABC):
 
     @classmethod
     def get_pval(cls, stat, reg_active=None):
-        """compute FWER-adjusted p-values via Westfall-Young permutation.
+        """Compute FWER-adjusted p-values via Westfall-Young permutation.
+
+        Westfall & Young 1993: the max-statistic null over the active
+        comparison set controls the family-wise error rate.
 
         Args:
-            stat (np.array): (num_permute, num_reg) statistics per region
-            reg_active (np.array): (num_reg) boolean mask. only active
+            stat (np.array): (n_perm+1, num_reg) statistics per region.
+                Row 0 is the observed (unpermuted) statistic.
+            reg_active (np.array): (num_reg,) boolean mask. Only active
                 regions have a p-value computed; inactive get np.nan.
-                discarding a-priori small regions from the comparison
-                set preserves power for larger regions. defaults to all
+                Discarding a-priori small regions from the comparison
+                set preserves power for larger regions. Defaults to all
                 regions active.
 
         Returns:
-            pval (np.array): (num_reg) FWER-controlled p-values
+            pval (np.array): (num_reg,) FWER-controlled p-values
         """
         if reg_active is None:
             reg_active = np.ones(stat.shape[1], dtype=bool)
         elif not reg_active.any():
-            # no active regions, return all nan
             num_reg = stat.shape[1]
             return np.full(num_reg, fill_value=np.nan)
 
-        # max stat per permutation (sorted from low to high)
+        # max stat per permutation, sorted low to high (bisect_left below
+        # needs an ascending array)
         stat_max = np.sort(np.nanmax(stat[:, reg_active], axis=1))
 
-        # compute pvalues (what percentage of permuted, or unpermuted,
-        # stats were >= to observed value?)
+        # p-value: fraction of permuted-or-observed max-stats >= the
+        # region's observed value
         num_perm, num_reg = stat.shape
         pval = np.full(num_reg, fill_value=-1.0)
         for reg_idx, z in enumerate(stat[0, :]):
@@ -63,7 +72,8 @@ class Analysis(ABC):
             pval[reg_idx] = max(1 - bisect_left(stat_max, z) / num_perm,
                                 1 / num_perm)
 
-        # inactive regions get no pvalue (otherwise we don't control FWER!)
+        # inactive regions must stay NaN: assigning them a p-value would
+        # expand the comparison set and break FWER control
         pval[~reg_active] = np.nan
 
         return pval
@@ -99,7 +109,7 @@ class Analysis(ABC):
 
     @classmethod
     def discover_mask(cls, mask, exp):
-        """split a boolean mask into connected-component effects.
+        """Split a boolean mask into connected-component effects.
 
         Args:
             mask (np.array): boolean mask, same shape as exp.mask_idx
@@ -108,13 +118,12 @@ class Analysis(ABC):
         Returns:
             effect_list (list): discovered Effect objects
         """
-        # split discovered regions into disjoint effects (all adjacent are
-        # same effect)
+        # one effect per connected component: adjacent voxels belong to
+        # the same effect
         mask_est, num_effect = label(mask.astype(bool))
 
         effect_list = list()
         for eff_idx in range(1, num_effect + 1):
-            # build effect for each contiguous effect found
             _mask = mask_est == eff_idx
             eff = glow.effect.EffectEstimate.from_exp_mask(exp=exp, mask=_mask)
             effect_list.append(eff)
@@ -125,12 +134,16 @@ class Analysis(ABC):
 class AnalysisVoxel(Analysis):
     """Analysis with a pluggable per-region stat function.
 
-    VBA and CET compute one stat per voxel via ``get_stat`` (Wilks,
-    Hotelling-Lawley-trace, etc.).  AnalysisGLOW does not subclass
-    this — its inner kernel hard-codes LLR.
+    VBA and CET compute one stat per voxel via get_stat (Wilks,
+    Hotelling-Lawley-trace, etc.). AnalysisGLOW does not subclass
+    this -- its inner kernel hard-codes LLR.
+
+    Attributes:
+        get_stat (Callable): per-region stat function f(e, h, n) -> float
+        stat (np.array): (n_perm+1, num_reg) statistics (set by fit)
     """
 
-    def __init__(self, exp, get_stat=None):
+    def __init__(self, exp, get_stat: Callable = None):
         super().__init__(exp)
         if get_stat is None:
             from .mancova import get_wilks
@@ -139,13 +152,13 @@ class AnalysisVoxel(Analysis):
         self.stat = None
 
     @classmethod
-    def get_stat_perm_multi(cls, exp, get_stat_list, children=None):
-        """compute multiple test statistics from a single tree walk.
+    def get_stat_perm_multi(cls, exp, get_stat_list: list, children=None) -> dict:
+        """Compute multiple test statistics from a single tree walk.
 
         Avoids redundant E/H computation when comparing stat functions.
         Computes one stat value per region per stat function, on the
-        given (possibly permuted) experiment.  For permutation nulls,
-        callers must loop externally over ``exp.permute(k)``.
+        given (possibly permuted) experiment. For permutation nulls,
+        callers must loop externally over exp.permute(k).
 
         Args:
             exp (Experiment): experiment data (already permuted if
@@ -154,7 +167,7 @@ class AnalysisVoxel(Analysis):
             children (np.array): (num_leaf - 1, 2) child index array
 
         Returns:
-            dict mapping each stat function to (num_reg,) array
+            dict mapping each stat function to a (num_reg,) array
         """
         b, num_img, num_vox = exp.y.shape
         num_reg = num_vox
@@ -175,16 +188,16 @@ class AnalysisVoxel(Analysis):
         return result
 
     def get_stat_perm(self, exp, children=None):
-        """compute test statistic for each region.
+        """Compute the test statistic for each region.
 
         Computes one stat per region on the given (possibly permuted)
-        experiment.  For permutation nulls, callers must loop
-        externally over ``exp.permute(k)``.
+        experiment. For permutation nulls, callers must loop
+        externally over exp.permute(k).
 
         Args:
             exp (Experiment): experiment to evaluate (already permuted
                 if this is a permutation draw)
-            children (np.array): (num_reg, 2) child index array. if None,
+            children (np.array): (num_reg, 2) child index array. If None,
                 only iterates through individual voxels.
 
         Returns:

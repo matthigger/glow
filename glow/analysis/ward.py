@@ -1,21 +1,19 @@
 """Connectivity-constrained Ward clustering via Mullner's NN-array algorithm.
 
-Faster drop-in for ``sklearn.cluster.ward_tree(X, connectivity=...)``.
-Produces the same dendrogram as sklearn (same ``children`` array, distances
-matching to float64 ULP).
+Faster drop-in for sklearn.cluster.ward_tree(X, connectivity=...) (Mullner
+2011). Produces the same dendrogram as sklearn (same children array,
+distances matching to float64 ULP).
 
-Algorithm
----------
-Each cluster c tracks its current nearest neighbour ``nn[c]`` and that
-distance ``nn_d[c]``.  A global min-heap is keyed by ``(nn_d[c], c)``.
-The next merge is always the global min over alive clusters' NN
-distances, which is the same edge sklearn's heap-greedy picks.
+Algorithm: each cluster c tracks its current nearest neighbour nn[c] and
+that distance nn_d[c]. A global min-heap is keyed by (nn_d[c], c). The next
+merge is always the global min over alive clusters' NN distances, which is
+the same edge sklearn's heap-greedy picks.
 
 Compared to sklearn's single-global-edge-heap approach, this dramatically
 cuts heap pressure: instead of pushing every edge (and accumulating ~95%
 stale entries when endpoints merge away), we push at most one entry per
-cluster per NN change.  On HCP-scale grids this gives ~3× over the
-heap-greedy variant and ~9× over sklearn.
+cluster per NN change. On HCP-scale grids this gives ~3x over the
+heap-greedy variant and ~9x over sklearn.
 
 Per-merge work:
 - Pop outer heap; skip stale entries (cluster dead or distance changed).
@@ -25,10 +23,10 @@ Per-merge work:
 - For each neighbour n: if n's NN was i/j (now dead), rescan n's adj;
   else update n's NN only if the new cluster is closer than its current.
 
-``a`` is the feature dimension (number of independent variables), matching
-the GLOW convention for ``x.shape == (a, n_subjects)``.  When called from
-``cluster()`` it equals ``n_batch × projection_dim`` (the einsum-``'b,a'``
-axes of ``y`` after projection, flattened).
+a is the feature dimension (number of independent variables), matching the
+GLOW convention for x.shape == (a, n_subjects). When called from cluster()
+it equals n_batch x projection_dim (the einsum-'b,a' axes of y after
+projection, flattened).
 """
 from __future__ import annotations
 
@@ -43,6 +41,7 @@ from scipy.sparse.csgraph import connected_components
 
 @njit(cache=True, boundscheck=False)
 def _ward_dist(centroid, size, a, i, j):
+    """Compute the Ward (variance-increase) distance between clusters i and j."""
     pa = 0.0
     for f in range(a):
         d = centroid[i, f] - centroid[j, f]
@@ -77,6 +76,7 @@ def _heap_less(d1, c1, d2, c2):
 
 @njit(cache=True, boundscheck=False)
 def _heap_push(heap_d, heap_c, heap_size, d, c):
+    """Push (d, c) onto the min-heap; return False if the heap is full."""
     n = heap_size[0]
     if n >= heap_d.shape[0]:
         return False
@@ -96,6 +96,7 @@ def _heap_push(heap_d, heap_c, heap_size, d, c):
 
 @njit(cache=True, boundscheck=False)
 def _heap_pop(heap_d, heap_c, heap_size):
+    """Pop and return the min (d, c) from the heap, re-heapifying."""
     n = heap_size[0] - 1
     d_out = heap_d[0]
     c_out = heap_c[0]
@@ -129,6 +130,7 @@ def _heap_pop(heap_d, heap_c, heap_size):
 
 @njit(cache=True, boundscheck=False)
 def _adj_prepend(adj_head, adj_cluster, adj_next, pool_top, c, x):
+    """Prepend neighbour x to c's adjacency list; return False if pool full."""
     nid = pool_top[0]
     if nid >= adj_cluster.shape[0]:
         return False
@@ -215,7 +217,8 @@ def _mullner_loop(
             c_merge = c_popped
             break
         if c_merge < 0:
-            break  # heap exhausted (all merges in this component done)
+            # heap exhausted: all merges in this component are done
+            break
 
         i = c_merge
         j = nn[i]
@@ -319,28 +322,29 @@ def _mullner_loop(
 # -------------------------------------------------------- public entry point --
 
 
-def ward_tree(X, connectivity, return_distance=False):
-    """Connectivity-constrained Ward agglomerative clustering.
+def ward_tree(X, connectivity, return_distance: bool = False):
+    """Cluster agglomeratively under a connectivity constraint (Ward).
 
     Matches the signature and dendrogram of
-    ``sklearn.cluster.ward_tree(X, connectivity=...)``.
+    sklearn.cluster.ward_tree(X, connectivity=...).
 
     Args:
-        X (np.ndarray): (n_samples, a) feature matrix where ``a`` is the
+        X (np.array): (n_samples, a) feature matrix where a is the
             feature/batch dimension.
         connectivity: scipy sparse matrix of shape (n_samples, n_samples).
             Symmetrised internally; non-zero entries define graph neighbours.
         return_distance (bool): if True, also return per-merge
-            ``sqrt(2 * raw_ward)`` (sklearn's scaling).
+            sqrt(2 * raw_ward) (sklearn's scaling).
 
     Returns:
-        children (np.ndarray): (n_merges, 2) child index pairs.  Internal
-            node ``n_samples + i`` corresponds to row i.
-        n_connected_components (int)
-        n_leaves (int)
-        parents (np.ndarray): (n_nodes,) parent of each node.  Root(s)
+        children (np.array): (n_merges, 2) child index pairs. Internal
+            node n_samples + i corresponds to row i.
+        n_connected_components (int): number of connected components
+        n_leaves (int): number of leaf samples (n_samples)
+        parents (np.array): (n_nodes,) parent of each node. Root(s)
             point to themselves.
-        distances (np.ndarray, optional): per-merge sqrt(2 * raw_ward).
+        distances (np.array, optional): per-merge sqrt(2 * raw_ward),
+            returned only when return_distance is True.
     """
     X = np.ascontiguousarray(X, dtype=np.float64)
     n_samples, a = X.shape

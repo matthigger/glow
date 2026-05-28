@@ -1,15 +1,15 @@
-"""driver_aws: TrialCache-compatible AWS Batch runner.
+"""TrialCache-compatible AWS Batch runner.
 
-Mirrors ``glow.benchmark.driver.driver_local``: pulls uncached trials,
-runs each through ``run_fnc``, saves the result back through
-``trial_cache.save_result``.  Each run is one Batch array job
-(potentially escalated through ``aws_config.memory_mb_tiers`` for OOM
-children) whose worker downloads the per-trial pickle from S3,
-executes, and uploads the result.
+Mirrors glow.benchmark.driver.driver_local: pulls uncached trials, runs
+each through run_fnc, saves the result back through
+trial_cache.save_result. Each run is one Batch array job (potentially
+escalated through aws_config.memory_mb_tiers for OOM children) whose
+worker downloads the per-trial pickle from S3, executes, and uploads the
+result.
 
-Result-key keying uses ``stable_hash(trial)`` on the ORIGINAL trial,
-not the S3-wrapped worker variant — so AWS and local runs write the
-same row hash and share one ``results.csv``.
+Result-key keying uses stable_hash(trial) on the ORIGINAL trial, not the
+S3-wrapped worker variant, so AWS and local runs write the same row hash
+and share one results.csv.
 """
 
 import time
@@ -28,18 +28,20 @@ from glow.util import stable_hash
 
 
 UPLOAD_THREADS = 16
-ARRAY_MIN, ARRAY_MAX = 2, 10_000   # AWS Batch arrayProperties.size bounds
+# AWS Batch arrayProperties.size bounds.
+ARRAY_MIN, ARRAY_MAX = 2, 10_000
 
 
-def driver_aws(trial_cache, run_fnc: Callable, aws_config, verbose: bool = True):
-    """Run every uncached trial of ``trial_cache`` on AWS Batch.
+def driver_aws(trial_cache, run_fnc: Callable, aws_config,
+               verbose: bool = True) -> None:
+    """Run every uncached trial of trial_cache on AWS Batch.
 
     Args:
-        trial_cache (TrialCache): trial spec + cache.
-        run_fnc: callable accepting ``**trial`` and returning a dict
-            or DataFrame, persisted by ``trial_cache.save_result``.
-        aws_config (AWSConfig): bucket / queue / definition / region.
-        verbose (bool): tqdm progress bar + status prints.
+        trial_cache (TrialCache): trial spec plus cache.
+        run_fnc (Callable): accepts **trial and returns a dict or
+            DataFrame, persisted by trial_cache.save_result.
+        aws_config (AWSConfig): bucket, queue, definition, region.
+        verbose (bool): tqdm progress bar plus status prints.
     """
     trials = list(trial_cache.iter_trial_no_repeat())
     if not trials:
@@ -50,8 +52,8 @@ def driver_aws(trial_cache, run_fnc: Callable, aws_config, verbose: bool = True)
     s3 = boto3.client('s3', region_name=aws_config.region)
     batch = boto3.client('batch', region_name=aws_config.region)
 
-    # Map trial_hash -> ORIGINAL trial dict (used for save_result).  We
-    # want one job per uncached trial, deduped if hashes collide (rare).
+    # Map trial_hash -> ORIGINAL trial dict (used for save_result). One job
+    # per uncached trial, deduped if hashes collide (rare).
     pending: Dict[str, dict] = {stable_hash(t): t for t in trials}
     if verbose:
         print(f'[driver_aws] {len(pending)} uncached trials')
@@ -65,7 +67,8 @@ def driver_aws(trial_cache, run_fnc: Callable, aws_config, verbose: bool = True)
         s3, aws_config, run_fnc, pending, ds_wrap, verbose=verbose)
 
     # 3. Tier-escalation loop.
-    failures: List[Tuple[str, str]] = []     # (trial_hash, reason)
+    # failures holds (trial_hash, reason) pairs.
+    failures: List[Tuple[str, str]] = []
     remaining = list(pending)
     for tier_idx, mem_mb in enumerate(aws_config.memory_mb_tiers):
         if not remaining:
@@ -79,12 +82,12 @@ def driver_aws(trial_cache, run_fnc: Callable, aws_config, verbose: bool = True)
             s3=s3, batch=batch, aws_config=aws_config,
             trial_hashes=remaining, mem_mb=mem_mb, verbose=verbose)
 
-        # Save successful results.
         for h in completed:
             result = _download_result(s3, aws_config, h)
             trial_cache.save_result(result, pending[h])
 
-        # Permanently fail anything not-OOM (timeout / crash / bad image).
+        # A not-OOM failure (timeout, crash, bad image) is permanent: only
+        # OOM children are eligible to retry at the next memory tier.
         for h, reason in other_failed:
             failures.append((h, reason))
 
@@ -103,14 +106,23 @@ def driver_aws(trial_cache, run_fnc: Callable, aws_config, verbose: bool = True)
 
 
 def _upload_shared_datasources(trials, *, aws_config, s3, verbose):
-    """For each non-WGN ``ds`` in ``trials``, upload its built exp once.
+    """Upload each non-WGN data source's built exp once.
 
-    Returns ``{id(ds): DataSourceS3}`` for callers to swap into
-    worker_trial.  WGN sources skip the upload — workers rebuild them
-    locally from seed.
+    WGN sources skip the upload; workers rebuild them locally from seed.
+
+    Args:
+        trials (list): trial dicts, each possibly carrying a 'ds' key.
+        aws_config (AWSConfig): supplies the S3 bucket and prefix.
+        s3: boto3 S3 client.
+        verbose (bool): show a tqdm upload bar.
+
+    Returns:
+        ds_wrap (dict): {id(ds): DataSourceS3} for callers to swap into
+            worker_trial.
     """
     ds_wrap: Dict[int, DataSourceS3] = {}
-    unique = {}    # id -> ds
+    # id(ds) -> ds, deduping shared sources across trials.
+    unique = {}
     for t in trials:
         ds = t.get('ds')
         if ds is None or isinstance(ds, DataSourceWGN):
@@ -132,7 +144,7 @@ def _upload_shared_datasources(trials, *, aws_config, s3, verbose):
 
 
 def _to_worker_trial(trial: dict, ds_wrap: Dict[int, DataSourceS3]) -> dict:
-    """Replace ``ds`` with its S3 wrapper if one was uploaded for it."""
+    """Replace ds with its S3 wrapper if one was uploaded for it."""
     ds = trial.get('ds')
     if ds is None or isinstance(ds, DataSourceWGN):
         return trial
@@ -146,19 +158,33 @@ def _to_worker_trial(trial: dict, ds_wrap: Dict[int, DataSourceS3]) -> dict:
 
 
 def _job_key(prefix: str, trial_hash: str) -> str:
+    """Build the S3 key holding one trial's input pickle."""
     return s3_key(prefix, 'jobs', trial_hash, 'job.pkl')
 
 
 def _result_key(prefix: str, trial_hash: str) -> str:
+    """Build the S3 key holding one trial's result pickle."""
     return s3_key(prefix, 'jobs', trial_hash, 'result.pkl')
 
 
 def _manifest_key(prefix: str, run_id: str) -> str:
+    """Build the S3 key holding one array job's trial-hash manifest."""
     return s3_key(prefix, 'jobs', run_id, 'manifest.pkl')
 
 
 def _upload_jobs(s3, aws_config, run_fnc, pending, ds_wrap, verbose):
-    """Pickle ``(run_fnc, worker_trial)`` per trial; put_object in parallel."""
+    """Pickle (run_fnc, worker_trial) per trial and put_object in parallel.
+
+    Args:
+        s3: boto3 S3 client.
+        aws_config (AWSConfig): supplies the S3 bucket and prefix.
+        run_fnc (Callable): the per-trial run function pickled alongside
+            each trial.
+        pending (dict): {trial_hash: trial} for the uncached trials.
+        ds_wrap (dict): {id(ds): DataSourceS3} from
+            _upload_shared_datasources.
+        verbose (bool): show a tqdm upload bar.
+    """
     bucket = aws_config.s3_bucket
     prefix = aws_config.s3_prefix
 
@@ -182,13 +208,24 @@ def _upload_jobs(s3, aws_config, run_fnc, pending, ds_wrap, verbose):
 
 def _run_one_tier(*, s3, batch, aws_config, trial_hashes: List[str],
                   mem_mb: int, verbose: bool):
-    """Submit + poll a single array-job attempt at one memory tier.
+    """Submit and poll a single array-job attempt at one memory tier.
 
-    Returns ``(completed_hashes, oom_failed, other_failed)`` where
-    each ``*_failed`` is ``[(hash, reason), ...]``.
+    For trial counts above ARRAY_MAX the manifest is split across
+    multiple array submissions; the results merge before returning.
 
-    For trial counts > ARRAY_MAX the manifest is split across multiple
-    array submissions; the results merge before returning.
+    Args:
+        s3: boto3 S3 client.
+        batch: boto3 Batch client.
+        aws_config (AWSConfig): bucket, queue, definition, region.
+        trial_hashes (list): trial-hash strings to attempt this tier.
+        mem_mb (int): memory ceiling for this tier, in MB.
+        verbose (bool): tqdm progress bar plus status prints.
+
+    Returns:
+        completed (list): trial-hash strings that SUCCEEDED.
+        oom_failed (list): (trial_hash, reason) pairs that failed on OOM.
+        other_failed (list): (trial_hash, reason) pairs that failed for
+            any other reason.
     """
     completed: List[str] = []
     oom: List[Tuple[str, str]] = []
@@ -208,7 +245,23 @@ def _run_one_tier(*, s3, batch, aws_config, trial_hashes: List[str],
 
 def _run_one_array(*, s3, batch, aws_config, manifest: List[str],
                    mem_mb: int, verbose: bool):
-    """Upload manifest + submit one array (or single) job + poll."""
+    """Upload the manifest, submit one array (or single) job, and poll.
+
+    Args:
+        s3: boto3 S3 client.
+        batch: boto3 Batch client.
+        aws_config (AWSConfig): bucket, queue, definition, region.
+        manifest (list): trial-hash strings for this single submission,
+            at most ARRAY_MAX long.
+        mem_mb (int): memory ceiling for this tier, in MB.
+        verbose (bool): tqdm progress bar plus status prints.
+
+    Returns:
+        completed (list): trial-hash strings that SUCCEEDED.
+        oom_failed (list): (trial_hash, reason) pairs that failed on OOM.
+        other_failed (list): (trial_hash, reason) pairs that failed for
+            any other reason.
+    """
     run_id = f'run-{uuid.uuid4().hex[:8]}'
     bucket = aws_config.s3_bucket
     prefix = aws_config.s3_prefix
@@ -239,7 +292,17 @@ def _submit_job(*, batch, aws_config, run_id: str, manifest_uri: str,
                 n: int, mem_mb: int):
     """Submit one array (n >= 2) or single (n == 1) Batch job.
 
-    Returns ``(parent_job_id, is_array)``.
+    Args:
+        batch: boto3 Batch client.
+        aws_config (AWSConfig): queue, definition, vcpus, retry, timeout.
+        run_id (str): short run identifier used in the job name.
+        manifest_uri (str): s3:// URI of the manifest passed to the worker.
+        n (int): number of trials in the manifest.
+        mem_mb (int): memory ceiling for this tier, in MB.
+
+    Returns:
+        parent_job_id (str): the submitted job's id.
+        is_array (bool): True if submitted as an array job.
     """
     overrides = {
         'command': ['python', '-m', 'glow.aws.worker', manifest_uri],
@@ -268,8 +331,17 @@ def _poll_until_terminal(*, batch, parent_id: str, n: int, is_array: bool,
                          poll_seconds: float, verbose: bool):
     """Block until every child reaches a terminal state.
 
-    Returns a list of ``describe_jobs`` payload dicts, one per child,
-    in array-index order (or a single-element list for non-array).
+    Args:
+        batch: boto3 Batch client.
+        parent_id (str): the submitted job's id.
+        n (int): number of children to wait on.
+        is_array (bool): True if parent_id is an array job.
+        poll_seconds (float): sleep between describe_jobs polls.
+        verbose (bool): show a tqdm progress bar.
+
+    Returns:
+        statuses (list): describe_jobs payload dicts, one per child, in
+            array-index order (a single-element list for non-array).
     """
     terminal = {'SUCCEEDED', 'FAILED'}
     child_ids = ([f'{parent_id}:{i}' for i in range(n)]
@@ -301,13 +373,24 @@ def _poll_until_terminal(*, batch, parent_id: str, n: int, is_array: bool,
     return [statuses[i] for i in child_ids]
 
 
-def _chunked(seq, k):
+def _chunked(seq, k: int):
+    """Yield successive length-k slices of seq."""
     for i in range(0, len(seq), k):
         yield seq[i:i + k]
 
 
 def _classify(statuses: List[dict], manifest: List[str]):
-    """Sort terminal children into completed / oom-failed / other-failed."""
+    """Sort terminal children into completed, oom-failed, other-failed.
+
+    Args:
+        statuses (list): describe_jobs payload dicts, in manifest order.
+        manifest (list): trial-hash strings aligned with statuses.
+
+    Returns:
+        completed (list): trial-hash strings that SUCCEEDED.
+        oom (list): (trial_hash, reason) pairs that failed on OOM.
+        other (list): (trial_hash, reason) pairs that failed otherwise.
+    """
     completed: List[str] = []
     oom: List[Tuple[str, str]] = []
     other: List[Tuple[str, str]] = []
@@ -331,10 +414,17 @@ def _classify(statuses: List[dict], manifest: List[str]):
 
 
 def _is_oom(job: dict) -> bool:
-    """Carry-over from old aws_batch.py: 3 text checks + exit-code fallback.
+    """Decide whether a failed job was killed for running out of memory.
 
-    Timeouts also exit 137 — check the duration/timeout phrasing first
-    so we don't escalate them into the OOM retry loop.
+    Carry-over from the old aws_batch.py: three text checks plus an
+    exit-code fallback. Timeouts also exit 137, so the duration/timeout
+    phrasing is checked first to keep them out of the OOM retry loop.
+
+    Args:
+        job (dict): a describe_jobs payload for one child.
+
+    Returns:
+        is_oom (bool): True if the failure looks like an OOM kill.
     """
     status_reason = (job.get('statusReason') or '').lower()
     container = job.get('container') or {}
@@ -358,6 +448,16 @@ def _is_oom(job: dict) -> bool:
 
 
 def _download_result(s3, aws_config, trial_hash: str):
+    """Fetch and unpickle one trial's result from S3.
+
+    Args:
+        s3: boto3 S3 client.
+        aws_config (AWSConfig): supplies the S3 bucket and prefix.
+        trial_hash (str): the trial whose result to download.
+
+    Returns:
+        result: the unpickled worker result (dict or DataFrame).
+    """
     body = s3.get_object(
         Bucket=aws_config.s3_bucket,
         Key=_result_key(aws_config.s3_prefix, trial_hash))['Body'].read()
@@ -365,7 +465,13 @@ def _download_result(s3, aws_config, trial_hash: str):
 
 
 def _print_summary(pending: Dict[str, dict],
-                   failures: Iterable[Tuple[str, str]]):
+                   failures: Iterable[Tuple[str, str]]) -> None:
+    """Print the success count and up to 20 failures.
+
+    Args:
+        pending (dict): {trial_hash: trial} for every attempted trial.
+        failures (Iterable): (trial_hash, reason) pairs that failed.
+    """
     failures = list(failures)
     n_ok = len(pending) - len(failures)
     print(f'[driver_aws] done: {n_ok}/{len(pending)} succeeded')

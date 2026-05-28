@@ -1,3 +1,5 @@
+"""Ward hierarchical segmentation of an experiment's voxels into a tree."""
+
 from enum import StrEnum
 
 import numpy as np
@@ -21,8 +23,8 @@ class ClusterMode(StrEnum):
     FOCUS = 'Focus'
 
 
-def cluster(exp, mode=ClusterMode.FOCUS):
-    """hierarchical segmentation via Ward's method (6-connectivity in 3d).
+def cluster(exp, mode: ClusterMode = ClusterMode.FOCUS):
+    """Segment hierarchically via Ward's method (6-connectivity in 3d).
 
     Supports non-contiguous masks: each connected component is clustered
     independently and results are concatenated into a forest.
@@ -60,7 +62,8 @@ def cluster(exp, mode=ClusterMode.FOCUS):
     # global indices of active voxels, ordered by raster scan of the bbox
     global_idx = exp.mask_idx[bb_slices][mask_bb]
 
-    # per-component clustering → forest
+    # cluster each connected component separately, concatenating the
+    # per-component trees into one forest
     all_children = []
     internal_offset = 0
 

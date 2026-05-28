@@ -1,4 +1,7 @@
+"""Cluster-extent thresholding with permutation FWER."""
+
 from bisect import bisect_left
+from typing import Callable
 
 import numpy as np
 from scipy.ndimage import label
@@ -15,11 +18,35 @@ class AnalysisCET(AnalysisVoxel):
     derived from the permutation null at cft_pval, finds connected
     components, and compares cluster sizes to the permutation null
     of max cluster sizes.
+
+    Attributes:
+        exp (Experiment): source data (scaled)
+        n_perm_fwer (int): permutations for FWER control
+        alpha_fwer (float): family-wise error rate
+        cft_pval (float): tail probability defining the cluster-forming
+            threshold from the permutation null
+        z_flag (bool): whether stats are z-scored before thresholding
+        cft (float): cluster-forming threshold in stat units
+            (populated by fit)
+        stat (np.array): (n_perm_fwer+1, num_vox) stats (populated by fit)
+        pval (np.array): (num_vox,) FWER p-values (populated by fit)
     """
 
-    def __init__(self, exp, n_perm_fwer, alpha_fwer=.05,
-                 cft_pval=DEFAULT_CET_CFT_PVAL, z_flag=False,
-                 get_stat=None):
+    def __init__(self, exp, n_perm_fwer: int, alpha_fwer: float = .05,
+                 cft_pval: float = DEFAULT_CET_CFT_PVAL, z_flag: bool = False,
+                 get_stat: Callable = None):
+        """Configure a cluster-extent thresholding analysis.
+
+        Args:
+            exp (Experiment): experiment to analyze
+            n_perm_fwer (int): number of permutations for FWER control
+            alpha_fwer (float): family-wise error rate
+            cft_pval (float): tail probability defining the cluster-forming
+                threshold from the permutation null
+            z_flag (bool): z-score voxel-wise before thresholding
+            get_stat (Callable): per-region stat function (e, h, n);
+                defaults to Wilks lambda.
+        """
         super().__init__(exp, get_stat=get_stat)
         self.n_perm_fwer = n_perm_fwer
         self.alpha_fwer = alpha_fwer
@@ -31,9 +58,10 @@ class AnalysisCET(AnalysisVoxel):
         """Run the permutation walk and compute cluster-extent p-values.
 
         Args:
-            _stat: optional (n_perm_fwer+1, num_vox) pre-computed stat matrix
-                (raw, before z-scoring). Caller is responsible for passing a
-                copy. Must match n_perm_fwer.
+            _stat (np.array): optional (n_perm_fwer+1, num_vox) pre-computed
+                stat matrix (raw, before z-scoring). Row 0 is the observed
+                draw. Caller is responsible for passing a copy. Must match
+                n_perm_fwer.
 
         Returns:
             self
@@ -62,20 +90,21 @@ class AnalysisCET(AnalysisVoxel):
 
     @staticmethod
     def _get_pval_cet(stat, mask_idx, cft):
-        """FWER via permutation null of max cluster sizes.
+        """Compute FWER p-values via permutation null of max cluster sizes.
 
         For each permutation (and the observed data), thresholds the stat
         map at cft, labels connected components, and records the max
-        cluster size.  The observed clusters are then compared to the
-        sorted null of max cluster sizes.
+        cluster size. The observed clusters are then compared to the
+        sorted null of max cluster sizes (Nichols & Holmes 2002).
 
         Args:
-            stat: (n_perm+1, num_vox) stats (row 0 = observed)
-            mask_idx: voxel index array (2D or 3D, -1 outside)
-            cft: cluster-forming threshold (in stat units)
+            stat (np.array): (n_perm+1, num_vox) stats (row 0 = observed)
+            mask_idx (np.array): 2d or 3d voxel index array (-1 outside)
+            cft (float): cluster-forming threshold in stat units
 
         Returns:
-            pval: (num_vox,) p-value per voxel (cluster members share p)
+            pval (np.array): (num_vox,) p-value per voxel; voxels in the
+                same cluster share a p-value
         """
         n_rows, num_vox = stat.shape
         vox_mask = mask_idx > -1
@@ -87,12 +116,14 @@ class AnalysisCET(AnalysisVoxel):
         for i in range(n_rows):
             vol = np.zeros(mask_idx.shape)
             vol[vox_mask] = stat[i, :]
-            labeled, n_cl = label(vol >= cft)  # default face-connectivity
+            # default face-connectivity
+            labeled, n_cl = label(vol >= cft)
             if n_cl == 0:
                 if i == 0:
                     obs_labels, obs_sizes = labeled, np.array([])
                 continue
-            sizes = np.bincount(labeled.ravel())[1:]  # skip background
+            # skip background (label 0)
+            sizes = np.bincount(labeled.ravel())[1:]
             max_sizes[i] = sizes.max()
             if i == 0:
                 obs_labels, obs_sizes = labeled, sizes

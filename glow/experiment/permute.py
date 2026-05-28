@@ -5,32 +5,38 @@ import numpy as np
 from glow.analysis.mancova import decompose
 
 
-def _perm_indices(seed, num_img):
-    """Index array for one Freedman-Lane permutation under ``seed``.
+def _perm_indices(seed: int, num_img: int):
+    """Build the index array for one Freedman-Lane permutation under seed.
 
     Sole source of truth for the seed-to-perm mapping: every consumer
     that needs FL permutations under a given seed (the full FL matrix
-    in :func:`get_freed_lane`, the per-row build loops in batched
-    perm-LLR backends) routes through here so the mapping stays
-    consistent.
+    in get_freed_lane, the per-row build loops in batched perm-LLR
+    backends) routes through here so the mapping stays consistent.
 
-    ``perm[k]`` gives the original-image index that the FL-permuted
-    data puts at position ``k``.
+    perm[k] gives the original-image index that the FL-permuted data
+    puts at position k.
+
+    Args:
+        seed (int): permutation seed
+        num_img (int): number of images
+
+    Returns:
+        perm (np.array): (num_img,) int permutation index array
     """
     rng = np.random.default_rng(seed)
     return np.argsort(rng.permutation(num_img))
 
 
-def get_freed_lane(x, contrast, perm_idx):
-    """build Freedman-Lane permutation matrix (standard textbook convention).
+def get_freed_lane(x, contrast, perm_idx: int):
+    """Build the Freedman-Lane permutation matrix (textbook convention).
 
-    Column-layout: ``Y_v* = P A Y_v + B Y_v`` where A = I - Q0Q0T,
+    Column-layout: Y_v* = P A Y_v + B Y_v where A = I - Q0Q0T,
     B = Q0Q0T.  I.e., compute residuals A Y_v, permute them by P, then
     add the original fitted part B Y_v back.
 
-    Applied along glow's row-layout image axis as ``y_perm = y @ freed_lane``,
-    so the matrix returned is the column-layout transpose ``M.T = A P.T + B``,
-    which in index form is ``(I - Q0Q0T)[:, perm] + Q0Q0T``.
+    Applied along glow's row-layout image axis as y_perm = y @ freed_lane,
+    so the matrix returned is the column-layout transpose M.T = A P.T + B,
+    which in index form is (I - Q0Q0T)[:, perm] + Q0Q0T.
 
     Args:
         x (np.array): (a, num_img) design matrix
@@ -43,7 +49,8 @@ def get_freed_lane(x, contrast, perm_idx):
     assert perm_idx, 'perm_idx = 0 reserved for unpermuted data'
 
     q = decompose(x, contrast)
-    q0 = q[0].T @ q[0]  # (num_img, num_img) nuisance projector Q0Q0T
+    # (num_img, num_img) nuisance projector Q0Q0T
+    q0 = q[0].T @ q[0]
 
     num_img = x.shape[1]
     perm = _perm_indices(perm_idx, num_img)

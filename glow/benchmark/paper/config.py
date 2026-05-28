@@ -1,15 +1,15 @@
 """Paper-benchmark catalogue.
 
-Each entry of ``CACHE_BY_LABEL`` is a ``(TrialCache, run_fnc)`` pair:
-the cache owns iteration + result IO for one (data source,
-analysis-family) combination; the ``run_fnc`` is bound to its analysis
-recipe via ``functools.partial`` so the CLI doesn't need to know
-whether the trial is a ``run_ana`` or ``run_mancova`` job.
+Each entry of CACHE_BY_LABEL is a (TrialCache, run_fnc) pair: the cache
+owns iteration + result IO for one (data source, analysis-family)
+combination; the run_fnc is bound to its analysis recipe via
+functools.partial so the CLI doesn't need to know whether the trial is
+a run_ana or run_mancova job.
 
-The trial space is intentionally small: ``seed`` x ``effect_llr``,
-with a single ``DataSource`` and effect ``Extenter`` held constant per
-cache.  Sweeps that varied a structural parameter (b, num_img, effect
-n_vox, ...) are encoded by emitting one cache per value.
+The trial space is intentionally small: seed x effect_llr, with a
+single DataSource and effect Extenter held constant per cache. Sweeps
+that varied a structural parameter (b, num_img, effect n_vox, ...) are
+encoded by emitting one cache per value.
 """
 import math
 from functools import partial
@@ -78,7 +78,9 @@ ANALYSIS_DICT = {
 
 
 # ---------- data-source factories -------------------------------------------
-def _ds_wgn(*, shape=None, b=2, num_img=100, seed=0, crop=True):
+def _ds_wgn(*, shape=None, b: int = 2, num_img: int = 100, seed: int = 0,
+            crop: bool = True):
+    """Build a white-Gaussian-noise data source, optionally cropped to a sphere."""
     if shape is None:
         shape = (_WGN_SIDE_3D,) * 3
     return DataSourceWGN(
@@ -86,7 +88,8 @@ def _ds_wgn(*, shape=None, b=2, num_img=100, seed=0, crop=True):
         extenter=_CROP_EXTENTER if crop else None)
 
 
-def _ds_hcp(*, hcp_feats=('fa', 'md'), seed=0):
+def _ds_hcp(*, hcp_feats=('fa', 'md'), seed: int = 0):
+    """Build an HCP data source over the given features, cropped to a sphere."""
     return DataSourceHCP(hcp_feats=hcp_feats, seed=seed,
                          extenter=_CROP_EXTENTER)
 
@@ -96,7 +99,9 @@ def _ds_hcp(*, hcp_feats=('fa', 'md'), seed=0):
 CACHE_BY_LABEL = {}
 
 
-def _make_cache(label, *, ds, extenter, effect_llr_all, n_seed):
+def _make_cache(label: str, *, ds, extenter, effect_llr_all,
+                n_seed: int) -> TrialCache:
+    """Build a TrialCache over the seed x effect_llr grid for one (ds, extenter)."""
     return TrialCache(
         name=label,
         iter_kwargs={
@@ -107,9 +112,19 @@ def _make_cache(label, *, ds, extenter, effect_llr_all, n_seed):
     )
 
 
-def _add_ana(label, *, ds, extenter=None, effect_llr_all=None,
-             n_seed=N_SEED, ana_kwargs_dict=None):
-    """Catalogue entry that runs every analysis in ``ana_kwargs_dict``."""
+def _add_ana(label: str, *, ds, extenter=None, effect_llr_all=None,
+             n_seed: int = N_SEED, ana_kwargs_dict: dict = None) -> None:
+    """Register a CACHE_BY_LABEL entry that runs every analysis in ana_kwargs_dict.
+
+    Args:
+        label (str): catalogue key for the new cache
+        ds: data source for the trials
+        extenter: effect Extenter (defaults to the shared MinVar extenter)
+        effect_llr_all: effect-strength grid (defaults to EFFECT_LLR_GRID)
+        n_seed (int): number of seeds to sweep
+        ana_kwargs_dict (dict): label -> (Analysis class, init kwargs);
+            defaults to ANALYSIS_DICT
+    """
     if extenter is None:
         extenter = _DEFAULT_EFFECT_EXTENTER
     if effect_llr_all is None:
@@ -123,10 +138,20 @@ def _add_ana(label, *, ds, extenter=None, effect_llr_all=None,
     CACHE_BY_LABEL[label] = (cache, run_fnc)
 
 
-def _add_mancova(label, *, ds, extenter=None, effect_llr_all=None,
-                 n_seed=N_SEED, n_perm_fwer=N_PERM_FWER,
-                 alpha_fwer=ALPHA_FWER):
-    """Catalogue entry that runs the VBA/TFCE/CET x stats x {raw,z} matrix."""
+def _add_mancova(label: str, *, ds, extenter=None, effect_llr_all=None,
+                 n_seed: int = N_SEED, n_perm_fwer: int = N_PERM_FWER,
+                 alpha_fwer: float = ALPHA_FWER) -> None:
+    """Register a CACHE_BY_LABEL entry that runs the VBA/TFCE/CET x stats x {raw,z} matrix.
+
+    Args:
+        label (str): catalogue key for the new cache
+        ds: data source for the trials
+        extenter: effect Extenter (defaults to the shared MinVar extenter)
+        effect_llr_all: effect-strength grid (defaults to EFFECT_LLR_GRID)
+        n_seed (int): number of seeds to sweep
+        n_perm_fwer (int): number of FWER permutations
+        alpha_fwer (float): FWER significance level
+    """
     if extenter is None:
         extenter = _DEFAULT_EFFECT_EXTENTER
     if effect_llr_all is None:

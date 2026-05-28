@@ -1,11 +1,11 @@
 """CLI entry point for paper benchmarks.
 
-Resolves cache labels from ``config.CACHE_BY_LABEL`` and drives each
-selected entry through ``driver_local`` (or ``driver_aws`` with
-``--aws``).  Each catalogue entry is a ``(TrialCache, run_fnc)``
-pair; the ``run_fnc`` is already bound to its analysis recipe (see
-``paper/config.py``), so the CLI doesn't need to know whether a cache
-is a ``run_ana`` or ``run_mancova`` job.
+Running python -m glow.benchmark.paper resolves cache labels from
+config.CACHE_BY_LABEL and drives each selected entry through
+driver_local (or driver_aws with --aws). Each catalogue entry is a
+(TrialCache, run_fnc) pair; the run_fnc is already bound to its
+analysis recipe (see paper/config.py), so the CLI doesn't need to know
+whether a cache is a run_ana or run_mancova job.
 
 Usage:
     python -m glow.benchmark.paper                       # everything (local)
@@ -21,11 +21,22 @@ from glow.benchmark.driver import driver_local
 from .config import CACHE_BY_LABEL
 
 
-def resolve_labels(patterns):
+def resolve_labels(patterns) -> list:
     """Expand a list of literal labels / fnmatch patterns into entries.
 
-    Empty input means "everything".  Unknown literal labels raise; an
+    Empty input means "everything". Unknown literal labels raise; an
     fnmatch pattern that matches nothing also raises (so typos surface).
+
+    Args:
+        patterns (list): literal cache labels and/or fnmatch patterns;
+            empty selects every catalogue entry
+
+    Returns:
+        out (list): (label, (cache, run_fnc)) pairs, de-duplicated and in
+            first-seen order
+
+    Raises:
+        ValueError: a literal label is unknown, or a pattern matches nothing
     """
     if not patterns:
         return list(CACHE_BY_LABEL.items())
@@ -45,9 +56,17 @@ def resolve_labels(patterns):
     return out
 
 
-def run(labels=None, n_jobs=1, verbose=True,
-        aws=False, aws_config_path='.glow_aws_config'):
-    """Run every selected cache through ``driver_local`` (or ``driver_aws``)."""
+def run(labels=None, n_jobs: int = 1, verbose: bool = True,
+        aws: bool = False, aws_config_path: str = '.glow_aws_config') -> None:
+    """Run every selected cache through driver_local (or driver_aws).
+
+    Args:
+        labels (list | None): cache labels or fnmatch patterns; None selects all
+        n_jobs (int): parallel worker count (local driver only)
+        verbose (bool): print per-cache headers and progress
+        aws (bool): dispatch to AWS Batch via glow.aws.driver_aws instead of local
+        aws_config_path (str): path to the AWSConfig JSON, used only when aws is True
+    """
     aws_cfg = None
     driver_aws = None
     if aws:
@@ -64,7 +83,15 @@ def run(labels=None, n_jobs=1, verbose=True,
             driver_local(cache, run_fnc, n_jobs=n_jobs, verbose=verbose)
 
 
-def parse_args(argv=None):
+def parse_args(argv=None) -> argparse.Namespace:
+    """Parse the paper-benchmark CLI arguments.
+
+    Args:
+        argv (list | None): argument list to parse; None reads sys.argv
+
+    Returns:
+        the parsed argparse.Namespace
+    """
     parser = argparse.ArgumentParser(description='Run paper benchmarks.')
     parser.add_argument('labels', nargs='*',
                         help='cache labels or fnmatch patterns (default: all)')

@@ -1,6 +1,6 @@
 """Idempotent AWS Batch infrastructure CLI.
 
-Subcommands::
+Subcommands:
 
     python -m glow.aws.infra bootstrap [--config PATH]
     python -m glow.aws.infra setup     [--image-tag IMG] [--config PATH]
@@ -10,16 +10,15 @@ Subcommands::
     python -m glow.aws.infra pause                                 [--config PATH]
     python -m glow.aws.infra resume                                [--config PATH]
 
-Reads ``AWSConfig`` from ``.glow_aws_config`` (or ``--config``) for
-bucket / queue / job-definition / region names; the rest of the
-provisioning detail (instance types, allocation strategy, VPC lookup)
-lives in this file.
+Reads AWSConfig from .glow_aws_config (or --config) for bucket, queue,
+job-definition, and region names; the rest of the provisioning detail
+(instance types, allocation strategy, VPC lookup) lives in this file.
 
-``bootstrap`` creates the account-wide IAM roles ``setup`` depends on
-(the Batch service-linked role, ``ecsInstanceRole`` + instance profile,
-the spot-fleet role, and the two ECS task roles).  It needs IAM-admin
-credentials and only has to run once per account; ``setup`` and the
-daily commands need only S3 / Batch / ECR permissions.
+bootstrap creates the account-wide IAM roles setup depends on (the Batch
+service-linked role, ecsInstanceRole plus instance profile, the
+spot-fleet role, and the two ECS task roles). It needs IAM-admin
+credentials and only has to run once per account; setup and the daily
+commands need only S3, Batch, and ECR permissions.
 """
 
 import argparse
@@ -62,7 +61,7 @@ INSTANCE_TYPES = [
     'r7a.large', 'r7a.xlarge', 'r7a.2xlarge', 'r7a.4xlarge',
 ]
 
-# IAM role names — created by `bootstrap`, consumed by `setup`.
+# IAM role names created by bootstrap, consumed by setup.
 ECS_INSTANCE_ROLE = 'ecsInstanceRole'
 SPOT_FLEET_ROLE = 'aws-ec2-spot-fleet-tagging-role'
 ECS_TASK_EXECUTION_ROLE = 'GlowEcsTaskExecutionRole'
@@ -75,11 +74,17 @@ ECR_REPO_NAME = 'glow-worker'
 # ---------- bootstrap (one-time IAM) ----------------------------------------
 
 
-def cmd_bootstrap(args, cfg: AWSConfig):
-    """Create the account-wide IAM roles `setup` depends on (idempotent).
+def cmd_bootstrap(args, cfg: AWSConfig) -> None:
+    """Create the account-wide IAM roles setup depends on (idempotent).
 
-    Needs IAM-admin credentials; only has to run once per account.  Every
+    Needs IAM-admin credentials; only has to run once per account. Every
     call here tolerates pre-existing roles, so rerunning is safe.
+
+    Args:
+        args: parsed argparse Namespace (unused; kept for the CLI
+            dispatch signature).
+        cfg (AWSConfig): supplies the S3 bucket scoped into the task
+            role's inline policy.
     """
     iam = boto3.client('iam')
     print('[bootstrap] creating IAM roles (idempotent)')
@@ -112,7 +117,14 @@ def cmd_bootstrap(args, cfg: AWSConfig):
 
 
 def _trust(service: str) -> dict:
-    """An assume-role trust policy for an AWS service principal."""
+    """Build an assume-role trust policy for an AWS service principal.
+
+    Args:
+        service (str): the service principal, e.g. ec2.amazonaws.com.
+
+    Returns:
+        policy (dict): the trust-policy document.
+    """
     return {
         'Version': '2012-10-17',
         'Statement': [{
@@ -124,7 +136,14 @@ def _trust(service: str) -> dict:
 
 
 def _s3_policy(bucket: str) -> dict:
-    """Inline policy granting the worker get/put/list on its bucket."""
+    """Build an inline policy granting the worker get/put/list on its bucket.
+
+    Args:
+        bucket (str): the S3 bucket name to scope the policy to.
+
+    Returns:
+        policy (dict): the inline-policy document.
+    """
     return {
         'Version': '2012-10-17',
         'Statement': [{
@@ -138,12 +157,19 @@ def _s3_policy(bucket: str) -> dict:
     }
 
 
-def _create_service_linked_role(iam, service: str):
+def _create_service_linked_role(iam, service: str) -> None:
+    """Create a service-linked role, tolerating one that already exists.
+
+    Args:
+        iam: boto3 IAM client.
+        service (str): the AWS service principal, e.g. batch.amazonaws.com.
+    """
     try:
         iam.create_service_linked_role(AWSServiceName=service)
         print(f'  ✓ created service-linked role for {service}')
     except ClientError as e:
-        # Already exists → InvalidInput; that's the success path on rerun.
+        # An existing role surfaces as InvalidInput here; that is the
+        # success path on rerun.
         already = ('InvalidInput', 'EntityAlreadyExists')
         if e.response['Error']['Code'] in already:
             print(f'  ✓ service-linked role for {service} exists')
@@ -153,7 +179,19 @@ def _create_service_linked_role(iam, service: str):
 
 def _create_role(iam, name: str, trust: dict, *,
                  managed: Optional[List[str]] = None,
-                 inline: Optional[dict] = None):
+                 inline: Optional[dict] = None) -> None:
+    """Create an IAM role and attach its policies (idempotent).
+
+    A pre-existing role is tolerated; policy attachment then runs over it
+    so reruns converge on the same attachments.
+
+    Args:
+        iam: boto3 IAM client.
+        name (str): the role name.
+        trust (dict): the assume-role trust-policy document.
+        managed (list | None): AWS-managed policy ARN suffixes to attach.
+        inline (dict | None): {policy_name: policy_document} inline policies.
+    """
     try:
         iam.create_role(
             RoleName=name,
@@ -175,7 +213,13 @@ def _create_role(iam, name: str, trust: dict, *,
             PolicyDocument=json.dumps(doc))
 
 
-def _create_instance_profile(iam, name: str):
+def _create_instance_profile(iam, name: str) -> None:
+    """Create an instance profile and attach the like-named role (idempotent).
+
+    Args:
+        iam: boto3 IAM client.
+        name (str): the profile name, also used as the attached role name.
+    """
     try:
         iam.create_instance_profile(InstanceProfileName=name)
         print(f'  ✓ created instance profile {name}')
@@ -196,8 +240,14 @@ def _create_instance_profile(iam, name: str):
 # ---------- setup -----------------------------------------------------------
 
 
-def cmd_setup(args, cfg: AWSConfig):
-    """Provision S3 + ECR + Batch resources (idempotent)."""
+def cmd_setup(args, cfg: AWSConfig) -> None:
+    """Provision the S3, ECR, and Batch resources (idempotent).
+
+    Args:
+        args: parsed argparse Namespace; reads args.image_tag.
+        cfg (AWSConfig): bucket, queue, definition, region, and resource
+            sizing.
+    """
     region = cfg.region
     account_id = _account_id()
 
@@ -211,7 +261,12 @@ def cmd_setup(args, cfg: AWSConfig):
     print('[setup] done.')
 
 
-def _setup_s3_bucket(cfg: AWSConfig):
+def _setup_s3_bucket(cfg: AWSConfig) -> None:
+    """Create the configured S3 bucket if it does not already exist.
+
+    Args:
+        cfg (AWSConfig): supplies the bucket name and region.
+    """
     s3 = boto3.client('s3', region_name=cfg.region)
     try:
         s3.head_bucket(Bucket=cfg.s3_bucket)
@@ -232,9 +287,17 @@ def _setup_s3_bucket(cfg: AWSConfig):
 def _resolve_image_uri(args, region: str, account_id: str) -> str:
     """Return the ECR image URI Batch should run.
 
-    With ``--image-tag <tag>``, the local image is pushed to ECR
-    under that tag.  Without it, an existing ``glow-worker:latest`` in
-    ECR is expected — looked up via ``describe_images``.
+    With --image-tag <tag>, the local image is pushed to ECR under that
+    tag. Without it, an existing glow-worker:latest in ECR is expected,
+    looked up via describe_images.
+
+    Args:
+        args: parsed argparse Namespace; reads args.image_tag.
+        region (str): the AWS region.
+        account_id (str): the AWS account id, for the ECR URI.
+
+    Returns:
+        image_uri (str): the resolved ECR image URI.
     """
     if args.image_tag:
         return _push_image_to_ecr(args.image_tag, region, account_id)
@@ -253,10 +316,18 @@ def _resolve_image_uri(args, region: str, account_id: str) -> str:
 
 
 def _push_image_to_ecr(local_tag: str, region: str, account_id: str) -> str:
-    """Tag + push a local Docker image to ECR.  Creates the repo if needed.
+    """Tag and push a local Docker image to ECR, creating the repo if needed.
 
-    Uses the ``docker`` CLI via ``subprocess`` rather than the Docker
-    SDK so it works in any environment that already builds the image.
+    Uses the docker CLI via subprocess rather than the Docker SDK so it
+    works in any environment that already builds the image.
+
+    Args:
+        local_tag (str): the local Docker image tag to push.
+        region (str): the AWS region.
+        account_id (str): the AWS account id, for the ECR URI.
+
+    Returns:
+        ecr_uri (str): the pushed image's ECR URI.
     """
     import shutil
     import subprocess
@@ -288,12 +359,22 @@ def _push_image_to_ecr(local_tag: str, region: str, account_id: str) -> str:
     return ecr_uri
 
 
-def _setup_job_definition(cfg: AWSConfig, *, image_uri: str, account_id: str):
+def _setup_job_definition(cfg: AWSConfig, *, image_uri: str,
+                          account_id: str) -> None:
+    """Register a Batch job definition pointing at the worker image.
+
+    Args:
+        cfg (AWSConfig): supplies definition name, region, vcpus, memory
+            tiers, retry attempts, and timeout.
+        image_uri (str): the ECR image URI the container runs.
+        account_id (str): the AWS account id, for the task-role ARNs.
+    """
     batch = boto3.client('batch', region_name=cfg.region)
-    # ECS task roles — referenced; created out-of-band per README.
+    # ECS task roles referenced here are created by bootstrap.
     exec_role = f'arn:aws:iam::{account_id}:role/GlowEcsTaskExecutionRole'
     task_role = f'arn:aws:iam::{account_id}:role/GlowEcsTaskRole'
 
+    # The driver overrides command per-submission.
     container = {
         'image': image_uri,
         'jobRoleArn': task_role,
@@ -302,7 +383,6 @@ def _setup_job_definition(cfg: AWSConfig, *, image_uri: str, account_id: str):
             {'type': 'VCPU', 'value': str(cfg.vcpus)},
             {'type': 'MEMORY', 'value': str(cfg.memory_mb_tiers[0])},
         ],
-        # driver overrides command per-submission
         'command': ['python', '-m', 'glow.aws.worker'],
         'environment': [
             {'name': 'AWS_DEFAULT_REGION', 'value': cfg.region},
@@ -321,6 +401,20 @@ def _setup_job_definition(cfg: AWSConfig, *, image_uri: str, account_id: str):
 
 
 def _setup_compute_environment(cfg: AWSConfig, *, account_id: str) -> str:
+    """Create (or update) the Spot compute environment (idempotent).
+
+    On rerun only maxvCpus is updated; every other compute-resource field
+    is immutable on an existing environment. A new environment is placed
+    in the account's default VPC (first default subnet, default SG).
+
+    Args:
+        cfg (AWSConfig): supplies region and max_concurrent.
+        account_id (str): the AWS account id, for the service / instance
+            / spot-fleet role ARNs.
+
+    Returns:
+        ce_arn (str): the compute environment's ARN.
+    """
     batch = boto3.client('batch', region_name=cfg.region)
     ec2 = boto3.client('ec2', region_name=cfg.region)
 
@@ -328,7 +422,6 @@ def _setup_compute_environment(cfg: AWSConfig, *, account_id: str) -> str:
         computeEnvironments=[COMPUTE_ENV_NAME])['computeEnvironments']
     if existing:
         arn = existing[0]['computeEnvironmentArn']
-        # Update maxvCpus to track config; everything else is immutable.
         try:
             batch.update_compute_environment(
                 computeEnvironment=COMPUTE_ENV_NAME,
@@ -339,7 +432,6 @@ def _setup_compute_environment(cfg: AWSConfig, *, account_id: str) -> str:
             print(f'  ⚠ compute env update failed: {e}')
         return arn
 
-    # Default VPC: first default subnet + default SG.
     subnets = ec2.describe_subnets(
         Filters=[{'Name': 'default-for-az', 'Values': ['true']}])['Subnets']
     if not subnets:
@@ -384,7 +476,16 @@ def _setup_compute_environment(cfg: AWSConfig, *, account_id: str) -> str:
     return arn
 
 
-def _wait_for_ce_valid(batch, timeout_s: int = 300):
+def _wait_for_ce_valid(batch, timeout_s: int = 300) -> None:
+    """Block until the compute environment reaches VALID, else raise.
+
+    Args:
+        batch: boto3 Batch client.
+        timeout_s (int): seconds to wait before raising SystemExit.
+
+    Raises:
+        SystemExit: if VALID is not reached within timeout_s.
+    """
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         ces = batch.describe_compute_environments(
@@ -395,7 +496,13 @@ def _wait_for_ce_valid(batch, timeout_s: int = 300):
     raise SystemExit(f'compute env did not reach VALID within {timeout_s}s')
 
 
-def _setup_job_queue(cfg: AWSConfig, *, ce_arn: str):
+def _setup_job_queue(cfg: AWSConfig, *, ce_arn: str) -> None:
+    """Create the job queue bound to the compute environment (idempotent).
+
+    Args:
+        cfg (AWSConfig): supplies the queue name and region.
+        ce_arn (str): the compute environment ARN to bind the queue to.
+    """
     batch = boto3.client('batch', region_name=cfg.region)
     existing = batch.describe_job_queues(
         jobQueues=[cfg.job_queue])['jobQueues']
@@ -415,7 +522,14 @@ def _setup_job_queue(cfg: AWSConfig, *, ce_arn: str):
 # ---------- teardown --------------------------------------------------------
 
 
-def cmd_teardown(args, cfg: AWSConfig):
+def cmd_teardown(args, cfg: AWSConfig) -> None:
+    """Disable and delete the Batch resources (requires --yes).
+
+    Args:
+        args: parsed argparse Namespace; reads args.yes and
+            args.delete_bucket.
+        cfg (AWSConfig): supplies the queue, definition, bucket, region.
+    """
     if not args.yes:
         print('--yes required to actually delete resources.')
         return
@@ -431,7 +545,13 @@ def cmd_teardown(args, cfg: AWSConfig):
     print('[teardown] done.')
 
 
-def _teardown_queue(batch, cfg: AWSConfig):
+def _teardown_queue(batch, cfg: AWSConfig) -> None:
+    """Disable and delete the job queue, waiting for it to drain.
+
+    Args:
+        batch: boto3 Batch client.
+        cfg (AWSConfig): supplies the queue name.
+    """
     queues = batch.describe_job_queues(
         jobQueues=[cfg.job_queue])['jobQueues']
     if not queues:
@@ -443,7 +563,19 @@ def _teardown_queue(batch, cfg: AWSConfig):
     print(f'  ✓ deleted job queue {cfg.job_queue}')
 
 
-def _wait_for_queue_state(batch, name: str, state: str, timeout_s=180):
+def _wait_for_queue_state(batch, name: str, state: str,
+                          timeout_s: int = 180) -> None:
+    """Block until the queue reaches state (and VALID) or disappears.
+
+    Returns on timeout rather than raising, so teardown proceeds even if
+    the queue is slow to settle.
+
+    Args:
+        batch: boto3 Batch client.
+        name (str): the job-queue name.
+        state (str): the target state, e.g. DISABLED.
+        timeout_s (int): seconds to wait before giving up.
+    """
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         qs = batch.describe_job_queues(jobQueues=[name])['jobQueues']
@@ -454,7 +586,12 @@ def _wait_for_queue_state(batch, name: str, state: str, timeout_s=180):
         time.sleep(3)
 
 
-def _teardown_compute_env(batch):
+def _teardown_compute_env(batch) -> None:
+    """Disable the compute environment, wait for it to settle, then delete.
+
+    Args:
+        batch: boto3 Batch client.
+    """
     ces = batch.describe_compute_environments(
         computeEnvironments=[COMPUTE_ENV_NAME])['computeEnvironments']
     if not ces:
@@ -474,7 +611,13 @@ def _teardown_compute_env(batch):
     print(f'  ✓ deleted compute env {COMPUTE_ENV_NAME}')
 
 
-def _teardown_job_definition(batch, cfg: AWSConfig):
+def _teardown_job_definition(batch, cfg: AWSConfig) -> None:
+    """Deregister every ACTIVE revision of the job definition.
+
+    Args:
+        batch: boto3 Batch client.
+        cfg (AWSConfig): supplies the job-definition name.
+    """
     defs = batch.describe_job_definitions(
         jobDefinitionName=cfg.job_definition,
         status='ACTIVE')['jobDefinitions']
@@ -485,7 +628,12 @@ def _teardown_job_definition(batch, cfg: AWSConfig):
         print(f'  ✓ deregistered {len(defs)} revision(s) of {cfg.job_definition}')
 
 
-def _teardown_bucket(cfg: AWSConfig):
+def _teardown_bucket(cfg: AWSConfig) -> None:
+    """Empty and delete the S3 bucket.
+
+    Args:
+        cfg (AWSConfig): supplies the bucket name and region.
+    """
     s3 = boto3.client('s3', region_name=cfg.region)
     print(f'  emptying + deleting bucket {cfg.s3_bucket}')
     paginator = s3.get_paginator('list_objects_v2')
@@ -499,7 +647,13 @@ def _teardown_bucket(cfg: AWSConfig):
 # ---------- status ----------------------------------------------------------
 
 
-def cmd_status(args, cfg: AWSConfig):
+def cmd_status(args, cfg: AWSConfig) -> None:
+    """Print job counts per state, then recent failures.
+
+    Args:
+        args: parsed argparse Namespace; reads args.label.
+        cfg (AWSConfig): supplies the queue name and region.
+    """
     batch = boto3.client('batch', region_name=cfg.region)
     states = ('SUBMITTED', 'PENDING', 'RUNNABLE', 'STARTING', 'RUNNING',
               'SUCCEEDED', 'FAILED')
@@ -519,6 +673,18 @@ def cmd_status(args, cfg: AWSConfig):
 
 def _list_jobs(batch, *, queue: str, state: str,
                label: Optional[str] = None) -> List[dict]:
+    """List jobs in one queue and state, optionally filtered by label.
+
+    Args:
+        batch: boto3 Batch client.
+        queue (str): the job-queue name.
+        state (str): the job status to list, e.g. RUNNING.
+        label (str | None): if given, keep only jobs whose name starts
+            glow-<label>.
+
+    Returns:
+        out (list): job-summary dicts matching the filters.
+    """
     out: List[dict] = []
     paginator = batch.get_paginator('list_jobs')
     for page in paginator.paginate(jobQueue=queue, jobStatus=state):
@@ -531,7 +697,14 @@ def _list_jobs(batch, *, queue: str, state: str,
 # ---------- clean -----------------------------------------------------------
 
 
-def cmd_clean(args, cfg: AWSConfig):
+def cmd_clean(args, cfg: AWSConfig) -> None:
+    """Delete the jobs/ and/or datasource/ S3 prefixes (requires --yes).
+
+    Args:
+        args: parsed argparse Namespace; reads args.jobs, args.datasource,
+            and args.yes.
+        cfg (AWSConfig): supplies the bucket, prefix, and region.
+    """
     if not (args.jobs or args.datasource):
         print('pick at least one of --jobs / --datasource')
         return
@@ -546,14 +719,21 @@ def cmd_clean(args, cfg: AWSConfig):
                        s3_key(cfg.s3_prefix, 'datasource') + '/')
 
 
-def _delete_prefix(s3, bucket: str, prefix: str):
+def _delete_prefix(s3, bucket: str, prefix: str) -> None:
+    """Delete every object under an S3 prefix, in batches.
+
+    Args:
+        s3: boto3 S3 client.
+        bucket (str): the S3 bucket name.
+        prefix (str): the key prefix to clear.
+    """
     paginator = s3.get_paginator('list_objects_v2')
     total = 0
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         keys = [{'Key': obj['Key']} for obj in page.get('Contents', [])]
         if not keys:
             continue
-        # delete_objects max 1000 per call
+        # delete_objects accepts at most 1000 keys per call.
         for i in range(0, len(keys), 1000):
             s3.delete_objects(Bucket=bucket,
                               Delete={'Objects': keys[i:i + 1000]})
@@ -564,14 +744,26 @@ def _delete_prefix(s3, bucket: str, prefix: str):
 # ---------- pause / resume --------------------------------------------------
 
 
-def cmd_pause(args, cfg: AWSConfig):
+def cmd_pause(args, cfg: AWSConfig) -> None:
+    """Disable the job queue so it stops dispatching new jobs.
+
+    Args:
+        args: parsed argparse Namespace (unused; kept for CLI dispatch).
+        cfg (AWSConfig): supplies the queue name and region.
+    """
     boto3.client('batch', region_name=cfg.region).update_job_queue(
         jobQueue=cfg.job_queue, state='DISABLED')
     print(f'[pause] {cfg.job_queue} → DISABLED '
           '(in-flight children keep running; SUBMITTED stays pending)')
 
 
-def cmd_resume(args, cfg: AWSConfig):
+def cmd_resume(args, cfg: AWSConfig) -> None:
+    """Re-enable the job queue so it resumes dispatching jobs.
+
+    Args:
+        args: parsed argparse Namespace (unused; kept for CLI dispatch).
+        cfg (AWSConfig): supplies the queue name and region.
+    """
     boto3.client('batch', region_name=cfg.region).update_job_queue(
         jobQueue=cfg.job_queue, state='ENABLED')
     print(f'[resume] {cfg.job_queue} → ENABLED')
@@ -581,6 +773,7 @@ def cmd_resume(args, cfg: AWSConfig):
 
 
 def _account_id() -> str:
+    """Return the caller's AWS account id."""
     return boto3.client('sts').get_caller_identity()['Account']
 
 
@@ -588,6 +781,12 @@ def _account_id() -> str:
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    """Build the argparse parser for the infra CLI.
+
+    Returns:
+        parser (argparse.ArgumentParser): the configured parser; each
+            subcommand sets its handler via func.
+    """
     p = argparse.ArgumentParser(
         prog='python -m glow.aws.infra',
         description='Idempotent AWS Batch provisioning for glow.aws.')
@@ -634,7 +833,12 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv=None):
+def main(argv=None) -> None:
+    """Parse argv, load the config, and dispatch to the subcommand.
+
+    Args:
+        argv (list | None): argument vector; None uses sys.argv.
+    """
     args = _build_parser().parse_args(argv)
     cfg = AWSConfig.from_file(args.config)
     args.func(args, cfg)

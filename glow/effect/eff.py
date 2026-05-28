@@ -1,3 +1,5 @@
+"""Effect objects: planted synthetic effects and estimated effect regions."""
+
 import numpy as np
 
 from glow.analysis.mancova import get_mancova
@@ -15,15 +17,15 @@ class EffectEstimate:
         seed (int): random seed used to sample the effect extent
         effect_llr (float): size-normalized LLR of the imposed effect.
             This is the per-voxel LLR contribution; the LLR you observe
-            for the planted region is approximately ``effect_llr × |mask|``
+            for the planted region is approximately effect_llr * |mask|
         reg_idx (int): region index in the Ward hierarchy (discovery)
         pval_fwer (float): FWER-corrected p-value (discovery)
-        meta (dict): optional metadata — not used by analysis
+        meta (dict): optional metadata, not used by analysis
     """
 
     @classmethod
     def from_exp_mask(cls, exp, mask, **kwargs):
-        """build an EffectEstimate from an experiment and a boolean mask."""
+        """Build an EffectEstimate from an experiment and a boolean mask."""
         vox_list = exp.mask_idx[mask]
         y = exp.y[..., tuple(vox_list)]
 
@@ -32,7 +34,7 @@ class EffectEstimate:
 
     @classmethod
     def from_x_y_contrast(cls, x, y, contrast, **kwargs):
-        """build an EffectEstimate from raw design, image and contrast arrays."""
+        """Build an EffectEstimate from raw design, image and contrast arrays."""
         e, h, _ = get_mancova(x=x, y=y, contrast=contrast)
         return cls(y_mean=y.mean(axis=2), e=e, h=h, **kwargs)
 
@@ -49,8 +51,17 @@ class EffectEstimate:
         self.pval_fwer = pval_fwer
         self.meta = meta if meta is not None else {}
 
-    def is_close(self, other, rtol=1e-5, atol=1e-8):
-        """check approximate equality of two effects."""
+    def is_close(self, other, rtol: float = 1e-5, atol: float = 1e-8) -> bool:
+        """Check approximate equality of two effects.
+
+        Args:
+            other: the EffectEstimate to compare against
+            rtol (float): relative tolerance passed to np.allclose
+            atol (float): absolute tolerance passed to np.allclose
+
+        Returns:
+            bool: True if masks match exactly and y_mean values are close
+        """
         if self.mask.shape != other.mask.shape:
             return False
         if not np.array_equal(self.mask, other.mask):
@@ -63,7 +74,7 @@ class EffectEstimate:
         return True
 
 # Back-compat alias: existing call sites and external users may still reference
-# ``Effect``.  Discovery code paths should migrate to ``EffectEstimate`` directly.
+# Effect. Discovery code paths should migrate to EffectEstimate directly.
 Effect = EffectEstimate
 
 class EffectSynthetic(HashBySlots):
@@ -71,9 +82,9 @@ class EffectSynthetic(HashBySlots):
 
     Operation parameters (set at __init__):
         extenter (Extenter | None): how to sample the support. XOR
-            with ``mask``.
+            with mask.
         mask (np.array | None): pre-known boolean support. XOR with
-            ``extenter``. Frozen on assignment so the hash is stable.
+            extenter. Frozen on assignment so the hash is stable.
         effect_llr (float): per-voxel LLR target.
         seed (int | None): RNG seed for extenter sampling.
 
@@ -104,8 +115,17 @@ class EffectSynthetic(HashBySlots):
         self.sigma_scale_ = None
 
     def fit(self, exp):
-        """Sample support, compute offset, populate *_ attrs, return
-        the experiment with effect imposed."""
+        """Sample support, compute offset, and impose the effect.
+
+        Populates the fit-output attributes (mask_, offset_, sigma_scale_).
+
+        Args:
+            exp: the experiment to plant the effect into; must already have
+                x and contrast (call .sample_x() first)
+
+        Returns:
+            the experiment with the effect imposed
+        """
         # local import keeps glow.effect import-time cycle-free
         from .impose import compute_offset
 
@@ -129,5 +149,6 @@ class EffectSynthetic(HashBySlots):
         return self.apply(exp)
 
     def apply(self, exp):
+        """Add the fitted offset to an experiment, returning the result."""
         return exp.add_offset(self.offset_, mask=self.mask_,
                               sigma_scale=self.sigma_scale_)

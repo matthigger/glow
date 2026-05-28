@@ -1,9 +1,9 @@
 """Paper plots: shared palette + generic helpers + MANCOVA stat comparison.
 
-Palette and the generic plot helpers (``plot_compute_time``,
-``plot_calibration``, ``plot_x_vs_metrics``) are used across paper
-figures.  The MANCOVA stat-comparison block at the bottom is the
-entrypoint for ``python -m glow.benchmark.paper.plot``.
+The palette and the generic plot helpers (plot_compute_time,
+plot_calibration, plot_x_vs_metrics) are used across paper figures. The
+MANCOVA stat-comparison block at the bottom is the entrypoint for
+python -m glow.benchmark.paper.plot.
 """
 import colorsys
 
@@ -24,28 +24,45 @@ import glow.benchmark
 _H, _L, _S = 0.500, 0.476, 0.366  # HLS of #4DA6A6
 
 
-def _hls_hex(h, l=_L, s=_S):
+def _hls_hex(h: float, l: float = _L, s: float = _S) -> str:
+    """Convert an HLS triple to a #rrggbb hex string."""
     r, g, b = colorsys.hls_to_rgb(h % 1.0, l, s)
     return f'#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}'
 
 
 COLOR_ANALYSIS = {
-    'GLOW-Focus': _hls_hex(0/4 + _H),                # teal   (180°)
-    'GLOW-GLM':   _hls_hex(0/4 + _H, l=_L * 0.6),    # darker teal
-    'VBA-TFCE':   _hls_hex(1/4 + _H),                # purple (270°)
-    'VBA':        _hls_hex(2/4 + _H),                # coral  (0°)
-    'CET':        _hls_hex(3/4 + _H),                # olive  (90°)
+    # teal (180 deg)
+    'GLOW-Focus': _hls_hex(0/4 + _H),
+    # darker teal
+    'GLOW-GLM':   _hls_hex(0/4 + _H, l=_L * 0.6),
+    # purple (270 deg)
+    'VBA-TFCE':   _hls_hex(1/4 + _H),
+    # coral (0 deg)
+    'VBA':        _hls_hex(2/4 + _H),
+    # olive (90 deg)
+    'CET':        _hls_hex(3/4 + _H),
 }
 
 COLOR_SEGMENT = {
-    'Naive':     _hls_hex(0/3),        # red    (0°)
-    'GLM Error': _hls_hex(1/3),        # green  (120°)
-    'Focus':     _hls_hex(2/3),        # blue   (240°)
+    # red (0 deg)
+    'Naive':     _hls_hex(0/3),
+    # green (120 deg)
+    'GLM Error': _hls_hex(1/3),
+    # blue (240 deg)
+    'Focus':     _hls_hex(2/3),
 }
 
 
-def get_cmap_dict(label_list):
-    """Return {label: color} using the fixed palette when possible."""
+def get_cmap_dict(label_list) -> dict:
+    """Map each label to a color, using the fixed palette where possible.
+
+    Args:
+        label_list: labels to assign colors to
+
+    Returns:
+        out (dict): label -> color; labels outside the fixed palettes get a
+            seaborn fallback color
+    """
     out = {}
     for lab in label_list:
         if lab in COLOR_ANALYSIS:
@@ -53,7 +70,7 @@ def get_cmap_dict(label_list):
         elif lab in COLOR_SEGMENT:
             out[lab] = COLOR_SEGMENT[lab]
         else:
-            out[lab] = None  # placeholder
+            out[lab] = None
 
     # fall back to seaborn for labels not in the fixed palettes
     missing = [lab for lab in sorted(label_list) if out[lab] is None]
@@ -64,7 +81,12 @@ def get_cmap_dict(label_list):
     return out
 
 
-def plot_compute_time(df):
+def plot_compute_time(df) -> None:
+    """Draw a per-experiment compute-time boxplot, one row per method label.
+
+    Args:
+        df: results DataFrame with label and time_sec columns
+    """
     labels_sorted = sorted(df['label'].unique().tolist())
     color_map = get_cmap_dict(labels_sorted)
 
@@ -75,11 +97,18 @@ def plot_compute_time(df):
                 hue='label')
 
 
-def plot_calibration(df, alpha_max=0.20, n_pts=200, title=None):
+def plot_calibration(df, alpha_max: float = 0.20, n_pts: int = 200,
+                     title: str = None) -> None:
     """Plot FWER calibration curve: nominal alpha vs empirical rejection rate.
 
-    Requires a ``min_pval`` column (minimum FWER-corrected p-value per seed).
     Each method (label) gets its own curve; the diagonal is the reference.
+
+    Args:
+        df: results DataFrame; requires a min_pval column (minimum
+            FWER-corrected p-value per seed)
+        alpha_max (float): right edge of the nominal-alpha axis
+        n_pts (int): number of nominal-alpha sample points
+        title (str): plot title, or None for the default
     """
     if 'min_pval' not in df.columns:
         print('  (no min_pval column — skipping calibration plot)')
@@ -143,9 +172,28 @@ _X_PARAM_LABELS = {
 }
 
 
-def plot_x_vs_metrics(df, x_param='effect_llr', metrics=['dice', 'sens', 'spec'],
-                      one_vs_rest=False, one_labels=None, alpha=.5, ci=90,
-                      title=None, ylabel=None):
+def plot_x_vs_metrics(df, x_param: str = 'effect_llr',
+                      metrics: list = ['dice', 'sens', 'spec'],
+                      one_vs_rest: bool = False, one_labels: list = None,
+                      alpha: float = .5, ci: int = 90,
+                      title: str = None, ylabel: str = None) -> None:
+    """Plot each metric vs x_param, one bold mean curve per method label.
+
+    The top row shows mean + shaded percentile band per label. When
+    one_vs_rest is set, extra rows show each one_label's metric minus the
+    best of the other methods, per trial and on average.
+
+    Args:
+        df: results DataFrame with label, seed, x_param, and metric columns
+        x_param (str): column to use for the x-axis
+        metrics (list): metric column names, one subplot column each
+        one_vs_rest (bool): add per-label difference rows below the top row
+        one_labels (list): labels to difference; defaults to all GLOW variants
+        alpha (float): grid line alpha
+        ci (int): central percentile width for the shaded band
+        title (str): per-subplot title override, or None for the metric name
+        ylabel (str): y-axis label of the top-left subplot, or None for "score"
+    """
     # ensure numeric x + metrics (prevents lexicographic sorts)
     df2 = df.copy()
     df2[x_param] = pd.to_numeric(df2[x_param], errors='coerce')
@@ -302,20 +350,21 @@ SOURCES_GLOW = [
 SOURCES = [(l, f'{n} ({"synthetic" if "wgn" in l else "real"})') for l, n in SOURCES_VBA]
 
 
-def _load(label):
+def _load(label: str):
+    """Load a cache's results DataFrame and its folder for the given label."""
     df, folder, _ = glow.benchmark.load_update_all(label, verbose=False)
     return df, folder
 
 
-def _parse_label(label):
-    """'VBA-TFCE-pillai-z' -> ('pillai', True)"""
+def _parse_label(label: str):
+    """Parse a VBA-TFCE label into (stat, z_flag): 'VBA-TFCE-pillai-z' -> ('pillai', True)."""
     rest = label.removeprefix('VBA-TFCE-')
     if rest.endswith('-z'):
         return rest[:-2], True
     return rest, False
 
 
-def _parse_label_full(label):
+def _parse_label_full(label: str):
     """Parse any mancova label into (method, stat, z_flag).
 
     Examples:
@@ -341,7 +390,7 @@ def _parse_label_full(label):
 
 
 def _agg(df):
-    """Mean Dice per (label, effect_llr)."""
+    """Aggregate to mean / std / count of Dice per (label, effect_llr)."""
     return (df.groupby(['label', 'effect_llr'])['dice']
             .agg(['mean', 'std', 'count'])
             .reset_index())
@@ -352,10 +401,17 @@ def _agg(df):
 # ------------------------------------------------------------------
 
 def plot_facet_grid(datasets):
-    """5 columns (one per stat) x 2 rows (WGN, HCP).
+    """Plot a faceted grid: 5 columns (one per stat) x one row per source.
 
-    Each cell: raw (solid) + z-scored (dashed).
-    A thin grey line shows LLR-raw as a common reference.
+    Each cell shows raw (solid) + z-scored (dashed); a thin grey line
+    shows LLR-raw as a common reference.
+
+    Args:
+        datasets: list of (aggregated df, source nice-name); each df comes
+            from _agg and has label, effect_llr, mean, std, count columns
+
+    Returns:
+        the matplotlib Figure
     """
     n_src = len(datasets)
     n_stat = len(STAT_ORDER)
@@ -410,7 +466,14 @@ def plot_facet_grid(datasets):
 # ------------------------------------------------------------------
 
 def plot_summary(datasets):
-    """Side-by-side panels showing the top stats for each source."""
+    """Plot side-by-side panels showing the top stats for each source.
+
+    Args:
+        datasets: list of (aggregated df, source nice-name) from _agg
+
+    Returns:
+        the matplotlib Figure
+    """
     top_labels = [
         ('VBA-TFCE-llr',       'LLR',         'C0', '-'),
         ('VBA-TFCE-llr-z',     'LLR (z)',      'C0', '--'),
@@ -458,7 +521,14 @@ def plot_summary(datasets):
 # ------------------------------------------------------------------
 
 def plot_z_delta(datasets):
-    """Per-stat z-scoring improvement, one panel per source."""
+    """Plot per-stat z-scoring improvement (Dice_z - Dice_raw), one panel per source.
+
+    Args:
+        datasets: list of (aggregated df, source nice-name) from _agg
+
+    Returns:
+        the matplotlib Figure
+    """
     n_src = len(datasets)
     fig, axes = plt.subplots(1, n_src, figsize=(7 * n_src, 4), sharey=True)
     if n_src == 1:
@@ -493,17 +563,14 @@ def plot_z_delta(datasets):
 # ------------------------------------------------------------------
 
 def build_summary_table(raw_dfs):
-    """Build a summary CSV: mean Dice, std, and win rate by stat and z-score.
+    """Build a summary table: mean Dice, std, and win rate by stat and z-score.
 
-    Parameters
-    ----------
-    raw_dfs : list of (pd.DataFrame, str)
-        Each entry is (raw df with 'label' column, source nice-name).
-        Labels must be VBA-TFCE-{stat}[-z] format.
+    Args:
+        raw_dfs: list of (raw df with a label column, source nice-name);
+            labels must be VBA-TFCE-{stat}[-z] format
 
-    Returns
-    -------
-    pd.DataFrame
+    Returns:
+        a DataFrame with one row per (source, stat, z_scored)
     """
     rows = []
     for df, source_nice in raw_dfs:
@@ -541,17 +608,14 @@ def build_summary_table(raw_dfs):
 
 
 def build_best_stat_table(all_dfs):
-    """Build a table of best stat per (method, source).
+    """Build a per-(method, source) table comparing each method's stat variants.
 
-    Parameters
-    ----------
-    all_dfs : list of (pd.DataFrame, str)
-        Each entry is (raw df, source nice-name).  Labels can be any method.
+    Args:
+        all_dfs: list of (raw df, source nice-name); labels can be any method
 
-    Returns
-    -------
-    pd.DataFrame  with columns: source, method, stat, z_scored, mean_dice,
-                                std_dice, win_rate, tie_rate, mean_loss
+    Returns:
+        a DataFrame with columns source, method, stat, z_scored, mean_dice,
+            std_dice, win_rate, tie_rate, mean_loss
     """
     rows = []
     for df, source_nice in all_dfs:
@@ -623,12 +687,13 @@ def build_best_stat_table(all_dfs):
     return pd.DataFrame(rows)
 
 
-def main():
+def main() -> None:
+    """Load every mancova source, write the comparison plots/CSV, print summaries."""
     import matplotlib
     matplotlib.use('Agg')
     # --- load all sources (VBA/TFCE/CET from mancova_vba_*, GLOW from mancova_glow_*) ---
     # keyed by source nice-name -> combined df
-    combined = {}  # source_nice -> list of dfs
+    combined = {}
     for label, nice in SOURCES_VBA + SOURCES_GLOW:
         df, folder = _load(label)
         if df.empty:

@@ -1,20 +1,25 @@
+"""Greedy pruning of significant Ward regions to a disjoint antichain."""
+
 import numpy as np
 
 from ..graph import get_parent
 
 
-def prune_greedy(sig_reg_list, children, stat):
-    """Greedy LLR pruning: iteratively pick the highest-LLR significant
-    region, remove all ancestors and descendants, repeat.
+def prune_greedy(sig_reg_list: list, children, stat) -> tuple:
+    """Prune significant regions greedily by descending LLR.
+
+    Iteratively picks the highest-LLR significant region, removes all of
+    its ancestors and descendants, and repeats. The result is a disjoint
+    antichain (no selected region is an ancestor of another).
 
     Args:
-        sig_reg_list (list[int]): regions declared significant (via FWER)
+        sig_reg_list (list): int regions declared significant (via FWER)
         children (np.array): (num_internal, 2) Ward child-index pairs
-        stat (np.array): 1-D raw LLR per region
+        stat (np.array): (num_reg,) raw LLR per region
 
     Returns:
-        selected (list[int]): sorted region indices (disjoint antichain)
-        info (dict): diagnostic key ``sig_reg_list``
+        selected (list): sorted int region indices (disjoint antichain)
+        info (dict): diagnostic, with key sig_reg_list
     """
     if not sig_reg_list:
         return [], dict(sig_reg_list=[])
@@ -23,6 +28,7 @@ def prune_greedy(sig_reg_list, children, stat):
     parent = get_parent(children, num_vox)
 
     def _ancestors(node):
+        """Return the set of strict ancestors of node in the tree."""
         out = set()
         p = parent[node]
         while p != -1:
@@ -31,6 +37,7 @@ def prune_greedy(sig_reg_list, children, stat):
         return out
 
     def _descendants(node):
+        """Return the set of strict descendants of node in the tree."""
         out = set()
         stack = [node]
         while stack:

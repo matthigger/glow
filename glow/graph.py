@@ -1,3 +1,29 @@
+"""Ward-tree region statistics and MANCOVA / LLR permutation kernels.
+
+Regions are nodes of a binary Ward tree over voxels: the num_vox leaves
+are single-voxel regions and each internal node is the union of its two
+children, in topological (bottom-up) order. The tree is given as a
+children array (num_internal, 2) of child index pairs, the
+sklearn.cluster.Ward.children_ convention.
+
+Two families of routines live here:
+
+  - region aggregation: walk the tree once, re-using each region's
+    sufficient statistics (size, ysum, yout) to build its parent's.
+    iter_size_ysum_yout, iter_mancova and node_sum are the per-region
+    streaming primitives; build_dfs_preorder / _reg_sum_cumsum trade the
+    tree walk for a DFS pre-order layout plus cumsum-and-diff so an
+    entire tree's region sums fall out of two index reads.
+
+  - permutation LLR: compute_llr_batched scores one already-permuted
+    experiment; iter_llr_perm streams the per-region LLR across many
+    Freedman-Lane (Freedman & Lane 1983) permutation draws. Both feed
+    the MANCOVA log-likelihood-ratio statistic in glow.analysis.mancova.
+
+The remaining helpers (get_dice_sens_spec, get_fp_tp, get_label_map,
+get_parent, iter_postorder, SCGraph) are graph bookkeeping over the same
+children representation.
+"""
 from collections import Counter
 
 import numpy as np
@@ -6,11 +32,15 @@ from glow.analysis.mancova import decompose
 
 
 def iter_size_ysum_yout(y, children=None):
-    """iterate region statistics, re-using partial sums via the graph.
+    """Yield per-region sufficient statistics, re-using partial sums via the tree.
+
+    Walks regions in topological order so each internal node's stats are
+    the sum of its two children's; children are dropped from the cache
+    once their last parent has consumed them.
 
     Args:
         y (np.array): (b, num_img, num_vox) imaging features
-        children (np.array): (num_leaf - 1, 2) child index pairs. if None,
+        children (np.array): (num_leaf - 1, 2) child index pairs. If None,
             iterates individual voxels only.
 
     Yields:
@@ -40,28 +70,28 @@ def iter_size_ysum_yout(y, children=None):
             size0, ysum0, yout0 = out_dict.get(c0)
             size1, ysum1, yout1 = out_dict.get(c1)
 
-            # clean up intermediates (if no longer needed)
+            # Drop each child once its last parent has consumed it, so the
+            # cache holds only the active frontier rather than the whole tree.
             for c in (c0, c1):
                 ref_count[c] -= 1
                 if not ref_count[c]:
                     del out_dict[c]
 
-            # compute stats of union
+            # stats of the union are the sums of the children's stats
             size = size0 + size1
             ysum = ysum0 + ysum1
             yout = yout0 + yout1
 
-        # store and yield
         out_dict[reg_idx] = size, ysum, yout
         yield reg_idx, size, ysum, yout
 
 
 def iter_mancova(exp, **kwargs):
-    """iterate region-level MANCOVA statistics (E, H).
+    """Yield region-level MANCOVA statistics (E, H), one pair per region.
 
-    Computes one (E, H) pair per region for the given experiment.  To
-    obtain a permutation null distribution, callers should loop
-    externally over Freedman-Lane permutations of the experiment::
+    To obtain a permutation null distribution, callers loop externally
+    over Freedman-Lane (Freedman & Lane 1983) permutations of the
+    experiment:
 
         for k in range(n_perm + 1):
             _exp = exp.permute(k) if k else exp
@@ -70,8 +100,8 @@ def iter_mancova(exp, **kwargs):
 
     Args:
         exp (Experiment): experiment data
-        **kwargs: forwarded to ``iter_size_ysum_yout`` (notably
-            ``children`` for hierarchical regions)
+        **kwargs: forwarded to iter_size_ysum_yout (notably children for
+            hierarchical regions)
 
     Yields:
         reg_idx (int): region index
@@ -92,42 +122,41 @@ def iter_mancova(exp, **kwargs):
         yield reg_idx, size, e, h
 
 
-def compute_llr_batched(exp, children, q0, q1, min_size=1):
-    """Vectorised LLR per region for a single (already-permuted) experiment.
+def compute_llr_batched(exp, children, q0, q1, min_size: int = 1):
+    """Compute vectorised per-region LLR for a single (already-permuted) experiment.
 
-    Computes the same per-region LLR statistic as the per-region loop::
+    Computes the same per-region LLR statistic as the per-region loop:
 
         for reg_idx, size, e, h in iter_mancova(exp, children=children):
             llr[reg_idx] = get_llr(e, h, n=size)
 
-    but in a single batched pass over numpy.  Two phases:
+    but in a single batched pass over numpy. Two phases:
 
-    1. Bottom-up build of ``(size, ysum, yout)`` for ALL regions.
-       Cannot be skipped for small regions because every internal node
-       needs its children's ``ysum``/``yout``.  This is the cheap part
-       (a few numpy adds per region).
+    1. Bottom-up build of (size, ysum, yout) for ALL regions. Cannot be
+       skipped for small regions because every internal node needs its
+       children's ysum / yout. This is the cheap part (a few numpy adds
+       per region).
 
-    2. Per-region E/H/LLR via einsum + batched ``np.linalg.slogdet``.
-       This is where the bulk of the FLOPs live.  When ``min_size > 1``
-       we skip Phase 2 for regions with ``size < min_size`` and leave
-       their LLR as NaN.  At ``min_size=4`` on typical neuroimaging
-       trees, ~70% of regions drop out, cutting Phase 2's cost roughly
-       proportionally.
+    2. Per-region E / H / LLR via einsum + batched np.linalg.slogdet.
+       This is where the bulk of the FLOPs live. When min_size > 1 we
+       skip Phase 2 for regions with size < min_size and leave their LLR
+       as NaN. At min_size=4 on typical neuroimaging trees, ~70% of
+       regions drop out, cutting Phase 2's cost roughly proportionally.
 
     Args:
-        exp (Experiment): experiment data (already FL-permuted).
+        exp (Experiment): experiment data (already FL-permuted)
         children (np.array): (num_internal, 2) child index pairs in
-            topological (bottom-up) order.
-        q0 (np.array): nuisance subspace (from ``decompose``).
-        q1 (np.array): interest subspace (from ``decompose``).
+            topological (bottom-up) order
+        q0 (np.array): (a0, num_img) nuisance subspace (from decompose)
+        q1 (np.array): (a1, num_img) interest subspace (from decompose)
         min_size (int): regions with size < min_size get NaN LLR (and
-            their E/H matrices are never computed).  Default 1 keeps
+            their E / H matrices are never computed). Default 1 keeps
             every region.
 
     Returns:
-        llr (np.array): (num_reg,) LLR per region.  NaN where size <
+        llr (np.array): (num_reg,) LLR per region. NaN where size <
             min_size, or where E or E + H were not positive-definite.
-        size (np.array): (num_reg,) voxel count per region.
+        size (np.array): (num_reg,) int voxel count per region.
     """
     y = exp.y
     b, num_img, num_vox = y.shape
@@ -178,12 +207,18 @@ def compute_llr_batched(exp, children, q0, q1, min_size=1):
 
 
 def _slogdet_batched(M):
-    """Batched ``log|det(M)|`` for the small symmetric matrices in LLR.
+    """Compute batched log|det(M)| for the small symmetric matrices in LLR.
 
-    Closed-form for ``b in {1, 2}`` -- significantly cheaper than
-    ``np.linalg.slogdet``'s LU dispatch, which dominates the per-perm
-    cost at ``b=2`` in glow's inner loop.  Falls back to numpy for
-    larger ``b``.  Returns ``(sign, log|det|)`` matching numpy's API.
+    Closed-form for b in {1, 2} -- significantly cheaper than
+    np.linalg.slogdet's LU dispatch, which dominates the per-perm cost at
+    b=2 in glow's inner loop. Falls back to numpy for larger b.
+
+    Args:
+        M (np.array): (..., b, b) stack of square matrices
+
+    Returns:
+        sign (np.array): (...,) sign of each determinant, numpy's slogdet API
+        logabsdet (np.array): (...,) log|det(M)| per matrix
     """
     b = M.shape[-1]
     if b == 1:
@@ -198,31 +233,30 @@ def _slogdet_batched(M):
     return np.linalg.slogdet(M)
 
 
-def build_dfs_preorder(children, num_vox):
-    """DFS pre-order leaf permutation and per-region leaf ranges.
+def build_dfs_preorder(children, num_vox: int):
+    """Build a DFS pre-order leaf permutation and per-region leaf ranges.
 
-    Given a (forest of) binary tree(s) on ``num_vox`` leaves in
-    topological (bottom-up) order, this returns a permutation
-    ``leaf_ord`` of the original voxel indices such that every region's
-    leaves occupy a contiguous range ``[region_l[r], region_h[r])`` on
-    the permuted leaf axis.  That is the prerequisite for cumsum-and-
-    diff region aggregation (see ``_reg_sum_cumsum`` and
-    ``compute_optimize/perm_llr_compute.tex``).
+    Given a (forest of) binary tree(s) on num_vox leaves in topological
+    (bottom-up) order, this returns a permutation leaf_ord of the
+    original voxel indices such that every region's leaves occupy a
+    contiguous range [region_l[r], region_h[r]) on the permuted leaf
+    axis. That is the prerequisite for cumsum-and-diff region aggregation
+    (see _reg_sum_cumsum and compute_optimize/perm_llr_compute.tex).
 
     Roots are laid out end-to-end -- the first root takes positions
-    ``[0, size_root_0)``, the next takes ``[size_root_0, ...)``, etc.
+    [0, size_root_0), the next takes [size_root_0, ...), etc.
 
     Args:
         children (np.array): (num_internal, 2) child index pairs in
-            topological order -- each row references indices ``< num_vox
-            + row_idx``.
-        num_vox (int): number of leaves.
+            topological order -- each row references indices
+            < num_vox + row_idx
+        num_vox (int): number of leaves
 
     Returns:
         leaf_ord (np.array): (num_vox,) original voxel index visited at
-            each DFS position -- i.e. ``y_dfs[..., k] = y[..., leaf_ord[k]]``.
-        region_l (np.array): (num_reg,) leaf range start per region.
-        region_h (np.array): (num_reg,) leaf range end per region.
+            each DFS position -- i.e. y_dfs[..., k] = y[..., leaf_ord[k]]
+        region_l (np.array): (num_reg,) leaf range start per region
+        region_h (np.array): (num_reg,) leaf range end per region
     """
     num_internal = int(children.shape[0])
     num_reg = num_vox + num_internal
@@ -264,17 +298,24 @@ def build_dfs_preorder(children, num_vox):
     return leaf_ord, region_l, region_h
 
 
-def _reg_sum_cumsum(x_dfs, axis, region_l, region_h):
-    """Per-region sums via cumsum-and-diff along ``axis``.
+def _reg_sum_cumsum(x_dfs, axis: int, region_l, region_h):
+    """Compute per-region sums via cumsum-and-diff along axis.
 
-    ``x_dfs`` is laid out in DFS pre-order along ``axis`` (length V),
-    so every region's voxels form a contiguous range.  We prepend a
-    zero slice along ``axis`` and cumsum into the rest, then index at
-    ``region_h`` and ``region_l`` to read out half-open range sums.
-    The ``l = 0`` case is handled correctly because we left a zero in
-    the prepended slot.
+    x_dfs is laid out in DFS pre-order along axis (length num_vox), so
+    every region's voxels form a contiguous range. We prepend a zero
+    slice along axis and cumsum into the rest, then index at region_h and
+    region_l to read out half-open range sums. The l = 0 case is handled
+    correctly because we left a zero in the prepended slot.
 
-    Output length along ``axis`` is ``len(region_l) == num_reg``.
+    Args:
+        x_dfs (np.array): per-voxel values, DFS pre-order along axis
+        axis (int): axis carrying the num_vox DFS-ordered voxels
+        region_l (np.array): (num_reg,) leaf range start per region
+        region_h (np.array): (num_reg,) leaf range end per region
+
+    Returns:
+        out (np.array): x_dfs with its axis (length num_vox) replaced by
+            a per-region sum axis of length num_reg == len(region_l)
     """
     out_shape = list(x_dfs.shape)
     out_shape[axis] = x_dfs.shape[axis] + 1
@@ -289,67 +330,72 @@ def _reg_sum_cumsum(x_dfs, axis, region_l, region_h):
             - np.take(c, region_l, axis=axis))
 
 def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
-                  min_size=1, perm_chunk=8):
-    """Per-region LLR for many Freedman-Lane perms -- streaming.
+                  min_size: int = 1, perm_chunk: int = 8):
+    """Stream per-region LLR across many Freedman-Lane permutations.
 
-    Generator over chunks of size ``perm_chunk``.  Phase 1 (per-voxel
+    Generator over chunks of size perm_chunk. Phase 1 (per-voxel
     sufficient statistics) is built once on entry; each iteration runs
-    Phase 2 for the next ``Pc`` perms and yields one ``(Pc, num_reg)``
-    fp64 chunk.  Callers that need raw draws stack via
-    ``np.vstack(list(iter_llr_perm(...)))``; callers that only need
-    moments (e.g. ``inner_perm.cpu_perm``) fold each chunk into a
-    Welford accumulator and never materialize the full draws array.
-    Closing the generator releases all Phase-1 state.
+    Phase 2 for the next Pc perms and yields one (Pc, num_reg) fp64
+    chunk. Callers that need raw draws stack via
+    np.vstack(list(iter_llr_perm(...))); callers that only need moments
+    (e.g. inner_perm.cpu_perm) fold each chunk into a Welford accumulator
+    and never materialize the full draws array. Closing the generator
+    releases all Phase-1 state.
 
-    Algorithm (see ``compute_optimize/perm_llr_compute.tex``):
+    Freedman-Lane permutation (Freedman & Lane 1983) permutes the
+    nuisance residuals; here the permutation is carried on q0 / q1 rather
+    than re-permuting y.
 
-      1.  *Phase 1 (once)* -- per-voxel sufficient statistics:
+    Algorithm (see compute_optimize/perm_llr_compute.tex):
 
-              T_v   = Y_v Y_v^T               (b, b)
-              S0_v  = Q0 Y_v                  (a0, b)
-              r_v   = (I - Q0 Q0^T) Y_v       (N, b)   FL residuals
+      1. Phase 1 (once) -- per-voxel sufficient statistics:
 
-          Aggregated over each region via cumsum-and-diff on the DFS
-          pre-order axis -- no tree walk in the inner loop.
+             T_v   = Y_v Y_v^T               (b, b)
+             S0_v  = Q0 Y_v                  (a0, b)
+             r_v   = (I - Q0 Q0^T) Y_v       (num_img, b)   FL residuals
 
-      2.  *Phase 2 (per perm)* -- one ``(a, N) @ (N, V*b)`` GEMM
-          assembles ``gamma_v = Q^T P r_v`` for every voxel and feature.
-          From ``gamma`` we read the FL-shifted ``rho`` (Q0 part) and
-          ``beta`` (Q1 part) needed to assemble ``E*``, ``H*`` and
-          finally the per-region LLR.
+         Aggregated over each region via cumsum-and-diff on the DFS
+         pre-order axis -- no tree walk in the inner loop.
 
-    Both intercept-only and general-Q0 nuisance ride this same code
-    path: under intercept-only Q0 commutes with P, so ``rho`` is
-    numerically zero (and the ``X_v`` cross-correction below vanishes
-    up to roundoff).  The waste is ``O(V a0 b^2)`` FLOPs, dwarfed by
-    the dominant ``O(V N a b)`` gamma GEMM.
+      2. Phase 2 (per perm) -- one (a, num_img) @ (num_img, num_vox*b)
+         GEMM assembles gamma_v = Q^T P r_v for every voxel and feature.
+         From gamma we read the FL-shifted rho (Q0 part) and beta (Q1
+         part) needed to assemble E*, H* and finally the per-region LLR.
+
+    Both intercept-only and general-Q0 nuisance ride this same code path:
+    under intercept-only Q0 commutes with P, so rho is numerically zero
+    (and the X_v cross-correction below vanishes up to roundoff). The
+    waste is O(num_vox a0 b^2) FLOPs, dwarfed by the dominant
+    O(num_vox num_img a b) gamma GEMM.
 
     Args:
-        y (np.array): (b, num_img, num_vox) imaging features.  The
+        y (np.array): (b, num_img, num_vox) imaging features. The
             caller's original (unpermuted) data -- permutations are
-            applied to ``q0/q1`` instead.
-        q0 (np.array): (a0, num_img) nuisance subspace from
-            ``decompose``.
-        q1 (np.array): (a1, num_img) interest subspace.
-        perms (np.array): (n_perm, num_img) int -- ``perms[p, k]``
-            gives the original-image index that the FL-permuted data
-            puts at position ``k``.  Matches glow's
-            ``get_freed_lane`` convention so callers can build this as
-            ``np.argsort(rng.permutation(num_img))`` per draw.
-        leaf_ord, region_l, region_h: from ``build_dfs_preorder``.
-        min_size (int): regions with ``size < min_size`` return NaN
-            in every chunk.
+            applied to q0 / q1 instead.
+        q0 (np.array): (a0, num_img) nuisance subspace from decompose
+        q1 (np.array): (a1, num_img) interest subspace
+        perms (np.array): (n_perm, num_img) int -- perms[p, k] gives the
+            original-image index that the FL-permuted data puts at
+            position k. Matches glow's get_freed_lane convention so
+            callers can build this as np.argsort(rng.permutation(num_img))
+            per draw.
+        leaf_ord (np.array): (num_vox,) from build_dfs_preorder
+        region_l (np.array): (num_reg,) leaf range start, from
+            build_dfs_preorder
+        region_h (np.array): (num_reg,) leaf range end, from
+            build_dfs_preorder
+        min_size (int): regions with size < min_size return NaN in every
+            chunk
         perm_chunk (int): number of perms to batch through one gamma
-            GEMM.  Trade-off: larger chunks reduce Python / BLAS call
-            overhead but multiply the (Pc, V, ...) temporary memory.
-            Default 8 is the sweet spot empirically at V in [25k,
-            55k] for both intercept-only and general-Q0.
+            GEMM. Trade-off: larger chunks reduce Python / BLAS call
+            overhead but multiply the (Pc, num_vox, ...) temporary
+            memory. Default 8 is the sweet spot empirically at num_vox in
+            [25k, 55k] for both intercept-only and general-Q0.
 
     Yields:
-        llr_chunk (np.array): (Pc, num_reg) fp64 LLR draws for the
-            next ``Pc`` perms (``Pc <= perm_chunk``; the final yield
-            may be short).  NaN for ``size < min_size`` or non-
-            positive-definite ``E`` / ``E + H``.
+        llr_chunk (np.array): (Pc, num_reg) fp64 LLR draws for the next Pc
+            perms (Pc <= perm_chunk; the final yield may be short). NaN
+            for size < min_size or non-positive-definite E / E + H.
     """
     b, num_img, num_vox = y.shape
     n_perm = int(perms.shape[0])
@@ -357,9 +403,9 @@ def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
     a1 = int(q1.shape[0])
     a = a0 + a1
 
-    # match glow's existing dtype policy: float32 stays float32, else
-    # float64.  Cumsums over ~10^6 entries are stable enough in fp32
-    # for our purposes (see perm_llr_compute.tex, "Numerical care").
+    # Match glow's existing dtype policy: float32 stays float32, else
+    # float64.  Cumsums over ~10^6 entries are stable enough in fp32 for
+    # our purposes (see perm_llr_compute.tex, "Numerical care").
     dtype = y.dtype if y.dtype == np.float32 else np.float64
 
     # -------------------- Phase 1: per-voxel state --------------------
@@ -374,20 +420,23 @@ def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
     T_v = np.einsum('inv,jnv->vij', y_dfs, y_dfs, optimize=True)
 
     # Build the FL residuals r_v = (I - Q0 Q0^T) Y_v directly in the
-    # (N, V, b) layout the dominant GEMM needs, then reshape to
-    # (N, V*b) for free.  Holding r_v in (V, N, b) instead would force
-    # a non-contiguous transpose + copy at reshape time, doubling peak
-    # memory at the 600k-voxel scale.
-    r_v_nvb = np.ascontiguousarray(y_dfs.transpose(1, 2, 0))           # (N, V, b)
+    # (num_img, num_vox, b) layout the dominant GEMM needs, then reshape
+    # to (num_img, num_vox*b) for free.  Holding r_v in (num_vox,
+    # num_img, b) instead would force a non-contiguous transpose + copy
+    # at reshape time, doubling peak memory at the 600k-voxel scale.
+    r_v_nvb = np.ascontiguousarray(y_dfs.transpose(1, 2, 0))
     del y_dfs
-    r_v_nvb -= np.einsum('an,vaj->nvj', q0, S0_v, optimize=True)       # in-place
-    r_v_flat = r_v_nvb.reshape(num_img, num_vox * b)                   # (N, V*b)
+    # subtract the Q0 projection in place to form the FL residuals
+    r_v_nvb -= np.einsum('an,vaj->nvj', q0, S0_v, optimize=True)
+    r_v_flat = r_v_nvb.reshape(num_img, num_vox * b)
 
-    # one-time region statistics (perm-invariant)
+    # one-time, permutation-invariant region statistics
+    # S0_r: (num_reg, a0, b)
     S0_r = _reg_sum_cumsum(S0_v, axis=0,
-                           region_l=region_l, region_h=region_h)   # (R, a0, b)
+                           region_l=region_l, region_h=region_h)
+    # T_r: (num_reg, b, b)
     T_r = _reg_sum_cumsum(T_v, axis=0,
-                          region_l=region_l, region_h=region_h)    # (R, b, b)
+                          region_l=region_l, region_h=region_h)
 
     sz_1d = (region_h - region_l).astype(dtype)
     inv_sz = np.empty_like(sz_1d)
@@ -395,7 +444,8 @@ def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
     inv_sz_3d = inv_sz[:, None, None]
     active = (region_h - region_l) >= min_size
 
-    Q = np.vstack([q0, q1]).astype(dtype, copy=False)              # (a, N)
+    # Q: (a, num_img)
+    Q = np.vstack([q0, q1]).astype(dtype, copy=False)
 
     # -------------------- Phase 2: per-perm hot loop -----------------
     for s in range(0, n_perm, perm_chunk):
@@ -403,37 +453,47 @@ def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
         Pc = int(chunk.shape[0])
 
         # Match glow's FL convention: a permutation acts on the image
-        # axis as ``y_perm[..., k] = y[..., perm[k]]``.  Then
-        # ``(Q^T P r_v)[a, j] = sum_n Q[n, a] * r_v[perm[n], j]``,
-        # which after substitution m = perm[n] reads off rows of Q at
-        # ``perm^{-1}``.  ``argsort`` inverts the perm.
+        # axis as y_perm[..., k] = y[..., perm[k]].  Then
+        # (Q^T P r_v)[a, j] = sum_n Q[n, a] * r_v[perm[n], j], which
+        # after substitution m = perm[n] reads off rows of Q at
+        # perm^{-1}.  argsort inverts the perm.
         pi_inv = np.argsort(chunk, axis=1)
-        tQ = Q[:, pi_inv].transpose(1, 0, 2)                       # (Pc, a, N)
+        # tQ: (Pc, a, num_img)
+        tQ = Q[:, pi_inv].transpose(1, 0, 2)
 
-        # Dominant compute: (Pc*a, N) @ (N, V*b) -> (Pc*a, V*b).
-        # Reshape lands gamma in (Pc, V, a, b).
+        # Dominant compute: (Pc*a, num_img) @ (num_img, num_vox*b) ->
+        # (Pc*a, num_vox*b).  Reshape lands gamma in (Pc, num_vox, a, b).
         gamma = (tQ.reshape(Pc * a, num_img) @ r_v_flat
                  ).reshape(Pc, a, num_vox, b).transpose(0, 2, 1, 3)
 
-        rho = gamma[..., :a0, :]                                   # (Pc, V, a0, b)
-        beta = gamma[..., a0:, :]                                  # (Pc, V, a1, b)
+        # rho: (Pc, num_vox, a0, b)
+        rho = gamma[..., :a0, :]
+        # beta: (Pc, num_vox, a1, b)
+        beta = gamma[..., a0:, :]
 
-        # T_v's permutation-dependent correction: X_v = rho^T S0_v
-        # in math; in our (V, a, b) indexing that's an einsum over a.
-        X_v = np.einsum('pvai,vaj->pvij', rho, S0_v, optimize=True)  # (Pc, V, b, b)
+        # T_v's permutation-dependent correction: X_v = rho^T S0_v in
+        # math; in our (num_vox, a, b) indexing that's an einsum over a.
+        # X_v: (Pc, num_vox, b, b)
+        X_v = np.einsum('pvai,vaj->pvij', rho, S0_v, optimize=True)
 
-        # Region aggregation via cumsum-and-diff on the V axis.
+        # Region aggregation via cumsum-and-diff on the num_vox axis.
+        # rho_r: (Pc, num_reg, a0, b)
         rho_r = _reg_sum_cumsum(rho, axis=1,
-                                region_l=region_l, region_h=region_h)  # (Pc, R, a0, b)
+                                region_l=region_l, region_h=region_h)
+        # beta_r: (Pc, num_reg, a1, b)
         beta_r = _reg_sum_cumsum(beta, axis=1,
-                                 region_l=region_l, region_h=region_h)  # (Pc, R, a1, b)
+                                 region_l=region_l, region_h=region_h)
+        # X_r: (Pc, num_reg, b, b)
         X_r = _reg_sum_cumsum(X_v, axis=1,
-                              region_l=region_l, region_h=region_h)    # (Pc, R, b, b)
+                              region_l=region_l, region_h=region_h)
 
         # FL-shifted sufficient statistics per region.
-        S0_star = rho_r + S0_r                                     # (Pc, R, a0, b)
-        S1_star = beta_r                                           # (Pc, R, a1, b)
-        T_star = T_r + X_r + X_r.swapaxes(-1, -2)                  # (Pc, R, b, b)
+        # S0_star: (Pc, num_reg, a0, b)
+        S0_star = rho_r + S0_r
+        # S1_star: (Pc, num_reg, a1, b)
+        S1_star = beta_r
+        # T_star: (Pc, num_reg, b, b)
+        T_star = T_r + X_r + X_r.swapaxes(-1, -2)
 
         # E + H = T* - (1/|r|) S0*^T S0*;  H = (1/|r|) S1*^T S1*.
         EH = T_star - np.einsum('prai,praj->prij',
@@ -453,22 +513,21 @@ def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
 
 
 def node_sum(x, children):
-    """sum leaf values up through the graph.
+    """Sum leaf values up through the tree to every node.
 
     Args:
-        x (np.array): one value per leaf (single-voxel region)
+        x (np.array): (num_leaf,) one value per leaf (single-voxel region)
         children (np.array): (num_leaf - 1, 2) child index pairs
 
     Returns:
-        summed (np.array): values for all nodes (leaves + internal)
+        summed (np.array): (num_reg,) value for all nodes (leaves +
+            internal), in topological order
     """
-    # prep output array
     num_leaf = x.size
     num_reg = num_leaf + children.shape[0]
     summed = np.empty(num_reg, dtype=x.dtype)
     summed[:num_leaf] = x
 
-    # sum
     for node_idx, (c0, c1) in enumerate(children):
         node_idx += num_leaf
         summed[node_idx] = summed[c0] + summed[c1]
@@ -477,18 +536,21 @@ def node_sum(x, children):
 
 
 def get_dice_sens_spec(mask, mask_idx, children):
-    """compute Dice, sensitivity (recall/TPR), and specificity (TNR) per region.
+    """Compute Dice, sensitivity (recall/TPR), and specificity (TNR) per region.
+
+    Each region is scored as a predictor of the target mask. Dice
+    coefficient (Dice 1945).
 
     Args:
-        mask (np.array): target mask (boolean, same shape as mask_idx)
+        mask (np.array): target mask, boolean, same shape as mask_idx
         mask_idx (np.array): voxel index array (-1 outside analysis)
-        children (np.array): (num_leaf - 1, 2) graph arrays (equiv to
+        children (np.array): (num_leaf - 1, 2) child index pairs (equiv to
             sklearn.cluster.Ward.children_)
 
     Returns:
-        dice (np.array): Dice score per region
-        sens (np.array): TP / (TP + FN) per region
-        spec (np.array): TN / (TN + FP) per region
+        dice (np.array): (num_reg,) Dice score per region
+        sens (np.array): (num_reg,) TP / (TP + FN) per region
+        spec (np.array): (num_reg,) TN / (TN + FP) per region
     """
     fp, tp = get_fp_tp(mask, mask_idx, children)
 
@@ -513,18 +575,20 @@ def get_dice_sens_spec(mask, mask_idx, children):
 
 
 def get_fp_tp(mask, mask_idx, children):
-    """count false-positive and true-positive voxels per node.
+    """Count false-positive and true-positive voxels per node.
 
     Treats each region as a predictor of the target mask.
 
     Args:
-        mask (np.array): target mask (boolean, same shape as mask_idx)
+        mask (np.array): target mask, boolean, same shape as mask_idx
         mask_idx (np.array): voxel index array (-1 outside analysis)
         children (np.array): (num_leaf - 1, 2) child index pairs
 
     Returns:
-        fp (np.array): non-target voxels per node (in region, not in target)
-        tp (np.array): target voxels per node (in region and in target)
+        fp (np.array): (num_reg,) non-target voxels per node (in region,
+            not in target)
+        tp (np.array): (num_reg,) target voxels per node (in region and
+            in target)
     """
     num_vox = (mask_idx >= 0).sum()
     tp = np.zeros(num_vox)
@@ -538,16 +602,17 @@ def get_fp_tp(mask, mask_idx, children):
 
 
 
-def iter_postorder(*, children=None, num_leaf, node_start=None, only_leaf=False):
-    """DFS post-order traversal; yields nodes in topological order (leaves to root).
+def iter_postorder(*, children=None, num_leaf: int, node_start: int | None = None,
+                   only_leaf: bool = False):
+    """Traverse the tree in DFS post-order, yielding nodes leaves-to-root.
 
-    Supports forests: when ``node_start`` is None, iterates from every
-    root (nodes with no parent).
+    Yields nodes in topological order. Supports forests: when node_start
+    is None, iterates from every root (nodes with no parent).
 
     Args:
         children (np.array): (num_internal, 2) child index pairs
         num_leaf (int): number of leaves
-        node_start (int): subtree root (defaults to all roots)
+        node_start (int | None): subtree root (defaults to all roots)
         only_leaf (bool): if True, yield only leaves
 
     Yields:
@@ -574,15 +639,16 @@ def iter_postorder(*, children=None, num_leaf, node_start=None, only_leaf=False)
         yield node_start
 
 
-def get_parent(children, num_leaf):
-    """build parent lookup array for a binary tree.
+def get_parent(children, num_leaf: int):
+    """Build a parent-lookup array for a binary tree.
 
     Args:
         children (np.array): (num_leaf - 1, 2) child index pairs
         num_leaf (int): number of leaves
 
     Returns:
-        parent (np.array): parent[idx] gives the parent of node idx
+        parent (np.array): (num_reg,) parent[idx] gives the parent of
+            node idx, -1 for a root
     """
     num_nodes = num_leaf + children.shape[0]
     parent = np.full(num_nodes, -1, dtype=int)
@@ -593,25 +659,30 @@ def get_parent(children, num_leaf):
 
 
 class RegIntersectError(Exception):
+    """Raised when regions that should be disjoint share voxels."""
     pass
 
 
-def get_label_map(reg_idx_list, mask_idx, children, check_disjoint=False):
-    """build a mask_idx array from a list of region indices.
+def get_label_map(reg_idx_list, mask_idx, children, check_disjoint: bool = False):
+    """Build a label_map array from a list of region indices.
 
     Args:
-        reg_idx_list (list[int]): list of region indices to include
-        mask_idx (np.array): -1 outside of label_map, otherwise contains smallest
-            reg_idx which contains this voxel in reg_idx_list
-        children (num_node, 2): array whose i-th row represents
-            node-n_common+i's children.  this representation contains a node
-            for any node in all input graphs
+        reg_idx_list (list[int]): region indices to include
+        mask_idx (np.array): voxel index array, -1 outside of analysis,
+            otherwise the voxel's index
+        children (np.array): (num_internal, 2) child index pairs whose
+            i-th row gives the children of node num_leaf + i. This
+            representation contains a node for any node in all input
+            graphs.
         check_disjoint (bool): if True, ensure no regions intersect
 
     Returns:
         label_map (np.array): same shape as mask_idx, -1 outside regions,
-            reg_idx where voxel belongs to that region (smallest reg_idx if
-            intersections)
+            reg_idx where voxel belongs to that region (smallest reg_idx
+            if intersections)
+
+    Raises:
+        RegIntersectError: if check_disjoint and two regions overlap
     """
     reg_idx_list = sorted(reg_idx_list, reverse=True)
 
@@ -637,23 +708,33 @@ GRAPH_EXCLUDE = -1
 
 
 class SCGraph:
-    """graph with short-circuited parent/child relations.
+    """A tree with short-circuited parent/child relations over a node subset.
 
-    if A -> B -> C in the full tree but B is excluded, SCGraph treats
-    A as a direct child of C.
+    If A is a child of B and B a child of C in the full tree but B is
+    excluded, SCGraph treats A as a direct child of C.
 
     Attributes:
-        included (np.array): boolean, True if node is in the subgraph
-        parent (np.array): short-circuit parent (-1 if excluded/root)
+        included (np.array): (num_node,) boolean, True if node is in the
+            subgraph
+        parent (np.array): (num_node,) short-circuit parent (-1 if
+            excluded/root)
         children (dict): node -> sorted list of short-circuit children
     """
 
     @classmethod
-    def from_children(cls, children, num_leaf, **kwargs):
+    def from_children(cls, children, num_leaf: int, **kwargs):
+        """Construct from a children array (sklearn.cluster.Ward.children_)."""
         parent = get_parent(children, num_leaf)
         return cls(parent, **kwargs)
 
     def __init__(self, parent, subset=None):
+        """Build from a full-tree parent array, restricted to subset.
+
+        Args:
+            parent (np.array): (num_node,) full-tree parent index per
+                node, -1 for a root
+            subset: indices of nodes to include; None includes every node
+        """
         if subset is None:
             included = np.ones(len(parent), dtype=bool)
         else:
@@ -665,7 +746,7 @@ class SCGraph:
         self._rebuild()
 
     def modify(self, nodes_add=tuple(), nodes_rm=tuple()):
-        """add or remove nodes and rebuild short-circuit relationships."""
+        """Add or remove nodes, then rebuild short-circuit relationships."""
         for node in nodes_add:
             self.included[node] = True
         for node in nodes_rm:
@@ -673,10 +754,10 @@ class SCGraph:
         self._rebuild()
 
     def _rebuild(self):
-        """rebuild children dict with short-circuited relationships."""
+        """Rebuild the children dict with short-circuited relationships."""
 
+        # walk up the full-tree parent chain to the nearest included node
         def _get_ss_parent(node):
-            # short-circuit parent
             while True:
                 node = self._parent_full[node]
                 if node == GRAPH_EXCLUDE:
@@ -694,11 +775,10 @@ class SCGraph:
                 self.children[par].append(kid)
                 self.parent[kid] = par
 
-        # sort kids
         self.children = {k: sorted(v) for k, v in self.children.items()}
 
-    def iter_desc(self, node, incl_self=False):
-        """yield all descendants of node in the short-circuit subgraph."""
+    def iter_desc(self, node, incl_self: bool = False):
+        """Yield all descendants of node in the short-circuit subgraph."""
         assert self.included[node]
         if incl_self:
             yield node
@@ -706,8 +786,8 @@ class SCGraph:
         for _node in self.children[node]:
             yield from self.iter_desc(_node, incl_self=True)
 
-    def iter_ancest(self, node, incl_self=False):
-        """yield all ancestors of node in the short-circuit subgraph."""
+    def iter_ancest(self, node, incl_self: bool = False):
+        """Yield all ancestors of node in the short-circuit subgraph."""
         assert self.included[node]
         if incl_self:
             yield node

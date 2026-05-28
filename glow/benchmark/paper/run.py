@@ -1,14 +1,14 @@
 """Trial functions for the paper benchmarks.
 
-Both ``run_ana`` and ``run_mancova`` have the same outer signature —
-``(ds, extenter, effect_llr, seed, ...) -> DataFrame`` — so the CLI can
-dispatch either one through the same ``driver_local`` call.  The
-difference is what each trial emits:
+Both run_ana and run_mancova have the same outer signature,
+(ds, extenter, effect_llr, seed, ...) -> DataFrame, so the CLI can
+dispatch either one through the same driver_local call. The difference
+is what each trial emits:
 
-  - ``run_ana`` fits every entry of an ``ana_kwargs_dict`` and emits
-    one row per entry.
+  - run_ana fits every entry of an ana_kwargs_dict and emits one row
+    per entry.
 
-  - ``run_mancova`` runs one shared voxel-stat walk and dispatches it
+  - run_mancova runs one shared voxel-stat walk and dispatches it
     across VBA / VBA-TFCE / CET x 5 MANCOVA stats x {raw, z}, emitting
     30 rows per trial.
 
@@ -28,8 +28,20 @@ from glow.analysis.mancova import stat_dict, stat_dict_inv, get_wilks
 from glow.effect import EffectSynthetic
 
 
-def _plant(ds, extenter, effect_llr, seed):
-    """Build the exp + planted-effect pair shared by every trial fn."""
+def _plant(ds, extenter, effect_llr: float, seed: int):
+    """Build the exp + planted-effect pair shared by every trial fn.
+
+    Args:
+        ds: data source whose .exp gives the clean experiment
+        extenter: Extenter that samples the planted effect's support
+        effect_llr (float): planted effect strength (log-likelihood ratio)
+        seed (int): RNG seed for the synthetic effect
+
+    Returns:
+        exp: the clean experiment
+        exp_eff: the experiment with the synthetic effect added
+        mask_ (np.array): (X, Y, Z) bool, the realized effect support
+    """
     exp = ds.exp
     synth = EffectSynthetic(extenter=extenter, effect_llr=effect_llr,
                             seed=seed)
@@ -37,11 +49,19 @@ def _plant(ds, extenter, effect_llr, seed):
     return exp, exp_eff, synth.mask_
 
 
-def _score(ana, mask_target, mask_active):
+def _score(ana, mask_target, mask_active) -> dict:
     """Dice/sens/spec + min_pval against the planted mask.
 
-    Returns a dict (without the per-trial bookkeeping columns); merged
-    by the caller into the row it's accumulating.
+    The returned dict carries no per-trial bookkeeping columns; the
+    caller merges it into the row it's accumulating.
+
+    Args:
+        ana: a fitted Analysis whose .effect_list / .pval are scored
+        mask_target (np.array): (X, Y, Z) bool, the planted effect support
+        mask_active (np.array): (X, Y, Z) bool, voxels inside the mask
+
+    Returns:
+        the dice, sens, spec, and min_pval scores as a dict
     """
     mask_pred = np.zeros(mask_active.shape, dtype=bool)
     for eff in (ana.effect_list or ()):
@@ -57,10 +77,19 @@ def _score(ana, mask_target, mask_active):
     }
 
 
-def run_ana(*, ds, extenter, effect_llr, seed, ana_kwargs_dict):
-    """Fit every analysis in ``ana_kwargs_dict`` on one synthetic trial.
+def run_ana(*, ds, extenter, effect_llr: float, seed: int,
+            ana_kwargs_dict: dict):
+    """Fit every analysis in ana_kwargs_dict on one synthetic trial.
 
-    Returns a DataFrame with one row per analysis label.
+    Args:
+        ds: data source whose .exp gives the clean experiment
+        extenter: Extenter that samples the planted effect's support
+        effect_llr (float): planted effect strength (log-likelihood ratio)
+        seed (int): RNG seed for the synthetic effect
+        ana_kwargs_dict (dict): label -> (Analysis class, init kwargs)
+
+    Returns:
+        a DataFrame with one row per analysis label
     """
     exp, exp_eff, mask_target = _plant(ds, extenter, effect_llr, seed)
     mask_active = exp.mask_idx > -1
@@ -94,13 +123,19 @@ def run_ana(*, ds, extenter, effect_llr, seed, ana_kwargs_dict):
 _MANCOVA_FAMILIES = ('VBA', 'VBA-TFCE', 'CET')
 
 
-def _shared_voxel_walk(exp_eff, n_perm_fwer):
+def _shared_voxel_walk(exp_eff, n_perm_fwer: int) -> dict:
     """One stat matrix per MANCOVA stat fn, shared across families.
 
-    Returns ``{stat_fn: (n_perm_fwer + 1, num_vox) array}``: row 0 is
-    observed; rows 1: are Freedman-Lane nulls.  This is the expensive
-    part — each family then post-processes its copy (TFCE smoothing,
-    CET thresholding, raw vs z-score).
+    This is the expensive part; each family then post-processes its copy
+    (TFCE smoothing, CET thresholding, raw vs z-score).
+
+    Args:
+        exp_eff: the experiment with the synthetic effect added
+        n_perm_fwer (int): number of FWER permutations
+
+    Returns:
+        stat_fn -> (n_perm_fwer + 1, num_vox) array; row 0 is observed,
+            rows 1: are Freedman-Lane nulls
     """
     num_vox = exp_eff.y.shape[2]
     stat_fns = list(stat_dict.values())
@@ -115,8 +150,18 @@ def _shared_voxel_walk(exp_eff, n_perm_fwer):
     return out
 
 
-def _build_specs(n_perm_fwer, alpha_fwer, cft_pval):
-    """Yield (label, Ana, kw, z_flag, stat_fn) for every mancova variant."""
+def _build_specs(n_perm_fwer: int, alpha_fwer: float, cft_pval: float):
+    """Build the per-variant specs for the MANCOVA stat comparison.
+
+    Args:
+        n_perm_fwer (int): number of FWER permutations
+        alpha_fwer (float): FWER significance level
+        cft_pval (float): cluster-forming threshold p-value (CET family)
+
+    Yields:
+        (label, Ana, kw, stat_fn) for every VBA / VBA-TFCE / CET variant
+            crossed with the MANCOVA stats and {raw, z}
+    """
     for fn in stat_dict.values():
         name = stat_dict_inv[fn]
         for z_flag in (False, True):
@@ -138,14 +183,26 @@ def _build_specs(n_perm_fwer, alpha_fwer, cft_pval):
                    fn)
 
 
-def run_mancova(*, ds, extenter, effect_llr, seed,
-                n_perm_fwer, alpha_fwer=0.05,
-                cft_pval=DEFAULT_CET_CFT_PVAL):
+def run_mancova(*, ds, extenter, effect_llr: float, seed: int,
+                n_perm_fwer: int, alpha_fwer: float = 0.05,
+                cft_pval: float = DEFAULT_CET_CFT_PVAL):
     """VBA / VBA-TFCE / CET x 5 MANCOVA stats x {raw, z} on one trial.
 
-    Shares one voxel-stat walk across families.  Each emitted row's
-    ``time_sec`` is ``walk_time + own_post`` — the cost the variant
-    would incur if run in isolation.
+    Shares one voxel-stat walk across families. Each emitted row's
+    time_sec is walk_time + own_post, the cost the variant would incur
+    if run in isolation.
+
+    Args:
+        ds: data source whose .exp gives the clean experiment
+        extenter: Extenter that samples the planted effect's support
+        effect_llr (float): planted effect strength (log-likelihood ratio)
+        seed (int): RNG seed for the synthetic effect
+        n_perm_fwer (int): number of FWER permutations
+        alpha_fwer (float): FWER significance level
+        cft_pval (float): cluster-forming threshold p-value (CET family)
+
+    Returns:
+        a DataFrame with one row per (family, stat, z) variant
     """
     exp, exp_eff, mask_target = _plant(ds, extenter, effect_llr, seed)
     mask_active = exp.mask_idx > -1

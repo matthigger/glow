@@ -1,19 +1,20 @@
 """Local runtime benchmark for ward_tree + inner-perm CPU backend.
 
-Sweeps HCP voxel counts at ``--n-steps`` log-spaced points between
-``--min-voxels`` and ``--max-voxels`` and, for each, times three
-functions on the same (X, connectivity, exp, children) inputs:
+Running python -m glow.benchmark.runtime sweeps HCP voxel counts at
+--n-steps log-spaced points between --min-voxels and --max-voxels and,
+for each, times three functions on the same (X, connectivity, exp,
+children) inputs:
 
-  - ``glow.analysis.ward.ward_tree``
-  - ``sklearn.cluster.ward_tree``
-  - ``glow.analysis.inner_perm.cpu_perm``  (unified perm-LLR backend;
+  - glow.analysis.ward.ward_tree
+  - sklearn.cluster.ward_tree
+  - glow.analysis.inner_perm.cpu_perm  (unified perm-LLR backend;
     handles intercept-only and general Q0 on the same code path)
 
 Results are appended to a JSON file after every voxel count so you can
-follow progress live (``tail -f`` the output path, or just rerun this
+follow progress live (tail -f the output path, or just rerun this
 script's plotting / summary).
 
-Run::
+Run:
 
     python -m glow.benchmark.runtime               # defaults (1k..600k, 20 steps)
     python -m glow.benchmark.runtime --n-perm 1    # quicker
@@ -72,8 +73,18 @@ def load_hcp_exp():
     return exp.sample_x(a=2, seed=0, add_bias=True)
 
 
-def subsample(exp_orig, n_vox, seed=0):
-    """Subsample ``exp_orig`` to ~n_vox voxels via a single contiguous sphere."""
+def subsample(exp_orig, n_vox: int, seed: int = 0):
+    """Subsample exp_orig to ~n_vox voxels via a single contiguous sphere.
+
+    Args:
+        exp_orig: the full experiment to subsample
+        n_vox (int): target voxel count; returns exp_orig unchanged if it
+            already has at most this many voxels
+        seed (int): RNG seed for the sphere extenter
+
+    Returns:
+        the subsampled experiment (or exp_orig if no subsampling was needed)
+    """
     max_vox = int((exp_orig.mask_idx > -1).sum())
     if n_vox >= max_vox:
         return exp_orig
@@ -83,12 +94,20 @@ def subsample(exp_orig, n_vox, seed=0):
 
 
 def ward_inputs(exp):
-    """Build ``(X, connectivity)`` for the largest connected component.
+    """Build (X, connectivity) for the largest connected component.
 
-    Mirrors the per-component prep inside ``glow.analysis.cluster.cluster``
-    (FOCUS mode): project ``exp.y`` onto the interest subspace ``q1``,
-    then carve out the component's rows / grid graph.  For a
-    ``contiguous=True`` subsample the largest component is the whole mask.
+    Mirrors the per-component prep inside glow.analysis.cluster.cluster
+    (FOCUS mode): project exp.y onto the interest subspace q1, then carve
+    out the component's rows / grid graph. For a contiguous=True subsample
+    the largest component is the whole mask.
+
+    Args:
+        exp: the experiment to derive ward inputs from
+
+    Returns:
+        X (np.array): (n_comp_vox, a1 * b) projected feature rows for the
+            component, C-contiguous
+        connectivity: the component's grid-graph sparse adjacency
     """
     _, q1, _ = decompose(exp.x, exp.contrast)
     y = np.einsum('bnr,na->bar', exp.y, q1.T, optimize=True)
@@ -119,13 +138,13 @@ def ward_inputs(exp):
 
 
 def time_call(fn, *args, **kwargs):
-    """Run ``fn`` once and return ``(elapsed_seconds, result)``."""
+    """Run fn once and return (elapsed_seconds, result)."""
     t0 = time.perf_counter()
     result = fn(*args, **kwargs)
     return time.perf_counter() - t0, result
 
 
-def warm_up():
+def warm_up() -> None:
     """Trigger numba JIT compiles so the first measurement is honest."""
     rng = np.random.default_rng(0)
     side = 4
@@ -137,8 +156,13 @@ def warm_up():
     sklearn_ward_tree(X=X, connectivity=conn)
 
 
-def write_results(path, results):
-    """Atomic-ish overwrite of ``path`` so partial reads see a full list."""
+def write_results(path: Path, results: list) -> None:
+    """Atomic-ish overwrite of path so partial reads see a full list.
+
+    Args:
+        path (pathlib.Path): JSON output path
+        results (list): result dicts to serialize
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + '.tmp')
     with open(tmp, 'w') as f:
@@ -153,8 +177,13 @@ _PLOT_SERIES = [
 ]
 
 
-def write_plot(path, results):
-    """Save a log-log plot of num_vox vs. time for all backends."""
+def write_plot(path: Path, results: list) -> None:
+    """Save a log-log plot of num_vox vs. time for all backends.
+
+    Args:
+        path (pathlib.Path): output image path; the suffix sets the format
+        results (list): result dicts as written by run_one
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = sorted(results, key=lambda r: r['num_vox'])
     nv = np.array([r['num_vox'] for r in rows])
@@ -183,8 +212,18 @@ def write_plot(path, results):
     tmp.replace(path)
 
 
-def run_one(exp, n_perm, base_seed):
-    """Time all backends on one ``exp``; returns a result dict."""
+def run_one(exp, n_perm: int, base_seed: int) -> dict:
+    """Time all backends on one exp and return a result dict.
+
+    Args:
+        exp: the (sub)sampled experiment to time
+        n_perm (int): inner permutations for cpu_perm
+        base_seed (int): base RNG seed for cpu_perm
+
+    Returns:
+        a result dict with sizes (num_vox, b, num_img, ward_n_samples) and
+            per-backend timings (glow_ward_sec, sklearn_ward_sec, cpu_perm_sec)
+    """
     actual_vox = int(exp.y.shape[2])
     row = {'num_vox': actual_vox,
            'b': int(exp.y.shape[0]),
@@ -216,7 +255,12 @@ def run_one(exp, n_perm, base_seed):
     return row
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
+    """Parse the runtime-benchmark CLI arguments.
+
+    Returns:
+        the parsed argparse.Namespace
+    """
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -231,7 +275,8 @@ def parse_args():
     return p.parse_args()
 
 
-def main():
+def main() -> None:
+    """Run the voxel-count sweep, writing JSON + a plot after each step."""
     args = parse_args()
     print(f'Loading HCP data...')
     exp_orig = load_hcp_exp()

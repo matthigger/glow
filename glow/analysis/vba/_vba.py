@@ -1,3 +1,7 @@
+"""Voxel-based analysis with permutation FWER and optional TFCE."""
+
+from typing import Callable
+
 import numpy as np
 from tqdm import tqdm
 
@@ -5,19 +9,39 @@ from .._base import AnalysisVoxel
 
 
 class AnalysisVBA(AnalysisVoxel):
-    def __init__(self, exp, n_perm_fwer, alpha_fwer=.05, verbose=False,
-                 tfce_flag=False, z_flag=False,
-                 get_stat=None):
-        """
+    """Per-voxel MANCOVA analysis with max-stat permutation FWER.
+
+    Computes one stat per voxel, optionally z-scores and TFCE-enhances
+    the permutation null, then derives FWER-controlled p-values.
+
+    Attributes:
+        exp (Experiment): source data (scaled)
+        n_perm_fwer (int): permutations for FWER control
+        alpha_fwer (float): family-wise error rate
+        tfce_flag (bool): whether TFCE enhancement is applied
+        z_flag (bool): whether stats are z-scored before TFCE
+        verbose (bool): whether progress is printed
+        stat (np.array): (n_perm_fwer+1, num_vox) stats (populated by fit)
+        pval (np.array): (num_vox,) FWER p-values (populated by fit)
+    """
+
+    def __init__(self, exp, n_perm_fwer: int, alpha_fwer: float = .05,
+                 verbose: bool = False, tfce_flag: bool = False,
+                 z_flag: bool = False, get_stat: Callable = None):
+        """Configure a voxel-based analysis.
+
         Args:
-            exp: Experiment to analyze
-            n_perm_fwer: Number of permutations for FWER control
-            alpha_fwer: Family-wise error rate
-            verbose: Print progress
-            tfce_flag: Apply TFCE enhancement
-            z_flag: Z-score voxel-wise using the permutation null before
-                TFCE.  Makes the null distribution spatially homogeneous
-                (pivotal), improving power under max-stat correction.
+            exp (Experiment): experiment to analyze
+            n_perm_fwer (int): number of permutations for FWER control
+            alpha_fwer (float): family-wise error rate
+            verbose (bool): print progress
+            tfce_flag (bool): apply TFCE enhancement
+            z_flag (bool): z-score voxel-wise using the permutation null
+                before TFCE. Makes the null distribution spatially
+                homogeneous (pivotal), improving power under max-stat
+                correction.
+            get_stat (Callable): per-region stat function (e, h, n);
+                defaults to Wilks lambda.
         """
         super().__init__(exp, get_stat=get_stat)
         self.n_perm_fwer = n_perm_fwer
@@ -30,9 +54,10 @@ class AnalysisVBA(AnalysisVoxel):
         """Run the permutation walk and compute p-values.
 
         Args:
-            _stat: optional (n_perm_fwer+1, num_vox) pre-computed stat matrix
-                (raw, before z-scoring or TFCE). Caller is responsible for
-                passing a copy. Must match n_perm_fwer.
+            _stat (np.array): optional (n_perm_fwer+1, num_vox) pre-computed
+                stat matrix (raw, before z-scoring or TFCE). Row 0 is the
+                observed draw. Caller is responsible for passing a copy.
+                Must match n_perm_fwer.
 
         Returns:
             self
@@ -63,18 +88,19 @@ class AnalysisVBA(AnalysisVoxel):
         return self
 
     @classmethod
-    def apply_tfce(cls, stat, mask_idx, verbose=False):
-        """apply TFCE to every permutation image.
+    def apply_tfce(cls, stat, mask_idx, verbose: bool = False):
+        """Apply TFCE to every permutation image.
 
         Args:
-            stat (np.array): (num_permute, num_vox) statistics
+            stat (np.array): (n_perm+1, num_vox) statistics (row 0 observed)
             mask_idx (np.array): 3d voxel index array (-1 outside analysis)
             verbose (bool): print progress
 
         Returns:
-            tfce (np.array): (num_permute, num_vox) TFCE-enhanced stats
+            tfce (np.array): (n_perm+1, num_vox) TFCE-enhanced stats
         """
-        from . import _tfce as _tfce_mod  # lazy import (requires FSL)
+        # lazy import: TFCE validation against FSL is opt-in
+        from . import _tfce as _tfce_mod
         tfce = np.full(shape=stat.shape,
                        fill_value=np.nanmin(stat))
         for perm_idx, _stat in tqdm(enumerate(stat),

@@ -1,3 +1,5 @@
+"""Solve for the offset that imposes a target effect size on imaging data."""
+
 import warnings
 
 import numpy as np
@@ -6,17 +8,17 @@ from scipy.optimize import minimize
 from glow.analysis.mancova import decompose, get_llr
 
 
-def compute_offset(x, y, contrast, effect_llr):
+def compute_offset(x, y, contrast, effect_llr: float):
     """Find the smallest offset to y that imposes a given effect strength.
 
-    The target is expressed as **size-normalized** LLR:
+    The target is expressed as size-normalized LLR:
     (1/2) * ln|det(I + E^{-1}H)|.
 
-    Note that ``effect_llr`` here is per-voxel-equivalent: the LLR you
+    Note that effect_llr here is per-voxel-equivalent: the LLR you
     will observe for the planted region under H1 is approximately
-    ``effect_llr * |region|`` (because the un-normalized LLR carries an
+    effect_llr * |region| (because the un-normalized LLR carries an
     n-prefactor that this routine divides out by calling
-    ``get_llr(e, h, n=1)``).  So asking for ``effect_llr=0.5`` on a
+    get_llr(e, h, n=1)). So asking for effect_llr=0.5 on a
     614-voxel region plants a region whose downstream observed LLR is
     ~307, not 0.5.
 
@@ -51,8 +53,28 @@ def compute_offset(x, y, contrast, effect_llr):
 
 
 def _solve_offset_only(y_mean, q, yq1_norm2, yq2_norm2, yq1q1y, yq2q2y,
-                        sigma_orig, num_vox, effect_llr):
-    """Original 2-variable optimisation (alpha1, alpha2), sigma_scale=1."""
+                        sigma_orig, num_vox: int, effect_llr: float):
+    """Solve the 2-variable offset optimisation, holding sigma fixed.
+
+    Minimises the offset norm over the interest/nuisance scalings
+    (alpha1, alpha2) subject to the LLR matching effect_llr; sigma_scale
+    is always 1 (returned as None).
+
+    Args:
+        y_mean (np.array): (b, num_img) mean image over voxels
+        q: QR bases (q1 interest, q2 nuisance) from decompose
+        yq1_norm2 (float): squared norm of y_mean projected onto q1
+        yq2_norm2 (float): squared norm of y_mean projected onto q2
+        yq1q1y (np.array): (b, b) interest outer product
+        yq2q2y (np.array): (b, b) nuisance outer product
+        sigma_orig (np.array): (b, b) within-region scatter
+        num_vox (int): number of voxels in the region
+        effect_llr (float): target size-normalized log-likelihood ratio
+
+    Returns:
+        offset (np.array): (b, num_img) constant offset across voxels
+        sigma_scale (float | None): always None (kept for API compatibility)
+    """
 
     def get_e_h(alpha):
         alpha1, alpha2 = alpha
@@ -86,7 +108,15 @@ def _solve_offset_only(y_mean, q, yq1_norm2, yq2_norm2, yq1q1y, yq2q2y,
 
 
 def _fix_alpha_signs(alpha, obj_fn):
-    """Ensure 1 + alpha_i >= 0 by flipping signs (preserves objective)."""
+    """Ensure 1 + alpha_i >= 0 by flipping signs (preserves objective).
+
+    Args:
+        alpha (np.array): (2,) the (alpha1, alpha2) scalings to correct
+        obj_fn (Callable): objective used to assert the flip is value-preserving
+
+    Returns:
+        x_opt (np.array): (2,) sign-corrected scalings
+    """
     x_opt = alpha.copy()
     for idx in range(min(2, len(x_opt))):
         if 1 + x_opt[idx] < 0:
