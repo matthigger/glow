@@ -2,6 +2,7 @@
 
 Subcommands::
 
+    python -m glow.aws.infra bootstrap [--config PATH]
     python -m glow.aws.infra setup     [--image-tag IMG] [--config PATH]
     python -m glow.aws.infra teardown  [--yes] [--delete-bucket] [--config PATH]
     python -m glow.aws.infra status    [--label LABEL]              [--config PATH]
@@ -14,11 +15,11 @@ bucket / queue / job-definition / region names; the rest of the
 provisioning detail (instance types, allocation strategy, VPC lookup)
 lives in this file.
 
-Assumes the IAM bootstrap from the README is done:
-``ecsInstanceRole``, ``aws-ec2-spot-fleet-tagging-role``, and the
-Batch service-linked role.  The IAM user running this only needs S3 /
-Batch / ECR permissions (no IAM create), so role provisioning stays a
-one-time admin step rather than something this CLI does.
+``bootstrap`` creates the account-wide IAM roles ``setup`` depends on
+(the Batch service-linked role, ``ecsInstanceRole`` + instance profile,
+the spot-fleet role, and the two ECS task roles).  It needs IAM-admin
+credentials and only has to run once per account; ``setup`` and the
+daily commands need only S3 / Batch / ECR permissions.
 """
 
 import argparse
@@ -30,7 +31,7 @@ from typing import List, Optional
 import boto3
 from botocore.exceptions import ClientError
 
-from glow.aws.config import AWSConfig, DEFAULT_CONFIG_PATH
+from glow.aws.config import AWSConfig, DEFAULT_CONFIG_PATH, s3_key
 
 
 # ---------- compute-environment constants -----------------------------------
@@ -61,12 +62,135 @@ INSTANCE_TYPES = [
     'r7a.large', 'r7a.xlarge', 'r7a.2xlarge', 'r7a.4xlarge',
 ]
 
-# IAM role names — assumed to already exist (see README).
+# IAM role names — created by `bootstrap`, consumed by `setup`.
 ECS_INSTANCE_ROLE = 'ecsInstanceRole'
 SPOT_FLEET_ROLE = 'aws-ec2-spot-fleet-tagging-role'
+ECS_TASK_EXECUTION_ROLE = 'GlowEcsTaskExecutionRole'
+ECS_TASK_ROLE = 'GlowEcsTaskRole'
 
 # ECR repository for the worker image.
 ECR_REPO_NAME = 'glow-worker'
+
+
+# ---------- bootstrap (one-time IAM) ----------------------------------------
+
+
+def cmd_bootstrap(args, cfg: AWSConfig):
+    """Create the account-wide IAM roles `setup` depends on (idempotent).
+
+    Needs IAM-admin credentials; only has to run once per account.  Every
+    call here tolerates pre-existing roles, so rerunning is safe.
+    """
+    iam = boto3.client('iam')
+    print('[bootstrap] creating IAM roles (idempotent)')
+
+    _create_service_linked_role(iam, 'batch.amazonaws.com')
+
+    # EC2 instances that Batch launches need this role + a like-named
+    # instance profile wrapping it.
+    _create_role(
+        iam, ECS_INSTANCE_ROLE, _trust('ec2.amazonaws.com'),
+        managed=['service-role/AmazonEC2ContainerServiceforEC2Role'])
+    _create_instance_profile(iam, ECS_INSTANCE_ROLE)
+
+    # Lets Batch tag the Spot fleet it requests.
+    _create_role(
+        iam, SPOT_FLEET_ROLE, _trust('spotfleet.amazonaws.com'),
+        managed=['service-role/AmazonEC2SpotFleetTaggingRole'])
+
+    # ECS pulls the image / writes logs under the execution role; the worker
+    # container reads/writes S3 under the task role.
+    _create_role(
+        iam, ECS_TASK_EXECUTION_ROLE, _trust('ecs-tasks.amazonaws.com'),
+        managed=['service-role/AmazonECSTaskExecutionRolePolicy'])
+    _create_role(
+        iam, ECS_TASK_ROLE, _trust('ecs-tasks.amazonaws.com'),
+        inline={'GlowS3Access': _s3_policy(cfg.s3_bucket)})
+
+    print('[bootstrap] done. now run: '
+          'python -m glow.aws.infra setup --image-tag glow-worker:latest')
+
+
+def _trust(service: str) -> dict:
+    """An assume-role trust policy for an AWS service principal."""
+    return {
+        'Version': '2012-10-17',
+        'Statement': [{
+            'Effect': 'Allow',
+            'Principal': {'Service': service},
+            'Action': 'sts:AssumeRole',
+        }],
+    }
+
+
+def _s3_policy(bucket: str) -> dict:
+    """Inline policy granting the worker get/put/list on its bucket."""
+    return {
+        'Version': '2012-10-17',
+        'Statement': [{
+            'Effect': 'Allow',
+            'Action': ['s3:GetObject', 's3:PutObject', 's3:ListBucket'],
+            'Resource': [
+                f'arn:aws:s3:::{bucket}',
+                f'arn:aws:s3:::{bucket}/*',
+            ],
+        }],
+    }
+
+
+def _create_service_linked_role(iam, service: str):
+    try:
+        iam.create_service_linked_role(AWSServiceName=service)
+        print(f'  ✓ created service-linked role for {service}')
+    except ClientError as e:
+        # Already exists → InvalidInput; that's the success path on rerun.
+        already = ('InvalidInput', 'EntityAlreadyExists')
+        if e.response['Error']['Code'] in already:
+            print(f'  ✓ service-linked role for {service} exists')
+        else:
+            raise
+
+
+def _create_role(iam, name: str, trust: dict, *,
+                 managed: Optional[List[str]] = None,
+                 inline: Optional[dict] = None):
+    try:
+        iam.create_role(
+            RoleName=name,
+            AssumeRolePolicyDocument=json.dumps(trust))
+        print(f'  ✓ created role {name}')
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'EntityAlreadyExists':
+            raise
+        print(f'  ✓ role {name} exists')
+
+    for arn_suffix in (managed or []):
+        iam.attach_role_policy(
+            RoleName=name,
+            PolicyArn=f'arn:aws:iam::aws:policy/{arn_suffix}')
+    for policy_name, doc in (inline or {}).items():
+        iam.put_role_policy(
+            RoleName=name,
+            PolicyName=policy_name,
+            PolicyDocument=json.dumps(doc))
+
+
+def _create_instance_profile(iam, name: str):
+    try:
+        iam.create_instance_profile(InstanceProfileName=name)
+        print(f'  ✓ created instance profile {name}')
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'EntityAlreadyExists':
+            raise
+        print(f'  ✓ instance profile {name} exists')
+    # add_role_to_instance_profile errors if the role is already attached;
+    # tolerate that so rerun stays idempotent.
+    try:
+        iam.add_role_to_instance_profile(
+            InstanceProfileName=name, RoleName=name)
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'LimitExceeded':
+            raise
 
 
 # ---------- setup -----------------------------------------------------------
@@ -81,7 +205,7 @@ def cmd_setup(args, cfg: AWSConfig):
     _setup_s3_bucket(cfg)
 
     image_uri = _resolve_image_uri(args, region, account_id)
-    _setup_job_definition(cfg, image_uri=image_uri)
+    _setup_job_definition(cfg, image_uri=image_uri, account_id=account_id)
     ce_arn = _setup_compute_environment(cfg, account_id=account_id)
     _setup_job_queue(cfg, ce_arn=ce_arn)
     print('[setup] done.')
@@ -164,9 +288,8 @@ def _push_image_to_ecr(local_tag: str, region: str, account_id: str) -> str:
     return ecr_uri
 
 
-def _setup_job_definition(cfg: AWSConfig, *, image_uri: str):
+def _setup_job_definition(cfg: AWSConfig, *, image_uri: str, account_id: str):
     batch = boto3.client('batch', region_name=cfg.region)
-    account_id = _account_id()
     # ECS task roles — referenced; created out-of-band per README.
     exec_role = f'arn:aws:iam::{account_id}:role/GlowEcsTaskExecutionRole'
     task_role = f'arn:aws:iam::{account_id}:role/GlowEcsTaskRole'
@@ -417,9 +540,10 @@ def cmd_clean(args, cfg: AWSConfig):
         return
     s3 = boto3.client('s3', region_name=cfg.region)
     if args.jobs:
-        _delete_prefix(s3, cfg.s3_bucket, f'{cfg.s3_prefix}/jobs/')
+        _delete_prefix(s3, cfg.s3_bucket, s3_key(cfg.s3_prefix, 'jobs') + '/')
     if args.datasource:
-        _delete_prefix(s3, cfg.s3_bucket, f'{cfg.s3_prefix}/datasource/')
+        _delete_prefix(s3, cfg.s3_bucket,
+                       s3_key(cfg.s3_prefix, 'datasource') + '/')
 
 
 def _delete_prefix(s3, bucket: str, prefix: str):
@@ -470,6 +594,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument('--config', default=DEFAULT_CONFIG_PATH,
                    help=f'path to AWSConfig JSON (default: {DEFAULT_CONFIG_PATH})')
     subs = p.add_subparsers(dest='cmd', required=True)
+
+    sp = subs.add_parser('bootstrap',
+                         help='create one-time IAM roles (needs IAM admin)')
+    sp.set_defaults(func=cmd_bootstrap)
 
     sp = subs.add_parser('setup', help='provision S3/ECR/Batch resources')
     sp.add_argument('--image-tag', default=None,

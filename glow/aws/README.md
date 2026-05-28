@@ -62,29 +62,28 @@ non-deterministic source) **is** uploaded once per unique `ds`.
 
 ## One-time AWS setup
 
-These are the steps `glow.aws.infra` doesn't perform itself (they require
-IAM admin and only need to happen once per account):
+You do three things by hand; the CLI does the rest.
 
-1. **Create an AWS account** with billing alerts.
-2. **Create an IAM user** with programmatic access. Attach
-   `AmazonS3FullAccess`, `AWSBatchFullAccess`,
-   `AmazonEC2ContainerRegistryFullAccess`, `IAMReadOnlyAccess`.
-3. **Create the Batch Service-Linked Role**
-   (`AWSServiceRoleForBatch`), required for `SPOT_PRICE_CAPACITY_OPTIMIZED`:
-   ```bash
-   aws iam create-service-linked-role --aws-service-name batch.amazonaws.com
-   ```
-4. **Create `ecsInstanceRole` + instance profile** (attach
-   `service-role/AmazonEC2ContainerServiceforEC2Role`).
-5. **Create `aws-ec2-spot-fleet-tagging-role`** (attach
-   `service-role/AmazonEC2SpotFleetTaggingRole`).
-6. **Create `GlowEcsTaskExecutionRole`** (attach
-   `service-role/AmazonECSTaskExecutionRolePolicy`) and **`GlowEcsTaskRole`**
-   (attach an inline policy granting `s3:GetObject` / `s3:PutObject` /
-   `s3:ListBucket` on your bucket).
-7. `aws configure` with the IAM-user credentials and your default region.
-8. Install Docker locally.
-9. Pick a region with c7i/c7a Spot capacity (default: `us-east-1`).
+1. **Create an AWS account** (and set a billing alert). Sign in, open
+   *IAM → Users*, create a user with **AdministratorAccess** and an access
+   key. (Admin is needed only for the one-time `bootstrap` below; day-to-day
+   work doesn't use it.)
+2. **`aws configure`** with that access key and your region (default
+   `us-east-1` — any region with c7i/c7a Spot capacity works).
+3. **Install Docker** (used to build the worker image).
+
+Then run the bootstrap, which creates every IAM role Batch needs — the
+service-linked role, `ecsInstanceRole` + instance profile, the spot-fleet
+role, and the two ECS task roles (the worker's S3 access is scoped to your
+bucket). It's idempotent, so rerunning is safe:
+
+```bash
+python -m glow.aws.infra bootstrap
+```
+
+> Why a separate command? `bootstrap` is the only step that needs IAM-admin
+> rights. After it runs, `setup` and the daily commands need only S3 / Batch
+> / ECR permissions.
 
 ## Per-project setup (run by `glow.aws.infra`)
 
@@ -92,12 +91,13 @@ IAM admin and only need to happen once per account):
 # Project-local config (cwd)
 cat > .glow_aws_config <<'EOF'
 {
-  "s3_bucket": "glow-experiments-yourname",
-  "s3_prefix": "paper2026",
+  "s3_bucket": "glow-experiments",
   "job_queue": "glow-job-queue",
   "job_definition": "glow-job-definition"
 }
 EOF
+# s3_prefix defaults to "" (objects land at the bucket root). Set it only
+# to namespace multiple projects within one bucket, e.g. "s3_prefix": "paper2026".
 
 # Build worker image + push to ECR + register Batch resources
 docker build -t glow-worker:latest -f glow/aws/Dockerfile .
@@ -168,5 +168,5 @@ python -m glow.aws.infra teardown --yes --delete-bucket  # nuke everything
 | `datasource.py` | `DataSourceS3` — S3-backed stand-in for a `DataSource` |
 | `driver.py` | `driver_aws` — orchestration + OOM tier escalation |
 | `worker.py` | `python -m glow.aws.worker <manifest_uri>` |
-| `infra.py` | `setup` / `teardown` / `status` / `clean` / `pause` / `resume` |
+| `infra.py` | `bootstrap` / `setup` / `teardown` / `status` / `clean` / `pause` / `resume` |
 | `Dockerfile` | Worker container image |

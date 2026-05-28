@@ -22,6 +22,7 @@ import boto3
 import cloudpickle
 from botocore.exceptions import ClientError
 
+from glow.aws.config import s3_key
 from glow.util import HashBySlots, value_id
 
 
@@ -66,7 +67,7 @@ class DataSourceS3(HashBySlots):
         """
         if s3 is None:
             s3 = boto3.client('s3')
-        key = f'{prefix}/datasource/{value_id(inner_ds)}/exp.pkl'
+        key = s3_key(prefix, 'datasource', value_id(inner_ds), 'exp.pkl')
         if not _object_exists(s3, bucket, key):
             body = cloudpickle.dumps(inner_ds.exp)
             s3.put_object(Bucket=bucket, Key=key, Body=body)

@@ -14,12 +14,21 @@ from typing import List
 DEFAULT_CONFIG_PATH = '.glow_aws_config'
 
 
+def s3_key(prefix: str, *parts: str) -> str:
+    """Join an ``s3_prefix`` with key parts, tolerating an empty prefix.
+
+    With an empty ``s3_prefix`` objects land at the bucket root rather than
+    under a leading-slash key like ``/jobs/...``.
+    """
+    return '/'.join(p for p in (prefix, *parts) if p)
+
+
 @dataclass
 class AWSConfig:
     s3_bucket: str
-    s3_prefix: str
     job_queue: str
     job_definition: str
+    s3_prefix: str = ''
     region: str = 'us-east-1'
     vcpus: int = 1
     memory_mb_tiers: List[int] = field(

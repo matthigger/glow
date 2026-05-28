@@ -21,6 +21,7 @@ import boto3
 import cloudpickle
 from tqdm import tqdm
 
+from glow.aws.config import s3_key
 from glow.aws.datasource import DataSourceS3
 from glow.benchmark.data import DataSourceWGN
 from glow.util import stable_hash
@@ -145,15 +146,15 @@ def _to_worker_trial(trial: dict, ds_wrap: Dict[int, DataSourceS3]) -> dict:
 
 
 def _job_key(prefix: str, trial_hash: str) -> str:
-    return f'{prefix}/jobs/{trial_hash}/job.pkl'
+    return s3_key(prefix, 'jobs', trial_hash, 'job.pkl')
 
 
 def _result_key(prefix: str, trial_hash: str) -> str:
-    return f'{prefix}/jobs/{trial_hash}/result.pkl'
+    return s3_key(prefix, 'jobs', trial_hash, 'result.pkl')
 
 
 def _manifest_key(prefix: str, run_id: str) -> str:
-    return f'{prefix}/jobs/{run_id}/manifest.pkl'
+    return s3_key(prefix, 'jobs', run_id, 'manifest.pkl')
 
 
 def _upload_jobs(s3, aws_config, run_fnc, pending, ds_wrap, verbose):
