@@ -12,7 +12,7 @@ import pytest
 
 from glow.aws.config import AWSConfig
 from glow.aws.driver import (
-    _is_oom, driver_aws)
+    _is_oom, driver_aws, driver_aws_multi)
 from glow.benchmark.data import DataSource, DataSourceWGN
 from glow.benchmark.trial_cache import TrialCache
 from glow.util import stable_hash
@@ -285,6 +285,102 @@ def test_single_trial_uses_non_array_submit(tmp_path):
     # For n=1, arrayProperties must NOT be passed to submit_job
     assert 'arrayProperties' not in fake_batch.submitted[0]
     assert len(cache._load_results()) == 1
+
+
+# ---------- driver_aws_multi ------------------------------------------------
+
+
+def test_multi_cache_submits_all_before_polling(tmp_path):
+    """Two caches submit one array job each in the same tier, then poll.
+
+    The old per-cache loop drained one cache to completion before
+    submitting the next; driver_aws_multi must instead have both array
+    jobs in flight (two submissions, one tier) and save both caches.
+    """
+    DataSource._exp_cache.clear()
+    ds = DataSourceWGN(seed=0, shape=(2, 2, 2), b=1, num_img=5)
+
+    def _cache(name, seeds):
+        return TrialCache(folder=tmp_path / name,
+                          iter_kwargs={'seed': seeds}, kwargs={'ds': ds})
+
+    cache_a = _cache('a', [0, 1])
+    cache_b = _cache('b', [2, 3])
+    hashes_a = [stable_hash(t) for t in cache_a.iter_trial_no_repeat()]
+    hashes_b = [stable_hash(t) for t in cache_b.iter_trial_no_repeat()]
+
+    fake_s3 = FakeS3()
+    _seed_results(fake_s3, bucket='b', prefix='pre', manifest=hashes_a,
+                  results=[{'seed': 0}, {'seed': 1}])
+    _seed_results(fake_s3, bucket='b', prefix='pre', manifest=hashes_b,
+                  results=[{'seed': 2}, {'seed': 3}])
+
+    # One array submission per cache (submission order = job order), all ok.
+    fake_batch = FakeBatch(submit_then=[
+        [{'status': 'SUCCEEDED'}] * 2,
+        [{'status': 'SUCCEEDED'}] * 2,
+    ])
+
+    with patch('glow.aws.driver.boto3.client',
+               side_effect=lambda kind, **_:
+               fake_s3 if kind == 's3' else fake_batch):
+        driver_aws_multi(
+            [('a', cache_a, _run_fnc), ('b', cache_b, _run_fnc)],
+            _cfg(), verbose=False)
+
+    assert len(cache_a._load_results()) == 2
+    assert len(cache_b._load_results()) == 2
+    # Both caches submitted in one tier as array jobs (not one drained first).
+    assert len(fake_batch.submitted) == 2
+    assert all('arrayProperties' in s for s in fake_batch.submitted)
+
+
+def test_multi_cache_per_cache_oom_escalation(tmp_path):
+    """OOM children escalate per cache while the other cache stays put."""
+    DataSource._exp_cache.clear()
+    ds = DataSourceWGN(seed=0, shape=(2, 2, 2), b=1, num_img=5)
+
+    def _cache(name, seeds):
+        return TrialCache(folder=tmp_path / name,
+                          iter_kwargs={'seed': seeds}, kwargs={'ds': ds})
+
+    cache_a = _cache('a', [0, 1])
+    cache_b = _cache('b', [2, 3])
+    hashes_a = [stable_hash(t) for t in cache_a.iter_trial_no_repeat()]
+    hashes_b = [stable_hash(t) for t in cache_b.iter_trial_no_repeat()]
+
+    fake_s3 = FakeS3()
+    _seed_results(fake_s3, bucket='b', prefix='pre', manifest=hashes_a,
+                  results=[{'seed': 0}, {'seed': 1}])
+    _seed_results(fake_s3, bucket='b', prefix='pre', manifest=hashes_b,
+                  results=[{'seed': 2}, {'seed': 3}])
+
+    # Tier 0: cache a (sub 0) both ok; cache b (sub 1) child 0 OOMs.
+    # Tier 1: only cache b's OOM child retried (sub 2), succeeds.
+    fake_batch = FakeBatch(submit_then=[
+        [{'status': 'SUCCEEDED'}] * 2,
+        [{'status': 'FAILED',
+          'container': {'exitCode': 137, 'reason': 'OutOfMemoryError'}},
+         {'status': 'SUCCEEDED'}],
+        [{'status': 'SUCCEEDED'}],
+    ])
+
+    with patch('glow.aws.driver.boto3.client',
+               side_effect=lambda kind, **_:
+               fake_s3 if kind == 's3' else fake_batch):
+        driver_aws_multi(
+            [('a', cache_a, _run_fnc), ('b', cache_b, _run_fnc)],
+            _cfg(), verbose=False)
+
+    assert len(cache_a._load_results()) == 2
+    assert len(cache_b._load_results()) == 2
+    # Three submissions: two at tier 0 (a, b) and only b retried at tier 1.
+    assert len(fake_batch.submitted) == 3
+    mem_at_tier_1 = next(
+        r['value'] for r in
+        fake_batch.submitted[2]['containerOverrides']['resourceRequirements']
+        if r['type'] == 'MEMORY')
+    assert mem_at_tier_1 == '4000'
 
 
 # ---------- real-AWS smoke test --------------------------------------------

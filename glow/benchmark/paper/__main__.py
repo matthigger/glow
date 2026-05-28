@@ -2,7 +2,9 @@
 
 Running python -m glow.benchmark.paper resolves cache labels from
 config.CACHE_BY_LABEL and drives each selected entry through
-driver_local (or driver_aws with --aws). Each catalogue entry is a
+driver_local; with --aws every selected cache is handed to
+driver_aws_multi at once, which uploads and submits them all up front
+and polls them concurrently. Each catalogue entry is a
 (TrialCache, run_fnc) pair; the run_fnc is already bound to its
 analysis recipe (see paper/config.py), so the CLI doesn't need to know
 whether a cache is a run_ana or run_mancova job.
@@ -67,20 +69,19 @@ def run(labels=None, n_jobs: int = 1, verbose: bool = True,
         aws (bool): dispatch to AWS Batch via glow.aws.driver_aws instead of local
         aws_config_path (str): path to the AWSConfig JSON, used only when aws is True
     """
-    aws_cfg = None
-    driver_aws = None
-    if aws:
-        from glow.aws import AWSConfig, driver_aws as _driver_aws
-        aws_cfg = AWSConfig.from_file(aws_config_path)
-        driver_aws = _driver_aws
+    entries = resolve_labels(labels or [])
 
-    for label, (cache, run_fnc) in resolve_labels(labels or []):
+    if aws:
+        from glow.aws import AWSConfig, driver_aws_multi
+        aws_cfg = AWSConfig.from_file(aws_config_path)
+        jobs = [(label, cache, run_fnc) for label, (cache, run_fnc) in entries]
+        driver_aws_multi(jobs, aws_cfg, verbose=verbose)
+        return
+
+    for label, (cache, run_fnc) in entries:
         if verbose:
             print(f'\n=== {label} ({cache.folder}) ===')
-        if aws:
-            driver_aws(cache, run_fnc, aws_cfg, verbose=verbose)
-        else:
-            driver_local(cache, run_fnc, n_jobs=n_jobs, verbose=verbose)
+        driver_local(cache, run_fnc, n_jobs=n_jobs, verbose=verbose)
 
 
 def parse_args(argv=None) -> argparse.Namespace:

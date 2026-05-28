@@ -16,6 +16,6 @@ Public surface is populated as the build progresses; see __all__.
 
 from .config import AWSConfig
 from .datasource import DataSourceS3
-from .driver import driver_aws
+from .driver import driver_aws, driver_aws_multi
 
-__all__ = ['AWSConfig', 'DataSourceS3', 'driver_aws']
+__all__ = ['AWSConfig', 'DataSourceS3', 'driver_aws', 'driver_aws_multi']
