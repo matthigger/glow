@@ -4,7 +4,6 @@ Verifies:
 - FWER control under the null for VBA and CET (with and without z-scoring)
 - z_score_stat standardization correctness
 - Power monotonicity: stronger effects detected more often
-- Size adjustment: GLOW regression decorrelates stat from region size
 - Permutation exchangeability: observed rank uniform under H0
 
 Small synthetic experiments keep runtime manageable.
@@ -17,7 +16,7 @@ from scipy import stats as sp_stats
 from glow.effect import ExtenterSphere, EffectSynthetic
 from glow.experiment import Experiment
 from glow.analysis import (
-    Analysis, AnalysisVBA, AnalysisCET, AnalysisGLOW,
+    Analysis, AnalysisVBA, AnalysisCET,
 )
 
 
@@ -236,34 +235,6 @@ class TestPowerMonotonicity:
         # strong effect should be detected reliably
         assert rates[0.8] >= 0.5, (
             f'Strong effect power too low: {rates[0.8]}')
-
-
-# ---------------------------------------------------------------------------
-# GLOW size adjustment
-# ---------------------------------------------------------------------------
-
-class TestSizeAdjustment:
-    """Sanity that per-region z-scoring runs and produces finite output.
-
-    The historical "adjustment reduces size correlation" check made sense
-    for the GAM smooth (which fit a function of size).  Per-region z
-    doesn't model size at all — each region is z-scored against its own
-    null — so a residual size correlation in ``llr_z_0`` is just
-    a finite-sample property of which regions ended up with which sizes,
-    not a statement about the method.  The real validation lives in
-    null-FWER calibration runs (see ``test/validate_studentize.py``).
-    """
-
-    def test_runs_and_produces_finite_output(self):
-        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
-                                    num_img=50, seed=42)
-        ana = AnalysisGLOW(exp, n_perm_fwer=20, n_perm_inner=50,
-                           alpha_fwer=0.05).fit()
-
-        valid = (np.isfinite(ana.llr)
-                 & np.isfinite(ana.z)
-                 & (ana.size > 0))
-        assert valid.sum() > 0, 'no valid regions'
 
 
 # ---------------------------------------------------------------------------

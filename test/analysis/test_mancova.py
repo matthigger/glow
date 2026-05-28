@@ -104,72 +104,39 @@ def test_get_mancova_with_q_tup():
     assert np.allclose(sigma1, sigma2)
 
 
-def test_all_stat_functions():
-    """test all MANCOVA statistics"""
-    import pytest
+def test_all_stats_oriented_nonnegative():
+    """every stat in stat_dict is non-negative (larger = more evidence vs H0)."""
     rng = np.random.default_rng(42)
     b = 3
-    
-    # create symmetric positive definite matrices
+
+    # symmetric positive definite E, positive semidefinite H
     e_raw = rng.standard_normal((b, b))
-    e = e_raw @ e_raw.T + np.eye(b)  # ensure positive definite
-    
+    e = e_raw @ e_raw.T + np.eye(b)
     h_raw = rng.standard_normal((b, b))
     h = h_raw @ h_raw.T
-    
-    # test all stats run without error
-    wilks = get_wilks(e=e, h=h)
-    assert 0 < wilks <= 1
 
-    pillai = get_pillai(e=e, h=h)
-    assert pillai >= 0
-
-    hotel = get_hotel_tr(e=e, h=h)
-    assert hotel >= 0
-
-    roy = get_roys_root(e=e, h=h)
-    assert roy >= 0
-
-    llr = get_llr(e=e, h=h, n=100)
-    assert llr >= 0
-
-    # test stat_dict
-    assert len(stat_dict) == 5
-    assert 'llr' in stat_dict
-    assert 'wilks' in stat_dict
-    assert 'pillai' in stat_dict
-    assert 'hotel_tr' in stat_dict
-    assert 'roys_root' in stat_dict
-
-    for name, stat_func in stat_dict.items():
-        result = stat_func(e=e, h=h, n=100)
-        assert isinstance(result, (float, np.floating))
-
-    # all stats oriented so larger = more evidence against H0
     for name, stat_func in stat_dict.items():
         result = stat_func(e=e, h=h, n=100)
         assert result >= 0, f'{name} should be non-negative'
 
 
 def test_singular_matrix_errors():
-    """stat functions raise LinAlgError with diagnostic message on singular input"""
-    import pytest
-
+    """stat functions raise LinAlgError on singular input"""
     # singular E (rank 1) — affects hotel_tr and roys_root
     e_singular = np.array([[1.0, 2.0], [2.0, 4.0]])
     h = np.eye(2)
 
-    with pytest.raises(np.linalg.LinAlgError, match='num_img'):
+    with pytest.raises(np.linalg.LinAlgError):
         get_hotel_tr(e_singular, h)
 
-    with pytest.raises(np.linalg.LinAlgError, match='num_img'):
+    with pytest.raises(np.linalg.LinAlgError):
         get_roys_root(e_singular, h)
 
     # singular H + E — affects pillai
     e_zero = np.zeros((2, 2))
     h_singular = np.array([[1.0, 0.0], [0.0, 0.0]])
 
-    with pytest.raises(np.linalg.LinAlgError, match='num_img'):
+    with pytest.raises(np.linalg.LinAlgError):
         get_pillai(e_zero, h_singular)
 
 

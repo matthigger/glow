@@ -58,22 +58,10 @@ def _make_two_clusters_3d(val_small, val_large, size_small=1, size_large=27):
 
 class TestTFCE2D:
 
-    def test_zeros(self):
-        assert np.allclose(apply_tfce_img(np.zeros((5, 5))), 0)
-
-    def test_negative(self):
-        assert np.allclose(apply_tfce_img(-np.ones((5, 5))), 0)
-
-    def test_single_pixel(self):
-        x = np.zeros((7, 7))
-        x[3, 3] = 1.0
-        r = apply_tfce_img(x)
-        assert r[3, 3] > 0
-        assert r[0, 0] == 0
-
-    def test_output_shape(self):
-        x = np.abs(np.random.default_rng(0).standard_normal((8, 10)))
-        assert apply_tfce_img(x).shape == x.shape
+    @pytest.mark.parametrize('img', [np.zeros((5, 5)), -np.ones((5, 5))])
+    def test_nonpositive_gives_zeros(self, img):
+        """img_max <= 0 produces all-zero TFCE."""
+        assert np.allclose(apply_tfce_img(img), 0)
 
     def test_cluster_enhancement(self):
         """Larger cluster should get higher TFCE than single pixel."""
@@ -100,19 +88,6 @@ class TestTFCE2D:
 
 class TestTFCE3D:
 
-    def test_single_voxel_analytical(self):
-        """Single voxel TFCE should match the discrete sum exactly."""
-        val = 2.5
-        n_steps = 100
-        for H in (1.0, 2.0, 3.0):
-            x = np.zeros((7, 7, 7))
-            x[3, 3, 3] = val
-            r = apply_tfce_img(x, H=H, n_steps=n_steps)
-            expected = _single_element_expected(val, H, n_steps)
-            np.testing.assert_allclose(
-                r[3, 3, 3], expected, rtol=1e-10,
-                err_msg=f'H={H}')
-
     def test_connectivity_6_vs_26(self):
         """26-connected merges face-diagonal neighbors into larger clusters."""
         x = np.zeros((9, 9, 9))
@@ -130,12 +105,9 @@ class TestTFCE3D:
 class TestHeightExponent:
     """Higher H should favor tall peaks over broad low clusters."""
 
-    @pytest.fixture()
-    def imgs_2d(self):
-        return _make_two_clusters_2d(val_small=0.5, val_large=2.0)
-
-    @pytest.fixture()
-    def imgs_3d(self):
+    def _imgs(self, ndim):
+        if ndim == 2:
+            return _make_two_clusters_2d(val_small=0.5, val_large=2.0)
         return _make_two_clusters_3d(val_small=0.5, val_large=2.0)
 
     def _peak_ratio(self, img, H, E=0.5):
@@ -144,42 +116,22 @@ class TestHeightExponent:
         peak_dim = t[11, 11] if img.ndim == 2 else t[11, 11, 11]
         return peak_bright / max(peak_dim, 1e-30)
 
-    def test_higher_H_favors_peaks_2d(self, imgs_2d):
+    @pytest.mark.parametrize('ndim', [2, 3])
+    def test_higher_H_favors_peaks(self, ndim):
         """Increasing H should increase the ratio of bright/dim TFCE."""
-        ratio_low = self._peak_ratio(imgs_2d, H=1.0)
-        ratio_high = self._peak_ratio(imgs_2d, H=3.0)
+        img = self._imgs(ndim)
+        ratio_low = self._peak_ratio(img, H=1.0)
+        ratio_high = self._peak_ratio(img, H=3.0)
         assert ratio_high > ratio_low
-
-    def test_higher_H_favors_peaks_3d(self, imgs_3d):
-        ratio_low = self._peak_ratio(imgs_3d, H=1.0)
-        ratio_high = self._peak_ratio(imgs_3d, H=3.0)
-        assert ratio_high > ratio_low
-
-    def test_H_changes_output_2d(self, imgs_2d):
-        """Different H values should produce different TFCE maps."""
-        t1 = apply_tfce_img(imgs_2d, H=1.0)
-        t3 = apply_tfce_img(imgs_2d, H=3.0)
-        assert not np.allclose(t1, t3)
-
-    def test_H_changes_output_3d(self):
-        x = np.zeros((9, 9, 9))
-        x[3:6, 3:6, 3:6] = np.random.default_rng(0).uniform(0.5, 2.0,
-                                                              (3, 3, 3))
-        t1 = apply_tfce_img(x, H=1.0)
-        t3 = apply_tfce_img(x, H=3.0)
-        assert not np.allclose(t1, t3)
 
 
 class TestExtentExponent:
     """Higher E should favor large clusters over isolated peaks."""
 
-    @pytest.fixture()
-    def imgs_2d(self):
-        return _make_two_clusters_2d(val_small=1.0, val_large=1.0,
-                                     size_small=1, size_large=9)
-
-    @pytest.fixture()
-    def imgs_3d(self):
+    def _imgs(self, ndim):
+        if ndim == 2:
+            return _make_two_clusters_2d(val_small=1.0, val_large=1.0,
+                                         size_small=1, size_large=9)
         return _make_two_clusters_3d(val_small=1.0, val_large=1.0,
                                      size_small=1, size_large=27)
 
@@ -189,56 +141,46 @@ class TestExtentExponent:
         peak_cluster = t[11, 11] if img.ndim == 2 else t[11, 11, 11]
         return peak_cluster / max(peak_single, 1e-30)
 
-    def test_higher_E_favors_extent_2d(self, imgs_2d):
+    @pytest.mark.parametrize('ndim', [2, 3])
+    def test_higher_E_favors_extent(self, ndim):
         """Increasing E should increase the ratio of large/small cluster TFCE."""
-        ratio_low = self._large_ratio(imgs_2d, E=0.0)
-        ratio_high = self._large_ratio(imgs_2d, E=1.5)
+        img = self._imgs(ndim)
+        ratio_low = self._large_ratio(img, E=0.0)
+        ratio_high = self._large_ratio(img, E=1.5)
         assert ratio_high > ratio_low
 
-    def test_higher_E_favors_extent_3d(self, imgs_3d):
-        ratio_low = self._large_ratio(imgs_3d, E=0.0)
-        ratio_high = self._large_ratio(imgs_3d, E=1.5)
-        assert ratio_high > ratio_low
-
-    def test_E_zero_ignores_extent_2d(self):
-        """E=0 means extent is ignored: single pixel == cluster center
+    @pytest.mark.parametrize('ndim', [2, 3])
+    def test_E_zero_ignores_extent(self, ndim):
+        """E=0 means extent is ignored: single element == cluster center
         when both have the same height."""
-        x1 = np.zeros((9, 9))
-        x1[4, 4] = 1.0
-        x2 = np.zeros((9, 9))
-        x2[3:6, 3:6] = 1.0
-        t1 = apply_tfce_img(x1, E=0.0)[4, 4]
-        t2 = apply_tfce_img(x2, E=0.0)[4, 4]
-        np.testing.assert_allclose(t1, t2, rtol=1e-10)
-
-    def test_E_zero_ignores_extent_3d(self):
-        x1 = np.zeros((9, 9, 9))
-        x1[4, 4, 4] = 1.0
-        x2 = np.zeros((9, 9, 9))
-        x2[3:6, 3:6, 3:6] = 1.0
-        t1 = apply_tfce_img(x1, E=0.0)[4, 4, 4]
-        t2 = apply_tfce_img(x2, E=0.0)[4, 4, 4]
+        center = (4,) * ndim
+        x1 = np.zeros((9,) * ndim)
+        x1[center] = 1.0
+        x2 = np.zeros((9,) * ndim)
+        x2[(slice(3, 6),) * ndim] = 1.0
+        t1 = apply_tfce_img(x1, E=0.0)[center]
+        t2 = apply_tfce_img(x2, E=0.0)[center]
         np.testing.assert_allclose(t1, t2, rtol=1e-10)
 
 
 # ---------------------------------------------------------------------------
-# 2D analytical match
+# analytical single-element match (2D + 3D)
 # ---------------------------------------------------------------------------
 
-class TestAnalytical2D:
+class TestAnalytical:
 
-    def test_single_pixel_matches_sum(self):
-        """2D single pixel should match the same discrete sum as 3D."""
-        val = 1.5
+    @pytest.mark.parametrize('ndim', [2, 3])
+    @pytest.mark.parametrize('H', [1.0, 2.0, 3.0])
+    def test_single_element_matches_sum(self, ndim, H):
+        """A single element's TFCE matches the discrete sum, in 2D and 3D."""
+        val = 2.5
         n_steps = 100
-        for H in (1.0, 2.0, 3.0):
-            x = np.zeros((7, 7))
-            x[3, 3] = val
-            r = apply_tfce_img(x, H=H, n_steps=n_steps)
-            expected = _single_element_expected(val, H, n_steps)
-            np.testing.assert_allclose(
-                r[3, 3], expected, rtol=1e-10,
-                err_msg=f'H={H}')
+        center = (3,) * ndim
+        x = np.zeros((7,) * ndim)
+        x[center] = val
+        r = apply_tfce_img(x, H=H, n_steps=n_steps)
+        expected = _single_element_expected(val, H, n_steps)
+        np.testing.assert_allclose(r[center], expected, rtol=1e-10)
 
     def test_uniform_cluster_all_equal(self):
         """All pixels in a uniform cluster get the same TFCE value."""

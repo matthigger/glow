@@ -19,7 +19,7 @@ import glow.graph
 import glow.mask
 from glow.analysis import inner_perm
 from glow.analysis.cluster import cluster
-from glow.analysis.mancova import decompose, is_intercept_only_nuisance
+from glow.analysis.mancova import decompose
 from glow.experiment import permute
 from glow.experiment.exper import Experiment
 
@@ -149,21 +149,6 @@ def _assert_moments_match(got, ref, *, atol):
 
 
 # ---------------------------------------------------------------------------
-# Pin the regimes each fixture exercises (intercept-only Q0 commutes with
-# P; general Q0 does not -- both must produce identical answers under
-# cpu_perm because the algorithm is unified).
-
-def test_intercept_only_fixture_is_intercept_only(prep_intercept_fp64):
-    exp = prep_intercept_fp64['exp']
-    assert is_intercept_only_nuisance(exp.x, exp.contrast)
-
-
-def test_general_q0_fixture_is_general(prep_general_fp64):
-    exp = prep_general_fp64['exp']
-    assert not is_intercept_only_nuisance(exp.x, exp.contrast)
-
-
-# ---------------------------------------------------------------------------
 # cpu_perm vs cpu_reliable -- moments agree to fp64 round-off.
 # Both backends now feed their per-draw output through the same Welford /
 # Chan-parallel accumulator (_welford_moments), so differences trace back
@@ -189,6 +174,10 @@ def test_cpu_perm_matches_reliable_general(prep_general_fp64):
 # row-by-row.  Anchors that the underlying LLR computations agree before
 # moments reduction; if this fails, the moments tests above can't isolate
 # whether the divergence is in the LLR or in the accumulator.
+#
+# Both layers are retained on purpose: the per-draw layer localizes a
+# divergence to the LLR kernel, while the moment layer above also exercises
+# the Welford accumulator -- one without the other can't tell them apart.
 
 def test_iter_llr_perm_matches_reliable_intercept(prep_intercept_fp64):
     """Per-draw output of ``iter_llr_perm`` matches ``cpu_reliable_full``

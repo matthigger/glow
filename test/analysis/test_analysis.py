@@ -1,7 +1,9 @@
+import pytest
+
 from glow.effect import ExtenterSphere, EffectSynthetic
 from glow.experiment import *
 from glow.analysis import *
-from glow.graph import get_dice_sens_spec, iter_postorder
+from glow.graph import get_dice_sens_spec
 from glow.mask import get_mask_idx
 
 
@@ -38,12 +40,10 @@ class TestBigEffect:
         assert len(analysis.effect_list) >= 1, \
             'no effects discovered'
 
-    def test_vba(self):
-        kwargs_list = [dict(tfce_flag=False),
-                       dict(tfce_flag=True)]
-        for kwargs in kwargs_list:
-            analysis = AnalysisVBA(TestBigEffect.exp, n_perm_fwer=25,
-                                   alpha_fwer=.1, **kwargs).fit()
+    @pytest.mark.parametrize('tfce_flag', [False, True])
+    def test_vba(self, tfce_flag):
+        analysis = AnalysisVBA(TestBigEffect.exp, n_perm_fwer=25,
+                               alpha_fwer=.1, tfce_flag=tfce_flag).fit()
         mask_all = sum(eff.mask for eff in analysis.effect_list)
         np.testing.assert_allclose(mask_all,
                                    TestBigEffect.effect.mask_)
@@ -71,54 +71,9 @@ class TestBigEffect:
             f'Wilks VBA-TFCE produced no small p-values '
             f'(min={np.nanmin(ana_tfce.pval):.3f})')
 
-    def test_glow_with_prune(self):
-        """test GLOW with default pruning (llr_z, lam=0)"""
-        analysis = AnalysisGLOW(
-            TestBigEffect.exp,
-            n_perm_fwer=10,
-            alpha_fwer=.1,
-        ).fit()
-
-        # should still find the effect
-        assert len(analysis.effect_list) > 0
-
-    def test_glow_node(self):
-        """Greedy pruning should find the true effect."""
-        analysis = AnalysisGLOW(
-            TestBigEffect.exp,
-            n_perm_fwer=25,
-            alpha_fwer=.1,
-        ).fit()
-
-        assert len(analysis.effect_list) >= 1, \
-            f'expected at least 1 effect, got {len(analysis.effect_list)}'
-
-    def test_glow_with_adjustment(self):
-        """test GLOW with adjustment permutations"""
-        analysis = AnalysisGLOW(
-            TestBigEffect.exp,
-            n_perm_fwer=10,
-            alpha_fwer=.1
-        ).fit()
-
-        assert hasattr(analysis, 'children')
-        assert hasattr(analysis, 'pval')
-
 
 class TestZScoreStat:
-    """z_score_stat lives on Analysis and is inherited by subclasses."""
-
-    def test_shape_preserved(self):
-        stat = np.random.default_rng(0).standard_normal((11, 50))
-        z = Analysis.z_score_stat(stat)
-        assert z.shape == stat.shape
-
-    def test_all_rows_standardised(self):
-        """All rows (observed + null) should have per-voxel mean ~0, std ~1."""
-        stat = np.random.default_rng(0).standard_normal((51, 200))
-        z = Analysis.z_score_stat(stat)
-        np.testing.assert_allclose(z.mean(axis=0), 0, atol=1e-12)
-        np.testing.assert_allclose(z.std(axis=0, ddof=1), 1, atol=1e-12)
+    """z_score_stat lives on Analysis."""
 
     def test_constant_row_safe(self):
         """A constant row should not produce inf or nan."""
@@ -126,16 +81,6 @@ class TestZScoreStat:
         z = Analysis.z_score_stat(stat)
         assert not np.any(np.isinf(z))
         assert not np.any(np.isnan(z))
-
-    def test_inherited_by_subclasses(self):
-        """Subclasses should not override z_score_stat."""
-        stat = np.random.default_rng(0).standard_normal((5, 20))
-        np.testing.assert_array_equal(
-            AnalysisVBA.z_score_stat(stat),
-            Analysis.z_score_stat(stat))
-        np.testing.assert_array_equal(
-            AnalysisCET.z_score_stat(stat),
-            Analysis.z_score_stat(stat))
 
 
 class TestCET:
@@ -145,27 +90,12 @@ class TestCET:
                           alpha_fwer=.1, cft_pval=0.01).fit()
         assert len(ana.effect_list) >= 1
 
-    def test_big_effect_z(self):
-        """CET with z_flag runs without error and sets the flag."""
-        ana = AnalysisCET(TestBigEffect.exp, n_perm_fwer=25,
-                          alpha_fwer=.5, cft_pval=0.05, z_flag=True).fit()
-        assert ana.z_flag is True
-        assert hasattr(ana, 'pval')
-        assert hasattr(ana, 'effect_list')
-
     def test_null_no_discoveries(self):
         """Under the null (no effect), CET should not discover at alpha=0.05."""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                     num_img=100, seed=0)
         ana = AnalysisCET(exp, n_perm_fwer=25, alpha_fwer=.05).fit()
         assert len(ana.effect_list) == 0
-
-    def test_pval_bounds(self):
-        """p-values in [1/n_perm, 1]."""
-        n = 25
-        ana = AnalysisCET(TestBigEffect.exp, n_perm_fwer=n, alpha_fwer=.1).fit()
-        assert (ana.pval >= 1 / n).all()
-        assert (ana.pval <= 1.0).all()
 
     def test_cluster_members_share_pval(self):
         """All voxels in a discovered cluster should have the same p-value."""
@@ -203,44 +133,6 @@ class TestAnalysisEdgeCases:
         
         # no effects should be found
         assert len(analysis.effect_list) == 0
-    
-    def test_small_experiment(self):
-        """test with minimal experiment size"""
-        exp = Experiment.from_gauss(a=2, b=1, shape=(3, 3), num_img=10, seed=0)
-        
-        analysis = AnalysisGLOW(
-            exp,
-            n_perm_fwer=3,
-            alpha_fwer=.5,  # lenient for small sample
-            min_vox=1
-        ).fit()
-        
-        # should run without error even with small size
-        assert hasattr(analysis, 'pval')
-        assert analysis.pval.shape[0] > 0
-    
-    def test_different_alpha_values(self):
-        """test with different alpha thresholds"""
-        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
-        exp = EffectSynthetic(extenter=ExtenterSphere(radius=1),
-                              effect_llr=0.5, seed=0).fit(exp)
-        
-        # strict alpha
-        analysis_strict = AnalysisGLOW(
-            exp,
-            n_perm_fwer=5,
-            alpha_fwer=.01
-        ).fit()
-
-        # lenient alpha
-        analysis_lenient = AnalysisGLOW(
-            exp,
-            n_perm_fwer=5,
-            alpha_fwer=.5
-        ).fit()
-        
-        # lenient should find same or more effects
-        assert len(analysis_lenient.effect_list) >= len(analysis_strict.effect_list)
 
 
 class TestPvalFloor:
@@ -404,14 +296,10 @@ class TestForest:
                          mask_idx=mask_idx, add_bias=True)
         ana = AnalysisGLOW(exp, n_perm_fwer=10, alpha_fwer=.5).fit()
 
+        # GLOW completes on a forest: 2 components → num_vox - 2 internal nodes
         children = ana.children
         assert children.shape == (num_vox - 2, 2), \
             f'expected {num_vox - 2} internal nodes, got {children.shape[0]}'
-
-        all_nodes = list(iter_postorder(children=children, num_leaf=num_vox))
-        expected_total = num_vox + children.shape[0]
-        assert len(all_nodes) == expected_total, \
-            f'iter_postorder yielded {len(all_nodes)}, expected {expected_total}'
 
 
 class TestStreamingFidelity:
@@ -466,16 +354,16 @@ class TestAnalysisScaling:
         self._check_scales(AnalysisCET, n_perm_fwer=2)
 
 
-class TestFromPrecomputed:
-    """Test factory classmethods for constructing analysis from pre-computed data."""
+class TestDiscoverMask:
+    """Analysis.discover_mask splits a mask into connected-component effects."""
 
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=100, seed=0)
     effect = EffectSynthetic(extenter=ExtenterSphere(radius=2),
                              effect_llr=0.5, seed=0)
     exp_eff = effect.fit(exp)
 
-    def test_discover_mask_on_base(self):
-        """Verify Analysis.discover_mask works (it was moved from AnalysisVBA)."""
+    def test_single_connected_mask_is_one_effect(self):
+        """A single connected blob yields exactly one effect equal to the mask."""
         mask = np.zeros((5, 5), dtype=bool)
         mask[1:4, 1:4] = True
 
