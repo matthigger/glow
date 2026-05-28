@@ -25,6 +25,7 @@ import argparse
 import json
 import sys
 import time
+from pathlib import Path
 from typing import List, Optional
 
 import boto3
@@ -833,13 +834,51 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv=None) -> None:
-    """Parse argv, load the config, and dispatch to the subcommand.
+# Default resource names written into a fresh .glow_aws_config by
+# `bootstrap`; each is overridable at the prompt.  s3_bucket must end up
+# globally unique, hence the prompt rather than a silent default.
+DEFAULT_CONFIG_NAMES = {
+    's3_bucket': 'glow-experiments',
+    'job_queue': 'glow-job-queue',
+    'job_definition': 'glow-job-definition',
+}
+
+
+def _prompt_yes(question: str) -> bool:
+    """Ask a yes/no question at the terminal, defaulting to yes on blank."""
+    return input(f'{question} [Y/n] ').strip().lower() in ('', 'y', 'yes')
+
+
+def _init_config(path: str) -> None:
+    """Write a fresh .glow_aws_config at path, prompting for resource names.
+
+    Called by `bootstrap` when no config exists yet.  Prints the default
+    bucket / queue / job-definition names and offers to accept them all; on
+    a 'no', prompts for each (a blank answer keeps that field's default).
 
     Args:
-        argv (list | None): argument vector; None uses sys.argv.
+        path (str): where to write the AWSConfig JSON
     """
+    print(f'[bootstrap] no config at {path}; creating one.')
+    print('  default names:')
+    for key, default in DEFAULT_CONFIG_NAMES.items():
+        print(f'    {key} = {default}')
+
+    names = dict(DEFAULT_CONFIG_NAMES)
+    if not _prompt_yes('use these defaults?'):
+        for key, default in DEFAULT_CONFIG_NAMES.items():
+            names[key] = input(f'  {key} [{default}]: ').strip() or default
+
+    AWSConfig(**names).to_file(path)
+    print(f'[bootstrap] wrote {path}')
+
+
+def main(argv=None):
     args = _build_parser().parse_args(argv)
+    # bootstrap is the entry point on a fresh machine, so it creates the
+    # config if absent; later commands expect it to already exist.
+    if args.cmd == 'bootstrap' and not Path(args.config).exists():
+        _init_config(args.config)
     cfg = AWSConfig.from_file(args.config)
     args.func(args, cfg)
 

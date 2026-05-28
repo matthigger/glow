@@ -81,24 +81,34 @@ bucket). It's idempotent, so rerunning is safe:
 python -m glow.aws.infra bootstrap
 ```
 
+On a machine with no `.glow_aws_config` yet, `bootstrap` writes one first:
+it prints the default bucket / queue / job-definition names and asks whether
+to accept them, otherwise prompts for each (blank keeps the printed default).
+The bucket name you pick here is what the worker's S3 access is scoped to, so
+choose a globally-unique bucket you own (or will create in `setup`).
+
 > Why a separate command? `bootstrap` is the only step that needs IAM-admin
 > rights. After it runs, `setup` and the daily commands need only S3 / Batch
 > / ECR permissions.
 
 ## Per-project setup (run by `glow.aws.infra`)
 
-```bash
-# Project-local config (cwd)
-cat > .glow_aws_config <<'EOF'
+`bootstrap` already wrote `.glow_aws_config` in the cwd (see above). It holds
+just the three names you were prompted for; every other field uses its
+`AWSConfig` default. Edit the file (plain JSON) by hand only for the optional
+fields — e.g. add `s3_prefix` to namespace multiple projects within one bucket
+(it defaults to `""`, so objects land at the bucket root):
+
+```json
 {
   "s3_bucket": "glow-experiments",
   "job_queue": "glow-job-queue",
-  "job_definition": "glow-job-definition"
+  "job_definition": "glow-job-definition",
+  "s3_prefix": "paper2026"
 }
-EOF
-# s3_prefix defaults to "" (objects land at the bucket root). Set it only
-# to namespace multiple projects within one bucket, e.g. "s3_prefix": "paper2026".
+```
 
+```bash
 # Build worker image + push to ECR + register Batch resources
 docker build -t glow-worker:latest -f glow/aws/Dockerfile .
 python -m glow.aws.infra setup --image-tag glow-worker:latest
