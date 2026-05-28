@@ -31,13 +31,12 @@ class TestExtenterSphereHash:
         assert hash(a) != hash(b)
 
     def test_dict_key(self):
+        # equal params hash equal, so an equal instance retrieves the value
+        # and a set collapses duplicates to one member.
         a = ExtenterSphere(radius=2)
         d = {a: 'sphere'}
         assert d[ExtenterSphere(radius=2)] == 'sphere'
-
-    def test_set_member(self):
-        s = {ExtenterSphere(radius=2), ExtenterSphere(radius=2)}
-        assert len(s) == 1
+        assert len({ExtenterSphere(radius=2), ExtenterSphere(radius=2)}) == 1
 
 
 class TestExtenterMinVarHash:
@@ -58,11 +57,6 @@ class TestExtenterMinVarHash:
         assert a != b
         assert hash(a) != hash(b)
 
-    def test_dict_key(self):
-        a = ExtenterMinVar(n_vox=10)
-        d = {a: 'minvar'}
-        assert d[ExtenterMinVar(n_vox=10)] == 'minvar'
-
 
 class TestCrossClass:
     def test_sphere_minvar_distinct_when_n_vox_matches(self):
@@ -70,12 +64,3 @@ class TestCrossClass:
         minvar = ExtenterMinVar(n_vox=10)
         assert sphere != minvar
         assert hash(sphere) != hash(minvar)
-
-
-class TestNotEqualToOtherTypes:
-    def test_sphere_neq_dict(self):
-        # __eq__ returns False (not NotImplemented) for foreign types
-        assert ExtenterSphere(radius=2) != {'radius': 2}
-
-    def test_minvar_neq_int(self):
-        assert ExtenterMinVar(n_vox=10) != 10

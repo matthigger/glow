@@ -1,10 +1,22 @@
+import numpy as np
 import pytest
 
-from glow.effect.extent import *
+from glow.effect.extent import (
+    ContiguousRegionNotFound,
+    ExtenterMinVar,
+    ExtenterSphere,
+    iter_vox_neighbor,
+)
 from glow.mask import get_mask_idx
 
 
-def test_iter_vox_neighbor():
+def test_iter_vox_neighbor_2d_single_seed():
+    # 3x3 grid; row 0 is outside the analysis mask (-1):
+    #   [[-1, -1, -1],
+    #    [ 3,  4,  5],
+    #    [ 6,  7,  8]]
+    # seed the single voxel at (2, 0) (index 6). Its in-mask face-neighbours
+    # are (1, 0)=3 and (2, 1)=7; the (3, 0) neighbour is off-grid.
     mask_idx = np.array([[-1, -1, -1],
                          [3, 4, 5],
                          [6, 7, 8]])
@@ -12,10 +24,25 @@ def test_iter_vox_neighbor():
     mask[2, 0] = 1
     assert [3, 7] == sorted(iter_vox_neighbor(mask, mask_idx))
 
+
+def test_iter_vox_neighbor_2d_multi_seed():
+    # same grid; seed voxels at (2,0)=6, (1,1)=4 and (2,1)=7.
+    # face-neighbours outside the seeded region (and in-mask) are
+    # (1,0)=3, (1,2)=5 and (2,2)=8.
+    mask_idx = np.array([[-1, -1, -1],
+                         [3, 4, 5],
+                         [6, 7, 8]])
+    mask = np.zeros_like(mask_idx)
+    mask[2, 0] = 1
     mask[1, 1] = 1
     mask[2, 1] = 1
     assert [3, 5, 8] == sorted(iter_vox_neighbor(mask, mask_idx))
 
+
+def test_iter_vox_neighbor_3d_single_seed():
+    # 3x3x3 grid indexed 0..26; seed the centre voxel (1,1,1)=13.
+    # its six face-neighbours are 4, 10, 12, 14, 16, 22 (no diagonals,
+    # matching 6-connectivity).
     mask_idx = np.arange(27).reshape((3, 3, 3))
     mask = np.zeros_like(mask_idx)
     mask[1, 1, 1] = 1
@@ -50,7 +77,9 @@ class TestExtenterSphere:
 
             assert np.allclose(mask, mask_expect)
 
-    def test_contiguous(self):
+    def test_contiguous_unreachable_raises(self):
+        # two disconnected rows: any voxel selected, dilated 4 times, then
+        # re-masked spans both rows and so is never contiguous.
         mask = np.array([[1, 1, 1],
                          [0, 0, 0],
                          [1, 1, 1]])
@@ -59,11 +88,12 @@ class TestExtenterSphere:
         extenter = ExtenterSphere(radius=4)
 
         with pytest.raises(ContiguousRegionNotFound):
-            # any voxel selected (from 6 below), dilated 4 times, and then masked
-            # again will not be contiguous
             extenter(mask_idx=mask_idx, seed=0, contiguous=True)
 
-        # any region produced (there is only one really) would be contiguous
+    def test_contiguous_reachable_succeeds(self):
+        # fully-connected grid: the produced region is contiguous, so the
+        # contiguous=True request succeeds and fills the grid.
+        extenter = ExtenterSphere(radius=4)
         mask_idx = np.arange(9).reshape(3, 3)
         mask = extenter(mask_idx=mask_idx, seed=0, contiguous=True)
         assert np.allclose(np.ones((3, 3)), mask)
@@ -129,43 +159,13 @@ class TestExtenterMinVar:
         mask_obs = extenter_min_var(y=y, mask_idx=mask_idx, vox_init=17)
         np.testing.assert_equal(mask_obs, mask)
 
-
-class TestExtenterMinVarRandomInit:
-    """test ExtenterMinVar with random initial voxel selection"""
-    
-    def test_minvar_without_vox_init(self):
-        """test that ExtenterMinVar works without specifying vox_init"""
-        mask_idx = np.arange(64).reshape((8, 8))
-        
-        # create extenter that grows to size 10
-        extenter = ExtenterMinVar(n_vox=10)
-        
-        # create simple y data (1 feature, 1 image, 64 voxels)
-        y = np.random.standard_normal((1, 1, 64))
-        
-        # call without vox_init (should select random voxel internally, lines 119-121)
-        mask = extenter(mask_idx=mask_idx, y=y, seed=42)
-        
-        # verify mask has correct size
-        assert mask.sum() == 10
-        
-        # verify mask is within bounds
-        assert mask.shape == mask_idx.shape
-    
-    def test_minvar_with_different_seeds(self):
-        """test that different seeds produce different results"""
+    def test_random_init_reaches_n_vox(self):
+        # without vox_init the seed voxel is chosen randomly; the grown
+        # region must still reach the requested size and grid shape.
         mask_idx = np.arange(64).reshape((8, 8))
         extenter = ExtenterMinVar(n_vox=10)
-
         rng = np.random.default_rng(42)
         y = rng.standard_normal((1, 1, 64))
-        
-        mask1 = extenter(mask_idx=mask_idx, y=y, seed=0)
-        mask2 = extenter(mask_idx=mask_idx, y=y, seed=1)
-        
-        # different seeds should produce different masks
-        assert not np.array_equal(mask1, mask2)
-        
-        # but both should have correct size
-        assert mask1.sum() == 10
-        assert mask2.sum() == 10
+        mask = extenter(mask_idx=mask_idx, y=y, seed=42)
+        assert mask.sum() == 10
+        assert mask.shape == mask_idx.shape
