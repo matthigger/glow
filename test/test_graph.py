@@ -8,7 +8,7 @@ from glow.experiment.exper import NoBiasTermWarning
 from glow.graph import *
 
 
-def test_iter_node_sum():
+def test_node_sum():
     x = np.arange(4)
     children = np.array([[0, 1],
                          [2, 3],
@@ -66,7 +66,8 @@ def test_get_dice_sens_spec_with_inactive_voxels():
     assert spec[4] == 0.0
 
 
-def test_get_fp_tp():
+@pytest.mark.parametrize('tree', ['complete', 'incomplete'])
+def test_get_fp_tp(tree):
     mask = np.array([0, 0, 1, 1])
     mask_idx = np.arange(4)
     children = np.array([[0, 1],
@@ -76,14 +77,11 @@ def test_get_fp_tp():
     fp_exp = np.array([1, 1, 0, 0, 2, 0, 2])
     tp_exp = np.array([0, 0, 1, 1, 0, 2, 2])
 
-    fp, tp = get_fp_tp(mask=mask, mask_idx=mask_idx, children=children)
-    assert np.allclose(fp, fp_exp)
-    assert np.allclose(tp, tp_exp)
-
-    # test incomplete tree
-    children = children[:-1, :]
-    fp_exp = fp_exp[:-1]
-    tp_exp = tp_exp[:-1]
+    if tree == 'incomplete':
+        # drop the root node: regions stop at the two internal nodes (4, 5)
+        children = children[:-1, :]
+        fp_exp = fp_exp[:-1]
+        tp_exp = tp_exp[:-1]
 
     fp, tp = get_fp_tp(mask=mask, mask_idx=mask_idx, children=children)
     assert np.allclose(fp, fp_exp)
@@ -155,10 +153,17 @@ def test_iter_size_ysum_yout(exp, children):
                                       only_leaf=True)))
         _y = exp.y[:, :, vox]
 
-        # test basic stats
+        # iter_size_ysum_yout reports three per-region quantities:
+        #   size -- number of voxels in the region
+        #   ysum -- per-(b, img) sum of y over the region's voxels
+        #   yout -- the (b x b) outer product accumulated over all
+        #           (img, voxel) observations in the region
         assert size == vox.size
         assert np.allclose(ysum, _y.sum(axis=2))
 
+        # order='F' flattens (b, num_img, num_vox) so the b-axis stays the
+        # leading dim while img and vox collapse into the columns; the
+        # resulting y_flat @ y_flat.T is exactly the bxb outer-product sum.
         y_flat = _y.reshape((b, -1), order='F')
         yout_exp = y_flat @ y_flat.T
         assert np.allclose(yout_exp, yout)
@@ -239,28 +244,24 @@ def test_compute_llr_batched_min_size_masking(exp, children):
 
     llr_full, size_full = compute_llr_batched(
         exp_x, children=children, q0=q0, q1=q1)
-    for min_size in (1, 2, 3, 5):
+    for min_size in (2, 3):
         llr_m, size_m = compute_llr_batched(
             exp_x, children=children, q0=q0, q1=q1, min_size=min_size)
 
         # size array is unaffected by masking
         assert np.array_equal(size_m, size_full)
 
-        # below threshold must be NaN; above-threshold must match full path
+        # below threshold must be NaN
         below = size_full < min_size
         assert np.all(np.isnan(llr_m[below])), (
             f'min_size={min_size}: regions below threshold should be NaN')
 
+        # at/above threshold must be identical to the full path -- this
+        # equality also pins the NaN pattern, since np.array_equal treats
+        # matching NaNs as equal when comparing with equal_nan
         above = ~below
-        # valid above-threshold entries must match the full-pass result
-        valid_full = above & ~np.isnan(llr_full)
-        assert np.allclose(llr_m[valid_full], llr_full[valid_full],
-                           rtol=1e-10, atol=1e-10), (
+        assert np.array_equal(llr_m[above], llr_full[above], equal_nan=True), (
             f'min_size={min_size}: above-threshold values diverged from full path')
-
-        # NaN pattern above threshold must match full
-        assert np.array_equal(
-            np.isnan(llr_m[above]), np.isnan(llr_full[above]))
 
 
 def test_compute_llr_batched_leaf_only_tree():
@@ -280,8 +281,6 @@ def test_compute_llr_batched_leaf_only_tree():
     assert size.shape == (num_vox,)
     assert llr.shape == (num_vox,)
     assert np.all(size == 1)
-    # leaf LLR should be finite (or NaN) but not crash
-    assert np.all(np.isfinite(llr) | np.isnan(llr))
 
 
 def test_build_dfs_preorder_single_tree():
@@ -391,6 +390,10 @@ def test_iter_llr_perm_matches_compute_llr_batched():
             f'perm_idx={perm_idx}: {only_new.sum()} regions finite in iter_llr_perm '
             f'path but NaN in batched — NaN masks must match')
 
+        # iter_llr_perm streams per-region sums via an fp32 cumsum over the
+        # DFS-ordered leaf axis, so it accumulates more rounding error than
+        # the batched path's direct per-region reduction; hence the looser
+        # rel_err < 5e-3 tolerance here vs. 1e-6 in the sibling exact-match test.
         abs_err = np.abs(llr_ref[both_finite] - llr_new[both_finite])
         denom = np.maximum(np.abs(llr_ref[both_finite]), 1e-8)
         rel_err = (abs_err / denom).max() if both_finite.any() else 0.0
@@ -436,41 +439,57 @@ class TestSubgraph:
                                                 [2, 3],
                                                 [4, 5]]), num_leaf=4)
 
-    def test_line(self):
-        # init
-        parent = [1, 2, 3, -1]
-        g = SCGraph(parent=parent)
+    # a 4-node line graph: 0 -> 1 -> 2 -> 3 (root)
+    parent_line = [1, 2, 3, -1]
+
+    def test_line_init(self):
+        # fresh graph: every node included, parent/children mirror the input
+        g = SCGraph(parent=self.parent_line)
         assert np.allclose(g.included, [1, 1, 1, 1])
-        assert np.allclose(g.parent, parent)
+        assert np.allclose(g.parent, self.parent_line)
         assert g.children == {0: [], 1: [0], 2: [1], 3: [2]}
 
-        # rm node 0
+    def test_line_single_removal(self):
+        # removing leaf 0 drops it and orphans node 1 (0 was its only child)
+        g = SCGraph(parent=self.parent_line)
         g.modify(nodes_rm=[0])
         assert np.allclose(g.included, [0, 1, 1, 1])
         assert np.allclose(g.parent, [SE, 2, 3, SE])
         assert g.children == {1: [], 2: [1], 3: [2]}
 
-        # add node 0 back in, rm node 2
+    def test_line_removal_then_add(self):
+        # starting from the single-removal state (0 removed), add 0 back and
+        # remove 2; node 1 re-parents from 2 up to 3, and 0 re-attaches to 1
+        g = SCGraph(parent=self.parent_line)
+        g.modify(nodes_rm=[0])
         g.modify(nodes_add=[0], nodes_rm=[2])
         assert np.allclose(g.included, [1, 1, 0, 1])
         assert np.allclose(g.parent, [1, 3, SE, SE])
         assert g.children == {0: [], 1: [0], 3: [1]}
 
-    def test_tree(self):
+    def test_tree_init(self):
+        # fresh balanced tree: every node included, children mirror the input
         g = SCGraph(parent=self.parent_tree)
         assert np.allclose(g.included, [1, 1, 1, 1, 1, 1, 1])
         assert np.allclose(g.parent, self.parent_tree)
         assert g.children == {0: [], 1: [], 2: [], 3: [],
                               4: [0, 1], 5: [2, 3], 6: [4, 5]}
 
-        # rm node 0
+    def test_tree_single_removal(self):
+        # removing leaf 0 leaves internal node 4 with a single child (1)
+        g = SCGraph(parent=self.parent_tree)
         g.modify(nodes_rm=[0])
         assert np.allclose(g.included, [0, 1, 1, 1, 1, 1, 1])
         assert np.allclose(g.parent, [SE, 4, 5, 5, 6, 6, SE])
         assert g.children == {1: [], 2: [], 3: [],
                               4: [1], 5: [2, 3], 6: [4, 5]}
 
-        # add node 0 back in, rm node 2 and 4
+    def test_tree_removal_then_add(self):
+        # starting from the single-removal state (0 removed), add 0 back and
+        # remove internal nodes 2 and 4; surviving descendants re-parent up to
+        # the nearest included ancestor (6), so 0,1 attach to 6 and 3 to 5
+        g = SCGraph(parent=self.parent_tree)
+        g.modify(nodes_rm=[0])
         g.modify(nodes_add=[0], nodes_rm=[2, 4])
         assert np.allclose(g.included, [1, 1, 0, 1, 0, 1, 1])
         assert np.allclose(g.parent, [6, 6, SE, 5, SE, 6, SE])

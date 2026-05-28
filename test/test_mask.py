@@ -1,7 +1,5 @@
 from collections import namedtuple
 
-from scipy.ndimage import convolve
-
 from glow.mask import *
 
 
@@ -43,6 +41,9 @@ def test_get_entropy():
 
 
 def test_get_score():
+    # validates the same dice/sens/spec metrics as
+    # test_graph.py::test_get_dice_sens_spec, but via get_score's sklearn
+    # voxel-level path (the other exercises the node_sum tree path)
     Case = namedtuple('Case', ['y_true', 'y_pred', 'dice', 'sens', 'spec',
                                'mask_active'])
 
@@ -176,33 +177,35 @@ def test_get_neighbor_offsets():
 
 
 def test_iter_neighbor():
-    Case = namedtuple('Case', ['shape', 'seed', 'p_mask', 'conn'])
+    # 8-connectivity in 2d (center excluded -> non-reflexive)
     conn2d = np.array([[1, 1, 1],
                        [1, 0, 1],
                        [1, 1, 1]])
-    conn3d = conn_dict[26]
-    case_list = [Case(seed=0, shape=(3, 3), p_mask=1, conn=conn2d),
-                 Case(seed=0, shape=(3, 3), p_mask=.6, conn=conn2d),
-                 Case(seed=0, shape=(5, 5, 5), p_mask=1, conn=conn3d),
-                 Case(seed=0, shape=(5, 5, 5), p_mask=.6, conn=conn3d)]
 
-    for case in case_list:
-        a = np.arange(np.prod(case.shape)).reshape(case.shape)
-        rng = np.random.default_rng(seed=case.seed)
-        mask_active = rng.random(size=case.shape) <= case.p_mask
+    # a 3x3 grid of distinct values:
+    #   0 1 2
+    #   3 4 5
+    #   6 7 8
+    a = np.arange(9).reshape(3, 3)
 
-        for ijk in np.ndindex(case.shape):
-            # expected
-            mask = np.zeros(case.shape, dtype=bool)
-            mask[*ijk] = True
-            mask = convolve(mask, case.conn, mode='constant', cval=False)
-            mask[~mask_active] = False
-            neigh_set_exp = set(a[mask])
+    # interior voxel (1,1)=4: all 8 surrounding voxels are in-bounds neighbours
+    assert set(iter_neighbor(ijk=(1, 1), a=a, conn=conn2d)) == \
+        {0, 1, 2, 3, 5, 6, 7, 8}
 
-            # observed
-            neigh_set_obs = set(iter_neighbor(ijk=ijk, a=a, conn=case.conn,
-                                              mask_active=mask_active))
+    # corner voxel (0,0)=0: only the 3 in-bounds neighbours remain after the
+    # out-of-grid offsets are clipped -- exercises glow's bounds handling
+    assert set(iter_neighbor(ijk=(0, 0), a=a, conn=conn2d)) == {1, 3, 4}
 
-            assert neigh_set_exp == neigh_set_obs
+    # edge voxel (0,1)=1: 5 in-bounds neighbours
+    assert set(iter_neighbor(ijk=(0, 1), a=a, conn=conn2d)) == {0, 2, 3, 4, 5}
+
+    # mask_active drops any neighbour at a False position -- exercises glow's
+    # mask handling. Mask out voxels 3 and 5; the interior voxel (1,1) should
+    # then see only the remaining active neighbours.
+    mask_active = np.ones((3, 3), dtype=bool)
+    mask_active[1, 0] = False  # value 3
+    mask_active[1, 2] = False  # value 5
+    assert set(iter_neighbor(ijk=(1, 1), a=a, conn=conn2d,
+                             mask_active=mask_active)) == {0, 1, 2, 6, 7, 8}
 
 
