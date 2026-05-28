@@ -47,8 +47,5 @@ tqdm = ">=4.66"
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
-[project.scripts]
-glow-download = "glow.aws.download:main"
-
 [project.urls]
 "Homepage" = "https://github.com/matthigger/glow"
