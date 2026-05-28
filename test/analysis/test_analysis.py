@@ -440,6 +440,32 @@ class TestStreamingFidelity:
         assert masks_a == masks_b
 
 
+class TestAnalysisScaling:
+    """Analysis must scale the experiment if it isn't already scaled."""
+
+    exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
+    assert not isinstance(exp, ExperimentScaled)
+
+    def _check_scales(self, AnalysisCls, **kwargs):
+        # unscaled in → wrapped in ExperimentScaled
+        ana = AnalysisCls(self.exp, **kwargs)
+        assert isinstance(ana.exp, ExperimentScaled)
+
+        # already-scaled in → kept as-is (not re-wrapped)
+        exp_scaled = ExperimentScaled.from_exp(self.exp)
+        ana_pre = AnalysisCls(exp_scaled, **kwargs)
+        assert ana_pre.exp is exp_scaled
+
+    def test_glow_scales(self):
+        self._check_scales(AnalysisGLOW, n_perm_fwer=2)
+
+    def test_vba_scales(self):
+        self._check_scales(AnalysisVBA, n_perm_fwer=2)
+
+    def test_cet_scales(self):
+        self._check_scales(AnalysisCET, n_perm_fwer=2)
+
+
 class TestFromPrecomputed:
     """Test factory classmethods for constructing analysis from pre-computed data."""
 
