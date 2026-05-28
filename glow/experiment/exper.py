@@ -340,6 +340,18 @@ class ExperimentImageOnly:
                           mask_idx=self.mask_idx,
                           meta=self.meta, **kwargs)
 
+    def _copy_with(self, **overrides):
+        """Return a deep copy of this experiment with attributes overridden.
+
+        Clones every instance attribute and feeds them back to
+        type(self)(**d), so callers that derive a new experiment by
+        swapping one or two fields (y, mask_idx) don't repeat the
+        deepcopy-and-reconstruct dance.
+        """
+        d = deepcopy(self.__dict__)
+        d.update(overrides)
+        return type(self)(**d)
+
     def apply_mask(self, mask):
         """Return a new experiment restricted to voxels where mask is True.
 
@@ -354,10 +366,7 @@ class ExperimentImageOnly:
         mask_idx = glow.mask.get_mask_idx(mask)
         y = self.y[:, :, self.mask_idx[mask]]
 
-        d = deepcopy(self.__dict__)
-        d['mask_idx'] = mask_idx
-        d['y'] = y
-        return type(self)(**d)
+        return self._copy_with(mask_idx=mask_idx, y=y)
 
     def add_offset(self, offset, mask=None, vox_idx=None,
                    sigma_scale: float = None):
@@ -385,9 +394,7 @@ class ExperimentImageOnly:
             y[:, :, vox_idx] = stretch_sigma(y=y[:, :, vox_idx],
                                              scale=sigma_scale)
 
-        d = deepcopy(self.__dict__)
-        d['y'] = y
-        return type(self)(**d)
+        return self._copy_with(y=y)
 
 
 class Experiment(ExperimentImageOnly):
