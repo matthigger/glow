@@ -27,7 +27,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import boto3
 from botocore.exceptions import ClientError
@@ -654,29 +654,76 @@ def _teardown_bucket(cfg: AWSConfig) -> None:
 # list before reaching the terminal SUCCEEDED / FAILED.  cancel acts on
 # exactly these; status also reports the two terminal states.
 ACTIVE_STATES = ('SUBMITTED', 'PENDING', 'RUNNABLE', 'STARTING', 'RUNNING')
+TERMINAL_STATES = ('SUCCEEDED', 'FAILED')
+
+# Default awslogs group AWS Batch writes container stdout/stderr to; the
+# per-attempt stream name lives in describe_jobs container.logStreamName.
+LOG_GROUP = '/aws/batch/job'
 
 
 def cmd_status(args, cfg: AWSConfig) -> None:
-    """Print job counts per state, then recent failures.
+    """Print job counts, per-run array progress, and expanded failures.
+
+    Each run is one Batch (array) parent named glow-run-<hex>.  The job
+    listing is taken once per state; the array parents' statusSummary and
+    timestamps come along for free, so active-run progress and timing add
+    no API calls.  Failures drill into the failed children for exit codes
+    and an OOM/error tag, and with --logs tail each child's CloudWatch
+    stream.
 
     Args:
-        args: parsed argparse Namespace; reads args.label.
+        args: parsed argparse Namespace; reads args.label, args.limit,
+            args.logs.
         cfg (AWSConfig): supplies the queue name and region.
     """
     batch = boto3.client('batch', region_name=cfg.region)
-    states = ACTIVE_STATES + ('SUCCEEDED', 'FAILED')
     print(f'[status] queue={cfg.job_queue}')
-    for state in states:
-        jobs = _list_jobs(batch, queue=cfg.job_queue, state=state,
-                          label=args.label)
-        print(f'  {state:10s} {len(jobs):>6d}')
 
-    failed = _list_jobs(batch, queue=cfg.job_queue, state='FAILED',
-                        label=args.label)
-    if failed:
-        print('\n[status] recent failures:')
-        for job in failed[:5]:
-            print(f'  {job["jobName"]:30s} {job.get("statusReason", "")}')
+    by_state: Dict[str, List[dict]] = {
+        state: _list_jobs(batch, queue=cfg.job_queue, state=state,
+                          label=args.label)
+        for state in ACTIVE_STATES + TERMINAL_STATES}
+
+    _print_state_counts(by_state)
+    _print_active_runs(by_state)
+    _print_failures(batch, cfg, by_state['FAILED'],
+                    limit=args.limit, logs=args.logs)
+
+
+def _print_state_counts(by_state: Dict[str, List[dict]]) -> None:
+    """Print the job count for each terminal or non-empty active state.
+
+    Args:
+        by_state (dict): state name -> list of job summaries.
+    """
+    print('\n[status] jobs by state:')
+    zero = []
+    for state in ACTIVE_STATES + TERMINAL_STATES:
+        n = len(by_state[state])
+        if n or state in TERMINAL_STATES:
+            print(f'  {state:10s} {n:>6d}')
+        else:
+            zero.append(state)
+    if zero:
+        print(f'  (0: {" ".join(zero)})')
+
+
+def _print_active_runs(by_state: Dict[str, List[dict]]) -> None:
+    """Print in-flight runs with array-child progress and timing.
+
+    Args:
+        by_state (dict): state name -> list of job summaries.
+    """
+    active = [job for state in ACTIVE_STATES for job in by_state[state]]
+    if not active:
+        return
+    print(f'\n[status] active ({_n_runs(active)}):')
+    for job in active:
+        wait, run = _timing(job)
+        timing = (f'ran {_fmt_dur(run)}' if run is not None
+                  else f'waited {_fmt_dur(wait)}')
+        print(f'  {_run_id(job["jobName"]):16s} {_kind(job):9s} '
+              f'{job.get("status", "?"):9s} {_fmt_progress(job):14s} {timing}')
 
 
 def _list_jobs(batch, *, queue: str, state: str,
@@ -700,6 +747,248 @@ def _list_jobs(batch, *, queue: str, state: str,
             if label is None or job['jobName'].startswith(f'glow-{label}'):
                 out.append(job)
     return out
+
+
+# ---------- status helpers --------------------------------------------------
+
+
+def _print_failures(batch, cfg: AWSConfig, failed: List[dict], *,
+                    limit: int, logs: bool) -> None:
+    """Expand failed runs: per-child exit code, OOM/error tag, log tail.
+
+    For an array parent the failed children are listed (their summaries
+    already carry container.exitCode / reason); single jobs are their own
+    "child".  With logs=True each child's CloudWatch stream is tailed.
+    A tag tally closes the section.
+
+    Args:
+        batch: boto3 Batch client.
+        cfg (AWSConfig): supplies the region for the logs client.
+        failed (list): FAILED parent/single job summaries from the queue.
+        limit (int): max number of failed runs to expand.
+        logs (bool): if True, tail each failed child's log stream.
+    """
+    if not failed:
+        return
+    shown = failed[:limit]
+    hidden = len(failed) - len(shown)
+    suffix = f', showing {len(shown)}' if hidden else ''
+    print(f'\n[status] failures ({_n_runs(failed)}{suffix}):')
+
+    logs_client = (boto3.client('logs', region_name=cfg.region)
+                   if logs else None)
+    tally: Dict[str, int] = {'OOM': 0, 'timeout': 0, 'err': 0}
+
+    for job in shown:
+        _, run = _timing(job)
+        print(f'  {_run_id(job["jobName"]):16s} {_kind(job):9s} '
+              f'{_fmt_progress(job):14s} ran {_fmt_dur(run)}')
+        is_array = _array_size(job) is not None
+        children = _failed_children(batch, job['jobId']) if is_array else [job]
+        if logs_client is not None:
+            _attach_log_streams(batch, children)
+        for child in children:
+            tally[_failure_tag(child)] += 1
+            _print_child_failure(child, is_array=is_array,
+                                 logs_client=logs_client)
+
+    if hidden:
+        print(f'  … and {hidden} more (raise --limit to expand)')
+    summary = ' · '.join(f'{n} {tag}' for tag, n in tally.items() if n)
+    if summary:
+        print(f'  tags: {summary}')
+
+
+def _print_child_failure(child: dict, *, is_array: bool,
+                         logs_client) -> None:
+    """Print one failed child's index, exit code, tag, and reason.
+
+    Args:
+        child (dict): a failed child (array) or the failed job (single).
+        is_array (bool): True if child belongs to an array parent.
+        logs_client: boto3 Logs client, or None to skip the log tail.
+    """
+    container = child.get('container') or {}
+    exit_code = container.get('exitCode')
+    exit_str = f'exit={exit_code}' if exit_code is not None else 'exit=?'
+    reason = (container.get('reason') or child.get('statusReason') or '').strip()
+    idx = (child.get('arrayProperties') or {}).get('index')
+    label = f'child[{idx}]' if is_array and idx is not None else 'job'
+    print(f'     {label:10s} {exit_str:9s} {_failure_tag(child):8s} '
+          f'{reason[:80]}')
+    if logs_client is not None:
+        for line in _tail_log(logs_client, container.get('logStreamName')):
+            print(f'        | {line}')
+
+
+def _failed_children(batch, parent_id: str) -> List[dict]:
+    """List an array parent's FAILED child summaries, in index order.
+
+    The child summaries already include container.exitCode / reason and
+    arrayProperties.index, so no describe_jobs call is needed unless log
+    streams are wanted (see _attach_log_streams).
+
+    Args:
+        batch: boto3 Batch client.
+        parent_id (str): the array parent job id.
+
+    Returns:
+        children (list): failed child job summaries, sorted by index.
+    """
+    out: List[dict] = []
+    paginator = batch.get_paginator('list_jobs')
+    for page in paginator.paginate(arrayJobId=parent_id, jobStatus='FAILED'):
+        out.extend(page.get('jobSummaryList', []))
+    out.sort(key=lambda j: (j.get('arrayProperties') or {}).get('index', 0))
+    return out
+
+
+def _attach_log_streams(batch, children: List[dict]) -> None:
+    """Fill each child's container.logStreamName via describe_jobs in place.
+
+    The list_jobs summary omits logStreamName, so describe the child ids
+    (in 100-id chunks, the describe_jobs max) and copy the stream back.
+
+    Args:
+        batch: boto3 Batch client.
+        children (list): child/single job summaries to enrich in place.
+    """
+    by_id = {c['jobId']: c for c in children}
+    ids = list(by_id)
+    for i in range(0, len(ids), 100):
+        payload = batch.describe_jobs(jobs=ids[i:i + 100])
+        for job in payload.get('jobs', []):
+            stream = (job.get('container') or {}).get('logStreamName')
+            if stream:
+                by_id[job['jobId']].setdefault('container', {})
+                by_id[job['jobId']]['container']['logStreamName'] = stream
+
+
+def _tail_log(logs_client, stream: Optional[str], n: int = 12) -> List[str]:
+    """Return the last n message lines of a CloudWatch log stream.
+
+    Args:
+        logs_client: boto3 CloudWatch Logs client.
+        stream (str | None): the log stream name; None/empty -> a note.
+        n (int): number of trailing lines to return.
+
+    Returns:
+        lines (list): up to n messages (oldest first), or a single
+            explanatory line if the stream is missing or unreadable.
+    """
+    if not stream:
+        return ['(no log stream)']
+    try:
+        resp = logs_client.get_log_events(
+            logGroupName=LOG_GROUP, logStreamName=stream,
+            startFromHead=False, limit=n)
+    except ClientError as exc:
+        return [f'(log fetch failed: {exc.response["Error"]["Code"]})']
+    return [e['message'] for e in resp.get('events', [])]
+
+
+def _failure_tag(job: dict) -> str:
+    """Tag a failed job OOM / timeout / err for at-a-glance triage.
+
+    Mirrors driver._is_oom's ordering (timeout before OOM, since both
+    exit 137) but kept local so the CLI avoids the driver's heavy imports.
+
+    Args:
+        job (dict): a failed job/child summary or describe payload.
+
+    Returns:
+        tag (str): 'OOM', 'timeout', or 'err'.
+    """
+    status_reason = (job.get('statusReason') or '').lower()
+    container = job.get('container') or {}
+    container_reason = (container.get('reason') or '').lower()
+    texts = (status_reason, container_reason)
+    if any('duration' in t and 'timeout' in t for t in texts):
+        return 'timeout'
+    if container.get('exitCode') in (137, 134):
+        return 'OOM'
+    if any('memory' in t for t in texts):
+        return 'OOM'
+    return 'err'
+
+
+def _fmt_progress(job: dict) -> str:
+    """Compact array-child tally from a parent's statusSummary.
+
+    Uses arrayProperties.statusSummary (already in the list_jobs summary,
+    so no extra API call): ✓ succeeded, ✗ failed, ⋯ still in flight.
+
+    Args:
+        job (dict): a Batch job summary.
+
+    Returns:
+        progress (str): e.g. '5✓ 3✗ 2⋯', or the bare status for a
+            single (non-array) job.
+    """
+    summary = (job.get('arrayProperties') or {}).get('statusSummary') or {}
+    if not summary:
+        return job.get('status', '?')
+    done = summary.get('SUCCEEDED', 0)
+    failed = summary.get('FAILED', 0)
+    inflight = sum(v for k, v in summary.items()
+                   if k not in TERMINAL_STATES)
+    parts = [f'{done}✓', f'{failed}✗']
+    if inflight:
+        parts.append(f'{inflight}⋯')
+    return ' '.join(parts)
+
+
+def _timing(job: dict) -> Tuple[Optional[float], Optional[float]]:
+    """Return (queue_wait_s, run_s) from a summary's epoch-ms stamps.
+
+    Args:
+        job (dict): a Batch job summary; createdAt / startedAt / stoppedAt
+            are epoch milliseconds and any may be absent.
+
+    Returns:
+        queue_wait_s (float | None): seconds from submit to start.
+        run_s (float | None): seconds from start to stop.
+    """
+    created = job.get('createdAt')
+    started = job.get('startedAt')
+    stopped = job.get('stoppedAt')
+    wait = (started - created) / 1000 if created and started else None
+    run = (stopped - started) / 1000 if started and stopped else None
+    return wait, run
+
+
+def _fmt_dur(seconds: Optional[float]) -> str:
+    """Format a duration in seconds as compact h/m/s, or '—' if unknown."""
+    if seconds is None:
+        return '—'
+    seconds = int(seconds)
+    if seconds < 60:
+        return f'{seconds}s'
+    if seconds < 3600:
+        return f'{seconds // 60}m{seconds % 60:02d}s'
+    return f'{seconds // 3600}h{(seconds % 3600) // 60:02d}m'
+
+
+def _kind(job: dict) -> str:
+    """Describe a job as 'array×N' (array parent) or 'single'."""
+    size = _array_size(job)
+    return f'array×{size}' if size else 'single'
+
+
+def _array_size(job: dict) -> Optional[int]:
+    """Return the array size for an array parent, else None for a single job."""
+    return (job.get('arrayProperties') or {}).get('size')
+
+
+def _run_id(job_name: str) -> str:
+    """Strip the 'glow-' prefix: 'glow-run-1a2b3c4d' -> 'run-1a2b3c4d'."""
+    prefix = 'glow-'
+    return job_name[len(prefix):] if job_name.startswith(prefix) else job_name
+
+
+def _n_runs(jobs: List[dict]) -> str:
+    """Pluralize a run count: '1 run' / '3 runs'."""
+    return f'{len(jobs)} run' + ('' if len(jobs) == 1 else 's')
 
 
 # ---------- clear_storage ---------------------------------------------------
@@ -852,9 +1141,14 @@ def _build_parser() -> argparse.ArgumentParser:
                     help='also empty + delete the S3 bucket')
     sp.set_defaults(func=cmd_teardown)
 
-    sp = subs.add_parser('status', help='show job counts per state')
+    sp = subs.add_parser('status',
+                         help='job counts, per-run progress, and failures')
     sp.add_argument('--label', default=None,
-                    help='only count jobs whose name starts glow-<label>')
+                    help='only show jobs whose name starts glow-<label>')
+    sp.add_argument('--limit', type=int, default=5,
+                    help='max failed runs to expand (default: 5)')
+    sp.add_argument('--logs', action='store_true',
+                    help="tail each failed child's CloudWatch log stream")
     sp.set_defaults(func=cmd_status)
 
     sp = subs.add_parser('clear_storage', help='delete S3 prefixes')
