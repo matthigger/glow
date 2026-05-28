@@ -5,6 +5,22 @@ import numpy as np
 from glow.analysis.mancova import decompose
 
 
+def _perm_indices(seed, num_img):
+    """Index array for one Freedman-Lane permutation under ``seed``.
+
+    Sole source of truth for the seed-to-perm mapping: every consumer
+    that needs FL permutations under a given seed (the full FL matrix
+    in :func:`get_freed_lane`, the per-row build loops in batched
+    perm-LLR backends) routes through here so the mapping stays
+    consistent.
+
+    ``perm[k]`` gives the original-image index that the FL-permuted
+    data puts at position ``k``.
+    """
+    rng = np.random.default_rng(seed)
+    return np.argsort(rng.permutation(num_img))
+
+
 def get_freed_lane(x, contrast, perm_idx):
     """build Freedman-Lane permutation matrix (standard textbook convention).
 
@@ -30,8 +46,7 @@ def get_freed_lane(x, contrast, perm_idx):
     q0 = q[0].T @ q[0]  # (num_img, num_img) nuisance projector Q0Q0T
 
     num_img = x.shape[1]
-    rng = np.random.default_rng(perm_idx)
-    perm = np.argsort(rng.permutation(num_img))
+    perm = _perm_indices(perm_idx, num_img)
 
     # Match q0's dtype on np.eye so the subtraction doesn't promote a
     # float32 q0 to float64 (which would then propagate into the

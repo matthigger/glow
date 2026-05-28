@@ -4,15 +4,13 @@
 ``iter_mancova`` + ``get_llr`` per region, per draw.  Slow but
 unambiguous, and an independent code path from the batched
 ``compute_llr_batched`` that ``cpu_perm`` shares.  Both intercept-only
-and general-Q0 inputs to ``cpu_perm`` are validated here -- agreement
-is fp64 round-off (~1e-10).
+and general-Q0 inputs to ``cpu_perm`` are validated here -- moments
+agree to fp64 round-off (~1e-10).
 
 Run:
     ~/venv_glow/bin/pytest test/analysis/test_inner_perm.py -v
 """
 from __future__ import annotations
-
-import warnings
 
 import numpy as np
 import pytest
@@ -22,6 +20,7 @@ import glow.mask
 from glow.analysis import inner_perm
 from glow.analysis.cluster import cluster
 from glow.analysis.mancova import decompose, is_intercept_only_nuisance
+from glow.experiment import permute
 from glow.experiment.exper import Experiment
 
 
@@ -101,6 +100,24 @@ def _moments(fn, prep, *, n_perm=20, base_seed=12_345):
               children=prep['children'], min_vox=prep['min_vox'])
 
 
+def _materialize_iter_llr_perm(prep, *, n_perm, base_seed):
+    """Stack the chunks from ``iter_llr_perm`` into a (n_perm, num_reg)
+    draws matrix.  Mirrors the old ``cpu_perm_full`` shape for tests
+    that want per-draw equivalence checks."""
+    exp = prep['exp']
+    num_vox = exp.y.shape[2]
+    num_img = exp.y.shape[1]
+    leaf_ord, region_l, region_h = glow.graph.build_dfs_preorder(
+        children=prep['children'], num_vox=num_vox)
+    perms = np.empty((n_perm, num_img), dtype=np.int64)
+    for i in range(n_perm):
+        perms[i] = permute._perm_indices(base_seed + i, num_img)
+    return np.vstack(list(glow.graph.iter_llr_perm(
+        y=exp.y, q0=prep['q0'], q1=prep['q1'], perms=perms,
+        leaf_ord=leaf_ord, region_l=region_l, region_h=region_h,
+        min_size=prep['min_vox'])))
+
+
 def _assert_draws_match(draws, ref, *, atol):
     """Per-cell agreement + identical NaN masks."""
     assert draws.shape == ref.shape
@@ -111,6 +128,24 @@ def _assert_draws_match(draws, ref, *, atol):
     assert finite.any(), 'no finite cells to compare'
     diff = np.abs(draws[finite] - ref[finite]).max()
     assert diff < atol, f'max abs diff {diff:.3e} > {atol:.3e}'
+
+
+def _assert_moments_match(got, ref, *, atol):
+    """Per-region (mu, std) agreement + identical NaN masks."""
+    mu_g, std_g = got
+    mu_r, std_r = ref
+    assert mu_g.shape == mu_r.shape == std_g.shape == std_r.shape
+    nan_mu_g, nan_mu_r = np.isnan(mu_g), np.isnan(mu_r)
+    nan_std_g, nan_std_r = np.isnan(std_g), np.isnan(std_r)
+    assert (nan_mu_g == nan_mu_r).all(), 'mu NaN masks differ'
+    assert (nan_std_g == nan_std_r).all(), 'std NaN masks differ'
+    fin_mu = ~nan_mu_g
+    fin_std = ~nan_std_g
+    assert fin_mu.any() and fin_std.any(), 'no finite cells to compare'
+    d_mu = float(np.abs(mu_g[fin_mu] - mu_r[fin_mu]).max())
+    d_std = float(np.abs(std_g[fin_std] - std_r[fin_std]).max())
+    assert d_mu < atol, f'max |mu - ref| = {d_mu:.3e} > {atol:.3e}'
+    assert d_std < atol, f'max |std - ref| = {d_std:.3e} > {atol:.3e}'
 
 
 # ---------------------------------------------------------------------------
@@ -129,54 +164,76 @@ def test_general_q0_fixture_is_general(prep_general_fp64):
 
 
 # ---------------------------------------------------------------------------
-# cpu_perm vs cpu_reliable -- fp64 round-off
+# cpu_perm vs cpu_reliable -- moments agree to fp64 round-off.
+# Both backends now feed their per-draw output through the same Welford /
+# Chan-parallel accumulator (_welford_moments), so differences trace back
+# only to the underlying LLR computation (batched perm-LLR vs.
+# per-region iter_mancova).
 
 def test_cpu_perm_matches_reliable_intercept(prep_intercept_fp64):
-    """``cpu_perm`` matches ``cpu_reliable`` on intercept-only nuisance."""
-    draws_perm = _draws(inner_perm.cpu_perm_full, prep_intercept_fp64)
-    draws_ref = _draws(inner_perm.cpu_reliable_full, prep_intercept_fp64)
-    _assert_draws_match(draws_perm, draws_ref, atol=1e-10)
+    """``cpu_perm`` moments match ``cpu_reliable`` on intercept-only nuisance."""
+    moments_perm = _moments(inner_perm.cpu_perm, prep_intercept_fp64)
+    moments_ref = _moments(inner_perm.cpu_reliable, prep_intercept_fp64)
+    _assert_moments_match(moments_perm, moments_ref, atol=1e-10)
 
 
 def test_cpu_perm_matches_reliable_general(prep_general_fp64):
-    """``cpu_perm`` matches ``cpu_reliable`` on general Q0 too."""
-    draws_perm = _draws(inner_perm.cpu_perm_full, prep_general_fp64)
-    draws_ref = _draws(inner_perm.cpu_reliable_full, prep_general_fp64)
-    _assert_draws_match(draws_perm, draws_ref, atol=1e-10)
+    """``cpu_perm`` moments match ``cpu_reliable`` on general Q0 too."""
+    moments_perm = _moments(inner_perm.cpu_perm, prep_general_fp64)
+    moments_ref = _moments(inner_perm.cpu_reliable, prep_general_fp64)
+    _assert_moments_match(moments_perm, moments_ref, atol=1e-10)
 
 
 # ---------------------------------------------------------------------------
-# moments_from_draws wrapper agrees with manual nanmean / nanstd
+# Per-draw equivalence -- iter_llr_perm chunks (stacked) vs. cpu_reliable_full
+# row-by-row.  Anchors that the underlying LLR computations agree before
+# moments reduction; if this fails, the moments tests above can't isolate
+# whether the divergence is in the LLR or in the accumulator.
 
-def test_moments_wrapper_matches_draws(prep_general_fp64):
-    """``cpu_reliable`` (mu, std) == nanmean / nanstd(ddof=1) of draws."""
-    draws = _draws(inner_perm.cpu_reliable_full, prep_general_fp64, n_perm=8)
-    mu, std = _moments(inner_perm.cpu_reliable, prep_general_fp64, n_perm=8)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', RuntimeWarning)
-        mu_manual = np.nanmean(draws, axis=0)
-        std_manual = np.nanstd(draws, axis=0, ddof=1)
-    finite = np.isfinite(mu) & np.isfinite(mu_manual)
-    assert finite.any()
-    assert np.allclose(mu[finite], mu_manual[finite], atol=1e-12)
-    assert np.allclose(std[finite], std_manual[finite], atol=1e-12)
+def test_iter_llr_perm_matches_reliable_intercept(prep_intercept_fp64):
+    """Per-draw output of ``iter_llr_perm`` matches ``cpu_reliable_full``
+    cell-by-cell on intercept-only nuisance."""
+    prep = prep_intercept_fp64
+    draws_perm = _materialize_iter_llr_perm(prep, n_perm=6, base_seed=12_345)
+    draws_ref = _draws(inner_perm.cpu_reliable_full, prep, n_perm=6)
+    _assert_draws_match(draws_perm, draws_ref, atol=1e-10)
+
+
+def test_iter_llr_perm_matches_reliable_general(prep_general_fp64):
+    """Same on general Q0."""
+    prep = prep_general_fp64
+    draws_perm = _materialize_iter_llr_perm(prep, n_perm=6, base_seed=12_345)
+    draws_ref = _draws(inner_perm.cpu_reliable_full, prep, n_perm=6)
+    _assert_draws_match(draws_perm, draws_ref, atol=1e-10)
 
 
 # ---------------------------------------------------------------------------
 # min_vox NaN handling -- small regions must drop out of every backend.
 
-@pytest.mark.parametrize('backend_full', [
-    inner_perm.cpu_perm_full,
-    inner_perm.cpu_reliable_full,
-])
-def test_min_vox_drops_small_regions(prep_intercept_fp64, backend_full):
-    """Regions with size < min_vox return NaN draws on every CPU backend."""
+def test_min_vox_drops_small_regions_cpu_perm(prep_intercept_fp64):
+    """Regions with size < min_vox return NaN moments under ``cpu_perm``."""
     prep = {**prep_intercept_fp64, 'min_vox': 4}
-    draws = _draws(backend_full, prep)
+    mu, std = _moments(inner_perm.cpu_perm, prep)
+    _, size = glow.graph.compute_llr_batched(
+        prep['exp'], children=prep['children'],
+        q0=prep['q0'], q1=prep['q1'], min_size=1)
+    small = size < 4
+    assert small.any(), 'fixture has no size<4 regions; raise min_vox'
+    assert np.isnan(mu[small]).all(), \
+        'cpu_perm: size<min_vox cells leaked finite mu'
+    assert np.isnan(std[small]).all(), \
+        'cpu_perm: size<min_vox cells leaked finite std'
+
+
+def test_min_vox_drops_small_regions_cpu_reliable_full(prep_intercept_fp64):
+    """Regions with size < min_vox return NaN per-draw under
+    ``cpu_reliable_full``."""
+    prep = {**prep_intercept_fp64, 'min_vox': 4}
+    draws = _draws(inner_perm.cpu_reliable_full, prep)
     _, size = glow.graph.compute_llr_batched(
         prep['exp'], children=prep['children'],
         q0=prep['q0'], q1=prep['q1'], min_size=1)
     small = size < 4
     assert small.any(), 'fixture has no size<4 regions; raise min_vox'
     assert np.isnan(draws[:, small]).all(), \
-        f'{backend_full.__name__}: size<min_vox cells leaked finite values'
+        'cpu_reliable_full: size<min_vox cells leaked finite values'

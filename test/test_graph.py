@@ -338,8 +338,8 @@ def test_reg_sum_cumsum_recovers_per_region_sum():
     assert np.allclose(sums, expected)
 
 
-def test_compute_llr_perm_full_matches_compute_llr_batched():
-    """Per-perm draws from ``compute_llr_perm_full`` match the row-by-row
+def test_iter_llr_perm_matches_compute_llr_batched():
+    """Per-perm draws from ``iter_llr_perm`` match the row-by-row
     output of ``compute_llr_batched`` on the FL-permuted experiment.
 
     The unified perm-LLR backend hoists Phase 1 out of the inner loop
@@ -349,7 +349,7 @@ def test_compute_llr_perm_full_matches_compute_llr_batched():
     """
     from glow.experiment.exper import Experiment
     from glow.analysis.mancova import decompose, is_intercept_only_nuisance
-    from glow.graph import (compute_llr_batched, compute_llr_perm_full,
+    from glow.graph import (compute_llr_batched, iter_llr_perm,
                             build_dfs_preorder)
 
     exp = Experiment.from_gauss(a=2, b=2, num_img=30, shape=(8, 8),
@@ -369,10 +369,10 @@ def test_compute_llr_perm_full_matches_compute_llr_batched():
         rng = np.random.default_rng(perm_idx)
         perms[i] = np.argsort(rng.permutation(exp.y.shape[1]))
 
-    draws = compute_llr_perm_full(
+    draws = np.vstack(list(iter_llr_perm(
         y=exp.y, q0=q0, q1=q1, perms=perms,
         leaf_ord=leaf_ord, region_l=region_l, region_h=region_h,
-        min_size=4)
+        min_size=4)))
 
     for i, perm_idx in enumerate(perm_idxs):
         _exp_inner = exp.permute(perm_idx)
@@ -386,9 +386,9 @@ def test_compute_llr_perm_full_matches_compute_llr_batched():
         only_new = ~np.isfinite(llr_ref) & np.isfinite(llr_new)
         assert only_ref.sum() == 0, (
             f'perm_idx={perm_idx}: {only_ref.sum()} regions finite in batched '
-            f'path but NaN in perm-full — NaN masks must match')
+            f'path but NaN in iter_llr_perm — NaN masks must match')
         assert only_new.sum() == 0, (
-            f'perm_idx={perm_idx}: {only_new.sum()} regions finite in perm-full '
+            f'perm_idx={perm_idx}: {only_new.sum()} regions finite in iter_llr_perm '
             f'path but NaN in batched — NaN masks must match')
 
         abs_err = np.abs(llr_ref[both_finite] - llr_new[both_finite])
@@ -396,7 +396,7 @@ def test_compute_llr_perm_full_matches_compute_llr_batched():
         rel_err = (abs_err / denom).max() if both_finite.any() else 0.0
         assert rel_err < 5e-3, (
             f'perm_idx={perm_idx}: rel_err={rel_err:.3e} exceeds 5e-3 '
-            f'tolerance — perm-full path is not equivalent to batched path')
+            f'tolerance — iter_llr_perm path is not equivalent to batched path')
 
 
 def test_get_mask_cases():

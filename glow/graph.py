@@ -288,10 +288,18 @@ def _reg_sum_cumsum(x_dfs, axis, region_l, region_h):
     return (np.take(c, region_h, axis=axis)
             - np.take(c, region_l, axis=axis))
 
+def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
+                  min_size=1, perm_chunk=8):
+    """Per-region LLR for many Freedman-Lane perms -- streaming.
 
-def compute_llr_perm_full(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
-                          min_size=1, perm_chunk=8):
-    """Per-region LLR for many Freedman-Lane permutations in one sweep.
+    Generator over chunks of size ``perm_chunk``.  Phase 1 (per-voxel
+    sufficient statistics) is built once on entry; each iteration runs
+    Phase 2 for the next ``Pc`` perms and yields one ``(Pc, num_reg)``
+    fp64 chunk.  Callers that need raw draws stack via
+    ``np.vstack(list(iter_llr_perm(...)))``; callers that only need
+    moments (e.g. ``inner_perm.cpu_perm``) fold each chunk into a
+    Welford accumulator and never materialize the full draws array.
+    Closing the generator releases all Phase-1 state.
 
     Algorithm (see ``compute_optimize/perm_llr_compute.tex``):
 
@@ -330,21 +338,21 @@ def compute_llr_perm_full(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
             ``np.argsort(rng.permutation(num_img))`` per draw.
         leaf_ord, region_l, region_h: from ``build_dfs_preorder``.
         min_size (int): regions with ``size < min_size`` return NaN
-            draws.
+            in every chunk.
         perm_chunk (int): number of perms to batch through one gamma
             GEMM.  Trade-off: larger chunks reduce Python / BLAS call
             overhead but multiply the (Pc, V, ...) temporary memory.
             Default 8 is the sweet spot empirically at V in [25k,
             55k] for both intercept-only and general-Q0.
 
-    Returns:
-        draws (np.array): (n_perm, num_reg) LLR per region per perm.
-            NaN for ``size < min_size`` or non-positive-definite
-            ``E``/``E + H``.
+    Yields:
+        llr_chunk (np.array): (Pc, num_reg) fp64 LLR draws for the
+            next ``Pc`` perms (``Pc <= perm_chunk``; the final yield
+            may be short).  NaN for ``size < min_size`` or non-
+            positive-definite ``E`` / ``E + H``.
     """
     b, num_img, num_vox = y.shape
     n_perm = int(perms.shape[0])
-    num_reg = int(region_l.shape[0])
     a0 = int(q0.shape[0])
     a1 = int(q1.shape[0])
     a = a0 + a1
@@ -388,7 +396,6 @@ def compute_llr_perm_full(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
     active = (region_h - region_l) >= min_size
 
     Q = np.vstack([q0, q1]).astype(dtype, copy=False)              # (a, N)
-    draws = np.full((n_perm, num_reg), np.nan, dtype=np.float64)
 
     # -------------------- Phase 2: per-perm hot loop -----------------
     for s in range(0, n_perm, perm_chunk):
@@ -441,10 +448,8 @@ def compute_llr_perm_full(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
         valid = (sign_EH > 0) & (sign_E > 0) & active[None]
         llr_chunk = np.where(valid,
                              0.5 * sz_1d[None] * (ld_EH - ld_E),
-                             np.nan)
-        draws[s:s + Pc] = llr_chunk
-
-    return draws
+                             np.nan).astype(np.float64, copy=False)
+        yield llr_chunk
 
 
 def node_sum(x, children):
