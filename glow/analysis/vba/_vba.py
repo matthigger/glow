@@ -63,18 +63,7 @@ class AnalysisVBA(AnalysisVoxel):
             self
         """
         exp = self.exp
-        if _stat is None:
-            num_vox = exp.y.shape[2]
-            _stat = np.full((self.n_perm_fwer + 1, num_vox), np.nan)
-            for k in range(self.n_perm_fwer + 1):
-                _exp = exp.permute(k) if k else exp
-                _stat[k, :] = self.get_stat_perm(_exp, children=None)
-        elif _stat.shape[0] - 1 != self.n_perm_fwer:
-            raise ValueError(
-                f'_stat has {_stat.shape[0] - 1} permutations but '
-                f'n_perm_fwer={self.n_perm_fwer}')
-
-        self.stat = _stat
+        self.stat = self.build_stat_matrix(_stat)
         if self.z_flag:
             self.stat = self.z_score_stat(self.stat)
         if self.tfce_flag:

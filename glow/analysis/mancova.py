@@ -150,6 +150,22 @@ def get_wilks(e, h, n=None) -> float:
     return 1.0 - np.exp(logdet_e - logdet_t)
 
 
+def _safe_solve(m, h, label: str):
+    """Solve m @ x = h; re-raise a descriptive error if m is singular.
+
+    label names the singular matrix in the message, e.g. '(H + E) matrix'
+    or 'error matrix E'.
+    """
+    try:
+        return np.linalg.solve(m, h)
+    except np.linalg.LinAlgError:
+        raise np.linalg.LinAlgError(
+            f'singular {label} (shape {m.shape}). '
+            f'This typically means num_img <= b (too few images for the '
+            f'number of features). Consider reducing b or adding more images.'
+        )
+
+
 def get_pillai(e, h, n=None) -> float:
     """Compute Pillai's trace: tr((H + E)^-1 H).
 
@@ -164,14 +180,7 @@ def get_pillai(e, h, n=None) -> float:
     Raises:
         np.linalg.LinAlgError: if H + E is singular
     """
-    try:
-        return float(np.trace(np.linalg.solve(h + e, h)))
-    except np.linalg.LinAlgError:
-        raise np.linalg.LinAlgError(
-            f'singular (H + E) matrix (shape {e.shape}). '
-            f'This typically means num_img <= b (too few images for the '
-            f'number of features). Consider reducing b or adding more images.'
-        )
+    return float(np.trace(_safe_solve(h + e, h, '(H + E) matrix')))
 
 
 def get_hotel_tr(e, h, n=None) -> float:
@@ -188,14 +197,7 @@ def get_hotel_tr(e, h, n=None) -> float:
     Raises:
         np.linalg.LinAlgError: if E is singular
     """
-    try:
-        return float(np.trace(np.linalg.solve(e, h)))
-    except np.linalg.LinAlgError:
-        raise np.linalg.LinAlgError(
-            f'singular error matrix E (shape {e.shape}). '
-            f'This typically means num_img <= b (too few images for the '
-            f'number of features). Consider reducing b or adding more images.'
-        )
+    return float(np.trace(_safe_solve(e, h, 'error matrix E')))
 
 
 def get_roys_root(e, h, n=None) -> float:
@@ -212,15 +214,7 @@ def get_roys_root(e, h, n=None) -> float:
     Raises:
         np.linalg.LinAlgError: if E is singular
     """
-    try:
-        x = np.linalg.solve(e, h)
-    except np.linalg.LinAlgError:
-        raise np.linalg.LinAlgError(
-            f'singular error matrix E (shape {e.shape}). '
-            f'This typically means num_img <= b (too few images for the '
-            f'number of features). Consider reducing b or adding more images.'
-        )
-    eigvals = np.linalg.eigvals(x)
+    eigvals = np.linalg.eigvals(_safe_solve(e, h, 'error matrix E'))
     return float(np.max(np.real(eigvals)))
 
 

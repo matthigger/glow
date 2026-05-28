@@ -33,44 +33,65 @@ class Analysis(ABC):
         """Run the analysis computation and return self."""
 
     @classmethod
-    def get_pval(cls, stat, reg_active=None):
+    def get_pval(cls, stat, reg_active=None, *, stat_null=None):
         """Compute FWER-adjusted p-values via Westfall-Young permutation.
 
         Westfall & Young 1993: the max-statistic null over the active
         comparison set controls the family-wise error rate.
 
+        Two modes, sharing the same max-stat bisect:
+
+        * Single tree (VBA / CET): pass stat as the full
+          (n_perm+1, num_reg) matrix (row 0 observed). The max-stat null
+          is built column-wise as sort(nanmax(stat[:, reg_active])) and
+          the observed per-region statistic is stat[0].
+
+        * Per-permutation trees (GLOW): the null cannot be read off a
+          single matrix because each permutation has its own tree, so
+          pass the precomputed max-stat null as stat_null (one entry per
+          permutation incl. observed) and the observed per-region
+          statistic as stat (a (num_reg,) 1-D array).
+
         Args:
-            stat (np.array): (n_perm+1, num_reg) statistics per region.
-                Row 0 is the observed (unpermuted) statistic.
+            stat (np.array): (n_perm+1, num_reg) statistics per region
+                (row 0 observed), or (num_reg,) observed statistics when
+                stat_null is given.
             reg_active (np.array): (num_reg,) boolean mask. Only active
                 regions have a p-value computed; inactive get np.nan.
                 Discarding a-priori small regions from the comparison
                 set preserves power for larger regions. Defaults to all
                 regions active.
+            stat_null (np.array): optional (n_perm+1,) precomputed
+                max-stat null (one entry per permutation incl. observed).
 
         Returns:
             pval (np.array): (num_reg,) FWER-controlled p-values
         """
+        stat_obs = stat[0] if stat_null is None else stat
+        num_reg = stat_obs.shape[0]
+
         if reg_active is None:
-            reg_active = np.ones(stat.shape[1], dtype=bool)
+            reg_active = np.ones(num_reg, dtype=bool)
         elif not reg_active.any():
-            num_reg = stat.shape[1]
             return np.full(num_reg, fill_value=np.nan)
 
         # max stat per permutation, sorted low to high (bisect_left below
         # needs an ascending array)
-        stat_max = np.sort(np.nanmax(stat[:, reg_active], axis=1))
+        if stat_null is None:
+            null_sorted = np.sort(np.nanmax(stat[:, reg_active], axis=1))
+        else:
+            null_sorted = np.sort(stat_null)
+        n_null = len(null_sorted)
 
         # p-value: fraction of permuted-or-observed max-stats >= the
         # region's observed value
-        num_perm, num_reg = stat.shape
         pval = np.full(num_reg, fill_value=-1.0)
-        for reg_idx, z in enumerate(stat[0, :]):
+        for reg_idx, z in enumerate(stat_obs):
             if np.isnan(z):
                 pval[reg_idx] = np.nan
                 continue
-            pval[reg_idx] = max(1 - bisect_left(stat_max, z) / num_perm,
-                                1 / num_perm)
+            pval[reg_idx] = max(1 - bisect_left(null_sorted, z) / n_null,
+                                1 / n_null)
 
         # inactive regions must stay NaN: assigning them a p-value would
         # expand the comparison set and break FWER control
@@ -217,3 +238,23 @@ class AnalysisVoxel(Analysis):
                 pass
 
         return stat
+
+    def build_stat_matrix(self, _stat=None):
+        """Per-voxel stat matrix for the FWER walk, (n_perm_fwer+1, num_vox).
+
+        If ``_stat`` is None, runs the Freedman-Lane permutation walk
+        (row 0 observed, rows 1: permuted).  If provided, validates its
+        permutation count against ``self.n_perm_fwer`` and returns it
+        unchanged (the caller owns the copy).
+        """
+        if _stat is None:
+            num_vox = self.exp.y.shape[2]
+            _stat = np.full((self.n_perm_fwer + 1, num_vox), np.nan)
+            for k in range(self.n_perm_fwer + 1):
+                _exp = self.exp.permute(k) if k else self.exp
+                _stat[k, :] = self.get_stat_perm(_exp, children=None)
+        elif _stat.shape[0] - 1 != self.n_perm_fwer:
+            raise ValueError(
+                f'_stat has {_stat.shape[0] - 1} permutations but '
+                f'n_perm_fwer={self.n_perm_fwer}')
+        return _stat

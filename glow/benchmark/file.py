@@ -2,18 +2,11 @@
 
 import json
 import pathlib
-from uuid import uuid4
 
 import pandas as pd
 from platformdirs import user_data_dir
 
 OUT = 'out'
-ERROR = 'error'
-
-
-def short_uuid() -> str:
-    """Return an 8-character hex UUID string."""
-    return str(uuid4())[:8]
 
 
 def get_path_result() -> pathlib.Path:
@@ -22,6 +15,11 @@ def get_path_result() -> pathlib.Path:
                    'results')
     path_result.mkdir(parents=True, exist_ok=True)
     return path_result
+
+
+def get_path_out(folder) -> pathlib.Path:
+    """Return the per-label subfolder of un-aggregated *result.json files."""
+    return pathlib.Path(folder) / OUT
 
 
 def load_update_all(label: str, verbose: bool = True, result_dir=None):
@@ -54,7 +52,7 @@ def load_update_all(label: str, verbose: bool = True, result_dir=None):
 
     n_old = df.shape[0]
 
-    folder_out = folder / 'out'
+    folder_out = get_path_out(folder)
     file_list = list(folder_out.glob('*result.json')) if folder_out.exists() else []
     dict_list = list()
     for file in file_list:

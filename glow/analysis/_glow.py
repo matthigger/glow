@@ -1,5 +1,3 @@
-from bisect import bisect_left
-
 import numpy as np
 from joblib import Parallel, delayed
 from tqdm import tqdm
@@ -193,24 +191,9 @@ class AnalysisGLOW(Analysis):
         Args:
             verbose (bool): print significant-region and discovery counts.
         """
-        null_sorted = np.sort(self.max_z_null)
-        n_null = len(null_sorted)
-        num_reg = self.llr.shape[0]
-
         reg_active = self.size >= self.min_vox
-        if not reg_active.any():
-            self.pval = np.full(num_reg, fill_value=np.nan)
-        else:
-            pval = np.full(num_reg, fill_value=-1.0)
-            for r, z_r in enumerate(self.z):
-                if np.isnan(z_r):
-                    pval[r] = np.nan
-                    continue
-                pval[r] = max(
-                    1 - bisect_left(null_sorted, z_r) / n_null,
-                    1 / n_null)
-            pval[~reg_active] = np.nan
-            self.pval = pval
+        self.pval = self.get_pval(self.z, reg_active=reg_active,
+                                  stat_null=self.max_z_null)
 
         sig_reg_list = list(np.where(self.pval <= self.alpha_fwer)[0])
         if verbose:
