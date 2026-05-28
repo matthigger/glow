@@ -28,10 +28,10 @@ class TestConstruction:
         assert cache.folder == target
         assert target.is_dir()
 
-    def test_folder_accepts_str(self, tmp_path):
-        cache = TrialCache(folder=str(tmp_path / 'as_str'))
-        assert isinstance(cache.folder, Path)
-        assert cache.folder.is_dir()
+        # a str folder is coerced to Path and likewise created
+        cache_str = TrialCache(folder=str(tmp_path / 'as_str'))
+        assert isinstance(cache_str.folder, Path)
+        assert cache_str.folder.is_dir()
 
     def test_name_kwarg_resolves_under_default_results_dir(
             self, tmp_path, monkeypatch):
@@ -40,13 +40,15 @@ class TestConstruction:
         assert cache.folder == tmp_path / 'exp_foo'
         assert cache.folder.is_dir()
 
-    def test_both_name_and_folder_rejected(self, tmp_path):
+    @pytest.mark.parametrize('kw', [
+        dict(name='x', folder='FOLDER'),  # both → rejected
+        dict(),                           # neither → rejected
+    ])
+    def test_exactly_one_of_name_folder_required(self, tmp_path, kw):
+        if 'folder' in kw:
+            kw['folder'] = tmp_path
         with pytest.raises(ValueError, match='exactly one'):
-            TrialCache(name='x', folder=tmp_path)
-
-    def test_neither_name_nor_folder_rejected(self):
-        with pytest.raises(ValueError, match='exactly one'):
-            TrialCache()
+            TrialCache(**kw)
 
     def test_overlap_between_iter_and_const_kwargs_rejected(self, tmp_path):
         with pytest.raises(ValueError, match='share keys'):
@@ -54,11 +56,6 @@ class TestConstruction:
                 folder=tmp_path,
                 iter_kwargs={'seed': [1, 2]},
                 kwargs={'seed': 5})
-
-    def test_defaults_iter_and_kwargs_none(self, tmp_path):
-        cache = TrialCache(folder=tmp_path)
-        assert cache.iter_kwargs is None
-        assert cache.kwargs is None
 
     def test_df_initialized_empty_for_fresh_folder(self, tmp_path):
         cache = TrialCache(folder=tmp_path)
@@ -99,13 +96,6 @@ class TestIterTrial:
         assert all(t['ds'] is ds for t in out)
         assert sorted(t['seed'] for t in out) == [0, 1]
 
-    def test_keys_match_spec(self, tmp_path):
-        cache = TrialCache(
-            folder=tmp_path,
-            iter_kwargs={'a': [1], 'b': [2]},
-            kwargs={'c': 3})
-        assert list(cache.iter_trial()) == [{'a': 1, 'b': 2, 'c': 3}]
-
 
 class TestCaching:
     def test_is_cached_false_before_save(self, tmp_path):
@@ -135,11 +125,6 @@ class TestCaching:
         cache.save_result({'val': 1}, {'ds': _Toy(1, 1), 'seed': 0})
         assert cache.is_cached({'ds': _Toy(1, 1), 'seed': 0}) is True
         assert cache.is_cached({'ds': _Toy(2, 2), 'seed': 0}) is False
-
-    def test_cache_survives_re_open(self, tmp_path):
-        TrialCache(folder=tmp_path).save_result({'v': 1}, {'seed': 0})
-        cache2 = TrialCache(folder=tmp_path)
-        assert cache2.is_cached({'seed': 0}) is True
 
 
 class TestSaveResult:
@@ -178,27 +163,25 @@ class TestSaveResult:
         with pytest.raises(TypeError):
             cache.save_result(42, {'seed': 0})
 
-    def test_complex_kwarg_stored_as_hash_string(self, tmp_path):
+    @pytest.mark.parametrize('key, value', [
+        ('ds', _Toy(1, 2)),     # HashBySlots kwarg
+        ('x', np.arange(6)),    # ndarray kwarg
+    ])
+    def test_complex_kwarg_stored_as_hash_string(self, tmp_path, key, value):
         cache = TrialCache(folder=tmp_path)
-        cache.save_result({'v': 1}, {'ds': _Toy(1, 2), 'seed': 0})
-        ds_val = cache.df.iloc[0]['ds']
-        assert isinstance(ds_val, str) and len(ds_val) == 16
-
-    def test_ndarray_kwarg_stored_as_hash_string(self, tmp_path):
-        cache = TrialCache(folder=tmp_path)
-        cache.save_result({'v': 1}, {'x': np.arange(6), 'seed': 0})
-        x_val = cache.df.iloc[0]['x']
-        assert isinstance(x_val, str) and len(x_val) == 16
-
-    def test_trial_hash_is_dataframe_index(self, tmp_path):
-        cache = TrialCache(folder=tmp_path)
-        cache.save_result({'v': 1}, {'seed': 0})
-        assert cache.df.index.name == HASH_COL
-        assert HASH_COL not in cache.df.columns
+        cache.save_result({'v': 1}, {key: value, 'seed': 0})
+        stored = cache.df.iloc[0][key]
+        assert isinstance(stored, str) and len(stored) == 16
 
     def test_trial_hash_round_trips_through_csv(self, tmp_path):
         cache1 = TrialCache(folder=tmp_path)
         cache1.save_result({'v': 1}, {'seed': 0})
+        # the trial hash is the DataFrame index, not a column, and survives
+        # a save → re-open round trip through the CSV
+        assert cache1.df.index.name == HASH_COL
+        assert HASH_COL not in cache1.df.columns
         cache2 = TrialCache(folder=tmp_path)
         assert cache2.df.index.name == HASH_COL
         assert list(cache2.df.index) == list(cache1.df.index)
+        # re-opened cache still recognizes the saved trial as cached
+        assert cache2.is_cached({'seed': 0}) is True

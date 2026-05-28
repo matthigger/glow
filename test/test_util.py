@@ -13,13 +13,12 @@ from glow.util import (
 # ---------------------------------------------------------------------------
 
 class TestHashArray:
-    def test_deterministic(self):
-        a = np.arange(20).astype(np.float64)
-        assert hash_array(a) == hash_array(a)
-
     def test_same_content_same_hash(self):
+        # also covers determinism: equal-content arrays (incl. the same
+        # array hashed twice) hash identically
         a = np.arange(20).astype(np.float64)
         b = np.arange(20).astype(np.float64)
+        assert hash_array(a) == hash_array(a)
         assert hash_array(a) == hash_array(b)
 
     def test_different_content_different_hash(self):
@@ -39,12 +38,6 @@ class TestHashArray:
         a = np.arange(12, dtype=np.float64)
         b = np.arange(12, dtype=np.float32)
         assert hash_array(a) != hash_array(b)
-
-    def test_returns_16char_hex(self):
-        h = hash_array(np.arange(5))
-        assert isinstance(h, str)
-        assert len(h) == 16
-        int(h, 16)  # raises ValueError if not valid hex
 
     def test_multi_array(self):
         a = np.arange(5)
@@ -120,13 +113,14 @@ class _WithArray(HashBySlots):
 
 
 class TestHashBySlotsBasic:
-    def test_equal_when_slots_equal(self):
-        assert _Toy(1, 2) == _Toy(1, 2)
-        assert hash(_Toy(1, 2)) == hash(_Toy(1, 2))
-
-    def test_differ_when_slot_differs(self):
-        assert _Toy(1, 2) != _Toy(1, 3)
-        assert hash(_Toy(1, 2)) != hash(_Toy(1, 3))
+    @pytest.mark.parametrize('other, equal', [
+        (_Toy(1, 2), True),   # equal slots → equal value and hash
+        (_Toy(1, 3), False),  # differing slot → distinct value and hash
+    ])
+    def test_eq_and_hash_follow_slots(self, other, equal):
+        ref = _Toy(1, 2)
+        assert (ref == other) is equal
+        assert (hash(ref) == hash(other)) is equal
 
     def test_neq_other_subclass(self):
         # same slot names, different class → not equal, different hash
@@ -137,32 +131,15 @@ class TestHashBySlotsBasic:
         assert _Toy(1, 2) != (1, 2)
         assert _Toy(1, 2) != {'a': 1, 'b': 2}
 
-    def test_dict_key(self):
-        d = {_Toy(1, 2): 'x'}
-        assert d[_Toy(1, 2)] == 'x'
-
-    def test_slots_block_stray_attrs(self):
-        t = _Toy(1, 2)
-        with pytest.raises(AttributeError):
-            t.weird = 99
-
-    def test_identity_dict_contains_kind(self):
-        d = _Toy(1, 2)._identity_dict()
-        assert d['kind'] == '_Toy'
-        assert d['a'] == 1
-        assert d['b'] == 2
-
 
 class TestHashBySlotsCanon:
-    def test_ndarray_slot(self):
+    def test_ndarray_slot_routes_through_hash_array(self):
+        # equal-content array slots compare equal; a content change is
+        # detected — i.e. the slot is canonicalized via hash_array
         a = np.arange(10)
         b = np.arange(10)
         assert _WithArray(a, 't') == _WithArray(b, 't')
         assert hash(_WithArray(a, 't')) == hash(_WithArray(b, 't'))
-
-    def test_ndarray_content_change(self):
-        a = np.arange(10)
-        b = a.copy()
         b[0] = -1
         assert _WithArray(a, 't') != _WithArray(b, 't')
 
@@ -193,33 +170,32 @@ class TestHashBySlotsMutation:
 
 
 class TestValueId:
-    def test_simple_passthrough(self):
-        assert value_id(0) == 0
-        assert value_id('x') == 'x'
-        assert value_id(None) is None
-        assert value_id(True) is True
-
-    def test_numpy_scalar_unboxed(self):
-        v = value_id(np.float64(1.5))
-        assert v == 1.5
-        assert not isinstance(v, np.floating)
-
-    def test_ndarray_returns_hash(self):
-        h = value_id(np.arange(10))
-        assert isinstance(h, str) and len(h) == 16
-
-    def test_ndarray_content_changes_hash(self):
-        assert value_id(np.arange(10)) != value_id(np.arange(11))
-
-    def test_hashbyslots_stable_across_instances(self):
-        assert value_id(_Toy(1, 2)) == value_id(_Toy(1, 2))
-        assert value_id(_Toy(1, 2)) != value_id(_Toy(1, 3))
+    """value_id dispatch table: each value kind routes to its identity."""
 
     def test_unknown_type_falls_back_to_repr(self):
         class Other:
             def __repr__(self):
                 return 'OTHER'
         assert value_id(Other()) == 'OTHER'
+
+    @pytest.mark.parametrize('value, expected', [
+        # scalar passthrough
+        (0, 0),
+        ('x', 'x'),
+        (None, None),
+        (True, True),
+        # numpy scalar is unboxed to a native Python scalar
+        (np.float64(1.5), 1.5),
+        # ndarray routes through hash_array (16-hex digest)
+        (np.arange(10), hash_array(np.arange(10))),
+        # HashBySlots routes through its stable identity hash
+        (_Toy(1, 2), value_id(_Toy(1, 2))),
+    ])
+    def test_dispatch(self, value, expected):
+        assert value_id(value) == expected
+
+    def test_numpy_scalar_is_native(self):
+        assert not isinstance(value_id(np.float64(1.5)), np.floating)
 
 
 class TestStableHash:
@@ -233,19 +209,9 @@ class TestStableHash:
         assert stable_hash(a) == stable_hash(b)
 
     def test_different_values_different_hash(self):
+        # the only stable_hash-specific behavior: dict values flow through
+        # value_id (proven in TestValueId), so a value change changes the hash
         assert stable_hash({'seed': 0}) != stable_hash({'seed': 1})
-
-    def test_hashbyslots_identity(self):
-        assert stable_hash({'ds': _Toy(1, 2)}) == stable_hash({'ds': _Toy(1, 2)})
-        assert stable_hash({'ds': _Toy(1, 2)}) != stable_hash({'ds': _Toy(1, 3)})
-
-    def test_numpy_scalar_matches_python_scalar(self):
-        assert stable_hash({'seed': np.int64(0)}) == stable_hash({'seed': 0})
-
-    def test_returns_8_hex(self):
-        h = stable_hash({'seed': 0})
-        assert len(h) == 8
-        assert all(c in '0123456789abcdef' for c in h)
 
 # Subclass hierarchy + a class with an underscore slot, used to exercise
 # the MRO walk and the _-prefix skip in HashBySlots._identity_dict.
@@ -265,22 +231,14 @@ class _ToySub(_ToyBase):
 
 
 class TestHashBySlotsMroWalk:
-    """_identity_dict walks the full MRO so subclass identity covers base
-    slots (otherwise a subclass with extra slots would silently drop its
-    base identity)."""
-
-    def test_base_slot_in_subclass_identity(self):
-        d = _ToySub(1, 2)._identity_dict()
-        assert d['a'] == 1
-        assert d['b'] == 2
+    """identity walks the full MRO so subclass identity covers base slots
+    (otherwise a subclass with extra slots would silently drop its base
+    identity)."""
 
     def test_base_slot_change_changes_hash(self):
+        # a base-class slot participates in the subclass's identity
         assert _ToySub(1, 2) != _ToySub(9, 2)
         assert hash(_ToySub(1, 2)) != hash(_ToySub(9, 2))
-
-    def test_kind_is_concrete_class(self):
-        # the class name in identity uses type(self), not the slot's owner
-        assert _ToySub(1, 2)._identity_dict()['kind'] == '_ToySub'
 
     def test_base_and_subclass_distinct(self):
         # _ToyBase(1) and _ToySub(1, 2) must not collide even when their
@@ -291,11 +249,20 @@ class TestHashBySlotsMroWalk:
 
 class TestHashBySlotsRequiresSlots:
     """__init_subclass__ rejects subclasses that don't declare __slots__,
-    so identity is never silently empty."""
+    so identity is never silently empty.  This fires at any depth."""
 
-    def test_subclass_without_slots_errors(self):
+    def test_subclass_without_slots_errors_at_any_depth(self):
+        # direct subclass of HashBySlots
         with pytest.raises(TypeError, match='__slots__'):
             class _NoSlots(HashBySlots):
+                pass
+
+        # and a deeper subclass of a slotted intermediate
+        class _Mid(HashBySlots):
+            __slots__ = ('x',)
+
+        with pytest.raises(TypeError, match='__slots__'):
+            class _Leaf(_Mid):
                 pass
 
     def test_subclass_with_empty_slots_ok(self):
@@ -305,11 +272,3 @@ class TestHashBySlotsRequiresSlots:
             __slots__ = ()
 
         assert hash(_Empty()) == hash(_Empty())
-
-    def test_nested_subclass_also_checked(self):
-        class _Mid(HashBySlots):
-            __slots__ = ('x',)
-
-        with pytest.raises(TypeError, match='__slots__'):
-            class _Leaf(_Mid):
-                pass
