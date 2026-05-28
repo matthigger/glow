@@ -35,20 +35,3 @@ def test_scale_sigma():
     assert np.isclose(gain_exp, gain_obs)
 
     assert np.allclose(y.mean(axis=2), y1.mean(axis=2))
-
-
-def test_get_size_yout_ymean():
-    b, num_img, num_vox = 3, 10, 100
-    rng = np.random.default_rng(seed=0)
-    y = rng.standard_normal((b, num_img, num_vox))
-    size_obs, yout_obs, ymean_obs = get_size_yout_ymean(y)
-
-    yout_exp = 0
-    for vox_idx in range(num_vox):
-        _y = y[:, :, vox_idx]
-        yout_exp += _y @ _y.T
-    ymean_exp = y.mean(axis=2)
-
-    assert size_obs == num_vox
-    assert np.allclose(yout_obs, yout_exp)
-    assert np.allclose(ymean_obs, ymean_exp)

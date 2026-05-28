@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from pathlib import Path
+from PIL import Image
 
 from glow.experiment.load_image import load_image_color, load_image_nii
 
@@ -11,72 +12,42 @@ from glow.experiment.load_image import load_image_color, load_image_nii
 class TestLoadImageColor:
     """test loading color images (jpg, png)"""
 
-    def test_load_grayscale(self):
-        """test loading color images (PNG with RGB channels)"""
-        # use test data that exists
+    @pytest.mark.parametrize('rgb_png', ['mandrill_small.png',
+                                         'squares_test.png'])
+    def test_rgb_splits_into_per_channel_features(self, rgb_png):
+        """RGB images split into per-channel (R, G, B) features for all sbj"""
         test_data_dir = Path(__file__).parent.parent / 'data'
 
-        # create dataframe with test images
-        # Note: PNG images typically have RGB channels, so they'll be split
-        df = pd.DataFrame({
-            'img': [
-                test_data_dir / 'mandrill_small.png',
-                test_data_dir / 'mandrill_small.png'
-            ]
-        }, index=['sbj0', 'sbj1'])
+        # same RGB PNG for two subjects
+        path = test_data_dir / rgb_png
+        df = pd.DataFrame({'img': [path, path]}, index=['sbj0', 'sbj1'])
 
-        # load images
         feat_sbj_img, mask_idx = load_image_color(df)
 
-        # PNG images with RGB are split into img0, img1, img2 (R, G, B)
-        # check structure - should have at least one feature
-        assert len(feat_sbj_img) > 0
+        # the 'img' column is a 3-channel RGB PNG, so it is split into one
+        # feature per channel: img0 (R), img1 (G), img2 (B)
+        assert list(feat_sbj_img.keys()) == ['img0', 'img1', 'img2']
 
-        # get first feature name
-        first_feat = list(feat_sbj_img.keys())[0]
-        assert 'sbj0' in feat_sbj_img[first_feat]
-        assert 'sbj1' in feat_sbj_img[first_feat]
+        # every channel feature carries both subjects, as 2D arrays of the
+        # image's spatial shape
+        with Image.open(path) as im:
+            spatial_shape = (im.height, im.width)
+        for feat in ['img0', 'img1', 'img2']:
+            assert set(feat_sbj_img[feat]) == {'sbj0', 'sbj1'}
+            for sbj in ['sbj0', 'sbj1']:
+                ch = feat_sbj_img[feat][sbj]
+                assert ch.ndim == 2
+                assert ch.shape == spatial_shape
 
-        # check shapes match
-        img0 = feat_sbj_img[first_feat]['sbj0']
-        img1 = feat_sbj_img[first_feat]['sbj1']
-        assert img0.shape == img1.shape
-        assert img0.ndim == 2  # each channel is 2D
-
-        # check mask_idx
-        assert mask_idx.shape == img0.shape
+        # mask_idx covers the full image (color loader masks nothing)
+        assert mask_idx.shape == spatial_shape
         assert (mask_idx >= -1).all()
 
-    def test_load_rgb(self):
-        """test loading RGB images"""
-        test_data_dir = Path(__file__).parent.parent / 'data'
-
-        # use jpg images which are RGB
-        df = pd.DataFrame({
-            'img': [
-                test_data_dir / 'img0_feat0.jpg',
-                test_data_dir / 'img0_feat1.jpg'
-            ]
-        }, index=['sbj0', 'sbj1'])
-
-        # load images
-        feat_sbj_img, mask_idx = load_image_color(df)
-
-        # RGB images should be split into separate features
-        # should have img0, img1, img2 (R, G, B channels)
-        assert 'img0' in feat_sbj_img or 'img' in feat_sbj_img
-
-        # check that we got images for both subjects
-        first_feat = list(feat_sbj_img.keys())[0]
-        assert 'sbj0' in feat_sbj_img[first_feat]
-        assert 'sbj1' in feat_sbj_img[first_feat]
-
-        # check all images have same shape
-        shapes = set()
-        for feat, sbj_img in feat_sbj_img.items():
-            for sbj, img in sbj_img.items():
-                shapes.add(img.shape)
-        assert len(shapes) == 1  # all same shape
+        # known top-left pixel: the per-channel split must preserve the
+        # source channel intensities at that location
+        rgb = np.array(Image.open(path))
+        for ch_idx, feat in enumerate(['img0', 'img1', 'img2']):
+            assert feat_sbj_img[feat]['sbj0'][0, 0] == rgb[0, 0, ch_idx]
 
     def test_shape_consistency_error(self):
         """test that inconsistent shapes raise error"""
@@ -133,21 +104,29 @@ class TestLoadImageNii:
         # affine is a 4x4 array
         assert affine.shape == (4, 4)
 
-    def test_nifti_mask_excludes_missing_voxels(self):
-        """test that mask excludes voxels where any subject has zero"""
-        test_data_dir = Path(__file__).parent.parent / 'data'
+    def test_nifti_mask_excludes_missing_voxels(self, tmp_path):
+        """mask drops any voxel that is zero in at least one subject"""
+        import nibabel as nib
 
-        # load nifti images
-        df = pd.DataFrame({
-            'feat0': [
-                test_data_dir / 'img0_feat0.nii.gz',
-                test_data_dir / 'img1_feat0.nii.gz'
-            ]
-        }, index=['img0', 'img1'])
+        affine = np.eye(4)
+        # two subjects on an 8-voxel grid.  Zero a single voxel in only
+        # subject 0; it should be excluded from the mask even though
+        # subject 1 has data there (mask = vox_count == df.size).
+        arr0 = np.ones((2, 2, 2))
+        arr0[0, 0, 0] = 0
+        arr1 = np.full((2, 2, 2), 2.0)
+
+        df = pd.DataFrame({'feat0': []}, dtype=object)
+        for sbj, arr in [('img0', arr0), ('img1', arr1)]:
+            file = tmp_path / f'{sbj}_feat0.nii.gz'
+            nib.Nifti2Image(arr, affine=affine).to_filename(file)
+            df.loc[sbj, 'feat0'] = file
 
         y, y_names, mask_idx, _affine = load_image_nii(df)
 
-        # all values in y are within the mask, so all are non-zero by
-        # construction (mask = vox_count == df.size).
+        # exactly the one deliberately-zeroed voxel is dropped (7 of 8)
+        assert mask_idx[0, 0, 0] == -1
+        assert int((mask_idx > -1).sum()) == 7
+        assert y.shape == (1, 2, 7)
+        # surviving voxels are non-zero for every subject
         assert (y != 0).all()
-        assert (mask_idx > -1).sum() == y.shape[2]

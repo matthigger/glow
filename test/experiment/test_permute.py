@@ -23,7 +23,7 @@ def _get_freed_lane_dense(x, contrast, perm_idx):
     return (np.eye(num_img) - q0) @ p + q0
 
 
-def test_get_freed_lane():
+def test_get_freed_lane_matches_dense_reference():
     """index-based freed_lane matches the dense permutation-matrix reference"""
     exp = ExperimentImageOnly.from_gauss(seed=0)
     exp = exp.sample_x(a=2, add_bias=True)
@@ -35,6 +35,12 @@ def test_get_freed_lane():
         assert np.allclose(fl_new, fl_ref), \
             f'freed_lane mismatch at perm_idx={perm_idx}'
 
+
+def test_get_freed_lane_preserves_covariate_projection():
+    """freed_lane leaves the covariate projection Q0Q0T invariant"""
+    exp = ExperimentImageOnly.from_gauss(seed=0)
+    exp = exp.sample_x(a=2, add_bias=True)
+
     # covariate projection is unchanged (holds under intercept-only Q0,
     # which is what add_bias=True + a=2 gives here)
     q = decompose(x=exp.x, contrast=exp.contrast)
@@ -43,6 +49,18 @@ def test_get_freed_lane():
     y0 = exp.y[:, :, 0]
     y0_perm = y0 @ freed_lane
     assert np.allclose(y0 @ p0, y0_perm @ p0)
+
+
+def test_get_freed_lane_shuffles_residuals():
+    """freed_lane shuffles the residuals by the expected (inverse) permutation"""
+    exp = ExperimentImageOnly.from_gauss(seed=0)
+    exp = exp.sample_x(a=2, add_bias=True)
+
+    q = decompose(x=exp.x, contrast=exp.contrast)
+    p0 = q[0].T @ q[0]
+    freed_lane = get_freed_lane(x=exp.x, contrast=exp.contrast, perm_idx=1)
+    y0 = exp.y[:, :, 0]
+    y0_perm = y0 @ freed_lane
 
     # residuals are shuffled by the expected permutation.  Under the
     # column-layout convention this is argsort(rng.permutation()), the
