@@ -62,18 +62,48 @@ python -m glow.benchmark.paper --aws 'sweep_*'
 python -m glow.aws.infra status
 python -m glow.aws.infra status --label sweep_extent_wgn_n10
 
-# Stop dispatching (in-flight children keep running)
+# Pause / resume dispatch (in-flight children keep running)
 python -m glow.aws.infra pause
 python -m glow.aws.infra resume
 
-# Clean S3 between runs
-python -m glow.aws.infra clean --jobs --yes               # drop manifests/results
-python -m glow.aws.infra clean --jobs --datasource --yes  # also drop cached HCP exps
+# Clear jobs — terminate active jobs (cancels queued, kills in-flight)
+python -m glow.aws.infra clear_jobs --yes
+python -m glow.aws.infra clear_jobs --label sweep_extent_wgn_n10 --yes
+
+# Clear storage — delete S3 between runs
+python -m glow.aws.infra clear_storage --jobs --yes               # drop manifests/results
+python -m glow.aws.infra clear_storage --jobs --datasource --yes  # also drop cached HCP exps
 
 # Tear down Batch (keep bucket + cached results)
 python -m glow.aws.infra teardown --yes
 python -m glow.aws.infra teardown --yes --delete-bucket   # nuke everything
 ```
+
+## Pausing, resuming, and clearing jobs
+
+`pause` / `resume` flip the Batch **job queue** between `DISABLED` and
+`ENABLED`; `clear_jobs` acts on the **jobs** themselves. They solve different
+problems:
+
+- **`pause`** disables the queue, so Batch stops placing queued jobs onto
+  instances. Jobs already `STARTING`/`RUNNING` run to completion, and jobs
+  waiting in `SUBMITTED`/`PENDING`/`RUNNABLE` simply park — nothing is lost,
+  they keep their place in line. You can still submit more work while paused;
+  it queues up. Use this to stop launching new Spot instances (the main cost
+  driver) without discarding in-flight progress. Note it does **not** stop
+  instances that are already running — only new placements.
+- **`resume`** re-enables the queue; parked jobs start placing onto instances
+  again. `pause` then `resume` is lossless round-trip.
+- **`clear_jobs`** terminates the jobs. Queued jobs are cancelled and any
+  `STARTING`/`RUNNING` containers are killed (they end up `FAILED`); their
+  trials reappear on the next run, like any other failure. `clear_jobs` does
+  not touch the queue state, so a later `--aws` run dispatches fresh children —
+  pair it with `pause` if you want everything to stop and stay stopped. Scope
+  it to one sweep with `--label`.
+
+So: `pause` to idle the fleet without losing work, `clear_jobs` to actually
+kill jobs, `clear_storage` to wipe S3 results, `teardown` to delete the Batch
+resources entirely.
 
 ## Failure handling
 

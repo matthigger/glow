@@ -6,7 +6,8 @@ Subcommands:
     python -m glow.aws.infra setup     [--image-tag IMG] [--config PATH]
     python -m glow.aws.infra teardown  [--yes] [--delete-bucket] [--config PATH]
     python -m glow.aws.infra status    [--label LABEL]              [--config PATH]
-    python -m glow.aws.infra clean     [--jobs] [--datasource] [--yes] [--config PATH]
+    python -m glow.aws.infra clear_storage [--jobs] [--datasource] [--yes] [--config PATH]
+    python -m glow.aws.infra clear_jobs    [--label LABEL] [--yes]      [--config PATH]
     python -m glow.aws.infra pause                                 [--config PATH]
     python -m glow.aws.infra resume                                [--config PATH]
 
@@ -375,7 +376,9 @@ def _setup_job_definition(cfg: AWSConfig, *, image_uri: str,
     exec_role = f'arn:aws:iam::{account_id}:role/GlowEcsTaskExecutionRole'
     task_role = f'arn:aws:iam::{account_id}:role/GlowEcsTaskRole'
 
-    # The driver overrides command per-submission.
+    # No command: the image ENTRYPOINT is `python -m glow.aws.worker`, and
+    # the driver overrides command per-submission to pass the manifest URI
+    # as its argv.
     container = {
         'image': image_uri,
         'jobRoleArn': task_role,
@@ -384,7 +387,6 @@ def _setup_job_definition(cfg: AWSConfig, *, image_uri: str,
             {'type': 'VCPU', 'value': str(cfg.vcpus)},
             {'type': 'MEMORY', 'value': str(cfg.memory_mb_tiers[0])},
         ],
-        'command': ['python', '-m', 'glow.aws.worker'],
         'environment': [
             {'name': 'AWS_DEFAULT_REGION', 'value': cfg.region},
         ],
@@ -648,6 +650,12 @@ def _teardown_bucket(cfg: AWSConfig) -> None:
 # ---------- status ----------------------------------------------------------
 
 
+# Non-terminal Batch job states, in lifecycle order: a job moves down this
+# list before reaching the terminal SUCCEEDED / FAILED.  cancel acts on
+# exactly these; status also reports the two terminal states.
+ACTIVE_STATES = ('SUBMITTED', 'PENDING', 'RUNNABLE', 'STARTING', 'RUNNING')
+
+
 def cmd_status(args, cfg: AWSConfig) -> None:
     """Print job counts per state, then recent failures.
 
@@ -656,8 +664,7 @@ def cmd_status(args, cfg: AWSConfig) -> None:
         cfg (AWSConfig): supplies the queue name and region.
     """
     batch = boto3.client('batch', region_name=cfg.region)
-    states = ('SUBMITTED', 'PENDING', 'RUNNABLE', 'STARTING', 'RUNNING',
-              'SUCCEEDED', 'FAILED')
+    states = ACTIVE_STATES + ('SUCCEEDED', 'FAILED')
     print(f'[status] queue={cfg.job_queue}')
     for state in states:
         jobs = _list_jobs(batch, queue=cfg.job_queue, state=state,
@@ -695,10 +702,10 @@ def _list_jobs(batch, *, queue: str, state: str,
     return out
 
 
-# ---------- clean -----------------------------------------------------------
+# ---------- clear_storage ---------------------------------------------------
 
 
-def cmd_clean(args, cfg: AWSConfig) -> None:
+def cmd_clear_storage(args, cfg: AWSConfig) -> None:
     """Delete the jobs/ and/or datasource/ S3 prefixes (requires --yes).
 
     Args:
@@ -740,6 +747,39 @@ def _delete_prefix(s3, bucket: str, prefix: str) -> None:
                               Delete={'Objects': keys[i:i + 1000]})
         total += len(keys)
     print(f'  ✓ deleted {total} objects under s3://{bucket}/{prefix}')
+
+
+# ---------- clear_jobs ------------------------------------------------------
+
+
+def cmd_clear_jobs(args, cfg: AWSConfig) -> None:
+    """Terminate every active job in the queue (requires --yes).
+
+    One terminate_job pass clears the whole active lifecycle: Batch cancels
+    jobs that have not yet reached STARTING and kills STARTING / RUNNING
+    containers (which transition to FAILED).  SUCCEEDED / FAILED jobs are
+    left untouched.  Unlike pause this does not disable the queue, so a
+    later --aws run dispatches fresh children; pair with pause to also stop
+    new dispatch.
+
+    Args:
+        args: parsed argparse Namespace; reads args.label and args.yes.
+        cfg (AWSConfig): supplies the queue name and region.
+    """
+    if not args.yes:
+        print('--yes required to actually terminate jobs')
+        return
+    batch = boto3.client('batch', region_name=cfg.region)
+    total = 0
+    for state in ACTIVE_STATES:
+        for job in _list_jobs(batch, queue=cfg.job_queue, state=state,
+                              label=args.label):
+            batch.terminate_job(
+                jobId=job['jobId'],
+                reason='terminated via glow.aws.infra clear_jobs')
+            total += 1
+    scope = f' for label {args.label}' if args.label else ''
+    print(f'  ✓ terminated {total} active job(s) in {cfg.job_queue}{scope}')
 
 
 # ---------- pause / resume --------------------------------------------------
@@ -817,13 +857,20 @@ def _build_parser() -> argparse.ArgumentParser:
                     help='only count jobs whose name starts glow-<label>')
     sp.set_defaults(func=cmd_status)
 
-    sp = subs.add_parser('clean', help='delete S3 prefixes')
+    sp = subs.add_parser('clear_storage', help='delete S3 prefixes')
     sp.add_argument('--jobs', action='store_true',
                     help='delete jobs/ (job.pkl, result.pkl, manifest.pkl)')
     sp.add_argument('--datasource', action='store_true',
                     help='delete datasource/ (uploaded HCP exps)')
     sp.add_argument('--yes', action='store_true')
-    sp.set_defaults(func=cmd_clean)
+    sp.set_defaults(func=cmd_clear_storage)
+
+    sp = subs.add_parser('clear_jobs', help='terminate active jobs')
+    sp.add_argument('--label', default=None,
+                    help='only cancel jobs whose name starts glow-<label>')
+    sp.add_argument('--yes', action='store_true',
+                    help='required to actually terminate anything')
+    sp.set_defaults(func=cmd_clear_jobs)
 
     sp = subs.add_parser('pause', help='disable job queue dispatch')
     sp.set_defaults(func=cmd_pause)
