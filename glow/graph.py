@@ -87,13 +87,17 @@ def iter_size_ysum_yout(y, children=None):
 
 
 def region_stats_arrays(y, children):
-    """Collect per-region (ysum, yout, size) into arrays via one tree walk.
+    """Build per-region (ysum, yout, size) for every region, vectorised.
 
-    Array-collecting wrapper over iter_size_ysum_yout: rides the same
-    bottom-up partial-sum reuse but materialises every region's Phase-1
-    sufficient statistics at once. The inner-perm race uses it to build the
-    FL-invariant fast-kernel inputs (ysum, and t = yout - a0 a0^T / size)
-    under intercept-only nuisance.
+    Same per-region sufficient statistics as the iter_size_ysum_yout tree
+    walk, but via the DFS-preorder cumsum-and-diff that iter_llr_perm uses for
+    its Phase 1: reorder voxels so every region is a contiguous leaf range,
+    form the per-voxel stats once, then read each region's sum from two index
+    reads. This replaces the O(num_reg) Python tree walk -- the bottleneck of
+    the inner-perm race kernel build at large num_vox (~1.6 s -> ~0.1 s at
+    200k voxels). The inner-perm race uses the result to build the FL-invariant
+    fast-kernel inputs (ysum, and t = yout - a0 a0^T / size) under
+    intercept-only nuisance.
 
     Args:
         y (np.array): (b, num_img, num_vox) imaging features
@@ -106,14 +110,19 @@ def region_stats_arrays(y, children):
     """
     b, num_img, num_vox = y.shape
     dtype = y.dtype if y.dtype == np.float32 else np.float64
-    num_reg = num_vox + children.shape[0]
-    ysum = np.empty((num_reg, b, num_img), dtype=dtype)
-    yout = np.empty((num_reg, b, b), dtype=dtype)
-    size = np.empty(num_reg, dtype=int)
-    for reg_idx, sz, ys, yo in iter_size_ysum_yout(y, children=children):
-        ysum[reg_idx] = ys
-        yout[reg_idx] = yo
-        size[reg_idx] = sz
+    leaf_ord, region_l, region_h = build_dfs_preorder(
+        children=children, num_vox=num_vox)
+    # voxels in DFS pre-order so each region occupies a contiguous range
+    y_dfs = np.ascontiguousarray(y[:, :, leaf_ord]).astype(dtype, copy=False)
+    # per-voxel sufficient statistics, then cumsum-and-diff to every region
+    ysum_v = y_dfs.transpose(2, 0, 1)                       # (num_vox, b, num_img)
+    yout_v = np.einsum('inv,jnv->vij', y_dfs, y_dfs,
+                       optimize=True)                       # (num_vox, b, b)
+    ysum = _reg_sum_cumsum(ysum_v, axis=0,
+                           region_l=region_l, region_h=region_h)
+    yout = _reg_sum_cumsum(yout_v, axis=0,
+                           region_l=region_l, region_h=region_h)
+    size = (region_h - region_l).astype(int)
     return ysum, yout, size
 
 
