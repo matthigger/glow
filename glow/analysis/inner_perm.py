@@ -38,6 +38,7 @@ no longer has a _full variant -- callers that need per-draw output
 materialize via np.vstack(list(glow.graph.iter_llr_perm(...))).
 """
 import numpy as np
+from scipy.special import ndtri
 
 import glow.graph
 from glow.analysis import mancova
@@ -231,16 +232,28 @@ def cpu_reliable(*, exp, base_seed: int, n_perm: int, q0, q1, children,
     return _welford_moments([draws], draws.shape[1])
 
 
-def _race_keep(llr_obs, mu, std, n, active, top_k: int, k_sigma: float):
-    """Pick the survivor set after the burn-in trim.
+def _race_keep(llr_obs, mu, std, n, active, p_keep_thresh: float):
+    """Pick the survivor set: regions that could still be the max-z region.
 
-    Keeps the top_k active regions by upper z-confidence-bound
-    z + k_sigma*se (se = sqrt((1 + z^2/2)/n), the delta-method SE of the
-    standardised z) and always retains the interim arg-max. Using the UPPER
-    bound, not the point z, means a borderline region with a noisy-low burn-in
-    estimate is not dropped -- the basis for the race's empirically lossless
-    power. Retaining the arg-max guarantees a non-empty survivor set whose max
-    equals the full-tree max, which is what keeps the FWER null exact.
+    Keep region r if its probability of beating the current leader L (the
+    interim arg-max of z) exceeds p_keep_thresh, under a normal model for each
+    region's true z: z_r ~ N(z_r_hat, se_r^2), se = sqrt((1 + z^2/2)/n) the
+    delta-method SE of the standardised z. With z_r, z_L independent that is
+
+        P(z_r > z_L) = Phi((z_r - z_L) / sqrt(se_r^2 + se_L^2)) > p_keep_thresh
+                   <=> (z_r - z_L) / sqrt(se_r^2 + se_L^2) > Phi^{-1}(p_keep_thresh).
+
+    This is a scale-free reparameterisation of a k-sigma band
+    (p_keep_thresh = Phi(-k_sigma)); the survivor COUNT adapts per perm instead
+    of being a fixed number, so it behaves consistently across num_vox. The
+    leader is always retained, guaranteeing a non-empty survivor set whose max
+    equals the full-tree max -- what keeps the FWER null exact.
+
+    Recall note: this anchors on the leader, so it protects observed
+    discoveries (regions above the FWER cutoff, which can sit well below the
+    leader) only while the burn-in SE is wide enough -- empirically recall is
+    1.0 at race_init=15, p_keep_thresh<=1e-6. A longer burn-in tightens the CIs
+    and would need a smaller p_keep_thresh to stay lossless.
 
     Args:
         llr_obs (np.array): (num_reg,) observed LLR for this outer-perm tree
@@ -248,8 +261,8 @@ def _race_keep(llr_obs, mu, std, n, active, top_k: int, k_sigma: float):
         std (np.array): (num_reg,) burn-in inner-null std
         n (np.array): (num_reg,) burn-in sample count per region
         active (np.array): (num_reg,) bool, size >= min_vox and finite llr
-        top_k (int): number of regions to keep by z-CI-upper bound
-        k_sigma (float): confidence multiplier on the SE
+        p_keep_thresh (float): keep regions with > this probability of beating
+            the leader (smaller => keep more)
 
     Returns:
         kept (np.array): (num_reg,) bool survivor mask
@@ -257,23 +270,23 @@ def _race_keep(llr_obs, mu, std, n, active, top_k: int, k_sigma: float):
     std_safe = np.where(std < 1e-12, 1.0, std)
     z = np.where(active & (n >= 2), (llr_obs - mu) / std_safe, np.nan)
     se = np.sqrt((1.0 + z ** 2 / 2.0) / np.maximum(n, 1.0))
-    ci_up = np.where(np.isfinite(z), z + k_sigma * se, -np.inf)
+    eligible = active & np.isfinite(z) & (n >= 2)
 
-    eligible = np.isfinite(ci_up)
     kept = np.zeros_like(active)
-    if eligible.sum() <= top_k:
-        kept = eligible.copy()
-    else:
-        thresh = np.partition(ci_up[eligible], -top_k)[-top_k]
-        kept = eligible & (ci_up >= thresh)
-    if np.isfinite(z).any():
-        kept[int(np.nanargmax(np.where(np.isfinite(z), z, -np.inf)))] = True
+    if not eligible.any():
+        return kept
+    lead = int(np.argmax(np.where(eligible, z, -np.inf)))
+    z_crit = ndtri(p_keep_thresh)              # Phi^{-1}(p), negative
+    denom = np.sqrt(se ** 2 + se[lead] ** 2)
+    denom = np.where(denom < 1e-12, 1e-12, denom)
+    kept = eligible & ((z - z[lead]) / denom > z_crit)
+    kept[lead] = True
     return kept
 
 
 def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
                   children, min_vox: int, race_init: int = 15,
-                  top_k: int = 1000, k_sigma: float = 3.0):
+                  p_keep_thresh: float = 1e-6):
     """Compute inner-perm (mu, std, kept) via the racing fast-kernel backend.
 
     The same fixed-budget statistic as cpu_perm, but inner FL draws are spent
@@ -281,7 +294,7 @@ def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
     only thing FWER's max-z null needs. The procedure is IDENTICAL on every
     outer perm (the caller must apply it to the observed perm too), which keeps
     the max-z statistics exchangeable and the FWER bound exact (Lehmann & Romano
-    Thm 15.2.1; Hemerik & Goeman 2018) -- so race_init / top_k / k_sigma are
+    Thm 15.2.1; Hemerik & Goeman 2018) -- so race_init / p_keep_thresh are
     speed/power knobs, never validity knobs.
 
     Three stages, all on the intercept-only fast kernel
@@ -290,8 +303,8 @@ def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
 
       1. Burn-in: race_init draws over all active regions -> per-region
          (mu, std, n) via the shared Welford accumulator.
-      2. Trim: keep the survivor set S (see _race_keep) -- top_k by
-         z-CI-upper plus the interim arg-max.
+      2. Trim: keep the survivor set S (see _race_keep) -- regions with
+         > p_keep_thresh probability of beating the interim leader.
       3. Tail: draw the remaining n_perm - race_init perms for S only, folding
          them into the same accumulator. Non-survivors stay frozen at their
          race_init samples (their mu/std are coarse but they are, by
@@ -314,8 +327,9 @@ def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
         children (np.array): (num_reg - num_vox, 2) Ward tree
         min_vox (int): regions smaller than this are left NaN / inactive
         race_init (int): burn-in draws over all regions before the trim
-        top_k (int): survivor-set size (by z-CI-upper bound)
-        k_sigma (float): confidence multiplier for the keep rule
+        p_keep_thresh (float): keep regions with > this probability of beating
+            the interim leader (scale-free; smaller keeps more). See
+            _race_keep for the recall/race_init coupling.
 
     Returns:
         mu (np.array): (num_reg,) inner-null mean (survivors: n_perm samples;
@@ -366,7 +380,7 @@ def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
 
     # Stage 2: trim to survivors using the burn-in moments.
     mu_b, std_b = _welford_finalize(n, mean, M2)
-    kept = _race_keep(llr_obs, mu_b, std_b, n, active, top_k, k_sigma)
+    kept = _race_keep(llr_obs, mu_b, std_b, n, active, p_keep_thresh)
 
     # Stage 3: draw survivors to n_perm.
     kept_idx = np.where(kept)[0]

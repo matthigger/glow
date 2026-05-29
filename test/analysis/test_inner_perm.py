@@ -273,7 +273,7 @@ def test_cpu_perm_race_keepall_matches_reliable(prep_intercept_fp64):
     mu_r, std_r, kept = inner_perm.cpu_perm_race(
         exp=prep['exp'], llr_obs=llr, base_seed=777, n_perm=24,
         q0=prep['q0'], q1=prep['q1'], children=prep['children'],
-        min_vox=prep['min_vox'], race_init=24, top_k=10 ** 9, k_sigma=3.0)
+        min_vox=prep['min_vox'], race_init=24, p_keep_thresh=0.0)
     mu_ref, std_ref = inner_perm.cpu_reliable(
         exp=prep['exp'], base_seed=777, n_perm=24, q0=prep['q0'],
         q1=prep['q1'], children=prep['children'], min_vox=prep['min_vox'])
@@ -299,10 +299,10 @@ def test_cpu_perm_race_maxz_matches_flat(prep_intercept_fp64):
 
     common = dict(exp=prep['exp'], llr_obs=llr, base_seed=99, n_perm=40,
                   q0=prep['q0'], q1=prep['q1'], children=prep['children'],
-                  min_vox=prep['min_vox'], k_sigma=3.0)
+                  min_vox=prep['min_vox'])
     mu_f, std_f, kept_f = inner_perm.cpu_perm_race(
-        race_init=40, top_k=10 ** 9, **common)
+        race_init=40, p_keep_thresh=0.0, **common)
     mu_r, std_r, kept_r = inner_perm.cpu_perm_race(
-        race_init=8, top_k=4, **common)
+        race_init=8, p_keep_thresh=1e-3, **common)
     assert abs(maxz(mu_f, std_f, kept_f) - maxz(mu_r, std_r, kept_r)) < 1e-9
     assert kept_r.sum() < kept_f.sum(), 'race did not trim the active set'

@@ -27,7 +27,7 @@ class AnalysisGLOW(Analysis):
     Each outer perm runs the SAME inner-perm race (including the observed
     k=0), so the per-perm max-z statistics stay exchangeable and the FWER
     bound is exact (Lehmann & Romano Thm 15.2.1; Hemerik & Goeman 2018):
-    race_init / race_top_k / race_k_sigma are speed/power knobs, never
+    race_init / race_p_keep_thresh are speed/power knobs, never
     validity knobs. The race needs the intercept-only fast kernel; under
     general (non-constant) nuisance it falls back to the full cpu_perm.
 
@@ -39,8 +39,8 @@ class AnalysisGLOW(Analysis):
         min_vox (int): smallest region size admitted to the FWER set
         cluster_mode (ClusterMode): Ward projection mode
         race_init (int): burn-in inner draws (all regions) before the trim
-        race_top_k (int): survivor-set size kept past the burn-in
-        race_k_sigma (float): confidence multiplier for the keep rule
+        race_p_keep_thresh (float): keep regions with > this probability of
+            being the per-perm max-z region (scale-free survivor threshold)
 
     Fit outputs (populated by fit, for the observed k=0 tree):
         children (np.array): (num_reg - num_vox, 2) Ward tree.
@@ -60,8 +60,7 @@ class AnalysisGLOW(Analysis):
     def __init__(self, exp, n_perm_fwer: int, n_perm_inner: int = 500,
                  alpha_fwer: float = .05, min_vox: int = 4,
                  cluster_mode: ClusterMode = ClusterMode.FOCUS,
-                 race_init: int = 15, race_top_k: int = 1000,
-                 race_k_sigma: float = 3.0):
+                 race_init: int = 15, race_p_keep_thresh: float = 1e-6):
         """Configure a GLOW analysis.
 
         Args:
@@ -76,9 +75,10 @@ class AnalysisGLOW(Analysis):
                 ClusterMode.NAIVE clusters raw y.
             race_init (int): burn-in inner draws over all regions before the
                 survivor trim.
-            race_top_k (int): number of survivors kept (by z-CI-upper) past
-                the burn-in; these are drawn out to n_perm_inner.
-            race_k_sigma (float): confidence multiplier on the keep rule's SE.
+            race_p_keep_thresh (float): keep regions with > this probability of
+                beating the interim leader past the burn-in; survivors are
+                drawn out to n_perm_inner. Scale-free; smaller keeps more.
+                Default 1e-6 (lossless at race_init=15 on HCP).
         """
         super().__init__(exp)
         self.n_perm_fwer = n_perm_fwer
@@ -87,8 +87,7 @@ class AnalysisGLOW(Analysis):
         self.min_vox = min_vox
         self.cluster_mode = cluster_mode
         self.race_init = race_init
-        self.race_top_k = race_top_k
-        self.race_k_sigma = race_k_sigma
+        self.race_p_keep_thresh = race_p_keep_thresh
 
         self._q0, self._q1, _ = decompose(x=self.exp.x,
                                           contrast=self.exp.contrast)
@@ -105,8 +104,7 @@ class AnalysisGLOW(Analysis):
     @classmethod
     def run_inner_perm(cls, exp, children, n_perm: int, *, llr, q0, q1,
                        min_vox: int = 4, base_seed: int = 0,
-                       race_init: int = 15, race_top_k: int = 1000,
-                       race_k_sigma: float = 3.0):
+                       race_init: int = 15, race_p_keep_thresh: float = 1e-6):
         """Compute per-region inner-null (mu, std) and the race survivor mask.
 
         Runs n_perm Freedman-Lane (Freedman & Lane 1983) inner draws against
@@ -128,8 +126,8 @@ class AnalysisGLOW(Analysis):
             min_vox (int): regions smaller than this are left NaN.
             base_seed (int): draw i uses seed base_seed + i.
             race_init (int): burn-in draws before the survivor trim.
-            race_top_k (int): survivor-set size.
-            race_k_sigma (float): keep-rule confidence multiplier.
+            race_p_keep_thresh (float): keep regions with > this probability of
+                beating the interim leader.
 
         Returns:
             mu (np.array): (num_reg,) inner-null mean per region
@@ -140,7 +138,7 @@ class AnalysisGLOW(Analysis):
             return inner_perm.cpu_perm_race(
                 exp=exp, llr_obs=llr, base_seed=base_seed, n_perm=n_perm,
                 q0=q0, q1=q1, children=children, min_vox=min_vox,
-                race_init=race_init, top_k=race_top_k, k_sigma=race_k_sigma)
+                race_init=race_init, p_keep_thresh=race_p_keep_thresh)
         mu, std = inner_perm.cpu_perm(
             exp=exp, base_seed=base_seed, n_perm=n_perm,
             q0=q0, q1=q1, children=children, min_vox=min_vox)
@@ -149,7 +147,7 @@ class AnalysisGLOW(Analysis):
     @classmethod
     def _run_outer(cls, exp, k: int, *, q0, q1, n_perm_inner: int,
                    min_vox: int, cluster_mode: ClusterMode,
-                   race_init: int, race_top_k: int, race_k_sigma: float):
+                   race_init: int, race_p_keep_thresh: float):
         """Run one outer perm: cluster, observed LLR, inner-perm race.
 
         Pure (no self, no shared state) so joblib workers can run it.
@@ -164,8 +162,7 @@ class AnalysisGLOW(Analysis):
         mu, std, kept = cls.run_inner_perm(
             _exp, children, n_perm_inner, llr=llr, q0=q0, q1=q1,
             min_vox=min_vox, base_seed=(k + 1) * _INNER_SEED_BLOCK,
-            race_init=race_init, race_top_k=race_top_k,
-            race_k_sigma=race_k_sigma)
+            race_init=race_init, race_p_keep_thresh=race_p_keep_thresh)
         return children, size, llr, mu, std, kept
 
     def fit(self, *, n_jobs: int = 1, verbose: bool = False):
@@ -197,8 +194,8 @@ class AnalysisGLOW(Analysis):
                 n_perm_inner=self.n_perm_inner,
                 min_vox=self.min_vox,
                 cluster_mode=self.cluster_mode,
-                race_init=self.race_init, race_top_k=self.race_top_k,
-                race_k_sigma=self.race_k_sigma)
+                race_init=self.race_init,
+                race_p_keep_thresh=self.race_p_keep_thresh)
             for k in range(n_total))
 
         for k, (children, size, llr, mu, std, kept) in enumerate(
