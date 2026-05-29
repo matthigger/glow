@@ -9,7 +9,7 @@ import glow.graph
 from ._base import Analysis
 from . import inner_perm
 from .cluster import cluster, ClusterMode
-from .mancova import decompose
+from .mancova import decompose, is_intercept_only_nuisance
 from .prune import prune_greedy
 
 
@@ -24,13 +24,23 @@ class AnalysisGLOW(Analysis):
     Westfall-Young FWER (Westfall & Young 1993) runs on the max-z null
     assembled across outer perms.
 
+    Each outer perm runs the SAME inner-perm race (including the observed
+    k=0), so the per-perm max-z statistics stay exchangeable and the FWER
+    bound is exact (Lehmann & Romano Thm 15.2.1; Hemerik & Goeman 2018):
+    race_init / race_top_k / race_k_sigma are speed/power knobs, never
+    validity knobs. The race needs the intercept-only fast kernel; under
+    general (non-constant) nuisance it falls back to the full cpu_perm.
+
     Operation parameters (set at __init__):
         exp (Experiment): source data (ExperimentScaled)
         n_perm_fwer (int): outer FL permutations feeding the max-z null
-        n_perm_inner (int): inner FL permutations per outer perm
+        n_perm_inner (int): inner FL permutations per outer perm (survivors)
         alpha_fwer (float): family-wise error rate
         min_vox (int): smallest region size admitted to the FWER set
         cluster_mode (ClusterMode): Ward projection mode
+        race_init (int): burn-in inner draws (all regions) before the trim
+        race_top_k (int): survivor-set size kept past the burn-in
+        race_k_sigma (float): confidence multiplier for the keep rule
 
     Fit outputs (populated by fit, for the observed k=0 tree):
         children (np.array): (num_reg - num_vox, 2) Ward tree.
@@ -39,15 +49,19 @@ class AnalysisGLOW(Analysis):
         mu (np.array): (num_reg,) inner-null mean per region.
         std (np.array): (num_reg,) inner-null std per region.
         z (np.array): (num_reg,) per-region z-score (llr - mu)/std.
+        kept (np.array): (num_reg,) bool, observed-tree race survivors; only
+            these regions can be discoveries (others are confidently below).
         max_z_null (np.array): (n_perm_fwer + 1,) max-z per outer perm,
             indexed by outer-perm number; max_z_null[0] is the observed.
         pval (np.array): (num_reg,) FWER-controlled p-values.
         effect_list (list): discovered EffectEstimate objects.
     """
 
-    def __init__(self, exp, n_perm_fwer: int, n_perm_inner: int = 200,
+    def __init__(self, exp, n_perm_fwer: int, n_perm_inner: int = 500,
                  alpha_fwer: float = .05, min_vox: int = 4,
-                 cluster_mode: ClusterMode = ClusterMode.FOCUS):
+                 cluster_mode: ClusterMode = ClusterMode.FOCUS,
+                 race_init: int = 15, race_top_k: int = 1000,
+                 race_k_sigma: float = 3.0):
         """Configure a GLOW analysis.
 
         Args:
@@ -60,6 +74,11 @@ class AnalysisGLOW(Analysis):
                 ClusterMode.FOCUS projects onto the contrast subspace;
                 ClusterMode.GLM_ERROR keeps bias + contrast;
                 ClusterMode.NAIVE clusters raw y.
+            race_init (int): burn-in inner draws over all regions before the
+                survivor trim.
+            race_top_k (int): number of survivors kept (by z-CI-upper) past
+                the burn-in; these are drawn out to n_perm_inner.
+            race_k_sigma (float): confidence multiplier on the keep rule's SE.
         """
         super().__init__(exp)
         self.n_perm_fwer = n_perm_fwer
@@ -67,6 +86,9 @@ class AnalysisGLOW(Analysis):
         self.alpha_fwer = alpha_fwer
         self.min_vox = min_vox
         self.cluster_mode = cluster_mode
+        self.race_init = race_init
+        self.race_top_k = race_top_k
+        self.race_k_sigma = race_k_sigma
 
         self._q0, self._q1, _ = decompose(x=self.exp.x,
                                           contrast=self.exp.contrast)
@@ -77,54 +99,74 @@ class AnalysisGLOW(Analysis):
         self.mu = None
         self.std = None
         self.z = None
+        self.kept = None
         self.max_z_null = None
 
     @classmethod
-    def run_inner_perm(cls, exp, children, n_perm: int, *, q0, q1,
-                       min_vox: int = 4, base_seed: int = 0):
-        """Compute per-region inner-null mean and std from FL draws.
+    def run_inner_perm(cls, exp, children, n_perm: int, *, llr, q0, q1,
+                       min_vox: int = 4, base_seed: int = 0,
+                       race_init: int = 15, race_top_k: int = 1000,
+                       race_k_sigma: float = 3.0):
+        """Compute per-region inner-null (mu, std) and the race survivor mask.
 
-        Runs n_perm Freedman-Lane (Freedman & Lane 1983) draws against
-        the given Ward tree.
+        Runs n_perm Freedman-Lane (Freedman & Lane 1983) inner draws against
+        the given Ward tree. Under intercept-only nuisance this rides the
+        racing fast-kernel backend (inner_perm.cpu_perm_race): a burn-in over
+        all regions, then the remaining draws on survivors only. Under general
+        nuisance the fast kernel does not apply, so it falls back to the full
+        cpu_perm and marks every active region a survivor.
 
         Args:
             exp (Experiment): pre-permute if drawing against an
                 outer-permuted tree.
             children (np.array): (num_reg - num_vox, 2) Ward tree.
-            n_perm (int): number of inner FL draws.
+            n_perm (int): number of inner FL draws (for survivors).
+            llr (np.array): (num_reg,) observed LLR for this tree; the race
+                scores z = (llr - mu)/std to choose survivors.
             q0 (np.array): (a0, num_img) nuisance subspace.
             q1 (np.array): (a1, num_img) interest subspace.
             min_vox (int): regions smaller than this are left NaN.
             base_seed (int): draw i uses seed base_seed + i.
+            race_init (int): burn-in draws before the survivor trim.
+            race_top_k (int): survivor-set size.
+            race_k_sigma (float): keep-rule confidence multiplier.
 
         Returns:
             mu (np.array): (num_reg,) inner-null mean per region
             std (np.array): (num_reg,) inner-null std per region
+            kept (np.array): (num_reg,) bool survivor mask
         """
-        return inner_perm.cpu_perm(
+        if is_intercept_only_nuisance(exp.x, exp.contrast):
+            return inner_perm.cpu_perm_race(
+                exp=exp, llr_obs=llr, base_seed=base_seed, n_perm=n_perm,
+                q0=q0, q1=q1, children=children, min_vox=min_vox,
+                race_init=race_init, top_k=race_top_k, k_sigma=race_k_sigma)
+        mu, std = inner_perm.cpu_perm(
             exp=exp, base_seed=base_seed, n_perm=n_perm,
-            q0=q0, q1=q1, children=children,
-            min_vox=min_vox)
+            q0=q0, q1=q1, children=children, min_vox=min_vox)
+        return mu, std, np.isfinite(mu)
 
     @classmethod
     def _run_outer(cls, exp, k: int, *, q0, q1, n_perm_inner: int,
-                   min_vox: int, cluster_mode: ClusterMode):
-        """Run one outer perm: cluster, observed LLR, inner-perm mu/std.
+                   min_vox: int, cluster_mode: ClusterMode,
+                   race_init: int, race_top_k: int, race_k_sigma: float):
+        """Run one outer perm: cluster, observed LLR, inner-perm race.
 
         Pure (no self, no shared state) so joblib workers can run it.
-        Returns (children, size, llr, mu, std) for outer-perm index k:
-        children is (num_reg - num_vox, 2); size, llr, mu, std are each
+        Returns (children, size, llr, mu, std, kept) for outer-perm index k:
+        children is (num_reg - num_vox, 2); size, llr, mu, std, kept are each
         (num_reg,).
         """
         _exp = exp.permute(k) if k else exp
         children = cluster(_exp, mode=cluster_mode)
         llr, size = glow.graph.compute_llr_batched(
             _exp, children=children, q0=q0, q1=q1)
-        mu, std = cls.run_inner_perm(
-            _exp, children, n_perm_inner, q0=q0, q1=q1,
-            min_vox=min_vox,
-            base_seed=(k + 1) * _INNER_SEED_BLOCK)
-        return children, size, llr, mu, std
+        mu, std, kept = cls.run_inner_perm(
+            _exp, children, n_perm_inner, llr=llr, q0=q0, q1=q1,
+            min_vox=min_vox, base_seed=(k + 1) * _INNER_SEED_BLOCK,
+            race_init=race_init, race_top_k=race_top_k,
+            race_k_sigma=race_k_sigma)
+        return children, size, llr, mu, std, kept
 
     def fit(self, *, n_jobs: int = 1, verbose: bool = False):
         """Run the analysis and return self.
@@ -154,10 +196,12 @@ class AnalysisGLOW(Analysis):
                 self.exp, k, q0=self._q0, q1=self._q1,
                 n_perm_inner=self.n_perm_inner,
                 min_vox=self.min_vox,
-                cluster_mode=self.cluster_mode)
+                cluster_mode=self.cluster_mode,
+                race_init=self.race_init, race_top_k=self.race_top_k,
+                race_k_sigma=self.race_k_sigma)
             for k in range(n_total))
 
-        for k, (children, size, llr, mu, std) in enumerate(
+        for k, (children, size, llr, mu, std, kept) in enumerate(
                 tqdm(results, total=n_total, desc='outer perms',
                      disable=not verbose)):
 
@@ -165,9 +209,12 @@ class AnalysisGLOW(Analysis):
             z = np.nan_to_num((llr - mu) / std_safe,
                               nan=0.0, posinf=0.0, neginf=np.nan)
 
-            active = size >= self.min_vox
-            if active.any() and np.isfinite(z[active]).any():
-                self.max_z_null[k] = float(np.nanmax(z[active]))
+            # Max-z is taken over the race survivors only: by construction
+            # the survivor set contains the true max, and a dropped region's
+            # frozen (coarse) z must not be allowed to win the max.
+            consider = (size >= self.min_vox) & kept
+            if consider.any() and np.isfinite(z[consider]).any():
+                self.max_z_null[k] = float(np.nanmax(z[consider]))
             else:
                 self.max_z_null[k] = float('-inf')
 
@@ -178,6 +225,7 @@ class AnalysisGLOW(Analysis):
                 self.mu = mu
                 self.std = std
                 self.z = z
+                self.kept = kept
 
         if verbose:
             print('  [2/2] FWER synthesis ...')
@@ -197,7 +245,11 @@ class AnalysisGLOW(Analysis):
         n_null = len(null_sorted)
         num_reg = self.llr.shape[0]
 
-        reg_active = self.size >= self.min_vox
+        # Only race survivors are candidate discoveries: dropped regions were
+        # confidently below the max (hence below the FWER threshold) and carry
+        # only coarse burn-in z. Restricting here keeps discoveries ⊆ kept,
+        # which is what the exact-FWER argument bounds.
+        reg_active = (self.size >= self.min_vox) & self.kept
         if not reg_active.any():
             self.pval = np.full(num_reg, fill_value=np.nan)
         else:
