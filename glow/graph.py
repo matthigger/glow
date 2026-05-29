@@ -86,6 +86,37 @@ def iter_size_ysum_yout(y, children=None):
         yield reg_idx, size, ysum, yout
 
 
+def region_stats_arrays(y, children):
+    """Collect per-region (ysum, yout, size) into arrays via one tree walk.
+
+    Array-collecting wrapper over iter_size_ysum_yout: rides the same
+    bottom-up partial-sum reuse but materialises every region's Phase-1
+    sufficient statistics at once. The inner-perm race uses it to build the
+    FL-invariant fast-kernel inputs (ysum, and t = yout - a0 a0^T / size)
+    under intercept-only nuisance.
+
+    Args:
+        y (np.array): (b, num_img, num_vox) imaging features
+        children (np.array): (num_reg - num_vox, 2) Ward tree
+
+    Returns:
+        ysum (np.array): (num_reg, b, num_img) per-region image sum
+        yout (np.array): (num_reg, b, b) per-region sum of y_v @ y_v.T
+        size (np.array): (num_reg,) int voxel count per region
+    """
+    b, num_img, num_vox = y.shape
+    dtype = y.dtype if y.dtype == np.float32 else np.float64
+    num_reg = num_vox + children.shape[0]
+    ysum = np.empty((num_reg, b, num_img), dtype=dtype)
+    yout = np.empty((num_reg, b, b), dtype=dtype)
+    size = np.empty(num_reg, dtype=int)
+    for reg_idx, sz, ys, yo in iter_size_ysum_yout(y, children=children):
+        ysum[reg_idx] = ys
+        yout[reg_idx] = yo
+        size[reg_idx] = sz
+    return ysum, yout, size
+
+
 def iter_mancova(exp, **kwargs):
     """Yield region-level MANCOVA statistics (E, H), one pair per region.
 
@@ -231,6 +262,41 @@ def _slogdet_batched(M):
         with np.errstate(divide='ignore'):
             return np.sign(det), np.log(np.abs(det))
     return np.linalg.slogdet(M)
+
+
+def compute_llr_inner_fast(t, ysum, size, q1_T_perm):
+    """Compute per-region LLR from FL-invariant (t, ysum) and a permuted q1.T.
+
+    Phase-2-only LLR kernel for the inner Freedman-Lane loop under
+    intercept-only nuisance (mancova.is_intercept_only_nuisance). There the
+    nuisance projector commutes with every permutation, so ysum and
+    t = yout - a0 a0^T / size (a0 = ysum Q0^T) are permutation-invariant: each
+    draw reduces to forming the hypothesis term H from a row-permuted q1.T plus
+    one batched 2x2 slogdet, with no Phase-1 rebuild per draw. The caller
+    pre-slices (t, ysum, size) to the region subset it wants scored -- the
+    inner-perm race passes only its survivor set, making the per-draw cost
+    scale with the number of survivors rather than num_reg.
+
+    Args:
+        t (np.array): (num_reg, b, b) precomputed yout - a0 a0^T / size
+        ysum (np.array): (num_reg, b, num_img) per-region image sum
+        size (np.array): (num_reg,) voxel count per region
+        q1_T_perm (np.array): (num_img, a1) q1.T with rows permuted by the FL
+            draw -- equals (freed_lane @ q1.T) under intercept-only nuisance
+
+    Returns:
+        llr (np.array): (num_reg,) LLR per region. NaN where E or E + H is not
+            positive-definite (matches the sign-check short-circuit in get_llr).
+    """
+    dtype = ysum.dtype if ysum.dtype == np.float32 else np.float64
+    sz = size.astype(dtype)[:, None, None]
+    a1 = np.einsum('rbn,nv->rbv', ysum, q1_T_perm, optimize=True)
+    h = np.einsum('rbv,rcv->rbc', a1, a1, optimize=True) / sz
+    e = t - h
+    sign_eh, ld_eh = _slogdet_batched(e + h)
+    sign_e, ld_e = _slogdet_batched(e)
+    valid = (sign_eh > 0) & (sign_e > 0)
+    return np.where(valid, 0.5 * size * (ld_eh - ld_e), np.nan)
 
 
 def build_dfs_preorder(children, num_vox: int):
