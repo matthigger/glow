@@ -336,28 +336,33 @@ def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
     q1_T = q1.T.astype(dtype, copy=False)
     active = (size >= min_vox) & np.isfinite(llr_obs)
 
-    def draw(i, idx):
-        # argsort(_perm_indices) matches the FL convention iter_llr_perm /
-        # cpu_reliable use (verified to fp round-off), so race draws are valid
-        # inner-null samples.
-        perm = np.argsort(permute._perm_indices(base_seed + i, num_img))
-        return glow.graph.compute_llr_inner_fast(
-            t[idx], ysum[idx], size[idx], q1_T[perm, :])
-
-    def fold(idx, llr_idx, n, mean, M2):
-        chunk = np.full((1, num_reg), np.nan)
-        chunk[0, idx] = llr_idx
-        return _welford_combine(chunk, n, mean, M2)
-
     n = np.zeros(num_reg, dtype=np.float64)
     mean = np.zeros(num_reg, dtype=np.float64)
     M2 = np.zeros(num_reg, dtype=np.float64)
 
+    def accumulate(idx, draw_range):
+        # Per-draw Welford (Chan's rule at n_b=1) restricted to idx, updated
+        # in place: cost scales with |idx|, so the tail touches only
+        # survivors instead of a full num_reg-wide chunk per draw.
+        for i in draw_range:
+            # argsort(_perm_indices) matches the FL convention iter_llr_perm /
+            # cpu_reliable use (verified to fp round-off), so race draws are
+            # valid inner-null samples.
+            perm = np.argsort(permute._perm_indices(base_seed + i, num_img))
+            x = glow.graph.compute_llr_inner_fast(
+                t[idx], ysum[idx], size[idx], q1_T[perm, :])
+            fin = np.isfinite(x)
+            sub = idx[fin]
+            xv = x[fin]
+            n[sub] += 1.0
+            delta = xv - mean[sub]
+            mean[sub] += delta / n[sub]
+            M2[sub] += delta * (xv - mean[sub])
+
     # Stage 1: burn-in over all active regions.
     act_idx = np.where(active)[0]
     burn = min(race_init, n_perm)
-    for i in range(burn):
-        n, mean, M2 = fold(act_idx, draw(i, act_idx), n, mean, M2)
+    accumulate(act_idx, range(burn))
 
     # Stage 2: trim to survivors using the burn-in moments.
     mu_b, std_b = _welford_finalize(n, mean, M2)
@@ -366,8 +371,7 @@ def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
     # Stage 3: draw survivors to n_perm.
     kept_idx = np.where(kept)[0]
     if kept_idx.size:
-        for i in range(burn, n_perm):
-            n, mean, M2 = fold(kept_idx, draw(i, kept_idx), n, mean, M2)
+        accumulate(kept_idx, range(burn, n_perm))
 
     mu, std = _welford_finalize(n, mean, M2)
     return mu, std, kept
