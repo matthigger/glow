@@ -159,6 +159,63 @@ def test_happy_path_single_tier(tmp_path):
     assert set(cache._load_results().index.astype(str)) == set(hashes)
 
 
+def test_success_deletes_s3_objects(tmp_path):
+    """Each succeeded trial's job + result pickles are dropped from S3."""
+    cache = _make_cache(tmp_path, n_trials=3)
+    trials = list(cache.iter_trial_no_repeat())
+    hashes = [stable_hash(t) for t in trials]
+
+    fake_s3 = FakeS3()
+    _seed_results(
+        fake_s3, bucket='b', prefix='pre', manifest=hashes,
+        results=[{'shape': 'x', 'seed': i} for i in range(3)])
+
+    fake_batch = FakeBatch(submit_then=[[{'status': 'SUCCEEDED'}] * 3])
+
+    with patch('glow.aws.driver.boto3.client',
+               side_effect=lambda kind, **_:
+               fake_s3 if kind == 's3' else fake_batch):
+        driver_aws(cache, _run_fnc, _cfg(), verbose=False)
+
+    # Both job.pkl and result.pkl are gone for every trial.
+    for h in hashes:
+        assert ('b', f'pre/jobs/{h}/job.pkl') not in fake_s3.store
+        assert ('b', f'pre/jobs/{h}/result.pkl') not in fake_s3.store
+    deleted = {key for kind, _, key in fake_s3.calls if kind == 'delete'}
+    assert deleted == {f'pre/jobs/{h}/{name}'
+                       for h in hashes for name in ('job.pkl', 'result.pkl')}
+
+
+def test_failed_trial_objects_are_not_deleted(tmp_path):
+    """A non-OOM failure leaves its S3 objects in place (no delete)."""
+    cache = _make_cache(tmp_path, n_trials=2)
+    trials = list(cache.iter_trial_no_repeat())
+    hashes = [stable_hash(t) for t in trials]
+
+    fake_s3 = FakeS3()
+    _seed_results(
+        fake_s3, bucket='b', prefix='pre', manifest=hashes,
+        results=[{'shape': 'x', 'seed': 0}, {'shape': 'x', 'seed': 1}])
+
+    # Child 0 fails (non-OOM), child 1 succeeds.
+    fake_batch = FakeBatch(submit_then=[
+        [{'status': 'FAILED',
+          'container': {'exitCode': 1, 'reason': 'application error'}},
+         {'status': 'SUCCEEDED'}],
+    ])
+
+    with patch('glow.aws.driver.boto3.client',
+               side_effect=lambda kind, **_:
+               fake_s3 if kind == 's3' else fake_batch):
+        driver_aws(cache, _run_fnc, _cfg(), verbose=False)
+
+    deleted = {key for kind, _, key in fake_s3.calls if kind == 'delete'}
+    # Only the succeeded trial (child 1) is cleaned up.
+    assert f'pre/jobs/{hashes[1]}/result.pkl' in deleted
+    assert f'pre/jobs/{hashes[0]}/result.pkl' not in deleted
+    assert f'pre/jobs/{hashes[0]}/job.pkl' not in deleted
+
+
 def test_oom_escalation(tmp_path):
     cache = _make_cache(tmp_path, n_trials=2)
     trials = list(cache.iter_trial_no_repeat())

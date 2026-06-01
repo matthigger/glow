@@ -46,6 +46,12 @@ class FakeS3:
                 'HeadObject')
         return {}
 
+    def delete_objects(self, *, Bucket, Delete):
+        for obj in Delete['Objects']:
+            self.calls.append(('delete', Bucket, obj['Key']))
+            self.store.pop((Bucket, obj['Key']), None)
+        return {}
+
 
 def _wgn():
     DataSource._exp_cache.clear()

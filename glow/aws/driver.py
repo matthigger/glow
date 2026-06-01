@@ -13,6 +13,11 @@ every cache's trials up front, then polls all the array jobs together
 draining one cache to completion before the next is submitted.
 driver_aws is the single-cache wrapper over it.
 
+Each trial's result is downloaded, saved, and deleted from S3 the moment
+that trial reaches a terminal state in the poll loop — not after the
+whole tier finishes — so results land as soon as they are ready and the
+bucket only ever holds the still-in-flight trials.
+
 Result-key keying uses stable_hash(trial) on the ORIGINAL trial, not the
 S3-wrapped worker variant, so AWS and local runs write the same row hash
 and share one results.csv.
@@ -119,6 +124,17 @@ def driver_aws_multi(jobs, aws_config, verbose: bool = True) -> None:
     remaining_by_label: Dict[str, List[str]] = {
         label: list(pending) for label, pending in pending_by_label.items()}
 
+    # Invoked by _poll_attempts the first sweep a child reaches a terminal
+    # state: download + save + drop each SUCCEEDED trial right away rather
+    # than waiting for the whole tier. Failures fall through to _classify.
+    def on_complete(attempt: '_Attempt', trial_hash: str, job: dict) -> None:
+        if job.get('status') != 'SUCCEEDED':
+            return
+        result = _download_result(s3, aws_config, trial_hash)
+        cache_by_label[attempt.label].save_result(
+            result, pending_by_label[attempt.label][trial_hash])
+        _delete_trial_objects(s3, aws_config, trial_hash)
+
     for tier_idx, mem_mb in enumerate(aws_config.memory_mb_tiers):
         active = {label: rem for label, rem in remaining_by_label.items()
                   if rem}
@@ -139,23 +155,18 @@ def driver_aws_multi(jobs, aws_config, verbose: bool = True) -> None:
 
         statuses_per_attempt = _poll_attempts(
             batch=batch, attempts=attempts,
-            poll_seconds=aws_config.poll_seconds, verbose=verbose)
+            poll_seconds=aws_config.poll_seconds, verbose=verbose,
+            on_complete=on_complete)
 
-        # Classify each attempt and route its results to the right cache.
+        # Successes were already downloaded + saved by on_complete; here we
+        # only route the failures. A not-OOM failure (timeout, crash, bad
+        # image) is permanent: only OOM children retry at the next tier.
         oom_by_label: Dict[str, List[Tuple[str, str]]] = {
             label: [] for label in active}
         for attempt, statuses in zip(attempts, statuses_per_attempt):
-            completed, oom_failed, other_failed = _classify(
-                statuses, attempt.manifest)
-            label = attempt.label
-            for h in completed:
-                result = _download_result(s3, aws_config, h)
-                cache_by_label[label].save_result(
-                    result, pending_by_label[label][h])
-            # A not-OOM failure (timeout, crash, bad image) is permanent:
-            # only OOM children are eligible to retry at the next tier.
-            failures_by_label[label].extend(other_failed)
-            oom_by_label[label].extend(oom_failed)
+            _, oom_failed, other_failed = _classify(statuses, attempt.manifest)
+            failures_by_label[attempt.label].extend(other_failed)
+            oom_by_label[attempt.label].extend(oom_failed)
 
         for label in active:
             if is_last:
@@ -398,7 +409,8 @@ def _submit_job(*, batch, aws_config, run_id: str, manifest_uri: str,
 
 
 def _poll_attempts(*, batch, attempts: List['_Attempt'],
-                   poll_seconds: float, verbose: bool):
+                   poll_seconds: float, verbose: bool,
+                   on_complete: 'Callable | None' = None):
     """Block until every child of every attempt reaches a terminal state.
 
     All attempts are polled in one describe_jobs sweep per interval and
@@ -410,6 +422,11 @@ def _poll_attempts(*, batch, attempts: List['_Attempt'],
         attempts (list): _Attempt records to wait on.
         poll_seconds (float): sleep between describe_jobs sweeps.
         verbose (bool): show one tqdm bar per attempt.
+        on_complete (Callable | None): if given, called once per child the
+            first sweep it reaches a terminal state, as
+            on_complete(attempt, trial_hash, job) and before that child's
+            bar advances. Lets the caller download + drop each result as it
+            lands instead of after the whole tier finishes.
 
     Returns:
         statuses_per_attempt (list): aligned with attempts; each element is
@@ -422,7 +439,8 @@ def _poll_attempts(*, batch, attempts: List['_Attempt'],
     bars = [tqdm(total=len(a.manifest), desc=a.label, position=i,
                  disable=not verbose)
             for i, a in enumerate(attempts)]
-    last_done = [0] * len(attempts)
+    # Child indices per attempt already handed to on_complete + counted.
+    handled: List[set] = [set() for _ in attempts]
 
     while True:
         # describe_jobs takes max 100 ids per call
@@ -433,12 +451,20 @@ def _poll_attempts(*, batch, attempts: List['_Attempt'],
 
         all_done = True
         for i, a in enumerate(attempts):
-            done = sum(1 for cid in a.child_ids
-                       if statuses.get(cid, {}).get('status') in terminal)
-            if done > last_done[i]:
-                bars[i].update(done - last_done[i])
-                last_done[i] = done
-            if done < len(a.manifest):
+            newly = 0
+            for idx, cid in enumerate(a.child_ids):
+                if idx in handled[i]:
+                    continue
+                job = statuses.get(cid, {})
+                if job.get('status') not in terminal:
+                    continue
+                handled[i].add(idx)
+                newly += 1
+                if on_complete is not None:
+                    on_complete(a, a.manifest[idx], job)
+            if newly:
+                bars[i].update(newly)
+            if len(handled[i]) < len(a.manifest):
                 all_done = False
 
         if all_done:
@@ -540,6 +566,27 @@ def _download_result(s3, aws_config, trial_hash: str):
         Bucket=aws_config.s3_bucket,
         Key=_result_key(aws_config.s3_prefix, trial_hash))['Body'].read()
     return cloudpickle.loads(body)
+
+
+def _delete_trial_objects(s3, aws_config, trial_hash: str) -> None:
+    """Delete one succeeded trial's job + result pickles from S3.
+
+    Called once a trial's result is downloaded and saved, so the bucket
+    only ever holds the still-in-flight trials. Safe because a SUCCEEDED
+    trial is never resubmitted (only OOM children retry at the next tier).
+
+    Args:
+        s3: boto3 S3 client.
+        aws_config (AWSConfig): supplies the S3 bucket and prefix.
+        trial_hash (str): the trial whose input + result objects to remove.
+    """
+    prefix = aws_config.s3_prefix
+    s3.delete_objects(
+        Bucket=aws_config.s3_bucket,
+        Delete={'Objects': [
+            {'Key': _job_key(prefix, trial_hash)},
+            {'Key': _result_key(prefix, trial_hash)},
+        ]})
 
 
 def _print_summary(label: str, pending: Dict[str, dict],
