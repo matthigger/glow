@@ -66,7 +66,7 @@ def _compute_adj_thresh(ana_glow):
 
 def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
                   selected_reg=None, plot_tree=True,
-                  log_y=False, target_stats=None):
+                  log_y=False, target_stats=None, min_vox=0):
     """Build an interactive Plotly scatter figure.
 
     Args:
@@ -81,6 +81,12 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
         target_stats (dict|None): stats for the full target mask (from
             ``compute_target_stats``).  When both axes have finite values,
             a star marker is drawn at the target's position.
+        min_vox (int): scatter only regions with at least this many voxels
+            (n_voxel >= min_vox); 0 (default) scatters every region.  Large
+            trees have one point per region (num_vox leaves + internal nodes),
+            so a size cut keeps the figure responsive.  Hidden regions also
+            drop their tree edges, since an edge is drawn only between two
+            visible endpoints.
 
     Returns:
         fig (go.Figure): Plotly figure with clickable scatter
@@ -105,6 +111,11 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
         vis = np.isfinite(y) & (y > 0)
     else:
         vis = np.ones(len(y), dtype=bool)
+
+    # size gate: drop regions below min_vox (aligned to _df, which is sorted
+    # by region_idx) so large trees stay responsive
+    if min_vox and min_vox > 1:
+        vis &= _df['n_voxel'].values >= min_vox
 
     fig = go.Figure()
 

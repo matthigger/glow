@@ -80,10 +80,17 @@ def _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
               'borderRight': '1px solid #ddd', 'flexShrink': '0'})
 
 
-def _region_panel(num_reg):
-    """Build the left-hand region selection panel (shared by 2D and 3D)."""
-    region_options = [{'label': f'Region {i}', 'value': i}
-                      for i in range(num_reg)]
+def _region_panel(region_ids):
+    """Build the left-hand region selection panel (shared by 2D and 3D).
+
+    Args:
+        region_ids (np.array): (n_display,) int region indices to offer in
+            the 'Add by index' lookup dropdown.  Restricted to the displayed
+            (size >= min_vox) regions so the dropdown stays responsive on
+            large trees -- it matches the set scattered above.
+    """
+    region_options = [{'label': f'Region {int(i)}', 'value': int(i)}
+                      for i in region_ids]
     return html.Div([
         html.Label('Selected regions',
                    style={'fontWeight': 'bold', 'fontSize': '13px'}),
@@ -367,7 +374,7 @@ def _defaults(generic_cols, sig_cols, prune_cols, mask_cols):
 
 def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                     slicer0, slicer1, slicer2,
-                    x_names=None, y_names=None, num_reg=0,
+                    x_names=None, y_names=None, region_ids=None,
                     default_reg_x=0, num_img=0, feat_names=None,
                     subject_names=None):
     """Build layout for 3D data (with dash-slicer ortho views)."""
@@ -436,7 +443,7 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
 
         # --- IMAGE + REGRESSION (side by side) ---
         html.Div(id='lower-panel', children=[
-            _region_panel(num_reg),
+            _region_panel(region_ids),
 
             # center: three linked ortho slicers
             html.Div([
@@ -488,7 +495,7 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
 
 
 def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
-                    x_names=None, y_names=None, num_reg=0,
+                    x_names=None, y_names=None, region_ids=None,
                     default_reg_x=0, num_img=0, subject_names=None):
     """Build layout for 2D data (single go.Image view)."""
     all_cols, default_x, default_y, log_val, default_color = _defaults(
@@ -531,7 +538,7 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
         # --- IMAGE + REGRESSION (side by side) ---
         html.Div(id='lower-panel', children=[
             # left panel: region selection (aligned with controls column)
-            _region_panel(num_reg),
+            _region_panel(region_ids),
 
             # center: IMAGE with dropdowns below title
             html.Div([
@@ -584,7 +591,7 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
 # ---------------------------------------------------------------------------
 
 def _create_app(ana_glow, mask_target=None, y_features=None,
-                subject_names=None, extra_df=None,
+                subject_names=None, extra_df=None, min_vox=None,
                 url_base_pathname=None, server=None):
     """Create and wire up the Dash app.
 
@@ -597,6 +604,11 @@ def _create_app(ana_glow, mask_target=None, y_features=None,
             (auto-extracted from ``exp.meta['subjects']`` when *None*).
         extra_df (pd.DataFrame | None): optional extra per-region data
             (keyed on ``region_idx``) merged into the scatter DataFrame.
+        min_vox (int | None): scatter (and offer in the lookup dropdown)
+            only regions with at least this many voxels.  None or 0 shows
+            every region -- callers that want the gentle large-tree default
+            should resolve it via launch().  No prompting happens here, so
+            this stays safe for the headless multi-demo web server.
         url_base_pathname (str | None): when serving under a path prefix
             on a shared Flask server (e.g. ``"/wgn2d/"``).  Default *None*
             serves at the root.
@@ -607,6 +619,7 @@ def _create_app(ana_glow, mask_target=None, y_features=None,
     Returns:
         app (Dash): configured Dash application
     """
+    min_vox = int(min_vox or 0)
     meta = getattr(ana_glow.exp, 'meta', {})
     if y_features is None:
         y_features = meta.get('features')
@@ -637,20 +650,41 @@ def _create_app(ana_glow, mask_target=None, y_features=None,
         _setup_3d(app, ana_glow, df,
                   generic_cols, sig_cols, prune_cols, mask_cols,
                   y_features=y_features, subject_names=subject_names,
-                  target_stats=target_stats, target_vox=target_vox)
+                  target_stats=target_stats, target_vox=target_vox,
+                  min_vox=min_vox)
     else:
         _setup_2d(app, ana_glow, df,
                   generic_cols, sig_cols, prune_cols, mask_cols,
                   y_features=y_features, subject_names=subject_names,
-                  target_stats=target_stats, target_vox=target_vox)
+                  target_stats=target_stats, target_vox=target_vox,
+                  min_vox=min_vox)
 
     return app
+
+
+def _display_region_ids(ana_glow, min_vox):
+    """Return the region indices to display (scatter + lookup dropdown).
+
+    Keeps regions with size >= min_vox.  When min_vox is 0/1 (no cut) every
+    region is returned, so the lookup dropdown matches the scattered set.
+
+    Args:
+        ana_glow (AnalysisGLOW): completed analysis (for size + tree shape).
+        min_vox (int): minimum region size in voxels; 0/1 means no cut.
+
+    Returns:
+        region_ids (np.array): (n_display,) int region indices, ascending.
+    """
+    num_reg = ana_glow.exp.y.shape[2] + ana_glow.children.shape[0]
+    if not min_vox or min_vox <= 1:
+        return np.arange(num_reg)
+    return np.flatnonzero(ana_glow.size >= min_vox)
 
 
 def _setup_3d(app, ana_glow, df,
               generic_cols, sig_cols, prune_cols, mask_cols,
               y_features=None, subject_names=None,
-              target_stats=None, target_vox=None):
+              target_stats=None, target_vox=None, min_vox=0):
     """Set up the app for 3D data using dash-slicer."""
     from dash_slicer import VolumeSlicer
 
@@ -683,7 +717,7 @@ def _setup_3d(app, ana_glow, df,
 
     b = ana_glow.exp.y.shape[0]
     num_img = ana_glow.exp.y.shape[1]
-    num_reg = ana_glow.exp.y.shape[2] + ana_glow.children.shape[0]
+    region_ids = _display_region_ids(ana_glow, min_vox)
     if y_features is None:
         feat_names = [f'feature {i}' for i in range(b)]
     else:
@@ -691,7 +725,7 @@ def _setup_3d(app, ana_glow, df,
     app.layout = _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                                  slicer0, slicer1, slicer2,
                                  x_names=x_names, y_names=y_names,
-                                 num_reg=num_reg,
+                                 region_ids=region_ids,
                                  default_reg_x=default_reg_x,
                                  num_img=num_img, feat_names=feat_names,
                                  subject_names=subject_names)
@@ -707,7 +741,7 @@ def _setup_3d(app, ana_glow, df,
 
     # --- shared callbacks ---
     _register_scatter_callback(app, df, ana_glow,
-                               target_stats=target_stats)
+                               target_stats=target_stats, min_vox=min_vox)
     _register_selection_callback(app, ana_glow,
                                  mask_target_img=mask_target_img)
     _register_checklist_sync_callback(app, df,
@@ -854,7 +888,7 @@ def _build_overlay(slicer, label_map, visible_list, color_map,
 def _setup_2d(app, ana_glow, df,
               generic_cols, sig_cols, prune_cols, mask_cols,
               y_features=None, subject_names=None,
-              target_stats=None, target_vox=None):
+              target_stats=None, target_vox=None, min_vox=0):
     """Set up the app for 2D data using Plotly go.Image."""
     mask_idx = ana_glow.exp.mask_idx
     bg_dict = compute_backgrounds(ana_glow, y_features=y_features)
@@ -864,12 +898,12 @@ def _setup_2d(app, ana_glow, df,
     _, x_names, default_reg_x = _get_x_labels(ana_glow.exp)
     y_names = _get_y_labels(ana_glow.exp, y_features=y_features)
 
-    num_reg = ana_glow.exp.y.shape[2] + ana_glow.children.shape[0]
+    region_ids = _display_region_ids(ana_glow, min_vox)
     num_img = ana_glow.exp.y.shape[1]
     app.layout = _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols,
                                  bg_names,
                                  x_names=x_names, y_names=y_names,
-                                 num_reg=num_reg,
+                                 region_ids=region_ids,
                                  default_reg_x=default_reg_x,
                                  num_img=num_img,
                                  subject_names=subject_names)
@@ -884,7 +918,7 @@ def _setup_2d(app, ana_glow, df,
 
     # --- shared callbacks ---
     _register_scatter_callback(app, df, ana_glow,
-                               target_stats=target_stats)
+                               target_stats=target_stats, min_vox=min_vox)
     _register_selection_callback(app, ana_glow,
                                  mask_target_img=mask_target_img)
     _register_checklist_sync_callback(app, df,
@@ -969,7 +1003,8 @@ def _valid_reg(reg_idx, ana_glow):
     return isinstance(reg_idx, (int, np.integer)) and 0 <= reg_idx < num_reg
 
 
-def _register_scatter_callback(app, df, ana_glow, target_stats=None):
+def _register_scatter_callback(app, df, ana_glow, target_stats=None,
+                               min_vox=0):
     """Scatter plot updates when axes change or selection changes."""
     @app.callback(
         Output('scatter-plot', 'figure'),
@@ -985,7 +1020,8 @@ def _register_scatter_callback(app, df, ana_glow, target_stats=None):
         return build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
                              selected_reg=selected,
                              log_y=log_y,
-                             target_stats=target_stats)
+                             target_stats=target_stats,
+                             min_vox=min_vox)
 
 
 def _register_selection_callback(app, ana_glow, mask_target_img=None):
@@ -1345,9 +1381,111 @@ def _wait_for_port(port, socket_mod, timeout=5.0):
     return False
 
 
+def _suggest_min_vox(size, max_regions):
+    """Return the smallest size cutoff that keeps at most max_regions regions.
+
+    Among all integer cutoffs T, returns the smallest for which
+    (size >= T).sum() <= max_regions: one more than the (max_regions+1)-th
+    largest region size.  Assumes len(size) > max_regions.
+
+    Args:
+        size (np.array): (num_reg,) int voxel count per region.
+        max_regions (int): target ceiling on the number of displayed regions.
+
+    Returns:
+        min_vox (int): the suggested cutoff (>= 2).
+    """
+    # the (max_regions+1)-th largest size; any cutoff strictly above it keeps
+    # at most max_regions regions (ties at that size are excluded)
+    kth = np.partition(size, -(max_regions + 1))[-(max_regions + 1)]
+    return int(kth) + 1
+
+
+def _prompt_min_vox(num_reg, suggested, kept):
+    """Ask (interactively) whether to cap the scatter at the larger regions.
+
+    Enter / 'y'    -> apply the suggested cutoff (keeps ~max_regions regions)
+    'n'            -> scatter every region (returns 0)
+    a bare integer -> use it as the cutoff
+
+    Returns:
+        min_vox (int): the chosen cutoff (0 = scatter everything).
+    """
+    print(f'\n  glow:viewer: this analysis has {num_reg:,} regions; '
+          f'scattering them all can make the dashboard sluggish.')
+    prompt = (f'  Show only the {kept:,} regions with >= {suggested} voxels?  '
+              f'[Y]es / [n]o (show all) / integer cutoff: ')
+    try:
+        raw = input(prompt).strip().lower()
+    except EOFError:
+        raw = ''
+    if raw in ('', 'y', 'yes'):
+        return suggested
+    if raw in ('n', 'no'):
+        return 0
+    try:
+        v = int(raw)
+        if v >= 0:
+            return v
+    except ValueError:
+        pass
+    print('  (unrecognised response; showing all regions)')
+    return 0
+
+
+def _resolve_min_vox(ana_glow, min_vox, max_regions):
+    """Resolve the effective scatter size cutoff, gently.
+
+    The viewer draws one point per Ward-tree region (num_vox leaves plus
+    internal nodes), so a large experiment is hundreds of thousands of
+    points and the dashboard becomes sluggish.  This picks a cutoff without
+    surprising non-interactive callers:
+
+      - min_vox is an int  -> use it verbatim (0 disables the cut).
+      - min_vox is None and num_reg <= max_regions -> no cut (return 0).
+      - min_vox is None and num_reg  > max_regions:
+          * interactive stdin -> ask, defaulting to the suggested cutoff.
+          * otherwise         -> warn (suggesting a value) and return 0, so
+            Python callers keep every region unless they opt in.
+
+    Args:
+        ana_glow (AnalysisGLOW): completed analysis (for size + tree shape).
+        min_vox (int | None): caller-supplied cutoff, or None to auto-resolve.
+        max_regions (int): target ceiling on the number of displayed regions.
+
+    Returns:
+        min_vox (int): the effective cutoff (0 = scatter everything).
+    """
+    if min_vox is not None:
+        return int(min_vox)
+
+    size = getattr(ana_glow, 'size', None)
+    if size is None:
+        return 0
+    num_reg = len(size)
+    if num_reg <= max_regions:
+        return 0
+
+    suggested = _suggest_min_vox(size, max_regions)
+    kept = int((size >= suggested).sum())
+
+    import sys
+    if getattr(sys.stdin, 'isatty', lambda: False)():
+        return _prompt_min_vox(num_reg, suggested, kept)
+
+    import warnings
+    warnings.warn(
+        f'glow:viewer is scattering all {num_reg:,} regions, which can make '
+        f'the dashboard sluggish.  Pass min_vox=<int> to launch() to show '
+        f'only larger regions (min_vox={suggested} keeps {kept:,}, about '
+        f'{max_regions:,}); pass min_vox=0 to silence this warning.',
+        stacklevel=3)
+    return 0
+
+
 def launch(ana_glow, mask_target=None, port=8050, debug=False,
            y_features=None, subject_names=None,
-           extra_df=None, quiet=True):
+           extra_df=None, quiet=True, min_vox=None, max_regions=10_000):
     """Launch the glow viewer dashboard.
 
     Args:
@@ -1367,6 +1505,19 @@ def launch(ana_glow, mask_target=None, port=8050, debug=False,
         extra_df (pd.DataFrame | None): optional extra per-region data
             (keyed on ``region_idx``) merged into the scatter DataFrame.
         quiet (bool): suppress Dash/Werkzeug request logs.
+        min_vox (int | None): scatter (and offer in the lookup dropdown) only
+            regions with at least this many voxels.  None (default) auto-
+            resolves: keep every region when there are <= max_regions of
+            them, otherwise prompt on an interactive terminal or warn and
+            keep all for non-interactive Python callers.  0 forces every
+            region (and silences the warning); a positive int is used as-is.
+        max_regions (int): ceiling used by the None default to pick a cutoff
+            and to decide whether to prompt/warn at all.
+
+    Note:
+        Regions below min_vox are dropped everywhere in the dashboard (the
+        scatter, its tree edges, and the 'Add by index' lookup), so set
+        min_vox=0 if you need to inspect a small region by hand.
     """
     import logging
     import signal
@@ -1374,12 +1525,14 @@ def launch(ana_glow, mask_target=None, port=8050, debug=False,
 
     _check_port(port)
 
+    min_vox = _resolve_min_vox(ana_glow, min_vox, max_regions)
+
     if quiet:
         logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
     app = _create_app(ana_glow, mask_target=mask_target,
                       y_features=y_features, subject_names=subject_names,
-                      extra_df=extra_df)
+                      extra_df=extra_df, min_vox=min_vox)
 
     # clean shutdown on Ctrl+C (and SIGTERM on Unix)
     def _shutdown(signum, frame):

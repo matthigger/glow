@@ -407,6 +407,14 @@ def main():
     parser.add_argument(
         '-v', '--verbose', action='store_true',
         help='Show Dash/Werkzeug request logs (suppressed by default)')
+    parser.add_argument(
+        '--min-vox', type=int, default=None,
+        help='Scatter only regions with at least this many voxels (0 shows '
+             'all).  Default: prompt when the tree exceeds --max-regions.')
+    parser.add_argument(
+        '--max-regions', type=int, default=10_000,
+        help='Region ceiling used to pick a default --min-vox cutoff '
+             '(default: 10000).')
 
     args = parser.parse_args()
 
@@ -438,7 +446,8 @@ def main():
 
     from glow.viewer import launch
     launch(ana, mask_target=mask_target, port=args.port, debug=args.debug,
-           extra_df=extra_df, quiet=not args.verbose)
+           extra_df=extra_df, quiet=not args.verbose,
+           min_vox=args.min_vox, max_regions=args.max_regions)
 
 
 if __name__ == '__main__':
