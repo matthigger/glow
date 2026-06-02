@@ -226,3 +226,83 @@ def test_min_vox_drops_small_regions_cpu_reliable_full(prep_intercept_fp64):
     assert small.any(), 'fixture has no size<4 regions; raise min_vox'
     assert np.isnan(draws[:, small]).all(), \
         'cpu_reliable_full: size<min_vox cells leaked finite values'
+
+
+# ---------------------------------------------------------------------------
+# Inner-perm race (cpu_perm_race + the fast kernel it rides).
+#
+# Validity of the race is a permutation-test property (identical procedure on
+# every perm => exact FWER); these unit tests anchor the two pieces that
+# property rests on: (1) the fast kernel computes the same inner-null LLR as
+# the trust anchor, and (2) racing reproduces the flat moments / max-z when it
+# keeps everything, and the raced max-z equals the flat max-z when it trims.
+
+def _llr_obs(prep):
+    llr, _ = glow.graph.compute_llr_batched(
+        prep['exp'], children=prep['children'],
+        q0=prep['q0'], q1=prep['q1'])
+    return llr
+
+
+def test_compute_llr_inner_fast_matches_reliable(prep_intercept_fp64):
+    """Fast kernel reproduces cpu_reliable_full per draw (intercept-only)."""
+    prep = prep_intercept_fp64
+    exp, q0, q1 = prep['exp'], prep['q0'], prep['q1']
+    children, min_vox = prep['children'], prep['min_vox']
+    base, n = 4242, 5
+    ref = inner_perm.cpu_reliable_full(
+        exp=exp, base_seed=base, n_perm=n, q0=q0, q1=q1,
+        children=children, min_vox=min_vox)
+    ysum, yout, size = glow.graph.region_stats_arrays(exp.y, children)
+    a0 = np.einsum('rbn,an->rba', ysum, q0, optimize=True)
+    t = yout - np.einsum('rba,rca->rbc', a0, a0,
+                         optimize=True) / size.astype(float)[:, None, None]
+    rows = []
+    for i in range(n):
+        perm = np.argsort(permute._perm_indices(base + i, exp.y.shape[1]))
+        llr = glow.graph.compute_llr_inner_fast(t, ysum, size, q1.T[perm, :])
+        llr[size < min_vox] = np.nan
+        rows.append(llr)
+    _assert_draws_match(np.vstack(rows), ref, atol=1e-9)
+
+
+def test_cpu_perm_race_keepall_matches_reliable(prep_intercept_fp64):
+    """Race with keep-all + full burn-in == cpu_reliable moments."""
+    prep = prep_intercept_fp64
+    llr = _llr_obs(prep)
+    mu_r, std_r, kept = inner_perm.cpu_perm_race(
+        exp=prep['exp'], llr_obs=llr, base_seed=777, n_perm=24,
+        q0=prep['q0'], q1=prep['q1'], children=prep['children'],
+        min_vox=prep['min_vox'], race_init=24, p_keep_thresh=0.0)
+    mu_ref, std_ref = inner_perm.cpu_reliable(
+        exp=prep['exp'], base_seed=777, n_perm=24, q0=prep['q0'],
+        q1=prep['q1'], children=prep['children'], min_vox=prep['min_vox'])
+    _assert_moments_match((mu_r, std_r), (mu_ref, std_ref), atol=1e-9)
+    # keep-all retains every active region
+    assert kept[np.isfinite(mu_ref)].all()
+
+
+def test_cpu_perm_race_maxz_matches_flat(prep_intercept_fp64):
+    """Raced max-z over survivors == flat max-z over all active regions, and
+    the race actually trims the active set."""
+    prep = prep_intercept_fp64
+    llr = _llr_obs(prep)
+    _, size = glow.graph.compute_llr_batched(
+        prep['exp'], children=prep['children'], q0=prep['q0'],
+        q1=prep['q1'], min_size=1)
+
+    def maxz(mu, std, kept):
+        ss = np.where(std < 1e-12, 1.0, std)
+        z = (llr - mu) / ss
+        m = (size >= prep['min_vox']) & np.isfinite(z) & kept
+        return float(np.max(np.where(m, z, -np.inf)))
+
+    common = dict(exp=prep['exp'], llr_obs=llr, base_seed=99, n_perm=40,
+                  q0=prep['q0'], q1=prep['q1'], children=prep['children'],
+                  min_vox=prep['min_vox'])
+    mu_f, std_f, kept_f = inner_perm.cpu_perm_race(
+        race_init=40, p_keep_thresh=0.0, **common)
+    mu_r, std_r, kept_r = inner_perm.cpu_perm_race(
+        race_init=8, p_keep_thresh=1e-3, **common)
+    assert abs(maxz(mu_f, std_f, kept_f) - maxz(mu_r, std_r, kept_r)) < 1e-9
+    assert kept_r.sum() < kept_f.sum(), 'race did not trim the active set'
