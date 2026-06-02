@@ -1,9 +1,12 @@
 """Paper plots: shared palette + generic helpers + MANCOVA stat comparison.
 
 The palette and the generic plot helpers (plot_compute_time,
-plot_calibration, plot_x_vs_metrics) are used across paper figures. The
-MANCOVA stat-comparison block at the bottom is the entrypoint for
-python -m glow.benchmark.paper.plot.
+plot_calibration, plot_x_vs_metrics) are used across paper figures.
+
+python -m glow.benchmark.paper.plot is the entrypoint: with no arguments
+it plots every cache that has data on disk (a method-comparison figure
+per _add_ana cache, plus the MANCOVA stat-comparison figures when any
+mancova_* cache has data); given cache labels it plots just those.
 """
 import colorsys
 
@@ -193,6 +196,9 @@ def plot_x_vs_metrics(df, x_param: str = 'effect_llr',
         ci (int): central percentile width for the shaded band
         title (str): per-subplot title override, or None for the metric name
         ylabel (str): y-axis label of the top-left subplot, or None for "score"
+
+    Returns:
+        the matplotlib Figure
     """
     # ensure numeric x + metrics (prevents lexicographic sorts)
     df2 = df.copy()
@@ -325,6 +331,55 @@ def plot_x_vs_metrics(df, x_param: str = 'effect_llr',
 
     axes[0, 0].set_ylabel(ylabel if ylabel else 'score')
     plt.tight_layout()
+    return fig
+
+
+def plot_method_comparison(label: str, x_param: str = 'effect_llr',
+                           metrics=('dice', 'sens', 'spec'),
+                           one_vs_rest: bool = True):
+    """Plot one method-comparison cache's metrics vs an x parameter.
+
+    Loads an _add_ana cache (labels GLOW-Focus, GLOW-GLM, VBA, VBA-TFCE,
+    CET — see paper/config.py) and draws one mean curve per method via
+    plot_x_vs_metrics, saving the figure under results/_latest. With
+    one_vs_rest, extra rows show each GLOW variant minus the best
+    non-GLOW method on the same trial.
+
+    Args:
+        label (str): cache label, e.g. 'vba_hcp_famd'
+        x_param (str): results column for the x-axis
+        metrics: metric columns to draw, one subplot column each
+        one_vs_rest (bool): add per-GLOW-variant difference rows
+
+    Returns:
+        out_path (pathlib.Path | None): the saved PDF, or None when the
+            cache holds no data
+    """
+    df, _ = _load(label)
+    if df.empty:
+        print(f'skipping {label}: no data')
+        return None
+
+    # a metric-vs-x figure needs x to actually vary; null / single-effect
+    # sweeps hold effect_llr constant and want a different -x column
+    x_vals = (pd.to_numeric(df[x_param], errors='coerce').dropna()
+              if x_param in df.columns else pd.Series(dtype=float))
+    if x_vals.nunique() < 2:
+        print(f'skipping {label}: {x_param} has <2 distinct values '
+              f'(pass -x to pick another x-axis)')
+        return None
+
+    fig = plot_x_vs_metrics(df, x_param=x_param, metrics=list(metrics),
+                            one_vs_rest=one_vs_rest)
+    fig.suptitle(label, y=1.01)
+
+    out = glow.benchmark.get_path_result() / '_latest'
+    out.mkdir(exist_ok=True)
+    out_path = out / f'{label}.pdf'
+    fig.savefig(out_path, bbox_inches='tight')
+    plt.close(fig)
+    print(f'saved: {out_path}')
+    return out_path
 
 
 # ---------------------------------------------------------------------------
@@ -687,10 +742,8 @@ def build_best_stat_table(all_dfs):
     return pd.DataFrame(rows)
 
 
-def main() -> None:
+def _plot_mancova_stat_comparison() -> None:
     """Load every mancova source, write the comparison plots/CSV, print summaries."""
-    import matplotlib
-    matplotlib.use('Agg')
     # --- load all sources (VBA/TFCE/CET from mancova_vba_*, GLOW from mancova_glow_*) ---
     # keyed by source nice-name -> combined df
     combined = {}
@@ -777,6 +830,65 @@ def main() -> None:
                   f'| {r["mean_loss"]:.4f}    |')
 
     plt.close('all')
+
+
+def _labels_with_data() -> list:
+    """List cache labels that have a results.csv on disk (excluding _latest)."""
+    base = glow.benchmark.get_path_result()
+    return sorted(sub.name for sub in base.iterdir()
+                  if sub.is_dir() and sub.name != '_latest'
+                  and (sub / 'results.csv').exists())
+
+
+def main(argv=None) -> None:
+    """Plot paper figures from cached benchmark results.
+
+    Given one or more cache labels (e.g. vba_hcp_famd), draw each cache's
+    metrics-vs-x_param method-comparison figure. With no labels, plot
+    every cache that has data on disk: a method-comparison figure per
+    _add_ana cache and, when any mancova_* cache has data, the MANCOVA
+    stat-comparison figures too.
+
+    Args:
+        argv (list | None): CLI args to parse; None reads sys.argv
+    """
+    import argparse
+    import matplotlib
+    matplotlib.use('Agg')
+
+    parser = argparse.ArgumentParser(
+        description='Plot paper benchmark figures from cached results.')
+    parser.add_argument(
+        'labels', nargs='*',
+        help='cache labels to plot (e.g. vba_hcp_famd); '
+             'default: every cache that has data on disk')
+    parser.add_argument(
+        '-x', '--x-param', default='effect_llr',
+        help='results column for the x-axis (default: effect_llr)')
+    args = parser.parse_args(argv)
+
+    if args.labels:
+        for label in args.labels:
+            plot_method_comparison(label, x_param=args.x_param)
+        return
+
+    # no labels: plot every cache that has data on disk
+    labels = _labels_with_data()
+    mancova_labels = [l for l in labels if l.startswith('mancova_')]
+    method_labels = [l for l in labels if l not in mancova_labels]
+
+    for label in method_labels:
+        plot_method_comparison(label, x_param=args.x_param)
+
+    # the stat-comparison routine owns its own mancova_* sources; only
+    # invoke it when at least one of them actually has data
+    if mancova_labels:
+        _plot_mancova_stat_comparison()
+
+    if not labels:
+        print(f'no cached results under {glow.benchmark.get_path_result()}; '
+              'run a benchmark first, e.g. '
+              'python -m glow.benchmark.paper vba_hcp_famd')
 
 
 if __name__ == '__main__':
