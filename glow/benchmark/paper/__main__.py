@@ -20,8 +20,6 @@ from fnmatch import fnmatch
 
 from glow.benchmark.driver import driver_local
 
-from .config import CACHE_BY_LABEL
-
 
 def resolve_labels(patterns) -> list:
     """Expand a list of literal labels / fnmatch patterns into entries.
@@ -40,6 +38,10 @@ def resolve_labels(patterns) -> list:
     Raises:
         ValueError: a literal label is unknown, or a pattern matches nothing
     """
+    # imported lazily: building the catalogue constructs every TrialCache
+    # (touching the results dir on disk), which --help must not require
+    from .config import CACHE_BY_LABEL
+
     if not patterns:
         return list(CACHE_BY_LABEL.items())
 
