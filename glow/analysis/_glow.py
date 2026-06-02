@@ -106,11 +106,13 @@ class AnalysisGLOW(Analysis):
         """Compute per-region inner-null (mu, std) and the race survivor mask.
 
         Runs n_perm Freedman-Lane (Freedman & Lane 1983) inner draws against
-        the given Ward tree. Under intercept-only nuisance this rides the
-        racing fast-kernel backend (inner_perm.cpu_perm_race): a burn-in over
-        all regions, then the remaining draws on survivors only. Under general
-        nuisance the fast kernel does not apply, so it falls back to the full
-        cpu_perm and marks every active region a survivor.
+        the given Ward tree, racing the inner perms in both regimes: a burn-in
+        over all regions, then the remaining draws on survivors only. Under
+        intercept-only nuisance this rides the fast kernel
+        (inner_perm.cpu_perm_race); under general nuisance the fast kernel does
+        not apply, so it uses the par/perp M-kernel race
+        (inner_perm.cpu_perm_race_general), which streams the burn-in and draws
+        survivors via the per-region cross-feature kernel.
 
         Args:
             exp (Experiment): pre-permute if drawing against an
@@ -137,10 +139,10 @@ class AnalysisGLOW(Analysis):
                 exp=exp, llr_obs=llr, base_seed=base_seed, n_perm=n_perm,
                 q0=q0, q1=q1, children=children, min_vox=min_vox,
                 race_init=race_init, p_keep_thresh=race_p_keep_thresh)
-        mu, std = inner_perm.cpu_perm(
-            exp=exp, base_seed=base_seed, n_perm=n_perm,
-            q0=q0, q1=q1, children=children, min_vox=min_vox)
-        return mu, std, np.isfinite(mu)
+        return inner_perm.cpu_perm_race_general(
+            exp=exp, llr_obs=llr, base_seed=base_seed, n_perm=n_perm,
+            q0=q0, q1=q1, children=children, min_vox=min_vox,
+            race_init=race_init, p_keep_thresh=race_p_keep_thresh)
 
     @classmethod
     def _run_outer(cls, exp, k: int, *, q0, q1, n_perm_inner: int,

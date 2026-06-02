@@ -389,3 +389,123 @@ def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
 
     mu, std = _welford_finalize(n, mean, M2)
     return mu, std, kept
+
+
+def cpu_perm_race_general(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
+                          children, min_vox: int, race_init: int = 15,
+                          p_keep_thresh: float = 1e-6,
+                          max_kernel_bytes: int = 16 * 2 ** 30):
+    """Compute inner-perm (mu, std, kept) for GENERAL nuisance via the race.
+
+    The general-Q0 counterpart of cpu_perm_race. Same burn-in / trim / tail
+    structure and the same exact-FWER guarantee (identical procedure on every
+    outer perm), but the intercept-only fast kernel does not apply, so:
+
+      - Burn-in rides the general streaming backend (graph.iter_llr_perm, what
+        cpu_perm uses) over ALL active regions for race_init draws.
+      - Tail draws the survivors via the par/perp M-kernel
+        (graph.build_survivor_kernels once, then compute_llr_inner_kernel per
+        draw) -- valid for any Q0, per-draw cost scaling with the survivor
+        count rather than num_reg.
+
+    Burn-in and tail use identical permutations per draw index
+    (permute._perm_indices(base_seed + i)), so a survivor's combined moments
+    equal a full cpu_perm's to fp round-off. The M tensor is
+    num_surv * b^2 * num_img^2 floats; if it would exceed max_kernel_bytes the
+    tail falls back to streaming over all regions (kept := active, no survivor
+    speedup) -- correctness and the FWER bound are unchanged. See
+    docs/notes/general_q0_race_kernel.md.
+
+    Args:
+        exp (Experiment): experiment to sample inner perms from
+        llr_obs (np.array): (num_reg,) observed LLR for this tree (scores the
+            trim z = (llr_obs - mu)/std)
+        base_seed (int): draw i uses RNG seed base_seed + i
+        n_perm (int): total inner FL draws for survivors
+        q0 (np.array): (a0, num_img) nuisance subspace
+        q1 (np.array): (a1, num_img) interest subspace
+        children (np.array): (num_reg - num_vox, 2) Ward tree
+        min_vox (int): regions smaller than this are left NaN / inactive
+        race_init (int): burn-in draws over all regions before the trim
+        p_keep_thresh (float): keep regions with > this probability of beating
+            the interim leader (scale-free; smaller keeps more)
+        max_kernel_bytes (int): cap on the M-kernel allocation before the
+            streaming fallback
+
+    Returns:
+        mu (np.array): (num_reg,) inner-null mean (survivors: n_perm samples;
+            others: race_init samples)
+        std (np.array): (num_reg,) inner-null std, same sampling split
+        kept (np.array): (num_reg,) bool survivor mask
+    """
+    num_vox = exp.y.shape[2]
+    num_img = exp.y.shape[1]
+    b = exp.y.shape[0]
+    leaf_ord, region_l, region_h = glow.graph.build_dfs_preorder(
+        children=children, num_vox=num_vox)
+    num_reg = int(region_l.shape[0])
+    size = (region_h - region_l).astype(np.int64)
+    active = (size >= min_vox) & np.isfinite(llr_obs)
+
+    n = np.zeros(num_reg, dtype=np.float64)
+    mean = np.zeros(num_reg, dtype=np.float64)
+    M2 = np.zeros(num_reg, dtype=np.float64)
+
+    def stream(draw_range):
+        # Fold whole-tree draws from the general streaming backend into the
+        # shared Welford accumulator (Chan parallel-combine per chunk).
+        nonlocal n, mean, M2
+        idxs = list(draw_range)
+        if not idxs:
+            return
+        perms = np.empty((len(idxs), num_img), dtype=np.int64)
+        for j, i in enumerate(idxs):
+            perms[j] = permute._perm_indices(base_seed + i, num_img)
+        for chunk in glow.graph.iter_llr_perm(
+                y=exp.y, q0=q0, q1=q1, perms=perms,
+                leaf_ord=leaf_ord, region_l=region_l, region_h=region_h,
+                min_size=min_vox):
+            n, mean, M2 = _welford_combine(chunk, n, mean, M2)
+
+    # Stage 1: burn-in over ALL regions via the general streaming backend.
+    burn = min(race_init, n_perm)
+    stream(range(burn))
+
+    # Stage 2: trim to survivors using the burn-in moments.
+    mu_b, std_b = _welford_finalize(n, mean, M2)
+    kept = _race_keep(llr_obs, mu_b, std_b, n, active, p_keep_thresh)
+    kept_idx = np.where(kept)[0]
+
+    # Stage 3: tail -- survivors only via the M-kernel, else stream-fallback.
+    n_tail = n_perm - burn
+    if n_tail > 0 and kept_idx.size:
+        itemsize = 4 if exp.y.dtype == np.float32 else 8
+        m_bytes = int(kept_idx.size) * b * b * num_img * num_img * itemsize
+        if m_bytes <= max_kernel_bytes:
+            kernels = glow.graph.build_survivor_kernels(
+                exp.y, children, kept_idx, q0)
+            # freed_lane built inline from q0 (= get_freed_lane), avoiding a
+            # re-decompose per draw; proj is the (num_img, num_img) Q0Q0^T.
+            proj = q0.T @ q0
+            eye = np.eye(num_img, dtype=proj.dtype)
+            for i in range(burn, n_perm):
+                perm = permute._perm_indices(base_seed + i, num_img)
+                freed_lane = (eye - proj)[:, perm] + proj
+                x = glow.graph.compute_llr_inner_kernel(
+                    kernels, q0, q1, freed_lane, perm, num_reg,
+                    min_size=min_vox)
+                xk = x[kept_idx]
+                fin = np.isfinite(xk)
+                sub = kept_idx[fin]
+                xv = xk[fin]
+                n[sub] += 1.0
+                delta = xv - mean[sub]
+                mean[sub] += delta / n[sub]
+                M2[sub] += delta * (xv - mean[sub])
+        else:
+            # M would be too large: stream the tail over all regions (no trim).
+            stream(range(burn, n_perm))
+            kept = active.copy()
+
+    mu, std = _welford_finalize(n, mean, M2)
+    return mu, std, kept
