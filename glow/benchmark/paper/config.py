@@ -43,6 +43,14 @@ N_PERM_FWER = 250
 N_PERM_INNER = 250
 ALPHA_FWER = 0.05
 
+# GLOW inner-perm-race speed/power knobs (never validity knobs; see
+# AnalysisGLOW). RACE_INIT is the burn-in inner draws over all regions before
+# the survivor trim; RACE_P_KEEP_THRESH keeps any region with > this
+# probability of being the per-perm max-z region (scale-free, smaller keeps
+# more). Defaults are lossless at RACE_INIT=15 on HCP.
+RACE_INIT = 15
+RACE_P_KEEP_THRESH = 1e-6
+
 # Per-family VBA design decisions hoisted out of the ANALYSIS_DICT below
 # so they're easy to scan and override.
 VBA_Z_FLAG = True
@@ -57,7 +65,9 @@ _DEFAULT_EFFECT_EXTENTER = ExtenterMinVar(n_vox=EFFECT_N_VOX)
 # ---------- analysis recipes -------------------------------------------------
 _GLOW_BASE = dict(n_perm_fwer=N_PERM_FWER,
                   n_perm_inner=N_PERM_INNER,
-                  alpha_fwer=ALPHA_FWER)
+                  alpha_fwer=ALPHA_FWER,
+                  race_init=RACE_INIT,
+                  race_p_keep_thresh=RACE_P_KEEP_THRESH)
 _VBA_BASE = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER,
                  z_flag=VBA_Z_FLAG)
 
