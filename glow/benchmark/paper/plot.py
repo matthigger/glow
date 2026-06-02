@@ -2,9 +2,9 @@
 
 python -m glow.benchmark.paper.plot (main) walks the config catalogue
 (CACHE_BY_LABEL) rather than the result folders: for each cache it keeps
-only the complete trials the current config defines (_load_in_config
-drops anything left over from an older config) and writes one figure set
-per cache into results/_latest:
+the completed in-config trials (_load_in_config drops anything left over
+from an older config) and writes one figure set per cache into
+results/_latest:
 
   - run_ana caches get a compute-time boxplot plus either a FWER
     calibration curve (null caches) or a dice/sens/spec metric sweep,
@@ -13,10 +13,13 @@ per cache into results/_latest:
     source (WGN / HCP) and plotted by _plot_mancova with the
     faceted-grid / summary / z-delta figures.
 
-With no arguments it plots every cache in the catalogue; passing cache
-labels (e.g. vba_hcp_famd) restricts it to those. The generic helpers
-(plot_compute_time, plot_calibration, plot_x_vs_metrics) stay reusable
-so notebooks can call them directly.
+A cache is plotted as soon as any of its in-config trials are complete
+-- it does not wait for the whole config -- so this can be run
+mid-benchmark for intermediate figures; each cache prints how many of
+its config trials are done. With no arguments it plots every cache in
+the catalogue; passing cache labels (e.g. vba_hcp_famd) restricts it to
+those. The generic helpers (plot_compute_time, plot_calibration,
+plot_x_vs_metrics) stay reusable so notebooks can call them directly.
 """
 import colorsys
 
@@ -829,13 +832,17 @@ def _plot_mancova(sources, out) -> None:
 
 
 def _load_in_config(label: str, cache):
-    """Load a cache's results, keeping only complete trials in the current config.
+    """Load a cache's results, keeping the completed in-config trials.
 
     Folds any pending per-trial json into the csv (load_update_all), then
     drops rows whose trial_hash is not one cache.iter_trial() would
-    produce -- i.e. trials left over from a different config. The kept rows
-    are exactly the complete, in-config trials: save_result writes all of a
-    trial's rows under one trial_hash, so a present hash means complete.
+    produce -- i.e. trials left over from a different config. "Complete"
+    here is per trial, not per config: save_result writes all of a trial's
+    method rows under one trial_hash, so a present hash means that trial is
+    done. The result is therefore however many in-config trials have
+    finished so far -- a half-run cache yields a partial frame, which is
+    enough to plot intermediate results; it is empty only when no
+    completed trial on disk belongs to the current config.
 
     Args:
         label (str): cache label / result subfolder name
@@ -843,7 +850,8 @@ def _load_in_config(label: str, cache):
             defines the in-config trial set
 
     Returns:
-        the filtered results DataFrame (empty if nothing on disk matches)
+        the completed in-config results so far (empty only when no
+            completed trial on disk belongs to the current config)
     """
     df, _, _ = glow.benchmark.load_update_all(label, verbose=False)
     if df.empty or 'trial_hash' not in df.columns:
@@ -857,11 +865,16 @@ def main(argv=None) -> None:
 
     Walks CACHE_BY_LABEL (restricted to the cache labels given on the
     command line, or all of them when none are given); for each cache
-    keeps only the complete, in-config trials (_load_in_config) and
-    dispatches by run_fnc: run_ana caches go to plot_ana_cache,
-    run_mancova caches are combined by source (WGN / HCP) and handed to
-    _plot_mancova. All figures land in results/_latest. Caches with no
-    in-config results on disk are skipped.
+    keeps the completed in-config trials (_load_in_config) and dispatches
+    by run_fnc: run_ana caches go to plot_ana_cache, run_mancova caches
+    are combined by source (WGN / HCP) and handed to _plot_mancova. All
+    figures land in results/_latest.
+
+    A cache is plotted as soon as any of its in-config trials are
+    complete -- it does not wait for the whole config -- so this can be
+    run mid-benchmark for intermediate figures. Each plotted cache prints
+    an N/M count of how many of its config trials are done; caches with
+    no completed in-config trial on disk are skipped.
 
     Args:
         argv (list | None): CLI args to parse; None reads sys.argv.
@@ -898,11 +911,15 @@ def main(argv=None) -> None:
         df = _load_in_config(label, cache)
         if df.empty:
             continue
+        # how far along this cache is, so a mid-benchmark run reads as
+        # intermediate (n_done in-config trials of len(cache) total)
+        n_done = df['trial_hash'].astype(str).nunique()
+        print(f'\n=== {label}: {n_done}/{len(cache)} config trials '
+              f'complete ({len(df)} rows) ===')
         if getattr(run_fnc, 'func', run_fnc) is run_mancova:
             nice = 'HCP' if 'hcp' in label else 'WGN'
             mancova_sources.setdefault(nice, []).append(df)
         else:
-            print(f'\n=== {label} ({len(df)} rows) ===')
             plot_ana_cache(label, df, cache, out)
         n_plotted += 1
 
