@@ -350,37 +350,50 @@ def build_survivor_kernels(y, children, survivor_idx, q0):
             size_S       (num_surv,)              voxel count per survivor
             survivor_idx (num_surv,)              pass-through region indices
     """
-    b, num_img, num_vox = y.shape
-    a0 = q0.shape[0]
-    dtype = y.dtype if y.dtype == np.float32 else np.float64
-    y = y.astype(dtype, copy=False)
-    q0d = q0.astype(dtype, copy=False)
-    # s0 = Q0 y (a0-dim nuisance coords); y_par = Q0^T s0; y_perp = y - y_par.
-    s0 = np.einsum('an,inv->iav', q0d, y, optimize=True)       # (b, a0, num_vox)
-    y_par = np.einsum('ak,iav->ikv', q0d, s0, optimize=True)   # (b, num_img, ..)
-    y_perp = y - y_par
-
+    num_vox = y.shape[2]
+    out_dtype = y.dtype if y.dtype == np.float32 else np.float64
+    survivor_idx = np.asarray(survivor_idx, dtype=np.int64)
     leaf_ord, region_l, region_h = build_dfs_preorder(
         children=children, num_vox=num_vox)
-    survivor_idx = np.asarray(survivor_idx, dtype=np.int64)
-    n_surv = survivor_idx.size
+    rl = region_l[survivor_idx]
+    rh = region_h[survivor_idx] - 1
 
-    K = np.empty((n_surv, b, b, a0, num_img), dtype=dtype)
-    ysum_u = np.empty((n_surv, b, num_img), dtype=dtype)
-    yout_u = np.empty((n_surv, b, b), dtype=dtype)
-    size = np.empty(n_surv, dtype=np.int64)
-    for s, r in enumerate(survivor_idx):
-        leaves = leaf_ord[region_l[r]:region_h[r]]
-        s0_s = s0[:, :, leaves]
-        y_perp_s = y_perp[:, :, leaves]
-        y_s = y[:, :, leaves]
-        # K[s, i, j, a, l] = sum_{v in r} s0[i, a, v] y_perp[j, l, v]
-        np.einsum('iav,jlv->ijal', s0_s, y_perp_s, out=K[s], optimize=True)
-        np.sum(y_s, axis=2, out=ysum_u[s])
-        np.einsum('bnv,cnv->bc', y_s, y_s, out=yout_u[s], optimize=True)
-        size[s] = leaves.size
-    return dict(K=K, ysum_u_S=ysum_u, yout_u_S=yout_u, size_S=size,
-                survivor_idx=survivor_idx)
+    def reg_sum(xvox):
+        # Survivor region sums of a per-voxel array (DFS-ordered on the last
+        # axis) by cumsum-and-diff, reading only the survivor [l, h) boundaries
+        # -- every voxel touched once, no re-gathering of leaves shared by
+        # nested survivors (the per-survivor loop's bottleneck). Accumulated in
+        # float64: a small/deep region is the difference of two large partial
+        # sums, so a float32 cumsum loses it to catastrophic cancellation
+        # (a 4-voxel region at leaf ~6e5 carries ~1e-2 relative error in fp32).
+        np.cumsum(xvox, axis=-1, out=xvox)
+        hi = xvox[..., rh]
+        lo = xvox[..., np.maximum(rl - 1, 0)]
+        lo[..., rl == 0] = 0.0
+        return np.ascontiguousarray(np.moveaxis(hi - lo, -1, 0))
+
+    # per-voxel sufficient statistics in DFS leaf order (float64 for reg_sum)
+    yf = y.astype(np.float64, copy=False)
+    q0f = q0.astype(np.float64, copy=False)
+    s0 = np.einsum('an,inv->iav', q0f, yf, optimize=True)      # (b, a0, num_vox)
+    y_perp = yf - np.einsum('ak,iav->ikv', q0f, s0, optimize=True)
+    yf_dfs = yf[:, :, leaf_ord]
+    s0_dfs = s0[:, :, leaf_ord]
+    y_perp_dfs = y_perp[:, :, leaf_ord]
+    del yf, s0, y_perp
+
+    # yout_u (b,b) reads yf_dfs; ysum_u (b,N) consumes it (in-place cumsum).
+    yout_u = reg_sum(np.einsum('inv,jnv->ijv', yf_dfs, yf_dfs, optimize=True))
+    ysum_u = reg_sum(yf_dfs)
+    # K (b,b,a0,N): per-voxel kvox[i,j,a,l,v] = s0[i,a,v] y_perp[j,l,v]; the
+    # full (b,b,a0,num_vox) prefix is transient, only survivor K is kept.
+    kvox = s0_dfs[:, None, :, None, :] * y_perp_dfs[None, :, None, :, :]
+    K = reg_sum(kvox)
+    size = (region_h[survivor_idx] - region_l[survivor_idx]).astype(np.int64)
+    return dict(K=K.astype(out_dtype, copy=False),
+                ysum_u_S=ysum_u.astype(out_dtype, copy=False),
+                yout_u_S=yout_u.astype(out_dtype, copy=False),
+                size_S=size, survivor_idx=survivor_idx)
 
 
 def compute_llr_inner_kernel(kernels, q0, q1, freed_lane, perm, num_reg,
