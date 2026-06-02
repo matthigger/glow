@@ -309,26 +309,32 @@ def compute_llr_inner_fast(t, ysum, size, q1_T_perm):
 
 
 def build_survivor_kernels(y, children, survivor_idx, q0):
-    """Build per-survivor Freedman-Lane par/perp cross kernels (general Q0).
+    """Build per-survivor Freedman-Lane par/perp kernels (general Q0, low-rank).
 
     The general-nuisance counterpart of compute_llr_inner_fast's precompute.
     Under Freedman-Lane (Y_v* = P (I - Q0Q0^T) Y_v + Q0Q0^T Y_v) the
     sum-over-voxels b x b second moment of a region r decomposes as
 
         yout_perm[r] = yout_u[r] + C[r] + C[r]^T,
-        C[r][i, j]   = <P, M_r[i, j]>_F = sum_k M_r[i, j, k, perm[k]],
-        M_r[i, j, k, l] = sum_{v in r} y_par[i, k, v] y_perp[j, l, v],
+        C[r][i, j]   = sum_k y_par[i, k, .] . y_perp[j, perm[k], .]  (over r),
 
-    with y_par = Q0Q0^T y, y_perp = y - y_par (along the image axis). Because P
-    has a single 1 per row, C collapses to an N-element gather per draw (see
-    compute_llr_inner_kernel) -- no dense N x N matvec. Unlike the
-    intercept-only kernel this is valid for ANY nuisance, at the cost of the
-    M tensor. Survivor leaves are read off build_dfs_preorder's contiguous
-    ranges. See freedman_lane_trick.tex for the derivation and
-    docs/notes/general_q0_race_kernel.md for the design.
+    with y_par = Q0Q0^T y, y_perp = y - y_par. The naive cross kernel
+    M_r[i,j,k,l] = sum_v y_par[i,k,v] y_perp[j,l,v] is (b, b, N, N); but y_par
+    lives in the a0-dim column space of Q0 (y_par[i,k,v] = sum_a Q0[a,k] s0[i,a,v],
+    s0 = Q0 y), so M factors as M_r[i,j,k,l] = sum_a Q0[a,k] K_r[i,j,a,l]. We
+    therefore store the LOW-RANK kernel
 
-    Memory: num_surv * b^2 * num_img^2 floats for M (scales with num_img^2 --
-    the binding constraint at large cohorts).
+        K_r[i, j, a, l] = sum_{v in r} s0[i, a, v] y_perp[j, l, v]
+
+    of shape (b, b, a0, N) -- a num_img/a0 reduction in both storage and build
+    cost vs M. The per-draw cross term is then a contraction with a
+    column-permuted Q0 (see compute_llr_inner_kernel), no gather of a dense
+    tensor. Valid for ANY nuisance; survivor leaves are read off
+    build_dfs_preorder's contiguous ranges. See freedman_lane_trick.tex and
+    docs/notes/general_q0_race_kernel.md.
+
+    Memory: num_surv * b^2 * a0 * num_img floats for K (vs the dense M's
+    num_surv * b^2 * num_img^2).
 
     Args:
         y (np.array): (b, num_img, num_vox) raw voxel data, unpermuted
@@ -338,17 +344,20 @@ def build_survivor_kernels(y, children, survivor_idx, q0):
 
     Returns:
         kernels (dict): with keys
-            M            (num_surv, b, b, num_img, num_img) par/perp cross kernel
+            K            (num_surv, b, b, a0, num_img) low-rank par/perp kernel
             ysum_u_S     (num_surv, b, num_img)  unpermuted per-region image sum
             yout_u_S     (num_surv, b, b)         unpermuted per-region Y Y^T
             size_S       (num_surv,)              voxel count per survivor
             survivor_idx (num_surv,)              pass-through region indices
     """
     b, num_img, num_vox = y.shape
+    a0 = q0.shape[0]
     dtype = y.dtype if y.dtype == np.float32 else np.float64
     y = y.astype(dtype, copy=False)
-    q0_proj = (q0.T @ q0).astype(dtype, copy=False)        # (num_img, num_img)
-    y_par = np.einsum('nm,bmv->bnv', q0_proj, y, optimize=True)
+    q0d = q0.astype(dtype, copy=False)
+    # s0 = Q0 y (a0-dim nuisance coords); y_par = Q0^T s0; y_perp = y - y_par.
+    s0 = np.einsum('an,inv->iav', q0d, y, optimize=True)       # (b, a0, num_vox)
+    y_par = np.einsum('ak,iav->ikv', q0d, s0, optimize=True)   # (b, num_img, ..)
     y_perp = y - y_par
 
     leaf_ord, region_l, region_h = build_dfs_preorder(
@@ -356,40 +365,44 @@ def build_survivor_kernels(y, children, survivor_idx, q0):
     survivor_idx = np.asarray(survivor_idx, dtype=np.int64)
     n_surv = survivor_idx.size
 
-    M = np.empty((n_surv, b, b, num_img, num_img), dtype=dtype)
+    K = np.empty((n_surv, b, b, a0, num_img), dtype=dtype)
     ysum_u = np.empty((n_surv, b, num_img), dtype=dtype)
     yout_u = np.empty((n_surv, b, b), dtype=dtype)
     size = np.empty(n_surv, dtype=np.int64)
     for s, r in enumerate(survivor_idx):
         leaves = leaf_ord[region_l[r]:region_h[r]]
-        y_par_s = y_par[:, :, leaves]
+        s0_s = s0[:, :, leaves]
         y_perp_s = y_perp[:, :, leaves]
         y_s = y[:, :, leaves]
-        np.einsum('ikv,jlv->ijkl', y_par_s, y_perp_s, out=M[s], optimize=True)
+        # K[s, i, j, a, l] = sum_{v in r} s0[i, a, v] y_perp[j, l, v]
+        np.einsum('iav,jlv->ijal', s0_s, y_perp_s, out=K[s], optimize=True)
         np.sum(y_s, axis=2, out=ysum_u[s])
         np.einsum('bnv,cnv->bc', y_s, y_s, out=yout_u[s], optimize=True)
         size[s] = leaves.size
-    return dict(M=M, ysum_u_S=ysum_u, yout_u_S=yout_u, size_S=size,
+    return dict(K=K, ysum_u_S=ysum_u, yout_u_S=yout_u, size_S=size,
                 survivor_idx=survivor_idx)
 
 
 def compute_llr_inner_kernel(kernels, q0, q1, freed_lane, perm, num_reg,
                              min_size: int = 1):
-    """Per-perm LLR for survivors only via the par/perp gather kernel (general Q0).
+    """Per-perm LLR for survivors only via the low-rank par/perp kernel (general Q0).
 
     The general-nuisance per-draw kernel: given build_survivor_kernels' output
     and one Freedman-Lane draw (freed_lane plus its index array perm), forms
     each survivor's permuted (ysum, yout), then the usual E / H / LLR. The
-    permuted second moment uses the N-element gather
-    C[s, i, j] = sum_k M[s, i, j, k, perm[k]]; the permuted image sum folds the
-    FL matrix into the (small) q0 / q1 bases first, so the per-draw cost is
-    linear in num_img (O(num_surv b^2 num_img) gather + O(num_surv b num_img a)
-    projection), not quadratic. Returns the same LLR as compute_llr_batched on
-    the FL-permuted experiment (verified to fp round-off).
+    cross term collapses to a contraction with a column-permuted Q0,
+
+        C[s, i, j] = sum_{a, l} K[s, i, j, a, l] Q0[a, perm_inv[l]],
+
+    so no dense tensor is gathered per draw; the permuted image sum folds the
+    FL matrix into the (small) q0 / q1 bases first. Per-draw cost is
+    O(num_surv * b^2 * a0 * num_img). Returns the same LLR as
+    compute_llr_batched on the FL-permuted experiment (verified to fp).
 
     Args:
         kernels (dict): output of build_survivor_kernels
-        q0 (np.array): (a0, num_img) nuisance basis (rows)
+        q0 (np.array): (a0, num_img) nuisance basis (rows) -- the SAME passed to
+            build_survivor_kernels
         q1 (np.array): (a1, num_img) interest basis (rows)
         freed_lane (np.array): (num_img, num_img) FL matrix from get_freed_lane
             (applied along the image axis), for the SAME draw as perm
@@ -401,12 +414,12 @@ def compute_llr_inner_kernel(kernels, q0, q1, freed_lane, perm, num_reg,
     Returns:
         llr (np.array): (num_reg,) LLR -- NaN off-survivor and below min_size
     """
-    M = kernels['M']
+    K = kernels['K']
     ysum_u_S = kernels['ysum_u_S']
     yout_u_S = kernels['yout_u_S']
     size_S = kernels['size_S']
     survivor_idx = kernels['survivor_idx']
-    dtype = M.dtype
+    dtype = K.dtype
 
     llr = np.full(num_reg, np.nan, dtype=np.float64)
     if survivor_idx.size == 0:
@@ -421,9 +434,12 @@ def compute_llr_inner_kernel(kernels, q0, q1, freed_lane, perm, num_reg,
     fl_q0 = fl @ q0.T.astype(dtype, copy=False)            # (num_img, a0)
     fl_q1 = fl @ q1.T.astype(dtype, copy=False)            # (num_img, a1)
 
-    # C[s, i, j] = <P, M[s, i, j]>_F = sum_k M[s, i, j, k, perm[k]].
-    N = M.shape[-1]
-    C = M[:, :, :, np.arange(N), perm].sum(axis=-1)        # (num_surv, b, b)
+    # C[s, i, j] = sum_{a, l} K[s, i, j, a, l] Q0[a, perm_inv[l]]: one
+    # contraction of K against the column-permuted Q0 (perm is a bijection, so
+    # the gather k -> perm[k] becomes a reindex of Q0's columns by perm_inv).
+    perm_inv = np.argsort(perm)
+    q0pi = q0[:, perm_inv].astype(dtype, copy=False)       # (a0, num_img)
+    C = np.einsum('sijal,al->sij', K, q0pi, optimize=True)  # (num_surv, b, b)
     yout_perm_S = yout_u_S + C + C.transpose(0, 2, 1)
 
     sz_a = size_S[active_S].astype(dtype)[:, None, None]

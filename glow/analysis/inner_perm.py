@@ -410,10 +410,10 @@ def cpu_perm_race_general(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
 
     Burn-in and tail use identical permutations per draw index
     (permute._perm_indices(base_seed + i)), so a survivor's combined moments
-    equal a full cpu_perm's to fp round-off. The M tensor is
-    num_surv * b^2 * num_img^2 floats; if it would exceed max_kernel_bytes the
-    tail falls back to streaming over all regions (kept := active, no survivor
-    speedup) -- correctness and the FWER bound are unchanged. See
+    equal a full cpu_perm's to fp round-off. The low-rank kernel K is
+    num_surv * b^2 * a0 * num_img floats; if it would exceed max_kernel_bytes
+    the tail falls back to streaming over all regions (kept := active, no
+    survivor speedup) -- correctness and the FWER bound are unchanged. See
     docs/notes/general_q0_race_kernel.md.
 
     Args:
@@ -480,7 +480,8 @@ def cpu_perm_race_general(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
     n_tail = n_perm - burn
     if n_tail > 0 and kept_idx.size:
         itemsize = 4 if exp.y.dtype == np.float32 else 8
-        m_bytes = int(kept_idx.size) * b * b * num_img * num_img * itemsize
+        a0 = q0.shape[0]
+        m_bytes = int(kept_idx.size) * b * b * a0 * num_img * itemsize
         if m_bytes <= max_kernel_bytes:
             kernels = glow.graph.build_survivor_kernels(
                 exp.y, children, kept_idx, q0)
