@@ -1,12 +1,22 @@
-"""Paper plots: shared palette + generic helpers + MANCOVA stat comparison.
+"""Paper plots: shared palette, generic helpers, and the plot-everything entrypoint.
 
-The palette and the generic plot helpers (plot_compute_time,
-plot_calibration, plot_x_vs_metrics) are used across paper figures.
+python -m glow.benchmark.paper.plot (main) walks the config catalogue
+(CACHE_BY_LABEL) rather than the result folders: for each cache it keeps
+only the complete trials the current config defines (_load_in_config
+drops anything left over from an older config) and writes one figure set
+per cache into results/_latest:
 
-python -m glow.benchmark.paper.plot is the entrypoint: with no arguments
-it plots every cache that has data on disk (a method-comparison figure
-per _add_ana cache, plus the MANCOVA stat-comparison figures when any
-mancova_* cache has data); given cache labels it plots just those.
+  - run_ana caches get a compute-time boxplot plus either a FWER
+    calibration curve (null caches) or a dice/sens/spec metric sweep,
+    via plot_ana_cache.
+  - the MANCOVA stat-comparison caches (run_mancova) are combined by
+    source (WGN / HCP) and plotted by _plot_mancova with the
+    faceted-grid / summary / z-delta figures.
+
+With no arguments it plots every cache in the catalogue; passing cache
+labels (e.g. vba_hcp_famd) restricts it to those. The generic helpers
+(plot_compute_time, plot_calibration, plot_x_vs_metrics) stay reusable
+so notebooks can call them directly.
 """
 import colorsys
 
@@ -16,6 +26,7 @@ import pandas as pd
 import seaborn as sns
 
 import glow.benchmark
+from glow.util import stable_hash
 
 
 # ---------------------------------------------------------------------------
@@ -84,16 +95,17 @@ def get_cmap_dict(label_list) -> dict:
     return out
 
 
-def plot_compute_time(df) -> None:
+def plot_compute_time(df, title: str = 'Computation Time (per Experiment)') -> None:
     """Draw a per-experiment compute-time boxplot, one row per method label.
 
     Args:
         df: results DataFrame with label and time_sec columns
+        title (str): axes title
     """
     labels_sorted = sorted(df['label'].unique().tolist())
     color_map = get_cmap_dict(labels_sorted)
 
-    plt.title('Computation Time (per Experiment)')
+    plt.title(title)
     plt.xlabel('time (sec)')
     plt.ylabel('')
     sns.boxplot(data=df, x='time_sec', y='label', palette=color_map,
@@ -170,8 +182,7 @@ _METRIC_TITLES = {
 _X_PARAM_LABELS = {
     'effect_llr': 'Effect LLR',
     'effect_perc': 'Effect Size (% of Volume)',
-    'wgn_num_img': 'Number of Subjects',
-    'wgn_b': 'Number of Features ($b$)',
+    'num_img': 'Number of Subjects',
 }
 
 
@@ -334,56 +345,74 @@ def plot_x_vs_metrics(df, x_param: str = 'effect_llr',
     return fig
 
 
-def plot_method_comparison(label: str, x_param: str = 'effect_llr',
-                           metrics=('dice', 'sens', 'spec'),
-                           one_vs_rest: bool = True):
-    """Plot one method-comparison cache's metrics vs an x parameter.
+# ---------------------------------------------------------------------------
+# run_ana: per-cache dispatch (compute time + calibration / metric sweep)
+# ---------------------------------------------------------------------------
 
-    Loads an _add_ana cache (labels GLOW-Focus, GLOW-GLM, VBA, VBA-TFCE,
-    CET — see paper/config.py) and draws one mean curve per method via
-    plot_x_vs_metrics, saving the figure under results/_latest. With
-    one_vs_rest, extra rows show each GLOW variant minus the best
-    non-GLOW method on the same trial.
+def _savefig(path) -> None:
+    """Save the current matplotlib figure to path (tight bbox) and close it."""
+    plt.savefig(path, bbox_inches='tight')
+    plt.close('all')
+    print(f'saved: {path}')
+
+
+def plot_ana_cache(label: str, df, cache, out) -> None:
+    """Write the run_ana figures for one cache into out.
+
+    Always writes a compute-time boxplot, then one sweep / diagnostic
+    figure chosen from what the cache varies (read off cache.iter_kwargs,
+    not the data, so the choice matches the config exactly):
+
+      - null cache (effect_llr grid is all 0): FWER calibration from min_pval
+      - effect_llr swept: dice / sens / spec vs effect_llr
+      - effect extent swept (extenter in iter_kwargs): metrics vs effect
+        size (realized support as a fraction of the volume)
+      - data source swept (ds in iter_kwargs): metrics vs number of subjects
+
+    The metric sweeps difference each GLOW variant against the best other
+    method (plot_x_vs_metrics one_vs_rest). A cache with nothing to sweep
+    gets only the compute-time plot.
 
     Args:
-        label (str): cache label, e.g. 'vba_hcp_famd'
-        x_param (str): results column for the x-axis
-        metrics: metric columns to draw, one subplot column each
-        one_vs_rest (bool): add per-GLOW-variant difference rows
-
-    Returns:
-        out_path (pathlib.Path | None): the saved PDF, or None when the
-            cache holds no data
+        label (str): cache label; used in titles and output filenames
+        df: the cache's results DataFrame (run_ana schema: label, seed,
+            effect_llr, dice/sens/spec, min_pval, time_sec, vox_* columns),
+            already filtered to the complete in-config trials
+        cache (TrialCache): the cache from the config catalogue; its
+            iter_kwargs say which parameter the cache sweeps
+        out (pathlib.Path): directory the figures are written into
     """
-    df, _ = _load(label)
-    if df.empty:
-        print(f'skipping {label}: no data')
-        return None
+    iter_kwargs = cache.iter_kwargs or {}
+    effect_llr_grid = list(iter_kwargs.get('effect_llr', []))
 
-    # a metric-vs-x figure needs x to actually vary; null / single-effect
-    # sweeps hold effect_llr constant and want a different -x column
-    x_vals = (pd.to_numeric(df[x_param], errors='coerce').dropna()
-              if x_param in df.columns else pd.Series(dtype=float))
-    if x_vals.nunique() < 2:
-        print(f'skipping {label}: {x_param} has <2 distinct values '
-              f'(pass -x to pick another x-axis)')
-        return None
+    n_method = df['label'].nunique()
+    plt.figure(figsize=(7, 0.5 * n_method + 1.5))
+    plot_compute_time(df, title=f'Compute time — {label}')
+    _savefig(out / f'{label}_time.pdf')
 
-    fig = plot_x_vs_metrics(df, x_param=x_param, metrics=list(metrics),
-                            one_vs_rest=one_vs_rest)
-    fig.suptitle(label, y=1.01)
+    if effect_llr_grid and all(v == 0 for v in effect_llr_grid):
+        plot_calibration(df, title=f'FWER calibration — {label}')
+        _savefig(out / f'{label}_calibration.pdf')
+        return
 
-    out = glow.benchmark.get_path_result() / '_latest'
-    out.mkdir(exist_ok=True)
-    out_path = out / f'{label}.pdf'
-    fig.savefig(out_path, bbox_inches='tight')
-    plt.close(fig)
-    print(f'saved: {out_path}')
-    return out_path
+    if len(set(effect_llr_grid)) > 1:
+        x_param = 'effect_llr'
+    elif 'extenter' in iter_kwargs:
+        df = df.copy()
+        df['effect_perc'] = df['vox_effect'] / df['vox_total']
+        x_param = 'effect_perc'
+    elif 'ds' in iter_kwargs:
+        x_param = 'num_img'
+    else:
+        return
+
+    plot_x_vs_metrics(df, x_param=x_param, one_vs_rest=True)
+    plt.gcf().suptitle(label, y=1.02, fontsize=13)
+    _savefig(out / f'{label}_metrics.pdf')
 
 
 # ---------------------------------------------------------------------------
-# MANCOVA stat comparison (entrypoint: python -m glow.benchmark.paper.plot)
+# MANCOVA stat comparison (mancova_* caches)
 # ---------------------------------------------------------------------------
 STAT_ORDER = ['llr', 'pillai', 'wilks', 'hotel_tr', 'roys_root']
 STAT_NICE = {
@@ -391,25 +420,6 @@ STAT_NICE = {
     'hotel_tr': 'Hotelling', 'roys_root': "Roy's root",
 }
 METHOD_ORDER = ['VBA', 'VBA-TFCE', 'CET', 'GLOW']
-
-# VBA/TFCE/CET results live in mancova_vba_*, GLOW in mancova_glow_*
-SOURCES_VBA = [
-    ('mancova_vba_wgn', 'WGN'),
-    ('mancova_vba_hcp', 'HCP'),
-]
-SOURCES_GLOW = [
-    ('mancova_glow_wgn', 'WGN'),
-    ('mancova_glow_hcp', 'HCP'),
-]
-# legacy alias used by the VBA-TFCE detail plots
-SOURCES = [(l, f'{n} ({"synthetic" if "wgn" in l else "real"})') for l, n in SOURCES_VBA]
-
-
-def _load(label: str):
-    """Load a cache's results DataFrame and its folder for the given label."""
-    df, folder, _ = glow.benchmark.load_update_all(label, verbose=False)
-    return df, folder
-
 
 def _parse_label(label: str):
     """Parse a VBA-TFCE label into (stat, z_flag): 'VBA-TFCE-pillai-z' -> ('pillai', True)."""
@@ -742,40 +752,26 @@ def build_best_stat_table(all_dfs):
     return pd.DataFrame(rows)
 
 
-def _plot_mancova_stat_comparison() -> None:
-    """Load every mancova source, write the comparison plots/CSV, print summaries."""
-    # --- load all sources (VBA/TFCE/CET from mancova_vba_*, GLOW from mancova_glow_*) ---
-    # keyed by source nice-name -> combined df
-    combined = {}
-    for label, nice in SOURCES_VBA + SOURCES_GLOW:
-        df, folder = _load(label)
-        if df.empty:
-            print(f'skipping {label}: no data')
-            continue
-        combined.setdefault(nice, []).append(df)
+def _plot_mancova(sources, out) -> None:
+    """Write the MANCOVA stat-comparison figures + CSV, print the summaries.
 
-    all_dfs = []
-    for nice, dfs in combined.items():
-        all_dfs.append((pd.concat(dfs, ignore_index=True), nice))
+    Writes the faceted-grid / summary / z-delta figures plus the best-stat
+    CSV into out, from the per-source results that main has already loaded
+    and filtered to the in-config trials.
 
-    if not all_dfs:
-        print('no data found')
-        return
+    Args:
+        sources (dict): source nice-name (WGN / HCP) -> the combined,
+            in-config results DataFrame for that source's mancova caches
+        out (pathlib.Path): directory the figures and CSV are written into
+    """
+    all_dfs = [(df, nice) for nice, df in sources.items()]
 
-    out = glow.benchmark.get_path_result() / '_latest'
-    out.mkdir(exist_ok=True)
-
-    # --- VBA-TFCE detail plots (existing) ---
+    # --- VBA-TFCE detail plots ---
     tfce_datasets = []
-    tfce_raw = []
-    for label, nice in SOURCES:
-        df, folder = _load(label)
-        if df.empty:
-            continue
+    for df, nice in all_dfs:
         df_tfce = df[df['label'].str.startswith('VBA-TFCE-')]
         if df_tfce.empty:
             continue
-        tfce_raw.append((df_tfce, nice))
         tfce_datasets.append((_agg(df_tfce), nice))
 
     if tfce_datasets:
@@ -832,63 +828,91 @@ def _plot_mancova_stat_comparison() -> None:
     plt.close('all')
 
 
-def _labels_with_data() -> list:
-    """List cache labels that have a results.csv on disk (excluding _latest)."""
-    base = glow.benchmark.get_path_result()
-    return sorted(sub.name for sub in base.iterdir()
-                  if sub.is_dir() and sub.name != '_latest'
-                  and (sub / 'results.csv').exists())
+def _load_in_config(label: str, cache):
+    """Load a cache's results, keeping only complete trials in the current config.
+
+    Folds any pending per-trial json into the csv (load_update_all), then
+    drops rows whose trial_hash is not one cache.iter_trial() would
+    produce -- i.e. trials left over from a different config. The kept rows
+    are exactly the complete, in-config trials: save_result writes all of a
+    trial's rows under one trial_hash, so a present hash means complete.
+
+    Args:
+        label (str): cache label / result subfolder name
+        cache (TrialCache): the config-catalogue cache whose iter_trial()
+            defines the in-config trial set
+
+    Returns:
+        the filtered results DataFrame (empty if nothing on disk matches)
+    """
+    df, _, _ = glow.benchmark.load_update_all(label, verbose=False)
+    if df.empty or 'trial_hash' not in df.columns:
+        return pd.DataFrame()
+    expected = {stable_hash(trial) for trial in cache.iter_trial()}
+    return df[df['trial_hash'].astype(str).isin(expected)]
 
 
 def main(argv=None) -> None:
-    """Plot paper figures from cached benchmark results.
+    """Plot caches from the config catalogue into results/_latest.
 
-    Given one or more cache labels (e.g. vba_hcp_famd), draw each cache's
-    metrics-vs-x_param method-comparison figure. With no labels, plot
-    every cache that has data on disk: a method-comparison figure per
-    _add_ana cache and, when any mancova_* cache has data, the MANCOVA
-    stat-comparison figures too.
+    Walks CACHE_BY_LABEL (restricted to the cache labels given on the
+    command line, or all of them when none are given); for each cache
+    keeps only the complete, in-config trials (_load_in_config) and
+    dispatches by run_fnc: run_ana caches go to plot_ana_cache,
+    run_mancova caches are combined by source (WGN / HCP) and handed to
+    _plot_mancova. All figures land in results/_latest. Caches with no
+    in-config results on disk are skipped.
 
     Args:
-        argv (list | None): CLI args to parse; None reads sys.argv
+        argv (list | None): CLI args to parse; None reads sys.argv.
+            Positional args are cache labels (e.g. vba_hcp_famd) to plot;
+            with none, every cache in the catalogue is plotted.
     """
     import argparse
     import matplotlib
     matplotlib.use('Agg')
+    from .config import CACHE_BY_LABEL
+    from .run import run_mancova
 
     parser = argparse.ArgumentParser(
         description='Plot paper benchmark figures from cached results.')
     parser.add_argument(
         'labels', nargs='*',
         help='cache labels to plot (e.g. vba_hcp_famd); '
-             'default: every cache that has data on disk')
-    parser.add_argument(
-        '-x', '--x-param', default='effect_llr',
-        help='results column for the x-axis (default: effect_llr)')
+             'default: every cache in the config catalogue')
     args = parser.parse_args(argv)
 
+    items = list(CACHE_BY_LABEL.items())
     if args.labels:
-        for label in args.labels:
-            plot_method_comparison(label, x_param=args.x_param)
-        return
+        unknown = [l for l in args.labels if l not in CACHE_BY_LABEL]
+        if unknown:
+            parser.error(f'unknown cache label(s): {", ".join(unknown)}')
+        items = [(l, v) for l, v in items if l in args.labels]
 
-    # no labels: plot every cache that has data on disk
-    labels = _labels_with_data()
-    mancova_labels = [l for l in labels if l.startswith('mancova_')]
-    method_labels = [l for l in labels if l not in mancova_labels]
+    out = glow.benchmark.get_path_result() / '_latest'
+    out.mkdir(exist_ok=True)
 
-    for label in method_labels:
-        plot_method_comparison(label, x_param=args.x_param)
+    mancova_sources = {}
+    n_plotted = 0
+    for label, (cache, run_fnc) in items:
+        df = _load_in_config(label, cache)
+        if df.empty:
+            continue
+        if getattr(run_fnc, 'func', run_fnc) is run_mancova:
+            nice = 'HCP' if 'hcp' in label else 'WGN'
+            mancova_sources.setdefault(nice, []).append(df)
+        else:
+            print(f'\n=== {label} ({len(df)} rows) ===')
+            plot_ana_cache(label, df, cache, out)
+        n_plotted += 1
 
-    # the stat-comparison routine owns its own mancova_* sources; only
-    # invoke it when at least one of them actually has data
-    if mancova_labels:
-        _plot_mancova_stat_comparison()
+    if mancova_sources:
+        combined = {nice: pd.concat(dfs, ignore_index=True)
+                    for nice, dfs in mancova_sources.items()}
+        _plot_mancova(combined, out)
 
-    if not labels:
-        print(f'no cached results under {glow.benchmark.get_path_result()}; '
-              'run a benchmark first, e.g. '
-              'python -m glow.benchmark.paper vba_hcp_famd')
+    if n_plotted == 0:
+        print(f'no in-config results found in {out.parent}')
 
 
 if __name__ == '__main__':
