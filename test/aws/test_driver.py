@@ -445,8 +445,8 @@ def test_multi_cache_per_cache_oom_escalation(tmp_path):
 
 @pytest.mark.runaws
 def test_driver_aws_smoke(tmp_path):
-    """End-to-end on real AWS.  Requires .glow_aws_config + provisioned infra."""
-    cfg = AWSConfig.from_file('.glow_aws_config')
+    """End-to-end on real AWS.  Requires a written AWSConfig + provisioned infra."""
+    cfg = AWSConfig.from_file()
     cache = _make_cache(tmp_path, n_trials=2)
     driver_aws(cache, _run_fnc, cfg, verbose=True)
     assert len(cache._load_results()) == 2

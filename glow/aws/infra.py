@@ -11,8 +11,8 @@ Subcommands:
     python -m glow.aws.infra pause                                 [--config PATH]
     python -m glow.aws.infra resume                                [--config PATH]
 
-Reads AWSConfig from .glow_aws_config (or --config) for bucket, queue,
-job-definition, and region names; the rest of the provisioning detail
+Reads AWSConfig from the default user-config path (or --config) for
+bucket, queue, job-definition, and region names; the rest of the provisioning detail
 (instance types, allocation strategy, VPC lookup) lives in this file.
 
 bootstrap creates the account-wide IAM roles setup depends on (the Batch
@@ -1175,8 +1175,8 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-# Default resource names written into a fresh .glow_aws_config by
-# `bootstrap`; each is overridable at the prompt.  s3_bucket must end up
+# Default resource names written into a fresh config by `bootstrap`;
+# each is overridable at the prompt.  s3_bucket must end up
 # globally unique, hence the prompt rather than a silent default.
 DEFAULT_CONFIG_NAMES = {
     's3_bucket': 'glow-experiments',
@@ -1191,7 +1191,7 @@ def _prompt_yes(question: str) -> bool:
 
 
 def _init_config(path: str) -> None:
-    """Write a fresh .glow_aws_config at path, prompting for resource names.
+    """Write a fresh AWSConfig JSON at path, prompting for resource names.
 
     Called by `bootstrap` when no config exists yet.  Prints the default
     bucket / queue / job-definition names and offers to accept them all; on

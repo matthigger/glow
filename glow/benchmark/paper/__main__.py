@@ -61,7 +61,7 @@ def resolve_labels(patterns) -> list:
 
 
 def run(labels=None, n_jobs: int = 1, verbose: bool = True,
-        aws: bool = False, aws_config_path: str = '.glow_aws_config') -> None:
+        aws: bool = False, aws_config_path: str | None = None) -> None:
     """Run every selected cache through driver_local (or driver_aws).
 
     Args:
@@ -69,12 +69,20 @@ def run(labels=None, n_jobs: int = 1, verbose: bool = True,
         n_jobs (int): parallel worker count (local driver only)
         verbose (bool): print per-cache headers and progress
         aws (bool): dispatch to AWS Batch via glow.aws.driver_aws instead of local
-        aws_config_path (str): path to the AWSConfig JSON, used only when aws is True
+        aws_config_path (str | None): path to the AWSConfig JSON (aws only);
+            None loads the default user-config location and, when verbose,
+            announces where it loaded the config from
     """
     entries = resolve_labels(labels or [])
 
     if aws:
         from glow.aws import AWSConfig, driver_aws_multi
+        from glow.aws.config import DEFAULT_CONFIG_PATH
+        if aws_config_path is None:
+            aws_config_path = DEFAULT_CONFIG_PATH
+            if verbose:
+                print(f'loading AWS config from default location: '
+                      f'{aws_config_path}')
         aws_cfg = AWSConfig.from_file(aws_config_path)
         jobs = [(label, cache, run_fnc) for label, (cache, run_fnc) in entries]
         driver_aws_multi(jobs, aws_cfg, verbose=verbose)
@@ -104,8 +112,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help='suppress per-cache headers and the tqdm bar')
     parser.add_argument('--aws', action='store_true',
                         help='run on AWS Batch via glow.aws.driver_aws')
-    parser.add_argument('--aws-config', default='.glow_aws_config',
-                        help='path to AWSConfig JSON (default: .glow_aws_config)')
+    from glow.aws.config import DEFAULT_CONFIG_PATH
+    parser.add_argument('--aws-config', default=None,
+                        help=f'path to AWSConfig JSON (default: '
+                             f'{DEFAULT_CONFIG_PATH})')
     return parser.parse_args(argv)
 
 

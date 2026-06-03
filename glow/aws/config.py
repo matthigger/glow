@@ -1,8 +1,10 @@
 """AWSConfig: AWS Batch + S3 settings passed to driver_aws + infra CLI.
 
-JSON serialisation lives here (to_file / from_file) so the project root
-can hold a .glow_aws_config and the CLI doesn't need to know how to
-construct one.
+JSON serialisation lives here (to_file / from_file).  The default path is
+the per-user config directory (platformdirs user_config_dir, e.g.
+~/.config/glow/aws_config.json on Linux) -- the config peer of the
+user_data_dir glow already writes benchmark results to.  Callers override
+it with the --config / --aws-config CLI flags or the path argument.
 """
 
 import json
@@ -10,8 +12,13 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import List
 
+from platformdirs import user_config_dir
 
-DEFAULT_CONFIG_PATH = '.glow_aws_config'
+
+# per-user config location (XDG ~/.config/glow on Linux), the config peer
+# of the user_data_dir glow already uses for results
+DEFAULT_CONFIG_PATH = str(Path(user_config_dir('glow', 'glow_author')) /
+                          'aws_config.json')
 
 
 def s3_key(prefix: str, *parts: str) -> str:
@@ -57,8 +64,10 @@ class AWSConfig:
         return asdict(self)
 
     def to_file(self, path: str = DEFAULT_CONFIG_PATH) -> None:
-        """Write this config to path as indented JSON."""
-        Path(path).write_text(json.dumps(self.to_dict(), indent=2) + '\n')
+        """Write this config to path as indented JSON, creating parent dirs."""
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(self.to_dict(), indent=2) + '\n')
 
     @classmethod
     def from_dict(cls, d: dict) -> 'AWSConfig':

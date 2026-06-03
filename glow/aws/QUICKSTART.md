@@ -17,7 +17,7 @@ Or call it directly:
 from glow.aws import AWSConfig, driver_aws
 from glow.benchmark.paper.config import CACHE_BY_LABEL
 
-cfg = AWSConfig.from_file('.glow_aws_config')
+cfg = AWSConfig.from_file()  # default: per-user config dir (platformdirs)
 cache, run_fnc = CACHE_BY_LABEL['sweep_extent_wgn_n10']
 driver_aws(cache, run_fnc, cfg)
 ```
@@ -40,7 +40,9 @@ profile, spot-fleet role, the two ECS task roles). It's idempotent:
 python -m glow.aws.infra bootstrap
 ```
 
-`bootstrap` also writes `.glow_aws_config` in the cwd: it prints default
+`bootstrap` also writes the AWSConfig to your per-user config directory
+(located via platformdirs, so the exact path is OS-specific; bootstrap
+prints where it wrote): it prints default
 bucket / queue / job-definition names and lets you accept or override each.
 Pick a globally-unique bucket you own — the worker's S3 access is scoped to it.
 
