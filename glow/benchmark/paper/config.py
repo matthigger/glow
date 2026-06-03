@@ -40,7 +40,7 @@ _WGN_SIDE_3D = math.ceil(CROP_N_VOX ** (1 / 3))
 _WGN_SIDE_2D = math.ceil(CROP_N_VOX ** (1 / 2))
 
 N_PERM_FWER = 250
-N_PERM_INNER = 250
+N_PERM_INNER = 1000
 ALPHA_FWER = 0.05
 
 # Per-family VBA design decisions hoisted out of the ANALYSIS_DICT below
