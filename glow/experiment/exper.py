@@ -152,10 +152,16 @@ class ExperimentImageOnly:
         df = pd.DataFrame()
         for y_feat, y_glob in img_glob_dict.items():
             for file in folder.glob(y_glob):
-                sbj_list = re.findall(sbj_regex, str(file))
-                assert len(sbj_list) == 1, \
+                # dedupe before asserting: BIDS-derivatives paths repeat the
+                # subject id in both the directory and the filename (e.g.
+                # sub-100307/dwi/sub-100307_..._param-fa_dwimap.nii.gz), so a
+                # natural regex like sub-\d+ matches more than once. Collapse
+                # identical matches to one; still reject a path that yields two
+                # genuinely different ids.
+                sbj_set = set(re.findall(sbj_regex, str(file)))
+                assert len(sbj_set) == 1, \
                     f'unique sbj not found in file: {file}'
-                sbj = sbj_list[0]
+                sbj = sbj_set.pop()
                 df.loc[sbj, y_feat] = file
         return df
 
