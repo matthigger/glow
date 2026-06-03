@@ -43,6 +43,13 @@ UPLOAD_THREADS = 16
 # AWS Batch arrayProperties.size bounds.
 ARRAY_MIN, ARRAY_MAX = 2, 10_000
 
+# Batch job-state lifecycle: a child moves down ACTIVE_STATES (in this
+# order) before reaching one of TERMINAL_STATES. The poll bar advances on
+# terminal children and tallies the rest by state, so Spot spin-up reads as
+# live movement instead of a bar stuck at 0.
+ACTIVE_STATES = ('SUBMITTED', 'PENDING', 'RUNNABLE', 'STARTING', 'RUNNING')
+TERMINAL_STATES = frozenset({'SUCCEEDED', 'FAILED'})
+
 
 def driver_aws(trial_cache, run_fnc: Callable, aws_config,
                verbose: bool = True) -> None:
@@ -415,7 +422,9 @@ def _poll_attempts(*, batch, attempts: List['_Attempt'],
 
     All attempts are polled in one describe_jobs sweep per interval and
     each gets its own tqdm bar (stacked via position), so concurrently
-    submitted array jobs show independent progress.
+    submitted array jobs show independent progress. Each bar's postfix
+    tallies its still-in-flight children by Batch state (_inflight_postfix)
+    so Spot spin-up shows as movement before any child finishes the bar.
 
     Args:
         batch: boto3 Batch client.
@@ -432,7 +441,6 @@ def _poll_attempts(*, batch, attempts: List['_Attempt'],
         statuses_per_attempt (list): aligned with attempts; each element is
             that attempt's describe_jobs payloads in child-index order.
     """
-    terminal = {'SUCCEEDED', 'FAILED'}
     all_child_ids = [cid for a in attempts for cid in a.child_ids]
     statuses: Dict[str, dict] = {}
 
@@ -456,7 +464,7 @@ def _poll_attempts(*, batch, attempts: List['_Attempt'],
                 if idx in handled[i]:
                     continue
                 job = statuses.get(cid, {})
-                if job.get('status') not in terminal:
+                if job.get('status') not in TERMINAL_STATES:
                     continue
                 handled[i].add(idx)
                 newly += 1
@@ -464,6 +472,10 @@ def _poll_attempts(*, batch, attempts: List['_Attempt'],
                     on_complete(a, a.manifest[idx], job)
             if newly:
                 bars[i].update(newly)
+            # Live breakdown of the still-in-flight children by Batch state,
+            # so spin-up (SUBMITTED -> RUNNABLE -> STARTING -> RUNNING) reads
+            # as movement before any child finishes and advances the bar.
+            bars[i].set_postfix_str(_inflight_postfix(a, statuses))
             if len(handled[i]) < len(a.manifest):
                 all_done = False
 
@@ -475,6 +487,31 @@ def _poll_attempts(*, batch, attempts: List['_Attempt'],
         bar.close()
     # Preserve child-index order within each attempt.
     return [[statuses[cid] for cid in a.child_ids] for a in attempts]
+
+
+def _inflight_postfix(attempt: '_Attempt', statuses: Dict[str, dict]) -> str:
+    """Summarize an attempt's still-in-flight children by Batch state.
+
+    Reads the per-child status the poll loop already fetched, so it adds no
+    API calls. Terminal children are omitted (the bar's n/total counts
+    them); states with no children are dropped. A child not yet seen by
+    describe_jobs is counted as SUBMITTED.
+
+    Args:
+        attempt (_Attempt): the attempt whose children to tally.
+        statuses (dict): child job id -> latest describe_jobs payload.
+
+    Returns:
+        postfix (str): e.g. 'RUNNABLE=80 STARTING=12 RUNNING=18', or '' once
+            every child has reached a terminal state.
+    """
+    counts: Dict[str, int] = {}
+    for cid in attempt.child_ids:
+        status = statuses.get(cid, {}).get('status', 'SUBMITTED')
+        if status in TERMINAL_STATES:
+            continue
+        counts[status] = counts.get(status, 0) + 1
+    return ' '.join(f'{s}={counts[s]}' for s in ACTIVE_STATES if counts.get(s))
 
 
 def _chunked(seq, k: int):

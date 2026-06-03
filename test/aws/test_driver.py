@@ -12,7 +12,7 @@ import pytest
 
 from glow.aws.config import AWSConfig
 from glow.aws.driver import (
-    _is_oom, driver_aws, driver_aws_multi)
+    _Attempt, _inflight_postfix, _is_oom, driver_aws, driver_aws_multi)
 from glow.benchmark.data import DataSource, DataSourceWGN
 from glow.benchmark.trial_cache import TrialCache
 from glow.util import stable_hash
@@ -126,6 +126,34 @@ def _seed_results(fake_s3, *, bucket, prefix, manifest, results):
 ])
 def test_is_oom(job, expected):
     assert _is_oom(job) is expected
+
+
+# ---------- _inflight_postfix -----------------------------------------------
+
+
+def test_inflight_postfix_counts_active_states_in_order():
+    """Non-terminal children are tallied per state, in lifecycle order."""
+    attempt = _Attempt(label='x', manifest=['h0', 'h1', 'h2', 'h3'],
+                       parent_id='p-000', is_array=True)
+    statuses = {
+        'p-000:0': {'status': 'RUNNING'},
+        'p-000:1': {'status': 'RUNNABLE'},
+        'p-000:2': {'status': 'RUNNING'},
+        # h3 not yet seen by describe_jobs -> counted as SUBMITTED.
+    }
+    assert _inflight_postfix(attempt, statuses) == \
+        'SUBMITTED=1 RUNNABLE=1 RUNNING=2'
+
+
+def test_inflight_postfix_empty_when_all_terminal():
+    """Once every child is terminal the postfix clears (bar counts them)."""
+    attempt = _Attempt(label='x', manifest=['h0', 'h1'],
+                       parent_id='p-000', is_array=True)
+    statuses = {
+        'p-000:0': {'status': 'SUCCEEDED'},
+        'p-000:1': {'status': 'FAILED'},
+    }
+    assert _inflight_postfix(attempt, statuses) == ''
 
 
 # ---------- driver_aws happy path ------------------------------------------
