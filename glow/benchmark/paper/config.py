@@ -232,3 +232,11 @@ _add_ana('sphere_wgn',
 # G. MANCOVA stat comparison — VBA / VBA-TFCE / CET x 5 stats x {raw, z}
 _add_mancova('mancova_vba_hcp', ds=_ds_hcp())
 _add_mancova('mancova_vba_wgn', ds=_ds_wgn())
+
+# H. pruning rule — greedy max-LLR vs. DP max-likelihood cut
+# todo: add a cache validating GLOW's greedy max-LLR pruning against the
+#    exact max-likelihood (max-total-LLR) antichain found by a bottom-up
+#    dynamic program over the hierarchy, scoring both against ground-truth
+#    extent. Expectation: the unpenalized DP oversegments (one effect ->
+#    several output regions); confirm the greedy rule avoids this without
+#    losing regions the DP would recover. See Section ssec:prune.
