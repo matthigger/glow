@@ -116,7 +116,7 @@ def plot_compute_time(df, title: str = 'Computation Time (per Experiment)') -> N
 
 
 def plot_calibration(df, alpha_max: float = 0.20, n_pts: int = 200,
-                     title: str = None) -> None:
+                     title: str = None, ax=None) -> None:
     """Plot FWER calibration curve: nominal alpha vs empirical rejection rate.
 
     Each method (label) gets its own curve; the diagonal is the reference.
@@ -127,6 +127,8 @@ def plot_calibration(df, alpha_max: float = 0.20, n_pts: int = 200,
         alpha_max (float): right edge of the nominal-alpha axis
         n_pts (int): number of nominal-alpha sample points
         title (str): plot title, or None for the default
+        ax: matplotlib Axes to draw into; None makes its own square figure
+            (faceted by source via _plot_calibration_faceted)
     """
     if 'min_pval' not in df.columns:
         print('  (no min_pval column — skipping calibration plot)')
@@ -143,7 +145,9 @@ def plot_calibration(df, alpha_max: float = 0.20, n_pts: int = 200,
 
     alphas = np.linspace(0, alpha_max, n_pts)
 
-    fig, ax = plt.subplots(figsize=(5, 5))
+    owns_fig = ax is None
+    if owns_fig:
+        _, ax = plt.subplots(figsize=(5, 5))
     ax.plot([0, alpha_max], [0, alpha_max], ls='--', color='grey', lw=1,
             label='ideal')
 
@@ -171,7 +175,8 @@ def plot_calibration(df, alpha_max: float = 0.20, n_pts: int = 200,
     ax.set_ylim(0, alpha_max)
     ax.set_aspect('equal')
     ax.grid(True, alpha=0.3)
-    plt.tight_layout()
+    if owns_fig:
+        plt.tight_layout()
 
 
 _METRIC_TITLES = {
@@ -186,6 +191,7 @@ _X_PARAM_LABELS = {
     'effect_llr': 'Effect LLR',
     'effect_perc': 'Effect Size (% of Volume)',
     'num_img': 'Number of Subjects',
+    'b': 'Number of Imaging Features',
 }
 
 
@@ -412,6 +418,141 @@ def plot_ana_cache(label: str, df, cache, out) -> None:
     plot_x_vs_metrics(df, x_param=x_param, one_vs_rest=True)
     plt.gcf().suptitle(label, y=1.02, fontsize=13)
     _savefig(out / f'{label}_metrics.pdf')
+
+
+# ---------------------------------------------------------------------------
+# Spec-driven dispatch: one faceted plotter, roles read from config.PLOT
+# ---------------------------------------------------------------------------
+
+def plot_metric_grid(label: str, df, *, x: str, metrics: list,
+                     facet: str = 'source', hue: str = 'label',
+                     ci: int = 90, out=None) -> None:
+    """Plot a faceted metric sweep: col=facet, row=metric, one curve per hue.
+
+    The tidy-results generalisation of plot_x_vs_metrics: rather than
+    branching on what the cache swept, it puts the spec's x column on the
+    x-axis, the facet column (source) across panel columns, and each
+    metric on its own panel row, aggregating the seed replicates into a
+    mean + percentile band. WGN and HCP therefore sit side by side.
+
+    Args:
+        label (str): cache label; used in the title and output filename
+        df: the cache's tidy results (scalar axis columns + metric columns)
+        x (str): column for the x-axis ('effect_perc' is derived from
+            vox_effect / vox_total if absent)
+        metrics (list): metric columns, one panel row each
+        facet (str): categorical column spread across panel columns
+        hue (str): column mapped to line colour (the method 'label')
+        ci (int): central percentile-interval width for the band
+        out (pathlib.Path): directory the figure is written into
+    """
+    df = df.copy()
+    if x == 'effect_perc' and 'effect_perc' not in df.columns:
+        df['effect_perc'] = (pd.to_numeric(df['vox_effect'], errors='coerce')
+                             / pd.to_numeric(df['vox_total'], errors='coerce'))
+    for col in [x, *metrics]:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df = df.dropna(subset=[x])
+
+    long = df.melt(id_vars=[x, facet, hue], value_vars=metrics,
+                   var_name='metric', value_name='value')
+    long['metric'] = long['metric'].map(lambda m: _METRIC_TITLES.get(m, m))
+
+    palette = get_cmap_dict(sorted(df[hue].dropna().unique().tolist()))
+    g = sns.relplot(
+        data=long, x=x, y='value', hue=hue, col=facet, row='metric',
+        kind='line', estimator='mean', errorbar=('pi', ci), palette=palette,
+        facet_kws=dict(sharey='row', sharex=True), height=2.6, aspect=1.5)
+
+    xmin = df[x].min()
+    if pd.notnull(xmin) and xmin > 0:
+        g.set(xscale='log')
+    g.set_axis_labels(_X_PARAM_LABELS.get(x, x), 'score')
+    g.figure.suptitle(label, y=1.02, fontsize=13)
+    path = out / f'{label}_metrics.pdf'
+    g.figure.savefig(path, bbox_inches='tight')
+    plt.close('all')
+    print(f'saved: {path}')
+
+
+def _plot_calibration_faceted(label: str, df, out, facet: str = 'source') -> None:
+    """Lay out one FWER-calibration axes per facet value, side by side.
+
+    Args:
+        label (str): cache label; used in titles and the output filename
+        df: the null cache's results (needs min_pval, label, facet columns)
+        out (pathlib.Path): directory the figure is written into
+        facet (str): categorical column to split across axes
+    """
+    sources = sorted(df[facet].dropna().unique().tolist())
+    fig, axes = plt.subplots(1, len(sources), figsize=(5 * len(sources), 5),
+                             squeeze=False)
+    for ax, src in zip(axes[0], sources):
+        plot_calibration(df[df[facet] == src], title=f'{label} — {src}', ax=ax)
+    fig.tight_layout()
+    path = out / f'{label}_calibration.pdf'
+    fig.savefig(path, bbox_inches='tight')
+    plt.close('all')
+    print(f'saved: {path}')
+
+
+def _infer_spec(cache) -> dict:
+    """Fall back to a plot spec for a cache with no config.PLOT entry.
+
+    Reads cache.iter_kwargs (config intent, not the possibly-partial data):
+    an all-zero effect_llr grid is a calibration cache, the first ordered
+    axis that actually varies becomes the x-axis, else effect_llr.
+
+    Args:
+        cache (TrialCache): the catalogue cache whose axes are inspected
+
+    Returns:
+        a plot spec dict (kind / x / facet)
+    """
+    ik = cache.iter_kwargs or {}
+    if set(ik.get('effect_llr', [])) == {0.0}:
+        return dict(kind='calibration', facet='source')
+    for cand in ('effect_llr', 'b', 'num_img', 'n_vox_eff'):
+        if len(set(ik.get(cand, []))) > 1:
+            return dict(kind='metric', facet='source',
+                        x='effect_perc' if cand == 'n_vox_eff' else cand)
+    return dict(kind='metric', x='effect_llr', facet='source')
+
+
+def plot_cache(label: str, df, cache, spec: dict, out) -> None:
+    """Write one cache's figures, dispatching on its plot spec.
+
+    Always writes a compute-time boxplot, then dispatches by spec['kind']:
+    'calibration' (faceted FWER curve), 'metric' (faceted dice/sens/spec
+    sweep), or 'mancova' (the stat-comparison grid, splitting the merged
+    cache back into its per-source frames).
+
+    Args:
+        label (str): cache label; used in titles and output filenames
+        df: the cache's tidy in-config results
+        cache (TrialCache): the catalogue cache (unused beyond context)
+        spec (dict): plot roles (see config.PLOT)
+        out (pathlib.Path): directory the figures are written into
+    """
+    kind = spec.get('kind', 'metric')
+
+    n_method = df['label'].nunique()
+    plt.figure(figsize=(7, 0.5 * n_method + 1.5))
+    plot_compute_time(df, title=f'Compute time — {label}')
+    _savefig(out / f'{label}_time.pdf')
+
+    if kind == 'calibration':
+        _plot_calibration_faceted(label, df, out,
+                                  facet=spec.get('facet', 'source'))
+    elif kind == 'mancova':
+        sources = {('HCP' if str(s) == 'hcp' else 'WGN'): sub
+                   for s, sub in df.groupby('source')}
+        _plot_mancova(sources, out)
+    else:
+        plot_metric_grid(label, df, x=spec['x'],
+                         metrics=spec.get('metrics', ['dice', 'sens', 'spec']),
+                         facet=spec.get('facet', 'source'),
+                         hue=spec.get('hue', 'label'), out=out)
 
 
 # ---------------------------------------------------------------------------
@@ -865,10 +1006,11 @@ def main(argv=None) -> None:
 
     Walks CACHE_BY_LABEL (restricted to the cache labels given on the
     command line, or all of them when none are given); for each cache
-    keeps the completed in-config trials (_load_in_config) and dispatches
-    by run_fnc: run_ana caches go to plot_ana_cache, run_mancova caches
-    are combined by source (WGN / HCP) and handed to _plot_mancova. All
-    figures land in results/_latest.
+    keeps the completed in-config trials (_load_in_config) and hands them
+    to plot_cache with the cache's spec from config.PLOT (or an inferred
+    one). The spec decides the figure kind and which scalar column is the
+    x-axis / source facet, so a single merged cache plots WGN and HCP side
+    by side. All figures land in results/_latest.
 
     A cache is plotted as soon as any of its in-config trials are
     complete -- it does not wait for the whole config -- so this can be
@@ -878,34 +1020,32 @@ def main(argv=None) -> None:
 
     Args:
         argv (list | None): CLI args to parse; None reads sys.argv.
-            Positional args are cache labels (e.g. vba_hcp_famd) to plot;
+            Positional args are cache labels (e.g. sweep_llr) to plot;
             with none, every cache in the catalogue is plotted.
     """
     import argparse
     import matplotlib
     matplotlib.use('Agg')
-    from .config import CACHE_BY_LABEL
-    from .run import run_mancova
+    from .config import CACHE_BY_LABEL, PLOT
 
     parser = argparse.ArgumentParser(
         description='Plot paper benchmark figures from cached results.')
     parser.add_argument(
         'labels', nargs='*',
-        help='cache labels to plot (e.g. vba_hcp_famd); '
+        help='cache labels to plot (e.g. sweep_llr); '
              'default: every cache in the config catalogue')
     args = parser.parse_args(argv)
 
     items = list(CACHE_BY_LABEL.items())
     if args.labels:
-        unknown = [l for l in args.labels if l not in CACHE_BY_LABEL]
+        unknown = [lab for lab in args.labels if lab not in CACHE_BY_LABEL]
         if unknown:
             parser.error(f'unknown cache label(s): {", ".join(unknown)}')
-        items = [(l, v) for l, v in items if l in args.labels]
+        items = [(lab, v) for lab, v in items if lab in args.labels]
 
     out = glow.benchmark.get_path_result() / '_latest'
     out.mkdir(exist_ok=True)
 
-    mancova_sources = {}
     n_plotted = 0
     for label, (cache, run_fnc) in items:
         df = _load_in_config(label, cache)
@@ -916,17 +1056,9 @@ def main(argv=None) -> None:
         n_done = df['trial_hash'].astype(str).nunique()
         print(f'\n=== {label}: {n_done}/{len(cache)} config trials '
               f'complete ({len(df)} rows) ===')
-        if getattr(run_fnc, 'func', run_fnc) is run_mancova:
-            nice = 'HCP' if 'hcp' in label else 'WGN'
-            mancova_sources.setdefault(nice, []).append(df)
-        else:
-            plot_ana_cache(label, df, cache, out)
+        spec = PLOT.get(label) or _infer_spec(cache)
+        plot_cache(label, df, cache, spec, out)
         n_plotted += 1
-
-    if mancova_sources:
-        combined = {nice: pd.concat(dfs, ignore_index=True)
-                    for nice, dfs in mancova_sources.items()}
-        _plot_mancova(combined, out)
 
     if n_plotted == 0:
         print(f'no in-config results found in {out.parent}')

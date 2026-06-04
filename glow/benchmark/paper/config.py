@@ -1,17 +1,34 @@
-"""Paper-benchmark catalogue.
+"""Paper-benchmark catalogue (flattened-axis edition).
 
-Each entry of CACHE_BY_LABEL is a (TrialCache, run_fnc) pair: the cache
-owns iteration + result IO for one (data source, analysis-family)
-combination; the run_fnc is bound to its analysis recipe via
-functools.partial so the CLI doesn't need to know whether the trial is
-a run_ana or run_mancova job.
+Each entry of CACHE_BY_LABEL is a (TrialCache, run_fnc) pair. Every trial
+axis is a plain scalar/categorical in iter_kwargs -- source, seed, b,
+num_img, n_vox_eff, and an effect-strength knob -- so a cache's whole
+trial grid is the cartesian product of those lists. The heavy objects
+(DataSource, Extenter) are rebuilt from the scalars inside the trial fn
+via factory.build_ds, and TrialCache.save_result merges each scalar axis
+into every result row. results.csv is therefore tidy long-format: one row
+per (trial, method), self-describing by its scalar columns.
 
-The trial space is intentionally small: seed x effect_llr, with a
-single DataSource and effect Extenter held constant per cache. Sweeps
-that varied a structural parameter (b, num_img, effect n_vox, ...) are
-encoded by emitting one cache per value.
+WGN and HCP live in one cache per experiment (source=['wgn','hcp']); they
+plot side by side, faceted on the source column (see PLOT + plot.py). The
+companion PLOT dict declares each cache's plot roles -- which scalar is
+the x-axis, which is the facet -- so the plotter never introspects the
+data to guess.
+
+Effect strength. effect_llr is the per-voxel (size-normalized) target;
+the observed whole-region LLR is ~ effect_llr * n_vox_eff (see
+glow.effect.impose). Two consequences, both verified empirically:
+  - holding effect_llr fixed while sweeping num_img holds the per-subject
+    effect fixed (a clean power curve), so sweep_nimg needs no special
+    handling;
+  - holding effect_llr fixed while sweeping extent holds the per-voxel
+    effect fixed, so the total grows with the region. sweep_extent instead
+    passes effect_total_llr (the whole-region target) and the trial fn
+    sets effect_llr = effect_total_llr / n_vox_eff to hold the total fixed.
+
+Mothballed experiments (2-D WGN, sphere-extent variants) live in
+config_mothball.py and are not imported here.
 """
-import math
 from functools import partial
 
 import numpy as np
@@ -19,28 +36,32 @@ import numpy as np
 import glow
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr, get_wilks
-from glow.benchmark.data import DataSourceHCP, DataSourceWGN
 from glow.benchmark.trial_cache import TrialCache
-from glow.effect import ExtenterMinVar, ExtenterSphere
 
-from .run import run_ana, run_mancova
+from .factory import CROP_N_VOX, HCP_FEAT_POOL
+from .run import run_ana, run_mancova, run_segment
 
 
 # ---------- shared knobs -----------------------------------------------------
+SOURCES = ['wgn', 'hcp']
+
 N_SEED = 10
+# todo: the manuscript says "todo seeds" for the null calibration (was an
+#   unbacked 500). Pick the count here and update the text to match.
 N_SEED_NULL = 100
+
 EFFECT_LLR_GRID = np.logspace(np.log10(0.003), np.log10(0.3), 11)
 MODERATE_EFFECT_LLR = 0.03
 
-CROP_N_VOX = 25_000
-EFFECT_PERC_TOTAL_VOLUME = .1
+EFFECT_PERC_TOTAL_VOLUME = 0.1
 EFFECT_N_VOX = int(EFFECT_PERC_TOTAL_VOLUME * CROP_N_VOX)
 
-_WGN_SIDE_3D = math.ceil(CROP_N_VOX ** (1 / 3))
-_WGN_SIDE_2D = math.ceil(CROP_N_VOX ** (1 / 2))
+# Whole-region LLR target for the extent sweep, set so the default extent
+# (EFFECT_N_VOX) reproduces MODERATE_EFFECT_LLR per voxel.
+EXTENT_TOTAL_LLR = MODERATE_EFFECT_LLR * EFFECT_N_VOX
 
 N_PERM_FWER = 250
-N_PERM_INNER = 250
+N_PERM_INNER = 1000
 ALPHA_FWER = 0.05
 
 # GLOW inner-perm-race speed/power knobs (never validity knobs; see
@@ -51,15 +72,11 @@ ALPHA_FWER = 0.05
 RACE_INIT = 15
 RACE_P_KEEP_THRESH = 1e-6
 
-# Per-family VBA design decisions hoisted out of the ANALYSIS_DICT below
-# so they're easy to scan and override.
+# Per-family VBA design decisions (hoisted for easy scanning / override).
 VBA_Z_FLAG = True
 VBA_GET_STAT = get_hotel_tr
 VBA_TFCE_GET_STAT = get_wilks
 CET_GET_STAT = get_hotel_tr
-
-_CROP_EXTENTER = ExtenterSphere(n_vox=CROP_N_VOX, connected=True)
-_DEFAULT_EFFECT_EXTENTER = ExtenterMinVar(n_vox=EFFECT_N_VOX)
 
 
 # ---------- analysis recipes -------------------------------------------------
@@ -77,8 +94,7 @@ ANALYSIS_DICT = {
     'GLOW-GLM':   (glow.analysis.AnalysisGLOW,
                    {**_GLOW_BASE, 'cluster_mode': ClusterMode.GLM_ERROR}),
     'VBA':        (glow.analysis.AnalysisVBA,
-                   {**_VBA_BASE, 'tfce_flag': False,
-                    'get_stat': VBA_GET_STAT}),
+                   {**_VBA_BASE, 'tfce_flag': False, 'get_stat': VBA_GET_STAT}),
     'VBA-TFCE':   (glow.analysis.AnalysisVBA,
                    {**_VBA_BASE, 'tfce_flag': True,
                     'get_stat': VBA_TFCE_GET_STAT}),
@@ -86,157 +102,120 @@ ANALYSIS_DICT = {
                    {**_VBA_BASE, 'get_stat': CET_GET_STAT}),
 }
 
-
-# ---------- data-source factories -------------------------------------------
-def _ds_wgn(*, shape=None, b: int = 2, num_img: int = 100, seed: int = 0,
-            crop: bool = True):
-    """Build a white-Gaussian-noise data source, optionally cropped to a sphere."""
-    if shape is None:
-        shape = (_WGN_SIDE_3D,) * 3
-    return DataSourceWGN(
-        shape=shape, b=b, num_img=num_img, seed=seed,
-        extenter=_CROP_EXTENTER if crop else None)
+SEGMENT_MODES = [ClusterMode.NAIVE, ClusterMode.GLM_ERROR, ClusterMode.FOCUS]
 
 
-def _ds_hcp(*, hcp_feats=('fa', 'md'), seed: int = 0):
-    """Build an HCP data source over the given features, cropped to a sphere."""
-    return DataSourceHCP(hcp_feats=hcp_feats, seed=seed,
-                         extenter=_CROP_EXTENTER)
+# ---------- structural grids ------------------------------------------------
+# Feature-count grid. WGN runs the whole grid; HCP clamps to its feature
+# pool (run_ana would raise past it), so HCP's facet simply ends earlier.
+B_GRID = [b for b in (1, 2, 3, 4, 6, 8, 10)]
+_B_GRID_HCP_MAX = len(HCP_FEAT_POOL)
+
+# Effect-extent grid: 1% .. 100% of the cropped volume.
+EXTENT_N_VOX_GRID = [int(round(p * CROP_N_VOX))
+                     for p in np.geomspace(0.01, 1.0, 15)]
+
+# Subject-count grid (WGN only; HCP's N is its cohort size).
+NIMG_GRID = [10, 18, 30, 55, 100, 180, 300]
 
 
-# ---------- TrialCache assembly ---------------------------------------------
+# ---------- catalogue assembly ----------------------------------------------
 # label -> (TrialCache, run_fnc)
 CACHE_BY_LABEL = {}
 
 
-def _make_cache(label: str, *, ds, extenter, effect_llr_all,
-                n_seed: int) -> TrialCache:
-    """Build a TrialCache over the seed x effect_llr grid for one (ds, extenter).
-
-    Either ds or extenter may be passed as a list to sweep that structural
-    parameter inside this single cache (its values go to iter_kwargs)
-    rather than emitting one cache per value; the non-list one is held
-    constant in kwargs. A swept object stays a real trial kwarg, so its
-    trial_hash is identical to the per-value-folder layout — the two are
-    interchangeable on disk.
-    """
-    iter_kwargs = {
-        'seed': list(range(n_seed)),
-        'effect_llr': [float(x) for x in effect_llr_all],
-    }
-    kwargs = {}
-    for key, val in (('ds', ds), ('extenter', extenter)):
-        if isinstance(val, (list, tuple)):
-            iter_kwargs[key] = list(val)
-        else:
-            kwargs[key] = val
-    return TrialCache(name=label, iter_kwargs=iter_kwargs, kwargs=kwargs)
-
-
-def _add_ana(label: str, *, ds, extenter=None, effect_llr_all=None,
-             n_seed: int = N_SEED, ana_kwargs_dict: dict = None) -> None:
-    """Register a CACHE_BY_LABEL entry that runs every analysis in ana_kwargs_dict.
+def _cache(label: str, *, run_fnc, **iter_kwargs) -> None:
+    """Register one (TrialCache, run_fnc) entry from a flat scalar grid.
 
     Args:
-        label (str): catalogue key for the new cache
-        ds: data source for the trials
-        extenter: effect Extenter (defaults to the shared MinVar extenter)
-        effect_llr_all: effect-strength grid (defaults to EFFECT_LLR_GRID)
-        n_seed (int): number of seeds to sweep
-        ana_kwargs_dict (dict): label -> (Analysis class, init kwargs);
-            defaults to ANALYSIS_DICT
+        label (str): catalogue key / on-disk result folder name
+        run_fnc (Callable): bound trial fn (run_ana/run_segment/run_mancova)
+        **iter_kwargs: the scalar axes; each value is a list whose
+            cartesian product is the cache's trial grid
     """
-    if extenter is None:
-        extenter = _DEFAULT_EFFECT_EXTENTER
-    if effect_llr_all is None:
-        effect_llr_all = EFFECT_LLR_GRID
-    if ana_kwargs_dict is None:
-        ana_kwargs_dict = ANALYSIS_DICT
-
-    cache = _make_cache(label, ds=ds, extenter=extenter,
-                        effect_llr_all=effect_llr_all, n_seed=n_seed)
-    run_fnc = partial(run_ana, ana_kwargs_dict=ana_kwargs_dict)
-    CACHE_BY_LABEL[label] = (cache, run_fnc)
+    # cast numpy scalars to plain python so result columns stay readable
+    clean = {k: [v.item() if isinstance(v, np.generic) else v for v in vals]
+             for k, vals in iter_kwargs.items()}
+    CACHE_BY_LABEL[label] = (TrialCache(name=label, iter_kwargs=clean), run_fnc)
 
 
-def _add_mancova(label: str, *, ds, extenter=None, effect_llr_all=None,
-                 n_seed: int = N_SEED, n_perm_fwer: int = N_PERM_FWER,
-                 alpha_fwer: float = ALPHA_FWER) -> None:
-    """Register a CACHE_BY_LABEL entry that runs the VBA/TFCE/CET x stats x {raw,z} matrix.
-
-    Args:
-        label (str): catalogue key for the new cache
-        ds: data source for the trials
-        extenter: effect Extenter (defaults to the shared MinVar extenter)
-        effect_llr_all: effect-strength grid (defaults to EFFECT_LLR_GRID)
-        n_seed (int): number of seeds to sweep
-        n_perm_fwer (int): number of FWER permutations
-        alpha_fwer (float): FWER significance level
-    """
-    if extenter is None:
-        extenter = _DEFAULT_EFFECT_EXTENTER
-    if effect_llr_all is None:
-        effect_llr_all = EFFECT_LLR_GRID
-
-    cache = _make_cache(label, ds=ds, extenter=extenter,
-                        effect_llr_all=effect_llr_all, n_seed=n_seed)
-    run_fnc = partial(run_mancova, n_perm_fwer=n_perm_fwer,
-                      alpha_fwer=alpha_fwer)
-    CACHE_BY_LABEL[label] = (cache, run_fnc)
+_ana = partial(run_ana, ana_kwargs_dict=ANALYSIS_DICT)
+_segment = partial(run_segment, modes=SEGMENT_MODES)
+_mancova = partial(run_mancova, n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
 
 
-# ---------- benchmark catalogue ---------------------------------------------
-# A. type I error (null): effect_llr = 0, many seeds
-_add_ana('null_hcp', ds=_ds_hcp(),
-         effect_llr_all=[0.0], n_seed=N_SEED_NULL)
-_add_ana('null_wgn', ds=_ds_wgn(),
-         effect_llr_all=[0.0], n_seed=N_SEED_NULL)
+# A. Type I error (null): no effect, many seeds, both sources.
+_cache('null', run_fnc=_ana,
+       source=SOURCES, seed=list(range(N_SEED_NULL)),
+       effect_llr=[0.0], b=[1], num_img=[100], n_vox_eff=[EFFECT_N_VOX])
 
-# B. VBA comparison split by feature count
-_add_ana('vba_hcp_fa',   ds=_ds_hcp(hcp_feats=('fa',)))
-_add_ana('vba_hcp_famd', ds=_ds_hcp(hcp_feats=('fa', 'md')))
-_add_ana('vba_wgn_b1',   ds=_ds_wgn(b=1))
-_add_ana('vba_wgn_b2',   ds=_ds_wgn(b=2))
+# B. Detection vs effect strength (b=1; HCP draws one random feature/seed).
+_cache('sweep_llr', run_fnc=_ana,
+       source=SOURCES, seed=list(range(N_SEED)),
+       effect_llr=EFFECT_LLR_GRID, b=[1], num_img=[100],
+       n_vox_eff=[EFFECT_N_VOX])
 
-# C. effect-extent sweep — one cache per data source; the n_vox grid is
-#    swept inside each cache (each row records its realized support as
-#    vox_effect), so HCP and WGN are two folders instead of 2 * len(grid).
-_EFFECT_N_VOX_GRID = [int(round(p * CROP_N_VOX))
-                      for p in np.geomspace(0.01, 1.0, 15)]
-_EXTENT_EXTENTERS = [ExtenterMinVar(n_vox=_n_vox)
-                     for _n_vox in _EFFECT_N_VOX_GRID]
-_add_ana('sweep_extent_hcp', ds=_ds_hcp(), extenter=_EXTENT_EXTENTERS,
-         effect_llr_all=[MODERATE_EFFECT_LLR])
-_add_ana('sweep_extent_wgn', ds=_ds_wgn(), extenter=_EXTENT_EXTENTERS,
-         effect_llr_all=[MODERATE_EFFECT_LLR])
+# C. Detection vs feature count (the multivariate story). WGN spans the
+#    full B_GRID; HCP clamps to its pool (longer-grid HCP trials raise and
+#    record an error row -- the HCP facet just ends at the pool size).
+_cache('sweep_b', run_fnc=_ana,
+       source=SOURCES, seed=list(range(N_SEED)),
+       effect_llr=[MODERATE_EFFECT_LLR], b=B_GRID, num_img=[100],
+       n_vox_eff=[EFFECT_N_VOX])
 
-# D. num_img sweep (WGN only) — one cache; num_img is swept inside it (each
-#    row records its num_img), so it's one folder instead of len(grid).
-_NIMG_GRID = (10, 18, 30, 55, 100, 180, 300)
-_add_ana('sweep_nimg_wgn',
-         ds=[_ds_wgn(num_img=_n) for _n in _NIMG_GRID],
-         effect_llr_all=[MODERATE_EFFECT_LLR])
+# D. Detection vs effect extent, holding the whole-region LLR fixed
+#    (effect_total_llr; per-voxel llr shrinks as the region grows).
+_cache('sweep_extent', run_fnc=_ana,
+       source=SOURCES, seed=list(range(N_SEED)),
+       effect_total_llr=[EXTENT_TOTAL_LLR], b=[1], num_img=[100],
+       n_vox_eff=EXTENT_N_VOX_GRID)
 
-# E. 2D images (WGN, no 3D crop)
-_add_ana('vba_wgn_2d',
-         ds=_ds_wgn(shape=(_WGN_SIDE_2D, _WGN_SIDE_2D), crop=False))
+# E. Detection vs subject count (WGN only; fixed per-voxel effect = power
+#    curve). HCP's N is its cohort, so it has no num_img axis to sweep.
+_cache('sweep_nimg', run_fnc=_ana,
+       source=['wgn'], seed=list(range(N_SEED)),
+       effect_llr=[MODERATE_EFFECT_LLR], b=[1], num_img=NIMG_GRID,
+       n_vox_eff=[EFFECT_N_VOX])
 
-# F. sphere-extenter variants
-_add_ana('sphere_hcp',
-         ds=_ds_hcp(),
-         extenter=ExtenterSphere(n_vox=EFFECT_N_VOX))
-_add_ana('sphere_wgn',
-         ds=_ds_wgn(),
-         extenter=ExtenterSphere(n_vox=EFFECT_N_VOX))
+# F. Segmentation quality: oracle Dice of the best region per Ward mode
+#    (Naive / GLM Error / Focus), no significance test or pruning.
+_cache('segment', run_fnc=_segment,
+       source=SOURCES, seed=list(range(N_SEED)),
+       effect_llr=EFFECT_LLR_GRID, b=[1], num_img=[100],
+       n_vox_eff=[EFFECT_N_VOX])
 
-# G. MANCOVA stat comparison — VBA / VBA-TFCE / CET x 5 stats x {raw, z}
-_add_mancova('mancova_vba_hcp', ds=_ds_hcp())
-_add_mancova('mancova_vba_wgn', ds=_ds_wgn())
+# G. MANCOVA stat comparison: VBA / VBA-TFCE / CET x 5 stats x {raw, z}
+#    (b=2 so the multivariate stats differ). todo: add a GLOW arm (run.py).
+_cache('stat', run_fnc=_mancova,
+       source=SOURCES, seed=list(range(N_SEED)),
+       effect_llr=EFFECT_LLR_GRID, b=[2], num_img=[100],
+       n_vox_eff=[EFFECT_N_VOX])
 
-# H. pruning rule — greedy max-LLR vs. DP max-likelihood cut
+# H. Pruning rule -- greedy max-LLR vs DP max-likelihood cut.
 # todo: add a cache validating GLOW's greedy max-LLR pruning against the
 #    exact max-likelihood (max-total-LLR) antichain found by a bottom-up
 #    dynamic program over the hierarchy, scoring both against ground-truth
 #    extent. Expectation: the unpenalized DP oversegments (one effect ->
 #    several output regions); confirm the greedy rule avoids this without
 #    losing regions the DP would recover. See Section ssec:prune.
+
+
+# ---------- plot specs -------------------------------------------------------
+# Per-cache plot roles, read by plot.py instead of inferring from the data
+# (robust to partial runs and to a cache that varies >1 ordered axis):
+#   kind   -- 'metric' (faceted dice/sens/spec sweep), 'calibration'
+#             (FWER curve from min_pval), or 'mancova' (stat-comparison grid)
+#   x      -- the swept scalar column to put on the x-axis
+#   facet  -- categorical column(s) to split into side-by-side panels
+#   metrics/hue -- optional overrides (default metrics dice/sens/spec,
+#             hue = the method 'label' column)
+PLOT = {
+    'null':         dict(kind='calibration', facet='source'),
+    'sweep_llr':    dict(kind='metric', x='effect_llr',  facet='source'),
+    'sweep_b':      dict(kind='metric', x='b',           facet='source'),
+    'sweep_extent': dict(kind='metric', x='effect_perc', facet='source'),
+    'sweep_nimg':   dict(kind='metric', x='num_img',     facet='source'),
+    'segment':      dict(kind='metric', x='effect_llr',  facet='source',
+                         metrics=['dice']),
+    'stat':         dict(kind='mancova'),
+}
