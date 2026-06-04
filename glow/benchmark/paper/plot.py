@@ -29,6 +29,7 @@ import pandas as pd
 import seaborn as sns
 
 import glow.benchmark
+from glow.benchmark.trial_cache import NON_RESULT_LABELS
 from glow.util import stable_hash
 
 
@@ -535,6 +536,16 @@ def plot_cache(label: str, df, cache, spec: dict, out) -> None:
         out (pathlib.Path): directory the figures are written into
     """
     kind = spec.get('kind', 'metric')
+
+    # drop recorded-but-unscored rows (failed / infeasible trials) so they
+    # don't pollute the curves; report how many were set aside
+    n_outcome = int(df['label'].isin(NON_RESULT_LABELS).sum())
+    if n_outcome:
+        print(f'  ({n_outcome} ERROR/SKIP rows excluded from {label} plots)')
+        df = df[~df['label'].isin(NON_RESULT_LABELS)]
+    if df.empty:
+        print(f'  (no scored rows for {label} — skipping)')
+        return
 
     n_method = df['label'].nunique()
     plt.figure(figsize=(7, 0.5 * n_method + 1.5))

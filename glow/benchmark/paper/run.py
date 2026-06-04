@@ -35,6 +35,7 @@ from glow.analysis import (
     AnalysisVoxel, AnalysisVBA, AnalysisCET, DEFAULT_CET_CFT_PVAL)
 from glow.analysis.cluster import cluster, ClusterMode
 from glow.analysis.mancova import stat_dict, stat_dict_inv
+from glow.benchmark.trial_cache import SKIP_LABEL
 from glow.effect import EffectSynthetic, ExtenterMinVar
 
 from .factory import build_ds
@@ -193,7 +194,13 @@ def run_ana(*, source: str, b: int, num_img: int, n_vox_eff: int, seed: int,
     Returns:
         a DataFrame with one row per analysis label
     """
-    ds, feats = build_ds(source, b=b, num_img=num_img, seed=seed)
+    try:
+        ds, feats = build_ds(source, b=b, num_img=num_img, seed=seed)
+    except ValueError as e:
+        # infeasible cell (e.g. HCP b > feature pool): record a SKIP row so
+        # it's marked done and auditable, but excluded from plots. Not an
+        # ERROR -- an intentional absence, not a failure.
+        return pd.DataFrame([{'label': SKIP_LABEL, 'error': str(e)}])
     extenter = ExtenterMinVar(n_vox=n_vox_eff)
     llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
     return _run_ana_obj(ds=ds, extenter=extenter, effect_llr=llr, seed=seed,
@@ -223,7 +230,13 @@ def run_segment(*, source: str, b: int, num_img: int, n_vox_eff: int,
     Returns:
         a DataFrame with one row per ClusterMode (label = mode name)
     """
-    ds, feats = build_ds(source, b=b, num_img=num_img, seed=seed)
+    try:
+        ds, feats = build_ds(source, b=b, num_img=num_img, seed=seed)
+    except ValueError as e:
+        # infeasible cell (e.g. HCP b > feature pool): record a SKIP row so
+        # it's marked done and auditable, but excluded from plots. Not an
+        # ERROR -- an intentional absence, not a failure.
+        return pd.DataFrame([{'label': SKIP_LABEL, 'error': str(e)}])
     extenter = ExtenterMinVar(n_vox=n_vox_eff)
     llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
 
@@ -339,7 +352,13 @@ def run_mancova(*, source: str, b: int, num_img: int, n_vox_eff: int,
     Returns:
         a DataFrame with one row per (family, stat, z) variant
     """
-    ds, feats = build_ds(source, b=b, num_img=num_img, seed=seed)
+    try:
+        ds, feats = build_ds(source, b=b, num_img=num_img, seed=seed)
+    except ValueError as e:
+        # infeasible cell (e.g. HCP b > feature pool): record a SKIP row so
+        # it's marked done and auditable, but excluded from plots. Not an
+        # ERROR -- an intentional absence, not a failure.
+        return pd.DataFrame([{'label': SKIP_LABEL, 'error': str(e)}])
     extenter = ExtenterMinVar(n_vox=n_vox_eff)
     llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
 

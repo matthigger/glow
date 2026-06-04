@@ -23,6 +23,16 @@ from .file import get_path_result
 CSV_NAME = 'results.csv'
 HASH_COL = 'trial_hash'
 
+# Sentinel `label` values for trials that produced no scored result. They
+# are still recorded (one row, carrying the merged trial axes) so the trial
+# is auditable and marked done rather than silently missing or retried
+# forever; plotting excludes them from the curves. ERROR: run_fnc raised
+# (see driver._run_one). SKIP: an infeasible cell, e.g. an HCP feature
+# count beyond the pool (see paper.run).
+ERROR_LABEL = 'ERROR'
+SKIP_LABEL = 'SKIP'
+NON_RESULT_LABELS = (ERROR_LABEL, SKIP_LABEL)
+
 
 class TrialCache:
     """Trial iteration spec + result IO + cache lookup.
