@@ -185,7 +185,8 @@ _cache('segment', run_fnc=_segment,
        n_vox_eff=[EFFECT_N_VOX])
 
 # G. MANCOVA stat comparison: VBA / VBA-TFCE / CET x 5 stats x {raw, z}
-#    (b=2 so the multivariate stats differ). todo: add a GLOW arm (run.py).
+#    (b=2 so the multivariate stats differ). GLOW is excluded by design --
+#    it uses LLR throughout (see run.py) -- not pending work.
 _cache('stat', run_fnc=_mancova,
        source=SOURCES, seed=list(range(N_SEED)),
        effect_llr=EFFECT_LLR_GRID, b=[2], num_img=[100],

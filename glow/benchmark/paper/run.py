@@ -257,11 +257,12 @@ def run_segment(*, source: str, b: int, num_img: int, n_vox_eff: int,
 # ---------------------------------------------------------------------------
 # MANCOVA stat comparison
 # ---------------------------------------------------------------------------
-# todo: add a GLOW arm. AnalysisGLOW is hard-wired to LLR (its inner-perm
-#   race scores z = (llr - mu)/std), so comparing GLOW across the 5 MANCOVA
-#   stats needs the inner-perm kernel to accept a get_stat fn. Until then
-#   this matrix is VBA / VBA-TFCE / CET only; plot.METHOD_ORDER already
-#   lists GLOW, so its rows will simply be absent.
+# This matrix is VBA / VBA-TFCE / CET only, by design rather than omission.
+# GLOW uses the LLR throughout (it falls out of the cluster-level normal
+# likelihood; see the manuscript's normal-identity appendix), so it is not
+# swept across the classical MANCOVA stats here. Pinning GLOW to any single
+# such stat could only understate its advantage over the voxel-wise methods,
+# so the bake-off is among those methods.
 
 def _shared_voxel_walk(exp_eff, n_perm_fwer: int) -> dict:
     """One stat matrix per MANCOVA stat fn, shared across families.
