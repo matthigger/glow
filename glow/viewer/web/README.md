@@ -16,10 +16,44 @@ Interactive demos of the GLOW hierarchical-segmentation viewer.
 
 - `bake_demos.py` builds a curated set of `AnalysisGLOW` pickles from the
   builders in `glow.viewer.__main__`, written to `pickles/`.
-- `server.py` boots a single Flask server, mounts one `glow.viewer` Dash app
-  per pickle at `/{key}/`, and serves a small landing page at `/`.
+- `server.py` boots a single Flask server (wrapped in a
+  `DispatcherMiddleware`), mounts one `glow.viewer` Dash app per baked pickle
+  at `/{key}/`, and serves a small landing page at `/`.
+- `zenodo.py` fetches individual pickles from one published Zenodo record.
 - `play.py` loads a single pickle through the unmodified single-analysis
   `launch()` for local round-trip checks.
+
+## Zenodo browser (load any published experiment)
+
+The full benchmark is too large to host or load on a Space (tens-to-hundreds
+of GB; a Space has ≤32 GB RAM). Instead, the heavy precomputed experiments
+live on **Zenodo** (durable, DOI'd) and the Space loads **one at a time** on
+demand: `/zenodo/` lists the configured record's files; picking one downloads
+just that pickle (size-capped, MD5-verified, cached), mounts a fresh viewer
+under `/zenodo/view/<slug>/`, and redirects there. An LRU keeps at most
+`GLOW_ZENODO_MAX_MOUNTS` viewers live.
+
+**Security:** only files of the configured record id are ever fetched and
+unpickled — the record id is an allowlist. The server never unpickles
+user-uploaded bytes (`pickle.load` on untrusted input is arbitrary code
+execution), which is why this fetches by record id rather than accepting an
+upload.
+
+Configure via env (HF Space **Variables**, not Secrets):
+
+| var | meaning |
+|-----|---------|
+| `GLOW_ZENODO_RECORD_ID` | record to browse; unset = browser disabled |
+| `GLOW_ZENODO_API_BASE`  | `https://sandbox.zenodo.org/api` to test on Sandbox |
+| `GLOW_ZENODO_MAX_MB`    | per-file download cap (default 64) |
+| `GLOW_ZENODO_MAX_MOUNTS`| live viewers before LRU eviction (default 6) |
+
+```bash
+# test locally against a Zenodo Sandbox deposit before a real DOI exists
+GLOW_ZENODO_API_BASE=https://sandbox.zenodo.org/api \
+GLOW_ZENODO_RECORD_ID=123456 \
+python -m glow.viewer.web.server
+```
 
 ## Local development
 

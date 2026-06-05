@@ -592,7 +592,8 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
 
 def _create_app(ana_glow, mask_target=None, y_features=None,
                 subject_names=None, extra_df=None, min_vox=None,
-                url_base_pathname=None, server=None):
+                url_base_pathname=None, server=None,
+                routes_pathname_prefix=None, requests_pathname_prefix=None):
     """Create and wire up the Dash app.
 
     Args:
@@ -615,6 +616,13 @@ def _create_app(ana_glow, mask_target=None, y_features=None,
         server (flask.Flask | None): existing Flask server to mount onto.
             When *None*, Dash creates its own.  Used by the multi-demo
             web entry point to host several apps under one server.
+        routes_pathname_prefix (str | None): Dash routes_pathname_prefix,
+            for mounting behind a path-stripping WSGI dispatcher (the
+            Zenodo viewer mounts each app on its own server with routes at
+            "/" while requests_pathname_prefix carries the external path).
+            When given, used instead of url_base_pathname.
+        requests_pathname_prefix (str | None): Dash requests_pathname_prefix
+            paired with routes_pathname_prefix; see above.
 
     Returns:
         app (Dash): configured Dash application
@@ -640,7 +648,10 @@ def _create_app(ana_glow, mask_target=None, y_features=None,
         target_vox = mask_idx[mask_target & (mask_idx >= 0)]
 
     dash_kw = {'update_title': None}
-    if url_base_pathname is not None:
+    if routes_pathname_prefix is not None or requests_pathname_prefix is not None:
+        dash_kw['routes_pathname_prefix'] = routes_pathname_prefix
+        dash_kw['requests_pathname_prefix'] = requests_pathname_prefix
+    elif url_base_pathname is not None:
         dash_kw['url_base_pathname'] = url_base_pathname
     if server is not None:
         dash_kw['server'] = server
