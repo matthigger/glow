@@ -108,7 +108,7 @@ SEGMENT_MODES = [ClusterMode.NAIVE, ClusterMode.GLM_ERROR, ClusterMode.FOCUS]
 # ---------- structural grids ------------------------------------------------
 # Feature-count grid. WGN runs the whole grid; HCP clamps to its feature
 # pool (run_ana would raise past it), so HCP's facet simply ends earlier.
-B_GRID = [b for b in (1, 2, 3, 4, 6, 8, 10)]
+B_GRID = list(range(1, 7))
 _B_GRID_HCP_MAX = len(HCP_FEAT_POOL)
 
 # Effect-extent grid: 1% .. 100% of the cropped volume.
@@ -155,9 +155,7 @@ _cache('sweep_llr', run_fnc=_ana,
        effect_llr=EFFECT_LLR_GRID, b=[1], num_img=[100],
        n_vox_eff=[EFFECT_N_VOX])
 
-# C. Detection vs feature count (the multivariate story). WGN spans the
-#    full B_GRID; HCP clamps to its pool (longer-grid HCP trials raise and
-#    record an error row -- the HCP facet just ends at the pool size).
+# C. Detection vs feature count (the multivariate story).
 _cache('sweep_b', run_fnc=_ana,
        source=SOURCES, seed=list(range(N_SEED)),
        effect_llr=[MODERATE_EFFECT_LLR], b=B_GRID, num_img=[100],
