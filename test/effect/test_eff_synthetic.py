@@ -6,7 +6,9 @@ import numpy as np
 import pytest
 
 from glow.effect import EffectSynthetic, ExtenterMinVar, ExtenterSphere
+from glow.effect.impose import sample_beta_direction
 from glow.experiment.exper import Experiment
+from glow.analysis.mancova import decompose, get_mancova, get_llr
 
 
 @pytest.fixture
@@ -215,3 +217,90 @@ class TestPickle:
         # clone reproduces the same applied exp on the original input
         replay = clone.apply(exp)
         np.testing.assert_array_equal(replay.y, out.y)
+
+
+def _region_coef(applied_exp, base_exp, mask):
+    """Least-squares interest coefficient (b, a1) for a region after fit."""
+    idx = base_exp.mask_idx[mask]
+    q1 = decompose(base_exp.x, base_exp.contrast)[1]
+    return applied_exp.y[:, :, idx].mean(2) @ q1.T
+
+
+def _region_llr(applied_exp, base_exp, mask):
+    """Size-normalized (n=1) LLR of a region after fit."""
+    idx = base_exp.mask_idx[mask]
+    e, h, _ = get_mancova(x=base_exp.x, y=applied_exp.y[:, :, idx],
+                          contrast=base_exp.contrast)
+    return get_llr(e, h, n=1)
+
+
+def _fro_angle_deg(a, b):
+    """Angle (degrees) between two arrays under the Frobenius inner product."""
+    a, b = a.ravel(), b.ravel()
+    c = (a @ b) / (np.linalg.norm(a) * np.linalg.norm(b))
+    return np.degrees(np.arccos(np.clip(c, -1.0, 1.0)))
+
+
+class TestDirectionInit:
+    def test_angle_without_seed_raises(self, exp):
+        mask = exp.mask_idx >= 0
+        with pytest.raises(ValueError, match='seed'):
+            EffectSynthetic(mask=mask, effect_llr=0.5, angle=30)
+
+    def test_default_purge_true(self, exp):
+        mask = exp.mask_idx >= 0
+        synth = EffectSynthetic(mask=mask, effect_llr=0.5)
+        assert synth.purge_interest is True
+
+
+class TestDirectionFit:
+    def _mask(self, exp, rows):
+        m = np.zeros(exp.mask_idx.shape, dtype=bool)
+        m[rows, :] = True
+        return m & (exp.mask_idx >= 0)
+
+    def test_angle_path(self, exp):
+        mask = self._mask(exp, slice(0, 3))
+        synth = EffectSynthetic(mask=mask, effect_llr=0.1, angle=25, seed=4)
+        out = synth.fit(exp)
+        assert synth.offset_ is not None
+        assert synth.sigma_scale_ is None
+        assert np.isclose(_region_llr(out, exp, mask), 0.1, atol=1e-6)
+        # recovered coef points along the seed-sampled direction (recompute,
+        # not stored): same a1/b/angle/seed -> same beta_direction
+        expected = sample_beta_direction(a1=1, b=exp.y.shape[0], angle=25,
+                                         seed=4)
+        coef = _region_coef(out, exp, mask)
+        assert np.isclose(_fro_angle_deg(coef, expected.T), 0.0, atol=1e-3)
+
+    def test_two_adjacent_effects_at_angle(self, exp):
+        # two disjoint supports sharing a seed, angles 0 and 60: recovered
+        # effect directions sit 60 deg apart, each at the target LLR
+        mask_a = self._mask(exp, slice(0, 2))
+        mask_b = self._mask(exp, slice(3, 5))
+        e1 = EffectSynthetic(mask=mask_a, effect_llr=0.1, angle=0, seed=5)
+        e2 = EffectSynthetic(mask=mask_b, effect_llr=0.1, angle=60, seed=5)
+        out = e2.fit(e1.fit(exp))
+        assert np.isclose(_region_llr(out, exp, mask_a), 0.1, atol=1e-6)
+        assert np.isclose(_region_llr(out, exp, mask_b), 0.1, atol=1e-6)
+        coef_a = _region_coef(out, exp, mask_a)
+        coef_b = _region_coef(out, exp, mask_b)
+        assert np.isclose(_fro_angle_deg(coef_a, coef_b), 60.0, atol=1e-6)
+
+
+class TestDirectionHash:
+    def _base(self, **kw):
+        mask = np.ones((4, 4), dtype=bool)
+        return EffectSynthetic(mask=mask, effect_llr=0.5, **kw)
+
+    def test_angle_changes_hash(self):
+        a = self._base(angle=0, seed=0)
+        b = self._base(angle=60, seed=0)
+        assert a != b
+        assert hash(a) != hash(b)
+
+    def test_purge_interest_changes_hash(self):
+        a = self._base(angle=30, seed=0, purge_interest=True)
+        b = self._base(angle=30, seed=0, purge_interest=False)
+        assert a != b
+        assert hash(a) != hash(b)

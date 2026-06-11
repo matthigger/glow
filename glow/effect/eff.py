@@ -86,22 +86,37 @@ class EffectSynthetic(HashBySlots):
         mask (np.array | None): pre-known boolean support. XOR with
             extenter. Frozen on assignment so the hash is stable.
         effect_llr (float): per-voxel LLR target.
-        seed (int | None): RNG seed for extenter sampling.
+        seed (int | None): RNG seed for extenter sampling; when angle is
+            given it also seeds the imposed direction.
+        angle (float | None): if given, impose the effect along a direction
+            sampled at this rotation (degrees) from seed
+            (glow.effect.impose.sample_beta_direction, then impose_effect);
+            effects sharing a seed are separated by their angle difference.
+            If None, the direction is inherited from the data
+            (glow.effect.impose.compute_offset).
+        purge_interest (bool): when imposing a direction, subtract the
+            region's existing interest coefficient so the recovered effect
+            equals the imposed direction exactly.
 
     Fit outputs (populated by .fit()):
         mask_ (np.array): realized boolean support.
         offset_ (np.array): (b, num_img) offset added per voxel.
         sigma_scale_ (float | None): factor applied to within-region
-            sigma.
+            sigma (always None on the directional path).
     """
 
     __slots__ = ('extenter', 'mask', 'effect_llr', 'seed',
+                 'angle', 'purge_interest',
                  'mask_', 'offset_', 'sigma_scale_')
 
     def __init__(self, *, extenter=None, mask=None, effect_llr,
-                 seed=None):
+                 seed=None, angle=None, purge_interest: bool = True):
         if (extenter is None) == (mask is None):
             raise ValueError('extenter xor mask required')
+        if angle is not None and seed is None:
+            raise ValueError('angle requires seed (it sets the rotation '
+                             'reference for the imposed direction)')
+
         self.extenter = extenter
         if mask is not None:
             mask = np.ascontiguousarray(mask, dtype=bool)
@@ -109,6 +124,9 @@ class EffectSynthetic(HashBySlots):
         self.mask = mask
         self.effect_llr = float(effect_llr)
         self.seed = None if seed is None else int(seed)
+        self.angle = None if angle is None else float(angle)
+        self.purge_interest = bool(purge_interest)
+
         # fit outputs (sklearn trailing underscore convention)
         self.mask_ = None
         self.offset_ = None
@@ -117,7 +135,10 @@ class EffectSynthetic(HashBySlots):
     def fit(self, exp):
         """Sample support, compute offset, and impose the effect.
 
-        Populates the fit-output attributes (mask_, offset_, sigma_scale_).
+        The offset direction is either inherited from the data (the default,
+        via compute_offset) or, when angle is given, imposed along a
+        direction sampled from seed (via impose_effect). Populates the
+        fit-output attributes (mask_, offset_, sigma_scale_).
 
         Args:
             exp: the experiment to plant the effect into; must already have
@@ -127,7 +148,7 @@ class EffectSynthetic(HashBySlots):
             the experiment with the effect imposed
         """
         # local import keeps glow.effect import-time cycle-free
-        from .impose import compute_offset
+        from .impose import compute_offset, impose_effect, sample_beta_direction
 
         assert exp.x is not None, 'x/contrast needed; call .sample_x()'
 
@@ -139,9 +160,21 @@ class EffectSynthetic(HashBySlots):
 
         effect_idx = exp.mask_idx[mask]
         y = exp.y[:, :, effect_idx]
-        offset, sigma_scale = compute_offset(
-            x=exp.x, y=y, contrast=exp.contrast,
-            effect_llr=self.effect_llr)
+
+        if self.angle is not None:
+            b = exp.y.shape[0]
+            a1 = int(np.asarray(exp.contrast).sum())
+            beta_direction = sample_beta_direction(
+                a1=a1, b=b, angle=self.angle, seed=self.seed)
+            offset = impose_effect(
+                x=exp.x, y=y, contrast=exp.contrast,
+                beta_direction=beta_direction, effect_llr=self.effect_llr,
+                purge_interest=self.purge_interest)
+            sigma_scale = None
+        else:
+            offset, sigma_scale = compute_offset(
+                x=exp.x, y=y, contrast=exp.contrast,
+                effect_llr=self.effect_llr)
 
         self.mask_ = mask
         self.offset_ = offset
