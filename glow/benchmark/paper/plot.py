@@ -6,9 +6,8 @@ the completed in-config trials (_load_in_config drops anything left over
 from an older config) and writes one figure set per cache into
 results/_latest:
 
-  - run_ana caches get a compute-time boxplot plus either a FWER
-    calibration curve (null caches) or a dice/sens/spec metric sweep,
-    via plot_ana_cache.
+  - run_ana caches get either a FWER calibration curve (null caches)
+    or a dice/sens/spec metric sweep, via plot_ana_cache.
   - the MANCOVA stat-comparison caches (run_mancova) are combined by
     source (WGN / HCP) and plotted by _plot_mancova with the
     faceted-grid / summary / z-delta figures.
@@ -18,8 +17,8 @@ A cache is plotted as soon as any of its in-config trials are complete
 mid-benchmark for intermediate figures; each cache prints how many of
 its config trials are done. With no arguments it plots every cache in
 the catalogue; passing cache labels (e.g. vba_hcp_famd) restricts it to
-those. The generic helpers (plot_compute_time, plot_calibration,
-plot_x_vs_metrics) stay reusable so notebooks can call them directly.
+those. The generic helpers (plot_calibration, plot_x_vs_metrics) stay
+reusable so notebooks can call them directly.
 """
 import colorsys
 
@@ -97,23 +96,6 @@ def get_cmap_dict(label_list) -> dict:
         for lab, c in zip(missing, fallback):
             out[lab] = c
     return out
-
-
-def plot_compute_time(df, title: str = 'Computation Time (per Experiment)') -> None:
-    """Draw a per-experiment compute-time boxplot, one row per method label.
-
-    Args:
-        df: results DataFrame with label and time_sec columns
-        title (str): axes title
-    """
-    labels_sorted = sorted(df['label'].unique().tolist())
-    color_map = get_cmap_dict(labels_sorted)
-
-    plt.title(title)
-    plt.xlabel('time (sec)')
-    plt.ylabel('')
-    sns.boxplot(data=df, x='time_sec', y='label', palette=color_map,
-                hue='label')
 
 
 def plot_calibration(df, alpha_max: float = 0.20, n_pts: int = 200,
@@ -357,7 +339,7 @@ def plot_x_vs_metrics(df, x_param: str = 'effect_llr',
 
 
 # ---------------------------------------------------------------------------
-# run_ana: per-cache dispatch (compute time + calibration / metric sweep)
+# run_ana: per-cache dispatch (calibration / metric sweep)
 # ---------------------------------------------------------------------------
 
 def _savefig(path) -> None:
@@ -370,9 +352,9 @@ def _savefig(path) -> None:
 def plot_ana_cache(label: str, df, cache, out) -> None:
     """Write the run_ana figures for one cache into out.
 
-    Always writes a compute-time boxplot, then one sweep / diagnostic
-    figure chosen from what the cache varies (read off cache.iter_kwargs,
-    not the data, so the choice matches the config exactly):
+    Writes one sweep / diagnostic figure chosen from what the cache
+    varies (read off cache.iter_kwargs, not the data, so the choice
+    matches the config exactly):
 
       - null cache (effect_llr grid is all 0): FWER calibration from min_pval
       - effect_llr swept: dice / sens / spec vs effect_llr
@@ -382,7 +364,7 @@ def plot_ana_cache(label: str, df, cache, out) -> None:
 
     The metric sweeps difference each GLOW variant against the best other
     method (plot_x_vs_metrics one_vs_rest). A cache with nothing to sweep
-    gets only the compute-time plot.
+    gets no figure.
 
     Args:
         label (str): cache label; used in titles and output filenames
@@ -395,11 +377,6 @@ def plot_ana_cache(label: str, df, cache, out) -> None:
     """
     iter_kwargs = cache.iter_kwargs or {}
     effect_llr_grid = list(iter_kwargs.get('effect_llr', []))
-
-    n_method = df['label'].nunique()
-    plt.figure(figsize=(7, 0.5 * n_method + 1.5))
-    plot_compute_time(df, title=f'Compute time — {label}')
-    _savefig(out / f'{label}_time.pdf')
 
     if effect_llr_grid and all(v == 0 for v in effect_llr_grid):
         plot_calibration(df, title=f'FWER calibration — {label}')
@@ -524,10 +501,10 @@ def _infer_spec(cache) -> dict:
 def plot_cache(label: str, df, cache, spec: dict, out) -> None:
     """Write one cache's figures, dispatching on its plot spec.
 
-    Always writes a compute-time boxplot, then dispatches by spec['kind']:
-    'calibration' (faceted FWER curve), 'metric' (faceted dice/sens/spec
-    sweep), or 'mancova' (the stat-comparison grid, splitting the merged
-    cache back into its per-source frames).
+    Dispatches by spec['kind']: 'calibration' (faceted FWER curve),
+    'metric' (faceted dice/sens/spec sweep), or 'mancova' (the
+    stat-comparison grid, splitting the merged cache back into its
+    per-source frames).
 
     Args:
         label (str): cache label; used in titles and output filenames
@@ -547,11 +524,6 @@ def plot_cache(label: str, df, cache, spec: dict, out) -> None:
     if df.empty:
         print(f'  (no scored rows for {label} — skipping)')
         return
-
-    n_method = df['label'].nunique()
-    plt.figure(figsize=(7, 0.5 * n_method + 1.5))
-    plot_compute_time(df, title=f'Compute time — {label}')
-    _savefig(out / f'{label}_time.pdf')
 
     if kind == 'calibration':
         _plot_calibration_faceted(label, df, out,
