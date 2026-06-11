@@ -317,7 +317,7 @@ def build_dfs_preorder(children, num_vox: int):
     original voxel indices such that every region's leaves occupy a
     contiguous range [region_l[r], region_h[r]) on the permuted leaf
     axis. That is the prerequisite for cumsum-and-diff region aggregation
-    (see _reg_sum_cumsum and compute_optimize/perm_llr_compute.tex).
+    (see _reg_sum_cumsum).
 
     Roots are laid out end-to-end -- the first root takes positions
     [0, size_root_0), the next takes [size_root_0, ...), etc.
@@ -422,8 +422,6 @@ def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
     nuisance residuals; here the permutation is carried on q0 / q1 rather
     than re-permuting y.
 
-    Algorithm (see compute_optimize/perm_llr_compute.tex):
-
       1. Phase 1 (once) -- per-voxel sufficient statistics:
 
              T_v   = Y_v Y_v^T               (b, b)
@@ -481,7 +479,7 @@ def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
 
     # Match glow's existing dtype policy: float32 stays float32, else
     # float64.  Cumsums over ~10^6 entries are stable enough in fp32 for
-    # our purposes (see perm_llr_compute.tex, "Numerical care").
+    # our purposes.
     dtype = y.dtype if y.dtype == np.float32 else np.float64
 
     # -------------------- Phase 1: per-voxel state --------------------
