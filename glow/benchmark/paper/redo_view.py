@@ -49,7 +49,6 @@ import pickle
 import sys
 
 import numpy as np
-import pandas as pd
 from platformdirs import user_cache_dir
 
 import glow.benchmark
@@ -215,13 +214,13 @@ def _pick_from_ranking(df, glow_label: str):
     Returns:
         the chosen trial_hash, or None to go back / quit.
     """
-    feats = ['f1', 'sens', 'spec']
+    feats = ['dice', 'sens', 'ppv', 'spec']
     m = compare.choose('Sort trials by which feature?', feats)
     if m < 0:
         return None
     metric = feats[m]
 
-    summary = compare.summarize(df, glow_label, compare.METRIC_COL[metric])
+    summary = compare.summarize(df, glow_label, metric)
     compare.print_summary(summary, glow_label, metric)
 
     top = summary.head(compare.N_SHOW)
@@ -304,7 +303,7 @@ def reproduce(label: str, glow_label: str, trial_hash: str,
     trial = recover_trial(label, trial_hash)
 
     cache, _ = CACHE_BY_LABEL[label]
-    df = pd.read_csv(cache.folder / 'results.csv', index_col='trial_hash')
+    df = glow.benchmark.load_results_csv(cache.folder / 'results.csv')
     t_rec = _recorded_time(df, trial_hash, glow_label)
 
     if verbose:
@@ -348,7 +347,7 @@ def main() -> None:
         if c < 0:
             return
         label, csv = configs[c]
-        df = pd.read_csv(csv, index_col='trial_hash')
+        df = glow.benchmark.load_results_csv(csv)
 
         trial_hash = choose_trial_hash(df, glow_label)
         if trial_hash is None:

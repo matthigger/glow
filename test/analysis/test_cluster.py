@@ -3,7 +3,8 @@ from scipy.ndimage import label
 
 from glow.experiment import *
 from glow.analysis.cluster import *
-from glow.graph import get_dice_sens_spec
+from glow.graph import confusion_counts_tree
+from glow.mask import stats_from_counts
 from test.experiment.make_test_image import folder_test_data
 
 
@@ -47,8 +48,9 @@ def test_cluster():
         _label, n_regions = label(img_color)
         for idx in range(1, n_regions + 1):
             mask = _label == idx
-            dice = get_dice_sens_spec(mask=mask, mask_idx=exp.mask_idx,
-                                  children=children)[0]
+            counts = confusion_counts_tree(mask=mask, mask_idx=exp.mask_idx,
+                                          children=children)
+            dice = stats_from_counts(**counts)['dice']
             dice_list.append(max(dice))
 
     # every contiguous color region is recovered exactly by some tree node

@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 import glow.graph
+import glow.mask
 from glow.analysis.mancova import decompose, get_llr, get_mancova
 
 
@@ -68,20 +69,15 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
 
     # mask-target derived stats
     if mask_target is not None:
-        dice, sens, spec = glow.graph.get_dice_sens_spec(
+        counts = glow.graph.confusion_counts_tree(
             children=children,
             mask_idx=ana_glow.exp.mask_idx,
             mask=mask_target)
-        fp, tp = glow.graph.get_fp_tp(
-            children=children,
-            mask_idx=ana_glow.exp.mask_idx,
-            mask=mask_target)
-        d['dice'] = dice
-        d['sens'] = sens
-        d['spec'] = spec
-        d['vox_in_target'] = tp.astype(int)
-        d['vox_out_target'] = fp.astype(int)
+        d.update(glow.mask.stats_from_counts(**counts))
+        d.update({label: counts[key].astype(int)
+                  for key, label in _COUNT_LABELS.items()})
 
+        dice = d['dice']
         sig_mask = ~np.isnan(ana_glow.pval) & (ana_glow.pval <= alpha_fwer)
         max_dice_sig = float(dice[sig_mask].max()) if sig_mask.any() else 0.0
         if max_dice_sig > 0:
@@ -99,10 +95,20 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
     return df
 
 
+# per-region confusion count -> viewer column name (each region scored vs
+# the target mask): region voxels in / out of target (tp / fp), target
+# voxels the region misses (fn), and analyzed voxels in neither (tn)
+_COUNT_LABELS = {
+    'tp': 'vox_in_target',
+    'fp': 'vox_out_target',
+    'fn': 'vox_target_missed',
+    'tn': 'vox_outside_both',
+}
+
 _GENERIC_FEATURES = {'n_voxel'}
 _PRUNING_FEATURES = set()
-_MASK_FEATURES = {'dice', 'sens', 'spec', 'pct_max_dice',
-                   'vox_in_target', 'vox_out_target'}
+_MASK_FEATURES = {'dice', 'sens', 'ppv', 'spec', 'pct_max_dice',
+                  *_COUNT_LABELS.values()}
 
 
 def get_feature_columns(df):
@@ -181,9 +187,13 @@ def compute_target_stats(ana_glow, mask_target):
 
     stats['dice'] = 1.0
     stats['sens'] = 1.0
+    stats['ppv'] = 1.0
     stats['spec'] = 1.0
-    stats['vox_in_target'] = n_voxel
-    stats['vox_out_target'] = 0
+    # the target scored against itself: every target voxel hit, none missed
+    n_active = int((mask_idx >= 0).sum())
+    self_counts = {'tp': n_voxel, 'fp': 0, 'fn': 0, 'tn': n_active - n_voxel}
+    for key, label in _COUNT_LABELS.items():
+        stats[label] = self_counts[key]
 
     stats['pval_fwer'] = np.nan
     stats['llr_mu_h0'] = np.nan

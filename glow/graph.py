@@ -20,7 +20,7 @@ Two families of routines live here:
     Freedman-Lane (Freedman & Lane 1983) permutation draws. Both feed
     the MANCOVA log-likelihood-ratio statistic in glow.analysis.mancova.
 
-The remaining helpers (get_dice_sens_spec, get_fp_tp, get_label_map,
+The remaining helpers (confusion_counts_tree, get_fp_tp, get_label_map,
 get_parent, iter_postorder, SCGraph) are graph bookkeeping over the same
 children representation.
 """
@@ -29,6 +29,7 @@ from collections import Counter
 import numpy as np
 
 from glow.analysis.mancova import decompose
+from glow.mask import counts_from_tp_fp
 
 
 def iter_size_ysum_yout(y, children=None):
@@ -610,11 +611,14 @@ def node_sum(x, children):
     return summed
 
 
-def get_dice_sens_spec(mask, mask_idx, children):
-    """Compute Dice, sensitivity (recall/TPR), and specificity (TNR) per region.
+def confusion_counts_tree(mask, mask_idx, children) -> dict:
+    """Per-region confusion counts, scoring every region as a target predictor.
 
-    Each region is scored as a predictor of the target mask. Dice
-    coefficient (Dice 1945).
+    The tree analogue of glow.mask.confusion_counts: one pass over the Ward
+    tree (get_fp_tp) yields tp / fp for all regions at once, then the shared
+    glow.mask.counts_from_tp_fp fills in fn / tn. The detection metrics
+    (Dice, sensitivity, PPV, specificity) follow via stats_from_counts; we
+    return the counts so the caller may derive whichever it needs.
 
     Args:
         mask (np.array): target mask, boolean, same shape as mask_idx
@@ -623,30 +627,11 @@ def get_dice_sens_spec(mask, mask_idx, children):
             sklearn.cluster.Ward.children_)
 
     Returns:
-        dice (np.array): (num_reg,) Dice score per region
-        sens (np.array): (num_reg,) TP / (TP + FN) per region
-        spec (np.array): (num_reg,) TN / (TN + FP) per region
+        a dict {'tp', 'fp', 'tn', 'fn'} of (num_reg,) count arrays
     """
     fp, tp = get_fp_tp(mask, mask_idx, children)
-
-    # false negative: targets outside of estimated region
-    fn = mask.sum() - tp
-
-    # true negative: analysis voxels not in target and not in region
-    total = float((mask_idx >= 0).sum())
-    tn = total - tp - fp - fn
-
-    # metrics with safe division (0 where undefined)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        dice = 2 * tp / (2 * tp + fp + fn)
-        sens = tp / (tp + fn)
-        spec = tn / (tn + fp)
-
-    dice = np.nan_to_num(dice, nan=0)
-    sens = np.nan_to_num(sens, nan=0)
-    spec = np.nan_to_num(spec, nan=1)
-
-    return dice, sens, spec
+    return counts_from_tp_fp(tp, fp, n_pos=mask.sum(),
+                             n_total=float((mask_idx >= 0).sum()))
 
 
 def get_fp_tp(mask, mask_idx, children):

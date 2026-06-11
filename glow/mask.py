@@ -1,7 +1,6 @@
 """Boolean-mask and label-map utilities: indexing, scoring, neighbours."""
 
 import numpy as np
-from sklearn.metrics import f1_score, recall_score, confusion_matrix
 
 # structuring elements keyed by 3D connectivity (6-, 18-, 26-neighbour)
 conn_dict = {6: np.array([[[0, 0, 0],
@@ -69,8 +68,37 @@ def get_entropy(mask_idx) -> float:
     return float(entropy)
 
 
-def get_score(mask_pred, mask_target, mask_active=None) -> tuple:
-    """Compute Dice, sensitivity, and specificity against ground truth.
+def counts_from_tp_fp(tp, fp, n_pos, n_total) -> dict:
+    """Complete the confusion counts from tp / fp and the totals.
+
+    The two producers (confusion_counts, over masks, and
+    glow.graph.confusion_counts_tree, over a Ward tree) each compute tp and
+    fp their own way, then share this bookkeeping: fn is the unrecovered
+    target (n_pos - tp) and tn is whatever analyzed voxel is left over.
+    Pure arithmetic, so tp / fp may be scalars (one mask) or per-region
+    arrays (a whole tree); the returned dict matches the input type.
+
+    Args:
+        tp: true-positive count(s)
+        fp: false-positive count(s)
+        n_pos: target-positive voxel count (tp + fn)
+        n_total: analyzed voxel count (tp + fp + tn + fn)
+
+    Returns:
+        a dict {'tp', 'fp', 'tn', 'fn'} of the same scalar / array type
+    """
+    fn = n_pos - tp
+    tn = n_total - tp - fp - fn
+    return {'tp': tp, 'fp': fp, 'tn': tn, 'fn': fn}
+
+
+def confusion_counts(mask_pred, mask_target, mask_active=None) -> dict:
+    """Confusion counts of a predicted support against ground truth.
+
+    These four counts are the canonical detection score: every overlap
+    metric (Dice, sensitivity, PPV, specificity) is a function of them,
+    derived on demand via stats_from_counts. We store the counts rather
+    than the metrics so any metric can be recovered downstream.
 
     Args:
         mask_pred (np.array): boolean predicted support
@@ -81,28 +109,56 @@ def get_score(mask_pred, mask_target, mask_active=None) -> tuple:
             voxels.
 
     Returns:
-        dice (float): Dice / F1 overlap (0 when undefined)
-        sens (float): sensitivity / recall
-        spec (float): specificity (1 when undefined)
+        a dict of int counts {'tp', 'fp', 'tn', 'fn'} over the analyzed
+        voxels (true/false positive/negative)
     """
-    if mask_active is None:
-        y_true = mask_target.flatten()
-        y_pred = mask_pred.flatten()
-    else:
+    pred = mask_pred.astype(bool)
+    target = mask_target.astype(bool)
+    if mask_active is not None:
         # restrict the comparison to the voxels that were analyzed
-        y_true = mask_target[mask_active]
-        y_pred = mask_pred[mask_active]
+        pred = pred[mask_active]
+        target = target[mask_active]
 
-    dice = f1_score(y_true=y_true, y_pred=y_pred, zero_division=0)
-    sens = recall_score(y_true=y_true, y_pred=y_pred, zero_division=0)
+    tp = int((pred & target).sum())
+    fp = int((pred & ~target).sum())
+    return counts_from_tp_fp(tp, fp, n_pos=int(target.sum()),
+                             n_total=pred.size)
 
-    cm = confusion_matrix(y_true=y_true, y_pred=y_pred, labels=[0, 1])
-    tn, fp = cm[0, 0], cm[0, 1]
-    denom = tn + fp
-    # specificity is undefined with no true negatives; report perfect (1)
-    spec = 1 if denom == 0 else tn / denom
 
-    return dice, sens, spec
+def stats_from_counts(tp, fp, tn, fn) -> dict:
+    """Derive Dice, sensitivity, PPV, and specificity from confusion counts.
+
+    Each metric is an elementwise function of the four counts, so the
+    inputs may be numpy arrays (per-region) or pandas Series (a results
+    table's columns); the matching outputs are returned in a dict of the
+    same type. Bare scalars are not supported -- the 0/0 guard below
+    relies on boolean indexing -- so wrap a lone count set in an array.
+
+    A ratio is undefined only when its denominator is zero, and every
+    denominator here is a sum of the counts in its numerator, so an
+    undefined ratio is always a literal 0/0. We fill those with 0,
+    except specificity, which is conventionally 1 when there are no
+    true-negative voxels to find.
+
+    Args:
+        tp, fp, tn, fn: array-like (numpy array or pandas Series) of
+            matching shape holding the confusion counts
+
+    Returns:
+        a dict {'dice', 'sens', 'ppv', 'spec'} of the same array-like type
+    """
+    def ratio(num, denom, fill):
+        with np.errstate(divide='ignore', invalid='ignore'):
+            out = num / denom
+        out[denom == 0] = fill
+        return out
+
+    return {
+        'dice': ratio(2 * tp, 2 * tp + fp + fn, 0.0),
+        'sens': ratio(tp, tp + fn, 0.0),
+        'ppv': ratio(tp, tp + fp, 0.0),
+        'spec': ratio(tn, tn + fp, 1.0),
+    }
 
 
 def bbox_crop(arr, mask=None):

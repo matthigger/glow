@@ -22,6 +22,48 @@ def get_path_out(folder) -> pathlib.Path:
     return pathlib.Path(folder) / OUT
 
 
+def add_metric_cols(df):
+    """Add derived dice/sens/ppv/spec columns from tp/fp/tn/fn counts.
+
+    results.csv stores only the four confusion counts; this derives the
+    overlap metrics in memory for any consumer (plots, comparison REPL).
+    A no-op when the count columns are absent (e.g. an empty frame).
+
+    Args:
+        df (pd.DataFrame): a results frame, possibly carrying tp/fp/tn/fn
+
+    Returns:
+        df with dice/sens/ppv/spec columns added (a copy via assign when
+        the counts are present, else the input unchanged)
+    """
+    import glow.mask
+
+    if not {'tp', 'fp', 'tn', 'fn'}.issubset(df.columns):
+        return df
+    stats = glow.mask.stats_from_counts(
+        tp=df['tp'], fp=df['fp'], tn=df['tn'], fn=df['fn'])
+    return df.assign(**stats)
+
+
+def load_results_csv(path, index_col: str = 'trial_hash'):
+    """Read a results.csv and derive its overlap metrics.
+
+    The one read path for a stored results.csv: the csv holds only the
+    tp/fp/tn/fn counts, so every reader must pair pd.read_csv with
+    add_metric_cols to recover dice/sens/ppv/spec. This bundles the two so
+    no caller forgets the second step. (load_update_all has its own
+    json-folding read and derives the metrics itself.)
+
+    Args:
+        path: the results.csv path
+        index_col (str): index column to set (the per-trial hash)
+
+    Returns:
+        the results DataFrame with dice/sens/ppv/spec columns added
+    """
+    return add_metric_cols(pd.read_csv(path, index_col=index_col))
+
+
 def load_update_all(label: str, verbose: bool = True, result_dir=None):
     """Load all experiment results for a label, folding in any new json.
 
@@ -87,5 +129,8 @@ def load_update_all(label: str, verbose: bool = True, result_dir=None):
     if verbose:
         f_csv = f_csv.resolve()
         print(f'{n_old} old and {n_new} new experiments stored in {f_csv}')
+
+    # derive metrics in memory only; the csv on disk stays counts-only
+    df = add_metric_cols(df)
 
     return df, folder, n_new

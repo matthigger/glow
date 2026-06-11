@@ -15,8 +15,8 @@ VBA-TFCE, CET) on that same trial. Trials are sorted ascending by
 so the trial where GLOW falls furthest below the best alternative comes
 first — the failure cases a researcher most wants to inspect.
 
-The sortable metrics are f1 (the dice column — f1 and Dice coincide for
-a binary mask, see glow.mask.get_score), sens, and spec.
+The sortable metrics are dice, sens, ppv, and spec. All are derived from
+the stored tp/fp/tn/fn counts at load (glow.mask.stats_from_counts).
 
 Run it interactively:
 
@@ -32,10 +32,6 @@ import glow.benchmark
 
 # label -> the cluster_mode it stands for (config.py ANALYSIS_DICT)
 GLOW_LABEL = {'focus': 'GLOW-Focus', 'error': 'GLOW-GLM'}
-
-# user-facing metric name -> results.csv column. f1 is the dice column
-# (Dice == F1 for a binary mask; see glow.mask.get_score).
-METRIC_COL = {'f1': 'dice', 'sens': 'sens', 'spec': 'spec'}
 
 # how many trials (the worst GLOW cases) to print per query
 N_SHOW = 10
@@ -176,19 +172,19 @@ def main() -> None:
         if c < 0:
             return
         label, csv = configs[c]
-        df = pd.read_csv(csv, index_col='trial_hash')
+        df = glow.benchmark.load_results_csv(csv)
 
         if glow_label not in set(df['label']):
             print(f'  {label} has no {glow_label} rows — skipping.')
             continue
 
-        feats = ['f1', 'sens', 'spec']
+        feats = ['dice', 'sens', 'ppv', 'spec']
         m = choose('Sort trials by which feature?', feats)
         if m < 0:
             return
         metric = feats[m]
 
-        summary = summarize(df, glow_label, METRIC_COL[metric])
+        summary = summarize(df, glow_label, metric)
         print_summary(summary, glow_label, metric)
 
 

@@ -183,6 +183,7 @@ def plot_calibration(df, alpha_max: float = 0.20, n_pts: int = 200,
 _METRIC_TITLES = {
     'dice': 'Dice',
     'sens': 'Sensitivity',
+    'ppv': 'PPV (Precision)',
     'spec': 'Specificity',
     'pct_max_dice': r'Dice$(\hat{r})\;/\;\max_r$ Dice$(r)$',
     'n_selected': 'Num Selected Regions',
@@ -197,7 +198,7 @@ _X_PARAM_LABELS = {
 
 
 def plot_x_vs_metrics(df, x_param: str = 'effect_llr',
-                      metrics: list = ['dice', 'sens', 'spec'],
+                      metrics: list = ['dice', 'sens', 'ppv'],
                       one_vs_rest: bool = False, one_labels: list = None,
                       alpha: float = .5, ci: int = 90,
                       title: str = None, ylabel: str = None) -> None:
@@ -561,7 +562,7 @@ def plot_cache(label: str, df, cache, spec: dict, out) -> None:
         _plot_mancova(sources, out)
     else:
         plot_metric_grid(label, df, x=spec['x'],
-                         metrics=spec.get('metrics', ['dice', 'sens', 'spec']),
+                         metrics=spec.get('metrics', ['dice', 'sens', 'ppv']),
                          facet=spec.get('facet', 'source'),
                          hue=spec.get('hue', 'label'), out=out)
 

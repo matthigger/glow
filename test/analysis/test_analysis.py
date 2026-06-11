@@ -3,8 +3,8 @@ import pytest
 from glow.effect import ExtenterSphere, EffectSynthetic
 from glow.experiment import *
 from glow.analysis import *
-from glow.graph import get_dice_sens_spec
-from glow.mask import get_mask_idx
+from glow.graph import confusion_counts_tree
+from glow.mask import get_mask_idx, stats_from_counts
 
 
 class TestAnalysis:
@@ -31,9 +31,10 @@ class TestBigEffect:
         analysis = AnalysisGLOW(TestBigEffect.exp, n_perm_fwer=25, alpha_fwer=.1).fit()
 
         # check that target region segmented properly
-        dice = get_dice_sens_spec(mask=TestBigEffect.effect.mask_,
-                              mask_idx=analysis.exp.mask_idx,
-                              children=analysis.children)[0]
+        counts = confusion_counts_tree(mask=TestBigEffect.effect.mask_,
+                                      mask_idx=analysis.exp.mask_idx,
+                                      children=analysis.children)
+        dice = stats_from_counts(**counts)['dice']
         assert np.isclose(dice.max(), 1), 'target region not segmented'
 
         # should discover at least one effect overlapping the target

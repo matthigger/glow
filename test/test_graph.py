@@ -6,6 +6,7 @@ from glow.experiment import ExperimentImageOnly
 from glow.analysis.mancova import get_mancova
 from glow.experiment.exper import NoBiasTermWarning
 from glow.graph import *
+from glow.mask import stats_from_counts
 
 
 def test_node_sum():
@@ -19,7 +20,7 @@ def test_node_sum():
     assert np.allclose(node_sum(x, children), exp)
 
 
-def test_get_dice_sens_spec():
+def test_confusion_counts_tree():
     mask = np.array([0, 0, 1, 1])
     mask_idx = np.arange(4)
     children = np.array([[0, 1],
@@ -27,20 +28,23 @@ def test_get_dice_sens_spec():
                          [4, 5]])
 
     # Expected per region: leaves 0..3, then internal nodes 4..6
-    dice_exp = np.array([0.0, 0.0, 2 / 3, 2 / 3, 0.0, 1.0, 2 / 3])
-    sens_exp = np.array([0.0, 0.0, 0.5, 0.5, 0.0, 1.0, 1.0])
-    spec_exp = np.array([0.5, 0.5, 1.0, 1.0, 0.0, 1.0, 0.0])
+    counts = confusion_counts_tree(mask=mask, mask_idx=mask_idx,
+                                  children=children)
+    assert np.allclose(counts['tp'], [0, 0, 1, 1, 0, 2, 2])
+    assert np.allclose(counts['fp'], [1, 1, 0, 0, 2, 0, 2])
+    assert np.allclose(counts['fn'], [2, 2, 1, 1, 2, 0, 0])
+    assert np.allclose(counts['tn'], [1, 1, 2, 2, 0, 2, 0])
 
-    dice, sens, spec = get_dice_sens_spec(mask=mask, mask_idx=mask_idx,
-                                      children=children)
+    # the derived overlap metrics (incl. PPV) follow from those counts
+    stats = stats_from_counts(**counts)
+    assert np.allclose(stats['dice'], [0.0, 0.0, 2 / 3, 2 / 3, 0.0, 1.0, 2 / 3])
+    assert np.allclose(stats['sens'], [0.0, 0.0, 0.5, 0.5, 0.0, 1.0, 1.0])
+    assert np.allclose(stats['ppv'], [0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.5])
+    assert np.allclose(stats['spec'], [0.5, 0.5, 1.0, 1.0, 0.0, 1.0, 0.0])
 
-    assert np.allclose(dice, dice_exp)
-    assert np.allclose(sens, sens_exp)
-    assert np.allclose(spec, spec_exp)
 
-
-def test_get_dice_sens_spec_with_inactive_voxels():
-    """Specificity must ignore spatial positions outside the analysis mask."""
+def test_confusion_counts_tree_with_inactive_voxels():
+    """Counts must ignore spatial positions outside the analysis mask."""
     # 2x4 spatial grid, only 4 of 8 positions are analysis voxels
     mask_idx = np.array([[-1, 0, 1, -1],
                          [-1, 2, 3, -1]])
@@ -53,8 +57,10 @@ def test_get_dice_sens_spec_with_inactive_voxels():
     # 4 analysis voxels, 2 in target (vox 2, 3)
     # Region 6 (root): all 4 voxels → tp=2, fp=2, fn=0, tn=0
     #   spec = 0/(0+2) = 0, NOT ~0.75 which you'd get using mask.size=8
-    dice, sens, spec = get_dice_sens_spec(mask=mask, mask_idx=mask_idx,
-                                      children=children)
+    counts = confusion_counts_tree(mask=mask, mask_idx=mask_idx,
+                                  children=children)
+    spec = stats_from_counts(**counts)['spec']
+    sens = stats_from_counts(**counts)['sens']
     root = 6
     assert spec[root] == 0.0
     assert sens[root] == 1.0

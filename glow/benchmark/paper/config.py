@@ -39,7 +39,7 @@ from glow.analysis.mancova import get_hotel_tr, get_wilks
 from glow.benchmark.trial_cache import TrialCache
 
 from .factory import CROP_N_VOX, HCP_FEAT_POOL
-from .run import run_ana, run_mancova, run_segment
+from .run import run_ana, run_mancova, run_prune, run_segment
 
 
 # ---------- shared knobs -----------------------------------------------------
@@ -142,6 +142,8 @@ def _cache(label: str, *, run_fnc, **iter_kwargs) -> None:
 _ana = partial(run_ana, ana_kwargs_dict=ANALYSIS_DICT)
 _segment = partial(run_segment, modes=SEGMENT_MODES)
 _mancova = partial(run_mancova, n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
+# run_prune needs no partial: it has one call site and builds GLOW's default
+# recipe (Focus, shared perms) itself.
 
 
 # A. Type I error (null): no effect, many seeds, both sources.
@@ -190,31 +192,39 @@ _cache('stat', run_fnc=_mancova,
        effect_llr=EFFECT_LLR_GRID, b=[2], num_img=[100],
        n_vox_eff=[EFFECT_N_VOX])
 
-# H. Pruning rule -- greedy max-LLR vs DP max-likelihood cut.
-# todo: add a cache validating GLOW's greedy max-LLR pruning against the
-#    exact max-likelihood (max-total-LLR) antichain found by a bottom-up
-#    dynamic program over the hierarchy, scoring both against ground-truth
-#    extent. Expectation: the unpenalized DP oversegments (one effect ->
-#    several output regions); confirm the greedy rule avoids this without
-#    losing regions the DP would recover. See Section ssec:prune.
+# H. Pruning rule -- greedy max-LLR vs DP max-likelihood cut, scored on one
+#    shared GLOW-Focus fit per trial (so the comparison isolates the rule,
+#    not the permutation test). The unpenalized DP is expected to
+#    oversegment -- one effect reported as several children -- which shows
+#    up as n_selected (output-region count, ideal 1) climbing with effect
+#    strength while greedy stays near 1. See Section ssec:prune.
+_cache('prune', run_fnc=run_prune,
+       source=SOURCES, seed=list(range(N_SEED)),
+       effect_llr=EFFECT_LLR_GRID, b=[1], num_img=[100],
+       n_vox_eff=[EFFECT_N_VOX])
 
 
 # ---------- plot specs -------------------------------------------------------
 # Per-cache plot roles, read by plot.py instead of inferring from the data
 # (robust to partial runs and to a cache that varies >1 ordered axis):
-#   kind   -- 'metric' (faceted dice/sens/spec sweep), 'calibration'
+#   kind   -- 'metric' (faceted dice/sens/ppv sweep), 'calibration'
 #             (FWER curve from min_pval), or 'mancova' (stat-comparison grid)
 #   x      -- the swept scalar column to put on the x-axis
 #   facet  -- categorical column(s) to split into side-by-side panels
-#   metrics/hue -- optional overrides (default metrics dice/sens/spec,
-#             hue = the method 'label' column)
+#   metrics/hue -- optional overrides (default metrics dice/sens/ppv,
+#             hue = the method 'label' column). PPV (not specificity) since
+#             effects fill a small fraction of the volume; the extent sweep
+#             varies that fraction, so it also shows prevalence-free spec.
 PLOT = {
     'null':         dict(kind='calibration', facet='source'),
     'sweep_llr':    dict(kind='metric', x='effect_llr',  facet='source'),
     'sweep_b':      dict(kind='metric', x='b',           facet='source'),
-    'sweep_extent': dict(kind='metric', x='effect_perc', facet='source'),
+    'sweep_extent': dict(kind='metric', x='effect_perc', facet='source',
+                         metrics=['dice', 'sens', 'ppv', 'spec']),
     'sweep_nimg':   dict(kind='metric', x='num_img',     facet='source'),
     'segment':      dict(kind='metric', x='effect_llr',  facet='source',
                          metrics=['dice']),
     'stat':         dict(kind='mancova'),
+    'prune':        dict(kind='metric', x='effect_llr',  facet='source',
+                         metrics=['dice', 'sens', 'ppv', 'n_selected']),
 }

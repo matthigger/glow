@@ -37,7 +37,8 @@ class TestPrepDf:
             'no_effect', 'has_effect'}
 
     def test_mask_target_columns(self, df_with_target):
-        for col in ('dice', 'sens', 'spec', 'vox_in_target', 'vox_out_target'):
+        for col in ('dice', 'sens', 'ppv', 'spec', 'vox_in_target',
+                    'vox_out_target', 'vox_target_missed', 'vox_outside_both'):
             assert col in df_with_target.columns, f'missing column: {col}'
 
     def test_dice_range(self, df_with_target):
@@ -101,6 +102,7 @@ class TestComputeTargetStats:
     def test_self_metrics(self, target_stats):
         assert target_stats['dice'] == 1.0
         assert target_stats['sens'] == 1.0
+        assert target_stats['ppv'] == 1.0
         assert target_stats['spec'] == 1.0
 
     def test_empty_mask_returns_none(self, ana):
