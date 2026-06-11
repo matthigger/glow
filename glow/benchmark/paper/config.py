@@ -46,10 +46,10 @@ from .run import run_ana, run_mancova, run_prune, run_segment
 # ---------- shared knobs -----------------------------------------------------
 SOURCES = ['wgn', 'hcp']
 
-N_SEED = 10
+N_SEED = 2
 # todo: the manuscript says "todo seeds" for the null calibration (was an
 #   unbacked 500). Pick the count here and update the text to match.
-N_SEED_NULL = 100
+N_SEED_NULL = 10
 
 EFFECT_LLR_GRID = np.logspace(np.log10(0.003), np.log10(0.3), 11)
 MODERATE_EFFECT_LLR = 0.03

@@ -24,7 +24,7 @@ from glow.effect import ExtenterSphere
 
 
 # ---------- shared structural constants -------------------------------------
-CROP_N_VOX = 25_000
+CROP_N_VOX = 1_000
 _WGN_SIDE_3D = math.ceil(CROP_N_VOX ** (1 / 3))
 
 # Data-source seed is held fixed (only the effect seed is swept), matching
