@@ -1,11 +1,13 @@
 """Tests for glow.benchmark.data: DataSource family."""
 
 import json
+import pathlib
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from glow.benchmark import hcp
 from glow.benchmark.data import (
     DataSource,
     DataSourceWGN,
@@ -51,25 +53,23 @@ def _stub_exp_img_only(shape=(2, 2, 2), b=1, num_img=8):
     return ExperimentImageOnly(y=y, mask_idx=mask_idx)
 
 
-def _install_fake_brainjar(monkeypatch, df=None):
-    """install a stub `brainjar.hcp_ya_open.get_df_image()` in sys.modules."""
-    import sys
+def _patch_hcp_df(monkeypatch):
+    """stub the HCP loader seams so DataSourceHCP builds with no download.
 
-    if df is None:
-        df = pd.DataFrame(
-            {'fa': ['a.nii', 'b.nii'],
-             'md': ['c.nii', 'd.nii'],
-             'extra': ['e.nii', 'f.nii']},
+    DataSourceHCP resolves its df inline (hcp.ensure_hcp_data +
+    ExperimentImageOnly._search_files); patch both to return a per-feature
+    path frame whose columns are exactly the searched features, so the
+    real column filtering still runs and no download / nibabel is hit.
+    """
+    monkeypatch.setattr(hcp, 'ensure_hcp_data', lambda: pathlib.Path('/fake'))
+
+    def fake_search_files(folder, sbj_regex, glob_dict):
+        return pd.DataFrame(
+            {feat: [f'{feat}_s0.nii', f'{feat}_s1.nii'] for feat in glob_dict},
             index=['s0', 's1'])
 
-    class _FakeHcpYaOpen:
-        @staticmethod
-        def get_df_image():
-            return df
-
-    fake = type(sys)('brainjar')
-    fake.hcp_ya_open = _FakeHcpYaOpen
-    monkeypatch.setitem(sys.modules, 'brainjar', fake)
+    monkeypatch.setattr(ExperimentImageOnly, '_search_files',
+                        staticmethod(fake_search_files))
 
 
 # ---------------------------------------------------------------------------
@@ -176,9 +176,9 @@ class TestIdentityDict:
             assert s in d, f'subclass slot {s!r} missing'
 
     def test_hcp_includes_hcp_slot(self, monkeypatch):
-        _install_fake_brainjar(monkeypatch)
+        _patch_hcp_df(monkeypatch)
         d = DataSourceHCP()._identity_dict()
-        assert d['hcp_feats'] == ('fa', 'md')
+        assert d['hcp_feats'] == hcp.HCP_FEATS
 
     def test_json_serialisable(self):
         # WGN with no extenter is plain-types only
@@ -411,14 +411,14 @@ class TestDataSourceDataFrame:
 # ---------------------------------------------------------------------------
 
 class TestDataSourceHCP:
-    """HCP fetches the df eagerly in __init__; all tests mock brainjar."""
+    """HCP fetches the df eagerly in __init__; all tests stub hcp."""
 
     @pytest.fixture(autouse=True)
-    def _brainjar(self, monkeypatch):
-        _install_fake_brainjar(monkeypatch)
+    def _hcp_df(self, monkeypatch):
+        _patch_hcp_df(monkeypatch)
 
     def test_hcp_feats_default(self):
-        assert DataSourceHCP().hcp_feats == ('fa', 'md')
+        assert DataSourceHCP().hcp_feats == hcp.HCP_FEATS
 
     def test_hcp_feats_tuple_coercion(self):
         assert DataSourceHCP(hcp_feats=['fa']).hcp_feats == ('fa',)

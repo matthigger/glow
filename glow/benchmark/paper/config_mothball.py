@@ -23,13 +23,13 @@ revive one just drive it the same way the CLI drives a catalogue entry:
 import math
 from functools import partial
 
+from glow.benchmark import hcp
 from glow.benchmark.data import DataSourceHCP, DataSourceWGN
 from glow.benchmark.trial_cache import TrialCache
 from glow.effect import ExtenterMinVar, ExtenterSphere
 
 from .config import ANALYSIS_DICT, EFFECT_LLR_GRID, EFFECT_N_VOX, N_SEED
-from .factory import (CROP_N_VOX, DS_SEED, HCP_FEAT_POOL, _CROP_EXTENTER,
-                      _ds_factory)
+from .factory import CROP_N_VOX, DS_SEED, _CROP_EXTENTER, _ds_factory
 from .run import _run_ana_obj
 
 
@@ -69,6 +69,6 @@ _mothball('sphere_wgn',
           ds=_ds_factory('wgn', 1, 100, None),
           extenter=ExtenterSphere(n_vox=EFFECT_N_VOX))
 _mothball('sphere_hcp',
-          ds=DataSourceHCP(hcp_feats=HCP_FEAT_POOL, seed=DS_SEED,
+          ds=DataSourceHCP(hcp_feats=hcp.HCP_FEATS, seed=DS_SEED,
                            extenter=_CROP_EXTENTER),
           extenter=ExtenterSphere(n_vox=EFFECT_N_VOX))

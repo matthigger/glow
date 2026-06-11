@@ -36,9 +36,10 @@ import numpy as np
 import glow
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr, get_wilks
+from glow.benchmark import hcp
 from glow.benchmark.trial_cache import TrialCache
 
-from .factory import CROP_N_VOX, HCP_FEAT_POOL
+from .factory import CROP_N_VOX
 from .run import run_ana, run_mancova, run_prune, run_segment
 
 
@@ -109,7 +110,7 @@ SEGMENT_MODES = [ClusterMode.NAIVE, ClusterMode.GLM_ERROR, ClusterMode.FOCUS]
 # Feature-count grid. WGN runs the whole grid; HCP clamps to its feature
 # pool (run_ana would raise past it), so HCP's facet simply ends earlier.
 B_GRID = list(range(1, 7))
-_B_GRID_HCP_MAX = len(HCP_FEAT_POOL)
+_B_GRID_HCP_MAX = len(hcp.HCP_FEATS)
 
 # Effect-extent grid: 1% .. 100% of the cropped volume.
 EXTENT_N_VOX_GRID = [int(round(p * CROP_N_VOX))

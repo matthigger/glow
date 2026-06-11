@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 import glow
+from glow.benchmark import hcp
 from glow.util import HashBySlots, hash_array
 
 
@@ -178,21 +179,25 @@ class DataSourceDataFrame(DataSource):
 
 
 class DataSourceHCP(DataSourceDataFrame):
-    """Build an Experiment from the HCP-YA open dataset.
+    """Build an Experiment from glow's reference HCP-YA open dataset.
 
-    Resolves the per-subject image-path dataframe from brainjar's HCP-YA
-    open loader, restricted to the requested features, then defers to
-    DataSourceDataFrame for loading and design-matrix construction.
+    Searches the hcp module's local maps (hcp.ensure_hcp_data downloads
+    the published Zenodo dataset on first use, gated on the HCP Data Use
+    Terms) for the requested features, then defers to DataSourceDataFrame
+    for loading and design-matrix construction.
 
     Attributes:
-        hcp_feats (tuple[str]): subset of ('fa', 'md') to load.
+        hcp_feats (tuple[str]): subset of hcp.HCP_FEATS to load
+            (DKI fa/md/mk, NODDI icvf/isovf/od).
     """
 
     __slots__ = ('hcp_feats',)
 
-    def __init__(self, *, hcp_feats=('fa', 'md'), **kwargs):
-        from brainjar import hcp_ya_open
+    def __init__(self, *, hcp_feats=hcp.HCP_FEATS, **kwargs):
         self.hcp_feats = tuple(hcp_feats)
-        super().__init__(
-            df=hcp_ya_open.get_df_image()[list(self.hcp_feats)],
-            **kwargs)
+        folder = hcp.ensure_hcp_data()
+        glob_dict = {feat: hcp.IMG_GLOB_DICT[feat] for feat in self.hcp_feats}
+        df = glow.experiment.ExperimentImageOnly._search_files(
+            folder, hcp.SBJ_REGEX, glob_dict)
+        assert df.size, f'no HCP maps found under {folder}'
+        super().__init__(df=df[list(self.hcp_feats)], **kwargs)

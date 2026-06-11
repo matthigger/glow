@@ -9,10 +9,16 @@ from platformdirs import user_data_dir
 OUT = 'out'
 
 
+def get_path_data() -> pathlib.Path:
+    """Return glow's per-user data directory, creating it if missing."""
+    path_data = pathlib.Path(user_data_dir('glow', 'glow_author'))
+    path_data.mkdir(parents=True, exist_ok=True)
+    return path_data
+
+
 def get_path_result() -> pathlib.Path:
     """Return the per-user results directory, creating it if missing."""
-    path_result = (pathlib.Path(user_data_dir('glow', 'glow_author')) /
-                   'results')
+    path_result = get_path_data() / 'results'
     path_result.mkdir(parents=True, exist_ok=True)
     return path_result
 

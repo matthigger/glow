@@ -51,6 +51,7 @@ from sklearn.feature_extraction.image import grid_to_graph
 import glow
 import glow.effect
 import glow.experiment
+from glow.benchmark import hcp
 from glow.analysis import inner_perm
 from glow.analysis.cluster import cluster as glow_cluster
 from glow.analysis.mancova import decompose
@@ -63,13 +64,18 @@ DEFAULT_OUTPUT = (Path(user_data_dir('glow', 'glow_author'))
 
 
 def load_hcp_exp():
-    """Load the HCP image-only experiment used throughout this sweep."""
-    from brainjar import hcp_ya_open
-    path = hcp_ya_open.process()
+    """Load the HCP image-only experiment used throughout this sweep.
+
+    Searches glow's reference HCP dataset (hcp.ensure_hcp_data, which
+    downloads it on first use) for the fa / md maps -- b=2 keeps this
+    sweep's ward / perm timings comparable to earlier runs.
+    """
+    folder = hcp.ensure_hcp_data()
+    glob_dict = {feat: hcp.IMG_GLOB_DICT[feat] for feat in ('fa', 'md')}
     exp = glow.experiment.ExperimentImageOnly.from_search(
-        folder=path,
-        sbj_regex=r'[\d]{6}',
-        img_glob_dict={'fa': '*_fa.nii.gz', 'md': '*_md.nii.gz'})
+        folder=folder,
+        sbj_regex=hcp.SBJ_REGEX,
+        img_glob_dict=glob_dict)
     return exp.sample_x(a=2, seed=0, add_bias=True)
 
 

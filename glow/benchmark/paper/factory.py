@@ -18,6 +18,7 @@ from functools import lru_cache
 
 import numpy as np
 
+from glow.benchmark import hcp
 from glow.benchmark.data import DataSourceHCP, DataSourceWGN
 from glow.effect import ExtenterSphere
 
@@ -35,37 +36,32 @@ DS_SEED = 0
 # across WGN and HCP.
 _CROP_EXTENTER = ExtenterSphere(n_vox=CROP_N_VOX, connected=True)
 
-# HCP imaging-feature pool to draw from. Today's open dataset ships only
-# fa / md; the manuscript's new dataset will carry 6-7 features. Extend
-# this tuple when that data lands and the b-sweep grid + random-feature
-# draws widen automatically (sample_hcp_feats / config.B_GRID clamp to it).
-# todo: sync with the 6-7-feature HCP release.
-HCP_FEAT_POOL = ('fa', 'md')
-
 
 def sample_hcp_feats(b: int, seed: int) -> tuple:
-    """Draw b distinct HCP features from the pool, deterministically per seed.
+    """Draw b distinct HCP features from hcp.HCP_FEATS, per seed.
 
     Each effect seed gets its own random feature subset so a b-feature
     result averages over which features were chosen rather than fixing an
-    arbitrary one. Sorted for a stable, order-invariant identity.
+    arbitrary one. Sorted for a stable, order-invariant identity. The
+    b-sweep grid + random draws size themselves off the six-feature pool
+    (config.B_GRID clamps to it).
 
     Args:
         b (int): number of features to draw
         seed (int): effect seed; also seeds the feature draw
 
     Returns:
-        a sorted tuple of b feature names from HCP_FEAT_POOL
+        a sorted tuple of b feature names from hcp.HCP_FEATS
 
     Raises:
         ValueError: if b exceeds the pool size
     """
-    if b > len(HCP_FEAT_POOL):
+    if b > len(hcp.HCP_FEATS):
         raise ValueError(
-            f'requested b={b} > HCP feature pool {len(HCP_FEAT_POOL)}')
+            f'requested b={b} > HCP feature pool {len(hcp.HCP_FEATS)}')
     rng = np.random.default_rng(seed)
-    idx = rng.choice(len(HCP_FEAT_POOL), size=b, replace=False)
-    return tuple(sorted(HCP_FEAT_POOL[i] for i in idx))
+    idx = rng.choice(len(hcp.HCP_FEATS), size=b, replace=False)
+    return tuple(sorted(hcp.HCP_FEATS[i] for i in idx))
 
 
 @lru_cache(maxsize=None)
