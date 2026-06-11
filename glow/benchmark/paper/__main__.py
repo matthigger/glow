@@ -120,6 +120,10 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 
 if __name__ == '__main__':
+    # prompt / load hcp data if need be
+    from glow.benchmark.hcp import ensure_hcp_data
+    ensure_hcp_data()
+
     args = parse_args()
     run(labels=args.labels, n_jobs=args.n_jobs, verbose=not args.quiet,
         aws=args.aws, aws_config_path=args.aws_config)
