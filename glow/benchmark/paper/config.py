@@ -29,6 +29,7 @@ glow.effect.impose). Two consequences, both verified empirically:
 Mothballed experiments (2-D WGN, sphere-extent variants) live in
 config_mothball.py and are not imported here.
 """
+import os
 from functools import partial
 
 import numpy as np
@@ -40,16 +41,17 @@ from glow.benchmark import hcp
 from glow.benchmark.trial_cache import TrialCache
 
 from .factory import CROP_N_VOX
-from .run import run_ana, run_mancova, run_prune, run_segment
+from .run import (run_ana, run_mancova, run_prune, run_segment,
+                  run_two_effect)
 
 
 # ---------- shared knobs -----------------------------------------------------
 SOURCES = ['wgn', 'hcp']
 
-N_SEED = 2
-# todo: the manuscript says "todo seeds" for the null calibration (was an
-#   unbacked 500). Pick the count here and update the text to match.
-N_SEED_NULL = 10
+# Env-overridable for big runs (e.g. GLOW_N_SEED=10, GLOW_N_SEED_NULL=1000);
+# defaults stay small for fast local iteration.
+N_SEED = int(os.environ.get('GLOW_N_SEED', 2))
+N_SEED_NULL = int(os.environ.get('GLOW_N_SEED_NULL', 10))
 
 EFFECT_LLR_GRID = np.logspace(np.log10(0.003), np.log10(0.3), 11)
 MODERATE_EFFECT_LLR = 0.03
@@ -143,8 +145,12 @@ def _cache(label: str, *, run_fnc, **iter_kwargs) -> None:
 _ana = partial(run_ana, ana_kwargs_dict=ANALYSIS_DICT)
 _segment = partial(run_segment, modes=SEGMENT_MODES)
 _mancova = partial(run_mancova, n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
+_two_effect = partial(run_two_effect, ana_kwargs_dict=ANALYSIS_DICT)
 # run_prune needs no partial: it has one call site and builds GLOW's default
 # recipe (Focus, shared perms) itself.
+
+# Angle (deg) between the two effects' feature directions: 0..90 in 10 steps.
+ANGLE_GRID = [float(a) for a in np.linspace(0, 90, 10)]
 
 
 # A. Type I error (null): no effect, many seeds, both sources.
@@ -204,6 +210,17 @@ _cache('prune', run_fnc=run_prune,
        effect_llr=EFFECT_LLR_GRID, b=[1], num_img=[100],
        n_vox_eff=[EFFECT_N_VOX])
 
+# I. Cleaving: two adjacent equal-LLR effects, sweep the angle between their
+#    feature directions (0..90 deg). Headline metric is instance separation
+#    (ARI of the recovered partition vs the {effect0, effect1} truth), derived
+#    downstream from region_overlap_json; the aggregate tp/fp/tn/fn (union vs
+#    both effects) give the detectability check. b>=2 so the direction
+#    rotation has a plane to turn in.
+_cache('two-effect', run_fnc=_two_effect,
+       source=SOURCES, seed=list(range(N_SEED)),
+       angle=ANGLE_GRID, b=[3], num_img=[100],
+       effect_llr=[MODERATE_EFFECT_LLR], n_vox_eff=[EFFECT_N_VOX])
+
 
 # ---------- plot specs -------------------------------------------------------
 # Per-cache plot roles, read by plot.py instead of inferring from the data
@@ -228,4 +245,7 @@ PLOT = {
     'stat':         dict(kind='mancova'),
     'prune':        dict(kind='metric', x='effect_llr',  facet='source',
                          metrics=['dice', 'sens', 'ppv', 'n_selected']),
+    # ARI (cleaving) is computed downstream from region_overlap_json -- plot.py
+    # needs a 'two_effect' branch (TODO); the run itself does not plot.
+    'two-effect':   dict(kind='two_effect', x='angle',   facet='source'),
 }

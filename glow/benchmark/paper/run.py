@@ -42,6 +42,7 @@ from glow.analysis.mancova import stat_dict, stat_dict_inv
 from glow.analysis.prune import prune_greedy, prune_dp
 from glow.benchmark.trial_cache import SKIP_LABEL
 from glow.effect import EffectSynthetic, ExtenterMinVar
+from glow.effect.extent import split_mask
 from .factory import build_ds
 
 
@@ -563,4 +564,121 @@ def run_mancova(*, source: str, b: int, num_img: int, n_vox_eff: int,
         row.update(_score(ana, trial.mask_target, trial.mask_active))
         rows.append(row)
 
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# two adjacent effects (cleaving)
+# ---------------------------------------------------------------------------
+
+def _score_regions_two(reg_mask_list, mask0, mask1, mask_active) -> dict:
+    """Region x truth-class overlap for the two-effect cleaving trial.
+
+    Records, per output region, its voxel overlap with each planted effect
+    (n0, n1) and with the analysed background (nbg). This overlap table is the
+    sufficient statistic for the downstream metrics -- instance separation
+    (ARI of the recovered partition vs the {effect0, effect1} truth) and
+    per-effect detection both derive from it -- so results.csv stores raw
+    counts only. Also returns the aggregate confusion of the union of regions
+    against the whole effect (mask0 | mask1), which feeds the detectability
+    (Dice / sens / PPV) panel through the existing stats_from_counts path.
+
+    Output regions are disjoint (a Ward antichain, or connected components for
+    the voxel methods), so the per-region overlaps partition the detection.
+
+    Args:
+        reg_mask_list (list): (reg_idx, mask) per output region, in output
+            order; reg_idx is the Ward region index or None (voxel methods)
+        mask0, mask1 (np.array): (X, Y, Z) bool, the two planted effect halves
+        mask_active (np.array): (X, Y, Z) bool, the analysed voxels
+
+    Returns:
+        the union-vs-(mask0|mask1) aggregate tp/fp/tn/fn, plus vox_eff0,
+        vox_eff1, n_selected and region_overlap_json (a JSON list of
+        {reg_idx, n0, n1, nbg} dicts)
+    """
+    bg = mask_active & ~(mask0 | mask1)
+    mask_pred = np.zeros(mask_active.shape, dtype=bool)
+    overlap = []
+    for reg_idx, mask in reg_mask_list:
+        m = mask & mask_active
+        mask_pred |= m
+        overlap.append({'reg_idx': None if reg_idx is None else int(reg_idx),
+                        'n0': int((m & mask0).sum()),
+                        'n1': int((m & mask1).sum()),
+                        'nbg': int((m & bg).sum())})
+    counts = glow.mask.confusion_counts(
+        mask_pred=mask_pred, mask_target=(mask0 | mask1),
+        mask_active=mask_active)
+    return {**counts,
+            'vox_eff0': int(mask0.sum()), 'vox_eff1': int(mask1.sum()),
+            'n_selected': len(overlap),
+            'region_overlap_json': json.dumps(overlap)}
+
+
+def run_two_effect(*, source: str, b: int, num_img: int, n_vox_eff: int,
+                   seed: int, angle: float, ana_kwargs_dict: dict,
+                   effect_llr=None, effect_total_llr=None):
+    """Two adjacent equal-LLR effects at a controlled feature-direction angle.
+
+    Grows one min-variance extent of n_vox_eff voxels, splits it into two
+    contiguous halves (split_mask), and plants an effect on each: both at the
+    same effect_llr, with feature directions `angle` degrees apart (shared
+    seed, angles 0 and `angle`; see EffectSynthetic / sample_beta_direction).
+    Fits every analysis and scores the region x truth-class overlap, so ARI
+    (cleaving) and per-effect detection are recoverable downstream.
+
+    Args:
+        source (str): 'wgn' or 'hcp'
+        b (int): imaging-feature count (>= 2; the direction rotation needs a
+            plane)
+        num_img (int): subject count (WGN; HCP uses its cohort)
+        n_vox_eff (int): the combined two-effect support, split into halves
+        seed (int): effect RNG seed (extent grow, direction plane, HCP feats)
+        angle (float): feature-direction angle between the two effects (deg)
+        ana_kwargs_dict (dict): label -> (Analysis class, init kwargs)
+        effect_llr (float | None): per-voxel target for each effect
+        effect_total_llr (float | None): whole-region target per effect
+
+    Returns:
+        a DataFrame with one row per analysis label
+    """
+    try:
+        ds, feats = build_ds(source, b=b, num_img=num_img, seed=seed)
+    except ValueError as e:
+        return _skip_frame(e)
+
+    exp = ds.exp
+    mask_active = exp.mask_idx > -1
+    llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
+
+    extent = ExtenterMinVar(n_vox=n_vox_eff)(
+        mask_idx=exp.mask_idx, y=exp.y, seed=seed)
+    mask0, mask1 = split_mask(extent)
+    e0 = EffectSynthetic(mask=mask0, effect_llr=llr, angle=0.0, seed=seed)
+    e1 = EffectSynthetic(mask=mask1, effect_llr=llr, angle=float(angle),
+                         seed=seed)
+    exp_eff = e1.fit(e0.fit(exp))
+
+    diag = {**_trial_diag(exp, mask0 | mask1, llr, feats),
+            'angle': float(angle)}
+    rows = []
+    for label, (Ana, kw) in ana_kwargs_dict.items():
+        row = {'label': label, 'analysis_cls': Ana.__name__, **diag}
+        t0 = time.time()
+        try:
+            ana = Ana(exp=exp_eff, **kw).fit()
+        except Exception:
+            row['time_sec'] = time.time() - t0
+            row['error'] = traceback.format_exc()
+            rows.append(row)
+            continue
+        row['time_sec'] = time.time() - t0
+        reg_mask_list = [(getattr(eff, 'reg_idx', None), eff.mask)
+                         for eff in (ana.effect_list or ())]
+        row.update(_score_regions_two(reg_mask_list, mask0, mask1, mask_active))
+        row['min_pval'] = (float(np.nanmin(ana.pval))
+                           if getattr(ana, 'pval', None) is not None
+                           else np.nan)
+        rows.append(row)
     return pd.DataFrame(rows)

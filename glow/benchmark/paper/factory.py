@@ -14,6 +14,7 @@ amortisation the old object-valued catalogue got from sharing one ds
 instance across the seed loop.
 """
 import math
+import os
 from functools import lru_cache
 
 import numpy as np
@@ -24,7 +25,9 @@ from glow.effect import ExtenterSphere
 
 
 # ---------- shared structural constants -------------------------------------
-CROP_N_VOX = 1_000
+# Env-overridable so a big real-data run (GLOW_CROP_N_VOX=25000) can be
+# launched without editing the source default (fast 1k for local iteration).
+CROP_N_VOX = int(os.environ.get('GLOW_CROP_N_VOX', 1_000))
 _WGN_SIDE_3D = math.ceil(CROP_N_VOX ** (1 / 3))
 
 # Data-source seed is held fixed (only the effect seed is swept), matching
