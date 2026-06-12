@@ -1,11 +1,15 @@
 import numpy as np
 import pytest
+from scipy.ndimage import generate_binary_structure, label
 
 from glow.effect.extent import (
     ContiguousRegionNotFound,
     ExtenterMinVar,
     ExtenterSphere,
+    get_diameter,
+    iter_bfs,
     iter_vox_neighbor,
+    split_mask,
 )
 from glow.mask import get_mask_idx
 
@@ -169,3 +173,124 @@ class TestExtenterMinVar:
         mask = extenter(mask_idx=mask_idx, y=y, seed=42)
         assert mask.sum() == 10
         assert mask.shape == mask_idx.shape
+
+
+def _is_contiguous(mask):
+    # single connected component under the same face-connectivity the
+    # extent functions use (4-conn in 2D, 6-conn in 3D)
+    structure = (generate_binary_structure(3, 1) if mask.ndim == 3
+                 else generate_binary_structure(2, 1))
+    _, n_components = label(mask, structure=structure)
+    return n_components == 1
+
+
+def _assert_valid_split(mask, mask0, mask1):
+    # the two pieces partition mask exactly, are disjoint, and each is a
+    # single connected component (an empty piece is allowed, e.g. one voxel)
+    assert np.array_equal(mask0 | mask1, mask)
+    assert not (mask0 & mask1).any()
+    assert _is_contiguous(mask0)
+    if mask1.any():
+        assert _is_contiguous(mask1)
+
+
+class TestIterBfs:
+    def test_distances_along_a_line(self):
+        # a 1x5 line; BFS from the (0, 0) end visits voxels in order with
+        # graph distances 0, 1, 2, 3, 4.
+        mask = np.ones((1, 5), dtype=bool)
+        visited = list(iter_bfs(mask, (0, 0)))
+        assert [ijk for ijk, _ in visited] == [(0, 0), (0, 1), (0, 2),
+                                               (0, 3), (0, 4)]
+        assert [d for _, d in visited] == [0, 1, 2, 3, 4]
+
+    def test_blocked_halts_the_front(self):
+        # blocking the (0, 2) voxel walls off everything beyond it: the front
+        # neither yields nor expands through a blocked voxel, so only
+        # (0, 0) and (0, 1) are reached.
+        mask = np.ones((1, 5), dtype=bool)
+        blocked = np.zeros_like(mask)
+        blocked[0, 2] = True
+        reached = [ijk for ijk, _ in iter_bfs(mask, (0, 0), blocked=blocked)]
+        assert reached == [(0, 0), (0, 1)]
+
+    def test_seed_outside_mask_raises(self):
+        mask = np.zeros((3, 3), dtype=bool)
+        mask[1, 1] = True
+        with pytest.raises(AssertionError):
+            list(iter_bfs(mask, (0, 0)))
+
+
+class TestGetDiameter:
+    def test_line_endpoints(self):
+        # the diameter of a 1x6 line is its two ends.
+        mask = np.ones((1, 6), dtype=bool)
+        ijk0, ijk1 = get_diameter(mask)
+        assert {ijk0, ijk1} == {(0, 0), (0, 5)}
+
+    def test_disconnected_raises(self):
+        # two separated rows are not a single connected component.
+        mask = np.array([[1, 1, 1],
+                         [0, 0, 0],
+                         [1, 1, 1]], dtype=bool)
+        with pytest.raises(ValueError):
+            get_diameter(mask)
+
+
+class TestSplitMask:
+    def test_even_line_splits_in_half(self):
+        # a 1x6 line splits into two contiguous runs of three voxels.
+        mask = np.ones((1, 6), dtype=bool)
+        mask0, mask1 = split_mask(mask)
+        _assert_valid_split(mask, mask0, mask1)
+        assert mask0.sum() == 3
+        assert mask1.sum() == 3
+
+    def test_odd_line_differs_by_one(self):
+        # a 1x7 line cannot split evenly; the pieces differ by one voxel.
+        mask = np.ones((1, 7), dtype=bool)
+        mask0, mask1 = split_mask(mask)
+        _assert_valid_split(mask, mask0, mask1)
+        assert abs(int(mask0.sum()) - int(mask1.sum())) == 1
+
+    def test_square_block_2d(self):
+        # a solid 4x4 block splits into two contiguous halves of eight.
+        mask = np.ones((4, 4), dtype=bool)
+        mask0, mask1 = split_mask(mask)
+        _assert_valid_split(mask, mask0, mask1)
+        assert mask0.sum() == 8
+        assert mask1.sum() == 8
+
+    def test_cube_block_3d(self):
+        # a solid 2x2x2 cube splits into two contiguous halves of four.
+        mask = np.ones((2, 2, 2), dtype=bool)
+        mask0, mask1 = split_mask(mask)
+        _assert_valid_split(mask, mask0, mask1)
+        assert mask0.sum() == 4
+        assert mask1.sum() == 4
+
+    def test_l_shape_stays_contiguous(self):
+        # an L-shaped region: a straight cut would sever a piece, so this
+        # exercises the curved seam the BFS fronts grow.
+        mask = np.array([[1, 0, 0, 0],
+                         [1, 0, 0, 0],
+                         [1, 1, 1, 1]], dtype=bool)
+        mask0, mask1 = split_mask(mask)
+        _assert_valid_split(mask, mask0, mask1)
+        assert abs(int(mask0.sum()) - int(mask1.sum())) <= 1
+
+    def test_single_voxel(self):
+        # one voxel cannot be split; it lands wholly in one piece.
+        mask = np.zeros((3, 3), dtype=bool)
+        mask[1, 1] = True
+        mask0, mask1 = split_mask(mask)
+        _assert_valid_split(mask, mask0, mask1)
+        assert mask0.sum() == 1
+        assert mask1.sum() == 0
+
+    def test_disconnected_raises(self):
+        mask = np.array([[1, 1, 1],
+                         [0, 0, 0],
+                         [1, 1, 1]], dtype=bool)
+        with pytest.raises(ValueError):
+            split_mask(mask)

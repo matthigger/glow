@@ -1,5 +1,6 @@
 """Extenters: sample the contiguous voxel support (extent) of an effect."""
 
+from collections import deque
 from functools import wraps
 from typing import Protocol, runtime_checkable
 
@@ -264,3 +265,145 @@ class ExtenterMinVar(HashBySlots):
             y_norm_sq += (y_new ** 2).sum()
 
         return mask
+
+
+def _face_offsets(ndim):
+    """Return the face-neighbour index offsets for an ndim array.
+
+    Four offsets in 2D, six in 3D -- the same 4-/6-connectivity that
+    CONNECTIVITY_3D encodes for dilation, here as explicit index deltas for
+    breadth-first traversal (one axis stepped by +-1, the rest held at 0).
+
+    Args:
+        ndim (int): number of array dimensions
+
+    Returns:
+        offsets (tuple): each element an (ndim,) int tuple with a single
+            nonzero entry of +1 or -1
+    """
+    offsets = []
+    for axis in range(ndim):
+        for step in (-1, 1):
+            off = [0] * ndim
+            off[axis] = step
+            offsets.append(tuple(off))
+    return tuple(offsets)
+
+
+def iter_bfs(mask, ijk, blocked=None):
+    """Yield mask voxels in breadth-first order from a seed voxel.
+
+    Neighbours are face-connected (4-connectivity in 2D, 6-connectivity in
+    3D), matching CONNECTIVITY_3D and Ward clustering.
+
+    Args:
+        mask (np.array): boolean spatial mask, (X, Y) or (X, Y, Z), True for
+            in-mask voxels
+        ijk (tuple): (i, j[, k]) seed voxel, must be in the mask
+        blocked (np.array): boolean, same shape as mask, voxels to neither
+            yield nor expand through. Checked when a voxel is dequeued, not
+            when it is enqueued, so the caller may keep mutating the array
+            between pulls (split_mask grows two competing fronts this way).
+
+    Yields:
+        ijk (tuple): (i, j[, k]) voxel
+        d (int): graph distance (face-connectivity) from the seed
+    """
+    assert mask[ijk], 'seed voxel not in mask'
+    shape = mask.shape
+    offsets = _face_offsets(mask.ndim)
+    visited = np.zeros(shape, dtype=bool)
+    visited[ijk] = True
+    queue = deque([(ijk, 0)])
+    while queue:
+        ijk, d = queue.popleft()
+        if blocked is not None and blocked[ijk]:
+            continue
+        yield ijk, d
+        for off in offsets:
+            _ijk = tuple(c + o for c, o in zip(ijk, off))
+            if (all(0 <= _ijk[ax] < shape[ax] for ax in range(mask.ndim))
+                    and mask[_ijk]
+                    and not visited[_ijk]):
+                visited[_ijk] = True
+                queue.append((_ijk, d + 1))
+
+
+def get_diameter(mask):
+    """Find two voxels at (approximately) maximal graph distance.
+
+    Iterated BFS sweep (Handler 1973): BFS from a seed, jump to the farthest
+    voxel found, repeat until the farthest distance stops increasing. Exact on
+    trees, a lower bound on general graphs.
+
+    Args:
+        mask (np.array): boolean spatial mask, (X, Y) or (X, Y, Z), must be a
+            single connected component
+
+    Returns:
+        ijk0 (tuple): (i, j[, k]) one endpoint of the diameter
+        ijk1 (tuple): (i, j[, k]) the other endpoint
+
+    Raises:
+        ValueError: if mask has more than one connected component
+    """
+    ijk0 = tuple(np.argwhere(mask)[0])
+    d_last = None
+    while True:
+        # the last voxel out of iter_bfs is the farthest from the seed
+        num_visited = 0
+        for ijk1, d in iter_bfs(mask, ijk0):
+            num_visited += 1
+        if num_visited != mask.sum():
+            raise ValueError('mask is not a single connected component')
+        if d == d_last:
+            return ijk0, ijk1
+        d_last = d
+        ijk0 = ijk1
+
+
+def split_mask(mask):
+    """Split a mask into two contiguous pieces of (near) equal size.
+
+    BFS fronts grow from the two endpoints of a diameter of the mask,
+    alternately claiming one voxel from each front until the mask is
+    exhausted. Each front blocks on the other piece, so it only expands
+    through its own territory and every voxel it claims has a neighbour
+    already in the piece -- both pieces are guaranteed contiguous.
+
+    Note:
+        Sizes differ by at most one voxel unless one front gets walled in by
+        the other; the trapped front then stops and the open front claims the
+        remainder, trading balance for contiguity.
+
+    Args:
+        mask (np.array): boolean spatial mask, (X, Y) or (X, Y, Z), must be a
+            single connected component
+
+    Returns:
+        mask0 (np.array): boolean, same shape as mask, piece grown from one
+            diameter endpoint
+        mask1 (np.array): boolean, the other piece. mask0 | mask1 == mask and
+            mask0 & mask1 is empty
+
+    Raises:
+        ValueError: if mask has more than one connected component
+    """
+    ijk0, ijk1 = get_diameter(mask)
+    pieces = (np.zeros_like(mask), np.zeros_like(mask))
+    iters = (iter_bfs(mask, ijk0, blocked=pieces[1]),
+             iter_bfs(mask, ijk1, blocked=pieces[0]))
+    num_remain = int(mask.sum())
+    while num_remain:
+        num_remain_start = num_remain
+        for piece, _iter in zip(pieces, iters):
+            for ijk, _ in _iter:
+                piece[ijk] = True
+                num_remain -= 1
+                break
+            if not num_remain:
+                break
+        # both fronts exhausted with voxels left can only happen on a
+        # disconnected mask, which get_diameter already rejects
+        assert num_remain < num_remain_start, 'no front can advance'
+    return pieces
