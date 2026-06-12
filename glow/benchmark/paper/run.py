@@ -41,7 +41,7 @@ from glow.analysis.cluster import cluster, ClusterMode
 from glow.analysis.mancova import stat_dict, stat_dict_inv
 from glow.analysis.prune import prune_greedy, prune_dp
 from glow.benchmark.trial_cache import SKIP_LABEL
-from glow.effect import EffectSynthetic, ExtenterMinVar
+from glow.effect import EffectSynthetic, ExtenterMinVar, ExtenterSphere
 from glow.effect.extent import split_mask
 from .factory import build_ds
 
@@ -652,8 +652,17 @@ def run_two_effect(*, source: str, b: int, num_img: int, n_vox_eff: int,
     mask_active = exp.mask_idx > -1
     llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
 
-    extent = ExtenterMinVar(n_vox=n_vox_eff)(
-        mask_idx=exp.mask_idx, y=exp.y, seed=seed)
+    # A sphere centred in the middle of the data splits (split_mask) into two
+    # equal halves; a min-variance extent's irregular shape splits unevenly
+    # (verified at 25k: 34/66..58/42, vs the sphere's exact 50/50), which would
+    # break the "two equal effects" premise. Centre = in-mask voxel nearest the
+    # centroid (the analysis mask is itself a sphere, so this is its middle).
+    coords = np.argwhere(mask_active)
+    ctr = coords.mean(axis=0)
+    vox_init = int(exp.mask_idx[tuple(
+        coords[np.argmin(((coords - ctr) ** 2).sum(axis=1))])])
+    extent = ExtenterSphere(n_vox=n_vox_eff, connected=True)(
+        mask_idx=exp.mask_idx, y=exp.y, vox_init=vox_init)
     mask0, mask1 = split_mask(extent)
     e0 = EffectSynthetic(mask=mask0, effect_llr=llr, angle=0.0, seed=seed)
     e1 = EffectSynthetic(mask=mask1, effect_llr=llr, angle=float(angle),

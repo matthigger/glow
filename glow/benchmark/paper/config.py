@@ -151,6 +151,11 @@ _two_effect = partial(run_two_effect, ana_kwargs_dict=ANALYSIS_DICT)
 
 # Angle (deg) between the two effects' feature directions: 0..90 in 10 steps.
 ANGLE_GRID = [float(a) for a in np.linspace(0, 90, 10)]
+# Per-voxel effect_llr grid for the two-effect cache. At 25k each ~1250-vox
+# half is very high-SNR at 0.03 (per-region LLR ~37 -> GLOW favours the merged
+# region), so span weaker SNRs too; the right level is read off the resulting
+# ARI(angle) curves and the dice/sens detectability columns.
+TWO_EFFECT_LLR_GRID = [0.003, 0.01, 0.03]
 
 
 # A. Type I error (null): no effect, many seeds, both sources.
@@ -219,7 +224,7 @@ _cache('prune', run_fnc=run_prune,
 _cache('two-effect', run_fnc=_two_effect,
        source=SOURCES, seed=list(range(N_SEED)),
        angle=ANGLE_GRID, b=[3], num_img=[100],
-       effect_llr=[MODERATE_EFFECT_LLR], n_vox_eff=[EFFECT_N_VOX])
+       effect_llr=TWO_EFFECT_LLR_GRID, n_vox_eff=[EFFECT_N_VOX])
 
 
 # ---------- plot specs -------------------------------------------------------
