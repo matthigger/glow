@@ -29,7 +29,6 @@ glow.effect.impose). Two consequences, both verified empirically:
 Mothballed experiments (2-D WGN, sphere-extent variants) live in
 config_mothball.py and are not imported here.
 """
-import os
 from functools import partial
 
 import numpy as np
@@ -48,10 +47,8 @@ from .run import (run_ana, run_mancova, run_prune, run_segment,
 # ---------- shared knobs -----------------------------------------------------
 SOURCES = ['wgn', 'hcp']
 
-# Env-overridable for big runs (e.g. GLOW_N_SEED=10, GLOW_N_SEED_NULL=1000);
-# defaults stay small for fast local iteration.
-N_SEED = int(os.environ.get('GLOW_N_SEED', 2))
-N_SEED_NULL = int(os.environ.get('GLOW_N_SEED_NULL', 10))
+N_SEED = 2
+N_SEED_NULL = 10
 
 EFFECT_LLR_GRID = np.logspace(np.log10(0.003), np.log10(0.3), 11)
 MODERATE_EFFECT_LLR = 0.03
