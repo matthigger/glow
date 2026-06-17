@@ -221,6 +221,7 @@ def _pick_from_ranking(df, glow_label: str):
     metric = feats[m]
 
     summary = compare.summarize(df, glow_label, metric)
+    summary = summary.dropna(subset=['gap'])
     compare.print_summary(summary, glow_label, metric)
 
     top = summary.head(compare.N_SHOW)

@@ -72,8 +72,8 @@ def test_confusion_counts():
 
 
 def test_stats_from_counts():
-    # the four test_confusion_counts regions, plus an empty region (all zero) to
-    # exercise the 0/0 fills: spec -> 1, the others -> 0
+    # the four test_confusion_counts regions, plus an empty region (all zero)
+    # to exercise 0/0 fills: dice/sens -> 0; ppv/spec -> nan
     tp = np.array([1, 0, 2, 0, 0])
     fp = np.array([1, 2, 0, 1, 0])
     tn = np.array([1, 2, 0, 1, 0])
@@ -83,8 +83,12 @@ def test_stats_from_counts():
 
     assert np.allclose(stats['dice'], [0.5, 0.0, 4 / 6, 0.0, 0.0])
     assert np.allclose(stats['sens'], [0.5, 0.0, 0.5, 0.0, 0.0])
-    assert np.allclose(stats['ppv'], [0.5, 0.0, 1.0, 0.0, 0.0])
-    assert np.allclose(stats['spec'], [0.5, 0.5, 1.0, 0.5, 1.0])
+    # ppv[4]: tp+fp=0 -> nan
+    assert np.allclose(stats['ppv'], [0.5, 0.0, 1.0, 0.0, np.nan],
+                       equal_nan=True)
+    # spec[2]: tn+fp=0 -> nan; spec[4]: tn+fp=0 -> nan
+    assert np.allclose(stats['spec'], [0.5, 0.5, np.nan, 0.5, np.nan],
+                       equal_nan=True)
 
 
 def test_stats_from_counts_preserves_series():
@@ -98,9 +102,9 @@ def test_stats_from_counts_preserves_series():
     for key in ('dice', 'sens', 'ppv', 'spec'):
         assert isinstance(stats[key], pd.Series)
         assert stats[key].index.equals(idx)
-    # the all-zero second region takes the fills
-    assert stats['spec'].iloc[1] == 1.0
-    assert stats['ppv'].iloc[1] == 0.0
+    # the all-zero second region: ppv and spec are 0/0 -> nan
+    assert np.isnan(stats['spec'].iloc[1])
+    assert np.isnan(stats['ppv'].iloc[1])
 
 
 Case = namedtuple("Case", ["conn", "not_reflexive", "offset_exp"])

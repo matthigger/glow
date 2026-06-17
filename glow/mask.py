@@ -136,9 +136,9 @@ def stats_from_counts(tp, fp, tn, fn) -> dict:
 
     A ratio is undefined only when its denominator is zero, and every
     denominator here is a sum of the counts in its numerator, so an
-    undefined ratio is always a literal 0/0. We fill those with 0,
-    except specificity, which is conventionally 1 when there are no
-    true-negative voxels to find.
+    undefined ratio is always a literal 0/0. All four are filled with
+    nan so that undefined trials are excluded from rankings rather than
+    biased by an arbitrary fill value.
 
     Args:
         tp, fp, tn, fn: array-like (numpy array or pandas Series) of
@@ -156,8 +156,8 @@ def stats_from_counts(tp, fp, tn, fn) -> dict:
     return {
         'dice': ratio(2 * tp, 2 * tp + fp + fn, 0.0),
         'sens': ratio(tp, tp + fn, 0.0),
-        'ppv': ratio(tp, tp + fp, 0.0),
-        'spec': ratio(tn, tn + fp, 1.0),
+        'ppv': ratio(tp, tp + fp, np.nan),
+        'spec': ratio(tn, tn + fp, np.nan),
     }
 
 
