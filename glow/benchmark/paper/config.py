@@ -40,8 +40,8 @@ from glow.benchmark import hcp
 from glow.benchmark.trial_cache import TrialCache
 
 from .factory import CROP_N_VOX
-from .run import (run_ana, run_mancova, run_prune, run_segment,
-                  run_two_effect)
+from .run import (run_ana, run_mancova, run_min_size, run_prune, run_segment,
+                  run_two_effect, _SEED_OFFSET_DISTINCT)
 
 
 # ---------- shared knobs -----------------------------------------------------
@@ -143,6 +143,11 @@ _ana = partial(run_ana, ana_kwargs_dict=ANALYSIS_DICT)
 _segment = partial(run_segment, modes=SEGMENT_MODES)
 _mancova = partial(run_mancova, n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
 _two_effect = partial(run_two_effect, ana_kwargs_dict=ANALYSIS_DICT)
+
+# Min-size sweep: faithful GLOW knobs, but heavy (cpu_perm, no race -> every
+# region >= floor gets an exact z, ~12x slower than the racing fit).
+_min_size = partial(run_min_size, n_perm_fwer=N_PERM_FWER,
+                    n_perm_inner=N_PERM_INNER, min_vox_floor=1)
 # run_prune needs no partial: it has one call site and builds GLOW's default
 # recipe (Focus, shared perms) itself.
 
@@ -222,6 +227,19 @@ _cache('two-effect', run_fnc=_two_effect,
        source=SOURCES, seed=list(range(N_SEED)),
        angle=ANGLE_GRID, b=[3], num_img=[100],
        effect_llr=TWO_EFFECT_LLR_GRID, n_vox_eff=[EFFECT_N_VOX])
+
+# J. Min-size sweep: per-perm (size -> max-z) staircases on HCP, mirroring
+#    sweep_llr's effect grid and N_SEED seed count, so min_vox can be swept
+#    post hoc from one run (no plot yet -- just the curve_json results). Inner
+#    perms are race-free; the trial seed is split (derive_seeds) and its ds
+#    sub-seed drives the DataSource, so each seed is an independent null. Seeds
+#    run from a _SEED_OFFSET_DISTINCT offset to keep this block clear of the
+#    other sweeps.
+_cache('min_size', run_fnc=_min_size,
+       source=['hcp'],
+       seed=list(range(_SEED_OFFSET_DISTINCT, _SEED_OFFSET_DISTINCT + N_SEED)),
+       effect_llr=EFFECT_LLR_GRID, b=[1], num_img=[100],
+       n_vox_eff=[EFFECT_N_VOX])
 
 
 # ---------- plot specs -------------------------------------------------------

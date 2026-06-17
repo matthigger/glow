@@ -66,7 +66,7 @@ _mothball(
 
 # Cropped WGN / HCP, but the planted effect is a sphere.
 _mothball('sphere_wgn',
-          ds=_ds_factory('wgn', 1, 100, None),
+          ds=_ds_factory('wgn', 1, 100, None, DS_SEED),
           extenter=ExtenterSphere(n_vox=EFFECT_N_VOX))
 _mothball('sphere_hcp',
           ds=DataSourceHCP(hcp_feats=hcp.HCP_FEATS, seed=DS_SEED,

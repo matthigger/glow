@@ -36,14 +36,14 @@ import glow.graph
 import glow.mask
 from glow.analysis import (
     AnalysisGLOW, AnalysisVoxel, AnalysisVBA, AnalysisCET,
-    DEFAULT_CET_CFT_PVAL)
+    DEFAULT_CET_CFT_PVAL, inner_perm)
 from glow.analysis.cluster import cluster, ClusterMode
 from glow.analysis.mancova import stat_dict, stat_dict_inv
 from glow.analysis.prune import prune_greedy, prune_dp
 from glow.benchmark.trial_cache import SKIP_LABEL
 from glow.effect import EffectSynthetic, ExtenterMinVar, ExtenterSphere
 from glow.effect.extent import split_mask_spectral
-from .factory import build_ds
+from .factory import build_ds, derive_seeds
 
 
 def _effect_llr(effect_llr, effect_total_llr, n_vox_eff: int) -> float:
@@ -316,6 +316,158 @@ def run_ana(*, source: str, b: int, num_img: int, n_vox_eff: int, seed: int,
     llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
     return _run_ana_obj(ds=ds, extenter=extenter, effect_llr=llr, seed=seed,
                         ana_kwargs_dict=ana_kwargs_dict, feats=feats)
+
+
+# ---------------------------------------------------------------------------
+# min-size sweep: capture the per-perm (size -> max-z) staircase
+
+# A large seed offset reused to keep distinct seed regimes apart: outer-perm
+# k draws its inner FL perms from the block starting at
+# (k + 1) * _SEED_OFFSET_DISTINCT (matching AnalysisGLOW's per-outer-perm
+# spacing), and config offsets the min_size trial seeds by it so they sit
+# clear of the other sweeps' seeds.
+_SEED_OFFSET_DISTINCT = 100_000
+
+
+def _size_max_z_curve(size, z, consider):
+    """Build one outer perm's (size, max-z-at-size-or-larger) staircase.
+
+    The max-z FWER null restricts the per-perm max to regions of size >=
+    min_vox, so the only thing a min_vox sweep needs from a perm is the
+    function E(m) = max{ z_r : size_r >= m } -- a non-increasing step
+    function of m. This returns its corners: dedupe regions by size (only
+    the largest z at a size can matter), take the running max from the
+    largest size down, and keep the largest size holding each distinct max-z
+    value. Each returned corner (s, v) then satisfies v = E(s) exactly, and
+    E(m) for any m is the v of the first corner with size >= m -- so a
+    handful of corners per perm recovers the perm's max-z at any m >= floor
+    without storing every region.
+
+    Args:
+        size (np.array): (num_reg,) region sizes
+        z (np.array): (num_reg,) per-region z = (llr - mu) / std
+        consider (np.array): (num_reg,) bool, regions eligible for the max
+            (here size >= floor and z finite)
+
+    Returns:
+        curve (np.array): (L, 2) corners, columns (size, max_z), rows
+            ascending in size (so max_z is descending); (0, 2) if none.
+    """
+    s, zz = size[consider], z[consider]
+    if s.size == 0:
+        return np.empty((0, 2))
+    order = np.argsort(s)
+    uniq, idx = np.unique(s[order], return_index=True)
+    z_at = np.maximum.reduceat(zz[order], idx)
+    suffix = np.maximum.accumulate(z_at[::-1])[::-1]
+    # keep the largest size of each max-z plateau (right edge), so a
+    # "first corner with size >= m" lookup returns the right value
+    keep = np.append(np.diff(suffix) != 0, True)
+    return np.column_stack([uniq, suffix])[keep]
+
+
+def _curve_json(curve_list) -> str:
+    """Serialize the per-perm staircases to one results.csv cell.
+
+    Args:
+        curve_list (list): one (L_k, 2) corner array per outer perm, index
+            k matching the perm number (k=0 observed).
+
+    Returns:
+        a JSON string: a list (per perm) of [size, max_z] corner pairs.
+    """
+    return json.dumps([[[int(s), float(z)] for s, z in c] for c in curve_list])
+
+
+def run_min_size(*, source: str, b: int, num_img: int, n_vox_eff: int,
+                 seed: int, n_perm_fwer: int, n_perm_inner: int,
+                 min_vox_floor: int = 1, cluster_mode=ClusterMode.FOCUS,
+                 effect_llr=None, effect_total_llr=None):
+    """Capture each outer perm's (size -> max-z) curve for a min_vox sweep.
+
+    Mirrors run_ana's HCP trial setup (plant one synthetic effect, sweep
+    effect_llr), but instead of fitting GLOW at a single min_vox it runs the
+    outer-perm loop directly and records, per perm, the staircase of max-z
+    over a size threshold (_size_max_z_curve). With those curves in hand,
+    GLOW's max-z FWER null -- hence its rejection / power -- can be recomputed
+    at any min_vox >= min_vox_floor without re-fitting (the curve evaluated at
+    the fit-time min_vox reproduces AnalysisGLOW.max_z_null exactly).
+
+    Two deliberate departures from run_ana:
+      - The trial seed is split (derive_seeds) into independent ds / feat /
+        effect sub-seeds; the ds sub-seed drives the DataSource, so each seed
+        is an independent data realization rather than the shared DS_SEED=0
+        base -- the sweep wants independent nulls, with the effect kept
+        independent of the data realization.
+      - Inner perms use inner_perm.cpu_perm (no race), so every region >=
+        min_vox_floor gets an exact z. The race only keeps the single global
+        max accurate; raising min_vox past that region would read a frozen
+        non-survivor z, biasing the swept null. cpu_perm avoids that, at the
+        cost of the race's speedup.
+
+    Args:
+        source (str): 'wgn' or 'hcp' (the cache registers 'hcp').
+        b (int): imaging-feature count.
+        num_img (int): subject count (WGN; HCP uses its cohort).
+        n_vox_eff (int): requested effect support size.
+        seed (int): trial seed -- split by derive_seeds into independent
+            DataSource, feature, and effect sub-seeds.
+        n_perm_fwer (int): outer FL perms (n_perm_fwer + 1 curves, incl. k=0).
+        n_perm_inner (int): inner FL draws per outer perm.
+        min_vox_floor (int): smallest region size given a z; the sweep's lower
+            bound. 1 keeps the whole range available.
+        cluster_mode (ClusterMode): Ward projection (default FOCUS).
+        effect_llr (float | None): per-voxel effect target.
+        effect_total_llr (float | None): whole-region effect target.
+
+    Returns:
+        a one-row DataFrame: the trial diagnostics plus n_perm_fwer,
+        n_perm_inner, min_vox_floor, time_sec, and curve_json (the per-perm
+        staircases, parse with json.loads).
+    """
+    s = derive_seeds(seed)
+    try:
+        ds, feats = build_ds(source, b=b, num_img=num_img,
+                             seed=s.feat, ds_seed=s.ds)
+    except ValueError as e:
+        return _skip_frame(e)
+
+    extenter = ExtenterMinVar(n_vox=n_vox_eff)
+    llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
+    exp, exp_eff, mask_target = _plant(ds, extenter, llr, s.effect)
+    diag = _trial_diag(exp, mask_target, llr, feats)
+
+    # borrow AnalysisGLOW only for its scaling + (q0, q1) decomposition, so
+    # the captured curves match a real fit; the outer loop below is run by
+    # hand to swap the racing kernel for the exact cpu_perm.
+    ana = AnalysisGLOW(exp=exp_eff, n_perm_fwer=n_perm_fwer,
+                       n_perm_inner=n_perm_inner, min_vox=min_vox_floor,
+                       cluster_mode=cluster_mode)
+    exp_s, q0, q1 = ana.exp, ana._q0, ana._q1
+
+    t0 = time.time()
+    curve_list = []
+    for k in range(n_perm_fwer + 1):
+        _exp = exp_s.permute(k) if k else exp_s
+        children = cluster(_exp, mode=cluster_mode)
+        llr_k, size = glow.graph.compute_llr_batched(
+            _exp, children=children, q0=q0, q1=q1)
+        mu, std = inner_perm.cpu_perm(
+            exp=_exp, base_seed=(k + 1) * _SEED_OFFSET_DISTINCT,
+            n_perm=n_perm_inner, q0=q0, q1=q1, children=children,
+            min_vox=min_vox_floor)
+        std_safe = np.where(std < 1e-12, 1.0, std)
+        z = np.nan_to_num((llr_k - mu) / std_safe,
+                          nan=0.0, posinf=0.0, neginf=np.nan)
+        consider = (size >= min_vox_floor) & np.isfinite(z)
+        curve_list.append(_size_max_z_curve(size, z, consider))
+
+    row = {'label': 'min_size', 'analysis_cls': 'AnalysisGLOW',
+           'time_sec': time.time() - t0,
+           'n_perm_fwer': n_perm_fwer, 'n_perm_inner': n_perm_inner,
+           'min_vox_floor': min_vox_floor,
+           'curve_json': _curve_json(curve_list), **diag}
+    return pd.DataFrame([row])
 
 
 def run_segment(*, source: str, b: int, num_img: int, n_vox_eff: int,
