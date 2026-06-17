@@ -47,8 +47,8 @@ from .run import (run_ana, run_mancova, run_prune, run_segment,
 # ---------- shared knobs -----------------------------------------------------
 SOURCES = ['wgn', 'hcp']
 
-N_SEED = 2
-N_SEED_NULL = 10
+N_SEED = 15
+N_SEED_NULL = 1000
 
 EFFECT_LLR_GRID = np.logspace(np.log10(0.003), np.log10(0.3), 11)
 MODERATE_EFFECT_LLR = 0.03
