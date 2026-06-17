@@ -186,7 +186,7 @@ class ExperimentImageOnly:
 
     @classmethod
     def from_search(cls, folder, sbj_regex: str, img_glob_dict: dict,
-                    dtype=np.float32, **kwargs):
+                    dtype=np.float32, mask=None, **kwargs):
         """Search a folder for images and build an experiment.
 
         Args:
@@ -195,16 +195,18 @@ class ExperimentImageOnly:
             img_glob_dict (dict): feature_name -> glob pattern
             dtype: numpy dtype for the loaded y array (default np.float32;
                 see from_paths)
+            mask (path): optional brain-mask NIfTI defining the analysis
+                support (NIfTI inputs only); see from_paths
 
         Returns:
             Experiment built from discovered images
         """
         df = cls._search_files(folder, sbj_regex, img_glob_dict)
-        return cls.from_paths(df, dtype=dtype, **kwargs)
+        return cls.from_paths(df, dtype=dtype, mask=mask, **kwargs)
 
     @classmethod
     def from_paths(cls, paths, *, channel_names: dict = None,
-                   dtype=np.float32, **kwargs):
+                   dtype=np.float32, mask=None, **kwargs):
         """Build an experiment from an explicit (subject x feature) path map.
 
         Args:
@@ -216,6 +218,10 @@ class ExperimentImageOnly:
                 splits into multiple channels (e.g. RGB ->
                 {'rgb': ['red', 'green', 'blue']})
             dtype: numpy dtype for the loaded y array (default np.float32)
+            mask (path): optional path to a brain-mask NIfTI on the images'
+                grid (NIfTI inputs only).  When given, its nonzero voxels
+                are the analysis support; when None the support is inferred
+                as the voxels nonzero in every image (see load_image_nii).
 
         Returns:
             Experiment built from the listed images
@@ -242,8 +248,10 @@ class ExperimentImageOnly:
             # NIfTI path streams to y directly (no per-image dict held in
             # memory).  The loader controls dtype; we pass the public
             # factory's choice (float32 by default).
-            y, y_names, mask_idx, affine = load_image_nii(df, dtype=dtype)
+            y, y_names, mask_idx, affine = load_image_nii(
+                df, dtype=dtype, mask=mask)
         elif not any(nii_in_file):
+            assert mask is None, 'explicit mask only supported for NIfTI'
             feat_sbj_img, mask_idx = load_image_color(
                 df, channel_names=channel_names)
 

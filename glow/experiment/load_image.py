@@ -11,14 +11,20 @@ import glow.mask
 from glow.mask import get_mask_idx
 
 
-def load_image_nii(df: pd.DataFrame, dtype=np.float32):
+def load_image_nii(df: pd.DataFrame, dtype=np.float32, mask=None):
     """Load NIfTI images from a subject x feature dataframe.
 
     Streams images in two passes so peak memory is one image (~30 MB for
     HCP) rather than the full (b, num_sbj) stack.  Pass 1 walks every
-    file to accumulate a nonzero-voxel count and validate the shared
-    affine; Pass 2 walks them again, masks each image into the output
-    y array, and discards.
+    file to validate the shared affine (and, with no explicit mask, to
+    accumulate a nonzero-voxel count); Pass 2 walks them again, masks
+    each image into the output y array, and discards.
+
+    The analysis support is either supplied (a brain-mask NIfTI) or
+    inferred.  When inferred, a voxel is kept only where every image is
+    nonzero -- a crude proxy for "in brain" that fails for maps that are
+    legitimately zero inside the brain (e.g. NODDI isovf in dense tissue),
+    so callers with a real brain mask should pass it.
 
     Args:
         df (pd.DataFrame): index=subject, columns=feature, values=file paths
@@ -27,20 +33,26 @@ def load_image_nii(df: pd.DataFrame, dtype=np.float32):
             compute_llr_batched keep its hot loop in float32 throughout.
             nibabel.get_fdata(dtype=...) preserves precision when the
             on-disk type is itself float32 (no upcast/downcast round-trip).
+        mask (path): optional path to a brain-mask NIfTI on the images'
+            grid.  When given, its nonzero voxels are the analysis support
+            (its affine must match the images'); when None the
+            every-image-nonzero rule above is used instead.
 
     Returns:
         y (np.array): (b, num_sbj, num_vox) masked image intensities.
             Subject axis is ordered by sorted(df.index); feature axis
             follows df.columns.  Dtype matches the dtype argument.
         y_names (list): feature names, in df.columns order
-        mask_idx (np.array): voxel index array (-1 where any image is zero)
+        mask_idx (np.array): voxel index array (-1 outside the support)
         affine (np.array): (4, 4) NIfTI affine (consistent across all images)
     """
     y_names = list(df.columns)
     subjects = sorted(df.index)
 
-    # ---- Pass 1: scan all files, accumulate vox_count, check affine
+    # ---- Pass 1: scan all files, check affine; count nonzeros only when
+    # the support must be inferred (no explicit mask)
     affine = None
+    img_shape = None
     vox_count = None
     for feat in df.columns:
         for sbj in df.index:
@@ -49,19 +61,30 @@ def load_image_nii(df: pd.DataFrame, dtype=np.float32):
             img = nib.load(file)
             if affine is None:
                 affine = img.affine
+                img_shape = img.shape
             assert np.array_equal(img.affine,
                                   affine), 'affine mismatch'
 
-            arr = img.get_fdata(dtype=dtype)
-            if vox_count is None:
-                vox_count = np.zeros(arr.shape, dtype=np.int32)
-            vox_count += arr != 0
-            del arr, img
+            if mask is None:
+                arr = img.get_fdata(dtype=dtype)
+                if vox_count is None:
+                    vox_count = np.zeros(arr.shape, dtype=np.int32)
+                vox_count += arr != 0
+                del arr
+            del img
 
-    # build mask_idx (exclude any voxel which any subject is missing)
-    mask = vox_count == df.size
+    if mask is None:
+        # inferred support: drop any voxel zero in some subject / feature
+        mask = vox_count == df.size
+        del vox_count
+    else:
+        # explicit brain-mask NIfTI: must sit on the images' grid
+        mask_img = nib.load(mask)
+        assert np.array_equal(mask_img.affine, affine), 'mask affine mismatch'
+        mask = mask_img.get_fdata() > 0
+        assert mask.shape == img_shape, \
+            f'mask shape {mask.shape} != image shape {img_shape}'
     mask_idx = glow.mask.get_mask_idx(mask)
-    del vox_count
 
     # ---- Pass 2: reload each file, mask into y, discard
     num_vox = int(mask.sum())

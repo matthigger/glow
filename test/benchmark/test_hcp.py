@@ -17,12 +17,13 @@ from glow.benchmark import hcp
 # ---------------------------------------------------------------------------
 
 def _lay_down_maps(root, subjects=('100307', '149337'),
-                   feats=hcp.HCP_FEATS):
+                   feats=hcp.HCP_FEATS, mask=True):
     """Create empty dwimap files under root mirroring the archive layout.
 
     Names match the QSIRecon convention so SBJ_REGEX and IMG_GLOB_DICT
     select them exactly, including the doubled subject id (sub-<id>/ dir
-    and filename) that exercises from_search's dedup.
+    and filename) that exercises from_search's dedup.  When mask is True
+    the dataset brain-mask file (MASK_GLOB) is laid at the archive root.
     """
     model = {'fa': 'dki', 'md': 'dki', 'mk': 'dki',
              'icvf': 'noddi', 'isovf': 'noddi', 'od': 'noddi'}
@@ -33,6 +34,9 @@ def _lay_down_maps(root, subjects=('100307', '149337'),
             name = (f'sub-{sbj}_space-MNI152NLin2009cAsym_'
                     f'model-{model[feat]}_param-{feat}_dwimap.nii.gz')
             (dwi / name).write_bytes(b'')
+    if mask:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / 'brain_mask_space-MNI152NLin2009cAsym.nii.gz').write_bytes(b'')
     return root
 
 
@@ -70,6 +74,11 @@ class TestIsPresent:
     def test_partial_tree_not_present(self, tmp_path):
         # all but one feature -> a half-extracted dir must read as absent
         _lay_down_maps(tmp_path, feats=hcp.HCP_FEATS[:-1])
+        assert not hcp.is_present(tmp_path)
+
+    def test_missing_mask_not_present(self, tmp_path):
+        # all six maps but no brain mask (e.g. a pre-mask archive) -> absent
+        _lay_down_maps(tmp_path, mask=False)
         assert not hcp.is_present(tmp_path)
 
 

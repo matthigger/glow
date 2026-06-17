@@ -201,3 +201,17 @@ class DataSourceHCP(DataSourceDataFrame):
             folder, hcp.SBJ_REGEX, glob_dict)
         assert df.size, f'no HCP maps found under {folder}'
         super().__init__(df=df[list(self.hcp_feats)], **kwargs)
+
+    def _get(self):
+        """Load the HCP maps over the dataset brain mask, then sample X / crop.
+
+        The brain mask shipped with the dataset defines the analysis
+        support, in place of from_paths's default every-image-nonzero rule.
+        That rule wrongly excludes in-brain voxels where NODDI isovf is
+        legitimately zero (dense tissue / low free water).
+        """
+        folder = hcp.ensure_hcp_data()
+        mask = next(folder.glob(hcp.MASK_GLOB))
+        exp_img = glow.experiment.ExperimentImageOnly.from_paths(
+            self.df, mask=mask)
+        return self._sample_x_and_crop(exp_img)

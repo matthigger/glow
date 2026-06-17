@@ -1,15 +1,20 @@
 """Download and load glow's reference HCP-YA diffusion-microstructure data.
 
 Six per-subject diffusion-microstructure maps (DKI fa/md/mk, NODDI
-icvf/isovf/od) for the 100 unrelated WU-Minn HCP-Young-Adult subjects, in
-MNI152NLin2009cAsym space at 2 mm, published as a single Zenodo archive
-(record 20645614).
+icvf/isovf/od) for the 100 unrelated WU-Minn HCP-Young-Adult subjects, plus
+a single brain mask, in MNI152NLin2009cAsym space at 2 mm, published as a
+single Zenodo archive (record 20736221).
 
 ensure_hcp_data returns a local directory of the maps, downloading and
 extracting the archive on first use.  Because the maps derive from HCP
 open-access data, the first download is gated on the user accepting the
 WU-Minn HCP Open Access Data Use Terms; once the data is on disk it loads
 with no prompt.
+
+The archive also ships a brain mask (MASK_GLOB); DataSourceHCP passes it
+to from_paths as the analysis support, so the maps are not used to infer
+it -- the every-image-nonzero heuristic wrongly drops in-brain voxels
+where NODDI isovf is legitimately zero.
 """
 
 import hashlib
@@ -24,7 +29,7 @@ import zipfile
 from glow.benchmark import file
 
 
-ZENODO_RECORD_ID = '20645614'
+ZENODO_RECORD_ID = '20736221'
 DUA_URL = ('https://www.humanconnectome.org/study/hcp-young-adult/document/'
            'wu-minn-hcp-consortium-open-access-data-use-terms')
 DUA_ACK_PHRASE = 'I agree to the WU-Minn HCP Open Access Data Use Terms'
@@ -44,6 +49,11 @@ IMG_GLOB_DICT = {
 # The full six-feature panel, in canonical order (DKI then NODDI).
 HCP_FEATS = tuple(IMG_GLOB_DICT)
 
+# Recursive glob for the single brain-mask map shipped with the archive.
+# It shares the maps' MNI152NLin2009cAsym 2 mm grid and marks the in-brain
+# voxels used as the analysis support (see load_brain_mask).
+MASK_GLOB = '**/brain_mask_space-*.nii.gz'
+
 # Subject id repeats in the sub-<id>/ directory and the filename
 # (from_search dedupes); the sub- prefix avoids matching the digits in the
 # MNI152NLin2009cAsym space tag.
@@ -59,15 +69,16 @@ def data_dir() -> pathlib.Path:
 
 
 def is_present(folder: pathlib.Path = None) -> bool:
-    """Return whether all six feature maps are on disk under folder.
+    """Return whether the six feature maps and brain mask are under folder.
 
-    A partial / aborted extraction (any feature missing) reads as absent,
-    so it is re-downloaded rather than silently half-loaded.
+    A partial / aborted extraction (any feature or the mask missing) reads
+    as absent, so it is re-downloaded rather than silently half-loaded.
+    Requiring the mask also forces a re-download of a pre-mask archive.
     """
     folder = folder or data_dir()
+    globs = list(IMG_GLOB_DICT.values()) + [MASK_GLOB]
     return folder.is_dir() and all(
-        next(folder.glob(glob), None) is not None
-        for glob in IMG_GLOB_DICT.values())
+        next(folder.glob(glob), None) is not None for glob in globs)
 
 
 def ensure_hcp_data() -> pathlib.Path:
