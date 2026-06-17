@@ -9,7 +9,7 @@ from glow.effect.extent import (
     get_diameter,
     iter_bfs,
     iter_vox_neighbor,
-    split_mask,
+    split_mask_spectral,
 )
 from glow.mask import get_mask_idx
 
@@ -237,11 +237,29 @@ class TestGetDiameter:
             get_diameter(mask)
 
 
-class TestSplitMask:
+@pytest.fixture(scope='module')
+def hcp_img_exp():
+    """Image-only HCP Experiment: first 10 subjects, FA only.
+
+    Skipped at collection time when the HCP dataset is absent from disk.
+    """
+    from glow.benchmark import hcp
+    import glow.experiment
+
+    if not hcp.is_present():
+        pytest.skip('HCP data not on disk')
+    folder = hcp.data_dir()
+    df = glow.experiment.ExperimentImageOnly._search_files(
+        folder, hcp.SBJ_REGEX, {'fa': hcp.IMG_GLOB_DICT['fa']})
+    df = df.iloc[:10]
+    return glow.experiment.ExperimentImageOnly.from_paths(df)
+
+
+class TestSplitMaskSpectral:
     def test_even_line_splits_in_half(self):
         # a 1x6 line splits into two contiguous runs of three voxels.
         mask = np.ones((1, 6), dtype=bool)
-        mask0, mask1 = split_mask(mask)
+        mask0, mask1 = split_mask_spectral(mask)
         _assert_valid_split(mask, mask0, mask1)
         assert mask0.sum() == 3
         assert mask1.sum() == 3
@@ -249,14 +267,14 @@ class TestSplitMask:
     def test_odd_line_differs_by_one(self):
         # a 1x7 line cannot split evenly; the pieces differ by one voxel.
         mask = np.ones((1, 7), dtype=bool)
-        mask0, mask1 = split_mask(mask)
+        mask0, mask1 = split_mask_spectral(mask)
         _assert_valid_split(mask, mask0, mask1)
         assert abs(int(mask0.sum()) - int(mask1.sum())) == 1
 
     def test_square_block_2d(self):
         # a solid 4x4 block splits into two contiguous halves of eight.
         mask = np.ones((4, 4), dtype=bool)
-        mask0, mask1 = split_mask(mask)
+        mask0, mask1 = split_mask_spectral(mask)
         _assert_valid_split(mask, mask0, mask1)
         assert mask0.sum() == 8
         assert mask1.sum() == 8
@@ -264,7 +282,7 @@ class TestSplitMask:
     def test_cube_block_3d(self):
         # a solid 2x2x2 cube splits into two contiguous halves of four.
         mask = np.ones((2, 2, 2), dtype=bool)
-        mask0, mask1 = split_mask(mask)
+        mask0, mask1 = split_mask_spectral(mask)
         _assert_valid_split(mask, mask0, mask1)
         assert mask0.sum() == 4
         assert mask1.sum() == 4
@@ -275,7 +293,7 @@ class TestSplitMask:
         mask = np.array([[1, 0, 0, 0],
                          [1, 0, 0, 0],
                          [1, 1, 1, 1]], dtype=bool)
-        mask0, mask1 = split_mask(mask)
+        mask0, mask1 = split_mask_spectral(mask)
         _assert_valid_split(mask, mask0, mask1)
         assert abs(int(mask0.sum()) - int(mask1.sum())) <= 1
 
@@ -283,7 +301,7 @@ class TestSplitMask:
         # one voxel cannot be split; it lands wholly in one piece.
         mask = np.zeros((3, 3), dtype=bool)
         mask[1, 1] = True
-        mask0, mask1 = split_mask(mask)
+        mask0, mask1 = split_mask_spectral(mask)
         _assert_valid_split(mask, mask0, mask1)
         assert mask0.sum() == 1
         assert mask1.sum() == 0
@@ -293,4 +311,19 @@ class TestSplitMask:
                          [0, 0, 0],
                          [1, 1, 1]], dtype=bool)
         with pytest.raises(ValueError):
-            split_mask(mask)
+            split_mask_spectral(mask)
+
+    @pytest.mark.slow
+    def test_hcp_minvar_region(self, hcp_img_exp):
+        # sample a 500-voxel MinVar region from HCP FA and verify that
+        # spectral split produces two roughly equal connected pieces.
+        # Balance tolerance is 10% of n_vox: the "trapped-front" case
+        # documented in the split_mask_spectral docstring can produce more
+        # than a 1-voxel difference on irregular 3-D regions.
+        extenter = ExtenterMinVar(n_vox=500)
+        region = extenter(y=hcp_img_exp.y, mask_idx=hcp_img_exp.mask_idx,
+                          seed=0)
+        mask0, mask1 = split_mask_spectral(region)
+        _assert_valid_split(region, mask0, mask1)
+        total = int(region.sum())
+        assert abs(int(mask0.sum()) - int(mask1.sum())) <= total // 10

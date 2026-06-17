@@ -5,8 +5,12 @@ from functools import wraps
 from typing import Protocol, runtime_checkable
 
 import numpy as np
+from scipy import sparse
 from scipy.ndimage import label
 from scipy.ndimage import binary_dilation, generate_binary_structure
+from scipy.sparse.csgraph import connected_components
+from scipy.sparse.linalg import eigsh
+from sklearn.feature_extraction.image import grid_to_graph
 from tqdm import tqdm
 
 from ..util import HashBySlots
@@ -302,8 +306,8 @@ def iter_bfs(mask, ijk, blocked=None):
         ijk (tuple): (i, j[, k]) seed voxel, must be in the mask
         blocked (np.array): boolean, same shape as mask, voxels to neither
             yield nor expand through. Checked when a voxel is dequeued, not
-            when it is enqueued, so the caller may keep mutating the array
-            between pulls (split_mask grows two competing fronts this way).
+            when it is enqueued, so the caller may mutate the array between
+            pulls (two competing fronts can share it this way).
 
     Yields:
         ijk (tuple): (i, j[, k]) voxel
@@ -362,14 +366,73 @@ def get_diameter(mask):
         ijk0 = ijk1
 
 
-def split_mask(mask):
+def _fiedler_endpoints(mask):
+    """Find two seed voxels at the extremes of the mask's Fiedler vector.
+
+    Builds the face-connectivity graph over the mask's voxels, forms the
+    graph Laplacian, and returns the voxels at the minimum and maximum of
+    its Fiedler vector (the second-smallest Laplacian eigenvector; Fiedler
+    1973). These sit across the graph's minimum bisection, so they are the
+    spectral analogue of get_diameter's endpoints -- the seed pair that
+    splits the mask into two balanced, geometrically natural halves.
+
+    Node i of grid_to_graph(mask=mask) is the i-th True voxel in row-major
+    order, matching np.argwhere(mask), so a Fiedler-vector index maps back
+    to a voxel by indexing the argwhere coordinates.
+
+    Args:
+        mask (np.array): boolean spatial mask, (X, Y) or (X, Y, Z), must be
+            a single connected component
+
+    Returns:
+        ijk0 (tuple): (i, j[, k]) voxel at the Fiedler minimum
+        ijk1 (tuple): (i, j[, k]) voxel at the Fiedler maximum
+
+    Raises:
+        ValueError: if mask has more than one connected component
+    """
+    coords = np.argwhere(mask)
+    n_vox = len(coords)
+
+    A = grid_to_graph(*mask.shape, mask=mask)
+    A = (A + A.T).tocsr()
+    A.setdiag(0)
+    A.eliminate_zeros()
+
+    n_comp, _ = connected_components(A, directed=False)
+    if n_comp != 1:
+        raise ValueError('mask is not a single connected component')
+
+    if n_vox <= 2:
+        # too small for eigsh (needs k < n_vox); the lone voxel is its own
+        # pair (n_vox == 1) and the two voxels are each other's (n_vox == 2)
+        node0, node1 = 0, n_vox - 1
+    else:
+        degree = np.asarray(A.sum(axis=1)).ravel()
+        L = sparse.diags(degree) - A
+        # eigsh needs k < n_vox; k=2 returns the constant vector + Fiedler
+        evals, evecs = eigsh(L, k=2, which='SM')
+        fiedler = evecs[:, np.argsort(evals)[1]]
+        node0 = int(np.argmin(fiedler))
+        node1 = int(np.argmax(fiedler))
+
+    return tuple(coords[node0]), tuple(coords[node1])
+
+
+def split_mask_spectral(mask):
     """Split a mask into two contiguous pieces of (near) equal size.
 
-    BFS fronts grow from the two endpoints of a diameter of the mask,
-    alternately claiming one voxel from each front until the mask is
-    exhausted. Each front blocks on the other piece, so it only expands
-    through its own territory and every voxel it claims has a neighbour
-    already in the piece -- both pieces are guaranteed contiguous.
+    BFS fronts grow from two seeds chosen by spectral bisection -- the
+    extremes of the mask's Fiedler vector (_fiedler_endpoints) -- alternately
+    claiming one voxel from each front until the mask is exhausted. Each
+    front blocks on the other piece, so it only expands through its own
+    territory and every voxel it claims has a neighbour already in the piece;
+    both pieces are guaranteed contiguous.
+
+    The Fiedler seeds place the cut across the graph's minimum bisection,
+    giving more balanced, geometrically natural pieces than the
+    spatial-diameter endpoints used previously. Only the seed choice differs
+    from the diameter-based split; the front growth is identical.
 
     Note:
         Sizes differ by at most one voxel unless one front gets walled in by
@@ -381,15 +444,15 @@ def split_mask(mask):
             single connected component
 
     Returns:
-        mask0 (np.array): boolean, same shape as mask, piece grown from one
-            diameter endpoint
+        mask0 (np.array): boolean, same shape as mask, piece grown from the
+            Fiedler-minimum seed
         mask1 (np.array): boolean, the other piece. mask0 | mask1 == mask and
             mask0 & mask1 is empty
 
     Raises:
         ValueError: if mask has more than one connected component
     """
-    ijk0, ijk1 = get_diameter(mask)
+    ijk0, ijk1 = _fiedler_endpoints(mask)
     pieces = (np.zeros_like(mask), np.zeros_like(mask))
     iters = (iter_bfs(mask, ijk0, blocked=pieces[1]),
              iter_bfs(mask, ijk1, blocked=pieces[0]))
@@ -403,7 +466,5 @@ def split_mask(mask):
                 break
             if not num_remain:
                 break
-        # both fronts exhausted with voxels left can only happen on a
-        # disconnected mask, which get_diameter already rejects
         assert num_remain < num_remain_start, 'no front can advance'
     return pieces
