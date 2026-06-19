@@ -5,6 +5,7 @@ exercised without provisioning AWS.  A separate @pytest.mark.runaws
 test exercises the same flow against real AWS.
 """
 
+import sys
 from unittest.mock import patch
 
 import cloudpickle
@@ -474,6 +475,12 @@ def test_multi_cache_per_cache_oom_escalation(tmp_path):
 @pytest.mark.runaws
 def test_driver_aws_smoke(tmp_path):
     """End-to-end on real AWS.  Requires a written AWSConfig + provisioned infra."""
+    # _run_fnc lives in this `test` package, which is importable here but
+    # NOT shipped into the worker image (the Dockerfile copies only glow/).
+    # Without this, cloudpickle stores run_fnc by reference and the worker
+    # dies on `import test` -> ModuleNotFoundError; register the module so
+    # run_fnc is pickled by value and travels with the job.
+    cloudpickle.register_pickle_by_value(sys.modules[__name__])
     cfg = AWSConfig.from_file()
     cache = _make_cache(tmp_path, n_trials=2)
     driver_aws(cache, _run_fnc, cfg, verbose=True)
