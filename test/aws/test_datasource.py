@@ -4,7 +4,6 @@ Unit tests use an in-memory fake S3 client.  A second @pytest.mark.runaws
 test exercises the same flow against real S3 (skipped without --runaws).
 """
 
-import os
 import uuid
 from unittest.mock import patch
 
@@ -13,6 +12,7 @@ import numpy as np
 import pytest
 from botocore.exceptions import ClientError
 
+from glow.aws.config import DEFAULT_CONFIG_PATH, AWSConfig
 from glow.aws.datasource import DataSourceS3, _parse_s3_uri
 from glow.benchmark.data import DataSource, DataSourceWGN
 
@@ -142,10 +142,15 @@ def test_different_inner_ds_different_key(seed_a, seed_b, same_key):
 
 @pytest.mark.runaws
 def test_from_source_real_s3():
-    """End-to-end with real S3.  Skipped without --runaws."""
-    bucket = os.environ.get('GLOW_TEST_BUCKET')
-    if not bucket:
-        pytest.skip('set GLOW_TEST_BUCKET to run this test')
+    """End-to-end with real S3, against the configured glow bucket.
+
+    Uses the bucket from the saved AWS config (written by the infra setup
+    CLI); skipped without --runaws, or if no config has been written yet.
+    """
+    try:
+        bucket = AWSConfig.from_file().s3_bucket
+    except FileNotFoundError:
+        pytest.skip(f'no glow AWS config at {DEFAULT_CONFIG_PATH}')
     prefix = f'test/{uuid.uuid4().hex[:8]}'
     s3 = boto3.client('s3')
     ds = _wgn()
