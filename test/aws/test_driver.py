@@ -11,12 +11,15 @@ from unittest.mock import patch
 import cloudpickle
 import pytest
 
-from glow.aws.config import AWSConfig
+import glow
+from glow.aws.config import AWSConfig, s3_key
+from glow.aws.datasource import DataSourceS3
 from glow.aws.driver import (
-    _Attempt, _inflight_postfix, _is_oom, driver_aws, driver_aws_multi)
+    _Attempt, _inflight_postfix, _is_oom, _to_s3_cache, driver_aws,
+    driver_aws_multi)
 from glow.benchmark.data import DataSource, DataSourceWGN
 from glow.benchmark.trial_cache import TrialCache
-from glow.util import stable_hash
+from glow.util import stable_hash, value_id
 from test.aws.test_datasource import FakeS3
 
 
@@ -75,6 +78,29 @@ class FakeBatch:
             payload = {'jobId': job_id, **child_status}
             out.append(payload)
         return {'jobs': out}
+
+
+class _FakeRealSource(DataSource):
+    """A non-WGN DataSource, so the driver ships it to S3.
+
+    Built from gauss like DataSourceWGN but a distinct class, so it stands in
+    for a real-data source (DataSourceHCP) the worker cannot rebuild -- without
+    needing image files on disk.
+    """
+
+    __slots__ = ('shape', 'b', 'num_img')
+
+    def __init__(self, *, shape=(2, 2, 2), b: int = 1, num_img: int = 5,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.shape = tuple(shape)
+        self.b = int(b)
+        self.num_img = int(num_img)
+
+    def _get(self):
+        exp_img = glow.experiment.ExperimentImageOnly.from_gauss(
+            seed=self.seed, shape=self.shape, b=self.b, num_img=self.num_img)
+        return self._sample_x_and_crop(exp_img)
 
 
 def _run_fnc(*, ds, seed):
@@ -467,6 +493,82 @@ def test_multi_cache_per_cache_oom_escalation(tmp_path):
         fake_batch.submitted[2]['containerOverrides']['resourceRequirements']
         if r['type'] == 'MEMORY')
     assert mem_at_tier_1 == '4000'
+
+
+# ---------- S3-shipped twin cache + trial_alias_map ------------------------
+
+
+def test_to_s3_cache_swaps_real_leaves_wgn(tmp_path):
+    """_to_s3_cache swaps real sources to DataSourceS3, passes WGN through."""
+    DataSource._exp_cache.clear()
+    real = _FakeRealSource(seed=0, shape=(2, 2, 2), b=1, num_img=5)
+    wgn = DataSourceWGN(seed=0, shape=(2, 2, 2), b=1, num_img=5)
+    cache = TrialCache(folder=tmp_path / 'c',
+                       iter_kwargs={'ds': [real, wgn]})
+
+    fake_s3 = FakeS3()
+    twin = _to_s3_cache(cache, aws_config=_cfg(), s3=fake_s3,
+                        swap_memo={}, verbose=False)
+    sources = [t['ds'] for t in twin.iter_trial()]
+
+    # real source -> DataSourceS3; WGN left as-is (rebuilds on the worker)
+    assert any(isinstance(s, DataSourceS3) for s in sources)
+    assert wgn in sources
+    # only the swapped (real) trial changed hash, so only it is aliased
+    assert len(twin.trial_alias_map) == 1
+
+
+def test_to_s3_cache_noop_without_real_source(tmp_path):
+    """A WGN-only / scalar grid has nothing to ship: the cache is returned."""
+    cache = _make_cache(tmp_path, n_trials=2)
+    fake_s3 = FakeS3()
+    twin = _to_s3_cache(cache, aws_config=_cfg(), s3=fake_s3,
+                        swap_memo={}, verbose=False)
+    assert twin is cache
+    # no upload happened (no real-data source to ship)
+    assert fake_s3.calls == []
+
+
+def test_real_source_shipped_and_results_aliased(tmp_path):
+    """End-to-end: a real source ships to S3 and rows key to the local hash.
+
+    The worker keys results by the SWAPPED trial's hash (DataSourceS3 in place
+    of the real source), so it differs from the local hash; the twin cache's
+    trial_alias_map must redirect the saved row back to the original hash, so a
+    later local run sees the trial as cached.
+    """
+    DataSource._exp_cache.clear()
+    ds = _FakeRealSource(seed=0, shape=(2, 2, 2), b=1, num_img=5)
+    cache = TrialCache(folder=tmp_path / 'cache',
+                       iter_kwargs={'seed': [0, 1]}, kwargs={'ds': ds})
+
+    orig_trials = list(cache.iter_trial())
+    orig_hashes = [stable_hash(t) for t in orig_trials]
+
+    # The driver builds a content-addressed DataSourceS3; reconstruct its URI
+    # (without uploading) to predict the worker-side hashes the results key to.
+    uri = f's3://b/{s3_key("pre", "datasource", value_id(ds), "exp.pkl")}'
+    wrap = DataSourceS3(s3_uri=uri)
+    new_hashes = [stable_hash({**t, 'ds': wrap}) for t in orig_trials]
+    assert new_hashes != orig_hashes
+
+    fake_s3 = FakeS3()
+    _seed_results(fake_s3, bucket='b', prefix='pre', manifest=new_hashes,
+                  results=[{'seed': 0}, {'seed': 1}])
+    fake_batch = FakeBatch(submit_then=[[{'status': 'SUCCEEDED'}] * 2])
+
+    with patch('glow.aws.driver.boto3.client',
+               side_effect=lambda kind, **_:
+               fake_s3 if kind == 's3' else fake_batch):
+        driver_aws(cache, _run_fnc, _cfg(), verbose=False)
+
+    # results landed under the ORIGINAL hashes, despite running swapped trials
+    saved = cache._load_results()
+    assert set(saved.index.astype(str)) == set(orig_hashes)
+    # the source's exp was uploaded exactly once, content-addressed
+    ds_puts = [key for kind, _, key in fake_s3.calls
+               if kind == 'put' and '/datasource/' in key]
+    assert len(ds_puts) == 1
 
 
 # ---------- real-AWS smoke test --------------------------------------------

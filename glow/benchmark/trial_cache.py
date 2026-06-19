@@ -7,6 +7,12 @@ A TrialCache owns a results csv and answers three questions:
   2. Which of those are already on disk (is_cached,
      iter_trial_no_repeat)?
   3. How do I persist a result (save_result)?
+
+The three answers all key off _hash(trial), which is stable_hash(trial)
+optionally redirected through trial_alias_map. The alias map lets a second
+cache whose trials differ only by a swapped-in stand-in (the AWS driver
+ships every real-data DataSource as a DataSourceS3) share the original
+cache's results rows: see glow.aws.driver._to_s3_cache.
 """
 
 from itertools import product
@@ -50,6 +56,12 @@ class TrialCache:
             product yields one kwarg dict per trial.
         kwargs (dict | None): constant kwargs merged into every yielded
             dict.
+        trial_alias_map (dict | None): {raw_hash: alias_hash} redirecting a
+            trial's stable_hash for all on-disk keying (lookup and save). An
+            empty / None map is the identity. Used to make a swapped-trial
+            cache (an AWS run shipping DataSourceS3 stand-ins) write into the
+            same rows the original trials would, so the two runs share one
+            results.csv.
 
     The trial function passed to a Driver must accept
     f(**trial) -> dict | pd.DataFrame; persistence is the cache's job,
@@ -59,7 +71,8 @@ class TrialCache:
     def __init__(self, *, name: Optional[str] = None,
                  folder: Optional[Path] = None,
                  iter_kwargs: Optional[dict] = None,
-                 kwargs: Optional[dict] = None):
+                 kwargs: Optional[dict] = None,
+                 trial_alias_map: Optional[dict] = None):
         if (name is None) == (folder is None):
             raise ValueError('exactly one of `name` or `folder` required')
 
@@ -76,6 +89,7 @@ class TrialCache:
 
         self.iter_kwargs = iter_kwargs
         self.kwargs = kwargs
+        self.trial_alias_map = trial_alias_map
         self.df = self._load_results()
 
     @property
@@ -92,6 +106,26 @@ class TrialCache:
     def _cached_hashes(self) -> set:
         """Return the set of trial hashes already on disk (as str)."""
         return set(self.df.index.astype(str))
+
+    def _hash(self, trial: dict) -> str:
+        """Hash a trial, redirected through trial_alias_map when one is set.
+
+        stable_hash gives the trial's content identity; trial_alias_map then
+        optionally maps that to a different hash, so a trial whose spec differs
+        only by a swapped-in stand-in (an S3-shipped DataSource on AWS) keys
+        the same results row its original spec would. An empty / None map is
+        the identity, so an ordinary cache hashes trials unchanged.
+
+        Args:
+            trial (dict): the trial kwargs.
+
+        Returns:
+            the (possibly aliased) trial hash used for lookup and result IO.
+        """
+        h = stable_hash(trial)
+        if self.trial_alias_map:
+            return self.trial_alias_map.get(h, h)
+        return h
 
     def __len__(self) -> int:
         """Total trial count yielded by iter_trial (cached + uncached)."""
@@ -112,12 +146,12 @@ class TrialCache:
         """Yield only trials whose result is not already in self.df."""
         cached = self._cached_hashes()
         for trial in self.iter_trial():
-            if stable_hash(trial) not in cached:
+            if self._hash(trial) not in cached:
                 yield trial
 
     def is_cached(self, trial: dict) -> bool:
         """Return True if this trial's result is already in self.df."""
-        return stable_hash(trial) in self._cached_hashes()
+        return self._hash(trial) in self._cached_hashes()
 
     def save_result(self, result, trial: dict) -> None:
         """Append one trial's result to self.df and results.csv.
@@ -140,7 +174,7 @@ class TrialCache:
             TypeError: if result is neither a dict nor a DataFrame.
         """
         cols = {k: value_id(v) for k, v in trial.items()}
-        th = stable_hash(trial)
+        th = self._hash(trial)
 
         if isinstance(result, pd.DataFrame):
             new = result.copy()

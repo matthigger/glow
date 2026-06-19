@@ -10,10 +10,11 @@ and can't re-build from scratch — the on-disk exp IS the identity.  It
 just satisfies the one part of the DataSource contract that run_fnc
 actually uses: .exp.
 
-Because this wrapper appears only in the worker-side trial dict (never
-in the local TrialCache hashing path), its hash doesn't need to match
-the inner ds's hash.  The original ds stays in the trial dict that
-trial_cache.save_result is called with.
+The driver swaps this wrapper in for a real-data DataSource when building
+a cache's S3-shipped twin (glow.aws.driver._to_s3_cache).  Its hash
+therefore differs from the inner ds's; the twin cache's
+TrialCache.trial_alias_map maps that swapped hash back to the original, so
+save_result still writes the original trial's results.csv row.
 """
 
 import urllib.parse

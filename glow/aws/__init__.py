@@ -5,11 +5,14 @@ for glow.benchmark.driver.driver_local: pulls uncached trials from
 the cache, runs each as one child of an AWS Batch array job, and writes
 results back through trial_cache.save_result.
 
-DataSourceS3 wraps a benchmark DataSource whose .exp is too expensive to
-rebuild on the worker (e.g. HCP).  The driver builds the exp locally,
-uploads it once per unique source, and the worker fetches from S3 on
-demand.  Deterministic sources (DataSourceWGN) are left in the trial
-dict and rebuilt on the worker from their seed.
+DataSourceS3 wraps a benchmark DataSource whose .exp the worker cannot
+rebuild (a real-data source loading files the image does not carry, e.g.
+HCP).  Before submitting, the driver builds an S3-shipped twin of each
+cache (driver._to_s3_cache): it uploads each such source's exp once and
+swaps in a DataSourceS3 that fetches from S3 on demand, while leaving
+deterministic DataSourceWGN sources to rebuild on the worker from seed.
+The twin's TrialCache.trial_alias_map redirects the swapped trial hashes
+back to the originals, so the AWS and local runs share one results.csv.
 
 Public surface is populated as the build progresses; see __all__.
 """

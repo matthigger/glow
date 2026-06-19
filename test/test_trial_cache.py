@@ -8,7 +8,7 @@ import pytest
 import glow.benchmark.trial_cache as tc_mod
 from glow.benchmark import TrialCache
 from glow.benchmark.trial_cache import HASH_COL
-from glow.util import HashBySlots
+from glow.util import HashBySlots, stable_hash
 
 
 class _Toy(HashBySlots):
@@ -185,3 +185,50 @@ class TestSaveResult:
         assert list(cache2.df.index) == list(cache1.df.index)
         # re-opened cache still recognizes the saved trial as cached
         assert cache2.is_cached({'seed': 0}) is True
+
+
+class TestTrialAliasMap:
+    """trial_alias_map redirects a trial's hash for lookup and result IO.
+
+    The AWS driver uses it so a swapped-source trial (DataSourceS3 in place
+    of a real DataSource) keys the same results row its original would.
+    """
+
+    def test_default_is_identity(self, tmp_path):
+        # No alias map: hashes are plain stable_hash, behaviour unchanged.
+        cache = TrialCache(folder=tmp_path)
+        assert cache.trial_alias_map is None
+        cache.save_result({'v': 1}, {'seed': 0})
+        assert list(cache.df.index) == [stable_hash({'seed': 0})]
+
+    def test_save_writes_aliased_row(self, tmp_path):
+        new_trial = {'seed': 0, 'ds': _Toy(9, 9)}
+        new_hash = stable_hash(new_trial)
+        cache = TrialCache(folder=tmp_path,
+                           trial_alias_map={new_hash: 'OLDHASH'})
+        cache.save_result({'v': 1}, new_trial)
+        # the row lands under the aliased hash, not new_trial's own hash
+        assert list(cache.df.index) == ['OLDHASH']
+
+    def test_lookup_follows_alias(self, tmp_path):
+        # An original trial is saved by an ordinary cache ...
+        base = TrialCache(folder=tmp_path)
+        base.save_result({'v': 1}, {'seed': 0})
+        old_hash = base.df.index[0]
+
+        # ... and a distinct twin trial, aliased back to it, reads as cached.
+        new_trial = {'seed': 0, 'ds': _Toy(9, 9)}
+        new_hash = stable_hash(new_trial)
+        assert new_hash != old_hash
+        twin = TrialCache(folder=tmp_path,
+                          iter_kwargs={'seed': [0]}, kwargs={'ds': _Toy(9, 9)},
+                          trial_alias_map={new_hash: old_hash})
+        assert twin.is_cached(new_trial) is True
+        assert list(twin.iter_trial_no_repeat()) == []
+
+    def test_unmapped_hash_passes_through(self, tmp_path):
+        # A hash absent from a non-empty alias map is left unchanged.
+        cache = TrialCache(folder=tmp_path,
+                           trial_alias_map={'SOMETHING_ELSE': 'OLDHASH'})
+        cache.save_result({'v': 1}, {'seed': 0})
+        assert list(cache.df.index) == [stable_hash({'seed': 0})]

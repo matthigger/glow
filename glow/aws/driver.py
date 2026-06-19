@@ -7,20 +7,26 @@ escalated through aws_config.memory_mb_tiers for OOM children) whose
 worker downloads the per-trial pickle from S3, executes, and uploads the
 result.
 
+A worker has only the glow image, no datasets, so a real-data DataSource
+(e.g. DataSourceHCP) cannot rebuild its .exp there. Before submitting,
+_to_s3_cache builds an S3-shipped twin of each cache: every shippable
+DataSource in the trial grid is uploaded once (content-addressed) and
+replaced by a DataSourceS3 that downloads it on demand; DataSourceWGN is
+deterministic from its seed and left untouched. The twin's distinct trial
+hashes are redirected back to the originals via TrialCache.trial_alias_map,
+so a trial run on AWS lands in the same results.csv row a local run would
+write -- and is later seen as cached by the local driver.
+
 driver_aws_multi runs several caches at once: it uploads and submits
-every cache's trials up front, then polls all the array jobs together
-(one tqdm bar per cache) so the Batch queue stays saturated instead of
-draining one cache to completion before the next is submitted.
+every (twin) cache's trials up front, then polls all the array jobs
+together (one tqdm bar per cache) so the Batch queue stays saturated
+instead of draining one cache to completion before the next is submitted.
 driver_aws is the single-cache wrapper over it.
 
 Each trial's result is downloaded, saved, and deleted from S3 the moment
 that trial reaches a terminal state in the poll loop — not after the
 whole tier finishes — so results land as soon as they are ready and the
 bucket only ever holds the still-in-flight trials.
-
-Result-key keying uses stable_hash(trial) on the ORIGINAL trial, not the
-S3-wrapped worker variant, so AWS and local runs write the same row hash
-and share one results.csv.
 """
 
 import time
@@ -35,8 +41,9 @@ from tqdm import tqdm
 
 from glow.aws.config import s3_key
 from glow.aws.datasource import DataSourceS3
-from glow.benchmark.data import DataSourceWGN
-from glow.util import stable_hash
+from glow.benchmark.data import DataSource, DataSourceWGN
+from glow.benchmark.trial_cache import TrialCache
+from glow.util import stable_hash, value_id
 
 
 UPLOAD_THREADS = 16
@@ -88,27 +95,16 @@ def driver_aws_multi(jobs, aws_config, verbose: bool = True) -> None:
         aws_config (AWSConfig): bucket, queue, definition, region.
         verbose (bool): tqdm progress bars plus status prints.
     """
-    # Per label: ORIGINAL trial dict by hash (for save_result), run_fnc,
-    # and the cache itself. Caches with nothing uncached are dropped here.
-    pending_by_label: Dict[str, Dict[str, dict]] = {}
-    fnc_by_label: Dict[str, Callable] = {}
-    cache_by_label: dict = {}
-    all_trials: list = []
+    # Pass 1: which caches have uncached trials? Decided on the original
+    # caches, so a fully-cached run returns before any boto3 client is built.
+    active_jobs = []
     for label, cache, run_fnc in jobs:
-        trials = list(cache.iter_trial_no_repeat())
-        if not trials:
-            if verbose:
-                print(f'[driver_aws] {label}: no uncached trials')
-            continue
-        pending = {stable_hash(t): t for t in trials}
-        pending_by_label[label] = pending
-        fnc_by_label[label] = run_fnc
-        cache_by_label[label] = cache
-        all_trials.extend(trials)
-        if verbose:
-            print(f'[driver_aws] {label}: {len(pending)} uncached trials')
+        if next(cache.iter_trial_no_repeat(), None) is not None:
+            active_jobs.append((label, cache, run_fnc))
+        elif verbose:
+            print(f'[driver_aws] {label}: no uncached trials')
 
-    if not pending_by_label:
+    if not active_jobs:
         if verbose:
             print('[driver_aws] no uncached trials; nothing to do.')
         return
@@ -116,16 +112,30 @@ def driver_aws_multi(jobs, aws_config, verbose: bool = True) -> None:
     s3 = boto3.client('s3', region_name=aws_config.region)
     batch = boto3.client('batch', region_name=aws_config.region)
 
-    # 1. Upload non-WGN data sources once each (deduped across all caches).
-    ds_wrap = _upload_shared_datasources(
-        all_trials, aws_config=aws_config, s3=s3, verbose=verbose)
+    # Pass 2: build each cache's S3-shipped twin (uploading its real-data
+    # sources once, deduped across caches via swap_memo), then collect the
+    # twin's uncached trials keyed by their worker-side hash. save_result on
+    # the twin redirects that hash back to the original via trial_alias_map.
+    pending_by_label: Dict[str, Dict[str, dict]] = {}
+    fnc_by_label: Dict[str, Callable] = {}
+    cache_by_label: dict = {}
+    swap_memo: Dict[str, DataSourceS3] = {}
+    for label, cache, run_fnc in active_jobs:
+        aws_cache = _to_s3_cache(cache, aws_config=aws_config, s3=s3,
+                                 swap_memo=swap_memo, verbose=verbose)
+        pending = {stable_hash(t): t
+                   for t in aws_cache.iter_trial_no_repeat()}
+        pending_by_label[label] = pending
+        fnc_by_label[label] = run_fnc
+        cache_by_label[label] = aws_cache
+        if verbose:
+            print(f'[driver_aws] {label}: {len(pending)} uncached trials')
 
-    # 2. Upload one job.pkl per uncached trial, all caches under one bar.
+    # Upload one job.pkl per uncached trial, all caches under one bar.
     _upload_all_jobs(
-        s3, aws_config, pending_by_label, fnc_by_label, ds_wrap,
-        verbose=verbose)
+        s3, aws_config, pending_by_label, fnc_by_label, verbose=verbose)
 
-    # 3. Global tier-escalation loop. failures/remaining are per label.
+    # Global tier-escalation loop. failures/remaining are per label.
     failures_by_label: Dict[str, List[Tuple[str, str]]] = {
         label: [] for label in pending_by_label}
     remaining_by_label: Dict[str, List[str]] = {
@@ -189,56 +199,82 @@ def driver_aws_multi(jobs, aws_config, verbose: bool = True) -> None:
             _print_summary(label, pending, failures_by_label[label])
 
 
-# ---------- shared-datasource upload ----------------------------------------
+# ---------- S3-shipped twin cache -------------------------------------------
 
 
-def _upload_shared_datasources(trials, *, aws_config, s3, verbose):
-    """Upload each non-WGN data source's built exp once.
+def _is_shippable(v) -> bool:
+    """Whether v is a real-data DataSource that must be shipped to S3.
 
-    WGN sources skip the upload; workers rebuild them locally from seed.
+    A DataSourceWGN rebuilds bit-for-bit from its seed on the worker, so it
+    is left in place; every other DataSource loads files the worker image
+    does not carry, so its built exp is shipped as a DataSourceS3.
+    """
+    return isinstance(v, DataSource) and not isinstance(v, DataSourceWGN)
+
+
+def _to_s3_cache(cache, *, aws_config, s3, swap_memo: Dict[str, DataSourceS3],
+                 verbose: bool):
+    """Build an S3-shipped twin of cache for worker execution.
+
+    Every shippable DataSource (see _is_shippable) appearing in the trial
+    grid is uploaded once -- content-addressed, so identical sources across
+    trials and caches upload a single time -- and replaced by a DataSourceS3
+    that downloads it on the worker. The twin keeps cache.folder, so it reads
+    and writes the same results.csv; its trial_alias_map redirects each
+    swapped trial's hash back to the original's, keeping the AWS and local
+    runs row-for-row consistent.
+
+    A cache with no shippable source (a pure-WGN or scalar-axis grid) is
+    returned unchanged: there is nothing to swap and no alias is needed.
 
     Args:
-        trials (list): trial dicts, each possibly carrying a 'ds' key.
+        cache (TrialCache): the original cache to mirror.
         aws_config (AWSConfig): supplies the S3 bucket and prefix.
         s3: boto3 S3 client.
+        swap_memo (dict): value_id(ds) -> DataSourceS3, shared across caches
+            so an identical source uploads (and HEAD-probes) once per run.
         verbose (bool): show a tqdm upload bar.
 
     Returns:
-        ds_wrap (dict): {id(ds): DataSourceS3} for callers to swap into
-            worker_trial.
+        aws_cache (TrialCache): the twin, or cache itself if nothing to swap.
     """
-    ds_wrap: Dict[int, DataSourceS3] = {}
-    # id(ds) -> ds, deduping shared sources across trials.
-    unique = {}
-    for t in trials:
-        ds = t.get('ds')
-        if ds is None or isinstance(ds, DataSourceWGN):
-            continue
-        unique.setdefault(id(ds), ds)
+    grid = list((cache.kwargs or {}).values())
+    for vals in (cache.iter_kwargs or {}).values():
+        grid.extend(vals)
+    shippable = {value_id(v): v for v in grid if _is_shippable(v)}
+    if not shippable:
+        return cache
 
-    if not unique:
-        return ds_wrap
-
-    bar = tqdm(total=len(unique), disable=not verbose,
+    todo = [(k, v) for k, v in shippable.items() if k not in swap_memo]
+    bar = tqdm(total=len(todo), disable=not verbose or not todo,
                desc='upload ds.exp')
-    for ds_id, ds in unique.items():
-        ds_wrap[ds_id] = DataSourceS3.from_source(
-            ds, bucket=aws_config.s3_bucket,
+    for k, v in todo:
+        swap_memo[k] = DataSourceS3.from_source(
+            v, bucket=aws_config.s3_bucket,
             prefix=aws_config.s3_prefix, s3=s3)
         bar.update(1)
     bar.close()
-    return ds_wrap
 
+    def _swap(v):
+        return swap_memo[value_id(v)] if _is_shippable(v) else v
 
-def _to_worker_trial(trial: dict, ds_wrap: Dict[int, DataSourceS3]) -> dict:
-    """Replace ds with its S3 wrapper if one was uploaded for it."""
-    ds = trial.get('ds')
-    if ds is None or isinstance(ds, DataSourceWGN):
-        return trial
-    wrap = ds_wrap.get(id(ds))
-    if wrap is None:
-        return trial
-    return {**trial, 'ds': wrap}
+    new_kwargs = (None if cache.kwargs is None
+                  else {k: _swap(v) for k, v in cache.kwargs.items()})
+    new_iter = (None if cache.iter_kwargs is None
+                else {k: [_swap(v) for v in vals]
+                      for k, vals in cache.iter_kwargs.items()})
+
+    aws_cache = TrialCache(folder=cache.folder, iter_kwargs=new_iter,
+                           kwargs=new_kwargs)
+    # Pair each original trial with its swapped twin (same grid order) and
+    # alias the twin's hash back, so save_result writes the original's row.
+    alias: Dict[str, str] = {}
+    for orig, new in zip(cache.iter_trial(), aws_cache.iter_trial()):
+        oh, nh = stable_hash(orig), stable_hash(new)
+        if oh != nh:
+            alias[nh] = oh
+    aws_cache.trial_alias_map = alias
+    return aws_cache
 
 
 # ---------- per-trial job.pkl upload ----------------------------------------
@@ -259,12 +295,13 @@ def _manifest_key(prefix: str, run_id: str) -> str:
     return s3_key(prefix, 'jobs', run_id, 'manifest.pkl')
 
 
-def _upload_all_jobs(s3, aws_config, pending_by_label, fnc_by_label,
-                     ds_wrap, verbose):
-    """Pickle (run_fnc, worker_trial) per trial and put_object in parallel.
+def _upload_all_jobs(s3, aws_config, pending_by_label, fnc_by_label, verbose):
+    """Pickle (run_fnc, trial) per trial and put_object in parallel.
 
     Spans every cache under one tqdm bar so the pre-submit upload reads as
-    a single step. Each trial is pickled with its own cache's run_fnc.
+    a single step. Each trial is pickled with its own cache's run_fnc. The
+    trials are already the S3-shipped twins built by _to_s3_cache, so the
+    worker downloads any DataSourceS3.exp on demand.
 
     Args:
         s3: boto3 S3 client.
@@ -273,8 +310,6 @@ def _upload_all_jobs(s3, aws_config, pending_by_label, fnc_by_label,
             uncached trials of every cache.
         fnc_by_label (dict): {label: run_fnc} pickled alongside each of
             that cache's trials.
-        ds_wrap (dict): {id(ds): DataSourceS3} from
-            _upload_shared_datasources.
         verbose (bool): show a tqdm upload bar.
     """
     bucket = aws_config.s3_bucket
@@ -286,8 +321,7 @@ def _upload_all_jobs(s3, aws_config, pending_by_label, fnc_by_label,
 
     def _put_one(item):
         run_fnc, trial_hash, trial = item
-        bundle = cloudpickle.dumps(
-            (run_fnc, _to_worker_trial(trial, ds_wrap)))
+        bundle = cloudpickle.dumps((run_fnc, trial))
         s3.put_object(
             Bucket=bucket, Key=_job_key(prefix, trial_hash), Body=bundle)
 
