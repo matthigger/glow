@@ -11,8 +11,24 @@ import json
 import numpy as np
 import pandas as pd
 
+import pytest
+
 import glow.benchmark
-from glow.benchmark.paper.run import _score, _score_regions
+from glow.benchmark.paper.run import _effect_llr, _plant, _score, _score_regions
+
+
+class _FakeExp:
+    """Stand-in for an experiment: just the mask_idx _plant reads for shape."""
+
+    def __init__(self, mask_idx):
+        self.mask_idx = mask_idx
+
+
+class _FakeDS:
+    """Stand-in for a data source: exposes a clean .exp."""
+
+    def __init__(self, exp):
+        self.exp = exp
 
 
 class _FakeEffect:
@@ -36,6 +52,32 @@ def _masks():
     mask_active = np.array([True, True, True, True, False, False])
     mask_target = np.array([True, True, False, False, False, False])
     return mask_active, mask_target
+
+
+def test_effect_llr_resolves_per_voxel_total_or_null():
+    # per-voxel target passes through; total target divides by the extent
+    assert _effect_llr(0.03, None, 614) == 0.03
+    assert _effect_llr(None, 18.42, 614) == 18.42 / 614
+    # neither knob set -> None, the null / FWER-calibration signal (NOT 0)
+    assert _effect_llr(None, None, 614) is None
+    # both knobs set is a misconfiguration
+    with pytest.raises(ValueError):
+        _effect_llr(0.03, 18.42, 614)
+
+
+def test_plant_none_leaves_data_untouched():
+    # effect_llr=None must plant nothing: the same exp back (no scrubbing of
+    # incidental effect, as effect_llr=0 would do) and an all-False target.
+    exp = _FakeExp(mask_idx=np.arange(6).reshape(2, 3))
+    ds = _FakeDS(exp)
+
+    out_exp, out_eff, mask = _plant(ds, extenter=None, effect_llr=None, seed=0)
+
+    assert out_exp is exp
+    assert out_eff is exp
+    assert mask.shape == exp.mask_idx.shape
+    assert mask.dtype == bool
+    assert not mask.any()
 
 
 def test_score_regions_emits_counts_not_metrics():

@@ -160,10 +160,12 @@ ANGLE_GRID = [float(a) for a in np.linspace(0, 90, 10)]
 TWO_EFFECT_LLR_GRID = [0.003, 0.01, 0.03]
 
 
-# A. Type I error (null): no effect, many seeds, both sources.
+# A. Type I error (null): no effect, many seeds, both sources. effect_llr is
+# None (plant nothing, data untouched), NOT 0 -- effect_llr=0 would scrub the
+# sampled region's incidental effect, biasing the calibration (see run._plant).
 _cache('null', run_fnc=_ana,
        source=SOURCES, seed=list(range(N_SEED_NULL)),
-       effect_llr=[0.0], b=[1], num_img=[100], n_vox_eff=[EFFECT_N_VOX])
+       effect_llr=[None], b=[1], num_img=[100], n_vox_eff=[EFFECT_N_VOX])
 
 # B. Detection vs effect strength (b=1; HCP draws one random feature/seed).
 _cache('sweep_llr', run_fnc=_ana,

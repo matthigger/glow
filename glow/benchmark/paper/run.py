@@ -46,7 +46,7 @@ from glow.effect.extent import split_mask_spectral
 from .factory import build_ds, derive_seeds
 
 
-def _effect_llr(effect_llr, effect_total_llr, n_vox_eff: int) -> float:
+def _effect_llr(effect_llr, effect_total_llr, n_vox_eff: int):
     """Resolve the per-voxel effect_llr from whichever knob the cache set.
 
     Args:
@@ -56,33 +56,51 @@ def _effect_llr(effect_llr, effect_total_llr, n_vox_eff: int) -> float:
         n_vox_eff (int): requested effect support size
 
     Returns:
-        the per-voxel effect_llr to plant
+        the per-voxel effect_llr to plant, or None when neither knob is set
+        -- the null / FWER-calibration path, which plants no effect (see
+        _plant). Note effect_llr=0 is NOT this path: 0 is a real target the
+        offset solver hits by scrubbing the region's incidental effect.
 
     Raises:
-        ValueError: if neither (or both) knobs are given
+        ValueError: if both knobs are given
     """
-    if (effect_llr is None) == (effect_total_llr is None):
-        raise ValueError('pass exactly one of effect_llr / effect_total_llr')
+    if effect_llr is not None and effect_total_llr is not None:
+        raise ValueError('pass at most one of effect_llr / effect_total_llr')
     if effect_total_llr is not None:
         return float(effect_total_llr) / n_vox_eff
-    return float(effect_llr)
+    if effect_llr is not None:
+        return float(effect_llr)
+    return None
 
 
-def _plant(ds, extenter, effect_llr: float, seed: int):
+def _plant(ds, extenter, effect_llr, seed: int):
     """Build the exp + planted-effect pair shared by every trial fn.
+
+    effect_llr is None for the null / FWER-calibration path: plant nothing
+    and return the data untouched with an empty target mask. effect_llr=0 is
+    deliberately NOT this case -- compute_offset would solve for the offset
+    that drives the sampled region's natural LLR to exactly zero, scrubbing
+    any incidental effect out of it. A calibration on the global null wants
+    the data left exactly as the source produced it, so the null cache
+    passes None (see config._cache('null', ...)), not 0.
 
     Args:
         ds: data source whose .exp gives the clean experiment
         extenter: Extenter that samples the planted effect's support
-        effect_llr (float): per-voxel planted effect strength
+        effect_llr (float | None): per-voxel planted effect strength, or
+            None to plant no effect (null calibration)
         seed (int): RNG seed for the synthetic effect
 
     Returns:
         exp: the clean experiment
-        exp_eff: the experiment with the synthetic effect added
+        exp_eff: the experiment with the synthetic effect added (exp itself,
+            unmodified, when effect_llr is None)
         mask_ (np.array): (X, Y, Z) bool, the realized effect support
+            (all-False when effect_llr is None)
     """
     exp = ds.exp
+    if effect_llr is None:
+        return exp, exp, np.zeros(exp.mask_idx.shape, dtype=bool)
     synth = EffectSynthetic(extenter=extenter, effect_llr=effect_llr,
                             seed=seed)
     exp_eff = synth.fit(exp)

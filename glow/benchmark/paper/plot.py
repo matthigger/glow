@@ -356,7 +356,7 @@ def plot_ana_cache(label: str, df, cache, out) -> None:
     varies (read off cache.iter_kwargs, not the data, so the choice
     matches the config exactly):
 
-      - null cache (effect_llr grid is all 0): FWER calibration from min_pval
+      - null cache (effect_llr grid all None/0): FWER calibration from min_pval
       - effect_llr swept: dice / sens / spec vs effect_llr
       - effect extent swept (extenter in iter_kwargs): metrics vs effect
         size (realized support as a fraction of the volume)
@@ -378,7 +378,7 @@ def plot_ana_cache(label: str, df, cache, out) -> None:
     iter_kwargs = cache.iter_kwargs or {}
     effect_llr_grid = list(iter_kwargs.get('effect_llr', []))
 
-    if effect_llr_grid and all(v == 0 for v in effect_llr_grid):
+    if effect_llr_grid and all(not v for v in effect_llr_grid):
         plot_calibration(df, title=f'FWER calibration — {label}')
         _savefig(out / f'{label}_calibration.pdf')
         return
@@ -479,8 +479,8 @@ def _infer_spec(cache) -> dict:
     """Fall back to a plot spec for a cache with no config.PLOT entry.
 
     Reads cache.iter_kwargs (config intent, not the possibly-partial data):
-    an all-zero effect_llr grid is a calibration cache, the first ordered
-    axis that actually varies becomes the x-axis, else effect_llr.
+    an all-None/zero effect_llr grid is a calibration cache, the first
+    ordered axis that actually varies becomes the x-axis, else effect_llr.
 
     Args:
         cache (TrialCache): the catalogue cache whose axes are inspected
@@ -489,7 +489,8 @@ def _infer_spec(cache) -> dict:
         a plot spec dict (kind / x / facet)
     """
     ik = cache.iter_kwargs or {}
-    if set(ik.get('effect_llr', [])) == {0.0}:
+    llr_grid = ik.get('effect_llr', [])
+    if llr_grid and all(not v for v in llr_grid):
         return dict(kind='calibration', facet='source')
     for cand in ('effect_llr', 'b', 'num_img', 'n_vox_eff'):
         if len(set(ik.get(cand, []))) > 1:
