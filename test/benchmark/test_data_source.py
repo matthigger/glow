@@ -15,7 +15,7 @@ from glow.benchmark.data import (
     DataSourceHCP,
 )
 from glow.effect import ExtenterSphere
-from glow.experiment.exper import ExperimentImageOnly
+from glow.experiment.exper import ExperimentImageOnly, NoBiasTermWarning
 from glow.mask import get_mask_idx
 
 
@@ -257,7 +257,9 @@ class TestSampleXShared:
 
     def test_x_shape_no_bias(self):
         ds = _wgn(a=1, a_nuisance=0, has_bias=False)
-        assert ds.exp.x.shape == (1, 8)
+        # no all-ones row -> ExperimentImageOnly warns (expected here)
+        with pytest.warns(NoBiasTermWarning):
+            assert ds.exp.x.shape == (1, 8)
 
     def test_x_shape_with_nuisance(self):
         ds = _wgn(a=2, a_nuisance=3, has_bias=True)
