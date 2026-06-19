@@ -3,7 +3,7 @@
 Subcommands:
 
     python -m glow.aws.infra bootstrap [--config PATH]
-    python -m glow.aws.infra setup     [--image-tag IMG] [--config PATH]
+    python -m glow.aws.infra setup     [--build] [--image-tag IMG] [--config PATH]
     python -m glow.aws.infra teardown  [--yes] [--delete-bucket] [--config PATH]
     python -m glow.aws.infra status    [--label LABEL]              [--config PATH]
     python -m glow.aws.infra clear_storage [--jobs] [--datasource] [--yes] [--config PATH]
@@ -71,6 +71,9 @@ ECS_TASK_ROLE = 'GlowEcsTaskRole'
 
 # ECR repository for the worker image.
 ECR_REPO_NAME = 'glow-worker'
+
+# Default local tag built/pushed by `setup --build`.
+DEFAULT_IMAGE_TAG = 'glow-worker:latest'
 
 
 # ---------- bootstrap (one-time IAM) ----------------------------------------
@@ -245,8 +248,12 @@ def _create_instance_profile(iam, name: str) -> None:
 def cmd_setup(args, cfg: AWSConfig) -> None:
     """Provision the S3, ECR, and Batch resources (idempotent).
 
+    With --build, the worker image is built here first (tagged
+    args.image_tag, or DEFAULT_IMAGE_TAG if unset) and then pushed, so
+    deploy is one command instead of a separate docker build.
+
     Args:
-        args: parsed argparse Namespace; reads args.image_tag.
+        args: parsed argparse Namespace; reads args.build and args.image_tag.
         cfg (AWSConfig): bucket, queue, definition, region, and resource
             sizing.
     """
@@ -254,6 +261,11 @@ def cmd_setup(args, cfg: AWSConfig) -> None:
     account_id = _account_id()
 
     print(f'[setup] region={region} account={account_id}')
+
+    if args.build:
+        args.image_tag = args.image_tag or DEFAULT_IMAGE_TAG
+        _build_image(args.image_tag)
+
     _setup_s3_bucket(cfg)
 
     image_uri = _resolve_image_uri(args, region, account_id)
@@ -315,6 +327,30 @@ def _resolve_image_uri(args, region: str, account_id: str) -> str:
     uri = f'{account_id}.dkr.ecr.{region}.amazonaws.com/{ECR_REPO_NAME}:latest'
     print(f'  ✓ using existing ECR image {uri}')
     return uri
+
+
+def _build_image(tag: str) -> None:
+    """Build the worker Docker image from the repo's Dockerfile.
+
+    Runs docker build with the repo root as the build context (so the
+    Dockerfile's COPY glow/ ./glow/ captures the working-tree source)
+    regardless of the caller's cwd.
+
+    Args:
+        tag (str): local image tag to build, e.g. glow-worker:latest.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which('docker') is None:
+        raise SystemExit('docker not found in PATH — install Docker first')
+
+    repo_root = Path(__file__).resolve().parents[2]
+    dockerfile = repo_root / 'glow' / 'aws' / 'Dockerfile'
+    print(f'[setup] docker build -t {tag} (context {repo_root})')
+    subprocess.run(
+        ['docker', 'build', '-t', tag, '-f', str(dockerfile), str(repo_root)],
+        check=True)
 
 
 def _push_image_to_ecr(local_tag: str, region: str, account_id: str) -> str:
@@ -1129,6 +1165,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_bootstrap)
 
     sp = subs.add_parser('setup', help='provision S3/ECR/Batch resources')
+    sp.add_argument('--build', action='store_true',
+                    help='docker build the worker image first, then push '
+                         f'(tags {DEFAULT_IMAGE_TAG} unless --image-tag given)')
     sp.add_argument('--image-tag', default=None,
                     help='local docker image tag to push to ECR; '
                          'omit if already pushed')

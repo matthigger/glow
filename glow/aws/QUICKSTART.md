@@ -46,12 +46,24 @@ prints where it wrote): it prints default
 bucket / queue / job-definition names and lets you accept or override each.
 Pick a globally-unique bucket you own — the worker's S3 access is scoped to it.
 
-Finally, build the worker image and register the Batch resources:
+Finally, build the worker image and register the Batch resources. `setup
+--build` does the `docker build` for you (build context is the repo root, so it
+works from any cwd), then pushes and registers in one step:
+
+```bash
+python -m glow.aws.infra setup --build
+```
+
+Equivalent two-step form, if you'd rather build the image yourself:
 
 ```bash
 docker build -t glow-worker:latest -f glow/aws/Dockerfile .
 python -m glow.aws.infra setup --image-tag glow-worker:latest
 ```
+
+Re-run `setup --build` whenever you change worker-baked code (anything the
+worker imports: `glow/aws/worker.py`, `glow/benchmark/paper/run.py`,
+`glow/benchmark/data.py`, `glow/analysis/*`, …) to redeploy it to the workers.
 
 ## Daily workflow
 
