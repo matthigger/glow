@@ -49,6 +49,8 @@ def test_single_output_and_defaults(rec):
 	assert record["function"].split(".")[-1] == "f"
 	assert record["inputs"] == {"a": 5, "b": 10}
 	assert record["outputs"] == {"out": 15}
+	# every success record is timed
+	assert isinstance(record["time_sec"], float) and record["time_sec"] >= 0
 	# trial_ids are uuid4 strings
 	uuid.UUID(record["trial_id"])
 
@@ -251,9 +253,9 @@ def test_function_identity_uses_qualname(rec):
 	]
 
 
-# --- failure cleanup ---------------------------------------------------------
+# --- failure capture ---------------------------------------------------------
 
-def test_exception_cleans_up_trial_id_and_records_nothing(rec):
+def test_exception_records_failure_and_reraises(rec):
 	@rec(output_name='x')
 	def boom():
 		raise ValueError("boom")
@@ -261,7 +263,13 @@ def test_exception_cleans_up_trial_id_and_records_nothing(rec):
 	with pytest.raises(ValueError):
 		boom()
 
-	assert rec.records == []
+	# a failure is recorded (auditable), with the traceback in place of outputs
+	assert len(rec.records) == 1
+	(record,) = rec.records
+	assert record["function"].split(".")[-1] == "boom"
+	assert "outputs" not in record
+	assert "ValueError: boom" in record["error"]
+	assert isinstance(record["time_sec"], float) and record["time_sec"] >= 0
 	# trial id must be released so the next top-level call starts fresh
 	assert rec._trial_id_current.get() is None
 
@@ -270,7 +278,40 @@ def test_exception_cleans_up_trial_id_and_records_nothing(rec):
 		return 1
 
 	ok()
-	assert len(rec.records) == 1
+	assert len(rec.records) == 2
+	assert rec.records[1]["outputs"] == {"y": 1}
+
+
+def test_nested_failure_records_at_each_decorated_frame(rec):
+	# one exception propagating through two decorated frames yields one failure
+	# record per frame (each is a legitimate failed call), sharing the trial id
+	@rec(output_name='inner_out')
+	def inner():
+		raise RuntimeError("kaboom")
+
+	@rec(output_name='outer_out')
+	def outer():
+		return inner()
+
+	with pytest.raises(RuntimeError):
+		outer()
+
+	funcs = [r["function"].split(".")[-1] for r in rec.records]
+	assert funcs == ["inner", "outer"]  # inner completes (fails) before outer
+	assert all("error" in r for r in rec.records)
+	assert len({r["trial_id"] for r in rec.records}) == 1
+
+
+def test_output_validation_error_is_not_recorded_as_failure(rec):
+	# the fnc succeeds; the recorder's own arity check raises afterwards, so
+	# nothing is recorded (it's misconfiguration, not a trial failure)
+	@rec(output_name_list=('a', 'b'))
+	def f():
+		return (1, 2, 3)
+
+	with pytest.raises(ValueError):
+		f()
+	assert rec.records == []
 
 
 # --- export ------------------------------------------------------------------

@@ -3,7 +3,8 @@
 A ``Recorder`` is a decorator factory. Decorating a function makes every
 call append one record
 
-    {"trial_id": ..., "function": ..., "inputs": {...}, "outputs": {...}}
+    {"trial_id": ..., "function": ..., "inputs": {...}, "outputs": {...},
+     "time_sec": ...}
 
 to ``records``. Calls nested inside one top-level invocation (or inside an
 explicit ``with recorder.run(trial_id=...):`` block) share a single
@@ -12,6 +13,16 @@ the benchmark the ``trial_id`` is the trial's cache hash
 (``TrialCache.hash``), so records from independent workers -- local joblib
 pools or AWS Batch jobs -- merge without collision and line up with the
 results.csv row the same trial would write.
+
+``time_sec`` is the wall-clock duration of the wrapped call, so the
+benchmark no longer hand-times each method.
+
+A call that *raises* records a failure record instead -- same shape but
+with ``error`` (the traceback) in place of ``outputs`` -- and the
+exception re-raises. This keeps a failed trial auditable in the records
+(and so in results.csv) rather than vanishing; the caller catches to move
+on. The SKIP-vs-ERROR distinction is a domain decision left to the
+benchmark, not encoded here.
 
 Records are append-only: a function called twice in a trial yields two
 records, never an overwrite.
@@ -31,6 +42,8 @@ import contextvars
 import functools
 import inspect
 import json
+import time
+import traceback
 import uuid
 
 
@@ -39,7 +52,9 @@ class Recorder:
 
     Attributes:
         records (list): append-only list of recorded call dicts, one per
-            decorated call, each ``{trial_id, function, inputs, outputs}``.
+            decorated call. A success carries ``{trial_id, function, inputs,
+            outputs, time_sec}``; a failure swaps ``outputs`` for ``error``
+            (the traceback).
         _trial_id_current (contextvars.ContextVar): the active trial id for
             the current execution context (thread / asyncio task); None when
             no trial is open. A ContextVar so concurrent runs never see each
@@ -156,10 +171,28 @@ class Recorder:
                 active = self._trial_id_current.get()
                 cm = contextlib.nullcontext(active) if active is not None else self.run()
                 with cm as trial_id:
-                    out = fnc(*args, **kwargs)
+                    # time only the wrapped call; record-and-reraise on failure
+                    # so a failed trial is auditable (and not silently retried)
+                    # rather than vanishing. trial_id is still open here, so the
+                    # failure record lands under the right trial. Only fnc's own
+                    # exceptions are caught -- the recorder's output-validation
+                    # errors below are misconfiguration, not a trial failure, and
+                    # stay unrecorded.
+                    t0 = time.perf_counter()
+                    try:
+                        out = fnc(*args, **kwargs)
+                    except Exception:
+                        self.records.append({
+                            "trial_id": trial_id,
+                            "function": fnc.__qualname__,
+                            "inputs": inputs,
+                            "error": traceback.format_exc(),
+                            "time_sec": time.perf_counter() - t0,
+                        })
+                        raise
+                    time_sec = time.perf_counter() - t0
 
-                # only successful calls are recorded (a failed call has no
-                # outputs)
+                # only successful calls reach here; record their named outputs
                 if output_name is not None:
                     outputs = {output_name: out}
                 else:
@@ -180,6 +213,7 @@ class Recorder:
                     "function": fnc.__qualname__,
                     "inputs": inputs,
                     "outputs": outputs,
+                    "time_sec": time_sec,
                 })
 
                 return out
