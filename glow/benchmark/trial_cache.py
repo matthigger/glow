@@ -107,7 +107,7 @@ class TrialCache:
         """Return the set of trial hashes already on disk (as str)."""
         return set(self.df.index.astype(str))
 
-    def _hash(self, trial: dict) -> str:
+    def hash(self, trial: dict) -> str:
         """Hash a trial, redirected through trial_alias_map when one is set.
 
         stable_hash gives the trial's content identity; trial_alias_map then
@@ -115,6 +115,10 @@ class TrialCache:
         only by a swapped-in stand-in (an S3-shipped DataSource on AWS) keys
         the same results row its original spec would. An empty / None map is
         the identity, so an ordinary cache hashes trials unchanged.
+
+        Public because the recorder uses it as the trial_id scoping each
+        trial's recorded calls (see glow.benchmark.recorder), so local and
+        S3-shipped runs of the same trial record under one id.
 
         Args:
             trial (dict): the trial kwargs.
@@ -146,12 +150,12 @@ class TrialCache:
         """Yield only trials whose result is not already in self.df."""
         cached = self._cached_hashes()
         for trial in self.iter_trial():
-            if self._hash(trial) not in cached:
+            if self.hash(trial) not in cached:
                 yield trial
 
     def is_cached(self, trial: dict) -> bool:
         """Return True if this trial's result is already in self.df."""
-        return self._hash(trial) in self._cached_hashes()
+        return self.hash(trial) in self._cached_hashes()
 
     def save_result(self, result, trial: dict) -> None:
         """Append one trial's result to self.df and results.csv.
@@ -174,7 +178,7 @@ class TrialCache:
             TypeError: if result is neither a dict nor a DataFrame.
         """
         cols = {k: value_id(v) for k, v in trial.items()}
-        th = self._hash(trial)
+        th = self.hash(trial)
 
         if isinstance(result, pd.DataFrame):
             new = result.copy()

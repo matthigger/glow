@@ -6,4 +6,5 @@ cache (trial_cache), local / AWS drivers, and on-disk result helpers
 (file).
 """
 from .file import *
+from .recorder import Recorder
 from .trial_cache import TrialCache
