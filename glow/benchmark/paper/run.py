@@ -107,81 +107,63 @@ def _plant(ds, extenter, effect_llr, seed: int):
     return exp, exp_eff, synth.mask_
 
 
-def _effect_reg_json(reg_tp_fp) -> str:
-    """Pack per-output-region (reg_idx, tp, fp) triples into a JSON column.
+def _score_regions(reg_mask_list, mask_target_list, mask_active) -> dict:
+    """Per-effect confusion scoring of a method's output regions.
 
-    A trial outputs a variable number of effect regions, so rather than a
-    ragged set of columns we stash one tidy row per method and serialize
-    its regions into a single results.csv cell -- parse back with
-    json.loads. reg_idx is the Ward-tree region index for GLOW (None for a
-    voxel-method cluster that is not a tree node); tp/fp are that one
-    region's counts against the planted support (over the active voxels).
-    Use is diagnostic (e.g. debugging the per-region statistics); the
-    plotted scores come from the row's aggregate tp/fp/tn/fn instead.
-
-    Args:
-        reg_tp_fp (list): (reg_idx, tp, fp) per output region, in output order
-
-    Returns:
-        a JSON list-of-dicts string, e.g. '[{"reg_idx": 12, "tp": 90, "fp": 4}]'
-    """
-    return json.dumps([{'reg_idx': None if r is None else int(r),
-                        'tp': int(tp), 'fp': int(fp)}
-                       for r, tp, fp in reg_tp_fp])
-
-
-def _score_regions(reg_mask_list, mask_target, mask_active) -> dict:
-    """Aggregate + per-region confusion scoring of a method's output regions.
-
-    Shared by _score (a fitted Analysis's effect_list) and run_prune (each
-    pruning rule's selected regions): unions the region masks for the
-    aggregate tp/fp/tn/fn, and records each region's own tp/fp. Dice,
-    sensitivity, PPV and specificity are derived from the aggregate counts
-    at load time (glow.mask.stats_from_counts); the per-region detail is a
-    cheap diagnostic the plots ignore.
+    Shared by _score (a fitted Analysis's effect_list), run_prune (each
+    pruning rule's selected regions) and the two-effect trial: unions the
+    output region masks into one prediction, then scores that prediction
+    against each planted effect in turn. With a single planted effect the
+    four counts are the bare tp/fp/tn/fn; with several they are suffixed by
+    effect index (tp0/fp0/tn0/fn0 vs effect 0, tp1/.. vs effect 1, ...) --
+    each effect's counts treat the others' support as background. Dice,
+    sensitivity, PPV and specificity are derived from the counts at load
+    time (glow.mask.stats_from_counts).
 
     Args:
         reg_mask_list (list): (reg_idx, mask) per output region, in output
             order; reg_idx is the Ward region index or None (voxel methods)
-        mask_target (np.array): (X, Y, Z) bool, the planted effect support
+        mask_target_list (list): the planted effect supports, one (X, Y, Z)
+            bool mask each (length 1 for the single-effect trials)
         mask_active (np.array): (X, Y, Z) bool, the analyzed voxels
 
     Returns:
-        the aggregate tp/fp/tn/fn counts plus n_selected (output-region
-        count) and effect_reg_json (each region's reg_idx + tp/fp)
+        the per-effect tp/fp/tn/fn counts (unsuffixed for one effect, else
+        suffixed by effect index) plus n_selected (output-region count)
     """
     mask_pred = np.zeros(mask_active.shape, dtype=bool)
-    reg_tp_fp = []
-    for reg_idx, mask in reg_mask_list:
+    for _, mask in reg_mask_list:
         mask_pred |= mask
-        c = glow.mask.confusion_counts(
-            mask_pred=mask, mask_target=mask_target, mask_active=mask_active)
-        reg_tp_fp.append((reg_idx, c['tp'], c['fp']))
-    counts = glow.mask.confusion_counts(
-        mask_pred=mask_pred, mask_target=mask_target, mask_active=mask_active)
-    return {**counts,
-            'n_selected': len(reg_tp_fp),
-            'effect_reg_json': _effect_reg_json(reg_tp_fp)}
+    out = {'n_selected': len(reg_mask_list)}
+    single = len(mask_target_list) == 1
+    for i, mask_target in enumerate(mask_target_list):
+        counts = glow.mask.confusion_counts(
+            mask_pred=mask_pred, mask_target=mask_target,
+            mask_active=mask_active)
+        suffix = '' if single else str(i)
+        out.update({f'{k}{suffix}': v for k, v in counts.items()})
+    return out
 
 
-def _score(ana, mask_target, mask_active) -> dict:
-    """Score a fitted Analysis's effect_list against the planted mask.
+def _score(ana, mask_target_list, mask_active) -> dict:
+    """Score a fitted Analysis's effect_list against the planted effect(s).
 
-    The per-region confusion scoring of _score_regions (run by every
+    The per-effect confusion scoring of _score_regions (run by every
     Analysis trial) plus min_pval, the smallest region p-value reported.
 
     Args:
         ana: a fitted Analysis whose .effect_list / .pval are scored
-        mask_target (np.array): (X, Y, Z) bool, the planted effect support
+        mask_target_list (list): the planted effect supports, one (X, Y, Z)
+            bool mask each (length 1 for the single-effect trials)
         mask_active (np.array): (X, Y, Z) bool, voxels inside the mask
 
     Returns:
-        the _score_regions dict (tp/fp/tn/fn, n_selected, effect_reg_json)
-        plus min_pval
+        the _score_regions dict (per-effect tp/fp/tn/fn, n_selected) plus
+        min_pval
     """
     reg_mask_list = [(getattr(eff, 'reg_idx', None), eff.mask)
                      for eff in (ana.effect_list or ())]
-    scored = _score_regions(reg_mask_list, mask_target, mask_active)
+    scored = _score_regions(reg_mask_list, mask_target_list, mask_active)
     scored['min_pval'] = (float(np.nanmin(ana.pval))
                           if getattr(ana, 'pval', None) is not None
                           else np.nan)
@@ -238,11 +220,11 @@ def _setup_trial(*, source: str, b: int, num_img: int, n_vox_eff: int,
                  seed: int, effect_llr=None, effect_total_llr=None) -> _Trial:
     """Build one planted-effect trial shared by the scalar-axis trial fns.
 
-    The common front half of run_segment / run_mancova / run_prune (run_ana
-    routes through _run_ana_obj instead): resolve the data source, plant the
-    synthetic effect at the resolved per-voxel llr, and assemble the per-row
-    diagnostics. Raises ValueError for an infeasible cell -- callers turn
-    that into a SKIP row via _skip_frame.
+    The common front half of run_ana / run_segment / run_mancova / run_prune:
+    resolve the data source, plant the synthetic effect at the resolved
+    per-voxel llr, and assemble the per-row diagnostics. Raises ValueError
+    for an infeasible cell -- callers turn that into a SKIP row via
+    _skip_frame.
 
     Args:
         source (str): 'wgn' or 'hcp'
@@ -268,47 +250,6 @@ def _setup_trial(*, source: str, b: int, num_img: int, n_vox_eff: int,
                   diag=_trial_diag(exp, mask_target, llr, feats))
 
 
-def _run_ana_obj(*, ds, extenter, effect_llr: float, seed: int,
-                 ana_kwargs_dict: dict, feats=None):
-    """Fit every analysis in ana_kwargs_dict on one already-built trial.
-
-    The object-level core shared by run_ana (which resolves scalar axes
-    via the factory) and the mothballed catalogue (which builds its own
-    2-D / sphere-extent objects directly).
-
-    Args:
-        ds: data source whose .exp gives the clean experiment
-        extenter: Extenter that samples the planted effect's support
-        effect_llr (float): per-voxel planted effect strength
-        seed (int): effect RNG seed
-        ana_kwargs_dict (dict): label -> (Analysis class, init kwargs)
-        feats (tuple | None): HCP feature subset for the diagnostics, or None
-
-    Returns:
-        a DataFrame with one row per analysis label
-    """
-    exp, exp_eff, mask_target = _plant(ds, extenter, effect_llr, seed)
-    mask_active = exp.mask_idx > -1
-    diag = _trial_diag(exp, mask_target, effect_llr, feats)
-
-    rows = []
-    for label, (Ana, kw) in ana_kwargs_dict.items():
-        row = {'label': label, 'analysis_cls': Ana.__name__, **diag}
-        t0 = time.time()
-        try:
-            ana = Ana(exp=exp_eff, **kw).fit()
-        except Exception:
-            row['time_sec'] = time.time() - t0
-            row['error'] = traceback.format_exc()
-            rows.append(row)
-            continue
-        row['time_sec'] = time.time() - t0
-        row.update(_score(ana, mask_target, mask_active))
-        rows.append(row)
-
-    return pd.DataFrame(rows)
-
-
 def run_ana(*, source: str, b: int, num_img: int, n_vox_eff: int, seed: int,
             ana_kwargs_dict: dict, effect_llr=None, effect_total_llr=None):
     """Fit every analysis in ana_kwargs_dict on one synthetic trial.
@@ -327,13 +268,29 @@ def run_ana(*, source: str, b: int, num_img: int, n_vox_eff: int, seed: int,
         a DataFrame with one row per analysis label
     """
     try:
-        ds, feats = build_ds(source, b=b, num_img=num_img, seed=seed)
+        trial = _setup_trial(source=source, b=b, num_img=num_img,
+                             n_vox_eff=n_vox_eff, seed=seed,
+                             effect_llr=effect_llr,
+                             effect_total_llr=effect_total_llr)
     except ValueError as e:
         return _skip_frame(e)
-    extenter = ExtenterMinVar(n_vox=n_vox_eff)
-    llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
-    return _run_ana_obj(ds=ds, extenter=extenter, effect_llr=llr, seed=seed,
-                        ana_kwargs_dict=ana_kwargs_dict, feats=feats)
+
+    rows = []
+    for label, (Ana, kw) in ana_kwargs_dict.items():
+        row = {'label': label, 'analysis_cls': Ana.__name__, **trial.diag}
+        t0 = time.time()
+        try:
+            ana = Ana(exp=trial.exp_eff, **kw).fit()
+        except Exception:
+            row['time_sec'] = time.time() - t0
+            row['error'] = traceback.format_exc()
+            rows.append(row)
+            continue
+        row['time_sec'] = time.time() - t0
+        row.update(_score(ana, [trial.mask_target], trial.mask_active))
+        rows.append(row)
+
+    return pd.DataFrame(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -565,8 +522,8 @@ def run_prune(*, source: str, b: int, num_img: int, n_vox_eff: int, seed: int,
     Emits one row per rule (label Greedy / DP) with the usual aggregate
     tp/fp/tn/fn (over the union of the rule's output regions), n_selected
     (output-region count, ideal 1 per planted effect -- the direct
-    over/under-segmentation measure), n_sig (significant regions fed to both
-    rules), and effect_reg_json (each output region's reg_idx + tp/fp).
+    over/under-segmentation measure), and n_sig (significant regions fed to
+    both rules).
 
     Args:
         source (str): 'wgn' or 'hcp'
@@ -614,7 +571,7 @@ def run_prune(*, source: str, b: int, num_img: int, n_vox_eff: int, seed: int,
                                          children=ana.children) > -1)
             for r in reg_out_list]
         rows.append({'label': label, 'analysis_cls': 'AnalysisGLOW',
-                     **_score_regions(reg_mask_list, trial.mask_target,
+                     **_score_regions(reg_mask_list, [trial.mask_target],
                                       trial.mask_active),
                      'n_sig': len(sig_reg_list),
                      'time_sec': fit_time, **trial.diag})
@@ -731,7 +688,7 @@ def run_mancova(*, source: str, b: int, num_img: int, n_vox_eff: int,
             rows.append(row)
             continue
         row['time_sec'] = walk_time + (time.time() - post_start)
-        row.update(_score(ana, trial.mask_target, trial.mask_active))
+        row.update(_score(ana, [trial.mask_target], trial.mask_active))
         rows.append(row)
 
     return pd.DataFrame(rows)
@@ -740,51 +697,6 @@ def run_mancova(*, source: str, b: int, num_img: int, n_vox_eff: int,
 # ---------------------------------------------------------------------------
 # two adjacent effects (cleaving)
 # ---------------------------------------------------------------------------
-
-def _score_regions_two(reg_mask_list, mask0, mask1, mask_active) -> dict:
-    """Region x truth-class overlap for the two-effect cleaving trial.
-
-    Records, per output region, its voxel overlap with each planted effect
-    (n0, n1) and with the analysed background (nbg). This overlap table is the
-    sufficient statistic for the downstream metrics -- instance separation
-    (ARI of the recovered partition vs the {effect0, effect1} truth) and
-    per-effect detection both derive from it -- so results.csv stores raw
-    counts only. Also returns the aggregate confusion of the union of regions
-    against the whole effect (mask0 | mask1), which feeds the detectability
-    (Dice / sens / PPV) panel through the existing stats_from_counts path.
-
-    Output regions are disjoint (a Ward antichain, or connected components for
-    the voxel methods), so the per-region overlaps partition the detection.
-
-    Args:
-        reg_mask_list (list): (reg_idx, mask) per output region, in output
-            order; reg_idx is the Ward region index or None (voxel methods)
-        mask0, mask1 (np.array): (X, Y, Z) bool, the two planted effect halves
-        mask_active (np.array): (X, Y, Z) bool, the analysed voxels
-
-    Returns:
-        the union-vs-(mask0|mask1) aggregate tp/fp/tn/fn, plus vox_eff0,
-        vox_eff1, n_selected and region_overlap_json (a JSON list of
-        {reg_idx, n0, n1, nbg} dicts)
-    """
-    bg = mask_active & ~(mask0 | mask1)
-    mask_pred = np.zeros(mask_active.shape, dtype=bool)
-    overlap = []
-    for reg_idx, mask in reg_mask_list:
-        m = mask & mask_active
-        mask_pred |= m
-        overlap.append({'reg_idx': None if reg_idx is None else int(reg_idx),
-                        'n0': int((m & mask0).sum()),
-                        'n1': int((m & mask1).sum()),
-                        'nbg': int((m & bg).sum())})
-    counts = glow.mask.confusion_counts(
-        mask_pred=mask_pred, mask_target=(mask0 | mask1),
-        mask_active=mask_active)
-    return {**counts,
-            'vox_eff0': int(mask0.sum()), 'vox_eff1': int(mask1.sum()),
-            'n_selected': len(overlap),
-            'region_overlap_json': json.dumps(overlap)}
-
 
 def run_two_effect(*, source: str, b: int, num_img: int, n_vox_eff: int,
                    seed: int, angle: float, ana_kwargs_dict: dict,
@@ -796,8 +708,8 @@ def run_two_effect(*, source: str, b: int, num_img: int, n_vox_eff: int,
     both at the same effect_llr, with feature directions `angle` degrees
     apart (shared seed, angles 0 and `angle`; see EffectSynthetic /
     sample_beta_direction).
-    Fits every analysis and scores the region x truth-class overlap, so ARI
-    (cleaving) and per-effect detection are recoverable downstream.
+    Fits every analysis and scores the prediction against each planted half
+    separately (per-effect tp/fp/tn/fn suffixed 0/1; see _score_regions).
 
     Args:
         source (str): 'wgn' or 'hcp'
@@ -854,11 +766,6 @@ def run_two_effect(*, source: str, b: int, num_img: int, n_vox_eff: int,
             rows.append(row)
             continue
         row['time_sec'] = time.time() - t0
-        reg_mask_list = [(getattr(eff, 'reg_idx', None), eff.mask)
-                         for eff in (ana.effect_list or ())]
-        row.update(_score_regions_two(reg_mask_list, mask0, mask1, mask_active))
-        row['min_pval'] = (float(np.nanmin(ana.pval))
-                           if getattr(ana, 'pval', None) is not None
-                           else np.nan)
+        row.update(_score(ana, [mask0, mask1], mask_active))
         rows.append(row)
     return pd.DataFrame(rows)

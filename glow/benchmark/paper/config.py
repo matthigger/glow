@@ -25,9 +25,6 @@ glow.effect.impose). Two consequences, both verified empirically:
     effect fixed, so the total grows with the region. sweep_extent instead
     passes effect_total_llr (the whole-region target) and the trial fn
     sets effect_llr = effect_total_llr / n_vox_eff to hold the total fixed.
-
-Mothballed experiments (2-D WGN, sphere-extent variants) live in
-config_mothball.py and are not imported here.
 """
 from functools import partial
 
@@ -220,11 +217,9 @@ _cache('prune', run_fnc=run_prune,
        n_vox_eff=[EFFECT_N_VOX])
 
 # I. Cleaving: two adjacent equal-LLR effects, sweep the angle between their
-#    feature directions (0..90 deg). Headline metric is instance separation
-#    (ARI of the recovered partition vs the {effect0, effect1} truth), derived
-#    downstream from region_overlap_json; the aggregate tp/fp/tn/fn (union vs
-#    both effects) give the detectability check. b>=2 so the direction
-#    rotation has a plane to turn in.
+#    feature directions (0..90 deg). Each row stores per-effect confusion
+#    counts (tp0/fp0/tn0/fn0 vs effect0, tp1/.. vs effect1) for the per-effect
+#    detectability check. b>=2 so the direction rotation has a plane to turn in.
 _cache('two-effect', run_fnc=_two_effect,
        source=SOURCES, seed=list(range(N_SEED)),
        angle=ANGLE_GRID, b=[3], num_img=[100],
@@ -267,7 +262,7 @@ PLOT = {
     'stat':         dict(kind='mancova'),
     'prune':        dict(kind='metric', x='effect_llr',  facet='source',
                          metrics=['dice', 'sens', 'ppv', 'n_selected']),
-    # ARI (cleaving) is computed downstream from region_overlap_json -- plot.py
-    # needs a 'two_effect' branch (TODO); the run itself does not plot.
+    # plot.py needs a 'two_effect' branch (TODO) to chart the per-effect
+    # detectability vs angle; the run itself does not plot.
     'two-effect':   dict(kind='two_effect', x='angle',   facet='source'),
 }
