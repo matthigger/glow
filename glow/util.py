@@ -82,6 +82,15 @@ class DataclassJSON:
         """Serialise the identity dict to a sorted-key JSON string."""
         return json.dumps(self.to_dict(), sort_keys=True)
 
+    def to_record(self) -> dict:
+        """Return this spec's JSON-friendly record (its to_dict identity).
+
+        The benchmark Recorder serialises any value exposing to_record (see
+        glow.benchmark.recorder._json_default); for a DataclassJSON spec that
+        is just its identity dict, so the record nests the full stable recipe.
+        """
+        return self.to_dict()
+
 
 def value_id(v):
     """Build a stable, JSON-friendly identity for one value.

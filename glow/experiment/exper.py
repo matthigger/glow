@@ -77,6 +77,22 @@ class ExperimentImageOnly:
         """
         return hash_array(*self._hash_arrays)
 
+    def to_record(self) -> dict:
+        """Build a JSON-friendly identity dict for provenance (no raw y).
+
+        The benchmark Recorder serialises any value exposing to_record (see
+        glow.benchmark.recorder). This records the experiment's identity
+        without its large y array: the (b, num_img, num_vox) shape, dtype, a
+        stable content hash (_hash), and the propagated meta.
+
+        Returns:
+            a dict of {kind, hash, b, num_img, num_vox, dtype, meta}
+        """
+        b, num_img, num_vox = self.y.shape
+        return {'kind': type(self).__name__, 'hash': self._hash(),
+                'b': int(b), 'num_img': int(num_img), 'num_vox': int(num_vox),
+                'dtype': str(self.dtype), 'meta': self.meta}
+
     @classmethod
     def from_gauss(cls, b: int = None, num_img: int = 10,
                    shape: tuple = (2, 3, 4), seed: int = None,
@@ -479,6 +495,19 @@ class Experiment(ExperimentImageOnly):
     def _hash_arrays(self):
         """Tuple of arrays that define this object's identity for hashing."""
         return (*super()._hash_arrays, self.x, self.contrast)
+
+    def to_record(self) -> dict:
+        """Extend the image-only record with the design width and contrast.
+
+        Adds a (the number of design-matrix features, == len(contrast); the
+        other design dimension, num_img, is already recorded by the base) and
+        contrast (the small (a,) boolean, listed in full); the data hash from
+        the base already folds x and contrast in for identity.
+        """
+        rec = super().to_record()
+        rec['a'] = len(self.contrast)
+        rec['contrast'] = self.contrast.tolist()
+        return rec
 
     def permute(self, perm_idx: int):
         """Return a new experiment with Freedman-Lane permuted images.

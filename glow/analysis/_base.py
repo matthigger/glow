@@ -12,6 +12,22 @@ import glow.graph
 from glow.experiment.exper import ExperimentScaled
 
 
+def _canon(v):
+    """Canonicalize one recorded config value to a JSON-friendly form.
+
+    A DataclassJSON spec uses its own to_record; a bare callable (a stat
+    function) records as its __name__; everything else passes through
+    unchanged -- scalars, bools, and a StrEnum like ClusterMode, which is
+    already a JSON-native str serialising to its value (e.g. 'Focus').
+    """
+    hook = getattr(v, 'to_record', None)
+    if callable(hook):
+        return hook()
+    if callable(v):
+        return getattr(v, '__name__', repr(v))
+    return v
+
+
 class Analysis(ABC):
     """Perform effect discovery (GLOW or TFCE) and compute FWER p-values.
 
@@ -21,12 +37,36 @@ class Analysis(ABC):
         pval (np.array): (num_reg,) FWER-controlled p-values (set by fit)
     """
 
+    # the __init__ config knobs recorded by to_record; subclasses declare
+    # their own. Never includes exp, the fitted arrays, or pval -- only the
+    # immutable recipe (see to_record).
+    RECORD_FIELDS = ()
+
     def __init__(self, exp):
         if not isinstance(exp, ExperimentScaled):
             exp = ExperimentScaled.from_exp(exp)
         self.exp = exp
         self.effect_list = None
         self.pval = None
+
+    def to_record(self) -> dict:
+        """Build a JSON-friendly recipe dict: class name + config knobs.
+
+        The benchmark Recorder serialises any value exposing to_record (see
+        glow.benchmark.recorder). This records only the configuration subset
+        declared in RECORD_FIELDS (the __init__ knobs) -- never exp, the
+        fitted outputs (effect_list, pval, and any per-region array), nor the
+        large data arrays. exp is omitted deliberately: it is recorded as its
+        own input arg wherever an Analysis is built, so nesting it here would
+        duplicate it.
+
+        Returns:
+            a dict of {kind, <each RECORD_FIELDS knob, canonicalized>}
+        """
+        out = {'kind': type(self).__name__}
+        for name in self.RECORD_FIELDS:
+            out[name] = _canon(getattr(self, name))
+        return out
 
     @abstractmethod
     def fit(self):

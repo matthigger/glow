@@ -25,6 +25,9 @@ class AnalysisVBA(AnalysisVoxel):
         pval (np.array): (num_vox,) FWER p-values (populated by fit)
     """
 
+    RECORD_FIELDS = ('get_stat', 'n_perm_fwer', 'alpha_fwer', 'tfce_flag',
+                     'z_flag')
+
     def __init__(self, exp, n_perm_fwer: int, alpha_fwer: float = .05,
                  verbose: bool = False, tfce_flag: bool = False,
                  z_flag: bool = False, get_stat: Callable = None):

@@ -346,6 +346,33 @@ def test_to_json_falls_back_to_repr(rec):
 	assert loaded[0]["outputs"]["out"] == "<Thing>"
 
 
+def test_to_json_nests_dataclassjson(rec):
+	# a DataclassJSON spec (DataSource / Extenter / ...) records as its
+	# to_dict() -- a nested JSON object with 'kind' -- not an opaque repr
+	from dataclasses import dataclass
+
+	from glow.util import DataclassJSON
+
+	@dataclass(frozen=True, slots=True)
+	class _Inner(DataclassJSON):
+		k: int
+
+	@dataclass(frozen=True, slots=True)
+	class _Spec(DataclassJSON):
+		n: int
+		inner: object
+
+	@rec(output_name='out')
+	def f(spec):
+		return spec.n
+
+	f(spec=_Spec(n=7, inner=_Inner(k=3)))
+	loaded = json.loads(rec.to_json())
+	# nested as an object, and a nested spec recurses too
+	assert loaded[0]["inputs"]["spec"] == {
+		"kind": "_Spec", "n": 7, "inner": {"kind": "_Inner", "k": 3}}
+
+
 # --- concurrency -------------------------------------------------------------
 
 def test_concurrent_runs_do_not_bleed_trial_ids(rec):

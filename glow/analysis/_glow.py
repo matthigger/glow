@@ -55,6 +55,9 @@ class AnalysisGLOW(Analysis):
         effect_list (list): discovered EffectEstimate objects.
     """
 
+    RECORD_FIELDS = ('n_perm_fwer', 'n_perm_inner', 'alpha_fwer', 'min_vox',
+                     'cluster_mode', 'race_init', 'race_p_keep_thresh')
+
     def __init__(self, exp, n_perm_fwer: int, n_perm_inner: int = 500,
                  alpha_fwer: float = .05, min_vox: int = 4,
                  cluster_mode: ClusterMode = ClusterMode.FOCUS,

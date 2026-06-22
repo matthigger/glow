@@ -27,14 +27,22 @@ benchmark, not encoded here.
 Records are append-only: a function called twice in a trial yields two
 records, never an overwrite.
 
-Two known limitations, both deferred to the object-representation work
-(see docs/notes/recorder_object_repr.md):
+``to_json`` serializes via ``_json_default``, which consults one protocol --
+``to_record()``: any input/output exposing it (a DataclassJSON spec such as a
+DataSource / Extenter, an Experiment, an Analysis) records as its
+JSON-friendly identity/recipe dict rather than an opaque ``repr`` string.
+Each glow class chooses the subset it records -- Experiment its shapes / dtype
+/ content hash / meta (never the large ``y``), Analysis its ``__init__`` config
+knobs (never ``exp``, the fitted arrays, or ``pval``) -- so a record carries
+the stable recipe without dumping any heavy array. Raw numpy still falls back
+safely (scalar -> value, ndarray -> content hash); everything else -> ``repr``.
 
-  - inputs/outputs hold *references*, serialized only at ``to_json`` time
-    via the ``repr`` fallback, so an in-place mutation by the decorated
-    function is reflected post-call rather than snapshotted at call time;
-  - heavy glow objects (Experiment, Analysis) have no JSON-friendly,
-    stable repr yet, so they currently serialize via ``repr``.
+One known limitation, deferred to the object-representation work (see
+docs/notes/recorder_object_repr.md): inputs/outputs hold *references*,
+serialized only at ``to_json`` time, so an in-place mutation by the decorated
+function (e.g. an ``Analysis.fit`` populating its fitted outputs) is reflected
+post-call rather than snapshotted at call time. The recorded subsets above are
+all set at ``__init__`` and never mutated, so this does not affect them.
 """
 
 import contextlib
@@ -45,6 +53,32 @@ import json
 import time
 import traceback
 import uuid
+
+import numpy as np
+
+from glow.util import hash_array
+
+
+def _json_default(obj):
+    """json.dumps fallback: a value's own to_record() dict, else a safe form.
+
+    The single serialisation protocol is to_record(): any value exposing it
+    -- a DataclassJSON spec (DataSource / Extenter / ...), an Experiment, an
+    Analysis -- records as its JSON-friendly identity/recipe dict rather than
+    an opaque repr string. Raw numpy is never dumped wholesale: a scalar
+    becomes its Python value and an ndarray its stable content hash (so a
+    stray array in, e.g., Experiment.meta records compactly). A StrEnum like
+    ClusterMode is already JSON-native (its value string), so json handles it
+    directly. Anything else falls back to repr.
+    """
+    to_record = getattr(obj, "to_record", None)
+    if callable(to_record):
+        return to_record()
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, np.ndarray):
+        return hash_array(obj)
+    return repr(obj)
 
 
 class Recorder:
@@ -225,7 +259,10 @@ class Recorder:
     def to_json(self, file=None, indent=2):
         """Serialize records to JSON. Returns the string if no file is given.
 
-        Non-serializable values fall back to repr() (see module docstring).
+        Inputs/outputs exposing to_record() (DataclassJSON specs, Experiment,
+        Analysis) nest as their record dict; raw numpy serialises safely and
+        any other non-serializable value falls back to repr() (see module
+        docstring and _json_default).
 
         Args:
             file (str | None): path to write; None returns the JSON string.
@@ -235,6 +272,6 @@ class Recorder:
             the JSON string when ``file`` is None, else None.
         """
         if file is None:
-            return json.dumps(self.records, indent=indent, default=repr)
+            return json.dumps(self.records, indent=indent, default=_json_default)
         with open(file, "w") as f:
-            json.dump(self.records, f, indent=indent, default=repr)
+            json.dump(self.records, f, indent=indent, default=_json_default)
