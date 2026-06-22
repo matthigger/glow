@@ -1,8 +1,17 @@
-"""Extenters: sample the contiguous voxel support (extent) of an effect."""
+"""Extenters: sample the contiguous voxel support (extent) of an effect.
 
+An extenter is a frozen, hashable spec (a frozen dataclass): every knob that
+changes the sampled mask -- the geometry (radius / n_vox / connected), the
+RNG seed, the seed voxel vox_init, and whether to resample until contiguous
+(contiguous / max_iter) -- is a field set at construction. Calling the
+extenter takes only the data to sample over (mask_idx, optional y) plus a
+cosmetic verbose flag, so the mask is a pure function of the frozen spec
+and the data, and the spec's hash is a stable cache key.
+"""
+
+from abc import ABC, abstractmethod
 from collections import deque
-from functools import wraps
-from typing import Protocol, runtime_checkable
+from dataclasses import dataclass
 
 import numpy as np
 from scipy import sparse
@@ -13,7 +22,7 @@ from scipy.sparse.linalg import eigsh
 from sklearn.feature_extraction.image import grid_to_graph
 from tqdm import tqdm
 
-from ..util import HashBySlots
+from ..util import DataclassJSON
 
 # 6-connectivity (face neighbours only) for 3D, matching Ward clustering, so
 # effects grow and clustering merges share the same neighbour definition.
@@ -24,64 +33,81 @@ class ContiguousRegionNotFound(RuntimeError):
     """Raised when no contiguous region is sampled within max_iter tries."""
 
 
-@runtime_checkable
-class Extenter(Protocol):
-    """Sample a contiguous voxel mask defining an effect's spatial extent.
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Extenter(DataclassJSON, ABC):
+    """Base extenter: a frozen spec sampling an effect's spatial extent.
 
-    All concrete extenters share the same call signature. y is required
-    by data-driven extenters (e.g. ExtenterMinVar) and ignored by
-    geometric ones (e.g. ExtenterSphere); pass it whenever it's
-    available. The call returns a boolean mask, True within the extent.
+    Concrete extenters implement _sample (a single draw given a seed); this
+    base wraps it in the resample-until-contiguous loop. All shared knobs
+    are identity fields.
+
+    Attributes:
+        seed (int | None): RNG seed for reproducibility (None draws fresh).
+        vox_init (int | None): seed voxel index; drawn from seed when None.
+        contiguous (bool): resample until the mask is a single connected
+            component (face-connectivity), up to max_iter tries.
+        max_iter (int): maximum resample attempts when contiguous is True.
     """
 
-    def __call__(self, *, mask_idx, y=None, seed=None, contiguous: bool = False,
-                 max_iter: int = 100, **kwargs):  # pragma: no cover
-        ...
+    seed: int = None
+    vox_init: int = None
+    contiguous: bool = False
+    max_iter: int = 100
 
+    def __post_init__(self):
+        object.__setattr__(self, 'seed',
+                           None if self.seed is None else int(self.seed))
+        object.__setattr__(self, 'vox_init',
+                           None if self.vox_init is None else int(self.vox_init))
+        object.__setattr__(self, 'contiguous', bool(self.contiguous))
+        object.__setattr__(self, 'max_iter', int(self.max_iter))
 
-def resample_to_contiguous(fnc):
-    """Wrap an extenter __call__ to re-sample until its region is contiguous.
+    def __call__(self, mask_idx, y=None, verbose: bool = False):
+        """Return a boolean mask defining the extent.
 
-    When the caller passes contiguous=True, the wrapped extenter is
-    re-invoked with a fresh seed (derived from the previous one) until the
-    sampled mask forms a single connected component, up to max_iter tries.
+        Re-samples with a fresh derived seed until the mask is a single
+        connected component when contiguous is True, otherwise returns the
+        first draw.
 
-    Args:
-        fnc (Callable): an extenter __call__ accepting mask_idx and seed
+        Args:
+            mask_idx (np.array): voxel index array (-1 outside analysis)
+            y (np.array): (b, num_img, num_vox) image intensities; required
+                by data-driven extenters, ignored by geometric ones
+            verbose (bool): if True, show a progress bar (data-driven only)
 
-    Returns:
-        Callable: the wrapped __call__
+        Returns:
+            mask (np.array): boolean, True within extent
 
-    Raises:
-        ContiguousRegionNotFound: if no contiguous region is found in max_iter
-    """
-
-    @wraps(fnc)
-    def wrapped(self, *, mask_idx, seed=None, contiguous: bool = False,
-                max_iter: int = 100, **kwargs):
-        _seed = seed
-        for _ in range(max_iter):
-            mask = fnc(self, mask_idx=mask_idx, **kwargs, seed=_seed)
-
-            if not contiguous:
+        Raises:
+            ContiguousRegionNotFound: if no contiguous region is found in
+                max_iter tries (only when contiguous is True)
+        """
+        _seed = self.seed
+        for _ in range(self.max_iter):
+            mask = self._sample(mask_idx=mask_idx, y=y, seed=_seed,
+                                verbose=verbose)
+            if not self.contiguous:
                 return mask
 
-            # 6-connectivity (face neighbours) matches clustering and effect growth
-            structure = CONNECTIVITY_3D if (mask_idx.ndim == 3) else generate_binary_structure(2, 1)
+            structure = (CONNECTIVITY_3D if mask_idx.ndim == 3
+                         else generate_binary_structure(2, 1))
             _, n_components = label((mask_idx >= 0) & mask, structure=structure)
             if n_components == 1:
                 return mask
 
             # not contiguous: derive a fresh seed from the previous and retry
             rng = np.random.default_rng(seed=_seed)
-            _seed = rng.integers(low=0, high=2 ** 32, size=1)[0]
+            _seed = int(rng.integers(low=0, high=2 ** 32, size=1)[0])
 
         raise ContiguousRegionNotFound()
 
-    return wrapped
+    @abstractmethod
+    def _sample(self, *, mask_idx, y, seed, verbose):
+        """Sample one boolean extent mask for the given seed (no resampling)."""
 
 
-class ExtenterSphere(HashBySlots):
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExtenterSphere(Extenter):
     """Build effect extent as a randomly placed sphere.
 
     Specify exactly one of radius or n_vox. With radius, the extent is a
@@ -95,34 +121,28 @@ class ExtenterSphere(HashBySlots):
             connected component of the analysis mask
     """
 
-    __slots__ = ('radius', 'n_vox', 'connected')
+    radius: int = None
+    n_vox: int = None
+    connected: bool = False
 
-    def __init__(self, radius: int = None, n_vox: int = None,
-                 connected: bool = False):
-        if radius is None and n_vox is None:
+    def __post_init__(self):
+        Extenter.__post_init__(self)
+        if self.radius is None and self.n_vox is None:
             raise ValueError('radius or n_vox required')
-        if radius is not None and n_vox is not None:
+        if self.radius is not None and self.n_vox is not None:
             raise ValueError('specify radius or n_vox, not both')
-        self.radius = None if radius is None else int(radius)
-        self.n_vox = None if n_vox is None else int(n_vox)
-        self.connected = bool(connected)
+        object.__setattr__(self, 'radius',
+                           None if self.radius is None else int(self.radius))
+        object.__setattr__(self, 'n_vox',
+                           None if self.n_vox is None else int(self.n_vox))
+        object.__setattr__(self, 'connected', bool(self.connected))
 
-    @resample_to_contiguous
-    def __call__(self, mask_idx, y=None, seed=None, vox_init=None):
-        """Return a boolean mask defining the sphere extent.
-
-        Args:
-            mask_idx (np.array): voxel index array (-1 outside analysis)
-            y (np.array): (b, num_img, num_vox) image intensities (unused)
-            seed (int | None): random seed for reproducibility
-            vox_init (int | None): seed voxel (random if not passed)
-
-        Returns:
-            mask (np.array): boolean, True within extent
-        """
+    def _sample(self, *, mask_idx, y=None, seed=None, verbose=False):
         rng = np.random.default_rng(seed=seed)
+        vox_init = self.vox_init
         mask_bool = mask_idx > -1
-        structure = CONNECTIVITY_3D if (mask_idx.ndim == 3) else generate_binary_structure(2, 1)
+        structure = (CONNECTIVITY_3D if mask_idx.ndim == 3
+                     else generate_binary_structure(2, 1))
         if self.connected:
             comp_idx, num_comp = label(mask_bool, structure=structure)
             if num_comp == 0:
@@ -200,36 +220,27 @@ def iter_vox_neighbor(mask, mask_idx):
             yield vox_idx
 
 
-class ExtenterMinVar(HashBySlots):
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExtenterMinVar(Extenter):
     """Grow effect extent from a seed voxel to greedily minimise variance.
 
     Attributes:
         n_vox (int): target voxel count for the grown extent
     """
 
-    __slots__ = ('n_vox',)
+    n_vox: int = None
 
-    def __init__(self, n_vox: int):
-        self.n_vox = int(n_vox)
+    def __post_init__(self):
+        Extenter.__post_init__(self)
+        if self.n_vox is None:
+            raise ValueError('n_vox required')
+        object.__setattr__(self, 'n_vox', int(self.n_vox))
 
-    @resample_to_contiguous
-    def __call__(self, mask_idx, y=None, seed=None, vox_init=None,
-                 verbose: bool = False):
-        """Return a boolean mask of n_vox voxels with minimal pooled variance.
-
-        Args:
-            mask_idx (np.array): voxel index array (-1 outside analysis)
-            y (np.array): (b, num_img, num_vox) image intensities (required)
-            seed (int | None): random seed for reproducibility
-            vox_init (int | None): seed voxel (random if not passed)
-            verbose (bool): if True, show a tqdm progress bar
-
-        Returns:
-            mask (np.array): boolean, True within extent
-        """
+    def _sample(self, *, mask_idx, y=None, seed=None, verbose=False):
         assert y is not None, 'ExtenterMinVar requires y'
 
         # choose a random initial voxel
+        vox_init = self.vox_init
         if vox_init is None:
             rng = np.random.default_rng(seed=seed)
             mask_bool = mask_idx > -1

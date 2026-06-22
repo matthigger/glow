@@ -73,7 +73,7 @@ def _effect_llr(effect_llr, effect_total_llr, n_vox_eff: int):
     return None
 
 
-def _plant(ds, extenter, effect_llr, seed: int):
+def _plant(ds, extenter, effect_llr):
     """Build the exp + planted-effect pair shared by every trial fn.
 
     effect_llr is None for the null / FWER-calibration path: plant nothing
@@ -84,12 +84,14 @@ def _plant(ds, extenter, effect_llr, seed: int):
     the data left exactly as the source produced it, so the null cache
     passes None (see config._cache('null', ...)), not 0.
 
+    The effect seed lives in the extenter (it carries its own seed), so the
+    planted support is a pure function of the passed extenter and ds.exp.
+
     Args:
         ds: data source whose .exp gives the clean experiment
-        extenter: Extenter that samples the planted effect's support
+        extenter: Extenter (seed baked in) sampling the planted support
         effect_llr (float | None): per-voxel planted effect strength, or
             None to plant no effect (null calibration)
-        seed (int): RNG seed for the synthetic effect
 
     Returns:
         exp: the clean experiment
@@ -101,10 +103,8 @@ def _plant(ds, extenter, effect_llr, seed: int):
     exp = ds.exp
     if effect_llr is None:
         return exp, exp, np.zeros(exp.mask_idx.shape, dtype=bool)
-    synth = EffectSynthetic(extenter=extenter, effect_llr=effect_llr,
-                            seed=seed)
-    exp_eff = synth.fit(exp)
-    return exp, exp_eff, synth.mask_
+    fit = EffectSynthetic(extenter=extenter, effect_llr=effect_llr).fit(exp)
+    return exp, fit.exp, fit.mask
 
 
 def _score_regions(reg_mask_list, mask_target_list, mask_active) -> dict:
@@ -242,9 +242,9 @@ def _setup_trial(*, source: str, b: int, num_img: int, n_vox_eff: int,
         ValueError: infeasible cell (build_ds); the caller records a SKIP row
     """
     ds, feats = build_ds(source, b=b, num_img=num_img, seed=seed)
-    extenter = ExtenterMinVar(n_vox=n_vox_eff)
+    extenter = ExtenterMinVar(n_vox=n_vox_eff, seed=seed)
     llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
-    exp, exp_eff, mask_target = _plant(ds, extenter, llr, seed)
+    exp, exp_eff, mask_target = _plant(ds, extenter, llr)
     return _Trial(exp=exp, exp_eff=exp_eff, mask_target=mask_target,
                   mask_active=exp.mask_idx > -1,
                   diag=_trial_diag(exp, mask_target, llr, feats))
@@ -407,9 +407,9 @@ def run_min_size(*, source: str, b: int, num_img: int, n_vox_eff: int,
     except ValueError as e:
         return _skip_frame(e)
 
-    extenter = ExtenterMinVar(n_vox=n_vox_eff)
+    extenter = ExtenterMinVar(n_vox=n_vox_eff, seed=s.effect)
     llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
-    exp, exp_eff, mask_target = _plant(ds, extenter, llr, s.effect)
+    exp, exp_eff, mask_target = _plant(ds, extenter, llr)
     diag = _trial_diag(exp, mask_target, llr, feats)
 
     # borrow AnalysisGLOW only for its scaling + (q0, q1) decomposition, so
@@ -744,13 +744,13 @@ def run_two_effect(*, source: str, b: int, num_img: int, n_vox_eff: int,
     ctr = coords.mean(axis=0)
     vox_init = int(exp.mask_idx[tuple(
         coords[np.argmin(((coords - ctr) ** 2).sum(axis=1))])])
-    extent = ExtenterSphere(n_vox=n_vox_eff, connected=True)(
-        mask_idx=exp.mask_idx, y=exp.y, vox_init=vox_init)
+    extent = ExtenterSphere(n_vox=n_vox_eff, connected=True,
+                            vox_init=vox_init)(mask_idx=exp.mask_idx, y=exp.y)
     mask0, mask1 = split_mask_spectral(extent)
     e0 = EffectSynthetic(mask=mask0, effect_llr=llr, angle=0.0, seed=seed)
     e1 = EffectSynthetic(mask=mask1, effect_llr=llr, angle=float(angle),
                          seed=seed)
-    exp_eff = e1.fit(e0.fit(exp))
+    exp_eff = e1.fit(e0.fit(exp).exp).exp
 
     diag = {**_trial_diag(exp, mask0 | mask1, llr, feats),
             'angle': float(angle)}

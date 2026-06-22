@@ -1,13 +1,14 @@
 """Shared utilities for hashing and identity.
 
 hash_array is a fast probabilistic SHA-256 over one or more ndarrays.
-HashBySlots is a mixin that derives __hash__ / __eq__ from a class's
-__slots__ and handles ndarray / nested-mixin slot values via hash_array
-and recursion.
+DataclassJSON is a mixin adding to_dict / to_json to a frozen dataclass;
+the dataclass itself supplies native __hash__ / __eq__ (so every field
+must be hashable -- scalars, tuples, nested dataclasses -- no ndarrays).
 """
 
 import hashlib
 import json
+from dataclasses import fields
 
 import numpy as np
 
@@ -48,76 +49,51 @@ def hash_array(*arrs) -> str:
     return h.hexdigest()[:16]
 
 
-class HashBySlots:
-    """Mixin deriving __hash__ / __eq__ from a class's __slots__.
+class DataclassJSON:
+    """Mixin adding to_dict / to_json to a frozen dataclass.
 
-    Every slot listed in __slots__ is part of identity — there is no
-    private / non-identity slot convention. Non-identity state (memo
-    caches, etc.) lives off the instance, typically as a class attribute.
+    The dataclass itself supplies immutability and native __hash__ / __eq__
+    (so every field must be hashable -- scalars, tuples, nested
+    DataclassJSON specs -- and no field may hold an ndarray). This mixin
+    adds only a JSON-friendly serialisation of the fields, used for stable
+    cross-process identity (value_id / stable_hash) and provenance. Unlike
+    the builtin hash, to_json folds in the class name under 'kind', so two
+    classes with identical field tuples get distinct stable ids.
 
-    Subclasses MUST declare __slots__ (use () if no new slots are added);
-    enforced at class-creation time by __init_subclass__.
-
-    Non-JSON-friendly slot values are canonicalised in _canon (ndarrays
-    become hash_array digests, nested HashBySlots instances become their
-    own identity dict). Hash is NOT stable across mutating method calls —
-    if a subclass writes to a slot after construction (e.g. an
-    sklearn-style .fit() that populates result attrs), its hash will
-    change. Callers that put mutated instances in dicts/sets are
-    responsible for that contract.
+    Declares __slots__ = () so it does not reintroduce a __dict__ on
+    dataclasses built with slots=True (a single non-slotted ancestor would
+    silently defeat slots=True on every subclass).
     """
 
     __slots__ = ()
 
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        if '__slots__' not in cls.__dict__:
-            raise TypeError(
-                f'{cls.__name__}: HashBySlots subclasses must declare '
-                '__slots__ (use () if no new slots are added)')
+    def to_dict(self) -> dict:
+        """Build the JSON-friendly identity dict, keyed by field name.
 
-    def _identity_dict(self) -> dict:
-        """Build the JSON-friendly identity dict used by __hash__ / __eq__.
-
-        Walks the full MRO so subclass identity covers every slot
-        declared along the inheritance chain.
+        The class name is under 'kind'; nested DataclassJSON fields recurse.
         """
         out = {'kind': type(self).__name__}
-        for cls in reversed(type(self).__mro__):
-            for slot in getattr(cls, '__slots__', ()):
-                out[slot] = self._canon(getattr(self, slot))
+        for f in fields(self):
+            v = getattr(self, f.name)
+            out[f.name] = v.to_dict() if isinstance(v, DataclassJSON) else v
         return out
 
-    @staticmethod
-    def _canon(v):
-        """Canonicalise one slot value into a JSON-friendly identity token."""
-        if isinstance(v, np.ndarray):
-            return hash_array(v)
-        if isinstance(v, HashBySlots):
-            return v._identity_dict()
-        return v
-
-    def __hash__(self):
-        return hash(json.dumps(self._identity_dict(), sort_keys=True))
-
-    def __eq__(self, other):
-        return (type(self) is type(other)
-                and self._identity_dict() == other._identity_dict())
+    def to_json(self) -> str:
+        """Serialise the identity dict to a sorted-key JSON string."""
+        return json.dumps(self.to_dict(), sort_keys=True)
 
 
 def value_id(v):
     """Build a stable, JSON-friendly identity for one value.
 
-    Simple scalars pass through; ndarrays and HashBySlots instances get a
+    Simple scalars pass through; ndarrays and DataclassJSON instances get a
     stable hash; anything else falls back to repr. Unlike Python's builtin
     hash, the output is the same across processes.
     """
     if isinstance(v, np.ndarray):
         return hash_array(v)
-    if isinstance(v, HashBySlots):
-        return hashlib.sha256(
-            json.dumps(v._identity_dict(), sort_keys=True).encode()
-        ).hexdigest()[:16]
+    if isinstance(v, DataclassJSON):
+        return hashlib.sha256(v.to_json().encode()).hexdigest()[:16]
     if isinstance(v, np.generic):
         return v.item()
     if isinstance(v, (str, int, float, bool)) or v is None:

@@ -94,8 +94,9 @@ def subsample(exp_orig, n_vox: int, seed: int = 0):
     max_vox = int((exp_orig.mask_idx > -1).sum())
     if n_vox >= max_vox:
         return exp_orig
-    extenter = glow.effect.ExtenterSphere(n_vox=n_vox, connected=True)
-    mask = extenter(mask_idx=exp_orig.mask_idx, seed=seed, contiguous=True)
+    extenter = glow.effect.ExtenterSphere(n_vox=n_vox, connected=True,
+                                          contiguous=True, seed=seed)
+    mask = extenter(mask_idx=exp_orig.mask_idx)
     return exp_orig.apply_mask(mask)
 
 

@@ -167,13 +167,12 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
         from glow.effect import EffectSynthetic
         n_vox = (exp.mask_idx >= 0).sum()
         n_effect = max(int(0.15 * n_vox), 10)
-        extenter = ExtenterMinVar(n_vox=n_effect)
+        extenter = ExtenterMinVar(n_vox=n_effect, seed=seed)
         print(f'  imposing effect (llr={effect_llr}) in ~{n_effect}'
               f' voxels ({100 * n_effect / n_vox:.0f}% of mask) ...')
         try:
-            effect = EffectSynthetic(
-                extenter=extenter, effect_llr=effect_llr, seed=seed)
-            exp_eff = effect.fit(exp)
+            effect = EffectSynthetic(extenter=extenter, effect_llr=effect_llr)
+            fit = effect.fit(exp)
         except (ValueError, RuntimeError, np.linalg.LinAlgError, AssertionError):
             print('  (extenter failed, falling back to sphere mask)')
             shape = exp.mask_idx.shape
@@ -185,10 +184,10 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
             while (dist <= radius).sum() < target_n and radius < max(shape):
                 radius += 0.5
             sphere = (dist <= radius).reshape(shape) & (exp.mask_idx >= 0)
-            effect = EffectSynthetic(
-                mask=sphere, effect_llr=effect_llr, seed=seed)
-            exp_eff = effect.fit(exp)
-        mask_target = effect.mask_
+            effect = EffectSynthetic(mask=sphere, effect_llr=effect_llr)
+            fit = effect.fit(exp)
+        exp_eff = fit.exp
+        mask_target = fit.mask
     else:
         exp_eff = exp
         print('  no effect imposed')

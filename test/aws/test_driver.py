@@ -6,6 +6,7 @@ test exercises the same flow against real AWS.
 """
 
 import sys
+from dataclasses import dataclass
 from unittest.mock import patch
 
 import cloudpickle
@@ -80,6 +81,7 @@ class FakeBatch:
         return {'jobs': out}
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _FakeRealSource(DataSource):
     """A non-WGN DataSource, so the driver ships it to S3.
 
@@ -88,14 +90,15 @@ class _FakeRealSource(DataSource):
     needing image files on disk.
     """
 
-    __slots__ = ('shape', 'b', 'num_img')
+    shape: tuple = (2, 2, 2)
+    b: int = 1
+    num_img: int = 5
 
-    def __init__(self, *, shape=(2, 2, 2), b: int = 1, num_img: int = 5,
-                 **kwargs):
-        super().__init__(**kwargs)
-        self.shape = tuple(shape)
-        self.b = int(b)
-        self.num_img = int(num_img)
+    def __post_init__(self):
+        DataSource.__post_init__(self)
+        object.__setattr__(self, 'shape', tuple(self.shape))
+        object.__setattr__(self, 'b', int(self.b))
+        object.__setattr__(self, 'num_img', int(self.num_img))
 
     def _get(self):
         exp_img = glow.experiment.ExperimentImageOnly.from_gauss(

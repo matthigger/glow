@@ -1,19 +1,13 @@
 """Tests for glow.benchmark.data: DataSource family."""
 
 import json
-import pathlib
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from glow.benchmark import hcp
-from glow.benchmark.data import (
-    DataSource,
-    DataSourceWGN,
-    DataSourceDataFrame,
-    DataSourceHCP,
-)
+from glow.benchmark.data import DataSource, DataSourceWGN, DataSourceHCP
 from glow.effect import ExtenterSphere
 from glow.experiment.exper import ExperimentImageOnly, NoBiasTermWarning
 from glow.mask import get_mask_idx
@@ -44,36 +38,8 @@ def small_wgn():
     return _wgn()
 
 
-def _stub_exp_img_only(shape=(2, 2, 2), b=1, num_img=8):
-    """build an ExperimentImageOnly directly, without nifti / from_paths."""
-    rng = np.random.default_rng(0)
-    num_vox = int(np.prod(shape))
-    y = rng.standard_normal((b, num_img, num_vox)).astype(np.float32)
-    mask_idx = get_mask_idx(np.ones(shape))
-    return ExperimentImageOnly(y=y, mask_idx=mask_idx)
-
-
-def _patch_hcp_df(monkeypatch):
-    """stub the HCP loader seams so DataSourceHCP builds with no download.
-
-    DataSourceHCP resolves its df inline (hcp.ensure_hcp_data +
-    ExperimentImageOnly._search_files); patch both to return a per-feature
-    path frame whose columns are exactly the searched features, so the
-    real column filtering still runs and no download / nibabel is hit.
-    """
-    monkeypatch.setattr(hcp, 'ensure_hcp_data', lambda: pathlib.Path('/fake'))
-
-    def fake_search_files(folder, sbj_regex, glob_dict):
-        return pd.DataFrame(
-            {feat: [f'{feat}_s0.nii', f'{feat}_s1.nii'] for feat in glob_dict},
-            index=['s0', 's1'])
-
-    monkeypatch.setattr(ExperimentImageOnly, '_search_files',
-                        staticmethod(fake_search_files))
-
-
 # ---------------------------------------------------------------------------
-# 1. Identity & hashing
+# 1. Identity & hashing  (native frozen-dataclass __hash__ / __eq__)
 # ---------------------------------------------------------------------------
 
 class TestIdentity:
@@ -82,7 +48,7 @@ class TestIdentity:
         assert hash(_wgn()) == hash(_wgn())
 
     def test_int_bool_coercion(self):
-        # constructor casts; equivalent values must agree
+        # __post_init__ casts; equivalent values must agree
         a = DataSourceWGN(a=2, has_bias=True, seed=0,
                           shape=(2, 2, 2), b=1, num_img=8)
         b = DataSourceWGN(a=2.0, has_bias=1, seed=0.0,
@@ -97,10 +63,9 @@ class TestIdentity:
         assert hash(a) == hash(b)
 
     @pytest.mark.parametrize('attr, value', [
-        # 'a' is a BASE-class slot. Regression: HashBySlots._identity_dict
-        # only walked type(self).__slots__, dropping base slots; DataSource
-        # overrides it to walk the MRO so base attrs land in identity. If that
-        # regresses, changing 'a' would no longer change the hash.
+        # 'a'/'a_nuisance'/'has_bias'/'seed'/'extenter' are base-class fields;
+        # native __hash__ / __eq__ cover inherited fields, so each changes
+        # identity.
         ('a', 2),
         ('a_nuisance', 1),
         ('has_bias', False),
@@ -117,15 +82,14 @@ class TestIdentity:
         assert hash(a) != hash(b), f'{attr} should affect hash'
 
     def test_cross_subclass_inequality(self):
-        # different DataSource subclasses with overlapping slots must
-        # still be distinct (type(self) is type(other) in __eq__ + class
-        # name in identity dict).
+        # different DataSource subclasses are distinct (dataclass __eq__
+        # checks the class), and their stable ids (to_json, folds in 'kind')
+        # differ too. HCP construction is pure, so no stub is needed.
         wgn = _wgn(a=1, a_nuisance=0, has_bias=True, seed=0)
-        df = DataSourceDataFrame(
-            df=pd.DataFrame({'fa': ['x']}, index=['s']),
-            a=1, a_nuisance=0, has_bias=True, seed=0)
-        assert wgn != df
-        assert hash(wgn) != hash(df)
+        hcp_ds = DataSourceHCP(hcp_feats=('fa',),
+                               a=1, a_nuisance=0, has_bias=True, seed=0)
+        assert wgn != hcp_ds
+        assert wgn.to_json() != hcp_ds.to_json()
 
     def test_usable_as_collection_key(self):
         # equal-but-distinct sources collapse as dict keys and set members
@@ -139,62 +103,57 @@ class TestIdentity:
         assert a == b and hash(a) == hash(b)
         assert a != c and hash(a) != hash(c)
 
-    def test_unhashable_extenter_raises(self):
-        class _NotHashable:
+    def test_non_serialisable_extenter_to_json_raises(self):
+        # an extenter that isn't JSON-serialisable can't produce a stable id
+        class _NotSerialisable:
             pass
 
-        ds = _wgn(extenter=_NotHashable())
-        # not json-serialisable → hash raises (TypeError from json.dumps)
+        ds = _wgn(extenter=_NotSerialisable())
         with pytest.raises(TypeError):
-            hash(ds)
+            ds.to_json()
 
 
 # ---------------------------------------------------------------------------
-# 2. _identity_dict (JSON-friendly recipe used for cache keys / YAML)
+# 2. to_dict / to_json (JSON-friendly recipe used for stable cross-process id)
 # ---------------------------------------------------------------------------
 
-class TestIdentityDict:
+class TestToDict:
     def test_contains_kind(self):
-        d = _wgn()._identity_dict()
-        assert d['kind'] == 'DataSourceWGN'
+        assert _wgn().to_dict()['kind'] == 'DataSourceWGN'
 
     def test_class_attrs_not_in_identity(self):
-        # _exp_cache is a class attribute (not in __slots__) and so
-        # never enters identity — locks the contract that the memo
-        # cache can't perturb hashing.
-        d = _wgn()._identity_dict()
-        assert '_exp_cache' not in d
+        # _exp_cache is a class attribute (not a field) and so never enters
+        # identity — locks the contract that the memo cache can't perturb it.
+        assert '_exp_cache' not in _wgn().to_dict()
 
-    def test_includes_base_slots(self):
-        d = _wgn()._identity_dict()
+    def test_includes_base_fields(self):
+        d = _wgn().to_dict()
         for s in ('a', 'a_nuisance', 'has_bias', 'seed', 'extenter'):
-            assert s in d, f'base slot {s!r} missing from identity dict'
+            assert s in d, f'base field {s!r} missing from to_dict'
 
-    def test_includes_subclass_slots(self):
-        d = _wgn()._identity_dict()
+    def test_includes_subclass_fields(self):
+        d = _wgn().to_dict()
         for s in ('shape', 'b', 'num_img'):
-            assert s in d, f'subclass slot {s!r} missing'
+            assert s in d, f'subclass field {s!r} missing'
 
-    def test_hcp_includes_hcp_slot(self, monkeypatch):
-        _patch_hcp_df(monkeypatch)
-        d = DataSourceHCP()._identity_dict()
-        assert d['hcp_feats'] == hcp.HCP_FEATS
+    def test_hcp_includes_hcp_field(self):
+        # to_dict touches no disk, so DataSourceHCP needs no stub
+        assert DataSourceHCP().to_dict()['hcp_feats'] == hcp.HCP_FEATS
 
     def test_json_serialisable(self):
         # WGN with no extenter is plain-types only
-        ds = _wgn()
-        json.dumps(ds._identity_dict(), sort_keys=True)
+        json.loads(_wgn().to_json())
 
     def test_json_serialisable_with_extenter(self):
+        # extenter is a nested DataclassJSON → to_dict recurses to its dict
         ds = _wgn(extenter=ExtenterSphere(n_vox=4))
-        # extenter is nested HashBySlots → _canon recurses to its dict
-        json.dumps(ds._identity_dict(), sort_keys=True)
+        d = json.loads(ds.to_json())
+        assert d['extenter']['kind'] == 'ExtenterSphere'
 
     def test_stable_across_memoization(self, small_wgn):
-        before = small_wgn._identity_dict()
-        _ = small_wgn.exp        # populates _exp
-        after = small_wgn._identity_dict()
-        assert before == after
+        before = small_wgn.to_dict()
+        _ = small_wgn.exp        # populates the memo cache
+        assert small_wgn.to_dict() == before
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +165,7 @@ class TestExpProperty:
         assert small_wgn.exp is small_wgn.exp
 
     def test_get_called_once(self, monkeypatch, small_wgn):
-        # __slots__ blocks instance attribute writes, so patch the class
+        # frozen+slots blocks instance attribute writes, so patch the class
         calls = []
         real_get = DataSourceWGN._get
 
@@ -238,8 +197,7 @@ class TestExpProperty:
 
     def test_two_equal_sources_share_cache(self):
         # cache is keyed by `self` via hash+eq, so equal-but-distinct
-        # sources resolve to the same cached Experiment (matches the
-        # identity-caching intent in REFACTOR_OUTLINE.md).
+        # sources resolve to the same cached Experiment.
         a = _wgn()
         b = _wgn()
         assert a == b
@@ -299,18 +257,21 @@ class TestExtenterCrop:
     def test_extenter_crops(self):
         ds = DataSourceWGN(
             shape=(5, 5, 5), b=1, num_img=8, seed=0,
-            extenter=ExtenterSphere(n_vox=8))
+            extenter=ExtenterSphere(n_vox=8, seed=0))
         assert (ds.exp.mask_idx >= 0).sum() == 8
 
-    def test_crop_uses_data_seed(self):
-        # same seed → same cropped voxels; different seed → likely
-        # different voxels (sphere is randomly placed).
+    def test_crop_uses_extenter_seed(self):
+        # the crop seed lives in the extenter now (not the DataSource seed):
+        # same extenter -> same cropped voxels; a differently-seeded extenter
+        # -> different voxels (sphere is randomly placed).
+        ext0 = ExtenterSphere(n_vox=8, seed=0)
+        ext1 = ExtenterSphere(n_vox=8, seed=1)
         a = DataSourceWGN(shape=(5, 5, 5), b=1, num_img=8, seed=0,
-                          extenter=ExtenterSphere(n_vox=8)).exp
+                          extenter=ext0).exp
         b = DataSourceWGN(shape=(5, 5, 5), b=1, num_img=8, seed=0,
-                          extenter=ExtenterSphere(n_vox=8)).exp
-        c = DataSourceWGN(shape=(5, 5, 5), b=1, num_img=8, seed=1,
-                          extenter=ExtenterSphere(n_vox=8)).exp
+                          extenter=ext0).exp
+        c = DataSourceWGN(shape=(5, 5, 5), b=1, num_img=8, seed=0,
+                          extenter=ext1).exp
         np.testing.assert_array_equal(a.mask_idx >= 0, b.mask_idx >= 0)
         assert not np.array_equal(a.mask_idx >= 0, c.mask_idx >= 0)
 
@@ -327,10 +288,8 @@ class TestDataSourceWGN:
         assert ds.num_img == 100
 
     def test_get_uses_from_gauss(self):
-        # WGN builds y via ExperimentImageOnly.from_gauss; rather than spy on
-        # the call, assert the observable result reflects the kwargs:
-        # y.shape == (b, num_img, prod(shape)), float32 by default, and the
-        # seed actually drives the draw (different seed -> different data).
+        # WGN builds y via ExperimentImageOnly.from_gauss; assert the
+        # observable result reflects the kwargs.
         exp = _wgn(seed=42, b=3, num_img=4, shape=(2, 2, 2)).exp
         assert exp.y.shape == (3, 4, 8)        # b, num_img, 2*2*2 voxels
         assert exp.y.dtype == np.float32
@@ -347,77 +306,12 @@ class TestDataSourceWGN:
 
 
 # ---------------------------------------------------------------------------
-# 7. DataFrame subclass (concrete — accepts user df)
-# ---------------------------------------------------------------------------
-
-class TestDataSourceDataFrame:
-    def _df(self, n=2, cols=('fa',)):
-        return pd.DataFrame(
-            {c: [f'/tmp/sbj{i}_{c}.nii' for i in range(n)] for c in cols},
-            index=[f'sbj{i}' for i in range(n)])
-
-    def test_df_required(self):
-        with pytest.raises(TypeError):
-            DataSourceDataFrame()           # missing required df=
-
-    def test_df_stored(self):
-        df = self._df()                      # already sorted
-        ds = DataSourceDataFrame(df=df)
-        pd.testing.assert_frame_equal(ds.df, df)
-
-    def test_df_stored_sorted_by_index(self):
-        # construct a df with shuffled index
-        unsorted = pd.DataFrame(
-            {'fa': ['/tmp/c.nii', '/tmp/a.nii', '/tmp/b.nii']},
-            index=['sbj2', 'sbj0', 'sbj1'])
-        ds = DataSourceDataFrame(df=unsorted)
-        assert list(ds.df.index) == ['sbj0', 'sbj1', 'sbj2']
-
-    def test_input_order_does_not_affect_identity(self):
-        # same content in two different row orders → equal sources
-        a = pd.DataFrame({'fa': ['x', 'y']}, index=['s1', 's0'])
-        b = pd.DataFrame({'fa': ['y', 'x']}, index=['s0', 's1'])
-        assert DataSourceDataFrame(df=a) == DataSourceDataFrame(df=b)
-        assert hash(DataSourceDataFrame(df=a)) \
-            == hash(DataSourceDataFrame(df=b))
-
-    def test_df_in_identity(self):
-        a = DataSourceDataFrame(df=self._df())
-        b = DataSourceDataFrame(df=self._df())
-        assert a == b
-        assert hash(a) == hash(b)
-
-    def test_different_df_different_hash(self):
-        a = DataSourceDataFrame(df=self._df(n=2))
-        b = DataSourceDataFrame(df=self._df(n=3))
-        assert a != b
-        assert hash(a) != hash(b)
-
-    def test_get_routes_through_from_paths(self, monkeypatch):
-        # from_paths reads real nifti, so it must be stubbed; but make the
-        # stub's size track the df it receives (one image per subject row) and
-        # assert the *produced* exp reflects that, rather than spying on args.
-        def fake_from_paths(cls, paths, **kw):
-            return _stub_exp_img_only(num_img=len(paths))
-
-        monkeypatch.setattr(ExperimentImageOnly, 'from_paths',
-                            classmethod(fake_from_paths))
-        df = self._df(n=3)
-        exp = DataSourceDataFrame(df=df).exp
-        # y is (b, num_img, num_vox); num_img == subject count routed through
-        assert exp.y.shape[1] == 3
-
-
-# ---------------------------------------------------------------------------
-# 8. HCP subclass
+# 7. HCP subclass
 # ---------------------------------------------------------------------------
 
 class TestDataSourceHCP:
-    """HCP fetches the df eagerly in __init__; all tests stub hcp."""
-
-    @pytest.fixture(autouse=True)
-    def _hcp_df(self, monkeypatch):
-        _patch_hcp_df(monkeypatch)
+    """Identity is the feature subset; the df is derived in _get (no field
+    holds a DataFrame), so construction touches no disk."""
 
     def test_hcp_feats_default(self):
         assert DataSourceHCP().hcp_feats == hcp.HCP_FEATS
@@ -431,7 +325,8 @@ class TestDataSourceHCP:
         assert a != b
         assert hash(a) != hash(b)
 
-    def test_init_fetches_filtered_df(self):
-        assert list(DataSourceHCP(hcp_feats=('fa',)).df.columns) == ['fa']
-        assert list(DataSourceHCP(hcp_feats=('fa', 'md')).df.columns) \
-            == ['fa', 'md']
+    def test_construction_is_pure(self):
+        # df is derived in _get, not stored as a field
+        ds = DataSourceHCP(hcp_feats=('fa',))
+        assert not hasattr(ds, 'df')
+        assert 'df' not in ds.to_dict()

@@ -1,9 +1,16 @@
 """Effect objects: planted synthetic effects and estimated effect regions."""
 
+from collections import namedtuple
+from dataclasses import dataclass
+
 import numpy as np
 
 from glow.analysis.mancova import get_mancova
-from glow.util import HashBySlots
+
+
+# fit outputs, returned by EffectSynthetic.fit (kept off the frozen spec so
+# the spec's identity stays stable across a fit)
+EffectFit = namedtuple('EffectFit', 'exp mask')
 
 
 class EffectEstimate:
@@ -77,17 +84,28 @@ class EffectEstimate:
 # Effect. Discovery code paths should migrate to EffectEstimate directly.
 Effect = EffectEstimate
 
-class EffectSynthetic(HashBySlots):
-    """A planted (synthetic) effect.
 
-    Operation parameters (set at __init__):
-        extenter (Extenter | None): how to sample the support. XOR
-            with mask.
-        mask (np.array | None): pre-known boolean support. XOR with
-            extenter. Frozen on assignment so the hash is stable.
+@dataclass(frozen=True, slots=True, eq=False, kw_only=True)
+class EffectSynthetic:
+    """A planted (synthetic) effect: a frozen, immutable spec.
+
+    The spec fully determines the planted effect; fit(exp) returns its
+    realized support and the modified experiment as an EffectFit, leaving
+    the spec unchanged. Supply exactly one of extenter or mask. When
+    extenter is given it carries its own RNG seed; the seed field here
+    drives only the imposed direction (angle).
+
+    Unlike the extenter / data-source specs, EffectSynthetic carries an
+    ndarray (mask) and is never a cache key, so it uses identity equality
+    (eq=False) rather than a value hash.
+
+    Attributes:
         effect_llr (float): per-voxel LLR target.
-        seed (int | None): RNG seed for extenter sampling; when angle is
-            given it also seeds the imposed direction.
+        extenter (Extenter | None): how to sample the support. XOR with mask.
+        mask (np.array | None): pre-known boolean support, frozen on
+            assignment. XOR with extenter.
+        seed (int | None): RNG seed for the imposed direction when angle is
+            given (it sets the rotation reference).
         angle (float | None): if given, impose the effect along a direction
             sampled at this rotation (degrees) from seed
             (glow.effect.impose.sample_beta_direction, then impose_effect);
@@ -97,55 +115,46 @@ class EffectSynthetic(HashBySlots):
         purge_interest (bool): when imposing a direction, subtract the
             region's existing interest coefficient so the recovered effect
             equals the imposed direction exactly.
-
-    Fit outputs (populated by .fit()):
-        mask_ (np.array): realized boolean support.
-        offset_ (np.array): (b, num_img) offset added per voxel.
-        sigma_scale_ (float | None): factor applied to within-region
-            sigma (always None on the directional path).
     """
 
-    __slots__ = ('extenter', 'mask', 'effect_llr', 'seed',
-                 'angle', 'purge_interest',
-                 'mask_', 'offset_', 'sigma_scale_')
+    effect_llr: float
+    extenter: object = None
+    mask: object = None
+    seed: int = None
+    angle: float = None
+    purge_interest: bool = True
 
-    def __init__(self, *, extenter=None, mask=None, effect_llr,
-                 seed=None, angle=None, purge_interest: bool = True):
-        if (extenter is None) == (mask is None):
+    def __post_init__(self):
+        if (self.extenter is None) == (self.mask is None):
             raise ValueError('extenter xor mask required')
-        if angle is not None and seed is None:
+        if self.angle is not None and self.seed is None:
             raise ValueError('angle requires seed (it sets the rotation '
                              'reference for the imposed direction)')
-
-        self.extenter = extenter
-        if mask is not None:
-            mask = np.ascontiguousarray(mask, dtype=bool)
+        object.__setattr__(self, 'effect_llr', float(self.effect_llr))
+        object.__setattr__(self, 'seed',
+                           None if self.seed is None else int(self.seed))
+        object.__setattr__(self, 'angle',
+                           None if self.angle is None else float(self.angle))
+        object.__setattr__(self, 'purge_interest', bool(self.purge_interest))
+        if self.mask is not None:
+            mask = np.ascontiguousarray(self.mask, dtype=bool)
             mask.flags.writeable = False
-        self.mask = mask
-        self.effect_llr = float(effect_llr)
-        self.seed = None if seed is None else int(seed)
-        self.angle = None if angle is None else float(angle)
-        self.purge_interest = bool(purge_interest)
+            object.__setattr__(self, 'mask', mask)
 
-        # fit outputs (sklearn trailing underscore convention)
-        self.mask_ = None
-        self.offset_ = None
-        self.sigma_scale_ = None
-
-    def fit(self, exp):
-        """Sample support, compute offset, and impose the effect.
+    def fit(self, exp) -> EffectFit:
+        """Sample support, compute offset, impose the effect.
 
         The offset direction is either inherited from the data (the default,
         via compute_offset) or, when angle is given, imposed along a
-        direction sampled from seed (via impose_effect). Populates the
-        fit-output attributes (mask_, offset_, sigma_scale_).
+        direction sampled from seed (via impose_effect).
 
         Args:
             exp: the experiment to plant the effect into; must already have
                 x and contrast (call .sample_x() first)
 
         Returns:
-            the experiment with the effect imposed
+            EffectFit(exp, mask): the experiment with the effect imposed and
+                the realized boolean support.
         """
         # local import keeps glow.effect import-time cycle-free
         from .impose import compute_offset, impose_effect, sample_beta_direction
@@ -155,8 +164,7 @@ class EffectSynthetic(HashBySlots):
         if self.mask is not None:
             mask = self.mask
         else:
-            mask = self.extenter(
-                y=exp.y, mask_idx=exp.mask_idx, seed=self.seed)
+            mask = self.extenter(y=exp.y, mask_idx=exp.mask_idx)
 
         effect_idx = exp.mask_idx[mask]
         y = exp.y[:, :, effect_idx]
@@ -176,12 +184,5 @@ class EffectSynthetic(HashBySlots):
                 x=exp.x, y=y, contrast=exp.contrast,
                 effect_llr=self.effect_llr)
 
-        self.mask_ = mask
-        self.offset_ = offset
-        self.sigma_scale_ = sigma_scale
-        return self.apply(exp)
-
-    def apply(self, exp):
-        """Add the fitted offset to an experiment, returning the result."""
-        return exp.add_offset(self.offset_, mask=self.mask_,
-                              sigma_scale=self.sigma_scale_)
+        exp_eff = exp.add_offset(offset, mask=mask, sigma_scale=sigma_scale)
+        return EffectFit(exp=exp_eff, mask=mask)

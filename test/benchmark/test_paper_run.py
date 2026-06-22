@@ -70,7 +70,7 @@ def test_plant_none_leaves_data_untouched():
     exp = _FakeExp(mask_idx=np.arange(6).reshape(2, 3))
     ds = _FakeDS(exp)
 
-    out_exp, out_eff, mask = _plant(ds, extenter=None, effect_llr=None, seed=0)
+    out_exp, out_eff, mask = _plant(ds, extenter=None, effect_llr=None)
 
     assert out_exp is exp
     assert out_eff is exp

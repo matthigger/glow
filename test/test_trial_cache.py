@@ -1,4 +1,5 @@
 """Tests for ``glow.benchmark.TrialCache``."""
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -8,16 +9,14 @@ import pytest
 import glow.benchmark.trial_cache as tc_mod
 from glow.benchmark import TrialCache
 from glow.benchmark.trial_cache import HASH_COL
-from glow.util import HashBySlots, stable_hash
+from glow.util import DataclassJSON, stable_hash
 
 
-class _Toy(HashBySlots):
-    """Small HashBySlots fixture standing in for DataSource / Effect."""
-    __slots__ = ('a', 'b')
-
-    def __init__(self, a, b):
-        self.a = a
-        self.b = b
+@dataclass(frozen=True, slots=True)
+class _Toy(DataclassJSON):
+    """Small frozen-dataclass fixture standing in for DataSource / Effect."""
+    a: object
+    b: object
 
 
 class TestConstruction:
@@ -164,7 +163,7 @@ class TestSaveResult:
             cache.save_result(42, {'seed': 0})
 
     @pytest.mark.parametrize('key, value', [
-        ('ds', _Toy(1, 2)),     # HashBySlots kwarg
+        ('ds', _Toy(1, 2)),     # DataclassJSON kwarg
         ('x', np.arange(6)),    # ndarray kwarg
     ])
     def test_complex_kwarg_stored_as_hash_string(self, tmp_path, key, value):

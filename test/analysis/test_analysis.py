@@ -23,15 +23,17 @@ class TestBigEffect:
     """ given strong effect, discover it"""
     # build experiment with strong effect to be found
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=100, seed=0)
-    effect = EffectSynthetic(extenter=ExtenterSphere(radius=2),
-                             effect_llr=0.5, seed=0)
-    exp = effect.fit(exp)
+    effect = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
+                             effect_llr=0.5)
+    _fit = effect.fit(exp)
+    exp = _fit.exp
+    mask_target = _fit.mask
 
     def test_glow(self):
         analysis = AnalysisGLOW(TestBigEffect.exp, n_perm_fwer=25, alpha_fwer=.1).fit()
 
         # check that target region segmented properly
-        counts = confusion_counts_tree(mask=TestBigEffect.effect.mask_,
+        counts = confusion_counts_tree(mask=TestBigEffect.mask_target,
                                       mask_idx=analysis.exp.mask_idx,
                                       children=analysis.children)
         dice = stats_from_counts(**counts)['dice']
@@ -47,7 +49,7 @@ class TestBigEffect:
                                alpha_fwer=.1, tfce_flag=tfce_flag).fit()
         mask_all = sum(eff.mask for eff in analysis.effect_list)
         np.testing.assert_allclose(mask_all,
-                                   TestBigEffect.effect.mask_)
+                                   TestBigEffect.mask_target)
     
     def test_vba_wilks(self):
         """VBA with Wilks' Lambda (1 - Wilks) should detect effects.
@@ -114,8 +116,8 @@ class TestAnalysisEdgeCases:
     def test_all_regions_too_small(self):
         """test when all regions are filtered out by min_vox"""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
-        exp = EffectSynthetic(extenter=ExtenterSphere(radius=1),
-                              effect_llr=0.5, seed=0).fit(exp)
+        exp = EffectSynthetic(extenter=ExtenterSphere(radius=1, seed=0),
+                              effect_llr=0.5).fit(exp).exp
 
         # set min_vox so large that all regions are filtered
         analysis = AnalysisGLOW(
@@ -163,8 +165,8 @@ class TestZeroStdGuard:
     def test_constant_stat_region(self):
         """regions with constant stat across adjustment perms should not produce inf/nan"""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
-        exp = EffectSynthetic(extenter=ExtenterSphere(radius=1),
-                              effect_llr=0.5, seed=0).fit(exp)
+        exp = EffectSynthetic(extenter=ExtenterSphere(radius=1, seed=0),
+                              effect_llr=0.5).fit(exp).exp
 
         analysis = AnalysisGLOW(exp, n_perm_fwer=5, alpha_fwer=0.05,
                                 min_vox=1).fit()
@@ -182,8 +184,8 @@ class TestMinVox:
         """No significant region in effect_list should have size < min_vox."""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                      num_img=50, seed=0)
-        exp = EffectSynthetic(extenter=ExtenterSphere(radius=2),
-                              effect_llr=0.5, seed=0).fit(exp)
+        exp = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
+                              effect_llr=0.5).fit(exp).exp
 
         min_vox = 4
         ana = AnalysisGLOW(
@@ -210,8 +212,8 @@ class TestMinVox:
         """
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                      num_img=50, seed=0)
-        exp = EffectSynthetic(extenter=ExtenterSphere(radius=2),
-                              effect_llr=0.5, seed=0).fit(exp)
+        exp = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
+                              effect_llr=0.5).fit(exp).exp
 
         ana_low = AnalysisGLOW(
             exp, n_perm_fwer=10, n_perm_inner=20,
@@ -237,8 +239,8 @@ class TestPerRegionZConsistency:
     def test_z_matches_stat_minus_mu_over_std(self):
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                     num_img=50, seed=0)
-        exp = EffectSynthetic(extenter=ExtenterSphere(radius=2),
-                              effect_llr=0.5, seed=0).fit(exp)
+        exp = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
+                              effect_llr=0.5).fit(exp).exp
         ana = AnalysisGLOW(exp, n_perm_fwer=5, n_perm_inner=20,
                            alpha_fwer=.5, min_vox=1).fit()
 
@@ -307,9 +309,9 @@ class TestStreamingFidelity:
     """Verify that two identical runs produce the same results."""
 
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=50, seed=0)
-    effect = EffectSynthetic(extenter=ExtenterSphere(radius=2),
-                             effect_llr=0.5, seed=0)
-    exp = effect.fit(exp)
+    effect = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
+                             effect_llr=0.5)
+    exp = effect.fit(exp).exp
 
     def test_reproducible(self):
         """Two runs with the same data must produce identical p-values."""
@@ -359,9 +361,9 @@ class TestDiscoverMask:
     """Analysis.discover_mask splits a mask into connected-component effects."""
 
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=100, seed=0)
-    effect = EffectSynthetic(extenter=ExtenterSphere(radius=2),
-                             effect_llr=0.5, seed=0)
-    exp_eff = effect.fit(exp)
+    effect = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
+                             effect_llr=0.5)
+    exp_eff = effect.fit(exp).exp
 
     def test_single_connected_mask_is_one_effect(self):
         """A single connected blob yields exactly one effect equal to the mask."""

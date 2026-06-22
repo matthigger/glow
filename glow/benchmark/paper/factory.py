@@ -33,10 +33,6 @@ _WGN_SIDE_3D = math.ceil(CROP_N_VOX ** (1 / 3))
 # across the effect-seed replicates within a structural cell.
 DS_SEED = 0
 
-# Every source is cropped to the same connected sphere so num_vox matches
-# across WGN and HCP.
-_CROP_EXTENTER = ExtenterSphere(n_vox=CROP_N_VOX, connected=True)
-
 # Mutually independent per-trial sub-seeds (see derive_seeds).
 TrialSeeds = namedtuple('TrialSeeds', 'ds feat effect')
 
@@ -88,12 +84,15 @@ def _ds_factory(source: str, b: int, num_img: int, feats: tuple,
     Raises:
         ValueError: if source is unknown
     """
+    # Every source is cropped to the same connected sphere (seed baked in,
+    # resampled until contiguous) so num_vox matches across WGN and HCP.
+    crop = ExtenterSphere(n_vox=CROP_N_VOX, connected=True,
+                          contiguous=True, seed=ds_seed)
     if source == 'wgn':
         return DataSourceWGN(shape=(_WGN_SIDE_3D,) * 3, b=b, num_img=num_img,
-                             seed=ds_seed, extenter=_CROP_EXTENTER)
+                             seed=ds_seed, extenter=crop)
     if source == 'hcp':
-        return DataSourceHCP(hcp_feats=feats, seed=ds_seed,
-                             extenter=_CROP_EXTENTER)
+        return DataSourceHCP(hcp_feats=feats, seed=ds_seed, extenter=crop)
     raise ValueError(f'unknown source: {source!r}')
 
 
