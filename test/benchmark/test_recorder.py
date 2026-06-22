@@ -108,7 +108,7 @@ def test_separate_top_level_calls_get_distinct_trial_ids(rec):
 def test_run_uses_explicit_trial_id(rec):
 	big_func, _, _ = make_pipeline(rec)
 
-	with rec.run(trial_id='asdf'):
+	with rec.trial(trial_id='asdf'):
 		big_func(1, b=2)
 	assert all(r["trial_id"] == 'asdf' for r in rec.records)
 
@@ -118,7 +118,7 @@ def test_run_groups_multiple_top_level_calls(rec):
 	def f(a):
 		return a
 
-	with rec.run() as trial_id:
+	with rec.trial() as trial_id:
 		f(1)
 		f(2)
 	assert [r["trial_id"] for r in rec.records] == [trial_id, trial_id]
@@ -356,7 +356,7 @@ def test_concurrent_runs_do_not_bleed_trial_ids(rec):
 	barrier = threading.Barrier(2)
 
 	def worker(trial_id):
-		with rec.run(trial_id=trial_id):
+		with rec.trial(trial_id=trial_id):
 			barrier.wait()  # force the two runs to overlap
 			for i in range(50):
 				f(i)

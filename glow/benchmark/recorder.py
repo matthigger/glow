@@ -7,7 +7,7 @@ call append one record
      "time_sec": ...}
 
 to ``records``. Calls nested inside one top-level invocation (or inside an
-explicit ``with recorder.run(trial_id=...):`` block) share a single
+explicit ``with recorder.trial(trial_id=...):`` block) share a single
 ``trial_id``, so all the work of one benchmark trial groups together. In
 the benchmark the ``trial_id`` is the trial's cache hash
 (``TrialCache.hash``), so records from independent workers -- local joblib
@@ -72,12 +72,12 @@ class Recorder:
         uuid4: globally unique with no coordination, so JSON outputs from
         independent workers (e.g. on AWS) merge without collision. The
         benchmark instead supplies the cache hash explicitly via
-        ``run(trial_id=...)``; this default covers standalone use.
+        ``trial(trial_id=...)``; this default covers standalone use.
         """
         return str(uuid.uuid4())
 
     @contextlib.contextmanager
-    def run(self, trial_id=None):
+    def trial(self, trial_id=None):
         """Scope a trial id; all decorated calls in the block share it.
 
         A fresh id is minted when ``trial_id`` is None. Uses the ContextVar
@@ -167,9 +167,9 @@ class Recorder:
                     inputs.update(inputs.pop(var_kw))
 
                 # reuse an open trial id (nested call), else open a fresh one
-                # for this call via run() (set/reset, even if fnc raises)
+                # for this call via trial() (set/reset, even if fnc raises)
                 active = self._trial_id_current.get()
-                cm = contextlib.nullcontext(active) if active is not None else self.run()
+                cm = contextlib.nullcontext(active) if active is not None else self.trial()
                 with cm as trial_id:
                     # time only the wrapped call; record-and-reraise on failure
                     # so a failed trial is auditable (and not silently retried)
