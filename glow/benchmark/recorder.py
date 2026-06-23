@@ -18,14 +18,20 @@ results.csv row the same trial would write.
 benchmark no longer hand-times each method.
 
 A call that *raises* records a failure record instead -- same shape but
-with ``error`` (the traceback) in place of ``outputs`` -- and the
-exception re-raises. This keeps a failed trial auditable in the records
-(and so in results.csv) rather than vanishing; the caller catches to move
-on. The SKIP-vs-ERROR distinction is a domain decision left to the
-benchmark, not encoded here.
+with ``error`` (the traceback) in place of ``outputs`` -- and the exception
+is then *swallowed*: the call returns None and the trial is marked failed,
+so the caller never has to wrap each step in try/except. Every later
+recorded call in that same trial short-circuits -- it neither runs nor
+records, returning None -- so a trial fn written as a straight-line
+sequence of recorded steps just fast-forwards to its end and the driver
+moves on to the next trial. A failure therefore leaves exactly the records
+up to and including the call that raised, and nothing after, all under the
+one trial id. The SKIP-vs-ERROR distinction is a domain decision left to
+the benchmark, not encoded here.
 
 Records are append-only: a function called twice in a trial yields two
-records, never an overwrite.
+records, never an overwrite. A call short-circuited after a same-trial
+failure adds none.
 
 ``to_json`` serializes via ``_json_default``, which consults one protocol --
 ``to_record()``: any input/output exposing it (a DataclassJSON spec such as a
@@ -86,19 +92,24 @@ class Recorder:
 
     Attributes:
         records (list): append-only list of recorded call dicts, one per
-            decorated call. A success carries ``{trial_id, function, inputs,
-            outputs, time_sec}``; a failure swaps ``outputs`` for ``error``
-            (the traceback).
+            executed decorated call. A success carries ``{trial_id, function,
+            inputs, outputs, time_sec}``; a failure swaps ``outputs`` for
+            ``error`` (the traceback). Calls short-circuited after a same-trial
+            failure add none.
         _trial_id_current (contextvars.ContextVar): the active trial id for
             the current execution context (thread / asyncio task); None when
             no trial is open. A ContextVar so concurrent runs never see each
             other's id.
+        _failed_trials (set): trial ids that have recorded a failure and are
+            still open. Membership makes every later recorded call in the trial
+            short-circuit; the id is dropped when its trial scope closes.
     """
 
     def __init__(self):
         self.records = []
         self._trial_id_current = contextvars.ContextVar(
             "recorder_trial_id", default=None)
+        self._failed_trials = set()
 
     def get_trial_id(self):
         """Mint a fresh trial id.
@@ -132,6 +143,10 @@ class Recorder:
             yield trial_id
         finally:
             self._trial_id_current.reset(reset)
+            # drop any failure flag raised during this trial: the id can't
+            # carry a stale "failed" state into a reuse, and the set stays
+            # bounded by the number of trials currently open (not ever-failed).
+            self._failed_trials.discard(trial_id)
 
     def __call__(self, output_name=None, output_name_list=None):
         """Build a decorator that records calls under one or more output names.
@@ -187,6 +202,14 @@ class Recorder:
 
             @functools.wraps(fnc)
             def wrapped(*args, **kwargs):
+                # once a trial has failed, every later step in it is a no-op:
+                # it neither runs nor records and returns None, so the trial fn
+                # keeps its straight-line shape and just fast-forwards to its
+                # end (the driver then moves on to the next trial).
+                active = self._trial_id_current.get()
+                if active is not None and active in self._failed_trials:
+                    return None
+
                 # capture inputs (incl. defaults). NB: shallow copy of
                 # references, not a snapshot -- in-place mutation by fnc is
                 # reflected later (see module docstring).
@@ -202,16 +225,15 @@ class Recorder:
 
                 # reuse an open trial id (nested call), else open a fresh one
                 # for this call via trial() (set/reset, even if fnc raises)
-                active = self._trial_id_current.get()
                 cm = contextlib.nullcontext(active) if active is not None else self.trial()
                 with cm as trial_id:
-                    # time only the wrapped call; record-and-reraise on failure
-                    # so a failed trial is auditable (and not silently retried)
-                    # rather than vanishing. trial_id is still open here, so the
-                    # failure record lands under the right trial. Only fnc's own
-                    # exceptions are caught -- the recorder's output-validation
-                    # errors below are misconfiguration, not a trial failure, and
-                    # stay unrecorded.
+                    # time only the wrapped call. On failure record it (so the
+                    # failed trial is auditable, not vanished), mark the trial
+                    # failed, and *swallow* -- return None instead of re-raising
+                    # -- so the caller need not try/except each step and later
+                    # steps short-circuit above. Only fnc's own exceptions are
+                    # caught; the output-validation errors below are
+                    # misconfiguration, not a trial failure, and stay unrecorded.
                     t0 = time.perf_counter()
                     try:
                         out = fnc(*args, **kwargs)
@@ -223,34 +245,42 @@ class Recorder:
                             "error": traceback.format_exc(),
                             "time_sec": time.perf_counter() - t0,
                         })
-                        raise
+                        self._failed_trials.add(trial_id)
+                        return None
                     time_sec = time.perf_counter() - t0
 
-                # only successful calls reach here; record their named outputs
-                if output_name is not None:
-                    outputs = {output_name: out}
-                else:
-                    if not isinstance(out, (tuple, list)):
-                        raise TypeError(
-                            f"{fnc.__name__} declared output_name_list but returned "
-                            f"{type(out).__name__}; expected a tuple/list"
-                        )
-                    if len(out) != len(output_name_list):
-                        raise ValueError(
-                            f"{fnc.__name__} returned {len(out)} values but "
-                            f"output_name_list has {len(output_name_list)} names"
-                        )
-                    outputs = dict(zip(output_name_list, out))
+                    # a nested wrapped call may have failed (and swallowed)
+                    # while fnc ran, marking the trial failed: suppress this
+                    # success so a trial's records stop at its first failure.
+                    if trial_id in self._failed_trials:
+                        return out
 
-                self.records.append({
-                    "trial_id": trial_id,
-                    "function": fnc.__qualname__,
-                    "inputs": inputs,
-                    "outputs": outputs,
-                    "time_sec": time_sec,
-                })
+                    # only successful calls in a still-clean trial reach here;
+                    # record their named outputs
+                    if output_name is not None:
+                        outputs = {output_name: out}
+                    else:
+                        if not isinstance(out, (tuple, list)):
+                            raise TypeError(
+                                f"{fnc.__name__} declared output_name_list but returned "
+                                f"{type(out).__name__}; expected a tuple/list"
+                            )
+                        if len(out) != len(output_name_list):
+                            raise ValueError(
+                                f"{fnc.__name__} returned {len(out)} values but "
+                                f"output_name_list has {len(output_name_list)} names"
+                            )
+                        outputs = dict(zip(output_name_list, out))
 
-                return out
+                    self.records.append({
+                        "trial_id": trial_id,
+                        "function": fnc.__qualname__,
+                        "inputs": inputs,
+                        "outputs": outputs,
+                        "time_sec": time_sec,
+                    })
+
+                    return out
 
             return wrapped
 

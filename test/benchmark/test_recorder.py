@@ -255,13 +255,14 @@ def test_function_identity_uses_qualname(rec):
 
 # --- failure capture ---------------------------------------------------------
 
-def test_exception_records_failure_and_reraises(rec):
+def test_exception_records_failure_and_swallows(rec):
 	@rec(output_name='x')
 	def boom():
 		raise ValueError("boom")
 
-	with pytest.raises(ValueError):
-		boom()
+	# the recorder swallows: the call records a failure and returns None
+	# rather than propagating, so the caller need not try/except each step
+	assert boom() is None
 
 	# a failure is recorded (auditable), with the traceback in place of outputs
 	assert len(rec.records) == 1
@@ -270,21 +271,58 @@ def test_exception_records_failure_and_reraises(rec):
 	assert "outputs" not in record
 	assert "ValueError: boom" in record["error"]
 	assert isinstance(record["time_sec"], float) and record["time_sec"] >= 0
-	# trial id must be released so the next top-level call starts fresh
+	# trial id released, and not left marked failed, so the next call is fresh
 	assert rec._trial_id_current.get() is None
+	assert rec._failed_trials == set()
 
 	@rec(output_name='y')
 	def ok():
 		return 1
 
-	ok()
+	# a fresh top-level call opens a new (clean) trial and records success
+	assert ok() == 1
 	assert len(rec.records) == 2
 	assert rec.records[1]["outputs"] == {"y": 1}
 
 
-def test_nested_failure_records_at_each_decorated_frame(rec):
-	# one exception propagating through two decorated frames yields one failure
-	# record per frame (each is a legitimate failed call), sharing the trial id
+def test_failed_trial_short_circuits_later_calls(rec):
+	# within one explicit trial, the first failure marks it failed; every later
+	# recorded step then no-ops -- it neither runs nor records
+	calls = []
+
+	@rec(output_name='a')
+	def step_ok(v):
+		calls.append('ok')
+		return v
+
+	@rec(output_name='b')
+	def step_boom():
+		calls.append('boom')
+		raise RuntimeError("nope")
+
+	@rec(output_name='c')
+	def step_after():
+		calls.append('after')
+		return 99
+
+	with rec.trial(trial_id='T'):
+		assert step_ok(1) == 1
+		assert step_boom() is None    # records a failure, marks T failed
+		assert step_after() is None   # short-circuits: body never runs
+
+	assert calls == ['ok', 'boom']  # step_after's body was skipped
+	funcs = [r["function"].split(".")[-1] for r in rec.records]
+	assert funcs == ['step_ok', 'step_boom']
+	assert "RuntimeError" in rec.records[1]["error"]
+	# all under the one trial id, and the failure flag is cleared on scope exit
+	assert {r["trial_id"] for r in rec.records} == {'T'}
+	assert rec._failed_trials == set()
+
+
+def test_nested_failure_records_once_and_suppresses_outer(rec):
+	# an inner wrapped call that raises is swallowed (one failure record) and
+	# marks the trial failed; the outer frame, completing afterward, records
+	# nothing -- a trial's records stop at its first failure
 	@rec(output_name='inner_out')
 	def inner():
 		raise RuntimeError("kaboom")
@@ -293,12 +331,10 @@ def test_nested_failure_records_at_each_decorated_frame(rec):
 	def outer():
 		return inner()
 
-	with pytest.raises(RuntimeError):
-		outer()
-
+	assert outer() is None
 	funcs = [r["function"].split(".")[-1] for r in rec.records]
-	assert funcs == ["inner", "outer"]  # inner completes (fails) before outer
-	assert all("error" in r for r in rec.records)
+	assert funcs == ["inner"]
+	assert "error" in rec.records[0]
 	assert len({r["trial_id"] for r in rec.records}) == 1
 
 
