@@ -253,6 +253,68 @@ def test_function_identity_uses_qualname(rec):
 	]
 
 
+# --- method / self capture ---------------------------------------------------
+
+def test_bound_method_captures_self(rec):
+	# decorating a bound method inline records its receiver as the 'self' input
+	# (the bound signature omits self, so it is taken from __self__) and
+	# serialized via the receiver's to_record() recipe
+	class Thing:
+		def __init__(self, k):
+			self.k = k
+		def to_record(self):
+			return {'kind': 'Thing', 'k': self.k}
+		def go(self, x):
+			return self.k + x
+
+	assert rec(output_name='r')(Thing(10).go)(5) == 15
+
+	(record,) = rec.records
+	assert record['function'].split('.')[-1] == 'go'
+	assert record['outputs']['r'] == 15
+	loaded = json.loads(rec.to_json())
+	assert loaded[0]['inputs']['self'] == {'kind': 'Thing', 'k': 10}
+	assert loaded[0]['inputs']['x'] == 5
+
+
+def test_bound_method_forwards_kwargs_and_returns_value(rec):
+	class Adder:
+		def to_record(self):
+			return {'kind': 'Adder'}
+		def add(self, *, a, b):
+			return a + b
+
+	assert rec(output_name='s')(Adder().add)(a=2, b=3) == 5
+	loaded = json.loads(rec.to_json())
+	assert loaded[0]['inputs'] == {'self': {'kind': 'Adder'}, 'a': 2, 'b': 3}
+	assert loaded[0]['outputs']['s'] == 5
+
+
+def test_bound_method_failure_keeps_self(rec):
+	# a failing bound method still records self (in the error record) and
+	# swallows, per the failure semantics
+	class Boom:
+		def to_record(self):
+			return {'kind': 'Boom'}
+		def go(self):
+			raise ValueError('x')
+
+	assert rec(output_name='r')(Boom().go)() is None
+	loaded = json.loads(rec.to_json())
+	assert loaded[0]['inputs']['self'] == {'kind': 'Boom'}
+	assert 'ValueError' in loaded[0]['error']
+
+
+def test_plain_function_has_no_self(rec):
+	# a non-method recorded call gets no injected 'self'
+	@rec(output_name='out')
+	def f(x):
+		return x
+
+	f(7)
+	assert 'self' not in rec.records[0]['inputs']
+
+
 # --- failure capture ---------------------------------------------------------
 
 def test_exception_records_failure_and_swallows(rec):

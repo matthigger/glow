@@ -17,6 +17,13 @@ results.csv row the same trial would write.
 ``time_sec`` is the wall-clock duration of the wrapped call, so the
 benchmark no longer hand-times each method.
 
+A recorded call may be a bound method: when the wrapped callable is one, its
+receiver is captured as the ``self`` input (serialized via its ``to_record``
+recipe), so recording an object's method needs no passthrough wrapper -- apply
+the decorator to the bound method inline, e.g.
+``recorder(output_name='ana')(AnalysisGLOW(exp=exp, n_perm_fwer=n).fit)()``
+records the analysis recipe, the fitted result, the timing and any failure.
+
 A call that *raises* records a failure record instead -- same shape but
 with ``error`` (the traceback) in place of ``outputs`` -- and the exception
 is then *swallowed*: the call returns None and the trial is marked failed,
@@ -187,6 +194,12 @@ class Recorder:
         def decorator(fnc):
             sig = inspect.signature(fnc)
 
+            # a bound method's signature already excludes self, so record it
+            # separately from its __self__ -- the call captures the receiver
+            # (its to_record() recipe) as the 'self' input without the caller
+            # threading it through a passthrough function.
+            is_method = inspect.ismethod(fnc)
+
             # *args holds positional values with no names, so we can't record
             # them as named inputs -> reject it at decoration time. (**kwargs is
             # fine: its values are named, and we splice them up a level below.)
@@ -216,6 +229,12 @@ class Recorder:
                 bound = sig.bind(*args, **kwargs)
                 bound.apply_defaults()
                 inputs = dict(bound.arguments)
+
+                # record the receiver of a bound method as the 'self' input
+                # (first, for readability), captured from __self__ since the
+                # bound signature omits it
+                if is_method:
+                    inputs = {'self': fnc.__self__, **inputs}
 
                 # splice **kwargs up a level: {'kwargs': {'x': 1}} -> {'x': 1}.
                 # sig.bind already routes any keyword matching a named param to
