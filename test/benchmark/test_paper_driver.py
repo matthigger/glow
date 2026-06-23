@@ -1,10 +1,10 @@
-"""Tests for the recorder-wired paper driver and run_ana.
+"""Tests for the recorder-wired paper driver and trial fns.
 
 The TrialCache owns a recorder and writes one json per trial under its records/
-dir; driver_paper passes the recorder to a recorder-wired fn (run_ana) and falls
-back to results.csv for a legacy DataFrame-returning fn. Serial drives
-cache.iter_trial(record=True, flush=True); parallel scopes each trial in a
-worker. The run_ana cases use a tiny WGN cell with a cheap VBA fit.
+dir; driver_paper passes the recorder to a recorder-wired fn and serial drives
+cache.iter_trial(record=True, flush=True) while parallel scopes each trial in a
+worker. Covers run_ana plus the converted fit-shaped fns (run_mancova /
+run_prune / run_two_effect), on a tiny WGN cell with cheap fits.
 """
 import json
 from functools import partial
@@ -127,3 +127,55 @@ class TestRunAnaRecords:
         fits = [r for r in cache.load_records() if r['function'].endswith('.fit')]
         assert len(fits) == 1
         assert 'error' in fits[0] and 'RuntimeError' in fits[0]['error']
+
+
+def _fns(recs):
+    """Leaf names of each record's function (bare for free fns / methods)."""
+    return [r['function'].rsplit('.', 1)[-1] for r in recs]
+
+
+class TestConvertedFitFns:
+    """run_mancova / run_prune / run_two_effect, recorder-wired (config only)."""
+
+    def test_mancova_records_setup_walk_and_fits(self, tmp_path):
+        cache = _cache(tmp_path, b=[2], seed=[0])
+        driver_paper(cache, partial(paper_run.run_mancova, n_perm_fwer=1),
+                     verbose=False)
+        recs = cache.load_records()
+        fns = _fns(recs)
+        # setup + the shared voxel walk (recorded once) + one fit per variant
+        assert '_setup_trial' in fns and '_shared_voxel_walk' in fns
+        assert sum(f == 'fit' for f in fns) == 30
+        walk = next(r for r in recs if r['function'].endswith('_shared_voxel_walk'))
+        # walk output is keyed by stat name (json-friendly), each matrix a hash
+        assert 'llr' in walk['outputs']['stat']
+        fit = next(r for r in recs if r['function'].endswith('.fit'))
+        assert fit['inputs']['self']['kind'] in ('AnalysisVBA', 'AnalysisCET')
+
+    def test_prune_records_fit_and_both_rules(self, tmp_path, monkeypatch):
+        # the real _GLOW_BASE is 250x1000 perms; shrink it for the test
+        from glow.benchmark.paper import config as cfg
+        monkeypatch.setattr(cfg, '_GLOW_BASE',
+                            dict(n_perm_fwer=1, n_perm_inner=2))
+        cache = _cache(tmp_path, b=[2], seed=[0])
+        driver_paper(cache, paper_run.run_prune, verbose=False)
+        recs = cache.load_records()
+        fns = _fns(recs)
+        assert 'fit' in fns  # the one shared GLOW fit
+        prunes = [r for r in recs if 'prune' in r['function']]
+        assert {r['function'].rsplit('.', 1)[-1] for r in prunes} == {
+            'prune_greedy', 'prune_dp'}
+        assert all('reg_out_list' in r['outputs'] for r in prunes)
+
+    def test_two_effect_records_splitter_and_two_effects(self, tmp_path):
+        cache = _cache(tmp_path, b=[2], seed=[0], angle=[30.0])
+        driver_paper(cache, partial(paper_run.run_two_effect,
+                                    ana_kwargs_dict=VBA), verbose=False)
+        recs = cache.load_records()
+        setup = next(r for r in recs
+                     if r['function'].endswith('_setup_two_effect'))
+        # provenance: the ExtenterSplit plus the two effect specs (angles 0/30)
+        assert setup['outputs']['splitter']['kind'] == 'ExtenterSplit'
+        effects = setup['outputs']['effect_list']
+        assert len(effects) == 2 and effects[1]['angle'] == 30.0
+        assert any(r['function'].endswith('AnalysisVBA.fit') for r in recs)

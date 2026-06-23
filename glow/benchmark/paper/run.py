@@ -494,27 +494,22 @@ def run_segment(*, source: str, b: int, num_img: int, n_vox_eff: int,
     return pd.DataFrame(rows)
 
 
-def run_prune(*, source: str, b: int, num_img: int, n_vox_eff: int, seed: int,
-              effect_llr=None, effect_total_llr=None):
-    """Greedy vs DP pruning scored on one shared GLOW fit.
+def run_prune(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
+              seed: int, effect_llr=None, effect_total_llr=None):
+    """Greedy vs DP pruning recorded on one shared GLOW fit.
 
-    Fits GLOW once with its default recipe -- Focus clustering and the
-    shared FWER perms -- then applies both pruning rules to the SAME
-    FWER-significant region set, so the comparison isolates the rule from
-    the permutation test (and both see the regions GLOW would actually
-    report). Both rank candidates by raw LLR, as AnalysisGLOW.finalize does
-    (the z-score, right for FWER thresholding, fragments under pruning).
-    prune_greedy blooms the max-LLR region and removes its tree relatives
-    (GLOW's default; tends to undersegment); prune_dp takes the exact
-    max-total-LLR antichain (tends to oversegment).
-
-    Emits one row per rule (label Greedy / DP) with the usual aggregate
-    tp/fp/tn/fn (over the union of the rule's output regions), n_selected
-    (output-region count, ideal 1 per planted effect -- the direct
-    over/under-segmentation measure), and n_sig (significant regions fed to
-    both rules).
+    Records, it does not score. Fits GLOW once (recorded -- self is the recipe),
+    then applies both pruning rules to the SAME FWER-significant region set, so
+    the comparison isolates the rule from the permutation test. Both rank
+    candidates by raw LLR (mirrors AnalysisGLOW.finalize; the z-score fragments
+    under pruning). prune_greedy blooms the max-LLR region and removes its tree
+    relatives (GLOW's default; undersegments); prune_dp takes the exact
+    max-total-LLR antichain (oversegments). Each prune call is recorded -- its
+    function name is the rule, its output the selected regions. Scoring (the
+    over/under-segmentation counts) is derived afterward from the records.
 
     Args:
+        recorder (Recorder): the trial's recorder; calls are wrapped with it.
         source (str): 'wgn' or 'hcp'
         b (int): imaging-feature count
         num_img (int): subject count (WGN; HCP uses its cohort)
@@ -522,17 +517,13 @@ def run_prune(*, source: str, b: int, num_img: int, n_vox_eff: int, seed: int,
         seed (int): effect RNG seed (also selects the HCP feature subset)
         effect_llr (float | None): per-voxel effect target
         effect_total_llr (float | None): whole-region effect target
-
-    Returns:
-        a DataFrame with one row per pruning rule
     """
-    try:
-        trial = _setup_legacy(source=source, b=b, num_img=num_img,
-                             n_vox_eff=n_vox_eff, seed=seed,
-                             effect_llr=effect_llr,
-                             effect_total_llr=effect_total_llr)
-    except ValueError as e:
-        return _skip_frame(e)
+    setup = recorder(output_name_list=('exp_eff', 'effect_list'))(_setup_trial)(
+        source=source, b=b, num_img=num_img, n_vox_eff=n_vox_eff, seed=seed,
+        effect_llr=effect_llr, effect_total_llr=effect_total_llr)
+    if setup is None:
+        return
+    exp_eff, _effect_list = setup
 
     # GLOW's default recipe, shared with the GLOW-Focus arm so both pruning
     # rules prune the regions GLOW would actually report. Deferred import:
@@ -540,9 +531,10 @@ def run_prune(*, source: str, b: int, num_img: int, n_vox_eff: int, seed: int,
     from .config import _GLOW_BASE
     glow_kwargs = {**_GLOW_BASE, 'cluster_mode': ClusterMode.FOCUS}
 
-    t0 = time.time()
-    ana = AnalysisGLOW(exp=trial.exp_eff, **glow_kwargs).fit()
-    fit_time = time.time() - t0
+    ana = recorder(output_name='ana')(
+        AnalysisGLOW(exp=exp_eff, **glow_kwargs).fit)()
+    if ana is None:
+        return
 
     # the FWER-significant regions both rules prune, ranked by raw LLR
     # (mirrors AnalysisGLOW.finalize; the z-score fragments under pruning)
@@ -550,21 +542,9 @@ def run_prune(*, source: str, b: int, num_img: int, n_vox_eff: int, seed: int,
     llr_gain = np.nan_to_num(ana.llr.astype(float), nan=0.0,
                              posinf=0.0, neginf=0.0)
 
-    rows = []
-    for label, prune_fn in (('Greedy', prune_greedy), ('DP', prune_dp)):
-        reg_out_list, _ = prune_fn(sig_reg_list=sig_reg_list,
-                                   children=ana.children, stat=llr_gain)
-        reg_mask_list = [
-            (r, glow.graph.get_label_map(reg_idx_list=[r],
-                                         mask_idx=trial.exp.mask_idx,
-                                         children=ana.children) > -1)
-            for r in reg_out_list]
-        rows.append({'label': label, 'analysis_cls': 'AnalysisGLOW',
-                     **_score_regions(reg_mask_list, [trial.mask_target],
-                                      trial.mask_active),
-                     'n_sig': len(sig_reg_list),
-                     'time_sec': fit_time, **trial.diag})
-    return pd.DataFrame(rows)
+    for prune_fn in (prune_greedy, prune_dp):
+        recorder(output_name_list=('reg_out_list', 'prune_info'))(prune_fn)(
+            sig_reg_list=sig_reg_list, children=ana.children, stat=llr_gain)
 
 
 # ---------------------------------------------------------------------------
@@ -578,24 +558,29 @@ def run_prune(*, source: str, b: int, num_img: int, n_vox_eff: int, seed: int,
 # so the bake-off is among those methods.
 
 def _shared_voxel_walk(exp_eff, n_perm_fwer: int) -> dict:
-    """One stat matrix per MANCOVA stat fn, shared across families.
+    """One stat matrix per MANCOVA stat, keyed by stat name, shared across families.
+
+    Keyed by the stat's name (not the function) so the result is JSON-friendly
+    -- the recorder serialises it as a step output (each matrix as a content
+    hash); run_mancova indexes it by stat_dict_inv[fn].
 
     Args:
         exp_eff: the experiment with the synthetic effect added
         n_perm_fwer (int): number of FWER permutations
 
     Returns:
-        stat_fn -> (n_perm_fwer + 1, num_vox) array; row 0 is observed,
+        stat name -> (n_perm_fwer + 1, num_vox) array; row 0 is observed,
             rows 1: are Freedman-Lane nulls
     """
     num_vox = exp_eff.y.shape[2]
     stat_fns = list(stat_dict.values())
-    out = {fn: np.full((n_perm_fwer + 1, num_vox), np.nan) for fn in stat_fns}
+    out = {stat_dict_inv[fn]: np.full((n_perm_fwer + 1, num_vox), np.nan)
+           for fn in stat_fns}
     for k in range(n_perm_fwer + 1):
         _exp = exp_eff.permute(k) if k else exp_eff
         row = AnalysisVoxel.get_stat_perm_multi(_exp, stat_fns, children=None)
         for fn in stat_fns:
-            out[fn][k, :] = row[fn]
+            out[stat_dict_inv[fn]][k, :] = row[fn]
     return out
 
 
@@ -628,16 +613,20 @@ def _build_specs(n_perm_fwer: int, alpha_fwer: float, cft_pval: float):
                    fn)
 
 
-def run_mancova(*, source: str, b: int, num_img: int, n_vox_eff: int,
+def run_mancova(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
                 seed: int, n_perm_fwer: int, alpha_fwer: float = 0.05,
                 cft_pval: float = DEFAULT_CET_CFT_PVAL,
                 effect_llr=None, effect_total_llr=None):
     """VBA / VBA-TFCE / CET x 5 MANCOVA stats x {raw, z} on one trial.
 
-    Shares one voxel-stat walk across families; each row's time_sec is
-    walk_time + own_post (the isolated-run cost of that variant).
+    Records, it does not score. The shared voxel-stat walk is recorded as one
+    step (its own timing), then each variant's fit records self (the recipe --
+    the stat fn name, z_flag, tfce/cft -- which identifies the variant). The
+    big _stat matrix passed to fit records as a content hash. Scoring is derived
+    afterward from the records, not here.
 
     Args:
+        recorder (Recorder): the trial's recorder; calls are wrapped with it.
         source (str): 'wgn' or 'hcp'
         b (int): imaging-feature count (>1 for a meaningful stat comparison)
         num_img (int): subject count (WGN; HCP uses its cohort)
@@ -648,59 +637,84 @@ def run_mancova(*, source: str, b: int, num_img: int, n_vox_eff: int,
         cft_pval (float): cluster-forming threshold p-value (CET family)
         effect_llr (float | None): per-voxel effect target
         effect_total_llr (float | None): whole-region effect target
-
-    Returns:
-        a DataFrame with one row per (family, stat, z) variant
     """
-    try:
-        trial = _setup_legacy(source=source, b=b, num_img=num_img,
-                             n_vox_eff=n_vox_eff, seed=seed,
-                             effect_llr=effect_llr,
-                             effect_total_llr=effect_total_llr)
-    except ValueError as e:
-        return _skip_frame(e)
+    setup = recorder(output_name_list=('exp_eff', 'effect_list'))(_setup_trial)(
+        source=source, b=b, num_img=num_img, n_vox_eff=n_vox_eff, seed=seed,
+        effect_llr=effect_llr, effect_total_llr=effect_total_llr)
+    if setup is None:
+        return
+    exp_eff, _effect_list = setup
 
-    walk_start = time.time()
-    stat_by_fn = _shared_voxel_walk(trial.exp_eff, n_perm_fwer)
-    walk_time = time.time() - walk_start
+    # the shared walk is recorded once (its own time_sec); a failure stops the
+    # trial (swallowed -> None) before the per-variant fits
+    stat_by_name = recorder(output_name='stat')(_shared_voxel_walk)(
+        exp_eff, n_perm_fwer)
+    if stat_by_name is None:
+        return
 
-    rows = []
-    for label, Ana, kw, fn in _build_specs(n_perm_fwer, alpha_fwer, cft_pval):
-        row = {'label': label, 'analysis_cls': Ana.__name__,
-               'stat': stat_dict_inv[fn], 'z_flag': kw['z_flag'], **trial.diag}
-        post_start = time.time()
-        try:
-            ana = Ana(exp=trial.exp_eff, **kw).fit(_stat=stat_by_fn[fn].copy())
-        except Exception:
-            row['time_sec'] = walk_time + (time.time() - post_start)
-            row['error'] = traceback.format_exc()
-            rows.append(row)
-            continue
-        row['time_sec'] = walk_time + (time.time() - post_start)
-        row.update(_score(ana, [trial.mask_target], trial.mask_active))
-        rows.append(row)
-
-    return pd.DataFrame(rows)
+    for _label, Ana, kw, fn in _build_specs(n_perm_fwer, alpha_fwer, cft_pval):
+        recorder(output_name='ana')(Ana(exp=exp_eff, **kw).fit)(
+            _stat=stat_by_name[stat_dict_inv[fn]].copy())
 
 
 # ---------------------------------------------------------------------------
 # two adjacent effects (cleaving)
 # ---------------------------------------------------------------------------
 
-def run_two_effect(*, source: str, b: int, num_img: int, n_vox_eff: int,
-                   seed: int, angle: float, ana_kwargs_dict: dict,
-                   effect_llr=None, effect_total_llr=None):
+def _setup_two_effect(*, source: str, b: int, num_img: int, n_vox_eff: int,
+                      seed: int, angle: float, effect_llr=None,
+                      effect_total_llr=None):
+    """Build the two-adjacent-effect trial: the imposed experiment + provenance.
+
+    A sphere centred in the mask is spectrally bisected (ExtenterSplit) into two
+    contiguous halves; one effect is planted on each, same llr, with feature
+    directions `angle` apart (shared seed, angles 0 and angle). build_ds raises
+    on an infeasible cell (recorded + swallowed by the recorder).
+
+    A sphere splits cleanly into two equal halves; a min-variance extent's
+    irregular shape splits unevenly (verified at 25k: 34/66..58/42), which would
+    break the "two equal effects" premise. Centre = in-mask voxel nearest the
+    centroid (the analysis mask is itself a sphere, so this is its middle).
+
+    Returns:
+        exp_eff: the experiment with both effects imposed.
+        effect_list (list): the two EffectSynthetic specs (angles 0 and angle).
+        splitter (ExtenterSplit): the bisection that placed them -- the
+            provenance of where each effect landed (the effects carry the masks
+            verbatim, so their own to_record omits the support).
+    """
+    ds, _ = build_ds(source, b=b, num_img=num_img, seed=seed)
+    exp = ds.exp
+    llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
+
+    coords = np.argwhere(exp.mask_idx > -1)
+    ctr = coords.mean(axis=0)
+    vox_init = int(exp.mask_idx[tuple(
+        coords[np.argmin(((coords - ctr) ** 2).sum(axis=1))])])
+    splitter = ExtenterSplit(
+        base=ExtenterSphere(n_vox=n_vox_eff, connected=True, vox_init=vox_init))
+    mask0, mask1 = splitter.fit(mask_idx=exp.mask_idx, y=exp.y)
+    e0 = EffectSynthetic(mask=mask0, effect_llr=llr, angle=0.0, seed=seed)
+    e1 = EffectSynthetic(mask=mask1, effect_llr=llr, angle=float(angle),
+                         seed=seed)
+    exp_eff = e1.fit(e0.fit(exp)[0])[0]
+    return exp_eff, [e0, e1], splitter
+
+
+def run_two_effect(recorder, *, source: str, b: int, num_img: int,
+                   n_vox_eff: int, seed: int, angle: float,
+                   ana_kwargs_dict: dict, effect_llr=None,
+                   effect_total_llr=None):
     """Two adjacent equal-LLR effects at a controlled feature-direction angle.
 
-    Grows one min-variance extent of n_vox_eff voxels, splits it into two
-    contiguous halves (split_mask_spectral) and plants an effect on each:
-    both at the same effect_llr, with feature directions `angle` degrees
-    apart (shared seed, angles 0 and `angle`; see EffectSynthetic /
-    sample_beta_direction).
-    Fits every analysis and scores the prediction against each planted half
-    separately (per-effect tp/fp/tn/fn suffixed 0/1; see _score_regions).
+    Records, it does not score. _setup_two_effect plants the two effects and
+    records the experiment, the effect specs, and the ExtenterSplit (the
+    provenance of the bisection); then each analysis fit records self (the
+    recipe). Scoring against each planted half is derived afterward from the
+    records, not here.
 
     Args:
+        recorder (Recorder): the trial's recorder; calls are wrapped with it.
         source (str): 'wgn' or 'hcp'
         b (int): imaging-feature count (>= 2; the direction rotation needs a
             plane)
@@ -711,54 +725,15 @@ def run_two_effect(*, source: str, b: int, num_img: int, n_vox_eff: int,
         ana_kwargs_dict (dict): label -> (Analysis class, init kwargs)
         effect_llr (float | None): per-voxel target for each effect
         effect_total_llr (float | None): whole-region target per effect
-
-    Returns:
-        a DataFrame with one row per analysis label
     """
-    try:
-        ds, feats = build_ds(source, b=b, num_img=num_img, seed=seed)
-    except ValueError as e:
-        return _skip_frame(e)
+    setup = recorder(
+        output_name_list=('exp_eff', 'effect_list', 'splitter'))(
+        _setup_two_effect)(
+        source=source, b=b, num_img=num_img, n_vox_eff=n_vox_eff, seed=seed,
+        angle=angle, effect_llr=effect_llr, effect_total_llr=effect_total_llr)
+    if setup is None:
+        return
+    exp_eff, _effect_list, _splitter = setup
 
-    exp = ds.exp
-    mask_active = exp.mask_idx > -1
-    llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
-
-    # A sphere centred in the middle of the data splits cleanly into two equal
-    # halves; a min-variance extent's irregular shape splits unevenly (verified
-    # at 25k: 34/66..58/42), which would break the "two equal effects" premise.
-    # Centre = in-mask voxel nearest the centroid (the analysis mask is itself
-    # a sphere, so this is its middle).
-    coords = np.argwhere(mask_active)
-    ctr = coords.mean(axis=0)
-    vox_init = int(exp.mask_idx[tuple(
-        coords[np.argmin(((coords - ctr) ** 2).sum(axis=1))])])
-    # one sphere, spectrally bisected into two adjacent halves by a single
-    # ExtenterSplit; plant one effect on each half (same llr, feature
-    # directions `angle` apart).
-    splitter = ExtenterSplit(
-        base=ExtenterSphere(n_vox=n_vox_eff, connected=True, vox_init=vox_init))
-    mask0, mask1 = splitter.fit(mask_idx=exp.mask_idx, y=exp.y)
-    e0 = EffectSynthetic(mask=mask0, effect_llr=llr, angle=0.0, seed=seed)
-    e1 = EffectSynthetic(mask=mask1, effect_llr=llr, angle=float(angle),
-                         seed=seed)
-    exp_eff0, _ = e0.fit(exp)
-    exp_eff, _ = e1.fit(exp_eff0)
-
-    diag = {**_trial_diag(exp, mask0 | mask1, llr, feats),
-            'angle': float(angle)}
-    rows = []
-    for label, (Ana, kw) in ana_kwargs_dict.items():
-        row = {'label': label, 'analysis_cls': Ana.__name__, **diag}
-        t0 = time.time()
-        try:
-            ana = Ana(exp=exp_eff, **kw).fit()
-        except Exception:
-            row['time_sec'] = time.time() - t0
-            row['error'] = traceback.format_exc()
-            rows.append(row)
-            continue
-        row['time_sec'] = time.time() - t0
-        row.update(_score(ana, [mask0, mask1], mask_active))
-        rows.append(row)
-    return pd.DataFrame(rows)
+    for Ana, kw in ana_kwargs_dict.values():
+        recorder(output_name='ana')(Ana(exp=exp_eff, **kw).fit)()
