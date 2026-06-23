@@ -982,7 +982,8 @@ def _load_in_config(label: str, cache):
     df, _, _ = glow.benchmark.load_update_all(label, verbose=False)
     if df.empty or 'trial_hash' not in df.columns:
         return pd.DataFrame()
-    expected = {stable_hash(trial) for trial in cache.iter_trial()}
+    expected = {stable_hash(trial)
+                for trial in cache.iter_trial(include_completed=True)}
     return df[df['trial_hash'].astype(str).isin(expected)]
 
 

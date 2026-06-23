@@ -144,7 +144,7 @@ def recover_trial(label: str, trial_hash: str) -> dict:
         LookupError: no trial in the cache matches trial_hash.
     """
     cache, _ = CACHE_BY_LABEL[label]
-    for trial in cache.iter_trial():
+    for trial in cache.iter_trial(include_completed=True):
         if stable_hash(trial) == trial_hash:
             return trial
     raise LookupError(

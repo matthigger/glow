@@ -40,17 +40,10 @@ from glow.analysis import (
 from glow.analysis.cluster import cluster, ClusterMode
 from glow.analysis.mancova import stat_dict, stat_dict_inv
 from glow.analysis.prune import prune_greedy, prune_dp
-from glow.benchmark.recorder import recorder
 from glow.benchmark.trial_cache import SKIP_LABEL
 from glow.effect import (EffectSynthetic, ExtenterMinVar, ExtenterSphere,
                          ExtenterSplit)
 from .factory import build_ds, derive_seeds
-
-
-# the shared process-wide recorder (glow.benchmark.recorder.recorder). The
-# trial fns below wrap their calls with it at runtime; the TrialCache scopes
-# each trial on the same instance (its iter_record opens the trial id), so the
-# wrapped calls record under the right trial without threading it through.
 
 
 def _effect_llr(effect_llr, effect_total_llr, n_vox_eff: int):
@@ -295,19 +288,22 @@ def _setup_trial(*, source: str, b: int, num_img: int, n_vox_eff: int,
     return effect.fit(exp)[0], [effect]
 
 
-def run_ana(*, source: str, b: int, num_img: int, n_vox_eff: int, seed: int,
-            ana_kwargs_dict: dict, effect_llr=None, effect_total_llr=None):
+def run_ana(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
+            seed: int, ana_kwargs_dict: dict, effect_llr=None,
+            effect_total_llr=None):
     """Fit every analysis in ana_kwargs_dict on one synthetic trial.
 
-    Records, it does not score. Every step is wrapped with the recorder at the
-    call site (no decorators): _setup_trial records the experiment + planted
-    effects for provenance, then each analysis fit records self (the analysis
-    recipe, which identifies the variant), its timing, and any traceback. The
-    trial scope -- trial_id = the cache hash, shared by all these records -- is
-    opened by the TrialCache iterator driving this call. Scoring is derived
-    afterward from the records, not here.
+    Records, it does not score. The recorder is passed in (by the driver, which
+    got it from the TrialCache that scoped this trial) and every step is wrapped
+    with it at the call site -- no decorators: _setup_trial records the
+    experiment + planted effects for provenance, then each analysis fit records
+    self (the analysis recipe, which identifies the variant), its timing, and
+    any traceback. All share one trial id (the cache hash, set by the iterator's
+    scope). Scoring is derived afterward from the records, not here.
 
     Args:
+        recorder (Recorder): the trial's recorder (its trial scope is already
+            open); calls are wrapped with it.
         source (str): 'wgn' or 'hcp'
         b (int): imaging-feature count
         num_img (int): subject count (WGN; HCP uses its cohort)

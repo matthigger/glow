@@ -269,7 +269,8 @@ def _to_s3_cache(cache, *, aws_config, s3, swap_memo: Dict[str, DataSourceS3],
     # Pair each original trial with its swapped twin (same grid order) and
     # alias the twin's hash back, so save_result writes the original's row.
     alias: Dict[str, str] = {}
-    for orig, new in zip(cache.iter_trial(), aws_cache.iter_trial()):
+    for orig, new in zip(cache.iter_trial(include_completed=True),
+                         aws_cache.iter_trial(include_completed=True)):
         oh, nh = stable_hash(orig), stable_hash(new)
         if oh != nh:
             alias[nh] = oh
