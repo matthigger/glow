@@ -1,9 +1,9 @@
-"""Tests for EffectSynthetic (frozen spec, EffectFit output).
+"""Tests for EffectSynthetic (frozen spec, (exp_eff, mask) output).
 
 The effect seed lives in the extenter (it carries its own seed), so a
 seeded extenter makes the sampled extent reproducible. EffectSynthetic's
 own seed drives only the imposed direction (angle). fit(exp) returns an
-EffectFit(exp, mask) and leaves the frozen spec untouched.
+(exp_eff, mask) pair and leaves the frozen spec untouched.
 """
 
 import pickle
@@ -13,7 +13,6 @@ import numpy as np
 import pytest
 
 from glow.effect import EffectSynthetic, ExtenterMinVar, ExtenterSphere
-from glow.effect.eff import EffectFit
 from glow.effect.impose import sample_beta_direction
 from glow.experiment.exper import Experiment
 from glow.analysis.mancova import decompose, get_mancova, get_llr
@@ -73,19 +72,18 @@ class TestInit:
 
 
 class TestFitExtenterPath:
-    def test_returns_effect_fit(self, exp, extenter):
+    def test_returns_exp_and_mask(self, exp, extenter):
         synth = EffectSynthetic(extenter=extenter, effect_llr=0.5)
-        fit = synth.fit(exp)
-        assert isinstance(fit, EffectFit)
-        assert fit.mask is not None
-        assert fit.exp.y.shape == exp.y.shape
+        exp_eff, mask = synth.fit(exp)
+        assert mask is not None
+        assert exp_eff.y.shape == exp.y.shape
 
     def test_mask_matches_extenter(self, exp, extenter):
         # the extenter (seed baked in) produces the same mask directly
         synth = EffectSynthetic(extenter=extenter, effect_llr=0.5)
-        fit = synth.fit(exp)
+        _, mask = synth.fit(exp)
         direct = extenter(y=exp.y, mask_idx=exp.mask_idx)
-        np.testing.assert_array_equal(fit.mask, direct)
+        np.testing.assert_array_equal(mask, direct)
 
     def test_effect_llr_preserved(self, exp):
         synth = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
@@ -100,8 +98,8 @@ class TestFitMaskPath:
         mask[0:3, 0:3] = True
         mask &= (exp.mask_idx >= 0)
         synth = EffectSynthetic(mask=mask, effect_llr=0.5)
-        fit = synth.fit(exp)
-        np.testing.assert_array_equal(fit.mask, mask)
+        _, fit_mask = synth.fit(exp)
+        np.testing.assert_array_equal(fit_mask, mask)
 
 
 class TestReproducibility:
@@ -110,9 +108,9 @@ class TestReproducibility:
                             effect_llr=0.5)
         b = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
                             effect_llr=0.5)
-        fa, fb = a.fit(exp), b.fit(exp)
-        np.testing.assert_array_equal(fa.mask, fb.mask)
-        np.testing.assert_array_equal(fa.exp.y, fb.exp.y)
+        (exp_a, mask_a), (exp_b, mask_b) = a.fit(exp), b.fit(exp)
+        np.testing.assert_array_equal(mask_a, mask_b)
+        np.testing.assert_array_equal(exp_a.y, exp_b.y)
 
     def test_different_seed_different_mask(self, exp):
         # seeds 0 and 1 place distinct sphere centres for this fixture
@@ -121,7 +119,7 @@ class TestReproducibility:
                             effect_llr=0.5)
         b = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=1),
                             effect_llr=0.5)
-        assert not np.array_equal(a.fit(exp).mask, b.fit(exp).mask)
+        assert not np.array_equal(a.fit(exp)[1], b.fit(exp)[1])
 
     def test_effect_llr_no_leak_into_mask(self, exp):
         # same extenter (same seed) -> same mask regardless of llr
@@ -129,10 +127,10 @@ class TestReproducibility:
                             effect_llr=0.3)
         b = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
                             effect_llr=0.9)
-        fa, fb = a.fit(exp), b.fit(exp)
-        np.testing.assert_array_equal(fa.mask, fb.mask)
+        (exp_a, mask_a), (exp_b, mask_b) = a.fit(exp), b.fit(exp)
+        np.testing.assert_array_equal(mask_a, mask_b)
         # different llr -> different imposed offset -> different applied y
-        assert not np.allclose(fa.exp.y, fb.exp.y)
+        assert not np.allclose(exp_a.y, exp_b.y)
 
 
 class TestIdentity:
@@ -152,6 +150,27 @@ class TestIdentity:
         assert synth != 42
 
 
+class TestToRecord:
+    """to_record gives a JSON-friendly recipe without the realized mask."""
+
+    def test_extenter_recipe_nested_no_mask(self, extenter):
+        rec = EffectSynthetic(extenter=extenter, effect_llr=0.5,
+                              seed=3).to_record()
+        assert rec['kind'] == 'EffectSynthetic'
+        assert rec['effect_llr'] == 0.5
+        assert rec['seed'] == 3
+        assert rec['extenter'] == extenter.to_record()
+        assert 'mask' not in rec
+
+    def test_mask_path_records_no_mask(self, exp):
+        # the explicit-mask path is not in the pipeline; to_record omits the
+        # array (extenter is None) rather than dumping it
+        mask = exp.mask_idx >= 0
+        rec = EffectSynthetic(mask=mask, effect_llr=0.5).to_record()
+        assert rec['extenter'] is None
+        assert 'mask' not in rec
+
+
 class TestFrozenInputsInterop:
     def test_fit_does_not_mutate_exp(self, exp, extenter):
         # freeze the exp arrays — fit() must not write to them
@@ -169,10 +188,10 @@ class TestPickle:
     def test_round_trip_reproduces_fit(self, exp):
         synth = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
                                 effect_llr=0.5)
-        out = synth.fit(exp)
+        exp_eff, _ = synth.fit(exp)
         clone = pickle.loads(pickle.dumps(synth))
         # a pickled clone re-fits to the same applied experiment
-        np.testing.assert_array_equal(clone.fit(exp).exp.y, out.exp.y)
+        np.testing.assert_array_equal(clone.fit(exp)[0].y, exp_eff.y)
 
 
 def _region_coef(applied_exp, base_exp, mask):
@@ -218,13 +237,13 @@ class TestDirectionFit:
     def test_angle_path(self, exp):
         mask = self._mask(exp, slice(0, 3))
         synth = EffectSynthetic(mask=mask, effect_llr=0.1, angle=25, seed=4)
-        fit = synth.fit(exp)
-        assert np.isclose(_region_llr(fit.exp, exp, mask), 0.1, atol=1e-6)
+        exp_eff, _ = synth.fit(exp)
+        assert np.isclose(_region_llr(exp_eff, exp, mask), 0.1, atol=1e-6)
         # recovered coef points along the seed-sampled direction (recompute,
         # not stored): same a1/b/angle/seed -> same beta_direction
         expected = sample_beta_direction(a1=1, b=exp.y.shape[0], angle=25,
                                          seed=4)
-        coef = _region_coef(fit.exp, exp, mask)
+        coef = _region_coef(exp_eff, exp, mask)
         assert np.isclose(_fro_angle_deg(coef, expected.T), 0.0, atol=1e-3)
 
     def test_two_adjacent_effects_at_angle(self, exp):
@@ -234,7 +253,7 @@ class TestDirectionFit:
         mask_b = self._mask(exp, slice(3, 5))
         e1 = EffectSynthetic(mask=mask_a, effect_llr=0.1, angle=0, seed=5)
         e2 = EffectSynthetic(mask=mask_b, effect_llr=0.1, angle=60, seed=5)
-        out = e2.fit(e1.fit(exp).exp).exp
+        out, _ = e2.fit(e1.fit(exp)[0])
         assert np.isclose(_region_llr(out, exp, mask_a), 0.1, atol=1e-6)
         assert np.isclose(_region_llr(out, exp, mask_b), 0.1, atol=1e-6)
         coef_a = _region_coef(out, exp, mask_a)

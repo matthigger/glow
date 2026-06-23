@@ -282,6 +282,51 @@ class ExtenterMinVar(Extenter):
         return mask
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExtenterSplit(DataclassJSON):
+    """Bisect a base extent into two adjacent halves.
+
+    A compound, recordable spec that holds one base Extenter defining the
+    whole area; fit() grows that extent and spectrally bisects it
+    (split_mask_spectral, a Fiedler cut) into two contiguous near-equal
+    halves, returned as a pair. The two-effect cleaving trial plants one
+    effect on each half. The base carries its own seed and geometry, so a
+    single ExtenterSplit yields both halves -- no per-half instance.
+
+    Unlike an Extenter (one mask via __call__), this returns a pair, so it is
+    a sibling spec rather than an Extenter subclass; it is still value-hashable
+    and records (to_record) as {kind, base: base.to_record()}.
+
+    Attributes:
+        base (Extenter): the extent to bisect; must yield a single connected
+            component (e.g. ExtenterSphere(connected=True)), as
+            split_mask_spectral requires.
+    """
+
+    base: object = None
+
+    def __post_init__(self):
+        if self.base is None:
+            raise ValueError('base required')
+
+    def fit(self, mask_idx, y=None, verbose: bool = False):
+        """Grow the base extent and bisect it into two spectral halves.
+
+        Args:
+            mask_idx (np.array): voxel index array (-1 outside analysis)
+            y (np.array): (b, num_img, num_vox) intensities; required by
+                data-driven bases (ExtenterMinVar), ignored by geometric ones
+            verbose (bool): forwarded to the base extenter
+
+        Returns:
+            mask0 (np.array): boolean, the first spectral half
+            mask1 (np.array): boolean, the other half. mask0 | mask1 is the
+                base extent and the two are disjoint.
+        """
+        full = self.base(mask_idx=mask_idx, y=y, verbose=verbose)
+        return split_mask_spectral(full)
+
+
 def _face_offsets(ndim):
     """Return the face-neighbour index offsets for an ndim array.
 
@@ -422,10 +467,18 @@ def _fiedler_endpoints(mask):
         degree = np.asarray(A.sum(axis=1)).ravel()
         L = sparse.diags(degree) - A
         # eigsh needs k < n_vox; k=2 returns the constant vector + Fiedler
-        evals, evecs = eigsh(L, k=2, which='SM')
+        # eigsh's Lanczos start is random by default, so the Fiedler vector --
+        # and thus the split -- is non-deterministic run to run; for a
+        # (near-)degenerate second eigenvalue (symmetric regions) it returns an
+        # arbitrary vector in the eigenspace, not just a sign flip. Pin a fixed
+        # start vector so the split is reproducible (ExtenterSplit's half 0/1
+        # must agree across its two independent calls).
+        v0 = np.random.default_rng(0).standard_normal(n_vox)
+        evals, evecs = eigsh(L, k=2, which='SM', v0=v0)
         fiedler = evecs[:, np.argsort(evals)[1]]
-        node0 = int(np.argmin(fiedler))
-        node1 = int(np.argmax(fiedler))
+        # canonicalize the endpoint pair by node index too, so any residual
+        # sign ambiguity cannot swap which piece is 0
+        node0, node1 = sorted((int(np.argmin(fiedler)), int(np.argmax(fiedler))))
 
     return tuple(coords[node0]), tuple(coords[node1])
 

@@ -25,9 +25,7 @@ class TestBigEffect:
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=100, seed=0)
     effect = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
                              effect_llr=0.5)
-    _fit = effect.fit(exp)
-    exp = _fit.exp
-    mask_target = _fit.mask
+    exp, mask_target = effect.fit(exp)
 
     def test_glow(self):
         analysis = AnalysisGLOW(TestBigEffect.exp, n_perm_fwer=25, alpha_fwer=.1).fit()
@@ -117,7 +115,7 @@ class TestAnalysisEdgeCases:
         """test when all regions are filtered out by min_vox"""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
         exp = EffectSynthetic(extenter=ExtenterSphere(radius=1, seed=0),
-                              effect_llr=0.5).fit(exp).exp
+                              effect_llr=0.5).fit(exp)[0]
 
         # set min_vox so large that all regions are filtered
         analysis = AnalysisGLOW(
@@ -166,7 +164,7 @@ class TestZeroStdGuard:
         """regions with constant stat across adjustment perms should not produce inf/nan"""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
         exp = EffectSynthetic(extenter=ExtenterSphere(radius=1, seed=0),
-                              effect_llr=0.5).fit(exp).exp
+                              effect_llr=0.5).fit(exp)[0]
 
         analysis = AnalysisGLOW(exp, n_perm_fwer=5, alpha_fwer=0.05,
                                 min_vox=1).fit()
@@ -185,7 +183,7 @@ class TestMinVox:
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                      num_img=50, seed=0)
         exp = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
-                              effect_llr=0.5).fit(exp).exp
+                              effect_llr=0.5).fit(exp)[0]
 
         min_vox = 4
         ana = AnalysisGLOW(
@@ -213,7 +211,7 @@ class TestMinVox:
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                      num_img=50, seed=0)
         exp = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
-                              effect_llr=0.5).fit(exp).exp
+                              effect_llr=0.5).fit(exp)[0]
 
         ana_low = AnalysisGLOW(
             exp, n_perm_fwer=10, n_perm_inner=20,
@@ -240,7 +238,7 @@ class TestPerRegionZConsistency:
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                     num_img=50, seed=0)
         exp = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
-                              effect_llr=0.5).fit(exp).exp
+                              effect_llr=0.5).fit(exp)[0]
         ana = AnalysisGLOW(exp, n_perm_fwer=5, n_perm_inner=20,
                            alpha_fwer=.5, min_vox=1).fit()
 
@@ -311,7 +309,7 @@ class TestStreamingFidelity:
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=50, seed=0)
     effect = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
                              effect_llr=0.5)
-    exp = effect.fit(exp).exp
+    exp = effect.fit(exp)[0]
 
     def test_reproducible(self):
         """Two runs with the same data must produce identical p-values."""
@@ -363,7 +361,7 @@ class TestDiscoverMask:
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=100, seed=0)
     effect = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
                              effect_llr=0.5)
-    exp_eff = effect.fit(exp).exp
+    exp_eff = effect.fit(exp)[0]
 
     def test_single_connected_mask_is_one_effect(self):
         """A single connected blob yields exactly one effect equal to the mask."""

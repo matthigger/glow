@@ -220,7 +220,7 @@ class TestPowerMonotonicity:
                 if llr > 0:
                     exp = EffectSynthetic(
                         extenter=ExtenterSphere(radius=2, seed=seed),
-                        effect_llr=llr).fit(exp).exp
+                        effect_llr=llr).fit(exp)[0]
                 ana = AnalysisVBA(exp, n_perm_fwer=n_perm,
                                   alpha_fwer=alpha).fit()
                 if len(ana.effect_list) > 0:

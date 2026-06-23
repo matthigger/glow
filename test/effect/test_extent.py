@@ -6,6 +6,7 @@ from glow.effect.extent import (
     ContiguousRegionNotFound,
     ExtenterMinVar,
     ExtenterSphere,
+    ExtenterSplit,
     get_diameter,
     iter_bfs,
     iter_vox_neighbor,
@@ -313,6 +314,17 @@ class TestSplitMaskSpectral:
         with pytest.raises(ValueError):
             split_mask_spectral(mask)
 
+    def test_piece_order_is_deterministic(self):
+        # the Fiedler sign is arbitrary (eigsh random start); the piece
+        # labeling must still be stable across calls, or ExtenterSplit's two
+        # halves disagree on which is 0
+        mask = np.ones((4, 4), dtype=bool)
+        first0, first1 = split_mask_spectral(mask)
+        for _ in range(8):
+            m0, m1 = split_mask_spectral(mask)
+            np.testing.assert_array_equal(m0, first0)
+            np.testing.assert_array_equal(m1, first1)
+
     @pytest.mark.slow
     def test_hcp_minvar_region(self, hcp_img_exp):
         # sample a 500-voxel MinVar region from HCP FA and verify that
@@ -326,3 +338,33 @@ class TestSplitMaskSpectral:
         _assert_valid_split(region, mask0, mask1)
         total = int(region.sum())
         assert abs(int(mask0.sum()) - int(mask1.sum())) <= total // 10
+
+
+class TestExtenterSplit:
+    def test_fit_returns_two_partitioning_halves(self):
+        # a 1x6 line: one ExtenterSplit over a sphere base returns both halves,
+        # matching a direct split of the base extent and partitioning it
+        mask_idx = get_mask_idx(np.ones((1, 6), dtype=bool))
+        base = ExtenterSphere(n_vox=6, vox_init=0)
+        full = base(mask_idx=mask_idx)
+        ref0, ref1 = split_mask_spectral(full)
+
+        mask0, mask1 = ExtenterSplit(base=base).fit(mask_idx=mask_idx)
+        np.testing.assert_array_equal(mask0, ref0)
+        np.testing.assert_array_equal(mask1, ref1)
+        _assert_valid_split(full, mask0, mask1)
+
+    def test_value_hashable(self):
+        base = ExtenterSphere(n_vox=6, vox_init=0)
+        a = ExtenterSplit(base=base)
+        assert a == ExtenterSplit(base=base)
+        assert hash(a) == hash(ExtenterSplit(base=base))
+
+    def test_to_record_nests_base(self):
+        rec = ExtenterSplit(base=ExtenterSphere(n_vox=6, vox_init=0)).to_record()
+        assert rec['kind'] == 'ExtenterSplit'
+        assert rec['base']['kind'] == 'ExtenterSphere'
+
+    def test_missing_base_raises(self):
+        with pytest.raises(ValueError, match='base'):
+            ExtenterSplit()

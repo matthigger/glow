@@ -1,16 +1,10 @@
 """Effect objects: planted synthetic effects and estimated effect regions."""
 
-from collections import namedtuple
 from dataclasses import dataclass
 
 import numpy as np
 
 from glow.analysis.mancova import get_mancova
-
-
-# fit outputs, returned by EffectSynthetic.fit (kept off the frozen spec so
-# the spec's identity stays stable across a fit)
-EffectFit = namedtuple('EffectFit', 'exp mask')
 
 
 class EffectEstimate:
@@ -89,11 +83,15 @@ Effect = EffectEstimate
 class EffectSynthetic:
     """A planted (synthetic) effect: a frozen, immutable spec.
 
-    The spec fully determines the planted effect; fit(exp) returns its
-    realized support and the modified experiment as an EffectFit, leaving
-    the spec unchanged. Supply exactly one of extenter or mask. When
+    The spec fully determines the planted effect; fit(exp) returns the
+    modified experiment and the realized support as an (exp_eff, mask) pair,
+    leaving the spec unchanged. Supply exactly one of extenter or mask. When
     extenter is given it carries its own RNG seed; the seed field here
     drives only the imposed direction (angle).
+
+    The benchmark pipeline always builds effects by extenter (mask stays None),
+    so the recorded provenance (to_record) is the extenter recipe; the explicit
+    mask path is kept for ad-hoc use (the viewer) but is not recorded.
 
     Unlike the extenter / data-source specs, EffectSynthetic carries an
     ndarray (mask) and is never a cache key, so it uses identity equality
@@ -141,7 +139,23 @@ class EffectSynthetic:
             mask.flags.writeable = False
             object.__setattr__(self, 'mask', mask)
 
-    def fit(self, exp) -> EffectFit:
+    def to_record(self) -> dict:
+        """JSON-friendly recipe for provenance: the spec without the mask.
+
+        The recorder serializes any value exposing to_record (see
+        glow.benchmark.recorder). The realized support is omitted: in the
+        pipeline it is a deterministic function of the extenter, and recording
+        it would dump a boolean array. extenter recurses via its own to_record.
+        """
+        return {'kind': type(self).__name__,
+                'effect_llr': self.effect_llr,
+                'extenter': (None if self.extenter is None
+                             else self.extenter.to_record()),
+                'seed': self.seed,
+                'angle': self.angle,
+                'purge_interest': self.purge_interest}
+
+    def fit(self, exp):
         """Sample support, compute offset, impose the effect.
 
         The offset direction is either inherited from the data (the default,
@@ -153,8 +167,9 @@ class EffectSynthetic:
                 x and contrast (call .sample_x() first)
 
         Returns:
-            EffectFit(exp, mask): the experiment with the effect imposed and
-                the realized boolean support.
+            exp_eff: the experiment with the effect imposed.
+            mask (np.array): the realized boolean support, same shape as
+                exp.mask_idx.
         """
         # local import keeps glow.effect import-time cycle-free
         from .impose import compute_offset, impose_effect, sample_beta_direction
@@ -185,4 +200,4 @@ class EffectSynthetic:
                 effect_llr=self.effect_llr)
 
         exp_eff = exp.add_offset(offset, mask=mask, sigma_scale=sigma_scale)
-        return EffectFit(exp=exp_eff, mask=mask)
+        return exp_eff, mask

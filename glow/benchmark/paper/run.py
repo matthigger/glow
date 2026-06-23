@@ -41,8 +41,8 @@ from glow.analysis.cluster import cluster, ClusterMode
 from glow.analysis.mancova import stat_dict, stat_dict_inv
 from glow.analysis.prune import prune_greedy, prune_dp
 from glow.benchmark.trial_cache import SKIP_LABEL
-from glow.effect import EffectSynthetic, ExtenterMinVar, ExtenterSphere
-from glow.effect.extent import split_mask_spectral
+from glow.effect import (EffectSynthetic, ExtenterMinVar, ExtenterSphere,
+                         ExtenterSplit)
 from .factory import build_ds, derive_seeds
 
 
@@ -103,8 +103,9 @@ def _plant(ds, extenter, effect_llr):
     exp = ds.exp
     if effect_llr is None:
         return exp, exp, np.zeros(exp.mask_idx.shape, dtype=bool)
-    fit = EffectSynthetic(extenter=extenter, effect_llr=effect_llr).fit(exp)
-    return exp, fit.exp, fit.mask
+    exp_eff, mask = EffectSynthetic(extenter=extenter,
+                                    effect_llr=effect_llr).fit(exp)
+    return exp, exp_eff, mask
 
 
 def _score_regions(reg_mask_list, mask_target_list, mask_active) -> dict:
@@ -744,13 +745,17 @@ def run_two_effect(*, source: str, b: int, num_img: int, n_vox_eff: int,
     ctr = coords.mean(axis=0)
     vox_init = int(exp.mask_idx[tuple(
         coords[np.argmin(((coords - ctr) ** 2).sum(axis=1))])])
-    extent = ExtenterSphere(n_vox=n_vox_eff, connected=True,
-                            vox_init=vox_init)(mask_idx=exp.mask_idx, y=exp.y)
-    mask0, mask1 = split_mask_spectral(extent)
+    # one sphere, spectrally bisected into two adjacent halves by a single
+    # ExtenterSplit; plant one effect on each half (same llr, feature
+    # directions `angle` apart).
+    splitter = ExtenterSplit(
+        base=ExtenterSphere(n_vox=n_vox_eff, connected=True, vox_init=vox_init))
+    mask0, mask1 = splitter.fit(mask_idx=exp.mask_idx, y=exp.y)
     e0 = EffectSynthetic(mask=mask0, effect_llr=llr, angle=0.0, seed=seed)
     e1 = EffectSynthetic(mask=mask1, effect_llr=llr, angle=float(angle),
                          seed=seed)
-    exp_eff = e1.fit(e0.fit(exp).exp).exp
+    exp_eff0, _ = e0.fit(exp)
+    exp_eff, _ = e1.fit(exp_eff0)
 
     diag = {**_trial_diag(exp, mask0 | mask1, llr, feats),
             'angle': float(angle)}

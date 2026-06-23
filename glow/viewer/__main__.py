@@ -186,8 +186,7 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
             sphere = (dist <= radius).reshape(shape) & (exp.mask_idx >= 0)
             effect = EffectSynthetic(mask=sphere, effect_llr=effect_llr)
             fit = effect.fit(exp)
-        exp_eff = fit.exp
-        mask_target = fit.mask
+        exp_eff, mask_target = fit
     else:
         exp_eff = exp
         print('  no effect imposed')
