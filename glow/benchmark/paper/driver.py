@@ -34,17 +34,17 @@ def _call(run_fnc, recorder, trial: dict):
     return run_fnc(**trial)
 
 
-def _run_one(run_fnc, trial: dict, trial_hash: str, records_dir: str) -> None:
+def _run_one(run_fnc, trial: dict, trial_hash: str, folder: str) -> None:
     """Run one trial in a worker on its own recorder; write its own json file.
 
     Scopes the trial (trial_id = the cache hash) on a worker-local recorder
-    rooted at records_dir, so a recorder-wired fn records under it, then flushes
-    those records to records_dir/<hash>.json in-worker (only compact recipe
-    dicts touch disk; per-trial files never contend). A recorder-wired fn
-    swallows its own failures; any other exception is swallowed here (the trial
-    simply produces no records).
+    rooted at the same experiment folder, so a recorder-wired fn records under
+    it, then flushes those records to its records/<hash>.json in-worker (only
+    compact recipe dicts touch disk; per-trial files never contend). A
+    recorder-wired fn swallows its own failures; any other exception is
+    swallowed here (the trial simply produces no records).
     """
-    recorder = Recorder(folder=records_dir)
+    recorder = Recorder(folder=folder)
     try:
         with recorder.trial(trial_id=trial_hash):
             _call(run_fnc, recorder, trial)
@@ -80,8 +80,8 @@ def driver_paper(trial_cache, run_fnc, n_jobs: int = 1,
     trials = list(trial_cache.iter_trial())  # uncompleted, no scope/record
     if not trials:
         return
-    records_dir = str(trial_cache.recorder.folder)
-    args = [(run_fnc, t, trial_cache.hash(t), records_dir) for t in trials]
+    folder = str(trial_cache.recorder.folder)
+    args = [(run_fnc, t, trial_cache.hash(t), folder) for t in trials]
 
     bar = tqdm(total=len(trials), disable=not verbose, desc='trials')
     for _ in Parallel(n_jobs=n_jobs, return_as='generator')(

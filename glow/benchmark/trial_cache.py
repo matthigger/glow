@@ -25,12 +25,8 @@ from typing import Iterator, Optional
 from tqdm import tqdm
 
 from glow.util import stable_hash, value_id
-from .file import get_path_result
 from .recorder import Recorder
 
-
-RECORDS_NAME = 'records.json'
-RECORDS_DIR = 'records'
 
 # Sentinel `label` values for trials that produced no scored result, used by
 # the trial fns / plotting (not by the cache). SKIP: an infeasible cell, e.g.
@@ -44,13 +40,15 @@ class TrialCache:
     """Trial iteration spec that owns a recorder; no disk IO of its own.
 
     Construct with exactly one of name (resolves to
-    <default_results_dir>/<name>/) or folder (used directly).
+    <default_results_dir>/<name>/) or folder (used directly); both are forwarded
+    to the recorder, which owns the directory -- the cache holds no folder of
+    its own (use cache.recorder.folder).
 
     Attributes:
-        folder (Path): on-disk directory for this cache. Created if missing.
-        recorder (Recorder): this cache's recorder, rooted at folder/records;
-            iter_trial(record=True) scopes each trial on it, and it is the only
-            object that reads/writes the per-trial record files.
+        recorder (Recorder): this cache's recorder, rooted at the experiment
+            folder (resolved from name/folder). iter_trial(record=True) scopes
+            each trial on it, and it is the only object that reads/writes the
+            per-trial record files.
         iter_kwargs (dict | None): values are iterables; their cartesian
             product yields one kwarg dict per trial.
         kwargs (dict | None): constant kwargs merged into every yielded dict.
@@ -68,11 +66,6 @@ class TrialCache:
         if (name is None) == (folder is None):
             raise ValueError('exactly one of `name` or `folder` required')
 
-        if name is not None:
-            folder = get_path_result() / name
-        self.folder = Path(folder)
-        self.folder.mkdir(parents=True, exist_ok=True)
-
         if iter_kwargs and kwargs:
             overlap = set(iter_kwargs) & set(kwargs)
             if overlap:
@@ -82,10 +75,10 @@ class TrialCache:
         self.iter_kwargs = iter_kwargs
         self.kwargs = kwargs
         self.trial_alias_map = trial_alias_map
-        # this cache's recorder, rooted at the per-trial records dir;
+        # the recorder owns the experiment folder + per-trial record files;
         # iter_trial(record=True) scopes each trial on it and the driver passes
         # it to the trial fn, which wraps its calls
-        self.recorder = Recorder(folder=self.folder / RECORDS_DIR)
+        self.recorder = Recorder(name=name, folder=folder)
 
     def hash(self, trial: dict) -> str:
         """Hash a trial, redirected through trial_alias_map when one is set.
@@ -175,9 +168,9 @@ class TrialCache:
     def load_records(self, consolidate: bool = False) -> list:
         """Load every per-trial record file; optionally consolidate to one json.
 
-        Delegates the disk reads to the recorder. With consolidate=True also
-        writes the combined list to <folder>/records.json (outside the per-trial
-        records dir, so it is not re-read).
+        Delegates the disk reads to the recorder. With consolidate=True the
+        recorder also writes the combined list to records.json beside the
+        per-trial records dir.
 
         Args:
             consolidate (bool): also write the union to records.json.
@@ -186,5 +179,5 @@ class TrialCache:
             the combined records across all trials.
         """
         if consolidate:
-            return self.recorder.consolidate(self.folder / RECORDS_NAME)
+            return self.recorder.consolidate()
         return self.recorder.load()

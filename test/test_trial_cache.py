@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-import glow.benchmark.trial_cache as tc_mod
+import glow.benchmark.recorder as rec_mod
 from glow.benchmark import TrialCache
-from glow.benchmark.trial_cache import RECORDS_DIR
+from glow.benchmark.recorder import RECORDS_DIR
 from glow.util import DataclassJSON, stable_hash
 
 
@@ -33,22 +33,25 @@ def _complete(cache, trial):
 
 class TestConstruction:
     def test_folder_kwarg_creates_dir(self, tmp_path):
+        # the cache has no folder of its own; the recorder owns it (created)
         target = tmp_path / 'fresh'
         assert not target.exists()
         cache = TrialCache(folder=target)
-        assert cache.folder == target
+        assert not hasattr(cache, 'folder')
+        assert cache.recorder.folder == target
         assert target.is_dir()
 
         cache_str = TrialCache(folder=str(tmp_path / 'as_str'))
-        assert isinstance(cache_str.folder, Path)
-        assert cache_str.folder.is_dir()
+        assert isinstance(cache_str.recorder.folder, Path)
+        assert cache_str.recorder.folder.is_dir()
 
     def test_name_kwarg_resolves_under_default_results_dir(
             self, tmp_path, monkeypatch):
-        monkeypatch.setattr(tc_mod, 'get_path_result', lambda: tmp_path)
+        # name resolution lives in the recorder now
+        monkeypatch.setattr(rec_mod, 'get_path_result', lambda: tmp_path)
         cache = TrialCache(name='exp_foo')
-        assert cache.folder == tmp_path / 'exp_foo'
-        assert cache.folder.is_dir()
+        assert cache.recorder.folder == tmp_path / 'exp_foo'
+        assert cache.recorder.folder.is_dir()
 
     @pytest.mark.parametrize('kw', [
         dict(name='x', folder='FOLDER'),  # both -> rejected
@@ -65,9 +68,12 @@ class TestConstruction:
             TrialCache(folder=tmp_path,
                        iter_kwargs={'seed': [1, 2]}, kwargs={'seed': 5})
 
-    def test_recorder_rooted_at_records_dir(self, tmp_path):
+    def test_per_trial_files_under_records_subdir(self, tmp_path):
         cache = TrialCache(folder=tmp_path)
-        assert cache.recorder.folder == tmp_path / RECORDS_DIR
+        _complete(cache, {'seed': 0})
+        # the recorder writes per-trial files to the records/ subdir
+        assert (tmp_path / RECORDS_DIR).is_dir()
+        assert list((tmp_path / RECORDS_DIR).glob('*.json'))
 
 
 class TestIterTrial:

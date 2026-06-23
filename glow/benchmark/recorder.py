@@ -71,6 +71,13 @@ from pathlib import Path
 import numpy as np
 
 from glow.util import hash_array
+from .file import get_path_result
+
+
+# layout under a recorder's experiment folder: per-trial record files live in
+# the records/ subdir; consolidate() merges them into records.json beside it
+RECORDS_DIR = 'records'
+RECORDS_NAME = 'records.json'
 
 
 def _json_default(obj):
@@ -111,19 +118,28 @@ class Recorder:
         _failed_trials (set): trial ids that have recorded a failure and are
             still open. Membership makes every later recorded call in the trial
             short-circuit; the id is dropped when its trial scope closes.
-        folder (Path | None): directory of per-trial record files
-            (<trial_id>.json), set when persisting to disk. The Recorder is the
-            only object that reads/writes these files (flush / load / etc.).
+        folder (Path | None): the experiment directory (resolved from name or
+            folder, created on construction), or None for in-memory only. The
+            Recorder is the only object that reads/writes its record files:
+            per-trial files in the records/ subdir, consolidate() merges them
+            to records.json beside it.
     """
 
-    def __init__(self, folder=None):
+    def __init__(self, *, name=None, folder=None):
         self.records = []
         self._trial_id_current = contextvars.ContextVar(
             "recorder_trial_id", default=None)
         self._failed_trials = set()
-        # directory of per-trial record files (<trial_id>.json); set when the
-        # recorder persists to disk (a TrialCache passes its records dir)
+        # resolve the experiment folder (name -> <default results dir>/name, or
+        # an explicit folder) and create it; None means in-memory only (no
+        # disk). Per-trial files live in its records/ subdir (see _records_dir).
+        if name is not None and folder is not None:
+            raise ValueError('at most one of name or folder')
+        if name is not None:
+            folder = get_path_result() / name
         self.folder = Path(folder) if folder is not None else None
+        if self.folder is not None:
+            self.folder.mkdir(parents=True, exist_ok=True)
 
     def get_trial_id(self):
         """Mint a fresh trial id.
@@ -332,14 +348,19 @@ class Recorder:
         with open(file, "w") as f:
             json.dump(self.records, f, indent=indent, default=_json_default)
 
-    # ----- disk IO: per-trial json files under self.folder -------------------
+    # ----- disk IO: per-trial json files under folder/records ----------------
     # The Recorder is the only object that reads/writes the record files. A
     # trial's records go to one file named for its trial id, so independent
     # writers (joblib workers) never contend and a run resumes by which ids are
     # already on disk.
 
+    @property
+    def _records_dir(self):
+        """The records/ subdir of the experiment folder (per-trial files)."""
+        return self.folder / RECORDS_DIR
+
     def flush(self, **stamp) -> None:
-        """Write the current records to folder/<trial_id>.json, one per trial.
+        """Write the current records to records/<trial_id>.json, one per trial.
 
         The records are serialised via to_json (the to_record protocol -- only
         compact recipe dicts, never the heavy Experiment / Analysis objects),
@@ -356,30 +377,30 @@ class Recorder:
         recs = json.loads(self.to_json())
         for r in recs:
             r.update(stamp)
-        self.folder.mkdir(parents=True, exist_ok=True)
-        (self.folder / f'{recs[0]["trial_id"]}.json').write_text(
+        self._records_dir.mkdir(parents=True, exist_ok=True)
+        (self._records_dir / f'{recs[0]["trial_id"]}.json').write_text(
             json.dumps(recs, indent=2))
 
     def completed_ids(self) -> set:
-        """Trial ids (file stems) already written under self.folder."""
-        if self.folder is None or not self.folder.exists():
+        """Trial ids (file stems) already written under records/."""
+        if self.folder is None or not self._records_dir.exists():
             return set()
-        return {p.stem for p in self.folder.glob('*.json')}
+        return {p.stem for p in self._records_dir.glob('*.json')}
 
     def load(self) -> list:
-        """Concatenate every per-trial json under self.folder into one list."""
-        if self.folder is None or not self.folder.exists():
+        """Concatenate every per-trial json under records/ into one list."""
+        if self.folder is None or not self._records_dir.exists():
             return []
         recs = []
-        for p in sorted(self.folder.glob('*.json')):
+        for p in sorted(self._records_dir.glob('*.json')):
             recs.extend(json.loads(p.read_text()))
         return recs
 
-    def consolidate(self, dest) -> list:
-        """Load every per-trial json and write the union to dest (outside folder).
+    def consolidate(self) -> list:
+        """Merge the per-trial files into records.json beside the records/ dir.
 
         Returns the combined records.
         """
         recs = self.load()
-        Path(dest).write_text(json.dumps(recs, indent=2))
+        (self.folder / RECORDS_NAME).write_text(json.dumps(recs, indent=2))
         return recs

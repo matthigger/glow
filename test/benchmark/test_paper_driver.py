@@ -10,7 +10,8 @@ import json
 from functools import partial
 
 from glow.analysis import AnalysisVBA
-from glow.benchmark.trial_cache import TrialCache, RECORDS_DIR
+from glow.benchmark.trial_cache import TrialCache
+from glow.benchmark.recorder import RECORDS_DIR
 from glow.benchmark.paper import run as paper_run
 from glow.benchmark.paper.driver import driver_paper
 

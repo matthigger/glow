@@ -304,7 +304,7 @@ def reproduce(label: str, glow_label: str, trial_hash: str,
     trial = recover_trial(label, trial_hash)
 
     cache, _ = CACHE_BY_LABEL[label]
-    df = glow.benchmark.load_results_csv(cache.folder / 'results.csv')
+    df = glow.benchmark.load_results_csv(cache.recorder.folder / 'results.csv')
     t_rec = _recorded_time(df, trial_hash, glow_label)
 
     if verbose:

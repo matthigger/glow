@@ -90,7 +90,7 @@ def run(labels=None, n_jobs: int = 1, verbose: bool = True,
 
     for label, (cache, run_fnc) in entries:
         if verbose:
-            print(f'\n=== {label} ({cache.folder}) ===')
+            print(f'\n=== {label} ({cache.recorder.folder}) ===')
         driver_paper(cache, run_fnc, n_jobs=n_jobs, verbose=verbose)
 
 

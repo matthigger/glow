@@ -73,7 +73,7 @@ def driver_aws(trial_cache, run_fnc: Callable, aws_config,
         verbose (bool): tqdm progress bar plus status prints.
     """
     driver_aws_multi(
-        [(trial_cache.folder.name, trial_cache, run_fnc)],
+        [(trial_cache.recorder.folder.name, trial_cache, run_fnc)],
         aws_config, verbose=verbose)
 
 
@@ -264,7 +264,7 @@ def _to_s3_cache(cache, *, aws_config, s3, swap_memo: Dict[str, DataSourceS3],
                 else {k: [_swap(v) for v in vals]
                       for k, vals in cache.iter_kwargs.items()})
 
-    aws_cache = TrialCache(folder=cache.folder, iter_kwargs=new_iter,
+    aws_cache = TrialCache(folder=cache.recorder.folder, iter_kwargs=new_iter,
                            kwargs=new_kwargs)
     # Pair each original trial with its swapped twin (same grid order) and
     # alias the twin's hash back, so save_result writes the original's row.
