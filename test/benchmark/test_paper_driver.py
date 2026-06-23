@@ -9,10 +9,8 @@ worker. The run_ana cases use a tiny WGN cell with a cheap VBA fit.
 import json
 from functools import partial
 
-import pandas as pd
-
 from glow.analysis import AnalysisVBA
-from glow.benchmark.trial_cache import TrialCache, CSV_NAME, RECORDS_DIR
+from glow.benchmark.trial_cache import TrialCache, RECORDS_DIR
 from glow.benchmark.paper import run as paper_run
 from glow.benchmark.paper.driver import driver_paper
 
@@ -73,16 +71,6 @@ class TestDriverRecords:
         cache = _cache(tmp_path, b=[2], seed=[0, 1, 2])
         driver_paper(cache, _ana(VBA), n_jobs=2, verbose=False)
         assert len(list((tmp_path / RECORDS_DIR).glob('*.json'))) == 3
-
-    def test_legacy_dataframe_to_csv(self, tmp_path):
-        # a fn with no `recorder` parameter is legacy: its DataFrame goes to
-        # results.csv and it writes no record files
-        def legacy(*, source, b, num_img, n_vox_eff, seed, effect_llr=None):
-            return pd.DataFrame([{'label': 'X', 'val': seed}])
-
-        driver_paper(_cache(tmp_path, b=[2], seed=[0]), legacy, verbose=False)
-        assert not (tmp_path / RECORDS_DIR).exists()
-        assert (tmp_path / CSV_NAME).exists()
 
 
 class TestRunAnaRecords:

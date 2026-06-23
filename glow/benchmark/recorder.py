@@ -111,13 +111,19 @@ class Recorder:
         _failed_trials (set): trial ids that have recorded a failure and are
             still open. Membership makes every later recorded call in the trial
             short-circuit; the id is dropped when its trial scope closes.
+        folder (Path | None): directory of per-trial record files
+            (<trial_id>.json), set when persisting to disk. The Recorder is the
+            only object that reads/writes these files (flush / load / etc.).
     """
 
-    def __init__(self):
+    def __init__(self, folder=None):
         self.records = []
         self._trial_id_current = contextvars.ContextVar(
             "recorder_trial_id", default=None)
         self._failed_trials = set()
+        # directory of per-trial record files (<trial_id>.json); set when the
+        # recorder persists to disk (a TrialCache passes its records dir)
+        self.folder = Path(folder) if folder is not None else None
 
     def get_trial_id(self):
         """Mint a fresh trial id.
@@ -326,56 +332,54 @@ class Recorder:
         with open(file, "w") as f:
             json.dump(self.records, f, indent=indent, default=_json_default)
 
-    # ----- disk IO: per-trial json files under a records folder --------------
+    # ----- disk IO: per-trial json files under self.folder -------------------
     # The Recorder is the only object that reads/writes the record files. A
     # trial's records go to one file named for its trial id, so independent
     # writers (joblib workers) never contend and a run resumes by which ids are
     # already on disk.
 
-    def flush(self, path, **stamp) -> None:
-        """Write the current records to `path` as json, one file per trial.
+    def flush(self, **stamp) -> None:
+        """Write the current records to folder/<trial_id>.json, one per trial.
 
-        Each record is first serialised via to_json (the to_record protocol,
-        so only compact recipe dicts, never the heavy Experiment / Analysis
-        objects) and then stamped with `stamp` -- the scalar trial axes -- so a
-        per-trial file is self-describing. The records stay in memory; the
-        caller clears them per trial.
+        The records are serialised via to_json (the to_record protocol -- only
+        compact recipe dicts, never the heavy Experiment / Analysis objects),
+        stamped with `stamp` (the scalar trial axes, so the file is
+        self-describing), and written to a file named for the trial id they
+        share (the open scope's id). No-op when there are no records; the
+        records stay in memory (the caller clears them per trial).
 
         Args:
-            path: the json file to write (named for the trial id).
             stamp: scalar columns merged onto every record (the trial axes).
         """
+        if not self.records:
+            return
         recs = json.loads(self.to_json())
         for r in recs:
             r.update(stamp)
-        Path(path).write_text(json.dumps(recs, indent=2))
+        self.folder.mkdir(parents=True, exist_ok=True)
+        (self.folder / f'{recs[0]["trial_id"]}.json').write_text(
+            json.dumps(recs, indent=2))
 
-    @staticmethod
-    def completed_ids(folder) -> set:
-        """Trial ids (file stems) already written under folder."""
-        folder = Path(folder)
-        if not folder.exists():
+    def completed_ids(self) -> set:
+        """Trial ids (file stems) already written under self.folder."""
+        if self.folder is None or not self.folder.exists():
             return set()
-        return {p.stem for p in folder.glob('*.json')}
+        return {p.stem for p in self.folder.glob('*.json')}
 
-    @staticmethod
-    def load(folder) -> list:
-        """Concatenate every per-trial json under folder into one records list."""
-        folder = Path(folder)
-        if not folder.exists():
+    def load(self) -> list:
+        """Concatenate every per-trial json under self.folder into one list."""
+        if self.folder is None or not self.folder.exists():
             return []
         recs = []
-        for p in sorted(folder.glob('*.json')):
+        for p in sorted(self.folder.glob('*.json')):
             recs.extend(json.loads(p.read_text()))
         return recs
 
-    @staticmethod
-    def consolidate(folder, dest) -> list:
-        """Load every per-trial json under folder and write the union to dest.
+    def consolidate(self, dest) -> list:
+        """Load every per-trial json and write the union to dest (outside folder).
 
-        dest must be outside folder so it is not re-read on the next load.
         Returns the combined records.
         """
-        recs = Recorder.load(folder)
+        recs = self.load()
         Path(dest).write_text(json.dumps(recs, indent=2))
         return recs
