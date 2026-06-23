@@ -324,3 +324,11 @@ class Recorder:
             return json.dumps(self.records, indent=indent, default=_json_default)
         with open(file, "w") as f:
             json.dump(self.records, f, indent=indent, default=_json_default)
+
+
+# The process-wide recorder. A TrialCache scopes each trial on it (its
+# iter_record opens recorder.trial(trial_id=hash)) and the paper trial fns wrap
+# their calls with it, so both sides share one instance without threading it
+# through. One per process: a module singleton is imported (not pickled), so
+# joblib workers each get their own -- safe, since a ContextVar is unpicklable.
+recorder = Recorder()

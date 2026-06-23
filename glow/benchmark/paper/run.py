@@ -40,19 +40,17 @@ from glow.analysis import (
 from glow.analysis.cluster import cluster, ClusterMode
 from glow.analysis.mancova import stat_dict, stat_dict_inv
 from glow.analysis.prune import prune_greedy, prune_dp
-from glow.benchmark.recorder import Recorder
+from glow.benchmark.recorder import recorder
 from glow.benchmark.trial_cache import SKIP_LABEL
 from glow.effect import (EffectSynthetic, ExtenterMinVar, ExtenterSphere,
                          ExtenterSplit)
 from .factory import build_ds, derive_seeds
 
 
-# Process-wide recorder shared by the trial fns below and the paper driver
-# (glow.benchmark.paper.driver), which clears it per trial, opens a trial scope
-# keyed by the cache hash, and serialises its records to records.json. One
-# instance per process: joblib workers each import their own, and the cache hash
-# (the trial_id) keeps records mergeable.
-recorder = Recorder()
+# the shared process-wide recorder (glow.benchmark.recorder.recorder). The
+# trial fns below wrap their calls with it at runtime; the TrialCache scopes
+# each trial on the same instance (its iter_record opens the trial id), so the
+# wrapped calls record under the right trial without threading it through.
 
 
 def _effect_llr(effect_llr, effect_total_llr, n_vox_eff: int):
@@ -260,16 +258,16 @@ def _setup_legacy(*, source: str, b: int, num_img: int, n_vox_eff: int,
                   diag=_trial_diag(exp, mask_target, llr, feats))
 
 
-@recorder(output_name_list=('exp_eff', 'effect_list'))
 def _setup_trial(*, source: str, b: int, num_img: int, n_vox_eff: int,
                  seed: int, effect_llr=None, effect_total_llr=None):
     """Build one planted-effect trial: the imposed experiment and its effects.
 
-    Recorded for provenance -- the scalar-axis inputs and the outputs (the
-    effect-bearing experiment and the planted effects) capture the full data
-    lineage through their to_record(). build_ds raises on an infeasible cell
-    (e.g. HCP b > pool); the recorder records that failure and swallows it, so
-    the caller sees None and ends the trial without a try/except.
+    A plain function, wrapped with the recorder at the call site (run_ana) like
+    every other recorded step -- the experiment + planted effects it returns
+    capture the trial's data lineage through their to_record(). build_ds raises
+    on an infeasible cell (e.g. HCP b > pool); the recorder records that failure
+    and swallows it, so the caller sees None and ends the trial without a
+    try/except.
 
     Args:
         source (str): 'wgn' or 'hcp'
@@ -301,12 +299,13 @@ def run_ana(*, source: str, b: int, num_img: int, n_vox_eff: int, seed: int,
             ana_kwargs_dict: dict, effect_llr=None, effect_total_llr=None):
     """Fit every analysis in ana_kwargs_dict on one synthetic trial.
 
-    Records, it does not score: _setup_trial plants the effect and records the
-    experiment + planted effects for provenance; each analysis fit is recorded
-    under its own per-label trial scope, so one failure is isolated to its
-    label. The recorder owns timing and failure capture (the driver serialises
-    its records to records.json); scoring is derived afterward from the
-    records, not here.
+    Records, it does not score. Every step is wrapped with the recorder at the
+    call site (no decorators): _setup_trial records the experiment + planted
+    effects for provenance, then each analysis fit records self (the analysis
+    recipe, which identifies the variant), its timing, and any traceback. The
+    trial scope -- trial_id = the cache hash, shared by all these records -- is
+    opened by the TrialCache iterator driving this call. Scoring is derived
+    afterward from the records, not here.
 
     Args:
         source (str): 'wgn' or 'hcp'
@@ -318,19 +317,14 @@ def run_ana(*, source: str, b: int, num_img: int, n_vox_eff: int, seed: int,
         effect_llr (float | None): per-voxel effect target
         effect_total_llr (float | None): whole-region effect target
     """
-    # the trial scope is opened by the driver (trial_id = the cache hash), so
-    # _setup_trial and every fit below share one trial id and stay associated.
-    # If build_ds fails the recorder records it and returns None, so we end the
-    # trial here without a try/except.
-    setup = _setup_trial(source=source, b=b, num_img=num_img,
-                         n_vox_eff=n_vox_eff, seed=seed,
-                         effect_llr=effect_llr, effect_total_llr=effect_total_llr)
+    # build_ds failure is recorded and swallowed -> setup is None -> end here
+    setup = recorder(output_name_list=('exp_eff', 'effect_list'))(_setup_trial)(
+        source=source, b=b, num_img=num_img, n_vox_eff=n_vox_eff, seed=seed,
+        effect_llr=effect_llr, effect_total_llr=effect_total_llr)
     if setup is None:
         return
     exp_eff, _effect_list = setup
 
-    # the recorder records each fit (self = the analysis recipe, which
-    # identifies the variant), its timing, and any traceback
     for Ana, kw in ana_kwargs_dict.values():
         recorder(output_name='ana')(Ana(exp=exp_eff, **kw).fit)()
 

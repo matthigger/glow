@@ -13,9 +13,9 @@ import pandas as pd
 import pytest
 
 from glow.analysis import AnalysisVBA
-from glow.benchmark.trial_cache import TrialCache, CSV_NAME
+from glow.benchmark.trial_cache import TrialCache, CSV_NAME, RECORDS_NAME
 from glow.benchmark.paper import run as paper_run
-from glow.benchmark.paper.driver import driver_paper, RECORDS_NAME
+from glow.benchmark.paper.driver import driver_paper
 
 
 def _cache(tmp_path, **iter_kwargs):

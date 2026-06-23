@@ -82,16 +82,18 @@ class ExperimentImageOnly:
 
         The benchmark Recorder serialises any value exposing to_record (see
         glow.benchmark.recorder). This records the experiment's identity
-        without its large y array: the (b, num_img, num_vox) shape, dtype, a
-        stable content hash (_hash), and the propagated meta.
+        without its large y array: the (b, num_img, num_vox) shape, dtype, and
+        a stable content hash (_hash). meta is deliberately omitted -- it
+        carries the full subject / feature lists, more bulk than the record is
+        worth, and is recoverable from the scalar axes.
 
         Returns:
-            a dict of {kind, hash, b, num_img, num_vox, dtype, meta}
+            a dict of {kind, hash, b, num_img, num_vox, dtype}
         """
         b, num_img, num_vox = self.y.shape
         return {'kind': type(self).__name__, 'hash': self._hash(),
                 'b': int(b), 'num_img': int(num_img), 'num_vox': int(num_vox),
-                'dtype': str(self.dtype), 'meta': self.meta}
+                'dtype': str(self.dtype)}
 
     @classmethod
     def from_gauss(cls, b: int = None, num_img: int = 10,

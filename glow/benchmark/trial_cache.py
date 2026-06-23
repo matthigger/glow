@@ -15,18 +15,22 @@ ships every real-data DataSource as a DataSourceS3) share the original
 cache's results rows: see glow.aws.driver._to_s3_cache.
 """
 
+import json
 from itertools import product
 from math import prod
 from pathlib import Path
 from typing import Iterator, Optional
 
 import pandas as pd
+from tqdm import tqdm
 
 from glow.util import stable_hash, value_id
 from .file import get_path_result
+from .recorder import recorder as _recorder
 
 
 CSV_NAME = 'results.csv'
+RECORDS_NAME = 'records.json'
 HASH_COL = 'trial_hash'
 
 # Sentinel `label` values for trials that produced no scored result. They
@@ -91,6 +95,9 @@ class TrialCache:
         self.kwargs = kwargs
         self.trial_alias_map = trial_alias_map
         self.df = self._load_results()
+        # the shared process-wide recorder; iter_record scopes each trial on it
+        # so the trial fns' runtime-wrapped calls record under the right id
+        self.recorder = _recorder
 
     @property
     def _csv_path(self) -> Path:
@@ -156,6 +163,95 @@ class TrialCache:
     def is_cached(self, trial: dict) -> bool:
         """Return True if this trial's result is already in self.df."""
         return self.hash(trial) in self._cached_hashes()
+
+    # ----- records.json: provenance captured by the recorder -----------------
+
+    @property
+    def _records_path(self) -> Path:
+        """Path to the records json inside folder."""
+        return self.folder / RECORDS_NAME
+
+    def _load_records(self) -> list:
+        """Load records.json (a flat list of record dicts), or [] if absent."""
+        if self._records_path.exists():
+            return json.loads(self._records_path.read_text())
+        return []
+
+    def _completed_ids(self) -> set:
+        """Trial ids already on disk: records.json trial_ids and csv hashes.
+
+        A trial is done if its hash appears as a record's trial_id in
+        records.json (the recorder path) or on the results.csv index (the
+        legacy DataFrame path), so a resumed run skips it either way.
+        """
+        return ({r['trial_id'] for r in self._load_records()}
+                | self._cached_hashes())
+
+    @staticmethod
+    def serialize_records(recorder, trial: dict) -> list:
+        """Serialise a recorder's records to JSON dicts, stamped with the axes.
+
+        recorder.to_json renders each record via its to_record protocol (so
+        only compact recipe dicts, never the heavy Experiment / Analysis
+        objects); the scalar trial axes are then merged onto every record so a
+        record is self-describing. Done in whatever process holds the records
+        (a joblib worker), so only these dicts cross a process boundary.
+
+        Args:
+            recorder (Recorder): holds the trial's captured records.
+            trial (dict): the trial kwargs, stamped onto each record.
+
+        Returns:
+            the serialised, axis-stamped record dicts.
+        """
+        recs = json.loads(recorder.to_json())
+        axes = {k: value_id(v) for k, v in trial.items()}
+        for r in recs:
+            r.update(axes)
+        return recs
+
+    def append_records(self, records: list) -> None:
+        """Append already-serialised records to records.json (no-op if empty)."""
+        if not records:
+            return
+        existing = self._load_records()
+        existing.extend(records)
+        self._records_path.write_text(json.dumps(existing, indent=2))
+
+    def iter_uncompleted(self) -> Iterator[dict]:
+        """Yield each trial whose result is not yet on disk (records or csv)."""
+        done = self._completed_ids()
+        for trial in self.iter_trial():
+            if self.hash(trial) not in done:
+                yield trial
+
+    def iter_record(self, verbose: bool = True) -> Iterator[dict]:
+        """Yield each uncompleted trial inside its recorder scope; persist after.
+
+        For each not-yet-completed trial this clears the recorder, opens
+        recorder.trial(trial_id=self.hash(trial)) so every call the consumer
+        records lands under that trial id, and yields the trial kwargs. When the
+        consumer advances to the next trial the scope closes and the trial's
+        captured records are serialised (axis-stamped) and appended to
+        records.json. Serial -- one trial scope open at a time; the parallel
+        driver instead scopes each trial in its worker (see
+        glow.benchmark.paper.driver).
+
+        Args:
+            verbose (bool): show a tqdm progress bar.
+
+        Yields:
+            the trial kwargs, with its recorder scope active.
+        """
+        trials = list(self.iter_uncompleted())
+        bar = tqdm(total=len(trials), disable=not verbose, desc='trials')
+        for trial in trials:
+            self.recorder.records.clear()
+            with self.recorder.trial(trial_id=self.hash(trial)):
+                yield trial
+            self.append_records(self.serialize_records(self.recorder, trial))
+            bar.update(1)
+        bar.close()
 
     def save_result(self, result, trial: dict) -> None:
         """Append one trial's result to self.df and results.csv.
