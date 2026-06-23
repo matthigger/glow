@@ -40,10 +40,19 @@ from glow.analysis import (
 from glow.analysis.cluster import cluster, ClusterMode
 from glow.analysis.mancova import stat_dict, stat_dict_inv
 from glow.analysis.prune import prune_greedy, prune_dp
+from glow.benchmark.recorder import Recorder
 from glow.benchmark.trial_cache import SKIP_LABEL
 from glow.effect import (EffectSynthetic, ExtenterMinVar, ExtenterSphere,
                          ExtenterSplit)
 from .factory import build_ds, derive_seeds
+
+
+# Process-wide recorder shared by the trial fns below and the paper driver
+# (glow.benchmark.paper.driver), which clears it per trial, opens a trial scope
+# keyed by the cache hash, and serialises its records to records.json. One
+# instance per process: joblib workers each import their own, and the cache hash
+# (the trial_id) keeps records mergeable.
+recorder = Recorder()
 
 
 def _effect_llr(effect_llr, effect_total_llr, n_vox_eff: int):
@@ -217,15 +226,15 @@ def _skip_frame(exc) -> pd.DataFrame:
 _Trial = namedtuple('_Trial', 'exp exp_eff mask_target mask_active diag')
 
 
-def _setup_trial(*, source: str, b: int, num_img: int, n_vox_eff: int,
-                 seed: int, effect_llr=None, effect_total_llr=None) -> _Trial:
-    """Build one planted-effect trial shared by the scalar-axis trial fns.
+def _setup_legacy(*, source: str, b: int, num_img: int, n_vox_eff: int,
+                  seed: int, effect_llr=None, effect_total_llr=None) -> _Trial:
+    """Build one planted-effect trial for the not-yet-recorder-wired fns.
 
-    The common front half of run_ana / run_segment / run_mancova / run_prune:
-    resolve the data source, plant the synthetic effect at the resolved
-    per-voxel llr, and assemble the per-row diagnostics. Raises ValueError
-    for an infeasible cell -- callers turn that into a SKIP row via
-    _skip_frame.
+    The common front half of run_segment / run_mancova / run_prune: resolve the
+    data source, plant the synthetic effect at the resolved per-voxel llr, and
+    assemble the per-row diagnostics. Raises ValueError for an infeasible cell
+    -- callers turn that into a SKIP row via _skip_frame. (run_ana now uses the
+    recorded _setup_trial instead; this remains until those fns are converted.)
 
     Args:
         source (str): 'wgn' or 'hcp'
@@ -251,9 +260,53 @@ def _setup_trial(*, source: str, b: int, num_img: int, n_vox_eff: int,
                   diag=_trial_diag(exp, mask_target, llr, feats))
 
 
+@recorder(output_name_list=('exp_eff', 'effect_list'))
+def _setup_trial(*, source: str, b: int, num_img: int, n_vox_eff: int,
+                 seed: int, effect_llr=None, effect_total_llr=None):
+    """Build one planted-effect trial: the imposed experiment and its effects.
+
+    Recorded for provenance -- the scalar-axis inputs and the outputs (the
+    effect-bearing experiment and the planted effects) capture the full data
+    lineage through their to_record(). build_ds raises on an infeasible cell
+    (e.g. HCP b > pool); the recorder records that failure and swallows it, so
+    the caller sees None and ends the trial without a try/except.
+
+    Args:
+        source (str): 'wgn' or 'hcp'
+        b (int): imaging-feature count
+        num_img (int): subject count (WGN; HCP uses its cohort)
+        n_vox_eff (int): requested effect support size
+        seed (int): effect RNG seed (also selects the HCP feature subset)
+        effect_llr (float | None): per-voxel effect target
+        effect_total_llr (float | None): whole-region effect target
+
+    Returns:
+        exp_eff: the experiment with the synthetic effect imposed (the clean
+            experiment unchanged when no effect is planted).
+        effect_list (list): the planted EffectSynthetic specs (empty for the
+            null / FWER-calibration path). One today; this factory will grow to
+            plant several.
+    """
+    ds, _ = build_ds(source, b=b, num_img=num_img, seed=seed)
+    exp = ds.exp
+    llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
+    if llr is None:
+        return exp, []
+    effect = EffectSynthetic(extenter=ExtenterMinVar(n_vox=n_vox_eff, seed=seed),
+                             effect_llr=llr)
+    return effect.fit(exp)[0], [effect]
+
+
 def run_ana(*, source: str, b: int, num_img: int, n_vox_eff: int, seed: int,
             ana_kwargs_dict: dict, effect_llr=None, effect_total_llr=None):
     """Fit every analysis in ana_kwargs_dict on one synthetic trial.
+
+    Records, it does not score: _setup_trial plants the effect and records the
+    experiment + planted effects for provenance; each analysis fit is recorded
+    under its own per-label trial scope, so one failure is isolated to its
+    label. The recorder owns timing and failure capture (the driver serialises
+    its records to records.json); scoring is derived afterward from the
+    records, not here.
 
     Args:
         source (str): 'wgn' or 'hcp'
@@ -264,34 +317,22 @@ def run_ana(*, source: str, b: int, num_img: int, n_vox_eff: int, seed: int,
         ana_kwargs_dict (dict): label -> (Analysis class, init kwargs)
         effect_llr (float | None): per-voxel effect target
         effect_total_llr (float | None): whole-region effect target
-
-    Returns:
-        a DataFrame with one row per analysis label
     """
-    try:
-        trial = _setup_trial(source=source, b=b, num_img=num_img,
-                             n_vox_eff=n_vox_eff, seed=seed,
-                             effect_llr=effect_llr,
-                             effect_total_llr=effect_total_llr)
-    except ValueError as e:
-        return _skip_frame(e)
+    # the trial scope is opened by the driver (trial_id = the cache hash), so
+    # _setup_trial and every fit below share one trial id and stay associated.
+    # If build_ds fails the recorder records it and returns None, so we end the
+    # trial here without a try/except.
+    setup = _setup_trial(source=source, b=b, num_img=num_img,
+                         n_vox_eff=n_vox_eff, seed=seed,
+                         effect_llr=effect_llr, effect_total_llr=effect_total_llr)
+    if setup is None:
+        return
+    exp_eff, _effect_list = setup
 
-    rows = []
-    for label, (Ana, kw) in ana_kwargs_dict.items():
-        row = {'label': label, 'analysis_cls': Ana.__name__, **trial.diag}
-        t0 = time.time()
-        try:
-            ana = Ana(exp=trial.exp_eff, **kw).fit()
-        except Exception:
-            row['time_sec'] = time.time() - t0
-            row['error'] = traceback.format_exc()
-            rows.append(row)
-            continue
-        row['time_sec'] = time.time() - t0
-        row.update(_score(ana, [trial.mask_target], trial.mask_active))
-        rows.append(row)
-
-    return pd.DataFrame(rows)
+    # the recorder records each fit (self = the analysis recipe, which
+    # identifies the variant), its timing, and any traceback
+    for Ana, kw in ana_kwargs_dict.values():
+        recorder(output_name='ana')(Ana(exp=exp_eff, **kw).fit)()
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +511,7 @@ def run_segment(*, source: str, b: int, num_img: int, n_vox_eff: int,
         a DataFrame with one row per ClusterMode (label = mode name)
     """
     try:
-        trial = _setup_trial(source=source, b=b, num_img=num_img,
+        trial = _setup_legacy(source=source, b=b, num_img=num_img,
                              n_vox_eff=n_vox_eff, seed=seed,
                              effect_llr=effect_llr,
                              effect_total_llr=effect_total_llr)
@@ -539,7 +580,7 @@ def run_prune(*, source: str, b: int, num_img: int, n_vox_eff: int, seed: int,
         a DataFrame with one row per pruning rule
     """
     try:
-        trial = _setup_trial(source=source, b=b, num_img=num_img,
+        trial = _setup_legacy(source=source, b=b, num_img=num_img,
                              n_vox_eff=n_vox_eff, seed=seed,
                              effect_llr=effect_llr,
                              effect_total_llr=effect_total_llr)
@@ -665,7 +706,7 @@ def run_mancova(*, source: str, b: int, num_img: int, n_vox_eff: int,
         a DataFrame with one row per (family, stat, z) variant
     """
     try:
-        trial = _setup_trial(source=source, b=b, num_img=num_img,
+        trial = _setup_legacy(source=source, b=b, num_img=num_img,
                              n_vox_eff=n_vox_eff, seed=seed,
                              effect_llr=effect_llr,
                              effect_total_llr=effect_total_llr)

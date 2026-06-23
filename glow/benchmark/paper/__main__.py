@@ -18,7 +18,7 @@ Usage:
 import argparse
 from fnmatch import fnmatch
 
-from glow.benchmark.driver import driver_local
+from .driver import driver_paper
 
 
 def resolve_labels(patterns) -> list:
@@ -91,7 +91,7 @@ def run(labels=None, n_jobs: int = 1, verbose: bool = True,
     for label, (cache, run_fnc) in entries:
         if verbose:
             print(f'\n=== {label} ({cache.folder}) ===')
-        driver_local(cache, run_fnc, n_jobs=n_jobs, verbose=verbose)
+        driver_paper(cache, run_fnc, n_jobs=n_jobs, verbose=verbose)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
