@@ -23,7 +23,6 @@ Three trial kinds share this contract:
   - run_mancova: one shared voxel-stat walk dispatched across VBA /
     VBA-TFCE / CET x 5 MANCOVA stats x {raw, z}; 30 rows per trial.
 """
-import json
 import time
 import traceback
 from collections import namedtuple
@@ -44,6 +43,8 @@ from glow.benchmark.trial_cache import SKIP_LABEL
 from glow.effect import (EffectSynthetic, ExtenterMinVar, ExtenterSphere,
                          ExtenterSplit)
 from .factory import build_ds, derive_seeds
+from .score import (score_effects, score_oracle_tree, size_max_z_curve,
+                    curve_json)
 
 
 def _effect_llr(effect_llr, effect_total_llr, n_vox_eff: int):
@@ -277,29 +278,36 @@ def _setup_trial(*, source: str, b: int, num_img: int, n_vox_eff: int,
         effect_list (list): the planted EffectSynthetic specs (empty for the
             null / FWER-calibration path). One today; this factory will grow to
             plant several.
+        mask_target_list (list): the realized (X, Y, Z) bool support of each
+            planted effect, in effect_list order (empty for the null path).
+            Kept alongside the recorded specs so the score step (score_effects)
+            scores the prediction against the actual planted voxels.
     """
     ds, _ = build_ds(source, b=b, num_img=num_img, seed=seed)
     exp = ds.exp
     llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
     if llr is None:
-        return exp, []
+        return exp, [], []
     effect = EffectSynthetic(extenter=ExtenterMinVar(n_vox=n_vox_eff, seed=seed),
                              effect_llr=llr)
-    return effect.fit(exp)[0], [effect]
+    exp_eff, mask = effect.fit(exp)
+    return exp_eff, [effect], [mask]
 
 
 def run_ana(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
             seed: int, ana_kwargs_dict: dict, effect_llr=None,
             effect_total_llr=None):
-    """Fit every analysis in ana_kwargs_dict on one synthetic trial.
+    """Fit and score every analysis in ana_kwargs_dict on one synthetic trial.
 
-    Records, it does not score. The recorder is passed in (by the driver, which
-    got it from the TrialCache that scoped this trial) and every step is wrapped
-    with it at the call site -- no decorators: _setup_trial records the
-    experiment + planted effects for provenance, then each analysis fit records
-    self (the analysis recipe, which identifies the variant), its timing, and
-    any traceback. All share one trial id (the cache hash, set by the iterator's
-    scope). Scoring is derived afterward from the records, not here.
+    The recorder is passed in (by the driver, which got it from the TrialCache
+    that scoped this trial) and every step is wrapped with it at the call site
+    -- no decorators: _setup_trial records the experiment + planted effects for
+    provenance, then for each analysis a fit step records self (the recipe,
+    which identifies the variant), its timing, and any traceback, and a score
+    step records that fit's detection score against the planted effects
+    (score_effects). All share one trial id (the cache hash, set by the
+    iterator's scope). A fit that fails marks the trial failed, so its score
+    step (and every later fit/score) short-circuits unrecorded (see recorder).
 
     Args:
         recorder (Recorder): the trial's recorder (its trial scope is already
@@ -314,15 +322,19 @@ def run_ana(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
         effect_total_llr (float | None): whole-region effect target
     """
     # build_ds failure is recorded and swallowed -> setup is None -> end here
-    setup = recorder(output_name_list=('exp_eff', 'effect_list'))(_setup_trial)(
+    setup = recorder(output_name_list=(
+        'exp_eff', 'effect_list', 'mask_target_list'))(_setup_trial)(
         source=source, b=b, num_img=num_img, n_vox_eff=n_vox_eff, seed=seed,
         effect_llr=effect_llr, effect_total_llr=effect_total_llr)
     if setup is None:
         return
-    exp_eff, _effect_list = setup
+    exp_eff, _effect_list, mask_target_list = setup
+    mask_active = exp_eff.mask_idx > -1
 
     for Ana, kw in ana_kwargs_dict.values():
-        recorder(output_name='ana')(Ana(exp=exp_eff, **kw).fit)()
+        ana = recorder(output_name='ana')(Ana(exp=exp_eff, **kw).fit)()
+        recorder(output_name='score')(score_effects)(
+            ana=ana, mask_target_list=mask_target_list, mask_active=mask_active)
 
 
 # ---------------------------------------------------------------------------
@@ -336,56 +348,6 @@ def run_ana(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
 _SEED_OFFSET_DISTINCT = 100_000
 
 
-def _size_max_z_curve(size, z, consider):
-    """Build one outer perm's (size, max-z-at-size-or-larger) staircase.
-
-    The max-z FWER null restricts the per-perm max to regions of size >=
-    min_vox, so the only thing a min_vox sweep needs from a perm is the
-    function E(m) = max{ z_r : size_r >= m } -- a non-increasing step
-    function of m. This returns its corners: dedupe regions by size (only
-    the largest z at a size can matter), take the running max from the
-    largest size down, and keep the largest size holding each distinct max-z
-    value. Each returned corner (s, v) then satisfies v = E(s) exactly, and
-    E(m) for any m is the v of the first corner with size >= m -- so a
-    handful of corners per perm recovers the perm's max-z at any m >= floor
-    without storing every region.
-
-    Args:
-        size (np.array): (num_reg,) region sizes
-        z (np.array): (num_reg,) per-region z = (llr - mu) / std
-        consider (np.array): (num_reg,) bool, regions eligible for the max
-            (here size >= floor and z finite)
-
-    Returns:
-        curve (np.array): (L, 2) corners, columns (size, max_z), rows
-            ascending in size (so max_z is descending); (0, 2) if none.
-    """
-    s, zz = size[consider], z[consider]
-    if s.size == 0:
-        return np.empty((0, 2))
-    order = np.argsort(s)
-    uniq, idx = np.unique(s[order], return_index=True)
-    z_at = np.maximum.reduceat(zz[order], idx)
-    suffix = np.maximum.accumulate(z_at[::-1])[::-1]
-    # keep the largest size of each max-z plateau (right edge), so a
-    # "first corner with size >= m" lookup returns the right value
-    keep = np.append(np.diff(suffix) != 0, True)
-    return np.column_stack([uniq, suffix])[keep]
-
-
-def _curve_json(curve_list) -> str:
-    """Serialize the per-perm staircases to one results.csv cell.
-
-    Args:
-        curve_list (list): one (L_k, 2) corner array per outer perm, index
-            k matching the perm number (k=0 observed).
-
-    Returns:
-        a JSON string: a list (per perm) of [size, max_z] corner pairs.
-    """
-    return json.dumps([[[int(s), float(z)] for s, z in c] for c in curve_list])
-
-
 def run_min_size(*, source: str, b: int, num_img: int, n_vox_eff: int,
                  seed: int, n_perm_fwer: int, n_perm_inner: int,
                  min_vox_floor: int = 1, cluster_mode=ClusterMode.FOCUS,
@@ -395,7 +357,7 @@ def run_min_size(*, source: str, b: int, num_img: int, n_vox_eff: int,
     Mirrors run_ana's HCP trial setup (plant one synthetic effect, sweep
     effect_llr), but instead of fitting GLOW at a single min_vox it runs the
     outer-perm loop directly and records, per perm, the staircase of max-z
-    over a size threshold (_size_max_z_curve). With those curves in hand,
+    over a size threshold (score.size_max_z_curve). With those curves in hand,
     GLOW's max-z FWER null -- hence its rejection / power -- can be recomputed
     at any min_vox >= min_vox_floor without re-fitting (the curve evaluated at
     the fit-time min_vox reproduces AnalysisGLOW.max_z_null exactly).
@@ -467,13 +429,13 @@ def run_min_size(*, source: str, b: int, num_img: int, n_vox_eff: int,
         z = np.nan_to_num((llr_k - mu) / std_safe,
                           nan=0.0, posinf=0.0, neginf=np.nan)
         consider = (size >= min_vox_floor) & np.isfinite(z)
-        curve_list.append(_size_max_z_curve(size, z, consider))
+        curve_list.append(size_max_z_curve(size, z, consider))
 
     row = {'label': 'min_size', 'analysis_cls': 'AnalysisGLOW',
            'time_sec': time.time() - t0,
            'n_perm_fwer': n_perm_fwer, 'n_perm_inner': n_perm_inner,
            'min_vox_floor': min_vox_floor,
-           'curve_json': _curve_json(curve_list), **diag}
+           'curve_json': curve_json(curve_list), **diag}
     return pd.DataFrame([row])
 
 
@@ -515,23 +477,18 @@ def run_segment(*, source: str, b: int, num_img: int, n_vox_eff: int,
         t0 = time.time()
         try:
             children = cluster(trial.exp_eff, mode=mode)
-            counts = glow.graph.confusion_counts_tree(
-                mask=trial.mask_target, mask_idx=trial.exp.mask_idx,
-                children=children)
-            # the oracle picks the single tree region best matching the
-            # target, so the max is taken here over the whole tree
-            dice = glow.mask.stats_from_counts(**counts)['dice']
-            i = int(np.nanargmax(dice))
+            # oracle: the single tree region best matching the planted support
+            counts = score_oracle_tree(children=children,
+                                       mask_target=trial.mask_target,
+                                       mask_idx=trial.exp.mask_idx)
         except Exception:
             row['time_sec'] = time.time() - t0
             row['error'] = traceback.format_exc()
             rows.append(row)
             continue
         row['time_sec'] = time.time() - t0
-        # oracle: the single region best matching the planted support; store
-        # its counts (metrics derived downstream, as for every other row)
-        row.update(tp=int(counts['tp'][i]), fp=int(counts['fp'][i]),
-                   tn=int(counts['tn'][i]), fn=int(counts['fn'][i]))
+        # store its counts (metrics derived downstream, as for every other row)
+        row.update(counts)
         rows.append(row)
 
     return pd.DataFrame(rows)

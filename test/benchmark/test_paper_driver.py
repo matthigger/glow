@@ -47,7 +47,7 @@ class TestDriverRecords:
         assert all(r['source'] == 'wgn' and r['b'] == 2 for r in recs)
         assert {r['trial_id'] for r in recs} == {files[0].stem}
         fns = {r['function'].rsplit('.', 1)[-1] for r in recs}
-        assert fns == {'_setup_trial', 'fit'}
+        assert fns == {'_setup_trial', 'fit', 'score_effects'}
 
     def test_resume_skips_completed(self, tmp_path):
         cache = _cache(tmp_path, b=[2], seed=[0])
@@ -62,11 +62,11 @@ class TestDriverRecords:
         driver_paper(cache, _ana(VBA), verbose=False)
 
         recs = cache.load_records()
-        assert len(recs) == 4  # 2 trials x (setup + fit)
+        assert len(recs) == 6  # 2 trials x (setup + fit + score)
         # consolidate writes one combined json outside the per-trial dir
         cache.load_records(consolidate=True)
         combined = json.loads((tmp_path / 'records.json').read_text())
-        assert len(combined) == 4
+        assert len(combined) == 6
 
     def test_parallel_writes_per_trial_files(self, tmp_path):
         cache = _cache(tmp_path, b=[2], seed=[0, 1, 2])
@@ -97,6 +97,20 @@ class TestRunAnaRecords:
         assert fit['inputs']['self']['kind'] == 'AnalysisVBA'
         assert isinstance(fit['time_sec'], float)
         assert 'pval' not in fit['inputs']['self']  # config recipe only
+
+    def test_score_step_records_detection_dict(self, tmp_path):
+        # the score step run beside each fit records the detection dict
+        # (score_effects) against the recipe it scored
+        cache = _cache(tmp_path, b=[2], seed=[0])
+        driver_paper(cache, _ana(VBA), verbose=False)
+        recs = cache.load_records()
+
+        score = next(r for r in recs
+                     if r['function'].endswith('score_effects'))
+        s = score['outputs']['score']
+        assert {'num_vox', 'min_pval', 'n_pred', 'pred', 'target'} <= set(s)
+        assert set(s['target']) == {'tp', 'fp', 'tn', 'fn'}
+        assert score['inputs']['ana']['kind'] == 'AnalysisVBA'
 
     def test_fit_failure_short_circuits_the_trial(self, tmp_path):
         # one shared trial scope -> the first failing fit marks the trial failed
