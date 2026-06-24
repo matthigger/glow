@@ -1,12 +1,17 @@
-"""Trial functions for the paper benchmarks (flattened-axis edition).
+"""Trial functions for the paper benchmarks (recorder-wired).
 
-Every trial fn takes only scalar/categorical axes (source, b, num_img,
-n_vox_eff, seed, effect strength) and rebuilds the heavy DataSource /
-Extenter objects via factory.build_ds, so iter_kwargs stays a flat scalar
-grid and results.csv is tidy long-format: save_result merges each scalar
-axis in as a column, and the fns below add only the method outputs plus a
-few realized diagnostics (vox counts, the resolved per-voxel effect_llr,
-the HCP feature subset).
+Every trial fn takes the recorder as its first argument and only
+scalar/categorical axes after it (source, b, num_img, n_vox_eff, seed,
+effect strength), rebuilding the heavy DataSource / Extenter objects via
+factory.build_ds so iter_kwargs stays a flat scalar grid. The fns return
+nothing: each wraps its steps with the recorder at the call site (no
+decorators), so a trial's provenance (the imposed Experiment + planted
+effects), per-method timing, any failure, and the score land in the
+records, grouped under the trial's cache hash. Scoring is recorded as its
+own step (run_ana / run_segment) or derived afterward from the records
+(run_mancova / run_prune / run_two_effect). build_ds raises on an
+infeasible cell (e.g. HCP b > pool); the setup step records that failure
+and swallows it, so the trial ends without a try/except (see recorder).
 
 Effect strength is given one of two ways, resolved by _effect_llr:
   - effect_llr: the per-voxel (size-normalized) target, held fixed when a
@@ -15,20 +20,17 @@ Effect strength is given one of two ways, resolved by _effect_llr:
     effect_total_llr / n_vox_eff, so the total stays fixed as the extent
     grows (the extent sweep's choice).
 
-Three trial kinds share this contract:
-  - run_ana: fit every entry of an ana_kwargs_dict; one row per entry.
+The trial kinds (each registered with its analysis recipe in config.py):
+  - run_ana: fit and score every entry of an ana_kwargs_dict.
   - run_segment: oracle-Dice of the best-matching region in each Ward
-    hierarchy; one row per ClusterMode (segmentation quality, no
-    significance test or pruning).
+    hierarchy (segmentation quality, no significance test or pruning).
   - run_mancova: one shared voxel-stat walk dispatched across VBA /
-    VBA-TFCE / CET x 5 MANCOVA stats x {raw, z}; 30 rows per trial.
+    VBA-TFCE / CET x 5 MANCOVA stats x {raw, z}.
+  - run_prune: greedy vs DP pruning on one shared GLOW fit.
+  - run_two_effect: two adjacent equal-LLR effects at a controlled angle.
+  - run_min_size: per-perm (size -> max-z) staircases for a min_vox sweep.
 """
-import time
-import traceback
-from collections import namedtuple
-
 import numpy as np
-import pandas as pd
 
 import glow
 import glow.graph
@@ -39,7 +41,6 @@ from glow.analysis import (
 from glow.analysis.cluster import cluster, ClusterMode
 from glow.analysis.mancova import stat_dict, stat_dict_inv
 from glow.analysis.prune import prune_greedy, prune_dp
-from glow.benchmark.trial_cache import SKIP_LABEL
 from glow.effect import (EffectSynthetic, ExtenterMinVar, ExtenterSphere,
                          ExtenterSplit)
 from .factory import build_ds, derive_seeds
@@ -172,84 +173,35 @@ def _score(ana, mask_target_list, mask_active) -> dict:
     return scored
 
 
-def _trial_diag(exp, mask_target, effect_llr: float, feats) -> dict:
-    """Realized per-trial diagnostics shared by every emitted row.
+def _plant_effect(exp, *, n_vox_eff: int, seed: int, llr):
+    """Plant one ExtenterMinVar effect on exp; the shared tail of the setups.
 
-    These are the realized values (as opposed to the requested axes that
-    save_result already merges in): the actual feature count / subject
-    count, the planted support size, the resolved per-voxel effect_llr,
-    and the HCP feature subset drawn for this seed.
-
-    Args:
-        exp: the clean experiment (y is (b, num_img, num_vox))
-        mask_target (np.array): (X, Y, Z) bool, realized effect support
-        effect_llr (float): resolved per-voxel planted strength
-        feats (tuple | None): HCP feature subset, or None for WGN
-
-    Returns:
-        a dict of diagnostic columns
-    """
-    return {
-        'b_real': int(exp.y.shape[0]),
-        'num_img_real': int(exp.y.shape[1]),
-        'vox_total': int(exp.y.shape[2]),
-        'vox_effect': int(mask_target.sum()),
-        'effect_llr': effect_llr,
-        'feats': ','.join(feats) if feats else '',
-    }
-
-
-def _skip_frame(exc) -> pd.DataFrame:
-    """A one-row SKIP frame for an infeasible cell (e.g. HCP b > pool).
-
-    build_ds raises ValueError when a requested cell cannot be realized.
-    Recording a SKIP row marks the cell done and auditable but keeps it out
-    of the plots -- an intentional absence, not an ERROR (a failed trial).
+    The piece common to _setup_trial and _setup_min_size: given the clean
+    experiment, the support size, the effect seed, and the resolved per-voxel
+    llr, plant one synthetic effect (or nothing for the null path) and return
+    the recorder-friendly (exp_eff, effect_list, mask_target_list) triple.
 
     Args:
-        exc (Exception): the build_ds error to record in the row
+        exp: the clean experiment to impose the effect on.
+        n_vox_eff (int): requested effect support size.
+        seed (int): the effect RNG seed (ExtenterMinVar support + direction).
+        llr (float | None): resolved per-voxel effect target, or None to plant
+            no effect (the null / FWER-calibration path).
 
     Returns:
-        a single-row DataFrame labelled SKIP
+        exp_eff: the experiment with the effect imposed (exp itself when llr
+            is None).
+        effect_list (list): the planted EffectSynthetic specs (empty when llr
+            is None).
+        mask_target_list (list): each planted effect's realized (X, Y, Z) bool
+            support, in effect_list order (empty when llr is None).
     """
-    return pd.DataFrame([{'label': SKIP_LABEL, 'error': str(exc)}])
-
-
-_Trial = namedtuple('_Trial', 'exp exp_eff mask_target mask_active diag')
-
-
-def _setup_legacy(*, source: str, b: int, num_img: int, n_vox_eff: int,
-                  seed: int, effect_llr=None, effect_total_llr=None) -> _Trial:
-    """Build one planted-effect trial for the not-yet-recorder-wired fns.
-
-    The common front half of run_segment / run_mancova / run_prune: resolve the
-    data source, plant the synthetic effect at the resolved per-voxel llr, and
-    assemble the per-row diagnostics. Raises ValueError for an infeasible cell
-    -- callers turn that into a SKIP row via _skip_frame. (run_ana now uses the
-    recorded _setup_trial instead; this remains until those fns are converted.)
-
-    Args:
-        source (str): 'wgn' or 'hcp'
-        b (int): imaging-feature count
-        num_img (int): subject count (WGN; HCP uses its cohort)
-        n_vox_eff (int): requested effect support size
-        seed (int): effect RNG seed (also selects the HCP feature subset)
-        effect_llr (float | None): per-voxel effect target
-        effect_total_llr (float | None): whole-region effect target
-
-    Returns:
-        a _Trial(exp, exp_eff, mask_target, mask_active, diag)
-
-    Raises:
-        ValueError: infeasible cell (build_ds); the caller records a SKIP row
-    """
-    ds, feats = build_ds(source, b=b, num_img=num_img, seed=seed)
-    extenter = ExtenterMinVar(n_vox=n_vox_eff, seed=seed)
-    llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
-    exp, exp_eff, mask_target = _plant(ds, extenter, llr)
-    return _Trial(exp=exp, exp_eff=exp_eff, mask_target=mask_target,
-                  mask_active=exp.mask_idx > -1,
-                  diag=_trial_diag(exp, mask_target, llr, feats))
+    if llr is None:
+        return exp, [], []
+    effect = EffectSynthetic(
+        extenter=ExtenterMinVar(n_vox=n_vox_eff, seed=seed), effect_llr=llr)
+    exp_eff, mask = effect.fit(exp)
+    return exp_eff, [effect], [mask]
 
 
 def _setup_trial(*, source: str, b: int, num_img: int, n_vox_eff: int,
@@ -284,14 +236,8 @@ def _setup_trial(*, source: str, b: int, num_img: int, n_vox_eff: int,
             scores the prediction against the actual planted voxels.
     """
     ds, _ = build_ds(source, b=b, num_img=num_img, seed=seed)
-    exp = ds.exp
     llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
-    if llr is None:
-        return exp, [], []
-    effect = EffectSynthetic(extenter=ExtenterMinVar(n_vox=n_vox_eff, seed=seed),
-                             effect_llr=llr)
-    exp_eff, mask = effect.fit(exp)
-    return exp_eff, [effect], [mask]
+    return _plant_effect(ds.exp, n_vox_eff=n_vox_eff, seed=seed, llr=llr)
 
 
 def run_ana(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
@@ -348,64 +294,66 @@ def run_ana(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
 _SEED_OFFSET_DISTINCT = 100_000
 
 
-def run_min_size(*, source: str, b: int, num_img: int, n_vox_eff: int,
-                 seed: int, n_perm_fwer: int, n_perm_inner: int,
-                 min_vox_floor: int = 1, cluster_mode=ClusterMode.FOCUS,
-                 effect_llr=None, effect_total_llr=None):
-    """Capture each outer perm's (size -> max-z) curve for a min_vox sweep.
+def _setup_min_size(*, source: str, b: int, num_img: int, n_vox_eff: int,
+                    seed: int, effect_llr=None, effect_total_llr=None):
+    """Build one min-size trial on an independent data realization.
 
-    Mirrors run_ana's HCP trial setup (plant one synthetic effect, sweep
-    effect_llr), but instead of fitting GLOW at a single min_vox it runs the
-    outer-perm loop directly and records, per perm, the staircase of max-z
-    over a size threshold (score.size_max_z_curve). With those curves in hand,
-    GLOW's max-z FWER null -- hence its rejection / power -- can be recomputed
-    at any min_vox >= min_vox_floor without re-fitting (the curve evaluated at
-    the fit-time min_vox reproduces AnalysisGLOW.max_z_null exactly).
-
-    Two deliberate departures from run_ana:
-      - The trial seed is split (derive_seeds) into independent ds / feat /
-        effect sub-seeds; the ds sub-seed drives the DataSource, so each seed
-        is an independent data realization rather than the shared DS_SEED=0
-        base -- the sweep wants independent nulls, with the effect kept
-        independent of the data realization.
-      - Inner perms use inner_perm.cpu_perm (no race), so every region >=
-        min_vox_floor gets an exact z. The race only keeps the single global
-        max accurate; raising min_vox past that region would read a frozen
-        non-survivor z, biasing the swept null. cpu_perm avoids that, at the
-        cost of the race's speedup.
+    Like _setup_trial, but the trial seed is split (derive_seeds) into
+    independent DataSource / feature / effect sub-seeds and the ds sub-seed
+    drives the DataSource, so each seed is its own data realization rather than
+    the shared DS_SEED base -- the min_size sweep wants independent nulls, with
+    the effect kept independent of the realization (see run_min_size). Same
+    (exp_eff, effect_list, mask_target_list) contract as _setup_trial; the call
+    site records it, and a build_ds failure on an infeasible cell is recorded
+    and swallowed.
 
     Args:
-        source (str): 'wgn' or 'hcp' (the cache registers 'hcp').
-        b (int): imaging-feature count.
-        num_img (int): subject count (WGN; HCP uses its cohort).
-        n_vox_eff (int): requested effect support size.
-        seed (int): trial seed -- split by derive_seeds into independent
-            DataSource, feature, and effect sub-seeds.
+        source (str): 'wgn' or 'hcp'
+        b (int): imaging-feature count
+        num_img (int): subject count (WGN; HCP uses its cohort)
+        n_vox_eff (int): requested effect support size
+        seed (int): trial seed, split by derive_seeds into independent
+            DataSource, feature, and effect sub-seeds
+        effect_llr (float | None): per-voxel effect target
+        effect_total_llr (float | None): whole-region effect target
+
+    Returns:
+        exp_eff, effect_list, mask_target_list -- as _setup_trial.
+    """
+    s = derive_seeds(seed)
+    ds, _ = build_ds(source, b=b, num_img=num_img, seed=s.feat, ds_seed=s.ds)
+    llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
+    return _plant_effect(ds.exp, n_vox_eff=n_vox_eff, seed=s.effect, llr=llr)
+
+
+def _min_size_curves(exp_eff, *, n_perm_fwer: int, n_perm_inner: int,
+                     min_vox_floor: int, cluster_mode) -> str:
+    """Capture each outer perm's (size -> max-z) staircase, race-free.
+
+    The min_size sweep's compute step. Borrows AnalysisGLOW for its scaling +
+    (q0, q1) decomposition (so the captured curves match a real fit), then runs
+    the outer-perm loop by hand with the exact inner_perm.cpu_perm kernel (no
+    race), recording per perm the size_max_z_curve staircase. With those curves
+    GLOW's max-z FWER null -- hence its rejection / power -- can be recomputed at
+    any min_vox >= min_vox_floor without re-fitting (the curve at the fit-time
+    min_vox reproduces AnalysisGLOW.max_z_null exactly).
+
+    Race-free inner perms give every region >= min_vox_floor an exact z; the
+    race only keeps the single global max accurate, so raising min_vox past a
+    non-survivor region would read a frozen z and bias the swept null.
+
+    Args:
+        exp_eff: the experiment with the synthetic effect imposed.
         n_perm_fwer (int): outer FL perms (n_perm_fwer + 1 curves, incl. k=0).
         n_perm_inner (int): inner FL draws per outer perm.
         min_vox_floor (int): smallest region size given a z; the sweep's lower
             bound. 1 keeps the whole range available.
-        cluster_mode (ClusterMode): Ward projection (default FOCUS).
-        effect_llr (float | None): per-voxel effect target.
-        effect_total_llr (float | None): whole-region effect target.
+        cluster_mode (ClusterMode): Ward projection.
 
     Returns:
-        a one-row DataFrame: the trial diagnostics plus n_perm_fwer,
-        n_perm_inner, min_vox_floor, time_sec, and curve_json (the per-perm
-        staircases, parse with json.loads).
+        a JSON string of the per-perm [size, max_z] corner staircases
+        (curve_json; parse with json.loads).
     """
-    s = derive_seeds(seed)
-    try:
-        ds, feats = build_ds(source, b=b, num_img=num_img,
-                             seed=s.feat, ds_seed=s.ds)
-    except ValueError as e:
-        return _skip_frame(e)
-
-    extenter = ExtenterMinVar(n_vox=n_vox_eff, seed=s.effect)
-    llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
-    exp, exp_eff, mask_target = _plant(ds, extenter, llr)
-    diag = _trial_diag(exp, mask_target, llr, feats)
-
     # borrow AnalysisGLOW only for its scaling + (q0, q1) decomposition, so
     # the captured curves match a real fit; the outer loop below is run by
     # hand to swap the racing kernel for the exact cpu_perm.
@@ -414,7 +362,6 @@ def run_min_size(*, source: str, b: int, num_img: int, n_vox_eff: int,
                        cluster_mode=cluster_mode)
     exp_s, q0, q1 = ana.exp, ana._q0, ana._q1
 
-    t0 = time.time()
     curve_list = []
     for k in range(n_perm_fwer + 1):
         _exp = exp_s.permute(k) if k else exp_s
@@ -431,25 +378,98 @@ def run_min_size(*, source: str, b: int, num_img: int, n_vox_eff: int,
         consider = (size >= min_vox_floor) & np.isfinite(z)
         curve_list.append(size_max_z_curve(size, z, consider))
 
-    row = {'label': 'min_size', 'analysis_cls': 'AnalysisGLOW',
-           'time_sec': time.time() - t0,
-           'n_perm_fwer': n_perm_fwer, 'n_perm_inner': n_perm_inner,
-           'min_vox_floor': min_vox_floor,
-           'curve_json': curve_json(curve_list), **diag}
-    return pd.DataFrame([row])
+    return curve_json(curve_list)
 
 
-def run_segment(*, source: str, b: int, num_img: int, n_vox_eff: int,
+def run_min_size(recorder, *, source: str, b: int, num_img: int,
+                 n_vox_eff: int, seed: int, n_perm_fwer: int,
+                 n_perm_inner: int, min_vox_floor: int = 1,
+                 cluster_mode=ClusterMode.FOCUS, effect_llr=None,
+                 effect_total_llr=None):
+    """Capture each outer perm's (size -> max-z) curve for a min_vox sweep.
+
+    Records, it does not score. _setup_min_size plants one synthetic effect on
+    an independent data realization (recorded for provenance), then a single
+    curve step records the per-perm (size -> max-z) staircases (_min_size_curves
+    -> curve_json) plus its inputs (n_perm_fwer / n_perm_inner / min_vox_floor /
+    cluster_mode) and timing. With those, GLOW's max-z FWER null can be swept
+    over min_vox post hoc without re-fitting. Sweeping itself is derived
+    afterward from the records, not here.
+
+    Two deliberate departures from run_ana (see _setup_min_size and
+    _min_size_curves): the trial seed is split for an independent null per seed,
+    and inner perms are race-free so every region >= min_vox_floor gets an exact
+    z.
+
+    Args:
+        recorder (Recorder): the trial's recorder; calls are wrapped with it.
+        source (str): 'wgn' or 'hcp' (the cache registers 'hcp').
+        b (int): imaging-feature count.
+        num_img (int): subject count (WGN; HCP uses its cohort).
+        n_vox_eff (int): requested effect support size.
+        seed (int): trial seed -- split by derive_seeds into independent
+            DataSource, feature, and effect sub-seeds.
+        n_perm_fwer (int): outer FL perms (n_perm_fwer + 1 curves, incl. k=0).
+        n_perm_inner (int): inner FL draws per outer perm.
+        min_vox_floor (int): smallest region size given a z; the sweep's lower
+            bound. 1 keeps the whole range available.
+        cluster_mode (ClusterMode): Ward projection (default FOCUS).
+        effect_llr (float | None): per-voxel effect target.
+        effect_total_llr (float | None): whole-region effect target.
+    """
+    setup = recorder(output_name_list=(
+        'exp_eff', 'effect_list', 'mask_target_list'))(_setup_min_size)(
+        source=source, b=b, num_img=num_img, n_vox_eff=n_vox_eff, seed=seed,
+        effect_llr=effect_llr, effect_total_llr=effect_total_llr)
+    if setup is None:
+        return
+    exp_eff, _effect_list, _mask_target_list = setup
+
+    recorder(output_name='curve')(_min_size_curves)(
+        exp_eff=exp_eff, n_perm_fwer=n_perm_fwer, n_perm_inner=n_perm_inner,
+        min_vox_floor=min_vox_floor, cluster_mode=cluster_mode)
+
+
+def _segment_oracle(exp_eff, mode, mask_target_list) -> dict:
+    """Best-Dice tree region for one ClusterMode: the segment trial's score.
+
+    Builds the Ward hierarchy in `mode` on the effect-bearing images and
+    returns score_oracle_tree's confusion counts for the planted support -- the
+    best a perfect selector could do on this segmentation, with no significance
+    test or pruning. The mode and the experiment are the recorded inputs (its
+    provenance); the timing is the segmentation + tree-scan cost.
+
+    Args:
+        exp_eff: the experiment with the synthetic effect imposed.
+        mode (ClusterMode): the Ward projection to segment with.
+        mask_target_list (list): the planted (X, Y, Z) bool supports (one for
+            the segment cache); their union is the target scored (all-False,
+            hence empty counts, for the null path).
+
+    Returns:
+        the {tp, fp, tn, fn} counts of the single best-matching tree region.
+    """
+    mask_target = np.zeros(exp_eff.mask_idx.shape, dtype=bool)
+    for m in mask_target_list:
+        mask_target |= m
+    children = cluster(exp_eff, mode=mode)
+    return score_oracle_tree(children=children, mask_target=mask_target,
+                             mask_idx=exp_eff.mask_idx)
+
+
+def run_segment(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
                 seed: int, modes, effect_llr=None, effect_total_llr=None):
     """Oracle Dice of the best region in each Ward hierarchy, per mode.
 
-    Isolates segmentation quality from significance testing and pruning:
-    for each ClusterMode it builds the hierarchy on the effect-bearing
-    images and reports the maximum Dice over all regions of the tree (the
-    oracle best match), unavailable in practice but a clean measure of how
-    well the segmentation alone recovers the planted support.
+    Isolates segmentation quality from significance testing and pruning.
+    _setup_trial plants one synthetic effect (recorded for provenance), then for
+    each ClusterMode a score step records the oracle best-Dice region of that
+    Ward tree (_segment_oracle): the maximum Dice over all regions, unavailable
+    in practice but a clean measure of how well the segmentation alone recovers
+    the planted support. The mode is the score step's recorded input.
 
     Args:
+        recorder (Recorder): the trial's recorder; calls are wrapped with it.
         source (str): 'wgn' or 'hcp'
         b (int): imaging-feature count
         num_img (int): subject count (WGN; HCP uses its cohort)
@@ -458,40 +478,19 @@ def run_segment(*, source: str, b: int, num_img: int, n_vox_eff: int,
         modes: iterable of ClusterMode (or their string values) to compare
         effect_llr (float | None): per-voxel effect target
         effect_total_llr (float | None): whole-region effect target
-
-    Returns:
-        a DataFrame with one row per ClusterMode (label = mode name)
     """
-    try:
-        trial = _setup_legacy(source=source, b=b, num_img=num_img,
-                             n_vox_eff=n_vox_eff, seed=seed,
-                             effect_llr=effect_llr,
-                             effect_total_llr=effect_total_llr)
-    except ValueError as e:
-        return _skip_frame(e)
+    setup = recorder(output_name_list=(
+        'exp_eff', 'effect_list', 'mask_target_list'))(_setup_trial)(
+        source=source, b=b, num_img=num_img, n_vox_eff=n_vox_eff, seed=seed,
+        effect_llr=effect_llr, effect_total_llr=effect_total_llr)
+    if setup is None:
+        return
+    exp_eff, _effect_list, mask_target_list = setup
 
-    rows = []
     for mode in modes:
-        mode = ClusterMode(mode)
-        row = {'label': str(mode), **trial.diag}
-        t0 = time.time()
-        try:
-            children = cluster(trial.exp_eff, mode=mode)
-            # oracle: the single tree region best matching the planted support
-            counts = score_oracle_tree(children=children,
-                                       mask_target=trial.mask_target,
-                                       mask_idx=trial.exp.mask_idx)
-        except Exception:
-            row['time_sec'] = time.time() - t0
-            row['error'] = traceback.format_exc()
-            rows.append(row)
-            continue
-        row['time_sec'] = time.time() - t0
-        # store its counts (metrics derived downstream, as for every other row)
-        row.update(counts)
-        rows.append(row)
-
-    return pd.DataFrame(rows)
+        recorder(output_name='score')(_segment_oracle)(
+            exp_eff=exp_eff, mode=ClusterMode(mode),
+            mask_target_list=mask_target_list)
 
 
 def run_prune(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,

@@ -3,13 +3,15 @@
 The TrialCache owns a recorder and writes one json per trial under its records/
 dir; driver_local passes the recorder to a recorder-wired fn and serial drives
 cache.iter_trial(record=True, flush=True) while parallel scopes each trial in a
-worker. Covers run_ana plus the converted fit-shaped fns (run_mancova /
-run_prune / run_two_effect), on a tiny WGN cell with cheap fits.
+worker. Covers run_ana plus the other recorder-wired fns (run_mancova /
+run_prune / run_two_effect / run_segment / run_min_size), on a tiny WGN cell
+with cheap fits.
 """
 import json
 from functools import partial
 
 from glow.analysis import AnalysisVBA
+from glow.analysis.cluster import ClusterMode
 from glow.benchmark.trial_cache import TrialCache
 from glow.benchmark.recorder import RECORDS_DIR
 from glow.benchmark.paper import run as paper_run
@@ -179,3 +181,34 @@ class TestConvertedFitFns:
         effects = setup['outputs']['effect_list']
         assert len(effects) == 2 and effects[1]['angle'] == 30.0
         assert any(r['function'].endswith('AnalysisVBA.fit') for r in recs)
+
+    def test_segment_records_setup_and_per_mode_scores(self, tmp_path):
+        modes = [ClusterMode.FOCUS, ClusterMode.NAIVE]
+        cache = _cache(tmp_path, b=[1], seed=[0])
+        driver_local(cache, partial(paper_run.run_segment, modes=modes),
+                     verbose=False)
+        recs = cache.load_records()
+        fns = _fns(recs)
+        # setup provenance + one oracle score per mode
+        assert '_setup_trial' in fns
+        assert sum(f == '_segment_oracle' for f in fns) == len(modes)
+        scores = [r for r in recs if r['function'].endswith('_segment_oracle')]
+        # each score records its mode (the StrEnum value) and the counts
+        assert {r['inputs']['mode'] for r in scores} == {'Focus', 'Naive'}
+        assert set(scores[0]['outputs']['score']) == {'tp', 'fp', 'tn', 'fn'}
+
+    def test_min_size_records_setup_and_curve(self, tmp_path):
+        cache = _cache(tmp_path, b=[1], seed=[0])
+        driver_local(cache, partial(paper_run.run_min_size,
+                                    n_perm_fwer=1, n_perm_inner=2),
+                     verbose=False)
+        recs = cache.load_records()
+        fns = _fns(recs)
+        assert '_setup_min_size' in fns and '_min_size_curves' in fns
+        curve = next(r for r in recs
+                     if r['function'].endswith('_min_size_curves'))
+        # the curve step records its perm knobs as inputs ...
+        assert curve['inputs']['n_perm_fwer'] == 1
+        assert curve['inputs']['min_vox_floor'] == 1
+        # ... and a per-perm (n_perm_fwer + 1) staircase JSON as its output
+        assert len(json.loads(curve['outputs']['curve'])) == 2
