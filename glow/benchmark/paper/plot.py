@@ -2,8 +2,8 @@
 
 python -m glow.benchmark.paper.plot (main) walks the config catalogue
 (CACHE_BY_LABEL) rather than the result folders: for each cache it keeps
-the completed in-config trials (_load_in_config drops anything left over
-from an older config) and writes one figure set per cache into
+the completed in-config trials (results.load_config_df drops anything left
+over from an older config) and writes one figure set per cache into
 results/_latest:
 
   - run_ana caches get either a FWER calibration curve (null caches)
@@ -29,7 +29,8 @@ import seaborn as sns
 
 import glow.benchmark
 from glow.benchmark.trial_cache import NON_RESULT_LABELS
-from glow.util import stable_hash
+
+from .results import load_config_df
 
 
 # ---------------------------------------------------------------------------
@@ -1074,42 +1075,12 @@ def _plot_mancova(sources, out) -> None:
     plt.close('all')
 
 
-def _load_in_config(label: str, cache):
-    """Load a cache's results, keeping the completed in-config trials.
-
-    Folds any pending per-trial json into the csv (load_update_all), then
-    drops rows whose trial_hash is not one cache.iter_trial() would
-    produce -- i.e. trials left over from a different config. "Complete"
-    here is per trial, not per config: save_result writes all of a trial's
-    method rows under one trial_hash, so a present hash means that trial is
-    done. The result is therefore however many in-config trials have
-    finished so far -- a half-run cache yields a partial frame, which is
-    enough to plot intermediate results; it is empty only when no
-    completed trial on disk belongs to the current config.
-
-    Args:
-        label (str): cache label / result subfolder name
-        cache (TrialCache): the config-catalogue cache whose iter_trial()
-            defines the in-config trial set
-
-    Returns:
-        the completed in-config results so far (empty only when no
-            completed trial on disk belongs to the current config)
-    """
-    df, _, _ = glow.benchmark.load_update_all(label, verbose=False)
-    if df.empty or 'trial_hash' not in df.columns:
-        return pd.DataFrame()
-    expected = {stable_hash(trial)
-                for trial in cache.iter_trial(include_completed=True)}
-    return df[df['trial_hash'].astype(str).isin(expected)]
-
-
 def main(argv=None) -> None:
     """Plot caches from the config catalogue into results/_latest.
 
     Walks CACHE_BY_LABEL (restricted to the cache labels given on the
     command line, or all of them when none are given); for each cache
-    keeps the completed in-config trials (_load_in_config) and hands them
+    keeps the completed in-config trials (results.load_config_df) and hands them
     to plot_cache with the cache's spec from config.PLOT (or an inferred
     one). The spec decides the figure kind and which scalar column is the
     x-axis / source facet, so a single merged cache plots WGN and HCP side
@@ -1151,7 +1122,7 @@ def main(argv=None) -> None:
 
     n_plotted = 0
     for label, (cache, run_fnc) in items:
-        df = _load_in_config(label, cache)
+        df = load_config_df(cache)
         if df.empty:
             continue
         # how far along this cache is, so a mid-benchmark run reads as

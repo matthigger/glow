@@ -1,9 +1,9 @@
 """Interactive REPL: rank a config's trials by where GLOW most underperforms.
 
-A companion to glow.benchmark.paper.plot. It scans the per-user results
-directory for configs (labels) that have a results.csv,
-asks which one to view and which metric to sort by, then lists the
-config's worst GLOW cases (the N_SHOW trials with the largest gap).
+A companion to glow.benchmark.paper.plot. It scans the config catalogue for
+caches (labels) that have records on disk (results.find_caches), asks which
+one to view and which metric to sort by, then lists the config's worst GLOW
+cases (the N_SHOW trials with the largest gap).
 
 "Worst" is per-trial regret: for each trial (one trial_hash, holding
 seed / effect_llr / data-source / extenter fixed) it compares the chosen
@@ -27,7 +27,7 @@ import sys
 
 import pandas as pd
 
-import glow.benchmark
+from .results import find_caches, load_config_df
 
 
 # label -> the cluster_mode it stands for (config.py ANALYSIS_DICT)
@@ -38,23 +38,16 @@ N_SHOW = 10
 
 
 def find_configs() -> list:
-    """List (label, csv_path) for every config folder that has a results.csv.
+    """List (label, cache) for every catalogue cache that has records on disk.
 
-    Skips the _latest scratch folder written by paper.plot.
+    A thin wrapper over results.find_caches, kept so callers read as "find the
+    configs" -- discovery now keys off the per-trial records/ dir the driver
+    writes, not a results.csv.
 
     Returns:
-        sorted list of (label, pathlib.Path) pairs, one per config whose
-            results.csv exists on disk
+        sorted list of (label, TrialCache) pairs, one per cache with records.
     """
-    base = glow.benchmark.get_path_result()
-    out = []
-    for sub in sorted(base.iterdir()):
-        if not sub.is_dir() or sub.name == '_latest':
-            continue
-        csv = sub / 'results.csv'
-        if csv.exists():
-            out.append((sub.name, csv))
-    return out
+    return find_caches()
 
 
 def choose(prompt: str, options: list) -> int:
@@ -154,9 +147,11 @@ def print_summary(summary, glow_label: str, metric: str) -> None:
 
 def main() -> None:
     """Run the compare REPL: pick GLOW variant, then loop config + metric."""
+    import glow.benchmark
+
     configs = find_configs()
     if not configs:
-        print('no configs with a results.csv under '
+        print('no configs with records under '
               f'{glow.benchmark.get_path_result()}')
         return
 
@@ -171,8 +166,12 @@ def main() -> None:
         c = choose('Which config to view?', labels)
         if c < 0:
             return
-        label, csv = configs[c]
-        df = glow.benchmark.load_results_csv(csv)
+        label, cache = configs[c]
+        df = load_config_df(cache)
+        if df.empty:
+            print(f'  {label} has no completed in-config trials — skipping.')
+            continue
+        df = df.set_index('trial_hash')
 
         if glow_label not in set(df['label']):
             print(f'  {label} has no {glow_label} rows — skipping.')
