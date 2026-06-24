@@ -6,7 +6,9 @@ call append one record
     {"trial_id": ..., "function": ..., "inputs": {...}, "outputs": {...},
      "time_sec": ...}
 
-to ``records``. Calls nested inside one top-level invocation (or inside an
+with an optional top-level ``"label"`` naming the method/variant the call
+belongs to (e.g. 'GLOW-GLM', 'VBA-TFCE') when one is passed to the decorator.
+Calls nested inside one top-level invocation (or inside an
 explicit ``with recorder.trial(trial_id=...):`` block) share a single
 ``trial_id``, so all the work of one benchmark trial groups together. In
 the benchmark the ``trial_id`` is the trial's cache hash
@@ -109,8 +111,9 @@ class Recorder:
         records (list): append-only list of recorded call dicts, one per
             executed decorated call. A success carries ``{trial_id, function,
             inputs, outputs, time_sec}``; a failure swaps ``outputs`` for
-            ``error`` (the traceback). Calls short-circuited after a same-trial
-            failure add none.
+            ``error`` (the traceback). A call given a ``label`` carries it as a
+            top-level field too (the method/variant name; see __call__). Calls
+            short-circuited after a same-trial failure add none.
         _trial_id_current (contextvars.ContextVar): the active trial id for
             the current execution context (thread / asyncio task); None when
             no trial is open. A ContextVar so concurrent runs never see each
@@ -178,29 +181,44 @@ class Recorder:
             # bounded by the number of trials currently open (not ever-failed).
             self._failed_trials.discard(trial_id)
 
-    def __call__(self, output_name=None, output_name_list=None):
+    def __call__(self, output_name=None, output_name_list=None, label=None):
         """Build a decorator that records calls under one or more output names.
 
         Pass exactly one of ``output_name`` (the whole return is recorded
         under that single name) or ``output_name_list`` (the return is a
         tuple/list, unpacked positionally onto those names).
 
+        ``label`` is optional per-call metadata: the method/variant name this
+        call belongs to (e.g. 'GLOW-GLM', 'VBA-TFCE'), recorded as a top-level
+        field on the record. It is distinct from a trial's axis stamp (flush):
+        the stamp is per-trial, but one trial fits many methods under one trial
+        id, so the label identifies which. Tagging every recorded call of a
+        method with the same label (a fit and its score, say) also gives the
+        records-to-csv reader its (trial_id, label) group key. Left None for a
+        trial-level step (e.g. the experiment setup) that has no method.
+
         Args:
             output_name (str | None): single name for the whole return.
             output_name_list (tuple | list | None): names for an unpacked
                 tuple/list return; non-empty, no duplicates.
+            label (str | None): method/variant name for this call, recorded
+                top-level; None to record no label.
 
         Returns:
             a decorator that wraps a function for recording.
 
         Raises:
-            ValueError: neither or both of the two args given, or
+            ValueError: neither or both of the two output args given, or
                 ``output_name_list`` has duplicate names.
-            TypeError: a name is not a str, or ``output_name_list`` is empty.
+            TypeError: a name is not a str, ``output_name_list`` is empty, or
+                ``label`` is not a str.
         """
         # require exactly one of output_name / output_name_list (be explicit)
         if (output_name is None) == (output_name_list is None):
             raise ValueError("provide exactly one of output_name or output_name_list")
+
+        if label is not None and not isinstance(label, str):
+            raise TypeError("label must be a str")
 
         if output_name is not None:
             if not isinstance(output_name, str):
@@ -283,6 +301,7 @@ class Recorder:
                         self.records.append({
                             "trial_id": trial_id,
                             "function": fnc.__qualname__,
+                            **({"label": label} if label is not None else {}),
                             "inputs": inputs,
                             "error": traceback.format_exc(),
                             "time_sec": time.perf_counter() - t0,
@@ -317,6 +336,7 @@ class Recorder:
                     self.records.append({
                         "trial_id": trial_id,
                         "function": fnc.__qualname__,
+                        **({"label": label} if label is not None else {}),
                         "inputs": inputs,
                         "outputs": outputs,
                         "time_sec": time_sec,

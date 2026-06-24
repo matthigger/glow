@@ -114,6 +114,21 @@ class TestRunAnaRecords:
         assert set(s['target']) == {'tp', 'fp', 'tn', 'fn'}
         assert score['inputs']['ana']['kind'] == 'AnalysisVBA'
 
+    def test_fit_and_score_carry_method_label(self, tmp_path):
+        # the ana_kwargs_dict key (the method/variant name) is recorded as a
+        # top-level label on both the fit and its score; the trial-level setup
+        # step has none
+        cache = _cache(tmp_path, b=[2], seed=[0])
+        driver_local(cache, _ana(VBA), verbose=False)
+        recs = cache.load_records()
+
+        fit = next(r for r in recs if r['function'].endswith('.fit'))
+        score = next(r for r in recs if r['function'].endswith('score_effects'))
+        setup = next(r for r in recs if r['function'].endswith('_setup_trial'))
+        assert fit['label'] == 'VBA'
+        assert score['label'] == 'VBA'
+        assert 'label' not in setup  # trial-level step, no method
+
     def test_fit_failure_short_circuits_the_trial(self, tmp_path):
         # one shared trial scope -> the first failing fit marks the trial failed
         # and later fits short-circuit; the records stop at the failure
@@ -151,8 +166,13 @@ class TestConvertedFitFns:
         walk = next(r for r in recs if r['function'].endswith('_shared_voxel_walk'))
         # walk output is keyed by stat name (json-friendly), each matrix a hash
         assert 'llr' in walk['outputs']['stat']
+        assert 'label' not in walk  # the shared walk is trial-level, no method
         fit = next(r for r in recs if r['function'].endswith('.fit'))
         assert fit['inputs']['self']['kind'] in ('AnalysisVBA', 'AnalysisCET')
+        # every variant fit carries its _build_specs label; 30 distinct ones
+        fits = [r for r in recs if r['function'].endswith('.fit')]
+        assert all('label' in r for r in fits)
+        assert len({r['label'] for r in fits}) == 30
 
     def test_prune_records_fit_and_both_rules(self, tmp_path, monkeypatch):
         # the real _GLOW_BASE is 250x1000 perms; shrink it for the test
@@ -164,10 +184,15 @@ class TestConvertedFitFns:
         recs = cache.load_records()
         fns = _fns(recs)
         assert 'fit' in fns  # the one shared GLOW fit
+        # the shared fit is a trial-level input to both rules, so it has no label
+        glow_fit = next(r for r in recs if r['function'].endswith('.fit'))
+        assert 'label' not in glow_fit
         prunes = [r for r in recs if 'prune' in r['function']]
         assert {r['function'].rsplit('.', 1)[-1] for r in prunes} == {
             'prune_greedy', 'prune_dp'}
         assert all('reg_out_list' in r['outputs'] for r in prunes)
+        # each rule is tagged with its method label
+        assert {r['label'] for r in prunes} == {'GLOW-Greedy', 'GLOW-DP'}
 
     def test_two_effect_records_splitter_and_two_effects(self, tmp_path):
         cache = _cache(tmp_path, b=[2], seed=[0], angle=[30.0])
@@ -180,7 +205,8 @@ class TestConvertedFitFns:
         assert setup['outputs']['splitter']['kind'] == 'ExtenterSplit'
         effects = setup['outputs']['effect_list']
         assert len(effects) == 2 and effects[1]['angle'] == 30.0
-        assert any(r['function'].endswith('AnalysisVBA.fit') for r in recs)
+        fit = next(r for r in recs if r['function'].endswith('AnalysisVBA.fit'))
+        assert fit['label'] == 'VBA'  # the ana_kwargs_dict key
 
     def test_segment_records_setup_and_per_mode_scores(self, tmp_path):
         modes = [ClusterMode.FOCUS, ClusterMode.NAIVE]

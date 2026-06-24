@@ -251,9 +251,12 @@ def run_ana(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
     provenance, then for each analysis a fit step records self (the recipe,
     which identifies the variant), its timing, and any traceback, and a score
     step records that fit's detection score against the planted effects
-    (score_effects). All share one trial id (the cache hash, set by the
-    iterator's scope). A fit that fails marks the trial failed, so its score
-    step (and every later fit/score) short-circuits unrecorded (see recorder).
+    (score_effects). Both the fit and score steps are tagged with the
+    ana_kwargs_dict label (e.g. 'GLOW-GLM'), so the records carry the method
+    name and a fit pairs with its score on (trial_id, label). All share one
+    trial id (the cache hash, set by the iterator's scope). A fit that fails
+    marks the trial failed, so its score step (and every later fit/score)
+    short-circuits unrecorded (see recorder).
 
     Args:
         recorder (Recorder): the trial's recorder (its trial scope is already
@@ -277,9 +280,9 @@ def run_ana(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
     exp_eff, _effect_list, mask_target_list = setup
     mask_active = exp_eff.mask_idx > -1
 
-    for Ana, kw in ana_kwargs_dict.values():
-        ana = recorder(output_name='ana')(Ana(exp=exp_eff, **kw).fit)()
-        recorder(output_name='score')(score_effects)(
+    for label, (Ana, kw) in ana_kwargs_dict.items():
+        ana = recorder(output_name='ana', label=label)(Ana(exp=exp_eff, **kw).fit)()
+        recorder(output_name='score', label=label)(score_effects)(
             ana=ana, mask_target_list=mask_target_list, mask_active=mask_active)
 
 
@@ -503,9 +506,10 @@ def run_prune(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
     candidates by raw LLR (mirrors AnalysisGLOW.finalize; the z-score fragments
     under pruning). prune_greedy blooms the max-LLR region and removes its tree
     relatives (GLOW's default; undersegments); prune_dp takes the exact
-    max-total-LLR antichain (oversegments). Each prune call is recorded -- its
-    function name is the rule, its output the selected regions. Scoring (the
-    over/under-segmentation counts) is derived afterward from the records.
+    max-total-LLR antichain (oversegments). Each prune call is recorded and
+    tagged with its rule label (GLOW-Greedy / GLOW-DP), its output the selected
+    regions. Scoring (the over/under-segmentation counts) is derived afterward
+    from the records.
 
     Args:
         recorder (Recorder): the trial's recorder; calls are wrapped with it.
@@ -542,8 +546,9 @@ def run_prune(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
     llr_gain = np.nan_to_num(ana.llr.astype(float), nan=0.0,
                              posinf=0.0, neginf=0.0)
 
-    for prune_fn in (prune_greedy, prune_dp):
-        recorder(output_name_list=('reg_out_list', 'prune_info'))(prune_fn)(
+    for prune_fn, label in ((prune_greedy, 'GLOW-Greedy'), (prune_dp, 'GLOW-DP')):
+        recorder(output_name_list=('reg_out_list', 'prune_info'),
+                 label=label)(prune_fn)(
             sig_reg_list=sig_reg_list, children=ana.children, stat=llr_gain)
 
 
@@ -621,9 +626,10 @@ def run_mancova(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
 
     Records, it does not score. The shared voxel-stat walk is recorded as one
     step (its own timing), then each variant's fit records self (the recipe --
-    the stat fn name, z_flag, tfce/cft -- which identifies the variant). The
-    big _stat matrix passed to fit records as a content hash. Scoring is derived
-    afterward from the records, not here.
+    the stat fn name, z_flag, tfce/cft -- which identifies the variant) tagged
+    with its _build_specs label (e.g. 'VBA-TFCE-Wilks-z'). The big _stat matrix
+    passed to fit records as a content hash. Scoring is derived afterward from
+    the records, not here.
 
     Args:
         recorder (Recorder): the trial's recorder; calls are wrapped with it.
@@ -653,8 +659,8 @@ def run_mancova(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
     if stat_by_name is None:
         return
 
-    for _label, Ana, kw, fn in _build_specs(n_perm_fwer, alpha_fwer, cft_pval):
-        recorder(output_name='ana')(Ana(exp=exp_eff, **kw).fit)(
+    for label, Ana, kw, fn in _build_specs(n_perm_fwer, alpha_fwer, cft_pval):
+        recorder(output_name='ana', label=label)(Ana(exp=exp_eff, **kw).fit)(
             _stat=stat_by_name[stat_dict_inv[fn]].copy())
 
 
@@ -711,8 +717,8 @@ def run_two_effect(recorder, *, source: str, b: int, num_img: int,
     Records, it does not score. _setup_two_effect plants the two effects and
     records the experiment, the effect specs, and the ExtenterSplit (the
     provenance of the bisection); then each analysis fit records self (the
-    recipe). Scoring against each planted half is derived afterward from the
-    records, not here.
+    recipe) tagged with its ana_kwargs_dict label (e.g. 'GLOW-GLM'). Scoring
+    against each planted half is derived afterward from the records, not here.
 
     Args:
         recorder (Recorder): the trial's recorder; calls are wrapped with it.
@@ -736,5 +742,5 @@ def run_two_effect(recorder, *, source: str, b: int, num_img: int,
         return
     exp_eff, _effect_list, _splitter = setup
 
-    for Ana, kw in ana_kwargs_dict.values():
-        recorder(output_name='ana')(Ana(exp=exp_eff, **kw).fit)()
+    for label, (Ana, kw) in ana_kwargs_dict.items():
+        recorder(output_name='ana', label=label)(Ana(exp=exp_eff, **kw).fit)()

@@ -83,6 +83,63 @@ def test_output_name_stores_tuple_whole(rec):
 	assert rec.records[0]["outputs"] == {"pair": (7, 7)}
 
 
+# --- label tagging ----------------------------------------------------------
+
+def test_label_recorded_top_level(rec):
+	# label names the method/variant this call belongs to; it lands as a
+	# top-level field on the record, beside trial_id / function (not nested
+	# under inputs)
+	@rec(output_name='out', label='GLOW-GLM')
+	def f(a):
+		return a
+
+	f(5)
+	(record,) = rec.records
+	assert record['label'] == 'GLOW-GLM'
+	assert 'label' not in record['inputs']
+	# survives serialization
+	assert json.loads(rec.to_json())[0]['label'] == 'GLOW-GLM'
+
+
+def test_label_absent_when_not_given(rec):
+	# an unlabelled call (e.g. a trial-level setup step) carries no label key
+	@rec(output_name='out')
+	def f(a):
+		return a
+
+	f(5)
+	assert 'label' not in rec.records[0]
+
+
+def test_label_recorded_on_failure(rec):
+	# a failure record carries the label too, so a failed variant is auditable
+	@rec(output_name='out', label='VBA-TFCE')
+	def boom():
+		raise ValueError('x')
+
+	assert boom() is None
+	(record,) = rec.records
+	assert record['label'] == 'VBA-TFCE'
+	assert 'ValueError' in record['error']
+
+
+def test_label_with_output_name_list(rec):
+	@rec(output_name_list=('lo', 'hi'), label='prune')
+	def f(x):
+		return (x - 1, x + 1)
+
+	f(5)
+	assert rec.records[0]['label'] == 'prune'
+	assert rec.records[0]['outputs'] == {'lo': 4, 'hi': 6}
+
+
+def test_label_must_be_str(rec):
+	with pytest.raises(TypeError):
+		@rec(output_name='out', label=123)
+		def f():
+			return 1
+
+
 # --- run / trial_id semantics -----------------------------------------------
 
 def test_nested_calls_share_trial_id(rec):
