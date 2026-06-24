@@ -331,19 +331,18 @@ def _setup_min_size(*, source: str, b: int, num_img: int, n_vox_eff: int,
 
 def _min_size_curves(exp_eff, *, n_perm_fwer: int, n_perm_inner: int,
                      min_vox_floor: int, cluster_mode) -> str:
-    """Capture each outer perm's (size -> max-z) staircase, race-free.
+    """Capture each outer perm's (size -> max-z) staircase.
 
     The min_size sweep's compute step. Borrows AnalysisGLOW for its scaling +
     (q0, q1) decomposition (so the captured curves match a real fit), then runs
-    the outer-perm loop by hand with the exact inner_perm.cpu_perm kernel (no
-    race), recording per perm the size_max_z_curve staircase. With those curves
+    the outer-perm loop by hand with the exact inner_perm.cpu_perm kernel,
+    recording per perm the size_max_z_curve staircase. With those curves
     GLOW's max-z FWER null -- hence its rejection / power -- can be recomputed at
     any min_vox >= min_vox_floor without re-fitting (the curve at the fit-time
     min_vox reproduces AnalysisGLOW.max_z_null exactly).
 
-    Race-free inner perms give every region >= min_vox_floor an exact z; the
-    race only keeps the single global max accurate, so raising min_vox past a
-    non-survivor region would read a frozen z and bias the swept null.
+    inner_perm.cpu_perm gives every region >= min_vox_floor an exact z, so the
+    null can be re-thresholded at any min_vox the sweep visits without bias.
 
     Args:
         exp_eff: the experiment with the synthetic effect imposed.
@@ -400,10 +399,8 @@ def run_min_size(recorder, *, source: str, b: int, num_img: int,
     those, GLOW's max-z FWER null can be swept over min_vox post hoc without
     re-fitting. Sweeping itself is derived afterward from the records, not here.
 
-    Two deliberate departures from run_ana (see _setup_min_size and
-    _min_size_curves): the trial seed is split for an independent null per seed,
-    and inner perms are race-free so every region >= min_vox_floor gets an exact
-    z.
+    One deliberate departure from run_ana (see _setup_min_size): the trial seed
+    is split for an independent null per seed.
 
     Args:
         recorder (Recorder): the trial's recorder; calls are wrapped with it.

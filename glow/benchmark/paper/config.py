@@ -61,14 +61,6 @@ N_PERM_FWER = 250
 N_PERM_INNER = 1000
 ALPHA_FWER = 0.05
 
-# GLOW inner-perm-race speed/power knobs (never validity knobs; see
-# AnalysisGLOW). RACE_INIT is the burn-in inner draws over all regions before
-# the survivor trim; RACE_P_KEEP_THRESH keeps any region with > this
-# probability of being the per-perm max-z region (scale-free, smaller keeps
-# more). Defaults are lossless at RACE_INIT=15 on HCP.
-RACE_INIT = 15
-RACE_P_KEEP_THRESH = 1e-6
-
 # Per-family VBA design decisions (hoisted for easy scanning / override).
 VBA_Z_FLAG = True
 VBA_GET_STAT = get_hotel_tr
@@ -79,9 +71,7 @@ CET_GET_STAT = get_hotel_tr
 # ---------- analysis recipes -------------------------------------------------
 _GLOW_BASE = dict(n_perm_fwer=N_PERM_FWER,
                   n_perm_inner=N_PERM_INNER,
-                  alpha_fwer=ALPHA_FWER,
-                  race_init=RACE_INIT,
-                  race_p_keep_thresh=RACE_P_KEEP_THRESH)
+                  alpha_fwer=ALPHA_FWER)
 _VBA_BASE = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER,
                  z_flag=VBA_Z_FLAG)
 
@@ -141,8 +131,8 @@ _segment = partial(run_segment, modes=SEGMENT_MODES)
 _mancova = partial(run_mancova, n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
 _two_effect = partial(run_two_effect, ana_kwargs_dict=ANALYSIS_DICT)
 
-# Min-size sweep: faithful GLOW knobs, but heavy (cpu_perm, no race -> every
-# region >= floor gets an exact z, ~12x slower than the racing fit).
+# Min-size sweep: faithful GLOW knobs. cpu_perm gives every region >= floor an
+# exact z, so min_vox can be swept post hoc from a single run.
 _min_size = partial(run_min_size, n_perm_fwer=N_PERM_FWER,
                     n_perm_inner=N_PERM_INNER, min_vox_floor=1)
 # run_prune needs no partial: it has one call site and builds GLOW's default
@@ -227,9 +217,9 @@ _cache('two-effect', run_fnc=_two_effect,
 
 # J. Min-size sweep: per-perm (size -> max-z) staircases on HCP, mirroring
 #    sweep_llr's effect grid and N_SEED seed count, so min_vox can be swept
-#    post hoc from one run (no plot yet -- just the curve_json results). Inner
-#    perms are race-free; the trial seed is split (derive_seeds) and its ds
-#    sub-seed drives the DataSource, so each seed is an independent null. Seeds
+#    post hoc from one run (no plot yet -- just the curve_json results). The
+#    trial seed is split (derive_seeds) and its ds sub-seed drives the
+#    DataSource, so each seed is an independent null. Seeds
 #    run from a _SEED_OFFSET_DISTINCT offset to keep this block clear of the
 #    other sweeps.
 _cache('min_size', run_fnc=_min_size,
