@@ -405,7 +405,8 @@ def plot_ana_cache(label: str, df, cache, out) -> None:
 
 def plot_metric_grid(label: str, df, *, x: str, metrics: list,
                      facet: str = 'source', hue: str = 'label',
-                     ci: int = 90, out=None) -> None:
+                     ci: int = 90, hide_labels: tuple = ('GLOW-GLM',),
+                     out=None) -> None:
     """Plot a faceted metric sweep: col=facet, row=metric, one curve per hue.
 
     The tidy-results generalisation of plot_x_vs_metrics: rather than
@@ -423,9 +424,14 @@ def plot_metric_grid(label: str, df, *, x: str, metrics: list,
         facet (str): categorical column spread across panel columns
         hue (str): column mapped to line colour (the method 'label')
         ci (int): central percentile-interval width for the band
+        hide_labels (tuple): hue values dropped before plotting; defaults to
+            the GLOW-GLM baseline (a no-op for caches that never emit it).
+            Pass () to keep every method.
         out (pathlib.Path): directory the figure is written into
     """
     df = df.copy()
+    if hide_labels:
+        df = df[~df[hue].isin(hide_labels)]
     if x == 'effect_perc' and 'effect_perc' not in df.columns:
         df['effect_perc'] = (pd.to_numeric(df['vox_effect'], errors='coerce')
                              / pd.to_numeric(df['vox_total'], errors='coerce'))
@@ -450,6 +456,114 @@ def plot_metric_grid(label: str, df, *, x: str, metrics: list,
     g.figure.suptitle(label, y=1.02, fontsize=13)
     path = out / f'{label}_metrics.pdf'
     g.figure.savefig(path, bbox_inches='tight')
+    plt.close('all')
+    print(f'saved: {path}')
+
+
+def plot_metric_diff_grid(label: str, df, *, x: str, metrics: list,
+                          one_label: str = 'GLOW-Focus',
+                          facet: str = 'source', hue: str = 'label',
+                          alpha: float = .5, out=None) -> None:
+    """Plot one_label minus the best alternative: col=facet, row=metric.
+
+    The head-to-head companion to plot_metric_grid. Instead of one curve
+    per method, each panel shows the per-trial advantage of one_label
+    (default GLOW-Focus) over the best competing method -- the largest
+    metric among the non-GLOW labels (VBA / VBA-TFCE / CET) at the same
+    (seed, x). A thin black line per seed plus a bold black mean make the
+    win / loss against the field legible; the dashed zero line is
+    break-even, so ink above it is GLOW-Focus winning. The
+    prediction-undefined PPV trials (no detections; nan, see
+    glow.mask.stats_from_counts) drop out of the difference, so the PPV
+    panels thin toward weak effects.
+
+    The figure is skipped (nothing written) when one_label is absent or no
+    non-GLOW alternative exists -- so the prune / segment caches, whose
+    arms are all GLOW variants or segmentation modes, produce no diff grid.
+
+    Args:
+        label (str): cache label; used in the title and output filename
+        df: the cache's tidy results (scalar axis columns + metric columns)
+        x (str): column for the x-axis ('effect_perc' is derived from
+            vox_effect / vox_total if absent)
+        metrics (list): metric columns, one panel row each
+        one_label (str): the method differenced against the field
+        facet (str): categorical column spread across panel columns
+        hue (str): the method-label column; its GLOW* values are excluded
+            from the "best alternative" pool
+        alpha (float): grid / zero-line alpha
+        out (pathlib.Path): directory the figure is written into
+    """
+    df = df.copy()
+    if x == 'effect_perc' and 'effect_perc' not in df.columns:
+        df['effect_perc'] = (pd.to_numeric(df['vox_effect'], errors='coerce')
+                             / pd.to_numeric(df['vox_total'], errors='coerce'))
+    for col in [x, *metrics]:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df = df.dropna(subset=[x])
+
+    if one_label not in set(df[hue].unique()):
+        print(f'  ({one_label} absent — skipping {label} diff grid)')
+        return
+
+    sources = sorted(df[facet].dropna().unique().tolist())
+    nrows, ncols = len(metrics), len(sources)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, 2.8 * nrows),
+                             sharex=True, sharey='row', squeeze=False)
+
+    for j, src in enumerate(sources):
+        # collapse replicate rows to one value per (label, seed, x)
+        agg = (df[df[facet] == src]
+               .groupby([hue, 'seed', x], as_index=False)[metrics].mean())
+        for i, metric in enumerate(metrics):
+            ax = axes[i, j]
+            pivot = agg.pivot_table(index=['seed', x], columns=hue,
+                                    values=metric).reset_index()
+            others = [c for c in pivot.columns
+                      if c not in {'seed', x} and not str(c).startswith('GLOW')]
+
+            if one_label in pivot.columns and others:
+                valid = (pivot[one_label].notna()
+                         & pivot[others].notna().any(axis=1))
+                pv = pivot.loc[valid].copy()
+            else:
+                pv = pivot.iloc[:0]
+
+            if pv.empty:
+                ax.axis('off')
+                continue
+
+            pv['best_other'] = pv[others].max(axis=1, skipna=True)
+            pv['diff'] = pv[one_label] - pv['best_other']
+
+            for _, seed_df in pv.groupby('seed'):
+                seed_df = seed_df.sort_values(x)
+                ax.plot(seed_df[x], seed_df['diff'],
+                        lw=0.5, color='black', alpha=0.3)
+            mean_diff = (pv.groupby(x)['diff'].mean()
+                         .reset_index().sort_values(x))
+            ax.plot(mean_diff[x], mean_diff['diff'], lw=3, color='black')
+
+            ax.axhline(0, lw=.5, color='black', alpha=alpha)
+            ax.set_ylim(-1, 1)
+            ax.grid(True, alpha=alpha, linewidth=1.2)
+            if i == 0:
+                ax.set_title(f'{facet} = {src}')
+            if j == 0:
+                ax.set_ylabel(_METRIC_TITLES.get(metric, metric))
+            if i == nrows - 1:
+                ax.set_xlabel(_X_PARAM_LABELS.get(x, x))
+
+    xmin = df[x].min()
+    if pd.notnull(xmin) and xmin > 0:
+        for ax in axes.flat:
+            ax.set_xscale('log')
+
+    fig.suptitle(f'{label}: {one_label} − best alternative',
+                 y=1.02, fontsize=13)
+    fig.tight_layout()
+    path = out / f'{label}_diff.pdf'
+    fig.savefig(path, bbox_inches='tight')
     plt.close('all')
     print(f'saved: {path}')
 
@@ -534,10 +648,13 @@ def plot_cache(label: str, df, cache, spec: dict, out) -> None:
                    for s, sub in df.groupby('source')}
         _plot_mancova(sources, out)
     else:
-        plot_metric_grid(label, df, x=spec['x'],
-                         metrics=spec.get('metrics', ['dice', 'sens', 'ppv']),
-                         facet=spec.get('facet', 'source'),
-                         hue=spec.get('hue', 'label'), out=out)
+        metrics = spec.get('metrics', ['dice', 'sens', 'ppv'])
+        facet = spec.get('facet', 'source')
+        hue = spec.get('hue', 'label')
+        plot_metric_grid(label, df, x=spec['x'], metrics=metrics,
+                         facet=facet, hue=hue, out=out)
+        plot_metric_diff_grid(label, df, x=spec['x'], metrics=metrics,
+                              facet=facet, hue=hue, out=out)
 
 
 # ---------------------------------------------------------------------------
