@@ -1,7 +1,7 @@
 """Tests for the recorder-wired paper driver and trial fns.
 
 The TrialCache owns a recorder and writes one json per trial under its records/
-dir; driver_paper passes the recorder to a recorder-wired fn and serial drives
+dir; driver_local passes the recorder to a recorder-wired fn and serial drives
 cache.iter_trial(record=True, flush=True) while parallel scopes each trial in a
 worker. Covers run_ana plus the converted fit-shaped fns (run_mancova /
 run_prune / run_two_effect), on a tiny WGN cell with cheap fits.
@@ -13,7 +13,7 @@ from glow.analysis import AnalysisVBA
 from glow.benchmark.trial_cache import TrialCache
 from glow.benchmark.recorder import RECORDS_DIR
 from glow.benchmark.paper import run as paper_run
-from glow.benchmark.paper.driver import driver_paper
+from glow.benchmark.driver import driver_local
 
 VBA = {'VBA': (AnalysisVBA, dict(n_perm_fwer=1))}
 
@@ -36,7 +36,7 @@ class TestDriverRecords:
 
     def test_per_trial_files_written_and_stamped(self, tmp_path):
         cache = _cache(tmp_path, b=[2], seed=[0, 1])
-        driver_paper(cache, _ana(VBA), verbose=False)
+        driver_local(cache, _ana(VBA), verbose=False)
 
         files = sorted((tmp_path / RECORDS_DIR).glob('*.json'))
         assert len(files) == 2  # one file per trial
@@ -51,15 +51,15 @@ class TestDriverRecords:
 
     def test_resume_skips_completed(self, tmp_path):
         cache = _cache(tmp_path, b=[2], seed=[0])
-        driver_paper(cache, _ana(VBA), verbose=False)
+        driver_local(cache, _ana(VBA), verbose=False)
         n1 = len(list((tmp_path / RECORDS_DIR).glob('*.json')))
-        driver_paper(cache, _ana(VBA), verbose=False)  # resume: no-op
+        driver_local(cache, _ana(VBA), verbose=False)  # resume: no-op
         n2 = len(list((tmp_path / RECORDS_DIR).glob('*.json')))
         assert n1 == n2 == 1
 
     def test_load_records_and_consolidate(self, tmp_path):
         cache = _cache(tmp_path, b=[2], seed=[0, 1])
-        driver_paper(cache, _ana(VBA), verbose=False)
+        driver_local(cache, _ana(VBA), verbose=False)
 
         recs = cache.load_records()
         assert len(recs) == 6  # 2 trials x (setup + fit + score)
@@ -70,7 +70,7 @@ class TestDriverRecords:
 
     def test_parallel_writes_per_trial_files(self, tmp_path):
         cache = _cache(tmp_path, b=[2], seed=[0, 1, 2])
-        driver_paper(cache, _ana(VBA), n_jobs=2, verbose=False)
+        driver_local(cache, _ana(VBA), n_jobs=2, verbose=False)
         assert len(list((tmp_path / RECORDS_DIR).glob('*.json'))) == 3
 
 
@@ -79,7 +79,7 @@ class TestRunAnaRecords:
 
     def test_setup_and_fit_recipes(self, tmp_path):
         cache = _cache(tmp_path, b=[2], seed=[0])
-        driver_paper(cache, _ana(VBA), verbose=False)
+        driver_local(cache, _ana(VBA), verbose=False)
         recs = cache.load_records()
 
         # setup + fit share one trial_id (the cache hash)
@@ -102,7 +102,7 @@ class TestRunAnaRecords:
         # the score step run beside each fit records the detection dict
         # (score_effects) against the recipe it scored
         cache = _cache(tmp_path, b=[2], seed=[0])
-        driver_paper(cache, _ana(VBA), verbose=False)
+        driver_local(cache, _ana(VBA), verbose=False)
         recs = cache.load_records()
 
         score = next(r for r in recs
@@ -122,7 +122,7 @@ class TestRunAnaRecords:
         ana = {'boom': (_Boom, dict(n_perm_fwer=1)),
                'VBA': (AnalysisVBA, dict(n_perm_fwer=1))}
         cache = _cache(tmp_path, b=[2], seed=[0])
-        driver_paper(cache, _ana(ana), verbose=False)
+        driver_local(cache, _ana(ana), verbose=False)
 
         fits = [r for r in cache.load_records() if r['function'].endswith('.fit')]
         assert len(fits) == 1
@@ -139,7 +139,7 @@ class TestConvertedFitFns:
 
     def test_mancova_records_setup_walk_and_fits(self, tmp_path):
         cache = _cache(tmp_path, b=[2], seed=[0])
-        driver_paper(cache, partial(paper_run.run_mancova, n_perm_fwer=1),
+        driver_local(cache, partial(paper_run.run_mancova, n_perm_fwer=1),
                      verbose=False)
         recs = cache.load_records()
         fns = _fns(recs)
@@ -158,7 +158,7 @@ class TestConvertedFitFns:
         monkeypatch.setattr(cfg, '_GLOW_BASE',
                             dict(n_perm_fwer=1, n_perm_inner=2))
         cache = _cache(tmp_path, b=[2], seed=[0])
-        driver_paper(cache, paper_run.run_prune, verbose=False)
+        driver_local(cache, paper_run.run_prune, verbose=False)
         recs = cache.load_records()
         fns = _fns(recs)
         assert 'fit' in fns  # the one shared GLOW fit
@@ -169,7 +169,7 @@ class TestConvertedFitFns:
 
     def test_two_effect_records_splitter_and_two_effects(self, tmp_path):
         cache = _cache(tmp_path, b=[2], seed=[0], angle=[30.0])
-        driver_paper(cache, partial(paper_run.run_two_effect,
+        driver_local(cache, partial(paper_run.run_two_effect,
                                     ana_kwargs_dict=VBA), verbose=False)
         recs = cache.load_records()
         setup = next(r for r in recs

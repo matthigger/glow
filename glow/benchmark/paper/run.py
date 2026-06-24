@@ -518,12 +518,13 @@ def run_prune(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
         effect_llr (float | None): per-voxel effect target
         effect_total_llr (float | None): whole-region effect target
     """
-    setup = recorder(output_name_list=('exp_eff', 'effect_list'))(_setup_trial)(
+    setup = recorder(output_name_list=(
+        'exp_eff', 'effect_list', 'mask_target_list'))(_setup_trial)(
         source=source, b=b, num_img=num_img, n_vox_eff=n_vox_eff, seed=seed,
         effect_llr=effect_llr, effect_total_llr=effect_total_llr)
     if setup is None:
         return
-    exp_eff, _effect_list = setup
+    exp_eff, _effect_list, _mask_target_list = setup
 
     # GLOW's default recipe, shared with the GLOW-Focus arm so both pruning
     # rules prune the regions GLOW would actually report. Deferred import:
@@ -638,12 +639,13 @@ def run_mancova(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
         effect_llr (float | None): per-voxel effect target
         effect_total_llr (float | None): whole-region effect target
     """
-    setup = recorder(output_name_list=('exp_eff', 'effect_list'))(_setup_trial)(
+    setup = recorder(output_name_list=(
+        'exp_eff', 'effect_list', 'mask_target_list'))(_setup_trial)(
         source=source, b=b, num_img=num_img, n_vox_eff=n_vox_eff, seed=seed,
         effect_llr=effect_llr, effect_total_llr=effect_total_llr)
     if setup is None:
         return
-    exp_eff, _effect_list = setup
+    exp_eff, _effect_list, _mask_target_list = setup
 
     # the shared walk is recorded once (its own time_sec); a failure stops the
     # trial (swallowed -> None) before the per-variant fits
