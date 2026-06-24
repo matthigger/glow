@@ -219,8 +219,10 @@ class TestConvertedFitFns:
         assert '_setup_trial' in fns
         assert sum(f == '_segment_oracle' for f in fns) == len(modes)
         scores = [r for r in recs if r['function'].endswith('_segment_oracle')]
-        # each score records its mode (the StrEnum value) and the counts
+        # each score records its mode (the StrEnum value) and the counts, and
+        # carries that mode as its method label too
         assert {r['inputs']['mode'] for r in scores} == {'Focus', 'Naive'}
+        assert {r['label'] for r in scores} == {'Focus', 'Naive'}
         assert set(scores[0]['outputs']['score']) == {'tp', 'fp', 'tn', 'fn'}
 
     def test_min_size_records_setup_and_curve(self, tmp_path):
@@ -233,8 +235,9 @@ class TestConvertedFitFns:
         assert '_setup_min_size' in fns and '_min_size_curves' in fns
         curve = next(r for r in recs
                      if r['function'].endswith('_min_size_curves'))
-        # the curve step records its perm knobs as inputs ...
+        # the curve step records its perm knobs as inputs and the 'GLOW' label
         assert curve['inputs']['n_perm_fwer'] == 1
         assert curve['inputs']['min_vox_floor'] == 1
+        assert curve['label'] == 'GLOW'
         # ... and a per-perm (n_perm_fwer + 1) staircase JSON as its output
         assert len(json.loads(curve['outputs']['curve'])) == 2

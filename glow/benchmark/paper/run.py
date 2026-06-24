@@ -395,9 +395,10 @@ def run_min_size(recorder, *, source: str, b: int, num_img: int,
     an independent data realization (recorded for provenance), then a single
     curve step records the per-perm (size -> max-z) staircases (_min_size_curves
     -> curve_json) plus its inputs (n_perm_fwer / n_perm_inner / min_vox_floor /
-    cluster_mode) and timing. With those, GLOW's max-z FWER null can be swept
-    over min_vox post hoc without re-fitting. Sweeping itself is derived
-    afterward from the records, not here.
+    cluster_mode) and timing, tagged with the 'GLOW' method label (the cache's
+    one method, so the records-to-csv reader keys on (trial_id, 'GLOW')). With
+    those, GLOW's max-z FWER null can be swept over min_vox post hoc without
+    re-fitting. Sweeping itself is derived afterward from the records, not here.
 
     Two deliberate departures from run_ana (see _setup_min_size and
     _min_size_curves): the trial seed is split for an independent null per seed,
@@ -428,7 +429,7 @@ def run_min_size(recorder, *, source: str, b: int, num_img: int,
         return
     exp_eff, _effect_list, _mask_target_list = setup
 
-    recorder(output_name='curve')(_min_size_curves)(
+    recorder(output_name='curve', label='GLOW')(_min_size_curves)(
         exp_eff=exp_eff, n_perm_fwer=n_perm_fwer, n_perm_inner=n_perm_inner,
         min_vox_floor=min_vox_floor, cluster_mode=cluster_mode)
 
@@ -469,7 +470,9 @@ def run_segment(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
     each ClusterMode a score step records the oracle best-Dice region of that
     Ward tree (_segment_oracle): the maximum Dice over all regions, unavailable
     in practice but a clean measure of how well the segmentation alone recovers
-    the planted support. The mode is the score step's recorded input.
+    the planted support. The mode is both the score step's recorded input and
+    its method label (e.g. 'Focus'), so the records-to-csv reader keys on
+    (trial_id, mode).
 
     Args:
         recorder (Recorder): the trial's recorder; calls are wrapped with it.
@@ -491,9 +494,9 @@ def run_segment(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
     exp_eff, _effect_list, mask_target_list = setup
 
     for mode in modes:
-        recorder(output_name='score')(_segment_oracle)(
-            exp_eff=exp_eff, mode=ClusterMode(mode),
-            mask_target_list=mask_target_list)
+        mode = ClusterMode(mode)
+        recorder(output_name='score', label=str(mode))(_segment_oracle)(
+            exp_eff=exp_eff, mode=mode, mask_target_list=mask_target_list)
 
 
 def run_prune(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
