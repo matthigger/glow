@@ -545,7 +545,7 @@ def run_prune(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
 
     # the FWER-significant regions both rules prune, ranked by raw LLR
     # (mirrors AnalysisGLOW.finalize; the z-score fragments under pruning)
-    sig_reg_list = list(np.where(ana.pval <= ana.alpha_fwer)[0])
+    sig_reg_list = np.where(ana.pval <= ana.alpha_fwer)[0].tolist()
     llr_gain = np.nan_to_num(ana.llr.astype(float), nan=0.0,
                              posinf=0.0, neginf=0.0)
 
