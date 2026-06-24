@@ -3,23 +3,24 @@
 A companion to glow.benchmark.paper.compare. Where compare *ranks* a
 config's trials by where GLOW underperforms, redo_view *reproduces* a
 single trial end to end: it recovers the exact experiment behind one
-results.csv row, re-fits the chosen GLOW variant, and launches the
-viewer on it.
+trial record, re-fits the chosen GLOW variant, and launches the viewer
+on it.
 
-A results.csv row cannot be inverted on its own -- its ds and extenter
-columns are one-way value_id hashes (glow.util.value_id). What makes a
-row reproducible is its folder: the folder name is a cache label in
-config.CACHE_BY_LABEL, which still holds the real TrialCache (the actual
-ds / extenter objects and the seed x effect_llr grid). The row's
-trial_hash (the csv index) then pins the trial -- re-derive the cache's
-iter_trial() and keep the one whose stable_hash matches. That recovers
-the real ds / extenter / seed / effect_llr, from which run._plant
-rebuilds exp_eff + the planted mask_target deterministically.
+A record carries only compact recipe dicts, not the heavy experiment (no
+y array, just hashes / shapes; see glow.benchmark.recorder), so a trial
+cannot be inverted from its record alone. What makes it reproducible is
+its cache: a record's trial_id is the cache hash (TrialCache.hash), and
+the cache label is a key in config.CACHE_BY_LABEL, which still holds the
+real TrialCache (its scalar seed x effect_llr x ... grid). The trial_hash
+then pins the trial -- re-derive the cache's iter_trial() and keep the one
+whose cache.hash matches. That recovers the real scalar axes (source /
+seed / effect_llr / b / num_img / n_vox_eff), from which run._setup_trial
+rebuilds exp_eff + the planted target mask(s) deterministically.
 
 The REPL asks for three things:
 
   1. the GLOW variant to fit -- focus (GLOW-Focus) or error (GLOW-GLM);
-  2. the config (results folder) to draw from, e.g. vba_hcp_famd;
+  2. the config (cache label) to draw from, e.g. sweep_llr;
   3. the trial, either by typing its trial_hash or by reusing compare's
      gap ranking to pick from the worst GLOW cases.
 
@@ -44,6 +45,7 @@ the standalone viewer:
 """
 
 import gzip
+import inspect
 import pathlib
 import pickle
 import sys
@@ -51,13 +53,18 @@ import sys
 import numpy as np
 from platformdirs import user_cache_dir
 
-import glow.benchmark
 from glow.analysis import AnalysisGLOW
-from glow.util import stable_hash
 
 from . import compare
 from .config import ANALYSIS_DICT, CACHE_BY_LABEL
-from .run import _plant
+from .results import load_config_df
+from .run import _setup_trial
+
+
+# the scalar axes _setup_trial can rebuild a trial from; a cache whose trials
+# carry any other axis (e.g. two-effect's `angle`) plants differently and is
+# not reproducible through this path (recover handles that with a clear error).
+_SETUP_PARAMS = frozenset(inspect.signature(_setup_trial).parameters)
 
 
 # Fitted-analysis cache. Re-computing a trial is the expensive step
@@ -115,29 +122,34 @@ def _save_cached(ana, mask_target, ana_path, mask_path) -> None:
 
     Args:
         ana (AnalysisGLOW): the fitted analysis to cache.
-        mask_target (np.array): (X, Y, Z) bool planted-effect support.
+        mask_target (np.array | None): (X, Y, Z) bool planted-effect support, or
+            None on the null path (no effect planted); no mask file is written
+            then, and _load_cached reads back None.
         ana_path (pathlib.Path): destination for the gzipped pickle.
         mask_path (pathlib.Path): destination for the mask .npy.
     """
     ana_path.parent.mkdir(parents=True, exist_ok=True)
     with gzip.open(ana_path, 'wb') as f:
         pickle.dump(ana, f)
-    np.save(mask_path, mask_target)
+    if mask_target is not None:
+        np.save(mask_path, mask_target)
 
 
 def recover_trial(label: str, trial_hash: str) -> dict:
-    """Recover the exact trial-kwargs dict behind one results.csv row.
+    """Recover the exact trial-kwargs dict behind one trial record.
 
-    Re-derives the label's TrialCache iteration and returns the trial
-    whose stable_hash matches trial_hash, so the opaque ds / extenter
-    hash columns become the real objects again.
+    Re-derives the label's TrialCache iteration and returns the trial whose
+    cache.hash matches trial_hash (the same id the record's trial_id carries),
+    so the trial's scalar axes (source / seed / effect_llr / ...) are in hand
+    again.
 
     Args:
-        label (str): results folder name == CACHE_BY_LABEL key.
-        trial_hash (str): the row's trial_hash (results.csv index).
+        label (str): cache label == CACHE_BY_LABEL key.
+        trial_hash (str): the record's trial_id (== cache.hash of the trial).
 
     Returns:
-        the trial dict {ds, extenter, seed, effect_llr} for that row.
+        the trial dict (its scalar axes, e.g. {source, seed, effect_llr, b,
+            num_img, n_vox_eff}) for that record.
 
     Raises:
         KeyError: label is not a known cache.
@@ -145,34 +157,36 @@ def recover_trial(label: str, trial_hash: str) -> dict:
     """
     cache, _ = CACHE_BY_LABEL[label]
     for trial in cache.iter_trial(include_completed=True):
-        if stable_hash(trial) == trial_hash:
+        if cache.hash(trial) == trial_hash:
             return trial
     raise LookupError(
         f'no trial in cache {label!r} matches trial_hash {trial_hash!r}')
 
 
-def _recorded_time(df, trial_hash: str, glow_label: str):
-    """Return the row's recorded time_sec for this trial + GLOW variant.
+def _recorded_time(records: list, trial_hash: str, glow_label: str):
+    """Return the recorded fit time_sec for this trial + GLOW variant.
 
-    A rough time estimate for the re-fit (the analysis is deterministic
-    in cost, not just in output). None when the variant wasn't scored.
+    A rough time estimate for the re-fit (the analysis is deterministic in cost,
+    not just in output). Reads it straight off the GLOW fit step's record -- the
+    expensive call, tagged with the variant label -- rather than the tidy frame,
+    which keeps only the (cheap) score step. None when the trial has no such fit
+    record (e.g. the variant failed, so only an error record exists).
 
     Args:
-        df: a config's results, indexed by trial_hash, with label and
-            time_sec columns.
-        trial_hash (str): the trial to look up.
+        records (list): the cache's records (cache.recorder.load()).
+        trial_hash (str): the trial to look up (== a record's trial_id).
         glow_label (str): the GLOW label, e.g. 'GLOW-Focus'.
 
     Returns:
-        the recorded wall time in seconds, or None if unavailable.
+        the recorded fit wall time in seconds, or None if unavailable.
     """
-    if trial_hash not in df.index:
-        return None
-    sub = df.loc[[trial_hash]]
-    sub = sub[sub['label'] == glow_label]
-    if sub.empty or 'time_sec' not in sub.columns:
-        return None
-    return float(sub['time_sec'].iloc[0])
+    for r in records:
+        if (r.get('trial_id') == trial_hash
+                and r.get('label') == glow_label
+                and r.get('function', '').endswith('.fit')
+                and 'time_sec' in r):
+            return float(r['time_sec'])
+    return None
 
 
 def _enter_hash(df):
@@ -270,6 +284,27 @@ def choose_trial_hash(df, glow_label: str):
     return _pick_from_ranking(df, glow_label)
 
 
+def _union_mask(mask_target_list):
+    """OR the planted target masks into one (X, Y, Z) bool support, or None.
+
+    The viewer takes a single target mask, while a trial may plant several
+    effects (scored separately upstream); their supports are unioned here.
+
+    Args:
+        mask_target_list (list): each planted effect's (X, Y, Z) bool support,
+            empty on the null path (no effect planted).
+
+    Returns:
+        the unioned (X, Y, Z) bool mask, or None when nothing was planted.
+    """
+    if not mask_target_list:
+        return None
+    mask = np.zeros(mask_target_list[0].shape, dtype=bool)
+    for m in mask_target_list:
+        mask |= m
+    return mask
+
+
 def reproduce(label: str, glow_label: str, trial_hash: str,
               verbose: bool = True, use_cache: bool = True):
     """Rebuild one trial's planted experiment and fit the chosen GLOW.
@@ -281,18 +316,22 @@ def reproduce(label: str, glow_label: str, trial_hash: str,
     minutes-long fit in seconds instead of recomputing it.
 
     Args:
-        label (str): results folder name == CACHE_BY_LABEL key.
+        label (str): cache label == CACHE_BY_LABEL key.
         glow_label (str): GLOW variant to fit, 'GLOW-Focus' or 'GLOW-GLM'
             (its ANALYSIS_DICT recipe sets cluster_mode and perm counts).
-        trial_hash (str): the row's trial_hash, pinning the trial.
+        trial_hash (str): the record's trial_hash, pinning the trial.
         verbose (bool): print progress and the GLOW fit log.
         use_cache (bool): reuse a cached fit when present (and write one
             after fitting); False forces a fresh fit and overwrite.
 
     Returns:
         ana (AnalysisGLOW): the fitted analysis to pass to viewer.launch.
-        mask_target (np.array): (X, Y, Z) bool planted-effect support, the
-            launch mask_target argument.
+        mask_target (np.array | None): (X, Y, Z) bool planted-effect support
+            (the launch mask_target argument), or None on the null path.
+
+    Raises:
+        NotImplementedError: the cache's trial carries an axis _setup_trial
+            cannot rebuild from (e.g. the two-effect cache's `angle`).
     """
     ana_path, mask_path = _cache_paths(label, glow_label, trial_hash)
     if use_cache and ana_path.exists():
@@ -303,19 +342,30 @@ def reproduce(label: str, glow_label: str, trial_hash: str,
 
     trial = recover_trial(label, trial_hash)
 
+    # _setup_trial rebuilds the exact planted experiment from the scalar axes;
+    # a cache whose trial carries an axis it doesn't take (two-effect's angle)
+    # plants differently and isn't reproducible through this path.
+    extra = set(trial) - _SETUP_PARAMS
+    if extra:
+        raise NotImplementedError(
+            f'redo_view cannot rebuild {label!r} trials yet: their axes '
+            f'{sorted(extra)} need a planting other than _setup_trial.')
+
     cache, _ = CACHE_BY_LABEL[label]
-    df = glow.benchmark.load_results_csv(cache.recorder.folder / 'results.csv')
-    t_rec = _recorded_time(df, trial_hash, glow_label)
+    t_rec = _recorded_time(cache.recorder.load(), trial_hash, glow_label)
 
     if verbose:
         print(f'\n  redo {label} / {trial_hash}  ->  {glow_label}')
-        print(f"    seed={trial['seed']}  effect_llr={trial['effect_llr']:.4g}")
+        axes = '  '.join(f'{k}={trial[k]}' for k in
+                         ('source', 'seed', 'effect_llr', 'effect_total_llr')
+                         if trial.get(k) is not None)
+        print(f'    {axes}')
         if t_rec is not None:
             print(f'    (recorded fit took ~{t_rec:.0f}s; re-fit is similar)')
         print('  rebuilding planted experiment ...')
 
-    _exp, exp_eff, mask_target = _plant(
-        trial['ds'], trial['extenter'], trial['effect_llr'], trial['seed'])
+    exp_eff, _effect_list, mask_target_list = _setup_trial(**trial)
+    mask_target = _union_mask(mask_target_list)
 
     kw = dict(ANALYSIS_DICT[glow_label][1])
     if verbose:
@@ -330,9 +380,11 @@ def reproduce(label: str, glow_label: str, trial_hash: str,
 
 def main() -> None:
     """Run the redo_view REPL: pick GLOW variant, then loop config + trial."""
+    import glow.benchmark
+
     configs = compare.find_configs()
     if not configs:
-        print('no configs with a results.csv under '
+        print('no configs with records under '
               f'{glow.benchmark.get_path_result()}')
         return
 
@@ -347,8 +399,12 @@ def main() -> None:
         c = compare.choose('Which config to draw a trial from?', labels)
         if c < 0:
             return
-        label, csv = configs[c]
-        df = glow.benchmark.load_results_csv(csv)
+        label, cache = configs[c]
+        df = load_config_df(cache)
+        if df.empty:
+            print(f'  {label} has no completed in-config trials.')
+            continue
+        df = df.set_index('trial_hash')
 
         trial_hash = choose_trial_hash(df, glow_label)
         if trial_hash is None:
