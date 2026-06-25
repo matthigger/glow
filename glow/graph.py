@@ -156,7 +156,10 @@ def compute_llr_batched(exp, children, q0, q1, min_size: int = 1):
 
     Returns:
         llr (np.array): (num_reg,) LLR per region. NaN where size <
-            min_size, or where E or E + H were not positive-definite.
+            min_size, or where the error matrix E is not positive-definite
+            to within the float rounding floor M*eps*trace(yout)
+            (M = num_img*size) -- i.e. degenerate near-constant regions whose
+            E is cancellation noise rather than genuine residual scatter.
         size (np.array): (num_reg,) int voxel count per region.
     """
     y = exp.y
@@ -192,13 +195,26 @@ def compute_llr_batched(exp, children, q0, q1, min_size: int = 1):
 
     e = t - h
 
-    # LLR = (size/2) * (ln|E+H| - ln|E|).  NaN where either determinant
-    # is non-positive (matches the sign-check short-circuit in get_llr).
+    # LLR = (size/2) * (ln|E+H| - ln|E|).  NaN where E is not positive
+    # definite.  A plain sign>0 check is too lax in float32: E is formed by
+    # cancelling two terms of magnitude S = trace(yout) (the region's
+    # un-centred energy Sum y^2), so for near-constant low-variance regions
+    # its true value falls below the summation rounding floor ~ M*eps*S,
+    # where M = num_img*size is the number of (image, voxel) terms summed.
+    # There slogdet's sign is noise; left in, such a region's per-permutation
+    # z explodes (mu, std collapse to float scale) and dead near-constant
+    # voxels poison the Westfall-Young max-z null (see the dead-voxel FWER
+    # analysis).  Require lambda_min(E) above that floor; since H is PSD,
+    # lambda_min(E) >= tol implies E + H is safe too (Weyl).
     sign_t, logdet_t = np.linalg.slogdet(e + h)
     sign_e, logdet_e = np.linalg.slogdet(e)
-    valid_a = (sign_t > 0) & (sign_e > 0)
 
     sz_a_1d = size[active]
+    energy_a = np.einsum('rbb->r', yout_a)
+    tol_a = num_img * sz_a_1d * np.finfo(dtype).eps * energy_a
+    lam_min_e = np.linalg.eigvalsh(e)[:, 0]
+    valid_a = (sign_t > 0) & (sign_e > 0) & (lam_min_e > tol_a)
+
     llr_a = np.where(valid_a,
                      (sz_a_1d / 2.0) * (logdet_t - logdet_e),
                      np.nan)
