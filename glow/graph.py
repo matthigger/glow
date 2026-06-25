@@ -347,7 +347,8 @@ def _reg_sum_cumsum(x_dfs, axis: int, region_l, region_h):
             - np.take(c, region_l, axis=axis))
 
 def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
-                  min_size: int = 1, perm_chunk: int = 8):
+                  min_size: int = 1, perm_chunk: int = 8,
+                  acc_dtype=np.float64):
     """Stream per-region LLR across many Freedman-Lane permutations.
 
     Generator over chunks of size perm_chunk. Phase 1 (per-voxel
@@ -406,6 +407,11 @@ def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
             overhead but multiply the (Pc, num_vox, ...) temporary
             memory. Default 8 is the sweet spot empirically at num_vox in
             [25k, 55k] for both intercept-only and general-Q0.
+        acc_dtype: accumulation dtype for the sufficient statistics and the
+            E / H assembly. Default np.float64 keeps the per-region error
+            matrix accurate for low-variance voxels on a large DC offset
+            (float32 there collapses E to rounding noise; see the dtype note
+            below). float32 is for tests reproducing that collapse only.
 
     Yields:
         llr_chunk (np.array): (Pc, num_reg) fp64 LLR draws for the next Pc
@@ -418,10 +424,20 @@ def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
     a1 = int(q1.shape[0])
     a = a0 + a1
 
-    # Match glow's existing dtype policy: float32 stays float32, else
-    # float64.  Cumsums over ~10^6 entries are stable enough in fp32 for
-    # our purposes.
-    dtype = y.dtype if y.dtype == np.float32 else np.float64
+    # Accumulate in float64 (acc_dtype default) even for float32 y.  Each
+    # region's error matrix E is formed by cancelling two terms of magnitude
+    # ~num_img*size*mean(y)^2 -- the raw second moment T_r and the nuisance
+    # projection S0*^T S0* / size -- down to the residual ~num_img*size*var(y).
+    # For low-variance voxels on a large DC offset (e.g. HCP background at mean
+    # -0.76, std 5e-4) that subtraction loses every significant digit in
+    # float32: E collapses to rounding noise or goes negative, so the
+    # per-region inner-null std degenerates (~1e-6 instead of ~5e-3) and the
+    # standardized z explodes, poisoning the Westfall-Young max-z null.  float64
+    # keeps E accurate; float32 only ever bought bandwidth (the dominant GEMM
+    # could be re-narrowed in isolation if large-num_vox memory matters).
+    # acc_dtype=float32 is exposed only to reproduce the old collapse in tests
+    # (see test/analysis/test_inner_perm_hcp.py).
+    dtype = np.dtype(acc_dtype)
 
     # -------------------- Phase 1: per-voxel state --------------------
     # Reorder y so its voxel axis is DFS pre-order; downstream cumsums
