@@ -6,6 +6,7 @@ from typing import Callable
 import numpy as np
 from scipy.ndimage import label
 
+from glow.experiment.exper import ExperimentScaled
 from .._base import AnalysisVoxel
 
 DEFAULT_CET_CFT_PVAL = 0.001
@@ -19,8 +20,9 @@ class AnalysisCET(AnalysisVoxel):
     components, and compares cluster sizes to the permutation null
     of max cluster sizes.
 
+    The experiment is supplied to fit(), not stored (see Analysis).
+
     Attributes:
-        exp (Experiment): source data (scaled)
         n_perm_fwer (int): permutations for FWER control
         alpha_fwer (float): family-wise error rate
         cft_pval (float): tail probability defining the cluster-forming
@@ -35,13 +37,12 @@ class AnalysisCET(AnalysisVoxel):
     RECORD_FIELDS = ('get_stat', 'n_perm_fwer', 'alpha_fwer', 'cft_pval',
                      'z_flag')
 
-    def __init__(self, exp, n_perm_fwer: int, alpha_fwer: float = .05,
+    def __init__(self, n_perm_fwer: int, alpha_fwer: float = .05,
                  cft_pval: float = DEFAULT_CET_CFT_PVAL, z_flag: bool = False,
                  get_stat: Callable = None):
         """Configure a cluster-extent thresholding analysis.
 
         Args:
-            exp (Experiment): experiment to analyze
             n_perm_fwer (int): number of permutations for FWER control
             alpha_fwer (float): family-wise error rate
             cft_pval (float): tail probability defining the cluster-forming
@@ -50,17 +51,18 @@ class AnalysisCET(AnalysisVoxel):
             get_stat (Callable): per-region stat function (e, h, n);
                 defaults to Wilks lambda.
         """
-        super().__init__(exp, get_stat=get_stat)
+        super().__init__(get_stat=get_stat)
         self.n_perm_fwer = n_perm_fwer
         self.alpha_fwer = alpha_fwer
         self.cft_pval = cft_pval
         self.z_flag = z_flag
         self.cft = None
 
-    def fit(self, _stat=None):
-        """Run the permutation walk and compute cluster-extent p-values.
+    def fit(self, exp, _stat=None):
+        """Run the permutation walk on exp and compute cluster-extent p-values.
 
         Args:
+            exp (Experiment): experiment to analyze (scaled on the way in).
             _stat (np.array): optional (n_perm_fwer+1, num_vox) pre-computed
                 stat matrix (raw, before z-scoring). Row 0 is the observed
                 draw. Caller is responsible for passing a copy. Must match
@@ -69,15 +71,16 @@ class AnalysisCET(AnalysisVoxel):
         Returns:
             self
         """
-        self.stat = self.build_stat_matrix(_stat)
+        exp = ExperimentScaled.from_exp(exp)
+        self.stat = self.build_stat_matrix(exp, _stat)
         if self.z_flag:
             self.stat = self.z_score_stat(self.stat)
         null_pool = self.stat[1:, :].ravel()
         self.cft = np.quantile(null_pool, 1 - self.cft_pval)
-        self.pval = self._get_pval_cet(self.stat, self.exp.mask_idx, self.cft)
-        mask = np.zeros(self.exp.mask_idx.shape, dtype=bool)
-        mask[self.exp.mask_idx > -1] = self.pval <= self.alpha_fwer
-        self.effect_list = self.discover_mask(mask=mask, exp=self.exp)
+        self.pval = self._get_pval_cet(self.stat, exp.mask_idx, self.cft)
+        mask = np.zeros(exp.mask_idx.shape, dtype=bool)
+        mask[exp.mask_idx > -1] = self.pval <= self.alpha_fwer
+        self.effect_list = self.discover_mask(mask=mask, exp=exp)
         return self
 
     @staticmethod

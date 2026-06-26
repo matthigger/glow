@@ -4,6 +4,7 @@ from tqdm import tqdm
 
 import glow.effect
 import glow.graph
+from glow.experiment.exper import ExperimentScaled
 from ._base import Analysis
 from . import inner_perm
 from .cluster import cluster, ClusterMode
@@ -27,8 +28,10 @@ class AnalysisGLOW(Analysis):
     the FWER bound is exact (Lehmann & Romano Thm 15.2.1; Hemerik & Goeman
     2018).
 
+    The experiment is supplied to fit(), not stored (see Analysis); fit()
+    scales it (ExperimentScaled.from_exp) and decomposes its design.
+
     Operation parameters (set at __init__):
-        exp (Experiment): source data (ExperimentScaled)
         n_perm_fwer (int): outer FL permutations feeding the max-z null
         n_perm_inner (int): inner FL permutations per outer perm
         alpha_fwer (float): family-wise error rate
@@ -51,13 +54,12 @@ class AnalysisGLOW(Analysis):
     RECORD_FIELDS = ('n_perm_fwer', 'n_perm_inner', 'alpha_fwer', 'min_vox',
                      'cluster_mode')
 
-    def __init__(self, exp, n_perm_fwer: int, n_perm_inner: int = 500,
+    def __init__(self, n_perm_fwer: int, n_perm_inner: int = 500,
                  alpha_fwer: float = .05, min_vox: int = 1,
                  cluster_mode: ClusterMode = ClusterMode.FOCUS):
         """Configure a GLOW analysis.
 
         Args:
-            exp (Experiment): experiment to analyze.
             n_perm_fwer (int): outer FL permutations feeding the max-z null.
             n_perm_inner (int): inner FL permutations per outer perm.
             alpha_fwer (float): family-wise error rate.
@@ -67,15 +69,12 @@ class AnalysisGLOW(Analysis):
                 ClusterMode.GLM_ERROR keeps bias + contrast;
                 ClusterMode.NAIVE clusters raw y.
         """
-        super().__init__(exp)
+        super().__init__()
         self.n_perm_fwer = n_perm_fwer
         self.n_perm_inner = n_perm_inner
         self.alpha_fwer = alpha_fwer
         self.min_vox = min_vox
         self.cluster_mode = cluster_mode
-
-        self._q0, self._q1, _ = decompose(x=self.exp.x,
-                                          contrast=self.exp.contrast)
 
         self.children = None
         self.size = None
@@ -131,32 +130,38 @@ class AnalysisGLOW(Analysis):
             min_vox=min_vox, base_seed=(k + 1) * _INNER_SEED_BLOCK)
         return children, size, llr, mu, std
 
-    def fit(self, *, n_jobs: int = 1, verbose: bool = False):
-        """Run the analysis and return self.
+    def fit(self, exp, *, n_jobs: int = 1, verbose: bool = False):
+        """Run the analysis on exp and return self.
 
         Populates the observed-tree attributes (children, size, llr,
         mu, std, z), the FWER null (max_z_null), and the synthesis
         output (pval, effect_list).
 
         Args:
+            exp (Experiment): experiment to analyze. fit scales it
+                (ExperimentScaled.from_exp) and decomposes its design into
+                the q0/q1 subspaces.
             n_jobs (int): outer-perm parallelism via joblib. 1 (default)
                 runs in-process; -1 uses all cores. Results are
                 identical regardless of n_jobs (seed is derived from
                 outer-perm index).
             verbose (bool): print progress and show tqdm bar.
         """
+        exp = ExperimentScaled.from_exp(exp)
+        q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
+
         n_total = self.n_perm_fwer + 1
         self.max_z_null = np.empty(n_total)
 
         if verbose:
-            num_vox = self.exp.y.shape[2]
+            num_vox = exp.y.shape[2]
             print(f'  [1/2] outer perms: {n_total} perms '
                   f'({num_vox} voxels, {self.n_perm_fwer} FWER, '
                   f'{self.n_perm_inner} inner, n_jobs={n_jobs}) ...')
 
         results = Parallel(n_jobs=n_jobs, return_as='generator')(
             delayed(self._run_outer)(
-                self.exp, k, q0=self._q0, q1=self._q1,
+                exp, k, q0=q0, q1=q1,
                 n_perm_inner=self.n_perm_inner,
                 min_vox=self.min_vox,
                 cluster_mode=self.cluster_mode)
@@ -186,16 +191,18 @@ class AnalysisGLOW(Analysis):
 
         if verbose:
             print('  [2/2] FWER synthesis ...')
-        self.finalize(verbose=verbose)
+        self.finalize(exp, verbose=verbose)
         return self
 
-    def finalize(self, *, verbose: bool = False):
+    def finalize(self, exp, *, verbose: bool = False):
         """Compute FWER p-values, prune the observed tree, discover effects.
 
         Requires max_z_null and the observed-tree attributes. Sets
         pval and effect_list.
 
         Args:
+            exp (Experiment): the (scaled) experiment fit ran on; supplies
+                mask_idx and is carried into each discovered EffectEstimate.
             verbose (bool): print significant-region and discovery counts.
         """
         reg_active = self.size >= self.min_vox
@@ -227,10 +234,10 @@ class AnalysisGLOW(Analysis):
         for reg_idx in reg_out_list:
             label_map = glow.graph.get_label_map(
                 reg_idx_list=[reg_idx],
-                mask_idx=self.exp.mask_idx,
+                mask_idx=exp.mask_idx,
                 children=self.children)
             eff = glow.effect.EffectEstimate.from_exp_mask(
-                mask=label_map > -1, exp=self.exp,
+                mask=label_map > -1, exp=exp,
                 reg_idx=reg_idx, pval_fwer=self.pval[reg_idx])
             self.effect_list.append(eff)
 

@@ -21,9 +21,12 @@ optional top-level ``"label"`` names the method/variant the call belongs to
 A recorded call may be a bound method: its receiver is captured as the
 ``self`` input (serialized via its ``repr``). ``filter_args`` includes the
 receiver in the hashed arguments, so distinct receivers key to distinct
-records -- recording an object's method needs no passthrough wrapper, e.g.
-``recorder(output_name='ana')(AnalysisGLOW(exp=exp, n_perm_fwer=n).fit)()``
-records the analysis, the fitted result and the timing.
+records -- recording an object's method needs no passthrough wrapper. The
+experiment is passed to fit rather than stored on the analysis, so it is
+captured as fit's own input rather than nested in the analysis recipe, e.g.
+``recorder(output_name='ana')(AnalysisGLOW(n_perm_fwer=n).fit)(exp)``
+records the analysis recipe, its ``exp`` fit input, the fitted result and the
+timing.
 
 Records are *keyed*, not appended. The same call recorded twice (same fnc and
 the same filtered args -> same hash) overwrites the first and warns, mirroring

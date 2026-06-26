@@ -90,9 +90,9 @@ class TestToggleRegionLogic:
 class TestTargetStarClickable:
     """Verify the target star trace has the right customdata for clicks."""
 
-    def test_target_customdata_is_string(self, df_with_target, ana,
+    def test_target_customdata_is_string(self, df_with_target, ana, exp,
                                          target_stats):
-        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr',
+        fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr',
                             '__none__', target_stats=target_stats)
         star = [t for t in fig.data
                 if getattr(t, 'customdata', None) is not None
@@ -107,28 +107,28 @@ class TestScatterCallbackIntegration:
     This catches the IndexError regression and y-feature responsiveness.
     """
 
-    def test_rebuild_all_y_features(self, df_with_target, ana, feature_cols,
-                                    target_stats):
+    def test_rebuild_all_y_features(self, df_with_target, ana, exp,
+                                    feature_cols, target_stats):
         """Changing Y feature must not crash (IndexError regression)."""
         generic, sig, prune, mask = feature_cols
         all_y = generic + sig + prune + mask
         for y_feat in all_y:
-            fig = build_scatter(df_with_target, ana, 'n_voxel', y_feat,
+            fig = build_scatter(df_with_target, ana, exp, 'n_voxel', y_feat,
                                 '__none__', target_stats=target_stats)
             assert fig.layout.yaxis.title.text == y_feat, \
                 f'y-axis title should be {y_feat}'
 
-    def test_rebuild_all_x_features(self, df_with_target, ana, feature_cols,
-                                    target_stats):
+    def test_rebuild_all_x_features(self, df_with_target, ana, exp,
+                                    feature_cols, target_stats):
         for x_feat in sum(feature_cols, []):
-            fig = build_scatter(df_with_target, ana, x_feat, 'llr_z',
+            fig = build_scatter(df_with_target, ana, exp, x_feat, 'llr_z',
                                 '__none__', target_stats=target_stats)
             assert fig.layout.xaxis.title.text == x_feat
 
-    def test_selected_round_trip(self, df_with_target, ana):
+    def test_selected_round_trip(self, df_with_target, ana, exp):
         """Select a region, rebuild figure, verify it's highlighted."""
         reg = int(df_with_target['region_idx'].iloc[5])
-        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr_z',
+        fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr_z',
                             '__none__', selected_reg={reg})
         main = [t for t in fig.data
                 if t.mode == 'markers' and t.showlegend is False
@@ -143,25 +143,25 @@ class TestScatterCallbackIntegration:
 class TestRegressionClickToImage:
     """Clicking a regression data point should yield an image index."""
 
-    def _build_reg_fig(self, ana, df):
-        num_vox = ana.exp.y.shape[2]
+    def _build_reg_fig(self, ana, exp, df):
+        num_vox = exp.y.shape[2]
         reg_idx = num_vox  # first internal node
         return build_regression_figure(
-            ana_glow=ana, region_list=[reg_idx],
+            ana_glow=ana, exp=exp, region_list=[reg_idx],
             x_feat_idx=0, y_feat_idx=0, df=df)
 
-    def test_marker_traces_have_customdata(self, ana, df_with_target):
-        fig = self._build_reg_fig(ana, df_with_target)
+    def test_marker_traces_have_customdata(self, ana, exp, df_with_target):
+        fig = self._build_reg_fig(ana, exp, df_with_target)
         marker_traces = [t for t in fig.data if t.mode == 'markers']
         assert len(marker_traces) >= 1
         for t in marker_traces:
             assert t.customdata is not None, 'regression markers need customdata'
-            assert len(t.customdata) == ana.exp.y.shape[1]
+            assert len(t.customdata) == exp.y.shape[1]
 
-    def test_customdata_are_image_indices(self, ana, df_with_target):
-        fig = self._build_reg_fig(ana, df_with_target)
+    def test_customdata_are_image_indices(self, ana, exp, df_with_target):
+        fig = self._build_reg_fig(ana, exp, df_with_target)
         marker_traces = [t for t in fig.data if t.mode == 'markers']
-        num_img = ana.exp.y.shape[1]
+        num_img = exp.y.shape[1]
         for t in marker_traces:
             assert list(t.customdata) == list(range(num_img))
 
@@ -178,21 +178,21 @@ class TestRegressionClickToImage:
         assert img_idx is not None
         assert str(int(img_idx)) == '3'
 
-    def test_click_line_trace_no_customdata(self, ana, df_with_target):
+    def test_click_line_trace_no_customdata(self, ana, exp, df_with_target):
         """OLS fit-line traces should NOT have customdata (ignored on click)."""
-        fig = self._build_reg_fig(ana, df_with_target)
+        fig = self._build_reg_fig(ana, exp, df_with_target)
         line_traces = [t for t in fig.data if t.mode == 'lines']
         for t in line_traces:
             assert t.customdata is None
 
-    def test_multiple_regions(self, ana, df_with_target):
+    def test_multiple_regions(self, ana, exp, df_with_target):
         """Each region's marker trace should carry image-index customdata."""
-        num_vox = ana.exp.y.shape[2]
+        num_vox = exp.y.shape[2]
         regs = [num_vox, num_vox + 1]
         fig = build_regression_figure(
-            ana_glow=ana, region_list=regs,
+            ana_glow=ana, exp=exp, region_list=regs,
             x_feat_idx=0, y_feat_idx=0, df=df_with_target)
         marker_traces = [t for t in fig.data if t.mode == 'markers']
         assert len(marker_traces) == 2
         for t in marker_traces:
-            assert list(t.customdata) == list(range(ana.exp.y.shape[1]))
+            assert list(t.customdata) == list(range(exp.y.shape[1]))

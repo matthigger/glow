@@ -133,7 +133,7 @@ class TestRunAnaRecords:
         # one shared trial scope -> the first failing fit marks the trial failed
         # and later fits short-circuit; the records stop at the failure
         class _Boom(AnalysisVBA):
-            def fit(self, _stat=None):
+            def fit(self, exp, _stat=None):
                 raise RuntimeError('boom')
 
         ana = {'boom': (_Boom, dict(n_perm_fwer=1)),

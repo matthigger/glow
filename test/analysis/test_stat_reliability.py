@@ -30,7 +30,7 @@ def _null_rejection_rate(cls, K, n_perm, alpha, **kw):
     for seed in range(K):
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                     num_img=30, seed=seed)
-        ana = cls(exp, n_perm_fwer=n_perm, alpha_fwer=alpha, **kw).fit()
+        ana = cls(n_perm_fwer=n_perm, alpha_fwer=alpha, **kw).fit(exp)
         if len(ana.effect_list) > 0:
             hits += 1
     return hits / K
@@ -221,8 +221,8 @@ class TestPowerMonotonicity:
                     exp = EffectSynthetic(
                         extenter=ExtenterSphere(radius=2, seed=seed),
                         effect_llr=llr).fit(exp)[0]
-                ana = AnalysisVBA(exp, n_perm_fwer=n_perm,
-                                  alpha_fwer=alpha).fit()
+                ana = AnalysisVBA(n_perm_fwer=n_perm,
+                                  alpha_fwer=alpha).fit(exp)
                 if len(ana.effect_list) > 0:
                     hits += 1
             rates[llr] = hits / K
@@ -254,7 +254,7 @@ class TestPermutationExchangeability:
             exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                         num_img=30, seed=seed)
             from glow.analysis.mancova import get_wilks
-            ana = AnalysisVBA(exp, n_perm_fwer=n_perm, get_stat=get_wilks)
+            ana = AnalysisVBA(n_perm_fwer=n_perm, get_stat=get_wilks)
             num_vox = exp.y.shape[2]
             stat = np.full((n_perm + 1, num_vox), np.nan)
             for k in range(n_perm + 1):

@@ -540,12 +540,19 @@ class ExperimentScaled(Experiment):
     def from_exp(cls, exp):
         """Build an ExperimentScaled from an existing Experiment.
 
+        Idempotent: an exp that is already an ExperimentScaled is returned
+        unchanged (never re-scaled), so each Analysis.fit can pass whatever
+        it was handed -- raw or already-scaled -- through this one call.
+
         Args:
             exp: source Experiment (provides y, mask_idx, x, contrast, meta)
 
         Returns:
-            ExperimentScaled with pre-processing applied to exp.y
+            ExperimentScaled with pre-processing applied to exp.y, or exp
+            itself when it is already an ExperimentScaled
         """
+        if isinstance(exp, cls):
+            return exp
         return cls(y=exp.y, mask_idx=exp.mask_idx, x=exp.x,
                    contrast=exp.contrast,
                    meta=dict(exp.meta) if getattr(exp, 'meta', None) else None)

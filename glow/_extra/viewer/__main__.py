@@ -5,13 +5,15 @@ Usage::
     # interactive demo
     python -m glow._extra.viewer --demo
 
-    # load a pickled AnalysisGLOW
-    python -m glow._extra.viewer analysis.p.gz
+    # load a bundle pickle {'ana': AnalysisGLOW, 'exp': Experiment, ...}
+    # (as written by glow._extra.viewer.web.bake_demos); a bare AnalysisGLOW
+    # no longer carries the experiment the viewer needs
+    python -m glow._extra.viewer bundle.p.gz
 
     # with a target mask (nifti, numpy, or pickled Effect)
-    python -m glow._extra.viewer analysis.p.gz --mask target.nii.gz
-    python -m glow._extra.viewer analysis.p.gz --mask target.npy
-    python -m glow._extra.viewer analysis.p.gz --mask effect.pkl
+    python -m glow._extra.viewer bundle.p.gz --mask target.nii.gz
+    python -m glow._extra.viewer bundle.p.gz --mask target.npy
+    python -m glow._extra.viewer bundle.p.gz --mask effect.pkl
 """
 
 import argparse
@@ -159,7 +161,12 @@ _EFFECT_MAP = {
 
 
 def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
-    """Optionally impose an effect, run AnalysisGLOW, and launch the viewer."""
+    """Optionally impose an effect and run AnalysisGLOW.
+
+    Returns ``(ana, exp_eff, mask_target)``: the fitted analysis, the
+    experiment it was fit on (the analysis no longer stores it; the viewer
+    needs it), and the planted target mask (None when no effect imposed).
+    """
     from glow.effect.extent import ExtenterMinVar
     from glow.analysis import AnalysisGLOW
 
@@ -192,11 +199,11 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
         print('  no effect imposed')
 
     print('  running AnalysisGLOW (n_perm_fwer=200, n_perm_inner=200) ...')
-    ana = AnalysisGLOW(exp_eff, n_perm_fwer=200,
-                       n_perm_inner=200).fit(verbose=True)
+    ana = AnalysisGLOW(n_perm_fwer=200,
+                       n_perm_inner=200).fit(exp_eff, verbose=True)
     n_eff = len(ana.effect_list)
     print(f'  found {n_eff} effect{"s" if n_eff != 1 else ""}')
-    return ana, mask_target
+    return ana, exp_eff, mask_target
 
 
 # ---------------------------------------------------------------------------
@@ -210,8 +217,8 @@ def _demo_wgn_2d(b, effect_llr, seed=0, num_img=_NUM_IMG):
     print(f'  building 2D WGN: shape={shape}, b={b}, num_img={num_img}')
     exp = Experiment.from_gauss(a=1, b=b, num_img=num_img, shape=shape,
                                  seed=seed, add_bias=True)
-    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
-    return ana, mask_target
+    ana, exp_eff, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
+    return ana, exp_eff, mask_target
 
 
 def _demo_mandrill(channels, effect_llr, seed=0, num_img=_NUM_IMG):
@@ -240,8 +247,8 @@ def _demo_mandrill(channels, effect_llr, seed=0, num_img=_NUM_IMG):
     h, w = exp.mask_idx.shape
     print(f'  mandrill: {h}x{w}, features={exp.meta["features"]}, '
           f'num_img={num_img}')
-    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
-    return ana, mask_target
+    ana, exp_eff, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
+    return ana, exp_eff, mask_target
 
 
 def _demo_dti_2d(features, effect_llr, seed=0, num_img=_NUM_IMG):
@@ -258,8 +265,8 @@ def _demo_wgn_3d(b, effect_llr, seed=0, num_img=_NUM_IMG):
     print(f'  building 3D WGN: shape={shape}, b={b}, num_img={num_img}')
     exp = Experiment.from_gauss(a=1, b=b, num_img=num_img, shape=shape,
                                  seed=seed, add_bias=True)
-    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
-    return ana, mask_target
+    ana, exp_eff, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
+    return ana, exp_eff, mask_target
 
 
 def _demo_dti_3d(features, effect_llr, seed=0, num_img=_NUM_IMG):
@@ -292,8 +299,8 @@ def _build_dti_demo(dim, features, effect_llr, seed, num_img):
     img_only = ExperimentImageOnly.from_paths({'mean': feat_paths})
     img_only = img_only.bootstrap_img(num_img, seed=seed, noise_scale=0.15)
     exp = img_only.sample_x(a=1, seed=seed, add_bias=True)
-    ana, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
-    return ana, mask_target
+    ana, exp_eff, mask_target = _impose_and_run(exp, effect_llr, seed=seed)
+    return ana, exp_eff, mask_target
 
 
 # ---------------------------------------------------------------------------
@@ -361,17 +368,17 @@ def _run_demo():
           f' num_img={num_img}, seed={seed}) ...')
     kw = dict(effect_llr=effect_llr, seed=seed, num_img=num_img)
     if image_set == 'wgn2d':
-        ana, mask_target = _demo_wgn_2d(b_choice, **kw)
+        ana, exp, mask_target = _demo_wgn_2d(b_choice, **kw)
     elif image_set == 'mandrill':
-        ana, mask_target = _demo_mandrill(feat_choice, **kw)
+        ana, exp, mask_target = _demo_mandrill(feat_choice, **kw)
     elif image_set == 'dti2d':
-        ana, mask_target = _demo_dti_2d(feat_choice, **kw)
+        ana, exp, mask_target = _demo_dti_2d(feat_choice, **kw)
     elif image_set == 'wgn3d':
-        ana, mask_target = _demo_wgn_3d(b_choice, **kw)
+        ana, exp, mask_target = _demo_wgn_3d(b_choice, **kw)
     elif image_set == 'dti3d':
-        ana, mask_target = _demo_dti_3d(feat_choice, **kw)
+        ana, exp, mask_target = _demo_dti_3d(feat_choice, **kw)
 
-    launch(ana, mask_target=mask_target)
+    launch(ana, exp, mask_target=mask_target)
 
 
 # ---------------------------------------------------------------------------
@@ -424,12 +431,21 @@ def main():
         parser.error('either --demo or an analysis file path is required')
 
     print(f'Loading analysis from {args.analysis} ...')
-    ana = _load_analysis(args.analysis)
+    obj = _load_analysis(args.analysis)
+    # the analysis no longer carries exp, so the viewer needs a bundle
+    # pickle {'ana', 'exp', ...} (as written by bake_demos), not a bare
+    # AnalysisGLOW.
+    if not (isinstance(obj, dict) and 'ana' in obj and 'exp' in obj):
+        parser.error(
+            'the viewer needs the experiment the analysis was fit on; pass a '
+            "bundle pickle containing {'ana', 'exp'} (e.g. one written by "
+            'glow._extra.viewer.web.bake_demos), not a bare AnalysisGLOW.')
+    ana, exp = obj['ana'], obj['exp']
 
-    mask_target = None
+    mask_target = obj.get('mask_target')
     if args.mask is not None:
         print(f'Loading mask from {args.mask} ...')
-        mask_target = _load_mask(args.mask, ana.exp.mask_idx)
+        mask_target = _load_mask(args.mask, exp.mask_idx)
         print(f'  mask shape: {mask_target.shape}, '
               f'{mask_target.sum()} voxels active')
 
@@ -443,7 +459,7 @@ def main():
         print(f'  {len(extra_df)} rows, columns: {list(extra_df.columns)}')
 
     from glow._extra.viewer import launch
-    launch(ana, mask_target=mask_target, port=args.port, debug=args.debug,
+    launch(ana, exp, mask_target=mask_target, port=args.port, debug=args.debug,
            extra_df=extra_df, quiet=not args.verbose,
            min_vox=args.min_vox, max_regions=args.max_regions)
 

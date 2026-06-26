@@ -248,15 +248,14 @@ def _render_value(key, val, depth=0):
     return _kv_row(key, s)
 
 
-def _detail_panels(ana_glow):
+def _detail_panels(ana_glow, exp):
     """Build the experiment + analysis detail <details> panels.
 
     Both are collapsed by default.  Values are pulled directly from
-    ``ana_glow`` and ``ana_glow.exp`` at layout time — no callbacks.
+    ``ana_glow`` and ``exp`` at layout time — no callbacks.
     """
     import numpy as np
 
-    exp = ana_glow.exp
     meta = getattr(exp, 'meta', {}) or {}
 
     y_shape = getattr(exp.y, 'shape', None) if exp.y is not None else '(unset)'
@@ -590,7 +589,7 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
 # App factory
 # ---------------------------------------------------------------------------
 
-def _create_app(ana_glow, mask_target=None, y_features=None,
+def _create_app(ana_glow, exp, mask_target=None, y_features=None,
                 subject_names=None, extra_df=None, min_vox=None,
                 url_base_pathname=None, server=None,
                 routes_pathname_prefix=None, requests_pathname_prefix=None):
@@ -598,6 +597,7 @@ def _create_app(ana_glow, mask_target=None, y_features=None,
 
     Args:
         ana_glow (AnalysisGLOW): completed analysis
+        exp (Experiment): the experiment the analysis was fit on
         mask_target: optional target mask
         y_features (list[str] | None): imaging feature names (auto-extracted
             from ``exp.meta['features']`` when *None*).
@@ -628,15 +628,15 @@ def _create_app(ana_glow, mask_target=None, y_features=None,
         app (Dash): configured Dash application
     """
     min_vox = int(min_vox or 0)
-    meta = getattr(ana_glow.exp, 'meta', {})
+    meta = getattr(exp, 'meta', {})
     if y_features is None:
         y_features = meta.get('features')
     if subject_names is None:
         subject_names = meta.get('subjects')
 
-    df = prep_df(ana_glow, mask_target=mask_target, extra_df=extra_df)
+    df = prep_df(ana_glow, exp, mask_target=mask_target, extra_df=extra_df)
     generic_cols, sig_cols, prune_cols, mask_cols = get_feature_columns(df)
-    mask_idx = ana_glow.exp.mask_idx
+    mask_idx = exp.mask_idx
     ndim = mask_idx.ndim
     is_3d = ndim == 3
 
@@ -644,7 +644,7 @@ def _create_app(ana_glow, mask_target=None, y_features=None,
     target_stats = None
     target_vox = None
     if mask_target is not None:
-        target_stats = compute_target_stats(ana_glow, mask_target)
+        target_stats = compute_target_stats(exp, mask_target)
         target_vox = mask_idx[mask_target & (mask_idx >= 0)]
 
     dash_kw = {'update_title': None}
@@ -658,13 +658,13 @@ def _create_app(ana_glow, mask_target=None, y_features=None,
     app = Dash(__name__, **dash_kw)
 
     if is_3d:
-        _setup_3d(app, ana_glow, df,
+        _setup_3d(app, ana_glow, exp, df,
                   generic_cols, sig_cols, prune_cols, mask_cols,
                   y_features=y_features, subject_names=subject_names,
                   target_stats=target_stats, target_vox=target_vox,
                   min_vox=min_vox)
     else:
-        _setup_2d(app, ana_glow, df,
+        _setup_2d(app, ana_glow, exp, df,
                   generic_cols, sig_cols, prune_cols, mask_cols,
                   y_features=y_features, subject_names=subject_names,
                   target_stats=target_stats, target_vox=target_vox,
@@ -673,7 +673,7 @@ def _create_app(ana_glow, mask_target=None, y_features=None,
     return app
 
 
-def _display_region_ids(ana_glow, min_vox):
+def _display_region_ids(ana_glow, exp, min_vox):
     """Return the region indices to display (scatter + lookup dropdown).
 
     Keeps regions with size >= min_vox.  When min_vox is 0/1 (no cut) every
@@ -681,31 +681,32 @@ def _display_region_ids(ana_glow, min_vox):
 
     Args:
         ana_glow (AnalysisGLOW): completed analysis (for size + tree shape).
+        exp (Experiment): the experiment the analysis was fit on (num_vox).
         min_vox (int): minimum region size in voxels; 0/1 means no cut.
 
     Returns:
         region_ids (np.array): (n_display,) int region indices, ascending.
     """
-    num_reg = ana_glow.exp.y.shape[2] + ana_glow.children.shape[0]
+    num_reg = exp.y.shape[2] + ana_glow.children.shape[0]
     if not min_vox or min_vox <= 1:
         return np.arange(num_reg)
     return np.flatnonzero(ana_glow.size >= min_vox)
 
 
-def _setup_3d(app, ana_glow, df,
+def _setup_3d(app, ana_glow, exp, df,
               generic_cols, sig_cols, prune_cols, mask_cols,
               y_features=None, subject_names=None,
               target_stats=None, target_vox=None, min_vox=0):
     """Set up the app for 3D data using dash-slicer."""
     from dash_slicer import VolumeSlicer
 
-    bg_vol = compute_bg_volume(ana_glow, feature_idx=0)
+    bg_vol = compute_bg_volume(exp, feature_idx=0)
 
     # Per-feature clim across all images so colour scale is stable when
     # switching images but adapts when switching features.
     from .data import get_original_y
-    _y_all = get_original_y(ana_glow.exp)
-    _mask = ana_glow.exp.mask_idx
+    _y_all = get_original_y(exp)
+    _mask = exp.mask_idx
     _valid_idx = _mask[_mask >= 0].ravel()
     _per_feat_clim = {}
     for _fi in range(_y_all.shape[0]):
@@ -723,12 +724,12 @@ def _setup_3d(app, ana_glow, df,
         s.graph.config['scrollZoom'] = False
         s.graph.style = {'height': '280px'}
 
-    _, x_names, default_reg_x = _get_x_labels(ana_glow.exp)
-    y_names = _get_y_labels(ana_glow.exp, y_features=y_features)
+    _, x_names, default_reg_x = _get_x_labels(exp)
+    y_names = _get_y_labels(exp, y_features=y_features)
 
-    b = ana_glow.exp.y.shape[0]
-    num_img = ana_glow.exp.y.shape[1]
-    region_ids = _display_region_ids(ana_glow, min_vox)
+    b = exp.y.shape[0]
+    num_img = exp.y.shape[1]
+    region_ids = _display_region_ids(ana_glow, exp, min_vox)
     if y_features is None:
         feat_names = [f'feature {i}' for i in range(b)]
     else:
@@ -740,26 +741,26 @@ def _setup_3d(app, ana_glow, df,
                                  default_reg_x=default_reg_x,
                                  num_img=num_img, feat_names=feat_names,
                                  subject_names=subject_names)
-    app.layout.children.append(_detail_panels(ana_glow))
+    app.layout.children.append(_detail_panels(ana_glow, exp))
 
     # pre-compute target mask in image space for overlays
     mask_target_img = None
     if target_vox is not None:
-        mask_idx = ana_glow.exp.mask_idx
+        mask_idx = exp.mask_idx
         mask_target_img = np.zeros(mask_idx.shape, dtype=bool)
         mask_target_img[mask_idx >= 0] = np.isin(
             mask_idx[mask_idx >= 0], target_vox)
 
     # --- shared callbacks ---
-    _register_scatter_callback(app, df, ana_glow,
+    _register_scatter_callback(app, df, ana_glow, exp,
                                target_stats=target_stats, min_vox=min_vox)
-    _register_selection_callback(app, ana_glow,
+    _register_selection_callback(app, ana_glow, exp,
                                  mask_target_img=mask_target_img)
     _register_checklist_sync_callback(app, df,
                                       target_stats=target_stats)
-    _register_hover_callback(app, ana_glow,
+    _register_hover_callback(app, ana_glow, exp,
                              mask_target_img=mask_target_img)
-    _register_regression_callback(app, ana_glow, df,
+    _register_regression_callback(app, ana_glow, exp, df,
                                   y_features=y_features,
                                   subject_names=subject_names,
                                   target_vox=target_vox)
@@ -803,11 +804,11 @@ def _setup_3d(app, ana_glow, df,
         show_list = list(visible)
         if hover_reg is not None and hover_reg not in show_list:
             show_list.append(hover_reg)
-        show_list = [r for r in show_list if _valid_reg(r, ana_glow)]
+        show_list = [r for r in show_list if _valid_reg(r, ana_glow, exp)]
 
         # build overlay for tree regions only ('target' handled separately)
         tree_regs = [r for r in show_list if r != 'target']
-        label_map = build_label_map(tree_regs, ana_glow)
+        label_map = build_label_map(tree_regs, exp, ana_glow)
 
         # color index must match position in selected list (for consistency)
         color_map = {r: i for i, r in enumerate(selected)}
@@ -845,7 +846,7 @@ def _setup_3d(app, ana_glow, df,
     def update_bg_volume(feat_val, img_val, st0, st1, st2):
         feat_idx = int(feat_val) if feat_val is not None else 0
         img_idx = None if img_val in (None, 'mean') else int(img_val)
-        new_vol = compute_bg_volume(ana_glow, feature_idx=feat_idx,
+        new_vol = compute_bg_volume(exp,feature_idx=feat_idx,
                                     image_idx=img_idx)
         for s in (slicer0, slicer1, slicer2):
             s._volume = new_vol
@@ -896,21 +897,21 @@ def _build_overlay(slicer, label_map, visible_list, color_map,
     return slicer.create_overlay_data(mask, colors)
 
 
-def _setup_2d(app, ana_glow, df,
+def _setup_2d(app, ana_glow, exp, df,
               generic_cols, sig_cols, prune_cols, mask_cols,
               y_features=None, subject_names=None,
               target_stats=None, target_vox=None, min_vox=0):
     """Set up the app for 2D data using Plotly go.Image."""
-    mask_idx = ana_glow.exp.mask_idx
-    bg_dict = compute_backgrounds(ana_glow, y_features=y_features)
-    bg_ranges = compute_bg_ranges(ana_glow, y_features=y_features)
+    mask_idx = exp.mask_idx
+    bg_dict = compute_backgrounds(exp, y_features=y_features)
+    bg_ranges = compute_bg_ranges(exp, y_features=y_features)
     bg_names = list(bg_dict.keys())
 
-    _, x_names, default_reg_x = _get_x_labels(ana_glow.exp)
-    y_names = _get_y_labels(ana_glow.exp, y_features=y_features)
+    _, x_names, default_reg_x = _get_x_labels(exp)
+    y_names = _get_y_labels(exp, y_features=y_features)
 
-    region_ids = _display_region_ids(ana_glow, min_vox)
-    num_img = ana_glow.exp.y.shape[1]
+    region_ids = _display_region_ids(ana_glow, exp, min_vox)
+    num_img = exp.y.shape[1]
     app.layout = _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols,
                                  bg_names,
                                  x_names=x_names, y_names=y_names,
@@ -918,7 +919,7 @@ def _setup_2d(app, ana_glow, df,
                                  default_reg_x=default_reg_x,
                                  num_img=num_img,
                                  subject_names=subject_names)
-    app.layout.children.append(_detail_panels(ana_glow))
+    app.layout.children.append(_detail_panels(ana_glow, exp))
 
     # pre-compute target mask in image space for overlays
     mask_target_img = None
@@ -928,15 +929,15 @@ def _setup_2d(app, ana_glow, df,
             mask_idx[mask_idx >= 0], target_vox)
 
     # --- shared callbacks ---
-    _register_scatter_callback(app, df, ana_glow,
+    _register_scatter_callback(app, df, ana_glow, exp,
                                target_stats=target_stats, min_vox=min_vox)
-    _register_selection_callback(app, ana_glow,
+    _register_selection_callback(app, ana_glow, exp,
                                  mask_target_img=mask_target_img)
     _register_checklist_sync_callback(app, df,
                                       target_stats=target_stats)
-    _register_hover_callback(app, ana_glow,
+    _register_hover_callback(app, ana_glow, exp,
                              mask_target_img=mask_target_img)
-    _register_regression_callback(app, ana_glow, df,
+    _register_regression_callback(app, ana_glow, exp, df,
                                   y_features=y_features,
                                   subject_names=subject_names,
                                   target_vox=target_vox)
@@ -958,12 +959,12 @@ def _setup_2d(app, ana_glow, df,
         show_list = list(visible)
         if hover_reg is not None and hover_reg not in show_list:
             show_list.append(hover_reg)
-        show_list = [r for r in show_list if _valid_reg(r, ana_glow)]
+        show_list = [r for r in show_list if _valid_reg(r, ana_glow, exp)]
 
         # resolve background: precomputed mean or single-image on-the-fly
         if image_sel is not None and image_sel != 'mean':
             active_bg = compute_backgrounds(
-                ana_glow, y_features=y_features,
+                exp, y_features=y_features,
                 image_idx=int(image_sel))
         else:
             active_bg = bg_dict
@@ -975,7 +976,7 @@ def _setup_2d(app, ana_glow, df,
 
         # build label map for tree regions only
         tree_regs = [r for r in show_list if r != 'target']
-        label_map = build_label_map(tree_regs, ana_glow)
+        label_map = build_label_map(tree_regs, exp, ana_glow)
 
         from .image import _bg_to_rgba, _overlay_mask
         gmin, gmax = bg_ranges.get(bg_name, (None, None))
@@ -1006,15 +1007,15 @@ def _setup_2d(app, ana_glow, df,
 # Shared callbacks
 # ---------------------------------------------------------------------------
 
-def _valid_reg(reg_idx, ana_glow):
+def _valid_reg(reg_idx, ana_glow, exp):
     """Return True if reg_idx is in range for this analysis tree."""
     if reg_idx == 'target':
         return True
-    num_reg = ana_glow.exp.y.shape[2] + ana_glow.children.shape[0]
+    num_reg = exp.y.shape[2] + ana_glow.children.shape[0]
     return isinstance(reg_idx, (int, np.integer)) and 0 <= reg_idx < num_reg
 
 
-def _register_scatter_callback(app, df, ana_glow, target_stats=None,
+def _register_scatter_callback(app, df, ana_glow, exp, target_stats=None,
                                min_vox=0):
     """Scatter plot updates when axes change or selection changes."""
     @app.callback(
@@ -1028,14 +1029,14 @@ def _register_scatter_callback(app, df, ana_glow, target_stats=None,
     def update_scatter(x_feat, y_feat, color_feat, selected_json, log_y_val):
         log_y = 'on' in (log_y_val or [])
         selected = set(json.loads(selected_json))
-        return build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
+        return build_scatter(df, ana_glow, exp, x_feat, y_feat, color_feat,
                              selected_reg=selected,
                              log_y=log_y,
                              target_stats=target_stats,
                              min_vox=min_vox)
 
 
-def _register_selection_callback(app, ana_glow, mask_target_img=None):
+def _register_selection_callback(app, ana_glow, exp, mask_target_img=None):
     """Scatter click, clear button, or lookup dropdown -> update store-selected."""
     @app.callback(
         [Output('store-selected', 'data'),
@@ -1060,12 +1061,12 @@ def _register_selection_callback(app, ana_glow, mask_target_img=None):
             if lookup_val is None:
                 return no_update, no_update, no_update
             reg_idx = int(lookup_val)
-            if not _valid_reg(reg_idx, ana_glow):
+            if not _valid_reg(reg_idx, ana_glow, exp):
                 return no_update, no_update, no_update
             selected = json.loads(selected_json)
             if reg_idx not in selected:
                 selected.append(reg_idx)
-            center = compute_region_center(reg_idx, ana_glow)
+            center = compute_region_center(reg_idx, exp, ana_glow)
             center_json = json.dumps(center) if center else 'null'
             return json.dumps(selected), center_json, None
 
@@ -1081,7 +1082,7 @@ def _register_selection_callback(app, ana_glow, mask_target_img=None):
         if reg_idx != 'target':
             reg_idx = int(reg_idx)
 
-        if not _valid_reg(reg_idx, ana_glow):
+        if not _valid_reg(reg_idx, ana_glow, exp):
             return no_update, no_update, no_update
 
         selected = json.loads(selected_json)
@@ -1094,7 +1095,7 @@ def _register_selection_callback(app, ana_glow, mask_target_img=None):
                 coords = np.argwhere(mask_target_img)
                 center = coords.mean(axis=0).tolist() if len(coords) else None
             else:
-                center = compute_region_center(reg_idx, ana_glow)
+                center = compute_region_center(reg_idx, exp, ana_glow)
             center_json = json.dumps(center) if center else 'null'
             return json.dumps(selected), center_json, no_update
 
@@ -1151,7 +1152,7 @@ def _register_checklist_sync_callback(app, df, target_stats=None):
         return new_options, new_value
 
 
-def _register_hover_callback(app, ana_glow, mask_target_img=None):
+def _register_hover_callback(app, ana_glow, exp, mask_target_img=None):
     """Hover over scatter -> update store-hover (+ center slicers).
 
     Also updates the hover toggle label to show the hovered region index.
@@ -1179,7 +1180,7 @@ def _register_hover_callback(app, ana_glow, mask_target_img=None):
 
         if reg_idx != 'target':
             reg_idx = int(reg_idx)
-        if not _valid_reg(reg_idx, ana_glow):
+        if not _valid_reg(reg_idx, ana_glow, exp):
             return 'null', no_update, no_update
 
         if reg_idx == 'target':
@@ -1195,12 +1196,12 @@ def _register_hover_callback(app, ana_glow, mask_target_img=None):
             coords = np.argwhere(mask_target_img)
             center = coords.mean(axis=0).tolist() if len(coords) else None
         else:
-            center = compute_region_center(reg_idx, ana_glow)
+            center = compute_region_center(reg_idx, exp, ana_glow)
         center_json = json.dumps(center) if center else 'null'
         return json.dumps(reg_idx), center_json, new_options
 
 
-def _register_regression_callback(app, ana_glow, df, y_features=None,
+def _register_regression_callback(app, ana_glow, exp, df, y_features=None,
                                    subject_names=None, target_vox=None):
     """Regression scatter: visible regions + hover + axis dropdowns -> figure.
 
@@ -1226,7 +1227,7 @@ def _register_regression_callback(app, ana_glow, df, y_features=None,
             show_list.append(hover_reg)
 
         # guard against stale indices from a previous browser session
-        show_list = [r for r in show_list if _valid_reg(r, ana_glow)]
+        show_list = [r for r in show_list if _valid_reg(r, ana_glow, exp)]
 
         n_selected = len(selected)
         color_map = {r: i for i, r in enumerate(selected)}
@@ -1236,6 +1237,7 @@ def _register_regression_callback(app, ana_glow, df, y_features=None,
 
         return build_regression_figure(
             ana_glow=ana_glow,
+            exp=exp,
             region_list=show_list,
             x_feat_idx=int(x_feat_idx),
             y_feat_idx=int(y_feat_idx),
@@ -1494,25 +1496,27 @@ def _resolve_min_vox(ana_glow, min_vox, max_regions):
     return 0
 
 
-def launch(ana_glow, mask_target=None, port=8050, debug=False,
+def launch(ana_glow, exp, mask_target=None, port=8050, debug=False,
            y_features=None, subject_names=None,
            extra_df=None, quiet=True, min_vox=None, max_regions=10_000):
     """Launch the glow viewer dashboard.
 
     Args:
         ana_glow (AnalysisGLOW): completed analysis
+        exp (Experiment): the experiment the analysis was fit on (the
+            analysis no longer stores it; pass the one given to ``fit``)
         mask_target (np.array): optional target mask (boolean, same shape
-            as ana_glow.exp.mask_idx).  When provided, per-region dice/sens/
+            as exp.mask_idx).  When provided, per-region dice/sens/
             spec/vox_in_target/vox_out_target columns become available.
         port (int): server port
         debug (bool): enable Dash debug mode (hot-reload).  If True,
             consider setting dev_tools_props_check=False for performance.
         y_features (list[str] | None): human-readable names for each
             imaging feature.  When *None*, extracted from
-            ``ana_glow.exp.meta['features']`` if available.
+            ``exp.meta['features']`` if available.
         subject_names (list[str] | None): human-readable names for each
             image / subject.  When *None*, extracted from
-            ``ana_glow.exp.meta['subjects']`` if available.
+            ``exp.meta['subjects']`` if available.
         extra_df (pd.DataFrame | None): optional extra per-region data
             (keyed on ``region_idx``) merged into the scatter DataFrame.
         quiet (bool): suppress Dash/Werkzeug request logs.
@@ -1541,7 +1545,7 @@ def launch(ana_glow, mask_target=None, port=8050, debug=False,
     if quiet:
         logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
-    app = _create_app(ana_glow, mask_target=mask_target,
+    app = _create_app(ana_glow, exp, mask_target=mask_target,
                       y_features=y_features, subject_names=subject_names,
                       extra_df=extra_df, min_vox=min_vox)
 

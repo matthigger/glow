@@ -75,14 +75,15 @@ def test_fetch_file_size_cap(tmp_path):
 
 
 @pytest.fixture
-def zenodo_space(ana_2d, mask_target_2d, tmp_path, monkeypatch):
+def zenodo_space(ana_2d, exp_2d, mask_target_2d, tmp_path, monkeypatch):
     """Serve one baked pickle from a local Zenodo-API stub; build the app.
 
     Yields (client, slug, filename) where client drives the dispatcher-
     wrapped server with GLOW_ZENODO_* pointed at the stub.
     """
     blob = gzip.compress(pickle.dumps(
-        {'ana': ana_2d, 'mask_target': mask_target_2d, 'combo': {}}))
+        {'ana': ana_2d, 'exp': exp_2d, 'mask_target': mask_target_2d,
+         'combo': {}}))
     md5 = hashlib.md5(blob).hexdigest()
     filename = 'demo_wgn2d.p.gz'
     record_id = '424242'

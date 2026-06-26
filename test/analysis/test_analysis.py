@@ -28,11 +28,12 @@ class TestBigEffect:
     exp, mask_target = effect.fit(exp)
 
     def test_glow(self):
-        analysis = AnalysisGLOW(TestBigEffect.exp, n_perm_fwer=25, alpha_fwer=.1).fit()
+        analysis = AnalysisGLOW(n_perm_fwer=25, alpha_fwer=.1).fit(
+            TestBigEffect.exp)
 
         # check that target region segmented properly
         counts = confusion_counts_tree(mask=TestBigEffect.mask_target,
-                                      mask_idx=analysis.exp.mask_idx,
+                                      mask_idx=TestBigEffect.exp.mask_idx,
                                       children=analysis.children)
         dice = stats_from_counts(**counts)['dice']
         assert np.isclose(dice.max(), 1), 'target region not segmented'
@@ -43,8 +44,9 @@ class TestBigEffect:
 
     @pytest.mark.parametrize('tfce_flag', [False, True])
     def test_vba(self, tfce_flag):
-        analysis = AnalysisVBA(TestBigEffect.exp, n_perm_fwer=25,
-                               alpha_fwer=.1, tfce_flag=tfce_flag).fit()
+        analysis = AnalysisVBA(n_perm_fwer=25,
+                               alpha_fwer=.1, tfce_flag=tfce_flag).fit(
+            TestBigEffect.exp)
         mask_all = sum(eff.mask for eff in analysis.effect_list)
         np.testing.assert_allclose(mask_all,
                                    TestBigEffect.mask_target)
@@ -57,17 +59,17 @@ class TestBigEffect:
         """
         from glow.analysis.mancova import get_wilks
         # non-TFCE
-        ana = AnalysisVBA(TestBigEffect.exp, n_perm_fwer=25,
+        ana = AnalysisVBA(n_perm_fwer=25,
                           alpha_fwer=.5, tfce_flag=False,
-                          get_stat=get_wilks).fit()
+                          get_stat=get_wilks).fit(TestBigEffect.exp)
         assert np.nanmin(ana.pval) <= 0.5, (
             f'Wilks VBA produced no small p-values '
             f'(min={np.nanmin(ana.pval):.3f})')
 
         # TFCE: 1-Wilks is non-negative, so TFCE works directly
-        ana_tfce = AnalysisVBA(TestBigEffect.exp, n_perm_fwer=25,
+        ana_tfce = AnalysisVBA(n_perm_fwer=25,
                                alpha_fwer=.5, tfce_flag=True,
-                               get_stat=get_wilks).fit()
+                               get_stat=get_wilks).fit(TestBigEffect.exp)
         assert np.nanmin(ana_tfce.pval) <= 0.5, (
             f'Wilks VBA-TFCE produced no small p-values '
             f'(min={np.nanmin(ana_tfce.pval):.3f})')
@@ -87,23 +89,23 @@ class TestZScoreStat:
 class TestCET:
     def test_big_effect(self):
         """CET discovers the strong effect."""
-        ana = AnalysisCET(TestBigEffect.exp, n_perm_fwer=25,
-                          alpha_fwer=.1, cft_pval=0.01).fit()
+        ana = AnalysisCET(n_perm_fwer=25,
+                          alpha_fwer=.1, cft_pval=0.01).fit(TestBigEffect.exp)
         assert len(ana.effect_list) >= 1
 
     def test_null_no_discoveries(self):
         """Under the null (no effect), CET should not discover at alpha=0.05."""
         exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
                                     num_img=100, seed=0)
-        ana = AnalysisCET(exp, n_perm_fwer=25, alpha_fwer=.05).fit()
+        ana = AnalysisCET(n_perm_fwer=25, alpha_fwer=.05).fit(exp)
         assert len(ana.effect_list) == 0
 
     def test_cluster_members_share_pval(self):
         """All voxels in a discovered cluster should have the same p-value."""
-        ana = AnalysisCET(TestBigEffect.exp, n_perm_fwer=25,
-                          alpha_fwer=.5, cft_pval=0.01).fit()
+        ana = AnalysisCET(n_perm_fwer=25,
+                          alpha_fwer=.5, cft_pval=0.01).fit(TestBigEffect.exp)
         for eff in ana.effect_list:
-            vox_idx = ana.exp.mask_idx[eff.mask]
+            vox_idx = TestBigEffect.exp.mask_idx[eff.mask]
             pvals = ana.pval[vox_idx]
             assert np.all(pvals == pvals[0])
 
@@ -119,11 +121,10 @@ class TestAnalysisEdgeCases:
 
         # set min_vox so large that all regions are filtered
         analysis = AnalysisGLOW(
-            exp,
             n_perm_fwer=5,
             alpha_fwer=.1,
             min_vox=1000000  # impossibly large
-        ).fit()
+        ).fit(exp)
         
         # should run without error
         assert hasattr(analysis, 'pval')
@@ -166,8 +167,8 @@ class TestZeroStdGuard:
         exp = EffectSynthetic(extenter=ExtenterSphere(radius=1, seed=0),
                               effect_llr=0.5).fit(exp)[0]
 
-        analysis = AnalysisGLOW(exp, n_perm_fwer=5, alpha_fwer=0.05,
-                                min_vox=1).fit()
+        analysis = AnalysisGLOW(n_perm_fwer=5, alpha_fwer=0.05,
+                                min_vox=1).fit(exp)
 
         assert not np.any(np.isinf(analysis.z)), \
             'z contains inf (likely zero-std division)'
@@ -187,8 +188,8 @@ class TestMinVox:
 
         min_vox = 4
         ana = AnalysisGLOW(
-            exp, n_perm_fwer=10, n_perm_inner=20,
-            alpha_fwer=.5, min_vox=min_vox).fit()
+            n_perm_fwer=10, n_perm_inner=20,
+            alpha_fwer=.5, min_vox=min_vox).fit(exp)
 
         # every significant region must have size >= min_vox
         sig = np.where(ana.pval <= ana.alpha_fwer)[0]
@@ -214,11 +215,11 @@ class TestMinVox:
                               effect_llr=0.5).fit(exp)[0]
 
         ana_low = AnalysisGLOW(
-            exp, n_perm_fwer=10, n_perm_inner=20,
-            alpha_fwer=.1, min_vox=1).fit()
+            n_perm_fwer=10, n_perm_inner=20,
+            alpha_fwer=.1, min_vox=1).fit(exp)
         ana_high = AnalysisGLOW(
-            exp, n_perm_fwer=10, n_perm_inner=20,
-            alpha_fwer=.1, min_vox=4).fit()
+            n_perm_fwer=10, n_perm_inner=20,
+            alpha_fwer=.1, min_vox=4).fit(exp)
 
         # threshold under min_vox=4 should be <= threshold under min_vox=1
         # (using the same outer-perm seeds → comparable max-z draws)
@@ -239,8 +240,8 @@ class TestPerRegionZConsistency:
                                     num_img=50, seed=0)
         exp = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
                               effect_llr=0.5).fit(exp)[0]
-        ana = AnalysisGLOW(exp, n_perm_fwer=5, n_perm_inner=20,
-                           alpha_fwer=.5, min_vox=1).fit()
+        ana = AnalysisGLOW(n_perm_fwer=5, n_perm_inner=20,
+                           alpha_fwer=.5, min_vox=1).fit(exp)
 
         mu = ana.mu
         std = ana.std
@@ -295,7 +296,7 @@ class TestForest:
 
         exp = Experiment(x=x, contrast=contrast, y=y,
                          mask_idx=mask_idx, add_bias=True)
-        ana = AnalysisGLOW(exp, n_perm_fwer=10, alpha_fwer=.5).fit()
+        ana = AnalysisGLOW(n_perm_fwer=10, alpha_fwer=.5).fit(exp)
 
         # GLOW completes on a forest: 2 components → num_vox - 2 internal nodes
         children = ana.children
@@ -316,10 +317,10 @@ class TestStreamingFidelity:
         n_perm_fwer = 25
         alpha_fwer = 0.1
 
-        ana_a = AnalysisGLOW(self.exp, n_perm_fwer=n_perm_fwer,
-                             alpha_fwer=alpha_fwer).fit()
-        ana_b = AnalysisGLOW(self.exp, n_perm_fwer=n_perm_fwer,
-                             alpha_fwer=alpha_fwer).fit()
+        ana_a = AnalysisGLOW(n_perm_fwer=n_perm_fwer,
+                             alpha_fwer=alpha_fwer).fit(self.exp)
+        ana_b = AnalysisGLOW(n_perm_fwer=n_perm_fwer,
+                             alpha_fwer=alpha_fwer).fit(self.exp)
 
         np.testing.assert_array_equal(ana_a.pval, ana_b.pval)
         np.testing.assert_array_equal(ana_a.max_z_null, ana_b.max_z_null)
@@ -330,29 +331,35 @@ class TestStreamingFidelity:
 
 
 class TestAnalysisScaling:
-    """Analysis must scale the experiment if it isn't already scaled."""
+    """fit scales the experiment via the idempotent ExperimentScaled.from_exp.
+
+    The experiment is no longer stored on the Analysis (it is passed to fit);
+    each fit calls ExperimentScaled.from_exp, which scales a raw experiment
+    and returns an already-scaled one unchanged.
+    """
 
     exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=20, seed=0)
     assert not isinstance(exp, ExperimentScaled)
 
-    def _check_scales(self, AnalysisCls, **kwargs):
-        # unscaled in → wrapped in ExperimentScaled
-        ana = AnalysisCls(self.exp, **kwargs)
-        assert isinstance(ana.exp, ExperimentScaled)
+    def test_from_exp_wraps_unscaled(self):
+        # raw experiment → scaled
+        assert isinstance(ExperimentScaled.from_exp(self.exp), ExperimentScaled)
 
-        # already-scaled in → kept as-is (not re-wrapped)
+    def test_from_exp_is_idempotent(self):
+        # already-scaled in → returned as-is (no double-scaling)
         exp_scaled = ExperimentScaled.from_exp(self.exp)
-        ana_pre = AnalysisCls(exp_scaled, **kwargs)
-        assert ana_pre.exp is exp_scaled
+        assert ExperimentScaled.from_exp(exp_scaled) is exp_scaled
 
-    def test_glow_scales(self):
-        self._check_scales(AnalysisGLOW, n_perm_fwer=2)
-
-    def test_vba_scales(self):
-        self._check_scales(AnalysisVBA, n_perm_fwer=2)
-
-    def test_cet_scales(self):
-        self._check_scales(AnalysisCET, n_perm_fwer=2)
+    @pytest.mark.parametrize('AnalysisCls, kwargs', [
+        (AnalysisGLOW, dict(n_perm_fwer=2)),
+        (AnalysisVBA, dict(n_perm_fwer=2)),
+        (AnalysisCET, dict(n_perm_fwer=2)),
+    ])
+    def test_fit_accepts_raw_and_scaled(self, AnalysisCls, kwargs):
+        # fit runs on a raw experiment (scaled internally) ...
+        AnalysisCls(**kwargs).fit(self.exp)
+        # ... and on an already-scaled one
+        AnalysisCls(**kwargs).fit(ExperimentScaled.from_exp(self.exp))
 
 
 class TestDiscoverMask:

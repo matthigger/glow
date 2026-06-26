@@ -5,6 +5,7 @@ from typing import Callable
 import numpy as np
 from tqdm import tqdm
 
+from glow.experiment.exper import ExperimentScaled
 from .._base import AnalysisVoxel
 
 
@@ -14,8 +15,9 @@ class AnalysisVBA(AnalysisVoxel):
     Computes one stat per voxel, optionally z-scores and TFCE-enhances
     the permutation null, then derives FWER-controlled p-values.
 
+    The experiment is supplied to fit(), not stored (see Analysis).
+
     Attributes:
-        exp (Experiment): source data (scaled)
         n_perm_fwer (int): permutations for FWER control
         alpha_fwer (float): family-wise error rate
         tfce_flag (bool): whether TFCE enhancement is applied
@@ -28,13 +30,12 @@ class AnalysisVBA(AnalysisVoxel):
     RECORD_FIELDS = ('get_stat', 'n_perm_fwer', 'alpha_fwer', 'tfce_flag',
                      'z_flag')
 
-    def __init__(self, exp, n_perm_fwer: int, alpha_fwer: float = .05,
+    def __init__(self, n_perm_fwer: int, alpha_fwer: float = .05,
                  verbose: bool = False, tfce_flag: bool = False,
                  z_flag: bool = False, get_stat: Callable = None):
         """Configure a voxel-based analysis.
 
         Args:
-            exp (Experiment): experiment to analyze
             n_perm_fwer (int): number of permutations for FWER control
             alpha_fwer (float): family-wise error rate
             verbose (bool): print progress
@@ -46,17 +47,18 @@ class AnalysisVBA(AnalysisVoxel):
             get_stat (Callable): per-region stat function (e, h, n);
                 defaults to Wilks lambda.
         """
-        super().__init__(exp, get_stat=get_stat)
+        super().__init__(get_stat=get_stat)
         self.n_perm_fwer = n_perm_fwer
         self.alpha_fwer = alpha_fwer
         self.tfce_flag = tfce_flag
         self.z_flag = z_flag
         self.verbose = verbose
 
-    def fit(self, _stat=None):
-        """Run the permutation walk and compute p-values.
+    def fit(self, exp, _stat=None):
+        """Run the permutation walk on exp and compute p-values.
 
         Args:
+            exp (Experiment): experiment to analyze (scaled on the way in).
             _stat (np.array): optional (n_perm_fwer+1, num_vox) pre-computed
                 stat matrix (raw, before z-scoring or TFCE). Row 0 is the
                 observed draw. Caller is responsible for passing a copy.
@@ -65,8 +67,8 @@ class AnalysisVBA(AnalysisVoxel):
         Returns:
             self
         """
-        exp = self.exp
-        self.stat = self.build_stat_matrix(_stat)
+        exp = ExperimentScaled.from_exp(exp)
+        self.stat = self.build_stat_matrix(exp, _stat)
         if self.z_flag:
             self.stat = self.z_score_stat(self.stat)
         if self.tfce_flag:

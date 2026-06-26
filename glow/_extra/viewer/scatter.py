@@ -64,7 +64,7 @@ def _compute_adj_thresh(ana_glow):
 
 
 
-def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
+def build_scatter(df, ana_glow, exp, x_feat, y_feat, color_feat,
                   selected_reg=None, plot_tree=True,
                   log_y=False, target_stats=None, min_vox=0):
     """Build an interactive Plotly scatter figure.
@@ -72,6 +72,7 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
     Args:
         df (pd.DataFrame): region DataFrame (from viewer.data.prep_df)
         ana_glow (AnalysisGLOW): completed analysis (for tree + thresholds)
+        exp (Experiment): the experiment the analysis was fit on (num_vox)
         x_feat (str): column name for x axis
         y_feat (str): column name for y axis
         color_feat (str): column name for color
@@ -94,7 +95,7 @@ def build_scatter(df, ana_glow, x_feat, y_feat, color_feat,
     if selected_reg is None:
         selected_reg = set()
 
-    num_vox = ana_glow.exp.y.shape[2]
+    num_vox = exp.y.shape[2]
     children = ana_glow.children
     parent = get_parent(children, num_vox)
 

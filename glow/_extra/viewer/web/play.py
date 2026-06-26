@@ -69,12 +69,13 @@ def main():
     print(f'loading {path} ...')
     payload = _load(path)
     ana = payload['ana']
+    exp = payload['exp']
     mask_target = payload.get('mask_target')
     combo = payload.get('combo', {})
     if combo:
         print(f'combo: {combo}')
 
-    launch(ana, mask_target=mask_target, port=args.port)
+    launch(ana, exp, mask_target=mask_target, port=args.port)
 
 
 if __name__ == '__main__':

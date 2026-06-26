@@ -99,22 +99,24 @@ def _load_registry(pickle_dir):
     return registry
 
 
-def _extract_ana(payload) -> Tuple[object, object]:
-    """Pull (ana, mask_target) from a loaded pickle payload.
+def _extract_ana(payload) -> Tuple[object, object, object]:
+    """Pull (ana, exp, mask_target) from a loaded pickle payload.
 
-    Accepts the baked-demo dict ({'ana', 'mask_target', 'combo'}) or a bare
-    fitted Analysis object (as the benchmark/Zenodo pickles may store).
+    Accepts the baked-demo dict ({'ana', 'exp', 'mask_target', 'combo'}) or
+    a bare fitted Analysis object (legacy; carries no experiment, so the
+    viewer cannot render it).
 
     Args:
         payload: the unpickled object.
 
     Returns:
         ana: the fitted analysis to view.
+        exp: the experiment it was fit on (None for a bare-object payload).
         mask_target: the target mask, or None.
     """
     if isinstance(payload, dict) and 'ana' in payload:
-        return payload['ana'], payload.get('mask_target')
-    return payload, None
+        return payload['ana'], payload.get('exp'), payload.get('mask_target')
+    return payload, None, None
 
 
 def _open_pickle(path: pathlib.Path):
@@ -234,11 +236,11 @@ class ZenodoMounter:
                 return self.mounted_[slug]
 
             path = zenodo.fetch_file(zfile, max_bytes=self.max_bytes)
-            ana, mask_target = _extract_ana(_open_pickle(path))
+            ana, exp, mask_target = _extract_ana(_open_pickle(path))
 
             mount_key = f'/zenodo/view/{slug}'
             app = _create_app(
-                ana, mask_target=mask_target,
+                ana, exp, mask_target=mask_target,
                 routes_pathname_prefix='/',
                 requests_pathname_prefix=f'{mount_key}/')
             self.application.mounts[mount_key] = app.server
@@ -416,9 +418,9 @@ def build_server(pickle_dir=_PICKLE_DIR) -> Flask:
 
     print(f'mounting {len(registry)} curated Dash app(s)')
     for key, payload in registry.items():
-        ana, mask = _extract_ana(payload)
+        ana, exp, mask = _extract_ana(payload)
         prefix = f'/{key}/'
-        _create_app(ana, mask_target=mask,
+        _create_app(ana, exp, mask_target=mask,
                     url_base_pathname=prefix, server=server)
         print(f'  mounted {prefix}')
 

@@ -1,8 +1,9 @@
 """Pre-bake a curated set of glow._extra.viewer demo analyses for the web demo.
 
 Each entry in ``COMBOS`` calls one of the existing ``_demo_*`` builders in
-``glow._extra.viewer.__main__`` and pickles the resulting ``(ana, mask_target)`` pair
-to ``PICKLE_DIR``.
+``glow._extra.viewer.__main__`` and pickles the resulting ``(ana, exp,
+mask_target)`` triple to ``PICKLE_DIR``.  ``exp`` is bundled because the
+analysis no longer stores it and the viewer needs it.
 
 Usage::
 
@@ -88,7 +89,7 @@ def canonical_key(combo):
 # ---------------------------------------------------------------------------
 
 def _build_combo(combo):
-    """Resolve a combo dict to (ana, mask_target) by calling the right builder."""
+    """Resolve a combo dict to (ana, exp, mask_target) via the right builder."""
     image_set = combo['image_set']
     seed = combo.get('seed', _DEFAULTS['seed'])
     effect_llr = _EFFECT_MAP[combo['severity']]
@@ -137,11 +138,11 @@ def main():
 
         print(f'[{i}/{len(COMBOS)}] {key}: building ...')
         t0 = time.time()
-        ana, mask_target = _build_combo(combo)
+        ana, exp, mask_target = _build_combo(combo)
         build_s = time.time() - t0
 
         with gzip.open(out, 'wb') as f:
-            pickle.dump({'ana': ana, 'mask_target': mask_target,
+            pickle.dump({'ana': ana, 'exp': exp, 'mask_target': mask_target,
                          'combo': combo}, f, protocol=pickle.HIGHEST_PROTOCOL)
 
         size_mb = out.stat().st_size / (1024 ** 2)

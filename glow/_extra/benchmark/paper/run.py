@@ -39,10 +39,11 @@ from glow.analysis import (
     AnalysisGLOW, AnalysisVoxel, AnalysisVBA, AnalysisCET,
     DEFAULT_CET_CFT_PVAL, inner_perm)
 from glow.analysis.cluster import cluster, ClusterMode
-from glow.analysis.mancova import stat_dict, stat_dict_inv
+from glow.analysis.mancova import decompose, stat_dict, stat_dict_inv
 from glow.analysis.prune import prune_greedy, prune_dp
 from glow.effect import (EffectSynthetic, ExtenterMinVar, ExtenterSphere,
                          ExtenterSplit)
+from glow.experiment.exper import ExperimentScaled
 from .factory import build_ds_for_seed
 from .score import (score_effects, score_oracle_tree, size_max_z_curve,
                     curve_json)
@@ -368,13 +369,11 @@ def _min_size_curves(exp_eff, *, n_perm_fwer: int, n_perm_inner: int,
         a JSON string of the per-perm [size, max_z] corner staircases
         (curve_json; parse with json.loads).
     """
-    # borrow AnalysisGLOW only for its scaling + (q0, q1) decomposition, so
-    # the captured curves match a real fit; the outer loop below is run by
-    # hand to swap the racing kernel for the exact cpu_perm.
-    ana = AnalysisGLOW(exp=exp_eff, n_perm_fwer=n_perm_fwer,
-                       n_perm_inner=n_perm_inner, min_vox=min_vox_floor,
-                       cluster_mode=cluster_mode)
-    exp_s, q0, q1 = ana.exp, ana._q0, ana._q1
+    # scale + decompose exactly as AnalysisGLOW.fit does, so the captured
+    # curves match a real fit; the outer loop below is run by hand to swap
+    # the racing kernel for the exact cpu_perm.
+    exp_s = ExperimentScaled.from_exp(exp_eff)
+    q0, q1, _ = decompose(x=exp_s.x, contrast=exp_s.contrast)
 
     curve_list = []
     for k in range(n_perm_fwer + 1):
@@ -549,7 +548,7 @@ def run_prune(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
     glow_kwargs = {**_GLOW_BASE, 'cluster_mode': ClusterMode.FOCUS}
 
     ana = recorder(output_name='ana')(
-        AnalysisGLOW(exp=exp_eff, **glow_kwargs).fit)()
+        AnalysisGLOW(**glow_kwargs).fit)(exp_eff)
     if ana is None:
         return
 
@@ -689,8 +688,8 @@ def run_mancova(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
         return
 
     for label, Ana, kw, fn in _build_specs(n_perm_fwer, alpha_fwer, cft_pval):
-        recorder(output_name='ana', label=label)(Ana(exp=exp_eff, **kw).fit)(
-            _stat=stat_by_name[stat_dict_inv[fn]].copy())
+        recorder(output_name='ana', label=label)(Ana(**kw).fit)(
+            exp_eff, _stat=stat_by_name[stat_dict_inv[fn]].copy())
 
 
 # ---------------------------------------------------------------------------
@@ -776,4 +775,4 @@ def run_two_effect(recorder, *, source: str, b: int, num_img: int,
     exp_eff, _effect_list, _splitter = setup
 
     for label, (Ana, kw) in ana_kwargs_dict.items():
-        recorder(output_name='ana', label=label)(Ana(exp=exp_eff, **kw).fit)()
+        recorder(output_name='ana', label=label)(Ana(**kw).fit)(exp_eff)

@@ -34,44 +34,46 @@ def get_region_color(idx):
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-def compute_region_center(reg_idx, ana_glow):
+def compute_region_center(reg_idx, exp, ana_glow):
     """Compute the centre-of-mass (voxel coordinates) for a single region.
 
     Args:
         reg_idx (int): region index
-        ana_glow (AnalysisGLOW): completed analysis
+        exp (Experiment): the experiment the analysis was fit on (mask_idx)
+        ana_glow (AnalysisGLOW): completed analysis (tree)
 
     Returns:
         list[float] or None: [i, j, k] voxel coordinates, or None if the
             region has no voxels.
     """
-    label_map = build_label_map([reg_idx], ana_glow)
+    label_map = build_label_map([reg_idx], exp, ana_glow)
     coords = np.argwhere(label_map == reg_idx)
     if len(coords) == 0:
         return None
     return coords.mean(axis=0).tolist()
 
 
-def build_label_map(reg_idx_list, ana_glow):
+def build_label_map(reg_idx_list, exp, ana_glow):
     """Build a spatial label map for a list of region indices.
 
     Args:
         reg_idx_list (list[int]): region indices to show
-        ana_glow (AnalysisGLOW): provides mask_idx and children
+        exp (Experiment): the experiment the analysis was fit on (mask_idx)
+        ana_glow (AnalysisGLOW): provides the Ward tree (children)
 
     Returns:
         label_map (np.array): same shape as mask_idx, -1 outside regions
     """
     if not reg_idx_list:
-        return np.full(ana_glow.exp.mask_idx.shape, -1, dtype=int)
+        return np.full(exp.mask_idx.shape, -1, dtype=int)
 
     return glow.graph.get_label_map(
         reg_idx_list=reg_idx_list,
-        mask_idx=ana_glow.exp.mask_idx,
+        mask_idx=exp.mask_idx,
         children=ana_glow.children)
 
 
-def compute_bg_volume(ana_glow, feature_idx=0, image_idx=None):
+def compute_bg_volume(exp, feature_idx=0, image_idx=None):
     """Compute a background volume from image data.
 
     Uses original (pre-scaled) intensities so that the background matches
@@ -79,7 +81,7 @@ def compute_bg_volume(ana_glow, feature_idx=0, image_idx=None):
     zero.
 
     Args:
-        ana_glow (AnalysisGLOW): completed analysis
+        exp (Experiment): the experiment the analysis was fit on
         feature_idx (int): which imaging feature to use (default 0)
         image_idx (int | None): if provided, use a single image (0-indexed)
             instead of the mean across all images.
@@ -89,7 +91,6 @@ def compute_bg_volume(ana_glow, feature_idx=0, image_idx=None):
     """
     from .data import get_original_y
 
-    exp = ana_glow.exp
     mask_idx = exp.mask_idx
     y = get_original_y(exp)  # (b, num_img, num_vox)
 

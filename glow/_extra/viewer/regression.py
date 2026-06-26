@@ -138,14 +138,15 @@ def build_empty_regression():
     return fig
 
 
-def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
+def build_regression_figure(ana_glow, exp, region_list, x_feat_idx, y_feat_idx,
                             df=None, color_map=None, hover_reg=None,
                             n_selected=0, y_features=None,
                             subject_names=None, target_vox=None):
     """Build a regression scatter for one or more regions.
 
     Args:
-        ana_glow: AnalysisGLOW
+        ana_glow: AnalysisGLOW (provides the Ward tree)
+        exp (Experiment): the experiment the analysis was fit on
         region_list (list[int]): region indices to show (visible + hover)
         x_feat_idx (int): which design-matrix row (original index)
         y_feat_idx (int): which imaging feature index
@@ -164,7 +165,6 @@ def build_regression_figure(ana_glow, region_list, x_feat_idx, y_feat_idx,
     """
     from .data import get_original_y
 
-    exp = ana_glow.exp
     children = ana_glow.children
     y_orig = get_original_y(exp)
     num_vox = y_orig.shape[2]

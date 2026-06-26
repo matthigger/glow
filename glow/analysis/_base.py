@@ -9,7 +9,6 @@ from scipy.ndimage import label
 
 import glow.effect
 import glow.graph
-from glow.experiment.exper import ExperimentScaled
 
 
 def _canon(v):
@@ -31,8 +30,12 @@ def _canon(v):
 class Analysis(ABC):
     """Perform effect discovery (GLOW or TFCE) and compute FWER p-values.
 
+    An Analysis is a reusable recipe -- its config knobs only. The
+    experiment is not stored; it is passed to fit(), which scales it
+    (ExperimentScaled) on the way in, so the same recipe can be fit
+    against any experiment.
+
     Attributes:
-        exp (Experiment): source data
         effect_list (list): discovered Effect objects (populated by fit)
         pval (np.array): (num_reg,) FWER-controlled p-values (set by fit)
     """
@@ -42,10 +45,7 @@ class Analysis(ABC):
     # immutable recipe (see to_record).
     RECORD_FIELDS = ()
 
-    def __init__(self, exp):
-        if not isinstance(exp, ExperimentScaled):
-            exp = ExperimentScaled.from_exp(exp)
-        self.exp = exp
+    def __init__(self):
         self.effect_list = None
         self.pval = None
 
@@ -54,11 +54,11 @@ class Analysis(ABC):
 
         The benchmark Recorder serialises any value exposing to_record (see
         glow._extra.benchmark.recorder). This records only the configuration subset
-        declared in RECORD_FIELDS (the __init__ knobs) -- never exp, the
-        fitted outputs (effect_list, pval, and any per-region array), nor the
-        large data arrays. exp is omitted deliberately: it is recorded as its
-        own input arg wherever an Analysis is built, so nesting it here would
-        duplicate it.
+        declared in RECORD_FIELDS (the __init__ knobs) -- never the fitted
+        outputs (effect_list, pval, and any per-region array) nor the large
+        data arrays. exp is not a knob (it is passed to fit, not stored), so
+        it never appears here; the recorder captures it as fit's own ``exp``
+        input instead.
 
         Returns:
             a dict of {kind, <each RECORD_FIELDS knob, canonicalized>}
@@ -69,8 +69,13 @@ class Analysis(ABC):
         return out
 
     @abstractmethod
-    def fit(self):
-        """Run the analysis computation and return self."""
+    def fit(self, exp):
+        """Run the analysis computation on exp and return self.
+
+        Implementations scale exp with ``ExperimentScaled.from_exp(exp)``
+        first (idempotent -- a raw exp is scaled, an already-scaled one
+        passes through), then compute.
+        """
 
     @classmethod
     def get_pval(cls, stat, reg_active=None, *, stat_null=None):
@@ -204,8 +209,8 @@ class AnalysisVoxel(Analysis):
         stat (np.array): (n_perm+1, num_reg) statistics (set by fit)
     """
 
-    def __init__(self, exp, get_stat: Callable = None):
-        super().__init__(exp)
+    def __init__(self, get_stat: Callable = None):
+        super().__init__()
         if get_stat is None:
             from .mancova import get_wilks
             get_stat = get_wilks
@@ -279,19 +284,19 @@ class AnalysisVoxel(Analysis):
 
         return stat
 
-    def build_stat_matrix(self, _stat=None):
+    def build_stat_matrix(self, exp, _stat=None):
         """Per-voxel stat matrix for the FWER walk, (n_perm_fwer+1, num_vox).
 
-        If ``_stat`` is None, runs the Freedman-Lane permutation walk
-        (row 0 observed, rows 1: permuted).  If provided, validates its
-        permutation count against ``self.n_perm_fwer`` and returns it
+        If ``_stat`` is None, runs the Freedman-Lane permutation walk on
+        ``exp`` (row 0 observed, rows 1: permuted).  If provided, validates
+        its permutation count against ``self.n_perm_fwer`` and returns it
         unchanged (the caller owns the copy).
         """
         if _stat is None:
-            num_vox = self.exp.y.shape[2]
+            num_vox = exp.y.shape[2]
             _stat = np.full((self.n_perm_fwer + 1, num_vox), np.nan)
             for k in range(self.n_perm_fwer + 1):
-                _exp = self.exp.permute(k) if k else self.exp
+                _exp = exp.permute(k) if k else exp
                 _stat[k, :] = self.get_stat_perm(_exp, children=None)
         elif _stat.shape[0] - 1 != self.n_perm_fwer:
             raise ValueError(

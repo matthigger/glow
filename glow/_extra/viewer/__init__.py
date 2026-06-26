@@ -3,7 +3,7 @@
 Usage::
 
     from glow._extra.viewer import launch
-    launch(ana_glow, mask_target=mask_target)
+    launch(ana_glow, exp, mask_target=mask_target)
 """
 
 from .app import launch

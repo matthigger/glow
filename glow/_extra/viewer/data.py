@@ -22,13 +22,14 @@ def _ensure_1d(arr):
     return arr if arr.ndim == 1 else arr[0]
 
 
-def prep_df(ana_glow, mask_target=None, extra_df=None):
+def prep_df(ana_glow, exp, mask_target=None, extra_df=None):
     """Build a DataFrame with one row per region (unpermuted only).
 
     Args:
         ana_glow (AnalysisGLOW): completed analysis
+        exp (Experiment): the experiment the analysis was fit on
         mask_target (np.array): optional boolean target mask (same shape
-            as ana_glow.exp.mask_idx)
+            as exp.mask_idx)
         extra_df (pd.DataFrame): optional DataFrame keyed on ``region_idx``
             to left-join onto the result.  Extra columns appear in the
             scatter dropdowns automatically.
@@ -37,7 +38,7 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
         df (pd.DataFrame): one row per region with all available stats
     """
     children = ana_glow.children
-    num_vox = ana_glow.exp.y.shape[2]
+    num_vox = exp.y.shape[2]
     num_reg = num_vox + children.shape[0]
 
     d = {
@@ -71,7 +72,7 @@ def prep_df(ana_glow, mask_target=None, extra_df=None):
     if mask_target is not None:
         counts = glow.graph.confusion_counts_tree(
             children=children,
-            mask_idx=ana_glow.exp.mask_idx,
+            mask_idx=exp.mask_idx,
             mask=mask_target)
         d.update(glow.mask.stats_from_counts(**counts))
         d.update({label: counts[key].astype(int)
@@ -142,7 +143,7 @@ def get_feature_columns(df):
     return sorted(generic), sorted(significance), sorted(pruning), sorted(mask)
 
 
-def compute_target_stats(ana_glow, mask_target):
+def compute_target_stats(exp, mask_target):
     """Compute stats for the full target mask treated as a single region.
 
     Computes LLR (and size-adjusted variant) for the union of all
@@ -150,7 +151,7 @@ def compute_target_stats(ana_glow, mask_target):
     metrics.
 
     Args:
-        ana_glow (AnalysisGLOW): completed analysis
+        exp (Experiment): the experiment the analysis was fit on
         mask_target (np.array): boolean target mask (same shape as mask_idx)
 
     Returns:
@@ -158,7 +159,6 @@ def compute_target_stats(ana_glow, mask_target):
             produced by ``prep_df`` where computable; others are NaN.
             Returns None if the target has no analysis voxels.
     """
-    exp = ana_glow.exp
     mask_idx = exp.mask_idx
     y = exp.y  # (b, num_img, num_vox)
 
@@ -217,14 +217,14 @@ def get_original_y(exp):
     return exp.y
 
 
-def compute_backgrounds(ana_glow, y_features=None, image_idx=None):
+def compute_backgrounds(exp, y_features=None, image_idx=None):
     """Compute per-feature background images from the experiment data.
 
     Uses original (pre-scaled) intensities so that backgrounds match
     the user's input images.
 
     Args:
-        ana_glow (AnalysisGLOW): completed analysis
+        exp (Experiment): the experiment the analysis was fit on
         y_features (list[str] | None): human-readable names for each
             imaging feature.  Falls back to ``exp.meta['features']``,
             then ``"feature 0"``, ``"feature 1"``, ...
@@ -235,7 +235,6 @@ def compute_backgrounds(ana_glow, y_features=None, image_idx=None):
         bg_dict (dict): feature_name -> np.array with same shape as mask_idx.
             Voxels outside the analysis mask are NaN.
     """
-    exp = ana_glow.exp
     mask_idx = exp.mask_idx
     y = get_original_y(exp)  # (b, num_img, num_vox)
 
@@ -273,16 +272,19 @@ def compute_backgrounds(ana_glow, y_features=None, image_idx=None):
     return bg_dict
 
 
-def compute_bg_ranges(ana_glow, y_features=None):
+def compute_bg_ranges(exp, y_features=None):
     """Compute the global (vmin, vmax) for each background key across ALL images.
 
     This ensures the colour scale stays constant regardless of which image
     (mean or individual) is displayed.
 
+    Args:
+        exp (Experiment): the experiment the analysis was fit on
+        y_features (list[str] | None): human-readable imaging feature names.
+
     Returns:
         ranges (dict): bg_name -> (vmin, vmax) floats
     """
-    exp = ana_glow.exp
     mask_idx = exp.mask_idx
     y = get_original_y(exp)  # (b, num_img, num_vox)
     b = y.shape[0]
