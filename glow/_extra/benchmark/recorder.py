@@ -60,17 +60,19 @@ does not dump wholesale. Records held in memory keep live references (the
 inputs/outputs themselves), serialised only when written to disk.
 
 Provenance DAG: each record also stores ``input_hashes`` / ``output_hashes``
--- ``joblib.hash`` of every named input and output value. A call B *depends on*
-a call A when one of B's input hashes equals one of A's output hashes (B
-consumed the value A produced). Because the link is by content hash, not object
-``id()``, it survives the per-hash on-disk layout above: producer and consumer
-may be different processes or different runs, yet their shared value hashes the
-same. ``flatten_to_df`` reads ``records`` as that directed acyclic graph and
-returns one row per *leaf* (a record whose outputs feed no other record) with
-every ancestor's fields appended -- e.g. a score leaf carries the fit it scored
-and the setup that built the data, so one row holds a whole trial. (Each value
-is hashed once more here, on top of the args-hash key; negligible beside the
-call being recorded.)
+-- ``joblib.hash`` of every named input and output whose type is in the
+Recorder's ``link_types``. A call B *depends on* a call A when one of B's input
+hashes equals one of A's output hashes (B consumed the value A produced).
+Restricting the hashing to a few meaningful domain classes (e.g.
+``(Experiment,)``) is deliberate: it keeps trivial values -- a scalar ``2``, a
+shared all-True mask -- from forging spurious edges between unrelated calls.
+Because the link is by content hash, not object ``id()``, it survives the
+per-hash on-disk layout above: producer and consumer may be different processes
+or runs, yet their shared value hashes the same. ``flatten_to_df`` reads
+``records`` as that directed acyclic graph and returns one row per *leaf* (a
+record whose outputs feed no other record) with every ancestor's fields
+appended -- e.g. a score leaf carries the fit it scored and the setup that built
+the data, so one row holds a whole trial.
 """
 
 import functools
@@ -111,22 +113,6 @@ def _json_default(obj):
     return repr(obj)
 
 
-def _safe_hash(value):
-    """``joblib.hash(value)``, or None when the value can't be hashed.
-
-    The per-value content hashes drive the provenance DAG, but a recorded
-    output may be any object -- including an unpicklable one joblib can't hash.
-    Such a value gets no hash (None): it simply forms no edge, rather than
-    failing the recording of an otherwise-successful call. (A call's hashable
-    *arguments* are already required by the args-hash key; this only widens the
-    tolerance for opaque *outputs*.)
-    """
-    try:
-        return joblib.hash(value)
-    except Exception:
-        return None
-
-
 def _cell(value):
     """Coerce a recorded input/output value to a DataFrame cell.
 
@@ -140,23 +126,27 @@ def _cell(value):
     return json.loads(json.dumps(value, default=_json_default))
 
 
-def _flatten_record(record) -> dict:
-    """One record as a flat ``{column: cell}`` dict for flatten_to_df.
+def _flatten_record(record, prefix, sep='.') -> dict:
+    """One record as a flat ``{column: cell}`` dict, every column under ``prefix``.
 
-    Carries the record's ``hash`` / ``function`` / ``label`` / ``time_sec`` and
-    one ``in.<name>`` / ``out.<name>`` column per named input / output (each
-    value coerced by ``_cell``). ``label`` is None when the call carried none.
+    ``prefix`` is the record's role in the row (its short function name, e.g.
+    ``fit``); every column it contributes -- the ``hash`` / ``function`` /
+    ``label`` / ``time_sec`` metadata and one ``in.<name>`` / ``out.<name>`` per
+    named input / output -- is namespaced by it (``fit.time_sec``,
+    ``fit.in.exp``), so a leaf and its ancestors never collide in one row. Each
+    value is coerced to a cell by ``_cell``; ``label`` is None when the call
+    carried none.
     """
     flat = {
-        'hash': record['hash'],
-        'function': record['function'],
-        'label': record.get('label'),
-        'time_sec': record.get('time_sec'),
+        f'{prefix}{sep}hash': record['hash'],
+        f'{prefix}{sep}function': record['function'],
+        f'{prefix}{sep}label': record.get('label'),
+        f'{prefix}{sep}time_sec': record.get('time_sec'),
     }
     for name, value in record.get('inputs', {}).items():
-        flat[f'in.{name}'] = _cell(value)
+        flat[f'{prefix}{sep}in.{name}'] = _cell(value)
     for name, value in record.get('outputs', {}).items():
-        flat[f'out.{name}'] = _cell(value)
+        flat[f'{prefix}{sep}out.{name}'] = _cell(value)
     return flat
 
 
@@ -195,20 +185,32 @@ class Recorder:
         records (dict): hash -> recorded call dict, one per executed decorated
             call. Each carries ``{hash, function, inputs, outputs, input_hashes,
             output_hashes, time_sec}`` and, when a ``label`` was given, that too.
-            The hash maps (``joblib.hash`` per named value) are the provenance
-            DAG edges flatten_to_df reads. A repeat hash overwrites (and warns);
-            see the module docstring.
+            ``input_hashes`` / ``output_hashes`` hold ``joblib.hash`` of only
+            the inputs / outputs whose type is in ``link_types`` -- the
+            provenance DAG edges flatten_to_df reads. A repeat hash overwrites
+            (and warns); see the module docstring.
         folder (Path | None): the directory record files are mirrored to (one
             ``<hash>.json`` per record), created on construction, or None for
             in-memory only. The Recorder is the only object that reads/writes
             these files.
+        link_types (tuple[type]): the classes whose values are content-hashed to
+            form DAG edges (e.g. ``(Experiment,)``). Restricting to a few
+            meaningful domain types stops trivial values (a scalar ``2``, a
+            shared mask) from forging spurious edges. Empty (the default) links
+            nothing, so flatten_to_df returns one ancestor-less row per record.
+            Registered types must be joblib-hashable, else recording raises --
+            that is a misconfiguration, deliberately not caught.
     """
 
-    def __init__(self, folder=None):
+    def __init__(self, folder=None, link_types=()):
         self.records = {}
         self.folder = Path(folder) if folder is not None else None
         if self.folder is not None:
             self.folder.mkdir(parents=True, exist_ok=True)
+        self.link_types = tuple(link_types)
+        if not all(isinstance(t, type) for t in self.link_types):
+            raise TypeError("link_types must be classes (a value is linked when "
+                            "isinstance(value, link_types))")
 
     @staticmethod
     def _args_hash(fnc, args, kwargs) -> str:
@@ -344,11 +346,15 @@ class Recorder:
                         )
                     outputs = dict(zip(output_name_list, out))
 
-                # per-value content hashes: an input that *is* another call's
-                # output shares that output's joblib.hash, so flatten_to_df()
-                # links the two into a provenance DAG (see module docstring).
-                input_hashes = {n: _safe_hash(v) for n, v in inputs.items()}
-                output_hashes = {n: _safe_hash(v) for n, v in outputs.items()}
+                # content hashes of the link_types inputs / outputs: an input
+                # that *is* another call's output shares that output's
+                # joblib.hash, so flatten_to_df() links the two into a
+                # provenance DAG. Hashing only the registered domain types keeps
+                # trivial values from forging spurious edges (see module docs).
+                input_hashes = {n: joblib.hash(v) for n, v in inputs.items()
+                                if isinstance(v, self.link_types)}
+                output_hashes = {n: joblib.hash(v) for n, v in outputs.items()
+                                 if isinstance(v, self.link_types)}
 
                 # key by joblib's own args hash, so the record matches the
                 # cache entry the same call writes (see module docstring)
@@ -431,15 +437,15 @@ class Recorder:
         whole trial: the swept axes (setup inputs), the recipe and timing (fit),
         and the result (the score outputs).
 
-        Each record contributes ``hash`` / ``function`` / ``label`` /
-        ``time_sec`` and one ``in.<name>`` / ``out.<name>`` column per named
-        input / output (values coerced by ``_cell``). The leaf's columns are
-        unprefixed; each ancestor's are prefixed by its short function name
-        (e.g. ``fit.time_sec``), suffixed ``#2`` / ``#3`` if one leaf has two
-        ancestors sharing that name. Ancestors are ordered shallowest-first
-        (then by function and hash) so the prefixes are deterministic. Records
-        missing the hash maps (written before they existed) contribute no edges
-        -- each is then its own ancestor-less leaf.
+        Every record in a row -- the leaf and each ancestor -- contributes its
+        ``hash`` / ``function`` / ``label`` / ``time_sec`` and one
+        ``in.<name>`` / ``out.<name>`` column per named input / output (values
+        coerced by ``_cell``), all namespaced by the record's short function
+        name (``fit.time_sec``, ``setup.in.seed``). A name repeated within one
+        row is suffixed ``#2`` / ``#3``; the leaf is laid down first (claiming
+        the un-suffixed name) and ancestors follow shallowest-first, so the
+        prefixes are deterministic. A record whose link_types produced no hashes
+        contributes no edges -- it is then its own ancestor-less leaf.
 
         Operates on the in-memory ``records``; call ``load()`` first to fold in
         a folder's on-disk records from other writers.
@@ -491,17 +497,19 @@ class Recorder:
 
         rows = []
         for leaf in leaves:
-            row = _flatten_record(records[leaf])
             depth = _ancestor_depths(leaf, parents_of)
-            # deterministic prefixing: shallowest ancestor first, then function
-            # and hash, disambiguating a repeated short name with #2 / #3
+            # the leaf first (it claims the un-suffixed prefix), then ancestors
+            # shallowest-first (then function, hash) so prefixes are
+            # deterministic; a short name repeated within the row gets #2 / #3
+            ordered = [leaf] + sorted(
+                depth, key=lambda k: (depth[k], records[k]['function'], k))
+            row = {}
             seen = {}
-            for anc in sorted(depth, key=lambda k: (depth[k], records[k]['function'], k)):
-                role = records[anc]['function'].rsplit('.', 1)[-1]
+            for key in ordered:
+                role = records[key]['function'].rsplit('.', 1)[-1]
                 seen[role] = seen.get(role, 0) + 1
                 prefix = role if seen[role] == 1 else f'{role}#{seen[role]}'
-                row.update({f'{prefix}{prefix_sep}{col}': val
-                            for col, val in _flatten_record(records[anc]).items()})
+                row.update(_flatten_record(records[key], prefix, sep=prefix_sep))
             rows.append(row)
 
         return pd.DataFrame(rows)

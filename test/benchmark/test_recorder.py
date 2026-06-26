@@ -11,6 +11,7 @@ on-disk persistence.
 import json
 
 import joblib
+import numpy as np
 import pytest
 from joblib.func_inspect import filter_args
 
@@ -479,89 +480,117 @@ def test_in_memory_recorder_writes_no_files(rec):
     assert len(rec.records) == 1
 
 
-# --- provenance DAG: per-value hashes + flatten_to_df -----------------------
+# --- provenance DAG: link_types hashing + flatten_to_df ---------------------
 
 def _chain(rec):
-    """Record a 3-step make -> use -> final chain; return the final value.
+    """Record a 3-step make -> use -> final ndarray chain; return final's array.
 
-    Each step consumes the previous step's output, so the records form a
-    make -> use -> final line whose only leaf is `final`.
+    Each step consumes the previous step's ndarray output, so (with ndarray in
+    link_types) the records form a make -> use -> final line whose only leaf is
+    `final`.
     """
-    import numpy as np
-
     @rec(output_name='a')
     def make(seed):
         return np.arange(seed, seed + 3)
 
     @rec(output_name='b')
     def use(a):
-        return int(a.sum())
+        return a * 2
 
     @rec(output_name='c')
     def final(b):
-        return b + 1000
+        return b + 1
 
     return final(use(make(10)))
 
 
-def test_per_value_hashes_recorded(rec):
-    # each named input / output is hashed with joblib.hash -- the edges the DAG
-    # is built from (an input that *is* another call's output shares its hash)
+def test_only_link_types_are_hashed():
+    # input_hashes / output_hashes hold only the values whose type is linked;
+    # the scalar int is omitted, so it can never forge a trivial edge
+    rec = Recorder(link_types=(np.ndarray,))
+
     @rec(output_name='out')
-    def f(a):
-        return a + 1
+    def f(a, n):
+        return a + n
 
-    f(5)
+    arr = np.arange(3)
+    f(arr, 5)
     record = _only(rec.records)
-    assert record['input_hashes'] == {'a': joblib.hash(5)}
-    assert record['output_hashes'] == {'out': joblib.hash(6)}
+    assert record['input_hashes'] == {'a': joblib.hash(arr)}      # 'n' omitted
+    assert record['output_hashes'] == {'out': joblib.hash(arr + 5)}
 
 
-def test_flatten_to_df_chains_leaf_with_ancestors(rec):
-    final_val = _chain(rec)
+def test_unlinked_types_form_no_edges():
+    # with nothing linked (the default), two calls sharing the scalar 2 stay
+    # independent -- no spurious producer->consumer edge on a trivial value
+    rec = Recorder()
+
+    @rec(output_name='out')
+    def produce():
+        return 2
+
+    @rec(output_name='out')
+    def consume(x):
+        return x + 1
+
+    produce()       # outputs the scalar 2
+    consume(2)      # takes a 2, but not the one produce made
+    df = rec.flatten_to_df()
+    assert len(df) == 2
+
+
+def test_link_types_must_be_classes():
+    with pytest.raises(TypeError):
+        Recorder(link_types=(42,))
+
+
+def test_flatten_to_df_chains_leaf_with_ancestors():
+    rec = Recorder(link_types=(np.ndarray,))
+    final_arr = _chain(rec)
 
     df = rec.flatten_to_df()
     # exactly one leaf (final's output feeds no other record)
     assert len(df) == 1
     row = df.iloc[0]
-    assert row['function'].endswith('final')
-    assert row['out.c'] == final_val
-
-    # both ancestors are appended under their short function names
+    # every column is namespaced by its record's short function name
+    assert row['final.function'].endswith('final')
+    assert row['final.out.c'] == joblib.hash(final_arr)
+    # both ancestors are appended under their own function names
     assert row['use.function'].endswith('use')
     assert row['make.function'].endswith('make')
-    # the swept axis rides in from the root of the chain
+    # a non-linked input still appears as a column (linking only gates edges)
     assert row['make.in.seed'] == 10
-    # the join holds: final's input b is use's output b (same content hash ->
-    # same coerced cell)
-    assert row['in.b'] == row['use.out.b']
+    # the join holds: final's input b is use's output b (same content hash)
+    assert row['final.in.b'] == row['use.out.b']
 
 
-def test_flatten_to_df_one_row_per_leaf(rec):
+def test_flatten_to_df_one_row_per_leaf():
     # two independent calls (neither consumes the other) -> two ancestor-less
     # leaves, one row each
+    rec = Recorder(link_types=(np.ndarray,))
+
     @rec(output_name='out')
     def f(a):
         return a + 100
 
-    f(1)
-    f(2)
+    f(np.array([1]))
+    f(np.array([2]))
     df = rec.flatten_to_df()
     assert len(df) == 2
-    assert set(df['out.out']) == {101, 102}
 
 
 def test_flatten_to_df_survives_disk_round_trip(tmp_path):
     # the DAG is rebuilt from the persisted hash maps, so a fresh reader over
-    # the folder reconstructs the same leaf-with-ancestors row
-    _chain(Recorder(folder=tmp_path))
+    # the folder reconstructs the same leaf-with-ancestors row -- and needs no
+    # link_types itself, the hashes are already stored
+    _chain(Recorder(folder=tmp_path, link_types=(np.ndarray,)))
 
     reader = Recorder(folder=tmp_path)
     reader.load()
     df = reader.flatten_to_df()
     assert len(df) == 1
     row = df.iloc[0]
-    assert row['function'].endswith('final')
+    assert row['final.function'].endswith('final')
     assert row['make.in.seed'] == 10
 
 
@@ -574,4 +603,4 @@ def test_flatten_to_df_records_without_hashes_are_lone_leaves(rec):
     }
     df = rec.flatten_to_df()
     assert len(df) == 1
-    assert df.iloc[0]['function'] == 'old.fn'
+    assert df.iloc[0]['fn.function'] == 'old.fn'
