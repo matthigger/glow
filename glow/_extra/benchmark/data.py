@@ -17,7 +17,7 @@ consumes it link into one provenance DAG.
 import joblib
 
 from glow.effect import EffectSynthetic, Extenter
-from glow.experiment import ExperimentImageOnly
+from glow.experiment import Experiment, ExperimentImageOnly
 
 from . import hcp
 from .file import get_path_cache, get_path_records
@@ -29,7 +29,11 @@ MEMORY = joblib.Memory(get_path_cache(), verbose=0)
 
 # captures each build's inputs / output / timing for provenance (see Recorder).
 # Keyed by joblib's args hash, mirrored to the records dir beside the cache.
-RECORDER = Recorder(folder=get_path_records())
+# link_types=(Experiment,) makes flatten_to_df draw an edge wherever an
+# Experiment produced by one build is consumed by another (data_factory's clean
+# exp -> effect_factory's plant); scalars / Extenters / masks never link, so
+# trivial values forge no spurious edges (see Recorder).
+RECORDER = Recorder(folder=get_path_records(), link_types=(Experiment,))
 
 
 def _sample_x_and_crop(exp_img, *, a: int, contrast, has_bias: bool,
