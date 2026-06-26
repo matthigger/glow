@@ -28,7 +28,7 @@ import pandas as pd
 import seaborn as sns
 
 import glow.benchmark
-from glow.benchmark.trial_cache import NON_RESULT_LABELS
+from glow.benchmark.recorder import NON_RESULT_LABELS
 
 from .results import load_config_df
 

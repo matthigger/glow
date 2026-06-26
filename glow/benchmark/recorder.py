@@ -82,6 +82,15 @@ RECORDS_DIR = 'records'
 RECORDS_NAME = 'records.json'
 
 
+# Sentinel `label` values for trials that produced no scored result, used by
+# the trial fns / plotting (not by the recorder itself). SKIP: an infeasible
+# cell, e.g. an HCP feature count beyond the pool. ERROR: a failed trial.
+# (Relocated here from the removed trial_cache module.)
+ERROR_LABEL = 'ERROR'
+SKIP_LABEL = 'SKIP'
+NON_RESULT_LABELS = (ERROR_LABEL, SKIP_LABEL)
+
+
 def _json_default(obj):
     """json.dumps fallback: a value's own to_record() dict, else a safe form.
 

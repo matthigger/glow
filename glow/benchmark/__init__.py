@@ -1,11 +1,11 @@
-"""Benchmark engine: data sources, trial cache, and drivers.
+"""Benchmark engine (mid-overhaul).
 
-Wires together the pieces that run a benchmark sweep: hashable,
-memoising DataSource builders (data), a trial-iteration + result-IO
-cache (trial_cache), local / AWS drivers, and on-disk result helpers
-(file).
+The trial-iteration + caching layer (the hashable/frozen-dataclass
+DataSource builders, the TrialCache, and the local/AWS drivers) is being
+replaced by a joblib.Memory-backed approach on the benchmark-overhaul
+branch -- those modules have been removed. What remains is the recorder
+(provenance + timing capture) and the on-disk result helpers (file); the
+new driver/cache layer will be wired back in here as it is rebuilt.
 """
-from .driver import driver_local
 from .file import *
 from .recorder import Recorder
-from .trial_cache import TrialCache
