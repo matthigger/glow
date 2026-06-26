@@ -1,87 +1,81 @@
-"""Record each decorated call's inputs and outputs, grouped by trial.
+"""Record each decorated call's inputs and outputs, keyed by joblib's args hash.
 
 A ``Recorder`` is a decorator factory. Decorating a function makes every
-call append one record
+*successful* call store one record
 
-    {"trial_id": ..., "function": ..., "inputs": {...}, "outputs": {...},
+    {"hash": ..., "function": ..., "inputs": {...}, "outputs": {...},
      "time_sec": ...}
 
-with an optional top-level ``"label"`` naming the method/variant the call
-belongs to (e.g. 'GLOW-GLM', 'VBA-TFCE') when one is passed to the decorator.
-Calls nested inside one top-level invocation (or inside an
-explicit ``with recorder.trial(trial_id=...):`` block) share a single
-``trial_id``, so all the work of one benchmark trial groups together. In
-the benchmark the ``trial_id`` is the trial's cache hash
-(``TrialCache.hash``), so records from independent workers -- local joblib
-pools or AWS Batch jobs -- merge without collision and line up with the
-results.csv row the same trial would write.
+keyed by ``joblib.hash(filter_args(fnc, [], args, kwargs))`` -- byte-for-byte
+the key ``joblib.Memory`` files the same call's result under (its
+``MemorizedFunc._get_args_id``: ``hash(filter_args(self.func, self.ignore,
+args, kwargs))`` with the default ``ignore=[]`` / ``mmap_mode=None``). So a
+record lines up one-to-one with the cached artifact: put the recorder *inside*
+``@MEMORY.cache`` (the inner decorator) and a cache miss records exactly the
+calls that actually ran, each under the hash joblib filed its result by. An
+optional top-level ``"label"`` names the method/variant the call belongs to
+(e.g. 'GLOW-GLM', 'VBA-TFCE'); it is metadata only, never part of the key.
 
-``time_sec`` is the wall-clock duration of the wrapped call, so the
-benchmark no longer hand-times each method.
+``time_sec`` is the wall-clock duration of the wrapped call.
 
-A recorded call may be a bound method: when the wrapped callable is one, its
-receiver is captured as the ``self`` input (serialized via its ``repr``), so
-recording an object's method needs no passthrough wrapper -- apply the
-decorator to the bound method inline, e.g.
+A recorded call may be a bound method: its receiver is captured as the
+``self`` input (serialized via its ``repr``). ``filter_args`` includes the
+receiver in the hashed arguments, so distinct receivers key to distinct
+records -- recording an object's method needs no passthrough wrapper, e.g.
 ``recorder(output_name='ana')(AnalysisGLOW(exp=exp, n_perm_fwer=n).fit)()``
-records the analysis, the fitted result, the timing and any failure.
+records the analysis, the fitted result and the timing.
 
-A call that *raises* records a failure record instead -- same shape but
-with ``error`` (the traceback) in place of ``outputs`` -- and the exception
-is then *swallowed*: the call returns None and the trial is marked failed,
-so the caller never has to wrap each step in try/except. Every later
-recorded call in that same trial short-circuits -- it neither runs nor
-records, returning None -- so a trial fn written as a straight-line
-sequence of recorded steps just fast-forwards to its end and the driver
-moves on to the next trial. A failure therefore leaves exactly the records
-up to and including the call that raised, and nothing after, all under the
-one trial id. The SKIP-vs-ERROR distinction is a domain decision left to
-the benchmark, not encoded here.
+Records are *keyed*, not appended. The same call recorded twice (same fnc and
+the same filtered args -> same hash) overwrites the first and warns, mirroring
+joblib.Memory, where a recompute replaces the one cache entry. In the
+inside-the-cache layout a joblib hit never reaches the recorder, so a repeat
+hash only arises if the cache was cleared and the call recomputed. NB the key
+is the args hash *alone* (as joblib's is): joblib namespaces it by a per-
+function directory, but this flat map does not, so two *different* functions
+with identical filtered args would collide -- the overwrite-warning is the
+guard for that.
 
-Records are append-only: a function called twice in a trial yields two
-records, never an overwrite. A call short-circuited after a same-trial
-failure adds none.
+A call that *raises* records nothing and the exception propagates -- again
+like joblib.Memory, which stores nothing on a failed call. The caller sees the
+real error; there is no failure record and no swallowing. (The output-shape
+checks below likewise raise without recording: they are misconfiguration, not
+a recorded result.)
 
-``to_json`` serializes via ``_json_default``, a placeholder: any input/output
-that is not JSON-native records as its ``repr`` string (a richer per-object
-form -- e.g. its ``__dict__`` -- may replace repr later). Raw numpy is kept
-compact (scalar -> value, ndarray -> content hash) so a stray heavy array
-does not dump wholesale.
+Persistence: when a ``folder`` is given, each record is mirrored to
+``folder/<hash>.json`` as it is made, written atomically (temp file +
+``os.replace``). The hash partitions the filename namespace, so parallel
+writers -- local joblib pools or AWS Batch jobs -- never contend on a file, and
+merging is just listing the folder; this mirrors joblib.Memory's own per-hash
+on-disk layout. ``load()`` reads the files back into ``records``. With
+``folder=None`` the recorder is in-memory only.
 
-One known limitation, deferred to the object-representation work (see
-docs/notes/recorder_object_repr.md): inputs/outputs hold *references*,
-serialized only at ``to_json`` time, so an in-place mutation by the decorated
-function (e.g. an ``Analysis.fit`` populating its fitted outputs) is reflected
-post-call rather than snapshotted at call time. The recorded subsets above are
-all set at ``__init__`` and never mutated, so this does not affect them.
+``_json_default`` is the on-disk serialisation fallback: any value json can't
+serialise natively is written as its ``repr`` string (a richer per-object form
+may replace repr later). Raw numpy is kept compact -- a scalar becomes its
+Python value and an ndarray its stable content hash -- so a stray heavy array
+does not dump wholesale. Records held in memory keep live references (the
+inputs/outputs themselves), serialised only when written to disk.
 """
 
-import contextlib
-import contextvars
 import functools
 import inspect
 import json
+import os
+import tempfile
 import time
-import traceback
-import uuid
+import warnings
 from pathlib import Path
 
+import joblib
 import numpy as np
+from joblib.func_inspect import filter_args
 
 from glow.util import hash_array
-from .file import get_path_result
-
-
-# layout under a recorder's experiment folder: per-trial record files live in
-# the records/ subdir; consolidate() merges them into records.json beside it
-RECORDS_DIR = 'records'
-RECORDS_NAME = 'records.json'
 
 
 # Sentinel `label` values for trials that produced no scored result, used by
 # the trial fns / plotting (not by the recorder itself). SKIP: an infeasible
 # cell, e.g. an HCP feature count beyond the pool. ERROR: a failed trial.
-# (Relocated here from the removed trial_cache module.)
 ERROR_LABEL = 'ERROR'
 SKIP_LABEL = 'SKIP'
 NON_RESULT_LABELS = (ERROR_LABEL, SKIP_LABEL)
@@ -91,12 +85,9 @@ def _json_default(obj):
     """json.dumps fallback: repr(obj), a placeholder serialisation.
 
     Stop-gap: any value json can't serialise natively records as its repr
-    string rather than a structured recipe. (A richer per-object form -- e.g.
-    its __dict__ -- may replace repr later.) Raw numpy is still kept compact:
-    a scalar becomes its Python value and an ndarray its stable content hash,
-    so a stray array (e.g. in Experiment.meta) does not dump wholesale. A
-    StrEnum like ClusterMode is already JSON-native, so json handles it
-    directly.
+    string rather than a structured recipe. Raw numpy is kept compact: a
+    scalar becomes its Python value and an ndarray its stable content hash, so
+    a stray array (e.g. in Experiment.meta) does not dump wholesale.
     """
     if isinstance(obj, np.generic):
         return obj.item()
@@ -106,81 +97,45 @@ def _json_default(obj):
 
 
 class Recorder:
-    """Decorator factory recording each decorated call's inputs and outputs.
+    """Decorator factory recording each decorated call, keyed by its args hash.
 
     Attributes:
-        records (list): append-only list of recorded call dicts, one per
-            executed decorated call. A success carries ``{trial_id, function,
-            inputs, outputs, time_sec}``; a failure swaps ``outputs`` for
-            ``error`` (the traceback). A call given a ``label`` carries it as a
-            top-level field too (the method/variant name; see __call__). Calls
-            short-circuited after a same-trial failure add none.
-        _trial_id_current (contextvars.ContextVar): the active trial id for
-            the current execution context (thread / asyncio task); None when
-            no trial is open. A ContextVar so concurrent runs never see each
-            other's id.
-        _failed_trials (set): trial ids that have recorded a failure and are
-            still open. Membership makes every later recorded call in the trial
-            short-circuit; the id is dropped when its trial scope closes.
-        folder (Path | None): the experiment directory (resolved from name or
-            folder, created on construction), or None for in-memory only. The
-            Recorder is the only object that reads/writes its record files:
-            per-trial files in the records/ subdir, consolidate() merges them
-            to records.json beside it.
+        records (dict): hash -> recorded call dict, one per executed decorated
+            call. Each carries ``{hash, function, inputs, outputs, time_sec}``
+            and, when a ``label`` was given, that too. A repeat hash overwrites
+            (and warns); see the module docstring.
+        folder (Path | None): the directory record files are mirrored to (one
+            ``<hash>.json`` per record), created on construction, or None for
+            in-memory only. The Recorder is the only object that reads/writes
+            these files.
     """
 
-    def __init__(self, *, name=None, folder=None):
-        self.records = []
-        self._trial_id_current = contextvars.ContextVar(
-            "recorder_trial_id", default=None)
-        self._failed_trials = set()
-        # resolve the experiment folder (name -> <default results dir>/name, or
-        # an explicit folder) and create it; None means in-memory only (no
-        # disk). Per-trial files live in its records/ subdir (see _records_dir).
-        if name is not None and folder is not None:
-            raise ValueError('at most one of name or folder')
-        if name is not None:
-            folder = get_path_result() / name
+    def __init__(self, folder=None):
+        self.records = {}
         self.folder = Path(folder) if folder is not None else None
         if self.folder is not None:
             self.folder.mkdir(parents=True, exist_ok=True)
 
-    def get_trial_id(self):
-        """Mint a fresh trial id.
+    @staticmethod
+    def _args_hash(fnc, args, kwargs) -> str:
+        """The args hash joblib keys a cached call by (its _get_args_id).
 
-        uuid4: globally unique with no coordination, so JSON outputs from
-        independent workers (e.g. on AWS) merge without collision. The
-        benchmark instead supplies the cache hash explicitly via
-        ``trial(trial_id=...)``; this default covers standalone use.
-        """
-        return str(uuid.uuid4())
-
-    @contextlib.contextmanager
-    def trial(self, trial_id=None):
-        """Scope a trial id; all decorated calls in the block share it.
-
-        A fresh id is minted when ``trial_id`` is None. Uses the ContextVar
-        so two concurrent ``run`` blocks (threads or async tasks) never see
-        each other's id; the reset token restores any outer value on exit,
-        so nesting is safe.
+        joblib's filter_args (bind the call, apply defaults, drop ignored)
+        then joblib.hash -- so a record keys by the same id joblib caches the
+        call under without reaching into the MemorizedFunc. ignore is []
+        (MEMORY.cache uses no ignore list) and the default coerce_mmap=False
+        matches MEMORY's mmap_mode=None. For a bound method filter_args
+        includes the receiver, so distinct receivers hash distinctly.
 
         Args:
-            trial_id: the id to scope, or None to mint one.
+            fnc: the function being hashed (its signature drives filter_args).
+            args (tuple): positional call arguments.
+            kwargs (dict): keyword call arguments.
 
-        Yields:
-            the scoped trial id.
+        Returns:
+            the joblib args hash (hex digest), the on-disk cache-entry key.
         """
-        if trial_id is None:
-            trial_id = self.get_trial_id()
-        reset = self._trial_id_current.set(trial_id)
-        try:
-            yield trial_id
-        finally:
-            self._trial_id_current.reset(reset)
-            # drop any failure flag raised during this trial: the id can't
-            # carry a stale "failed" state into a reuse, and the set stays
-            # bounded by the number of trials currently open (not ever-failed).
-            self._failed_trials.discard(trial_id)
+        return joblib.hash(filter_args(fnc, [], args, kwargs))
 
     def __call__(self, output_name=None, output_name_list=None, label=None):
         """Build a decorator that records calls under one or more output names.
@@ -191,12 +146,8 @@ class Recorder:
 
         ``label`` is optional per-call metadata: the method/variant name this
         call belongs to (e.g. 'GLOW-GLM', 'VBA-TFCE'), recorded as a top-level
-        field on the record. It is distinct from a trial's axis stamp (flush):
-        the stamp is per-trial, but one trial fits many methods under one trial
-        id, so the label identifies which. Tagging every recorded call of a
-        method with the same label (a fit and its score, say) also gives the
-        records-to-csv reader its (trial_id, label) group key. Left None for a
-        trial-level step (e.g. the experiment setup) that has no method.
+        field. It is not part of the key -- variant identity rides in the
+        receiver state filter_args already hashes.
 
         Args:
             output_name (str | None): single name for the whole return.
@@ -257,17 +208,9 @@ class Recorder:
 
             @functools.wraps(fnc)
             def wrapped(*args, **kwargs):
-                # once a trial has failed, every later step in it is a no-op:
-                # it neither runs nor records and returns None, so the trial fn
-                # keeps its straight-line shape and just fast-forwards to its
-                # end (the driver then moves on to the next trial).
-                active = self._trial_id_current.get()
-                if active is not None and active in self._failed_trials:
-                    return None
-
                 # capture inputs (incl. defaults). NB: shallow copy of
-                # references, not a snapshot -- in-place mutation by fnc is
-                # reflected later (see module docstring).
+                # references, serialised only when written to disk (see module
+                # docstring).
                 bound = sig.bind(*args, **kwargs)
                 bound.apply_defaults()
                 inputs = dict(bound.arguments)
@@ -284,143 +227,89 @@ class Recorder:
                 if var_kw is not None:
                     inputs.update(inputs.pop(var_kw))
 
-                # reuse an open trial id (nested call), else open a fresh one
-                # for this call via trial() (set/reset, even if fnc raises)
-                cm = contextlib.nullcontext(active) if active is not None else self.trial()
-                with cm as trial_id:
-                    # time only the wrapped call. On failure record it (so the
-                    # failed trial is auditable, not vanished), mark the trial
-                    # failed, and *swallow* -- return None instead of re-raising
-                    # -- so the caller need not try/except each step and later
-                    # steps short-circuit above. Only fnc's own exceptions are
-                    # caught; the output-validation errors below are
-                    # misconfiguration, not a trial failure, and stay unrecorded.
-                    t0 = time.perf_counter()
-                    try:
-                        out = fnc(*args, **kwargs)
-                    except Exception:
-                        self.records.append({
-                            "trial_id": trial_id,
-                            "function": fnc.__qualname__,
-                            **({"label": label} if label is not None else {}),
-                            "inputs": inputs,
-                            "error": traceback.format_exc(),
-                            "time_sec": time.perf_counter() - t0,
-                        })
-                        self._failed_trials.add(trial_id)
-                        return None
-                    time_sec = time.perf_counter() - t0
+                # time only the wrapped call; an exception propagates (nothing
+                # is recorded), like joblib.Memory on a failed call.
+                t0 = time.perf_counter()
+                out = fnc(*args, **kwargs)
+                time_sec = time.perf_counter() - t0
 
-                    # a nested wrapped call may have failed (and swallowed)
-                    # while fnc ran, marking the trial failed: suppress this
-                    # success so a trial's records stop at its first failure.
-                    if trial_id in self._failed_trials:
-                        return out
+                # name the outputs. The shape checks raise without recording:
+                # misconfiguration, not a recorded result.
+                if output_name is not None:
+                    outputs = {output_name: out}
+                else:
+                    if not isinstance(out, (tuple, list)):
+                        raise TypeError(
+                            f"{fnc.__name__} declared output_name_list but returned "
+                            f"{type(out).__name__}; expected a tuple/list"
+                        )
+                    if len(out) != len(output_name_list):
+                        raise ValueError(
+                            f"{fnc.__name__} returned {len(out)} values but "
+                            f"output_name_list has {len(output_name_list)} names"
+                        )
+                    outputs = dict(zip(output_name_list, out))
 
-                    # only successful calls in a still-clean trial reach here;
-                    # record their named outputs
-                    if output_name is not None:
-                        outputs = {output_name: out}
-                    else:
-                        if not isinstance(out, (tuple, list)):
-                            raise TypeError(
-                                f"{fnc.__name__} declared output_name_list but returned "
-                                f"{type(out).__name__}; expected a tuple/list"
-                            )
-                        if len(out) != len(output_name_list):
-                            raise ValueError(
-                                f"{fnc.__name__} returned {len(out)} values but "
-                                f"output_name_list has {len(output_name_list)} names"
-                            )
-                        outputs = dict(zip(output_name_list, out))
-
-                    self.records.append({
-                        "trial_id": trial_id,
-                        "function": fnc.__qualname__,
-                        **({"label": label} if label is not None else {}),
-                        "inputs": inputs,
-                        "outputs": outputs,
-                        "time_sec": time_sec,
-                    })
-
-                    return out
+                # key by joblib's own args hash, so the record matches the
+                # cache entry the same call writes (see module docstring)
+                key = self._args_hash(fnc, args, kwargs)
+                self._store(key, {
+                    "hash": key,
+                    "function": fnc.__qualname__,
+                    **({"label": label} if label is not None else {}),
+                    "inputs": inputs,
+                    "outputs": outputs,
+                    "time_sec": time_sec,
+                })
+                return out
 
             return wrapped
 
         return decorator
 
-    def to_json(self, file=None, indent=2):
-        """Serialize records to JSON. Returns the string if no file is given.
+    def _store(self, key, record) -> None:
+        """Add a record under its hash key, overwriting (and warning) on repeat.
 
-        JSON-native inputs/outputs serialise directly; raw numpy serialises
-        compactly and any other value falls back to repr() (see module
-        docstring and _json_default).
-
-        Args:
-            file (str | None): path to write; None returns the JSON string.
-            indent (int): json.dump indent.
-
-        Returns:
-            the JSON string when ``file`` is None, else None.
+        A repeat key is the collision the module docstring describes (the same
+        call recomputed, or two functions whose filtered args coincide); we
+        keep the latest and warn so it is never silent. When a folder is set
+        the record is also mirrored to ``<hash>.json``.
         """
-        if file is None:
-            return json.dumps(self.records, indent=indent, default=_json_default)
-        with open(file, "w") as f:
-            json.dump(self.records, f, indent=indent, default=_json_default)
+        if key in self.records:
+            warnings.warn(
+                f"recorder overwriting record for hash {key} "
+                f"({record['function']}); a prior call shared this args hash")
+        self.records[key] = record
+        if self.folder is not None:
+            self._write(key, record)
 
-    # ----- disk IO: per-trial json files under folder/records ----------------
-    # The Recorder is the only object that reads/writes the record files. A
-    # trial's records go to one file named for its trial id, so independent
-    # writers (joblib workers) never contend and a run resumes by which ids are
-    # already on disk.
+    def _write(self, key, record) -> None:
+        """Atomically mirror one record to ``folder/<hash>.json``.
 
-    @property
-    def _records_dir(self):
-        """The records/ subdir of the experiment folder (per-trial files)."""
-        return self.folder / RECORDS_DIR
-
-    def flush(self, **stamp) -> None:
-        """Write the current records to records/<trial_id>.json, one per trial.
-
-        The records are serialised via to_json (heavy objects fall back to a
-        compact repr, never a wholesale dump), stamped with `stamp` (the scalar
-        trial axes, so the file is self-describing), and written to a file
-        named for the trial id they share (the open scope's id). No-op when
-        there are no records; the records stay in memory (the caller clears
-        them per trial).
-
-        Args:
-            stamp: scalar columns merged onto every record (the trial axes).
+        Written via a temp file in the same dir + ``os.replace`` so a reader
+        (or a parallel worker) never sees a half-written file; the hash names
+        the final file, so distinct records never contend.
         """
-        if not self.records:
-            return
-        recs = json.loads(self.to_json())
-        for r in recs:
-            r.update(stamp)
-        self._records_dir.mkdir(parents=True, exist_ok=True)
-        (self._records_dir / f'{recs[0]["trial_id"]}.json').write_text(
-            json.dumps(recs, indent=2))
+        text = json.dumps(record, indent=2, default=_json_default)
+        fd, tmp = tempfile.mkstemp(dir=self.folder, suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'w') as f:
+                f.write(text)
+            os.replace(tmp, self.folder / f'{key}.json')
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
 
-    def completed_ids(self) -> set:
-        """Trial ids (file stems) already written under records/."""
-        if self.folder is None or not self._records_dir.exists():
-            return set()
-        return {p.stem for p in self._records_dir.glob('*.json')}
+    def load(self) -> dict:
+        """Read every ``<hash>.json`` under folder into ``records``; return it.
 
-    def load(self) -> list:
-        """Concatenate every per-trial json under records/ into one list."""
-        if self.folder is None or not self._records_dir.exists():
-            return []
-        recs = []
-        for p in sorted(self._records_dir.glob('*.json')):
-            recs.extend(json.loads(p.read_text()))
-        return recs
-
-    def consolidate(self) -> list:
-        """Merge the per-trial files into records.json beside the records/ dir.
-
-        Returns the combined records.
+        Merges the on-disk records into the in-memory map (keyed by hash), so a
+        reader process reconstitutes what parallel writers produced. A no-op
+        returning the current records when no folder is set.
         """
-        recs = self.load()
-        (self.folder / RECORDS_NAME).write_text(json.dumps(recs, indent=2))
-        return recs
+        if self.folder is None:
+            return self.records
+        for p in self.folder.glob('*.json'):
+            rec = json.loads(p.read_text())
+            self.records[rec['hash']] = rec
+        return self.records

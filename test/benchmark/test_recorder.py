@@ -1,527 +1,479 @@
-import json
-import threading
-import uuid
+"""Tests for glow._extra.benchmark.recorder: the args-hash-keyed Recorder.
 
+The Recorder stores one record per *successful* decorated call, keyed by
+joblib's own args hash (``joblib.hash(filter_args(fnc, [], args, kwargs))``) so
+a record matches the cache entry the same call writes. A repeat hash overwrites
+the prior record and warns; a call that raises propagates and records nothing;
+and -- when a folder is given -- each record mirrors to ``<hash>.json``. These
+tests exercise capture, the keying, the overwrite / failure semantics, and the
+on-disk persistence.
+"""
+import json
+
+import joblib
 import pytest
+from joblib.func_inspect import filter_args
 
 from glow._extra.benchmark.recorder import Recorder
 
 
 @pytest.fixture
 def rec():
-	return Recorder()
+    return Recorder()
 
 
-# --- example pipeline (mirrors the original sketch) -------------------------
+def _only(records):
+    """The sole record in a (single-entry) records dict."""
+    (record,) = records.values()
+    return record
 
-def make_pipeline(rec):
-	"""Build the big_func -> part0 -> part1 pipeline against a given recorder."""
 
-	@rec(output_name='e')
-	def part0(c, d=3):
-		return c * d
+# Module-level receiver classes for the bound-method tests: the key hashes the
+# receiver (filter_args includes it), and joblib.hash pickles it -- so, exactly
+# as with joblib.Memory, the receiver must be picklable (a class defined inside
+# a test function is not).
 
-	@rec(output_name='g')
-	def part1(e, f):
-		return e + f
+class _Thing:
+    def __init__(self, k):
+        self.k = k
+    def go(self, x):
+        return self.k + x
 
-	@rec(output_name='big_out')
-	def big_func(a, b=10):
-		variable_c = a + b
-		e = part0(variable_c)
-		g = part1(e, f=123)
-		return g * 100
 
-	return big_func, part0, part1
+class _A:
+    def go(self):
+        return 1
+
+
+class _B:
+    def go(self):
+        return 2
 
 
 # --- basic capture ----------------------------------------------------------
 
 def test_single_output_and_defaults(rec):
-	@rec(output_name='out')
-	def f(a, b=10):
-		return a + b
+    @rec(output_name='out')
+    def f(a, b=10):
+        return a + b
 
-	assert f(5) == 15
-	assert len(rec.records) == 1
-	(record,) = rec.records
-	# function identity is the qualname; locally-defined fns carry a <locals> prefix
-	assert record["function"].split(".")[-1] == "f"
-	assert record["inputs"] == {"a": 5, "b": 10}
-	assert record["outputs"] == {"out": 15}
-	# every success record is timed
-	assert isinstance(record["time_sec"], float) and record["time_sec"] >= 0
-	# trial_ids are uuid4 strings
-	uuid.UUID(record["trial_id"])
+    assert f(5) == 15
+    assert len(rec.records) == 1
+    record = _only(rec.records)
+    # function identity is the qualname; locally-defined fns carry a <locals> prefix
+    assert record["function"].split(".")[-1] == "f"
+    assert record["inputs"] == {"a": 5, "b": 10}
+    assert record["outputs"] == {"out": 15}
+    # every success record is timed
+    assert isinstance(record["time_sec"], float) and record["time_sec"] >= 0
+    # the record carries its hash, and that hash is its dict key
+    assert record["hash"] in rec.records
 
 
 def test_explicit_kwarg_overrides_default(rec):
-	@rec(output_name='out')
-	def f(a, b=10):
-		return a + b
+    @rec(output_name='out')
+    def f(a, b=10):
+        return a + b
 
-	f(5, b=2)
-	assert rec.records[0]["inputs"] == {"a": 5, "b": 2}
+    f(5, b=2)
+    assert _only(rec.records)["inputs"] == {"a": 5, "b": 2}
 
 
 def test_output_name_list_unpacks_tuple(rec):
-	@rec(output_name_list=('lo', 'hi'))
-	def f(x):
-		return (x - 1, x + 1)
+    @rec(output_name_list=('lo', 'hi'))
+    def f(x):
+        return (x - 1, x + 1)
 
-	assert f(5) == (4, 6)
-	assert rec.records[0]["outputs"] == {"lo": 4, "hi": 6}
+    assert f(5) == (4, 6)
+    assert _only(rec.records)["outputs"] == {"lo": 4, "hi": 6}
 
 
 def test_output_name_stores_tuple_whole(rec):
-	# single output_name keeps the return as-is, even when it's a tuple
-	@rec(output_name='pair')
-	def f(x):
-		return (x, x)
+    # single output_name keeps the return as-is, even when it's a tuple
+    @rec(output_name='pair')
+    def f(x):
+        return (x, x)
 
-	f(7)
-	assert rec.records[0]["outputs"] == {"pair": (7, 7)}
+    f(7)
+    assert _only(rec.records)["outputs"] == {"pair": (7, 7)}
+
+
+# --- keying (joblib args hash) ----------------------------------------------
+
+def test_record_keyed_by_joblib_args_hash(rec):
+    # the key is exactly joblib.hash(filter_args(raw_fn, [], args, kwargs)),
+    # i.e. the id joblib.Memory would file the same call under
+    @rec(output_name='out')
+    def f(a, b=10):
+        return a + b
+
+    f(5, b=2)
+    key = joblib.hash(filter_args(f.__wrapped__, [], (5,), {'b': 2}))
+    assert list(rec.records) == [key]
+    assert rec.records[key]["hash"] == key
+    # and the keying staticmethod agrees with the wrapper's keying
+    assert Recorder._args_hash(f.__wrapped__, (5,), {'b': 2}) == key
+
+
+def test_distinct_args_distinct_records(rec):
+    @rec(output_name='out')
+    def f(a):
+        return a
+
+    f(1)
+    f(2)
+    assert len(rec.records) == 2
+    assert {r["outputs"]["out"] for r in rec.records.values()} == {1, 2}
+
+
+def test_same_args_overwrites_and_warns(rec):
+    # same fn + same args -> same hash -> the second call overwrites the first
+    # (latest kept) and warns, mirroring joblib.Memory's single cache entry
+    calls = []
+
+    @rec(output_name='out')
+    def f(a):
+        calls.append(a)
+        return len(calls)   # 1 on the first call, 2 on the second
+
+    assert f(1) == 1
+    with pytest.warns(UserWarning, match='overwriting'):
+        assert f(1) == 2
+    assert len(rec.records) == 1
+    assert _only(rec.records)["outputs"] == {"out": 2}   # latest wins
 
 
 # --- label tagging ----------------------------------------------------------
 
 def test_label_recorded_top_level(rec):
-	# label names the method/variant this call belongs to; it lands as a
-	# top-level field on the record, beside trial_id / function (not nested
-	# under inputs)
-	@rec(output_name='out', label='GLOW-GLM')
-	def f(a):
-		return a
+    # label names the method/variant this call belongs to; it lands as a
+    # top-level field on the record (not nested under inputs)
+    @rec(output_name='out', label='GLOW-GLM')
+    def f(a):
+        return a
 
-	f(5)
-	(record,) = rec.records
-	assert record['label'] == 'GLOW-GLM'
-	assert 'label' not in record['inputs']
-	# survives serialization
-	assert json.loads(rec.to_json())[0]['label'] == 'GLOW-GLM'
+    f(5)
+    record = _only(rec.records)
+    assert record['label'] == 'GLOW-GLM'
+    assert 'label' not in record['inputs']
 
 
 def test_label_absent_when_not_given(rec):
-	# an unlabelled call (e.g. a trial-level setup step) carries no label key
-	@rec(output_name='out')
-	def f(a):
-		return a
+    # an unlabelled call carries no label key
+    @rec(output_name='out')
+    def f(a):
+        return a
 
-	f(5)
-	assert 'label' not in rec.records[0]
-
-
-def test_label_recorded_on_failure(rec):
-	# a failure record carries the label too, so a failed variant is auditable
-	@rec(output_name='out', label='VBA-TFCE')
-	def boom():
-		raise ValueError('x')
-
-	assert boom() is None
-	(record,) = rec.records
-	assert record['label'] == 'VBA-TFCE'
-	assert 'ValueError' in record['error']
+    f(5)
+    assert 'label' not in _only(rec.records)
 
 
 def test_label_with_output_name_list(rec):
-	@rec(output_name_list=('lo', 'hi'), label='prune')
-	def f(x):
-		return (x - 1, x + 1)
+    @rec(output_name_list=('lo', 'hi'), label='prune')
+    def f(x):
+        return (x - 1, x + 1)
 
-	f(5)
-	assert rec.records[0]['label'] == 'prune'
-	assert rec.records[0]['outputs'] == {'lo': 4, 'hi': 6}
+    f(5)
+    record = _only(rec.records)
+    assert record['label'] == 'prune'
+    assert record['outputs'] == {'lo': 4, 'hi': 6}
 
 
 def test_label_must_be_str(rec):
-	with pytest.raises(TypeError):
-		@rec(output_name='out', label=123)
-		def f():
-			return 1
+    with pytest.raises(TypeError):
+        @rec(output_name='out', label=123)
+        def f():
+            return 1
 
 
-# --- run / trial_id semantics -----------------------------------------------
+def test_label_not_part_of_key(rec):
+    # label is metadata, not part of the hash: two distinct functions with the
+    # same filtered args (here, both `(a=1)`) collide regardless of label --
+    # the flat map does not namespace by function, so the overwrite-warning is
+    # the guard (see module docstring)
+    @rec(output_name='out', label='A')
+    def f(a):
+        return a
 
-def test_nested_calls_share_trial_id(rec):
-	big_func, _, _ = make_pipeline(rec)
+    @rec(output_name='out', label='B')
+    def g(a):
+        return a
 
-	assert big_func(a=3) == 16200
-	trial_ids = {r["trial_id"] for r in rec.records}
-	assert len(trial_ids) == 1
-	funcs = [r["function"].split(".")[-1] for r in rec.records]
-	# inner calls complete before the outer one
-	assert funcs == ["part0", "part1", "big_func"]
-
-
-def test_separate_top_level_calls_get_distinct_trial_ids(rec):
-	big_func, _, _ = make_pipeline(rec)
-
-	big_func(a=3)
-	big_func(a=3)
-	big_ids = [r["trial_id"] for r in rec.records if r["function"].split(".")[-1] == "big_func"]
-	assert big_ids[0] != big_ids[1]
-
-
-def test_run_uses_explicit_trial_id(rec):
-	big_func, _, _ = make_pipeline(rec)
-
-	with rec.trial(trial_id='asdf'):
-		big_func(1, b=2)
-	assert all(r["trial_id"] == 'asdf' for r in rec.records)
-
-
-def test_run_groups_multiple_top_level_calls(rec):
-	@rec(output_name='out')
-	def f(a):
-		return a
-
-	with rec.trial() as trial_id:
-		f(1)
-		f(2)
-	assert [r["trial_id"] for r in rec.records] == [trial_id, trial_id]
+    f(1)
+    with pytest.warns(UserWarning, match='overwriting'):
+        g(1)
+    assert len(rec.records) == 1
 
 
 # --- decoration-time validation --------------------------------------------
 
 def test_requires_exactly_one_of_output_args(rec):
-	with pytest.raises(ValueError):
-		@rec()
-		def f():
-			return 1
+    with pytest.raises(ValueError):
+        @rec()
+        def f():
+            return 1
 
-	with pytest.raises(ValueError):
-		@rec(output_name='a', output_name_list=('a',))
-		def g():
-			return 1
+    with pytest.raises(ValueError):
+        @rec(output_name='a', output_name_list=('a',))
+        def g():
+            return 1
 
 
 def test_duplicate_output_names_rejected_at_decoration(rec):
-	with pytest.raises(ValueError):
-		@rec(output_name_list=('x', 'x'))
-		def f():
-			return (1, 2)
+    with pytest.raises(ValueError):
+        @rec(output_name_list=('x', 'x'))
+        def f():
+            return (1, 2)
 
 
 def test_output_name_must_be_str(rec):
-	with pytest.raises(TypeError):
-		@rec(output_name=123)
-		def f():
-			return 1
+    with pytest.raises(TypeError):
+        @rec(output_name=123)
+        def f():
+            return 1
 
 
 def test_empty_output_name_list_rejected(rec):
-	with pytest.raises(TypeError):
-		@rec(output_name_list=())
-		def f():
-			return ()
+    with pytest.raises(TypeError):
+        @rec(output_name_list=())
+        def f():
+            return ()
 
 
 # --- runtime output validation ----------------------------------------------
 
 def test_output_name_list_length_mismatch(rec):
-	@rec(output_name_list=('a', 'b'))
-	def f():
-		return (1, 2, 3)
+    @rec(output_name_list=('a', 'b'))
+    def f():
+        return (1, 2, 3)
 
-	with pytest.raises(ValueError):
-		f()
-	assert rec.records == []  # nothing recorded on failure
+    with pytest.raises(ValueError):
+        f()
+    assert rec.records == {}  # misconfiguration is not recorded
 
 
 def test_output_name_list_requires_sequence_return(rec):
-	@rec(output_name_list=('a', 'b'))
-	def f():
-		return 5  # not a tuple/list
+    @rec(output_name_list=('a', 'b'))
+    def f():
+        return 5  # not a tuple/list
 
-	with pytest.raises(TypeError):
-		f()
+    with pytest.raises(TypeError):
+        f()
+    assert rec.records == {}
 
 
 # --- variadic parameters ----------------------------------------------------
 
 def test_var_keyword_spliced_up_a_level(rec):
-	@rec(output_name='out')
-	def f(a, b=10, **kwargs):
-		return a
+    @rec(output_name='out')
+    def f(a, b=10, **kwargs):
+        return a
 
-	f(1, b=2, x=99, y=100)
-	# x and y are recorded as first-class named inputs, not nested under "kwargs"
-	assert rec.records[0]["inputs"] == {"a": 1, "b": 2, "x": 99, "y": 100}
+    f(1, b=2, x=99, y=100)
+    # x and y are recorded as first-class named inputs, not nested under "kwargs"
+    assert _only(rec.records)["inputs"] == {"a": 1, "b": 2, "x": 99, "y": 100}
 
 
 def test_var_keyword_empty_when_unused(rec):
-	@rec(output_name='out')
-	def f(a, **kwargs):
-		return a
+    @rec(output_name='out')
+    def f(a, **kwargs):
+        return a
 
-	f(1)
-	assert rec.records[0]["inputs"] == {"a": 1}
+    f(1)
+    assert _only(rec.records)["inputs"] == {"a": 1}
 
 
 def test_var_positional_rejected_at_decoration(rec):
-	with pytest.raises(TypeError):
-		@rec(output_name='out')
-		def f(a, *args):
-			return a
+    with pytest.raises(TypeError):
+        @rec(output_name='out')
+        def f(a, *args):
+            return a
 
 
 def test_keyword_only_params_recorded_normally(rec):
-	# keyword-only params are named, so they bind to their own name (not **kwargs)
-	@rec(output_name='out')
-	def f(a, *, b=10, **kwargs):
-		return a
+    # keyword-only params are named, so they bind to their own name (not **kwargs)
+    @rec(output_name='out')
+    def f(a, *, b=10, **kwargs):
+        return a
 
-	f(1, b=2, z=3)
-	assert rec.records[0]["inputs"] == {"a": 1, "b": 2, "z": 3}
+    f(1, b=2, z=3)
+    assert _only(rec.records)["inputs"] == {"a": 1, "b": 2, "z": 3}
 
 
 # --- introspection (functools.wraps) ----------------------------------------
 
 def test_wraps_preserves_metadata_and_signature(rec):
-	import inspect
+    import inspect
 
-	@rec(output_name='out')
-	def f(a, b=10):
-		"""docstring."""
-		return a + b
+    @rec(output_name='out')
+    def f(a, b=10):
+        """docstring."""
+        return a + b
 
-	assert f.__name__ == "f"
-	assert f.__doc__ == "docstring."
-	assert list(inspect.signature(f).parameters) == ["a", "b"]
+    assert f.__name__ == "f"
+    assert f.__doc__ == "docstring."
+    assert list(inspect.signature(f).parameters) == ["a", "b"]
 
 
 def test_function_identity_uses_qualname(rec):
-	# qualname disambiguates same-named functions (e.g. methods on different classes)
-	class A:
-		@rec(output_name='out')
-		def go(self):
-			return 1
-
-	class B:
-		@rec(output_name='out')
-		def go(self):
-			return 2
-
-	A().go()
-	B().go()
-	assert [r["function"] for r in rec.records] == [
-		"test_function_identity_uses_qualname.<locals>.A.go",
-		"test_function_identity_uses_qualname.<locals>.B.go",
-	]
+    # qualname disambiguates same-named methods on different classes; the
+    # receiver (different classes) also keys the two records distinctly
+    rec(output_name='out')(_A().go)()
+    rec(output_name='out')(_B().go)()
+    funcs = sorted(r["function"] for r in rec.records.values())
+    assert funcs == ["_A.go", "_B.go"]
 
 
 # --- method / self capture ---------------------------------------------------
 
 def test_bound_method_captures_self(rec):
-	# decorating a bound method inline records its receiver as the 'self' input
-	# (the bound signature omits self, so it is taken from __self__) and
-	# serialized via its repr (the placeholder serialisation)
-	class Thing:
-		def __init__(self, k):
-			self.k = k
-		def __repr__(self):
-			return f'Thing(k={self.k})'
-		def go(self, x):
-			return self.k + x
+    # decorating a bound method inline records its receiver as the 'self' input
+    # (the bound signature omits self, so it is taken from __self__)
+    assert rec(output_name='r')(_Thing(10).go)(5) == 15
 
-	assert rec(output_name='r')(Thing(10).go)(5) == 15
-
-	(record,) = rec.records
-	assert record['function'].split('.')[-1] == 'go'
-	assert record['outputs']['r'] == 15
-	loaded = json.loads(rec.to_json())
-	assert loaded[0]['inputs']['self'] == 'Thing(k=10)'
-	assert loaded[0]['inputs']['x'] == 5
+    record = _only(rec.records)
+    assert record['function'].split('.')[-1] == 'go'
+    assert record['outputs']['r'] == 15
+    # in memory the captured self is the live object
+    assert isinstance(record['inputs']['self'], _Thing)
+    assert record['inputs']['x'] == 5
 
 
-def test_bound_method_forwards_kwargs_and_returns_value(rec):
-	class Adder:
-		def __repr__(self):
-			return 'Adder()'
-		def add(self, *, a, b):
-			return a + b
-
-	assert rec(output_name='s')(Adder().add)(a=2, b=3) == 5
-	loaded = json.loads(rec.to_json())
-	assert loaded[0]['inputs'] == {'self': 'Adder()', 'a': 2, 'b': 3}
-	assert loaded[0]['outputs']['s'] == 5
-
-
-def test_bound_method_failure_keeps_self(rec):
-	# a failing bound method still records self (in the error record) and
-	# swallows, per the failure semantics
-	class Boom:
-		def __repr__(self):
-			return 'Boom()'
-		def go(self):
-			raise ValueError('x')
-
-	assert rec(output_name='r')(Boom().go)() is None
-	loaded = json.loads(rec.to_json())
-	assert loaded[0]['inputs']['self'] == 'Boom()'
-	assert 'ValueError' in loaded[0]['error']
+def test_distinct_receivers_distinct_records(rec):
+    # filter_args hashes the receiver, so two receivers in different states key
+    # to two records even though the (bound) call args are identical
+    rec(output_name='r')(_Thing(1).go)(0)
+    rec(output_name='r')(_Thing(2).go)(0)
+    assert len(rec.records) == 2
 
 
 def test_plain_function_has_no_self(rec):
-	# a non-method recorded call gets no injected 'self'
-	@rec(output_name='out')
-	def f(x):
-		return x
+    # a non-method recorded call gets no injected 'self'
+    @rec(output_name='out')
+    def f(x):
+        return x
 
-	f(7)
-	assert 'self' not in rec.records[0]['inputs']
+    f(7)
+    assert 'self' not in _only(rec.records)['inputs']
 
 
 # --- failure capture ---------------------------------------------------------
 
-def test_exception_records_failure_and_swallows(rec):
-	@rec(output_name='x')
-	def boom():
-		raise ValueError("boom")
+def test_exception_propagates_and_records_nothing(rec):
+    # a call that raises propagates the exception (no swallowing) and records
+    # nothing, like joblib.Memory on a failed call
+    @rec(output_name='x')
+    def boom():
+        raise ValueError("boom")
 
-	# the recorder swallows: the call records a failure and returns None
-	# rather than propagating, so the caller need not try/except each step
-	assert boom() is None
-
-	# a failure is recorded (auditable), with the traceback in place of outputs
-	assert len(rec.records) == 1
-	(record,) = rec.records
-	assert record["function"].split(".")[-1] == "boom"
-	assert "outputs" not in record
-	assert "ValueError: boom" in record["error"]
-	assert isinstance(record["time_sec"], float) and record["time_sec"] >= 0
-	# trial id released, and not left marked failed, so the next call is fresh
-	assert rec._trial_id_current.get() is None
-	assert rec._failed_trials == set()
-
-	@rec(output_name='y')
-	def ok():
-		return 1
-
-	# a fresh top-level call opens a new (clean) trial and records success
-	assert ok() == 1
-	assert len(rec.records) == 2
-	assert rec.records[1]["outputs"] == {"y": 1}
+    with pytest.raises(ValueError, match="boom"):
+        boom()
+    assert rec.records == {}
 
 
-def test_failed_trial_short_circuits_later_calls(rec):
-	# within one explicit trial, the first failure marks it failed; every later
-	# recorded step then no-ops -- it neither runs nor records
-	calls = []
+def test_output_validation_error_is_not_recorded(rec):
+    # the fnc succeeds; the recorder's own arity check raises afterwards, so
+    # nothing is recorded (it's misconfiguration, not a recorded result)
+    @rec(output_name_list=('a', 'b'))
+    def f():
+        return (1, 2, 3)
 
-	@rec(output_name='a')
-	def step_ok(v):
-		calls.append('ok')
-		return v
-
-	@rec(output_name='b')
-	def step_boom():
-		calls.append('boom')
-		raise RuntimeError("nope")
-
-	@rec(output_name='c')
-	def step_after():
-		calls.append('after')
-		return 99
-
-	with rec.trial(trial_id='T'):
-		assert step_ok(1) == 1
-		assert step_boom() is None    # records a failure, marks T failed
-		assert step_after() is None   # short-circuits: body never runs
-
-	assert calls == ['ok', 'boom']  # step_after's body was skipped
-	funcs = [r["function"].split(".")[-1] for r in rec.records]
-	assert funcs == ['step_ok', 'step_boom']
-	assert "RuntimeError" in rec.records[1]["error"]
-	# all under the one trial id, and the failure flag is cleared on scope exit
-	assert {r["trial_id"] for r in rec.records} == {'T'}
-	assert rec._failed_trials == set()
+    with pytest.raises(ValueError):
+        f()
+    assert rec.records == {}
 
 
-def test_nested_failure_records_once_and_suppresses_outer(rec):
-	# an inner wrapped call that raises is swallowed (one failure record) and
-	# marks the trial failed; the outer frame, completing afterward, records
-	# nothing -- a trial's records stop at its first failure
-	@rec(output_name='inner_out')
-	def inner():
-		raise RuntimeError("kaboom")
+def test_failure_writes_no_file(tmp_path):
+    rec = Recorder(folder=tmp_path)
 
-	@rec(output_name='outer_out')
-	def outer():
-		return inner()
+    @rec(output_name='x')
+    def boom():
+        raise ValueError('x')
 
-	assert outer() is None
-	funcs = [r["function"].split(".")[-1] for r in rec.records]
-	assert funcs == ["inner"]
-	assert "error" in rec.records[0]
-	assert len({r["trial_id"] for r in rec.records}) == 1
+    with pytest.raises(ValueError):
+        boom()
+    assert list(tmp_path.glob('*.json')) == []
 
 
-def test_output_validation_error_is_not_recorded_as_failure(rec):
-	# the fnc succeeds; the recorder's own arity check raises afterwards, so
-	# nothing is recorded (it's misconfiguration, not a trial failure)
-	@rec(output_name_list=('a', 'b'))
-	def f():
-		return (1, 2, 3)
+# --- persistence (per-hash files) --------------------------------------------
 
-	with pytest.raises(ValueError):
-		f()
-	assert rec.records == []
+def test_record_mirrored_to_per_hash_file(tmp_path):
+    rec = Recorder(folder=tmp_path)
 
+    @rec(output_name='out')
+    def f(a, b=10):
+        return a + b
 
-# --- export ------------------------------------------------------------------
-
-def test_to_json_string_and_file(rec, tmp_path):
-	@rec(output_name='out')
-	def f(a):
-		return a * 2
-
-	f(21)
-
-	loaded = json.loads(rec.to_json())
-	assert loaded[0]["outputs"]["out"] == 42
-
-	path = tmp_path / "rec.json"
-	rec.to_json(file=str(path))
-	on_disk = json.loads(path.read_text())
-	assert on_disk == loaded
+    f(5)
+    record = _only(rec.records)
+    f_json = tmp_path / f"{record['hash']}.json"
+    assert f_json.exists()
+    on_disk = json.loads(f_json.read_text())
+    assert on_disk['hash'] == record['hash']
+    assert on_disk['inputs'] == {'a': 5, 'b': 10}
+    assert on_disk['outputs'] == {'out': 15}
 
 
-def test_to_json_falls_back_to_repr(rec):
-	class Thing:
-		def __repr__(self):
-			return "<Thing>"
+def test_load_reads_per_hash_files(tmp_path):
+    rec = Recorder(folder=tmp_path)
 
-	@rec(output_name='out')
-	def f():
-		return Thing()
+    @rec(output_name='out')
+    def f(a):
+        return a
 
-	f()
-	loaded = json.loads(rec.to_json())
-	assert loaded[0]["outputs"]["out"] == "<Thing>"
+    f(1)
+    f(2)
+    keys = set(rec.records)
+
+    # a fresh recorder over the same folder reconstitutes the records via load()
+    rec2 = Recorder(folder=tmp_path)
+    loaded = rec2.load()
+    assert loaded is rec2.records
+    assert set(loaded) == keys
+    assert {r['outputs']['out'] for r in loaded.values()} == {1, 2}
 
 
-# --- concurrency -------------------------------------------------------------
+def test_overwrite_replaces_file(tmp_path):
+    rec = Recorder(folder=tmp_path)
+    calls = []
 
-def test_concurrent_runs_do_not_bleed_trial_ids(rec):
-	@rec(output_name='out')
-	def f(x):
-		return x
+    @rec(output_name='out')
+    def f(a):
+        calls.append(a)
+        return len(calls)
 
-	barrier = threading.Barrier(2)
+    f(1)
+    with pytest.warns(UserWarning, match='overwriting'):
+        f(1)
+    files = list(tmp_path.glob('*.json'))
+    assert len(files) == 1
+    assert json.loads(files[0].read_text())['outputs'] == {'out': 2}
 
-	def worker(trial_id):
-		with rec.trial(trial_id=trial_id):
-			barrier.wait()  # force the two runs to overlap
-			for i in range(50):
-				f(i)
 
-	t1 = threading.Thread(target=worker, args=('A',))
-	t2 = threading.Thread(target=worker, args=('B',))
-	t1.start(); t2.start()
-	t1.join(); t2.join()
+def test_non_json_output_falls_back_to_repr_on_disk(tmp_path):
+    rec = Recorder(folder=tmp_path)
 
-	a = [r for r in rec.records if r["trial_id"] == 'A']
-	b = [r for r in rec.records if r["trial_id"] == 'B']
-	assert len(a) == 50 and len(b) == 50
-	assert len(rec.records) == 100  # every call accounted for, none cross-contaminated
+    class Thing:
+        def __repr__(self):
+            return '<Thing>'
+
+    @rec(output_name='out')
+    def f():
+        return Thing()
+
+    f()
+    record = _only(rec.records)
+    on_disk = json.loads((tmp_path / f"{record['hash']}.json").read_text())
+    assert on_disk['outputs']['out'] == '<Thing>'
+
+
+def test_in_memory_recorder_writes_no_files(rec):
+    # the default (folder=None) recorder is in-memory; load() is then a no-op
+    @rec(output_name='out')
+    def f(a):
+        return a
+
+    f(1)
+    assert rec.folder is None
+    assert rec.load() is rec.records
+    assert len(rec.records) == 1
