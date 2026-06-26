@@ -406,7 +406,7 @@ def plot_ana_cache(label: str, df, cache, out) -> None:
 
 def plot_metric_grid(label: str, df, *, x: str, metrics: list,
                      facet: str = 'source', hue: str = 'label',
-                     ci: int = 90, hide_labels: tuple = ('GLOW-GLM',),
+                     ci: int = 90, hide_labels: tuple = (),
                      out=None) -> None:
     """Plot a faceted metric sweep: col=facet, row=metric, one curve per hue.
 
@@ -426,8 +426,8 @@ def plot_metric_grid(label: str, df, *, x: str, metrics: list,
         hue (str): column mapped to line colour (the method 'label')
         ci (int): central percentile-interval width for the band
         hide_labels (tuple): hue values dropped before plotting; defaults to
-            the GLOW-GLM baseline (a no-op for caches that never emit it).
-            Pass () to keep every method.
+            () so every method is drawn -- both GLOW-Focus and the darker-teal
+            GLOW-GLM baseline. Pass e.g. ('GLOW-GLM',) to suppress a method.
         out (pathlib.Path): directory the figure is written into
     """
     df = df.copy()
@@ -478,6 +478,14 @@ def plot_metric_diff_grid(label: str, df, *, x: str, metrics: list,
     glow.mask.stats_from_counts) drop out of the difference, so the PPV
     panels thin toward weak effects.
 
+    Also writes {label}_diff.csv: one row per (facet, method, x) -- a row
+    block for every GLOW variant present (GLOW-Focus and GLOW-GLM), each
+    against the same best non-GLOW alternative -- with a glow_<m> /
+    other_<m> / <m>_diff / <m>_win block per metric (the seed-averaged
+    absolute scores, their difference, and the win rate). Only one_label's
+    line is drawn in the figure. The x where the mean Dice delta peaks is
+    printed per (facet, method).
+
     The figure is skipped (nothing written) when one_label is absent or no
     non-GLOW alternative exists -- so the prune / segment caches, whose
     arms are all GLOW variants or segmentation modes, produce no diff grid.
@@ -493,7 +501,7 @@ def plot_metric_diff_grid(label: str, df, *, x: str, metrics: list,
         hue (str): the method-label column; its GLOW* values are excluded
             from the "best alternative" pool
         alpha (float): grid / zero-line alpha
-        out (pathlib.Path): directory the figure is written into
+        out (pathlib.Path): directory the figure and CSV are written into
     """
     df = df.copy()
     if x == 'effect_perc' and 'effect_perc' not in df.columns:
@@ -512,6 +520,9 @@ def plot_metric_diff_grid(label: str, df, *, x: str, metrics: list,
     fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, 2.8 * nrows),
                              sharex=True, sharey='row', squeeze=False)
 
+    # tidy rows behind the bold mean line, for the companion CSV
+    diff_rows = []
+
     for j, src in enumerate(sources):
         # collapse replicate rows to one value per (label, seed, x)
         agg = (df[df[facet] == src]
@@ -522,28 +533,51 @@ def plot_metric_diff_grid(label: str, df, *, x: str, metrics: list,
                                     values=metric).reset_index()
             others = [c for c in pivot.columns
                       if c not in {'seed', x} and not str(c).startswith('GLOW')]
+            glow_cols = [c for c in pivot.columns
+                         if c not in {'seed', x} and str(c).startswith('GLOW')]
 
-            if one_label in pivot.columns and others:
-                valid = (pivot[one_label].notna()
-                         & pivot[others].notna().any(axis=1))
-                pv = pivot.loc[valid].copy()
-            else:
-                pv = pivot.iloc[:0]
-
-            if pv.empty:
+            if not others or not glow_cols:
                 ax.axis('off')
                 continue
+            pivot['best_other'] = pivot[others].max(axis=1, skipna=True)
 
-            pv['best_other'] = pv[others].max(axis=1, skipna=True)
-            pv['diff'] = pv[one_label] - pv['best_other']
-
-            for _, seed_df in pv.groupby('seed'):
-                seed_df = seed_df.sort_values(x)
-                ax.plot(seed_df[x], seed_df['diff'],
-                        lw=0.5, color='black', alpha=0.3)
-            mean_diff = (pv.groupby(x)['diff'].mean()
+            # each GLOW variant vs the best non-GLOW alternative: the CSV
+            # gets a row block per variant (method column); the panel draws
+            # only one_label's per-seed + bold mean line
+            drew = False
+            for gl in glow_cols:
+                valid = pivot[gl].notna() & pivot['best_other'].notna()
+                pv = pivot.loc[valid, ['seed', x, gl, 'best_other']].copy()
+                if pv.empty:
+                    continue
+                pv['diff'] = pv[gl] - pv['best_other']
+                pv['win'] = (pv[gl] > pv['best_other']).astype(float)
+                agg_x = (pv.groupby(x).agg(
+                            mean_diff=('diff', 'mean'),
+                            glow=(gl, 'mean'),
+                            other=('best_other', 'mean'),
+                            win=('win', 'mean'),
+                            n_seed=('diff', 'size'))
                          .reset_index().sort_values(x))
-            ax.plot(mean_diff[x], mean_diff['diff'], lw=3, color='black')
+                for _, row in agg_x.iterrows():
+                    diff_rows.append({facet: src, 'method': gl, x: row[x],
+                                      'metric': metric, 'glow': row['glow'],
+                                      'other': row['other'],
+                                      'mean_diff': row['mean_diff'],
+                                      'win': row['win'],
+                                      'n_seed': int(row['n_seed'])})
+
+                if gl == one_label:
+                    for _, seed_df in pv.groupby('seed'):
+                        seed_df = seed_df.sort_values(x)
+                        ax.plot(seed_df[x], seed_df['diff'],
+                                lw=0.5, color='black', alpha=0.3)
+                    ax.plot(agg_x[x], agg_x['mean_diff'], lw=3, color='black')
+                    drew = True
+
+            if not drew:
+                ax.axis('off')
+                continue
 
             ax.axhline(0, lw=.5, color='black', alpha=alpha)
             ax.set_ylim(-1, 1)
@@ -567,6 +601,71 @@ def plot_metric_diff_grid(label: str, df, *, x: str, metrics: list,
     fig.savefig(path, bbox_inches='tight')
     plt.close('all')
     print(f'saved: {path}')
+
+    if diff_rows:
+        _write_diff_csv(label, pd.DataFrame(diff_rows), x=x, facet=facet,
+                        metrics=metrics, out=out)
+
+
+def _write_diff_csv(label: str, diff_long, *, x: str, facet: str,
+                    metrics: list, out) -> None:
+    """Write the diff-grid mean line to CSV and print where Dice peaks.
+
+    diff_long is the tidy mean line behind plot_metric_diff_grid, one row
+    per (facet, method, x, metric): the seed-averaged absolute scores (glow
+    = the GLOW variant named in method, other = best non-GLOW alternative),
+    their difference (mean_diff), and the win rate (win = fraction of trials
+    with the GLOW variant strictly above the best alternative). It is
+    reshaped to one row per (facet, method, x) -- so GLOW-Focus and GLOW-GLM
+    each get their own rows -- with a glow_<m> / other_<m> / <m>_diff /
+    <m>_win block per metric, written to {label}_diff.csv, then the x of the
+    maximum mean Dice delta is printed per (facet, method).
+
+    Args:
+        label (str): cache label; used in the output filename
+        diff_long: tidy DataFrame (facet, method, x, metric, glow, other,
+            mean_diff, win, n_seed)
+        x (str): the x-axis column name (becomes a CSV column)
+        facet (str): the facet column name (becomes a CSV column)
+        metrics (list): metric names, fixing the column block order
+        out (pathlib.Path): directory the CSV is written into
+    """
+    # one column block per metric, grouped: glow / other / diff / win
+    keys = [facet, 'method', x]
+    wide = diff_long[keys].drop_duplicates().sort_values(keys)
+    for m in metrics:
+        sub = diff_long[diff_long['metric'] == m]
+        if sub.empty:
+            continue
+        sub = sub.rename(columns={'glow': f'glow_{m}', 'other': f'other_{m}',
+                                  'mean_diff': f'{m}_diff', 'win': f'{m}_win'})
+        wide = wide.merge(
+            sub[keys + [f'glow_{m}', f'other_{m}', f'{m}_diff', f'{m}_win']],
+            on=keys, how='left')
+    csv_path = out / f'{label}_diff.csv'
+    wide.to_csv(csv_path, index=False, float_format='%.4f')
+    print(f'saved: {csv_path}')
+
+    if 'dice_diff' not in wide.columns:
+        return
+    # peak mean Dice delta per (facet, method): scores, delta, win, other deltas
+    n_dice = (diff_long[diff_long['metric'] == 'dice']
+              .set_index([facet, 'method', x])['n_seed'])
+    print('  GLOW variant − best alternative, peak mean Dice delta:')
+    for (src, method), sub in wide.groupby([facet, 'method']):
+        sub = sub.dropna(subset=['dice_diff'])
+        if sub.empty:
+            continue
+        peak = sub.loc[sub['dice_diff'].idxmax()]
+        n = int(n_dice.get((src, method, peak[x]), 0))
+        others = '  '.join(
+            f'{m}={peak[f"{m}_diff"]:+.4f}'
+            for m in metrics if m != 'dice' and f'{m}_diff' in wide.columns
+            and pd.notnull(peak[f'{m}_diff']))
+        print(f'    {facet}={src} {method}: at {x}={peak[x]:g} (n={n})  '
+              f'dice {peak["glow_dice"]:.4f} vs {peak["other_dice"]:.4f} '
+              f'(Δ{peak["dice_diff"]:+.4f}, win {peak["dice_win"]:.0%})  '
+              + others)
 
 
 def _plot_calibration_faceted(label: str, df, out, facet: str = 'source') -> None:
