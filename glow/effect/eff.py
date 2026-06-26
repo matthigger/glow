@@ -13,13 +13,8 @@ class EffectEstimate:
         y_mean (np.array): (b, num_img) mean imaging feature in region
         e (np.array): (b, b) error matrix
         h (np.array): (b, b) hypothesis matrix
-        seed (int): random seed used to sample the effect extent
-        effect_llr (float): size-normalized LLR of the imposed effect.
-            This is the per-voxel LLR contribution; the LLR you observe
-            for the planted region is approximately effect_llr * |mask|
         reg_idx (int): region index in the Ward hierarchy (discovery)
         pval_fwer (float): FWER-corrected p-value (discovery)
-        meta (dict): optional metadata, not used by analysis
     """
 
     @classmethod
@@ -37,18 +32,14 @@ class EffectEstimate:
         e, h, _ = get_mancova(x=x, y=y, contrast=contrast)
         return cls(y_mean=y.mean(axis=2), e=e, h=h, **kwargs)
 
-    def __init__(self, mask, y_mean, *, e=None, h=None,
-                 seed=None, effect_llr=None, reg_idx=None,
-                 pval_fwer=None, meta=None):
+    def __init__(self, mask, y_mean, *, e=None, h=None, reg_idx=None,
+                 pval_fwer=None):
         self.mask = mask
         self.y_mean = y_mean
         self.e = e
         self.h = h
-        self.seed = seed
-        self.effect_llr = effect_llr
         self.reg_idx = reg_idx
         self.pval_fwer = pval_fwer
-        self.meta = meta if meta is not None else {}
 
     def is_close(self, other, rtol: float = 1e-5, atol: float = 1e-8) -> bool:
         """Check approximate equality of two effects.
