@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 
 import glow._extra.benchmark
-from glow._extra.benchmark.paper.run import _effect_llr, _plant, _score, _score_regions
+from glow._extra.benchmark.paper.run_old import _effect_llr, _plant, _score, _score_regions
 
 
 class _FakeExp:

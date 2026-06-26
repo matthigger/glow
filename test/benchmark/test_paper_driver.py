@@ -14,7 +14,7 @@ from glow.analysis import AnalysisVBA
 from glow.analysis.cluster import ClusterMode
 from glow._extra.benchmark.trial_cache import TrialCache
 from glow._extra.benchmark.recorder import RECORDS_DIR
-from glow._extra.benchmark.paper import run as paper_run
+from glow._extra.benchmark.paper import run_old as paper_run
 from glow._extra.benchmark.driver import driver_local
 
 VBA = {'VBA': (AnalysisVBA, dict(n_perm_fwer=1))}
