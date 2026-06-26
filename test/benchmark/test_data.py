@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from glow._extra.benchmark import data, hcp
-from glow.effect import ExtenterSphere
+from glow.effect import ExtenterMinVar, ExtenterSphere
 from glow.experiment import ExperimentImageOnly
 from glow.experiment.exper import NoBiasTermWarning
 
@@ -183,3 +183,48 @@ class TestDataFactoryHCP:
         assert len(data.RECORDER.records) == 1
         (rec,) = data.RECORDER.records.values()
         assert rec['function'] == 'data_factory_hcp'
+
+
+# ---------------------------------------------------------------------------
+# effect planter (shares data_factory's MEMORY / RECORDER, tested above)
+# ---------------------------------------------------------------------------
+
+class TestEffectFactory:
+    def _clean_exp(self):
+        return data.data_factory_wgn(shape=(6, 6, 6), b=2, num_img=20, a=1,
+                                     seed=_fresh_seed())
+
+    def test_plants_effect_on_support(self):
+        exp = self._clean_exp()
+        exp_eff, mask = data.effect_factory(
+            exp, effect_llr=0.05, extenter=ExtenterMinVar(n_vox=12, seed=0),
+            seed=0)
+        # effect added in place: same shapes, mask over the spatial grid, y
+        # changed, and the extenter grew exactly n_vox voxels
+        assert exp_eff.y.shape == exp.y.shape
+        assert mask.shape == exp.mask_idx.shape
+        assert int(mask.sum()) == 12
+        assert not np.array_equal(exp.y, exp_eff.y)
+
+    def test_records_outputs_under_joblib_hash(self):
+        exp = self._clean_exp()
+        kw = dict(effect_llr=0.05, extenter=ExtenterMinVar(n_vox=10, seed=0),
+                  seed=0)
+        args_id = data.effect_factory._get_args_id(exp, **kw)
+
+        data.RECORDER.records.clear()   # drop the clean-build record above
+        data.effect_factory(exp, **kw)  # fresh exp -> miss -> records
+
+        assert len(data.RECORDER.records) == 1
+        rec = data.RECORDER.records[args_id]
+        assert rec['function'] == 'effect_factory'
+        # output_name_list unpacks the (exp, mask) return into two outputs
+        assert set(rec['outputs']) == {'exp', 'mask'}
+
+    def test_miss_then_hit(self):
+        exp = self._clean_exp()
+        kw = dict(effect_llr=0.05, extenter=ExtenterMinVar(n_vox=10, seed=0),
+                  seed=0)
+        assert not data.effect_factory.check_call_in_cache(exp, **kw)
+        data.effect_factory(exp, **kw)
+        assert data.effect_factory.check_call_in_cache(exp, **kw)

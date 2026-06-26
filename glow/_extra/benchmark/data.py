@@ -1,17 +1,22 @@
-"""Build a benchmark Experiment from synthetic or HCP-YA imaging data.
+"""Build benchmark Experiments: clean data, then a planted synthetic effect.
 
 data_factory_wgn / data_factory_hcp each build an image-only Experiment,
 sample a design matrix x onto it, and crop it to an Extenter's support -- the
-clean (effect-free) data a trial then plants an effect on. Each build is
-memoised on disk (MEMORY) with the recorder nested inside the cache, so a
-cache hit returns the stored Experiment and only a real (cache-miss) build is
-recorded. The recorder keys each build by joblib's own args hash (see
+clean (effect-free) data; data_factory dispatches to them on source.
+effect_factory then plants a synthetic effect on a clean Experiment, returning
+the planted Experiment and its support mask (raw, effect-free runs skip it and
+feed a clean Experiment straight to an Analysis).
+
+Every build is memoised on disk (MEMORY) with the recorder nested inside the
+cache, so a cache hit returns the stored result and only a real (cache-miss)
+build is recorded. The recorder keys each build by joblib's own args hash (see
 Recorder), so a record lines up one-to-one with the cached artifact on disk.
-data_factory dispatches to the builders on source.
+All builders share MEMORY / RECORDER, so a clean build and the plant that
+consumes it link into one provenance DAG.
 """
 import joblib
 
-from glow.effect import Extenter
+from glow.effect import EffectSynthetic, Extenter
 from glow.experiment import ExperimentImageOnly
 
 from . import hcp
@@ -130,3 +135,29 @@ def data_factory(source: str, **kwargs):
     if source == 'hcp':
         return data_factory_hcp(**kwargs)
     raise ValueError(f"source must be 'wgn' or 'hcp', got {source!r}")
+
+
+@MEMORY.cache
+@RECORDER(output_name_list=['exp', 'mask'])
+def effect_factory(exp, *, effect_llr, extenter: Extenter, seed: int = None,
+                   angle: float = None, purge_interest: bool = True):
+    """Plant one synthetic effect on a clean Experiment.
+
+    Args:
+        exp: clean Experiment (a data_factory output) to add the effect to.
+        effect_llr (float): per-voxel (size-normalized) LLR target; the
+            whole-region LLR observed is ~ effect_llr * |mask| (see
+            glow.effect.impose).
+        extenter (Extenter): samples the effect support; carries its own seed.
+        seed (int): RNG seed for the imposed direction; used only with angle.
+        angle (float): impose along a direction sampled at this rotation
+            (degrees) from seed; None inherits the direction from the data.
+        purge_interest (bool): subtract the region's existing interest
+            coefficient so the recovered effect matches the imposed direction.
+
+    Returns:
+        exp: the Experiment with the effect added.
+        mask (np.array): the realized boolean support (shape of exp.mask_idx).
+    """
+    return EffectSynthetic(extenter=extenter, effect_llr=effect_llr, seed=seed,
+                           angle=angle, purge_interest=purge_interest).fit(exp)
