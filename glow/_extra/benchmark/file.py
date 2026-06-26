@@ -23,6 +23,25 @@ def get_path_result() -> pathlib.Path:
     return path_result
 
 
+def get_path_cache() -> pathlib.Path:
+    """Return the per-user joblib.Memory cache directory, creating it if missing."""
+    path_cache = get_path_data() / 'cache'
+    path_cache.mkdir(parents=True, exist_ok=True)
+    return path_cache
+
+
+def get_path_records() -> pathlib.Path:
+    """Return the per-user recorder directory (per-hash <hash>.json files), creating it if missing.
+
+    Sibling to the joblib.Memory cache (get_path_cache): a record is keyed by
+    the same args hash joblib files its result under, so the two line up. See
+    glow._extra.benchmark.recorder.
+    """
+    path_records = get_path_data() / 'records'
+    path_records.mkdir(parents=True, exist_ok=True)
+    return path_records
+
+
 def get_path_out(folder) -> pathlib.Path:
     """Return the per-label subfolder of un-aggregated *result.json files."""
     return pathlib.Path(folder) / OUT
