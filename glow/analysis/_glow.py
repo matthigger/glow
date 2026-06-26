@@ -52,7 +52,7 @@ class AnalysisGLOW(Analysis):
                      'cluster_mode')
 
     def __init__(self, exp, n_perm_fwer: int, n_perm_inner: int = 500,
-                 alpha_fwer: float = .05, min_vox: int = 4,
+                 alpha_fwer: float = .05, min_vox: int = 1,
                  cluster_mode: ClusterMode = ClusterMode.FOCUS):
         """Configure a GLOW analysis.
 
