@@ -256,6 +256,36 @@ def _pick_from_ranking(df, glow_label: str):
     return str(top.index[i])
 
 
+def _filter_source(df):
+    """Optionally narrow a config's trials to one data source (wgn / hcp).
+
+    A cache can sweep several sources in one grid (source=['wgn', 'hcp']), so its
+    trials mix data types -- WGN's white-Gaussian noise and the HCP cohort. This
+    offers to keep just one before the trial is picked. A cache with a single
+    source (or no source axis at all) has nothing to choose and is returned
+    unchanged, with no prompt.
+
+    Args:
+        df: a config's results, one row per (trial, method).
+
+    Returns:
+        the (possibly source-filtered) frame, or None to go back / quit.
+    """
+    if 'source' not in df.columns:
+        return df
+    sources = sorted(df['source'].dropna().unique())
+    if len(sources) < 2:
+        return df
+
+    i = compare.choose('Filter trials by data source?',
+                       ['all sources'] + [str(s) for s in sources])
+    if i < 0:
+        return None
+    if i == 0:
+        return df
+    return df[df['source'] == sources[i - 1]]
+
+
 def choose_trial_hash(df, glow_label: str):
     """Choose a trial_hash by direct entry or by compare's gap ranking.
 
@@ -403,6 +433,10 @@ def main() -> None:
         df = load_config_df(cache)
         if df.empty:
             print(f'  {label} has no completed in-config trials.')
+            continue
+
+        df = _filter_source(df)
+        if df is None:
             continue
         df = df.set_index('trial_hash')
 
