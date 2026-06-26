@@ -70,8 +70,6 @@ import joblib
 import numpy as np
 from joblib.func_inspect import filter_args
 
-from glow.util import hash_array
-
 
 # Sentinel `label` values for trials that produced no scored result, used by
 # the trial fns / plotting (not by the recorder itself). SKIP: an infeasible
@@ -92,7 +90,7 @@ def _json_default(obj):
     if isinstance(obj, np.generic):
         return obj.item()
     if isinstance(obj, np.ndarray):
-        return hash_array(obj)
+        return joblib.hash(obj)
     return repr(obj)
 
 

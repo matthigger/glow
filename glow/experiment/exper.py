@@ -12,6 +12,7 @@ import re
 import warnings
 from copy import deepcopy
 
+import joblib
 import numpy as np
 import pandas as pd
 import scipy.linalg
@@ -22,7 +23,6 @@ from .load_image import load_image_color, load_image_nii
 from .permute import get_freed_lane
 from .sigma import stretch_sigma
 from ..mask import get_mask_idx
-from ..util import hash_array
 
 
 class NoBiasTermWarning(UserWarning):
@@ -64,34 +64,23 @@ class ExperimentImageOnly:
         """Return the dtype of the underlying y array, or None when unset."""
         return self.y.dtype if self.y is not None else None
 
-    @property
-    def _hash_arrays(self):
-        """Tuple of arrays that define this object's identity for hashing."""
-        return (self.y, self.mask_idx)
-
-    def _hash(self) -> str:
-        """Probabilistic SHA-256 hash over data arrays (16-char hex digest).
-
-        Used as an S3 cache key (see Config.run_cloud) to dedup uploads
-        of identical experiment data.  See glow.util.hash_array.
-        """
-        return hash_array(*self._hash_arrays)
-
     def to_record(self) -> dict:
         """Build a JSON-friendly identity dict for provenance (no raw y).
 
         The benchmark Recorder serialises any value exposing to_record (see
         glow._extra.benchmark.recorder). This records the experiment's identity
         without its large y array: the (b, num_img, num_vox) shape, dtype, and
-        a stable content hash (_hash). meta is deliberately omitted -- it
-        carries the full subject / feature lists, more bulk than the record is
-        worth, and is recoverable from the scalar axes.
+        a stable content hash. The hash is joblib.hash over the whole object --
+        the same identity joblib.Memory keys a cached call by -- so it folds in
+        every array (and meta) automatically. meta is still omitted from the
+        record itself: it carries the full subject / feature lists, more bulk
+        than the record is worth, and is recoverable from the scalar axes.
 
         Returns:
             a dict of {kind, hash, b, num_img, num_vox, dtype}
         """
         b, num_img, num_vox = self.y.shape
-        return {'kind': type(self).__name__, 'hash': self._hash(),
+        return {'kind': type(self).__name__, 'hash': joblib.hash(self),
                 'b': int(b), 'num_img': int(num_img), 'num_vox': int(num_vox),
                 'dtype': str(self.dtype)}
 
@@ -492,11 +481,6 @@ class Experiment(ExperimentImageOnly):
             warnings.warn('no bias term: regression constrained to '
                           'origin (consider add_bias=True)',
                           NoBiasTermWarning)
-
-    @property
-    def _hash_arrays(self):
-        """Tuple of arrays that define this object's identity for hashing."""
-        return (*super()._hash_arrays, self.x, self.contrast)
 
     def to_record(self) -> dict:
         """Extend the image-only record with the design width and contrast.

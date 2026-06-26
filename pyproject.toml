@@ -19,9 +19,6 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.12"
-awscli = ">=1.30"
-boto3 = ">=1.35"
-cloudpickle = ">=3.0"
 dash = ">=2.17"
 dash-daq = ">=0.6"
 dash-slicer = ">=0.3"
