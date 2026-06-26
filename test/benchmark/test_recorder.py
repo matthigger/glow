@@ -315,12 +315,12 @@ def test_function_identity_uses_qualname(rec):
 def test_bound_method_captures_self(rec):
 	# decorating a bound method inline records its receiver as the 'self' input
 	# (the bound signature omits self, so it is taken from __self__) and
-	# serialized via the receiver's to_record() recipe
+	# serialized via its repr (the placeholder serialisation)
 	class Thing:
 		def __init__(self, k):
 			self.k = k
-		def to_record(self):
-			return {'kind': 'Thing', 'k': self.k}
+		def __repr__(self):
+			return f'Thing(k={self.k})'
 		def go(self, x):
 			return self.k + x
 
@@ -330,20 +330,20 @@ def test_bound_method_captures_self(rec):
 	assert record['function'].split('.')[-1] == 'go'
 	assert record['outputs']['r'] == 15
 	loaded = json.loads(rec.to_json())
-	assert loaded[0]['inputs']['self'] == {'kind': 'Thing', 'k': 10}
+	assert loaded[0]['inputs']['self'] == 'Thing(k=10)'
 	assert loaded[0]['inputs']['x'] == 5
 
 
 def test_bound_method_forwards_kwargs_and_returns_value(rec):
 	class Adder:
-		def to_record(self):
-			return {'kind': 'Adder'}
+		def __repr__(self):
+			return 'Adder()'
 		def add(self, *, a, b):
 			return a + b
 
 	assert rec(output_name='s')(Adder().add)(a=2, b=3) == 5
 	loaded = json.loads(rec.to_json())
-	assert loaded[0]['inputs'] == {'self': {'kind': 'Adder'}, 'a': 2, 'b': 3}
+	assert loaded[0]['inputs'] == {'self': 'Adder()', 'a': 2, 'b': 3}
 	assert loaded[0]['outputs']['s'] == 5
 
 
@@ -351,14 +351,14 @@ def test_bound_method_failure_keeps_self(rec):
 	# a failing bound method still records self (in the error record) and
 	# swallows, per the failure semantics
 	class Boom:
-		def to_record(self):
-			return {'kind': 'Boom'}
+		def __repr__(self):
+			return 'Boom()'
 		def go(self):
 			raise ValueError('x')
 
 	assert rec(output_name='r')(Boom().go)() is None
 	loaded = json.loads(rec.to_json())
-	assert loaded[0]['inputs']['self'] == {'kind': 'Boom'}
+	assert loaded[0]['inputs']['self'] == 'Boom()'
 	assert 'ValueError' in loaded[0]['error']
 
 
@@ -499,33 +499,6 @@ def test_to_json_falls_back_to_repr(rec):
 	f()
 	loaded = json.loads(rec.to_json())
 	assert loaded[0]["outputs"]["out"] == "<Thing>"
-
-
-def test_to_json_nests_dataclassjson(rec):
-	# a DataclassJSON spec (DataSource / Extenter / ...) records as its
-	# to_dict() -- a nested JSON object with 'kind' -- not an opaque repr
-	from dataclasses import dataclass
-
-	from glow.util import DataclassJSON
-
-	@dataclass(frozen=True, slots=True)
-	class _Inner(DataclassJSON):
-		k: int
-
-	@dataclass(frozen=True, slots=True)
-	class _Spec(DataclassJSON):
-		n: int
-		inner: object
-
-	@rec(output_name='out')
-	def f(spec):
-		return spec.n
-
-	f(spec=_Spec(n=7, inner=_Inner(k=3)))
-	loaded = json.loads(rec.to_json())
-	# nested as an object, and a nested spec recurses too
-	assert loaded[0]["inputs"]["spec"] == {
-		"kind": "_Spec", "n": 7, "inner": {"kind": "_Inner", "k": 3}}
 
 
 # --- concurrency -------------------------------------------------------------

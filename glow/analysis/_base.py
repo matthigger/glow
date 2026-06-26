@@ -15,10 +15,10 @@ from glow.experiment.exper import ExperimentScaled
 def _canon(v):
     """Canonicalize one recorded config value to a JSON-friendly form.
 
-    A DataclassJSON spec uses its own to_record; a bare callable (a stat
-    function) records as its __name__; everything else passes through
-    unchanged -- scalars, bools, and a StrEnum like ClusterMode, which is
-    already a JSON-native str serialising to its value (e.g. 'Focus').
+    A spec exposing to_record uses it; a bare callable (a stat function)
+    records as its __name__; everything else passes through unchanged --
+    scalars, bools, and a StrEnum like ClusterMode, which is already a
+    JSON-native str serialising to its value (e.g. 'Focus').
     """
     hook = getattr(v, 'to_record', None)
     if callable(hook):

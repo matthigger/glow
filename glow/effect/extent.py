@@ -1,17 +1,15 @@
 """Extenters: sample the contiguous voxel support (extent) of an effect.
 
-An extenter is a frozen, hashable spec (a frozen dataclass): every knob that
-changes the sampled mask -- the geometry (radius / n_vox / connected), the
-RNG seed, the seed voxel vox_init, and whether to resample until contiguous
-(contiguous / max_iter) -- is a field set at construction. Calling the
-extenter takes only the data to sample over (mask_idx, optional y) plus a
-cosmetic verbose flag, so the mask is a pure function of the frozen spec
-and the data, and the spec's hash is a stable cache key.
+An extenter is a spec: every knob that changes the sampled mask -- the
+geometry (radius / n_vox / connected), the RNG seed, the seed voxel vox_init,
+and whether to resample until contiguous (contiguous / max_iter) -- is an
+attribute set at construction. Calling the extenter takes only the data to
+sample over (mask_idx, optional y) plus a cosmetic verbose flag, so the mask
+is a pure function of the spec and the data.
 """
 
 from abc import ABC, abstractmethod
 from collections import deque
-from dataclasses import dataclass
 
 import numpy as np
 from scipy import sparse
@@ -22,8 +20,6 @@ from scipy.sparse.linalg import eigsh
 from sklearn.feature_extraction.image import grid_to_graph
 from tqdm import tqdm
 
-from ..util import DataclassJSON
-
 # 6-connectivity (face neighbours only) for 3D, matching Ward clustering, so
 # effects grow and clustering merges share the same neighbour definition.
 CONNECTIVITY_3D = generate_binary_structure(3, 1)
@@ -33,13 +29,11 @@ class ContiguousRegionNotFound(RuntimeError):
     """Raised when no contiguous region is sampled within max_iter tries."""
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class Extenter(DataclassJSON, ABC):
-    """Base extenter: a frozen spec sampling an effect's spatial extent.
+class Extenter(ABC):
+    """Base extenter: a spec sampling an effect's spatial extent.
 
     Concrete extenters implement _sample (a single draw given a seed); this
-    base wraps it in the resample-until-contiguous loop. All shared knobs
-    are identity fields.
+    base wraps it in the resample-until-contiguous loop.
 
     Attributes:
         seed (int | None): RNG seed for reproducibility (None draws fresh).
@@ -49,18 +43,12 @@ class Extenter(DataclassJSON, ABC):
         max_iter (int): maximum resample attempts when contiguous is True.
     """
 
-    seed: int = None
-    vox_init: int = None
-    contiguous: bool = False
-    max_iter: int = 100
-
-    def __post_init__(self):
-        object.__setattr__(self, 'seed',
-                           None if self.seed is None else int(self.seed))
-        object.__setattr__(self, 'vox_init',
-                           None if self.vox_init is None else int(self.vox_init))
-        object.__setattr__(self, 'contiguous', bool(self.contiguous))
-        object.__setattr__(self, 'max_iter', int(self.max_iter))
+    def __init__(self, *, seed=None, vox_init=None, contiguous=False,
+                 max_iter=100):
+        self.seed = None if seed is None else int(seed)
+        self.vox_init = None if vox_init is None else int(vox_init)
+        self.contiguous = bool(contiguous)
+        self.max_iter = int(max_iter)
 
     def __call__(self, mask_idx, y=None, verbose: bool = False):
         """Return a boolean mask defining the extent.
@@ -106,7 +94,6 @@ class Extenter(DataclassJSON, ABC):
         """Sample one boolean extent mask for the given seed (no resampling)."""
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
 class ExtenterSphere(Extenter):
     """Build effect extent as a randomly placed sphere.
 
@@ -121,21 +108,17 @@ class ExtenterSphere(Extenter):
             connected component of the analysis mask
     """
 
-    radius: int = None
-    n_vox: int = None
-    connected: bool = False
-
-    def __post_init__(self):
-        Extenter.__post_init__(self)
-        if self.radius is None and self.n_vox is None:
+    def __init__(self, *, radius=None, n_vox=None, connected=False,
+                 seed=None, vox_init=None, contiguous=False, max_iter=100):
+        super().__init__(seed=seed, vox_init=vox_init,
+                         contiguous=contiguous, max_iter=max_iter)
+        if radius is None and n_vox is None:
             raise ValueError('radius or n_vox required')
-        if self.radius is not None and self.n_vox is not None:
+        if radius is not None and n_vox is not None:
             raise ValueError('specify radius or n_vox, not both')
-        object.__setattr__(self, 'radius',
-                           None if self.radius is None else int(self.radius))
-        object.__setattr__(self, 'n_vox',
-                           None if self.n_vox is None else int(self.n_vox))
-        object.__setattr__(self, 'connected', bool(self.connected))
+        self.radius = None if radius is None else int(radius)
+        self.n_vox = None if n_vox is None else int(n_vox)
+        self.connected = bool(connected)
 
     def _sample(self, *, mask_idx, y=None, seed=None, verbose=False):
         rng = np.random.default_rng(seed=seed)
@@ -220,7 +203,6 @@ def iter_vox_neighbor(mask, mask_idx):
             yield vox_idx
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
 class ExtenterMinVar(Extenter):
     """Grow effect extent from a seed voxel to greedily minimise variance.
 
@@ -228,13 +210,13 @@ class ExtenterMinVar(Extenter):
         n_vox (int): target voxel count for the grown extent
     """
 
-    n_vox: int = None
-
-    def __post_init__(self):
-        Extenter.__post_init__(self)
-        if self.n_vox is None:
+    def __init__(self, *, n_vox=None, seed=None, vox_init=None,
+                 contiguous=False, max_iter=100):
+        super().__init__(seed=seed, vox_init=vox_init,
+                         contiguous=contiguous, max_iter=max_iter)
+        if n_vox is None:
             raise ValueError('n_vox required')
-        object.__setattr__(self, 'n_vox', int(self.n_vox))
+        self.n_vox = int(n_vox)
 
     def _sample(self, *, mask_idx, y=None, seed=None, verbose=False):
         assert y is not None, 'ExtenterMinVar requires y'
@@ -282,20 +264,18 @@ class ExtenterMinVar(Extenter):
         return mask
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ExtenterSplit(DataclassJSON):
+class ExtenterSplit:
     """Bisect a base extent into two adjacent halves.
 
-    A compound, recordable spec that holds one base Extenter defining the
-    whole area; fit() grows that extent and spectrally bisects it
-    (split_mask_spectral, a Fiedler cut) into two contiguous near-equal
-    halves, returned as a pair. The two-effect cleaving trial plants one
-    effect on each half. The base carries its own seed and geometry, so a
-    single ExtenterSplit yields both halves -- no per-half instance.
+    A compound spec that holds one base Extenter defining the whole area;
+    fit() grows that extent and spectrally bisects it (split_mask_spectral, a
+    Fiedler cut) into two contiguous near-equal halves, returned as a pair.
+    The two-effect cleaving trial plants one effect on each half. The base
+    carries its own seed and geometry, so a single ExtenterSplit yields both
+    halves -- no per-half instance.
 
     Unlike an Extenter (one mask via __call__), this returns a pair, so it is
-    a sibling spec rather than an Extenter subclass; it is still value-hashable
-    and records (to_record) as {kind, base: base.to_record()}.
+    a sibling spec rather than an Extenter subclass.
 
     Attributes:
         base (Extenter): the extent to bisect; must yield a single connected
@@ -303,11 +283,10 @@ class ExtenterSplit(DataclassJSON):
             split_mask_spectral requires.
     """
 
-    base: object = None
-
-    def __post_init__(self):
-        if self.base is None:
+    def __init__(self, *, base=None):
+        if base is None:
             raise ValueError('base required')
+        self.base = base
 
     def fit(self, mask_idx, y=None, verbose: bool = False):
         """Grow the base extent and bisect it into two spectral halves.

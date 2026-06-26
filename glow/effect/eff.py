@@ -1,7 +1,5 @@
 """Effect objects: planted synthetic effects and estimated effect regions."""
 
-from dataclasses import dataclass
-
 import numpy as np
 
 from glow.analysis.mancova import get_mancova
@@ -79,9 +77,8 @@ class EffectEstimate:
 Effect = EffectEstimate
 
 
-@dataclass(frozen=True, slots=True, eq=False, kw_only=True)
 class EffectSynthetic:
-    """A planted (synthetic) effect: a frozen, immutable spec.
+    """A planted (synthetic) effect spec.
 
     The spec fully determines the planted effect; fit(exp) returns the
     modified experiment and the realized support as an (exp_eff, mask) pair,
@@ -89,18 +86,13 @@ class EffectSynthetic:
     extenter is given it carries its own RNG seed; the seed field here
     drives only the imposed direction (angle).
 
-    The benchmark pipeline always builds effects by extenter (mask stays None),
-    so the recorded provenance (to_record) is the extenter recipe; the explicit
-    mask path is kept for ad-hoc use (the viewer) but is not recorded.
-
-    Unlike the extenter / data-source specs, EffectSynthetic carries an
-    ndarray (mask) and is never a cache key, so it uses identity equality
-    (eq=False) rather than a value hash.
+    The benchmark pipeline always builds effects by extenter (mask stays None);
+    the explicit mask path is kept for ad-hoc use (the viewer).
 
     Attributes:
         effect_llr (float): per-voxel LLR target.
         extenter (Extenter | None): how to sample the support. XOR with mask.
-        mask (np.array | None): pre-known boolean support, frozen on
+        mask (np.array | None): pre-known boolean support, made read-only on
             assignment. XOR with extenter.
         seed (int | None): RNG seed for the imposed direction when angle is
             given (it sets the rotation reference).
@@ -115,45 +107,24 @@ class EffectSynthetic:
             equals the imposed direction exactly.
     """
 
-    effect_llr: float
-    extenter: object = None
-    mask: object = None
-    seed: int = None
-    angle: float = None
-    purge_interest: bool = True
-
-    def __post_init__(self):
-        if (self.extenter is None) == (self.mask is None):
+    def __init__(self, *, effect_llr, extenter=None, mask=None, seed=None,
+                 angle=None, purge_interest=True):
+        if (extenter is None) == (mask is None):
             raise ValueError('extenter xor mask required')
-        if self.angle is not None and self.seed is None:
+        if angle is not None and seed is None:
             raise ValueError('angle requires seed (it sets the rotation '
                              'reference for the imposed direction)')
-        object.__setattr__(self, 'effect_llr', float(self.effect_llr))
-        object.__setattr__(self, 'seed',
-                           None if self.seed is None else int(self.seed))
-        object.__setattr__(self, 'angle',
-                           None if self.angle is None else float(self.angle))
-        object.__setattr__(self, 'purge_interest', bool(self.purge_interest))
-        if self.mask is not None:
-            mask = np.ascontiguousarray(self.mask, dtype=bool)
+        self.effect_llr = float(effect_llr)
+        self.extenter = extenter
+        self.seed = None if seed is None else int(seed)
+        self.angle = None if angle is None else float(angle)
+        self.purge_interest = bool(purge_interest)
+        if mask is None:
+            self.mask = None
+        else:
+            mask = np.ascontiguousarray(mask, dtype=bool)
             mask.flags.writeable = False
-            object.__setattr__(self, 'mask', mask)
-
-    def to_record(self) -> dict:
-        """JSON-friendly recipe for provenance: the spec without the mask.
-
-        The recorder serializes any value exposing to_record (see
-        glow._extra.benchmark.recorder). The realized support is omitted: in the
-        pipeline it is a deterministic function of the extenter, and recording
-        it would dump a boolean array. extenter recurses via its own to_record.
-        """
-        return {'kind': type(self).__name__,
-                'effect_llr': self.effect_llr,
-                'extenter': (None if self.extenter is None
-                             else self.extenter.to_record()),
-                'seed': self.seed,
-                'angle': self.angle,
-                'purge_interest': self.purge_interest}
+            self.mask = mask
 
     def fit(self, exp):
         """Sample support, compute offset, impose the effect.

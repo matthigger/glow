@@ -18,7 +18,6 @@ save_result still writes the original trial's results.csv row.
 """
 
 import urllib.parse
-from dataclasses import dataclass
 from typing import Tuple
 
 import boto3
@@ -26,7 +25,7 @@ import cloudpickle
 from botocore.exceptions import ClientError
 
 from glow._extra.aws.config import s3_key
-from glow.util import DataclassJSON, value_id
+from glow.util import value_id
 
 
 def _parse_s3_uri(uri: str) -> Tuple[str, str]:
@@ -37,19 +36,19 @@ def _parse_s3_uri(uri: str) -> Tuple[str, str]:
     return parsed.netloc, parsed.path.lstrip('/')
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class DataSourceS3(DataclassJSON):
+class DataSourceS3:
     """S3-backed exp source.  Exposes .exp like any DataSource.
 
     Attributes:
         s3_uri (str): s3://bucket/key of the uploaded exp pickle.
     """
 
-    s3_uri: str
-
     # Cache the downloaded exp per URI so repeated .exp accesses in one
     # worker process don't re-download.  Mirrors DataSource._exp_cache.
     _exp_cache = {}
+
+    def __init__(self, *, s3_uri):
+        self.s3_uri = s3_uri
 
     @property
     def exp(self):

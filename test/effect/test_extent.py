@@ -354,17 +354,6 @@ class TestExtenterSplit:
         np.testing.assert_array_equal(mask1, ref1)
         _assert_valid_split(full, mask0, mask1)
 
-    def test_value_hashable(self):
-        base = ExtenterSphere(n_vox=6, vox_init=0)
-        a = ExtenterSplit(base=base)
-        assert a == ExtenterSplit(base=base)
-        assert hash(a) == hash(ExtenterSplit(base=base))
-
-    def test_to_record_nests_base(self):
-        rec = ExtenterSplit(base=ExtenterSphere(n_vox=6, vox_init=0)).to_record()
-        assert rec['kind'] == 'ExtenterSplit'
-        assert rec['base']['kind'] == 'ExtenterSphere'
-
     def test_missing_base_raises(self):
         with pytest.raises(ValueError, match='base'):
             ExtenterSplit()

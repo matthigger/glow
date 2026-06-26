@@ -1,13 +1,12 @@
-"""Tests for EffectSynthetic (frozen spec, (exp_eff, mask) output).
+"""Tests for EffectSynthetic (spec, (exp_eff, mask) output).
 
 The effect seed lives in the extenter (it carries its own seed), so a
 seeded extenter makes the sampled extent reproducible. EffectSynthetic's
 own seed drives only the imposed direction (angle). fit(exp) returns an
-(exp_eff, mask) pair and leaves the frozen spec untouched.
+(exp_eff, mask) pair and leaves the spec untouched.
 """
 
 import pickle
-from dataclasses import FrozenInstanceError
 
 import numpy as np
 import pytest
@@ -64,11 +63,6 @@ class TestInit:
         assert synth.mask.flags.writeable is False
         with pytest.raises(ValueError):
             synth.mask[0, 0] = False
-
-    def test_spec_is_frozen(self, extenter):
-        synth = EffectSynthetic(extenter=extenter, effect_llr=0.5)
-        with pytest.raises(FrozenInstanceError):
-            synth.effect_llr = 0.9
 
 
 class TestFitExtenterPath:
@@ -134,8 +128,7 @@ class TestReproducibility:
 
 
 class TestIdentity:
-    """EffectSynthetic carries an ndarray and is never a cache key, so it
-    uses identity equality (eq=False) rather than a value hash."""
+    """EffectSynthetic is a plain class, so it uses identity equality."""
 
     def test_identity_equality(self, extenter):
         a = EffectSynthetic(extenter=extenter, effect_llr=0.5)
@@ -148,27 +141,6 @@ class TestIdentity:
         synth = EffectSynthetic(extenter=extenter, effect_llr=0.5)
         assert synth != {'extenter': extenter}
         assert synth != 42
-
-
-class TestToRecord:
-    """to_record gives a JSON-friendly recipe without the realized mask."""
-
-    def test_extenter_recipe_nested_no_mask(self, extenter):
-        rec = EffectSynthetic(extenter=extenter, effect_llr=0.5,
-                              seed=3).to_record()
-        assert rec['kind'] == 'EffectSynthetic'
-        assert rec['effect_llr'] == 0.5
-        assert rec['seed'] == 3
-        assert rec['extenter'] == extenter.to_record()
-        assert 'mask' not in rec
-
-    def test_mask_path_records_no_mask(self, exp):
-        # the explicit-mask path is not in the pipeline; to_record omits the
-        # array (extenter is None) rather than dumping it
-        mask = exp.mask_idx >= 0
-        rec = EffectSynthetic(mask=mask, effect_llr=0.5).to_record()
-        assert rec['extenter'] is None
-        assert 'mask' not in rec
 
 
 class TestFrozenInputsInterop:

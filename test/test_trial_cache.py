@@ -5,7 +5,6 @@ does no disk IO of its own. A trial is "done" when a per-trial record file
 (records/<hash>.json) exists, which the recorder writes on flush -- so the tests
 mark a trial done by recording a trivial call under its id and flushing it.
 """
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -13,14 +12,14 @@ import pytest
 import glow._extra.benchmark.recorder as rec_mod
 from glow._extra.benchmark import TrialCache
 from glow._extra.benchmark.recorder import RECORDS_DIR
-from glow.util import DataclassJSON, stable_hash
+from glow.util import stable_hash
 
 
-@dataclass(frozen=True, slots=True)
-class _Toy(DataclassJSON):
-    """Small frozen-dataclass fixture standing in for DataSource / Effect."""
-    a: object
-    b: object
+class _Toy:
+    """Small fixture standing in for DataSource / Effect."""
+    def __init__(self, a, b):
+        self.a = a
+        self.b = b
 
 
 def _complete(cache, trial):

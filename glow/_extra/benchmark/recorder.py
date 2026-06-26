@@ -20,11 +20,11 @@ results.csv row the same trial would write.
 benchmark no longer hand-times each method.
 
 A recorded call may be a bound method: when the wrapped callable is one, its
-receiver is captured as the ``self`` input (serialized via its ``to_record``
-recipe), so recording an object's method needs no passthrough wrapper -- apply
-the decorator to the bound method inline, e.g.
+receiver is captured as the ``self`` input (serialized via its ``repr``), so
+recording an object's method needs no passthrough wrapper -- apply the
+decorator to the bound method inline, e.g.
 ``recorder(output_name='ana')(AnalysisGLOW(exp=exp, n_perm_fwer=n).fit)()``
-records the analysis recipe, the fitted result, the timing and any failure.
+records the analysis, the fitted result, the timing and any failure.
 
 A call that *raises* records a failure record instead -- same shape but
 with ``error`` (the traceback) in place of ``outputs`` -- and the exception
@@ -42,15 +42,11 @@ Records are append-only: a function called twice in a trial yields two
 records, never an overwrite. A call short-circuited after a same-trial
 failure adds none.
 
-``to_json`` serializes via ``_json_default``, which consults one protocol --
-``to_record()``: any input/output exposing it (a DataclassJSON spec such as a
-DataSource / Extenter, an Experiment, an Analysis) records as its
-JSON-friendly identity/recipe dict rather than an opaque ``repr`` string.
-Each glow class chooses the subset it records -- Experiment its shapes / dtype
-/ content hash / meta (never the large ``y``), Analysis its ``__init__`` config
-knobs (never ``exp``, the fitted arrays, or ``pval``) -- so a record carries
-the stable recipe without dumping any heavy array. Raw numpy still falls back
-safely (scalar -> value, ndarray -> content hash); everything else -> ``repr``.
+``to_json`` serializes via ``_json_default``, a placeholder: any input/output
+that is not JSON-native records as its ``repr`` string (a richer per-object
+form -- e.g. its ``__dict__`` -- may replace repr later). Raw numpy is kept
+compact (scalar -> value, ndarray -> content hash) so a stray heavy array
+does not dump wholesale.
 
 One known limitation, deferred to the object-representation work (see
 docs/notes/recorder_object_repr.md): inputs/outputs hold *references*,
@@ -92,20 +88,16 @@ NON_RESULT_LABELS = (ERROR_LABEL, SKIP_LABEL)
 
 
 def _json_default(obj):
-    """json.dumps fallback: a value's own to_record() dict, else a safe form.
+    """json.dumps fallback: repr(obj), a placeholder serialisation.
 
-    The single serialisation protocol is to_record(): any value exposing it
-    -- a DataclassJSON spec (DataSource / Extenter / ...), an Experiment, an
-    Analysis -- records as its JSON-friendly identity/recipe dict rather than
-    an opaque repr string. Raw numpy is never dumped wholesale: a scalar
-    becomes its Python value and an ndarray its stable content hash (so a
-    stray array in, e.g., Experiment.meta records compactly). A StrEnum like
-    ClusterMode is already JSON-native (its value string), so json handles it
-    directly. Anything else falls back to repr.
+    Stop-gap: any value json can't serialise natively records as its repr
+    string rather than a structured recipe. (A richer per-object form -- e.g.
+    its __dict__ -- may replace repr later.) Raw numpy is still kept compact:
+    a scalar becomes its Python value and an ndarray its stable content hash,
+    so a stray array (e.g. in Experiment.meta) does not dump wholesale. A
+    StrEnum like ClusterMode is already JSON-native, so json handles it
+    directly.
     """
-    to_record = getattr(obj, "to_record", None)
-    if callable(to_record):
-        return to_record()
     if isinstance(obj, np.generic):
         return obj.item()
     if isinstance(obj, np.ndarray):
@@ -246,7 +238,7 @@ class Recorder:
 
             # a bound method's signature already excludes self, so record it
             # separately from its __self__ -- the call captures the receiver
-            # (its to_record() recipe) as the 'self' input without the caller
+            # (serialised via its repr) as the 'self' input without the caller
             # threading it through a passthrough function.
             is_method = inspect.ismethod(fnc)
 
@@ -360,9 +352,8 @@ class Recorder:
     def to_json(self, file=None, indent=2):
         """Serialize records to JSON. Returns the string if no file is given.
 
-        Inputs/outputs exposing to_record() (DataclassJSON specs, Experiment,
-        Analysis) nest as their record dict; raw numpy serialises safely and
-        any other non-serializable value falls back to repr() (see module
+        JSON-native inputs/outputs serialise directly; raw numpy serialises
+        compactly and any other value falls back to repr() (see module
         docstring and _json_default).
 
         Args:
@@ -391,12 +382,12 @@ class Recorder:
     def flush(self, **stamp) -> None:
         """Write the current records to records/<trial_id>.json, one per trial.
 
-        The records are serialised via to_json (the to_record protocol -- only
-        compact recipe dicts, never the heavy Experiment / Analysis objects),
-        stamped with `stamp` (the scalar trial axes, so the file is
-        self-describing), and written to a file named for the trial id they
-        share (the open scope's id). No-op when there are no records; the
-        records stay in memory (the caller clears them per trial).
+        The records are serialised via to_json (heavy objects fall back to a
+        compact repr, never a wholesale dump), stamped with `stamp` (the scalar
+        trial axes, so the file is self-describing), and written to a file
+        named for the trial id they share (the open scope's id). No-op when
+        there are no records; the records stay in memory (the caller clears
+        them per trial).
 
         Args:
             stamp: scalar columns merged onto every record (the trial axes).

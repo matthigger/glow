@@ -1,14 +1,12 @@
 """Shared utilities for hashing and identity.
 
 hash_array is a fast probabilistic SHA-256 over one or more ndarrays.
-DataclassJSON is a mixin adding to_dict / to_json to a frozen dataclass;
-the dataclass itself supplies native __hash__ / __eq__ (so every field
-must be hashable -- scalars, tuples, nested dataclasses -- no ndarrays).
+value_id / stable_hash build a JSON-friendly identity (stable across
+processes, unlike the builtin hash) for scalars, ndarrays, and dicts of them.
 """
 
 import hashlib
 import json
-from dataclasses import fields
 
 import numpy as np
 
@@ -49,60 +47,15 @@ def hash_array(*arrs) -> str:
     return h.hexdigest()[:16]
 
 
-class DataclassJSON:
-    """Mixin adding to_dict / to_json to a frozen dataclass.
-
-    The dataclass itself supplies immutability and native __hash__ / __eq__
-    (so every field must be hashable -- scalars, tuples, nested
-    DataclassJSON specs -- and no field may hold an ndarray). This mixin
-    adds only a JSON-friendly serialisation of the fields, used for stable
-    cross-process identity (value_id / stable_hash) and provenance. Unlike
-    the builtin hash, to_json folds in the class name under 'kind', so two
-    classes with identical field tuples get distinct stable ids.
-
-    Declares __slots__ = () so it does not reintroduce a __dict__ on
-    dataclasses built with slots=True (a single non-slotted ancestor would
-    silently defeat slots=True on every subclass).
-    """
-
-    __slots__ = ()
-
-    def to_dict(self) -> dict:
-        """Build the JSON-friendly identity dict, keyed by field name.
-
-        The class name is under 'kind'; nested DataclassJSON fields recurse.
-        """
-        out = {'kind': type(self).__name__}
-        for f in fields(self):
-            v = getattr(self, f.name)
-            out[f.name] = v.to_dict() if isinstance(v, DataclassJSON) else v
-        return out
-
-    def to_json(self) -> str:
-        """Serialise the identity dict to a sorted-key JSON string."""
-        return json.dumps(self.to_dict(), sort_keys=True)
-
-    def to_record(self) -> dict:
-        """Return this spec's JSON-friendly record (its to_dict identity).
-
-        The benchmark Recorder serialises any value exposing to_record (see
-        glow._extra.benchmark.recorder._json_default); for a DataclassJSON spec that
-        is just its identity dict, so the record nests the full stable recipe.
-        """
-        return self.to_dict()
-
-
 def value_id(v):
     """Build a stable, JSON-friendly identity for one value.
 
-    Simple scalars pass through; ndarrays and DataclassJSON instances get a
-    stable hash; anything else falls back to repr. Unlike Python's builtin
-    hash, the output is the same across processes.
+    Simple scalars pass through; ndarrays get a stable content hash; anything
+    else falls back to repr. Unlike Python's builtin hash, the output is the
+    same across processes.
     """
     if isinstance(v, np.ndarray):
         return hash_array(v)
-    if isinstance(v, DataclassJSON):
-        return hashlib.sha256(v.to_json().encode()).hexdigest()[:16]
     if isinstance(v, np.generic):
         return v.item()
     if isinstance(v, (str, int, float, bool)) or v is None:
