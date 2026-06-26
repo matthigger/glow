@@ -187,12 +187,18 @@ class TestConvertedFitFns:
         # the shared fit is a trial-level input to both rules, so it has no label
         glow_fit = next(r for r in recs if r['function'].endswith('.fit'))
         assert 'label' not in glow_fit
-        prunes = [r for r in recs if 'prune' in r['function']]
+        prunes = [r for r in recs if r['function'].rsplit('.', 1)[-1]
+                  in ('prune_greedy', 'prune_dp')]
         assert {r['function'].rsplit('.', 1)[-1] for r in prunes} == {
             'prune_greedy', 'prune_dp'}
         assert all('reg_out_list' in r['outputs'] for r in prunes)
         # each rule is tagged with its method label
         assert {r['label'] for r in prunes} == {'GLOW-Greedy', 'GLOW-DP'}
+        # each rule's selection is scored, plus the standalone max-LLR region
+        scores = [r for r in recs if r['function'].endswith('_score_prune')]
+        assert {r['label'] for r in scores} == {
+            'GLOW-Greedy', 'GLOW-DP', 'GLOW-MaxLLR'}
+        assert all('n_selected' in r['outputs']['score'] for r in scores)
 
     def test_two_effect_records_splitter_and_two_effects(self, tmp_path):
         cache = _cache(tmp_path, b=[2], seed=[0], angle=[30.0])
@@ -232,7 +238,7 @@ class TestConvertedFitFns:
                      verbose=False)
         recs = cache.load_records()
         fns = _fns(recs)
-        assert '_setup_min_size' in fns and '_min_size_curves' in fns
+        assert '_setup_trial' in fns and '_min_size_curves' in fns
         curve = next(r for r in recs
                      if r['function'].endswith('_min_size_curves'))
         # the curve step records its perm knobs as inputs and the 'GLOW' label

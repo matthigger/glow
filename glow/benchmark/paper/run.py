@@ -43,7 +43,7 @@ from glow.analysis.mancova import stat_dict, stat_dict_inv
 from glow.analysis.prune import prune_greedy, prune_dp
 from glow.effect import (EffectSynthetic, ExtenterMinVar, ExtenterSphere,
                          ExtenterSplit)
-from .factory import build_ds, derive_seeds
+from .factory import build_ds_for_seed
 from .score import (score_effects, score_oracle_tree, size_max_z_curve,
                     curve_json)
 
@@ -148,6 +148,39 @@ def _score_regions(reg_mask_list, mask_target_list, mask_active) -> dict:
     return out
 
 
+def _score_prune(reg_out_list, children, mask_idx, mask_target_list,
+                 mask_active) -> dict:
+    """Score a pruning rule's selected regions against the planted effect(s).
+
+    The prune records keep only region indices (the masks are heavy), so the
+    score is derived at fit time: each selected region's (X, Y, Z) bool mask is
+    rebuilt from its Ward index (glow.graph.get_label_map, exactly as
+    AnalysisGLOW.finalize does), then the shared per-effect confusion scoring
+    (_score_regions) unions them and counts tp/fp/tn/fn vs the planted support
+    -- so dice / sens / ppv derive at load time like every other arm. Used for
+    the greedy / DP selections and for the single max-LLR region.
+
+    Args:
+        reg_out_list (list): selected Ward region indices (the pruning rule's
+            output, or [max-LLR region] for the max-LLR arm); empty when the
+            rule selected nothing (no FWER-significant region).
+        children (np.array): (num_reg - num_vox, 2) Ward child-index pairs
+        mask_idx (np.array): (X, Y, Z) int voxel-index array (-1 outside)
+        mask_target_list (list): the planted effect supports, one (X, Y, Z)
+            bool mask each (length 1 for the single-effect prune trials)
+        mask_active (np.array): (X, Y, Z) bool, the analyzed voxels
+
+    Returns:
+        the _score_regions dict (per-effect tp/fp/tn/fn, n_selected)
+    """
+    reg_mask_list = []
+    for reg_idx in reg_out_list:
+        label_map = glow.graph.get_label_map(
+            reg_idx_list=[reg_idx], mask_idx=mask_idx, children=children)
+        reg_mask_list.append((reg_idx, label_map > -1))
+    return _score_regions(reg_mask_list, mask_target_list, mask_active)
+
+
 def _score(ana, mask_target_list, mask_active) -> dict:
     """Score a fitted Analysis's effect_list against the planted effect(s).
 
@@ -174,12 +207,12 @@ def _score(ana, mask_target_list, mask_active) -> dict:
 
 
 def _plant_effect(exp, *, n_vox_eff: int, seed: int, llr):
-    """Plant one ExtenterMinVar effect on exp; the shared tail of the setups.
+    """Plant one ExtenterMinVar effect on exp; the planting tail of _setup_trial.
 
-    The piece common to _setup_trial and _setup_min_size: given the clean
-    experiment, the support size, the effect seed, and the resolved per-voxel
-    llr, plant one synthetic effect (or nothing for the null path) and return
-    the recorder-friendly (exp_eff, effect_list, mask_target_list) triple.
+    Given the clean experiment, the support size, the effect sub-seed, and the
+    resolved per-voxel llr, plant one synthetic effect (or nothing for the null
+    path) and return the recorder-friendly (exp_eff, effect_list,
+    mask_target_list) triple.
 
     Args:
         exp: the clean experiment to impose the effect on.
@@ -215,12 +248,23 @@ def _setup_trial(*, source: str, b: int, num_img: int, n_vox_eff: int,
     and swallows it, so the caller sees None and ends the trial without a
     try/except.
 
+    The trial seed is split (derive_seeds) into mutually independent DataSource /
+    feature / effect sub-seeds, so each seed is its own data realization -- an
+    independent WGN noise field (or HCP crop + design draw) -- with the planted
+    effect kept independent of that realization. Without the split a sweep's
+    seeds would share one base experiment (the DataSource seed pinned to
+    DS_SEED), leaving the per-seed replicates correlated; the ds sub-seed gives
+    each its own draw. The sub-seeds are a deterministic function of the trial
+    seed, so every effect_llr / method trial of one seed still reuses that
+    seed's single memoised ds build.
+
     Args:
         source (str): 'wgn' or 'hcp'
         b (int): imaging-feature count
         num_img (int): subject count (WGN; HCP uses its cohort)
         n_vox_eff (int): requested effect support size
-        seed (int): effect RNG seed (also selects the HCP feature subset)
+        seed (int): the trial seed, split by derive_seeds into independent
+            DataSource, feature (HCP subset), and effect sub-seeds
         effect_llr (float | None): per-voxel effect target
         effect_total_llr (float | None): whole-region effect target
 
@@ -235,9 +279,9 @@ def _setup_trial(*, source: str, b: int, num_img: int, n_vox_eff: int,
             Kept alongside the recorded specs so the score step (score_effects)
             scores the prediction against the actual planted voxels.
     """
-    ds, _ = build_ds(source, b=b, num_img=num_img, seed=seed)
+    ds, effect_seed = build_ds_for_seed(source, b=b, num_img=num_img, seed=seed)
     llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
-    return _plant_effect(ds.exp, n_vox_eff=n_vox_eff, seed=seed, llr=llr)
+    return _plant_effect(ds.exp, n_vox_eff=n_vox_eff, seed=effect_seed, llr=llr)
 
 
 def run_ana(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
@@ -295,38 +339,6 @@ def run_ana(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
 # spacing), and config offsets the min_size trial seeds by it so they sit
 # clear of the other sweeps' seeds.
 _SEED_OFFSET_DISTINCT = 100_000
-
-
-def _setup_min_size(*, source: str, b: int, num_img: int, n_vox_eff: int,
-                    seed: int, effect_llr=None, effect_total_llr=None):
-    """Build one min-size trial on an independent data realization.
-
-    Like _setup_trial, but the trial seed is split (derive_seeds) into
-    independent DataSource / feature / effect sub-seeds and the ds sub-seed
-    drives the DataSource, so each seed is its own data realization rather than
-    the shared DS_SEED base -- the min_size sweep wants independent nulls, with
-    the effect kept independent of the realization (see run_min_size). Same
-    (exp_eff, effect_list, mask_target_list) contract as _setup_trial; the call
-    site records it, and a build_ds failure on an infeasible cell is recorded
-    and swallowed.
-
-    Args:
-        source (str): 'wgn' or 'hcp'
-        b (int): imaging-feature count
-        num_img (int): subject count (WGN; HCP uses its cohort)
-        n_vox_eff (int): requested effect support size
-        seed (int): trial seed, split by derive_seeds into independent
-            DataSource, feature, and effect sub-seeds
-        effect_llr (float | None): per-voxel effect target
-        effect_total_llr (float | None): whole-region effect target
-
-    Returns:
-        exp_eff, effect_list, mask_target_list -- as _setup_trial.
-    """
-    s = derive_seeds(seed)
-    ds, _ = build_ds(source, b=b, num_img=num_img, seed=s.feat, ds_seed=s.ds)
-    llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
-    return _plant_effect(ds.exp, n_vox_eff=n_vox_eff, seed=s.effect, llr=llr)
 
 
 def _min_size_curves(exp_eff, *, n_perm_fwer: int, n_perm_inner: int,
@@ -390,17 +402,15 @@ def run_min_size(recorder, *, source: str, b: int, num_img: int,
                  effect_total_llr=None):
     """Capture each outer perm's (size -> max-z) curve for a min_vox sweep.
 
-    Records, it does not score. _setup_min_size plants one synthetic effect on
-    an independent data realization (recorded for provenance), then a single
-    curve step records the per-perm (size -> max-z) staircases (_min_size_curves
-    -> curve_json) plus its inputs (n_perm_fwer / n_perm_inner / min_vox_floor /
+    Records, it does not score. _setup_trial plants one synthetic effect on an
+    independent data realization (recorded for provenance; the trial seed is
+    split per source, so each seed is its own null), then a single curve step
+    records the per-perm (size -> max-z) staircases (_min_size_curves ->
+    curve_json) plus its inputs (n_perm_fwer / n_perm_inner / min_vox_floor /
     cluster_mode) and timing, tagged with the 'GLOW' method label (the cache's
     one method, so the records-to-csv reader keys on (trial_id, 'GLOW')). With
     those, GLOW's max-z FWER null can be swept over min_vox post hoc without
     re-fitting. Sweeping itself is derived afterward from the records, not here.
-
-    One deliberate departure from run_ana (see _setup_min_size): the trial seed
-    is split for an independent null per seed.
 
     Args:
         recorder (Recorder): the trial's recorder; calls are wrapped with it.
@@ -419,7 +429,7 @@ def run_min_size(recorder, *, source: str, b: int, num_img: int,
         effect_total_llr (float | None): whole-region effect target.
     """
     setup = recorder(output_name_list=(
-        'exp_eff', 'effect_list', 'mask_target_list'))(_setup_min_size)(
+        'exp_eff', 'effect_list', 'mask_target_list'))(_setup_trial)(
         source=source, b=b, num_img=num_img, n_vox_eff=n_vox_eff, seed=seed,
         effect_llr=effect_llr, effect_total_llr=effect_total_llr)
     if setup is None:
@@ -498,18 +508,20 @@ def run_segment(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
 
 def run_prune(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
               seed: int, effect_llr=None, effect_total_llr=None):
-    """Greedy vs DP pruning recorded on one shared GLOW fit.
+    """Greedy vs DP pruning scored on one shared GLOW fit.
 
-    Records, it does not score. Fits GLOW once (recorded -- self is the recipe),
-    then applies both pruning rules to the SAME FWER-significant region set, so
-    the comparison isolates the rule from the permutation test. Both rank
-    candidates by raw LLR (mirrors AnalysisGLOW.finalize; the z-score fragments
-    under pruning). prune_greedy blooms the max-LLR region and removes its tree
-    relatives (GLOW's default; undersegments); prune_dp takes the exact
-    max-total-LLR antichain (oversegments). Each prune call is recorded and
-    tagged with its rule label (GLOW-Greedy / GLOW-DP), its output the selected
-    regions. Scoring (the over/under-segmentation counts) is derived afterward
-    from the records.
+    Fits GLOW once (recorded -- self is the recipe), then applies both pruning
+    rules to the SAME FWER-significant region set, so the comparison isolates
+    the rule from the permutation test. Both rank candidates by raw LLR
+    (mirrors AnalysisGLOW.finalize; the z-score fragments under pruning).
+    prune_greedy blooms the max-LLR region and removes its tree relatives
+    (GLOW's default; undersegments); prune_dp takes the exact max-total-LLR
+    antichain (oversegments). Each prune call is recorded and tagged with its
+    rule label (GLOW-Greedy / GLOW-DP), its output the selected regions, then a
+    score step records that selection's detection counts (_score_prune) against
+    the planted effect. A third GLOW-MaxLLR arm scores the single highest-LLR
+    significant region on its own -- the headline "best region" dice / sens /
+    ppv (n_selected = 1), what greedy blooms first.
 
     Args:
         recorder (Recorder): the trial's recorder; calls are wrapped with it.
@@ -527,7 +539,8 @@ def run_prune(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
         effect_llr=effect_llr, effect_total_llr=effect_total_llr)
     if setup is None:
         return
-    exp_eff, _effect_list, _mask_target_list = setup
+    exp_eff, _effect_list, mask_target_list = setup
+    mask_active = exp_eff.mask_idx > -1
 
     # GLOW's default recipe, shared with the GLOW-Focus arm so both pruning
     # rules prune the regions GLOW would actually report. Deferred import:
@@ -546,10 +559,26 @@ def run_prune(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
     llr_gain = np.nan_to_num(ana.llr.astype(float), nan=0.0,
                              posinf=0.0, neginf=0.0)
 
+    def score(reg_out_list, label):
+        recorder(output_name='score', label=label)(_score_prune)(
+            reg_out_list=reg_out_list, children=ana.children,
+            mask_idx=exp_eff.mask_idx, mask_target_list=mask_target_list,
+            mask_active=mask_active)
+
+    # the single highest-LLR significant region -- what greedy blooms first,
+    # scored on its own as the headline "best region" detection quality
+    max_llr_reg = (max(sig_reg_list, key=lambda r: llr_gain[r])
+                   if sig_reg_list else None)
+    score([] if max_llr_reg is None else [max_llr_reg], 'GLOW-MaxLLR')
+
     for prune_fn, label in ((prune_greedy, 'GLOW-Greedy'), (prune_dp, 'GLOW-DP')):
-        recorder(output_name_list=('reg_out_list', 'prune_info'),
-                 label=label)(prune_fn)(
+        out = recorder(output_name_list=('reg_out_list', 'prune_info'),
+                       label=label)(prune_fn)(
             sig_reg_list=sig_reg_list, children=ana.children, stat=llr_gain)
+        if out is None:
+            continue
+        reg_out_list, _info = out
+        score(reg_out_list, label)
 
 
 # ---------------------------------------------------------------------------
@@ -675,8 +704,12 @@ def _setup_two_effect(*, source: str, b: int, num_img: int, n_vox_eff: int,
 
     A sphere centred in the mask is spectrally bisected (ExtenterSplit) into two
     contiguous halves; one effect is planted on each, same llr, with feature
-    directions `angle` apart (shared seed, angles 0 and angle). build_ds raises
-    on an infeasible cell (recorded + swallowed by the recorder).
+    directions `angle` apart (shared effect sub-seed, angles 0 and angle).
+    build_ds raises on an infeasible cell (recorded + swallowed by the recorder).
+
+    The trial seed is split (derive_seeds) into independent DataSource / feature
+    / effect sub-seeds, so each seed is its own data realization with the two
+    effects independent of it -- matching _setup_trial.
 
     A sphere splits cleanly into two equal halves; a min-variance extent's
     irregular shape splits unevenly (verified at 25k: 34/66..58/42), which would
@@ -690,7 +723,7 @@ def _setup_two_effect(*, source: str, b: int, num_img: int, n_vox_eff: int,
             provenance of where each effect landed (the effects carry the masks
             verbatim, so their own to_record omits the support).
     """
-    ds, _ = build_ds(source, b=b, num_img=num_img, seed=seed)
+    ds, effect_seed = build_ds_for_seed(source, b=b, num_img=num_img, seed=seed)
     exp = ds.exp
     llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
 
@@ -701,9 +734,9 @@ def _setup_two_effect(*, source: str, b: int, num_img: int, n_vox_eff: int,
     splitter = ExtenterSplit(
         base=ExtenterSphere(n_vox=n_vox_eff, connected=True, vox_init=vox_init))
     mask0, mask1 = splitter.fit(mask_idx=exp.mask_idx, y=exp.y)
-    e0 = EffectSynthetic(mask=mask0, effect_llr=llr, angle=0.0, seed=seed)
+    e0 = EffectSynthetic(mask=mask0, effect_llr=llr, angle=0.0, seed=effect_seed)
     e1 = EffectSynthetic(mask=mask1, effect_llr=llr, angle=float(angle),
-                         seed=seed)
+                         seed=effect_seed)
     exp_eff = e1.fit(e0.fit(exp)[0])[0]
     return exp_eff, [e0, e1], splitter
 

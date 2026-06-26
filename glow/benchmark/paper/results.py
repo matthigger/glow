@@ -37,7 +37,8 @@ def _flatten_score(score: dict) -> dict:
     """Flatten one score dict to scalar columns (confusion counts + scalars).
 
     Handles both score shapes the effect-discovery caches record:
-      - score_effects (run_ana): scalar num_vox / min_pval / n_pred plus a
+      - score_effects (run_ana): scalar num_vox / min_pval / n_pred (and
+        n_selected for the prune arms) plus a
         'target' confusion block (tp/fp/tn/fn vs the union of planted effects)
         and, with several effects, target0 / target1 / ... blocks scored
         against each effect in turn -> suffixed tp0/fp0/.. columns.
@@ -53,7 +54,7 @@ def _flatten_score(score: dict) -> dict:
         a flat dict of scalar columns for this (trial, method) row.
     """
     out = {}
-    for k in ('num_vox', 'min_pval', 'n_pred'):
+    for k in ('num_vox', 'min_pval', 'n_pred', 'n_selected'):
         if k in score:
             out[k] = score[k]
 

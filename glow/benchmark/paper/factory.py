@@ -8,10 +8,11 @@ run import from this module, so it must not import either of them (no
 import cycle).
 
 The DataSource build is memoised on its scalar identity (_ds_factory is
-lru_cached), so every method / effect_llr / effect-seed trial sharing one
-(source, b, num_img, feats) reuses a single ds.exp build -- the same
-amortisation the old object-valued catalogue got from sharing one ds
-instance across the seed loop.
+lru_cached on source / b / num_img / feats / ds_seed), so every method /
+effect_llr trial of one trial seed -- which derive_seeds maps to a single
+(feats, ds_seed) -- reuses that seed's single ds.exp build. Distinct trial
+seeds get distinct ds_seeds (an independent data realization each), so the
+build is amortised within a seed rather than shared across the seed loop.
 """
 import math
 from collections import namedtuple
@@ -28,9 +29,10 @@ from glow.effect import ExtenterSphere
 CROP_N_VOX = 25_000
 _WGN_SIDE_3D = math.ceil(CROP_N_VOX ** (1 / 3))
 
-# Data-source seed is held fixed (only the effect seed is swept), matching
-# the pre-flatten catalogue: the base images / design matrix are constant
-# across the effect-seed replicates within a structural cell.
+# Fallback DataSource seed for build_ds's ds_seed. The trial setups (run.py)
+# now derive an independent per-seed ds_seed via derive_seeds, so each trial
+# seed gets its own data realization; this fixed default only covers a direct
+# build_ds call that wants one shared base experiment (e.g. an ad-hoc probe).
 DS_SEED = 0
 
 # Mutually independent per-trial sub-seeds (see derive_seeds).
@@ -74,9 +76,10 @@ def _ds_factory(source: str, b: int, num_img: int, feats: tuple,
         b (int): imaging-feature count (WGN only; HCP uses len(feats))
         num_img (int): subject count (WGN only; HCP uses its full cohort)
         feats (tuple | None): HCP feature subset, or None for WGN
-        ds_seed (int): seed for the X design + sphere crop. The shared
-            DS_SEED gives one base experiment per cell (the sweeps); a
-            per-trial seed gives an independent data realization (min_size).
+        ds_seed (int): seed for the X design + sphere crop. A per-trial
+            ds_seed (from derive_seeds, what every trial setup passes) gives
+            each trial seed an independent data realization; the fixed DS_SEED
+            fallback gives one shared base experiment.
 
     Returns:
         the DataSource; its .exp is built once per identity and shared
@@ -102,17 +105,18 @@ def build_ds(source: str, *, b: int, num_img: int, seed: int,
 
     For HCP, draws the b-feature subset for this seed (sample_hcp_feats) and
     keys the build on it; for WGN, feats is None and b/num_img drive the build
-    directly. The X design + crop use ds_seed, defaulting to the shared
-    DS_SEED (one base experiment per cell, the sweeps' policy). Pass a
-    per-trial ds_seed (from derive_seeds) for an independent data realization,
-    as min_size does.
+    directly. The X design + crop use ds_seed: the trial setups pass a per-trial
+    ds_seed (from derive_seeds) so each trial seed is an independent data
+    realization; it falls back to the shared DS_SEED (one base experiment) only
+    when no ds_seed is given.
 
     Args:
         source (str): 'wgn' or 'hcp'
         b (int): imaging-feature count
         num_img (int): subject count (WGN only)
         seed (int): feature-subset seed (HCP); unused for WGN
-        ds_seed (int): seed for the X design + crop; default DS_SEED (shared)
+        ds_seed (int): seed for the X design + crop; the setups pass a per-seed
+            value (derive_seeds). Defaults to DS_SEED (shared base) as a fallback
 
     Returns:
         ds: the DataSource for this cell (memoised on its full identity)
@@ -128,10 +132,10 @@ def derive_seeds(seed: int) -> TrialSeeds:
     A single trial seed otherwise drives the DataSource, the HCP feature draw,
     and the planted effect off one RNG stream, coupling them (e.g. the effect
     placement correlated with the data realization). SeedSequence.spawn yields
-    three mutually independent child seeds, so an experiment that varies the
-    data source per trial (min_size) keeps the effect independent of the data.
-    Sweeps that share one base experiment leave ds at DS_SEED (build_ds's
-    default) and use the raw trial seed, so they do not call this.
+    three mutually independent child seeds, so each trial seed is an independent
+    data realization with the planted effect kept independent of it. Every trial
+    setup (run._setup_trial / _setup_two_effect, and the min_size curve setup)
+    derives its sub-seeds here; the DS_SEED-pinned shared base is no longer used.
 
     Args:
         seed (int): the trial seed (an iter_kwargs axis).
@@ -142,3 +146,31 @@ def derive_seeds(seed: int) -> TrialSeeds:
     ds, feat, effect = (int(s.generate_state(1)[0])
                         for s in np.random.SeedSequence(seed).spawn(3))
     return TrialSeeds(ds=ds, feat=feat, effect=effect)
+
+
+def build_ds_for_seed(source: str, *, b: int, num_img: int, seed: int):
+    """Build a trial's DataSource on its own data realization; hand back the
+    effect sub-seed.
+
+    The one entry point every run.py setup builds through, so the "independent
+    per-seed realization" convention lives in one place: the trial seed is split
+    (derive_seeds) into mutually independent ds / feature / effect sub-seeds, the
+    ds is built on the ds + feature sub-seeds (each trial seed its own draw), and
+    the effect sub-seed is returned for planting -- kept independent of that
+    draw. build_ds raises on an infeasible cell (e.g. HCP b > pool); the caller's
+    recorder records and swallows it.
+
+    Args:
+        source (str): 'wgn' or 'hcp'
+        b (int): imaging-feature count
+        num_img (int): subject count (WGN; HCP uses its cohort)
+        seed (int): the trial seed (an iter_kwargs axis), split here
+
+    Returns:
+        ds: the DataSource for this trial (memoised on its identity; .exp is
+            built once per identity and shared across the seed's trials)
+        effect_seed (int): the effect sub-seed, independent of the ds draw
+    """
+    s = derive_seeds(seed)
+    ds, _ = build_ds(source, b=b, num_img=num_img, seed=s.feat, ds_seed=s.ds)
+    return ds, s.effect
