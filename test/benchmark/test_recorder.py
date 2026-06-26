@@ -477,3 +477,101 @@ def test_in_memory_recorder_writes_no_files(rec):
     assert rec.folder is None
     assert rec.load() is rec.records
     assert len(rec.records) == 1
+
+
+# --- provenance DAG: per-value hashes + flatten_to_df -----------------------
+
+def _chain(rec):
+    """Record a 3-step make -> use -> final chain; return the final value.
+
+    Each step consumes the previous step's output, so the records form a
+    make -> use -> final line whose only leaf is `final`.
+    """
+    import numpy as np
+
+    @rec(output_name='a')
+    def make(seed):
+        return np.arange(seed, seed + 3)
+
+    @rec(output_name='b')
+    def use(a):
+        return int(a.sum())
+
+    @rec(output_name='c')
+    def final(b):
+        return b + 1000
+
+    return final(use(make(10)))
+
+
+def test_per_value_hashes_recorded(rec):
+    # each named input / output is hashed with joblib.hash -- the edges the DAG
+    # is built from (an input that *is* another call's output shares its hash)
+    @rec(output_name='out')
+    def f(a):
+        return a + 1
+
+    f(5)
+    record = _only(rec.records)
+    assert record['input_hashes'] == {'a': joblib.hash(5)}
+    assert record['output_hashes'] == {'out': joblib.hash(6)}
+
+
+def test_flatten_to_df_chains_leaf_with_ancestors(rec):
+    final_val = _chain(rec)
+
+    df = rec.flatten_to_df()
+    # exactly one leaf (final's output feeds no other record)
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert row['function'].endswith('final')
+    assert row['out.c'] == final_val
+
+    # both ancestors are appended under their short function names
+    assert row['use.function'].endswith('use')
+    assert row['make.function'].endswith('make')
+    # the swept axis rides in from the root of the chain
+    assert row['make.in.seed'] == 10
+    # the join holds: final's input b is use's output b (same content hash ->
+    # same coerced cell)
+    assert row['in.b'] == row['use.out.b']
+
+
+def test_flatten_to_df_one_row_per_leaf(rec):
+    # two independent calls (neither consumes the other) -> two ancestor-less
+    # leaves, one row each
+    @rec(output_name='out')
+    def f(a):
+        return a + 100
+
+    f(1)
+    f(2)
+    df = rec.flatten_to_df()
+    assert len(df) == 2
+    assert set(df['out.out']) == {101, 102}
+
+
+def test_flatten_to_df_survives_disk_round_trip(tmp_path):
+    # the DAG is rebuilt from the persisted hash maps, so a fresh reader over
+    # the folder reconstructs the same leaf-with-ancestors row
+    _chain(Recorder(folder=tmp_path))
+
+    reader = Recorder(folder=tmp_path)
+    reader.load()
+    df = reader.flatten_to_df()
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert row['function'].endswith('final')
+    assert row['make.in.seed'] == 10
+
+
+def test_flatten_to_df_records_without_hashes_are_lone_leaves(rec):
+    # a record predating the hash maps contributes no edges -> it is its own
+    # ancestor-less leaf (graceful, no crash)
+    rec.records['legacy'] = {
+        'hash': 'legacy', 'function': 'old.fn', 'time_sec': 0.0,
+        'inputs': {'x': 1}, 'outputs': {'y': 2},
+    }
+    df = rec.flatten_to_df()
+    assert len(df) == 1
+    assert df.iloc[0]['function'] == 'old.fn'

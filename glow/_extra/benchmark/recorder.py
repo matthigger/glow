@@ -4,7 +4,7 @@ A ``Recorder`` is a decorator factory. Decorating a function makes every
 *successful* call store one record
 
     {"hash": ..., "function": ..., "inputs": {...}, "outputs": {...},
-     "time_sec": ...}
+     "input_hashes": {...}, "output_hashes": {...}, "time_sec": ...}
 
 keyed by ``joblib.hash(filter_args(fnc, [], args, kwargs))`` -- byte-for-byte
 the key ``joblib.Memory`` files the same call's result under (its
@@ -58,6 +58,19 @@ may replace repr later). Raw numpy is kept compact -- a scalar becomes its
 Python value and an ndarray its stable content hash -- so a stray heavy array
 does not dump wholesale. Records held in memory keep live references (the
 inputs/outputs themselves), serialised only when written to disk.
+
+Provenance DAG: each record also stores ``input_hashes`` / ``output_hashes``
+-- ``joblib.hash`` of every named input and output value. A call B *depends on*
+a call A when one of B's input hashes equals one of A's output hashes (B
+consumed the value A produced). Because the link is by content hash, not object
+``id()``, it survives the per-hash on-disk layout above: producer and consumer
+may be different processes or different runs, yet their shared value hashes the
+same. ``flatten_to_df`` reads ``records`` as that directed acyclic graph and
+returns one row per *leaf* (a record whose outputs feed no other record) with
+every ancestor's fields appended -- e.g. a score leaf carries the fit it scored
+and the setup that built the data, so one row holds a whole trial. (Each value
+is hashed once more here, on top of the args-hash key; negligible beside the
+call being recorded.)
 """
 
 import functools
@@ -67,6 +80,7 @@ import os
 import tempfile
 import time
 import warnings
+from collections import defaultdict, deque
 from pathlib import Path
 
 import joblib
@@ -97,14 +111,93 @@ def _json_default(obj):
     return repr(obj)
 
 
+def _safe_hash(value):
+    """``joblib.hash(value)``, or None when the value can't be hashed.
+
+    The per-value content hashes drive the provenance DAG, but a recorded
+    output may be any object -- including an unpicklable one joblib can't hash.
+    Such a value gets no hash (None): it simply forms no edge, rather than
+    failing the recording of an otherwise-successful call. (A call's hashable
+    *arguments* are already required by the args-hash key; this only widens the
+    tolerance for opaque *outputs*.)
+    """
+    try:
+        return joblib.hash(value)
+    except Exception:
+        return None
+
+
+def _cell(value):
+    """Coerce a recorded input/output value to a DataFrame cell.
+
+    Routes the value through the same json serialisation the records use on
+    disk (``_json_default``), so a live object and its reloaded form flatten to
+    the *same* cell: a scalar stays itself, an ndarray / opaque object collapses
+    to its content-hash / repr string, a small list/dict is kept structurally
+    (its arrays hashed). Object *identity* for the DAG edges lives in the
+    records' hash maps, not in these (display / slicing) cells.
+    """
+    return json.loads(json.dumps(value, default=_json_default))
+
+
+def _flatten_record(record) -> dict:
+    """One record as a flat ``{column: cell}`` dict for flatten_to_df.
+
+    Carries the record's ``hash`` / ``function`` / ``label`` / ``time_sec`` and
+    one ``in.<name>`` / ``out.<name>`` column per named input / output (each
+    value coerced by ``_cell``). ``label`` is None when the call carried none.
+    """
+    flat = {
+        'hash': record['hash'],
+        'function': record['function'],
+        'label': record.get('label'),
+        'time_sec': record.get('time_sec'),
+    }
+    for name, value in record.get('inputs', {}).items():
+        flat[f'in.{name}'] = _cell(value)
+    for name, value in record.get('outputs', {}).items():
+        flat[f'out.{name}'] = _cell(value)
+    return flat
+
+
+def _ancestor_depths(start, parents_of) -> dict:
+    """Breadth-first map of every transitive ancestor of ``start`` to its depth.
+
+    ``parents_of(key)`` gives a record's immediate producers; this walks them
+    transitively, recording each ancestor's shortest hop count from ``start``
+    (its first visit, breadth-first). The visited set (``depth`` keys) makes it
+    cycle-safe should a content-hash collision forge a back edge. ``start``
+    itself is excluded from the result.
+
+    Args:
+        start: the leaf record key to walk up from.
+        parents_of: maps a record key to the set of its immediate-producer keys.
+
+    Returns:
+        ancestor record key -> depth (hops from ``start``), ``start`` omitted.
+    """
+    depth = {start: 0}
+    queue = deque([start])
+    while queue:
+        key = queue.popleft()
+        for parent in parents_of(key):
+            if parent not in depth:
+                depth[parent] = depth[key] + 1
+                queue.append(parent)
+    del depth[start]
+    return depth
+
+
 class Recorder:
     """Decorator factory recording each decorated call, keyed by its args hash.
 
     Attributes:
         records (dict): hash -> recorded call dict, one per executed decorated
-            call. Each carries ``{hash, function, inputs, outputs, time_sec}``
-            and, when a ``label`` was given, that too. A repeat hash overwrites
-            (and warns); see the module docstring.
+            call. Each carries ``{hash, function, inputs, outputs, input_hashes,
+            output_hashes, time_sec}`` and, when a ``label`` was given, that too.
+            The hash maps (``joblib.hash`` per named value) are the provenance
+            DAG edges flatten_to_df reads. A repeat hash overwrites (and warns);
+            see the module docstring.
         folder (Path | None): the directory record files are mirrored to (one
             ``<hash>.json`` per record), created on construction, or None for
             in-memory only. The Recorder is the only object that reads/writes
@@ -251,6 +344,12 @@ class Recorder:
                         )
                     outputs = dict(zip(output_name_list, out))
 
+                # per-value content hashes: an input that *is* another call's
+                # output shares that output's joblib.hash, so flatten_to_df()
+                # links the two into a provenance DAG (see module docstring).
+                input_hashes = {n: _safe_hash(v) for n, v in inputs.items()}
+                output_hashes = {n: _safe_hash(v) for n, v in outputs.items()}
+
                 # key by joblib's own args hash, so the record matches the
                 # cache entry the same call writes (see module docstring)
                 key = self._args_hash(fnc, args, kwargs)
@@ -260,6 +359,8 @@ class Recorder:
                     **({"label": label} if label is not None else {}),
                     "inputs": inputs,
                     "outputs": outputs,
+                    "input_hashes": input_hashes,
+                    "output_hashes": output_hashes,
                     "time_sec": time_sec,
                 })
                 return out
@@ -314,3 +415,93 @@ class Recorder:
             rec = json.loads(p.read_text())
             self.records[rec['hash']] = rec
         return self.records
+
+    def flatten_to_df(self, prefix_sep='.'):
+        """Flatten the records into a leaf-per-row provenance DataFrame.
+
+        Reads ``records`` as a directed acyclic graph: a call B depends on a
+        call A when one of B's ``input_hashes`` equals one of A's
+        ``output_hashes`` (B consumed the value A produced -- the same
+        ``joblib.hash`` content identity, so the edge holds across processes and
+        runs; see the module docstring). Each *leaf* -- a record whose outputs
+        feed no other record -- becomes one row, carrying its own fields plus
+        those of every ancestor (transitive producer) appended as prefixed
+        columns. A typical benchmark leaf is a score step; its ancestors are the
+        fit it scored and the setup that built the data, so one row holds the
+        whole trial: the swept axes (setup inputs), the recipe and timing (fit),
+        and the result (the score outputs).
+
+        Each record contributes ``hash`` / ``function`` / ``label`` /
+        ``time_sec`` and one ``in.<name>`` / ``out.<name>`` column per named
+        input / output (values coerced by ``_cell``). The leaf's columns are
+        unprefixed; each ancestor's are prefixed by its short function name
+        (e.g. ``fit.time_sec``), suffixed ``#2`` / ``#3`` if one leaf has two
+        ancestors sharing that name. Ancestors are ordered shallowest-first
+        (then by function and hash) so the prefixes are deterministic. Records
+        missing the hash maps (written before they existed) contribute no edges
+        -- each is then its own ancestor-less leaf.
+
+        Operates on the in-memory ``records``; call ``load()`` first to fold in
+        a folder's on-disk records from other writers.
+
+        Args:
+            prefix_sep (str): separator between an ancestor's prefix and its
+                column name (e.g. the ``.`` in ``fit.time_sec``).
+
+        Returns:
+            a pandas DataFrame with one row per leaf record; columns are the
+            union across leaves, NaN where a leaf lacks an ancestor's column.
+        """
+        import pandas as pd
+
+        records = self.records
+
+        # output content hash -> the record that produced it. A collision (two
+        # calls emitting an equal value, see module docstring) keeps the last
+        # writer; in practice the heavy domain objects are unique per trial. A
+        # None hash (an unhashable value, see _safe_hash) forms no edge.
+        producer_of = {}
+        for key, rec in records.items():
+            for h in rec.get('output_hashes', {}).values():
+                if h is not None:
+                    producer_of[h] = key
+
+        def parents_of(key):
+            """The records that produced this record's inputs (no self-edge)."""
+            ps = set()
+            for h in records[key].get('input_hashes', {}).values():
+                producer = producer_of.get(h)
+                if producer is not None and producer != key:
+                    ps.add(producer)
+            return ps
+
+        # input content hash -> the records consuming it. A leaf is a record
+        # none of whose (hashable) outputs is consumed by *another* record; the
+        # self exclusion keeps an identity call (input value == output value) a
+        # leaf, and a None output hash never disqualifies one.
+        consumers_of = defaultdict(set)
+        for key, rec in records.items():
+            for h in rec.get('input_hashes', {}).values():
+                if h is not None:
+                    consumers_of[h].add(key)
+        leaves = [key for key, rec in records.items()
+                  if all(not (consumers_of[h] - {key})
+                         for h in rec.get('output_hashes', {}).values()
+                         if h is not None)]
+
+        rows = []
+        for leaf in leaves:
+            row = _flatten_record(records[leaf])
+            depth = _ancestor_depths(leaf, parents_of)
+            # deterministic prefixing: shallowest ancestor first, then function
+            # and hash, disambiguating a repeated short name with #2 / #3
+            seen = {}
+            for anc in sorted(depth, key=lambda k: (depth[k], records[k]['function'], k)):
+                role = records[anc]['function'].rsplit('.', 1)[-1]
+                seen[role] = seen.get(role, 0) + 1
+                prefix = role if seen[role] == 1 else f'{role}#{seen[role]}'
+                row.update({f'{prefix}{prefix_sep}{col}': val
+                            for col, val in _flatten_record(records[anc]).items()})
+            rows.append(row)
+
+        return pd.DataFrame(rows)
