@@ -1,4 +1,4 @@
-"""Tests for glow.benchmark.hcp: DUA gating, presence, Zenodo resolution.
+"""Tests for glow._extra.benchmark.hcp: DUA gating, presence, Zenodo resolution.
 
 No test touches the network or loads NIfTI: downloads are stubbed and the
 regex search runs over a synthetic on-disk tree of empty files named like
@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from glow.benchmark import hcp
+from glow._extra.benchmark import hcp
 
 
 # ---------------------------------------------------------------------------

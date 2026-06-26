@@ -6,7 +6,7 @@ record id is an allowlist: only files belonging to that record are ever
 downloaded and unpickled, so the viewer never deserialises bytes from an
 untrusted source. This is the whole point of fetching by record id rather
 than accepting an upload -- pickle.load on attacker-supplied bytes is
-arbitrary code execution (see glow/viewer/web/README.md).
+arbitrary code execution (see glow/_extra/viewer/web/README.md).
 
 Zenodo's public read API needs no authentication. A GET of
 {api_base}/records/{record_id} returns a JSON record whose files live

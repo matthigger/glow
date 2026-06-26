@@ -4,8 +4,8 @@ import types
 
 import pytest
 
-from glow.aws import infra
-from glow.aws.config import AWSConfig
+from glow._extra.aws import infra
+from glow._extra.aws.config import AWSConfig
 
 
 def _answers(*responses):

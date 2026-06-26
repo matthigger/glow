@@ -4,7 +4,7 @@ import uuid
 
 import pytest
 
-from glow.benchmark.recorder import Recorder
+from glow._extra.benchmark.recorder import Recorder
 
 
 @pytest.fixture

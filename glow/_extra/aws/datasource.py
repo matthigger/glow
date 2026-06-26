@@ -11,7 +11,7 @@ just satisfies the one part of the DataSource contract that run_fnc
 actually uses: .exp.
 
 The driver swaps this wrapper in for a real-data DataSource when building
-a cache's S3-shipped twin (glow.aws.driver._to_s3_cache).  Its hash
+a cache's S3-shipped twin (glow._extra.aws.driver._to_s3_cache).  Its hash
 therefore differs from the inner ds's; the twin cache's
 TrialCache.trial_alias_map maps that swapped hash back to the original, so
 save_result still writes the original trial's results.csv row.
@@ -25,7 +25,7 @@ import boto3
 import cloudpickle
 from botocore.exceptions import ClientError
 
-from glow.aws.config import s3_key
+from glow._extra.aws.config import s3_key
 from glow.util import DataclassJSON, value_id
 
 

@@ -2,14 +2,14 @@
 
 Subcommands:
 
-    python -m glow.aws.infra bootstrap [--config PATH]
-    python -m glow.aws.infra setup     [--build] [--image-tag IMG] [--config PATH]
-    python -m glow.aws.infra teardown  [--yes] [--delete-bucket] [--config PATH]
-    python -m glow.aws.infra status    [--label LABEL]              [--config PATH]
-    python -m glow.aws.infra clear_storage [--jobs] [--datasource] [--yes] [--config PATH]
-    python -m glow.aws.infra clear_jobs    [--label LABEL] [--yes]      [--config PATH]
-    python -m glow.aws.infra pause                                 [--config PATH]
-    python -m glow.aws.infra resume                                [--config PATH]
+    python -m glow._extra.aws.infra bootstrap [--config PATH]
+    python -m glow._extra.aws.infra setup     [--build] [--image-tag IMG] [--config PATH]
+    python -m glow._extra.aws.infra teardown  [--yes] [--delete-bucket] [--config PATH]
+    python -m glow._extra.aws.infra status    [--label LABEL]              [--config PATH]
+    python -m glow._extra.aws.infra clear_storage [--jobs] [--datasource] [--yes] [--config PATH]
+    python -m glow._extra.aws.infra clear_jobs    [--label LABEL] [--yes]      [--config PATH]
+    python -m glow._extra.aws.infra pause                                 [--config PATH]
+    python -m glow._extra.aws.infra resume                                [--config PATH]
 
 Reads AWSConfig from the default user-config path (or --config) for
 bucket, queue, job-definition, and region names; the rest of the provisioning detail
@@ -32,7 +32,7 @@ from typing import Dict, List, Optional, Tuple
 import boto3
 from botocore.exceptions import ClientError
 
-from glow.aws.config import AWSConfig, DEFAULT_CONFIG_PATH, s3_key
+from glow._extra.aws.config import AWSConfig, DEFAULT_CONFIG_PATH, s3_key
 
 
 # ---------- compute-environment constants -----------------------------------
@@ -118,7 +118,7 @@ def cmd_bootstrap(args, cfg: AWSConfig) -> None:
         inline={'GlowS3Access': _s3_policy(cfg.s3_bucket)})
 
     print('[bootstrap] done. now run: '
-          'python -m glow.aws.infra setup --image-tag glow-worker:latest')
+          'python -m glow._extra.aws.infra setup --image-tag glow-worker:latest')
 
 
 def _trust(service: str) -> dict:
@@ -412,7 +412,7 @@ def _setup_job_definition(cfg: AWSConfig, *, image_uri: str,
     exec_role = f'arn:aws:iam::{account_id}:role/GlowEcsTaskExecutionRole'
     task_role = f'arn:aws:iam::{account_id}:role/GlowEcsTaskRole'
 
-    # No command: the image ENTRYPOINT is `python -m glow.aws.worker`, and
+    # No command: the image ENTRYPOINT is `python -m glow._extra.aws.worker`, and
     # the driver overrides command per-submission to pass the manifest URI
     # as its argv.
     container = {
@@ -1101,7 +1101,7 @@ def cmd_clear_jobs(args, cfg: AWSConfig) -> None:
                               label=args.label):
             batch.terminate_job(
                 jobId=job['jobId'],
-                reason='terminated via glow.aws.infra clear_jobs')
+                reason='terminated via glow._extra.aws.infra clear_jobs')
             total += 1
     scope = f' for label {args.label}' if args.label else ''
     print(f'  ✓ terminated {total} active job(s) in {cfg.job_queue}{scope}')
@@ -1154,8 +1154,8 @@ def _build_parser() -> argparse.ArgumentParser:
             subcommand sets its handler via func.
     """
     p = argparse.ArgumentParser(
-        prog='python -m glow.aws.infra',
-        description='Idempotent AWS Batch provisioning for glow.aws.')
+        prog='python -m glow._extra.aws.infra',
+        description='Idempotent AWS Batch provisioning for glow._extra.aws.')
     p.add_argument('--config', default=DEFAULT_CONFIG_PATH,
                    help=f'path to AWSConfig JSON (default: {DEFAULT_CONFIG_PATH})')
     subs = p.add_subparsers(dest='cmd', required=True)

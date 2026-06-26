@@ -81,7 +81,7 @@ class ExperimentImageOnly:
         """Build a JSON-friendly identity dict for provenance (no raw y).
 
         The benchmark Recorder serialises any value exposing to_record (see
-        glow.benchmark.recorder). This records the experiment's identity
+        glow._extra.benchmark.recorder). This records the experiment's identity
         without its large y array: the (b, num_img, num_vox) shape, dtype, and
         a stable content hash (_hash). meta is deliberately omitted -- it
         carries the full subject / feature lists, more bulk than the record is

@@ -53,7 +53,7 @@ class Analysis(ABC):
         """Build a JSON-friendly recipe dict: class name + config knobs.
 
         The benchmark Recorder serialises any value exposing to_record (see
-        glow.benchmark.recorder). This records only the configuration subset
+        glow._extra.benchmark.recorder). This records only the configuration subset
         declared in RECORD_FIELDS (the __init__ knobs) -- never exp, the
         fitted outputs (effect_list, pval, and any per-region array), nor the
         large data arrays. exp is omitted deliberately: it is recorded as its

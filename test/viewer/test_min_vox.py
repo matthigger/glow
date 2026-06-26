@@ -5,9 +5,9 @@ import sys
 import numpy as np
 import pytest
 
-from glow.viewer.app import (_create_app, _display_region_ids,
+from glow._extra.viewer.app import (_create_app, _display_region_ids,
                              _resolve_min_vox, _suggest_min_vox)
-from glow.viewer.scatter import build_scatter
+from glow._extra.viewer.scatter import build_scatter
 
 
 def _main_marker_trace(fig):

@@ -33,8 +33,8 @@ import numpy as np
 import glow
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr, get_wilks
-from glow.benchmark import hcp
-from glow.benchmark.trial_cache import TrialCache
+from glow._extra.benchmark import hcp
+from glow._extra.benchmark.trial_cache import TrialCache
 
 from .factory import CROP_N_VOX
 from .run import (run_ana, run_mancova, run_min_size, run_prune, run_segment,

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from glow.aws.config import AWSConfig
+from glow._extra.aws.config import AWSConfig
 
 
 def _make():

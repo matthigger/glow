@@ -5,9 +5,9 @@ import json
 import numpy as np
 import pytest
 
-from glow.viewer.app import _create_app
-from glow.viewer.data import compute_backgrounds, get_feature_columns
-from glow.viewer.image import compute_bg_volume
+from glow._extra.viewer.app import _create_app
+from glow._extra.viewer.data import compute_backgrounds, get_feature_columns
+from glow._extra.viewer.image import compute_bg_volume
 
 
 class TestLayout2D:

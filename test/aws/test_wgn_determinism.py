@@ -9,7 +9,7 @@ them (or worse, silently disagree at the float-tolerance level).
 
 import numpy as np
 
-from glow.benchmark.data import DataSource, DataSourceWGN
+from glow._extra.benchmark.data import DataSource, DataSourceWGN
 
 
 def _fresh_wgn(**kwargs):

@@ -3,7 +3,7 @@
 The recorder writes one json per trial under a cache's records/ dir, each a
 list of step records (one per decorated call: function, optional method label,
 inputs, outputs, the trial's scalar axes, and time_sec; see
-glow.benchmark.recorder). The plots want the opposite shape -- one tidy row per
+glow._extra.benchmark.recorder). The plots want the opposite shape -- one tidy row per
 (trial, method), the trial's scalar axes beside the method's detection score
 flattened to columns -- the long-format results.csv the old driver wrote
 directly. records_to_df is that pivot.
@@ -21,7 +21,7 @@ row.
 """
 import pandas as pd
 
-from glow.benchmark.file import add_metric_cols
+from glow._extra.benchmark.file import add_metric_cols
 
 
 # scalar trial axes stamped on every record (recorder.flush); copied through to

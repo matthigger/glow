@@ -12,8 +12,8 @@ import pandas as pd
 
 import pytest
 
-import glow.benchmark
-from glow.benchmark.paper.run import _effect_llr, _plant, _score, _score_regions
+import glow._extra.benchmark
+from glow._extra.benchmark.paper.run import _effect_llr, _plant, _score, _score_regions
 
 
 class _FakeExp:
@@ -143,7 +143,7 @@ def test_add_metric_cols_round_trip():
     # a counts-only row gains dice/sens/ppv/spec at load time
     df = pd.DataFrame([{'tp': 2, 'fp': 1, 'tn': 1, 'fn': 0}])
 
-    out = glow.benchmark.add_metric_cols(df)
+    out = glow._extra.benchmark.add_metric_cols(df)
 
     assert np.isclose(out['dice'].iloc[0], 2 * 2 / (2 * 2 + 1 + 0))
     assert np.isclose(out['sens'].iloc[0], 1.0)

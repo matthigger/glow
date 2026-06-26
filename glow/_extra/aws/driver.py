@@ -1,6 +1,6 @@
 """TrialCache-compatible AWS Batch runner.
 
-Mirrors glow.benchmark.driver.driver_local: pulls uncached trials, runs
+Mirrors glow._extra.benchmark.driver.driver_local: pulls uncached trials, runs
 each through run_fnc, saves the result back through
 trial_cache.save_result. Each run is one Batch array job (potentially
 escalated through aws_config.memory_mb_tiers for OOM children) whose
@@ -39,10 +39,10 @@ import boto3
 import cloudpickle
 from tqdm import tqdm
 
-from glow.aws.config import s3_key
-from glow.aws.datasource import DataSourceS3
-from glow.benchmark.data import DataSource, DataSourceWGN
-from glow.benchmark.trial_cache import TrialCache
+from glow._extra.aws.config import s3_key
+from glow._extra.aws.datasource import DataSourceS3
+from glow._extra.benchmark.data import DataSource, DataSourceWGN
+from glow._extra.benchmark.trial_cache import TrialCache
 from glow.util import stable_hash, value_id
 
 
@@ -426,7 +426,7 @@ def _submit_job(*, batch, aws_config, run_id: str, manifest_uri: str,
         is_array (bool): True if submitted as an array job.
     """
     overrides = {
-        # The image ENTRYPOINT is `python -m glow.aws.worker`; the command
+        # The image ENTRYPOINT is `python -m glow._extra.aws.worker`; the command
         # is appended as its argv, so pass only the manifest URI here.
         'command': [manifest_uri],
         'resourceRequirements': [

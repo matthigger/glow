@@ -1,10 +1,10 @@
-"""Tests for glow.viewer.scatter (figure building)."""
+"""Tests for glow._extra.viewer.scatter (figure building)."""
 
 import numpy as np
 import plotly.graph_objects as go
 
-from glow.viewer.scatter import build_scatter
-from glow.viewer.data import get_feature_columns
+from glow._extra.viewer.scatter import build_scatter
+from glow._extra.viewer.data import get_feature_columns
 
 
 class TestBuildScatterBasic:

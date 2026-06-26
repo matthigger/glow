@@ -1,17 +1,17 @@
-"""Pre-bake a curated set of glow.viewer demo analyses for the web demo.
+"""Pre-bake a curated set of glow._extra.viewer demo analyses for the web demo.
 
 Each entry in ``COMBOS`` calls one of the existing ``_demo_*`` builders in
-``glow.viewer.__main__`` and pickles the resulting ``(ana, mask_target)`` pair
+``glow._extra.viewer.__main__`` and pickles the resulting ``(ana, mask_target)`` pair
 to ``PICKLE_DIR``.
 
 Usage::
 
-    python -m glow.viewer.web.bake_demos                    # bake all
-    python -m glow.viewer.web.bake_demos --force            # rebuild even
+    python -m glow._extra.viewer.web.bake_demos                    # bake all
+    python -m glow._extra.viewer.web.bake_demos --force            # rebuild even
                                                             # if pickle exists
-    python -m glow.viewer.web.bake_demos --out path/to/dir  # custom output
+    python -m glow._extra.viewer.web.bake_demos --out path/to/dir  # custom output
 
-The pickles are loaded by ``glow.viewer.web.server`` at startup and served
+The pickles are loaded by ``glow._extra.viewer.web.server`` at startup and served
 via the multi-user Dash app.
 
 Each combo produces a single ``.p.gz`` file named by ``canonical_key()`` so
@@ -26,7 +26,7 @@ import sys
 import time
 
 # import the demo builders from the existing CLI module
-from glow.viewer.__main__ import (
+from glow._extra.viewer.__main__ import (
     _demo_wgn_2d,
     _demo_wgn_3d,
     _demo_mandrill,

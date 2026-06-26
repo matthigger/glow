@@ -12,10 +12,10 @@ from functools import partial
 
 from glow.analysis import AnalysisVBA
 from glow.analysis.cluster import ClusterMode
-from glow.benchmark.trial_cache import TrialCache
-from glow.benchmark.recorder import RECORDS_DIR
-from glow.benchmark.paper import run as paper_run
-from glow.benchmark.driver import driver_local
+from glow._extra.benchmark.trial_cache import TrialCache
+from glow._extra.benchmark.recorder import RECORDS_DIR
+from glow._extra.benchmark.paper import run as paper_run
+from glow._extra.benchmark.driver import driver_local
 
 VBA = {'VBA': (AnalysisVBA, dict(n_perm_fwer=1))}
 
@@ -176,7 +176,7 @@ class TestConvertedFitFns:
 
     def test_prune_records_fit_and_both_rules(self, tmp_path, monkeypatch):
         # the real _GLOW_BASE is 250x1000 perms; shrink it for the test
-        from glow.benchmark.paper import config as cfg
+        from glow._extra.benchmark.paper import config as cfg
         monkeypatch.setattr(cfg, '_GLOW_BASE',
                             dict(n_perm_fwer=1, n_perm_inner=2))
         cache = _cache(tmp_path, b=[2], seed=[0])

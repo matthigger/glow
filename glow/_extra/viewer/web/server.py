@@ -1,11 +1,11 @@
-"""Multi-demo web server for glow.viewer.
+"""Multi-demo web server for glow._extra.viewer.
 
 Serves two things off one Flask server, wrapped in a WSGI
 ``DispatcherMiddleware`` so apps can be mounted after start-up:
 
 * **Curated demos** -- every baked pickle in ``pickles/`` is loaded at
   boot into its own Dash app, mounted under ``/{key}/`` (see
-  ``glow.viewer.app._create_app``). The root ``/`` serves a landing page.
+  ``glow._extra.viewer.app._create_app``). The root ``/`` serves a landing page.
 * **Zenodo browser** -- ``/zenodo/`` lists the files of one pre-configured
   Zenodo record (GLOW_ZENODO_RECORD_ID); picking one downloads that single
   pickle, mounts a fresh viewer for it under ``/zenodo/view/<slug>/``, and
@@ -24,12 +24,12 @@ in the worker process, so the deployment runs a single gunicorn worker
 
 Run locally::
 
-    python -m glow.viewer.web.server                # dev server, port 7860
-    PORT=8080 python -m glow.viewer.web.server      # custom port
+    python -m glow._extra.viewer.web.server                # dev server, port 7860
+    PORT=8080 python -m glow._extra.viewer.web.server      # custom port
 
 Run under gunicorn (Docker / HF Spaces)::
 
-    gunicorn glow.viewer.web.server:application --bind 0.0.0.0:7860 --workers 1
+    gunicorn glow._extra.viewer.web.server:application --bind 0.0.0.0:7860 --workers 1
 """
 
 import argparse
@@ -48,8 +48,8 @@ from typing import Dict, List, Optional, Tuple
 from flask import Flask, abort, redirect
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
 
-from glow.viewer.app import _create_app
-from glow.viewer.web import zenodo
+from glow._extra.viewer.app import _create_app
+from glow._extra.viewer.web import zenodo
 
 
 _PICKLE_DIR = pathlib.Path(__file__).parent / 'pickles'
@@ -445,7 +445,7 @@ def build_application(pickle_dir=_PICKLE_DIR) -> DispatcherMiddleware:
     return application
 
 
-# WSGI entry point: gunicorn loads ``glow.viewer.web.server:application``.
+# WSGI entry point: gunicorn loads ``glow._extra.viewer.web.server:application``.
 # Built eagerly at import so workers don't race on first request.
 application = build_application()
 

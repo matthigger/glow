@@ -86,7 +86,7 @@ class DataclassJSON:
         """Return this spec's JSON-friendly record (its to_dict identity).
 
         The benchmark Recorder serialises any value exposing to_record (see
-        glow.benchmark.recorder._json_default); for a DataclassJSON spec that
+        glow._extra.benchmark.recorder._json_default); for a DataclassJSON spec that
         is just its identity dict, so the record nests the full stable recipe.
         """
         return self.to_dict()

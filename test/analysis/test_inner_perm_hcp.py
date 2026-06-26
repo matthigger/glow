@@ -20,7 +20,7 @@ rather than replay one trial we plant a block of voxels with a55e7237's
 pathological profile on top of real HCP data and compare the two accumulation
 dtypes directly.
 
-Skipped unless the HCP reference dataset is present (glow.benchmark.hcp) AND
+Skipped unless the HCP reference dataset is present (glow._extra.benchmark.hcp) AND
 --runslow is passed (it loads the full HCP brain).
 """
 import numpy as np
@@ -29,8 +29,8 @@ import pytest
 import glow.graph
 from glow.analysis.mancova import decompose
 from glow.experiment import permute
-from glow.benchmark import hcp
-from glow.benchmark.data import DataSourceHCP
+from glow._extra.benchmark import hcp
+from glow._extra.benchmark.data import DataSourceHCP
 
 
 def _caterpillar_children(num_vox):
@@ -66,7 +66,7 @@ def test_iter_llr_perm_float64_survives_near_constant_voxels():
     does not -- it NaNs roughly half the inner-FL draws and collapses the rest.
     """
     if not hcp.is_present():
-        pytest.skip('HCP reference dataset not present (see glow.benchmark.hcp)')
+        pytest.skip('HCP reference dataset not present (see glow._extra.benchmark.hcp)')
 
     # a55e7237's design: intercept-only nuisance (a0 = 1), one contrast (a1 = 1)
     exp = DataSourceHCP(hcp_feats=('fa',), a=1, a_nuisance=0, seed=0).exp

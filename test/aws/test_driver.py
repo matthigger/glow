@@ -13,9 +13,9 @@ import cloudpickle
 import pytest
 
 import glow
-from glow.aws.config import AWSConfig, s3_key
-from glow.aws.datasource import DataSourceS3
-from glow.aws.driver import (
+from glow._extra.aws.config import AWSConfig, s3_key
+from glow._extra.aws.datasource import DataSourceS3
+from glow._extra.aws.driver import (
     _Attempt, _inflight_postfix, _is_oom, _to_s3_cache, driver_aws,
     driver_aws_multi)
 
@@ -25,8 +25,8 @@ from glow.aws.driver import (
 # until then its driver path and these tests are deferred.
 pytestmark = pytest.mark.skip(
     reason='AWS results path pending rework onto records (save_result removed)')
-from glow.benchmark.data import DataSource, DataSourceWGN
-from glow.benchmark.trial_cache import TrialCache
+from glow._extra.benchmark.data import DataSource, DataSourceWGN
+from glow._extra.benchmark.trial_cache import TrialCache
 from glow.util import stable_hash, value_id
 from test.aws.test_datasource import FakeS3
 
@@ -212,7 +212,7 @@ def test_happy_path_single_tier(tmp_path):
         [{'status': 'SUCCEEDED'}] * 3,    # one submission, 3 children
     ])
 
-    with patch('glow.aws.driver.boto3.client',
+    with patch('glow._extra.aws.driver.boto3.client',
                side_effect=lambda kind, **_:
                fake_s3 if kind == 's3' else fake_batch):
         driver_aws(cache, _run_fnc, _cfg(), verbose=False)
@@ -237,7 +237,7 @@ def test_success_deletes_s3_objects(tmp_path):
 
     fake_batch = FakeBatch(submit_then=[[{'status': 'SUCCEEDED'}] * 3])
 
-    with patch('glow.aws.driver.boto3.client',
+    with patch('glow._extra.aws.driver.boto3.client',
                side_effect=lambda kind, **_:
                fake_s3 if kind == 's3' else fake_batch):
         driver_aws(cache, _run_fnc, _cfg(), verbose=False)
@@ -269,7 +269,7 @@ def test_failed_trial_objects_are_not_deleted(tmp_path):
          {'status': 'SUCCEEDED'}],
     ])
 
-    with patch('glow.aws.driver.boto3.client',
+    with patch('glow._extra.aws.driver.boto3.client',
                side_effect=lambda kind, **_:
                fake_s3 if kind == 's3' else fake_batch):
         driver_aws(cache, _run_fnc, _cfg(), verbose=False)
@@ -301,7 +301,7 @@ def test_oom_escalation(tmp_path):
         [{'status': 'SUCCEEDED'}],
     ])
 
-    with patch('glow.aws.driver.boto3.client',
+    with patch('glow._extra.aws.driver.boto3.client',
                side_effect=lambda kind, **_:
                fake_s3 if kind == 's3' else fake_batch):
         driver_aws(cache, _run_fnc, _cfg(), verbose=False)
@@ -334,7 +334,7 @@ def test_non_oom_failure_is_skipped(tmp_path):
          {'status': 'SUCCEEDED'}],
     ])
 
-    with patch('glow.aws.driver.boto3.client',
+    with patch('glow._extra.aws.driver.boto3.client',
                side_effect=lambda kind, **_:
                fake_s3 if kind == 's3' else fake_batch):
         driver_aws(cache, _run_fnc, _cfg(), verbose=False)
@@ -364,7 +364,7 @@ def test_oom_at_last_tier_is_skipped(tmp_path):
           'container': {'exitCode': 137, 'reason': 'OutOfMemoryError'}}],
     ])
 
-    with patch('glow.aws.driver.boto3.client',
+    with patch('glow._extra.aws.driver.boto3.client',
                side_effect=lambda kind, **_:
                fake_s3 if kind == 's3' else fake_batch):
         driver_aws(cache, _run_fnc, cfg, verbose=False)
@@ -380,7 +380,7 @@ def test_no_uncached_trials_short_circuits(tmp_path):
     for trial in cache.iter_trial():
         cache.save_result({'dummy': 1}, trial)
 
-    with patch('glow.aws.driver.boto3.client') as client:
+    with patch('glow._extra.aws.driver.boto3.client') as client:
         driver_aws(cache, _run_fnc, _cfg(), verbose=False)
     # The real short-circuit guarantee: with nothing uncached, the driver
     # returns before touching AWS at all (no s3/batch client, no submit_job).
@@ -399,7 +399,7 @@ def test_single_trial_uses_non_array_submit(tmp_path):
 
     fake_batch = FakeBatch(submit_then=[[{'status': 'SUCCEEDED'}]])
 
-    with patch('glow.aws.driver.boto3.client',
+    with patch('glow._extra.aws.driver.boto3.client',
                side_effect=lambda kind, **_:
                fake_s3 if kind == 's3' else fake_batch):
         driver_aws(cache, _run_fnc, _cfg(), verbose=False)
@@ -443,7 +443,7 @@ def test_multi_cache_submits_all_before_polling(tmp_path):
         [{'status': 'SUCCEEDED'}] * 2,
     ])
 
-    with patch('glow.aws.driver.boto3.client',
+    with patch('glow._extra.aws.driver.boto3.client',
                side_effect=lambda kind, **_:
                fake_s3 if kind == 's3' else fake_batch):
         driver_aws_multi(
@@ -487,7 +487,7 @@ def test_multi_cache_per_cache_oom_escalation(tmp_path):
         [{'status': 'SUCCEEDED'}],
     ])
 
-    with patch('glow.aws.driver.boto3.client',
+    with patch('glow._extra.aws.driver.boto3.client',
                side_effect=lambda kind, **_:
                fake_s3 if kind == 's3' else fake_batch):
         driver_aws_multi(
@@ -567,7 +567,7 @@ def test_real_source_shipped_and_results_aliased(tmp_path):
                   results=[{'seed': 0}, {'seed': 1}])
     fake_batch = FakeBatch(submit_then=[[{'status': 'SUCCEEDED'}] * 2])
 
-    with patch('glow.aws.driver.boto3.client',
+    with patch('glow._extra.aws.driver.boto3.client',
                side_effect=lambda kind, **_:
                fake_s3 if kind == 's3' else fake_batch):
         driver_aws(cache, _run_fnc, _cfg(), verbose=False)

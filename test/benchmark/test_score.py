@@ -11,7 +11,7 @@ import json
 
 import numpy as np
 
-from glow.benchmark.paper.score import (score_effects, score_oracle_tree,
+from glow._extra.benchmark.paper.score import (score_effects, score_oracle_tree,
                                         size_max_z_curve, curve_json)
 
 

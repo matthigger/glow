@@ -12,9 +12,9 @@ import numpy as np
 import pytest
 from botocore.exceptions import ClientError
 
-from glow.aws.config import DEFAULT_CONFIG_PATH, AWSConfig
-from glow.aws.datasource import DataSourceS3, _parse_s3_uri
-from glow.benchmark.data import DataSource, DataSourceWGN
+from glow._extra.aws.config import DEFAULT_CONFIG_PATH, AWSConfig
+from glow._extra.aws.datasource import DataSourceS3, _parse_s3_uri
+from glow._extra.benchmark.data import DataSource, DataSourceWGN
 
 
 class FakeS3:
@@ -93,7 +93,7 @@ def test_exp_roundtrips_via_fake_s3():
 
     # Drop any local exp cache so the wrapper has to read from S3
     DataSourceS3._exp_cache.clear()
-    with patch('glow.aws.datasource.boto3.client', return_value=fake):
+    with patch('glow._extra.aws.datasource.boto3.client', return_value=fake):
         exp_remote = wrap.exp
 
     assert np.array_equal(exp_local.y, exp_remote.y)
@@ -107,7 +107,7 @@ def test_exp_cached_per_uri():
     wrap = DataSourceS3.from_source(ds, bucket='b', prefix='pre', s3=fake)
 
     DataSourceS3._exp_cache.clear()
-    with patch('glow.aws.datasource.boto3.client', return_value=fake):
+    with patch('glow._extra.aws.datasource.boto3.client', return_value=fake):
         a = wrap.exp
         b = wrap.exp
 

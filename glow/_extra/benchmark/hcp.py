@@ -26,7 +26,7 @@ import sys
 import urllib.request
 import zipfile
 
-from glow.benchmark import file
+from glow._extra.benchmark import file
 
 
 ZENODO_RECORD_ID = '20736221'

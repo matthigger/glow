@@ -2,7 +2,7 @@
 
 Usage::
 
-    from glow.viewer import launch
+    from glow._extra.viewer import launch
     launch(ana_glow, mask_target=mask_target)
 """
 

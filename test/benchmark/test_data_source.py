@@ -1,4 +1,4 @@
-"""Tests for glow.benchmark.data: DataSource family."""
+"""Tests for glow._extra.benchmark.data: DataSource family."""
 
 import json
 
@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from glow.benchmark import hcp
-from glow.benchmark.data import DataSource, DataSourceWGN, DataSourceHCP
+from glow._extra.benchmark import hcp
+from glow._extra.benchmark.data import DataSource, DataSourceWGN, DataSourceHCP
 from glow.effect import ExtenterSphere
 from glow.experiment.exper import ExperimentImageOnly, NoBiasTermWarning
 from glow.mask import get_mask_idx

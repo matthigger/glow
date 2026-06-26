@@ -1,6 +1,6 @@
 """Paper plots: shared palette, generic helpers, and the plot-everything entrypoint.
 
-python -m glow.benchmark.paper.plot (main) walks the config catalogue
+python -m glow._extra.benchmark.paper.plot (main) walks the config catalogue
 (CACHE_BY_LABEL) rather than the result folders: for each cache it keeps
 the completed in-config trials (results.load_config_df drops anything left
 over from an older config) and writes one figure set per cache into
@@ -27,8 +27,8 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-import glow.benchmark
-from glow.benchmark.recorder import NON_RESULT_LABELS
+import glow._extra.benchmark
+from glow._extra.benchmark.recorder import NON_RESULT_LABELS
 
 from .results import load_config_df
 
@@ -1216,7 +1216,7 @@ def main(argv=None) -> None:
             parser.error(f'unknown cache label(s): {", ".join(unknown)}')
         items = [(lab, v) for lab, v in items if lab in args.labels]
 
-    out = glow.benchmark.get_path_result() / '_latest'
+    out = glow._extra.benchmark.get_path_result() / '_latest'
     out.mkdir(exist_ok=True)
 
     n_plotted = 0

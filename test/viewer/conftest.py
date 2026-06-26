@@ -10,7 +10,7 @@ import pytest
 from glow.experiment.exper import Experiment
 from glow.effect import EffectSynthetic
 from glow.analysis import AnalysisGLOW
-from glow.viewer.data import prep_df, get_feature_columns, compute_target_stats
+from glow._extra.viewer.data import prep_df, get_feature_columns, compute_target_stats
 
 
 @pytest.fixture(scope='session')

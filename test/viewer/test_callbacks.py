@@ -9,9 +9,9 @@ import json
 import numpy as np
 import pytest
 
-from glow.viewer.data import prep_df, compute_target_stats
-from glow.viewer.scatter import build_scatter
-from glow.viewer.regression import build_regression_figure
+from glow._extra.viewer.data import prep_df, compute_target_stats
+from glow._extra.viewer.scatter import build_scatter
+from glow._extra.viewer.regression import build_regression_figure
 
 
 class TestToggleRegionLogic:

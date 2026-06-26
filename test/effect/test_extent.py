@@ -244,7 +244,7 @@ def hcp_img_exp():
 
     Skipped at collection time when the HCP dataset is absent from disk.
     """
-    from glow.benchmark import hcp
+    from glow._extra.benchmark import hcp
     import glow.experiment
 
     if not hcp.is_present():

@@ -7,7 +7,7 @@ import cloudpickle
 import pandas as pd
 import pytest
 
-from glow.aws import worker
+from glow._extra.aws import worker
 from test.aws.test_datasource import FakeS3
 
 
@@ -50,7 +50,7 @@ def test_worker_result_roundtrip(trial_hash, run_fnc, trial, check):
     job_key = _seed(fake, bucket=bucket, manifest_key=manifest_key,
                     trial_hash=trial_hash, run_fnc=run_fnc, trial=trial)
 
-    with patch('glow.aws.worker.boto3.client', return_value=fake), \
+    with patch('glow._extra.aws.worker.boto3.client', return_value=fake), \
          patch.dict(os.environ, {'AWS_BATCH_JOB_ARRAY_INDEX': '0'}):
         worker.main(f's3://{bucket}/{manifest_key}')
 
@@ -77,7 +77,7 @@ def test_worker_picks_correct_array_index(env_index, expected_hash,
         fake.store[(bucket, job_key)] = cloudpickle.dumps(
             (_run_fnc, {'x': val, 'y': 1}))
 
-    with patch('glow.aws.worker.boto3.client', return_value=fake), \
+    with patch('glow._extra.aws.worker.boto3.client', return_value=fake), \
          patch.dict(os.environ, {}, clear=False):
         if env_index is None:
             os.environ.pop('AWS_BATCH_JOB_ARRAY_INDEX', None)
@@ -101,7 +101,7 @@ def test_worker_propagates_run_fnc_exception():
     _seed(fake, bucket=bucket, manifest_key=manifest_key,
           trial_hash='bad', run_fnc=_boom, trial={})
 
-    with patch('glow.aws.worker.boto3.client', return_value=fake), \
+    with patch('glow._extra.aws.worker.boto3.client', return_value=fake), \
          patch.dict(os.environ, {'AWS_BATCH_JOB_ARRAY_INDEX': '0'}):
         with pytest.raises(RuntimeError, match='worker should crash'):
             worker.main(f's3://{bucket}/{manifest_key}')

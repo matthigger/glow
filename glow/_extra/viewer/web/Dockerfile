@@ -1,21 +1,21 @@
 # Multi-demo viewer image for HuggingFace Spaces (Docker SDK).
 #
-# Build context must be the project root (src/), not glow/viewer/web/, so the
+# Build context must be the project root (src/), not glow/_extra/viewer/web/, so the
 # whole glow/ package is reachable.  Build with:
 #
 #     # from src/
-#     docker build -t glow-viewer-web -f glow/viewer/web/Dockerfile .
+#     docker build -t glow-viewer-web -f glow/_extra/viewer/web/Dockerfile .
 #     docker run --rm -p 7860:7860 glow-viewer-web
 #
-# Pickles must already exist in glow/viewer/web/pickles/ at build time
-# (run `python -m glow.viewer.web.bake_demos` locally first).
+# Pickles must already exist in glow/_extra/viewer/web/pickles/ at build time
+# (run `python -m glow._extra.viewer.web.bake_demos` locally first).
 
 FROM python:3.12-slim
 
 WORKDIR /app
 
 # --- python deps ---------------------------------------------------------
-COPY glow/viewer/web/requirements.txt /tmp/requirements.txt
+COPY glow/_extra/viewer/web/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 # --- glow package + baked demo pickles -----------------------------------
@@ -38,7 +38,7 @@ EXPOSE 7860
 # share that memory and keep slow Dash callbacks (3D slicer, regression) from
 # blocking each other.  --max-requests recycles the worker periodically to
 # reclaim memory from evicted/abandoned mounts.
-CMD ["gunicorn", "glow.viewer.web.server:application", \
+CMD ["gunicorn", "glow._extra.viewer.web.server:application", \
      "--bind", "0.0.0.0:7860", \
      "--workers", "1", \
      "--threads", "4", \

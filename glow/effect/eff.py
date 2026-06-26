@@ -143,7 +143,7 @@ class EffectSynthetic:
         """JSON-friendly recipe for provenance: the spec without the mask.
 
         The recorder serializes any value exposing to_record (see
-        glow.benchmark.recorder). The realized support is omitted: in the
+        glow._extra.benchmark.recorder). The realized support is omitted: in the
         pipeline it is a deterministic function of the extenter, and recording
         it would dump a boolean array. extenter recurses via its own to_record.
         """

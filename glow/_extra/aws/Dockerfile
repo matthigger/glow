@@ -32,4 +32,4 @@ RUN pip install --no-cache-dir poetry && \
     poetry lock && \
     poetry install --only main --no-interaction --no-ansi
 
-ENTRYPOINT ["python", "-m", "glow.aws.worker"]
+ENTRYPOINT ["python", "-m", "glow._extra.aws.worker"]

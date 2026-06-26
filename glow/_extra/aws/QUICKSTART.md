@@ -1,4 +1,4 @@
-# `glow.aws` — run the benchmark on AWS Batch
+# `glow._extra.aws` — run the benchmark on AWS Batch
 
 Run the paper benchmark on AWS Batch instead of your laptop. `driver_aws` is a
 drop-in for the local driver: it dispatches each uncached trial as one child of
@@ -6,16 +6,16 @@ a Batch array job and writes results back to the same `results.csv`, so AWS and
 local runs are interchangeable.
 
 ```bash
-python -m glow.benchmark.paper --aws sweep_extent_wgn_n10
-python -m glow.benchmark.paper --aws 'sweep_*'   # fnmatch glob
-python -m glow.benchmark.paper --aws             # all caches
+python -m glow._extra.benchmark.paper --aws sweep_extent_wgn_n10
+python -m glow._extra.benchmark.paper --aws 'sweep_*'   # fnmatch glob
+python -m glow._extra.benchmark.paper --aws             # all caches
 ```
 
 Or call it directly:
 
 ```python
-from glow.aws import AWSConfig, driver_aws
-from glow.benchmark.paper.config import CACHE_BY_LABEL
+from glow._extra.aws import AWSConfig, driver_aws
+from glow._extra.benchmark.paper.config import CACHE_BY_LABEL
 
 cfg = AWSConfig.from_file()  # default: per-user config dir (platformdirs)
 cache, run_fnc = CACHE_BY_LABEL['sweep_extent_wgn_n10']
@@ -37,7 +37,7 @@ Then bootstrap the IAM roles Batch needs (service-linked role, instance
 profile, spot-fleet role, the two ECS task roles). It's idempotent:
 
 ```bash
-python -m glow.aws.infra bootstrap
+python -m glow._extra.aws.infra bootstrap
 ```
 
 `bootstrap` also writes the AWSConfig to your per-user config directory
@@ -51,46 +51,46 @@ Finally, build the worker image and register the Batch resources. `setup
 works from any cwd), then pushes and registers in one step:
 
 ```bash
-python -m glow.aws.infra setup --build
+python -m glow._extra.aws.infra setup --build
 ```
 
 Equivalent two-step form, if you'd rather build the image yourself:
 
 ```bash
-docker build -t glow-worker:latest -f glow/aws/Dockerfile .
-python -m glow.aws.infra setup --image-tag glow-worker:latest
+docker build -t glow-worker:latest -f glow/_extra/aws/Dockerfile .
+python -m glow._extra.aws.infra setup --image-tag glow-worker:latest
 ```
 
 Re-run `setup --build` whenever you change worker-baked code (anything the
-worker imports: `glow/aws/worker.py`, `glow/benchmark/paper/run.py`,
-`glow/benchmark/data.py`, `glow/analysis/*`, …) to redeploy it to the workers.
+worker imports: `glow/_extra/aws/worker.py`, `glow/_extra/benchmark/paper/run.py`,
+`glow/_extra/benchmark/data.py`, `glow/analysis/*`, …) to redeploy it to the workers.
 
 ## Daily workflow
 
 ```bash
 # Submit work
-python -m glow.benchmark.paper --aws sweep_extent_wgn_n10
-python -m glow.benchmark.paper --aws 'sweep_*'
+python -m glow._extra.benchmark.paper --aws sweep_extent_wgn_n10
+python -m glow._extra.benchmark.paper --aws 'sweep_*'
 
 # Monitor
-python -m glow.aws.infra status
-python -m glow.aws.infra status --label sweep_extent_wgn_n10
+python -m glow._extra.aws.infra status
+python -m glow._extra.aws.infra status --label sweep_extent_wgn_n10
 
 # Pause / resume dispatch (in-flight children keep running)
-python -m glow.aws.infra pause
-python -m glow.aws.infra resume
+python -m glow._extra.aws.infra pause
+python -m glow._extra.aws.infra resume
 
 # Clear jobs — terminate active jobs (cancels queued, kills in-flight)
-python -m glow.aws.infra clear_jobs --yes
-python -m glow.aws.infra clear_jobs --label sweep_extent_wgn_n10 --yes
+python -m glow._extra.aws.infra clear_jobs --yes
+python -m glow._extra.aws.infra clear_jobs --label sweep_extent_wgn_n10 --yes
 
 # Clear storage — delete S3 between runs
-python -m glow.aws.infra clear_storage --jobs --yes               # drop manifests/results
-python -m glow.aws.infra clear_storage --jobs --datasource --yes  # also drop cached HCP exps
+python -m glow._extra.aws.infra clear_storage --jobs --yes               # drop manifests/results
+python -m glow._extra.aws.infra clear_storage --jobs --datasource --yes  # also drop cached HCP exps
 
 # Tear down Batch (keep bucket + cached results)
-python -m glow.aws.infra teardown --yes
-python -m glow.aws.infra teardown --yes --delete-bucket   # nuke everything
+python -m glow._extra.aws.infra teardown --yes
+python -m glow._extra.aws.infra teardown --yes --delete-bucket   # nuke everything
 ```
 
 ## Pausing, resuming, and clearing jobs

@@ -2,7 +2,7 @@
 
 Invoked inside the container as:
 
-    python -m glow.aws.worker s3://bucket/prefix/jobs/<run_id>/manifest.pkl
+    python -m glow._extra.aws.worker s3://bucket/prefix/jobs/<run_id>/manifest.pkl
 
 Reads AWS_BATCH_JOB_ARRAY_INDEX to pick its slot in the manifest,
 downloads the matching job.pkl, runs run_fnc(**trial) (where
@@ -19,7 +19,7 @@ import sys
 import boto3
 import cloudpickle
 
-from glow.aws.datasource import _parse_s3_uri
+from glow._extra.aws.datasource import _parse_s3_uri
 
 
 def _result_key_for(job_key: str) -> str:
@@ -66,7 +66,7 @@ def main(manifest_uri: str) -> None:
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:
-        print('usage: python -m glow.aws.worker <manifest_s3_uri>',
+        print('usage: python -m glow._extra.aws.worker <manifest_s3_uri>',
               file=sys.stderr)
         sys.exit(2)
     main(sys.argv[1])

@@ -2,14 +2,14 @@
 
 This is the local validator -- it confirms a pickle written by
 ``bake_demos.py`` round-trips through the full Dash app the same way as the
-interactive ``python -m glow.viewer --demo`` flow.  Use it to spot-check each
+interactive ``python -m glow._extra.viewer --demo`` flow.  Use it to spot-check each
 baked combo before deploying.
 
 Usage::
 
-    python -m glow.viewer.web.play wgn2d_b1_medium_s0
-    python -m glow.viewer.web.play --list
-    python -m glow.viewer.web.play path/to/some.p.gz
+    python -m glow._extra.viewer.web.play wgn2d_b1_medium_s0
+    python -m glow._extra.viewer.web.play --list
+    python -m glow._extra.viewer.web.play path/to/some.p.gz
 """
 
 import argparse
@@ -18,7 +18,7 @@ import pathlib
 import pickle
 import sys
 
-from glow.viewer import launch
+from glow._extra.viewer import launch
 
 _DEFAULT_DIR = pathlib.Path(__file__).parent / 'pickles'
 

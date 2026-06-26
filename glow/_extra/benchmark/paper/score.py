@@ -3,7 +3,7 @@
 A trial fn records (provenance + timing); these functions turn one fitted
 Analysis -- or a captured min-size staircase -- into the trial's score,
 recorded as its own step beside the fit (see paper.run.run_ana and
-glow.benchmark.recorder). Three scorers cover the whole catalogue:
+glow._extra.benchmark.recorder). Three scorers cover the whole catalogue:
 
   - score_effects: the detection score shared by every effect-discovery
     cache (null, the sweeps, the stat bake-off, two-effect, prune). It

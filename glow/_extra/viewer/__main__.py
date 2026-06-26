@@ -3,15 +3,15 @@
 Usage::
 
     # interactive demo
-    python -m glow.viewer --demo
+    python -m glow._extra.viewer --demo
 
     # load a pickled AnalysisGLOW
-    python -m glow.viewer analysis.p.gz
+    python -m glow._extra.viewer analysis.p.gz
 
     # with a target mask (nifti, numpy, or pickled Effect)
-    python -m glow.viewer analysis.p.gz --mask target.nii.gz
-    python -m glow.viewer analysis.p.gz --mask target.npy
-    python -m glow.viewer analysis.p.gz --mask effect.pkl
+    python -m glow._extra.viewer analysis.p.gz --mask target.nii.gz
+    python -m glow._extra.viewer analysis.p.gz --mask target.npy
+    python -m glow._extra.viewer analysis.p.gz --mask effect.pkl
 """
 
 import argparse
@@ -24,7 +24,7 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------------
-# Data paths (relative to this package: src/glow/viewer/__main__.py)
+# Data paths (relative to this package: src/glow/_extra/viewer/__main__.py)
 # ---------------------------------------------------------------------------
 
 _DATA_DIR = pathlib.Path(__file__).resolve().parents[2] / 'test' / 'data'
@@ -302,7 +302,7 @@ def _build_dti_demo(dim, features, effect_llr, seed, num_img):
 
 def _run_demo():
     """Interactive demo: prompt for image set, features, effect severity."""
-    from glow.viewer import launch
+    from glow._extra.viewer import launch
 
     print('\n=== GLOW Viewer Demo ===\n')
 
@@ -380,7 +380,7 @@ def _run_demo():
 
 def main():
     parser = argparse.ArgumentParser(
-        prog='python -m glow.viewer',
+        prog='python -m glow._extra.viewer',
         description='Launch the glow:viewer interactive dashboard.')
 
     parser.add_argument(
@@ -442,7 +442,7 @@ def main():
             parser.error('CSV must contain a region_idx column')
         print(f'  {len(extra_df)} rows, columns: {list(extra_df.columns)}')
 
-    from glow.viewer import launch
+    from glow._extra.viewer import launch
     launch(ana, mask_target=mask_target, port=args.port, debug=args.debug,
            extra_df=extra_df, quiet=not args.verbose,
            min_vox=args.min_vox, max_regions=args.max_regions)

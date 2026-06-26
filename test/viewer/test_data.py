@@ -1,9 +1,9 @@
-"""Tests for glow.viewer.data (DataFrame preparation and feature columns)."""
+"""Tests for glow._extra.viewer.data (DataFrame preparation and feature columns)."""
 
 import numpy as np
 import pandas as pd
 
-from glow.viewer.data import (prep_df, get_feature_columns,
+from glow._extra.viewer.data import (prep_df, get_feature_columns,
                                compute_target_stats, compute_backgrounds)
 
 

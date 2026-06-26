@@ -15,7 +15,7 @@ import threading
 import pytest
 from werkzeug.test import Client
 
-from glow.viewer.web import zenodo
+from glow._extra.viewer.web import zenodo
 
 
 # ---------- zenodo client units ---------------------------------------------
@@ -127,7 +127,7 @@ def zenodo_space(ana_2d, mask_target_2d, tmp_path, monkeypatch):
     monkeypatch.setenv('GLOW_ZENODO_CACHE_DIR', str(tmp_path / 'cache'))
 
     # Import here so the module exists; build a fresh app under the env above.
-    from glow.viewer.web import server
+    from glow._extra.viewer.web import server
     app = server.build_application(pickle_dir=str(tmp_path / 'no_demos'))
     client = Client(app)
     slug = 'demo_wgn2d'

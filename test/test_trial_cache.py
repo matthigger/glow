@@ -1,4 +1,4 @@
-"""Tests for ``glow.benchmark.TrialCache``.
+"""Tests for ``glow._extra.benchmark.TrialCache``.
 
 The cache iterates a scalar-axis grid, hashes trials, and owns a Recorder; it
 does no disk IO of its own. A trial is "done" when a per-trial record file
@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-import glow.benchmark.recorder as rec_mod
-from glow.benchmark import TrialCache
-from glow.benchmark.recorder import RECORDS_DIR
+import glow._extra.benchmark.recorder as rec_mod
+from glow._extra.benchmark import TrialCache
+from glow._extra.benchmark.recorder import RECORDS_DIR
 from glow.util import DataclassJSON, stable_hash
 
 
