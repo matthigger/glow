@@ -16,6 +16,7 @@ sweep is fast.
 import random
 
 import pytest
+from joblib import parallel_config
 
 from glow._extra.benchmark import data
 from glow._extra.benchmark.driver import drive
@@ -146,3 +147,54 @@ class TestProvenanceDAG:
         assert fns.count('data_factory_wgn') == 2
         assert fns.count('effect_factory') == 2 * 2
         assert fns.count('run_ana') == 2 * 2 * 2
+
+
+# ---------------------------------------------------------------------------
+# parallel: split by data cell (n_jobs != 1). The threading backend shares this
+# process, so it honours the monkeypatched recorder folder + in-memory records
+# (loky workers re-import the real singletons); it still exercises the grouping
+# and RECORDER.load -- the loky-only pickling is covered by the payload-size test.
+# ---------------------------------------------------------------------------
+
+class TestParallel:
+    def test_parallel_matches_serial(self):
+        # same grid, same results: parallel only changes who runs each data cell,
+        # not what each computes (order is preserved data-cell-wise).
+        grid, eff, ana = _data_grid(3), _effect_grid(2), _ana_grid(2)
+        with parallel_config(backend='threading'):
+            par = drive(grid, eff, ana, run_ana, n_jobs=2)
+        ser = drive(grid, eff, ana, run_ana, n_jobs=1)
+        assert len(par) == 3 * 2 * 2
+        assert par == ser
+
+    def test_parallel_records_full_chain(self):
+        # every parallel cell still lands in the shared DAG: one full
+        # data -> plant -> run_ana row per (data, effect, analysis) cell.
+        data.RECORDER.records.clear()
+        grid = _data_grid(3)
+        with parallel_config(backend='threading'):
+            drive(grid, _effect_grid(2), _ana_grid(2), run_ana, n_jobs=2)
+
+        df = data.RECORDER.flatten_to_df()
+        assert len(df) == 3 * 2 * 2
+        assert (df['run_ana.function'] == 'run_ana').all()
+        assert (df['effect_factory.function'] == 'effect_factory').all()
+        assert set(df['data_factory_wgn.in.seed']) == {d['seed'] for d in grid}
+
+    def test_parallel_task_payload_stays_small(self):
+        # regression: the leaf fnc is pickled into each task by value. Because the
+        # recorder snapshots its records (it retains no live Experiments), a task
+        # payload stays small even after a heavy record exists -- not the ~1 MB a
+        # pinned Experiment would add (see glow._extra.benchmark.recorder).
+        import cloudpickle
+        from joblib import delayed
+
+        from glow._extra.benchmark.driver import _run_data_cell
+
+        # parks a record in the shared recorder (an 829 KB array -> a snapshot)
+        data.data_factory_wgn(shape=(12, 12, 12), b=3, num_img=40, a=2,
+                              seed=_fresh_seed())
+        payload = cloudpickle.dumps(delayed(_run_data_cell)(
+            dict(source='wgn', shape=(5, 5, 5), b=2, num_img=16, a=2, seed=0),
+            [None], _ana_grid(1), run_ana))
+        assert len(payload) < 100_000
