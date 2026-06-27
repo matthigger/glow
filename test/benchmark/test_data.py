@@ -197,8 +197,7 @@ class TestEffectFactory:
     def test_plants_effect_on_support(self):
         exp = self._clean_exp()
         exp_eff, mask = data.effect_factory(
-            exp, effect_llr=0.05, extenter=ExtenterMinVar(n_vox=12, seed=0),
-            seed=0)
+            exp, effect_llr=0.05, extenter_cls=ExtenterMinVar, n_vox=12, seed=0)
         # effect added in place: same shapes, mask over the spatial grid, y
         # changed, and the extenter grew exactly n_vox voxels
         assert exp_eff.y.shape == exp.y.shape
@@ -206,10 +205,33 @@ class TestEffectFactory:
         assert int(mask.sum()) == 12
         assert not np.array_equal(exp.y, exp_eff.y)
 
+    def test_seed_from_exp_places_per_realization(self):
+        # seed_from_exp derives the support seed from a hash of exp, so a fixed
+        # config plants in a different place on different data...
+        kw = dict(effect_llr=0.05, extenter_cls=ExtenterMinVar, n_vox=12,
+                  seed_from_exp=True)
+        _, mask0 = data.effect_factory(self._clean_exp(), **kw)
+        _, mask1 = data.effect_factory(self._clean_exp(), **kw)
+        assert not np.array_equal(mask0, mask1)
+        # ...but it's a pure function of the data: identical across effect
+        # strengths for one experiment (only the imposed offset changes)
+        exp = self._clean_exp()
+        _, m_weak = data.effect_factory(exp, **kw)
+        _, m_strong = data.effect_factory(exp, **{**kw, 'effect_llr': 0.3})
+        np.testing.assert_array_equal(m_weak, m_strong)
+
+    def test_requires_exactly_one_seed_spec(self):
+        # seed XOR seed_from_exp: neither and both are errors
+        exp = self._clean_exp()
+        base = dict(effect_llr=0.05, extenter_cls=ExtenterMinVar, n_vox=10)
+        with pytest.raises(ValueError):
+            data.effect_factory(exp, **base)                       # neither
+        with pytest.raises(ValueError):
+            data.effect_factory(exp, seed=0, seed_from_exp=True, **base)  # both
+
     def test_records_outputs_under_joblib_hash(self):
         exp = self._clean_exp()
-        kw = dict(effect_llr=0.05, extenter=ExtenterMinVar(n_vox=10, seed=0),
-                  seed=0)
+        kw = dict(effect_llr=0.05, extenter_cls=ExtenterMinVar, n_vox=10, seed=0)
         args_id = data.effect_factory._get_args_id(exp, **kw)
 
         data.RECORDER.records.clear()   # drop the clean-build record above
@@ -223,8 +245,7 @@ class TestEffectFactory:
 
     def test_miss_then_hit(self):
         exp = self._clean_exp()
-        kw = dict(effect_llr=0.05, extenter=ExtenterMinVar(n_vox=10, seed=0),
-                  seed=0)
+        kw = dict(effect_llr=0.05, extenter_cls=ExtenterMinVar, n_vox=10, seed=0)
         assert not data.effect_factory.check_call_in_cache(exp, **kw)
         data.effect_factory(exp, **kw)
         assert data.effect_factory.check_call_in_cache(exp, **kw)

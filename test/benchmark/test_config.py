@@ -1,0 +1,166 @@
+"""Tests for glow._extra.benchmark.config: the paper-benchmark catalogue.
+
+config declares each cache as the four-tuple driver.drive consumes
+(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc); the two upstream
+grids are lists built by get_kwargs_data_list / get_kwargs_effect_list. Building
+the cells makes Extenters / HCP feature subsets but runs no experiments and
+downloads no data, so these check the catalogue is well-formed and that every
+cell *binds* to its stage signature -- a typo'd kwarg is caught here rather than
+deep in a multi-day sweep -- without executing any stage. The stages
+(data_factory / effect_factory / run_ana) and the sweep are covered by test_data
+/ test_run / test_driver.
+"""
+import inspect
+import math
+
+import pytest
+
+from glow._extra.benchmark import config, data, hcp
+from glow._extra.benchmark.run import run_ana
+from glow.analysis import Analysis
+from glow.effect import ExtenterMinVar
+
+
+LABELS = ['null', 'sweep_llr', 'sweep_b', 'sweep_extent', 'sweep_nimg']
+
+
+class TestCatalogueShape:
+    def test_expected_labels(self):
+        assert set(config.CONFIG) == set(LABELS)
+
+    @pytest.mark.parametrize('label', LABELS)
+    def test_entry_is_drive_four_tuple(self, label):
+        data_list, effect_list, fnc_kwargs, fnc = config.CONFIG[label]
+        assert data_list and effect_list and fnc_kwargs
+        # the leaf is run_ana over the shared recipe grid
+        assert fnc is run_ana
+        assert fnc_kwargs is config.RUN_ANA_LIST
+
+    @pytest.mark.parametrize('label', LABELS)
+    def test_grids_are_materialized_lists(self, label):
+        # the data / effect grids are concrete lists (re-iterable; the driver
+        # re-walks the effect grid per data cell, so a one-shot iterator breaks)
+        data_grid, effect_grid, _, _ = config.CONFIG[label]
+        assert isinstance(data_grid, list)
+        assert isinstance(effect_grid, list)
+
+    def test_five_analysis_recipes(self):
+        assert len(config.RUN_ANA_LIST) == 5
+        assert all(isinstance(c['ana'], Analysis) for c in config.RUN_ANA_LIST)
+
+
+class TestIterKwargsData:
+    def test_returns_a_list(self):
+        assert isinstance(config.get_kwargs_data_list(), list)
+
+    def test_defaults_both_sources_n_seed(self):
+        cells = config.get_kwargs_data_list()
+        assert len(cells) == 2 * config.N_SEED
+        assert {c['source'] for c in cells} == {'wgn', 'hcp'}
+
+    def test_wgn_box_sized_from_crop(self):
+        side = math.ceil(config.CROP_N_VOX ** (1 / 3))
+        cell = config.get_kwargs_data_list(sources=['wgn'], seeds=[0])[0]
+        assert cell['shape'] == (side, side, side)
+
+    def test_crop_built_once_per_seed(self):
+        # one extenter per (source, b, seed), shared across a WGN cell's num_img
+        cells = config.get_kwargs_data_list(sources=['wgn'], seeds=[0],
+                                            num_img_list=[10, 20, 30])
+        assert len(cells) == 3
+        assert len({id(c['extenter']) for c in cells}) == 1
+
+    def test_hcp_feats_distinct_sorted_in_pool(self):
+        cell, = config.get_kwargs_data_list(sources=['hcp'], seeds=[0], b_list=[3])
+        feats = cell['hcp_feats']
+        assert len(feats) == len(set(feats)) == 3
+        assert list(feats) == sorted(feats)
+        assert set(feats) <= set(hcp.HCP_FEATS)
+
+    def test_hcp_feats_seed_deterministic(self):
+        (a,) = config.get_kwargs_data_list(sources=['hcp'], seeds=[7], b_list=[2])
+        (b,) = config.get_kwargs_data_list(sources=['hcp'], seeds=[7], b_list=[2])
+        assert a['hcp_feats'] == b['hcp_feats']
+
+
+class TestIterKwargsEffect:
+    def test_returns_a_list(self):
+        assert isinstance(config.get_kwargs_effect_list(), list)
+
+    def test_default_is_moderate_llr_at_fixed_extent(self):
+        cells = config.get_kwargs_effect_list()
+        assert len(cells) == 1
+        assert cells[0]['effect_llr'] == config.MODERATE_EFFECT_LLR
+        assert cells[0]['n_vox'] == config.EFFECT_N_VOX
+        # cells carry the ingredients effect_factory builds the support from
+        assert cells[0]['extenter_cls'] is ExtenterMinVar
+        assert cells[0]['seed_from_exp'] is True
+
+    def test_null_returns_single_none(self):
+        assert config.get_kwargs_effect_list(llr_list=None) == [None]
+
+    def test_extent_sweeps_support_at_fixed_per_voxel_llr(self):
+        # no whole-region-LLR knob: effect_llr is held fixed, the support varies
+        cells = config.get_kwargs_effect_list(n_vox_list=[100, 500])
+        assert [c['effect_llr'] for c in cells] == [config.MODERATE_EFFECT_LLR] * 2
+        assert [c['n_vox'] for c in cells] == [100, 500]
+
+    def test_llr_and_extent_are_a_product(self):
+        cells = config.get_kwargs_effect_list(llr_list=[0.01, 0.1],
+                                              n_vox_list=[50, 100, 200])
+        assert len(cells) == 2 * 3
+
+
+class TestCellsBindToStages:
+    """Every cell is valid kwargs for the stage the driver feeds it to."""
+
+    _SIG_DATA = {'wgn': inspect.signature(data.data_factory_wgn),
+                 'hcp': inspect.signature(data.data_factory_hcp)}
+
+    @pytest.mark.parametrize('label', LABELS)
+    def test_data_cells_bind(self, label):
+        # source selects the builder; the rest are its kwargs
+        for cell in config.CONFIG[label][0]:
+            sig = self._SIG_DATA[cell['source']]
+            sig.bind(**{k: v for k, v in cell.items() if k != 'source'})
+
+    @pytest.mark.parametrize('label', LABELS)
+    def test_effect_cells_bind(self, label):
+        # exp is supplied by the driver; a None cell is the no-plant null path
+        sig = inspect.signature(data.effect_factory)
+        for cell in config.CONFIG[label][1]:
+            if cell is not None:
+                sig.bind(exp=None, **cell)
+
+    @pytest.mark.parametrize('label', LABELS)
+    def test_fnc_cells_bind(self, label):
+        # exp / mask_target_list are supplied by the driver
+        _, _, fnc_kwargs, fnc = config.CONFIG[label]
+        sig = inspect.signature(fnc)
+        for cell in fnc_kwargs:
+            sig.bind(exp=None, mask_target_list=[], **cell)
+
+
+class TestGridCardinality:
+    def test_products_match_old_catalogue(self):
+        # cells x methods, identical to paper/config_old.py's trial counts
+        n = {label: len(d) * len(e) * len(fk)
+             for label, (d, e, fk, _) in config.CONFIG.items()}
+        assert n == {
+            'null': 2 * config.N_SEED_NULL * 5,
+            'sweep_llr': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID) * 5,
+            'sweep_b': 2 * config.N_SEED * len(config.B_GRID) * 5,
+            'sweep_extent': 2 * config.N_SEED * len(config.EXTENT_N_VOX_GRID) * 5,
+            'sweep_nimg': config.N_SEED * len(config.NIMG_GRID) * 5,
+        }
+
+    def test_null_plants_nothing(self):
+        assert config.CONFIG['null'][1] == [None]
+
+    def test_hcp_cells_carry_no_num_img_axis(self):
+        # HCP's N is its cohort, so an HCP cell never carries num_img (it would
+        # be a dead axis silently duplicating cells)
+        for label in LABELS:
+            for cell in config.CONFIG[label][0]:
+                if cell['source'] == 'hcp':
+                    assert 'num_img' not in cell

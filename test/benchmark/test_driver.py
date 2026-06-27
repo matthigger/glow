@@ -3,10 +3,11 @@
 The stage functions (data_factory / effect_factory / run_ana) and the shared
 cache + recorder machinery are covered by test_data.py / test_run.py /
 test_recorder.py, so these cover only what is novel to ``drive``: that it runs
-the full cartesian product of its three kwargs grids (one score per cell), that
-it threads each stage's output into the next (the clean exp into the plant, the
-planted exp + its mask into run_ana as the target), and that every cell lands in
-the shared provenance DAG as a complete data -> plant -> score chain.
+the full cartesian product of its two upstream grids fanned across the fnc's
+kwargs grid (one score per cell), that it threads each stage's output into the
+next (the clean exp into the plant, the planted exp + its mask into fnc as the
+target), and that every cell lands in the shared provenance DAG as a complete
+data -> plant -> score chain.
 
 Fresh seeds keep every cell a cache miss, so each really runs and records (a hit
 would neither recompute nor record); the grids are tiny WGN + cheap VBA so the
@@ -18,6 +19,7 @@ import pytest
 
 from glow._extra.benchmark import data
 from glow._extra.benchmark.driver import drive
+from glow._extra.benchmark.run import run_ana
 from glow.analysis import AnalysisVBA
 from glow.effect import ExtenterSphere
 
@@ -45,8 +47,8 @@ def _data_grid(n):
 
 def _effect_grid(n):
     """n effect cells (distinct llr), each a fixed-size sphere plant."""
-    return [dict(effect_llr=0.05 + i,
-                 extenter=ExtenterSphere(n_vox=_N_VOX_EFF, seed=0))
+    return [dict(effect_llr=0.05 + i, extenter_cls=ExtenterSphere,
+                 n_vox=_N_VOX_EFF, seed=0)
             for i in range(n)]
 
 
@@ -61,19 +63,19 @@ def _ana_grid(n):
 
 class TestContract:
     def test_one_score_per_product_cell(self):
-        scores = drive(_data_grid(2), _effect_grid(2), _ana_grid(2))
+        scores = drive(_data_grid(2), _effect_grid(2), _ana_grid(2), run_ana)
         assert len(scores) == 2 * 2 * 2
         assert all(_SCORE_KEYS <= set(s) for s in scores)
 
     def test_non_rectangular_axes(self):
         # the product is n_data * n_effect * n_ana, not a square
-        scores = drive(_data_grid(3), _effect_grid(1), _ana_grid(2))
+        scores = drive(_data_grid(3), _effect_grid(1), _ana_grid(2), run_ana)
         assert len(scores) == 3 * 1 * 2
 
     def test_empty_grid_yields_no_scores(self):
         # an empty axis collapses the whole product to nothing
-        assert drive(_data_grid(2), [], _ana_grid(2)) == []
-        assert drive([], _effect_grid(2), _ana_grid(2)) == []
+        assert drive(_data_grid(2), [], _ana_grid(2), run_ana) == []
+        assert drive([], _effect_grid(2), _ana_grid(2), run_ana) == []
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +86,7 @@ class TestWiring:
     def test_planted_mask_reaches_run_ana_as_target(self):
         # the effect_factory mask is passed as run_ana's target, so every cell's
         # target accounts for exactly the planted support (tp hit + fn missed).
-        scores = drive(_data_grid(2), _effect_grid(1), _ana_grid(1))
+        scores = drive(_data_grid(2), _effect_grid(1), _ana_grid(1), run_ana)
         for s in scores:
             t = s['target']
             assert t['tp'] + t['fn'] == _N_VOX_EFF
@@ -94,11 +96,32 @@ class TestWiring:
 # provenance: every cell joins the shared recorder DAG as a full chain
 # ---------------------------------------------------------------------------
 
+class TestNullEffectCell:
+    """A ``None`` effect cell is the null path: no plant, empty target."""
+
+    def test_none_effect_targets_nothing(self):
+        # nothing is planted, so run_ana sees the clean exp and an empty target:
+        # every voxel is background (no tp to hit, no fn to miss)
+        scores = drive(_data_grid(2), [None], _ana_grid(1), run_ana)
+        assert len(scores) == 2 * 1
+        for s in scores:
+            assert s['target']['tp'] == 0 and s['target']['fn'] == 0
+
+    def test_none_effect_records_no_plant_node(self):
+        # the null row chains run_ana straight to the build -- effect_factory is
+        # skipped entirely, so it records nothing
+        data.RECORDER.records.clear()
+        drive(_data_grid(2), [None], _ana_grid(1), run_ana)
+        fns = [r['function'] for r in data.RECORDER.records.values()]
+        assert fns.count('effect_factory') == 0
+        assert fns.count('run_ana') == 2
+
+
 class TestProvenanceDAG:
     def test_one_full_chain_row_per_cell(self):
         data.RECORDER.records.clear()
         data_grid = _data_grid(2)
-        drive(data_grid, _effect_grid(2), _ana_grid(2))
+        drive(data_grid, _effect_grid(2), _ana_grid(2), run_ana)
 
         df = data.RECORDER.flatten_to_df()
         # one run_ana leaf per cell; the build + plant feed each, so they are
@@ -117,7 +140,7 @@ class TestProvenanceDAG:
         # exactly its grid: data once per data cell, the plant once per
         # (data, effect), the fit once per (data, effect, analysis).
         data.RECORDER.records.clear()
-        drive(_data_grid(2), _effect_grid(2), _ana_grid(2))
+        drive(_data_grid(2), _effect_grid(2), _ana_grid(2), run_ana)
 
         fns = [r['function'] for r in data.RECORDER.records.values()]
         assert fns.count('data_factory_wgn') == 2

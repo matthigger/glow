@@ -143,25 +143,47 @@ def data_factory(source: str, **kwargs):
 
 @MEMORY.cache
 @RECORDER(output_name_list=['exp', 'mask'])
-def effect_factory(exp, *, effect_llr, extenter: Extenter, seed: int = None,
-                   angle: float = None, purge_interest: bool = True):
+def effect_factory(exp, *, effect_llr, extenter_cls, n_vox, seed: int = None,
+                   seed_from_exp: bool = False):
     """Plant one synthetic effect on a clean Experiment.
+
+    The support extenter is built here from ``extenter_cls`` + ``n_vox`` + a
+    seed, so the caller passes ingredients, not a constructed Extenter. Pass
+    exactly one of ``seed`` / ``seed_from_exp`` to set the support placement:
+      - ``seed``: used directly (a fixed placement for the given geometry);
+      - ``seed_from_exp``: the seed is a content hash of ``exp`` itself, so a
+        fixed config plants in a different -- but reproducible -- place in each
+        experiment. The driver shares one effect grid across every data cell, so
+        a single fixed seed would otherwise plant at the same spot in every
+        experiment; hashing the experiment gives each its own placement without
+        threading the data seed through the grid. The clean ``exp`` is shared
+        across ``effect_llr``, so the placement is identical across strengths and
+        varies only across data realizations. (A slightly funny coupling, but it
+        is encapsulated entirely here; the analysis crop -- a separate extenter
+        in data_factory -- is untouched and stays geometric.)
 
     Args:
         exp: clean Experiment (a data_factory output) to add the effect to.
         effect_llr (float): per-voxel (size-normalized) LLR target; the
-            whole-region LLR observed is ~ effect_llr * |mask| (see
+            whole-region LLR observed is ~ effect_llr * n_vox (see
             glow.effect.impose).
-        extenter (Extenter): samples the effect support; carries its own seed.
-        seed (int): RNG seed for the imposed direction; used only with angle.
-        angle (float): impose along a direction sampled at this rotation
-            (degrees) from seed; None inherits the direction from the data.
-        purge_interest (bool): subtract the region's existing interest
-            coefficient so the recovered effect matches the imposed direction.
+        extenter_cls (type[Extenter]): Extenter subclass sampling the support,
+            built as ``extenter_cls(n_vox=n_vox, seed=...)`` (e.g. ExtenterMinVar).
+        n_vox (int): target support size.
+        seed (int): support placement seed; pass this XOR seed_from_exp.
+        seed_from_exp (bool): derive the support seed from a hash of exp; pass
+            this XOR seed.
 
     Returns:
         exp: the Experiment with the effect added.
         mask (np.array): the realized boolean support (shape of exp.mask_idx).
+
+    Raises:
+        ValueError: if not exactly one of seed / seed_from_exp is given.
     """
-    return EffectSynthetic(extenter=extenter, effect_llr=effect_llr, seed=seed,
-                           angle=angle, purge_interest=purge_interest).fit(exp)
+    if (seed is not None) == seed_from_exp:
+        raise ValueError('pass exactly one of seed / seed_from_exp')
+    if seed_from_exp:
+        seed = int(joblib.hash(exp), 16)
+    extenter = extenter_cls(n_vox=n_vox, seed=seed)
+    return EffectSynthetic(extenter=extenter, effect_llr=effect_llr).fit(exp)
