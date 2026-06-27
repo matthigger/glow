@@ -71,6 +71,44 @@ def test_single_output_and_defaults(rec):
     assert record["hash"] in rec.records
 
 
+def test_inputs_outputs_are_snapshotted_not_live(rec):
+    # inputs/outputs are stored as their serialised snapshot (ndarray -> content
+    # hash, opaque object -> repr), never the live object, so the record stays
+    # light. The link-type DAG hashes are still taken from the live values.
+    rec.link_types = (np.ndarray,)
+
+    @rec(output_name='out')
+    def f(arr):
+        return arr * 2
+
+    arr = np.arange(3)
+    f(arr)
+    record = _only(rec.records)
+    assert record['inputs']['arr'] == joblib.hash(arr)        # snapshot, not arr
+    assert record['outputs']['out'] == joblib.hash(arr * 2)
+    assert record['input_hashes']['arr'] == joblib.hash(arr)  # edge still present
+
+
+def test_recorder_does_not_retain_live_objects(rec):
+    # the motivation: a recorded heavy object must be collectable once the call
+    # returns -- the record keeps only its snapshot (repr), not a live reference.
+    import gc
+    import weakref
+
+    class Heavy:
+        pass
+
+    @rec(output_name='obj')
+    def make():
+        return Heavy()
+
+    obj = make()
+    ref = weakref.ref(obj)
+    del obj
+    gc.collect()
+    assert ref() is None   # nothing (not the record) is still pinning it
+
+
 def test_explicit_kwarg_overrides_default(rec):
     @rec(output_name='out')
     def f(a, b=10):
@@ -90,13 +128,14 @@ def test_output_name_list_unpacks_tuple(rec):
 
 
 def test_output_name_stores_tuple_whole(rec):
-    # single output_name keeps the return as-is, even when it's a tuple
+    # single output_name keeps the whole return under one name (not unpacked);
+    # the snapshot renders the tuple as a list (json has no tuple type)
     @rec(output_name='pair')
     def f(x):
         return (x, x)
 
     f(7)
-    assert _only(rec.records)["outputs"] == {"pair": (7, 7)}
+    assert _only(rec.records)["outputs"] == {"pair": [7, 7]}
 
 
 # --- keying (joblib args hash) ----------------------------------------------
@@ -335,8 +374,9 @@ def test_bound_method_captures_self(rec):
     record = _only(rec.records)
     assert record['function'].split('.')[-1] == 'go'
     assert record['outputs']['r'] == 15
-    # in memory the captured self is the live object
-    assert isinstance(record['inputs']['self'], _Thing)
+    # self is captured then snapshotted to its repr string (no live object kept)
+    assert isinstance(record['inputs']['self'], str)
+    assert '_Thing' in record['inputs']['self']
     assert record['inputs']['x'] == 5
 
 

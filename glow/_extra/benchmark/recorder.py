@@ -52,12 +52,17 @@ merging is just listing the folder; this mirrors joblib.Memory's own per-hash
 on-disk layout. ``load()`` reads the files back into ``records``. With
 ``folder=None`` the recorder is in-memory only.
 
-``_json_default`` is the on-disk serialisation fallback: any value json can't
-serialise natively is written as its ``repr`` string (a richer per-object form
-may replace repr later). Raw numpy is kept compact -- a scalar becomes its
-Python value and an ndarray its stable content hash -- so a stray heavy array
-does not dump wholesale. Records held in memory keep live references (the
-inputs/outputs themselves), serialised only when written to disk.
+``_json_default`` is the serialisation fallback: any value json can't serialise
+natively becomes its ``repr`` string (a richer per-object form may replace repr
+later). Raw numpy is kept compact -- a scalar becomes its Python value and an
+ndarray its stable content hash -- so a stray heavy array does not dump
+wholesale. Every record is snapshotted to this form *as it is made* (``_cell``),
+so it holds no live reference to the (often heavy) inputs/outputs: the Experiment
+etc. is free to be collected once the call returns, and the record stays light to
+hold, pickle, and persist. The DAG hashes (below) are taken from the live values
+first, before the snapshot -- so a record reads identically whether built here or
+reloaded from disk, and joblib.Memory remains the store for the live objects
+themselves (a cache hit hands them back).
 
 Provenance DAG: each record also stores ``input_hashes`` / ``output_hashes``
 -- ``joblib.hash`` of every named input and output whose type is in the
@@ -114,14 +119,16 @@ def _json_default(obj):
 
 
 def _cell(value):
-    """Coerce a recorded input/output value to a DataFrame cell.
+    """Coerce a recorded value to its serialised snapshot form.
 
-    Routes the value through the same json serialisation the records use on
-    disk (``_json_default``), so a live object and its reloaded form flatten to
-    the *same* cell: a scalar stays itself, an ndarray / opaque object collapses
-    to its content-hash / repr string, a small list/dict is kept structurally
-    (its arrays hashed). Object *identity* for the DAG edges lives in the
-    records' hash maps, not in these (display / slicing) cells.
+    The single coercion used everywhere a recorded value is kept: when a record
+    is made (snapshotting its inputs/outputs, so no live object is retained), on
+    disk, and when flatten_to_df lays a value into a DataFrame cell. Routing
+    through the same json serialisation (``_json_default``) means all three agree
+    -- a scalar stays itself, an ndarray / opaque object collapses to its
+    content-hash / repr string, a small list/dict is kept structurally (its
+    arrays hashed; note json renders tuples as lists). Object *identity* for the
+    DAG edges lives in the records' hash maps, not in these cells.
     """
     return json.loads(json.dumps(value, default=_json_default))
 
@@ -185,6 +192,8 @@ class Recorder:
         records (dict): hash -> recorded call dict, one per executed decorated
             call. Each carries ``{hash, function, inputs, outputs, input_hashes,
             output_hashes, time_sec}`` and, when a ``label`` was given, that too.
+            ``inputs`` / ``outputs`` are snapshots (the serialised ``_cell``
+            form), not live objects, so the record retains nothing heavy.
             ``input_hashes`` / ``output_hashes`` hold ``joblib.hash`` of only
             the inputs / outputs whose type is in ``link_types`` -- the
             provenance DAG edges flatten_to_df reads. A repeat hash overwrites
@@ -346,15 +355,26 @@ class Recorder:
                         )
                     outputs = dict(zip(output_name_list, out))
 
-                # content hashes of the link_types inputs / outputs: an input
-                # that *is* another call's output shares that output's
-                # joblib.hash, so flatten_to_df() links the two into a
-                # provenance DAG. Hashing only the registered domain types keeps
-                # trivial values from forging spurious edges (see module docs).
+                # content hashes of the link_types inputs / outputs, taken from
+                # the *live* values (before the snapshot below): an input that
+                # *is* another call's output shares that output's joblib.hash, so
+                # flatten_to_df() links the two into a provenance DAG. Hashing
+                # only the registered domain types keeps trivial values from
+                # forging spurious edges (see module docs).
                 input_hashes = {n: joblib.hash(v) for n, v in inputs.items()
                                 if isinstance(v, self.link_types)}
                 output_hashes = {n: joblib.hash(v) for n, v in outputs.items()
                                  if isinstance(v, self.link_types)}
+
+                # snapshot inputs / outputs to their serialised form *now* (the
+                # same _cell coercion the disk files and flatten_to_df use), so
+                # the record keeps no live reference to the (often heavy) call
+                # values -- the Experiment etc. is free to be collected once the
+                # call returns, and the record stays light to hold, pickle, and
+                # persist. The DAG hashes above were already taken from the live
+                # values, so the snapshot loses nothing the graph needs.
+                inputs = {n: _cell(v) for n, v in inputs.items()}
+                outputs = {n: _cell(v) for n, v in outputs.items()}
 
                 # key by joblib's own args hash, so the record matches the
                 # cache entry the same call writes (see module docstring)
