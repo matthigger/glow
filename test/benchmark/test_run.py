@@ -16,9 +16,11 @@ import numpy as np
 import pytest
 
 from glow._extra.benchmark import data
-from glow._extra.benchmark.run import run_ana, run_min_size, run_segment
+from glow._extra.benchmark.run import (run_ana, run_min_size, run_segment,
+                                       run_stat, voxel_stat_walk)
 from glow.analysis import AnalysisGLOW, AnalysisVBA
 from glow.analysis.cluster import ClusterMode
+from glow.analysis.mancova import get_hotel_tr, get_wilks, stat_dict_inv
 from glow.effect import ExtenterMinVar
 
 
@@ -216,3 +218,50 @@ class TestRunMinSize:
         run_min_size(exp, [mask], n_perm_fwer=4, n_perm_inner=20, label='GLOW')
         assert run_min_size.check_call_in_cache(
             exp, [mask], n_perm_fwer=4, n_perm_inner=20, label='OTHER')
+
+
+# ---------------------------------------------------------------------------
+# run_stat: one VBA / CET MANCOVA-stat variant reading the shared voxel-walk
+# ---------------------------------------------------------------------------
+
+class TestRunStat:
+    def _planted(self, seed=None):
+        # b=2 so the multivariate stats differ
+        seed = _fresh_seed() if seed is None else seed
+        exp = data.data_factory_wgn(shape=(6, 6, 6), b=2, num_img=24, a=1,
+                                    seed=seed)
+        return data.effect_factory(
+            exp, effect_llr=0.15, extenter_cls=ExtenterMinVar, n_vox=20,
+            seed=0)
+
+    def test_matches_standalone_fit(self):
+        # the shared walk is just a precompute of the same stat matrix, so a
+        # variant reading it equals the standalone run_ana fit of that recipe
+        exp, mask = self._planted()
+        ana = AnalysisVBA(get_stat=get_wilks, n_perm_fwer=15, z_flag=True)
+        assert run_stat(exp, [mask], ana, stat_dict_inv[get_wilks]) == run_ana(
+            exp, ana, [mask])
+
+    def test_variants_share_one_walk(self):
+        # the first variant computes voxel_stat_walk; the rest are cache hits
+        exp, mask = self._planted()
+        assert not voxel_stat_walk.check_call_in_cache(exp, 15)
+        run_stat(exp, [mask], AnalysisVBA(get_stat=get_wilks, n_perm_fwer=15),
+                 stat_dict_inv[get_wilks])
+        assert voxel_stat_walk.check_call_in_cache(exp, 15)
+
+    def test_recipe_is_a_cache_axis(self):
+        exp, mask = self._planted()
+        ana = AnalysisVBA(get_stat=get_wilks, n_perm_fwer=15)
+        run_stat(exp, [mask], ana, stat_dict_inv[get_wilks])
+        # a different stat is a different variant -> distinct cache entry
+        other = AnalysisVBA(get_stat=get_hotel_tr, n_perm_fwer=15)
+        assert not run_stat.check_call_in_cache(
+            exp, [mask], other, stat_dict_inv[get_hotel_tr])
+
+    def test_label_ignored_in_cache_key(self):
+        exp, mask = self._planted()
+        ana = AnalysisVBA(get_stat=get_wilks, n_perm_fwer=15)
+        run_stat(exp, [mask], ana, stat_dict_inv[get_wilks], label='VBA-wilks')
+        assert run_stat.check_call_in_cache(
+            exp, [mask], ana, stat_dict_inv[get_wilks], label='DIFFERENT')

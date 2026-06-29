@@ -24,7 +24,7 @@ from glow.effect import ExtenterMinVar
 # every cache, and the subset whose leaf is run_ana (the rest carry their own
 # fnc + kwargs grid -- segment its Ward-mode oracle, etc.)
 LABELS = ['null', 'sweep_llr', 'sweep_b', 'sweep_extent', 'sweep_nimg',
-          'segment', 'min_size']
+          'segment', 'min_size', 'stat']
 RUN_ANA_LABELS = ['null', 'sweep_llr', 'sweep_b', 'sweep_extent', 'sweep_nimg']
 
 
@@ -173,6 +173,8 @@ class TestGridCardinality:
             'segment': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
             * len(config.SEGMENT_MODES),
             'min_size': config.N_SEED * len(config.EFFECT_LLR_GRID),
+            'stat': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
+            * len(config.RUN_STAT_LIST),
         }
 
     def test_null_plants_nothing(self):

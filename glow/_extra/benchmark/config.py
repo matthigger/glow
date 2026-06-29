@@ -43,13 +43,14 @@ on the recorded source column downstream. HCP has no num_img axis (its N is
 the cohort), so the num_img sweep is WGN-only.
 
 Scope. Most caches share the run_ana leaf (fit + score one Analysis per cell):
-null, sweep_llr, sweep_b, sweep_extent, sweep_nimg. The segment cache swaps in
-run_segment (a Ward-mode oracle, no fit) over the same data / effect grids. The
-remaining old caches (stat, prune, two-effect, min_size) need other leaf
-functions (a shared voxel-stat walk, two pruning rules on one fit, two planted
-effects, per-perm staircases); each becomes its own fnc + kwargs_fnc_list in
-CONFIG once written to run_ana's contract (fnc(exp, mask_target_list=...,
-**kwargs), memoised + recorded).
+null, sweep_llr, sweep_b, sweep_extent, sweep_nimg. Three caches swap in their
+own leaf over those same grids: segment (run_segment, a Ward-mode oracle, no
+fit), min_size (run_min_size, per-perm staircases, recorded not scored), and
+stat (run_stat, a VBA / CET variant reading a shared voxel-stat walk). The
+remaining old caches (prune, two-effect) need other leaf functions (two pruning
+rules on one fit, two planted effects); each becomes its own fnc +
+kwargs_fnc_list in CONFIG once written to run_ana's contract (fnc(exp,
+mask_target_list=..., **kwargs), memoised + recorded).
 """
 import itertools
 import math
@@ -57,13 +58,15 @@ import warnings
 
 import numpy as np
 
-from glow.analysis import AnalysisCET, AnalysisGLOW, AnalysisVBA
+from glow.analysis import (AnalysisCET, AnalysisGLOW, AnalysisVBA,
+                           DEFAULT_CET_CFT_PVAL)
 from glow.analysis.cluster import ClusterMode
-from glow.analysis.mancova import get_hotel_tr, get_wilks
+from glow.analysis.mancova import (get_hotel_tr, get_wilks, stat_dict,
+                                   stat_dict_inv)
 from glow.effect import ExtenterMinVar, ExtenterSphere
 
 from . import hcp
-from .run import run_ana, run_min_size, run_segment
+from .run import run_ana, run_min_size, run_segment, run_stat
 
 
 # ---------- shared knobs (mirror paper/config_old.py) ------------------------
@@ -147,6 +150,43 @@ RUN_SEGMENT_LIST = [dict(cluster_mode=mode, label=str(mode))
 MIN_SIZE_SEED_OFFSET = 100_000
 RUN_MIN_SIZE_LIST = [dict(n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER,
                           label='GLOW')]
+
+
+def get_run_stat_list():
+    """Build the stat cache's leaf grid (one run_stat call per stat variant).
+
+    The bake-off among the voxel-wise methods: VBA / VBA-TFCE / CET x 5 stats x
+    {raw, z} = 30 variants. GLOW is excluded by design (it uses the LLR
+    throughout), so this is VBA / CET only. Each cell pairs a recipe with the
+    stat_dict key naming the shared-walk matrix run_stat injects as _stat, and
+    a record-only label (e.g. VBA-TFCE-Wilks-z).
+
+    Returns:
+        list[dict]: kwargs for run_stat (exp / mask_target_list supplied by the
+            driver), one per variant.
+    """
+    kwargs = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
+    specs = []
+    for fn in stat_dict.values():
+        name = stat_dict_inv[fn]
+        for z_flag in (False, True):
+            suffix = '-z' if z_flag else ''
+            specs.append(dict(
+                ana=AnalysisVBA(get_stat=fn, z_flag=z_flag, tfce_flag=False,
+                                **kwargs),
+                stat_name=name, label=f'VBA-{name}{suffix}'))
+            specs.append(dict(
+                ana=AnalysisVBA(get_stat=fn, z_flag=z_flag, tfce_flag=True,
+                                **kwargs),
+                stat_name=name, label=f'VBA-TFCE-{name}{suffix}'))
+            specs.append(dict(
+                ana=AnalysisCET(get_stat=fn, z_flag=z_flag,
+                                cft_pval=DEFAULT_CET_CFT_PVAL, **kwargs),
+                stat_name=name, label=f'CET-{name}{suffix}'))
+    return specs
+
+
+RUN_STAT_LIST = get_run_stat_list()
 
 
 # ---------- stage builders (swept axes are the keyword arguments) ------------
@@ -270,4 +310,11 @@ CONFIG = {
             seeds=range(MIN_SIZE_SEED_OFFSET, MIN_SIZE_SEED_OFFSET + N_SEED)),
         get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
         RUN_MIN_SIZE_LIST, run_min_size),
+    # G. MANCOVA stat comparison: VBA / VBA-TFCE / CET x 5 stats x {raw, z}
+    #    (b=2 so the multivariate stats differ). The cell's variants share one
+    #    voxel-stat walk (run_stat -> voxel_stat_walk). GLOW excluded.
+    'stat': (
+        get_kwargs_data_list(b_list=[2]),
+        get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
+        RUN_STAT_LIST, run_stat),
 }

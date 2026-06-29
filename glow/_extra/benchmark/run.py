@@ -4,9 +4,18 @@ Each leaf is one fnc(exp, mask_target_list=..., **kwargs) the driver runs on a
 (data, effect) cell. run_ana is the canonical leaf; run_segment is a sibling
 measuring segmentation quality (no fit); run_min_size captures GLOW's per-perm
 (size -> max-z) staircases (recorded as a curve, swept over min_vox post hoc
-rather than scored). All share @MEMORY.cache(ignore=['label']) -- label is
+rather than scored); run_stat fits one VBA / CET MANCOVA-stat variant reading a
+shared voxel-stat walk. All share @MEMORY.cache(ignore=['label']) -- label is
 recorded beside the output but dropped from the cache key -- and (where they
 score) score inline.
+
+A leaf may lean on a separately-memoised heavy intermediate rather than a
+driver stage: run_stat reads voxel_stat_walk (every MANCOVA stat for one exp),
+so the first of a cell's variants computes it and the rest are cache hits --
+the new-arch replacement for the old layer's "record the walk once, run N fits
+off it". The walk is a plain memoised helper, not a recorded DAG node: its
+output is not an Experiment, so it never links as a leaf's ancestor, and the
+leaf already links to the build via exp.
 
 The low-level benchmark primitive: run_ana takes an already-built
 Experiment, an unfitted Analysis recipe, and the planted target(s), runs
@@ -41,10 +50,10 @@ import copy
 import numpy as np
 
 import glow.graph
-from glow.analysis import Analysis
+from glow.analysis import Analysis, AnalysisVoxel
 from glow.analysis.cluster import cluster, ClusterMode
 from glow.analysis.inner_perm import cpu_perm
-from glow.analysis.mancova import decompose
+from glow.analysis.mancova import decompose, stat_dict, stat_dict_inv
 from glow.experiment.exper import Experiment, ExperimentScaled
 
 # share the data.py builders' disk cache + recorder, so a fit is memoised
@@ -228,3 +237,81 @@ def run_min_size(exp: Experiment, mask_target_list, *, n_perm_fwer,
     return _min_size_curves(
         exp, n_perm_fwer=n_perm_fwer, n_perm_inner=n_perm_inner,
         min_vox_floor=min_vox_floor, cluster_mode=cluster_mode)
+
+
+@MEMORY.cache
+def voxel_stat_walk(exp, n_perm_fwer: int) -> dict:
+    """Compute the (n_perm+1, num_vox) matrix of every stat for one exp.
+
+    The stat cache's shared heavy intermediate: one Freedman-Lane permutation
+    walk over the voxels, computing all stats in stat_dict in a single pass
+    (get_stat_perm_multi shares the per-region E / H decomposition across stat
+    functions), keyed by stat name. The first run_stat variant of a cell
+    computes and caches it; the others are cache hits, so the bake-off of 5
+    stats x {raw, z} x {VBA, VBA-TFCE, CET} pays the walk once. A plain
+    memoised helper, not a recorded DAG node (see the module docstring).
+
+    exp is scaled (ExperimentScaled.from_exp) before the walk, so the matrix is
+    byte-identical to the one AnalysisVoxel.fit would build (fit scales, then
+    build_stat_matrix runs the same get_stat_perm on the scaled exp) -- that
+    equivalence is what lets run_stat inject this as _stat and get exactly the
+    standalone fit's result.
+
+    Note: the cached matrix is ~250 MB per cell at the paper scale (251 perms,
+    25k voxels, 5 stats) -- the cost of the per-variant-leaf model (the walk is
+    shared on disk across the cell's variants); tune via its scale.
+
+    Args:
+        exp (Experiment): the experiment to walk (scaled here).
+        n_perm_fwer (int): number of FWER permutations (the walk has n+1 rows,
+            row 0 observed).
+
+    Returns:
+        {stat_name: (n_perm_fwer+1, num_vox) array}: row 0 observed, rows 1:
+            the Freedman-Lane nulls.
+    """
+    exp = ExperimentScaled.from_exp(exp)
+    num_vox = exp.y.shape[2]
+    stat_fns = list(stat_dict.values())
+    out = {stat_dict_inv[fn]: np.full((n_perm_fwer + 1, num_vox), np.nan)
+           for fn in stat_fns}
+    for k in range(n_perm_fwer + 1):
+        _exp = exp.permute(k) if k else exp
+        row = AnalysisVoxel.get_stat_perm_multi(_exp, stat_fns, children=None)
+        for fn in stat_fns:
+            out[stat_dict_inv[fn]][k, :] = row[fn]
+    return out
+
+
+@MEMORY.cache(ignore=['label'])
+@RECORDER(output_name='score')
+def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name,
+             label=None):
+    """Fit one VBA / CET MANCOVA-stat variant (reading the shared walk), score.
+
+    The stat bake-off's leaf: fit ana (a VBA / VBA-TFCE / CET recipe around one
+    MANCOVA stat) on exp, but inject the precomputed stat matrix from
+    voxel_stat_walk (indexed by stat_name) as _stat instead of re-walking the
+    permutations, so a cell's variants share one walk. The result is identical
+    to a standalone ana.fit(exp) (the walk reproduces the matrix fit would
+    build), then scored with score_effects like run_ana. GLOW is excluded from
+    this bake-off by design (it uses the LLR throughout), so this leaf is
+    VBA / CET only. Memoised + recorded, keyed by (exp, ana, stat_name); label
+    (e.g. VBA-TFCE-Wilks-z) is recorded but not a cache axis.
+
+    Args:
+        exp (Experiment): the experiment to analyze (raw or scaled).
+        mask_target_list (list): the planted effect supports (score target).
+        ana (Analysis): an unfitted AnalysisVBA / AnalysisCET recipe; its
+            n_perm_fwer sizes the walk and its get_stat picks the stat.
+        stat_name (str): the stat_dict key picking which walk matrix to inject
+            (must match ana.get_stat's stat).
+        label (str): method label recorded beside the score; not a cache axis.
+
+    Returns:
+        score (dict): the detection score (see score.score_effects).
+    """
+    walk = voxel_stat_walk(exp, ana.n_perm_fwer)
+    ana = copy.deepcopy(ana)
+    ana.fit(exp, _stat=walk[stat_name].copy())
+    return score_effects(ana, mask_target_list, mask_active=exp.mask_idx > -1)
