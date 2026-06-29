@@ -63,6 +63,19 @@ class ExperimentImageOnly:
         """Return the dtype of the underlying y array, or None when unset."""
         return self.y.dtype if self.y is not None else None
 
+    def __repr__(self):
+        """A compact identity string: class name + the y dimensions.
+
+        Cheap and human-readable (no array hashing): the (b, num_img,
+        num_vox) shape names what the object is in a log line, traceback, or
+        recorded DataFrame cell. y is None only for a half-built instance.
+        """
+        if self.y is None:
+            return f'{type(self).__name__}(empty)'
+        b, num_img, num_vox = self.y.shape
+        return (f'{type(self).__name__}(b={b}, num_img={num_img}, '
+                f'num_vox={num_vox})')
+
     @classmethod
     def from_gauss(cls, b: int = None, num_img: int = 10,
                    shape: tuple = (2, 3, 4), seed: int = None,
@@ -460,6 +473,15 @@ class Experiment(ExperimentImageOnly):
             warnings.warn('no bias term: regression constrained to '
                           'origin (consider add_bias=True)',
                           NoBiasTermWarning)
+
+    def __repr__(self):
+        """Extend the image-only repr with the design width a (== x rows)."""
+        a = self.x.shape[0]
+        if self.y is None:
+            return f'{type(self).__name__}(a={a})'
+        b, num_img, num_vox = self.y.shape
+        return (f'{type(self).__name__}(b={b}, num_img={num_img}, '
+                f'num_vox={num_vox}, a={a})')
 
     def permute(self, perm_idx: int):
         """Return a new experiment with Freedman-Lane permuted images.

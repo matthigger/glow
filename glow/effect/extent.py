@@ -50,6 +50,20 @@ class Extenter(ABC):
         self.contiguous = bool(contiguous)
         self.max_iter = int(max_iter)
 
+    def __repr__(self):
+        """Class name + each public, set (non-None) attribute.
+
+        Generic over the concrete extenter's own attributes (radius / n_vox /
+        connected, plus the base seed / contiguity knobs), so a subclass needs
+        no repr of its own: a set spec like ExtenterSphere(seed=0, n_vox=100)
+        reads in a log or recorded cell instead of '<...object at 0x...>'.
+        None-valued knobs (the unused half of an either/or, e.g. radius when
+        n_vox is given) are dropped.
+        """
+        fields = ', '.join(f'{k}={v}' for k, v in vars(self).items()
+                           if not k.startswith('_') and v is not None)
+        return f'{type(self).__name__}({fields})'
+
     def __call__(self, mask_idx, y=None, verbose: bool = False):
         """Return a boolean mask defining the extent.
 
@@ -287,6 +301,10 @@ class ExtenterSplit:
         if base is None:
             raise ValueError('base required')
         self.base = base
+
+    def __repr__(self):
+        """Class name + the base extent it bisects (rendered recursively)."""
+        return f'{type(self).__name__}(base={self.base!r})'
 
     def fit(self, mask_idx, y=None, verbose: bool = False):
         """Grow the base extent and bisect it into two spectral halves.

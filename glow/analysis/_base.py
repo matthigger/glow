@@ -24,14 +24,31 @@ class Analysis(ABC):
         pval (np.array): (num_reg,) FWER-controlled p-values (set by fit)
     """
 
-    # the __init__ config knobs that identify the recipe; subclasses declare
-    # their own. Never includes exp, the fitted arrays, or pval -- only the
-    # immutable recipe.
+    # the __init__ config knobs that identify the recipe -- the fields __repr__
+    # renders. Subclasses declare their own. Never includes exp, the fitted
+    # arrays, or pval -- only the immutable recipe.
     RECORD_FIELDS = ()
 
     def __init__(self):
         self.effect_list = None
         self.pval = None
+
+    def __repr__(self):
+        """A compact recipe string: class name + the RECORD_FIELDS knobs.
+
+        Reuses RECORD_FIELDS (the config subset that identifies the recipe) as
+        the single source of truth, so the repr tracks the recipe automatically
+        and never shows fitted arrays or the experiment. A stat-function knob
+        renders as its __name__, so it stays an address-free name rather than
+        '<function ... at 0x...>'.
+        """
+        parts = []
+        for name in self.RECORD_FIELDS:
+            v = getattr(self, name)
+            if callable(v) and not isinstance(v, type):
+                v = getattr(v, '__name__', v)
+            parts.append(f'{name}={v}')
+        return f'{type(self).__name__}({", ".join(parts)})'
 
     @abstractmethod
     def fit(self, exp):

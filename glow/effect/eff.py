@@ -41,6 +41,24 @@ class EffectEstimate:
         self.reg_idx = reg_idx
         self.pval_fwer = pval_fwer
 
+    def __repr__(self):
+        """Class name + region size and whichever identity scalars are set.
+
+        num_vox (the mask size) always shows; reg_idx / pval_fwer (set on a
+        discovered effect) and effect_llr / seed (set on a planted one) show
+        only when present, so a printed effect reads in the viewer or a
+        recorded cell instead of '<...object at 0x...>'. The heavy arrays
+        (y_mean, e, h) are omitted.
+        """
+        parts = []
+        if self.mask is not None:
+            parts.append(f'num_vox={int(self.mask.sum())}')
+        for name in ('reg_idx', 'pval_fwer', 'effect_llr', 'seed'):
+            v = getattr(self, name)
+            if v is not None:
+                parts.append(f'{name}={v}')
+        return f'{type(self).__name__}({", ".join(parts)})'
+
     def is_close(self, other, rtol: float = 1e-5, atol: float = 1e-8) -> bool:
         """Check approximate equality of two effects.
 
@@ -112,6 +130,22 @@ class EffectSynthetic:
             mask = np.ascontiguousarray(mask, dtype=bool)
             mask.flags.writeable = False
             self.mask = mask
+
+    def __repr__(self):
+        """Class name + the planting spec: effect_llr, whichever of
+        extenter / mask defines the support (extenter rendered recursively),
+        and a set seed / angle.
+        """
+        parts = [f'effect_llr={self.effect_llr}']
+        if self.extenter is not None:
+            parts.append(f'extenter={self.extenter!r}')
+        if self.mask is not None:
+            parts.append(f'mask=<{int(self.mask.sum())} vox>')
+        for name in ('seed', 'angle'):
+            v = getattr(self, name)
+            if v is not None:
+                parts.append(f'{name}={v}')
+        return f'{type(self).__name__}({", ".join(parts)})'
 
     def fit(self, exp):
         """Sample support, compute offset, impose the effect.
