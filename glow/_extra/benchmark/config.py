@@ -63,7 +63,7 @@ from glow.analysis.mancova import get_hotel_tr, get_wilks
 from glow.effect import ExtenterMinVar, ExtenterSphere
 
 from . import hcp
-from .run import run_ana, run_segment
+from .run import run_ana, run_min_size, run_segment
 
 
 # ---------- shared knobs (mirror paper/config_old.py) ------------------------
@@ -139,6 +139,14 @@ RUN_ANA_LIST = [dict(ana=ana, label=label)
 SEGMENT_MODES = [ClusterMode.NAIVE, ClusterMode.GLM_ERROR, ClusterMode.FOCUS]
 RUN_SEGMENT_LIST = [dict(cluster_mode=mode, label=str(mode))
                     for mode in SEGMENT_MODES]
+
+# the min_size cache's leaf grid: one run_min_size call capturing GLOW's
+# per-perm (size -> max-z) staircases (its one method, labelled GLOW), swept
+# over min_vox post hoc from the recorded curves. Its trial seeds are offset
+# clear of the other sweeps (MIN_SIZE_SEED_OFFSET), each its own HCP null.
+MIN_SIZE_SEED_OFFSET = 100_000
+RUN_MIN_SIZE_LIST = [dict(n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER,
+                          label='GLOW')]
 
 
 # ---------- stage builders (swept axes are the keyword arguments) ------------
@@ -253,4 +261,13 @@ CONFIG = {
         get_kwargs_data_list(),
         get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
         RUN_SEGMENT_LIST, run_segment),
+    # J. Min-size sweep: per-perm (size -> max-z) staircases on HCP, mirroring
+    #    sweep_llr's effect grid, so min_vox sweeps post hoc from one run.
+    #    Seeds are offset clear of the other sweeps; HCP only.
+    'min_size': (
+        get_kwargs_data_list(
+            sources=['hcp'],
+            seeds=range(MIN_SIZE_SEED_OFFSET, MIN_SIZE_SEED_OFFSET + N_SEED)),
+        get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
+        RUN_MIN_SIZE_LIST, run_min_size),
 }

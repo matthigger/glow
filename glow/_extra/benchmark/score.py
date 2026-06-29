@@ -10,10 +10,10 @@ RECORDER.flatten_to_df: its exp ancestor chains back through the plant to the
 data build, giving one score-bearing row per (trial, recipe). See
 glow._extra.benchmark.run / recorder.
 
-Ported from the deprecating paper layer (glow._extra.benchmark.paper.score).
-score_oracle_tree (the segment cache's segmentation-only score) now lives here
-beside score_effects; the min-size staircase scorers (size_max_z_curve /
-curve_json) move over with run_min_size.
+Ported from the deprecating paper layer (glow._extra.benchmark.paper.score):
+score_oracle_tree (the segment cache's segmentation score) and the min-size
+staircase scorers (size_max_z_curve / curve_json) now live here beside
+score_effects.
 
 score_effects output (one dict per fitted Analysis), keys:
 
@@ -40,6 +40,8 @@ Every metric (Dice, sensitivity, PPV, specificity) is a function of the four
 confusion counts and is derived downstream (glow.mask.stats_from_counts), so
 only the counts are stored.
 """
+import json
+
 import numpy as np
 
 import glow.graph
@@ -155,3 +157,50 @@ def score_oracle_tree(children, mask_target, mask_idx) -> dict:
     dice = glow.mask.stats_from_counts(**counts)['dice']
     i = int(np.nanargmax(dice))
     return {k: int(counts[k][i]) for k in ('tp', 'fp', 'tn', 'fn')}
+
+
+def size_max_z_curve(size, z, consider):
+    """Build one outer perm's (size, max-z-at-size-or-larger) staircase.
+
+    The max-z FWER null restricts the per-perm max to regions of size >=
+    min_vox, so a min_vox sweep needs only E(m) = max{z_r : size_r >= m}, a
+    non-increasing step function. This returns its corners: dedupe regions by
+    size, take the running max from the largest size down, and keep the
+    largest size of each distinct max-z. E(m) is then the value of the first
+    corner with size >= m, so a handful of corners recovers the perm's max-z
+    at any m >= floor without storing every region.
+
+    Args:
+        size (np.array): (num_reg,) region sizes
+        z (np.array): (num_reg,) per-region z = (llr - mu) / std
+        consider (np.array): (num_reg,) bool, regions eligible for the max
+            (here size >= floor and z finite)
+
+    Returns:
+        curve (np.array): (L, 2) corners (size, max_z), ascending in size (so
+            max_z descending); (0, 2) if none.
+    """
+    s, zz = size[consider], z[consider]
+    if s.size == 0:
+        return np.empty((0, 2))
+    order = np.argsort(s)
+    uniq, idx = np.unique(s[order], return_index=True)
+    z_at = np.maximum.reduceat(zz[order], idx)
+    suffix = np.maximum.accumulate(z_at[::-1])[::-1]
+    # keep the largest size of each max-z plateau (right edge), so a
+    # "first corner with size >= m" lookup returns the right value
+    keep = np.append(np.diff(suffix) != 0, True)
+    return np.column_stack([uniq, suffix])[keep]
+
+
+def curve_json(curve_list) -> str:
+    """Serialize the per-perm staircases to one results cell.
+
+    Args:
+        curve_list (list): one (L_k, 2) corner array per outer perm, index k
+            matching the perm number (k=0 observed).
+
+    Returns:
+        a JSON string: a list (per perm) of [size, max_z] corner pairs.
+    """
+    return json.dumps([[[int(s), float(z)] for s, z in c] for c in curve_list])

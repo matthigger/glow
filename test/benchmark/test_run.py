@@ -9,13 +9,14 @@ methods, that it fits a private copy (the caller's recipe is left un-fitted,
 which is what keeps the cache key stable), and that it joins the shared
 provenance DAG (a run_ana leaf carries the build that produced its exp).
 """
+import json
 import random
 
 import numpy as np
 import pytest
 
 from glow._extra.benchmark import data
-from glow._extra.benchmark.run import run_ana, run_segment
+from glow._extra.benchmark.run import run_ana, run_min_size, run_segment
 from glow.analysis import AnalysisGLOW, AnalysisVBA
 from glow.analysis.cluster import ClusterMode
 from glow.effect import ExtenterMinVar
@@ -180,3 +181,38 @@ class TestRunSegment:
         run_segment(exp, [mask], ClusterMode.FOCUS, label='Focus')
         assert run_segment.check_call_in_cache(
             exp, [mask], ClusterMode.FOCUS, label='DIFFERENT')
+
+
+# ---------------------------------------------------------------------------
+# run_min_size: capture GLOW's per-perm (size -> max-z) staircases (no score)
+# ---------------------------------------------------------------------------
+
+class TestRunMinSize:
+    def _planted(self):
+        exp = data.data_factory_wgn(shape=(6, 6, 6), b=2, num_img=20, a=1,
+                                    seed=_fresh_seed())
+        return data.effect_factory(
+            exp, effect_llr=0.1, extenter_cls=ExtenterMinVar, n_vox=20, seed=0)
+
+    def test_returns_one_curve_per_outer_perm(self):
+        exp, mask = self._planted()
+        curve = run_min_size(exp, [mask], n_perm_fwer=4, n_perm_inner=20)
+        parsed = json.loads(curve)
+        # n_perm_fwer + 1 staircases (k=0 observed); each lists [size, max_z]
+        assert len(parsed) == 5
+        for staircase in parsed:
+            assert all(len(corner) == 2 for corner in staircase)
+
+    def test_min_vox_floor_is_a_cache_axis(self):
+        # the lower bound changes which regions get a z -> distinct curves
+        exp, mask = self._planted()
+        run_min_size(exp, [mask], n_perm_fwer=4, n_perm_inner=20,
+                     min_vox_floor=1)
+        assert not run_min_size.check_call_in_cache(
+            exp, [mask], n_perm_fwer=4, n_perm_inner=20, min_vox_floor=3)
+
+    def test_label_ignored_in_cache_key(self):
+        exp, mask = self._planted()
+        run_min_size(exp, [mask], n_perm_fwer=4, n_perm_inner=20, label='GLOW')
+        assert run_min_size.check_call_in_cache(
+            exp, [mask], n_perm_fwer=4, n_perm_inner=20, label='OTHER')
