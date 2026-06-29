@@ -63,10 +63,6 @@ class EffectEstimate:
             return False
         return True
 
-# Back-compat alias: existing call sites and external users may still reference
-# Effect. Discovery code paths should migrate to EffectEstimate directly.
-Effect = EffectEstimate
-
 
 class EffectSynthetic:
     """A planted (synthetic) effect spec.

@@ -10,7 +10,7 @@ Usage::
     # no longer carries the experiment the viewer needs
     python -m glow._extra.viewer bundle.p.gz
 
-    # with a target mask (nifti, numpy, or pickled Effect)
+    # with a target mask (nifti, numpy, or pickled EffectEstimate)
     python -m glow._extra.viewer bundle.p.gz --mask target.nii.gz
     python -m glow._extra.viewer bundle.p.gz --mask target.npy
     python -m glow._extra.viewer bundle.p.gz --mask effect.pkl
@@ -82,7 +82,7 @@ def _load_mask(path, mask_idx):
             raise ValueError(
                 f'Could not interpret {path} as a mask.  Expected a nifti '
                 f'(.nii/.nii.gz), numpy array (.npy), or a pickled object '
-                f'with a .mask attribute (e.g. Effect).')
+                f'with a .mask attribute (e.g. EffectEstimate).')
 
     if mask.shape != mask_idx.shape:
         raise ValueError(
@@ -395,7 +395,7 @@ def main():
         help='Path to a pickled AnalysisGLOW object (.pkl, .p, .p.gz)')
     parser.add_argument(
         '--mask', default=None,
-        help='Path to a target mask (.nii, .nii.gz, .npy, or pickled Effect)')
+        help='Path to a target mask (.nii, .nii.gz, .npy, or pickled EffectEstimate)')
     parser.add_argument(
         '--demo', action='store_true',
         help='Run interactive demo')
