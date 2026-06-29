@@ -53,6 +53,7 @@ leaf functions do not exist yet.
 """
 import itertools
 import math
+import warnings
 
 import numpy as np
 
@@ -72,7 +73,14 @@ N_SEED = 15
 N_SEED_NULL = 1000
 
 EFFECT_LLR_GRID = np.logspace(np.log10(0.003), np.log10(0.3), 11)
-MODERATE_EFFECT_LLR = 0.03
+# the sweeps' shared centre: the grid's middle element. Taking it off the grid
+# (not typing 0.03, which misses grid[5] == 0.030000000000000013) is what makes
+# sweep_llr's midpoint hash equal to the default-effect anchor the other caches
+# plant. float() for a clean python-float hash matching effect_factory's
+# float(effect_llr) cast; a single midpoint needs an odd-length grid.
+if len(EFFECT_LLR_GRID) % 2 == 0:
+    warnings.warn('EFFECT_LLR_GRID is even-length; it has no single midpoint')
+MODERATE_EFFECT_LLR = float(EFFECT_LLR_GRID[len(EFFECT_LLR_GRID) // 2])
 
 # Every source is cropped to one connected sphere of this many voxels, so num_vox
 # matches across WGN and HCP (get_kwargs_data_list sizes the WGN box from it).
