@@ -1,14 +1,16 @@
 """Tests for glow._extra.benchmark.results: per-CONFIG CSV slicing.
 
 results re-attaches the CONFIG catalogue to the config-agnostic provenance frame
-(RECORDER.flatten_to_df): for one cache name it recomputes the run_ana args-hashes
-that name's grid produces (config_leaf_hashes) and keeps the matching rows. The
-behaviour worth covering is the *sharing* -- a run_ana call in two caches' grids
-is one record, so a shared row lands in both caches' frames, which is exactly why
-membership is recomputed rather than stamped. These run against a small
-monkeypatched CONFIG (the real grids run 15-1000 seeds). The recorder folder is
-redirected to a tmp dir and fresh seeds keep every cell a cache miss, so each
-cell really records (a hit would not).
+(RECORDER.flatten_to_df): for one cache name it selects the leaves the driver
+*tagged* with that cache (config_leaf_keys, reading the record's ``configs``
+list) and walks each up to its ancestors. The behaviour worth covering is the
+*sharing* -- a run_ana call in two caches is one record carrying both names, so
+a shared row lands in both caches' frames, which is exactly why membership is a
+tag list and not a single stamped field. These run against a small monkeypatched
+CONFIG (the real grids run 15-1000 seeds). The recorder folder is redirected to a
+tmp dir and fresh seeds keep the first run of every cell a cache miss (so it
+records); the *second* cache to want the shared cell hits the cache, and the
+driver's above-the-cache tag is what adds its name to the existing record.
 """
 import random
 
@@ -33,7 +35,7 @@ def _data_cell(seed):
 
 
 def _ana_grid():
-    # two recipes, each tagged with its method label (the record-only kwarg)
+    # two recipes, each tagged with its method label (the ignored 'label' kwarg)
     return [dict(ana=AnalysisVBA(n_perm_fwer=6), label='VBA-6'),
             dict(ana=AnalysisVBA(n_perm_fwer=7), label='VBA-7')]
 
@@ -43,8 +45,9 @@ def small_config(monkeypatch):
     """Two caches sharing one data cell; null effect, two labelled recipes.
 
     cacheA runs only the shared cell; cacheB runs the shared cell plus one of
-    its own. Driving both records every cell (fresh seeds -> all miss); the
-    shared cell is one record reused by both caches.
+    its own. Driving each under ``RECORDER.collecting(name)`` tags every leaf
+    with its cache; the shared cell is one record that cacheB tags on a cache
+    hit, so it ends up carrying both names.
     """
     s_shared, s_only_b = random.randrange(2 ** 31), random.randrange(2 ** 31)
     cfg = {
@@ -53,16 +56,19 @@ def small_config(monkeypatch):
                    _ana_grid(), run_ana),
     }
     monkeypatch.setattr(results, 'CONFIG', cfg)
-    for entry in cfg.values():
-        drive(*entry)
+    for name, entry in cfg.items():
+        with data.RECORDER.collecting(name):
+            drive(*entry)
     return cfg
 
 
-def test_config_leaf_hashes_match_recorded_rows(small_config):
-    # the recomputed hashes are exactly run_ana records the cache's grid ran
-    all_hashes = set(data.RECORDER.flatten_to_df()['run_ana.hash'])
-    assert results.config_leaf_hashes('cacheA') <= all_hashes
-    assert results.config_leaf_hashes('cacheB') <= all_hashes
+def test_config_leaf_keys_select_tagged_records(small_config):
+    # every selected key is a real record tagged with that cache
+    for name in ('cacheA', 'cacheB'):
+        keys = results.config_leaf_keys(name)
+        assert keys                                  # non-empty
+        for key in keys:
+            assert name in data.RECORDER.records[key]['configs']
 
 
 def test_config_results_df_filters_and_labels(small_config):
@@ -75,13 +81,17 @@ def test_config_results_df_filters_and_labels(small_config):
 
 
 def test_shared_cell_appears_in_both_caches(small_config):
-    # the shared cell is one record, so its rows land in BOTH frames -- the
-    # many-to-one membership a single stamped "which cache" column could not hold
+    # the shared cell is one record carrying BOTH names, so its rows land in
+    # both frames -- the many-to-one membership a single stamped column could
+    # not hold
     a = results.config_results_df('cacheA')
     b = results.config_results_df('cacheB')
     shared = set(a['run_ana.hash']) & set(b['run_ana.hash'])
     assert len(shared) == 2                              # shared cell x 2 recipes
     assert set(a['run_ana.hash']) < set(b['run_ana.hash'])  # B is a superset
+    # and that shared record really carries both cache names
+    for key in shared:
+        assert set(data.RECORDER.records[key]['configs']) == {'cacheA', 'cacheB'}
 
 
 def test_write_config_csvs(small_config, tmp_path):
@@ -94,7 +104,7 @@ def test_write_config_csvs(small_config, tmp_path):
 
 
 def test_empty_cache_is_skipped(monkeypatch, tmp_path):
-    # a cache whose cells have not run contributes no rows -> no csv written
+    # a cache whose cells have not run contributes no tagged leaves -> no csv
     monkeypatch.setattr(results, 'CONFIG',
                         {'unrun': ([_data_cell(random.randrange(2 ** 31))],
                                    [None], _ana_grid(), run_ana)})

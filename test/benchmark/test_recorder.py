@@ -780,3 +780,137 @@ def test_flatten_recurse_ragged_lists_nan_fill(rec):
     import pandas as pd
     assert pd.isna(df.loc[2, 'run_ana.out.score.pred.2.pval'])   # short row
     assert df.loc[3, 'run_ana.out.score.pred.2.pval'] == 0.1     # long row
+
+
+# --- flatten_to_df leaf_keys: restrict the rows to chosen leaves -------------
+
+def test_flatten_to_df_leaf_keys_restricts_rows(rec):
+    # two independent leaves; leaf_keys picks just one row
+    @rec(output_name='out')
+    def f(a):
+        return a + 1
+
+    f(1)
+    f(2)
+    all_keys = list(rec.records)
+    df = rec.flatten_to_df(leaf_keys=[all_keys[0]])
+    assert len(df) == 1
+    assert df.iloc[0]['f.hash'] == all_keys[0]
+
+
+def test_flatten_to_df_leaf_keys_still_walk_ancestors():
+    # a chosen leaf still carries its ancestors (the walk-up is unchanged)
+    rec = Recorder(link_types=(np.ndarray,))
+    _chain(rec)
+    leaf = next(k for k, r in rec.records.items()
+                if r['function'].endswith('final'))
+    row = rec.flatten_to_df(leaf_keys=[leaf]).iloc[0]
+    assert row['final.function'].endswith('final')
+    assert row['make.in.seed'] == 10                   # ancestor appended
+
+
+def test_flatten_to_df_leaf_keys_skips_unknown(rec):
+    # a key with no record is silently skipped (a stale / dead-end key)
+    @rec(output_name='out')
+    def f(a):
+        return a + 1
+
+    f(1)
+    real = next(iter(rec.records))
+    df = rec.flatten_to_df(leaf_keys=[real, 'no-such-key'])
+    assert len(df) == 1
+
+
+# --- collecting / tag / tag_call: above-the-cache config tags ----------------
+
+def test_collecting_sets_and_restores_current_config(rec):
+    assert rec._current_config is None
+    with rec.collecting('sweep_llr'):
+        assert rec._current_config == 'sweep_llr'
+        with rec.collecting('sweep_b'):              # nests: inner wins
+            assert rec._current_config == 'sweep_b'
+        assert rec._current_config == 'sweep_llr'    # restored on exit
+    assert rec._current_config is None
+
+
+def test_collecting_restores_even_on_error(rec):
+    with pytest.raises(ValueError):
+        with rec.collecting('x'):
+            raise ValueError
+    assert rec._current_config is None
+
+
+def test_tag_appends_to_record_and_is_idempotent(rec):
+    @rec(output_name='out')
+    def f(a):
+        return a + 1
+
+    f(1)
+    key = next(iter(rec.records))
+    assert rec.tag(key, 'configs', 'cacheA') is True
+    assert rec.records[key]['configs'] == ['cacheA']
+    rec.tag(key, 'configs', 'cacheB')
+    rec.tag(key, 'configs', 'cacheA')                # repeat is a no-op
+    assert rec.records[key]['configs'] == ['cacheA', 'cacheB']
+
+
+def test_tag_missing_record_is_noop(rec):
+    # tagging a never-computed cell finds no record -> False, nothing created
+    assert rec.tag('no-such-key', 'configs', 'cacheA') is False
+    assert 'no-such-key' not in rec.records
+
+
+def test_tag_persists_to_disk(tmp_path):
+    rec = Recorder(folder=tmp_path)
+
+    @rec(output_name='out')
+    def f(a):
+        return a + 1
+
+    f(1)
+    key = next(iter(rec.records))
+    rec.tag(key, 'configs', 'cacheA')
+    # a fresh reader over the folder sees the tag (it was written through)
+    reader = Recorder(folder=tmp_path)
+    reader.load()
+    assert reader.records[key]['configs'] == ['cacheA']
+
+
+def test_tag_reaches_a_record_only_on_disk(tmp_path):
+    # the cache-hit case: the record was written by a prior run (on disk, not in
+    # this recorder's memory); tag still finds and tags it
+    writer = Recorder(folder=tmp_path)
+
+    @writer(output_name='out')
+    def f(a):
+        return a + 1
+
+    f(1)
+    key = next(iter(writer.records))
+
+    reader = Recorder(folder=tmp_path)               # empty in-memory records
+    assert reader.tag(key, 'configs', 'cacheB') is True
+    assert reader.records[key]['configs'] == ['cacheB']
+
+
+def test_tag_call_tags_the_calls_record(rec):
+    # tag_call recomputes the call's record key and tags that record
+    @rec(output_name='out')
+    def f(a, b=1):
+        return a + b
+
+    with rec.collecting('cacheA'):
+        f(3, b=2)
+        rec.tag_call(f, (3,), {'b': 2})
+    key = next(iter(rec.records))
+    assert rec.records[key]['configs'] == ['cacheA']
+
+
+def test_tag_call_without_collecting_is_noop(rec):
+    @rec(output_name='out')
+    def f(a):
+        return a + 1
+
+    f(1)
+    assert rec.tag_call(f, (1,), {}) is False        # no active grouping
+    assert 'configs' not in next(iter(rec.records.values()))

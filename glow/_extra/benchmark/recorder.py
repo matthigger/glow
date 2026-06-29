@@ -80,9 +80,27 @@ or runs, yet their shared value hashes the same. ``flatten_to_df`` reads
 ``records`` as that directed acyclic graph and returns one row per *leaf* (a
 record whose outputs feed no other record) with every ancestor's fields
 appended -- e.g. a score leaf carries the fit it scored and the setup that built
-the data, so one row holds a whole trial.
+the data, so one row holds a whole trial. Passing ``leaf_keys`` restricts the
+walk to a chosen subset of leaves (each still carrying its ancestors), so a
+caller can assemble just the rows of one grouping (see config tags below).
+
+Config tags: a record can also accumulate a ``configs`` list naming the
+higher-level groupings -- benchmark CONFIG caches -- a call belongs to, added by
+``tag`` / ``tag_call`` from within a ``collecting(name)`` block. This is the one
+thing the inside-the-cache recorder cannot capture itself: when a second
+grouping re-runs a cell the first already computed, joblib.Memory serves the
+cached result *above* the recorder, so the record (written once, by the original
+miss) never sees the repeat. ``tag`` therefore read-modify-writes the *existing*
+record -- in memory and on its ``<hash>.json`` -- so a shared cell records every
+grouping it belongs to, not just the one that happened to compute it (a field
+stamped at record time could only ever hold that first writer). Tagging is
+driven from above the cache: a driver calls ``tag_call`` after each leaf call,
+and the recorder supplies only the read-modify-write and the ``collecting``
+context that names the active grouping. A tag of a never-computed cell is a
+silent no-op -- there is no record to tag, so a dead-end is simply skipped.
 """
 
+import contextlib
 import functools
 import inspect
 import json
@@ -239,8 +257,11 @@ class Recorder:
             form), not live objects, so the record retains nothing heavy.
             ``input_hashes`` / ``output_hashes`` hold ``joblib.hash`` of only
             the inputs / outputs whose type is in ``link_types`` -- the
-            provenance DAG edges flatten_to_df reads. A repeat hash overwrites
-            (and warns); see the module docstring.
+            provenance DAG edges flatten_to_df reads. A record may also gain a
+            ``configs`` list (the groupings it belongs to) via ``tag`` /
+            ``tag_call`` -- added above the cache, so it survives a cache hit
+            the inner record never sees (see the module docstring). A repeat
+            hash overwrites (and warns); see the module docstring.
         folder (Path | None): the directory record files are mirrored to (one
             ``<hash>.json`` per record), created on construction, or None for
             in-memory only. The Recorder is the only object that reads/writes
@@ -263,6 +284,37 @@ class Recorder:
         if not all(isinstance(t, type) for t in self.link_types):
             raise TypeError("link_types must be classes (a value is linked when "
                             "isinstance(value, link_types))")
+        # the stack of active collecting(name) groupings; the innermost is the
+        # tag tag_call stamps onto a record (see collecting / tag_call).
+        self._config_stack = []
+
+    @property
+    def _current_config(self):
+        """The innermost active ``collecting(name)`` grouping, or None."""
+        return self._config_stack[-1] if self._config_stack else None
+
+    @contextlib.contextmanager
+    def collecting(self, name):
+        """Mark records produced within this block as belonging to grouping ``name``.
+
+        Sets the active config tag (``_current_config``) for the duration, so a
+        ``tag_call`` made inside stamps its record with ``name``. Nests (an inner
+        block's tag wins until it exits) and restores on exit even if the body
+        raises. ``name`` is None for "no grouping" -- the block then runs without
+        tagging, so wrapping a plain run in ``collecting(None)`` is a harmless
+        no-op. The tag rides a context, not the call arguments, deliberately: it
+        must not enter the cache key or the record hash (else each grouping would
+        key a *distinct* record and the cell-sharing this exists to express would
+        be lost; see the module docstring).
+
+        Args:
+            name (str | None): the grouping to tag records with, or None for none.
+        """
+        self._config_stack.append(name)
+        try:
+            yield
+        finally:
+            self._config_stack.pop()
 
     @staticmethod
     def _args_hash(fnc, args, kwargs) -> str:
@@ -511,7 +563,81 @@ class Recorder:
             self.records[rec['hash']] = rec
         return self.records
 
-    def flatten_to_df(self, prefix_sep='.'):
+    def tag(self, key, field, value) -> bool:
+        """Append ``value`` to a list ``field`` on the record keyed ``key``.
+
+        The above-the-cache counterpart to recording (see the module docstring).
+        A record is written once, by the cache-miss call that computed it, but a
+        tag may need adding on a later cache *hit*, when the inner recorder never
+        fires (joblib.Memory returns above it). So tag reads the *existing*
+        record -- from memory, or the ``<hash>.json`` a prior run / another
+        worker wrote -- and appends ``value`` to its ``field`` list, in memory
+        and (when a folder is set) on disk. Idempotent: a value already present
+        is left as-is and nothing is rewritten, so a re-run neither duplicates a
+        tag nor churns the file. A no-op returning False when no record exists
+        for ``key`` -- a dead-end (the cell was never computed), nothing to tag.
+
+        Args:
+            key (str): the record's args hash (its ``<hash>.json`` stem).
+            field (str): the list field to append to (created if absent).
+            value: the entry to add (e.g. a CONFIG cache name).
+
+        Returns:
+            bool: True if a record was found (and now carries ``value``), False
+                if none exists for ``key`` (the dead-end no-op).
+        """
+        rec = self.records.get(key)
+        if rec is None and self.folder is not None:
+            path = self.folder / f'{key}.json'
+            if path.exists():
+                rec = json.loads(path.read_text())
+                self.records[key] = rec
+        if rec is None:
+            return False
+        tags = rec.setdefault(field, [])
+        if value not in tags:
+            tags.append(value)
+            if self.folder is not None:
+                self._write(key, rec)
+        return True
+
+    def tag_call(self, fnc, args, kwargs, field='configs') -> bool:
+        """Tag the record a memoised+recorded call keys, with the active grouping.
+
+        The driver-facing entry point: called *after* invoking ``fnc(*args,
+        **kwargs)`` (so on a miss the record exists, and on a hit it is already on
+        disk), it finds that call's record by recomputing its key and appends the
+        recorder's active ``collecting(...)`` name to ``field``. The cache-hit
+        case is the whole point: when a second grouping re-runs a cell another
+        already computed, joblib serves the cached result and the inner recorder
+        never fires, so this is the only way that grouping's membership reaches
+        the (shared) record. A no-op when no ``collecting`` block is active
+        (nothing to tag with) or when no record exists (the dead-end, via tag).
+
+        ``fnc`` is the memoised+recorded callable -- a joblib MemorizedFunc
+        wrapping the recorder-wrapped fn. Its undecorated function, reached via
+        ``.func`` (the MemorizedFunc's wrapped fn) then ``inspect.unwrap`` (past
+        the recorder), drives ``_args_hash`` so the recomputed key matches the one
+        the inner recorder filed the record under. ``args`` / ``kwargs`` must be
+        exactly what ``fnc`` was called with, so the hash agrees.
+
+        Args:
+            fnc (Callable): the memoised+recorded callable that was just invoked.
+            args (tuple): the positional arguments it was called with.
+            kwargs (dict): the keyword arguments it was called with.
+            field (str): the record list field to tag (default ``'configs'``).
+
+        Returns:
+            bool: tag's result -- True if a record was tagged, False otherwise
+                (no active grouping is also False: no tag attempted).
+        """
+        value = self._current_config
+        if value is None:
+            return False
+        raw = inspect.unwrap(getattr(fnc, 'func', fnc))
+        return self.tag(self._args_hash(raw, args, kwargs), field, value)
+
+    def flatten_to_df(self, prefix_sep='.', leaf_keys=None):
         """Flatten the records into a leaf-per-row provenance DataFrame.
 
         Reads ``records`` as a directed acyclic graph: a call B depends on a
@@ -547,9 +673,17 @@ class Recorder:
         Operates on the in-memory ``records``; call ``load()`` first to fold in
         a folder's on-disk records from other writers.
 
+        ``leaf_keys`` restricts the rows to a chosen set of leaves (each still
+        walked up to its ancestors), rather than every DAG leaf -- e.g. the
+        ``configs``-tagged leaves of one grouping (see the module docstring). Keys
+        not present in ``records`` are skipped, so a stale / dead-end key is
+        harmless. None (the default) uses every leaf the DAG implies.
+
         Args:
             prefix_sep (str): separator between an ancestor's prefix and its
                 column name (e.g. the ``.`` in ``fit.time_sec``).
+            leaf_keys (iterable[str] | None): the record keys to emit rows for;
+                None walks every DAG leaf.
 
         Returns:
             a pandas DataFrame with one row per leaf record; columns are the
@@ -578,19 +712,24 @@ class Recorder:
                     ps.add(producer)
             return ps
 
-        # input content hash -> the records consuming it. A leaf is a record
-        # none of whose (hashable) outputs is consumed by *another* record; the
-        # self exclusion keeps an identity call (input value == output value) a
-        # leaf, and a None output hash never disqualifies one.
-        consumers_of = defaultdict(set)
-        for key, rec in records.items():
-            for h in rec.get('input_hashes', {}).values():
-                if h is not None:
-                    consumers_of[h].add(key)
-        leaves = [key for key, rec in records.items()
-                  if all(not (consumers_of[h] - {key})
-                         for h in rec.get('output_hashes', {}).values()
-                         if h is not None)]
+        if leaf_keys is not None:
+            # caller-chosen leaves (e.g. one grouping's tagged records); skip any
+            # key with no record, so a stale / dead-end key is harmless
+            leaves = [key for key in leaf_keys if key in records]
+        else:
+            # input content hash -> the records consuming it. A leaf is a record
+            # none of whose (hashable) outputs is consumed by *another* record;
+            # the self exclusion keeps an identity call (input value == output
+            # value) a leaf, and a None output hash never disqualifies one.
+            consumers_of = defaultdict(set)
+            for key, rec in records.items():
+                for h in rec.get('input_hashes', {}).values():
+                    if h is not None:
+                        consumers_of[h].add(key)
+            leaves = [key for key, rec in records.items()
+                      if all(not (consumers_of[h] - {key})
+                             for h in rec.get('output_hashes', {}).values()
+                             if h is not None)]
 
         rows = []
         for leaf in leaves:

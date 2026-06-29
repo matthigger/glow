@@ -149,6 +149,30 @@ class TestProvenanceDAG:
         assert fns.count('run_ana') == 2 * 2 * 2
 
 
+class TestConfigTags:
+    """drive under ``collecting(name)`` tags each leaf record with ``name``."""
+
+    def test_collecting_tags_each_leaf(self):
+        # every run_ana leaf carries the active grouping; the upstream builds
+        # (reached as ancestors) are left untagged -- only the leaf holds it
+        data.RECORDER.records.clear()
+        with data.RECORDER.collecting('myfig'):
+            drive(_data_grid(2), _effect_grid(2), _ana_grid(2), run_ana)
+
+        recs = data.RECORDER.records.values()
+        leaves = [r for r in recs if r['function'] == 'run_ana']
+        builds = [r for r in recs if r['function'] != 'run_ana']
+        assert len(leaves) == 2 * 2 * 2
+        assert all('myfig' in r['configs'] for r in leaves)
+        assert all('configs' not in r for r in builds)
+
+    def test_without_collecting_no_tag(self):
+        # drive outside a collecting block records as normal, just untagged
+        data.RECORDER.records.clear()
+        drive(_data_grid(1), [None], _ana_grid(1), run_ana)
+        assert all('configs' not in r for r in data.RECORDER.records.values())
+
+
 # ---------------------------------------------------------------------------
 # parallel: split by data cell (n_jobs != 1). The threading backend shares this
 # process, so it honours the monkeypatched recorder folder + in-memory records
@@ -198,3 +222,17 @@ class TestParallel:
             dict(source='wgn', shape=(5, 5, 5), b=2, num_img=16, a=2, seed=0),
             [None], _ana_grid(1), run_ana))
         assert len(payload) < 100_000
+
+    def test_parallel_collecting_tags_each_leaf(self):
+        # the active grouping is captured in the parent and re-established per
+        # task, so a parallel sweep tags its leaves just as a serial one does
+        data.RECORDER.records.clear()
+        grid = _data_grid(3)
+        with parallel_config(backend='threading'):
+            with data.RECORDER.collecting('myfig'):
+                drive(grid, [None], _ana_grid(2), run_ana, n_jobs=2)
+
+        leaves = [r for r in data.RECORDER.records.values()
+                  if r['function'] == 'run_ana']
+        assert len(leaves) == 3 * 2
+        assert all('myfig' in r['configs'] for r in leaves)
