@@ -26,6 +26,8 @@ import sys
 import urllib.request
 import zipfile
 
+import numpy as np
+
 from glow._extra.benchmark import file
 
 
@@ -103,6 +105,142 @@ def ensure_hcp_data() -> pathlib.Path:
     if not is_present(folder):
         raise RuntimeError(f'HCP download yielded no maps under {folder}')
     return folder
+
+
+# ---------- npy bundle (the per-feature, AWS-shippable representation) -------
+# A compact stand-in for the niftis: a brain mask plus one float32
+# (num_img, num_vox) array per feature plus a small meta (subject ids +
+# affine). It holds exactly the arrays from_search builds -- y[feat] is
+# arr.get_fdata(float32)[mask] in the mask's C-order, the same for every
+# feature -- so build_exp_img_from_bundle reconstructs a byte-identical
+# ExperimentImageOnly (np.save round-trips dtype + values; data_factory's
+# _with_canonical_y normalises layout), and the experiment hashes identically
+# whether built from the niftis or the bundle.
+#
+# It is the single HCP build path: data_factory_hcp builds from the bundle
+# both locally (converting from the niftis on first use) and on an AWS worker
+# (where the bundle is pre-staged from S3, so no niftis and no DUA prompt are
+# needed -- see glow._extra.aws). Per-feature files let a worker pull only the
+# features its cell uses.
+
+BUNDLE_DIRNAME = 'hcp100_dki_noddi_npy'
+
+
+def bundle_dir() -> pathlib.Path:
+    """Return the local npy-bundle directory (sibling of the niftis)."""
+    return file.get_path_data() / BUNDLE_DIRNAME
+
+
+def bundle_feat_path(feat: str) -> pathlib.Path:
+    """Path to one feature's (num_img, num_vox) float32 array in the bundle."""
+    return bundle_dir() / 'feat' / f'{feat}.npy'
+
+
+def bundle_mask_path() -> pathlib.Path:
+    """Path to the bundle's boolean brain-mask array (full-volume shape)."""
+    return bundle_dir() / 'mask.npy'
+
+
+def bundle_affine_path() -> pathlib.Path:
+    """Path to the bundle's affine array (the maps' world transform)."""
+    return bundle_dir() / 'affine.npy'
+
+
+def bundle_meta_path() -> pathlib.Path:
+    """Path to the bundle's small JSON meta (the subject id list)."""
+    return bundle_dir() / 'meta.json'
+
+
+def is_bundle_present(feats=HCP_FEATS) -> bool:
+    """Return whether the mask / affine / meta and each feat array are present.
+
+    Checks only the requested feats (plus the shared mask / affine / meta), so
+    a worker that staged a subset reads as present for that subset.
+    """
+    base = (bundle_mask_path().exists() and bundle_affine_path().exists()
+            and bundle_meta_path().exists())
+    return base and all(bundle_feat_path(f).exists() for f in feats)
+
+
+def ensure_hcp_bundle(feats=HCP_FEATS) -> pathlib.Path:
+    """Return the bundle dir, converting it from the niftis on first use.
+
+    Idempotent: if the requested feats (and the shared mask / affine / meta)
+    are present the dir is returned untouched -- so on an AWS worker, where the
+    bundle is pre-staged from S3, this never reaches the niftis or the DUA
+    gate. Otherwise the niftis are loaded once (ensure_hcp_data -> from_search
+    over the full panel) and dumped as the bundle.
+
+    Raises:
+        RuntimeError: the conversion did not yield the requested feats.
+    """
+    if is_bundle_present(feats):
+        return bundle_dir()
+    from glow.experiment import ExperimentImageOnly
+
+    folder = ensure_hcp_data()
+    exp_img = ExperimentImageOnly.from_search(
+        folder=folder, sbj_regex=SBJ_REGEX, img_glob_dict=IMG_GLOB_DICT,
+        mask=next(folder.glob(MASK_GLOB)))
+    _dump_bundle(exp_img)
+    if not is_bundle_present(feats):
+        raise RuntimeError(
+            f'HCP bundle build did not yield all of {list(feats)}')
+    return bundle_dir()
+
+
+def _dump_bundle(exp_img) -> None:
+    """Write an ExperimentImageOnly out as the per-feature npy bundle.
+
+    Dumps the boolean mask (mask_idx > -1), the affine, the subject ids, and
+    one float32 (num_img, num_vox) array per feature -- exactly the arrays the
+    glue reloads (see build_exp_img_from_bundle).
+    """
+    (bundle_dir() / 'feat').mkdir(parents=True, exist_ok=True)
+    np.save(bundle_mask_path(), exp_img.mask_idx > -1)
+    np.save(bundle_affine_path(), np.asarray(exp_img.meta['affine']))
+    bundle_meta_path().write_text(
+        json.dumps({'subjects': exp_img.meta['subjects']}))
+    for feat_idx, feat in enumerate(exp_img.meta['features']):
+        np.save(bundle_feat_path(feat), exp_img.y[feat_idx])
+
+
+def build_exp_img_from_bundle(feats):
+    """Glue the bundle into an ExperimentImageOnly for a feature subset.
+
+    The single HCP build path (see the module section above): ensure the
+    bundle is present (locally convert from the niftis; on a worker it is
+    pre-staged), then load the shared mask / affine / subjects and stack the
+    requested feats into y in their given order. The result is byte-identical
+    to ExperimentImageOnly.from_search for the same feats, so it hashes the
+    same (verified in the tests).
+
+    Args:
+        feats (tuple[str]): the features to load, in order; sets b and the
+            meta 'features' order.
+
+    Returns:
+        ExperimentImageOnly with y of shape (b, num_img, num_vox) float32.
+    """
+    import glow.mask
+    from glow.experiment import ExperimentImageOnly
+
+    feats = tuple(feats)
+    ensure_hcp_bundle(feats)
+
+    mask_idx = glow.mask.get_mask_idx(np.load(bundle_mask_path()))
+    affine = np.load(bundle_affine_path())
+    subjects = json.loads(bundle_meta_path().read_text())['subjects']
+
+    y0 = np.load(bundle_feat_path(feats[0]))
+    y = np.empty((len(feats), *y0.shape), dtype=y0.dtype)
+    y[0] = y0
+    for feat_idx, feat in enumerate(feats[1:], start=1):
+        y[feat_idx] = np.load(bundle_feat_path(feat))
+
+    # mirror from_paths' meta exactly (key order included) so the hash matches
+    meta = {'subjects': subjects, 'features': list(feats), 'affine': affine}
+    return ExperimentImageOnly(y=y, mask_idx=mask_idx, meta=meta)
 
 
 def _accept_dua() -> bool:

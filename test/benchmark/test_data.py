@@ -152,32 +152,27 @@ class TestRecorderDecorator:
 class TestDataFactoryHCP:
     def test_builds_and_records_via_mocked_loader(self, monkeypatch, tmp_path):
         feats = ('fa', 'md')
-        # the image-only experiment the mocked NIfTI search stands in for
+        # the image-only experiment the mocked bundle loader stands in for
         img = ExperimentImageOnly.from_gauss(shape=(4, 4, 4), b=len(feats),
                                              num_img=10, seed=0)
 
         seen = {}
 
-        def fake_from_search(**kwargs):
-            seen.update(kwargs)
+        def fake_build(hcp_feats):
+            seen['feats'] = tuple(hcp_feats)
             return img
 
-        # mock the two heavy dependencies: the dataset dir and the NIfTI load
-        monkeypatch.setattr(ExperimentImageOnly, 'from_search', fake_from_search)
-        (tmp_path / 'brain_mask_space-MNI152NLin2009cAsym.nii.gz').write_bytes(b'')
-        monkeypatch.setattr(hcp, 'ensure_hcp_data', lambda: tmp_path)
+        # mock the single HCP loader (the bundle glue); feature selection /
+        # hash-equivalence are covered in test/aws/test_hcp_bundle.py
+        monkeypatch.setattr(hcp, 'build_exp_img_from_bundle', fake_build)
 
         data.RECORDER.records.clear()
         exp = data.data_factory_hcp(hcp_feats=feats, a=1, seed=_fresh_seed())
 
-        # the design matrix was sampled onto the loaded images (a=1 + bias)
+        # the requested features reached the loader; x was sampled (a=1 + bias)
+        assert seen['feats'] == feats
         assert exp.y.shape[0] == len(feats)
         assert exp.x.shape == (2, 10)
-
-        # the builder selected the requested features and passed the brain mask
-        assert tuple(seen['img_glob_dict']) == feats
-        assert seen['sbj_regex'] == hcp.SBJ_REGEX
-        assert seen['mask'].name.startswith('brain_mask_space-')
 
         # the call was recorded under the hcp builder's name
         assert len(data.RECORDER.records) == 1

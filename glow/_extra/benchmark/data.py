@@ -143,13 +143,13 @@ def data_factory_hcp(*, hcp_feats: tuple = hcp.HCP_FEATS, a: int = 1,
         Experiment with x and contrast attached, cropped to the extenter
         support when set.
     """
-    # the archive's brain mask is the analysis support (NODDI isovf is
-    # legitimately zero in-brain, so the maps can't infer it); see hcp.py
-    folder = hcp.ensure_hcp_data()
-    exp_img = ExperimentImageOnly.from_search(
-        folder=folder, sbj_regex=hcp.SBJ_REGEX,
-        img_glob_dict={feat: hcp.IMG_GLOB_DICT[feat] for feat in hcp_feats},
-        mask=next(folder.glob(hcp.MASK_GLOB)))
+    # build from the per-feature npy bundle, not the niftis directly: the same
+    # arrays from_search would load (so the experiment hashes identically), but
+    # the single build path that also works on an AWS worker, where the bundle
+    # is pre-staged from S3 (no niftis, no DUA prompt) -- see hcp.py / the aws
+    # package. The archive's brain mask is the analysis support (NODDI isovf is
+    # legitimately zero in-brain, so the maps can't infer it).
+    exp_img = hcp.build_exp_img_from_bundle(hcp_feats)
     return _sample_x_and_crop(exp_img, a=a, contrast=contrast,
                               has_bias=has_bias, extenter=extenter, seed=seed)
 

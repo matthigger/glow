@@ -179,6 +179,46 @@ def download_prefix(s3, bucket: str, key_prefix: str, local_dir, *,
     return n
 
 
+def download_each(s3, bucket: str, pairs, *, skip_existing: bool = True,
+                  threads: int = UPLOAD_THREADS) -> int:
+    """Download an explicit list of (s3_key, local_path) objects.
+
+    The selective counterpart to download_prefix: the caller names exactly
+    which keys to fetch and where each lands, so a worker pulls just the
+    bundle files its cell needs rather than a whole prefix (see
+    glow._extra.aws.sync.hcp_bundle_keys). Existing local files are skipped
+    when skip_existing; parent dirs are created.
+
+    Args:
+        s3: boto3 S3 client.
+        bucket (str): source bucket.
+        pairs (iterable[(str, str | Path)]): (s3_key, local_path) to fetch.
+        skip_existing (bool): skip a pair whose local file already exists.
+        threads (int): parallel download workers.
+
+    Returns:
+        n_downloaded (int): the number of objects actually downloaded.
+    """
+    pairs = list(pairs)
+
+    def _get_one(pair) -> bool:
+        key, dest = pair
+        dest = Path(dest)
+        if skip_existing and dest.exists():
+            return False
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        s3.download_file(bucket, key, str(dest))
+        return True
+
+    if not pairs:
+        return 0
+    n = 0
+    with ThreadPoolExecutor(max_workers=threads) as pool:
+        for downloaded in pool.map(_get_one, pairs):
+            n += int(downloaded)
+    return n
+
+
 class BackgroundUploader:
     """Periodically upload a set of (local_dir, key_prefix) pairs in a thread.
 

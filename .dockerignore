@@ -1,0 +1,25 @@
+# Build context for glow/_extra/aws/Dockerfile (context is the repo root).
+# The image only needs pyproject.toml / poetry.lock / README.md and glow/, so
+# keep the context tiny -- above all exclude the ~1 GB .git history.
+.git
+.gitignore
+.dockerignore
+
+# Python caches / build artifacts
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+build
+dist
+
+# Repo content the worker never imports
+test
+docs
+.claude
+.github
+.venv
+venv*
+*.ipynb

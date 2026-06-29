@@ -135,14 +135,37 @@ RUN_ANA_LIST = [dict(ana=ana, label=label)
                 for label, ana in ana_kwargs_dict.items()]
 
 
+# ---------- smoke test (a tiny non-paper cache for end-to-end checks) --------
+# Not a paper figure: a fast WGN-only null sweep used to confirm the whole
+# pipeline runs end to end (in particular the AWS Batch path -- driver submits,
+# a worker rebuilds its cell from this CONFIG, fits, and ships records back).
+# Small crop, few seeds, two representative recipes, and reduced permutation
+# counts so a cell finishes in seconds; see the 'smoke' CONFIG entry.
+SMOKE_CROP_N_VOX = 1_000
+SMOKE_N_SEED = 3
+SMOKE_NUM_IMG = 30
+SMOKE_N_PERM_FWER = 20
+SMOKE_N_PERM_INNER = 50
+
+_smoke_kwargs = dict(n_perm_fwer=SMOKE_N_PERM_FWER, alpha_fwer=ALPHA_FWER)
+SMOKE_RUN_ANA_LIST = [
+    dict(ana=AnalysisGLOW(n_perm_inner=SMOKE_N_PERM_INNER,
+                          cluster_mode=ClusterMode.FOCUS, **_smoke_kwargs),
+         label='GLOW-Focus'),
+    dict(ana=AnalysisVBA(z_flag=True, tfce_flag=False, get_stat=get_hotel_tr,
+                         **_smoke_kwargs),
+         label='VBA'),
+]
+
+
 # ---------- stage builders (swept axes are the keyword arguments) ------------
 def get_kwargs_data_list(*, sources=SOURCES, seeds=range(N_SEED), b_list=(1,),
-                         num_img_list=(100,)):
+                         num_img_list=(100,), crop_n_vox=CROP_N_VOX):
     """Return the list of data_factory kwargs dicts over the swept axes.
 
     The cartesian product of (source, b, seed); WGN additionally sweeps num_img
     (HCP's N is its cohort, so its cells omit it and never duplicate). The
-    analysis crop -- a connected CROP_N_VOX sphere seeded by the cell's seed --
+    analysis crop -- a connected crop_n_vox sphere seeded by the cell's seed --
     is built once per (source, b, seed) and shared across a WGN cell's num_img
     values; the HCP feature subset is a sorted random b-subset of the pool.
 
@@ -151,12 +174,15 @@ def get_kwargs_data_list(*, sources=SOURCES, seeds=range(N_SEED), b_list=(1,),
         seeds (iterable[int]): per-cell realization seeds.
         b_list (iterable[int]): imaging-feature counts (HCP draws a subset).
         num_img_list (iterable[int]): subject counts (WGN only).
+        crop_n_vox (int): voxels in the analysis-crop sphere (also sizes the
+            WGN box). Defaults to the paper CROP_N_VOX; the smoke cache passes
+            a small value for a fast end-to-end check.
 
     Returns:
         list[dict]: kwargs for data_factory, one per cell (source selects
             wgn / hcp).
     """
-    wgn_side = math.ceil(CROP_N_VOX ** (1 / 3))
+    wgn_side = math.ceil(crop_n_vox ** (1 / 3))
 
     def sample_hcp_feats(b, seed):
         # a sorted random b-subset of the HCP feature pool, per seed
@@ -166,7 +192,7 @@ def get_kwargs_data_list(*, sources=SOURCES, seeds=range(N_SEED), b_list=(1,),
 
     kwargs_data_list = []
     for source, b, seed in itertools.product(sources, b_list, seeds):
-        extenter = ExtenterSphere(n_vox=CROP_N_VOX, connected=True,
+        extenter = ExtenterSphere(n_vox=crop_n_vox, connected=True,
                                   contiguous=True, seed=seed)
         if source == 'wgn':
             for num_img in num_img_list:
@@ -240,4 +266,15 @@ CONFIG = {
         get_kwargs_data_list(sources=['wgn'], num_img_list=NIMG_GRID),
         get_kwargs_effect_list(),
         RUN_ANA_LIST, run_ana),
+    # Smoke: tiny null sweep over both sources to confirm the pipeline end to
+    # end (not a paper figure). Small crop / few seeds / reduced perms; see
+    # SMOKE_* above. WGN and HCP cells (3 each); on AWS the HCP cells need the
+    # reference data staged to S3 (python -m glow._extra.aws stage_hcp) and run
+    # with --sources wgn,hcp (default --sources wgn runs only the WGN half).
+    'smoke': (
+        get_kwargs_data_list(sources=['wgn', 'hcp'], seeds=range(SMOKE_N_SEED),
+                             num_img_list=(SMOKE_NUM_IMG,),
+                             crop_n_vox=SMOKE_CROP_N_VOX),
+        get_kwargs_effect_list(llr_list=None),
+        SMOKE_RUN_ANA_LIST, run_ana),
 }

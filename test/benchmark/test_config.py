@@ -21,12 +21,16 @@ from glow.analysis import Analysis
 from glow.effect import ExtenterMinVar
 
 
+# the paper-figure caches (run_ana over the shared recipe grid)
 LABELS = ['null', 'sweep_llr', 'sweep_b', 'sweep_extent', 'sweep_nimg']
+# non-paper helper caches in the catalogue (e.g. the tiny end-to-end smoke
+# cache); excluded from the paper-cardinality checks below
+NON_PAPER_LABELS = ['smoke']
 
 
 class TestCatalogueShape:
     def test_expected_labels(self):
-        assert set(config.CONFIG) == set(LABELS)
+        assert set(config.CONFIG) == set(LABELS) | set(NON_PAPER_LABELS)
 
     @pytest.mark.parametrize('label', LABELS)
     def test_entry_is_drive_four_tuple(self, label):
@@ -150,8 +154,10 @@ class TestCellsBindToStages:
 class TestGridCardinality:
     def test_products_match_old_catalogue(self):
         # cells x methods, identical to paper/config_old.py's trial counts
+        # (paper caches only; non-paper helpers like 'smoke' are excluded)
         n = {label: len(d) * len(e) * len(fk)
-             for label, (d, e, fk, _) in config.CONFIG.items()}
+             for label, (d, e, fk, _) in config.CONFIG.items()
+             if label in LABELS}
         assert n == {
             'null': 2 * config.N_SEED_NULL * 5,
             'sweep_llr': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID) * 5,

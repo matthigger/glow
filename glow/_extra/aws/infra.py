@@ -8,6 +8,7 @@ Subcommands:
     python -m glow._extra.aws.infra status    [--label LABEL]              [--config PATH]
     python -m glow._extra.aws.infra clear_storage [--runs|--records|--cache] [--yes]
     python -m glow._extra.aws.infra clear_jobs    [--label LABEL] [--yes]      [--config PATH]
+    python -m glow._extra.aws.infra stage_hcp                             [--config PATH]
     python -m glow._extra.aws.infra pause                                 [--config PATH]
     python -m glow._extra.aws.infra resume                                [--config PATH]
 
@@ -1079,6 +1080,40 @@ def _delete_prefix(s3, bucket: str, prefix: str) -> None:
     print(f'  ✓ deleted {total} objects under s3://{bucket}/{prefix}')
 
 
+# ---------- stage_hcp -------------------------------------------------------
+
+
+def cmd_stage_hcp(args, cfg: AWSConfig) -> None:
+    """Build the HCP npy bundle locally and upload it to S3 for workers.
+
+    One-time staging, idempotent (a rerun skips objects already there):
+    ensure_hcp_bundle converts the niftis to the per-feature bundle (mask /
+    affine / meta + one float32 array per feature; see hcp.py) on first use,
+    then the whole bundle is mirrored to {s3_prefix}/hcp_bundle. An HCP Batch
+    worker pulls only the files its cell needs (see
+    glow._extra.aws.sync.hcp_bundle_keys / worker), and data_factory_hcp builds
+    from them with no niftis and no DUA prompt. The conversion needs the niftis
+    present, so run it on a box with the data (any local HCP run downloads +
+    extracts the Zenodo archive).
+
+    Args:
+        args: parsed argparse Namespace (unused; kept for CLI dispatch).
+        cfg (AWSConfig): supplies the bucket, prefix, and region.
+    """
+    from glow._extra.aws import s3, sync
+    from glow._extra.benchmark import hcp
+
+    # convert niftis -> bundle if not already built (needs the niftis locally)
+    hcp.ensure_hcp_bundle()
+    local_dir, key_prefix = sync.hcp_bundle_pair(cfg.s3_prefix)
+    s3_client = boto3.client('s3', region_name=cfg.region)
+    print(f'[stage_hcp] uploading {local_dir} -> '
+          f's3://{cfg.s3_bucket}/{key_prefix}')
+    n = s3.upload_dir(s3_client, cfg.s3_bucket, local_dir, key_prefix)
+    print(f'[stage_hcp] uploaded {n} new file(s) '
+          '(existing objects skipped)')
+
+
 # ---------- clear_jobs ------------------------------------------------------
 
 
@@ -1211,6 +1246,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument('--yes', action='store_true',
                     help='required to actually terminate anything')
     sp.set_defaults(func=cmd_clear_jobs)
+
+    sp = subs.add_parser('stage_hcp',
+                         help='upload the local HCP reference data to S3')
+    sp.set_defaults(func=cmd_stage_hcp)
 
     sp = subs.add_parser('pause', help='disable job queue dispatch')
     sp.set_defaults(func=cmd_pause)

@@ -12,12 +12,16 @@ prefix / region for the shared state. The worker:
      and rebuilds that data cell from CONFIG (resolve_cells -- a pure function
      of the catalogue, so the cell matches what the driver enumerated; nothing
      per-cell is shipped, and no run function is pickled);
-  2. pulls the shared records + run_ana cache from S3 so any fit a prior
+  2. if the cell is HCP, pulls just its features from the staged npy bundle
+     (mask / affine / meta + its hcp_feats arrays) into hcp.bundle_dir(), so
+     data_factory_hcp builds from the bundle with no niftis and no DUA prompt
+     (WGN cells skip this; see glow._extra.aws.sync.hcp_bundle_keys);
+  3. pulls the shared records + run_ana cache from S3 so any fit a prior
      attempt or another run already computed is a cache hit (warm resume);
-  3. runs the cell's whole effect x analysis subtree (_run_data_cell -- build
+  4. runs the cell's whole effect x analysis subtree (_run_data_cell -- build
      the clean exp once, plant each effect, fit each recipe), while a
      background thread ships finished records / cache entries up every minute;
-  4. flushes the uploader on exit.
+  5. flushes the uploader on exit.
 
 Exits non-zero on any exception so AWS Batch marks the child FAILED -- the
 driver then retries it (resuming from the synced cache) and escalates an
@@ -70,9 +74,19 @@ def main(manifest_uri: str) -> None:
     print(f'[worker] {config_name} array_idx={idx} cell_idx={cell_idx} '
           f'source={kwargs_data.get("source")}', flush=True)
 
+    # an HCP cell builds from the staged npy bundle, so pull just the files it
+    # needs first (the shared mask / affine / meta + its hcp_feats arrays) --
+    # then data_factory_hcp builds from the bundle with no niftis and no DUA
+    # prompt. Pulled one way; never produced here, so never pushed.
+    if kwargs_data.get('source') == 'hcp':
+        bundle_pairs = sync.hcp_bundle_keys(prefix, kwargs_data['hcp_feats'])
+        n_hcp = s3.download_each(s3_client, bucket, bundle_pairs)
+        print(f'[worker] HCP bundle: {n_hcp} file(s) pulled for feats '
+              f'{list(kwargs_data["hcp_feats"])}', flush=True)
+
     # warm the local state: anything a prior attempt / run already computed is
     # then a cache hit (the records carry it; run_ana hits skip the ~450 s fit)
-    pairs = sync.wgn_sync_pairs(prefix)
+    pairs = sync.sync_pairs(prefix)
     for local_dir, key_prefix in pairs:
         s3.download_prefix(s3_client, bucket, key_prefix, local_dir)
 

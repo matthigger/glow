@@ -36,8 +36,27 @@ S3 (no locking, no merge):
   is cheap; the heavy WGN exp caches are *not* synced — they rebuild
   deterministically from a seed on the worker, cheaper than shipping tens of MB.
 
-WGN is the first milestone (`--sources wgn`, the default). HCP needs its
-per-feature data staged to S3 first (a later milestone).
+WGN runs out of the box (`--sources wgn`, the default; cells rebuild from a
+seed). HCP needs its reference data staged to S3 once. `stage_hcp` converts the
+niftis to a compact per-feature npy bundle (a brain mask + one float32 array
+per feature, exactly the arrays `from_search` loads, so the experiment hashes
+identically — see `hcp.py`) and uploads it; a worker then pulls only the
+features its cell uses and `data_factory_hcp` builds from the bundle (no
+niftis, no DUA prompt):
+
+```bash
+# one-time: build the npy bundle from the local niftis + upload it to S3
+# (run on a box with the HCP data; any local HCP run downloads + extracts it)
+python -m glow._extra.aws stage_hcp
+
+# then run HCP cells (or both sources) like normal
+python -m glow._extra.benchmark --aws smoke --sources hcp
+python -m glow._extra.benchmark --aws smoke --sources wgn,hcp
+```
+
+The heavy HCP exp caches are still not synced -- each worker rebuilds its exp
+by loading the staged niftis (cheaper than shipping them); only the records and
+the run_ana cache are mirrored both ways.
 
 ## One-time setup
 

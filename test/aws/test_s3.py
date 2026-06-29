@@ -79,3 +79,21 @@ def test_background_uploader_thread(tmp_path):
     with s3.BackgroundUploader(fake, 'bkt', [(src, 'p')], interval=0.01):
         pass  # __exit__ stops + final flush
     assert ('bkt', 'p/a.json') in fake.store
+
+
+def test_download_each_selective(tmp_path):
+    # seed two objects in S3, pull only the named (key, local) pairs
+    src = tmp_path / 'src'
+    _write(src / 'mask.npy', 'M')
+    _write(src / 'feat' / 'fa.npy', 'FA')
+    fake = FakeS3()
+    s3.upload_dir(fake, 'bkt', src, 'glow/hcp_bundle')
+
+    dst = tmp_path / 'dst'
+    pairs = [('glow/hcp_bundle/mask.npy', dst / 'mask.npy'),
+             ('glow/hcp_bundle/feat/fa.npy', dst / 'feat' / 'fa.npy')]
+    assert s3.download_each(fake, 'bkt', pairs) == 2
+    assert (dst / 'mask.npy').read_text() == 'M'
+    assert (dst / 'feat' / 'fa.npy').read_text() == 'FA'
+    # idempotent: existing local files are skipped
+    assert s3.download_each(fake, 'bkt', pairs) == 0
