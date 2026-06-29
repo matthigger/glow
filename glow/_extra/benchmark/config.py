@@ -45,12 +45,11 @@ the cohort), so the num_img sweep is WGN-only.
 Scope. Most caches share the run_ana leaf (fit + score one Analysis per cell):
 null, sweep_llr, sweep_b, sweep_extent, sweep_nimg. Three caches swap in their
 own leaf over those same grids: segment (run_segment, a Ward-mode oracle, no
-fit), min_size (run_min_size, per-perm staircases, recorded not scored), and
-stat (run_stat, a VBA / CET variant reading a shared voxel-stat walk). The
-remaining old caches (prune, two-effect) need other leaf functions (two pruning
-rules on one fit, two planted effects); each becomes its own fnc +
-kwargs_fnc_list in CONFIG once written to run_ana's contract (fnc(exp,
-mask_target_list=..., **kwargs), memoised + recorded).
+fit), min_size (run_min_size, per-perm staircases, recorded not scored), stat
+(run_stat, a VBA / CET variant reading a shared voxel-stat walk), and prune
+(run_prune, three pruning rules on a shared GLOW fit). The one remaining old
+cache, two-effect, needs a split effect stage (two planted effects); it becomes
+its own fnc + kwargs_fnc_list in CONFIG once the effect stage grows that path.
 """
 import itertools
 import math
@@ -66,7 +65,7 @@ from glow.analysis.mancova import (get_hotel_tr, get_wilks, stat_dict,
 from glow.effect import ExtenterMinVar, ExtenterSphere
 
 from . import hcp
-from .run import run_ana, run_min_size, run_segment, run_stat
+from .run import run_ana, run_min_size, run_prune, run_segment, run_stat
 
 
 # ---------- shared knobs (mirror paper/config_old.py) ------------------------
@@ -187,6 +186,18 @@ def get_run_stat_list():
 
 
 RUN_STAT_LIST = get_run_stat_list()
+
+# the prune cache's leaf grid: three rules scored on one shared GLOW fit per
+# cell (greedy / DP / the single max-LLR region). All carry the same GLOW fit
+# knobs (so run_prune's glow_fit_for_prune is shared across them); the rule
+# rides as both the cache axis and the recorded label.
+_PRUNE_GLOW_KWARGS = dict(n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER,
+                          alpha_fwer=ALPHA_FWER)
+RUN_PRUNE_LIST = [
+    dict(rule='maxllr', label='GLOW-MaxLLR', **_PRUNE_GLOW_KWARGS),
+    dict(rule='greedy', label='GLOW-Greedy', **_PRUNE_GLOW_KWARGS),
+    dict(rule='dp', label='GLOW-DP', **_PRUNE_GLOW_KWARGS),
+]
 
 
 # ---------- stage builders (swept axes are the keyword arguments) ------------
@@ -317,4 +328,11 @@ CONFIG = {
         get_kwargs_data_list(b_list=[2]),
         get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
         RUN_STAT_LIST, run_stat),
+    # H. Pruning rule: greedy max-LLR vs DP max-likelihood cut vs the single
+    #    max-LLR region, scored on one shared GLOW-Focus fit per cell (so the
+    #    comparison isolates the rule, not the permutation test).
+    'prune': (
+        get_kwargs_data_list(),
+        get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
+        RUN_PRUNE_LIST, run_prune),
 }

@@ -11,9 +11,9 @@ data build, giving one score-bearing row per (trial, recipe). See
 glow._extra.benchmark.run / recorder.
 
 Ported from the deprecating paper layer (glow._extra.benchmark.paper.score):
-score_oracle_tree (the segment cache's segmentation score) and the min-size
-staircase scorers (size_max_z_curve / curve_json) now live here beside
-score_effects.
+score_oracle_tree (segment), the min-size staircase scorers (size_max_z_curve /
+curve_json), and score_prune (the prune cache's region-index scorer) now live
+here beside score_effects.
 
 score_effects output (one dict per fitted Analysis), keys:
 
@@ -204,3 +204,68 @@ def curve_json(curve_list) -> str:
         a JSON string: a list (per perm) of [size, max_z] corner pairs.
     """
     return json.dumps([[[int(s), float(z)] for s, z in c] for c in curve_list])
+
+
+def _score_regions(reg_mask_list, mask_target_list, mask_active) -> dict:
+    """Per-effect confusion scoring of a set of output regions.
+
+    Unions the output region masks into one prediction, then scores it against
+    each planted effect in turn. With a single planted effect the four counts
+    are the bare tp/fp/tn/fn; with several they are suffixed by effect index
+    (tp0/fp0/tn0/fn0 vs effect 0, etc.) -- each effect's counts treat the
+    others' support as background. Dice / sensitivity / PPV derive downstream
+    from the counts (glow.mask.stats_from_counts).
+
+    Args:
+        reg_mask_list (list): (reg_idx, mask) per output region, in output
+            order; reg_idx is the Ward region index or None.
+        mask_target_list (list): the planted supports, one (X, Y, Z) bool
+            mask each (length 1 for the single-effect caches).
+        mask_active (np.array): (X, Y, Z) bool, the analyzed voxels.
+
+    Returns:
+        {n_selected, tp, fp, tn, fn}: the output-region count plus the
+            per-effect counts (suffixed by effect index when more than one).
+    """
+    mask_pred = np.zeros(mask_active.shape, dtype=bool)
+    for _, mask in reg_mask_list:
+        mask_pred |= mask
+    out = {'n_selected': len(reg_mask_list)}
+    single = len(mask_target_list) == 1
+    for i, mask_target in enumerate(mask_target_list):
+        counts = glow.mask.confusion_counts(
+            mask_pred=mask_pred, mask_target=mask_target,
+            mask_active=mask_active)
+        suffix = '' if single else str(i)
+        out.update({f'{k}{suffix}': v for k, v in counts.items()})
+    return out
+
+
+def score_prune(reg_out_list, children, mask_idx, mask_target_list,
+                mask_active) -> dict:
+    """Score a pruning rule's selected regions against the planted effect(s).
+
+    The prune leaf keeps only region indices (masks are heavy), so the score
+    is derived here: each selected region's (X, Y, Z) bool mask is rebuilt from
+    its Ward index (glow.graph.get_label_map, as AnalysisGLOW.finalize does),
+    then _score_regions unions them and counts tp/fp/tn/fn vs the planted
+    support, so dice / sens / ppv derive downstream like every arm. Used for
+    the greedy / DP selections and the single max-LLR region.
+
+    Args:
+        reg_out_list (list): selected region indices (the rule's output, or
+            [max-LLR region]); empty when nothing was selected.
+        children (np.array): (num_reg - num_vox, 2) Ward child-index pairs.
+        mask_idx (np.array): (X, Y, Z) int voxel-index array (-1 outside).
+        mask_target_list (list): the planted (X, Y, Z) bool supports.
+        mask_active (np.array): (X, Y, Z) bool, the analyzed voxels.
+
+    Returns:
+        {n_selected, tp, fp, tn, fn}: the _score_regions dict.
+    """
+    reg_mask_list = []
+    for reg_idx in reg_out_list:
+        label_map = glow.graph.get_label_map(
+            reg_idx_list=[reg_idx], mask_idx=mask_idx, children=children)
+        reg_mask_list.append((reg_idx, label_map > -1))
+    return _score_regions(reg_mask_list, mask_target_list, mask_active)

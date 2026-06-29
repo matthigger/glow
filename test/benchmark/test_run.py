@@ -16,7 +16,8 @@ import numpy as np
 import pytest
 
 from glow._extra.benchmark import data
-from glow._extra.benchmark.run import (run_ana, run_min_size, run_segment,
+from glow._extra.benchmark.run import (glow_fit_for_prune, run_ana,
+                                       run_min_size, run_prune, run_segment,
                                        run_stat, voxel_stat_walk)
 from glow.analysis import AnalysisGLOW, AnalysisVBA
 from glow.analysis.cluster import ClusterMode
@@ -265,3 +266,50 @@ class TestRunStat:
         run_stat(exp, [mask], ana, stat_dict_inv[get_wilks], label='VBA-wilks')
         assert run_stat.check_call_in_cache(
             exp, [mask], ana, stat_dict_inv[get_wilks], label='DIFFERENT')
+
+
+# ---------------------------------------------------------------------------
+# run_prune: one pruning rule scored on a shared GLOW fit
+# ---------------------------------------------------------------------------
+
+class TestRunPrune:
+    _GLOW = dict(n_perm_fwer=4, n_perm_inner=8, alpha_fwer=0.05)
+
+    def _planted(self):
+        exp = data.data_factory_wgn(shape=(6, 6, 6), b=2, num_img=24, a=1,
+                                    seed=_fresh_seed())
+        return data.effect_factory(
+            exp, effect_llr=0.2, extenter_cls=ExtenterMinVar, n_vox=20, seed=0)
+
+    def test_returns_prune_score(self):
+        exp, mask = self._planted()
+        score = run_prune(exp, [mask], 'maxllr', **self._GLOW)
+        # per-effect confusion counts plus the output-region count
+        assert {'n_selected', 'tp', 'fp', 'tn', 'fn'} <= set(score)
+
+    def test_rules_share_one_fit(self):
+        # the first rule fits GLOW; the other rules are glow_fit_for_prune hits
+        exp, mask = self._planted()
+        assert not glow_fit_for_prune.check_call_in_cache(
+            exp, cluster_mode=ClusterMode.FOCUS, **self._GLOW)
+        run_prune(exp, [mask], 'greedy', **self._GLOW)
+        assert glow_fit_for_prune.check_call_in_cache(
+            exp, cluster_mode=ClusterMode.FOCUS, **self._GLOW)
+
+    def test_rule_is_a_cache_axis(self):
+        exp, mask = self._planted()
+        run_prune(exp, [mask], 'greedy', **self._GLOW)
+        # a different rule is its own selection -> distinct cache entry
+        assert not run_prune.check_call_in_cache(
+            exp, [mask], 'dp', **self._GLOW)
+
+    def test_label_ignored_in_cache_key(self):
+        exp, mask = self._planted()
+        run_prune(exp, [mask], 'greedy', label='GLOW-Greedy', **self._GLOW)
+        assert run_prune.check_call_in_cache(
+            exp, [mask], 'greedy', label='DIFFERENT', **self._GLOW)
+
+    def test_bad_rule_raises(self):
+        exp, mask = self._planted()
+        with pytest.raises(ValueError):
+            run_prune(exp, [mask], 'nope', **self._GLOW)

@@ -5,17 +5,18 @@ Each leaf is one fnc(exp, mask_target_list=..., **kwargs) the driver runs on a
 measuring segmentation quality (no fit); run_min_size captures GLOW's per-perm
 (size -> max-z) staircases (recorded as a curve, swept over min_vox post hoc
 rather than scored); run_stat fits one VBA / CET MANCOVA-stat variant reading a
-shared voxel-stat walk. All share @MEMORY.cache(ignore=['label']) -- label is
-recorded beside the output but dropped from the cache key -- and (where they
-score) score inline.
+shared voxel-stat walk; run_prune scores one pruning rule on a shared GLOW fit.
+All share @MEMORY.cache(ignore=['label']) -- label is recorded beside the
+output but dropped from the cache key -- and (where they score) score inline.
 
 A leaf may lean on a separately-memoised heavy intermediate rather than a
-driver stage: run_stat reads voxel_stat_walk (every MANCOVA stat for one exp),
-so the first of a cell's variants computes it and the rest are cache hits --
-the new-arch replacement for the old layer's "record the walk once, run N fits
-off it". The walk is a plain memoised helper, not a recorded DAG node: its
-output is not an Experiment, so it never links as a leaf's ancestor, and the
-leaf already links to the build via exp.
+driver stage: run_stat reads voxel_stat_walk (every MANCOVA stat for one exp)
+and run_prune reads glow_fit_for_prune (one GLOW fit's children / per-region
+LLR / FWER-significant set), so the first of a cell's variants computes it and
+the rest are cache hits -- the new-arch replacement for the old layer's "record
+the fit once, run N rules / fits off it". The intermediate is a plain memoised
+helper, not a recorded DAG node: its output is not an Experiment, so it never
+links as a leaf's ancestor, and the leaf already links to the build via exp.
 
 The low-level benchmark primitive: run_ana takes an already-built
 Experiment, an unfitted Analysis recipe, and the planted target(s), runs
@@ -50,16 +51,17 @@ import copy
 import numpy as np
 
 import glow.graph
-from glow.analysis import Analysis, AnalysisVoxel
+from glow.analysis import Analysis, AnalysisGLOW, AnalysisVoxel
 from glow.analysis.cluster import cluster, ClusterMode
 from glow.analysis.inner_perm import cpu_perm
 from glow.analysis.mancova import decompose, stat_dict, stat_dict_inv
+from glow.analysis.prune import prune_dp, prune_greedy
 from glow.experiment.exper import Experiment, ExperimentScaled
 
 # share the data.py builders' disk cache + recorder, so a fit is memoised
 # beside the builds and run_ana joins their provenance DAG (see module docs).
 from .data import MEMORY, RECORDER
-from .score import (curve_json, score_effects, score_oracle_tree,
+from .score import (curve_json, score_effects, score_oracle_tree, score_prune,
                     size_max_z_curve)
 
 
@@ -315,3 +317,96 @@ def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name,
     ana = copy.deepcopy(ana)
     ana.fit(exp, _stat=walk[stat_name].copy())
     return score_effects(ana, mask_target_list, mask_active=exp.mask_idx > -1)
+
+
+@MEMORY.cache
+def glow_fit_for_prune(exp, *, n_perm_fwer: int, n_perm_inner: int,
+                       alpha_fwer: float,
+                       cluster_mode=ClusterMode.FOCUS) -> tuple:
+    """Fit GLOW once and return the pruning inputs (shared by the rules).
+
+    The prune cache's shared intermediate: a full AnalysisGLOW fit reduced
+    to the light triple every rule needs -- the Ward tree, the raw per-region
+    LLR (candidates are ranked by raw LLR, as AnalysisGLOW.finalize does; the
+    z-score fragments under pruning), and the FWER-significant region set. All
+    three rules prune this same set, so the comparison isolates the rule from
+    the permutation test; the first run_prune variant of a cell fits, the rest
+    are cache hits. A plain memoised helper, not a DAG node (see
+    voxel_stat_walk).
+
+    Args:
+        exp (Experiment): the experiment to fit (raw or scaled).
+        n_perm_fwer (int): outer FWER permutations.
+        n_perm_inner (int): inner FL draws per outer perm.
+        alpha_fwer (float): FWER significance level (selects sig_reg_list).
+        cluster_mode (ClusterMode): Ward projection (default FOCUS).
+
+    Returns:
+        children (np.array): (num_reg - num_vox, 2) Ward child-index pairs.
+        llr (np.array): (num_reg,) raw per-region LLR, NaN/inf zeroed (the rank
+            key the rules prune by).
+        sig_reg_list (list): int indices of the FWER-significant regions.
+    """
+    ana = AnalysisGLOW(n_perm_fwer=n_perm_fwer, n_perm_inner=n_perm_inner,
+                       alpha_fwer=alpha_fwer, cluster_mode=cluster_mode)
+    ana.fit(exp)
+    sig_reg_list = np.where(ana.pval <= ana.alpha_fwer)[0].tolist()
+    llr = np.nan_to_num(ana.llr.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
+    return ana.children, llr, sig_reg_list
+
+
+@MEMORY.cache(ignore=['label'])
+@RECORDER(output_name='score')
+def run_prune(exp: Experiment, mask_target_list, rule, *, n_perm_fwer: int,
+              n_perm_inner: int, alpha_fwer: float,
+              cluster_mode=ClusterMode.FOCUS, label=None):
+    """Score one pruning rule's selection on a shared GLOW fit.
+
+    Reads the shared GLOW fit (glow_fit_for_prune), applies one rule to its
+    FWER-significant regions, and scores the selection against the planted
+    support (score_prune). The rules:
+      - greedy: bloom the max-LLR region and drop its tree relatives (GLOW's
+        default; undersegments).
+      - dp: the exact max-total-LLR antichain (prune_dp; oversegments).
+      - maxllr: the single highest-LLR significant region (the headline best
+        region, n_selected = 1).
+    All three prune the same fit, isolating the rule from the permutation test.
+    Memoised + recorded, keyed by (exp, rule, the GLOW fit knobs); label
+    (e.g. GLOW-Greedy) is recorded but not a cache axis.
+
+    Args:
+        exp (Experiment): the experiment to analyze (raw or scaled).
+        mask_target_list (list): the planted effect supports (score target).
+        rule (str): 'greedy', 'dp', or 'maxllr'.
+        n_perm_fwer (int): outer FWER permutations (the shared fit's).
+        n_perm_inner (int): inner FL draws per outer perm (the shared fit's).
+        alpha_fwer (float): FWER significance level (the shared fit's).
+        cluster_mode (ClusterMode): Ward projection (default FOCUS).
+        label (str): method label recorded beside the score; not a cache axis.
+
+    Returns:
+        score (dict): the prune counts (see score.score_prune):
+            {n_selected, tp, fp, tn, fn}.
+
+    Raises:
+        ValueError: if rule is not 'greedy' / 'dp' / 'maxllr'.
+    """
+    children, llr, sig_reg_list = glow_fit_for_prune(
+        exp, n_perm_fwer=n_perm_fwer, n_perm_inner=n_perm_inner,
+        alpha_fwer=alpha_fwer, cluster_mode=cluster_mode)
+
+    if rule == 'greedy':
+        reg_out_list, _ = prune_greedy(sig_reg_list=sig_reg_list,
+                                       children=children, stat=llr)
+    elif rule == 'dp':
+        reg_out_list, _ = prune_dp(sig_reg_list=sig_reg_list,
+                                   children=children, stat=llr)
+    elif rule == 'maxllr':
+        reg_out_list = ([max(sig_reg_list, key=lambda r: llr[r])]
+                        if sig_reg_list else [])
+    else:
+        raise ValueError(f"rule must be greedy / dp / maxllr, got {rule!r}")
+
+    return score_prune(reg_out_list, children=children, mask_idx=exp.mask_idx,
+                       mask_target_list=mask_target_list,
+                       mask_active=exp.mask_idx > -1)
