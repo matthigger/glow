@@ -12,7 +12,6 @@ import re
 import warnings
 from copy import deepcopy
 
-import joblib
 import numpy as np
 import pandas as pd
 import scipy.linalg
@@ -63,26 +62,6 @@ class ExperimentImageOnly:
     def dtype(self):
         """Return the dtype of the underlying y array, or None when unset."""
         return self.y.dtype if self.y is not None else None
-
-    def to_record(self) -> dict:
-        """Build a JSON-friendly identity dict for provenance (no raw y).
-
-        The benchmark Recorder serialises any value exposing to_record (see
-        glow._extra.benchmark.recorder). This records the experiment's identity
-        without its large y array: the (b, num_img, num_vox) shape, dtype, and
-        a stable content hash. The hash is joblib.hash over the whole object --
-        the same identity joblib.Memory keys a cached call by -- so it folds in
-        every array (and meta) automatically. meta is still omitted from the
-        record itself: it carries the full subject / feature lists, more bulk
-        than the record is worth, and is recoverable from the scalar axes.
-
-        Returns:
-            a dict of {kind, hash, b, num_img, num_vox, dtype}
-        """
-        b, num_img, num_vox = self.y.shape
-        return {'kind': type(self).__name__, 'hash': joblib.hash(self),
-                'b': int(b), 'num_img': int(num_img), 'num_vox': int(num_vox),
-                'dtype': str(self.dtype)}
 
     @classmethod
     def from_gauss(cls, b: int = None, num_img: int = 10,
@@ -481,19 +460,6 @@ class Experiment(ExperimentImageOnly):
             warnings.warn('no bias term: regression constrained to '
                           'origin (consider add_bias=True)',
                           NoBiasTermWarning)
-
-    def to_record(self) -> dict:
-        """Extend the image-only record with the design width and contrast.
-
-        Adds a (the number of design-matrix features, == len(contrast); the
-        other design dimension, num_img, is already recorded by the base) and
-        contrast (the small (a,) boolean, listed in full); the data hash from
-        the base already folds x and contrast in for identity.
-        """
-        rec = super().to_record()
-        rec['a'] = len(self.contrast)
-        rec['contrast'] = self.contrast.tolist()
-        return rec
 
     def permute(self, perm_idx: int):
         """Return a new experiment with Freedman-Lane permuted images.
