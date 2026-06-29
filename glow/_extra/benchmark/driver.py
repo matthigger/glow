@@ -61,13 +61,24 @@ the pool drains. (The leaf fnc is pickled to the workers like any task
 argument; the recorder snapshots its records as they are made, so the wrapped
 fnc carries no live Experiments and stays light to ship -- see
 glow._extra.benchmark.recorder.)
+
+A verbose drive shows a tqdm bar over the total leaf count, known up front
+from the grid sizes (n_data * n_effect * n_fnc) and advanced one leaf per fnc
+call. It makes no attempt to tell a real compute from a cache hit, so the bar
+lurches -- racing through cached cells, crawling through the ones that
+actually run -- but it stays bounded and honest about how far the sweep has
+left to go. The serial bar ticks per leaf; the parallel bar ticks per data
+cell as each task returns its scores, since a worker cannot reach the caller's
+bar.
 """
+
+from tqdm import tqdm
 
 from .data import RECORDER, data_factory, effect_factory
 
 
 def _run_data_cell(kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
-                   config_name=None):
+                   config_name=None, bar=None):
     """Build one data cell, run its effect x fnc subtree, return its scores.
 
     The per-data-cell unit of work, shared by the serial loop and the parallel
@@ -93,6 +104,9 @@ def _run_data_cell(kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
             fnc(exp, mask_target_list=..., **kwargs).
         config_name (str | None): the CONFIG cache name to tag this cell's
             leaf records with, or None for no tagging.
+        bar (tqdm | None): progress bar to advance one step per fnc leaf, or
+            None to advance nothing (the parallel path, where a worker cannot
+            reach the caller's bar -- it ticks per returned cell instead).
 
     Returns:
         list[dict]: this cell's fnc scores, in (effect, fnc-kwargs) order.
@@ -118,11 +132,13 @@ def _run_data_cell(kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
                     fnc, (exp_eff,),
                     {'mask_target_list': mask_target_list, **kwargs})
                 score_list.append(score)
+                if bar is not None:
+                    bar.update(1)
         return score_list
 
 
 def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
-          n_jobs=1):
+          n_jobs=1, verbose=False):
     """Sweep data x effect, run fnc per cell over its kwargs, return scores.
 
     The two upstream lists are kwargs grids for the data and effect stages;
@@ -150,6 +166,12 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
     forwarded to joblib.Parallel (so -1 uses all cores); the default loky
     backend caps each worker's inner BLAS threads to avoid oversubscription.
 
+    With verbose a tqdm bar tracks the sweep over its total leaf count,
+    advanced as each fnc call passes (it lurches over cached cells; see the
+    module docstring); without it the sweep is silent. The total needs
+    len(data), so a verbose sweep pulls kwargs_data_list into a list up front
+    -- otherwise it stays lazy.
+
     Args:
         kwargs_data_list (iterable[dict]): one kwargs dict per data_factory
             call, e.g. {'source': 'wgn', 'shape': (5, 5, 5), 'seed': 0}.
@@ -166,6 +188,9 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
             with exp linked (see module docstring), e.g. run_ana.
         n_jobs (int): 1 (default) runs serially in-process; otherwise the data
             cells run in parallel over joblib.Parallel(n_jobs=n_jobs).
+        verbose (bool): False (default) runs silently; True shows a tqdm bar
+            over the total leaf count, advanced per fnc call (see module
+            docstring).
 
     Returns:
         list[dict]: the fnc score dicts, one per (data, effect, fnc-kwargs)
@@ -186,23 +211,42 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
     # not inherit the caller's context (see _run_data_cell).
     config_name = RECORDER._current_config
 
+    # the bar spans the total leaf count, known once data is a list;
+    # materialise data when verbose (else keep it lazy, iterated once, as
+    # documented above).
+    total = None
+    if verbose:
+        kwargs_data_list = list(kwargs_data_list)
+        total = (len(kwargs_data_list) * len(kwargs_effect_list)
+                 * len(kwargs_fnc_list))
+
     if n_jobs == 1:
         score_list = []
-        for kwargs_data in kwargs_data_list:
-            score_list.extend(_run_data_cell(
-                kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
-                config_name=config_name))
+        with tqdm(total=total, desc='drive', disable=not verbose) as bar:
+            for kwargs_data in kwargs_data_list:
+                score_list.extend(_run_data_cell(
+                    kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
+                    config_name=config_name, bar=bar))
         return score_list
 
     # parallel: one task per data cell, so each build has a single owner -- no
     # two workers compute / write the same cell (see module docstring).
     from joblib import Parallel, delayed
 
-    cell_scores = Parallel(n_jobs=n_jobs)(
+    # return_as='generator' streams results in submission order (so the
+    # returned scores keep their order) as tasks drain, letting the bar advance
+    # per cell.
+    results = Parallel(n_jobs=n_jobs, return_as='generator')(
         delayed(_run_data_cell)(
             kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
             config_name=config_name)
         for kwargs_data in kwargs_data_list)
+
+    cell_scores = []
+    with tqdm(total=total, desc='drive', disable=not verbose) as bar:
+        for scores in results:
+            cell_scores.append(scores)
+            bar.update(len(scores))
 
     # workers wrote their per-hash record files to the shared folder in their
     # own processes; fold them into this process's recorder so flatten_to_df
