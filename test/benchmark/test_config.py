@@ -21,7 +21,11 @@ from glow.analysis import Analysis
 from glow.effect import ExtenterMinVar
 
 
-LABELS = ['null', 'sweep_llr', 'sweep_b', 'sweep_extent', 'sweep_nimg']
+# every cache, and the subset whose leaf is run_ana (the rest carry their own
+# fnc + kwargs grid -- segment its Ward-mode oracle, etc.)
+LABELS = ['null', 'sweep_llr', 'sweep_b', 'sweep_extent', 'sweep_nimg',
+          'segment']
+RUN_ANA_LABELS = ['null', 'sweep_llr', 'sweep_b', 'sweep_extent', 'sweep_nimg']
 
 
 class TestCatalogueShape:
@@ -30,9 +34,17 @@ class TestCatalogueShape:
 
     @pytest.mark.parametrize('label', LABELS)
     def test_entry_is_drive_four_tuple(self, label):
+        # every cache is the (data, effect, fnc-kwargs, fnc) tuple drive
+        # consumes, with non-empty grids and a callable leaf
         data_list, effect_list, fnc_kwargs, fnc = config.CONFIG[label]
         assert data_list and effect_list and fnc_kwargs
-        # the leaf is run_ana over the shared recipe grid
+        assert callable(fnc)
+
+    @pytest.mark.parametrize('label', RUN_ANA_LABELS)
+    def test_run_ana_caches_share_the_recipe_grid(self, label):
+        # the detection sweeps all fit/score via run_ana over the one shared
+        # recipe grid
+        _, _, fnc_kwargs, fnc = config.CONFIG[label]
         assert fnc is run_ana
         assert fnc_kwargs is config.RUN_ANA_LIST
 
@@ -158,6 +170,8 @@ class TestGridCardinality:
             'sweep_b': 2 * config.N_SEED * len(config.B_GRID) * 5,
             'sweep_extent': 2 * config.N_SEED * len(config.EXTENT_N_VOX_GRID) * 5,
             'sweep_nimg': config.N_SEED * len(config.NIMG_GRID) * 5,
+            'segment': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
+            * len(config.SEGMENT_MODES),
         }
 
     def test_null_plants_nothing(self):

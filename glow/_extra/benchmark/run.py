@@ -1,4 +1,10 @@
-"""Fit one Analysis on one Experiment and score the result.
+"""Benchmark leaf functions: measure one Experiment and score it.
+
+Each leaf is one fnc(exp, mask_target_list=..., **kwargs) the driver runs on a
+(data, effect) cell. run_ana is the canonical leaf; run_segment is a sibling
+measuring segmentation quality (no fit). All share
+@MEMORY.cache(ignore=['label']) -- label is recorded beside the output but
+dropped from the cache key -- and (where they score) score inline.
 
 The low-level benchmark primitive: run_ana takes an already-built
 Experiment, an unfitted Analysis recipe, and the planted target(s), runs
@@ -30,13 +36,16 @@ have bought, at none of the linking cost.
 
 import copy
 
+import numpy as np
+
 from glow.analysis import Analysis
-from glow.experiment.exper import Experiment
+from glow.analysis.cluster import cluster, ClusterMode
+from glow.experiment.exper import Experiment, ExperimentScaled
 
 # share the data.py builders' disk cache + recorder, so a fit is memoised
 # beside the builds and run_ana joins their provenance DAG (see module docs).
 from .data import MEMORY, RECORDER
-from .score import score_effects
+from .score import score_effects, score_oracle_tree
 
 
 @MEMORY.cache(ignore=['label'])
@@ -90,3 +99,36 @@ def run_ana(exp: Experiment, ana: Analysis, mask_target_list, label=None):
     ana = copy.deepcopy(ana)
     ana.fit(exp)
     return score_effects(ana, mask_target_list, mask_active=exp.mask_idx > -1)
+
+
+@MEMORY.cache(ignore=['label'])
+@RECORDER(output_name='score')
+def run_segment(exp: Experiment, mask_target_list, cluster_mode, label=None):
+    """Segment exp in one Ward mode and score the oracle best-Dice region.
+
+    The segmentation-quality leaf: build the Ward tree in cluster_mode and
+    return the confusion counts of the region whose Dice against the planted
+    support is largest (score_oracle_tree) -- no significance test or pruning,
+    swept across modes (Naive / GLM Error / Focus) by the config's fnc grid.
+    exp is scaled (ExperimentScaled.from_exp) before clustering so the tree
+    matches the one AnalysisGLOW fits (GLM_ERROR / FOCUS project y through the
+    design). Memoised + recorded like run_ana; label (the mode name) is
+    recorded but not a cache axis.
+
+    Args:
+        exp (Experiment): the experiment to segment (raw or scaled).
+        mask_target_list (list): planted (X, Y, Z) bool supports; their union
+            is the target scored (empty -> all-background counts).
+        cluster_mode (ClusterMode | str): the Ward projection to segment with.
+        label (str): method label recorded beside the score; not a cache axis.
+
+    Returns:
+        {tp, fp, tn, fn}: the counts of the best-matching tree region.
+    """
+    mask_target = np.zeros(exp.mask_idx.shape, dtype=bool)
+    for m in mask_target_list:
+        mask_target |= m
+    children = cluster(ExperimentScaled.from_exp(exp),
+                       mode=ClusterMode(cluster_mode))
+    return score_oracle_tree(children=children, mask_target=mask_target,
+                             mask_idx=exp.mask_idx)

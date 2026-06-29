@@ -15,8 +15,10 @@ import numpy as np
 import pytest
 
 from glow._extra.benchmark import data
-from glow._extra.benchmark.run import run_ana
+from glow._extra.benchmark.run import run_ana, run_segment
 from glow.analysis import AnalysisGLOW, AnalysisVBA
+from glow.analysis.cluster import ClusterMode
+from glow.effect import ExtenterMinVar
 
 
 def _fresh_seed() -> int:
@@ -141,3 +143,40 @@ class TestProvenanceDAG:
         run_ana(exp, AnalysisVBA(n_perm_fwer=15), [], label='VBA')
         row = data.RECORDER.flatten_to_df().iloc[0]
         assert row['run_ana.in.label'] == 'VBA'
+
+
+# ---------------------------------------------------------------------------
+# run_segment: oracle best-Dice region of one Ward tree (segmentation quality)
+# ---------------------------------------------------------------------------
+
+class TestRunSegment:
+    _N_VOX_EFF = 20
+
+    def _planted(self):
+        """A clean WGN exp with one planted effect; returns (exp, [mask])."""
+        exp = data.data_factory_wgn(shape=(7, 7, 7), b=2, num_img=20, a=1,
+                                    seed=_fresh_seed())
+        return data.effect_factory(
+            exp, effect_llr=0.1, extenter_cls=ExtenterMinVar,
+            n_vox=self._N_VOX_EFF, seed=0)
+
+    def test_returns_oracle_confusion_counts(self):
+        exp, mask = self._planted()
+        score = run_segment(exp, [mask], ClusterMode.FOCUS)
+        assert set(score) == {'tp', 'fp', 'tn', 'fn'}
+        # the best region's counts vs the planted support: tp + fn is exactly
+        # the support size (every target voxel is hit or missed)
+        assert score['tp'] + score['fn'] == self._N_VOX_EFF
+
+    def test_cluster_mode_is_a_cache_axis(self):
+        exp, mask = self._planted()
+        run_segment(exp, [mask], ClusterMode.FOCUS)
+        # a different Ward mode is its own segmentation -> distinct cache entry
+        assert not run_segment.check_call_in_cache(
+            exp, [mask], ClusterMode.NAIVE)
+
+    def test_label_ignored_in_cache_key(self):
+        exp, mask = self._planted()
+        run_segment(exp, [mask], ClusterMode.FOCUS, label='Focus')
+        assert run_segment.check_call_in_cache(
+            exp, [mask], ClusterMode.FOCUS, label='DIFFERENT')

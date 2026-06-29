@@ -42,15 +42,14 @@ WGN and HCP share each cache (both sources in one data grid); they face apart
 on the recorded source column downstream. HCP has no num_img axis (its N is
 the cohort), so the num_img sweep is WGN-only.
 
-Scope. The leaf here is run_ana (fit + score one Analysis per cell), so this
-covers the five effect-detection caches that are exactly that shape: null,
-sweep_llr, sweep_b, sweep_extent, sweep_nimg. The old catalogue's segment /
-stat / prune / two-effect / min_size caches need other leaf functions (a
-segmentation oracle, a shared voxel-stat walk, two pruning rules on one fit,
-two planted effects, per-perm staircases); each becomes its own fnc +
-kwargs_fnc_list in CONFIG once written to run_ana's contract
-(fnc(exp, mask_target_list=..., **kwargs), memoised + recorded), but those
-leaf functions do not exist yet.
+Scope. Most caches share the run_ana leaf (fit + score one Analysis per cell):
+null, sweep_llr, sweep_b, sweep_extent, sweep_nimg. The segment cache swaps in
+run_segment (a Ward-mode oracle, no fit) over the same data / effect grids. The
+remaining old caches (stat, prune, two-effect, min_size) need other leaf
+functions (a shared voxel-stat walk, two pruning rules on one fit, two planted
+effects, per-perm staircases); each becomes its own fnc + kwargs_fnc_list in
+CONFIG once written to run_ana's contract (fnc(exp, mask_target_list=...,
+**kwargs), memoised + recorded).
 """
 import itertools
 import math
@@ -64,7 +63,7 @@ from glow.analysis.mancova import get_hotel_tr, get_wilks
 from glow.effect import ExtenterMinVar, ExtenterSphere
 
 from . import hcp
-from .run import run_ana
+from .run import run_ana, run_segment
 
 
 # ---------- shared knobs (mirror paper/config_old.py) ------------------------
@@ -133,6 +132,13 @@ ana_kwargs_dict = {
 # cache key, so renaming a method does not invalidate its cached fit.
 RUN_ANA_LIST = [dict(ana=ana, label=label)
                 for label, ana in ana_kwargs_dict.items()]
+
+# the segment cache's leaf grid: one run_segment call per Ward mode (Naive /
+# GLM Error / Focus). The mode rides as both the recorded label (its name) and
+# the cluster_mode the leaf segments with.
+SEGMENT_MODES = [ClusterMode.NAIVE, ClusterMode.GLM_ERROR, ClusterMode.FOCUS]
+RUN_SEGMENT_LIST = [dict(cluster_mode=mode, label=str(mode))
+                    for mode in SEGMENT_MODES]
 
 
 # ---------- stage builders (swept axes are the keyword arguments) ------------
@@ -240,4 +246,11 @@ CONFIG = {
         get_kwargs_data_list(sources=['wgn'], num_img_list=NIMG_GRID),
         get_kwargs_effect_list(),
         RUN_ANA_LIST, run_ana),
+    # F. Segmentation quality: oracle best-Dice region per Ward mode (Naive /
+    #    GLM Error / Focus), no significance test or pruning. Same grids as
+    #    sweep_llr; the leaf is run_segment over the mode grid.
+    'segment': (
+        get_kwargs_data_list(),
+        get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
+        RUN_SEGMENT_LIST, run_segment),
 }

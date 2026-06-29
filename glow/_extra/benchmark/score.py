@@ -11,9 +11,9 @@ data build, giving one score-bearing row per (trial, recipe). See
 glow._extra.benchmark.run / recorder.
 
 Ported from the deprecating paper layer (glow._extra.benchmark.paper.score).
-The segmentation-only / min-size scorers that lived beside it --
-score_oracle_tree, size_max_z_curve, curve_json -- stay there until their
-trial fns move over too.
+score_oracle_tree (the segment cache's segmentation-only score) now lives here
+beside score_effects; the min-size staircase scorers (size_max_z_curve /
+curve_json) move over with run_min_size.
 
 score_effects output (one dict per fitted Analysis), keys:
 
@@ -42,6 +42,7 @@ only the counts are stored.
 """
 import numpy as np
 
+import glow.graph
 import glow.mask
 
 
@@ -130,3 +131,27 @@ def score_effects(ana, mask_target_list, mask_active) -> dict:
             out[f'target{i}'] = glow.mask.confusion_counts(
                 mask_pred=pred_union, mask_target=tm, mask_active=mask_active)
     return out
+
+
+def score_oracle_tree(children, mask_target, mask_idx) -> dict:
+    """Return the confusion counts of the best-Dice region over a Ward tree.
+
+    The segmentation-only (oracle) score: scan every tree region and keep the
+    one whose Dice against the planted support is largest -- the best a perfect
+    selector could do on this segmentation, no significance test or pruning.
+    Used by the segment cache to isolate segmentation quality across Ward
+    modes; Dice / sensitivity / PPV derive downstream from the counts.
+
+    Args:
+        children (np.array): (num_reg - num_vox, 2) Ward merge pairs.
+        mask_target (np.array): (X, Y, Z) bool, the planted effect support.
+        mask_idx (np.array): (X, Y, Z) int voxel-index array (-1 outside).
+
+    Returns:
+        {tp, fp, tn, fn}: the counts of the single best-matching region.
+    """
+    counts = glow.graph.confusion_counts_tree(
+        mask=mask_target, mask_idx=mask_idx, children=children)
+    dice = glow.mask.stats_from_counts(**counts)['dice']
+    i = int(np.nanargmax(dice))
+    return {k: int(counts[k][i]) for k in ('tp', 'fp', 'tn', 'fn')}
