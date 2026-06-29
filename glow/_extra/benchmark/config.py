@@ -102,10 +102,12 @@ NIMG_GRID = [10, 18, 30, 55, 100, 180, 300]
 
 
 # ---------- analysis recipes -------------------------------------------------
-# label -> recipe. The label is for the reader; run_ana takes no label, so a
-# method is identified downstream by its recorded recipe config (to_record),
-# not this key. GLOW uses the LLR throughout, so the two GLOW arms differ only
-# in Ward projection; the voxel-wise arms z-score before the max-stat null.
+# label -> recipe. The label is for the reader: it rides into each run_ana cell
+# as a ``label`` kwarg the function ignores -- recorded as the in.label column
+# but dropped from the cache key (run_ana's @MEMORY.cache(ignore=['label'])) --
+# so a method is named beside its score without entering the computation. GLOW
+# uses the LLR throughout, so the two GLOW arms differ only in Ward projection;
+# the voxel-wise arms z-score before the max-stat null.
 kwargs = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
 ana_kwargs_dict = {
     'GLOW-Focus': AnalysisGLOW(n_perm_inner=N_PERM_INNER,
@@ -122,8 +124,12 @@ ana_kwargs_dict = {
                               **kwargs),
 }
 
-# the leaf kwargs grid: one run_ana call per recipe, shared by every cache
-RUN_ANA_LIST = [dict(ana=ana) for ana in ana_kwargs_dict.values()]
+# the leaf kwargs grid: one run_ana call per recipe, shared by every cache. The
+# ana_kwargs_dict key rides as a ``label`` kwarg run_ana ignores (see
+# run.run_ana): recorded beside the score in the output, but dropped from the
+# cache key, so renaming a method does not invalidate its cached fit.
+RUN_ANA_LIST = [dict(ana=ana, label=label)
+                for label, ana in ana_kwargs_dict.items()]
 
 
 # ---------- stage builders (swept axes are the keyword arguments) ------------

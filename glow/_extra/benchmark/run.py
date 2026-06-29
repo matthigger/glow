@@ -40,9 +40,9 @@ from .data import MEMORY, RECORDER
 from .score import score_effects
 
 
-@MEMORY.cache
+@MEMORY.cache(ignore=['label'])
 @RECORDER(output_name='score')
-def run_ana(exp: Experiment, ana: Analysis, mask_target_list):
+def run_ana(exp: Experiment, ana: Analysis, mask_target_list, label=None):
     """Fit ``ana`` on ``exp`` and score it against the planted target(s).
 
     Calls ``ana.fit(exp)`` (every Analysis scales exp on the way in and
@@ -67,6 +67,11 @@ def run_ana(exp: Experiment, ana: Analysis, mask_target_list):
     its heavy per-method arrays) is discarded; only the score dict is
     returned, cached, and recorded.
 
+    ``label`` (the config layer's ana_kwargs_dict method name) is unused by the
+    computation; it is recorded beside the score (the ``in.label`` column) so a
+    method is named in the output, and ``@MEMORY.cache(ignore=['label'])`` drops
+    it from the cache key so renaming a method does not invalidate its cache.
+
     Args:
         exp (Experiment): the experiment to analyze (raw or already
             scaled; fit idempotently scales it).
@@ -75,6 +80,8 @@ def run_ana(exp: Experiment, ana: Analysis, mask_target_list):
         mask_target_list (list): the planted effect supports, one (X, Y, Z)
             bool mask per EffectSynthetic (effect_factory's ``mask``
             output); empty for the null / FWER-calibration path.
+        label (str): the method label recorded beside the score; unused by the
+            computation and excluded from the cache key.
 
     Returns:
         score (dict): the detection score (see .score.score_effects):

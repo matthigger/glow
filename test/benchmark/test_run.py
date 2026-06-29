@@ -95,6 +95,15 @@ class TestCacheKeyedOnRecipe:
         s1 = run_ana(exp, ana, [])   # served from cache
         assert s0 == s1
 
+    def test_label_ignored_in_cache_key(self):
+        # label is recorded metadata, not a cache axis: a call differing only in
+        # label is served from the first's entry (run_ana's ignore=['label']),
+        # so renaming a method never invalidates its cached fit
+        exp = _exp()
+        ana = AnalysisVBA(n_perm_fwer=15)
+        run_ana(exp, ana, [], label='VBA')
+        assert run_ana.check_call_in_cache(exp, ana, [], label='DIFFERENT')
+
 
 # ---------------------------------------------------------------------------
 # provenance DAG: run_ana joins data.py's recorder graph via its exp input
@@ -122,3 +131,13 @@ class TestProvenanceDAG:
         # carrying the swept seed onto the run_ana row
         assert row['data_factory_wgn.function'] == 'data_factory_wgn'
         assert row['data_factory_wgn.in.seed'] == seed
+
+    def test_label_recorded_as_input_column(self):
+        # the method label is recorded beside the score, as the in.label column
+        seed = _fresh_seed()
+        data.RECORDER.records.clear()
+        exp = data.data_factory_wgn(shape=(5, 5, 5), b=2, num_img=20, a=2,
+                                    seed=seed)
+        run_ana(exp, AnalysisVBA(n_perm_fwer=15), [], label='VBA')
+        row = data.RECORDER.flatten_to_df().iloc[0]
+        assert row['run_ana.in.label'] == 'VBA'
