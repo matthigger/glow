@@ -15,6 +15,7 @@ All builders share MEMORY / RECORDER, so a clean build and the plant that
 consumes it link into one provenance DAG.
 """
 import joblib
+import numpy as np
 
 from glow.effect import EffectSynthetic, Extenter
 from glow.experiment import Experiment, ExperimentImageOnly
@@ -34,6 +35,31 @@ MEMORY = joblib.Memory(get_path_cache(), verbose=0)
 # exp -> effect_factory's plant); scalars / Extenters / masks never link, so
 # trivial values forge no spurious edges (see Recorder).
 RECORDER = Recorder(folder=get_path_records(), link_types=(Experiment,))
+
+
+def _with_canonical_y(exp):
+    """Return ``exp`` with an owning, canonically-strided (F-contiguous) ``y``.
+
+    Both the joblib.Memory cache key and the provenance link (Experiment.to_record
+    / RECORDER) are joblib.hash of the whole Experiment, which folds in y's memory
+    layout -- not just its bytes. apply_mask crops y to a non-owning view, and at
+    b=1 the length-1 feature axis carries an ambiguous stride that pickling does
+    not preserve, so a freshly built exp and the same exp reloaded from the disk
+    cache hash differently (their strides differ though their bytes do not). That
+    silently breaks the cache (a warm-cache / resumed run misses and recomputes)
+    and orphans the leaf in flatten_to_df (its exp-input hash no longer matches
+    the recorded build's output hash) the moment a build is served from cache.
+
+    A fresh ``copy`` gives y owning storage with canonical strides whose hash
+    survives the pickle round-trip. We copy in Fortran order (not the usual C):
+    that is the layout from_gauss / the HCP loader produce and that the scaling
+    path is written for (ExperimentScaled.prep's einsum, the ``order='F'`` cov
+    reshape), so the hash is fixed without flipping the layout the analysis hot
+    loop expects. ``asfortranarray`` would not do: the degenerate view is already
+    flagged F-contiguous, so it would return it unchanged and fix nothing.
+    """
+    exp.y = exp.y.copy(order='F')
+    return exp
 
 
 def _sample_x_and_crop(exp_img, *, a: int, contrast, has_bias: bool,
@@ -60,7 +86,8 @@ def _sample_x_and_crop(exp_img, *, a: int, contrast, has_bias: bool,
     if extenter is not None:
         # data-driven extenters (ExtenterMinVar) need y; geometric ones ignore it
         exp = exp.apply_mask(extenter(mask_idx=exp.mask_idx, y=exp.y))
-    return exp
+    # canonicalise y's layout so the cached/recorded exp hashes stably (see helper)
+    return _with_canonical_y(exp)
 
 
 @MEMORY.cache
@@ -186,4 +213,6 @@ def effect_factory(exp, *, effect_llr, extenter_cls, n_vox, seed: int = None,
     if seed_from_exp:
         seed = int(joblib.hash(exp), 16)
     extenter = extenter_cls(n_vox=n_vox, seed=seed)
-    return EffectSynthetic(extenter=extenter, effect_llr=effect_llr).fit(exp)
+    exp, mask = EffectSynthetic(extenter=extenter, effect_llr=effect_llr).fit(exp)
+    # canonicalise y's layout so the planted exp hashes stably (see _with_canonical_y)
+    return _with_canonical_y(exp), mask
