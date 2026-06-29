@@ -16,7 +16,7 @@ from .image import get_region_color
 
 
 def _get_voxel_indices(reg_idx, children, num_vox):
-    """Return a list of leaf (voxel) indices belonging to *reg_idx*."""
+    """Return the leaf (voxel) indices belonging to reg_idx."""
     return list(glow.graph.iter_postorder(
         children=children, num_leaf=num_vox,
         node_start=reg_idx, only_leaf=True))
@@ -30,15 +30,16 @@ def _get_x_labels(exp):
     non-bias row so the dropdown starts on something useful.
 
     Args:
-        exp: Experiment (may be ExperimentScaled)
+        exp (Experiment): may be an ExperimentScaled.
 
     Returns:
         x (np.array): (a, num_img) full design matrix
         x_names (list[str]): human-readable name per row
         default_idx (int): index of first non-bias row
     """
-    x = exp.x           # (a, num_img)
-    contrast = exp.contrast  # (a,)
+    # x is (a, num_img); contrast is (a,)
+    x = exp.x
+    contrast = exp.contrast
 
     is_bias = np.all(x == 1.0, axis=1)
 
@@ -66,8 +67,8 @@ def _get_x_labels(exp):
 def _get_y_labels(exp, y_features=None):
     """Return human-readable names for each imaging feature.
 
-    Falls back to ``exp.meta['features']`` when *y_features* is not
-    supplied, then to ``y0, y1, …``.
+    Falls back to exp.meta['features'] when y_features is not supplied,
+    then to y0, y1, ...
     """
     b = exp.y.shape[0]
     if y_features is None:
@@ -81,11 +82,11 @@ def _region_means(y, vox_indices):
     """Compute mean y across voxels in a region, per image, per feature.
 
     Args:
-        y (np.array): ``(b, num_img, num_vox)`` imaging data
-        vox_indices: voxel indices for the region
+        y (np.array): (b, num_img, num_vox) imaging data
+        vox_indices (list[int]): voxel indices for the region
 
     Returns:
-        y_mean (np.array): (b, num_img)  -- mean imaging value per image
+        y_mean (np.array): (b, num_img) mean imaging value per image
     """
     return y[:, :, vox_indices].mean(axis=2)
 
@@ -94,11 +95,11 @@ def _region_stds(y, vox_indices):
     """Compute std of y across voxels in a region, per image, per feature.
 
     Args:
-        y (np.array): ``(b, num_img, num_vox)`` imaging data
-        vox_indices: voxel indices for the region
+        y (np.array): (b, num_img, num_vox) imaging data
+        vox_indices (list[int]): voxel indices for the region
 
     Returns:
-        y_std (np.array): (b, num_img)  -- spatial std per image
+        y_std (np.array): (b, num_img) spatial std per image
     """
     return y[:, :, vox_indices].std(axis=2)
 
@@ -179,7 +180,8 @@ def build_regression_figure(ana_glow, exp, region_list, x_feat_idx, y_feat_idx,
     x_label = x_names[x_feat_idx]
     y_label = y_names[y_feat_idx]
 
-    x_design = x_full[x_feat_idx]  # (num_img,)
+    # x_design is (num_img,)
+    x_design = x_full[x_feat_idx]
 
     fig = go.Figure()
 
@@ -202,10 +204,11 @@ def build_regression_figure(ana_glow, exp, region_list, x_feat_idx, y_feat_idx,
             vox_idx = target_vox
         else:
             vox_idx = _get_voxel_indices(reg_idx, children, num_vox)
-        y_mean = _region_means(y_orig, vox_idx)  # (b, num_img)
-        y_std_all = _region_stds(y_orig, vox_idx)   # (b, num_img)
-        y_vals = y_mean[y_feat_idx]  # (num_img,)
-        y_std = y_std_all[y_feat_idx]  # (num_img,)
+        # y_mean and y_std_all are (b, num_img); y_vals and y_std (num_img,)
+        y_mean = _region_means(y_orig, vox_idx)
+        y_std_all = _region_stds(y_orig, vox_idx)
+        y_vals = y_mean[y_feat_idx]
+        y_std = y_std_all[y_feat_idx]
 
         # OLS fit
         intercept, slope, y_hat = _ols_fit(x_design, y_vals)

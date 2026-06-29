@@ -1,39 +1,40 @@
 """Detection scoring for the benchmark run functions.
 
-``score_effects`` turns one fitted Analysis into the trial's score: it compares
+score_effects turns one fitted Analysis into the trial's score: it compares
 the Analysis's discovered EffectEstimates against the planted EffectSynthetic
-target(s) and emits one JSON-friendly dict. ``run_ana`` fits a recipe and calls
-this on the result, returning (and so recording / caching) the dict as the run's
-output -- the heavy fitted Analysis stays an in-memory local and is discarded,
-so only the small score dict reaches disk. That dict is the leaf of
-``RECORDER.flatten_to_df``: its ``exp`` ancestor chains back through the plant
-to the data build, giving one score-bearing row per (trial, recipe). See
+target(s) and emits one JSON-friendly dict. run_ana fits a recipe and calls
+this on the result, returning (and so recording / caching) the dict as the
+run's output -- the heavy fitted Analysis stays an in-memory local and is
+discarded, so only the small score dict reaches disk. That dict is the leaf of
+RECORDER.flatten_to_df: its exp ancestor chains back through the plant to the
+data build, giving one score-bearing row per (trial, recipe). See
 glow._extra.benchmark.run / recorder.
 
-Ported from the deprecating paper layer (glow._extra.benchmark.paper.score). The
-segmentation-only / min-size scorers that lived beside it -- score_oracle_tree,
-size_max_z_curve, curve_json -- stay there until their trial fns move over too.
+Ported from the deprecating paper layer (glow._extra.benchmark.paper.score).
+The segmentation-only / min-size scorers that lived beside it --
+score_oracle_tree, size_max_z_curve, curve_json -- stay there until their
+trial fns move over too.
 
-score_effects output (one dict per fitted Analysis):
+score_effects output (one dict per fitted Analysis), keys:
 
-    {
-      "num_vox":  <analyzed voxel count>,       # mask_active.sum()
-      "min_pval": <smallest region p-value>,    # nanmin(ana.pval)
-      "n_pred":   <number of discovered regions>,
-      "pred": [ {reg_idx, num_vox, pval, target[, target0, target1, ...]} ],
-      "target":  {tp, fp, tn, fn},              # vs union of all targets
-      "target0": {tp, fp, tn, fn}, ...          # only when >1 target
-    }
+    {num_vox, min_pval, n_pred,
+     pred: [{reg_idx, num_vox, pval, target[, target0, target1, ...]}],
+     target: {tp, fp, tn, fn},
+     target0: {tp, fp, tn, fn}, ...}
 
-The single "target" block is always the prediction (the union of all discovered
+num_vox is the analyzed voxel count (mask_active.sum()), min_pval the smallest
+region p-value (nanmin(ana.pval)), n_pred the count of discovered regions. The
+target0/target1/... blocks are present only with more than one target.
+
+The single target block is always the prediction (the union of all discovered
 regions) scored against the union of all planted effects -- so for one planted
-effect it is that effect, and the bare tp/fp/tn/fn a reader flattens from it stay
-backward compatible. The target0/target1/... blocks appear only with several
-planted effects: they score the same prediction against each effect in turn, the
-others' support treated as background (the cleaving / merge-cost signal). Each
-pred region additionally reports how many of its voxels land in each target, so
-the per-region geometry is visible without the masks (which never reach disk;
-see recorder).
+effect it is that effect, and the bare tp/fp/tn/fn a reader flattens from it
+stay backward compatible. The target0/target1/... blocks appear only with
+several planted effects: they score the same prediction against each effect in
+turn, the others' support treated as background (the cleaving / merge-cost
+signal). Each pred region additionally reports how many of its voxels land in
+each target, so the per-region geometry is visible without the masks (which
+never reach disk; see recorder).
 
 Every metric (Dice, sensitivity, PPV, specificity) is a function of the four
 confusion counts and is derived downstream (glow.mask.stats_from_counts), so
@@ -45,7 +46,7 @@ import glow.mask
 
 
 def _union(mask_list, shape):
-    """OR a list of (X, Y, Z) bool masks into one; all-False if the list is empty.
+    """OR a list of bool masks into one; all-False on an empty list.
 
     Args:
         mask_list (list): (X, Y, Z) bool masks (possibly empty).
@@ -61,7 +62,7 @@ def _union(mask_list, shape):
 
 
 def score_effects(ana, mask_target_list, mask_active) -> dict:
-    """Score a fitted Analysis's discovered effects against the planted target(s).
+    """Score a fitted Analysis's effects against the planted target(s).
 
     The detection score shared by every effect-discovery cache. The
     prediction is the union of the Analysis's discovered EffectEstimate
@@ -122,7 +123,8 @@ def score_effects(ana, mask_target_list, mask_active) -> dict:
     # confusion of the whole prediction vs the union of targets (always),
     # then vs each planted effect when several were planted
     out['target'] = glow.mask.confusion_counts(
-        mask_pred=pred_union, mask_target=target_union, mask_active=mask_active)
+        mask_pred=pred_union, mask_target=target_union,
+        mask_active=mask_active)
     if n_target > 1:
         for i, tm in enumerate(mask_target_list):
             out[f'target{i}'] = glow.mask.confusion_counts(

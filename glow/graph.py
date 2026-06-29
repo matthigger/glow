@@ -33,7 +33,7 @@ from glow.mask import counts_from_tp_fp
 
 
 def iter_size_ysum_yout(y, children=None):
-    """Yield per-region sufficient statistics, re-using partial sums via the tree.
+    """Yield per-region sufficient statistics, reusing tree partial sums.
 
     Walks regions in topological order so each internal node's stats are
     the sum of its two children's; children are dropped from the cache
@@ -124,7 +124,7 @@ def iter_mancova(exp, **kwargs):
 
 
 def compute_llr_batched(exp, children, q0, q1, min_size: int = 1):
-    """Compute vectorised per-region LLR for a single (already-permuted) experiment.
+    """Compute vectorised per-region LLR for one (already-permuted) exp.
 
     Computes the same per-region LLR statistic as the per-region loop:
 
@@ -157,9 +157,9 @@ def compute_llr_batched(exp, children, q0, q1, min_size: int = 1):
     Returns:
         llr (np.array): (num_reg,) LLR per region. NaN where size <
             min_size, or where the error matrix E is not positive-definite
-            to within the float rounding floor M*eps*trace(yout)
-            (M = num_img*size) -- i.e. degenerate near-constant regions whose
-            E is cancellation noise rather than genuine residual scatter.
+            to within the float rounding floor M * eps * trace(yout)
+            (M = num_img * size) -- i.e. degenerate near-constant regions
+            whose E is cancellation noise, not genuine residual scatter.
         size (np.array): (num_reg,) int voxel count per region.
     """
     y = exp.y
@@ -199,8 +199,8 @@ def compute_llr_batched(exp, children, q0, q1, min_size: int = 1):
     # definite.  A plain sign>0 check is too lax in float32: E is formed by
     # cancelling two terms of magnitude S = trace(yout) (the region's
     # un-centred energy Sum y^2), so for near-constant low-variance regions
-    # its true value falls below the summation rounding floor ~ M*eps*S,
-    # where M = num_img*size is the number of (image, voxel) terms summed.
+    # its true value falls below the summation rounding floor ~ M * eps * S,
+    # where M = num_img * size is the number of (image, voxel) terms summed.
     # There slogdet's sign is noise; left in, such a region's per-permutation
     # z explodes (mu, std collapse to float scale) and dead near-constant
     # voxels poison the Westfall-Young max-z null (see the dead-voxel FWER
@@ -426,13 +426,14 @@ def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
 
     # Accumulate in float64 (acc_dtype default) even for float32 y.  Each
     # region's error matrix E is formed by cancelling two terms of magnitude
-    # ~num_img*size*mean(y)^2 -- the raw second moment T_r and the nuisance
-    # projection S0*^T S0* / size -- down to the residual ~num_img*size*var(y).
-    # For low-variance voxels on a large DC offset (e.g. HCP background at mean
-    # -0.76, std 5e-4) that subtraction loses every significant digit in
-    # float32: E collapses to rounding noise or goes negative, so the
-    # per-region inner-null std degenerates (~1e-6 instead of ~5e-3) and the
-    # standardized z explodes, poisoning the Westfall-Young max-z null.  float64
+    # ~num_img * size * mean(y)^2 -- the raw second moment T_r and the nuisance
+    # projection S0*^T S0* / size -- down to the residual
+    # ~num_img * size * var(y).  For low-variance voxels on a large DC offset
+    # (e.g. HCP background at mean -0.76, std 5e-4) that subtraction loses
+    # every significant digit in float32: E collapses to rounding noise or
+    # goes negative, so the per-region inner-null std degenerates (~1e-6
+    # instead of ~5e-3) and the standardized z explodes, poisoning the
+    # Westfall-Young max-z null.  float64
     # keeps E accurate; float32 only ever bought bandwidth (the dominant GEMM
     # could be re-narrowed in isolation if large-num_vox memory matters).
     # acc_dtype=float32 is exposed only to reproduce the old collapse in tests
@@ -617,8 +618,8 @@ def get_fp_tp(mask, mask_idx, children):
 
 
 
-def iter_postorder(*, children=None, num_leaf: int, node_start: int | None = None,
-                   only_leaf: bool = False):
+def iter_postorder(*, children=None, num_leaf: int,
+                   node_start: int | None = None, only_leaf: bool = False):
     """Traverse the tree in DFS post-order, yielding nodes leaves-to-root.
 
     Yields nodes in topological order. Supports forests: when node_start
@@ -678,7 +679,8 @@ class RegIntersectError(Exception):
     pass
 
 
-def get_label_map(reg_idx_list, mask_idx, children, check_disjoint: bool = False):
+def get_label_map(reg_idx_list, mask_idx, children,
+                  check_disjoint: bool = False):
     """Build a label_map array from a list of region indices.
 
     Args:

@@ -28,7 +28,7 @@ class EffectEstimate:
 
     @classmethod
     def from_x_y_contrast(cls, x, y, contrast, **kwargs):
-        """Build an EffectEstimate from raw design, image and contrast arrays."""
+        """Build an EffectEstimate from design, image and contrast arrays."""
         e, h, _ = get_mancova(x=x, y=y, contrast=contrast)
         return cls(y_mean=y.mean(axis=2), e=e, h=h, **kwargs)
 
@@ -132,9 +132,10 @@ class EffectSynthetic:
             self.mask = mask
 
     def __repr__(self):
-        """Class name + the planting spec: effect_llr, whichever of
-        extenter / mask defines the support (extenter rendered recursively),
-        and a set seed / angle.
+        """Render the class name and planting spec as a compact string.
+
+        Shows effect_llr, whichever of extenter / mask defines the support
+        (extenter rendered recursively), and a set seed / angle.
         """
         parts = [f'effect_llr={self.effect_llr}']
         if self.extenter is not None:
@@ -164,7 +165,8 @@ class EffectSynthetic:
                 exp.mask_idx.
         """
         # local import keeps glow.effect import-time cycle-free
-        from .impose import compute_offset, impose_effect, sample_beta_direction
+        from .impose import (compute_offset, impose_effect,
+                             sample_beta_direction)
 
         assert exp.x is not None, 'x/contrast needed; call .sample_x()'
 

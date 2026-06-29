@@ -125,7 +125,8 @@ class ExperimentImageOnly:
 
         meta = kwargs.pop('meta', {})
         meta.setdefault('features', [f'feat_{i}' for i in range(b)])
-        meta.setdefault('subjects', [f'subject_{i:03d}' for i in range(num_img)])
+        meta.setdefault('subjects',
+                        [f'subject_{i:03d}' for i in range(num_img)])
         # single cast at the public factory; the constructor would also
         # handle this but doing it explicitly documents the contract.
         y = y.reshape((b, num_img, num_vox)).astype(dtype, copy=False)
@@ -165,7 +166,8 @@ class ExperimentImageOnly:
         return df
 
     @classmethod
-    def list_subjects(cls, folder, sbj_regex: str, img_glob_dict: dict) -> list:
+    def list_subjects(cls, folder, sbj_regex: str,
+                      img_glob_dict: dict) -> list:
         """Return the sorted list of subject ids discovered under folder.
 
         Canonical across regex rewrites that select the same files — useful

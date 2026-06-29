@@ -10,11 +10,11 @@ arbitrary code execution (see glow/_extra/viewer/web/README.md).
 
 Zenodo's public read API needs no authentication. A GET of
 {api_base}/records/{record_id} returns a JSON record whose files live
-either in a top-level `files` list (current zenodo.org) or, on some
-InvenioRDM deployments, under `files.entries`. Each entry carries `key`
-(filename), `size` (bytes), `checksum` ("md5:..."), and a `links.self`
-content URL. Requesting a concept (version-independent) id redirects to
-the latest version; pin a version-specific id for a stable demo set.
+either in a top-level files list (current zenodo.org) or, on some
+InvenioRDM deployments, under files.entries. Each entry carries key
+(filename), size (bytes), checksum ("md5:..."), and a links.self content
+URL. Requesting a concept (version-independent) id redirects to the latest
+version; pin a version-specific id for a stable demo set.
 
 Set GLOW_ZENODO_API_BASE to https://sandbox.zenodo.org/api to test
 against a Zenodo Sandbox deposit before a real DOI exists.
@@ -46,7 +46,7 @@ def api_base() -> str:
 
 
 def cache_dir() -> pathlib.Path:
-    """Return the on-disk download cache dir (GLOW_ZENODO_CACHE_DIR or default)."""
+    """Return the download cache dir (GLOW_ZENODO_CACHE_DIR or default)."""
     env = os.environ.get('GLOW_ZENODO_CACHE_DIR')
     base = pathlib.Path(env) if env else (
         pathlib.Path(platformdirs.user_cache_dir('glow')) / 'zenodo')
@@ -81,9 +81,9 @@ def _get_json(url: str, *, timeout: int = _HTTP_TIMEOUT) -> dict:
 def _normalize_files(record: dict) -> List[ZenodoFile]:
     """Extract ZenodoFile entries from a record's files, both API shapes.
 
-    Handles the top-level `files` list (current zenodo.org) and the
-    InvenioRDM `files.entries` dict/list, ignoring entries that lack a
-    usable content link.
+    Handles the top-level files list (current zenodo.org) and the
+    InvenioRDM files.entries dict/list, ignoring entries that lack a usable
+    content link.
 
     Args:
         record (dict): parsed /api/records/<id> JSON.
@@ -101,7 +101,8 @@ def _normalize_files(record: dict) -> List[ZenodoFile]:
     out: List[ZenodoFile] = []
     for entry in raw:
         links = entry.get('links') or {}
-        url = links.get('self') or links.get('content') or links.get('download')
+        url = (links.get('self') or links.get('content')
+               or links.get('download'))
         key = entry.get('key')
         if not url or not key:
             continue

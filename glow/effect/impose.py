@@ -112,7 +112,7 @@ def _fix_alpha_signs(alpha, obj_fn):
 
     Args:
         alpha (np.array): (2,) the (alpha1, alpha2) scalings to correct
-        obj_fn (Callable): objective used to assert the flip is value-preserving
+        obj_fn (Callable): objective used to assert the flip preserves value
 
     Returns:
         x_opt (np.array): (2,) sign-corrected scalings
@@ -245,8 +245,9 @@ def impose_effect(x, y, contrast, *, beta_direction, effect_llr: float,
     beta_direction = np.asarray(beta_direction, dtype=float)
     if beta_direction.ndim == 1:
         beta_direction = beta_direction.reshape(1, b)
-    assert beta_direction.shape == (a1, b), \
-        f'beta_direction must be (a1, b)=({a1}, {b}), got {beta_direction.shape}'
+    assert beta_direction.shape == (a1, b), (
+        f'beta_direction must be (a1, b)=({a1}, {b}), '
+        f'got {beta_direction.shape}')
 
     q1 = decompose(x, contrast)[1]
     y_mean = y.mean(axis=2)

@@ -81,7 +81,8 @@ ANALYSIS_DICT = {
     'GLOW-GLM':   (glow.analysis.AnalysisGLOW,
                    {**_GLOW_BASE, 'cluster_mode': ClusterMode.GLM_ERROR}),
     'VBA':        (glow.analysis.AnalysisVBA,
-                   {**_VBA_BASE, 'tfce_flag': False, 'get_stat': VBA_GET_STAT}),
+                   {**_VBA_BASE, 'tfce_flag': False,
+                    'get_stat': VBA_GET_STAT}),
     'VBA-TFCE':   (glow.analysis.AnalysisVBA,
                    {**_VBA_BASE, 'tfce_flag': True,
                     'get_stat': VBA_TFCE_GET_STAT}),
@@ -123,7 +124,8 @@ def _cache(label: str, *, run_fnc, **iter_kwargs) -> None:
     # cast numpy scalars to plain python so result columns stay readable
     clean = {k: [v.item() if isinstance(v, np.generic) else v for v in vals]
              for k, vals in iter_kwargs.items()}
-    CACHE_BY_LABEL[label] = (TrialCache(name=label, iter_kwargs=clean), run_fnc)
+    CACHE_BY_LABEL[label] = (TrialCache(name=label, iter_kwargs=clean),
+                             run_fnc)
 
 
 _ana = partial(run_ana, ana_kwargs_dict=ANALYSIS_DICT)
@@ -209,7 +211,8 @@ _cache('prune', run_fnc=run_prune,
 # I. Cleaving: two adjacent equal-LLR effects, sweep the angle between their
 #    feature directions (0..90 deg). Each row stores per-effect confusion
 #    counts (tp0/fp0/tn0/fn0 vs effect0, tp1/.. vs effect1) for the per-effect
-#    detectability check. b>=2 so the direction rotation has a plane to turn in.
+#    detectability check. b>=2 so the direction rotation has a plane to turn
+#    in.
 _cache('two-effect', run_fnc=_two_effect,
        source=SOURCES, seed=list(range(N_SEED)),
        angle=ANGLE_GRID, b=[3], num_img=[100],

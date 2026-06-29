@@ -73,7 +73,7 @@ def decompose(x, contrast):
 
 
 def is_intercept_only_nuisance(x, contrast) -> bool:
-    """Return True when the nuisance projection Q0 commutes with every permutation.
+    """Return True when nuisance projection Q0 commutes with all permutations.
 
     Q0 commutes with all permutation matrices iff its column space is a
     permutation-invariant subspace. Over the full symmetric group on

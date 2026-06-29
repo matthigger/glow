@@ -1,3 +1,5 @@
+"""GLOW analysis: per-perm Ward-tree effect discovery with FWER control."""
+
 import numpy as np
 from joblib import Parallel, delayed
 from tqdm import tqdm

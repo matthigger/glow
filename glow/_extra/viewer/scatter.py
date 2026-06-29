@@ -38,12 +38,10 @@ _PVAL_THRESHOLD_MAP = {
 def _compute_adj_thresh(ana_glow):
     """Compute the llr_z value at the alpha_fwer significance boundary.
 
-    When significant regions exist, returns the minimum llr_z among
-    them (the empirical decision boundary).  Otherwise falls back to
-    ``adj_crit`` — the exact critical value from the permutation null
-    distribution (stored during analysis).
-
-    Returns None only when neither source is available.
+    When significant regions exist, returns the minimum llr_z among them
+    (the empirical decision boundary). Otherwise falls back to adj_crit,
+    the exact critical value from the permutation null (stored during
+    analysis). Returns None only when neither source is available.
     """
     alpha = getattr(ana_glow, 'alpha_fwer', None)
     if alpha is None:
@@ -79,9 +77,9 @@ def build_scatter(df, ana_glow, exp, x_feat, y_feat, color_feat,
         selected_reg (set): currently selected region indices (highlighted)
         plot_tree (bool): whether to draw hierarchy edges
         log_y (bool): apply log scale to y axis
-        target_stats (dict|None): stats for the full target mask (from
-            ``compute_target_stats``).  When both axes have finite values,
-            a star marker is drawn at the target's position.
+        target_stats (dict | None): stats for the full target mask (from
+            compute_target_stats). When both axes have finite values, a
+            star marker is drawn at the target's position.
         min_vox (int): scatter only regions with at least this many voxels
             (n_voxel >= min_vox); 0 (default) scatters every region.  Large
             trees have one point per region (num_vox leaves + internal nodes),
@@ -280,9 +278,9 @@ def _log_y_range(y_v, ana_glow, y_feat, target_stats):
     """Compute an explicit [log10_min, log10_max] range for log-y mode.
 
     Includes visible scatter data, any threshold hline, and the target star
-    so that Plotly doesn't auto-range to absurd extremes from outliers.
-    Returns *None* when there are no positive values at all (let Plotly
-    fall back to defaults).
+    so Plotly does not auto-range to absurd extremes from outliers. Returns
+    None when there are no positive values at all (Plotly falls back to its
+    defaults).
     """
     pos = y_v[np.isfinite(y_v) & (y_v > 0)]
     if len(pos) == 0:
@@ -372,7 +370,8 @@ def _add_threshold_lines(fig, ana_glow, x_feat, y_feat):
         if val is None:
             continue
 
-        label = f'alpha_fwer={alpha_fwer}' if feat == 'pval_fwer' else f'{attr}={val}'
+        label = (f'alpha_fwer={alpha_fwer}' if feat == 'pval_fwer'
+                 else f'{attr}={val}')
 
         if x_feat == feat:
             fig.add_vline(x=val, line=style,
@@ -403,17 +402,16 @@ def _add_threshold_lines(fig, ana_glow, x_feat, y_feat):
 
 
 def _add_min_vox_line(fig, ana_glow, x_feat, y_feat):
-    """Draw a vertical line at ``x = ana_glow.min_vox`` on the H1 z-vs-size view.
+    """Draw a vertical line at x = ana_glow.min_vox on the z-vs-size view.
 
-    The horizontal ``alpha_fwer`` threshold on the ``llr_z`` axis only
-    applies to regions with size >= ``min_vox`` (smaller regions are
-    excluded from the max-z null and assigned NaN p-values).  Showing
-    where that cutoff sits along the size axis makes the gating visible
-    to the viewer.
+    The horizontal alpha_fwer threshold on the llr_z axis only applies to
+    regions with size >= min_vox (smaller regions are excluded from the
+    max-z null and assigned NaN p-values). Showing where that cutoff sits
+    along the size axis makes the gating visible.
 
-    Only drawn when x is ``n_voxel`` AND y is ``llr_z`` — anywhere else
-    the cutoff isn't a meaningful reference.  Silently skipped when
-    ``min_vox`` is missing (older / partially-constructed analyses).
+    Only drawn when x is n_voxel and y is llr_z; anywhere else the cutoff
+    is not a meaningful reference. Silently skipped when min_vox is missing
+    (older / partially-constructed analyses).
     """
     if x_feat != 'n_voxel' or y_feat != _ADJ_COL:
         return

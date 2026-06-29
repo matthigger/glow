@@ -48,7 +48,7 @@ import glow.mask
 
 
 def _union(mask_list, shape):
-    """OR a list of (X, Y, Z) bool masks into one; all-False if the list is empty.
+    """OR a list of (X, Y, Z) bool masks; all-False if the list is empty.
 
     Args:
         mask_list (list): (X, Y, Z) bool masks (possibly empty).
@@ -64,7 +64,7 @@ def _union(mask_list, shape):
 
 
 def score_effects(ana, mask_target_list, mask_active) -> dict:
-    """Score a fitted Analysis's discovered effects against the planted target(s).
+    """Score an Analysis's discovered effects against the planted targets.
 
     The detection score shared by every effect-discovery cache. The
     prediction is the union of the Analysis's discovered EffectEstimate
@@ -125,7 +125,8 @@ def score_effects(ana, mask_target_list, mask_active) -> dict:
     # confusion of the whole prediction vs the union of targets (always),
     # then vs each planted effect when several were planted
     out['target'] = glow.mask.confusion_counts(
-        mask_pred=pred_union, mask_target=target_union, mask_active=mask_active)
+        mask_pred=pred_union, mask_target=target_union,
+        mask_active=mask_active)
     if n_target > 1:
         for i, tm in enumerate(mask_target_list):
             out[f'target{i}'] = glow.mask.confusion_counts(

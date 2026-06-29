@@ -24,14 +24,14 @@ def get_path_result() -> pathlib.Path:
 
 
 def get_path_cache() -> pathlib.Path:
-    """Return the per-user joblib.Memory cache directory, creating it if missing."""
+    """Return the per-user joblib.Memory cache dir, made if missing."""
     path_cache = get_path_data() / 'cache'
     path_cache.mkdir(parents=True, exist_ok=True)
     return path_cache
 
 
 def get_path_records() -> pathlib.Path:
-    """Return the per-user recorder directory (per-hash <hash>.json files), creating it if missing.
+    """Return the per-user recorder dir (per-hash json), made if missing.
 
     Sibling to the joblib.Memory cache (get_path_cache): a record is keyed by
     the same args hash joblib files its result under, so the two line up. See
@@ -43,7 +43,7 @@ def get_path_records() -> pathlib.Path:
 
 
 def get_path_out(folder) -> pathlib.Path:
-    """Return the per-label subfolder of un-aggregated *result.json files."""
+    """Return the per-label subfolder of un-aggregated result.json files."""
     return pathlib.Path(folder) / OUT
 
 
@@ -55,11 +55,11 @@ def add_metric_cols(df):
     A no-op when the count columns are absent (e.g. an empty frame).
 
     Args:
-        df (pd.DataFrame): a results frame, possibly carrying tp/fp/tn/fn
+        df (pd.DataFrame): a results frame, possibly carrying tp/fp/tn/fn.
 
     Returns:
         df with dice/sens/ppv/spec columns added (a copy via assign when
-        the counts are present, else the input unchanged)
+        the counts are present, else the input unchanged).
     """
     import glow.mask
 
@@ -80,11 +80,11 @@ def load_results_csv(path, index_col: str = 'trial_hash'):
     json-folding read and derives the metrics itself.)
 
     Args:
-        path: the results.csv path
-        index_col (str): index column to set (the per-trial hash)
+        path: the results.csv path.
+        index_col (str): index column to set (the per-trial hash).
 
     Returns:
-        the results DataFrame with dice/sens/ppv/spec columns added
+        the results DataFrame with dice/sens/ppv/spec columns added.
     """
     return add_metric_cols(pd.read_csv(path, index_col=index_col))
 
@@ -103,8 +103,8 @@ def load_update_all(label: str, verbose: bool = True, result_dir=None):
             defaults to get_path_result() when None.
 
     Returns:
-        A tuple (df, folder, n_new) of the combined results DataFrame,
-        the label's folder Path, and the number of json files folded in.
+        a tuple (df, folder, n_new): the combined results DataFrame, the
+        label's folder Path, and the count of json files folded in.
     """
     base = result_dir if result_dir is not None else get_path_result()
     folder = base / label
@@ -120,7 +120,8 @@ def load_update_all(label: str, verbose: bool = True, result_dir=None):
     n_old = df.shape[0]
 
     folder_out = get_path_out(folder)
-    file_list = list(folder_out.glob('*result.json')) if folder_out.exists() else []
+    file_list = (list(folder_out.glob('*result.json'))
+                 if folder_out.exists() else [])
     dict_list = list()
     for file in file_list:
         with open(file, 'r') as f:

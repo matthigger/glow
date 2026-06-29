@@ -34,7 +34,8 @@ def image_iter(children, mask_idx, num_vox: int):
 
     assert mask_idx.ndim == 2, 'only 2d images supported'
 
-    color_dict = {int(idx): sample_color(idx) for idx in mask_idx[mask_idx > -1]}
+    color_dict = {int(idx): sample_color(idx)
+                  for idx in mask_idx[mask_idx > -1]}
     mask_idx_current = copy(mask_idx)
     image = np.zeros(shape=(*mask_idx.shape, 3), dtype=np.uint8)
     for reg_idx, color in color_dict.items():

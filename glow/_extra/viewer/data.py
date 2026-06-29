@@ -30,9 +30,9 @@ def prep_df(ana_glow, exp, mask_target=None, extra_df=None):
         exp (Experiment): the experiment the analysis was fit on
         mask_target (np.array): optional boolean target mask (same shape
             as exp.mask_idx)
-        extra_df (pd.DataFrame): optional DataFrame keyed on ``region_idx``
-            to left-join onto the result.  Extra columns appear in the
-            scatter dropdowns automatically.
+        extra_df (pd.DataFrame): optional DataFrame keyed on region_idx to
+            left-join onto the result. Extra columns appear in the scatter
+            dropdowns automatically.
 
     Returns:
         df (pd.DataFrame): one row per region with all available stats
@@ -146,28 +146,29 @@ def get_feature_columns(df):
 def compute_target_stats(exp, mask_target):
     """Compute stats for the full target mask treated as a single region.
 
-    Computes LLR (and size-adjusted variant) for the union of all
-    analysis voxels inside ``mask_target``, plus trivial mask-vs-self
-    metrics.
+    Computes LLR (and size-adjusted variant) for the union of all analysis
+    voxels inside mask_target, plus trivial mask-vs-self metrics.
 
     Args:
         exp (Experiment): the experiment the analysis was fit on
         mask_target (np.array): boolean target mask (same shape as mask_idx)
 
     Returns:
-        dict or None: stat-name -> value.  Keys match the DataFrame columns
-            produced by ``prep_df`` where computable; others are NaN.
-            Returns None if the target has no analysis voxels.
+        dict | None: stat-name -> value. Keys match the prep_df DataFrame
+            columns where computable; others are NaN. None if the target
+            has no analysis voxels.
     """
     mask_idx = exp.mask_idx
-    y = exp.y  # (b, num_img, num_vox)
+    # y is (b, num_img, num_vox)
+    y = exp.y
 
     vox_indices = mask_idx[mask_target & (mask_idx >= 0)]
     n_voxel = len(vox_indices)
     if n_voxel == 0:
         return None
 
-    y_sub = y[:, :, vox_indices]  # (b, num_img, n_vox)
+    # y_sub is (b, num_img, n_vox)
+    y_sub = y[:, :, vox_indices]
 
     q = decompose(x=exp.x, contrast=exp.contrast)
     e, h, _ = get_mancova(y=y_sub, q_tup=q)
@@ -205,12 +206,12 @@ def compute_target_stats(exp, mask_target):
 def get_original_y(exp):
     """Return the original (pre-scaling) imaging data.
 
-    If *exp* is an ``ExperimentScaled``, inverts the zero-mean + whitening
+    If exp is an ExperimentScaled, inverts the zero-mean + whitening
     transform so the returned array has the same units as the user's input
-    images.  Otherwise returns ``exp.y`` unchanged.
+    images. Otherwise returns exp.y unchanged.
 
     Returns:
-        y (np.array): ``(b, num_img, num_vox)``
+        y (np.array): (b, num_img, num_vox)
     """
     if hasattr(exp, 'prep_inv'):
         return exp.prep_inv(exp.y)
@@ -220,14 +221,14 @@ def get_original_y(exp):
 def compute_backgrounds(exp, y_features=None, image_idx=None):
     """Compute per-feature background images from the experiment data.
 
-    Uses original (pre-scaled) intensities so that backgrounds match
-    the user's input images.
+    Uses original (pre-scaled) intensities so backgrounds match the user's
+    input images.
 
     Args:
         exp (Experiment): the experiment the analysis was fit on
         y_features (list[str] | None): human-readable names for each
-            imaging feature.  Falls back to ``exp.meta['features']``,
-            then ``"feature 0"``, ``"feature 1"``, ...
+            imaging feature. Falls back to exp.meta['features'], then to
+            "feature 0", "feature 1", ...
         image_idx (int | None): if provided, use a single image (0-indexed)
             instead of the mean across all images.
 
@@ -236,12 +237,14 @@ def compute_backgrounds(exp, y_features=None, image_idx=None):
             Voxels outside the analysis mask are NaN.
     """
     mask_idx = exp.mask_idx
-    y = get_original_y(exp)  # (b, num_img, num_vox)
+    # y is (b, num_img, num_vox)
+    y = get_original_y(exp)
 
+    # y_mean is (b, num_vox): a single image or the grand mean
     if image_idx is not None:
-        y_mean = y[:, image_idx, :]  # (b, num_vox) single image
+        y_mean = y[:, image_idx, :]
     else:
-        y_mean = y.mean(axis=1)      # (b, num_vox) grand mean
+        y_mean = y.mean(axis=1)
     b = y_mean.shape[0]
 
     if y_features is None:
@@ -273,10 +276,10 @@ def compute_backgrounds(exp, y_features=None, image_idx=None):
 
 
 def compute_bg_ranges(exp, y_features=None):
-    """Compute the global (vmin, vmax) for each background key across ALL images.
+    """Compute the global (vmin, vmax) per background key across all images.
 
-    This ensures the colour scale stays constant regardless of which image
-    (mean or individual) is displayed.
+    Keeps the colour scale constant regardless of which image (mean or
+    individual) is displayed.
 
     Args:
         exp (Experiment): the experiment the analysis was fit on
@@ -286,7 +289,8 @@ def compute_bg_ranges(exp, y_features=None):
         ranges (dict): bg_name -> (vmin, vmax) floats
     """
     mask_idx = exp.mask_idx
-    y = get_original_y(exp)  # (b, num_img, num_vox)
+    # y is (b, num_img, num_vox)
+    y = get_original_y(exp)
     b = y.shape[0]
 
     if y_features is None:
@@ -296,7 +300,8 @@ def compute_bg_ranges(exp, y_features=None):
 
     ranges = {}
     for feat_idx in range(b):
-        vals = y[feat_idx][:, mask_idx[mask_idx >= 0]]  # (num_img, valid_vox)
+        # vals is (num_img, valid_vox)
+        vals = y[feat_idx][:, mask_idx[mask_idx >= 0]]
         ranges[y_features[feat_idx]] = (
             float(np.nanmin(vals)), float(np.nanmax(vals)))
 
@@ -304,6 +309,7 @@ def compute_bg_ranges(exp, y_features=None):
     lower_names = [n.lower() for n in y_features]
     if mask_idx.ndim == 2 and set(lower_names) == set(_RGB_CHANNELS):
         all_vals = y[:, :, mask_idx[mask_idx >= 0].ravel()]
-        ranges['RGB'] = (float(np.nanmin(all_vals)), float(np.nanmax(all_vals)))
+        ranges['RGB'] = (float(np.nanmin(all_vals)),
+                         float(np.nanmax(all_vals)))
 
     return ranges

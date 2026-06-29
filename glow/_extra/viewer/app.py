@@ -1,14 +1,13 @@
 """Dash application for the glow viewer.
 
-Defines the layout and all callbacks.  The ``launch()`` function is the
-public entry point.
+Defines the layout and all callbacks. The launch() function is the public
+entry point.
 
 Stores:
-    store-selected: JSON list of region indices [123, 456, ...]
-        Updated by scatter clicks and the clear button.
-
-    region-checklist: dcc.Checklist whose options mirror store-selected
-        and whose value is the subset currently visible in the image viewer.
+    store-selected: JSON list of region indices [123, 456, ...], updated by
+        scatter clicks and the clear button.
+    region-checklist: dcc.Checklist whose options mirror store-selected and
+        whose value is the subset currently visible in the image viewer.
 """
 
 import json
@@ -50,6 +49,7 @@ def _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
         options += [{'label': c, 'value': c} for c in cols]
 
     def _dd(id_, value, label, none_option=False):
+        """Build a labelled feature dropdown grouped by column category."""
         options = []
         if none_option:
             options.append({'label': 'None', 'value': '__none__'})
@@ -251,8 +251,8 @@ def _render_value(key, val, depth=0):
 def _detail_panels(ana_glow, exp):
     """Build the experiment + analysis detail <details> panels.
 
-    Both are collapsed by default.  Values are pulled directly from
-    ``ana_glow`` and ``exp`` at layout time — no callbacks.
+    Both are collapsed by default. Values are pulled directly from ana_glow
+    and exp at layout time, with no callbacks.
     """
     import numpy as np
 
@@ -298,7 +298,8 @@ def _detail_panels(ana_glow, exp):
         _kv_row('cluster_mode',
                 f'{cluster_mode!r}  ({mode_label})'),
         _kv_row('alpha_fwer', getattr(ana_glow, 'alpha_fwer', None)),
-        _kv_row('n_perm_fwer', getattr(ana_glow, 'n_perm_fwer', '<not stored>')),
+        _kv_row('n_perm_fwer',
+                getattr(ana_glow, 'n_perm_fwer', '<not stored>')),
         _kv_row('n_perm_inner',
                 getattr(ana_glow, 'n_perm_inner', '<not stored>')),
         _kv_row('min_vox', getattr(ana_glow, 'min_vox', None)),
@@ -365,7 +366,8 @@ def _defaults(generic_cols, sig_cols, prune_cols, mask_cols):
     from .scatter import _LOG_COLS
     all_cols = generic_cols + sig_cols + prune_cols + mask_cols
     default_x = 'n_voxel' if 'n_voxel' in all_cols else all_cols[0]
-    default_y = 'llr' if 'llr' in all_cols else all_cols[min(1, len(all_cols) - 1)]
+    default_y = ('llr' if 'llr' in all_cols
+                 else all_cols[min(1, len(all_cols) - 1)])
     log_y_default = default_y in _LOG_COLS
     default_color = 'dice' if 'dice' in mask_cols else '__none__'
     return all_cols, default_x, default_y, log_y_default, default_color
@@ -600,22 +602,22 @@ def _create_app(ana_glow, exp, mask_target=None, y_features=None,
         exp (Experiment): the experiment the analysis was fit on
         mask_target: optional target mask
         y_features (list[str] | None): imaging feature names (auto-extracted
-            from ``exp.meta['features']`` when *None*).
+            from exp.meta['features'] when None).
         subject_names (list[str] | None): per-image subject names
-            (auto-extracted from ``exp.meta['subjects']`` when *None*).
+            (auto-extracted from exp.meta['subjects'] when None).
         extra_df (pd.DataFrame | None): optional extra per-region data
-            (keyed on ``region_idx``) merged into the scatter DataFrame.
+            (keyed on region_idx) merged into the scatter DataFrame.
         min_vox (int | None): scatter (and offer in the lookup dropdown)
-            only regions with at least this many voxels.  None or 0 shows
-            every region -- callers that want the gentle large-tree default
-            should resolve it via launch().  No prompting happens here, so
+            only regions with at least this many voxels. None or 0 shows
+            every region -- callers wanting the gentle large-tree default
+            should resolve it via launch(). No prompting happens here, so
             this stays safe for the headless multi-demo web server.
-        url_base_pathname (str | None): when serving under a path prefix
-            on a shared Flask server (e.g. ``"/wgn2d/"``).  Default *None*
-            serves at the root.
+        url_base_pathname (str | None): when serving under a path prefix on
+            a shared Flask server (e.g. "/wgn2d/"). Default None serves at
+            the root.
         server (flask.Flask | None): existing Flask server to mount onto.
-            When *None*, Dash creates its own.  Used by the multi-demo
-            web entry point to host several apps under one server.
+            When None, Dash creates its own. Used by the multi-demo web
+            entry point to host several apps under one server.
         routes_pathname_prefix (str | None): Dash routes_pathname_prefix,
             for mounting behind a path-stripping WSGI dispatcher (the
             Zenodo viewer mounts each app on its own server with routes at
@@ -648,7 +650,8 @@ def _create_app(ana_glow, exp, mask_target=None, y_features=None,
         target_vox = mask_idx[mask_target & (mask_idx >= 0)]
 
     dash_kw = {'update_title': None}
-    if routes_pathname_prefix is not None or requests_pathname_prefix is not None:
+    if (routes_pathname_prefix is not None
+            or requests_pathname_prefix is not None):
         dash_kw['routes_pathname_prefix'] = routes_pathname_prefix
         dash_kw['requests_pathname_prefix'] = requests_pathname_prefix
     elif url_base_pathname is not None:
@@ -780,10 +783,11 @@ def _setup_3d(app, ana_glow, exp, df,
         prevent_initial_call=True,
     )
     def center_slicers(center_json):
+        """Convert a stored centre to dash-slicer setpos coordinates."""
         if not center_json or center_json == 'null':
             return no_update
-        center = json.loads(center_json)  # [i, j, k] in numpy order
-        # dash-slicer setpos expects (x, y, z) = reversed numpy order
+        # center is [i, j, k] in numpy order; setpos wants reversed (x, y, z)
+        center = json.loads(center_json)
         return [center[2], center[1], center[0]]
 
     # --- overlay callback: visible regions + hover -> slicer overlay ---
@@ -796,11 +800,13 @@ def _setup_3d(app, ana_glow, exp, df,
         [State('store-selected', 'data')],
     )
     def update_overlays(visible, hover_json, selected_json):
+        """Rebuild the three slicer overlays from visible + hover regions."""
         selected = json.loads(selected_json)
         visible = visible or []
 
         # append hover region if not already visible
-        hover_reg = json.loads(hover_json) if hover_json and hover_json != 'null' else None
+        hover_reg = (json.loads(hover_json)
+                     if hover_json and hover_json != 'null' else None)
         show_list = list(visible)
         if hover_reg is not None and hover_reg not in show_list:
             show_list.append(hover_reg)
@@ -844,6 +850,7 @@ def _setup_3d(app, ana_glow, exp, df,
         prevent_initial_call=True,
     )
     def update_bg_volume(feat_val, img_val, st0, st1, st2):
+        """Swap the slicer background volume on feature/image change."""
         feat_idx = int(feat_val) if feat_val is not None else 0
         img_idx = None if img_val in (None, 'mean') else int(img_val)
         new_vol = compute_bg_volume(exp,feature_idx=feat_idx,
@@ -867,9 +874,9 @@ def _build_overlay(slicer, label_map, visible_list, color_map,
                    hover_reg=None, n_selected=0, mask_target_img=None):
     """Build overlay with colours matching the selected-list order.
 
-    The hover region (if not already selected) uses the next colour in
-    the palette so it keeps the same colour if the user clicks to add it.
-    ``'target'`` entries use ``mask_target_img`` for their voxels.
+    The hover region (if not already selected) uses the next colour in the
+    palette so it keeps the same colour if the user clicks to add it.
+    'target' entries use mask_target_img for their voxels.
     """
     from .image import get_region_color
 
@@ -943,7 +950,7 @@ def _setup_2d(app, ana_glow, exp, df,
                                   target_vox=target_vox)
     _register_regression_click_callback(app, 'dd-image')
 
-    # --- image callback: visible regions + hover + background + image -> figure ---
+    # --- image callback: regions + hover + background + image -> figure ---
     @app.callback(
         Output('image-viewer', 'figure'),
         [Input('region-checklist', 'value'),
@@ -952,10 +959,12 @@ def _setup_2d(app, ana_glow, exp, df,
          Input('dd-image', 'value')],
     )
     def update_image(visible, hover_json, bg_name, image_sel):
+        """Render the 2D background + region overlays as a go.Image figure."""
         visible = visible or []
 
         # append hover region if not already visible
-        hover_reg = json.loads(hover_json) if hover_json and hover_json != 'null' else None
+        hover_reg = (json.loads(hover_json)
+                     if hover_json and hover_json != 'null' else None)
         show_list = list(visible)
         if hover_reg is not None and hover_reg not in show_list:
             show_list.append(hover_reg)
@@ -1027,6 +1036,7 @@ def _register_scatter_callback(app, df, ana_glow, exp, target_stats=None,
          Input('log-y-switch', 'value')],
     )
     def update_scatter(x_feat, y_feat, color_feat, selected_json, log_y_val):
+        """Rebuild the scatter on axis, colour, selection, or log-y change."""
         log_y = 'on' in (log_y_val or [])
         selected = set(json.loads(selected_json))
         return build_scatter(df, ana_glow, exp, x_feat, y_feat, color_feat,
@@ -1037,7 +1047,7 @@ def _register_scatter_callback(app, df, ana_glow, exp, target_stats=None,
 
 
 def _register_selection_callback(app, ana_glow, exp, mask_target_img=None):
-    """Scatter click, clear button, or lookup dropdown -> update store-selected."""
+    """Update store-selected on scatter click, clear, or lookup pick."""
     @app.callback(
         [Output('store-selected', 'data'),
          Output('store-center', 'data'),
@@ -1048,6 +1058,7 @@ def _register_selection_callback(app, ana_glow, exp, mask_target_img=None):
         [State('store-selected', 'data')],
     )
     def toggle_region(click_data, clear_clicks, lookup_val, selected_json):
+        """Add/remove the triggering region and centre the slicers on it."""
         ctx = callback_context
         if not ctx.triggered:
             return no_update, no_update, no_update
@@ -1117,6 +1128,7 @@ def _register_checklist_sync_callback(app, df, target_stats=None):
          State('region-checklist', 'value')],
     )
     def sync_checklist(selected_json, prev_options, prev_value):
+        """Mirror store-selected into the checklist; new regions visible."""
         selected = json.loads(selected_json)
         prev_options = prev_options or []
         prev_value = prev_value or []
@@ -1166,6 +1178,7 @@ def _register_hover_callback(app, ana_glow, exp, mask_target_img=None):
         prevent_initial_call=True,
     )
     def update_hover(hover_data, toggle):
+        """Track the hovered region: store it, centre slicers, label toggle."""
         if hover_data is None:
             label = ' Preview on hover'
             if 'on' not in (toggle or []):
@@ -1217,6 +1230,7 @@ def _register_regression_callback(app, ana_glow, exp, df, y_features=None,
     )
     def update_regression(visible, hover_json, x_feat_idx, y_feat_idx,
                           selected_json):
+        """Rebuild the per-region regression on selection or axis change."""
         selected = json.loads(selected_json)
         visible = visible or []
 
@@ -1252,11 +1266,10 @@ def _register_regression_callback(app, ana_glow, exp, df, y_features=None,
 
 
 def _register_regression_click_callback(app, image_dd_id):
-    """Click on a regression data point -> switch the Image dropdown.
+    """Switch the Image dropdown on a regression data-point click.
 
-    Each marker trace in the regression figure carries ``customdata``
-    with 0-based image indices so the IMAGE view can show that specific
-    observation.
+    Each marker trace in the regression figure carries customdata with
+    0-based image indices so the IMAGE view can show that observation.
     """
     @app.callback(
         Output(image_dd_id, 'value'),
@@ -1264,6 +1277,7 @@ def _register_regression_click_callback(app, image_dd_id):
         prevent_initial_call=True,
     )
     def on_regression_click(click_data):
+        """Return the clicked point's image index for the Image dropdown."""
         if not click_data:
             return no_update
         point = click_data['points'][0]
@@ -1278,11 +1292,10 @@ def _register_regression_click_callback(app, image_dd_id):
 # ---------------------------------------------------------------------------
 
 def _check_port(port):
-    """Check whether *port* is available.  If not, offer to free it.
+    """Check whether port is available; if not, offer to free it.
 
-    Uses a plain socket bind test (cross-platform).  If the port is
-    occupied, prompts the user for confirmation before attempting to
-    kill the blocking process.
+    Uses a plain socket bind test (cross-platform). If the port is
+    occupied, prompts for confirmation before killing the blocking process.
     """
     import socket
 
@@ -1291,7 +1304,8 @@ def _check_port(port):
     try:
         sock.bind(('127.0.0.1', port))
         sock.close()
-        return  # port is free
+        # port is free
+        return
     except OSError:
         pass
 
@@ -1343,7 +1357,7 @@ def _check_port(port):
 
 
 def _find_pids_on_port(port):
-    """Return list of PIDs listening on *port* (best-effort, cross-platform)."""
+    """Return PIDs listening on port (best-effort, cross-platform)."""
     import subprocess
     import sys
 
@@ -1378,7 +1392,7 @@ def _find_pids_on_port(port):
 
 
 def _wait_for_port(port, socket_mod, timeout=5.0):
-    """Poll until *port* is free.  Returns True if freed within *timeout*."""
+    """Poll until port is free; return True if freed within timeout."""
     import time
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -1504,21 +1518,21 @@ def launch(ana_glow, exp, mask_target=None, port=8050, debug=False,
     Args:
         ana_glow (AnalysisGLOW): completed analysis
         exp (Experiment): the experiment the analysis was fit on (the
-            analysis no longer stores it; pass the one given to ``fit``)
+            analysis no longer stores it; pass the one given to fit)
         mask_target (np.array): optional target mask (boolean, same shape
-            as exp.mask_idx).  When provided, per-region dice/sens/
-            spec/vox_in_target/vox_out_target columns become available.
+            as exp.mask_idx). When provided, per-region dice/sens/spec/
+            vox_in_target/vox_out_target columns become available.
         port (int): server port
-        debug (bool): enable Dash debug mode (hot-reload).  If True,
-            consider setting dev_tools_props_check=False for performance.
+        debug (bool): enable Dash debug mode (hot-reload). If True, consider
+            setting dev_tools_props_check=False for performance.
         y_features (list[str] | None): human-readable names for each
-            imaging feature.  When *None*, extracted from
-            ``exp.meta['features']`` if available.
+            imaging feature. When None, extracted from exp.meta['features']
+            if available.
         subject_names (list[str] | None): human-readable names for each
-            image / subject.  When *None*, extracted from
-            ``exp.meta['subjects']`` if available.
+            image / subject. When None, extracted from exp.meta['subjects']
+            if available.
         extra_df (pd.DataFrame | None): optional extra per-region data
-            (keyed on ``region_idx``) merged into the scatter DataFrame.
+            (keyed on region_idx) merged into the scatter DataFrame.
         quiet (bool): suppress Dash/Werkzeug request logs.
         min_vox (int | None): scatter (and offer in the lookup dropdown) only
             regions with at least this many voxels.  None (default) auto-
@@ -1551,6 +1565,7 @@ def launch(ana_glow, exp, mask_target=None, port=8050, debug=False,
 
     # clean shutdown on Ctrl+C (and SIGTERM on Unix)
     def _shutdown(signum, frame):
+        """Print a notice and exit immediately on SIGINT/SIGTERM."""
         print('\n  shutting down glow:viewer ...')
         os._exit(0)
 

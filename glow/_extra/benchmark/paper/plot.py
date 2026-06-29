@@ -1,4 +1,4 @@
-"""Paper plots: shared palette, generic helpers, and the plot-everything entrypoint.
+"""Paper plots: palette, generic helpers, and the plot-all entrypoint.
 
 python -m glow._extra.benchmark.paper.plot (main) walks the config catalogue
 (CACHE_BY_LABEL) rather than the result folders: for each cache it keeps
@@ -268,7 +268,8 @@ def plot_x_vs_metrics(df, x_param: str = 'effect_llr',
 
         if j == 0:
             ax_top.legend(frameon=False)
-        ax_top.set_title(title if title else _METRIC_TITLES.get(metric, metric))
+        ax_top.set_title(
+            title if title else _METRIC_TITLES.get(metric, metric))
         if metric == 'spec':
             ax_top.set_ylim(0, 1)
         ax_top.grid(True, alpha=alpha, linewidth=1.2)
@@ -292,7 +293,8 @@ def plot_x_vs_metrics(df, x_param: str = 'effect_llr',
                     ax_bot.axis('off')
                     continue
 
-                valid = pivot[one_label].notna() & pivot[others].notna().any(axis=1)
+                valid = (pivot[one_label].notna()
+                         & pivot[others].notna().any(axis=1))
                 pv = pivot.loc[valid].copy()
                 if pv.empty:
                     ax_bot.axis('off')
@@ -532,7 +534,8 @@ def plot_metric_diff_grid(label: str, df, *, x: str, metrics: list,
             pivot = agg.pivot_table(index=['seed', x], columns=hue,
                                     values=metric).reset_index()
             others = [c for c in pivot.columns
-                      if c not in {'seed', x} and not str(c).startswith('GLOW')]
+                      if c not in {'seed', x}
+                      and not str(c).startswith('GLOW')]
             glow_cols = [c for c in pivot.columns
                          if c not in {'seed', x} and str(c).startswith('GLOW')]
 
@@ -648,7 +651,8 @@ def _write_diff_csv(label: str, diff_long, *, x: str, facet: str,
 
     if 'dice_diff' not in wide.columns:
         return
-    # peak mean Dice delta per (facet, method): scores, delta, win, other deltas
+    # peak mean Dice delta per (facet, method): scores, delta, win, other
+    # deltas
     n_dice = (diff_long[diff_long['metric'] == 'dice']
               .set_index([facet, 'method', x])['n_seed'])
     print('  GLOW variant − best alternative, peak mean Dice delta:')
@@ -668,7 +672,8 @@ def _write_diff_csv(label: str, diff_long, *, x: str, facet: str,
               + others)
 
 
-def _plot_calibration_faceted(label: str, df, out, facet: str = 'source') -> None:
+def _plot_calibration_faceted(label: str, df, out,
+                              facet: str = 'source') -> None:
     """Lay out one FWER-calibration axes per facet value, side by side.
 
     Args:
@@ -768,7 +773,10 @@ STAT_NICE = {
 METHOD_ORDER = ['VBA', 'VBA-TFCE', 'CET', 'GLOW']
 
 def _parse_label(label: str):
-    """Parse a VBA-TFCE label into (stat, z_flag): 'VBA-TFCE-pillai-z' -> ('pillai', True)."""
+    """Parse a VBA-TFCE label into (stat, z_flag).
+
+    E.g. 'VBA-TFCE-pillai-z' -> ('pillai', True).
+    """
     rest = label.removeprefix('VBA-TFCE-')
     if rest.endswith('-z'):
         return rest[:-2], True
@@ -826,7 +834,8 @@ def plot_facet_grid(datasets):
     """
     n_src = len(datasets)
     n_stat = len(STAT_ORDER)
-    fig, axes = plt.subplots(n_src, n_stat, figsize=(3.2 * n_stat, 3.4 * n_src),
+    fig, axes = plt.subplots(n_src, n_stat,
+                             figsize=(3.2 * n_stat, 3.4 * n_src),
                              sharex=True, sharey=True)
 
     for row, (df_agg, src_title) in enumerate(datasets):
@@ -922,7 +931,8 @@ def plot_summary(datasets):
         ax.grid(True, alpha=0.25)
         ax.set_ylim(-0.02, 1.02)
 
-    fig.suptitle('VBA-TFCE: Dice by statistic (mean ± 1 SE)', fontsize=13, y=1.01)
+    fig.suptitle('VBA-TFCE: Dice by statistic (mean ± 1 SE)',
+                 fontsize=13, y=1.01)
     fig.tight_layout()
     return fig
 
@@ -932,7 +942,7 @@ def plot_summary(datasets):
 # ------------------------------------------------------------------
 
 def plot_z_delta(datasets):
-    """Plot per-stat z-scoring improvement (Dice_z - Dice_raw), one panel per source.
+    """Plot per-stat z-scoring gain (Dice_z - Dice_raw), one panel/source.
 
     Args:
         datasets: list of (aggregated df, source nice-name) from _agg
@@ -966,7 +976,8 @@ def plot_z_delta(datasets):
         ax.legend(fontsize=8, frameon=False)
         ax.grid(True, alpha=0.25)
 
-    fig.suptitle('Effect of z-scoring on Dice by statistic', fontsize=13, y=1.01)
+    fig.suptitle('Effect of z-scoring on Dice by statistic',
+                 fontsize=13, y=1.01)
     fig.tight_layout()
     return fig
 
@@ -1019,7 +1030,7 @@ def build_summary_table(raw_dfs):
 
 
 def build_best_stat_table(all_dfs):
-    """Build a per-(method, source) table comparing each method's stat variants.
+    """Build a per-(method, source) table of each method's stat variants.
 
     Args:
         all_dfs: list of (raw df, source nice-name); labels can be any method
@@ -1078,7 +1089,9 @@ def build_best_stat_table(all_dfs):
             loss_regret = (mdf_sig[loss_mask]
                            .groupby(['stat', 'z_scored'])['regret'].mean())
 
-            z_options = [False, True] if method in ('VBA', 'VBA-TFCE', 'CET') else [False]
+            z_options = ([False, True]
+                         if method in ('VBA', 'VBA-TFCE', 'CET')
+                         else [False])
             for z_flag in z_options:
                 for stat in STAT_ORDER:
                     if (stat, z_flag) not in means.index:
@@ -1161,8 +1174,10 @@ def _plot_mancova(sources, out) -> None:
         # full table
         sub_all = best[best['source'] == source].sort_values(
             ['method', 'mean_dice'], ascending=[True, False])
-        print(f'\n| method     | stat         | z   | mean_dice | win_rate | tie_rate | mean_loss |')
-        print(f'|------------|--------------|-----|-----------|----------|----------|-----------|')
+        print(f'\n| method     | stat         | z   | mean_dice '
+              f'| win_rate | tie_rate | mean_loss |')
+        print(f'|------------|--------------|-----|-----------'
+              f'|----------|----------|-----------|')
         for _, r in sub_all.iterrows():
             z = 'yes' if r['z_scored'] else 'no'
             print(f'| {r["method"]:<10s} | {r["stat"]:<12s} | {z:<3s} '
@@ -1179,8 +1194,8 @@ def main(argv=None) -> None:
 
     Walks CACHE_BY_LABEL (restricted to the cache labels given on the
     command line, or all of them when none are given); for each cache
-    keeps the completed in-config trials (results.load_config_df) and hands them
-    to plot_cache with the cache's spec from config.PLOT (or an inferred
+    keeps the completed in-config trials (results.load_config_df) and hands
+    them to plot_cache with the cache's spec from config.PLOT (or an inferred
     one). The spec decides the figure kind and which scalar column is the
     x-axis / source facet, so a single merged cache plots WGN and HCP side
     by side. All figures land in results/_latest.

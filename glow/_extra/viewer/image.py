@@ -10,18 +10,19 @@ import numpy as np
 
 import glow.graph
 
-# qualitative palette for selected regions (up to 10, then cycles)
+# qualitative palette for selected regions (up to 10, then cycles):
+# blue, orange, green, red, purple, brown, pink, grey, olive, cyan
 REGION_COLORS = [
-    (31, 119, 180),    # blue
-    (255, 127, 14),    # orange
-    (44, 160, 44),     # green
-    (214, 39, 40),     # red
-    (148, 103, 189),   # purple
-    (140, 86, 75),     # brown
-    (227, 119, 194),   # pink
-    (127, 127, 127),   # grey
-    (188, 189, 34),    # olive
-    (23, 190, 207),    # cyan
+    (31, 119, 180),
+    (255, 127, 14),
+    (44, 160, 44),
+    (214, 39, 40),
+    (148, 103, 189),
+    (140, 86, 75),
+    (227, 119, 194),
+    (127, 127, 127),
+    (188, 189, 34),
+    (23, 190, 207),
 ]
 
 
@@ -92,13 +93,15 @@ def compute_bg_volume(exp, feature_idx=0, image_idx=None):
     from .data import get_original_y
 
     mask_idx = exp.mask_idx
-    y = get_original_y(exp)  # (b, num_img, num_vox)
+    # y is (b, num_img, num_vox)
+    y = get_original_y(exp)
 
     feat_idx = min(feature_idx, y.shape[0] - 1)
+    # y_agg is (num_vox,): a single image or the mean across images
     if image_idx is not None:
-        y_agg = y[feat_idx, image_idx, :]  # (num_vox,) single image
+        y_agg = y[feat_idx, image_idx, :]
     else:
-        y_agg = y[feat_idx].mean(axis=0)   # (num_vox,) mean across images
+        y_agg = y[feat_idx].mean(axis=0)
 
     vol = np.zeros(mask_idx.shape, dtype=np.float32)
     vol[mask_idx >= 0] = y_agg[mask_idx[mask_idx >= 0]]
@@ -119,13 +122,12 @@ _CHANNEL_SCALES = {'red': 0, 'green': 1, 'blue': 2}
 def _bg_to_rgba(bg_slice, channel=None, vmin=None, vmax=None):
     """Convert a background array to an RGBA uint8 image.
 
-    * 3-D input ``(H, W, 3)`` is composited as RGB.
-    * 2-D input with *channel* ``'red'``, ``'green'``, or ``'blue'`` uses
-      the matching single-colour ramp (black -> colour).
-    * Otherwise falls back to greyscale ``[20, 235]``.
+    A 3-D input (H, W, 3) is composited as RGB. A 2-D input with channel
+    'red', 'green', or 'blue' uses the matching single-colour ramp (black
+    to colour); otherwise it falls back to greyscale [20, 235].
 
-    When *vmin* / *vmax* are supplied the colour scale is pinned to that
-    range (keeping it consistent across different image selections).
+    When vmin / vmax are supplied the colour scale is pinned to that range
+    (keeping it consistent across different image selections).
     """
     if bg_slice.ndim == 3:
         return _rgb_to_rgba(bg_slice, vmin=vmin, vmax=vmax)
@@ -160,13 +162,13 @@ def _bg_to_rgba(bg_slice, channel=None, vmin=None, vmax=None):
 
 
 def _rgb_to_rgba(rgb_slice, vmin=None, vmax=None):
-    """Convert a ``(H, W, 3)`` RGB background to an RGBA uint8 image.
+    """Convert a (H, W, 3) RGB background to an RGBA uint8 image.
 
-    All three channels share a single global normalisation to ``[0, 255]``
-    so that relative colour balance is preserved.
+    All three channels share a single global normalisation to [0, 255] so
+    relative colour balance is preserved.
 
-    When *vmin* / *vmax* are supplied the colour scale is pinned to that
-    range (keeping it consistent across different image selections).
+    When vmin / vmax are supplied the colour scale is pinned to that range
+    (keeping it consistent across different image selections).
     """
     h, w, _ = rgb_slice.shape
     rgba = np.zeros((h, w, 4), dtype=np.uint8)

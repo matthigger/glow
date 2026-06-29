@@ -54,7 +54,7 @@ class Analysis(ABC):
     def fit(self, exp):
         """Run the analysis computation on exp and return self.
 
-        Implementations scale exp with ``ExperimentScaled.from_exp(exp)``
+        Implementations scale exp with ExperimentScaled.from_exp(exp)
         first (idempotent -- a raw exp is scaled, an already-scaled one
         passes through), then compute.
         """
@@ -68,12 +68,12 @@ class Analysis(ABC):
 
         Two modes, sharing the same max-stat bisect:
 
-        * Single tree (VBA / CET): pass stat as the full
+        - Single tree (VBA / CET): pass stat as the full
           (n_perm+1, num_reg) matrix (row 0 observed). The max-stat null
           is built column-wise as sort(nanmax(stat[:, reg_active])) and
           the observed per-region statistic is stat[0].
 
-        * Per-permutation trees (GLOW): the null cannot be read off a
+        - Per-permutation trees (GLOW): the null cannot be read off a
           single matrix because each permutation has its own tree, so
           pass the precomputed max-stat null as stat_null (one entry per
           permutation incl. observed) and the observed per-region
@@ -130,7 +130,7 @@ class Analysis(ABC):
     def z_score_stat(cls, stat):
         """Z-score each voxel across permutations (observed row included).
 
-        For each voxel, the mean and std are computed from **all** rows
+        For each voxel, the mean and std are computed from all rows
         — the observed row (0) together with the permutation null (1:) —
         then every row is standardized by that voxel's empirical mean and
         std.  This equalizes per-voxel scale so max-stat FWER is not
@@ -200,7 +200,8 @@ class AnalysisVoxel(Analysis):
         self.stat = None
 
     @classmethod
-    def get_stat_perm_multi(cls, exp, get_stat_list: list, children=None) -> dict:
+    def get_stat_perm_multi(cls, exp, get_stat_list: list,
+                            children=None) -> dict:
         """Compute multiple test statistics from a single tree walk.
 
         Avoids redundant E/H computation when comparing stat functions.
@@ -269,9 +270,9 @@ class AnalysisVoxel(Analysis):
     def build_stat_matrix(self, exp, _stat=None):
         """Per-voxel stat matrix for the FWER walk, (n_perm_fwer+1, num_vox).
 
-        If ``_stat`` is None, runs the Freedman-Lane permutation walk on
-        ``exp`` (row 0 observed, rows 1: permuted).  If provided, validates
-        its permutation count against ``self.n_perm_fwer`` and returns it
+        If _stat is None, runs the Freedman-Lane permutation walk on exp
+        (row 0 observed, rows 1: permuted). If provided, validates its
+        permutation count against self.n_perm_fwer and returns it
         unchanged (the caller owns the copy).
         """
         if _stat is None:

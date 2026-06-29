@@ -1,7 +1,6 @@
 """CLI entry point for the glow viewer.
 
-Usage::
-
+Usage:
     # interactive demo
     python -m glow._extra.viewer --demo
 
@@ -33,6 +32,7 @@ _DATA_DIR = pathlib.Path(__file__).resolve().parents[2] / 'test' / 'data'
 
 
 def _data_path(filename):
+    """Resolve a demo data file, falling back to test/data under the cwd."""
     p = _DATA_DIR / filename
     if not p.exists():
         p = pathlib.Path('test/data') / filename
@@ -98,9 +98,14 @@ def _load_mask(path, mask_idx):
 def _choose(prompt, options, default=None):
     """Display a numbered menu and return the user's choice.
 
-    *options* is a list of ``(key, label)`` tuples.  *default* (if given)
-    is the *key* to select when the user presses Enter without typing.
-    Echoes the chosen option so the user sees what was selected.
+    Args:
+        prompt (str): heading shown above the options.
+        options (list[tuple[str, str]]): (key, label) pairs; the key is
+            returned, the label is shown.
+        default (str | None): key selected when the user just presses Enter.
+
+    Returns:
+        the key of the chosen option.
     """
     print(f'\n  {prompt}')
     label_by_key = {}
@@ -150,8 +155,8 @@ def _choose_int(prompt, default, lo=1, hi=20):
 _NUM_IMG = 12
 
 # effect_llr is size-normalised: the observed region LLR is roughly
-# ``effect_llr * |region|``.  So a "medium" 0.5 effect on a 614-voxel
-# planted region produces an observed region LLR of ~307, not 0.5.
+# effect_llr * |region|. So a "medium" 0.5 effect on a 614-voxel planted
+# region produces an observed region LLR of ~307, not 0.5.
 _EFFECT_MAP = {
     'none':   0.0,
     'mild':   0.25,
@@ -163,9 +168,12 @@ _EFFECT_MAP = {
 def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
     """Optionally impose an effect and run AnalysisGLOW.
 
-    Returns ``(ana, exp_eff, mask_target)``: the fitted analysis, the
-    experiment it was fit on (the analysis no longer stores it; the viewer
-    needs it), and the planted target mask (None when no effect imposed).
+    Returns:
+        ana (AnalysisGLOW): the fitted analysis.
+        exp_eff (Experiment): the experiment it was fit on (the analysis no
+            longer stores it; the viewer needs it).
+        mask_target (np.array | None): planted target mask, same shape as
+            exp.mask_idx; None when no effect imposed.
     """
     from glow.effect.extent import ExtenterMinVar
     from glow.analysis import AnalysisGLOW
@@ -180,7 +188,8 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
         try:
             effect = EffectSynthetic(extenter=extenter, effect_llr=effect_llr)
             fit = effect.fit(exp)
-        except (ValueError, RuntimeError, np.linalg.LinAlgError, AssertionError):
+        except (ValueError, RuntimeError, np.linalg.LinAlgError,
+                AssertionError):
             print('  (extenter failed, falling back to sphere mask)')
             shape = exp.mask_idx.shape
             center = np.array([s // 2 for s in shape])
@@ -222,8 +231,11 @@ def _demo_wgn_2d(b, effect_llr, seed=0, num_img=_NUM_IMG):
 
 
 def _demo_mandrill(channels, effect_llr, seed=0, num_img=_NUM_IMG):
-    """2D Mandrill RGB demo — built through the same factories real users
-    would call (from_paths + bootstrap_img + sample_x)."""
+    """Build a 2D Mandrill RGB demo via the public factories.
+
+    Goes through from_paths + bootstrap_img + sample_x, the same path a
+    real user would call.
+    """
     from glow.experiment.exper import ExperimentImageOnly
 
     img_path = _data_path('mandrill_small.png')
@@ -233,12 +245,11 @@ def _demo_mandrill(channels, effect_llr, seed=0, num_img=_NUM_IMG):
         {'mandrill': {'rgb': str(img_path)}},
         channel_names={'rgb': ['red', 'green', 'blue']})
 
-    # bootstrap to num_img copies with noise; noise_scale is data-relative
-    # (multiplies sample-cov^0.5), so 0.3 ≈ 15 absolute units for mandrill
+    # noise_scale is data-relative (multiplies sample-cov^0.5), so 0.3 is
+    # ~15 absolute units for mandrill
     img_only = img_only.bootstrap_img(num_img, seed=seed, noise_scale=0.3)
 
-    # attach a random design (sample_x); the demo's contrast is on a
-    # single feature-of-interest plus a bias column
+    # contrast is one feature-of-interest plus a bias column
     exp = img_only.sample_x(a=1, seed=seed, add_bias=True)
 
     if channels != 'all':
@@ -252,8 +263,7 @@ def _demo_mandrill(channels, effect_llr, seed=0, num_img=_NUM_IMG):
 
 
 def _demo_dti_2d(features, effect_llr, seed=0, num_img=_NUM_IMG):
-    """2D Axial Slice DTI demo — load mean nifti(s) via from_paths,
-    bootstrap to num_img copies with noise, attach a random design."""
+    """Build a 2D axial-slice DTI demo (see _build_dti_demo)."""
     return _build_dti_demo('2d', features, effect_llr, seed=seed,
                            num_img=num_img)
 
@@ -270,16 +280,18 @@ def _demo_wgn_3d(b, effect_llr, seed=0, num_img=_NUM_IMG):
 
 
 def _demo_dti_3d(features, effect_llr, seed=0, num_img=_NUM_IMG):
-    """3D DTI demo — see _demo_dti_2d for the loading approach."""
+    """Build a 3D DTI demo (see _build_dti_demo)."""
     return _build_dti_demo('3d', features, effect_llr, seed=seed,
                            num_img=num_img)
 
 
 def _build_dti_demo(dim, features, effect_llr, seed, num_img):
-    """Shared 2D/3D DTI demo builder.  Loads mean fa/md nifti(s) via
-    from_paths (one 'mean' subject with feature-keyed paths), bootstraps
-    to num_img noisy copies via bootstrap_img, attaches a random design
-    via sample_x, then imposes an effect."""
+    """Build a 2D or 3D DTI demo from mean fa/md niftis.
+
+    Loads via from_paths (one 'mean' subject with feature-keyed paths),
+    bootstraps to num_img noisy copies, attaches a random design via
+    sample_x, then imposes an effect.
+    """
     from glow.experiment.exper import ExperimentImageOnly
     suffix = '_axial' if dim == '2d' else ''
     fa_path = _data_path(f'hcp_mean_fa{suffix}.nii.gz')
@@ -386,6 +398,7 @@ def _run_demo():
 # ---------------------------------------------------------------------------
 
 def main():
+    """Parse CLI args and launch the viewer (demo or loaded bundle)."""
     parser = argparse.ArgumentParser(
         prog='python -m glow._extra.viewer',
         description='Launch the glow:viewer interactive dashboard.')
@@ -395,7 +408,8 @@ def main():
         help='Path to a pickled AnalysisGLOW object (.pkl, .p, .p.gz)')
     parser.add_argument(
         '--mask', default=None,
-        help='Path to a target mask (.nii, .nii.gz, .npy, or pickled EffectEstimate)')
+        help='Path to a target mask (.nii, .nii.gz, .npy, or pickled '
+             'EffectEstimate)')
     parser.add_argument(
         '--demo', action='store_true',
         help='Run interactive demo')

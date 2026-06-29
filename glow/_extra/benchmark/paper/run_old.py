@@ -208,11 +208,11 @@ def _score(ana, mask_target_list, mask_active) -> dict:
 
 
 def _plant_effect(exp, *, n_vox_eff: int, seed: int, llr):
-    """Plant one ExtenterMinVar effect on exp; the planting tail of _setup_trial.
+    """Plant one ExtenterMinVar effect on exp (the _setup_trial tail).
 
-    Given the clean experiment, the support size, the effect sub-seed, and the
-    resolved per-voxel llr, plant one synthetic effect (or nothing for the null
-    path) and return the recorder-friendly (exp_eff, effect_list,
+    Given the clean experiment, the support size, the effect sub-seed, and
+    the resolved per-voxel llr, plant one synthetic effect (or nothing for
+    the null path) and return the recorder-friendly (exp_eff, effect_list,
     mask_target_list) triple.
 
     Args:
@@ -242,22 +242,22 @@ def _setup_trial(*, source: str, b: int, num_img: int, n_vox_eff: int,
                  seed: int, effect_llr=None, effect_total_llr=None):
     """Build one planted-effect trial: the imposed experiment and its effects.
 
-    A plain function, wrapped with the recorder at the call site (run_ana) like
-    every other recorded step -- the experiment + planted effects it returns
-    capture the trial's data lineage through their to_record(). build_ds raises
-    on an infeasible cell (e.g. HCP b > pool); the recorder records that failure
-    and swallows it, so the caller sees None and ends the trial without a
-    try/except.
+    A plain function, wrapped with the recorder at the call site (run_ana)
+    like every other recorded step -- the experiment + planted effects it
+    returns capture the trial's data lineage through their to_record().
+    build_ds raises on an infeasible cell (e.g. HCP b > pool); the recorder
+    records that failure and swallows it, so the caller sees None and ends
+    the trial without a try/except.
 
-    The trial seed is split (derive_seeds) into mutually independent DataSource /
-    feature / effect sub-seeds, so each seed is its own data realization -- an
-    independent WGN noise field (or HCP crop + design draw) -- with the planted
-    effect kept independent of that realization. Without the split a sweep's
-    seeds would share one base experiment (the DataSource seed pinned to
-    DS_SEED), leaving the per-seed replicates correlated; the ds sub-seed gives
-    each its own draw. The sub-seeds are a deterministic function of the trial
-    seed, so every effect_llr / method trial of one seed still reuses that
-    seed's single memoised ds build.
+    The trial seed is split (derive_seeds) into mutually independent
+    DataSource / feature / effect sub-seeds, so each seed is its own data
+    realization -- an independent WGN noise field (or HCP crop + design
+    draw) -- with the planted effect kept independent of that realization.
+    Without the split a sweep's seeds would share one base experiment (the
+    DataSource seed pinned to DS_SEED), leaving the per-seed replicates
+    correlated; the ds sub-seed gives each its own draw. The sub-seeds are a
+    deterministic function of the trial seed, so every effect_llr / method
+    trial of one seed still reuses that seed's single memoised ds build.
 
     Args:
         source (str): 'wgn' or 'hcp'
@@ -280,9 +280,11 @@ def _setup_trial(*, source: str, b: int, num_img: int, n_vox_eff: int,
             Kept alongside the recorded specs so the score step (score_effects)
             scores the prediction against the actual planted voxels.
     """
-    ds, effect_seed = build_ds_for_seed(source, b=b, num_img=num_img, seed=seed)
+    ds, effect_seed = build_ds_for_seed(
+        source, b=b, num_img=num_img, seed=seed)
     llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
-    return _plant_effect(ds.exp, n_vox_eff=n_vox_eff, seed=effect_seed, llr=llr)
+    return _plant_effect(
+        ds.exp, n_vox_eff=n_vox_eff, seed=effect_seed, llr=llr)
 
 
 def run_ana(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
@@ -326,9 +328,11 @@ def run_ana(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
     mask_active = exp_eff.mask_idx > -1
 
     for label, (Ana, kw) in ana_kwargs_dict.items():
-        ana = recorder(output_name='ana', label=label)(Ana(exp=exp_eff, **kw).fit)()
+        ana = recorder(output_name='ana', label=label)(
+            Ana(exp=exp_eff, **kw).fit)()
         recorder(output_name='score', label=label)(score_effects)(
-            ana=ana, mask_target_list=mask_target_list, mask_active=mask_active)
+            ana=ana, mask_target_list=mask_target_list,
+            mask_active=mask_active)
 
 
 # ---------------------------------------------------------------------------
@@ -350,9 +354,9 @@ def _min_size_curves(exp_eff, *, n_perm_fwer: int, n_perm_inner: int,
     (q0, q1) decomposition (so the captured curves match a real fit), then runs
     the outer-perm loop by hand with the exact inner_perm.cpu_perm kernel,
     recording per perm the size_max_z_curve staircase. With those curves
-    GLOW's max-z FWER null -- hence its rejection / power -- can be recomputed at
-    any min_vox >= min_vox_floor without re-fitting (the curve at the fit-time
-    min_vox reproduces AnalysisGLOW.max_z_null exactly).
+    GLOW's max-z FWER null -- hence its rejection / power -- can be
+    recomputed at any min_vox >= min_vox_floor without re-fitting (the curve
+    at the fit-time min_vox reproduces AnalysisGLOW.max_z_null exactly).
 
     inner_perm.cpu_perm gives every region >= min_vox_floor an exact z, so the
     null can be re-thresholded at any min_vox the sweep visits without bias.
@@ -407,9 +411,10 @@ def run_min_size(recorder, *, source: str, b: int, num_img: int,
     records the per-perm (size -> max-z) staircases (_min_size_curves ->
     curve_json) plus its inputs (n_perm_fwer / n_perm_inner / min_vox_floor /
     cluster_mode) and timing, tagged with the 'GLOW' method label (the cache's
-    one method, so the records-to-csv reader keys on (trial_id, 'GLOW')). With
-    those, GLOW's max-z FWER null can be swept over min_vox post hoc without
-    re-fitting. Sweeping itself is derived afterward from the records, not here.
+    one method, so the records-to-csv reader keys on (trial_id, 'GLOW')).
+    With those, GLOW's max-z FWER null can be swept over min_vox post hoc
+    without re-fitting. Sweeping itself is derived afterward from the
+    records, not here.
 
     Args:
         recorder (Recorder): the trial's recorder; calls are wrapped with it.
@@ -441,10 +446,10 @@ def run_min_size(recorder, *, source: str, b: int, num_img: int,
 
 
 def _segment_oracle(exp_eff, mode, mask_target_list) -> dict:
-    """Best-Dice tree region for one ClusterMode: the segment trial's score.
+    """Score the best-Dice tree region for one ClusterMode (segment trial).
 
-    Builds the Ward hierarchy in `mode` on the effect-bearing images and
-    returns score_oracle_tree's confusion counts for the planted support -- the
+    Build the Ward hierarchy in mode on the effect-bearing images and
+    return score_oracle_tree's confusion counts for the planted support -- the
     best a perfect selector could do on this segmentation, with no significance
     test or pruning. The mode and the experiment are the recorded inputs (its
     provenance); the timing is the segmentation + tree-scan cost.
@@ -472,12 +477,13 @@ def run_segment(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
     """Oracle Dice of the best region in each Ward hierarchy, per mode.
 
     Isolates segmentation quality from significance testing and pruning.
-    _setup_trial plants one synthetic effect (recorded for provenance), then for
-    each ClusterMode a score step records the oracle best-Dice region of that
-    Ward tree (_segment_oracle): the maximum Dice over all regions, unavailable
-    in practice but a clean measure of how well the segmentation alone recovers
-    the planted support. The mode is both the score step's recorded input and
-    its method label (e.g. 'Focus'), so the records-to-csv reader keys on
+    _setup_trial plants one synthetic effect (recorded for provenance), then
+    for each ClusterMode a score step records the oracle best-Dice region of
+    that Ward tree (_segment_oracle): the maximum Dice over all regions,
+    unavailable in practice but a clean measure of how well the segmentation
+    alone recovers the planted support. The mode is both the score step's
+    recorded input and its method label (e.g. 'Focus'), so the
+    records-to-csv reader keys on
     (trial_id, mode).
 
     Args:
@@ -570,7 +576,8 @@ def run_prune(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
                    if sig_reg_list else None)
     score([] if max_llr_reg is None else [max_llr_reg], 'GLOW-MaxLLR')
 
-    for prune_fn, label in ((prune_greedy, 'GLOW-Greedy'), (prune_dp, 'GLOW-DP')):
+    for prune_fn, label in ((prune_greedy, 'GLOW-Greedy'),
+                            (prune_dp, 'GLOW-DP')):
         out = recorder(output_name_list=('reg_out_list', 'prune_info'),
                        label=label)(prune_fn)(
             sig_reg_list=sig_reg_list, children=ana.children, stat=llr_gain)
@@ -591,7 +598,7 @@ def run_prune(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
 # so the bake-off is among those methods.
 
 def _shared_voxel_walk(exp_eff, n_perm_fwer: int) -> dict:
-    """One stat matrix per MANCOVA stat, keyed by stat name, shared across families.
+    """Walk one stat matrix per MANCOVA stat, keyed by stat name.
 
     Keyed by the stat's name (not the function) so the result is JSON-friendly
     -- the recorder serialises it as a step output (each matrix as a content
@@ -642,7 +649,8 @@ def _build_specs(n_perm_fwer: int, alpha_fwer: float, cft_pval: float):
                    fn)
             yield (f'CET-{name}{suffix}', AnalysisCET,
                    dict(get_stat=fn, n_perm_fwer=n_perm_fwer,
-                        alpha_fwer=alpha_fwer, z_flag=z_flag, cft_pval=cft_pval),
+                        alpha_fwer=alpha_fwer, z_flag=z_flag,
+                        cft_pval=cft_pval),
                    fn)
 
 
@@ -699,21 +707,23 @@ def run_mancova(recorder, *, source: str, b: int, num_img: int, n_vox_eff: int,
 def _setup_two_effect(*, source: str, b: int, num_img: int, n_vox_eff: int,
                       seed: int, angle: float, effect_llr=None,
                       effect_total_llr=None):
-    """Build the two-adjacent-effect trial: the imposed experiment + provenance.
+    """Build the two-adjacent-effect trial: experiment + provenance.
 
-    A sphere centred in the mask is spectrally bisected (ExtenterSplit) into two
-    contiguous halves; one effect is planted on each, same llr, with feature
-    directions `angle` apart (shared effect sub-seed, angles 0 and angle).
-    build_ds raises on an infeasible cell (recorded + swallowed by the recorder).
+    A sphere centred in the mask is spectrally bisected (ExtenterSplit) into
+    two contiguous halves; one effect is planted on each, same llr, with
+    feature directions angle apart (shared effect sub-seed, angles 0 and
+    angle). build_ds raises on an infeasible cell (recorded + swallowed by
+    the recorder).
 
-    The trial seed is split (derive_seeds) into independent DataSource / feature
-    / effect sub-seeds, so each seed is its own data realization with the two
-    effects independent of it -- matching _setup_trial.
+    The trial seed is split (derive_seeds) into independent DataSource /
+    feature / effect sub-seeds, so each seed is its own data realization with
+    the two effects independent of it -- matching _setup_trial.
 
     A sphere splits cleanly into two equal halves; a min-variance extent's
-    irregular shape splits unevenly (verified at 25k: 34/66..58/42), which would
-    break the "two equal effects" premise. Centre = in-mask voxel nearest the
-    centroid (the analysis mask is itself a sphere, so this is its middle).
+    irregular shape splits unevenly (verified at 25k: 34/66..58/42), which
+    would break the "two equal effects" premise. Centre = in-mask voxel
+    nearest the centroid (the analysis mask is itself a sphere, so this is
+    its middle).
 
     Returns:
         exp_eff: the experiment with both effects imposed.
@@ -722,7 +732,8 @@ def _setup_two_effect(*, source: str, b: int, num_img: int, n_vox_eff: int,
             provenance of where each effect landed (the effects carry the masks
             verbatim, so their own to_record omits the support).
     """
-    ds, effect_seed = build_ds_for_seed(source, b=b, num_img=num_img, seed=seed)
+    ds, effect_seed = build_ds_for_seed(
+        source, b=b, num_img=num_img, seed=seed)
     exp = ds.exp
     llr = _effect_llr(effect_llr, effect_total_llr, n_vox_eff)
 
@@ -731,9 +742,11 @@ def _setup_two_effect(*, source: str, b: int, num_img: int, n_vox_eff: int,
     vox_init = int(exp.mask_idx[tuple(
         coords[np.argmin(((coords - ctr) ** 2).sum(axis=1))])])
     splitter = ExtenterSplit(
-        base=ExtenterSphere(n_vox=n_vox_eff, connected=True, vox_init=vox_init))
+        base=ExtenterSphere(n_vox=n_vox_eff, connected=True,
+                            vox_init=vox_init))
     mask0, mask1 = splitter.fit(mask_idx=exp.mask_idx, y=exp.y)
-    e0 = EffectSynthetic(mask=mask0, effect_llr=llr, angle=0.0, seed=effect_seed)
+    e0 = EffectSynthetic(mask=mask0, effect_llr=llr, angle=0.0,
+                         seed=effect_seed)
     e1 = EffectSynthetic(mask=mask1, effect_llr=llr, angle=float(angle),
                          seed=effect_seed)
     exp_eff = e1.fit(e0.fit(exp)[0])[0]

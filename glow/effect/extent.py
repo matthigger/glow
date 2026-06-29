@@ -93,7 +93,8 @@ class Extenter(ABC):
 
             structure = (CONNECTIVITY_3D if mask_idx.ndim == 3
                          else generate_binary_structure(2, 1))
-            _, n_components = label((mask_idx >= 0) & mask, structure=structure)
+            _, n_components = label((mask_idx >= 0) & mask,
+                                    structure=structure)
             if n_components == 1:
                 return mask
 
@@ -105,7 +106,7 @@ class Extenter(ABC):
 
     @abstractmethod
     def _sample(self, *, mask_idx, y, seed, verbose):
-        """Sample one boolean extent mask for the given seed (no resampling)."""
+        """Sample one boolean extent mask for the seed (no resampling)."""
 
 
 class ExtenterSphere(Extenter):
@@ -149,7 +150,8 @@ class ExtenterSphere(Extenter):
             if self.n_vox is not None:
                 eligible = np.flatnonzero(comp_sizes >= self.n_vox)
                 if eligible.size == 0:
-                    raise ValueError('no connected component has >= n_vox voxels')
+                    raise ValueError(
+                        'no connected component has >= n_vox voxels')
             else:
                 eligible = np.flatnonzero(comp_sizes > 0)
 
@@ -163,7 +165,8 @@ class ExtenterSphere(Extenter):
                     raise ValueError('vox_init not in mask')
                 comp_id = comp_id[0]
                 if self.n_vox is not None and comp_sizes[comp_id] < self.n_vox:
-                    raise ValueError('vox_init component has fewer voxels than n_vox')
+                    raise ValueError(
+                        'vox_init component has fewer voxels than n_vox')
                 mask_bool = comp_idx == comp_id
         else:
             if vox_init is None:
@@ -173,7 +176,8 @@ class ExtenterSphere(Extenter):
         mask = np.logical_and(mask, mask_bool)
 
         if self.n_vox is None:
-            mask = binary_dilation(mask, structure=structure, iterations=self.radius)
+            mask = binary_dilation(mask, structure=structure,
+                                   iterations=self.radius)
             # clip the dilation so the extent stays within the analysis mask
             return np.logical_and(mask, mask_bool)
 
@@ -210,8 +214,10 @@ def iter_vox_neighbor(mask, mask_idx):
         vox_idx (int): neighbour voxel index (non-reflexive)
     """
     # 6-connectivity (face neighbours) for 3D matches clustering connectivity
-    structure = CONNECTIVITY_3D if (mask_idx.ndim == 3) else generate_binary_structure(2, 1)
-    mask_neighbor = binary_dilation(mask, structure=structure) & np.logical_not(mask)
+    structure = (CONNECTIVITY_3D if (mask_idx.ndim == 3)
+                 else generate_binary_structure(2, 1))
+    mask_neighbor = (binary_dilation(mask, structure=structure)
+                     & np.logical_not(mask))
     for vox_idx in mask_idx[mask_neighbor]:
         if vox_idx > -1:
             yield vox_idx
@@ -254,8 +260,8 @@ class ExtenterMinVar(Extenter):
             min_var = np.inf
             vox_idx_best = None
 
-            # incremental mean weights: adding the (n+1)-th voxel re-weights the
-            # running mean mu by n/(n+1) and the candidate voxel by 1/(n+1)
+            # incremental mean weights: adding the (n+1)-th voxel re-weights
+            # the running mean mu by n/(n+1) and the candidate voxel by 1/(n+1)
             lam0 = n / (n + 1)
             lam1 = 1 / (n + 1)
             for vox_idx in iter_vox_neighbor(mask=mask, mask_idx=mask_idx):
@@ -475,7 +481,8 @@ def _fiedler_endpoints(mask):
         fiedler = evecs[:, np.argsort(evals)[1]]
         # canonicalize the endpoint pair by node index too, so any residual
         # sign ambiguity cannot swap which piece is 0
-        node0, node1 = sorted((int(np.argmin(fiedler)), int(np.argmax(fiedler))))
+        node0, node1 = sorted((int(np.argmin(fiedler)),
+                               int(np.argmax(fiedler))))
 
     return tuple(coords[node0]), tuple(coords[node1])
 

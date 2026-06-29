@@ -1,18 +1,19 @@
 """Multi-demo web server for glow._extra.viewer.
 
 Serves two things off one Flask server, wrapped in a WSGI
-``DispatcherMiddleware`` so apps can be mounted after start-up:
+DispatcherMiddleware so apps can be mounted after start-up:
 
-* **Curated demos** -- every baked pickle in ``pickles/`` is loaded at
-  boot into its own Dash app, mounted under ``/{key}/`` (see
-  ``glow._extra.viewer.app._create_app``). The root ``/`` serves a landing page.
-* **Zenodo browser** -- ``/zenodo/`` lists the files of one pre-configured
-  Zenodo record (GLOW_ZENODO_RECORD_ID); picking one downloads that single
-  pickle, mounts a fresh viewer for it under ``/zenodo/view/<slug>/``, and
-  redirects there. Only files of the configured record are ever fetched
-  and unpickled -- the record id is an allowlist, so the server never
-  deserialises an uploaded (untrusted) pickle (that would be
-  arbitrary-code-execution; see README.md).
+Curated demos -- every baked pickle in pickles/ is loaded at boot into its
+own Dash app, mounted under /{key}/ (see
+glow._extra.viewer.app._create_app). The root / serves a landing page.
+
+Zenodo browser -- /zenodo/ lists the files of one pre-configured Zenodo
+record (GLOW_ZENODO_RECORD_ID); picking one downloads that single pickle,
+mounts a fresh viewer for it under /zenodo/view/<slug>/, and redirects
+there. Only files of the configured record are ever fetched and unpickled
+-- the record id is an allowlist, so the server never deserialises an
+uploaded (untrusted) pickle (that would be arbitrary-code-execution; see
+README.md).
 
 Why a dispatcher, and why one worker: Flask forbids registering routes
 after the first request, so a per-file viewer cannot be mounted onto the
@@ -22,14 +23,13 @@ LRU evicts the oldest when MAX_MOUNTS is exceeded. The mount table lives
 in the worker process, so the deployment runs a single gunicorn worker
 (threads, not processes) -- see the Dockerfile.
 
-Run locally::
+Run locally:
+    python -m glow._extra.viewer.web.server            # dev, port 7860
+    PORT=8080 python -m glow._extra.viewer.web.server  # custom port
 
-    python -m glow._extra.viewer.web.server                # dev server, port 7860
-    PORT=8080 python -m glow._extra.viewer.web.server      # custom port
-
-Run under gunicorn (Docker / HF Spaces)::
-
-    gunicorn glow._extra.viewer.web.server:application --bind 0.0.0.0:7860 --workers 1
+Run under gunicorn (Docker / HF Spaces):
+    gunicorn glow._extra.viewer.web.server:application \\
+        --bind 0.0.0.0:7860 --workers 1
 """
 
 import argparse
@@ -77,7 +77,7 @@ _FEATURE_LABELS = {
 
 
 def _describe_combo(combo):
-    """Human-readable label for a combo dict."""
+    """Build a human-readable label for a combo dict."""
     parts = [_IMAGE_SET_LABELS.get(combo['image_set'], combo['image_set'])]
     if 'b' in combo:
         parts.append(f"b={combo['b']}")
@@ -88,7 +88,7 @@ def _describe_combo(combo):
 
 
 def _load_registry(pickle_dir):
-    """Load every ``*.p.gz`` in ``pickle_dir``.  Keyed by file stem."""
+    """Load every *.p.gz in pickle_dir, keyed by file stem."""
     registry = {}
     for path in sorted(pickle_dir.glob('*.p.gz')):
         key = path.name.removesuffix('.p.gz')
@@ -192,7 +192,8 @@ class ZenodoMounter:
         if not self.record_id:
             return []
         now = time.time()
-        if force or now - self._files_at > _FILE_LIST_TTL or not self._files_by_slug:
+        if (force or now - self._files_at > _FILE_LIST_TTL
+                or not self._files_by_slug):
             files = zenodo.list_record_files(self.record_id)
             by_slug: Dict[str, zenodo.ZenodoFile] = {}
             for f in files:
@@ -265,7 +266,8 @@ def _landing_html(registry, mounter: ZenodoMounter):
             f'<li><a href="/{html.escape(key)}/">{html.escape(label)}</a>'
             f' <span class="key">({html.escape(key)})</span></li>'
         )
-    items = '\n'.join(items_html) or '<li><em>none baked into this build</em></li>'
+    items = ('\n'.join(items_html)
+             or '<li><em>none baked into this build</em></li>')
 
     zenodo_html = ''
     if mounter.enabled:
@@ -321,9 +323,12 @@ def _zenodo_index_html(mounter: ZenodoMounter):
     try:
         items = mounter.slug_items()
     except Exception as e:
-        return (f'<!doctype html><meta charset="utf-8"><title>Zenodo</title>'
-                f'<p>Could not read record {html.escape(str(mounter.record_id))}: '
-                f'{html.escape(str(e))}</p><p><a href="/">&larr; back</a></p>'), 502
+        return (f'<!doctype html><meta charset="utf-8">'
+                f'<title>Zenodo</title>'
+                f'<p>Could not read record '
+                f'{html.escape(str(mounter.record_id))}: '
+                f'{html.escape(str(e))}</p>'
+                f'<p><a href="/">&larr; back</a></p>'), 502
 
     rows = []
     for slug, f in items:
@@ -333,7 +338,9 @@ def _zenodo_index_html(mounter: ZenodoMounter):
                 f'{html.escape(f.key)} (too large)</span>' if over else
                 f'<a href="/zenodo/load/{html.escape(slug)}">'
                 f'{html.escape(f.key)}</a>')
-        rows.append(f'<li>{link} <span class="key">({size_mb:.1f} MB)</span></li>')
+        rows.append(
+            f'<li>{link} <span class="key">'
+            f'({size_mb:.1f} MB)</span></li>')
     body = '\n'.join(rows) or '<li><em>record has no files</em></li>'
 
     return f"""<!doctype html>
@@ -360,11 +367,11 @@ def build_server(pickle_dir=_PICKLE_DIR) -> Flask:
 
     Tolerates a missing or empty pickle dir (the Space still boots with the
     Zenodo browser and an empty curated list). The returned server carries
-    its ZenodoMounter as ``server.zenodo_mounter``; build_application wires
-    that mounter to the dispatcher.
+    its ZenodoMounter as server.zenodo_mounter; build_application wires that
+    mounter to the dispatcher.
 
     Args:
-        pickle_dir: directory of baked ``*.p.gz`` demos.
+        pickle_dir: directory of baked *.p.gz demos.
 
     Returns:
         server (Flask): the configured Flask application (not yet wrapped).
@@ -390,20 +397,24 @@ def build_server(pickle_dir=_PICKLE_DIR) -> Flask:
 
     @server.route('/')
     def index():
+        """Serve the landing page."""
         return _landing_html(registry, mounter)
 
     @server.route('/healthz')
     def healthz():
+        """Serve the liveness probe."""
         return 'ok', 200
 
     @server.route('/zenodo/')
     def zenodo_index():
+        """Serve the Zenodo file picker, or 404 if disabled."""
         if not mounter.enabled:
             abort(404)
         return _zenodo_index_html(mounter)
 
     @server.route('/zenodo/load/<slug>')
     def zenodo_load(slug):
+        """Mount the viewer for one slug and redirect to it."""
         if not mounter.enabled:
             abort(404)
         try:
@@ -436,7 +447,7 @@ def build_application(pickle_dir=_PICKLE_DIR) -> DispatcherMiddleware:
     is the one the mounter adds to and evicts from.
 
     Args:
-        pickle_dir: directory of baked ``*.p.gz`` demos.
+        pickle_dir: directory of baked *.p.gz demos.
 
     Returns:
         application (DispatcherMiddleware): the WSGI entry point.
@@ -447,12 +458,14 @@ def build_application(pickle_dir=_PICKLE_DIR) -> DispatcherMiddleware:
     return application
 
 
-# WSGI entry point: gunicorn loads ``glow._extra.viewer.web.server:application``.
-# Built eagerly at import so workers don't race on first request.
+# WSGI entry point: gunicorn loads
+# glow._extra.viewer.web.server:application. Built eagerly at import so
+# workers don't race on first request.
 application = build_application()
 
 
 def main():
+    """Run the dev server (werkzeug) from the command line."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--port', type=int,
                         default=int(os.environ.get('PORT', 7860)),

@@ -1,12 +1,10 @@
-"""Load a baked demo pickle and launch the existing single-analysis viewer.
+"""Load a baked demo pickle and launch the single-analysis viewer.
 
-This is the local validator -- it confirms a pickle written by
-``bake_demos.py`` round-trips through the full Dash app the same way as the
-interactive ``python -m glow._extra.viewer --demo`` flow.  Use it to spot-check each
-baked combo before deploying.
+Local validator: confirms a pickle written by bake_demos.py round-trips
+through the full Dash app, as the interactive python -m glow._extra.viewer
+--demo flow does. Spot-check each baked combo before deploying.
 
-Usage::
-
+Usage:
     python -m glow._extra.viewer.web.play wgn2d_b1_medium_s0
     python -m glow._extra.viewer.web.play --list
     python -m glow._extra.viewer.web.play path/to/some.p.gz
@@ -23,8 +21,19 @@ from glow._extra.viewer import launch
 _DEFAULT_DIR = pathlib.Path(__file__).parent / 'pickles'
 
 
-def _resolve(arg, pickle_dir):
-    """Accept either a key (e.g. 'wgn2d_b1_medium_s0') or a path."""
+def _resolve(arg: str, pickle_dir: pathlib.Path) -> pathlib.Path:
+    """Resolve a combo key or path to a baked pickle path.
+
+    Args:
+        arg (str): a combo key (e.g. 'wgn2d_b1_medium_s0') or a file path.
+        pickle_dir (pathlib.Path): directory keys are looked up in.
+
+    Returns:
+        path (pathlib.Path): the resolved pickle file.
+
+    Raises:
+        SystemExit: neither the path nor the keyed pickle exists.
+    """
     p = pathlib.Path(arg)
     if p.exists():
         return p
@@ -34,12 +43,14 @@ def _resolve(arg, pickle_dir):
     raise SystemExit(f'no pickle at {p} or {candidate}')
 
 
-def _load(path):
+def _load(path: pathlib.Path):
+    """Unpickle a gzipped baked-demo file."""
     with gzip.open(path, 'rb') as f:
         return pickle.load(f)
 
 
 def main():
+    """Parse args and launch the viewer (or list combos) for one pickle."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('key', nargs='?',
                         help='combo key or path to a baked pickle')
@@ -54,7 +65,8 @@ def main():
         if not args.dir.exists():
             print(f'(no pickle dir at {args.dir})')
             return 0
-        keys = sorted(p.stem.removesuffix('.p') for p in args.dir.glob('*.p.gz'))
+        keys = sorted(
+            p.stem.removesuffix('.p') for p in args.dir.glob('*.p.gz'))
         if not keys:
             print(f'(no pickles in {args.dir})')
         else:

@@ -1,22 +1,18 @@
-"""Pre-bake a curated set of glow._extra.viewer demo analyses for the web demo.
+"""Pre-bake a curated set of viewer demo analyses for the web demo.
 
-Each entry in ``COMBOS`` calls one of the existing ``_demo_*`` builders in
-``glow._extra.viewer.__main__`` and pickles the resulting ``(ana, exp,
-mask_target)`` triple to ``PICKLE_DIR``.  ``exp`` is bundled because the
-analysis no longer stores it and the viewer needs it.
+Each entry in COMBOS calls one of the _demo_* builders in
+glow._extra.viewer.__main__ and pickles the resulting (ana, exp,
+mask_target) triple to the output dir. exp is bundled because the analysis
+no longer stores it and the viewer needs it.
 
-Usage::
+Usage:
+    python -m glow._extra.viewer.web.bake_demos              # bake all
+    python -m glow._extra.viewer.web.bake_demos --force      # force rebuild
+    python -m glow._extra.viewer.web.bake_demos --out DIR    # custom output
 
-    python -m glow._extra.viewer.web.bake_demos                    # bake all
-    python -m glow._extra.viewer.web.bake_demos --force            # rebuild even
-                                                            # if pickle exists
-    python -m glow._extra.viewer.web.bake_demos --out path/to/dir  # custom output
-
-The pickles are loaded by ``glow._extra.viewer.web.server`` at startup and served
-via the multi-user Dash app.
-
-Each combo produces a single ``.p.gz`` file named by ``canonical_key()`` so
-filenames are stable across rebuilds.
+glow._extra.viewer.web.server loads the pickles at startup and serves them
+via the multi-user Dash app. Each combo produces one .p.gz file named by
+canonical_key, so filenames are stable across rebuilds.
 """
 
 import argparse
@@ -37,13 +33,8 @@ from glow._extra.viewer.__main__ import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Curated demo set
-# ---------------------------------------------------------------------------
-# Each entry is a dict consumed by ``_build_combo``.  Edit this list to grow
-# or shrink the demo library.  Keep it small -- every entry adds RAM at
-# server startup and bytes to the Docker image.
-
+# Each entry is a dict consumed by _build_combo. Keep this list small --
+# every entry adds RAM at server startup and bytes to the Docker image.
 COMBOS = [
     # --- 2D White Gaussian Noise --------------------------------------
     # univariate, the canonical "what is GLOW doing?" demo
@@ -72,8 +63,8 @@ _DEFAULTS = {'seed': 0}
 # Combo -> pickle path
 # ---------------------------------------------------------------------------
 
-def canonical_key(combo):
-    """Stable filename-safe key for a combo dict."""
+def canonical_key(combo) -> str:
+    """Build a stable, filename-safe key for a combo dict."""
     parts = [combo['image_set']]
     if 'b' in combo:
         parts.append(f"b{combo['b']}")
@@ -89,7 +80,7 @@ def canonical_key(combo):
 # ---------------------------------------------------------------------------
 
 def _build_combo(combo):
-    """Resolve a combo dict to (ana, exp, mask_target) via the right builder."""
+    """Resolve a combo dict to (ana, exp, mask_target) via its builder."""
     image_set = combo['image_set']
     seed = combo.get('seed', _DEFAULTS['seed'])
     effect_llr = _EFFECT_MAP[combo['severity']]
@@ -113,6 +104,7 @@ def _build_combo(combo):
 # ---------------------------------------------------------------------------
 
 def main():
+    """Bake every combo in COMBOS to the output dir as a .p.gz pickle."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         '--out', type=pathlib.Path,
@@ -133,7 +125,8 @@ def main():
 
         if out.exists() and not args.force:
             size_mb = out.stat().st_size / (1024 ** 2)
-            print(f'[{i}/{len(COMBOS)}] {key}: skip (exists, {size_mb:.1f} MB)')
+            print(f'[{i}/{len(COMBOS)}] {key}: skip '
+                  f'(exists, {size_mb:.1f} MB)')
             continue
 
         print(f'[{i}/{len(COMBOS)}] {key}: building ...')
