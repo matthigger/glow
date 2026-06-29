@@ -14,7 +14,10 @@ record lines up one-to-one with the cached artifact: put the recorder *inside*
 ``@MEMORY.cache`` (the inner decorator) and a cache miss records exactly the
 calls that actually ran, each under the hash joblib filed its result by. An
 optional top-level ``"label"`` names the method/variant the call belongs to
-(e.g. 'GLOW-GLM', 'VBA-TFCE'); it is metadata only, never part of the key.
+(e.g. 'GLOW-GLM', 'VBA-TFCE'); it is metadata only, never part of the key. An
+optional top-level ``"recurse"`` lists outputs whose nested value flatten_to_df
+should expand into per-key-path columns rather than one cell (see below); it too
+is metadata only.
 
 ``time_sec`` is the wall-clock duration of the wrapped call.
 
@@ -133,6 +136,33 @@ def _cell(value):
     return json.loads(json.dumps(value, default=_json_default))
 
 
+def _recurse_cell(value, base, sep='.') -> dict:
+    """Expand one nested cell value into a flat ``{column: scalar}`` by key-path.
+
+    The opt-in counterpart to ``_cell`` for outputs named in a record's
+    ``recurse`` list (see Recorder): rather than lay the whole structure into one
+    cell, it walks it and emits one column per *scalar leaf*, the column name the
+    path that reaches it. A dict descends one column per key (``base.key``); a
+    list / tuple one per *index* (``base.0``, ``base.1`` -- the index-suffixed
+    form, so the row count is unchanged and the structure widens instead); a
+    scalar terminates as ``{base: value}``. An empty dict / list reaches no leaf
+    and so contributes no column (the leaf is then NaN-filled against any sibling
+    row that does carry it). ``value`` is the already-snapshotted ``_cell`` form,
+    so tuples have become lists and only dict / list / scalar arise here.
+    """
+    if isinstance(value, dict):
+        flat = {}
+        for k, v in value.items():
+            flat.update(_recurse_cell(v, f'{base}{sep}{k}', sep))
+        return flat
+    if isinstance(value, (list, tuple)):
+        flat = {}
+        for i, v in enumerate(value):
+            flat.update(_recurse_cell(v, f'{base}{sep}{i}', sep))
+        return flat
+    return {base: value}
+
+
 def _flatten_record(record, prefix, sep='.') -> dict:
     """One record as a flat ``{column: cell}`` dict, every column under ``prefix``.
 
@@ -143,6 +173,14 @@ def _flatten_record(record, prefix, sep='.') -> dict:
     ``fit.in.exp``), so a leaf and its ancestors never collide in one row. Each
     value is coerced to a cell by ``_cell``; ``label`` is None when the call
     carried none.
+
+    An output whose name is in the record's ``recurse`` list is *not* laid into a
+    single cell: ``_recurse_cell`` expands it in place into one column per scalar
+    leaf of its nested structure, named by key-path under ``out.<name>`` (e.g.
+    ``run_ana.out.score.target.tp``, ``run_ana.out.score.pred.0.pval``). The
+    whole-structure cell is replaced by those path columns; the row count is
+    unchanged (lists widen via index suffixes), so ragged lists across records
+    NaN-fill the missing high-index columns.
     """
     flat = {
         f'{prefix}{sep}hash': record['hash'],
@@ -152,8 +190,13 @@ def _flatten_record(record, prefix, sep='.') -> dict:
     }
     for name, value in record.get('inputs', {}).items():
         flat[f'{prefix}{sep}in.{name}'] = _cell(value)
+    recurse = record.get('recurse', [])
     for name, value in record.get('outputs', {}).items():
-        flat[f'{prefix}{sep}out.{name}'] = _cell(value)
+        base = f'{prefix}{sep}out.{name}'
+        if name in recurse:
+            flat.update(_recurse_cell(_cell(value), base, sep))
+        else:
+            flat[base] = _cell(value)
     return flat
 
 
@@ -191,7 +234,7 @@ class Recorder:
     Attributes:
         records (dict): hash -> recorded call dict, one per executed decorated
             call. Each carries ``{hash, function, inputs, outputs, input_hashes,
-            output_hashes, time_sec}`` and, when a ``label`` was given, that too.
+            output_hashes, time_sec}`` and, when given, ``label`` / ``recurse``.
             ``inputs`` / ``outputs`` are snapshots (the serialised ``_cell``
             form), not live objects, so the record retains nothing heavy.
             ``input_hashes`` / ``output_hashes`` hold ``joblib.hash`` of only
@@ -242,7 +285,8 @@ class Recorder:
         """
         return joblib.hash(filter_args(fnc, [], args, kwargs))
 
-    def __call__(self, output_name=None, output_name_list=None, label=None):
+    def __call__(self, output_name=None, output_name_list=None, label=None,
+                 recurse_out_list=None):
         """Build a decorator that records calls under one or more output names.
 
         Pass exactly one of ``output_name`` (the whole return is recorded
@@ -254,21 +298,35 @@ class Recorder:
         field. It is not part of the key -- variant identity rides in the
         receiver state filter_args already hashes.
 
+        ``recurse_out_list`` names the outputs (a subset of the declared output
+        name(s)) whose value is a nested dict / list to be *flattened by
+        key-path* in flatten_to_df rather than kept as one cell -- each scalar
+        leaf becomes its own column ``out.<name>.<path>`` (e.g. a 'score' dict
+        becomes ``out.score.target.tp``, ``out.score.pred.0.pval`` ...). It is
+        recorded top-level and read at flatten time; like ``label`` it is not
+        part of the key.
+
         Args:
             output_name (str | None): single name for the whole return.
             output_name_list (tuple | list | None): names for an unpacked
                 tuple/list return; non-empty, no duplicates.
             label (str | None): method/variant name for this call, recorded
                 top-level; None to record no label.
+            recurse_out_list (tuple | list | None): output names whose nested
+                value flatten_to_df should expand into per-path columns; each
+                must be one of the declared output names. None / empty recurses
+                nothing (every output stays a single cell).
 
         Returns:
             a decorator that wraps a function for recording.
 
         Raises:
-            ValueError: neither or both of the two output args given, or
-                ``output_name_list`` has duplicate names.
-            TypeError: a name is not a str, ``output_name_list`` is empty, or
-                ``label`` is not a str.
+            ValueError: neither or both of the two output args given,
+                ``output_name_list`` has duplicate names, or a
+                ``recurse_out_list`` name is not a declared output.
+            TypeError: a name is not a str, ``output_name_list`` is empty,
+                ``label`` is not a str, or ``recurse_out_list`` is not a
+                tuple/list of str.
         """
         # require exactly one of output_name / output_name_list (be explicit)
         if (output_name is None) == (output_name_list is None):
@@ -288,6 +346,16 @@ class Recorder:
             # the only possible name collision: a repeated output name. assert once, here.
             if len(set(output_name_list)) != len(output_name_list):
                 raise ValueError("output_name_list has duplicate names")
+
+        # recurse_out_list must name declared outputs (so a typo'd name can't
+        # silently recurse nothing); normalise None -> () for the record.
+        recurse = tuple(recurse_out_list) if recurse_out_list is not None else ()
+        if not isinstance(recurse, tuple) or not all(isinstance(n, str) for n in recurse):
+            raise TypeError("recurse_out_list must be a tuple/list of str output names")
+        declared = {output_name} if output_name is not None else set(output_name_list)
+        unknown = [n for n in recurse if n not in declared]
+        if unknown:
+            raise ValueError(f"recurse_out_list names not declared outputs: {unknown}")
 
         def decorator(fnc):
             sig = inspect.signature(fnc)
@@ -383,6 +451,7 @@ class Recorder:
                     "hash": key,
                     "function": fnc.__qualname__,
                     **({"label": label} if label is not None else {}),
+                    **({"recurse": list(recurse)} if recurse else {}),
                     "inputs": inputs,
                     "outputs": outputs,
                     "input_hashes": input_hashes,
@@ -466,6 +535,14 @@ class Recorder:
         the un-suffixed name) and ancestors follow shallowest-first, so the
         prefixes are deterministic. A record whose link_types produced no hashes
         contributes no edges -- it is then its own ancestor-less leaf.
+
+        An output named in a record's ``recurse`` list (see ``__call__``) is the
+        exception to the one-cell rule: its nested dict / list value is expanded
+        in place by ``_recurse_cell`` into one column per scalar leaf, keyed by
+        key-path under ``out.<name>`` (e.g. ``run_ana.out.score.target.tp``,
+        ``run_ana.out.score.pred.0.pval``). Lists widen via index suffixes, so
+        the row count is unchanged; a list shorter in one record than another
+        simply leaves its high-index columns NaN there.
 
         Operates on the in-memory ``records``; call ``load()`` first to fold in
         a folder's on-disk records from other writers.
