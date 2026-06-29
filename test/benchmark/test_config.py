@@ -24,8 +24,9 @@ from glow.effect import ExtenterMinVar
 # every cache, and the subset whose leaf is run_ana (the rest carry their own
 # fnc + kwargs grid -- segment its Ward-mode oracle, etc.)
 LABELS = ['null', 'sweep_llr', 'sweep_b', 'sweep_extent', 'sweep_nimg',
-          'segment', 'min_size', 'stat', 'prune']
-RUN_ANA_LABELS = ['null', 'sweep_llr', 'sweep_b', 'sweep_extent', 'sweep_nimg']
+          'segment', 'min_size', 'stat', 'prune', 'two-effect']
+RUN_ANA_LABELS = ['null', 'sweep_llr', 'sweep_b', 'sweep_extent', 'sweep_nimg',
+                  'two-effect']
 
 
 class TestCatalogueShape:
@@ -142,13 +143,19 @@ class TestCellsBindToStages:
             sig = self._SIG_DATA[cell['source']]
             sig.bind(**{k: v for k, v in cell.items() if k != 'source'})
 
+    _SIG_EFFECT = {'single': inspect.signature(data.effect_factory_single),
+                   'split': inspect.signature(data.effect_factory_split)}
+
     @pytest.mark.parametrize('label', LABELS)
     def test_effect_cells_bind(self, label):
-        # exp is supplied by the driver; a None cell is the no-plant null path
-        sig = inspect.signature(data.effect_factory)
+        # kind selects the builder (effect_factory dispatches on it); exp is
+        # supplied by the driver; a None cell is the no-plant null path
         for cell in config.CONFIG[label][1]:
-            if cell is not None:
-                sig.bind(exp=None, **cell)
+            if cell is None:
+                continue
+            sig = self._SIG_EFFECT[cell['kind']]
+            sig.bind(exp=None,
+                     **{k: v for k, v in cell.items() if k != 'kind'})
 
     @pytest.mark.parametrize('label', LABELS)
     def test_fnc_cells_bind(self, label):
@@ -177,6 +184,8 @@ class TestGridCardinality:
             * len(config.RUN_STAT_LIST),
             'prune': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
             * len(config.RUN_PRUNE_LIST),
+            'two-effect': 2 * config.N_SEED * len(config.TWO_EFFECT_LLR_GRID)
+            * len(config.ANGLE_GRID) * 5,
         }
 
     def test_null_plants_nothing(self):

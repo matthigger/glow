@@ -47,9 +47,9 @@ null, sweep_llr, sweep_b, sweep_extent, sweep_nimg. Three caches swap in their
 own leaf over those same grids: segment (run_segment, a Ward-mode oracle, no
 fit), min_size (run_min_size, per-perm staircases, recorded not scored), stat
 (run_stat, a VBA / CET variant reading a shared voxel-stat walk), and prune
-(run_prune, three pruning rules on a shared GLOW fit). The one remaining old
-cache, two-effect, needs a split effect stage (two planted effects); it becomes
-its own fnc + kwargs_fnc_list in CONFIG once the effect stage grows that path.
+(run_prune, three pruning rules on a shared GLOW fit). two-effect reuses the
+run_ana leaf unchanged -- score_effects already scores each planted half
+(target0 / target1) -- over a split effect stage (effect_factory kind='split').
 """
 import itertools
 import math
@@ -102,6 +102,15 @@ B_GRID = list(range(1, len(hcp.HCP_FEATS) + 1))
 EXTENT_N_VOX_GRID = [int(round(p * CROP_N_VOX))
                      for p in np.geomspace(0.01, 1.0, 15)]
 NIMG_GRID = [10, 18, 30, 55, 100, 180, 300]
+
+# Two-effect (cleaving) grids. The angle between the two effects' feature
+# directions sweeps 0..90 deg in 10 steps; the per-voxel llr spans weaker SNRs
+# (at 25k a ~1250-vox half is very high-SNR at the moderate llr, where GLOW
+# favours the merged region), the right level read off the resulting ARI /
+# dice curves. b=3 so the direction rotation has a plane to turn in.
+B_TWO_EFFECT = 3
+ANGLE_GRID = [float(a) for a in np.linspace(0, 90, 10)]
+TWO_EFFECT_LLR_GRID = [0.003, 0.01, 0.03]
 
 
 # ---------- analysis recipes -------------------------------------------------
@@ -250,11 +259,11 @@ def get_kwargs_effect_list(*, llr_list=(MODERATE_EFFECT_LLR,),
     """Return the list of effect_factory kwargs dicts over the swept axes.
 
     The cartesian product of (effect_llr, n_vox): a per-voxel strength and a
-    support size. Each cell carries the ingredients effect_factory builds the
-    support from -- the ExtenterMinVar class, n_vox, and seed_from_exp=True so
-    the placement is derived from the experiment (see the module docstring).
-    llr_list=None is the null / FWER-calibration path -- the list [None]
-    (plant nothing).
+    support size. Each cell carries kind='single' and the ingredients
+    effect_factory_single builds the support from -- the ExtenterMinVar class,
+    n_vox, and seed_from_exp=True so the placement is derived from the
+    experiment (see the module docstring). llr_list=None is the null /
+    FWER-calibration path -- the list [None] (plant nothing).
 
     Args:
         llr_list (iterable[float] | None): per-voxel effect strengths; None is
@@ -270,9 +279,42 @@ def get_kwargs_effect_list(*, llr_list=(MODERATE_EFFECT_LLR,),
     kwargs_effect_list = []
     for llr, n_vox in itertools.product(llr_list, n_vox_list):
         kwargs_effect_list.append(dict(
-            effect_llr=float(llr), extenter_cls=ExtenterMinVar,
+            kind='single', effect_llr=float(llr), extenter_cls=ExtenterMinVar,
             n_vox=int(n_vox), seed_from_exp=True))
     return kwargs_effect_list
+
+
+def get_kwargs_two_effect_list(*, llr_list=TWO_EFFECT_LLR_GRID,
+                               angle_list=ANGLE_GRID, n_vox=EFFECT_N_VOX,
+                               extenter_cls=ExtenterMinVar):
+    """Build the cleaving grid: effect_factory_split kwargs over (llr, angle).
+
+    Two adjacent equal-LLR effects planted on the spectral halves of one n_vox
+    extent, their feature directions angle degrees apart. Each cell carries
+    kind='split' and seed_from_exp=True, so both the support placement and the
+    direction pair are derived from the experiment (see effect_factory_split).
+    The angle sweep at fixed llr is the cleaving / merge-cost curve.
+
+    extenter_cls is the split base: ExtenterMinVar (the default) grows the
+    lowest-variance region from its own seeded start -- the same data-driven
+    support the single-effect caches use -- then bisects it into roughly equal
+    halves. Pass ExtenterSphere for a geometric base.
+
+    Args:
+        llr_list (iterable[float]): per-voxel strengths (per effect).
+        angle_list (iterable[float]): direction angles between the two effects
+            (degrees).
+        n_vox (int): combined two-effect support size (split into halves).
+        extenter_cls (type[Extenter]): the split base extenter.
+
+    Returns:
+        list[dict]: kwargs for effect_factory (kind='split'), one per
+            (llr, angle) cell.
+    """
+    return [dict(kind='split', effect_llr=float(llr),
+                 extenter_cls=extenter_cls, n_vox=int(n_vox),
+                 angle=float(angle), seed_from_exp=True)
+            for llr, angle in itertools.product(llr_list, angle_list)]
 
 
 # ---------- catalogue: name -> (data, effect, fnc kwargs, fnc) ---------------
@@ -335,4 +377,12 @@ CONFIG = {
         get_kwargs_data_list(),
         get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
         RUN_PRUNE_LIST, run_prune),
+    # I. Cleaving: two adjacent equal-LLR effects; sweep the angle between
+    #    their feature directions (0..90 deg). The leaf is run_ana unchanged --
+    #    score_effects already scores the prediction against each planted half
+    #    (target0 / target1); only the effect stage differs (kind='split').
+    'two-effect': (
+        get_kwargs_data_list(b_list=[B_TWO_EFFECT]),
+        get_kwargs_two_effect_list(),
+        RUN_ANA_LIST, run_ana),
 }

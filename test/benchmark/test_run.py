@@ -157,12 +157,13 @@ class TestRunSegment:
     _N_VOX_EFF = 20
 
     def _planted(self):
-        """A clean WGN exp with one planted effect; returns (exp, [mask])."""
+        """A clean WGN exp with one planted effect; returns (exp, mask)."""
         exp = data.data_factory_wgn(shape=(7, 7, 7), b=2, num_img=20, a=1,
                                     seed=_fresh_seed())
-        return data.effect_factory(
+        exp_eff, (mask,) = data.effect_factory(
             exp, effect_llr=0.1, extenter_cls=ExtenterMinVar,
             n_vox=self._N_VOX_EFF, seed=0)
+        return exp_eff, mask
 
     def test_returns_oracle_confusion_counts(self):
         exp, mask = self._planted()
@@ -194,8 +195,9 @@ class TestRunMinSize:
     def _planted(self):
         exp = data.data_factory_wgn(shape=(6, 6, 6), b=2, num_img=20, a=1,
                                     seed=_fresh_seed())
-        return data.effect_factory(
+        exp_eff, (mask,) = data.effect_factory(
             exp, effect_llr=0.1, extenter_cls=ExtenterMinVar, n_vox=20, seed=0)
+        return exp_eff, mask
 
     def test_returns_one_curve_per_outer_perm(self):
         exp, mask = self._planted()
@@ -231,9 +233,10 @@ class TestRunStat:
         seed = _fresh_seed() if seed is None else seed
         exp = data.data_factory_wgn(shape=(6, 6, 6), b=2, num_img=24, a=1,
                                     seed=seed)
-        return data.effect_factory(
+        exp_eff, (mask,) = data.effect_factory(
             exp, effect_llr=0.15, extenter_cls=ExtenterMinVar, n_vox=20,
             seed=0)
+        return exp_eff, mask
 
     def test_matches_standalone_fit(self):
         # the shared walk is just a precompute of the same stat matrix, so a
@@ -278,8 +281,9 @@ class TestRunPrune:
     def _planted(self):
         exp = data.data_factory_wgn(shape=(6, 6, 6), b=2, num_img=24, a=1,
                                     seed=_fresh_seed())
-        return data.effect_factory(
+        exp_eff, (mask,) = data.effect_factory(
             exp, effect_llr=0.2, extenter_cls=ExtenterMinVar, n_vox=20, seed=0)
+        return exp_eff, mask
 
     def test_returns_prune_score(self):
         exp, mask = self._planted()

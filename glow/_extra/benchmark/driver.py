@@ -119,8 +119,10 @@ def _run_data_cell(kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
                 # null / FWER-calibration cell: no effect, empty target
                 exp_eff, mask_target_list = exp, []
             else:
-                exp_eff, mask = effect_factory(exp, **kwargs_effect)
-                mask_target_list = [mask]
+                # effect_factory returns the realized supports as a list (one
+                # entry for a single effect, two for a split), threaded as-is
+                exp_eff, mask_target_list = effect_factory(
+                    exp, **kwargs_effect)
             for kwargs in kwargs_fnc_list:
                 score = fnc(exp_eff, mask_target_list=mask_target_list,
                             **kwargs)
@@ -143,8 +145,9 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
 
     The two upstream lists are kwargs grids for the data and effect stages;
     the driver runs their cartesian product, threading each stage's output
-    into the next (the clean exp into effect_factory, the planted exp and its
-    realized support mask into fnc as the single-element mask_target_list).
+    into the next (the clean exp into effect_factory, the planted exp and the
+    effect factory's realized supports into fnc as mask_target_list -- one
+    entry for a single effect, two for a split).
     Each planted cell is then measured by fnc once per kwargs dict in
     kwargs_fnc_list. All stages and fnc are memoised + recorded, so this only
     forwards kwargs -- caching dedupes repeated cells and the recorder
@@ -177,8 +180,9 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
             call, e.g. {'source': 'wgn', 'shape': (5, 5, 5), 'seed': 0}.
         kwargs_effect_list (iterable[dict | None]): one kwargs dict per
             effect_factory call (exp is supplied by the driver), e.g.
-            {'effect_llr': 0.05, 'extenter': ExtenterSphere(n_vox=20)}; a None
-            cell plants no effect (the null / FWER-calibration path, run on the
+            {'kind': 'single', 'effect_llr': 0.05, 'extenter_cls':
+            ExtenterMinVar, 'n_vox': 20, 'seed_from_exp': True}; a None cell
+            plants no effect (the null / FWER-calibration path, run on the
             clean exp with an empty target).
         kwargs_fnc_list (iterable[dict]): one kwargs dict per fnc call on each
             planted cell (exp and mask_target_list are supplied by the driver),
