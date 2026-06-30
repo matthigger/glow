@@ -109,13 +109,15 @@ def tidy_run_ana(raw):
     results.config_results_df (run_ana leaf + its data_factory / effect_factory
     ancestors) into the flat schema the plotters consume. The source is read
     off which data_factory produced the row (wgn / hcp), the swept axes off the
-    relevant ancestor inputs, and the metrics off the run_ana.out.score dict's
-    confusion counts (glow.mask.stats_from_counts via add_metric_cols).
+    relevant ancestor inputs, and the metrics off the recursed score columns
+    (run_ana.out.score.target.{tp,fp,tn,fn}; glow.mask.stats_from_counts via
+    add_metric_cols).
 
     Args:
         raw: the provenance DataFrame (one row per run_ana leaf), with
-            run_ana.in.label / run_ana.out.score, data_factory_{wgn,hcp}.in.*
-            and (when an effect was planted) effect_factory.in.* columns.
+            run_ana.in.label, the recursed run_ana.out.score.* columns,
+            data_factory_{wgn,hcp}.in.* and (when an effect was planted)
+            effect_factory.in.* columns.
 
     Returns:
         a tidy DataFrame, one row per (trial, recipe), with columns label,
@@ -154,27 +156,15 @@ def tidy_run_ana(raw):
                                       errors='coerce')
     out['time_sec'] = pd.to_numeric(col('run_ana.time_sec'), errors='coerce')
 
-    # explode the score dict: the union-target confusion counts, plus the
-    # global min_pval / num_vox / n_pred
-    score = col('run_ana.out.score')
-
-    def field(key, subkey=None):
-        """Pull score[key] (or score[key][subkey]) per row, NaN when absent."""
-        def get(s):
-            if not isinstance(s, dict):
-                return np.nan
-            value = s.get(key)
-            if subkey is not None:
-                value = (value.get(subkey)
-                         if isinstance(value, dict) else np.nan)
-            return value
-        return score.map(get)
-
+    # run_ana recurses 'score', so flatten_to_df expands the dict into
+    # out.score.<path> columns: the union-target confusion counts plus the
+    # global min_pval / num_vox / n_pred (col -> all-NaN when absent)
+    base = 'run_ana.out.score'
     for cnt in ('tp', 'fp', 'tn', 'fn'):
-        out[cnt] = pd.to_numeric(field('target', cnt), errors='coerce')
-    out['min_pval'] = pd.to_numeric(field('min_pval'), errors='coerce')
-    out['num_vox'] = pd.to_numeric(field('num_vox'), errors='coerce')
-    out['n_pred'] = pd.to_numeric(field('n_pred'), errors='coerce')
+        out[cnt] = pd.to_numeric(col(f'{base}.target.{cnt}'), errors='coerce')
+    out['min_pval'] = pd.to_numeric(col(f'{base}.min_pval'), errors='coerce')
+    out['num_vox'] = pd.to_numeric(col(f'{base}.num_vox'), errors='coerce')
+    out['n_pred'] = pd.to_numeric(col(f'{base}.n_pred'), errors='coerce')
 
     # realized effect support (target positives) over the analyzed volume
     out['vox_effect'] = out['tp'] + out['fn']

@@ -10,16 +10,22 @@ from glow._extra.benchmark import plot
 
 
 def _score(tp, fp, tn, fn, min_pval=0.5, n_pred=1):
-    """Build a run_ana.out.score cell with the given union-target counts."""
-    return {'num_vox': tp + fp + tn + fn, 'min_pval': min_pval,
-            'n_pred': n_pred,
-            'target': {'tp': tp, 'fp': fp, 'tn': tn, 'fn': fn}}
+    """Build the recursed run_ana.out.score.* columns for one row.
+
+    run_ana declares recurse_out_list=['score'], so flatten_to_df expands the
+    score dict into one out.score.<path> column per scalar leaf; the fixtures
+    mirror that flat layout rather than a single dict cell.
+    """
+    base = 'run_ana.out.score'
+    return {f'{base}.num_vox': tp + fp + tn + fn, f'{base}.min_pval': min_pval,
+            f'{base}.n_pred': n_pred,
+            f'{base}.target.tp': tp, f'{base}.target.fp': fp,
+            f'{base}.target.tn': tn, f'{base}.target.fn': fn}
 
 
 def _wgn_row(label, seed, effect_llr, score, b=1, num_img=100):
     """Build one WGN provenance row (run_ana leaf + its ancestors)."""
-    return {'run_ana.in.label': label, 'run_ana.time_sec': 1.0,
-            'run_ana.out.score': score,
+    return {'run_ana.in.label': label, 'run_ana.time_sec': 1.0, **score,
             'data_factory_wgn.in.b': b, 'data_factory_wgn.in.num_img': num_img,
             'data_factory_wgn.in.seed': seed,
             'effect_factory.in.effect_llr': effect_llr,
@@ -28,8 +34,7 @@ def _wgn_row(label, seed, effect_llr, score, b=1, num_img=100):
 
 def _hcp_row(label, seed, effect_llr, score, hcp_feats=('od',)):
     """Build one HCP provenance row (run_ana leaf + its ancestors)."""
-    return {'run_ana.in.label': label, 'run_ana.time_sec': 1.0,
-            'run_ana.out.score': score,
+    return {'run_ana.in.label': label, 'run_ana.time_sec': 1.0, **score,
             'data_factory_hcp.in.hcp_feats': list(hcp_feats),
             'data_factory_hcp.in.seed': seed,
             'effect_factory.in.effect_llr': effect_llr,

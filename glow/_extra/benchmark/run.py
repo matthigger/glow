@@ -66,7 +66,7 @@ from .score import (curve_json, score_effects, score_oracle_tree, score_prune,
 
 
 @MEMORY.cache(ignore=['label'])
-@RECORDER(output_name='score')
+@RECORDER(output_name='score', recurse_out_list=['score'])
 def run_ana(exp: Experiment, ana: Analysis, mask_target_list, label=None):
     """Fit ana on exp and score it against the planted target(s).
 
@@ -119,7 +119,7 @@ def run_ana(exp: Experiment, ana: Analysis, mask_target_list, label=None):
 
 
 @MEMORY.cache(ignore=['label'])
-@RECORDER(output_name='score')
+@RECORDER(output_name='score', recurse_out_list=['score'])
 def run_segment(exp: Experiment, mask_target_list, cluster_mode, label=None):
     """Segment exp in one Ward mode and score the oracle best-Dice region.
 
@@ -286,7 +286,7 @@ def voxel_stat_walk(exp, n_perm_fwer: int) -> dict:
 
 
 @MEMORY.cache(ignore=['label'])
-@RECORDER(output_name='score')
+@RECORDER(output_name='score', recurse_out_list=['score'])
 def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name,
              label=None):
     """Fit one VBA / CET MANCOVA-stat variant (reading the shared walk), score.
@@ -356,7 +356,7 @@ def glow_fit_for_prune(exp, *, n_perm_fwer: int, n_perm_inner: int,
 
 
 @MEMORY.cache(ignore=['label'])
-@RECORDER(output_name='score')
+@RECORDER(output_name='score', recurse_out_list=['score'])
 def run_prune(exp: Experiment, mask_target_list, rule, *, n_perm_fwer: int,
               n_perm_inner: int, alpha_fwer: float,
               cluster_mode=ClusterMode.FOCUS, label=None):

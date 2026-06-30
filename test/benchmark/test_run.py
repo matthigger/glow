@@ -131,8 +131,12 @@ class TestProvenanceDAG:
         assert len(df) == 1
         (row,) = df.to_dict('records')
         assert row['run_ana.function'] == 'run_ana'
-        # the score dict is the leaf's recorded output
-        assert isinstance(row['run_ana.out.score'], dict)
+        # run_ana declares recurse_out_list=['score'], so the score dict is
+        # expanded into out.score.<path> columns, not kept as one dict cell
+        assert 'run_ana.out.score' not in row
+        assert row['run_ana.out.score.num_vox'] == int((exp.mask_idx > -1).sum())
+        assert {'run_ana.out.score.target.tp',
+                'run_ana.out.score.min_pval'} <= set(row)
         # the build chained in (only possible via the shared-exp DAG edge),
         # carrying the swept seed onto the run_ana row
         assert row['data_factory_wgn.function'] == 'data_factory_wgn'
