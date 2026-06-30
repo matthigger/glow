@@ -119,7 +119,7 @@ def cmd_bootstrap(args, cfg: AWSConfig) -> None:
         inline={'GlowS3Access': _s3_policy(cfg.s3_bucket)})
 
     print('[bootstrap] done. now run: '
-          'python -m glow._extra.aws.infra setup --image-tag glow-worker:latest')
+          'python -m glow._extra.aws.infra setup --build')
 
 
 def _trust(service: str) -> dict:
@@ -249,9 +249,14 @@ def _create_instance_profile(iam, name: str) -> None:
 def cmd_setup(args, cfg: AWSConfig) -> None:
     """Provision the S3, ECR, and Batch resources (idempotent).
 
-    With --build, the worker image is built here first (tagged
-    args.image_tag, or DEFAULT_IMAGE_TAG if unset) and then pushed, so
-    deploy is one command instead of a separate docker build.
+    The worker image reaches ECR one of three ways, by flag:
+        --build       build it from the Dockerfile here, then push (the
+                      one-step (re)deploy after a worker-code change);
+                      tags DEFAULT_IMAGE_TAG unless --image-tag overrides.
+        --image-tag T push the local image already tagged T instead of
+                      building it.
+        neither       reuse the DEFAULT_IMAGE_TAG image already in ECR
+                      (see _resolve_image_uri).
 
     Args:
         args: parsed argparse Namespace; reads args.build and args.image_tag.
@@ -1204,13 +1209,21 @@ def _build_parser() -> argparse.ArgumentParser:
                          help='create one-time IAM roles (needs IAM admin)')
     sp.set_defaults(func=cmd_bootstrap)
 
-    sp = subs.add_parser('setup', help='provision S3/ECR/Batch resources')
+    sp = subs.add_parser(
+        'setup',
+        help='provision S3/ECR/Batch resources; pass --build to (re)deploy '
+             'the worker image')
     sp.add_argument('--build', action='store_true',
-                    help='docker build the worker image first, then push '
-                         f'(tags {DEFAULT_IMAGE_TAG} unless --image-tag given)')
+                    help='build the worker image from the Dockerfile and push '
+                         f'it to ECR (tagged {DEFAULT_IMAGE_TAG} unless '
+                         '--image-tag is also given). This is the one-step '
+                         'path to (re)deploy worker code after a change, and '
+                         'needs no pre-built image.')
     sp.add_argument('--image-tag', default=None,
-                    help='local docker image tag to push to ECR; '
-                         'omit if already pushed')
+                    help='skip the build and push this already-built local '
+                         'image tag to ECR instead. With neither --build nor '
+                         f'--image-tag, setup reuses the {DEFAULT_IMAGE_TAG} '
+                         'image already in ECR.')
     sp.set_defaults(func=cmd_setup)
 
     sp = subs.add_parser('teardown', help='delete Batch resources')
