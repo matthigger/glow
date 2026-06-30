@@ -21,8 +21,12 @@ from glow.analysis import Analysis
 from glow.effect import ExtenterMinVar
 
 
-# the paper-figure caches (run_ana over the shared recipe grid)
-LABELS = ['null', 'sweep_llr', 'sweep_b', 'sweep_extent', 'sweep_nimg']
+# every paper-figure cache, and the subset whose leaf is run_ana (the rest
+# carry their own fnc + kwargs grid -- segment its Ward-mode oracle, etc.)
+LABELS = ['null', 'sweep_llr', 'sweep_b', 'sweep_extent', 'sweep_nimg',
+          'segment', 'min_size', 'stat', 'prune', 'two-effect']
+RUN_ANA_LABELS = ['null', 'sweep_llr', 'sweep_b', 'sweep_extent', 'sweep_nimg',
+                  'two-effect']
 # non-paper helper caches in the catalogue (e.g. the tiny end-to-end smoke
 # cache); excluded from the paper-cardinality checks below
 NON_PAPER_LABELS = ['smoke']
@@ -34,9 +38,17 @@ class TestCatalogueShape:
 
     @pytest.mark.parametrize('label', LABELS)
     def test_entry_is_drive_four_tuple(self, label):
+        # every cache is the (data, effect, fnc-kwargs, fnc) tuple drive
+        # consumes, with non-empty grids and a callable leaf
         data_list, effect_list, fnc_kwargs, fnc = config.CONFIG[label]
         assert data_list and effect_list and fnc_kwargs
-        # the leaf is run_ana over the shared recipe grid
+        assert callable(fnc)
+
+    @pytest.mark.parametrize('label', RUN_ANA_LABELS)
+    def test_run_ana_caches_share_the_recipe_grid(self, label):
+        # the detection sweeps all fit/score via run_ana over the one shared
+        # recipe grid
+        _, _, fnc_kwargs, fnc = config.CONFIG[label]
         assert fnc is run_ana
         assert fnc_kwargs is config.RUN_ANA_LIST
 
@@ -134,13 +146,19 @@ class TestCellsBindToStages:
             sig = self._SIG_DATA[cell['source']]
             sig.bind(**{k: v for k, v in cell.items() if k != 'source'})
 
+    _SIG_EFFECT = {'single': inspect.signature(data.effect_factory_single),
+                   'split': inspect.signature(data.effect_factory_split)}
+
     @pytest.mark.parametrize('label', LABELS)
     def test_effect_cells_bind(self, label):
-        # exp is supplied by the driver; a None cell is the no-plant null path
-        sig = inspect.signature(data.effect_factory)
+        # kind selects the builder (effect_factory dispatches on it); exp is
+        # supplied by the driver; a None cell is the no-plant null path
         for cell in config.CONFIG[label][1]:
-            if cell is not None:
-                sig.bind(exp=None, **cell)
+            if cell is None:
+                continue
+            sig = self._SIG_EFFECT[cell['kind']]
+            sig.bind(exp=None,
+                     **{k: v for k, v in cell.items() if k != 'kind'})
 
     @pytest.mark.parametrize('label', LABELS)
     def test_fnc_cells_bind(self, label):
@@ -164,6 +182,15 @@ class TestGridCardinality:
             'sweep_b': 2 * config.N_SEED * len(config.B_GRID) * 5,
             'sweep_extent': 2 * config.N_SEED * len(config.EXTENT_N_VOX_GRID) * 5,
             'sweep_nimg': config.N_SEED * len(config.NIMG_GRID) * 5,
+            'segment': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
+            * len(config.SEGMENT_MODES),
+            'min_size': config.N_SEED * len(config.EFFECT_LLR_GRID),
+            'stat': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
+            * len(config.RUN_STAT_LIST),
+            'prune': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
+            * len(config.RUN_PRUNE_LIST),
+            'two-effect': 2 * config.N_SEED * len(config.TWO_EFFECT_LLR_GRID)
+            * len(config.ANGLE_GRID) * 5,
         }
 
     def test_null_plants_nothing(self):

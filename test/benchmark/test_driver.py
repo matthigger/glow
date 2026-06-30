@@ -109,12 +109,12 @@ class TestNullEffectCell:
             assert s['target']['tp'] == 0 and s['target']['fn'] == 0
 
     def test_none_effect_records_no_plant_node(self):
-        # the null row chains run_ana straight to the build -- effect_factory is
-        # skipped entirely, so it records nothing
+        # the null row chains run_ana straight to the build -- the effect stage
+        # is skipped entirely, so it records nothing
         data.RECORDER.records.clear()
         drive(_data_grid(2), [None], _ana_grid(1), run_ana)
         fns = [r['function'] for r in data.RECORDER.records.values()]
-        assert fns.count('effect_factory') == 0
+        assert fns.count('effect_factory_single') == 0
         assert fns.count('run_ana') == 2
 
 
@@ -129,7 +129,8 @@ class TestProvenanceDAG:
         # ancestors (not leaves) and every row carries the whole chain
         assert len(df) == 2 * 2 * 2
         assert (df['run_ana.function'] == 'run_ana').all()
-        assert (df['effect_factory.function'] == 'effect_factory').all()
+        assert (df['effect_factory_single.function']
+                == 'effect_factory_single').all()
         assert (df['data_factory_wgn.function'] == 'data_factory_wgn').all()
         # the swept data seeds chain onto the run_ana rows (only via shared-exp
         # DAG edges), so both data cells are represented
@@ -145,7 +146,7 @@ class TestProvenanceDAG:
 
         fns = [r['function'] for r in data.RECORDER.records.values()]
         assert fns.count('data_factory_wgn') == 2
-        assert fns.count('effect_factory') == 2 * 2
+        assert fns.count('effect_factory_single') == 2 * 2
         assert fns.count('run_ana') == 2 * 2 * 2
 
 
@@ -202,7 +203,8 @@ class TestParallel:
         df = data.RECORDER.flatten_to_df()
         assert len(df) == 3 * 2 * 2
         assert (df['run_ana.function'] == 'run_ana').all()
-        assert (df['effect_factory.function'] == 'effect_factory').all()
+        assert (df['effect_factory_single.function']
+                == 'effect_factory_single').all()
         assert set(df['data_factory_wgn.in.seed']) == {d['seed'] for d in grid}
 
     def test_parallel_task_payload_stays_small(self):

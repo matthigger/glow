@@ -42,15 +42,14 @@ WGN and HCP share each cache (both sources in one data grid); they face apart
 on the recorded source column downstream. HCP has no num_img axis (its N is
 the cohort), so the num_img sweep is WGN-only.
 
-Scope. The leaf here is run_ana (fit + score one Analysis per cell), so this
-covers the five effect-detection caches that are exactly that shape: null,
-sweep_llr, sweep_b, sweep_extent, sweep_nimg. The old catalogue's segment /
-stat / prune / two-effect / min_size caches need other leaf functions (a
-segmentation oracle, a shared voxel-stat walk, two pruning rules on one fit,
-two planted effects, per-perm staircases); each becomes its own fnc +
-kwargs_fnc_list in CONFIG once written to run_ana's contract
-(fnc(exp, mask_target_list=..., **kwargs), memoised + recorded), but those
-leaf functions do not exist yet.
+Scope. Most caches share the run_ana leaf (fit + score one Analysis per cell):
+null, sweep_llr, sweep_b, sweep_extent, sweep_nimg. Three caches swap in their
+own leaf over those same grids: segment (run_segment, a Ward-mode oracle, no
+fit), min_size (run_min_size, per-perm staircases, recorded not scored), stat
+(run_stat, a VBA / CET variant reading a shared voxel-stat walk), and prune
+(run_prune, three pruning rules on a shared GLOW fit). two-effect reuses the
+run_ana leaf unchanged -- score_effects already scores each planted half
+(target0 / target1) -- over a split effect stage (effect_factory kind='split').
 """
 import itertools
 import math
@@ -58,13 +57,15 @@ import warnings
 
 import numpy as np
 
-from glow.analysis import AnalysisCET, AnalysisGLOW, AnalysisVBA
+from glow.analysis import (AnalysisCET, AnalysisGLOW, AnalysisVBA,
+                           DEFAULT_CET_CFT_PVAL)
 from glow.analysis.cluster import ClusterMode
-from glow.analysis.mancova import get_hotel_tr, get_wilks
+from glow.analysis.mancova import (get_hotel_tr, get_wilks, stat_dict,
+                                   stat_dict_inv)
 from glow.effect import ExtenterMinVar, ExtenterSphere
 
 from . import hcp
-from .run import run_ana
+from .run import run_ana, run_min_size, run_prune, run_segment, run_stat
 
 
 # ---------- shared knobs (mirror paper/config_old.py) ------------------------
@@ -102,6 +103,15 @@ EXTENT_N_VOX_GRID = [int(round(p * CROP_N_VOX))
                      for p in np.geomspace(0.01, 1.0, 15)]
 NIMG_GRID = [10, 18, 30, 55, 100, 180, 300]
 
+# Two-effect (cleaving) grids. The angle between the two effects' feature
+# directions sweeps 0..90 deg in 10 steps; the per-voxel llr spans weaker SNRs
+# (at 25k a ~1250-vox half is very high-SNR at the moderate llr, where GLOW
+# favours the merged region), the right level read off the resulting ARI /
+# dice curves. b=3 so the direction rotation has a plane to turn in.
+B_TWO_EFFECT = 3
+ANGLE_GRID = [float(a) for a in np.linspace(0, 90, 10)]
+TWO_EFFECT_LLR_GRID = [0.003, 0.01, 0.03]
+
 
 # ---------- analysis recipes -------------------------------------------------
 # label -> recipe. The label is for the reader: it rides into each run_ana
@@ -133,6 +143,70 @@ ana_kwargs_dict = {
 # cache key, so renaming a method does not invalidate its cached fit.
 RUN_ANA_LIST = [dict(ana=ana, label=label)
                 for label, ana in ana_kwargs_dict.items()]
+
+# the segment cache's leaf grid: one run_segment call per Ward mode (Naive /
+# GLM Error / Focus). The mode rides as both the recorded label (its name) and
+# the cluster_mode the leaf segments with.
+SEGMENT_MODES = [ClusterMode.NAIVE, ClusterMode.GLM_ERROR, ClusterMode.FOCUS]
+RUN_SEGMENT_LIST = [dict(cluster_mode=mode, label=str(mode))
+                    for mode in SEGMENT_MODES]
+
+# the min_size cache's leaf grid: one run_min_size call capturing GLOW's
+# per-perm (size -> max-z) staircases (its one method, labelled GLOW), swept
+# over min_vox post hoc from the recorded curves. Its trial seeds are offset
+# clear of the other sweeps (MIN_SIZE_SEED_OFFSET), each its own HCP null.
+MIN_SIZE_SEED_OFFSET = 100_000
+RUN_MIN_SIZE_LIST = [dict(n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER,
+                          label='GLOW')]
+
+
+def get_run_stat_list():
+    """Build the stat cache's leaf grid (one run_stat call per stat variant).
+
+    The bake-off among the voxel-wise methods: VBA / VBA-TFCE / CET x 5 stats x
+    {raw, z} = 30 variants. GLOW is excluded by design (it uses the LLR
+    throughout), so this is VBA / CET only. Each cell pairs a recipe with the
+    stat_dict key naming the shared-walk matrix run_stat injects as _stat, and
+    a record-only label (e.g. VBA-TFCE-Wilks-z).
+
+    Returns:
+        list[dict]: kwargs for run_stat (exp / mask_target_list supplied by the
+            driver), one per variant.
+    """
+    kwargs = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
+    specs = []
+    for fn in stat_dict.values():
+        name = stat_dict_inv[fn]
+        for z_flag in (False, True):
+            suffix = '-z' if z_flag else ''
+            specs.append(dict(
+                ana=AnalysisVBA(get_stat=fn, z_flag=z_flag, tfce_flag=False,
+                                **kwargs),
+                stat_name=name, label=f'VBA-{name}{suffix}'))
+            specs.append(dict(
+                ana=AnalysisVBA(get_stat=fn, z_flag=z_flag, tfce_flag=True,
+                                **kwargs),
+                stat_name=name, label=f'VBA-TFCE-{name}{suffix}'))
+            specs.append(dict(
+                ana=AnalysisCET(get_stat=fn, z_flag=z_flag,
+                                cft_pval=DEFAULT_CET_CFT_PVAL, **kwargs),
+                stat_name=name, label=f'CET-{name}{suffix}'))
+    return specs
+
+
+RUN_STAT_LIST = get_run_stat_list()
+
+# the prune cache's leaf grid: three rules scored on one shared GLOW fit per
+# cell (greedy / DP / the single max-LLR region). All carry the same GLOW fit
+# knobs (so run_prune's glow_fit_for_prune is shared across them); the rule
+# rides as both the cache axis and the recorded label.
+_PRUNE_GLOW_KWARGS = dict(n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER,
+                          alpha_fwer=ALPHA_FWER)
+RUN_PRUNE_LIST = [
+    dict(rule='maxllr', label='GLOW-MaxLLR', **_PRUNE_GLOW_KWARGS),
+    dict(rule='greedy', label='GLOW-Greedy', **_PRUNE_GLOW_KWARGS),
+    dict(rule='dp', label='GLOW-DP', **_PRUNE_GLOW_KWARGS),
+]
 
 
 # ---------- smoke test (a tiny non-paper cache for end-to-end checks) --------
@@ -211,11 +285,11 @@ def get_kwargs_effect_list(*, llr_list=(MODERATE_EFFECT_LLR,),
     """Return the list of effect_factory kwargs dicts over the swept axes.
 
     The cartesian product of (effect_llr, n_vox): a per-voxel strength and a
-    support size. Each cell carries the ingredients effect_factory builds the
-    support from -- the ExtenterMinVar class, n_vox, and seed_from_exp=True so
-    the placement is derived from the experiment (see the module docstring).
-    llr_list=None is the null / FWER-calibration path -- the list [None]
-    (plant nothing).
+    support size. Each cell carries kind='single' and the ingredients
+    effect_factory_single builds the support from -- the ExtenterMinVar class,
+    n_vox, and seed_from_exp=True so the placement is derived from the
+    experiment (see the module docstring). llr_list=None is the null /
+    FWER-calibration path -- the list [None] (plant nothing).
 
     Args:
         llr_list (iterable[float] | None): per-voxel effect strengths; None is
@@ -231,9 +305,42 @@ def get_kwargs_effect_list(*, llr_list=(MODERATE_EFFECT_LLR,),
     kwargs_effect_list = []
     for llr, n_vox in itertools.product(llr_list, n_vox_list):
         kwargs_effect_list.append(dict(
-            effect_llr=float(llr), extenter_cls=ExtenterMinVar,
+            kind='single', effect_llr=float(llr), extenter_cls=ExtenterMinVar,
             n_vox=int(n_vox), seed_from_exp=True))
     return kwargs_effect_list
+
+
+def get_kwargs_two_effect_list(*, llr_list=TWO_EFFECT_LLR_GRID,
+                               angle_list=ANGLE_GRID, n_vox=EFFECT_N_VOX,
+                               extenter_cls=ExtenterMinVar):
+    """Build the cleaving grid: effect_factory_split kwargs over (llr, angle).
+
+    Two adjacent equal-LLR effects planted on the spectral halves of one n_vox
+    extent, their feature directions angle degrees apart. Each cell carries
+    kind='split' and seed_from_exp=True, so both the support placement and the
+    direction pair are derived from the experiment (see effect_factory_split).
+    The angle sweep at fixed llr is the cleaving / merge-cost curve.
+
+    extenter_cls is the split base: ExtenterMinVar (the default) grows the
+    lowest-variance region from its own seeded start -- the same data-driven
+    support the single-effect caches use -- then bisects it into roughly equal
+    halves. Pass ExtenterSphere for a geometric base.
+
+    Args:
+        llr_list (iterable[float]): per-voxel strengths (per effect).
+        angle_list (iterable[float]): direction angles between the two effects
+            (degrees).
+        n_vox (int): combined two-effect support size (split into halves).
+        extenter_cls (type[Extenter]): the split base extenter.
+
+    Returns:
+        list[dict]: kwargs for effect_factory (kind='split'), one per
+            (llr, angle) cell.
+    """
+    return [dict(kind='split', effect_llr=float(llr),
+                 extenter_cls=extenter_cls, n_vox=int(n_vox),
+                 angle=float(angle), seed_from_exp=True)
+            for llr, angle in itertools.product(llr_list, angle_list)]
 
 
 # ---------- catalogue: name -> (data, effect, fnc kwargs, fnc) ---------------
@@ -265,6 +372,44 @@ CONFIG = {
     'sweep_nimg': (
         get_kwargs_data_list(sources=['wgn'], num_img_list=NIMG_GRID),
         get_kwargs_effect_list(),
+        RUN_ANA_LIST, run_ana),
+    # F. Segmentation quality: oracle best-Dice region per Ward mode (Naive /
+    #    GLM Error / Focus), no significance test or pruning. Same grids as
+    #    sweep_llr; the leaf is run_segment over the mode grid.
+    'segment': (
+        get_kwargs_data_list(),
+        get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
+        RUN_SEGMENT_LIST, run_segment),
+    # J. Min-size sweep: per-perm (size -> max-z) staircases on HCP, mirroring
+    #    sweep_llr's effect grid, so min_vox sweeps post hoc from one run.
+    #    Seeds are offset clear of the other sweeps; HCP only.
+    'min_size': (
+        get_kwargs_data_list(
+            sources=['hcp'],
+            seeds=range(MIN_SIZE_SEED_OFFSET, MIN_SIZE_SEED_OFFSET + N_SEED)),
+        get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
+        RUN_MIN_SIZE_LIST, run_min_size),
+    # G. MANCOVA stat comparison: VBA / VBA-TFCE / CET x 5 stats x {raw, z}
+    #    (b=2 so the multivariate stats differ). The cell's variants share one
+    #    voxel-stat walk (run_stat -> voxel_stat_walk). GLOW excluded.
+    'stat': (
+        get_kwargs_data_list(b_list=[2]),
+        get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
+        RUN_STAT_LIST, run_stat),
+    # H. Pruning rule: greedy max-LLR vs DP max-likelihood cut vs the single
+    #    max-LLR region, scored on one shared GLOW-Focus fit per cell (so the
+    #    comparison isolates the rule, not the permutation test).
+    'prune': (
+        get_kwargs_data_list(),
+        get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
+        RUN_PRUNE_LIST, run_prune),
+    # I. Cleaving: two adjacent equal-LLR effects; sweep the angle between
+    #    their feature directions (0..90 deg). The leaf is run_ana unchanged --
+    #    score_effects already scores the prediction against each planted half
+    #    (target0 / target1); only the effect stage differs (kind='split').
+    'two-effect': (
+        get_kwargs_data_list(b_list=[B_TWO_EFFECT]),
+        get_kwargs_two_effect_list(),
         RUN_ANA_LIST, run_ana),
     # Smoke: tiny null sweep over both sources to confirm the pipeline end to
     # end (not a paper figure). Small crop / few seeds / reduced perms; see

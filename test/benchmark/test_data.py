@@ -191,7 +191,8 @@ class TestEffectFactory:
 
     def test_plants_effect_on_support(self):
         exp = self._clean_exp()
-        exp_eff, mask = data.effect_factory(
+        # the effect stage returns the supports as a list (one for 'single')
+        exp_eff, (mask,) = data.effect_factory(
             exp, effect_llr=0.05, extenter_cls=ExtenterMinVar, n_vox=12, seed=0)
         # effect added in place: same shapes, mask over the spatial grid, y
         # changed, and the extenter grew exactly n_vox voxels
@@ -205,14 +206,14 @@ class TestEffectFactory:
         # config plants in a different place on different data...
         kw = dict(effect_llr=0.05, extenter_cls=ExtenterMinVar, n_vox=12,
                   seed_from_exp=True)
-        _, mask0 = data.effect_factory(self._clean_exp(), **kw)
-        _, mask1 = data.effect_factory(self._clean_exp(), **kw)
+        _, (mask0,) = data.effect_factory(self._clean_exp(), **kw)
+        _, (mask1,) = data.effect_factory(self._clean_exp(), **kw)
         assert not np.array_equal(mask0, mask1)
         # ...but it's a pure function of the data: identical across effect
         # strengths for one experiment (only the imposed offset changes)
         exp = self._clean_exp()
-        _, m_weak = data.effect_factory(exp, **kw)
-        _, m_strong = data.effect_factory(exp, **{**kw, 'effect_llr': 0.3})
+        _, (m_weak,) = data.effect_factory(exp, **kw)
+        _, (m_strong,) = data.effect_factory(exp, **{**kw, 'effect_llr': 0.3})
         np.testing.assert_array_equal(m_weak, m_strong)
 
     def test_requires_exactly_one_seed_spec(self):
@@ -224,23 +225,71 @@ class TestEffectFactory:
         with pytest.raises(ValueError):
             data.effect_factory(exp, seed=0, seed_from_exp=True, **base)  # both
 
+    def test_bad_kind_raises(self):
+        # the dispatcher only knows 'single' / 'split'
+        with pytest.raises(ValueError):
+            data.effect_factory(self._clean_exp(), kind='nope',
+                                effect_llr=0.05, extenter_cls=ExtenterMinVar,
+                                n_vox=10, seed=0)
+
     def test_records_outputs_under_joblib_hash(self):
         exp = self._clean_exp()
         kw = dict(effect_llr=0.05, extenter_cls=ExtenterMinVar, n_vox=10, seed=0)
-        args_id = data.effect_factory._get_args_id(exp, **kw)
+        # the cache + record live on the per-kind builder, not the dispatcher
+        args_id = data.effect_factory_single._get_args_id(exp, **kw)
 
-        data.RECORDER.records.clear()   # drop the clean-build record above
-        data.effect_factory(exp, **kw)  # fresh exp -> miss -> records
+        data.RECORDER.records.clear()          # drop the clean-build record
+        data.effect_factory_single(exp, **kw)  # fresh exp -> miss -> records
 
         assert len(data.RECORDER.records) == 1
         rec = data.RECORDER.records[args_id]
-        assert rec['function'] == 'effect_factory'
-        # output_name_list unpacks the (exp, mask) return into two outputs
-        assert set(rec['outputs']) == {'exp', 'mask'}
+        assert rec['function'] == 'effect_factory_single'
+        # output_name_list unpacks the (exp, mask_target_list) return
+        assert set(rec['outputs']) == {'exp', 'mask_target_list'}
 
     def test_miss_then_hit(self):
         exp = self._clean_exp()
         kw = dict(effect_llr=0.05, extenter_cls=ExtenterMinVar, n_vox=10, seed=0)
-        assert not data.effect_factory.check_call_in_cache(exp, **kw)
-        data.effect_factory(exp, **kw)
-        assert data.effect_factory.check_call_in_cache(exp, **kw)
+        assert not data.effect_factory_single.check_call_in_cache(exp, **kw)
+        data.effect_factory_single(exp, **kw)
+        assert data.effect_factory_single.check_call_in_cache(exp, **kw)
+
+
+class TestEffectFactorySplit:
+    """The two-effect (cleaving) plant: a MinVar region cut into two halves."""
+
+    def _clean_exp(self):
+        return data.data_factory_wgn(shape=(8, 8, 8), b=3, num_img=24, a=1,
+                                     seed=_fresh_seed())
+
+    def test_plants_two_disjoint_halves(self):
+        # the cleaving base: a data-driven ExtenterMinVar extent grown from
+        # its own seeded start, bisected into two disjoint halves
+        exp = self._clean_exp()
+        exp_eff, mask_target_list = data.effect_factory(
+            exp, kind='split', effect_llr=0.1, extenter_cls=ExtenterMinVar,
+            n_vox=24, angle=45.0, seed=0)
+        assert len(mask_target_list) == 2
+        mask0, mask1 = mask_target_list
+        assert not (mask0 & mask1).any()
+        assert int((mask0 | mask1).sum()) == 24
+        assert not np.array_equal(exp.y, exp_eff.y)
+
+    def test_placement_varies_per_realization(self):
+        # like effect_factory_single, the support is seeded from the experiment
+        kw = dict(effect_llr=0.1, extenter_cls=ExtenterMinVar, n_vox=24,
+                  angle=30.0, seed_from_exp=True)
+        _, (m0a, _) = data.effect_factory_split(self._clean_exp(), **kw)
+        _, (m0b, _) = data.effect_factory_split(self._clean_exp(), **kw)
+        assert not np.array_equal(m0a, m0b)
+
+    def test_records_under_split_builder_name(self):
+        exp = self._clean_exp()
+        kw = dict(effect_llr=0.1, extenter_cls=ExtenterMinVar, n_vox=24,
+                  angle=30.0, seed=0)
+        args_id = data.effect_factory_split._get_args_id(exp, **kw)
+        data.RECORDER.records.clear()
+        data.effect_factory_split(exp, **kw)
+        rec = data.RECORDER.records[args_id]
+        assert rec['function'] == 'effect_factory_split'
+        assert set(rec['outputs']) == {'exp', 'mask_target_list'}

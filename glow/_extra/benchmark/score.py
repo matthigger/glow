@@ -10,10 +10,10 @@ RECORDER.flatten_to_df: its exp ancestor chains back through the plant to the
 data build, giving one score-bearing row per (trial, recipe). See
 glow._extra.benchmark.run / recorder.
 
-Ported from the deprecating paper layer (glow._extra.benchmark.paper.score).
-The segmentation-only / min-size scorers that lived beside it --
-score_oracle_tree, size_max_z_curve, curve_json -- stay there until their
-trial fns move over too.
+Ported from the deprecating paper layer (glow._extra.benchmark.paper.score):
+score_oracle_tree (segment), the min-size staircase scorers (size_max_z_curve /
+curve_json), and score_prune (the prune cache's region-index scorer) now live
+here beside score_effects.
 
 score_effects output (one dict per fitted Analysis), keys:
 
@@ -40,8 +40,11 @@ Every metric (Dice, sensitivity, PPV, specificity) is a function of the four
 confusion counts and is derived downstream (glow.mask.stats_from_counts), so
 only the counts are stored.
 """
+import json
+
 import numpy as np
 
+import glow.graph
 import glow.mask
 
 
@@ -130,3 +133,139 @@ def score_effects(ana, mask_target_list, mask_active) -> dict:
             out[f'target{i}'] = glow.mask.confusion_counts(
                 mask_pred=pred_union, mask_target=tm, mask_active=mask_active)
     return out
+
+
+def score_oracle_tree(children, mask_target, mask_idx) -> dict:
+    """Return the confusion counts of the best-Dice region over a Ward tree.
+
+    The segmentation-only (oracle) score: scan every tree region and keep the
+    one whose Dice against the planted support is largest -- the best a perfect
+    selector could do on this segmentation, no significance test or pruning.
+    Used by the segment cache to isolate segmentation quality across Ward
+    modes; Dice / sensitivity / PPV derive downstream from the counts.
+
+    Args:
+        children (np.array): (num_reg - num_vox, 2) Ward merge pairs.
+        mask_target (np.array): (X, Y, Z) bool, the planted effect support.
+        mask_idx (np.array): (X, Y, Z) int voxel-index array (-1 outside).
+
+    Returns:
+        {tp, fp, tn, fn}: the counts of the single best-matching region.
+    """
+    counts = glow.graph.confusion_counts_tree(
+        mask=mask_target, mask_idx=mask_idx, children=children)
+    dice = glow.mask.stats_from_counts(**counts)['dice']
+    i = int(np.nanargmax(dice))
+    return {k: int(counts[k][i]) for k in ('tp', 'fp', 'tn', 'fn')}
+
+
+def size_max_z_curve(size, z, consider):
+    """Build one outer perm's (size, max-z-at-size-or-larger) staircase.
+
+    The max-z FWER null restricts the per-perm max to regions of size >=
+    min_vox, so a min_vox sweep needs only E(m) = max{z_r : size_r >= m}, a
+    non-increasing step function. This returns its corners: dedupe regions by
+    size, take the running max from the largest size down, and keep the
+    largest size of each distinct max-z. E(m) is then the value of the first
+    corner with size >= m, so a handful of corners recovers the perm's max-z
+    at any m >= floor without storing every region.
+
+    Args:
+        size (np.array): (num_reg,) region sizes
+        z (np.array): (num_reg,) per-region z = (llr - mu) / std
+        consider (np.array): (num_reg,) bool, regions eligible for the max
+            (here size >= floor and z finite)
+
+    Returns:
+        curve (np.array): (L, 2) corners (size, max_z), ascending in size (so
+            max_z descending); (0, 2) if none.
+    """
+    s, zz = size[consider], z[consider]
+    if s.size == 0:
+        return np.empty((0, 2))
+    order = np.argsort(s)
+    uniq, idx = np.unique(s[order], return_index=True)
+    z_at = np.maximum.reduceat(zz[order], idx)
+    suffix = np.maximum.accumulate(z_at[::-1])[::-1]
+    # keep the largest size of each max-z plateau (right edge), so a
+    # "first corner with size >= m" lookup returns the right value
+    keep = np.append(np.diff(suffix) != 0, True)
+    return np.column_stack([uniq, suffix])[keep]
+
+
+def curve_json(curve_list) -> str:
+    """Serialize the per-perm staircases to one results cell.
+
+    Args:
+        curve_list (list): one (L_k, 2) corner array per outer perm, index k
+            matching the perm number (k=0 observed).
+
+    Returns:
+        a JSON string: a list (per perm) of [size, max_z] corner pairs.
+    """
+    return json.dumps([[[int(s), float(z)] for s, z in c] for c in curve_list])
+
+
+def _score_regions(reg_mask_list, mask_target_list, mask_active) -> dict:
+    """Per-effect confusion scoring of a set of output regions.
+
+    Unions the output region masks into one prediction, then scores it against
+    each planted effect in turn. With a single planted effect the four counts
+    are the bare tp/fp/tn/fn; with several they are suffixed by effect index
+    (tp0/fp0/tn0/fn0 vs effect 0, etc.) -- each effect's counts treat the
+    others' support as background. Dice / sensitivity / PPV derive downstream
+    from the counts (glow.mask.stats_from_counts).
+
+    Args:
+        reg_mask_list (list): (reg_idx, mask) per output region, in output
+            order; reg_idx is the Ward region index or None.
+        mask_target_list (list): the planted supports, one (X, Y, Z) bool
+            mask each (length 1 for the single-effect caches).
+        mask_active (np.array): (X, Y, Z) bool, the analyzed voxels.
+
+    Returns:
+        {n_selected, tp, fp, tn, fn}: the output-region count plus the
+            per-effect counts (suffixed by effect index when more than one).
+    """
+    mask_pred = np.zeros(mask_active.shape, dtype=bool)
+    for _, mask in reg_mask_list:
+        mask_pred |= mask
+    out = {'n_selected': len(reg_mask_list)}
+    single = len(mask_target_list) == 1
+    for i, mask_target in enumerate(mask_target_list):
+        counts = glow.mask.confusion_counts(
+            mask_pred=mask_pred, mask_target=mask_target,
+            mask_active=mask_active)
+        suffix = '' if single else str(i)
+        out.update({f'{k}{suffix}': v for k, v in counts.items()})
+    return out
+
+
+def score_prune(reg_out_list, children, mask_idx, mask_target_list,
+                mask_active) -> dict:
+    """Score a pruning rule's selected regions against the planted effect(s).
+
+    The prune leaf keeps only region indices (masks are heavy), so the score
+    is derived here: each selected region's (X, Y, Z) bool mask is rebuilt from
+    its Ward index (glow.graph.get_label_map, as AnalysisGLOW.finalize does),
+    then _score_regions unions them and counts tp/fp/tn/fn vs the planted
+    support, so dice / sens / ppv derive downstream like every arm. Used for
+    the greedy / DP selections and the single max-LLR region.
+
+    Args:
+        reg_out_list (list): selected region indices (the rule's output, or
+            [max-LLR region]); empty when nothing was selected.
+        children (np.array): (num_reg - num_vox, 2) Ward child-index pairs.
+        mask_idx (np.array): (X, Y, Z) int voxel-index array (-1 outside).
+        mask_target_list (list): the planted (X, Y, Z) bool supports.
+        mask_active (np.array): (X, Y, Z) bool, the analyzed voxels.
+
+    Returns:
+        {n_selected, tp, fp, tn, fn}: the _score_regions dict.
+    """
+    reg_mask_list = []
+    for reg_idx in reg_out_list:
+        label_map = glow.graph.get_label_map(
+            reg_idx_list=[reg_idx], mask_idx=mask_idx, children=children)
+        reg_mask_list.append((reg_idx, label_map > -1))
+    return _score_regions(reg_mask_list, mask_target_list, mask_active)

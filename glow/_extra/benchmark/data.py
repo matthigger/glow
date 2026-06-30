@@ -3,9 +3,13 @@
 data_factory_wgn / data_factory_hcp each build an image-only Experiment,
 sample a design matrix x onto it, and crop it to an Extenter's support -- the
 clean (effect-free) data; data_factory dispatches to them on source.
-effect_factory then plants a synthetic effect on a clean Experiment, returning
-the planted Experiment and its support mask (raw, effect-free runs skip it and
-feed a clean Experiment straight to an Analysis).
+effect_factory then plants synthetic effect(s) on a clean Experiment, returning
+the planted Experiment and the list of realized supports; like data_factory it
+is a dispatcher (on kind) over the recorded builders effect_factory_single (one
+effect) / effect_factory_split (two adjacent effects for the cleaving figure),
+which share one (exp, mask_target_list) contract so the driver threads the
+support list into the leaf whatever the effect count. (Raw, effect-free runs
+skip the effect stage and feed a clean Experiment straight to an Analysis.)
 
 Every build is memoised on disk (MEMORY) with the recorder nested inside the
 cache, so a cache hit returns the stored result and only a real (cache-miss)
@@ -17,7 +21,7 @@ consumes it link into one provenance DAG.
 import joblib
 import numpy as np
 
-from glow.effect import EffectSynthetic, Extenter
+from glow.effect import EffectSynthetic, Extenter, ExtenterSplit
 from glow.experiment import Experiment, ExperimentImageOnly
 
 from . import hcp
@@ -173,55 +177,154 @@ def data_factory(source: str, **kwargs):
     raise ValueError(f"source must be 'wgn' or 'hcp', got {source!r}")
 
 
-@MEMORY.cache
-@RECORDER(output_name_list=['exp', 'mask'])
-def effect_factory(exp, *, effect_llr, extenter_cls, n_vox, seed: int = None,
-                   seed_from_exp: bool = False):
-    """Plant one synthetic effect on a clean Experiment.
+def _resolve_seed(exp, seed, seed_from_exp: bool) -> int:
+    """Resolve a placement seed from the seed XOR seed_from_exp pair.
 
-    The support extenter is built here from extenter_cls + n_vox + a seed, so
-    the caller passes ingredients, not a constructed Extenter. Pass exactly
-    one of seed / seed_from_exp to set the support placement:
-      - seed: used directly (a fixed placement for the given geometry);
-      - seed_from_exp: the seed is a content hash of exp itself, so a fixed
-        config plants in a different -- but reproducible -- place in each
-        experiment. The driver shares one effect grid across every data cell,
-        so a single fixed seed would otherwise plant at the same spot in
-        every experiment; hashing the experiment gives each its own placement
-        without threading the data seed through the grid. The clean exp is
-        shared across effect_llr, so the placement is identical across
-        strengths and varies only across data realizations. (A slightly funny
-        coupling, but it is encapsulated entirely here; the analysis crop -- a
-        separate extenter in data_factory -- is untouched and stays
-        geometric.)
+    seed_from_exp derives the seed from joblib.hash(exp), so a fixed config
+    plants in a different but reproducible place in each experiment: the driver
+    shares one effect grid across every data cell, so a single fixed seed would
+    plant identically everywhere; hashing exp gives each data realization its
+    own placement without threading the data seed through the grid. The clean
+    exp is shared across effect_llr, so the placement is identical across
+    strengths and varies only across data realizations.
 
     Args:
-        exp: clean Experiment (a data_factory output) to add the effect to.
-        effect_llr (float): per-voxel (size-normalized) LLR target; the
-            whole-region LLR observed is ~ effect_llr * n_vox (see
-            glow.effect.impose).
-        extenter_cls (type[Extenter]): Extenter subclass sampling the
-            support, built as extenter_cls(n_vox=n_vox, seed=...) (e.g.
-            ExtenterMinVar).
-        n_vox (int): target support size.
-        seed (int): support placement seed; pass this XOR seed_from_exp.
-        seed_from_exp (bool): derive the support seed from a hash of exp; pass
-            this XOR seed.
+        exp: the clean Experiment the effect is planted on.
+        seed (int | None): explicit placement seed; XOR seed_from_exp.
+        seed_from_exp (bool): derive the seed from a hash of exp; pass this
+            XOR seed.
 
     Returns:
-        exp: the Experiment with the effect added.
-        mask (np.array): the realized boolean support (shape of exp.mask_idx).
+        the resolved placement seed.
 
     Raises:
         ValueError: if not exactly one of seed / seed_from_exp is given.
     """
     if (seed is not None) == seed_from_exp:
         raise ValueError('pass exactly one of seed / seed_from_exp')
-    if seed_from_exp:
-        seed = int(joblib.hash(exp), 16)
+    return int(joblib.hash(exp), 16) if seed_from_exp else seed
+
+
+def effect_factory(exp, *, kind: str = 'single', **kwargs):
+    """Plant synthetic effect(s) on a clean Experiment (dispatches on kind).
+
+    A thin dispatcher (the recorded work is in the per-kind builders, so a
+    record names the concrete builder -- mirrors data_factory dispatching to
+    data_factory_wgn / data_factory_hcp). Every builder shares one contract,
+    (exp, **kwargs) -> (exp_eff, mask_target_list): the planted Experiment and
+    the list of realized supports (one entry for 'single', two for 'split'), so
+    the driver threads mask_target_list into the leaf as-is.
+
+    Args:
+        exp: clean Experiment (a data_factory output) to add the effect(s) to.
+        kind (str): 'single' (effect_factory_single) or 'split' (two adjacent
+            effects, effect_factory_split).
+        **kwargs: forwarded to the selected builder.
+
+    Returns:
+        exp: the Experiment with the effect(s) added.
+        mask_target_list (list): the realized (X, Y, Z) bool supports, one per
+            planted effect (in plant order).
+
+    Raises:
+        ValueError: if kind is neither 'single' nor 'split'.
+    """
+    if kind == 'single':
+        return effect_factory_single(exp, **kwargs)
+    if kind == 'split':
+        return effect_factory_split(exp, **kwargs)
+    raise ValueError(f"kind must be 'single' or 'split', got {kind!r}")
+
+
+@MEMORY.cache
+@RECORDER(output_name_list=['exp', 'mask_target_list'])
+def effect_factory_single(exp, *, effect_llr, extenter_cls, n_vox,
+                          seed: int = None, seed_from_exp: bool = False):
+    """Plant one synthetic effect on a clean Experiment.
+
+    The support extenter is built here from extenter_cls + n_vox + a placement
+    seed (seed XOR seed_from_exp; see _resolve_seed), so the caller passes
+    ingredients, not a constructed Extenter. The whole effect is encapsulated
+    here; the analysis crop (a separate extenter in data_factory) is untouched.
+
+    Args:
+        exp: clean Experiment (a data_factory output) to add the effect to.
+        effect_llr (float): per-voxel (size-normalized) LLR target; the
+            whole-region LLR observed is ~ effect_llr * n_vox (see
+            glow.effect.impose).
+        extenter_cls (type[Extenter]): Extenter subclass sampling the support,
+            built as extenter_cls(n_vox=n_vox, seed=...) (e.g. ExtenterMinVar).
+        n_vox (int): target support size.
+        seed (int): support placement seed; pass this XOR seed_from_exp.
+        seed_from_exp (bool): derive the seed from a hash of exp; pass this
+            XOR seed.
+
+    Returns:
+        exp: the Experiment with the effect added.
+        mask_target_list (list): the single realized (X, Y, Z) bool support,
+            as a one-element list.
+
+    Raises:
+        ValueError: if not exactly one of seed / seed_from_exp is given.
+    """
+    seed = _resolve_seed(exp, seed, seed_from_exp)
     extenter = extenter_cls(n_vox=n_vox, seed=seed)
     exp, mask = EffectSynthetic(
         extenter=extenter, effect_llr=effect_llr).fit(exp)
     # canonicalise y's layout so the planted exp hashes stably (see
     # _with_canonical_y)
-    return _with_canonical_y(exp), mask
+    return _with_canonical_y(exp), [mask]
+
+
+@MEMORY.cache
+@RECORDER(output_name_list=['exp', 'mask_target_list'])
+def effect_factory_split(exp, *, effect_llr, extenter_cls, n_vox, angle,
+                         seed: int = None, seed_from_exp: bool = False):
+    """Plant two adjacent equal-LLR effects at a controlled direction angle.
+
+    The cleaving setup: an extenter_cls extent of n_vox voxels is grown from
+    its own seeded start and spectrally bisected (ExtenterSplit) into two
+    contiguous halves, with one effect planted on each -- same effect_llr,
+    feature directions angle degrees apart (angles 0 and angle), so the two
+    effects differ only in orientation. score_effects then scores the union and
+    each half in turn (target0 / target1; the merge-cost signal).
+
+    The base extent is placed by the extenter from the resolved seed (as
+    effect_factory_single seeds its extenter), so it picks its own start --
+    ExtenterMinVar (the cleaving cache's base) grows the lowest-variance region
+    and bisects it into roughly equal halves, the same data-driven support the
+    single-effect caches use. The one resolved seed (seed XOR seed_from_exp)
+    drives both the placement and the direction pair. A data-driven Fiedler cut
+    is not perfectly even, so the halves may differ in size (visible in
+    target0 / target1's voxel counts).
+
+    Args:
+        exp: clean Experiment (a data_factory output) to add the effects to.
+        effect_llr (float): per-voxel LLR target for each effect.
+        extenter_cls (type[Extenter]): Extenter subclass grown then bisected,
+            built as extenter_cls(n_vox=n_vox, seed=...) (e.g. ExtenterMinVar).
+        n_vox (int): combined two-effect support size (split into halves).
+        angle (float): feature-direction angle between the two effects (deg).
+        seed (int): placement + direction seed; pass this XOR seed_from_exp.
+        seed_from_exp (bool): derive the seed from a hash of exp; pass this
+            XOR seed.
+
+    Returns:
+        exp: the Experiment with both effects added.
+        mask_target_list (list): the two realized half-supports [mask0, mask1]
+            (mask0 | mask1 is the grown extent, the two disjoint).
+
+    Raises:
+        ValueError: if not exactly one of seed / seed_from_exp is given.
+    """
+    seed = _resolve_seed(exp, seed, seed_from_exp)
+    splitter = ExtenterSplit(base=extenter_cls(n_vox=n_vox, seed=seed))
+    mask0, mask1 = splitter.fit(mask_idx=exp.mask_idx, y=exp.y)
+    e0 = EffectSynthetic(mask=mask0, effect_llr=effect_llr, angle=0.0,
+                         seed=seed)
+    e1 = EffectSynthetic(mask=mask1, effect_llr=effect_llr, angle=float(angle),
+                         seed=seed)
+    exp = e1.fit(e0.fit(exp)[0])[0]
+    # canonicalise y's layout so the planted exp hashes stably (see
+    # _with_canonical_y)
+    return _with_canonical_y(exp), [mask0, mask1]
