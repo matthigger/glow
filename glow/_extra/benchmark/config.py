@@ -210,26 +210,14 @@ RUN_PRUNE_LIST = [
 
 
 # ---------- smoke test (a tiny non-paper cache for end-to-end checks) --------
-# Not a paper figure: a fast WGN-only null sweep used to confirm the whole
+# Not a paper figure: a tiny null sweep over both sources, to check the whole
 # pipeline runs end to end (in particular the AWS Batch path -- driver submits,
 # a worker rebuilds its cell from this CONFIG, fits, and ships records back).
-# Small crop, few seeds, two representative recipes, and reduced permutation
-# counts so a cell finishes in seconds; see the 'smoke' CONFIG entry.
+# It is the null path with two overrides only -- a small crop and few seeds --
+# so a cell finishes fast; sources, num_img, the RUN_ANA_LIST recipes, and the
+# paper permutation counts stay standard, so it exercises the real recipes.
 SMOKE_CROP_N_VOX = 1_000
 SMOKE_N_SEED = 3
-SMOKE_NUM_IMG = 30
-SMOKE_N_PERM_FWER = 20
-SMOKE_N_PERM_INNER = 50
-
-_smoke_kwargs = dict(n_perm_fwer=SMOKE_N_PERM_FWER, alpha_fwer=ALPHA_FWER)
-SMOKE_RUN_ANA_LIST = [
-    dict(ana=AnalysisGLOW(n_perm_inner=SMOKE_N_PERM_INNER,
-                          cluster_mode=ClusterMode.FOCUS, **_smoke_kwargs),
-         label='GLOW-Focus'),
-    dict(ana=AnalysisVBA(z_flag=True, tfce_flag=False, get_stat=get_hotel_tr,
-                         **_smoke_kwargs),
-         label='VBA'),
-]
 
 
 # ---------- stage builders (swept axes are the keyword arguments) ------------
@@ -412,14 +400,14 @@ CONFIG = {
         get_kwargs_two_effect_list(),
         RUN_ANA_LIST, run_ana),
     # Smoke: tiny null sweep over both sources to confirm the pipeline end to
-    # end (not a paper figure). Small crop / few seeds / reduced perms; see
-    # SMOKE_* above. WGN and HCP cells (3 each); on AWS the HCP cells need the
-    # reference data staged to S3 (python -m glow._extra.aws stage_hcp) and run
-    # with --sources wgn,hcp (default --sources wgn runs only the WGN half).
+    # end (not a paper figure). The null path with only a small crop and few
+    # seeds overridden (see SMOKE_* above). WGN and HCP cells (3 each); on AWS
+    # the HCP cells need the reference data staged to S3
+    # (python -m glow._extra.aws stage_hcp) and run with --sources wgn,hcp
+    # (default --sources wgn runs only the WGN half).
     'smoke': (
-        get_kwargs_data_list(sources=['wgn', 'hcp'], seeds=range(SMOKE_N_SEED),
-                             num_img_list=(SMOKE_NUM_IMG,),
+        get_kwargs_data_list(seeds=range(SMOKE_N_SEED),
                              crop_n_vox=SMOKE_CROP_N_VOX),
         get_kwargs_effect_list(llr_list=None),
-        SMOKE_RUN_ANA_LIST, run_ana),
+        RUN_ANA_LIST, run_ana),
 }
