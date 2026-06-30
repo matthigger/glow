@@ -259,7 +259,7 @@ def get_kwargs_data_list(*, sources=SOURCES, seeds=range(N_SEED), b_list=(1,),
     wgn_side = math.ceil(crop_n_vox ** (1 / 3))
 
     def sample_hcp_feats(b, seed):
-        # a sorted random b-subset of the HCP feature pool, per seed
+        """Return a sorted random b-subset of HCP_FEATS, per seed."""
         idx = np.random.default_rng(seed).choice(len(hcp.HCP_FEATS), size=b,
                                                  replace=False)
         return tuple(sorted(hcp.HCP_FEATS[i] for i in idx))

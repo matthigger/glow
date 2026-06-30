@@ -108,6 +108,7 @@ def score_effects(ana, mask_target_list, mask_active) -> dict:
     # per-region geometry: each discovered region's size and how many of its
     # voxels land in each target (the union, then each effect when several)
     def overlap(region, target):
+        """Count region voxels that fall inside target (within mask_active)."""
         return int((region & target & mask_active).sum())
 
     pred = []
