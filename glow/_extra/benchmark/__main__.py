@@ -23,31 +23,12 @@ Usage:
     python -m glow._extra.benchmark                    # everything (local)
     python -m glow._extra.benchmark 'sweep_*'          # glob
     python -m glow._extra.benchmark -j 4 sweep_llr     # parallel local
-    python -m glow._extra.benchmark --aws sweep_llr    # run on AWS Batch (WGN)
+    python -m glow._extra.benchmark --aws sweep_llr    # run on AWS Batch
     python -m glow._extra.benchmark --csv-only         # rebuild CSVs only
     python -m glow._extra.benchmark --list             # list cache names
 """
 import argparse
 from fnmatch import fnmatch
-
-_SOURCES = ('wgn', 'hcp')
-
-
-def _parse_sources(text: str) -> tuple:
-    """Parse a comma-separated --sources value into a validated tuple.
-
-    A single argparse value (not nargs='+') so it never swallows the trailing
-    positional cache names; e.g. 'wgn' or 'wgn,hcp'.
-
-    Raises:
-        argparse.ArgumentTypeError: a token is not a known source.
-    """
-    vals = tuple(t.strip() for t in text.split(',') if t.strip())
-    bad = [v for v in vals if v not in _SOURCES]
-    if bad:
-        raise argparse.ArgumentTypeError(
-            f'invalid source(s) {bad}; choose from {list(_SOURCES)}')
-    return vals
 
 
 def resolve_names(patterns) -> list:
@@ -105,7 +86,7 @@ def _report_csvs(written: dict) -> None:
 
 def run(names=None, n_jobs: int = 1, verbose: bool = True,
         write_csv: bool = True, csv_only: bool = False, out_dir=None,
-        aws: bool = False, sources=('wgn',), aws_config_path=None) -> dict:
+        aws: bool = False, aws_config_path=None) -> dict:
     """Drive the selected CONFIG caches, then write their per-config CSVs.
 
     For each resolved cache name, runs ``drive(*CONFIG[name], n_jobs=n_jobs)``
@@ -138,9 +119,6 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
         out_dir (str | pathlib.Path | None): CSV destination; None is glow's
             per-user results dir (file.get_path_result).
         aws (bool): run the sweep on AWS Batch (drive_aws) rather than locally.
-        sources (tuple[str]): data sources to run under aws ('wgn' and/or
-            'hcp'); the default WGN-only matches the first AWS milestone.
-            Ignored for a local run (which runs every source in the grid).
         aws_config_path (str | None): AWSConfig JSON path for aws; None uses
             the per-user default (config.AWSConfig.from_file).
 
@@ -162,8 +140,8 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
         from glow._extra.aws import AWSConfig, drive_aws
         aws_config = (AWSConfig.from_file(aws_config_path) if aws_config_path
                       else AWSConfig.from_file())
-        return drive_aws(resolved, aws_config, sources=tuple(sources),
-                         write_csv=write_csv, verbose=verbose, out_dir=out_dir)
+        return drive_aws(resolved, aws_config, write_csv=write_csv,
+                         verbose=verbose, out_dir=out_dir)
 
     from .config import CONFIG
     from .data import RECORDER
@@ -211,9 +189,6 @@ def parse_args(argv=None) -> argparse.Namespace:
                              'dir)')
     parser.add_argument('--aws', action='store_true',
                         help='run the sweep on AWS Batch (glow._extra.aws)')
-    parser.add_argument('--sources', type=_parse_sources, default=('wgn',),
-                        help='comma-separated sources for --aws, e.g. wgn,hcp '
-                             '(default: wgn)')
     parser.add_argument('--aws-config', default=None,
                         help='AWSConfig JSON for --aws (default: per-user)')
     parser.add_argument('--list', action='store_true', dest='list_names',
@@ -243,7 +218,7 @@ def main(argv=None) -> None:
 
     run(names=args.names, n_jobs=args.n_jobs, verbose=not args.quiet,
         write_csv=not args.no_csv, csv_only=args.csv_only,
-        out_dir=args.out_dir, aws=args.aws, sources=args.sources,
+        out_dir=args.out_dir, aws=args.aws,
         aws_config_path=args.aws_config)
 
 

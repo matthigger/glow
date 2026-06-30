@@ -32,7 +32,7 @@ def _put_bundle(fake, bucket, prefix, run_id, bundle):
 
 def test_array_index_selects_cell(monkeypatch):
     bucket, prefix = 'bkt', 'glow'
-    data_cells, eff, fnc_kw, fnc = resolve_cells('sweep_llr', ('wgn',))
+    data_cells, eff, fnc_kw, fnc = resolve_cells('sweep_llr')
     # the driver ships a subset (here cells 5, 6, 7); child i runs the i-th
     bundle = ([data_cells[5], data_cells[6], data_cells[7]], eff, fnc_kw,
               fnc_to_ref(fnc), 'sweep_llr')
@@ -62,7 +62,8 @@ def test_hcp_cell_pulls_only_its_features(monkeypatch):
     # an HCP cell pulls just the bundle files for its hcp_feats (+ shared
     # mask/affine/meta), via download_each -- not the whole panel
     bucket, prefix = 'bkt', 'glow'
-    hcp_cells, eff, fnc_kw, fnc = resolve_cells('smoke', ('hcp',))
+    all_cells, eff, fnc_kw, fnc = resolve_cells('smoke')
+    hcp_cells = [c for c in all_cells if c['source'] == 'hcp']
     bundle = ([hcp_cells[0]], eff, fnc_kw, fnc_to_ref(fnc), 'smoke')
     fake = FakeS3()
     uri = _put_bundle(fake, bucket, prefix, 'run-h', bundle)

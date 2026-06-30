@@ -402,9 +402,8 @@ CONFIG = {
     # Smoke: tiny null sweep over both sources to confirm the pipeline end to
     # end (not a paper figure). The null path with only a small crop and few
     # seeds overridden (see SMOKE_* above). WGN and HCP cells (3 each); on AWS
-    # the HCP cells need the reference data staged to S3
-    # (python -m glow._extra.aws stage_hcp) and run with --sources wgn,hcp
-    # (default --sources wgn runs only the WGN half).
+    # the HCP cells need the reference data staged to S3 first
+    # (python -m glow._extra.aws stage_hcp).
     'smoke': (
         get_kwargs_data_list(seeds=range(SMOKE_N_SEED),
                              crop_n_vox=SMOKE_CROP_N_VOX),

@@ -87,6 +87,10 @@ def test_submit_job_array_vs_single():
 
 # ---------- end-to-end orchestration ----------------------------------------
 
+# sweep_llr's full CONFIG grid (both sources) -- the array size the driver
+# submits; derived so it tracks config rather than a hard-coded count.
+N_CELLS = len(resolve_cells('sweep_llr')[0])
+
 
 def _run(fake_s3, fake_batch, **kw):
     with patch('glow._extra.aws.driver.boto3.client',
@@ -96,21 +100,21 @@ def _run(fake_s3, fake_batch, **kw):
 
 
 def test_happy_path_submits_one_array_and_finishes():
-    # sweep_llr has 15 WGN cells -> one array job of size 15, all succeed
-    fake_s3, fake_batch = FakeS3(), FakeBatch(submit_then=[[OK] * 15])
+    # sweep_llr's full grid -> one array job of size N_CELLS, all succeed
+    fake_s3, fake_batch = FakeS3(), FakeBatch(submit_then=[[OK] * N_CELLS])
     _run(fake_s3, fake_batch)
     assert len(fake_batch.submitted) == 1
-    assert fake_batch.submitted[0]['arrayProperties'] == {'size': 15}
+    assert fake_batch.submitted[0]['arrayProperties'] == {'size': N_CELLS}
     # the manifest points at the pickled bundle; the bundle carries this
     # attempt's resolved cells + the shared grids + leaf fnc + cache label
     (_, manifest_key), = [k for k in fake_s3.store
                           if k[1].endswith('manifest.json')]
     manifest = json.loads(fake_s3.store[('bkt', manifest_key)])
     assert manifest['config_name'] == 'sweep_llr'
-    assert manifest['n_cells'] == 15
+    assert manifest['n_cells'] == N_CELLS
     data_cells, *_, label = pickle.loads(
         fake_s3.store[('bkt', manifest['bundle_key'])])
-    expected, *_ = resolve_cells('sweep_llr', ('wgn',))
+    expected, *_ = resolve_cells('sweep_llr')
     assert label == 'sweep_llr'
     # cells have no value __eq__; the cache key (joblib.hash) is what matters
     assert joblib.hash(data_cells) == joblib.hash(expected)
@@ -118,7 +122,7 @@ def test_happy_path_submits_one_array_and_finishes():
 
 def test_oom_escalates_to_next_tier():
     # cell 0 OOMs at tier 0, only it is retried at tier 1 (where it succeeds)
-    tier0 = [OOM] + [OK] * 14
+    tier0 = [OOM] + [OK] * (N_CELLS - 1)
     tier1 = [OK]  # one cell -> single (non-array) job
     fake_s3 = FakeS3()
     fake_batch = FakeBatch(submit_then=[tier0, tier1])
@@ -131,19 +135,19 @@ def test_oom_escalates_to_next_tier():
     assert mem['MEMORY'] == '8000'
     manifests = [json.loads(v) for (b, k), v in fake_s3.store.items()
                  if k.endswith('manifest.json')]
-    # two manifests: the full tier-0 grid (15) and the tier-1 retry of one cell
-    assert sorted(m['n_cells'] for m in manifests) == [1, 15]
+    # two manifests: the full tier-0 grid and the tier-1 retry of one cell
+    assert sorted(m['n_cells'] for m in manifests) == [1, N_CELLS]
     # the tier-1 retry ships exactly the OOM cell (cell 0)
     retry = next(m for m in manifests if m['n_cells'] == 1)
     cells, *_ = pickle.loads(fake_s3.store[('bkt', retry['bundle_key'])])
-    expected, *_ = resolve_cells('sweep_llr', ('wgn',))
+    expected, *_ = resolve_cells('sweep_llr')
     assert joblib.hash(cells) == joblib.hash([expected[0]])
 
 
 def test_permanent_failure_not_retried():
     # a non-OOM crash is permanent: no escalation, reported as a failure
     fake_s3 = FakeS3()
-    fake_batch = FakeBatch(submit_then=[[CRASH] + [OK] * 14])
+    fake_batch = FakeBatch(submit_then=[[CRASH] + [OK] * (N_CELLS - 1)])
     _run(fake_s3, fake_batch)
     assert len(fake_batch.submitted) == 1  # no tier-1 resubmission
 
@@ -156,7 +160,7 @@ def test_write_csv_pulls_records_and_writes(monkeypatch):
         return {}
     monkeypatch.setattr('glow._extra.benchmark.results.write_config_csvs',
                         _stub)
-    fake_s3, fake_batch = FakeS3(), FakeBatch(submit_then=[[OK] * 15])
+    fake_s3, fake_batch = FakeS3(), FakeBatch(submit_then=[[OK] * N_CELLS])
     with patch('glow._extra.aws.driver.boto3.client',
                client_factory(fake_s3, fake_batch)):
         written = drive_aws('sweep_llr', _cfg(), write_csv=True, verbose=False)

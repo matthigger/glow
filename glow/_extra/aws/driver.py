@@ -57,20 +57,20 @@ ACTIVE_STATES = ('SUBMITTED', 'PENDING', 'RUNNABLE', 'STARTING', 'RUNNING')
 TERMINAL_STATES = frozenset({'SUCCEEDED', 'FAILED'})
 
 
-def drive_aws(names, aws_config, *, sources=('wgn',), write_csv: bool = True,
+def drive_aws(names, aws_config, *, write_csv: bool = True,
               verbose: bool = True, out_dir=None) -> dict:
     """Run the selected CONFIG caches on AWS Batch, then write their CSVs.
 
-    Each cache's selected data cells (sources, e.g. WGN only) are submitted as
-    a Batch array job and escalated through aws_config.memory_mb_tiers for any
-    OOM-killed cells. When every cache's array has drained, the shared records
-    are pulled from S3 and the per-config CSVs written.
+    Each cache's data cells -- whatever sources its CONFIG grid declares -- are
+    submitted as a Batch array job and escalated through
+    aws_config.memory_mb_tiers for any OOM-killed cells. When every cache's
+    array has drained, the shared records are pulled from S3 and the per-config
+    CSVs written. (HCP cells need their reference data staged to S3 first; see
+    glow._extra.aws stage_hcp.)
 
     Args:
         names (str | list[str]): a CONFIG cache name or list of them.
         aws_config (AWSConfig): bucket, prefix, queue, definition, tiers.
-        sources (tuple[str]): data sources to run ('wgn' and/or 'hcp');
-            defaults to WGN only (HCP needs its data staged to S3 first).
         write_csv (bool): pull records and write the per-config CSVs at the
             end (results.write_config_csvs).
         verbose (bool): tqdm progress bars and status prints.
@@ -87,24 +87,18 @@ def drive_aws(names, aws_config, *, sources=('wgn',), write_csv: bool = True,
     s3_client = boto3.client('s3', region_name=aws_config.region)
     batch = boto3.client('batch', region_name=aws_config.region)
 
-    # resolve each cache's run bundle once (the selected data cells + shared
-    # effect / fnc grids + leaf fnc); remaining tracks the cell indices still
-    # to run, resolved holds the bundle to ship them from. A cache with no
-    # selected cell is skipped (e.g. an hcp-only filter against a wgn sweep).
+    # resolve each cache's run bundle once (its data cells + shared effect /
+    # fnc grids + leaf fnc); remaining tracks the cell indices still to run,
+    # resolved holds the bundle to ship them from.
     remaining: Dict[str, List[int]] = {}
     resolved: Dict[str, tuple] = {}
     for name in names:
         data_cells, kwargs_effect_list, kwargs_fnc_list, fnc = resolve_cells(
-            name, sources)
-        if data_cells:
-            remaining[name] = list(range(len(data_cells)))
-            resolved[name] = (data_cells, kwargs_effect_list,
-                              kwargs_fnc_list, fnc)
-            if verbose:
-                print(f'[drive_aws] {name}: {len(data_cells)} cell(s) '
-                      f'(sources={list(sources)})')
-        elif verbose:
-            print(f'[drive_aws] {name}: no cells for sources={list(sources)}')
+            name)
+        remaining[name] = list(range(len(data_cells)))
+        resolved[name] = (data_cells, kwargs_effect_list, kwargs_fnc_list, fnc)
+        if verbose:
+            print(f'[drive_aws] {name}: {len(data_cells)} cell(s)')
 
     failures: Dict[str, List[Tuple[int, str]]] = {n: [] for n in remaining}
 
