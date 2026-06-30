@@ -111,7 +111,8 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
         names (list | None): cache names or fnmatch patterns; None selects all.
         n_jobs (int): joblib worker count for a local sweep (1 = serial; -1 =
             all cores). Ignored when csv_only or aws is set.
-        verbose (bool): print per-cache headers and the CSV-written summary.
+        verbose (bool): print per-cache headers, the drive() progress bar,
+            and the CSV-written summary.
         write_csv (bool): write the per-config CSVs after the sweep. Implied
             (and forced) when csv_only is set.
         csv_only (bool): skip the sweep; rebuild the CSVs from the records on
@@ -157,7 +158,7 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
         # wrap drive so the cache name tags each leaf's record (driver reads
         # the active collecting() grouping); results then slices CSVs by tag
         with RECORDER.collecting(name):
-            drive(*CONFIG[name], n_jobs=n_jobs)
+            drive(*CONFIG[name], n_jobs=n_jobs, verbose=verbose)
 
     written = (write_config_csvs(out_dir=out_dir, names=resolved)
                if write_csv else {})
