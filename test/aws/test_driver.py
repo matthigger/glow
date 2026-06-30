@@ -5,11 +5,15 @@ escalate loop without provisioning AWS.
 """
 
 import json
+import pickle
 from unittest.mock import patch
+
+import joblib
 
 from glow._extra.aws.config import AWSConfig
 from glow._extra.aws.driver import (_Attempt, _classify, _inflight_postfix,
                                      _is_oom, _submit_job, drive_aws)
+from glow._extra.aws.units import resolve_cells
 from test.aws.fakes import FakeBatch, FakeS3, client_factory
 
 OOM = {'status': 'FAILED',
@@ -97,13 +101,19 @@ def test_happy_path_submits_one_array_and_finishes():
     _run(fake_s3, fake_batch)
     assert len(fake_batch.submitted) == 1
     assert fake_batch.submitted[0]['arrayProperties'] == {'size': 15}
-    # the manifest names the cache, sources, and this attempt's cell indices
+    # the manifest points at the pickled bundle; the bundle carries this
+    # attempt's resolved cells + the shared grids + leaf fnc + cache label
     (_, manifest_key), = [k for k in fake_s3.store
                           if k[1].endswith('manifest.json')]
     manifest = json.loads(fake_s3.store[('bkt', manifest_key)])
     assert manifest['config_name'] == 'sweep_llr'
-    assert manifest['sources'] == ['wgn']
-    assert manifest['cell_indices'] == list(range(15))
+    assert manifest['n_cells'] == 15
+    data_cells, *_, label = pickle.loads(
+        fake_s3.store[('bkt', manifest['bundle_key'])])
+    expected, *_ = resolve_cells('sweep_llr', ('wgn',))
+    assert label == 'sweep_llr'
+    # cells have no value __eq__; the cache key (joblib.hash) is what matters
+    assert joblib.hash(data_cells) == joblib.hash(expected)
 
 
 def test_oom_escalates_to_next_tier():
@@ -121,8 +131,13 @@ def test_oom_escalates_to_next_tier():
     assert mem['MEMORY'] == '8000'
     manifests = [json.loads(v) for (b, k), v in fake_s3.store.items()
                  if k.endswith('manifest.json')]
-    # two manifests: the full tier-0 grid and the tier-1 retry of just cell 0
-    assert sorted(m['cell_indices'] for m in manifests) == [[0], list(range(15))]
+    # two manifests: the full tier-0 grid (15) and the tier-1 retry of one cell
+    assert sorted(m['n_cells'] for m in manifests) == [1, 15]
+    # the tier-1 retry ships exactly the OOM cell (cell 0)
+    retry = next(m for m in manifests if m['n_cells'] == 1)
+    cells, *_ = pickle.loads(fake_s3.store[('bkt', retry['bundle_key'])])
+    expected, *_ = resolve_cells('sweep_llr', ('wgn',))
+    assert joblib.hash(cells) == joblib.hash([expected[0]])
 
 
 def test_permanent_failure_not_retried():

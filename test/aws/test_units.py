@@ -1,7 +1,8 @@
 """resolve_cells: determinism, source filtering, and array sizing.
 
-The driver and worker must enumerate the same ordered cell list with no
-shared state (see glow._extra.aws.units), so determinism is the key property.
+The driver resolves the cell list and ships it in the run bundle (see
+glow._extra.aws.units); determinism keeps the ordering reproducible across
+runs so warm-cache hits line up, so it is the key property here.
 """
 
 from glow._extra.aws.units import resolve_cells

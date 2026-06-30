@@ -4,14 +4,16 @@ Invoked inside the container (the image ENTRYPOINT) as
 
     python -m glow._extra.aws.worker s3://bucket/.../runs/<id>/manifest.json
 
-The manifest is a tiny JSON describing the run -- the CONFIG cache name, the
-data sources to keep, the cell indices this array job is running, and the S3
-prefix / region for the shared state. The worker:
+The manifest is a tiny JSON pointing at the run bundle -- the bundle's S3 key,
+the shared prefix / region for the shared state, and the cache label. The
+worker:
 
-  1. reads AWS_BATCH_JOB_ARRAY_INDEX, looks up its cell index in the manifest,
-     and rebuilds that data cell from CONFIG (resolve_cells -- a pure function
-     of the catalogue, so the cell matches what the driver enumerated; nothing
-     per-cell is shipped, and no run function is pickled);
+  1. downloads + unpickles the run bundle the driver shipped (the resolved
+     data cells + shared effect / fnc grids + leaf-fnc reference + cache
+     label) and takes its AWS_BATCH_JOB_ARRAY_INDEX-th cell -- nothing is
+     looked up in CONFIG, so the cell list cannot drift from what the driver
+     shipped (a config edit ships at submit time; only a glow code change
+     still needs an image rebuild);
   2. if the cell is HCP, pulls just its features from the staged npy bundle
      (mask / affine / meta + its hcp_feats arrays) into hcp.bundle_dir(), so
      data_factory_hcp builds from the bundle with no niftis and no DUA prompt
@@ -30,20 +32,22 @@ OOM-killed cell to the next memory tier (see glow._extra.aws.driver).
 
 import json
 import os
+import pickle
 import signal
 import sys
 
 import boto3
 
 from . import s3, sync
-from .units import resolve_cells
+from .bundle import fnc_from_ref
 
 
 def _load_manifest(s3_client, bucket: str, key: str) -> dict:
     """Download and parse the run manifest JSON from S3.
 
     Returns:
-        the manifest dict: {config_name, sources, cell_indices, s3_prefix}.
+        the manifest dict: {config_name, bundle_key, s3_prefix, region,
+        n_cells}.
     """
     body = s3_client.get_object(Bucket=bucket, Key=key)['Body'].read()
     return json.loads(body)
@@ -58,20 +62,28 @@ def main(manifest_uri: str) -> None:
     bucket, manifest_key = s3.parse_s3_uri(manifest_uri)
     manifest = _load_manifest(boto3.client('s3'), bucket, manifest_key)
 
-    config_name = manifest['config_name']
-    sources = tuple(manifest['sources'])
     prefix = manifest['s3_prefix']
     region = manifest.get('region')
     s3_client = boto3.client('s3', region_name=region) if region \
         else boto3.client('s3')
 
-    idx = int(os.environ.get('AWS_BATCH_JOB_ARRAY_INDEX', '0'))
-    cell_idx = manifest['cell_indices'][idx]
+    # download + unpickle the run bundle the driver shipped; the worker runs
+    # whatever it is handed, with no CONFIG lookup of its own (unpickling the
+    # fnc / Analysis objects resolves their classes from the installed glow).
+    # pickle is safe here: the bundle is written by this operator's own driver
+    # into the operator's private S3 bucket -- a closed trust boundary, not
+    # untrusted input.
+    body = s3_client.get_object(
+        Bucket=bucket, Key=manifest['bundle_key'])['Body'].read()
+    data_cells, kwargs_effect_list, kwargs_fnc_list, fnc_ref, config_name = \
+        pickle.loads(body)
+    # fnc ships as an import reference; resolving it here binds it to this
+    # worker's MEMORY / RECORDER (the synced cache dir), see bundle module
+    fnc = fnc_from_ref(fnc_ref)
 
-    data_cells, kwargs_effect_list, kwargs_fnc_list, fnc = resolve_cells(
-        config_name, sources)
-    kwargs_data = data_cells[cell_idx]
-    print(f'[worker] {config_name} array_idx={idx} cell_idx={cell_idx} '
+    idx = int(os.environ.get('AWS_BATCH_JOB_ARRAY_INDEX', '0'))
+    kwargs_data = data_cells[idx]
+    print(f'[worker] {config_name} array_idx={idx} '
           f'source={kwargs_data.get("source")}', flush=True)
 
     # an HCP cell builds from the staged npy bundle, so pull just the files it

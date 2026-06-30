@@ -8,10 +8,18 @@ array drains, the driver pulls the records down and writes the per-config CSVs
 with the unchanged results.write_config_csvs -- the AWS path produces the same
 records a local run would, so the read side is identical.
 
-The work split needs no per-cell shipping: the array index addresses a cell
-(resolve_cells is a pure function of CONFIG, so child i is the same cell on the
-driver and the worker; see glow._extra.aws.units). The manifest is a tiny JSON
-naming the cache, the sources, and this attempt's cell indices.
+The driver is the single source of truth for what runs: it resolves a cache's
+cells locally (resolve_cells -- see glow._extra.aws.units) and ships the
+resolved run bundle -- the selected data cells plus the shared effect / fnc
+grids (params) and the leaf fnc (an import reference; see
+glow._extra.aws.bundle) -- as one pickle per submission to S3. The worker
+downloads + unpickles it and runs its array-index cell, looking nothing up in
+CONFIG (so a config edit ships at submit time, with no image rebuild; only a
+code change to glow itself still needs one). The manifest is a tiny JSON
+pointing at the bundle (its key, the shared prefix / region, the cache label).
+Array child i runs the i-th cell of the shipped bundle -- a position, not a
+re-derived index -- so the driver and worker can never disagree on the cell
+list.
 
 OOM escalation is kept from the old driver: a cell killed for memory is
 re-submitted at the next memory_mb_tier, and only at the last tier does it
@@ -25,6 +33,7 @@ rerun re-tags membership and fills gaps without recomputing finished work.
 """
 
 import json
+import pickle
 import time
 import uuid
 from dataclasses import dataclass
@@ -34,6 +43,7 @@ import boto3
 from tqdm import tqdm
 
 from . import s3, sync
+from .bundle import fnc_to_ref
 from .config import s3_key
 from .units import resolve_cells
 
@@ -77,13 +87,19 @@ def drive_aws(names, aws_config, *, sources=('wgn',), write_csv: bool = True,
     s3_client = boto3.client('s3', region_name=aws_config.region)
     batch = boto3.client('batch', region_name=aws_config.region)
 
-    # cell count per cache (the array size); a cache with no selected cell is
-    # skipped (e.g. an hcp-only filter against a wgn-only sweep).
+    # resolve each cache's run bundle once (the selected data cells + shared
+    # effect / fnc grids + leaf fnc); remaining tracks the cell indices still
+    # to run, resolved holds the bundle to ship them from. A cache with no
+    # selected cell is skipped (e.g. an hcp-only filter against a wgn sweep).
     remaining: Dict[str, List[int]] = {}
+    resolved: Dict[str, tuple] = {}
     for name in names:
-        data_cells, *_ = resolve_cells(name, sources)
+        data_cells, kwargs_effect_list, kwargs_fnc_list, fnc = resolve_cells(
+            name, sources)
         if data_cells:
             remaining[name] = list(range(len(data_cells)))
+            resolved[name] = (data_cells, kwargs_effect_list,
+                              kwargs_fnc_list, fnc)
             if verbose:
                 print(f'[drive_aws] {name}: {len(data_cells)} cell(s) '
                       f'(sources={list(sources)})')
@@ -106,7 +122,7 @@ def drive_aws(names, aws_config, *, sources=('wgn',), write_csv: bool = True,
         for name, cells in active.items():
             attempts.extend(_submit_run(
                 s3=s3_client, batch=batch, aws_config=aws_config, name=name,
-                sources=sources, cell_indices=cells, mem_mb=mem_mb,
+                resolved=resolved[name], cell_indices=cells, mem_mb=mem_mb,
                 verbose=verbose))
 
         statuses_per_attempt = _poll_attempts(
@@ -155,8 +171,10 @@ class _Attempt:
     Attributes:
         name (str): CONFIG cache this attempt belongs to; routes failures back
             and labels the progress bar.
-        cell_indices (list[int]): the data-cell indices submitted, in child
-            order; child i runs cell_indices[i]. At most ARRAY_MAX long.
+        cell_indices (list[int]): the original data-cell indices submitted, in
+            child order -- child i ran the i-th cell of its shipped bundle,
+            which is cell cell_indices[i]; kept for failure reporting and OOM
+            retry. At most ARRAY_MAX long.
         parent_id (str): the submitted job's id.
         is_array (bool): True if submitted as an array job.
     """
@@ -180,20 +198,27 @@ def _manifest_key(prefix: str, run_id: str) -> str:
     return s3_key(prefix, 'runs', run_id, 'manifest.json')
 
 
-def _submit_run(*, s3, batch, aws_config, name: str, sources, cell_indices,
-                mem_mb: int, verbose: bool):
-    """Write the manifest(s) and submit one cache's array job(s) for a tier.
+def _submit_run(*, s3, batch, aws_config, name: str, resolved: tuple,
+                cell_indices, mem_mb: int, verbose: bool):
+    """Ship the run bundle(s) and submit one cache's array job(s) for a tier.
 
-    Cell counts above ARRAY_MAX are split across multiple array submissions,
-    each its own manifest + _Attempt.
+    Each chunk's selected data cells are sliced out of the resolved bundle,
+    pickled with the shared effect / fnc grids + leaf-fnc reference + cache
+    label, and uploaded to S3; the manifest is a tiny JSON pointing at that
+    pickle (see glow._extra.aws.bundle for the bundle layout). Cell
+    counts above ARRAY_MAX are split across multiple submissions, each its own
+    bundle + manifest + _Attempt. Array child i runs the i-th cell of its
+    bundle, so _Attempt.cell_indices[i] (the original index, kept for failure
+    reporting / OOM retry) is the cell child i ran.
 
     Args:
         s3: boto3 S3 client.
         batch: boto3 Batch client.
         aws_config (AWSConfig): bucket, prefix, queue, definition, region.
-        name (str): CONFIG cache name, carried on each returned _Attempt.
-        sources (tuple[str]): the data sources, recorded in the manifest so
-            the worker resolves the same cells.
+        name (str): CONFIG cache name; the bundle's label and each _Attempt's.
+        resolved (tuple): the cache's full bundle
+            (data_cells, kwargs_effect_list, kwargs_fnc_list, fnc); this
+            tier's chunk slices its data cells out of data_cells.
         cell_indices (list[int]): the data-cell indices to attempt this tier.
         mem_mb (int): memory ceiling for this tier, in MB.
         verbose (bool): print a per-submission status line.
@@ -203,18 +228,26 @@ def _submit_run(*, s3, batch, aws_config, name: str, sources, cell_indices,
     """
     bucket = aws_config.s3_bucket
     prefix = aws_config.s3_prefix
+    data_cells, kwargs_effect_list, kwargs_fnc_list, fnc = resolved
 
     attempts: List[_Attempt] = []
     chunks = [cell_indices[i:i + ARRAY_MAX]
               for i in range(0, len(cell_indices), ARRAY_MAX)]
     for chunk in chunks:
         run_id = f'{name}-{uuid.uuid4().hex[:8]}'
+        # fnc rides as an import reference (code), the rest as pickled params;
+        # see glow._extra.aws.bundle
+        bundle = ([data_cells[c] for c in chunk], kwargs_effect_list,
+                  kwargs_fnc_list, fnc_to_ref(fnc), name)
+        bundle_key = s3_key(prefix, 'runs', run_id, 'bundle.pkl')
+        s3.put_object(Bucket=bucket, Key=bundle_key,
+                      Body=pickle.dumps(bundle))
         manifest = {
             'config_name': name,
-            'sources': list(sources),
-            'cell_indices': chunk,
+            'bundle_key': bundle_key,
             's3_prefix': prefix,
             'region': aws_config.region,
+            'n_cells': len(chunk),
         }
         manifest_key = _manifest_key(prefix, run_id)
         s3.put_object(Bucket=bucket, Key=manifest_key,
