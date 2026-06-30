@@ -1,4 +1,4 @@
-"""Schema + arithmetic tests for the paper scoring functions (paper/score.py).
+"""Schema + arithmetic tests for the scoring functions (benchmark/score.py).
 
 score_effects turns one fitted Analysis into the trial's score dict: global
 num_vox / min_pval / n_pred, a per-region pred list, and the confusion blocks
@@ -11,8 +11,8 @@ import json
 
 import numpy as np
 
-from glow._extra.benchmark.paper.score import (score_effects, score_oracle_tree,
-                                        size_max_z_curve, curve_json)
+from glow._extra.benchmark.score import (score_effects, score_oracle_tree,
+                                         size_max_z_curve, curve_json)
 
 
 class _FakeEffect:

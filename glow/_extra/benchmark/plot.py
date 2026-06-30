@@ -1,6 +1,6 @@
 """Plot the run_ana benchmark caches from the shared provenance records.
 
-The successor to paper/plot.py for the run_ana layer. It reads each cache's
+The plotting layer for the run_ana caches. It reads each cache's
 provenance frame (results.config_results_df: one wide row per run_ana leaf,
 namespaced by the producing function -- run_ana.out.score, the swept
 data_factory / effect_factory inputs), normalises it to one tidy row per
@@ -20,8 +20,8 @@ Each cache then gets either a faceted FWER calibration curve (null) or a
 faceted dice/sens/ppv sweep plus the GLOW-Focus head-to-head diff grid, WGN
 and HCP side by side. With no arguments it plots every run_ana cache in the
 catalogue; passing names restricts it. The mancova / segment / prune figures
-of the old paper layer are out of scope -- their leaf functions do not exist
-in this layer yet (see config).
+are out of scope -- their leaf functions do not exist in this layer yet
+(see config).
 """
 import colorsys
 

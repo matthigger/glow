@@ -10,10 +10,9 @@ RECORDER.flatten_to_df: its exp ancestor chains back through the plant to the
 data build, giving one score-bearing row per (trial, recipe). See
 glow._extra.benchmark.run / recorder.
 
-Ported from the deprecating paper layer (glow._extra.benchmark.paper.score):
-score_oracle_tree (segment), the min-size staircase scorers (size_max_z_curve /
-curve_json), and score_prune (the prune cache's region-index scorer) now live
-here beside score_effects.
+Beside score_effects this module also holds score_oracle_tree (segment), the
+min-size staircase scorers (size_max_z_curve / curve_json), and score_prune
+(the prune cache's region-index scorer).
 
 score_effects output (one dict per fitted Analysis), keys:
 

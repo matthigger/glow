@@ -171,7 +171,7 @@ class TestCellsBindToStages:
 
 class TestGridCardinality:
     def test_products_match_old_catalogue(self):
-        # cells x methods, identical to paper/config_old.py's trial counts
+        # cells x methods, identical to the published paper's trial counts
         # (paper caches only; non-paper helpers like 'smoke' are excluded)
         n = {label: len(d) * len(e) * len(fk)
              for label, (d, e, fk, _) in config.CONFIG.items()

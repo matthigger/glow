@@ -14,7 +14,7 @@ null path. Each cache calls them with the axes it sweeps, leaving the rest at
 their defaults. The leaf is run_ana over the shared analysis recipes
 (RUN_ANA_LIST).
 
-This replaces the old scalar-grid catalogue (paper/config_old.py): there the
+This replaces the old scalar-grid catalogue: there the
 heavy objects (DataSource, Extenter) were rebuilt from scalar axes inside the
 trial fn; here a cell carries the Extenter (effect support, analysis crop)
 and the realized HCP feature subset directly, so the catalogue is what runs
@@ -68,7 +68,7 @@ from . import hcp
 from .run import run_ana, run_min_size, run_prune, run_segment, run_stat
 
 
-# ---------- shared knobs (mirror paper/config_old.py) ------------------------
+# ---------- shared knobs ------------------------------------------------------
 SOURCES = ['wgn', 'hcp']
 
 N_SEED = 15
