@@ -15,6 +15,7 @@ and ensure_hcp_data is stubbed (the WGN cells need no HCP data).
 """
 import random
 
+import pandas as pd
 import pytest
 
 from glow._extra.benchmark import __main__ as cli
@@ -121,6 +122,15 @@ class TestRun:
         monkeypatch.setattr(hcp, 'ensure_hcp_data', lambda: calls.append(1))
         return calls
 
+    def test_run_writes_csv(self, _tiny, tmp_path):
+        written = cli.run(names=['tiny'], out_dir=tmp_path / 'csv',
+                          verbose=False)
+        assert set(written) == {'tiny'}
+        # one data x effect x fnc cell -> one leaf row
+        assert len(pd.read_csv(written['tiny'])) == 1
+        # the HCP dataset was ensured once up front
+        assert _tiny == [1]
+
     def test_no_csv_runs_but_writes_nothing(self, _tiny, tmp_path):
         written = cli.run(names=['tiny'], out_dir=tmp_path / 'csv',
                           write_csv=False, verbose=False)
@@ -129,6 +139,21 @@ class TestRun:
         assert _tiny == [1]
         assert any(r['function'] == 'run_ana'
                    for r in data.RECORDER.records.values())
+
+    def test_csv_only_rebuilds_without_running(self, _tiny, tmp_path):
+        # a first sweep populates the records (no CSV written)
+        cli.run(names=['tiny'], out_dir=tmp_path / 'csv', write_csv=False,
+                verbose=False)
+        n_records = len(data.RECORDER.records)
+        _tiny.clear()
+
+        # csv-only rebuilds the CSV from those records: no HCP load, no new run
+        written = cli.run(names=['tiny'], out_dir=tmp_path / 'rebuild',
+                          csv_only=True, verbose=False)
+        assert set(written) == {'tiny'}
+        assert len(pd.read_csv(written['tiny'])) == 1
+        assert _tiny == []
+        assert len(data.RECORDER.records) == n_records
 
 
 # ---------------------------------------------------------------------------
