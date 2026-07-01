@@ -36,7 +36,10 @@ def _records_to_tmp(monkeypatch, tmp_path):
     monkeypatch.setattr(data.RECORDER, 'folder', tmp_path)
 
 
-_N_VOX_EFF = 10
+# the effect grids plant this fraction of the (uncropped, 5**3-voxel) WGN
+# support, so the realized effect is _N_VOX_EFF voxels
+_N_VOX_FRAC = 0.08
+_N_VOX_EFF = round(_N_VOX_FRAC * 5 ** 3)
 _SCORE_KEYS = {'num_vox', 'min_pval', 'n_pred', 'pred', 'target'}
 
 
@@ -49,7 +52,7 @@ def _data_grid(n):
 def _effect_grid(n):
     """n effect cells (distinct llr), each a fixed-size sphere plant."""
     return [dict(effect_llr=0.05 + i, extenter_cls=ExtenterSphere,
-                 n_vox=_N_VOX_EFF, seed=0)
+                 n_vox_frac=_N_VOX_FRAC, seed=0)
             for i in range(n)]
 
 

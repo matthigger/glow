@@ -46,6 +46,14 @@ fit), min_size (run_min_size, per-perm staircases, recorded not scored), stat
 (run_prune, three pruning rules on a shared GLOW fit). two-effect reuses the
 run_ana leaf unchanged -- score_effects already scores each planted half
 (target0 / target1) -- over a split effect stage (effect_factory kind='split').
+
+Runtime. A separate family measures wall time, not detection (HCP-only, so
+local-only): runtime (run_ana over a num_vox sweep, 1k -> full HCP, all
+methods), and four that time one piece of GLOW each -- runtime_segment
+(run_segment_time, Ward clustering per mode over the same num_vox sweep),
+runtime_n_perm_fwer / runtime_n_perm_inner (run_perm_fwer / run_perm_inner,
+GLOW's outer / inner perms at 1k voxels), and runtime_b (run_ana over the b
+sweep). See the runtime section below.
 """
 import itertools
 import math
@@ -61,7 +69,8 @@ from glow.analysis.mancova import (get_hotel_tr, get_wilks, stat_dict,
 from glow.effect import ExtenterMinVar, ExtenterSphere
 
 from . import hcp
-from .run import run_ana, run_min_size, run_prune, run_segment, run_stat
+from .run import (run_ana, run_min_size, run_perm_fwer, run_perm_inner,
+                  run_prune, run_segment, run_segment_time, run_stat)
 
 
 # ---------- shared knobs ------------------------------------------------------
@@ -85,8 +94,9 @@ MODERATE_EFFECT_LLR = float(EFFECT_LLR_GRID[len(EFFECT_LLR_GRID) // 2])
 # from it).
 CROP_N_VOX = 25_000
 
-# Effect support: 10% of the cropped volume.
-EFFECT_N_VOX = int(0.1 * CROP_N_VOX)
+# Effect support: 10% of the analysis volume. A per-cell fraction, so it
+# tracks whatever num_vox each cell is cropped to (see get_kwargs_effect_list).
+EFFECT_N_VOX_FRAC = 0.1
 
 N_PERM_FWER = 250
 N_PERM_INNER = 1000
@@ -95,8 +105,7 @@ ALPHA_FWER = 0.05
 # Structural grids. B caps at the HCP pool (6) so every HCP cell is feasible;
 # the extent grid spans 1%..100% of the volume; the subject grid is WGN-only.
 B_GRID = list(range(1, len(hcp.HCP_FEATS) + 1))
-EXTENT_N_VOX_GRID = [int(round(p * CROP_N_VOX))
-                     for p in np.geomspace(0.01, 1.0, 15)]
+EXTENT_FRAC_GRID = list(np.geomspace(0.01, 1.0, 15))
 NIMG_GRID = [10, 18, 30, 55, 100, 180, 300]
 
 # Two-effect (cleaving) grids. The angle between the two effects' feature
@@ -265,20 +274,23 @@ def get_kwargs_data_list(*, sources=SOURCES, seeds=range(N_SEED), b_list=(1,),
 
 
 def get_kwargs_effect_list(*, llr_list=(MODERATE_EFFECT_LLR,),
-                           n_vox_list=(EFFECT_N_VOX,)):
+                           n_vox_frac_list=(EFFECT_N_VOX_FRAC,)):
     """Return the list of effect_factory kwargs dicts over the swept axes.
 
-    The cartesian product of (effect_llr, n_vox): a per-voxel strength and a
-    support size. Each cell carries kind='single' and the ingredients
-    effect_factory_single builds the support from -- the ExtenterMinVar class,
-    n_vox, and seed_from_exp=True so the placement is derived from the
-    experiment (see the module docstring). llr_list=None is the null /
-    FWER-calibration path -- the list [None] (plant nothing).
+    The cartesian product of (effect_llr, n_vox_frac): a per-voxel strength and
+    a support size as a fraction of each cell's analysis volume. Each cell
+    carries kind='single' and the ingredients effect_factory_single builds the
+    support from -- the ExtenterMinVar class, n_vox_frac, and
+    seed_from_exp=True so the placement is derived from the experiment (see the
+    module docstring).
+    llr_list=None is the null / FWER-calibration path -- the list [None] (plant
+    nothing).
 
     Args:
         llr_list (iterable[float] | None): per-voxel effect strengths; None is
             the null path.
-        n_vox_list (iterable[int]): effect support sizes.
+        n_vox_frac_list (iterable[float]): effect support sizes, each a
+            fraction of the analysis volume.
 
     Returns:
         list[dict | None]: kwargs for effect_factory (exp is supplied by the
@@ -287,15 +299,16 @@ def get_kwargs_effect_list(*, llr_list=(MODERATE_EFFECT_LLR,),
     if llr_list is None:
         return [None]
     kwargs_effect_list = []
-    for llr, n_vox in itertools.product(llr_list, n_vox_list):
+    for llr, frac in itertools.product(llr_list, n_vox_frac_list):
         kwargs_effect_list.append(dict(
             kind='single', effect_llr=float(llr), extenter_cls=ExtenterMinVar,
-            n_vox=int(n_vox), seed_from_exp=True))
+            n_vox_frac=float(frac), seed_from_exp=True))
     return kwargs_effect_list
 
 
 def get_kwargs_two_effect_list(*, llr_list=TWO_EFFECT_LLR_GRID,
-                               angle_list=ANGLE_GRID, n_vox=EFFECT_N_VOX,
+                               angle_list=ANGLE_GRID,
+                               n_vox_frac=EFFECT_N_VOX_FRAC,
                                extenter_cls=ExtenterMinVar):
     """Build the cleaving grid: effect_factory_split kwargs over (llr, angle).
 
@@ -314,7 +327,8 @@ def get_kwargs_two_effect_list(*, llr_list=TWO_EFFECT_LLR_GRID,
         llr_list (iterable[float]): per-voxel strengths (per effect).
         angle_list (iterable[float]): direction angles between the two effects
             (degrees).
-        n_vox (int): combined two-effect support size (split into halves).
+        n_vox_frac (float): combined two-effect support as a fraction of the
+            analysis volume (split into halves).
         extenter_cls (type[Extenter]): the split base extenter.
 
     Returns:
@@ -322,9 +336,95 @@ def get_kwargs_two_effect_list(*, llr_list=TWO_EFFECT_LLR_GRID,
             (llr, angle) cell.
     """
     return [dict(kind='split', effect_llr=float(llr),
-                 extenter_cls=extenter_cls, n_vox=int(n_vox),
+                 extenter_cls=extenter_cls, n_vox_frac=float(n_vox_frac),
                  angle=float(angle), seed_from_exp=True)
             for llr, angle in itertools.product(llr_list, angle_list)]
+
+
+# ---------- runtime benchmarks (HCP-only, local-only) -----------------------
+# Wall-time scaling of the methods, not detection. The effect is the moderate
+# default (10% of each cell's volume, see get_kwargs_effect_list); only the
+# timed axis varies. HCP-only, so these run locally -- the AWS worker has no
+# HCP data (see hcp / the aws package). Each cache gets its own seed offset so
+# its leaf timings are cold (never served from another cache's cached fit) and
+# independent. The timed leaves are run.run_perm_fwer / run_perm_inner /
+# run_segment_time; runtime and runtime_b reuse run_ana (its score carries
+# num_vox, and time_sec is the fit wall time).
+RUNTIME_N_SEED = 3
+RUNTIME_CROP_N_VOX = 1_000
+
+# num_vox sweep: 1k -> the full HCP support (224,619 voxels, one connected
+# component), roughly doubling.
+RUNTIME_NUM_VOX_GRID = [1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000,
+                        128_000, 224_619]
+
+# the two GLOW arms, as (label, cluster_mode)
+RUNTIME_GLOW_MODES = [('GLOW-Focus', ClusterMode.FOCUS),
+                      ('GLOW-GLM', ClusterMode.GLM_ERROR)]
+
+# permutation-count sweeps (tiny num_vox, GLOW only): one axis varies, the
+# other holds at its paper value (N_PERM_INNER / N_PERM_FWER).
+RUNTIME_N_PERM_FWER_GRID = [50, 100, 200, 400, 800]
+RUNTIME_N_PERM_INNER_GRID = [250, 500, 1_000, 2_000, 4_000]
+
+# per-cache seed offsets, clear of each other and of MIN_SIZE_SEED_OFFSET, so
+# no two runtime caches share a data cell (hence a cached leaf timing).
+RUNTIME_SEED_OFFSET = {
+    'runtime': 200_000,
+    'runtime_segment': 210_000,
+    'runtime_n_perm_fwer': 220_000,
+    'runtime_n_perm_inner': 230_000,
+    'runtime_b': 240_000,
+}
+
+
+def get_kwargs_data_runtime(*, seed_offset, crop_n_vox_list, b_list=(1,)):
+    """Build the HCP data grid for a runtime cache (num_vox = crop, HCP only).
+
+    Concatenates get_kwargs_data_list over crop_n_vox_list, so one grid spans
+    several analysis volumes (each an ExtenterSphere crop of the HCP brain).
+    HCP only (the runtime caches are local-only) and RUNTIME_N_SEED seeds from
+    seed_offset, keeping each cache's cells (and their cached leaf timings)
+    distinct.
+
+    Args:
+        seed_offset (int): first seed; the cache uses
+            range(seed_offset, seed_offset + RUNTIME_N_SEED).
+        crop_n_vox_list (iterable[int]): analysis-crop sizes to span (the
+            num_vox axis); a single-element list for the fixed-size caches.
+        b_list (iterable[int]): imaging-feature counts (HCP draws a subset).
+
+    Returns:
+        list[dict]: kwargs for data_factory (source='hcp'), one per cell.
+    """
+    seeds = range(seed_offset, seed_offset + RUNTIME_N_SEED)
+    kwargs_data_list = []
+    for crop_n_vox in crop_n_vox_list:
+        kwargs_data_list += get_kwargs_data_list(
+            sources=['hcp'], seeds=seeds, b_list=b_list, crop_n_vox=crop_n_vox)
+    return kwargs_data_list
+
+
+# GLOW-only leaf grids for the perm sweeps: one run per (GLOW arm, count). The
+# swept count rides as an explicit run_perm_* arg (recorded as an in.<count>
+# column), the arm as the recorded label + cluster_mode.
+RUN_PERM_FWER_LIST = [
+    dict(n_perm_fwer=n, n_perm_inner=N_PERM_INNER, cluster_mode=mode,
+         label=label)
+    for label, mode in RUNTIME_GLOW_MODES
+    for n in RUNTIME_N_PERM_FWER_GRID]
+RUN_PERM_INNER_LIST = [
+    dict(n_perm_inner=n, cluster_mode=mode, label=label)
+    for label, mode in RUNTIME_GLOW_MODES
+    for n in RUNTIME_N_PERM_INNER_GRID]
+
+# segmentation timing: one run_segment_time per Ward mode (the segment cache's
+# modes), the mode riding as both cluster_mode and label.
+RUN_SEGMENT_TIME_LIST = [dict(cluster_mode=mode, label=str(mode))
+                         for mode in SEGMENT_MODES]
+
+# the two GLOW arms of RUN_ANA_LIST (runtime / runtime_b are GLOW only)
+GLOW_ANA_LIST = [kw for kw in RUN_ANA_LIST if kw['label'].startswith('GLOW')]
 
 
 # ---------- catalogue: name -> (data, effect, fnc kwargs, fnc) ---------------
@@ -350,7 +450,7 @@ CONFIG = {
     # D. Detection vs effect extent (fixed per-voxel effect_llr).
     'sweep_extent': (
         get_kwargs_data_list(),
-        get_kwargs_effect_list(n_vox_list=EXTENT_N_VOX_GRID),
+        get_kwargs_effect_list(n_vox_frac_list=EXTENT_FRAC_GRID),
         RUN_ANA_LIST, run_ana),
     # E. Detection vs subject count (WGN only; HCP's N is its cohort).
     'sweep_nimg': (
@@ -405,4 +505,44 @@ CONFIG = {
                              crop_n_vox=SMOKE_CROP_N_VOX),
         get_kwargs_effect_list(llr_list=None),
         RUN_ANA_LIST, run_ana),
+    # Runtime: wall time vs num_vox (1k -> full HCP), all methods, b=1, the
+    # moderate effect. HCP-only / local-only (see the runtime section above).
+    'runtime': (
+        get_kwargs_data_runtime(
+            seed_offset=RUNTIME_SEED_OFFSET['runtime'],
+            crop_n_vox_list=RUNTIME_NUM_VOX_GRID),
+        get_kwargs_effect_list(),
+        RUN_ANA_LIST, run_ana),
+    # Runtime (segmentation): Ward-clustering wall time vs num_vox per mode
+    # (Naive / GLM Error / Focus); run_segment_time times cluster only.
+    'runtime_segment': (
+        get_kwargs_data_runtime(
+            seed_offset=RUNTIME_SEED_OFFSET['runtime_segment'],
+            crop_n_vox_list=RUNTIME_NUM_VOX_GRID),
+        get_kwargs_effect_list(),
+        RUN_SEGMENT_TIME_LIST, run_segment_time),
+    # Runtime (n_perm_fwer): outer-loop wall time vs n_perm_fwer at 1k voxels,
+    # GLOW only, n_perm_inner held at N_PERM_INNER.
+    'runtime_n_perm_fwer': (
+        get_kwargs_data_runtime(
+            seed_offset=RUNTIME_SEED_OFFSET['runtime_n_perm_fwer'],
+            crop_n_vox_list=[RUNTIME_CROP_N_VOX]),
+        get_kwargs_effect_list(),
+        RUN_PERM_FWER_LIST, run_perm_fwer),
+    # Runtime (n_perm_inner): inner-null wall time vs n_perm_inner at 1k
+    # voxels, GLOW only (one observed tree; run_perm_inner).
+    'runtime_n_perm_inner': (
+        get_kwargs_data_runtime(
+            seed_offset=RUNTIME_SEED_OFFSET['runtime_n_perm_inner'],
+            crop_n_vox_list=[RUNTIME_CROP_N_VOX]),
+        get_kwargs_effect_list(),
+        RUN_PERM_INNER_LIST, run_perm_inner),
+    # Runtime (b): fit wall time vs feature count b (1..6) at 1k voxels, GLOW
+    # only. b rides the data grid; the leaf is run_ana.
+    'runtime_b': (
+        get_kwargs_data_runtime(
+            seed_offset=RUNTIME_SEED_OFFSET['runtime_b'],
+            crop_n_vox_list=[RUNTIME_CROP_N_VOX], b_list=B_GRID),
+        get_kwargs_effect_list(),
+        GLOW_ANA_LIST, run_ana),
 }

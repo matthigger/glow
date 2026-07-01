@@ -17,8 +17,10 @@ import pytest
 
 from glow._extra.benchmark import data
 from glow._extra.benchmark.run import (glow_fit_for_prune, run_ana,
-                                       run_min_size, run_prune, run_segment,
-                                       run_stat, voxel_stat_walk)
+                                       run_min_size, run_perm_fwer,
+                                       run_perm_inner, run_prune, run_segment,
+                                       run_segment_time, run_stat,
+                                       voxel_stat_walk)
 from glow.analysis import AnalysisGLOW, AnalysisVBA
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr, get_wilks, stat_dict_inv
@@ -158,15 +160,13 @@ class TestProvenanceDAG:
 # ---------------------------------------------------------------------------
 
 class TestRunSegment:
-    _N_VOX_EFF = 20
-
     def _planted(self):
         """A clean WGN exp with one planted effect; returns (exp, mask)."""
         exp = data.data_factory_wgn(shape=(7, 7, 7), b=2, num_img=20, a=1,
                                     seed=_fresh_seed())
         exp_eff, (mask,) = data.effect_factory(
             exp, effect_llr=0.1, extenter_cls=ExtenterMinVar,
-            n_vox=self._N_VOX_EFF, seed=0)
+            n_vox_frac=0.1, seed=0)
         return exp_eff, mask
 
     def test_returns_oracle_confusion_counts(self):
@@ -175,7 +175,7 @@ class TestRunSegment:
         assert set(score) == {'tp', 'fp', 'tn', 'fn'}
         # the best region's counts vs the planted support: tp + fn is exactly
         # the support size (every target voxel is hit or missed)
-        assert score['tp'] + score['fn'] == self._N_VOX_EFF
+        assert score['tp'] + score['fn'] == int(mask.sum())
 
     def test_cluster_mode_is_a_cache_axis(self):
         exp, mask = self._planted()
@@ -200,7 +200,8 @@ class TestRunMinSize:
         exp = data.data_factory_wgn(shape=(6, 6, 6), b=2, num_img=20, a=1,
                                     seed=_fresh_seed())
         exp_eff, (mask,) = data.effect_factory(
-            exp, effect_llr=0.1, extenter_cls=ExtenterMinVar, n_vox=20, seed=0)
+            exp, effect_llr=0.1, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
+            seed=0)
         return exp_eff, mask
 
     def test_returns_one_curve_per_outer_perm(self):
@@ -238,7 +239,7 @@ class TestRunStat:
         exp = data.data_factory_wgn(shape=(6, 6, 6), b=2, num_img=24, a=1,
                                     seed=seed)
         exp_eff, (mask,) = data.effect_factory(
-            exp, effect_llr=0.15, extenter_cls=ExtenterMinVar, n_vox=20,
+            exp, effect_llr=0.15, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
             seed=0)
         return exp_eff, mask
 
@@ -286,7 +287,8 @@ class TestRunPrune:
         exp = data.data_factory_wgn(shape=(6, 6, 6), b=2, num_img=24, a=1,
                                     seed=_fresh_seed())
         exp_eff, (mask,) = data.effect_factory(
-            exp, effect_llr=0.2, extenter_cls=ExtenterMinVar, n_vox=20, seed=0)
+            exp, effect_llr=0.2, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
+            seed=0)
         return exp_eff, mask
 
     def test_returns_prune_score(self):
@@ -321,3 +323,60 @@ class TestRunPrune:
         exp, mask = self._planted()
         with pytest.raises(ValueError):
             run_prune(exp, [mask], 'nope', **self._GLOW)
+
+
+# ---------------------------------------------------------------------------
+# runtime leaves: time one piece of GLOW, return the analyzed voxel count
+# ---------------------------------------------------------------------------
+
+class TestRuntimeLeaves:
+    def _planted(self):
+        exp = data.data_factory_wgn(shape=(6, 6, 6), b=2, num_img=20, a=1,
+                                    seed=_fresh_seed())
+        exp_eff, (mask,) = data.effect_factory(
+            exp, effect_llr=0.1, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
+            seed=0)
+        return exp_eff, mask
+
+    def test_perm_fwer_returns_num_vox(self):
+        # the recorded measurement is time_sec; the return is the analyzed
+        # voxel count, the sweep's size context
+        exp, mask = self._planted()
+        num_vox = run_perm_fwer(exp, [mask], n_perm_fwer=3, n_perm_inner=8)
+        assert num_vox == int((exp.mask_idx > -1).sum())
+
+    def test_perm_fwer_n_perm_is_a_cache_axis(self):
+        exp, mask = self._planted()
+        run_perm_fwer(exp, [mask], n_perm_fwer=3, n_perm_inner=8)
+        # a different n_perm_fwer is its own timing -> distinct cache entry
+        assert not run_perm_fwer.check_call_in_cache(
+            exp, [mask], n_perm_fwer=5, n_perm_inner=8)
+
+    def test_perm_inner_returns_num_vox(self):
+        exp, mask = self._planted()
+        num_vox = run_perm_inner(exp, [mask], n_perm_inner=8)
+        assert num_vox == int((exp.mask_idx > -1).sum())
+
+    def test_perm_inner_n_perm_is_a_cache_axis(self):
+        exp, mask = self._planted()
+        run_perm_inner(exp, [mask], n_perm_inner=8)
+        assert not run_perm_inner.check_call_in_cache(
+            exp, [mask], n_perm_inner=16)
+
+    def test_segment_time_returns_num_vox(self):
+        exp, mask = self._planted()
+        num_vox = run_segment_time(exp, [mask], ClusterMode.FOCUS)
+        assert num_vox == int((exp.mask_idx > -1).sum())
+
+    def test_segment_time_mode_is_a_cache_axis(self):
+        exp, mask = self._planted()
+        run_segment_time(exp, [mask], ClusterMode.FOCUS)
+        # a different Ward mode is its own segmentation -> distinct cache entry
+        assert not run_segment_time.check_call_in_cache(
+            exp, [mask], ClusterMode.NAIVE)
+
+    def test_label_ignored_in_cache_key(self):
+        exp, mask = self._planted()
+        run_perm_inner(exp, [mask], n_perm_inner=8, label='GLOW-Focus')
+        assert run_perm_inner.check_call_in_cache(
+            exp, [mask], n_perm_inner=8, label='DIFFERENT')

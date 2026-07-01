@@ -27,16 +27,19 @@ LABELS = ['null', 'sweep_llr', 'sweep_b', 'sweep_extent', 'sweep_nimg',
           'segment', 'min_size', 'stat', 'prune', 'two-effect']
 RUN_ANA_LABELS = ['null', 'sweep_llr', 'sweep_b', 'sweep_extent', 'sweep_nimg',
                   'two-effect']
-# non-paper helper caches in the catalogue (e.g. the tiny end-to-end smoke
-# cache); excluded from the paper-cardinality checks below
-NON_PAPER_LABELS = ['smoke']
+# non-paper helper caches in the catalogue (the tiny end-to-end smoke cache and
+# the runtime family); excluded from the paper-cardinality checks below
+NON_PAPER_LABELS = ['smoke', 'runtime', 'runtime_segment',
+                    'runtime_n_perm_fwer', 'runtime_n_perm_inner', 'runtime_b']
+# every catalogue entry (paper + helper); the shape / bind checks cover all
+ALL_LABELS = LABELS + NON_PAPER_LABELS
 
 
 class TestCatalogueShape:
     def test_expected_labels(self):
         assert set(config.CONFIG) == set(LABELS) | set(NON_PAPER_LABELS)
 
-    @pytest.mark.parametrize('label', LABELS)
+    @pytest.mark.parametrize('label', ALL_LABELS)
     def test_entry_is_drive_four_tuple(self, label):
         # every cache is the (data, effect, fnc-kwargs, fnc) tuple drive
         # consumes, with non-empty grids and a callable leaf
@@ -52,7 +55,7 @@ class TestCatalogueShape:
         assert fnc is run_ana
         assert fnc_kwargs is config.RUN_ANA_LIST
 
-    @pytest.mark.parametrize('label', LABELS)
+    @pytest.mark.parametrize('label', ALL_LABELS)
     def test_grids_are_materialized_lists(self, label):
         # the data / effect grids are concrete lists (re-iterable; the driver
         # re-walks the effect grid per data cell, so a one-shot iterator breaks)
@@ -113,7 +116,7 @@ class TestIterKwargsEffect:
         cells = config.get_kwargs_effect_list()
         assert len(cells) == 1
         assert cells[0]['effect_llr'] == config.MODERATE_EFFECT_LLR
-        assert cells[0]['n_vox'] == config.EFFECT_N_VOX
+        assert cells[0]['n_vox_frac'] == config.EFFECT_N_VOX_FRAC
         # cells carry the ingredients effect_factory builds the support from
         assert cells[0]['extenter_cls'] is ExtenterMinVar
         assert cells[0]['seed_from_exp'] is True
@@ -123,13 +126,13 @@ class TestIterKwargsEffect:
 
     def test_extent_sweeps_support_at_fixed_per_voxel_llr(self):
         # no whole-region-LLR knob: effect_llr is held fixed, the support varies
-        cells = config.get_kwargs_effect_list(n_vox_list=[100, 500])
+        cells = config.get_kwargs_effect_list(n_vox_frac_list=[0.05, 0.2])
         assert [c['effect_llr'] for c in cells] == [config.MODERATE_EFFECT_LLR] * 2
-        assert [c['n_vox'] for c in cells] == [100, 500]
+        assert [c['n_vox_frac'] for c in cells] == [0.05, 0.2]
 
     def test_llr_and_extent_are_a_product(self):
         cells = config.get_kwargs_effect_list(llr_list=[0.01, 0.1],
-                                              n_vox_list=[50, 100, 200])
+                                              n_vox_frac_list=[0.05, 0.1, 0.2])
         assert len(cells) == 2 * 3
 
 
@@ -139,7 +142,7 @@ class TestCellsBindToStages:
     _SIG_DATA = {'wgn': inspect.signature(data.data_factory_wgn),
                  'hcp': inspect.signature(data.data_factory_hcp)}
 
-    @pytest.mark.parametrize('label', LABELS)
+    @pytest.mark.parametrize('label', ALL_LABELS)
     def test_data_cells_bind(self, label):
         # source selects the builder; the rest are its kwargs
         for cell in config.CONFIG[label][0]:
@@ -149,7 +152,7 @@ class TestCellsBindToStages:
     _SIG_EFFECT = {'single': inspect.signature(data.effect_factory_single),
                    'split': inspect.signature(data.effect_factory_split)}
 
-    @pytest.mark.parametrize('label', LABELS)
+    @pytest.mark.parametrize('label', ALL_LABELS)
     def test_effect_cells_bind(self, label):
         # kind selects the builder (effect_factory dispatches on it); exp is
         # supplied by the driver; a None cell is the no-plant null path
@@ -160,7 +163,7 @@ class TestCellsBindToStages:
             sig.bind(exp=None,
                      **{k: v for k, v in cell.items() if k != 'kind'})
 
-    @pytest.mark.parametrize('label', LABELS)
+    @pytest.mark.parametrize('label', ALL_LABELS)
     def test_fnc_cells_bind(self, label):
         # exp / mask_target_list are supplied by the driver
         _, _, fnc_kwargs, fnc = config.CONFIG[label]
@@ -180,7 +183,7 @@ class TestGridCardinality:
             'null': 2 * config.N_SEED_NULL * 5,
             'sweep_llr': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID) * 5,
             'sweep_b': 2 * config.N_SEED * len(config.B_GRID) * 5,
-            'sweep_extent': 2 * config.N_SEED * len(config.EXTENT_N_VOX_GRID) * 5,
+            'sweep_extent': 2 * config.N_SEED * len(config.EXTENT_FRAC_GRID) * 5,
             'sweep_nimg': config.N_SEED * len(config.NIMG_GRID) * 5,
             'segment': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
             * len(config.SEGMENT_MODES),

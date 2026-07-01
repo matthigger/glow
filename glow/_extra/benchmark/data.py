@@ -238,23 +238,26 @@ def effect_factory(exp, *, kind: str = 'single', **kwargs):
 
 @MEMORY.cache
 @RECORDER(output_name_list=['exp', 'mask_target_list'])
-def effect_factory_single(exp, *, effect_llr, extenter_cls, n_vox,
+def effect_factory_single(exp, *, effect_llr, extenter_cls, n_vox_frac=0.1,
                           seed: int = None, seed_from_exp: bool = False):
     """Plant one synthetic effect on a clean Experiment.
 
-    The support extenter is built here from extenter_cls + n_vox + a placement
-    seed (seed XOR seed_from_exp; see _resolve_seed), so the caller passes
-    ingredients, not a constructed Extenter. The whole effect is encapsulated
-    here; the analysis crop (a separate extenter in data_factory) is untouched.
+    The support extenter is built here from extenter_cls + the resolved n_vox
+    (n_vox_frac of the analysis volume) + a placement seed (seed XOR
+    seed_from_exp; see _resolve_seed), so the caller passes ingredients, not a
+    constructed Extenter. The whole effect is encapsulated here; the analysis
+    crop (a separate extenter in data_factory) is untouched.
 
     Args:
         exp: clean Experiment (a data_factory output) to add the effect to.
         effect_llr (float): per-voxel (size-normalized) LLR target; the
-            whole-region LLR observed is ~ effect_llr * n_vox (see
-            glow.effect.impose).
+            whole-region LLR observed is ~ effect_llr * n_vox, where n_vox is
+            n_vox_frac of the analysis volume (see glow.effect.impose).
         extenter_cls (type[Extenter]): Extenter subclass sampling the support,
             built as extenter_cls(n_vox=n_vox, seed=...) (e.g. ExtenterMinVar).
-        n_vox (int): target support size.
+        n_vox_frac (float): support size as a fraction of the analysis volume
+            (num_vox = count of mask_idx > -1); resolved to
+            round(n_vox_frac * num_vox).
         seed (int): support placement seed; pass this XOR seed_from_exp.
         seed_from_exp (bool): derive the seed from a hash of exp; pass this
             XOR seed.
@@ -268,6 +271,7 @@ def effect_factory_single(exp, *, effect_llr, extenter_cls, n_vox,
         ValueError: if not exactly one of seed / seed_from_exp is given.
     """
     seed = _resolve_seed(exp, seed, seed_from_exp)
+    n_vox = round(n_vox_frac * int((exp.mask_idx > -1).sum()))
     extenter = extenter_cls(n_vox=n_vox, seed=seed)
     exp, mask = EffectSynthetic(
         extenter=extenter, effect_llr=effect_llr).fit(exp)
@@ -278,13 +282,14 @@ def effect_factory_single(exp, *, effect_llr, extenter_cls, n_vox,
 
 @MEMORY.cache
 @RECORDER(output_name_list=['exp', 'mask_target_list'])
-def effect_factory_split(exp, *, effect_llr, extenter_cls, n_vox, angle,
-                         seed: int = None, seed_from_exp: bool = False):
+def effect_factory_split(exp, *, effect_llr, extenter_cls, n_vox_frac=0.1,
+                         angle, seed: int = None, seed_from_exp: bool = False):
     """Plant two adjacent equal-LLR effects at a controlled direction angle.
 
-    The cleaving setup: an extenter_cls extent of n_vox voxels is grown from
-    its own seeded start and spectrally bisected (ExtenterSplit) into two
-    contiguous halves, with one effect planted on each -- same effect_llr,
+    The cleaving setup: an extenter_cls extent of n_vox voxels (n_vox_frac of
+    the analysis volume) is grown from its own seeded start and spectrally
+    bisected (ExtenterSplit) into two contiguous halves, with one effect
+    planted on each -- same effect_llr,
     feature directions angle degrees apart (angles 0 and angle), so the two
     effects differ only in orientation. score_effects then scores the union and
     each half in turn (target0 / target1; the merge-cost signal).
@@ -303,7 +308,9 @@ def effect_factory_split(exp, *, effect_llr, extenter_cls, n_vox, angle,
         effect_llr (float): per-voxel LLR target for each effect.
         extenter_cls (type[Extenter]): Extenter subclass grown then bisected,
             built as extenter_cls(n_vox=n_vox, seed=...) (e.g. ExtenterMinVar).
-        n_vox (int): combined two-effect support size (split into halves).
+        n_vox_frac (float): combined two-effect support as a fraction of the
+            analysis volume (split into halves); resolved to
+            round(n_vox_frac * num_vox).
         angle (float): feature-direction angle between the two effects (deg).
         seed (int): placement + direction seed; pass this XOR seed_from_exp.
         seed_from_exp (bool): derive the seed from a hash of exp; pass this
@@ -318,6 +325,7 @@ def effect_factory_split(exp, *, effect_llr, extenter_cls, n_vox, angle,
         ValueError: if not exactly one of seed / seed_from_exp is given.
     """
     seed = _resolve_seed(exp, seed, seed_from_exp)
+    n_vox = round(n_vox_frac * int((exp.mask_idx > -1).sum()))
     splitter = ExtenterSplit(base=extenter_cls(n_vox=n_vox, seed=seed))
     mask0, mask1 = splitter.fit(mask_idx=exp.mask_idx, y=exp.y)
     e0 = EffectSynthetic(mask=mask0, effect_llr=effect_llr, angle=0.0,

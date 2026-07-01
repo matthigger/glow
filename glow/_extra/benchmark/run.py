@@ -410,3 +410,110 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, n_perm_fwer: int,
     return score_prune(reg_out_list, children=children, mask_idx=exp.mask_idx,
                        mask_target_list=mask_target_list,
                        mask_active=exp.mask_idx > -1)
+
+
+# ---------- runtime leaves (timed, not scored) -------------------------------
+# The runtime caches measure wall time, not detection. Each leaf runs the one
+# piece of GLOW its cache sweeps and returns the analyzed voxel count; the
+# RECORDER's time_sec is the measurement, its swept knob rides as an explicit
+# in.<name> column, and num_vox rides as the out column -- so runtime plots
+# straight from the records. mask_target_list rides the uniform leaf contract
+# but is unused (the effect is planted only to keep the run realistic; timing
+# is effect-independent).
+
+
+@MEMORY.cache(ignore=['label'])
+@RECORDER(output_name='num_vox')
+def run_perm_fwer(exp: Experiment, mask_target_list, *, n_perm_fwer: int,
+                  n_perm_inner: int, cluster_mode=ClusterMode.FOCUS,
+                  min_vox: int = 1, label=None) -> int:
+    """Time GLOW's outer FWER loop for a fixed n_perm_inner (runtime leaf).
+
+    The n_perm_fwer runtime sweep's leaf: run GLOW's outer loop by hand
+    (AnalysisGLOW._run_outer for each of the n_perm_fwer + 1 outer perms -- the
+    cluster + observed-LLR + inner-perm work) and stop before finalize /
+    pruning / scoring. Holding n_perm_inner fixed, the recorded time_sec
+    isolates the FWER-permutation cost, which grows linearly in n_perm_fwer.
+
+    Args:
+        exp (Experiment): the experiment with the synthetic effect imposed.
+        mask_target_list (list): planted supports; unused (uniform contract).
+        n_perm_fwer (int): outer FL perms (n_perm_fwer + 1 outer passes, incl.
+            the observed k=0); the swept axis.
+        n_perm_inner (int): inner FL draws per outer perm (held fixed).
+        cluster_mode (ClusterMode): Ward projection (Focus / GLM_ERROR).
+        min_vox (int): smallest region size admitted to the inner null.
+        label (str): GLOW arm label recorded beside the timing; not a cache
+            axis.
+
+    Returns:
+        num_vox (int): the analyzed voxel count (recorded beside time_sec as
+            the sweep's size context).
+    """
+    exp_s = ExperimentScaled.from_exp(exp)
+    q0, q1, _ = decompose(x=exp_s.x, contrast=exp_s.contrast)
+    for k in range(n_perm_fwer + 1):
+        AnalysisGLOW._run_outer(
+            exp_s, k, q0=q0, q1=q1, n_perm_inner=n_perm_inner,
+            min_vox=min_vox, cluster_mode=ClusterMode(cluster_mode))
+    return int(exp_s.y.shape[2])
+
+
+@MEMORY.cache(ignore=['label'])
+@RECORDER(output_name='num_vox')
+def run_perm_inner(exp: Experiment, mask_target_list, *, n_perm_inner: int,
+                   cluster_mode=ClusterMode.FOCUS, min_vox: int = 1,
+                   label=None) -> int:
+    """Time one observed tree's inner Freedman-Lane null (runtime leaf).
+
+    The n_perm_inner runtime sweep's leaf: cluster the observed (k=0) Ward tree
+    once, then run its inner FL null (AnalysisGLOW.run_inner_perm) with
+    n_perm_inner draws. Decoupled from the outer FWER loop, so the recorded
+    time_sec is the pure inner-permutation cost, linear in n_perm_inner (the
+    one-time clustering is a fixed intercept).
+
+    Args:
+        exp (Experiment): the experiment with the synthetic effect imposed.
+        mask_target_list (list): planted supports; unused (uniform contract).
+        n_perm_inner (int): inner FL draws over the observed tree; swept axis.
+        cluster_mode (ClusterMode): Ward projection (Focus / GLM_ERROR).
+        min_vox (int): regions smaller than this are left NaN.
+        label (str): GLOW arm label recorded beside the timing; not a cache
+            axis.
+
+    Returns:
+        num_vox (int): the analyzed voxel count (recorded beside time_sec).
+    """
+    exp_s = ExperimentScaled.from_exp(exp)
+    q0, q1, _ = decompose(x=exp_s.x, contrast=exp_s.contrast)
+    children = cluster(exp_s, mode=ClusterMode(cluster_mode))
+    AnalysisGLOW.run_inner_perm(exp_s, children, n_perm_inner, q0=q0, q1=q1,
+                                min_vox=min_vox)
+    return int(exp_s.y.shape[2])
+
+
+@MEMORY.cache(ignore=['label'])
+@RECORDER(output_name='num_vox')
+def run_segment_time(exp: Experiment, mask_target_list, cluster_mode,
+                     label=None) -> int:
+    """Time Ward segmentation in one mode (runtime leaf, cluster only).
+
+    The segmentation runtime sweep's leaf: scale exp and build its Ward tree in
+    cluster_mode (cluster), timing that and nothing else -- no significance
+    test, pruning, or oracle scoring -- so the recorded time_sec isolates the
+    clustering cost across modes (Naive / GLM Error / Focus). exp is scaled
+    (ExperimentScaled.from_exp) before clustering so the tree matches the one
+    AnalysisGLOW fits (as run_segment does).
+
+    Args:
+        exp (Experiment): the experiment to segment (raw or scaled).
+        mask_target_list (list): planted supports; unused (uniform contract).
+        cluster_mode (ClusterMode | str): the Ward projection to segment with.
+        label (str): mode label recorded beside the timing; not a cache axis.
+
+    Returns:
+        num_vox (int): the analyzed voxel count (recorded beside time_sec).
+    """
+    exp_s = ExperimentScaled.from_exp(exp)
+    cluster(exp_s, mode=ClusterMode(cluster_mode))
+    return int(exp_s.y.shape[2])
