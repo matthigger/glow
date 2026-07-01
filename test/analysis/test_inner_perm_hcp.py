@@ -30,7 +30,7 @@ import glow.graph
 from glow.analysis.mancova import decompose
 from glow.experiment import permute
 from glow._extra.benchmark import hcp
-from glow._extra.benchmark.data import DataSourceHCP
+from glow._extra.benchmark.data import data_factory_hcp
 
 
 def _caterpillar_children(num_vox):
@@ -69,7 +69,7 @@ def test_iter_llr_perm_float64_survives_near_constant_voxels():
         pytest.skip('HCP reference dataset not present (see glow._extra.benchmark.hcp)')
 
     # a55e7237's design: intercept-only nuisance (a0 = 1), one contrast (a1 = 1)
-    exp = DataSourceHCP(hcp_feats=('fa',), a=1, a_nuisance=0, seed=0).exp
+    exp = data_factory_hcp(hcp_feats=('fa',), a=1, seed=0)
     q0, q1, _ = decompose(exp.x, exp.contrast)
     assert q0.shape[0] == 1, 'expected intercept-only nuisance'
     num_img = exp.y.shape[1]
