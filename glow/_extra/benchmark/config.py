@@ -114,13 +114,11 @@ TWO_EFFECT_LLR_GRID = [0.003, 0.01, 0.03]
 
 
 # ---------- analysis recipes -------------------------------------------------
-# label -> recipe. The label is for the reader: it rides into each run_ana
-# cell as a label kwarg the function ignores -- recorded as the in.label
-# column but dropped from the cache key (run_ana's
-# @MEMORY.cache(ignore=['label'])) -- so a method is named beside its score
-# without entering the computation. GLOW uses the LLR throughout, so the two
-# GLOW arms differ only in Ward projection; the voxel-wise arms z-score
-# before the max-stat null.
+# label -> recipe. The label is the reader-facing method name; it is the source
+# of truth results / plot map a recorded recipe back to (a run function is not
+# passed the label -- see run.py / benchmark.plot). GLOW uses the LLR
+# throughout, so the two GLOW arms differ only in Ward projection; the
+# voxel-wise arms z-score before the max-stat null.
 kwargs = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
 ana_kwargs_dict = {
     'GLOW-Focus': AnalysisGLOW(n_perm_inner=N_PERM_INNER,
@@ -138,26 +136,23 @@ ana_kwargs_dict = {
 }
 
 # the leaf kwargs grid: one run_ana call per recipe, shared by every cache.
-# The ana_kwargs_dict key rides as a label kwarg run_ana ignores (see
-# run.run_ana): recorded beside the score in the output, but dropped from the
-# cache key, so renaming a method does not invalidate its cached fit.
-RUN_ANA_LIST = [dict(ana=ana, label=label)
-                for label, ana in ana_kwargs_dict.items()]
+# Only the ana rides into the cell; the method name (the ana_kwargs_dict key)
+# is recovered from the recipe at read time (see benchmark.plot), so it never
+# enters the call or the cache key.
+RUN_ANA_LIST = [dict(ana=ana) for ana in ana_kwargs_dict.values()]
 
 # the segment cache's leaf grid: one run_segment call per Ward mode (Naive /
-# GLM Error / Focus). The mode rides as both the recorded label (its name) and
-# the cluster_mode the leaf segments with.
+# GLM Error / Focus). The mode rides in as cluster_mode; the method name is
+# str(mode), recovered from the record at read time.
 SEGMENT_MODES = [ClusterMode.NAIVE, ClusterMode.GLM_ERROR, ClusterMode.FOCUS]
-RUN_SEGMENT_LIST = [dict(cluster_mode=mode, label=str(mode))
-                    for mode in SEGMENT_MODES]
+RUN_SEGMENT_LIST = [dict(cluster_mode=mode) for mode in SEGMENT_MODES]
 
 # the min_size cache's leaf grid: one run_min_size call capturing GLOW's
-# per-perm (size -> max-z) staircases (its one method, labelled GLOW), swept
-# over min_vox post hoc from the recorded curves. Its trial seeds are offset
-# clear of the other sweeps (MIN_SIZE_SEED_OFFSET), each its own HCP null.
+# per-perm (size -> max-z) staircases (its one method, GLOW), swept over
+# min_vox post hoc from the recorded curves. Its trial seeds are offset clear
+# of the other sweeps (MIN_SIZE_SEED_OFFSET), each its own HCP null.
 MIN_SIZE_SEED_OFFSET = 100_000
-RUN_MIN_SIZE_LIST = [dict(n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER,
-                          label='GLOW')]
+RUN_MIN_SIZE_LIST = [dict(n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER)]
 
 
 def get_run_stat_list():
@@ -165,9 +160,10 @@ def get_run_stat_list():
 
     The bake-off among the voxel-wise methods: VBA / VBA-TFCE / CET x 5 stats x
     {raw, z} = 30 variants. GLOW is excluded by design (it uses the LLR
-    throughout), so this is VBA / CET only. Each cell pairs a recipe with the
-    stat_dict key naming the shared-walk matrix run_stat injects as _stat, and
-    a record-only label (e.g. VBA-TFCE-Wilks-z).
+    throughout), so this is VBA / CET only. Each cell pairs a recipe (its class
+    / tfce_flag / z_flag identify the variant) with the stat_dict key naming the
+    shared-walk matrix run_stat injects as _stat; the method name (e.g.
+    VBA-TFCE-Wilks-z) is recovered from those at read time.
 
     Returns:
         list[dict]: kwargs for run_stat (exp / mask_target_list supplied by the
@@ -178,19 +174,18 @@ def get_run_stat_list():
     for fn in stat_dict.values():
         name = stat_dict_inv[fn]
         for z_flag in (False, True):
-            suffix = '-z' if z_flag else ''
             specs.append(dict(
                 ana=AnalysisVBA(get_stat=fn, z_flag=z_flag, tfce_flag=False,
                                 **kwargs),
-                stat_name=name, label=f'VBA-{name}{suffix}'))
+                stat_name=name))
             specs.append(dict(
                 ana=AnalysisVBA(get_stat=fn, z_flag=z_flag, tfce_flag=True,
                                 **kwargs),
-                stat_name=name, label=f'VBA-TFCE-{name}{suffix}'))
+                stat_name=name))
             specs.append(dict(
                 ana=AnalysisCET(get_stat=fn, z_flag=z_flag,
                                 cft_pval=DEFAULT_CET_CFT_PVAL, **kwargs),
-                stat_name=name, label=f'CET-{name}{suffix}'))
+                stat_name=name))
     return specs
 
 
@@ -199,13 +194,13 @@ RUN_STAT_LIST = get_run_stat_list()
 # the prune cache's leaf grid: three rules scored on one shared GLOW fit per
 # cell (greedy / DP / the single max-LLR region). All carry the same GLOW fit
 # knobs (so run_prune's glow_fit_for_prune is shared across them); the rule
-# rides as both the cache axis and the recorded label.
+# rides in as the cache axis (and names the method: GLOW-<rule>).
 _PRUNE_GLOW_KWARGS = dict(n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER,
                           alpha_fwer=ALPHA_FWER)
 RUN_PRUNE_LIST = [
-    dict(rule='maxllr', label='GLOW-MaxLLR', **_PRUNE_GLOW_KWARGS),
-    dict(rule='greedy', label='GLOW-Greedy', **_PRUNE_GLOW_KWARGS),
-    dict(rule='dp', label='GLOW-DP', **_PRUNE_GLOW_KWARGS),
+    dict(rule='maxllr', **_PRUNE_GLOW_KWARGS),
+    dict(rule='greedy', **_PRUNE_GLOW_KWARGS),
+    dict(rule='dp', **_PRUNE_GLOW_KWARGS),
 ]
 
 

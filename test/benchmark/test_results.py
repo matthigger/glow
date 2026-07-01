@@ -36,10 +36,9 @@ def _data_cell(seed):
 
 
 def _ana_grid():
-    # two recipes, each named by its (ignored) label kwarg -- the leaf-grid
-    # discriminator results matches on
-    return [dict(ana=AnalysisVBA(n_perm_fwer=6), label='VBA-6'),
-            dict(ana=AnalysisVBA(n_perm_fwer=7), label='VBA-7')]
+    # two recipes (distinct n_perm_fwer -> distinct ana -> distinct leaf record)
+    return [dict(ana=AnalysisVBA(n_perm_fwer=6)),
+            dict(ana=AnalysisVBA(n_perm_fwer=7))]
 
 
 def _effect_cell():
@@ -77,13 +76,14 @@ def test_config_leaf_keys_selects_a_caches_leaves(small_config):
         assert data.RECORDER.records[key]['function'] == 'run_ana'
 
 
-def test_config_results_df_counts_and_labels(small_config):
+def test_config_results_df_counts_and_recipes(small_config):
     a = results.config_results_df('cacheA')
     b = results.config_results_df('cacheB')
     assert len(a) == 1 * 2           # 1 data cell x 2 recipes
     assert len(b) == 2 * 2           # 2 data cells x 2 recipes
-    # the method label rides through as the in.label column
-    assert set(a['run_ana.in.label']) == {'VBA-6', 'VBA-7'}
+    # the recipe rides through as the in.ana column (the label source), one per
+    # recipe -- no label is stored (see run / plot)
+    assert a['run_ana.in.ana'].nunique() == 2
 
 
 def test_shared_cell_appears_in_both_caches(small_config):
@@ -125,7 +125,7 @@ def test_write_config_csvs(small_config, tmp_path):
     assert set(written) == {'cacheA', 'cacheB', 'planted'}
     a = pd.read_csv(written['cacheA'])
     assert len(a) == 2
-    assert set(a['run_ana.in.label']) == {'VBA-6', 'VBA-7'}
+    assert a['run_ana.in.ana'].nunique() == 2
 
 
 def test_empty_cache_is_skipped(monkeypatch, tmp_path):

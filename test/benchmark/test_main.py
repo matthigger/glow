@@ -40,7 +40,7 @@ def _tiny_entry():
                       seed=_fresh_seed())]
     effect_list = [dict(effect_llr=0.05, extenter_cls=ExtenterSphere,
                         n_vox=10, seed=0)]
-    fnc_list = [dict(ana=AnalysisVBA(n_perm_fwer=15), label='VBA')]
+    fnc_list = [dict(ana=AnalysisVBA(n_perm_fwer=15))]
     return (data_list, effect_list, fnc_list, run_ana)
 
 

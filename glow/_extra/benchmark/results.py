@@ -21,8 +21,9 @@ declared cells:
     whose stored inputs match one of the cache's effect cells. A None effect
     cell is the null path -- no effect record, the leaf hangs off the clean
     exp -- so the anchor itself is the frontier.
-  - Step forward to the leaves. Keep the fnc records off the frontier whose
-    function and method label are in the cache's fnc grid.
+  - Step forward to the leaves. Take the fnc records off the frontier that
+    carry the cache's leaf function (a cache runs its whole fnc grid, and a
+    shared cell's other caches use a different leaf function).
 
 Deriving membership from the current CONFIG means editing a cache (adding,
 changing or dropping swept cells) is reflected at once: a dropped cell stops
@@ -113,9 +114,9 @@ def config_leaf_keys(name: str) -> list:
     anchor at the data records (_data_record_key), step to the effect records
     whose stored inputs match a cache effect cell (or, for a None cell, take the
     data record as the frontier -- the null path has no effect record), then
-    step to the fnc records off that frontier whose function and label are in
-    the cache's fnc grid. Membership is thus derived from the current CONFIG, so
-    a dropped / changed cell simply stops matching (see the module docstring).
+    take the fnc records off that frontier with the cache's leaf function.
+    Membership is thus derived from the current CONFIG, so a dropped / changed
+    cell simply stops matching (see the module docstring).
 
     Reads the in-memory records; call RECORDER.load() first to fold in what a
     parallel run left on disk.
@@ -126,8 +127,7 @@ def config_leaf_keys(name: str) -> list:
     Returns:
         list[str]: the leaf record keys for this cache (empty if none ran).
     """
-    kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc = (
-        config.CONFIG[name])
+    kwargs_data_list, kwargs_effect_list, _, fnc = config.CONFIG[name]
     records = RECORDER.records
 
     # forward edges: an output link-hash -> the records consuming it as input
@@ -168,18 +168,16 @@ def config_leaf_keys(name: str) -> list:
             parents |= {c for c in children_of(a)
                         if _inputs_match(records[c], expected)}
 
-    # leaves: fnc records off the frontier in this cache's fnc grid, keyed by
-    # the recorded function and the fnc call's label -- a clean string stored in
-    # inputs (the fnc's label arg, 1:1 with the recipe in config.py), so the ana
-    # object is never compared by repr.
+    # leaves: the fnc records off the frontier. A cache runs its whole fnc grid,
+    # and a cache sharing a (data, effect) cell runs a different leaf function
+    # (run_ana vs run_segment / run_stat / ...), so the recorded function name
+    # alone selects this cache's leaves; the recipe within the grid is recovered
+    # downstream (see benchmark.plot).
     fnc_name = _raw(fnc).__qualname__
-    labels = {f.get('label') for f in kwargs_fnc_list}
     leaves = set()
     for p in parents:
         for c in children_of(p):
-            rec = records[c]
-            if (rec['function'] == fnc_name
-                    and rec.get('inputs', {}).get('label') in labels):
+            if records[c]['function'] == fnc_name:
                 leaves.add(c)
     return list(leaves)
 
