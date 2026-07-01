@@ -10,6 +10,8 @@ import plotly.graph_objects as go
 
 from glow.graph import get_parent
 
+from .data import fwer_crit_llr_z
+
 
 def _ensure_1d(arr):
     """Return a 1-D view: if 2-D (b, num_reg), take first row."""
@@ -39,18 +41,18 @@ def _compute_adj_thresh(ana_glow):
     """Compute the llr_z value at the alpha_fwer significance boundary.
 
     When significant regions exist, returns the minimum llr_z among them
-    (the empirical decision boundary). Otherwise falls back to adj_crit,
-    the exact critical value from the permutation null (stored during
-    analysis). Returns None only when neither source is available.
+    (the empirical decision boundary). Otherwise falls back to the FWER
+    critical llr_z derived from the max-z null (fwer_crit_llr_z). Returns
+    None only when neither source is available.
     """
     alpha = getattr(ana_glow, 'alpha_fwer', None)
     if alpha is None:
         return None
 
     pval = getattr(ana_glow, 'pval', None)
-    adj = getattr(ana_glow, 'llr_z_0', None)
+    adj = getattr(ana_glow, 'z', None)
     if pval is None or adj is None:
-        return getattr(ana_glow, 'adj_crit', None)
+        return fwer_crit_llr_z(ana_glow)
     if adj.ndim > 1:
         adj = adj[0]
 
@@ -58,7 +60,7 @@ def _compute_adj_thresh(ana_glow):
     if sig.any():
         return float(np.nanmin(adj[sig]))
 
-    return getattr(ana_glow, 'adj_crit', None)
+    return fwer_crit_llr_z(ana_glow)
 
 
 
@@ -147,8 +149,7 @@ def build_scatter(df, ana_glow, exp, x_feat, y_feat, color_feat,
     # --- build hover text ---
     hover_cols = ['region_idx', 'n_voxel', 'llr', 'llr_z',
                   'pval_fwer']
-    for c in ('pval_homo',
-              'dice', 'sens', 'ppv', 'spec', 'vox_in_target',
+    for c in ('dice', 'sens', 'ppv', 'spec', 'vox_in_target',
               'vox_out_target', 'llr_mu_h0', 'llr_std_h0'):
         if c in _df.columns and not _df[c].isna().all():
             hover_cols.append(c)

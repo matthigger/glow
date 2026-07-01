@@ -19,7 +19,7 @@ from dash import Dash, html, dcc, callback_context, no_update
 from dash.dependencies import Input, Output, State
 
 from .data import (prep_df, get_feature_columns, compute_backgrounds,
-                    compute_bg_ranges, compute_target_stats)
+                    compute_bg_ranges, compute_target_stats, fwer_crit_llr_z)
 from .scatter import build_scatter
 from .image import (build_label_map, compute_bg_volume, get_region_color,
                     compute_region_center)
@@ -303,9 +303,11 @@ def _detail_panels(ana_glow, exp):
         _kv_row('n_perm_inner',
                 getattr(ana_glow, 'n_perm_inner', '<not stored>')),
         _kv_row('min_vox', getattr(ana_glow, 'min_vox', None)),
-        _kv_row('adj_crit', getattr(ana_glow, 'adj_crit', None)),
+        _kv_row('adj_crit (llr_z)', fwer_crit_llr_z(ana_glow)),
         _kv_row('# significant regions',
-                len(getattr(ana_glow, 'sig_reg_list', []) or [])),
+                int(np.sum(~np.isnan(pval)
+                           & (pval <= getattr(ana_glow, 'alpha_fwer', 0.05))))
+                if pval is not None else 0),
         _kv_row('# discovered effects',
                 len(getattr(ana_glow, 'effect_list', []) or [])),
         _kv_row('min p-value', pval_min),

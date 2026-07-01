@@ -22,6 +22,27 @@ def _ensure_1d(arr):
     return arr if arr.ndim == 1 else arr[0]
 
 
+def fwer_crit_llr_z(ana_glow):
+    """Return the FWER critical llr_z at alpha_fwer, or None if unavailable.
+
+    The (1 - alpha_fwer) point of the Westfall-Young max-z null
+    (ana_glow.max_z_null): the llr_z a region must exceed to be called
+    significant. Derived from the null here (not stored on the analysis), so a
+    caller can draw the significance boundary when no region cleared it -- the
+    empirical boundary, the min llr_z among significant regions, is preferred
+    when one exists.
+    """
+    alpha = getattr(ana_glow, 'alpha_fwer', None)
+    null = getattr(ana_glow, 'max_z_null', None)
+    if alpha is None or null is None:
+        return None
+    null = np.asarray(null, dtype=float)
+    null = null[~np.isnan(null)]
+    if null.size == 0:
+        return None
+    return float(np.quantile(null, 1.0 - alpha))
+
+
 def prep_df(ana_glow, exp, mask_target=None, extra_df=None):
     """Build a DataFrame with one row per region (unpermuted only).
 
