@@ -13,8 +13,8 @@ A leaf may lean on a separately-memoised heavy intermediate rather than a
 driver stage: run_stat reads voxel_stat_walk (every MANCOVA stat for one exp)
 and run_prune reads glow_fit_for_prune (one GLOW fit's children / per-region
 LLR / FWER-significant set), so the first of a cell's variants computes it and
-the rest are cache hits -- the new-arch replacement for the old layer's "record
-the fit once, run N rules / fits off it". The intermediate is a plain memoised
+the rest are cache hits -- one shared fit that a cell's N variants (rules or
+stats) each score off. The intermediate is a plain memoised
 helper, not a recorded DAG node: its output is not an Experiment, so it never
 links as a leaf's ancestor, and the leaf already links to the build via exp.
 

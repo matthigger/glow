@@ -6,7 +6,7 @@ Usage:
 
     # load a bundle pickle {'ana': AnalysisGLOW, 'exp': Experiment, ...}
     # (as written by glow._extra.viewer.web.bake_demos); a bare AnalysisGLOW
-    # no longer carries the experiment the viewer needs
+    # does not carry the experiment the viewer needs
     python -m glow._extra.viewer bundle.p.gz
 
     # with a target mask (nifti, numpy, or pickled EffectEstimate)
@@ -446,7 +446,7 @@ def main():
 
     print(f'Loading analysis from {args.analysis} ...')
     obj = _load_analysis(args.analysis)
-    # the analysis no longer carries exp, so the viewer needs a bundle
+    # the analysis does not carry exp, so the viewer needs a bundle
     # pickle {'ana', 'exp', ...} (as written by bake_demos), not a bare
     # AnalysisGLOW.
     if not (isinstance(obj, dict) and 'ana' in obj and 'exp' in obj):

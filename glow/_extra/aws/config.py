@@ -48,11 +48,11 @@ class AWSConfig:
         memory_mb_tiers (List[int]): per-attempt memory limits; the driver
             re-runs OOM-killed cells at the next larger tier.
         max_concurrent (int): compute-environment maxvCpus ceiling.
-        timeout_minutes (int): per-attempt wall-clock limit. Higher than the
-            old default: a single data cell runs its whole effect x analysis
-            subtree serially (the heaviest, sweep_extent, is hours), and a
-            Spot-killed attempt resumes from the synced cache on retry (see
-            the driver / s3 modules), so a generous ceiling is safe.
+        timeout_minutes (int): per-attempt wall-clock limit. A single data
+            cell runs its whole effect x analysis subtree serially (the
+            heaviest, sweep_extent, is hours), and a Spot-killed attempt
+            resumes from the synced cache on retry (see the driver / s3
+            modules), so a generous ceiling is safe.
         poll_seconds (int): interval between describe_jobs status polls.
     """
 

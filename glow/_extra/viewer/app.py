@@ -1518,7 +1518,7 @@ def launch(ana_glow, exp, mask_target=None, port=8050, debug=False,
     Args:
         ana_glow (AnalysisGLOW): completed analysis
         exp (Experiment): the experiment the analysis was fit on (the
-            analysis no longer stores it; pass the one given to fit)
+            analysis does not store it; pass the one given to fit)
         mask_target (np.array): optional target mask (boolean, same shape
             as exp.mask_idx). When provided, per-region dice/sens/spec/
             vox_in_target/vox_out_target columns become available.

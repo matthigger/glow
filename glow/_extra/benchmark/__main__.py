@@ -1,18 +1,18 @@
 """CLI entry point for the paper benchmarks.
 
-Running ``python -m glow._extra.benchmark`` resolves cache names from
+Running python -m glow._extra.benchmark resolves cache names from
 config.CONFIG and drives each selected one through driver.drive, wrapped in
-``RECORDER.collecting(name)`` so every leaf is tagged with the cache it belongs
-to (see driver / results). After the sweep it writes one ``<name>.csv`` per
+RECORDER.collecting(name) so every leaf is tagged with the cache it belongs
+to (see driver / results). After the sweep it writes one <name>.csv per
 cache from the shared provenance records (results.write_config_csvs).
 
-``--csv-only`` skips the sweep and rebuilds those CSVs from the records
-already on disk -- the path to take after editing config.py / results.py when
-the records are still good and no new experiments are needed. (It reads the
-``configs`` tags baked into the records at run time; it does not re-tag
+--csv-only skips the sweep and rebuilds those CSVs from the records already
+on disk -- the path to take after editing config.py / results.py when the
+records are still good and no new experiments are needed. (It reads the
+configs tags baked into the records at run time; it does not re-tag
 membership, which only a real run does.)
 
-``--aws`` runs the sweep on AWS Batch instead of locally: it hands the same
+--aws runs the sweep on AWS Batch instead of locally: it hands the same
 resolved cache names to glow._extra.aws.drive_aws, which submits each cache's
 data cells as a Batch array job and writes the same per-config CSVs from the
 shared records when they drain (see glow._extra.aws). This is the one CLI for a
@@ -89,19 +89,18 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
         aws: bool = False, aws_config_path=None) -> dict:
     """Drive the selected CONFIG caches, then write their per-config CSVs.
 
-    For each resolved cache name, runs ``drive(*CONFIG[name], n_jobs=n_jobs)``
-    inside ``RECORDER.collecting(name)`` so every leaf is tagged with the cache
-    it belongs to, then writes one ``<name>.csv`` per cache from the shared
-    records (results.write_config_csvs). ``csv_only`` skips the sweep and just
-    rebuilds those CSVs from the records already on disk -- the path to take
-    after editing config.py / results.py when no new experiments are needed.
+    For each resolved cache name, runs drive(*CONFIG[name], n_jobs=n_jobs)
+    inside RECORDER.collecting(name) so every leaf is tagged with the cache it
+    belongs to, then writes one <name>.csv per cache from the shared records
+    (results.write_config_csvs). csv_only skips the sweep and just rebuilds
+    those CSVs from the records already on disk -- the path to take after
+    editing config.py / results.py when no new experiments are needed.
 
-    ``aws`` runs the sweep on AWS Batch instead of locally: the resolved names
-    are handed to glow._extra.aws.drive_aws, which submits each cache's cells
-    as a Batch array job and writes the same CSVs from the shared records when
-    they drain. The local HCP dataset is not loaded in this mode (the workers
-    own the data), and ``n_jobs`` does not apply (the Batch array is the
-    parallelism).
+    aws runs the sweep on AWS Batch instead of locally: the resolved names are
+    handed to glow._extra.aws.drive_aws, which submits each cache's cells as a
+    Batch array job and writes the same CSVs from the shared records when they
+    drain. The local HCP dataset is not loaded in this mode (the workers own
+    the data), and n_jobs does not apply (the Batch array is the parallelism).
 
     The HCP reference dataset is ensured once up front (idempotent / cached)
     for the HCP-backed caches in a local run, except under csv_only / aws,

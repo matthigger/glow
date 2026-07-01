@@ -14,21 +14,17 @@ null path. Each cache calls them with the axes it sweeps, leaving the rest at
 their defaults. The leaf is run_ana over the shared analysis recipes
 (RUN_ANA_LIST).
 
-This replaces the old scalar-grid catalogue: there the
-heavy objects (DataSource, Extenter) were rebuilt from scalar axes inside the
-trial fn; here a cell carries the Extenter (effect support, analysis crop)
-and the realized HCP feature subset directly, so the catalogue is what runs
--- no factory indirection.
+A cell carries its heavy objects directly -- the Extenter (effect support,
+analysis crop) and the realized HCP feature subset -- so the catalogue is what
+runs, with no factory indirection.
 
-Seeding. The old layer split one trial seed (derive_seeds) into independent
-data / feature / effect sub-seeds so the effect placement tracked the data
-realization. The driver decouples the data and effect loops (one effect grid
-is shared across all data cells), so here a data cell's seed drives its whole
-realization (the WGN draw / HCP feature subset, the x design, and the
-analysis crop location), and the effect support is placed with seed_from_exp
--- effect_factory derives its placement seed from a hash of the experiment,
-so each realization gets its own (reproducible) effect location even though
-the effect grid is shared and carries no per-data seed (see effect_factory).
+Seeding. A data cell's seed drives its whole realization (the WGN draw / HCP
+feature subset, the x design, and the analysis crop location). The driver
+decouples the data and effect loops (one effect grid is shared across all data
+cells), so the effect support is placed with seed_from_exp -- effect_factory
+derives its placement seed from a hash of the experiment, so each realization
+gets its own (reproducible) effect location even though the effect grid is
+shared and carries no per-data seed (see effect_factory).
 
 Effect strength. effect_llr is the per-voxel (size-normalized) target; the
 observed whole-region LLR is ~ effect_llr * n_vox (see glow.effect.impose).
@@ -43,7 +39,7 @@ on the recorded source column downstream. HCP has no num_img axis (its N is
 the cohort), so the num_img sweep is WGN-only.
 
 Scope. Most caches share the run_ana leaf (fit + score one Analysis per cell):
-null, sweep_llr, sweep_b, sweep_extent, sweep_nimg. Three caches swap in their
+null, sweep_llr, sweep_b, sweep_extent, sweep_nimg. Four caches swap in their
 own leaf over those same grids: segment (run_segment, a Ward-mode oracle, no
 fit), min_size (run_min_size, per-perm staircases, recorded not scored), stat
 (run_stat, a VBA / CET variant reading a shared voxel-stat walk), and prune

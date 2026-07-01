@@ -54,7 +54,7 @@ class EffectEstimate:
         if self.mask is not None:
             parts.append(f'num_vox={int(self.mask.sum())}')
         for name in ('reg_idx', 'pval_fwer', 'effect_llr', 'seed'):
-            v = getattr(self, name)
+            v = getattr(self, name, None)
             if v is not None:
                 parts.append(f'{name}={v}')
         return f'{type(self).__name__}({", ".join(parts)})'

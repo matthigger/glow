@@ -21,9 +21,9 @@ Array child i runs the i-th cell of the shipped bundle -- a position, not a
 re-derived index -- so the driver and worker can never disagree on the cell
 list.
 
-OOM escalation is kept from the old driver: a cell killed for memory is
-re-submitted at the next memory_mb_tier, and only at the last tier does it
-count as a permanent failure. Other failures (timeout, crash) are permanent
+OOM escalation: a cell killed for memory is re-submitted at the next
+memory_mb_tier, and only at the last tier does it count as a permanent
+failure. Other failures (timeout, crash) are permanent
 and resurface on a rerun. Because the worker syncs its cache as it goes, a
 retried cell resumes from the fits it already completed rather than from cold.
 

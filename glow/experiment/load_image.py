@@ -29,8 +29,8 @@ def load_image_nii(df: pd.DataFrame, dtype=np.float32, mask=None):
     Args:
         df (pd.DataFrame): index=subject, columns=feature, values=file paths
         dtype: numpy dtype for the output y array.  Default np.float32
-            halves memory vs the legacy float64 and lets
-            compute_llr_batched keep its hot loop in float32 throughout.
+            halves memory versus float64 and lets compute_llr_batched keep
+            its hot loop in float32 throughout.
             nibabel.get_fdata(dtype=...) preserves precision when the
             on-disk type is itself float32 (no upcast/downcast round-trip).
         mask (path): optional path to a brain-mask NIfTI on the images'

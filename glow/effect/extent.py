@@ -498,9 +498,9 @@ def split_mask_spectral(mask):
     both pieces are guaranteed contiguous.
 
     The Fiedler seeds place the cut across the graph's minimum bisection,
-    giving more balanced, geometrically natural pieces than the
-    spatial-diameter endpoints used previously. Only the seed choice differs
-    from the diameter-based split; the front growth is identical.
+    giving balanced, geometrically natural pieces. The seed choice is what
+    shapes the split; the front growth is a plain simultaneous BFS from the
+    two seeds.
 
     Note:
         Sizes differ by at most one voxel unless one front gets walled in by

@@ -103,7 +103,7 @@ def _extract_ana(payload) -> Tuple[object, object, object]:
     """Pull (ana, exp, mask_target) from a loaded pickle payload.
 
     Accepts the baked-demo dict ({'ana', 'exp', 'mask_target', 'combo'}) or
-    a bare fitted Analysis object (legacy; carries no experiment, so the
+    a bare fitted Analysis object (which carries no experiment, so the
     viewer cannot render it).
 
     Args:

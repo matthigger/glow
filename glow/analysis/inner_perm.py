@@ -34,7 +34,7 @@ perms (_glow.py reserves a 100_000-wide block per outer perm).
 
 cpu_reliable_full returns the raw (n_perm, num_reg) LLR draws matrix;
 tests that want to inspect individual draws call it directly. cpu_perm
-no longer has a _full variant -- callers that need per-draw output
+returns only the reduced (mu, std); callers that need per-draw output
 materialize via np.vstack(list(glow.graph.iter_llr_perm(...))).
 """
 import numpy as np
@@ -109,9 +109,9 @@ def _welford_moments(chunks, num_reg: int):
 
     Per-region accumulators (n, mean, M2) updated via Chan's
     parallel-combine rule (Chan, Golub & LeVeque 1979). NaN cells are
-    excluded from the count, matching the old nanmean / nanstd(ddof=1)
-    semantics. Returns NaN mu where no chunk had a valid sample, NaN std
-    where fewer than 2 valid samples accumulated.
+    excluded from the count, giving nanmean / nanstd(ddof=1) semantics.
+    Returns NaN mu where no chunk had a valid sample, NaN std where fewer
+    than 2 valid samples accumulated.
 
     Numerically stable across chunk boundaries: the naive single-pass
     (sumsq - sum^2/n)/(n-1) formula loses precision when var << mean^2;

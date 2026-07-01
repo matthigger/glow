@@ -19,9 +19,9 @@ effect_perc that varies is swept.
 Each cache then gets either a faceted FWER calibration curve (null) or a
 faceted dice/sens/ppv sweep plus the GLOW-Focus head-to-head diff grid, WGN
 and HCP side by side. With no arguments it plots every run_ana cache in the
-catalogue; passing names restricts it. The mancova / segment / prune figures
-are out of scope -- their leaf functions do not exist in this layer yet
-(see config).
+catalogue; passing names restricts it. The other caches (segment / stat /
+prune / min_size) carry different leaf and score shapes, so this run_ana layer
+does not plot them (see config).
 """
 import colorsys
 

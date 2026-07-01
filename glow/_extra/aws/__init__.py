@@ -26,8 +26,8 @@ Modules:
     infra    -- idempotent boto3 provisioning CLI (bootstrap / setup / ...).
 
 Running a sweep is the benchmark CLI's job
-(``python -m glow._extra.benchmark --aws <names>`` calls drive_aws);
-``python -m glow._extra.aws`` is the provisioning CLI alias (see __main__ /
+(python -m glow._extra.benchmark --aws <names> calls drive_aws);
+python -m glow._extra.aws is the provisioning CLI alias (see __main__ /
 infra).  boto3 is imported lazily (only the driver / worker / infra need it),
 so importing this package for AWSConfig alone is cheap.
 """

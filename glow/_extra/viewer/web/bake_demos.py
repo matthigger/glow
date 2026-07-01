@@ -3,7 +3,7 @@
 Each entry in COMBOS calls one of the _demo_* builders in
 glow._extra.viewer.__main__ and pickles the resulting (ana, exp,
 mask_target) triple to the output dir. exp is bundled because the analysis
-no longer stores it and the viewer needs it.
+does not store it and the viewer needs it.
 
 Usage:
     python -m glow._extra.viewer.web.bake_demos              # bake all

@@ -44,8 +44,8 @@ RECORDER = Recorder(folder=get_path_records(), link_types=(Experiment,))
 def _with_canonical_y(exp):
     """Return exp with an owning, canonically-strided (F-contiguous) y.
 
-    Both the joblib.Memory cache key and the provenance link
-    (Experiment.to_record / RECORDER) are joblib.hash of the whole
+    Both the joblib.Memory cache key and the provenance link (the
+    RECORDER's input / output content hashes) are joblib.hash of the whole
     Experiment, which folds in y's memory layout -- not just its bytes.
     apply_mask crops y to a non-owning view, and at b=1 the length-1 feature
     axis carries an ambiguous stride that pickling does not preserve, so a

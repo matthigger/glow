@@ -1,6 +1,6 @@
 """Slice the shared provenance frame into one tidy CSV per CONFIG cache.
 
-The driver writes every run_ana leaf into one shared RECORDER
+The driver writes every leaf into one shared RECORDER
 (data.RECORDER): RECORDER.flatten_to_df yields one row per leaf, each
 carrying the data -> (plant ->) score chain that produced it (see
 glow._extra.benchmark.recorder / driver). That frame is config-agnostic --
@@ -45,7 +45,7 @@ CONFIG_TAG_FIELD = 'configs'
 def config_leaf_keys(name: str) -> list:
     """Return record keys of leaves tagged as in CONFIG cache name.
 
-    The driver tags each run_ana leaf with the cache it ran under
+    The driver tags each leaf with the cache it ran under
     (RECORDER.collecting -> the record's configs list), so membership is read
     straight off the records -- no grid is re-walked, no experiment rebuilt.
     A leaf shared by several caches (the sweeps' common baseline cell)
@@ -57,7 +57,7 @@ def config_leaf_keys(name: str) -> list:
         name (str): a CONFIG cache name (e.g. 'sweep_llr').
 
     Returns:
-        list[str]: the run_ana record keys tagged name (empty if none ran).
+        list[str]: the leaf record keys tagged name (empty if none ran).
     """
     return [key for key, rec in RECORDER.records.items()
             if name in rec.get(CONFIG_TAG_FIELD, [])]

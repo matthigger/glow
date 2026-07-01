@@ -246,8 +246,8 @@ class AnalysisVoxel(Analysis):
         Args:
             exp (Experiment): experiment to evaluate (already permuted
                 if this is a permutation draw)
-            children (np.array): (num_reg, 2) child index array. If None,
-                only iterates through individual voxels.
+            children (np.array): (num_reg - num_vox, 2) child index array.
+                If None, only iterates through individual voxels.
 
         Returns:
             stat (np.array): (num_reg,) test statistics

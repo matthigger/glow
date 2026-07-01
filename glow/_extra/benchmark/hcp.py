@@ -11,10 +11,11 @@ open-access data, the first download is gated on the user accepting the
 WU-Minn HCP Open Access Data Use Terms; once the data is on disk it loads
 with no prompt.
 
-The archive also ships a brain mask (MASK_GLOB); DataSourceHCP passes it
-to from_paths as the analysis support, so the maps are not used to infer
-it -- the every-image-nonzero heuristic wrongly drops in-brain voxels
-where NODDI isovf is legitimately zero.
+The archive also ships a brain mask (MASK_GLOB), passed to from_search as the
+analysis support and carried through the npy bundle to
+build_exp_img_from_bundle, so the maps are not used to infer it -- the
+every-image-nonzero heuristic wrongly drops in-brain voxels where NODDI isovf
+is legitimately zero.
 """
 
 import hashlib
@@ -53,7 +54,7 @@ HCP_FEATS = tuple(IMG_GLOB_DICT)
 
 # Recursive glob for the single brain-mask map shipped with the archive.
 # It shares the maps' MNI152NLin2009cAsym 2 mm grid and marks the in-brain
-# voxels used as the analysis support (see load_brain_mask).
+# voxels used as the analysis support (see build_exp_img_from_bundle).
 MASK_GLOB = '**/brain_mask_space-*.nii.gz'
 
 # Subject id repeats in the sub-<id>/ directory and the filename

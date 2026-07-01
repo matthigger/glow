@@ -42,9 +42,8 @@ ALLOC_STRATEGY = 'SPOT_PRICE_CAPACITY_OPTIMIZED'
 
 # Instance pool: 6/7 series c/m/r families, large → 12xlarge.  Picked
 # under SPOT_PRICE_CAPACITY_OPTIMIZED so Batch picks the cheapest pool
-# with available Spot capacity.  Carried verbatim from the old setup
-# (bench_instance_types.py 2026-04-28 sweep: 5-series 2x slower per core,
-# dropped from the list).
+# with available Spot capacity.  5-series omitted: a 2026-04-28 benchmark
+# clocked them ~2x slower per core.
 INSTANCE_TYPES = [
     'c6i.large', 'c6i.xlarge', 'c6i.2xlarge', 'c6i.4xlarge',
     'c6i.8xlarge', 'c6i.12xlarge',
