@@ -3,7 +3,7 @@
 A Recorder decorates a function so every successful call stores one record:
 
     {hash, function, inputs, outputs, input_hashes, output_hashes,
-     time_sec, label?, recurse?}
+     time_sec, recurse?}
 
 The key is joblib.hash(filter_args(fnc, [], args, kwargs)) -- the key
 joblib.Memory files the result under. Nest the recorder inside @MEMORY.cache
@@ -96,7 +96,7 @@ def _flatten_record(record, prefix, sep='.') -> dict:
     """Flatten one record to a {column: cell} dict, all columns under prefix.
 
     prefix is the record's role (its short function name, e.g. fit). Each
-    column -- the hash/function/label/time_sec metadata and one in.<name> /
+    column -- the hash/function/time_sec metadata and one in.<name> /
     out.<name> per input/output -- is namespaced by it (fit.time_sec), so a
     leaf and its ancestors never collide. Values go through _cell, except an
     output in the recurse list, which _recurse_cell expands into per-key-path
@@ -106,7 +106,6 @@ def _flatten_record(record, prefix, sep='.') -> dict:
     flat = {
         f'{prefix}{sep}hash': record['hash'],
         f'{prefix}{sep}function': record['function'],
-        f'{prefix}{sep}label': record.get('label'),
         f'{prefix}{sep}time_sec': record.get('time_sec'),
     }
     for name, value in record.get('inputs', {}).items():
@@ -207,23 +206,20 @@ class Recorder:
         """
         return joblib.hash(filter_args(fnc, [], args, kwargs))
 
-    def __call__(self, output_name=None, output_name_list=None, label=None,
+    def __call__(self, output_name=None, output_name_list=None,
                  recurse_out_list=None):
         """Build a decorator that records calls under one or more output names.
 
         Pass exactly one of output_name (the whole return under one name) or
         output_name_list (a tuple/list return unpacked onto those names).
-        label and recurse_out_list are top-level metadata, never part of the
-        key: label names the method/variant (e.g. 'GLOW-GLM'); recurse_out_list
-        names outputs whose nested dict/list flatten_to_df expands per key-path
-        into out.<name>.<path> columns (e.g. out.score.target.tp) not one cell.
+        recurse_out_list is top-level metadata, never part of the key: it names
+        outputs whose nested dict/list flatten_to_df expands per key-path into
+        out.<name>.<path> columns (e.g. out.score.target.tp) not one cell.
 
         Args:
             output_name (str | None): single name for the whole return.
             output_name_list (tuple | list | None): names for an unpacked
                 tuple/list return; non-empty, no duplicates.
-            label (str | None): method/variant name, recorded top-level; None
-                for no label.
             recurse_out_list (tuple | list | None): output names to expand per
                 key-path; each must be a declared output. None recurses none.
 
@@ -233,16 +229,13 @@ class Recorder:
         Raises:
             ValueError: neither or both output args given, duplicate
                 output_name_list names, or a recurse name not declared.
-            TypeError: a name is not a str, output_name_list is empty, label is
-                not a str, or recurse_out_list is not a tuple/list of str.
+            TypeError: a name is not a str, output_name_list is empty, or
+                recurse_out_list is not a tuple/list of str.
         """
         # require exactly one of output_name / output_name_list
         if (output_name is None) == (output_name_list is None):
             raise ValueError(
                 "provide exactly one of output_name or output_name_list")
-
-        if label is not None and not isinstance(label, str):
-            raise TypeError("label must be a str")
 
         if output_name is not None:
             if not isinstance(output_name, str):
@@ -357,7 +350,6 @@ class Recorder:
                 self._store(key, {
                     "hash": key,
                     "function": fnc.__qualname__,
-                    **({"label": label} if label is not None else {}),
                     **({"recurse": list(recurse)} if recurse else {}),
                     "inputs": inputs,
                     "outputs": outputs,
@@ -428,7 +420,7 @@ class Recorder:
         the data, so one row holds a whole trial: swept axes (setup), recipe
         and timing (fit), result (score).
 
-        Each record contributes hash/function/label/time_sec and one
+        Each record contributes hash/function/time_sec and one
         in.<name> / out.<name> per input/output (via _cell), namespaced by its
         short function name (fit.time_sec). A name repeated in a row is
         suffixed #2/#3; the leaf goes first then ancestors shallowest-first, so
