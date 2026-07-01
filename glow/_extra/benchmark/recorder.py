@@ -3,7 +3,7 @@
 A Recorder decorates a function so every successful call stores one record:
 
     {hash, function, inputs, outputs, input_hashes, output_hashes,
-     time_sec, label?, recurse?, configs?}
+     time_sec, recurse?}
 
 The key is joblib.hash(filter_args(fnc, [], args, kwargs)) -- the key
 joblib.Memory files the result under. Nest the recorder inside @MEMORY.cache
@@ -19,13 +19,8 @@ whose type is in link_types (e.g. (Experiment,); narrow, so trivial values
 forge no edges). B depends on A when a B input hash equals an A output hash.
 flatten_to_df walks it to one row per leaf carrying its ancestors' fields, so
 a trial's setup, fit and score land in one row.
-
-Config tags: tag/tag_call inside a collecting(name) block stamp a record with
-its groupings -- above the cache, so a grouping re-running a cached cell still
-tags the shared record the inner recorder never saw.
 """
 
-import contextlib
 import functools
 import inspect
 import json
@@ -101,7 +96,7 @@ def _flatten_record(record, prefix, sep='.') -> dict:
     """Flatten one record to a {column: cell} dict, all columns under prefix.
 
     prefix is the record's role (its short function name, e.g. fit). Each
-    column -- the hash/function/label/time_sec metadata and one in.<name> /
+    column -- the hash/function/time_sec metadata and one in.<name> /
     out.<name> per input/output -- is namespaced by it (fit.time_sec), so a
     leaf and its ancestors never collide. Values go through _cell, except an
     output in the recurse list, which _recurse_cell expands into per-key-path
@@ -111,7 +106,6 @@ def _flatten_record(record, prefix, sep='.') -> dict:
     flat = {
         f'{prefix}{sep}hash': record['hash'],
         f'{prefix}{sep}function': record['function'],
-        f'{prefix}{sep}label': record.get('label'),
         f'{prefix}{sep}time_sec': record.get('time_sec'),
     }
     for name, value in record.get('inputs', {}).items():
@@ -160,8 +154,7 @@ class Recorder:
             its fields are the record layout in the module docstring.
             inputs/outputs are _cell snapshots, not live objects;
             input_hashes/output_hashes hash only link_types values (the DAG
-            edges); configs is added by tag/tag_call. A repeat hash overwrites
-            and warns.
+            edges). A repeat hash overwrites and warns.
         folder (Path | None): directory the records mirror to (one <hash>.json
             each), made on construction, or None for in-memory only.
         link_types (tuple[type]): classes whose values are content-hashed into
@@ -192,34 +185,6 @@ class Recorder:
             raise TypeError(
                 "link_types must be classes (a value is linked when "
                 "isinstance(value, link_types))")
-        # stack of active collecting(name) groupings; the innermost is the tag
-        # tag_call stamps onto a record (see collecting / tag_call)
-        self._config_stack = []
-
-    @property
-    def _current_config(self):
-        """Return the innermost active collecting(name) grouping, or None."""
-        return self._config_stack[-1] if self._config_stack else None
-
-    @contextlib.contextmanager
-    def collecting(self, name):
-        """Tag records produced in this block as belonging to grouping name.
-
-        Sets _current_config for the duration, so a tag_call inside stamps its
-        record with name. Nests, and restores on exit even if the body raises;
-        name=None is a harmless no-op. The tag rides a context, not the call
-        arguments, so it never enters the cache key or record hash -- else each
-        grouping would key a distinct record and lose the cell-sharing this is
-        for.
-
-        Args:
-            name (str | None): grouping to tag records with, or None for none.
-        """
-        self._config_stack.append(name)
-        try:
-            yield
-        finally:
-            self._config_stack.pop()
 
     @staticmethod
     def _args_hash(fnc, args, kwargs) -> str:
@@ -241,23 +206,20 @@ class Recorder:
         """
         return joblib.hash(filter_args(fnc, [], args, kwargs))
 
-    def __call__(self, output_name=None, output_name_list=None, label=None,
+    def __call__(self, output_name=None, output_name_list=None,
                  recurse_out_list=None):
         """Build a decorator that records calls under one or more output names.
 
         Pass exactly one of output_name (the whole return under one name) or
         output_name_list (a tuple/list return unpacked onto those names).
-        label and recurse_out_list are top-level metadata, never part of the
-        key: label names the method/variant (e.g. 'GLOW-GLM'); recurse_out_list
-        names outputs whose nested dict/list flatten_to_df expands per key-path
-        into out.<name>.<path> columns (e.g. out.score.target.tp) not one cell.
+        recurse_out_list is top-level metadata, never part of the key: it names
+        outputs whose nested dict/list flatten_to_df expands per key-path into
+        out.<name>.<path> columns (e.g. out.score.target.tp) not one cell.
 
         Args:
             output_name (str | None): single name for the whole return.
             output_name_list (tuple | list | None): names for an unpacked
                 tuple/list return; non-empty, no duplicates.
-            label (str | None): method/variant name, recorded top-level; None
-                for no label.
             recurse_out_list (tuple | list | None): output names to expand per
                 key-path; each must be a declared output. None recurses none.
 
@@ -267,16 +229,13 @@ class Recorder:
         Raises:
             ValueError: neither or both output args given, duplicate
                 output_name_list names, or a recurse name not declared.
-            TypeError: a name is not a str, output_name_list is empty, label is
-                not a str, or recurse_out_list is not a tuple/list of str.
+            TypeError: a name is not a str, output_name_list is empty, or
+                recurse_out_list is not a tuple/list of str.
         """
         # require exactly one of output_name / output_name_list
         if (output_name is None) == (output_name_list is None):
             raise ValueError(
                 "provide exactly one of output_name or output_name_list")
-
-        if label is not None and not isinstance(label, str):
-            raise TypeError("label must be a str")
 
         if output_name is not None:
             if not isinstance(output_name, str):
@@ -391,7 +350,6 @@ class Recorder:
                 self._store(key, {
                     "hash": key,
                     "function": fnc.__qualname__,
-                    **({"label": label} if label is not None else {}),
                     **({"recurse": list(recurse)} if recurse else {}),
                     "inputs": inputs,
                     "outputs": outputs,
@@ -451,72 +409,6 @@ class Recorder:
             self.records[rec['hash']] = rec
         return self.records
 
-    def tag(self, key, field, value) -> bool:
-        """Append value to the list field of the record keyed key.
-
-        The above-the-cache counterpart to recording. A record is written once
-        by the cache-miss call, but a tag may be needed on a later cache hit,
-        when the inner recorder never fires. So tag reads the existing record
-        (from memory or its <hash>.json) and appends value to the field list,
-        in memory and (with a folder) on disk. Idempotent: a value already
-        present is left as-is. Returns False when no record exists for key (a
-        dead-end never computed).
-
-        Args:
-            key (str): the record's args hash (its <hash>.json stem).
-            field (str): the list field to append to (created if absent).
-            value: the entry to add (e.g. a CONFIG cache name).
-
-        Returns:
-            bool: True if a record was found and now carries value, else False.
-        """
-        rec = self.records.get(key)
-        if rec is None and self.folder is not None:
-            path = self.folder / f'{key}.json'
-            if path.exists():
-                rec = json.loads(path.read_text())
-                self.records[key] = rec
-        if rec is None:
-            return False
-        tags = rec.setdefault(field, [])
-        if value not in tags:
-            tags.append(value)
-            if self.folder is not None:
-                self._write(key, rec)
-        return True
-
-    def tag_call(self, fnc, args, kwargs, field='configs') -> bool:
-        """Tag the record a memoised+recorded call keys with the active group.
-
-        The driver-facing entry point: call it after invoking fnc(*args,
-        **kwargs), so the record exists (a miss) or is on disk (a hit). It
-        recomputes the call's key and appends the active collecting(...) name.
-        The hit case is the point: when a second grouping re-runs a cell
-        another computed, joblib serves the cache and the inner recorder never
-        fires, so this is the only path to the shared record. A no-op when no
-        collecting block is active or no record exists.
-
-        fnc is the memoised+recorded callable. Its undecorated function -- via
-        .func then inspect.unwrap past the recorder -- drives _args_hash, so
-        the key matches the record's. args/kwargs must be exactly what fnc was
-        called with.
-
-        Args:
-            fnc (Callable): the memoised+recorded callable just invoked.
-            args (tuple): the positional arguments it was called with.
-            kwargs (dict): the keyword arguments it was called with.
-            field (str): the record list field to tag (default 'configs').
-
-        Returns:
-            bool: tag's result -- True if a record was tagged, else False (no
-                active grouping also returns False: no tag attempted).
-        """
-        value = self._current_config
-        if value is None:
-            return False
-        raw = inspect.unwrap(getattr(fnc, 'func', fnc))
-        return self.tag(self._args_hash(raw, args, kwargs), field, value)
-
     def flatten_to_df(self, prefix_sep='.', leaf_keys=None):
         """Flatten the records into a leaf-per-row provenance DataFrame.
 
@@ -528,7 +420,7 @@ class Recorder:
         the data, so one row holds a whole trial: swept axes (setup), recipe
         and timing (fit), result (score).
 
-        Each record contributes hash/function/label/time_sec and one
+        Each record contributes hash/function/time_sec and one
         in.<name> / out.<name> per input/output (via _cell), namespaced by its
         short function name (fit.time_sec). A name repeated in a row is
         suffixed #2/#3; the leaf goes first then ancestors shallowest-first, so
@@ -538,7 +430,7 @@ class Recorder:
 
         Operates on the in-memory records; call load() first to fold in other
         writers' files. leaf_keys restricts rows to chosen leaves (still walked
-        to their ancestors), e.g. one grouping's configs-tagged leaves; missing
+        to their ancestors), e.g. one CONFIG cache's leaves; missing
         keys are skipped. None uses every DAG leaf.
 
         Args:

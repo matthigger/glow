@@ -38,13 +38,9 @@ per fnc leaf, each carrying the swept data / effect inputs that produced it
 without the driver tracking anything itself (see
 glow._extra.benchmark.recorder).
 
-To label which CONFIG cache a sweep's rows belong to, wrap the call in
-with RECORDER.collecting(name): drive(...); the driver tags each leaf's
-record with name after running it -- above the cache, so a cell shared with
-another cache (served from the cache, the inner recorder skipped) still
-records this cache's membership. Membership is then read straight off the
-records (the leaf's configs list), with no grid re-walk and no experiment
-rebuilt -- see glow._extra.benchmark.results.
+Which CONFIG cache a leaf belongs to is recomputed at read time by walking the
+records forward from the cache's data cells (see glow._extra.benchmark.results),
+so the driver records provenance and nothing else -- no per-sweep bookkeeping.
 
 Parallelism (n_jobs != 1) splits the sweep by data cell: each whole
 data_factory -> effect_factory* -> fnc* subtree is one joblib task, so the
@@ -78,7 +74,7 @@ from .data import RECORDER, data_factory, effect_factory
 
 
 def _run_data_cell(kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
-                   config_name=None, bar=None):
+                   bar=None):
     """Build one data cell, run its effect x fnc subtree, return its scores.
 
     The per-data-cell unit of work, shared by the serial loop and the parallel
@@ -86,24 +82,12 @@ def _run_data_cell(kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
     loops below), plant each effect (or skip it for a None cell), and run fnc
     over its kwargs grid on each planted cell.
 
-    Each leaf fnc call is then tagged with config_name (the CONFIG cache this
-    sweep is) via RECORDER.tag_call -- run after the call, so on a cache hit (a
-    cell another cache already computed) the tag still lands on the shared
-    record the inner recorder skipped (see glow._extra.benchmark.recorder).
-    Doing it here, where exp_eff is already in hand, recomputes the leaf's
-    record key from a live object (no rebuild). config_name is established as
-    the recorder's active grouping for the whole subtree (so it survives the
-    parallel fork, which does not inherit the caller's context); None tags
-    nothing.
-
     Args:
         kwargs_data (dict): kwargs for one data_factory call.
         kwargs_effect_list (list[dict | None]): the effect grid (a list).
         kwargs_fnc_list (list[dict]): the fnc kwargs grid (a list).
         fnc (Callable): the leaf measurement,
             fnc(exp, mask_target_list=..., **kwargs).
-        config_name (str | None): the CONFIG cache name to tag this cell's
-            leaf records with, or None for no tagging.
         bar (tqdm | None): progress bar to advance one step per fnc leaf, or
             None to advance nothing (the parallel path, where a worker cannot
             reach the caller's bar -- it ticks per returned cell instead).
@@ -111,32 +95,22 @@ def _run_data_cell(kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
     Returns:
         list[dict]: this cell's fnc scores, in (effect, fnc-kwargs) order.
     """
-    with RECORDER.collecting(config_name):
-        exp = data_factory(**kwargs_data)
-        score_list = []
-        for kwargs_effect in kwargs_effect_list:
-            if kwargs_effect is None:
-                # null / FWER-calibration cell: no effect, empty target
-                exp_eff, mask_target_list = exp, []
-            else:
-                # effect_factory returns the realized supports as a list (one
-                # entry for a single effect, two for a split), threaded as-is
-                exp_eff, mask_target_list = effect_factory(
-                    exp, **kwargs_effect)
-            for kwargs in kwargs_fnc_list:
-                score = fnc(exp_eff, mask_target_list=mask_target_list,
-                            **kwargs)
-                # tag the leaf's record with this cache (above the cache, so
-                # a cell shared with another cache -- a hit that skips the
-                # recorder -- still records this cache's membership; a no-op
-                # when untagged)
-                RECORDER.tag_call(
-                    fnc, (exp_eff,),
-                    {'mask_target_list': mask_target_list, **kwargs})
-                score_list.append(score)
-                if bar is not None:
-                    bar.update(1)
-        return score_list
+    exp = data_factory(**kwargs_data)
+    score_list = []
+    for kwargs_effect in kwargs_effect_list:
+        if kwargs_effect is None:
+            # null / FWER-calibration cell: no effect, empty target
+            exp_eff, mask_target_list = exp, []
+        else:
+            # effect_factory returns the realized supports as a list (one
+            # entry for a single effect, two for a split), threaded as-is
+            exp_eff, mask_target_list = effect_factory(exp, **kwargs_effect)
+        for kwargs in kwargs_fnc_list:
+            score = fnc(exp_eff, mask_target_list=mask_target_list, **kwargs)
+            score_list.append(score)
+            if bar is not None:
+                bar.update(1)
+    return score_list
 
 
 def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
@@ -152,11 +126,6 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
     kwargs_fnc_list. All stages and fnc are memoised + recorded, so this only
     forwards kwargs -- caching dedupes repeated cells and the recorder
     captures provenance (see module docstring).
-
-    Wrap the call in with RECORDER.collecting(name): to tag this sweep's leaf
-    records with the CONFIG cache name (the active grouping is captured here
-    and re-established per task, so it survives the parallel fork); without it
-    the sweep runs and records as normal, just untagged.
 
     kwargs_effect_list and kwargs_fnc_list are pulled into lists up front
     (they are re-iterated once per data / per data x effect cell), so one-shot
@@ -210,12 +179,6 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
     kwargs_effect_list = list(kwargs_effect_list)
     kwargs_fnc_list = list(kwargs_fnc_list)
 
-    # the active collecting() grouping (set by the caller's
-    # with RECORDER.collecting(name):), captured here so each per-data-cell
-    # task re-establishes it -- a parallel worker is a fresh process that does
-    # not inherit the caller's context (see _run_data_cell).
-    config_name = RECORDER._current_config
-
     # the bar spans the total leaf count, known once data is a list;
     # materialise data when verbose (else keep it lazy, iterated once, as
     # documented above).
@@ -231,7 +194,7 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
             for kwargs_data in kwargs_data_list:
                 score_list.extend(_run_data_cell(
                     kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
-                    config_name=config_name, bar=bar))
+                    bar=bar))
         return score_list
 
     # parallel: one task per data cell, so each build has a single owner -- no
@@ -243,8 +206,7 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
     # per cell.
     results = Parallel(n_jobs=n_jobs, return_as='generator')(
         delayed(_run_data_cell)(
-            kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
-            config_name=config_name)
+            kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc)
         for kwargs_data in kwargs_data_list)
 
     cell_scores = []

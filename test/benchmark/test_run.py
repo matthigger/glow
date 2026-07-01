@@ -12,7 +12,6 @@ provenance DAG (a run_ana leaf carries the build that produced its exp).
 import json
 import random
 
-import numpy as np
 import pytest
 
 from glow._extra.benchmark import data
@@ -103,15 +102,6 @@ class TestCacheKeyedOnRecipe:
         s1 = run_ana(exp, ana, [])   # served from cache
         assert s0 == s1
 
-    def test_label_ignored_in_cache_key(self):
-        # label is recorded metadata, not a cache axis: a call differing only in
-        # label is served from the first's entry (run_ana's ignore=['label']),
-        # so renaming a method never invalidates its cached fit
-        exp = _exp()
-        ana = AnalysisVBA(n_perm_fwer=15)
-        run_ana(exp, ana, [], label='VBA')
-        assert run_ana.check_call_in_cache(exp, ana, [], label='DIFFERENT')
-
 
 # ---------------------------------------------------------------------------
 # provenance DAG: run_ana joins data.py's recorder graph via its exp input
@@ -144,15 +134,17 @@ class TestProvenanceDAG:
         assert row['data_factory_wgn.function'] == 'data_factory_wgn'
         assert row['data_factory_wgn.in.seed'] == seed
 
-    def test_label_recorded_as_input_column(self):
-        # the method label is recorded beside the score, as the in.label column
+    def test_recipe_recorded_as_input_column(self):
+        # the recipe is recorded as the in.ana column (its address-free repr) --
+        # the key results / plot recover the method label from (no label stored)
         seed = _fresh_seed()
         data.RECORDER.records.clear()
+        ana = AnalysisVBA(n_perm_fwer=15)
         exp = data.data_factory_wgn(shape=(5, 5, 5), b=2, num_img=20, a=2,
                                     seed=seed)
-        run_ana(exp, AnalysisVBA(n_perm_fwer=15), [], label='VBA')
+        run_ana(exp, ana, [])
         row = data.RECORDER.flatten_to_df().iloc[0]
-        assert row['run_ana.in.label'] == 'VBA'
+        assert row['run_ana.in.ana'] == repr(ana)
 
 
 # ---------------------------------------------------------------------------
@@ -184,12 +176,6 @@ class TestRunSegment:
         assert not run_segment.check_call_in_cache(
             exp, [mask], ClusterMode.NAIVE)
 
-    def test_label_ignored_in_cache_key(self):
-        exp, mask = self._planted()
-        run_segment(exp, [mask], ClusterMode.FOCUS, label='Focus')
-        assert run_segment.check_call_in_cache(
-            exp, [mask], ClusterMode.FOCUS, label='DIFFERENT')
-
 
 # ---------------------------------------------------------------------------
 # run_min_size: capture GLOW's per-perm (size -> max-z) staircases (no score)
@@ -220,12 +206,6 @@ class TestRunMinSize:
                      min_vox_floor=1)
         assert not run_min_size.check_call_in_cache(
             exp, [mask], n_perm_fwer=4, n_perm_inner=20, min_vox_floor=3)
-
-    def test_label_ignored_in_cache_key(self):
-        exp, mask = self._planted()
-        run_min_size(exp, [mask], n_perm_fwer=4, n_perm_inner=20, label='GLOW')
-        assert run_min_size.check_call_in_cache(
-            exp, [mask], n_perm_fwer=4, n_perm_inner=20, label='OTHER')
 
 
 # ---------------------------------------------------------------------------
@@ -268,13 +248,6 @@ class TestRunStat:
         assert not run_stat.check_call_in_cache(
             exp, [mask], other, stat_dict_inv[get_hotel_tr])
 
-    def test_label_ignored_in_cache_key(self):
-        exp, mask = self._planted()
-        ana = AnalysisVBA(get_stat=get_wilks, n_perm_fwer=15)
-        run_stat(exp, [mask], ana, stat_dict_inv[get_wilks], label='VBA-wilks')
-        assert run_stat.check_call_in_cache(
-            exp, [mask], ana, stat_dict_inv[get_wilks], label='DIFFERENT')
-
 
 # ---------------------------------------------------------------------------
 # run_prune: one pruning rule scored on a shared GLOW fit
@@ -312,12 +285,6 @@ class TestRunPrune:
         # a different rule is its own selection -> distinct cache entry
         assert not run_prune.check_call_in_cache(
             exp, [mask], 'dp', **self._GLOW)
-
-    def test_label_ignored_in_cache_key(self):
-        exp, mask = self._planted()
-        run_prune(exp, [mask], 'greedy', label='GLOW-Greedy', **self._GLOW)
-        assert run_prune.check_call_in_cache(
-            exp, [mask], 'greedy', label='DIFFERENT', **self._GLOW)
 
     def test_bad_rule_raises(self):
         exp, mask = self._planted()

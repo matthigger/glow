@@ -6,8 +6,10 @@ measuring segmentation quality (no fit); run_min_size captures GLOW's per-perm
 (size -> max-z) staircases (recorded as a curve, swept over min_vox post hoc
 rather than scored); run_stat fits one VBA / CET MANCOVA-stat variant reading a
 shared voxel-stat walk; run_prune scores one pruning rule on a shared GLOW fit.
-All share @MEMORY.cache(ignore=['label']) -- label is recorded beside the
-output but dropped from the cache key -- and (where they score) score inline.
+All are @MEMORY.cache'd (so a record's key equals its cache id) and, where they
+score, score inline. The method name (GLOW-Focus, VBA-TFCE-Wilks-z, ...) is not
+passed or recorded: it is recovered from the recipe at read time from config.py
+(see config.ana_kwargs_dict / benchmark.plot).
 
 A leaf may lean on a separately-memoised heavy intermediate rather than a
 driver stage: run_stat reads voxel_stat_walk (every MANCOVA stat for one exp)
@@ -65,9 +67,9 @@ from .score import (curve_json, score_effects, score_oracle_tree, score_prune,
                     size_max_z_curve)
 
 
-@MEMORY.cache(ignore=['label'])
+@MEMORY.cache
 @RECORDER(output_name='score', recurse_out_list=['score'])
-def run_ana(exp: Experiment, ana: Analysis, mask_target_list, label=None):
+def run_ana(exp: Experiment, ana: Analysis, mask_target_list):
     """Fit ana on exp and score it against the planted target(s).
 
     Calls ana.fit(exp) (every Analysis scales exp on the way in and returns
@@ -91,12 +93,6 @@ def run_ana(exp: Experiment, ana: Analysis, mask_target_list, label=None):
     heavy per-method arrays) is discarded; only the score dict is returned,
     cached, and recorded.
 
-    label (the config layer's ana_kwargs_dict method name) is unused by the
-    computation; it is recorded beside the score (the in.label column) so a
-    method is named in the output, and @MEMORY.cache(ignore=['label'])
-    drops it from the cache key so renaming a method does not invalidate its
-    cache.
-
     Args:
         exp (Experiment): the experiment to analyze (raw or already
             scaled; fit idempotently scales it).
@@ -105,8 +101,6 @@ def run_ana(exp: Experiment, ana: Analysis, mask_target_list, label=None):
         mask_target_list (list): the planted effect supports, one (X, Y, Z)
             bool mask per EffectSynthetic (effect_factory's mask output);
             empty for the null / FWER-calibration path.
-        label (str): the method label recorded beside the score; unused by
-            the computation and excluded from the cache key.
 
     Returns:
         score (dict): the detection score (see .score.score_effects):
@@ -118,9 +112,9 @@ def run_ana(exp: Experiment, ana: Analysis, mask_target_list, label=None):
     return score_effects(ana, mask_target_list, mask_active=exp.mask_idx > -1)
 
 
-@MEMORY.cache(ignore=['label'])
+@MEMORY.cache
 @RECORDER(output_name='score', recurse_out_list=['score'])
-def run_segment(exp: Experiment, mask_target_list, cluster_mode, label=None):
+def run_segment(exp: Experiment, mask_target_list, cluster_mode):
     """Segment exp in one Ward mode and score the oracle best-Dice region.
 
     The segmentation-quality leaf: build the Ward tree in cluster_mode and
@@ -129,15 +123,13 @@ def run_segment(exp: Experiment, mask_target_list, cluster_mode, label=None):
     swept across modes (Naive / GLM Error / Focus) by the config's fnc grid.
     exp is scaled (ExperimentScaled.from_exp) before clustering so the tree
     matches the one AnalysisGLOW fits (GLM_ERROR / FOCUS project y through the
-    design). Memoised + recorded like run_ana; label (the mode name) is
-    recorded but not a cache axis.
+    design). Memoised + recorded like run_ana.
 
     Args:
         exp (Experiment): the experiment to segment (raw or scaled).
         mask_target_list (list): planted (X, Y, Z) bool supports; their union
             is the target scored (empty -> all-background counts).
         cluster_mode (ClusterMode | str): the Ward projection to segment with.
-        label (str): method label recorded beside the score; not a cache axis.
 
     Returns:
         {tp, fp, tn, fn}: the counts of the best-matching tree region.
@@ -205,11 +197,11 @@ def _min_size_curves(exp, *, n_perm_fwer, n_perm_inner, min_vox_floor,
     return curve_json(curve_list)
 
 
-@MEMORY.cache(ignore=['label'])
+@MEMORY.cache
 @RECORDER(output_name='curve')
 def run_min_size(exp: Experiment, mask_target_list, *, n_perm_fwer,
-                 n_perm_inner, min_vox_floor=1, cluster_mode=ClusterMode.FOCUS,
-                 label='GLOW'):
+                 n_perm_inner, min_vox_floor=1,
+                 cluster_mode=ClusterMode.FOCUS):
     """Capture GLOW's per-perm (size -> max-z) staircases for a min_vox sweep.
 
     Records, it does not score. Runs GLOW's outer-perm loop on exp by hand (the
@@ -230,7 +222,6 @@ def run_min_size(exp: Experiment, mask_target_list, *, n_perm_fwer,
         min_vox_floor (int): smallest region size given a z; the sweep's lower
             bound (1 keeps the whole range available).
         cluster_mode (ClusterMode): Ward projection (default FOCUS).
-        label (str): method label recorded beside the curve; not a cache axis.
 
     Returns:
         curve (str): a JSON string of the per-perm [size, max_z] corner
@@ -285,10 +276,9 @@ def voxel_stat_walk(exp, n_perm_fwer: int) -> dict:
     return out
 
 
-@MEMORY.cache(ignore=['label'])
+@MEMORY.cache
 @RECORDER(output_name='score', recurse_out_list=['score'])
-def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name,
-             label=None):
+def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name):
     """Fit one VBA / CET MANCOVA-stat variant (reading the shared walk), score.
 
     The stat bake-off's leaf: fit ana (a VBA / VBA-TFCE / CET recipe around one
@@ -298,8 +288,7 @@ def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name,
     to a standalone ana.fit(exp) (the walk reproduces the matrix fit would
     build), then scored with score_effects like run_ana. GLOW is excluded from
     this bake-off by design (it uses the LLR throughout), so this leaf is
-    VBA / CET only. Memoised + recorded, keyed by (exp, ana, stat_name); label
-    (e.g. VBA-TFCE-Wilks-z) is recorded but not a cache axis.
+    VBA / CET only. Memoised + recorded, keyed by (exp, ana, stat_name).
 
     Args:
         exp (Experiment): the experiment to analyze (raw or scaled).
@@ -308,7 +297,6 @@ def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name,
             n_perm_fwer sizes the walk and its get_stat picks the stat.
         stat_name (str): the stat_dict key picking which walk matrix to inject
             (must match ana.get_stat's stat).
-        label (str): method label recorded beside the score; not a cache axis.
 
     Returns:
         score (dict): the detection score (see score.score_effects).
@@ -355,11 +343,11 @@ def glow_fit_for_prune(exp, *, n_perm_fwer: int, n_perm_inner: int,
     return ana.children, llr, sig_reg_list
 
 
-@MEMORY.cache(ignore=['label'])
+@MEMORY.cache
 @RECORDER(output_name='score', recurse_out_list=['score'])
 def run_prune(exp: Experiment, mask_target_list, rule, *, n_perm_fwer: int,
               n_perm_inner: int, alpha_fwer: float,
-              cluster_mode=ClusterMode.FOCUS, label=None):
+              cluster_mode=ClusterMode.FOCUS):
     """Score one pruning rule's selection on a shared GLOW fit.
 
     Reads the shared GLOW fit (glow_fit_for_prune), applies one rule to its
@@ -371,8 +359,7 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, n_perm_fwer: int,
       - maxllr: the single highest-LLR significant region (the headline best
         region, n_selected = 1).
     All three prune the same fit, isolating the rule from the permutation test.
-    Memoised + recorded, keyed by (exp, rule, the GLOW fit knobs); label
-    (e.g. GLOW-Greedy) is recorded but not a cache axis.
+    Memoised + recorded, keyed by (exp, rule, the GLOW fit knobs).
 
     Args:
         exp (Experiment): the experiment to analyze (raw or scaled).
@@ -382,7 +369,6 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, n_perm_fwer: int,
         n_perm_inner (int): inner FL draws per outer perm (the shared fit's).
         alpha_fwer (float): FWER significance level (the shared fit's).
         cluster_mode (ClusterMode): Ward projection (default FOCUS).
-        label (str): method label recorded beside the score; not a cache axis.
 
     Returns:
         score (dict): the prune counts (see score.score_prune):

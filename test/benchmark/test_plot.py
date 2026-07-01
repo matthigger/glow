@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from glow._extra.benchmark import plot
+from glow._extra.benchmark.config import ana_kwargs_dict
 
 
 def _score(tp, fp, tn, fn, min_pval=0.5, n_pred=1):
@@ -25,7 +26,8 @@ def _score(tp, fp, tn, fn, min_pval=0.5, n_pred=1):
 
 def _wgn_row(label, seed, effect_llr, score, b=1, num_img=100):
     """Build one WGN provenance row (run_ana leaf + its ancestors)."""
-    return {'run_ana.in.label': label, 'run_ana.time_sec': 1.0, **score,
+    return {'run_ana.in.ana': repr(ana_kwargs_dict[label]),
+            'run_ana.time_sec': 1.0, **score,
             'data_factory_wgn.in.b': b, 'data_factory_wgn.in.num_img': num_img,
             'data_factory_wgn.in.seed': seed,
             'effect_factory.in.effect_llr': effect_llr,
@@ -34,7 +36,8 @@ def _wgn_row(label, seed, effect_llr, score, b=1, num_img=100):
 
 def _hcp_row(label, seed, effect_llr, score, hcp_feats=('od',)):
     """Build one HCP provenance row (run_ana leaf + its ancestors)."""
-    return {'run_ana.in.label': label, 'run_ana.time_sec': 1.0, **score,
+    return {'run_ana.in.ana': repr(ana_kwargs_dict[label]),
+            'run_ana.time_sec': 1.0, **score,
             'data_factory_hcp.in.hcp_feats': list(hcp_feats),
             'data_factory_hcp.in.seed': seed,
             'effect_factory.in.effect_llr': effect_llr,

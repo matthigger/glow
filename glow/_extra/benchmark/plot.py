@@ -31,6 +31,7 @@ import pandas as pd
 import seaborn as sns
 
 import glow._extra.benchmark
+from .config import ana_kwargs_dict
 from .file import add_metric_cols
 
 
@@ -60,6 +61,12 @@ COLOR_ANALYSIS = {
     # olive (90 deg)
     'CET':        _hls_hex(3/4 + _H),
 }
+
+# recover a run_ana leaf's method name from its recorded recipe: config's
+# label -> ana map, inverted on the ana repr (the address-free recipe id
+# Analysis.__repr__ renders, = the recorded run_ana.in.ana cell). config owns
+# the labels; run_ana neither takes nor records one (see config / run).
+_LABEL_OF_ANA = {repr(ana): label for label, ana in ana_kwargs_dict.items()}
 
 
 def get_cmap_dict(label_list) -> dict:
@@ -115,9 +122,9 @@ def tidy_run_ana(raw):
 
     Args:
         raw: the provenance DataFrame (one row per run_ana leaf), with
-            run_ana.in.label, the recursed run_ana.out.score.* columns,
-            data_factory_{wgn,hcp}.in.* and (when an effect was planted)
-            effect_factory.in.* columns.
+            run_ana.in.ana (mapped to the method label via _LABEL_OF_ANA), the
+            recursed run_ana.out.score.* columns, data_factory_{wgn,hcp}.in.*
+            and (when an effect was planted) effect_factory.in.* columns.
 
     Returns:
         a tidy DataFrame, one row per (trial, recipe), with columns label,
@@ -139,7 +146,7 @@ def tidy_run_ana(raw):
     hcp_seed = pd.to_numeric(col('data_factory_hcp.in.seed'), errors='coerce')
 
     out = pd.DataFrame(index=raw.index)
-    out['label'] = col('run_ana.in.label')
+    out['label'] = col('run_ana.in.ana').map(_LABEL_OF_ANA)
     # the row's source is whichever data_factory produced its clean experiment
     out['source'] = np.where(hcp_seed.notna(), 'HCP', 'WGN')
     out['seed'] = wgn_seed.fillna(hcp_seed)

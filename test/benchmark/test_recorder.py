@@ -183,68 +183,6 @@ def test_same_args_overwrites_and_warns(rec):
     assert _only(rec.records)["outputs"] == {"out": 2}   # latest wins
 
 
-# --- label tagging ----------------------------------------------------------
-
-def test_label_recorded_top_level(rec):
-    # label names the method/variant this call belongs to; it lands as a
-    # top-level field on the record (not nested under inputs)
-    @rec(output_name='out', label='GLOW-GLM')
-    def f(a):
-        return a
-
-    f(5)
-    record = _only(rec.records)
-    assert record['label'] == 'GLOW-GLM'
-    assert 'label' not in record['inputs']
-
-
-def test_label_absent_when_not_given(rec):
-    # an unlabelled call carries no label key
-    @rec(output_name='out')
-    def f(a):
-        return a
-
-    f(5)
-    assert 'label' not in _only(rec.records)
-
-
-def test_label_with_output_name_list(rec):
-    @rec(output_name_list=('lo', 'hi'), label='prune')
-    def f(x):
-        return (x - 1, x + 1)
-
-    f(5)
-    record = _only(rec.records)
-    assert record['label'] == 'prune'
-    assert record['outputs'] == {'lo': 4, 'hi': 6}
-
-
-def test_label_must_be_str(rec):
-    with pytest.raises(TypeError):
-        @rec(output_name='out', label=123)
-        def f():
-            return 1
-
-
-def test_label_not_part_of_key(rec):
-    # label is metadata, not part of the hash: two distinct functions with the
-    # same filtered args (here, both `(a=1)`) collide regardless of label --
-    # the flat map does not namespace by function, so the overwrite-warning is
-    # the guard (see module docstring)
-    @rec(output_name='out', label='A')
-    def f(a):
-        return a
-
-    @rec(output_name='out', label='B')
-    def g(a):
-        return a
-
-    f(1)
-    with pytest.warns(UserWarning, match='overwriting'):
-        g(1)
-    assert len(rec.records) == 1
-
-
 # --- decoration-time validation --------------------------------------------
 
 def test_requires_exactly_one_of_output_args(rec):
@@ -663,7 +601,7 @@ SCORE = {
 
 def test_recurse_out_list_recorded_top_level(rec):
     # the recurse list lands as a top-level record field (read at flatten time),
-    # not nested under inputs -- mirroring label
+    # not nested under inputs
     @rec(output_name='score', recurse_out_list=['score'])
     def run_ana(seed):
         return dict(SCORE)
@@ -698,8 +636,8 @@ def test_recurse_out_list_entries_must_be_str(rec):
 
 
 def test_recurse_out_list_not_part_of_key():
-    # like label, recurse is metadata: it does not enter the args hash, so two
-    # functions with the same filtered args still collide (overwrite + warn)
+    # recurse is metadata: it does not enter the args hash, so two functions
+    # with the same filtered args still collide (overwrite + warn)
     rec = Recorder()
 
     @rec(output_name='out', recurse_out_list=['out'])
@@ -819,98 +757,3 @@ def test_flatten_to_df_leaf_keys_skips_unknown(rec):
     real = next(iter(rec.records))
     df = rec.flatten_to_df(leaf_keys=[real, 'no-such-key'])
     assert len(df) == 1
-
-
-# --- collecting / tag / tag_call: above-the-cache config tags ----------------
-
-def test_collecting_sets_and_restores_current_config(rec):
-    assert rec._current_config is None
-    with rec.collecting('sweep_llr'):
-        assert rec._current_config == 'sweep_llr'
-        with rec.collecting('sweep_b'):              # nests: inner wins
-            assert rec._current_config == 'sweep_b'
-        assert rec._current_config == 'sweep_llr'    # restored on exit
-    assert rec._current_config is None
-
-
-def test_collecting_restores_even_on_error(rec):
-    with pytest.raises(ValueError):
-        with rec.collecting('x'):
-            raise ValueError
-    assert rec._current_config is None
-
-
-def test_tag_appends_to_record_and_is_idempotent(rec):
-    @rec(output_name='out')
-    def f(a):
-        return a + 1
-
-    f(1)
-    key = next(iter(rec.records))
-    assert rec.tag(key, 'configs', 'cacheA') is True
-    assert rec.records[key]['configs'] == ['cacheA']
-    rec.tag(key, 'configs', 'cacheB')
-    rec.tag(key, 'configs', 'cacheA')                # repeat is a no-op
-    assert rec.records[key]['configs'] == ['cacheA', 'cacheB']
-
-
-def test_tag_missing_record_is_noop(rec):
-    # tagging a never-computed cell finds no record -> False, nothing created
-    assert rec.tag('no-such-key', 'configs', 'cacheA') is False
-    assert 'no-such-key' not in rec.records
-
-
-def test_tag_persists_to_disk(tmp_path):
-    rec = Recorder(folder=tmp_path)
-
-    @rec(output_name='out')
-    def f(a):
-        return a + 1
-
-    f(1)
-    key = next(iter(rec.records))
-    rec.tag(key, 'configs', 'cacheA')
-    # a fresh reader over the folder sees the tag (it was written through)
-    reader = Recorder(folder=tmp_path)
-    reader.load()
-    assert reader.records[key]['configs'] == ['cacheA']
-
-
-def test_tag_reaches_a_record_only_on_disk(tmp_path):
-    # the cache-hit case: the record was written by a prior run (on disk, not in
-    # this recorder's memory); tag still finds and tags it
-    writer = Recorder(folder=tmp_path)
-
-    @writer(output_name='out')
-    def f(a):
-        return a + 1
-
-    f(1)
-    key = next(iter(writer.records))
-
-    reader = Recorder(folder=tmp_path)               # empty in-memory records
-    assert reader.tag(key, 'configs', 'cacheB') is True
-    assert reader.records[key]['configs'] == ['cacheB']
-
-
-def test_tag_call_tags_the_calls_record(rec):
-    # tag_call recomputes the call's record key and tags that record
-    @rec(output_name='out')
-    def f(a, b=1):
-        return a + b
-
-    with rec.collecting('cacheA'):
-        f(3, b=2)
-        rec.tag_call(f, (3,), {'b': 2})
-    key = next(iter(rec.records))
-    assert rec.records[key]['configs'] == ['cacheA']
-
-
-def test_tag_call_without_collecting_is_noop(rec):
-    @rec(output_name='out')
-    def f(a):
-        return a + 1
-
-    f(1)
-    assert rec.tag_call(f, (1,), {}) is False        # no active grouping
-    assert 'configs' not in next(iter(rec.records.values()))

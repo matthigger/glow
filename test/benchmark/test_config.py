@@ -67,11 +67,12 @@ class TestCatalogueShape:
         assert len(config.RUN_ANA_LIST) == 5
         assert all(isinstance(c['ana'], Analysis) for c in config.RUN_ANA_LIST)
 
-    def test_run_ana_cells_carry_their_label(self):
-        # each leaf cell pairs a recipe with its ana_kwargs_dict key as a
-        # record-only ``label`` (named beside the score, not part of the key)
-        labels = [c['label'] for c in config.RUN_ANA_LIST]
-        assert labels == list(config.ana_kwargs_dict)
+    def test_run_ana_cells_carry_only_the_recipe(self):
+        # each leaf cell carries just its ana; the method name is not passed
+        # (recovered from ana_kwargs_dict at read time -- see run / plot)
+        assert all(set(c) == {'ana'} for c in config.RUN_ANA_LIST)
+        assert ([c['ana'] for c in config.RUN_ANA_LIST]
+                == list(config.ana_kwargs_dict.values()))
 
 
 class TestIterKwargsData:
