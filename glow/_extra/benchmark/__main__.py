@@ -1,16 +1,14 @@
 """CLI entry point for the paper benchmarks.
 
 Running ``python -m glow._extra.benchmark`` resolves cache names from
-config.CONFIG and drives each selected one through driver.drive, wrapped in
-``RECORDER.collecting(name)`` so every leaf is tagged with the cache it belongs
-to (see driver / results). After the sweep it writes one ``<name>.csv`` per
-cache from the shared provenance records (results.write_config_csvs).
+config.CONFIG and drives each selected one through driver.drive. After the
+sweep it writes one ``<name>.csv`` per cache from the shared provenance
+records (results.write_config_csvs), which recomputes each cache's leaves by
+walking the records forward from its data cells (see driver / results).
 
 ``--csv-only`` skips the sweep and rebuilds those CSVs from the records
 already on disk -- the path to take after editing config.py / results.py when
-the records are still good and no new experiments are needed. (It reads the
-``configs`` tags baked into the records at run time; it does not re-tag
-membership, which only a real run does.)
+the records are still good and no new experiments are needed.
 
 ``--aws`` runs the sweep on AWS Batch instead of locally: it hands the same
 resolved cache names to glow._extra.aws.drive_aws, which submits each cache's
@@ -89,12 +87,13 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
         aws: bool = False, aws_config_path=None) -> dict:
     """Drive the selected CONFIG caches, then write their per-config CSVs.
 
-    For each resolved cache name, runs ``drive(*CONFIG[name], n_jobs=n_jobs)``
-    inside ``RECORDER.collecting(name)`` so every leaf is tagged with the cache
-    it belongs to, then writes one ``<name>.csv`` per cache from the shared
-    records (results.write_config_csvs). ``csv_only`` skips the sweep and just
-    rebuilds those CSVs from the records already on disk -- the path to take
-    after editing config.py / results.py when no new experiments are needed.
+    For each resolved cache name, runs ``drive(*CONFIG[name], n_jobs=n_jobs)``,
+    then writes one ``<name>.csv`` per cache from the shared records
+    (results.write_config_csvs, which recomputes each cache's leaves by walking
+    the records forward from its data cells). ``csv_only`` skips the sweep and
+    just rebuilds those CSVs from the records already on disk -- the path to
+    take after editing config.py / results.py when no new experiments are
+    needed.
 
     ``aws`` runs the sweep on AWS Batch instead of locally: the resolved names
     are handed to glow._extra.aws.drive_aws, which submits each cache's cells
@@ -155,10 +154,7 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
     for name in resolved:
         if verbose:
             print(f'\n=== {name} ({RECORDER.folder}) ===')
-        # wrap drive so the cache name tags each leaf's record (driver reads
-        # the active collecting() grouping); results then slices CSVs by tag
-        with RECORDER.collecting(name):
-            drive(*CONFIG[name], n_jobs=n_jobs, verbose=verbose)
+        drive(*CONFIG[name], n_jobs=n_jobs, verbose=verbose)
 
     written = (write_config_csvs(out_dir=out_dir, names=resolved)
                if write_csv else {})

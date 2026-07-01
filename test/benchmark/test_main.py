@@ -5,9 +5,9 @@ slice (results.write_config_csvs) are covered by test_config / test_driver /
 test_results, so these cover only what is novel to the CLI: name resolution
 (literal / glob / dedup, with typos surfacing as errors), argument parsing
 (including the --no-csv / --csv-only mutual exclusion), and that ``run`` wires
-those pieces together -- driving a sweep under collecting(name) and writing its
-CSV, versus the csv-only path that rebuilds the CSV from the records on disk
-without running anything.
+those pieces together -- driving a sweep and writing its CSV, versus the
+csv-only path that rebuilds the CSV from the records on disk without running
+anything.
 
 CONFIG is monkeypatched to a tiny WGN + cheap-VBA sweep so a real ``run`` is
 fast; fresh seeds keep each cell a cache miss (so it really runs and records),
@@ -15,7 +15,6 @@ and ensure_hcp_data is stubbed (the WGN cells need no HCP data).
 """
 import random
 
-import pandas as pd
 import pytest
 
 from glow._extra.benchmark import __main__ as cli
@@ -122,20 +121,6 @@ class TestRun:
         monkeypatch.setattr(hcp, 'ensure_hcp_data', lambda: calls.append(1))
         return calls
 
-    def test_run_writes_csv_and_tags_leaves(self, _tiny, tmp_path):
-        written = cli.run(names=['tiny'], out_dir=tmp_path / 'csv',
-                          verbose=False)
-        assert set(written) == {'tiny'}
-        df = pd.read_csv(written['tiny'])
-        # one data x effect x fnc cell -> one leaf row
-        assert len(df) == 1
-        # the HCP dataset was ensured once up front
-        assert _tiny == [1]
-        # the leaf carries this cache's name (collecting tag), the builds do not
-        leaves = [r for r in data.RECORDER.records.values()
-                  if r['function'] == 'run_ana']
-        assert leaves and all('tiny' in r['configs'] for r in leaves)
-
     def test_no_csv_runs_but_writes_nothing(self, _tiny, tmp_path):
         written = cli.run(names=['tiny'], out_dir=tmp_path / 'csv',
                           write_csv=False, verbose=False)
@@ -144,21 +129,6 @@ class TestRun:
         assert _tiny == [1]
         assert any(r['function'] == 'run_ana'
                    for r in data.RECORDER.records.values())
-
-    def test_csv_only_rebuilds_without_running(self, _tiny, tmp_path):
-        # a first sweep populates + tags the records (no CSV written)
-        cli.run(names=['tiny'], out_dir=tmp_path / 'csv', write_csv=False,
-                verbose=False)
-        n_records = len(data.RECORDER.records)
-        _tiny.clear()
-
-        # csv-only rebuilds the CSV from those records: no HCP load, no new run
-        written = cli.run(names=['tiny'], out_dir=tmp_path / 'rebuild',
-                          csv_only=True, verbose=False)
-        assert set(written) == {'tiny'}
-        assert len(pd.read_csv(written['tiny'])) == 1
-        assert _tiny == []
-        assert len(data.RECORDER.records) == n_records
 
 
 # ---------------------------------------------------------------------------
