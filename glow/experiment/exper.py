@@ -236,11 +236,12 @@ class ExperimentImageOnly:
         assert len(set(df.values.flatten())) == np.prod(df.shape), \
             'file repeated for more than one subject-feature pair'
 
-        # check if any subject is missing any imaging feature
+        # warn rather than fail: a subject missing a feature is often a
+        # recoverable data-collection gap the caller wants to see, not stop on.
         s_missing = df.isna().mean(axis=1)
         if s_missing.any():
-            print('some sbj missing files:')
-            print(df.loc[s_missing, :].notnull().astype('int'))
+            missing = df.index[s_missing > 0].tolist()
+            warnings.warn(f'some subjects missing imaging files: {missing}')
 
         nii_in_file = ['.nii' in str(file) for file in df.values.flatten()]
         affine = None
@@ -573,7 +574,7 @@ class ExperimentScaled(Experiment):
                          np.linalg.inv(self.pre_scale),
                          y) + self.mean_orig
 
-    def __init__(self, y, *args, **kwargs):
+    def __init__(self, y, **kwargs):
         """Fit the pre-processing transform on y, then store the scaled y.
 
         Args:
@@ -611,4 +612,4 @@ class ExperimentScaled(Experiment):
         evals, evecs = np.linalg.eigh(cov_scale)
         self.pre_scale = (evecs.T @ self.pre_scale).astype(y_dtype, copy=False)
 
-        super().__init__(y=self.prep(y), *args, **kwargs)
+        super().__init__(y=self.prep(y), **kwargs)
