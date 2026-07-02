@@ -24,7 +24,7 @@ from .scatter import build_scatter
 from .image import (build_label_map, compute_bg_volume, get_region_color,
                     compute_region_center)
 from .regression import (build_regression_figure, build_empty_regression,
-                         _get_x_labels, _get_y_labels)
+                         get_x_labels, get_y_labels)
 from ._port import _check_port
 
 
@@ -361,12 +361,12 @@ def _regression_panel(x_names, y_names, default_x=0):
 
 def _defaults(generic_cols, sig_cols, prune_cols, mask_cols):
     """Compute default dropdown values and log-toggle state."""
-    from .scatter import _LOG_COLS
+    from .scatter import LOG_COLS
     all_cols = generic_cols + sig_cols + prune_cols + mask_cols
     default_x = 'n_voxel' if 'n_voxel' in all_cols else all_cols[0]
     default_y = ('llr' if 'llr' in all_cols
                  else all_cols[min(1, len(all_cols) - 1)])
-    log_y_default = default_y in _LOG_COLS
+    log_y_default = default_y in LOG_COLS
     default_color = 'dice' if 'dice' in mask_cols else '__none__'
     return all_cols, default_x, default_y, log_y_default, default_color
 
@@ -725,8 +725,8 @@ def _setup_3d(app, ana_glow, exp, df,
         s.graph.config['scrollZoom'] = False
         s.graph.style = {'height': '280px'}
 
-    _, x_names, default_reg_x = _get_x_labels(exp)
-    y_names = _get_y_labels(exp, y_features=y_features)
+    _, x_names, default_reg_x = get_x_labels(exp)
+    y_names = get_y_labels(exp, y_features=y_features)
 
     b = exp.y.shape[0]
     num_img = exp.y.shape[1]
@@ -912,8 +912,8 @@ def _setup_2d(app, ana_glow, exp, df,
     bg_ranges = compute_bg_ranges(exp, y_features=y_features)
     bg_names = list(bg_dict.keys())
 
-    _, x_names, default_reg_x = _get_x_labels(exp)
-    y_names = _get_y_labels(exp, y_features=y_features)
+    _, x_names, default_reg_x = get_x_labels(exp)
+    y_names = get_y_labels(exp, y_features=y_features)
 
     region_ids = _display_region_ids(ana_glow, exp, min_vox)
     num_img = exp.y.shape[1]
