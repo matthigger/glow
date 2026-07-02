@@ -107,19 +107,19 @@ def is_intercept_only_nuisance(x, contrast) -> bool:
 # five MANCOVA test statistics
 # ---------------------------------------------------------------------------
 
-def get_llr(e, h, n: int = None):
+def get_llr(e, h, n: int = 1):
     """Compute the log-likelihood ratio: (n/2) * ln|det(I + E^{-1}H)|.
 
     Equivalent to LL_full - LL_null where both likelihoods are
     Gaussian profile log-likelihoods on the same region. The (n/2)
     prefactor makes LLR scale linearly with region size under H0.
-    Pass n=1 for a size-independent (per-voxel) LLR.
+    The default n=1 gives a size-independent (per-voxel) LLR.
 
     Args:
         e (np.array): (b, b) error matrix
         h (np.array): (b, b) hypothesis matrix
-        n (int): number of voxels in the region; use n=1 for a
-            size-independent result
+        n (int): number of voxels in the region; default n=1 gives a
+            size-independent (per-voxel) result
 
     Returns:
         float: the log-likelihood ratio, or np.nan if E or E + H is

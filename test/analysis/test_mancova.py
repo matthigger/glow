@@ -177,6 +177,16 @@ def test_get_llr_fidelity():
     assert np.isclose(sn, ref_sn, rtol=1e-10)
 
 
+def test_get_llr_default_n():
+    """Calling get_llr without n uses the size-independent n=1 form."""
+    rng = np.random.default_rng(0)
+    A = rng.standard_normal((3, 3))
+    e = A @ A.T + np.eye(3) * 0.1
+    B = rng.standard_normal((3, 3))
+    h = B @ B.T
+    assert get_llr(e, h) == get_llr(e, h, n=1)
+
+
 @pytest.mark.parametrize('x, contrast, expected', [
     # bias-only nuisance: single all-ones row, rest interest
     (np.array([[1., 1., 1., 1., 1.],
