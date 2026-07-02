@@ -56,3 +56,16 @@ def test_cluster():
     # every contiguous color region is recovered exactly by some tree node
     assert dice_list, 'no color regions found'
     np.testing.assert_allclose(dice_list, 1.0)
+
+
+def test_cluster_all_isolated_voxels():
+    # a 3x3x3 checkerboard has no two active voxels 6-adjacent, so every
+    # component is a singleton: the forest has zero merges, and cluster
+    # must return an empty (0, 2) tree rather than choke on concatenate.
+    shape = (3, 3, 3)
+    exp = Experiment.from_gauss(shape=shape, seed=0)
+    checkerboard = np.indices(shape).sum(0) % 2 == 0
+    exp = exp.apply_mask(checkerboard)
+
+    children = cluster(exp=exp)
+    assert children.shape == (0, 2)

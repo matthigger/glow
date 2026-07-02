@@ -92,5 +92,10 @@ def cluster(exp, mode: ClusterMode = ClusterMode.FOCUS):
         all_children.append(remapped)
         internal_offset += n_c - 1
 
+    # a forest of all-singleton components has no merges; np.concatenate
+    # rejects an empty list, so return the zero-merge tree explicitly.
+    if not all_children:
+        return np.empty((0, 2), dtype=np.intp)
+
     children = np.concatenate(all_children, axis=0)
     return children
