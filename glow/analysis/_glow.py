@@ -88,7 +88,7 @@ class AnalysisGLOW(Analysis):
 
     @classmethod
     def run_inner_perm(cls, exp, children, n_perm: int, *, q0, q1,
-                       min_vox: int = 4, base_seed: int = 0):
+                       min_vox: int = 1, base_seed: int = 0):
         """Compute per-region inner-null (mu, std) for the given Ward tree.
 
         Runs n_perm Freedman-Lane (Freedman & Lane 1983) inner draws against
