@@ -22,7 +22,7 @@ def _get_voxel_indices(reg_idx, children, num_vox):
         node_start=reg_idx, only_leaf=True))
 
 
-def _get_x_labels(exp):
+def get_x_labels(exp):
     """Return design matrix rows with labels using original indices.
 
     The bias row is included (labelled as such) so users see the same
@@ -64,7 +64,7 @@ def _get_x_labels(exp):
     return x, x_names, default_idx
 
 
-def _get_y_labels(exp, y_features=None):
+def get_y_labels(exp, y_features=None):
     """Return human-readable names for each imaging feature.
 
     Falls back to exp.meta['features'] when y_features is not supplied,
@@ -171,8 +171,8 @@ def build_regression_figure(ana_glow, exp, region_list, x_feat_idx, y_feat_idx,
     num_vox = y_orig.shape[2]
     num_img = y_orig.shape[1]
 
-    x_full, x_names, _ = _get_x_labels(exp)
-    y_names = _get_y_labels(exp, y_features=y_features)
+    x_full, x_names, _ = get_x_labels(exp)
+    y_names = get_y_labels(exp, y_features=y_features)
 
     x_feat_idx = min(x_feat_idx, len(x_names) - 1)
     y_feat_idx = min(y_feat_idx, len(y_names) - 1)

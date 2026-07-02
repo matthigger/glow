@@ -19,7 +19,7 @@ def _ensure_1d(arr):
 
 
 # columns where a log scale is the sensible default
-_LOG_COLS = {'n_voxel', 'vox_in_target', 'vox_out_target'}
+LOG_COLS = {'n_voxel', 'vox_in_target', 'vox_out_target'}
 
 _ADJ_COL = 'llr_z'
 
@@ -247,7 +247,7 @@ def build_scatter(df, ana_glow, exp, x_feat, y_feat, color_feat,
 
     # --- axis scales ---
     # x: auto-log for size/count columns
-    if x_feat in _LOG_COLS:
+    if x_feat in LOG_COLS:
         fig.update_xaxes(type='log')
     # y: user-controlled toggle
     if log_y:
