@@ -18,10 +18,19 @@ effect_perc that varies is swept.
 
 Each cache then gets either a faceted FWER calibration curve (null) or a
 faceted dice/sens/ppv sweep plus the GLOW-Focus head-to-head diff grid, WGN
-and HCP side by side. With no arguments it plots every run_ana cache in the
-catalogue; passing names restricts it. The other caches (segment / stat /
-prune / min_size) carry different leaf and score shapes, so this run_ana layer
-does not plot them (see config).
+and HCP side by side.
+
+The runtime family is plotted apart (tidy_runtime / plot_runtime): those caches
+hold detection fixed and sweep one cost knob, so the signal is the leaf wall
+time (RECORDER time_sec), not a score. Each is one wall-time-vs-knob curve per
+method on log axes -- runtime (the paper figure) over the num_vox sweep to the
+full HCP support, and the diagnostic caches over the segmentation / permutation
+/ feature-count knobs (see _RUNTIME_SPEC).
+
+With no arguments the CLI plots every detection and runtime cache in the
+catalogue; passing names restricts it. The remaining caches (segment / stat /
+prune / min_size) carry different leaf and score shapes, so this layer does not
+plot them (see config).
 """
 import colorsys
 
@@ -102,6 +111,24 @@ _X_PARAM_LABELS = {
     'effect_perc': 'Effect Size (% of Volume)',
     'num_img': 'Number of Subjects',
     'b': 'Number of Imaging Features',
+    'num_vox': 'Number of Voxels',
+    'n_perm_fwer': 'FWER Permutations',
+    'n_perm_inner': 'Inner (Freedman-Lane) Permutations',
+}
+
+# runtime caches: name -> (leaf column prefix, swept x-axis column). The
+# runtime family plots wall time (leaf.time_sec) against one swept cost knob;
+# unlike the detection sweeps the x is not inferred (time is the signal, the
+# effect is held at the moderate default). run_ana leaves (runtime / runtime_b)
+# carry num_vox inside the recursed score and the method in the recipe; the
+# timed leaves (run_segment_time / run_perm_*) return num_vox bare and record
+# the method as an explicit label. See config's runtime section.
+_RUNTIME_SPEC = {
+    'runtime':              ('run_ana',          'num_vox'),
+    'runtime_b':            ('run_ana',          'b'),
+    'runtime_segment':      ('run_segment_time', 'num_vox'),
+    'runtime_n_perm_fwer':  ('run_perm_fwer',    'n_perm_fwer'),
+    'runtime_n_perm_inner': ('run_perm_inner',   'n_perm_inner'),
 }
 
 
@@ -538,6 +565,120 @@ def _write_diff_csv(label: str, diff_long, *, x: str, facet: str,
 
 
 # ---------------------------------------------------------------------------
+# Runtime sweeps (wall time vs one cost knob)
+# ---------------------------------------------------------------------------
+
+def tidy_runtime(name: str, raw):
+    """Normalise a runtime cache's provenance frame to (label, x, time_sec).
+
+    The runtime counterpart to tidy_run_ana: collapses the wide provenance
+    frame to one tidy row per timed leaf, reading the method label, the swept
+    x-axis value, and the wall time. The leaf prefix and swept axis come from
+    _RUNTIME_SPEC (time is the signal, so unlike the detection path the x is
+    not inferred from what varies). A run_ana-leaf cache (runtime / runtime_b)
+    reads num_vox off the recursed score and the method off the recipe (as
+    tidy_run_ana does); a timed leaf (run_segment_time / run_perm_*) returns
+    num_vox bare and records the method as an explicit label. All runtime
+    caches are HCP-only, so the seed is the HCP data seed.
+
+    Args:
+        name (str): the runtime cache name (a key of _RUNTIME_SPEC).
+        raw: the provenance DataFrame (one row per leaf) for this cache.
+
+    Returns:
+        a tidy DataFrame, one row per (trial, method), with columns label, x
+        (the swept-axis value), x_name (its column name), time_sec, num_vox,
+        and seed; empty in, empty out.
+    """
+    if raw.empty:
+        return raw
+
+    leaf, x_name = _RUNTIME_SPEC[name]
+
+    def col(c):
+        """Return raw[c], or an all-NaN column when absent."""
+        if c in raw.columns:
+            return raw[c]
+        return pd.Series(np.nan, index=raw.index)
+
+    out = pd.DataFrame(index=raw.index)
+    out['time_sec'] = pd.to_numeric(col(f'{leaf}.time_sec'), errors='coerce')
+    out['seed'] = pd.to_numeric(col('data_factory_hcp.in.seed'),
+                                errors='coerce')
+
+    if leaf == 'run_ana':
+        out['num_vox'] = pd.to_numeric(col('run_ana.out.score.num_vox'),
+                                       errors='coerce')
+        out['label'] = col('run_ana.in.ana').map(_LABEL_OF_ANA)
+    else:
+        out['num_vox'] = pd.to_numeric(col(f'{leaf}.out.num_vox'),
+                                       errors='coerce')
+        out['label'] = col(f'{leaf}.in.label')
+
+    # b is the HCP feature-subset length; every other knob is num_vox itself or
+    # an explicit leaf input
+    if x_name == 'num_vox':
+        out['x'] = out['num_vox']
+    elif x_name == 'b':
+        out['x'] = col('data_factory_hcp.in.hcp_feats').map(
+            lambda v: len(v) if isinstance(v, (list, tuple)) else np.nan)
+    else:
+        out['x'] = pd.to_numeric(col(f'{leaf}.in.{x_name}'), errors='coerce')
+    out['x_name'] = x_name
+    return out
+
+
+def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0) -> None:
+    """Plot wall time vs the swept knob, one curve per method, on log axes.
+
+    The runtime family's single plotter: the seed replicates collapse to a
+    median line per method with a min-max band, wall time on a log y-axis and
+    the swept knob on a log x-axis when it spans at least log_x_ratio (so the
+    num_vox / permutation scaling reads as a slope; the small b sweep stays
+    linear). Methods use the shared palette (COLOR_ANALYSIS); the Ward-mode
+    labels of runtime_segment take a seaborn fallback (get_cmap_dict).
+
+    Args:
+        name (str): cache name; used in the title and output filename.
+        df: the cache's tidy_runtime results.
+        out (pathlib.Path): directory the figure is written into.
+        log_x_ratio (float): x max/min ratio at or above which the x-axis is
+            log-scaled.
+    """
+    df = df.dropna(subset=['x', 'time_sec', 'label'])
+    if df.empty:
+        print(f'  (no timed rows for {name} — skipping)')
+        return
+
+    x_name = df['x_name'].iloc[0]
+    labels = sorted(df['label'].unique().tolist())
+    palette = get_cmap_dict(labels)
+
+    fig, ax = plt.subplots(figsize=(6, 4.5))
+    for label in labels:
+        g = df[df['label'] == label].groupby('x')['time_sec']
+        med, lo, hi = g.median(), g.min(), g.max()
+        ax.plot(med.index, med.values, marker='o', ms=5, lw=2,
+                color=palette[label], label=label)
+        ax.fill_between(med.index, lo.values, hi.values,
+                        color=palette[label], alpha=0.15)
+
+    if df['x'].max() / max(df['x'].min(), 1) >= log_x_ratio:
+        ax.set_xscale('log')
+    ax.set_yscale('log')
+    ax.set_xlabel(_X_PARAM_LABELS.get(x_name, x_name))
+    ax.set_ylabel('wall time (s)')
+    ax.set_title(name)
+    ax.legend(frameon=False)
+    ax.grid(True, which='both', alpha=0.3)
+    fig.tight_layout()
+    path = out / f'{name}_runtime.pdf'
+    fig.savefig(path, bbox_inches='tight')
+    plt.close('all')
+    print(f'saved: {path}')
+
+
+# ---------------------------------------------------------------------------
 # Per-cache dispatch + CLI
 # ---------------------------------------------------------------------------
 
@@ -570,20 +711,25 @@ def plot_cache(label: str, df, out,
 
 
 def main(argv=None) -> None:
-    """Plot the run_ana caches from the shared provenance records.
+    """Plot the detection and runtime caches from the shared records.
 
-    For each selected run_ana cache (every one in CONFIG by default, or the
-    names given on the command line), reads its provenance frame
-    (results.config_results_df), normalises it with tidy_run_ana, and hands it
-    to plot_cache. Figures land in results/_latest, so a mid-benchmark run
-    yields intermediate figures. Non-run_ana CONFIG entries are skipped.
+    For each selected cache (every detection and runtime cache in CONFIG by
+    default, or the names given on the command line), reads its provenance
+    frame (results.config_results_df) and plots it: a runtime cache is
+    normalised with tidy_runtime and drawn by plot_runtime (wall time vs its
+    cost knob); every other run_ana cache is normalised with tidy_run_ana and
+    drawn by plot_cache (detection sweep / calibration). Figures land in
+    results/_latest, so a mid-benchmark run yields intermediate figures. The
+    remaining caches (segment / stat / prune / min_size) carry other leaf and
+    score shapes and are skipped.
 
     Args:
         argv (list | None): CLI args to parse; None reads sys.argv. Positional
-            args are cache names (e.g. sweep_llr); with none, every run_ana
-            cache in the catalogue is plotted.
+            args are cache names (e.g. sweep_llr, runtime); with none, every
+            detection and runtime cache in the catalogue is plotted.
     """
     import argparse
+    import fnmatch
     import matplotlib
     matplotlib.use('Agg')
     from .config import CONFIG
@@ -591,42 +737,59 @@ def main(argv=None) -> None:
     from . import results
 
     parser = argparse.ArgumentParser(
-        description='Plot run_ana benchmark figures from the records.')
+        description='Plot detection and runtime benchmark figures from the '
+                    'records.')
     parser.add_argument(
         'names', nargs='*',
-        help='cache names to plot (e.g. sweep_llr); '
-             'default: every run_ana cache in the catalogue')
+        help='cache names or fnmatch patterns (e.g. sweep_llr, runtime*); '
+             'default: every detection and runtime cache in the catalogue')
     args = parser.parse_args(argv)
 
-    # the leaf function fixes whether a cache is a run_ana cache (CONFIG values
-    # are (data, effect, fnc_kwargs, fnc))
-    ana_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_ana]
+    # a runtime cache is one in _RUNTIME_SPEC; the rest split on the leaf
+    # function (CONFIG values are (data, effect, fnc_kwargs, fnc)) into the
+    # run_ana detection caches this layer draws and the others it skips.
+    runtime_names = [n for n in CONFIG if n in _RUNTIME_SPEC]
+    detect_names = [n for n, cfg in CONFIG.items()
+                    if cfg[3] is run_ana and n not in _RUNTIME_SPEC]
     if args.names:
-        unknown = [n for n in args.names if n not in CONFIG]
-        if unknown:
-            parser.error(f'unknown cache name(s): {", ".join(unknown)}')
-        names = args.names
+        # literal name, else fnmatch pattern; a pattern matching nothing is an
+        # error (a typo surfaces rather than silently plotting nothing)
+        names = []
+        for pattern in args.names:
+            matches = ([pattern] if pattern in CONFIG
+                       else fnmatch.filter(CONFIG, pattern))
+            if not matches:
+                parser.error(f'no cache names match: {pattern}')
+            names += [n for n in matches if n not in names]
     else:
-        names = ana_names
+        names = detect_names + runtime_names
 
     out = glow._extra.benchmark.get_path_result() / '_latest'
     out.mkdir(exist_ok=True)
 
     n_plotted = 0
     for name in names:
-        if name not in ana_names:
-            print(f'  ({name} is not a run_ana cache — skipping)')
-            continue
-        df = tidy_run_ana(results.config_results_df(name))
-        if df.empty:
-            print(f'  (no records for {name} — skipping)')
-            continue
-        print(f'\n=== {name}: {len(df)} run_ana rows ===')
-        plot_cache(name, df, out)
-        n_plotted += 1
+        if name in _RUNTIME_SPEC:
+            df = tidy_runtime(name, results.config_results_df(name))
+            if df.empty:
+                print(f'  (no records for {name} — skipping)')
+                continue
+            print(f'\n=== {name}: {len(df)} runtime rows ===')
+            plot_runtime(name, df, out)
+            n_plotted += 1
+        elif name in detect_names:
+            df = tidy_run_ana(results.config_results_df(name))
+            if df.empty:
+                print(f'  (no records for {name} — skipping)')
+                continue
+            print(f'\n=== {name}: {len(df)} run_ana rows ===')
+            plot_cache(name, df, out)
+            n_plotted += 1
+        else:
+            print(f'  ({name} is not a detection or runtime cache — skipping)')
 
     if n_plotted == 0:
-        print(f'no run_ana results found under {out.parent}')
+        print(f'no results found under {out.parent}')
 
 
 if __name__ == '__main__':

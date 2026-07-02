@@ -1,4 +1,4 @@
-"""Tests for the run_ana benchmark plotters (tidy_run_ana + plot_cache)."""
+"""Tests for the benchmark plotters (detection + runtime)."""
 import matplotlib
 matplotlib.use('Agg')
 
@@ -136,3 +136,82 @@ def test_plot_cache_sweep_writes_metrics_and_diff(tmp_path):
     assert set(diff['method'].unique()) == {'GLOW-Focus'}
     assert {'source', 'effect_llr', 'dice_diff', 'dice_win'}.issubset(
         diff.columns)
+
+
+# ---------------------------------------------------------------------------
+# Runtime plotters
+# ---------------------------------------------------------------------------
+
+def _runtime_ana_row(label, seed, num_vox, time_sec, hcp_feats=('od',)):
+    """One run_ana runtime row (runtime / runtime_b): method in the recipe."""
+    return {'run_ana.in.ana': repr(ana_kwargs_dict[label]),
+            'run_ana.time_sec': time_sec,
+            'run_ana.out.score.num_vox': num_vox,
+            'data_factory_hcp.in.hcp_feats': list(hcp_feats),
+            'data_factory_hcp.in.seed': seed}
+
+
+def _runtime_perm_row(label, seed, n_perm_fwer, time_sec, num_vox=1000):
+    """One run_perm_fwer runtime row: method + knob are explicit inputs."""
+    return {'run_perm_fwer.in.label': label,
+            'run_perm_fwer.in.n_perm_fwer': n_perm_fwer,
+            'run_perm_fwer.time_sec': time_sec,
+            'run_perm_fwer.out.num_vox': num_vox,
+            'data_factory_hcp.in.seed': seed}
+
+
+def test_tidy_runtime_empty():
+    """An empty frame in gives an empty frame out."""
+    assert plot.tidy_runtime('runtime', pd.DataFrame()).empty
+
+
+def test_tidy_runtime_run_ana_leaf():
+    """A run_ana runtime cache reads num_vox off score and label off ana."""
+    raw = pd.DataFrame([
+        _runtime_ana_row('GLOW-Focus', seed=0, num_vox=1000, time_sec=25.0),
+        _runtime_ana_row('VBA', seed=0, num_vox=224619, time_sec=480.0),
+    ])
+    df = plot.tidy_runtime('runtime', raw)
+    assert list(df['label']) == ['GLOW-Focus', 'VBA']
+    assert list(df['x']) == [1000, 224619]
+    assert list(df['x_name'].unique()) == ['num_vox']
+    assert list(df['time_sec']) == [25.0, 480.0]
+
+
+def test_tidy_runtime_b_from_feature_count():
+    """runtime_b's x is the HCP feature-subset length (b), not num_vox."""
+    raw = pd.DataFrame([
+        _runtime_ana_row('GLOW-Focus', 0, num_vox=1000, time_sec=2.0,
+                         hcp_feats=('od',)),
+        _runtime_ana_row('GLOW-Focus', 0, num_vox=1000, time_sec=6.0,
+                         hcp_feats=('od', 'mk', 'fa')),
+    ])
+    df = plot.tidy_runtime('runtime_b', raw)
+    assert list(df['x_name'].unique()) == ['b']
+    assert list(df['x']) == [1, 3]
+
+
+def test_tidy_runtime_timed_leaf():
+    """A timed leaf reads the method + swept knob off its explicit inputs."""
+    raw = pd.DataFrame([
+        _runtime_perm_row('GLOW-Focus', seed=0, n_perm_fwer=50, time_sec=5.0),
+        _runtime_perm_row('GLOW-GLM', seed=0, n_perm_fwer=800, time_sec=80.0),
+    ])
+    df = plot.tidy_runtime('runtime_n_perm_fwer', raw)
+    assert list(df['label']) == ['GLOW-Focus', 'GLOW-GLM']
+    assert list(df['x']) == [50, 800]
+    assert list(df['x_name'].unique()) == ['n_perm_fwer']
+
+
+def test_plot_runtime_writes_figure(tmp_path):
+    """plot_runtime writes one wall-time curve figure per runtime cache."""
+    rows = []
+    for label in ('GLOW-Focus', 'VBA'):
+        for num_vox in (1000, 8000, 64000):
+            for seed in range(3):
+                rows.append(_runtime_ana_row(
+                    label, seed, num_vox, time_sec=num_vox * 0.01 + seed))
+    df = plot.tidy_runtime('runtime', pd.DataFrame(rows))
+
+    plot.plot_runtime('runtime', df, tmp_path)
+    assert (tmp_path / 'runtime_runtime.pdf').exists()
