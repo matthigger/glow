@@ -5,7 +5,9 @@ from bisect import bisect_left
 from typing import Callable
 
 import numpy as np
+from joblib import Parallel, delayed
 from scipy.ndimage import label
+from tqdm import tqdm
 
 import glow.effect
 import glow.graph
@@ -236,6 +238,39 @@ class AnalysisVoxel(Analysis):
 
         return result
 
+    @staticmethod
+    def _walk_stat(exp, get_stat: Callable, children=None):
+        """Compute one stat per region for a fixed (already-permuted) exp.
+
+        The shared MANCOVA tree-walk behind get_stat_perm and the joblib
+        worker _stat_row. get_stat is passed explicitly (not read off
+        self) so a joblib task carries no instance state.
+
+        Args:
+            exp (Experiment): experiment to evaluate (already permuted if
+                this is a permutation draw)
+            get_stat (Callable): per-region stat function (e, h, n)
+            children (np.array): (num_reg - num_vox, 2) child index array.
+                If None, only iterates through individual voxels.
+
+        Returns:
+            stat (np.array): (num_reg,) test statistics
+        """
+        num_vox = exp.y.shape[2]
+        num_reg = num_vox
+        if children is not None:
+            num_reg += children.shape[0]
+
+        stat = np.full(num_reg, fill_value=np.nan)
+        for reg_idx, size, e, h in glow.graph.iter_mancova(exp=exp,
+                                                           children=children):
+            try:
+                stat[reg_idx] = get_stat(e=e, h=h, n=size)
+            except np.linalg.LinAlgError:
+                pass
+
+        return stat
+
     def get_stat_perm(self, exp, children=None):
         """Compute the test statistic for each region.
 
@@ -252,35 +287,53 @@ class AnalysisVoxel(Analysis):
         Returns:
             stat (np.array): (num_reg,) test statistics
         """
-        b, num_img, num_vox = exp.y.shape
-        num_reg = num_vox
-        if children is not None:
-            num_reg += children.shape[0]
+        return self._walk_stat(exp, self.get_stat, children=children)
 
-        stat = np.full(num_reg, fill_value=np.nan)
-        for reg_idx, size, e, h in glow.graph.iter_mancova(exp=exp,
-                                                           children=children):
-            try:
-                stat[reg_idx] = self.get_stat(e=e, h=h, n=size)
-            except np.linalg.LinAlgError:
-                pass
+    @classmethod
+    def _stat_row(cls, exp, k: int, get_stat: Callable, children=None):
+        """Per-region stat row for outer perm k (pure, for joblib workers).
 
-        return stat
+        Permutes exp by outer-perm index k (k=0 = observed data), then
+        computes one stat per region. Kept free of instance state so
+        joblib workers can run it; k seeds the permutation, so the row
+        is a deterministic function of k alone.
+        """
+        _exp = exp.permute(k) if k else exp
+        return cls._walk_stat(_exp, get_stat, children=children)
 
-    def build_stat_matrix(self, exp, _stat=None):
+    def build_stat_matrix(self, exp, _stat=None, *, n_jobs: int = 1,
+                          verbose: bool = False):
         """Per-voxel stat matrix for the FWER walk, (n_perm_fwer+1, num_vox).
 
         If _stat is None, runs the Freedman-Lane permutation walk on exp
-        (row 0 observed, rows 1: permuted). If provided, validates its
-        permutation count against self.n_perm_fwer and returns it
-        unchanged (the caller owns the copy).
+        (row 0 observed, rows 1: permuted), parallelised over
+        permutations with joblib. If provided, validates its permutation
+        count against self.n_perm_fwer and returns it unchanged (the
+        caller owns the copy).
+
+        Row k depends only on k (exp.permute(k) is seeded by k), so the
+        matrix is identical regardless of n_jobs.
+
+        Args:
+            exp (Experiment): experiment to walk (already scaled).
+            _stat (np.array): optional precomputed (n_perm_fwer+1,
+                num_vox) stat matrix; returned unchanged after a shape
+                check.
+            n_jobs (int): permutation-level parallelism via joblib. 1
+                (default) runs in-process; -1 uses all cores.
+            verbose (bool): show a tqdm bar over permutations.
         """
         if _stat is None:
+            n_total = self.n_perm_fwer + 1
             num_vox = exp.y.shape[2]
-            _stat = np.full((self.n_perm_fwer + 1, num_vox), np.nan)
-            for k in range(self.n_perm_fwer + 1):
-                _exp = exp.permute(k) if k else exp
-                _stat[k, :] = self.get_stat_perm(_exp, children=None)
+            _stat = np.full((n_total, num_vox), np.nan)
+            rows = Parallel(n_jobs=n_jobs, return_as='generator')(
+                delayed(self._stat_row)(exp, k, self.get_stat, children=None)
+                for k in range(n_total))
+            for k, row in enumerate(tqdm(rows, total=n_total,
+                                         desc='fwer perms',
+                                         disable=not verbose)):
+                _stat[k, :] = row
         elif _stat.shape[0] - 1 != self.n_perm_fwer:
             raise ValueError(
                 f'_stat has {_stat.shape[0] - 1} permutations but '

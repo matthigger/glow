@@ -58,7 +58,7 @@ class AnalysisCET(AnalysisVoxel):
         self.z_flag = z_flag
         self.cft = None
 
-    def fit(self, exp, _stat=None):
+    def fit(self, exp, _stat=None, *, n_jobs: int = 1):
         """Run the permutation walk on exp and compute cluster-extent p-values.
 
         Args:
@@ -67,12 +67,16 @@ class AnalysisCET(AnalysisVoxel):
                 stat matrix (raw, before z-scoring). Row 0 is the observed
                 draw. Caller is responsible for passing a copy. Must match
                 n_perm_fwer.
+            n_jobs (int): permutation-level parallelism via joblib for the
+                stat walk. 1 (default) runs in-process; -1 uses all cores.
+                Results are identical regardless of n_jobs (each
+                permutation is seeded by its index).
 
         Returns:
             self
         """
         exp = ExperimentScaled.from_exp(exp)
-        self.stat = self.build_stat_matrix(exp, _stat)
+        self.stat = self.build_stat_matrix(exp, _stat, n_jobs=n_jobs)
         if self.z_flag:
             self.stat = self.z_score_stat(self.stat)
         null_pool = self.stat[1:, :].ravel()

@@ -3,6 +3,7 @@
 from typing import Callable
 
 import numpy as np
+from joblib import Parallel, delayed
 from tqdm import tqdm
 
 from glow.experiment.exper import ExperimentScaled
@@ -54,7 +55,7 @@ class AnalysisVBA(AnalysisVoxel):
         self.z_flag = z_flag
         self.verbose = verbose
 
-    def fit(self, exp, _stat=None):
+    def fit(self, exp, _stat=None, *, n_jobs: int = 1):
         """Run the permutation walk on exp and compute p-values.
 
         Args:
@@ -63,17 +64,23 @@ class AnalysisVBA(AnalysisVoxel):
                 stat matrix (raw, before z-scoring or TFCE). Row 0 is the
                 observed draw. Caller is responsible for passing a copy.
                 Must match n_perm_fwer.
+            n_jobs (int): permutation-level parallelism via joblib, spanning
+                both the stat walk and TFCE. 1 (default) runs in-process;
+                -1 uses all cores. Results are identical regardless of
+                n_jobs (each permutation is seeded by its index).
 
         Returns:
             self
         """
         exp = ExperimentScaled.from_exp(exp)
-        self.stat = self.build_stat_matrix(exp, _stat)
+        self.stat = self.build_stat_matrix(exp, _stat, n_jobs=n_jobs,
+                                           verbose=self.verbose)
         if self.z_flag:
             self.stat = self.z_score_stat(self.stat)
         if self.tfce_flag:
             self.stat = self.apply_tfce(stat=self.stat,
                                         mask_idx=exp.mask_idx,
+                                        n_jobs=n_jobs,
                                         verbose=self.verbose)
         self.pval = self.get_pval(self.stat)
         mask = np.zeros(exp.mask_idx.shape, dtype=bool)
@@ -82,12 +89,18 @@ class AnalysisVBA(AnalysisVoxel):
         return self
 
     @classmethod
-    def apply_tfce(cls, stat, mask_idx, verbose: bool = False):
+    def apply_tfce(cls, stat, mask_idx, *, n_jobs: int = 1,
+                   verbose: bool = False):
         """Apply TFCE to every permutation image.
+
+        Each permutation image is enhanced independently, so the loop
+        parallelises over permutations with joblib (n_jobs).
 
         Args:
             stat (np.array): (n_perm+1, num_vox) statistics (row 0 observed)
             mask_idx (np.array): 3d voxel index array (-1 outside analysis)
+            n_jobs (int): permutation-level parallelism via joblib. 1
+                (default) runs in-process; -1 uses all cores.
             verbose (bool): print progress
 
         Returns:
@@ -95,11 +108,13 @@ class AnalysisVBA(AnalysisVoxel):
         """
         # lazy import: TFCE validation against FSL is opt-in
         from . import _tfce as _tfce_mod
+        rows = Parallel(n_jobs=n_jobs, return_as='generator')(
+            delayed(_tfce_mod.apply_tfce_x)(_stat, mask_idx=mask_idx)
+            for _stat in stat)
         tfce = np.full(shape=stat.shape,
                        fill_value=np.nanmin(stat))
-        for perm_idx, _stat in tqdm(enumerate(stat),
-                                    desc='tfce per permutation',
-                                    disable=not verbose):
-            tfce[perm_idx, :] = _tfce_mod.apply_tfce_x(_stat,
-                                                       mask_idx=mask_idx)
+        for perm_idx, row in enumerate(tqdm(rows, total=stat.shape[0],
+                                            desc='tfce per permutation',
+                                            disable=not verbose)):
+            tfce[perm_idx, :] = row
         return tfce

@@ -330,6 +330,40 @@ class TestStreamingFidelity:
         assert masks_a == masks_b
 
 
+class TestNJobsDeterminism:
+    """VBA / CET fits are identical serial vs joblib-parallel.
+
+    Each permutation row is seeded by its index (exp.permute(k)), so the
+    stat matrix, p-values, and discovered effects must not depend on
+    n_jobs. Covers plain VBA, z-scored VBA, VBA+TFCE (parallel TFCE
+    loop), and CET (parallel stat walk).
+    """
+
+    exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5), num_img=50, seed=0)
+    effect = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
+                             effect_llr=0.5)
+    exp = effect.fit(exp)[0]
+
+    @pytest.mark.parametrize('make_ana', [
+        lambda: AnalysisVBA(n_perm_fwer=10, alpha_fwer=.1),
+        lambda: AnalysisVBA(n_perm_fwer=10, alpha_fwer=.1, z_flag=True),
+        lambda: AnalysisVBA(n_perm_fwer=10, alpha_fwer=.1, tfce_flag=True),
+        lambda: AnalysisCET(n_perm_fwer=10, alpha_fwer=.1, cft_pval=.05),
+    ])
+    def test_serial_matches_parallel(self, make_ana):
+        ana_serial = make_ana().fit(self.exp, n_jobs=1)
+        ana_par = make_ana().fit(self.exp, n_jobs=2)
+
+        # bit-identical stat matrix and p-values
+        np.testing.assert_array_equal(ana_serial.stat, ana_par.stat)
+        np.testing.assert_array_equal(ana_serial.pval, ana_par.pval)
+
+        # identical discovered effects
+        masks_serial = sorted(e.mask.tobytes() for e in ana_serial.effect_list)
+        masks_par = sorted(e.mask.tobytes() for e in ana_par.effect_list)
+        assert masks_serial == masks_par
+
+
 class TestAnalysisScaling:
     """fit scales the experiment via the idempotent ExperimentScaled.from_exp.
 
