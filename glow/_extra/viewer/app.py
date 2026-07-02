@@ -171,7 +171,6 @@ def _kv_row(key, val):
 
 def _array_preview(arr, max_chars=600):
     """Truncated text preview of a numpy array, suitable for nested display."""
-    import numpy as np
     try:
         s = np.array2string(arr, threshold=20, edgeitems=2, precision=4,
                             max_line_width=80)
@@ -191,8 +190,6 @@ def _render_value(key, val, depth=0):
     dicts/lists/tuples: collapsed <details> with size summary; expand
         to recursively render each entry.
     """
-    import numpy as np
-
     if val is None or isinstance(val, (bool, int, float, str)):
         return _kv_row(key, repr(val))
 
@@ -255,8 +252,6 @@ def _detail_panels(ana_glow, exp):
     Both are collapsed by default. Values are pulled directly from ana_glow
     and exp at layout time, with no callbacks.
     """
-    import numpy as np
-
     meta = getattr(exp, 'meta', {}) or {}
 
     y_shape = getattr(exp.y, 'shape', None) if exp.y is not None else '(unset)'
