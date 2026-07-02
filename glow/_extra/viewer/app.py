@@ -25,6 +25,7 @@ from .image import (build_label_map, compute_bg_volume, get_region_color,
                     compute_region_center)
 from .regression import (build_regression_figure, build_empty_regression,
                          _get_x_labels, _get_y_labels)
+from ._port import _check_port
 
 
 # ---------------------------------------------------------------------------
@@ -1292,123 +1293,6 @@ def _register_regression_click_callback(app, image_dd_id):
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
-
-def _check_port(port):
-    """Check whether port is available; if not, offer to free it.
-
-    Uses a plain socket bind test (cross-platform). If the port is
-    occupied, prompts for confirmation before killing the blocking process.
-    """
-    import socket
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        sock.bind(('127.0.0.1', port))
-        sock.close()
-        # port is free
-        return
-    except OSError:
-        pass
-
-    print(f'\n  Port {port} is already in use.')
-    answer = input('  Kill the process using it? [y/N] ').strip().lower()
-    if answer not in ('y', 'yes'):
-        print('  Aborted.  Use --port to choose a different port.')
-        raise SystemExit(1)
-
-    import subprocess
-    import sys
-
-    pids = _find_pids_on_port(port)
-    if not pids:
-        print(f'  Could not identify process on port {port}.  '
-              f'Use --port to choose a different port.')
-        raise SystemExit(1)
-
-    # try SIGTERM first, escalate to SIGKILL if needed
-    if sys.platform == 'win32':
-        for pid in pids:
-            subprocess.call(
-                ['taskkill', '/F', '/PID', str(pid)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-    else:
-        import signal as _sig
-        for pid in pids:
-            try:
-                os.kill(pid, _sig.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
-
-        # give SIGTERM 2 seconds to work
-        if not _wait_for_port(port, socket, timeout=2.0):
-            # escalate to SIGKILL
-            for pid in pids:
-                try:
-                    os.kill(pid, _sig.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    pass
-
-    if _wait_for_port(port, socket, timeout=5.0):
-        print(f'  Freed port {port}.')
-    else:
-        print(f'  Port {port} still in use.  Use --port to choose '
-              f'a different port.')
-        raise SystemExit(1)
-
-
-def _find_pids_on_port(port):
-    """Return PIDs listening on port (best-effort, cross-platform)."""
-    import subprocess
-    import sys
-
-    pids = []
-    if sys.platform == 'win32':
-        try:
-            out = subprocess.check_output(
-                ['netstat', '-ano'], stderr=subprocess.DEVNULL,
-            ).decode()
-            for line in out.splitlines():
-                if f':{port}' in line and 'LISTENING' in line:
-                    try:
-                        pids.append(int(line.strip().split()[-1]))
-                    except ValueError:
-                        pass
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            pass
-    else:
-        try:
-            out = subprocess.check_output(
-                ['lsof', '-t', '-i', f':{port}'],
-                stderr=subprocess.DEVNULL,
-            ).decode().strip()
-            for pid_str in out.splitlines():
-                try:
-                    pids.append(int(pid_str))
-                except ValueError:
-                    pass
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            pass
-    return pids
-
-
-def _wait_for_port(port, socket_mod, timeout=5.0):
-    """Poll until port is free; return True if freed within timeout."""
-    import time
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        s = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_STREAM)
-        s.setsockopt(socket_mod.SOL_SOCKET, socket_mod.SO_REUSEADDR, 1)
-        try:
-            s.bind(('127.0.0.1', port))
-            s.close()
-            return True
-        except OSError:
-            s.close()
-        time.sleep(0.1)
-    return False
-
 
 def _suggest_min_vox(size, max_regions):
     """Return the smallest size cutoff that keeps at most max_regions regions.
