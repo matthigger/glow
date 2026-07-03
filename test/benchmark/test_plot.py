@@ -30,8 +30,8 @@ def _wgn_row(label, seed, effect_llr, score, b=1, num_img=100):
             'run_ana.time_sec': 1.0, **score,
             'data_factory_wgn.in.b': b, 'data_factory_wgn.in.num_img': num_img,
             'data_factory_wgn.in.seed': seed,
-            'effect_factory.in.effect_llr': effect_llr,
-            'effect_factory.in.n_vox_frac': 0.1}
+            'effect_factory_single.in.effect_llr': effect_llr,
+            'effect_factory_single.in.n_vox_frac': 0.1}
 
 
 def _hcp_row(label, seed, effect_llr, score, hcp_feats=('od',)):
@@ -40,8 +40,8 @@ def _hcp_row(label, seed, effect_llr, score, hcp_feats=('od',)):
             'run_ana.time_sec': 1.0, **score,
             'data_factory_hcp.in.hcp_feats': list(hcp_feats),
             'data_factory_hcp.in.seed': seed,
-            'effect_factory.in.effect_llr': effect_llr,
-            'effect_factory.in.n_vox_frac': 0.1}
+            'effect_factory_single.in.effect_llr': effect_llr,
+            'effect_factory_single.in.n_vox_frac': 0.1}
 
 
 def test_tidy_run_ana_empty():
@@ -105,11 +105,11 @@ def test_plot_cache_null_writes_calibration(tmp_path):
 
     plot.plot_cache('null', df, tmp_path)
     assert (tmp_path / 'null_calibration.pdf').exists()
-    assert not (tmp_path / 'null_metrics.pdf').exists()
+    assert not (tmp_path / 'null.pdf').exists()
 
 
-def test_plot_cache_sweep_writes_metrics_and_diff(tmp_path):
-    """A swept cache writes the metric grid, the diff grid, and diff CSV."""
+def test_plot_cache_sweep_writes_grid_and_diff_csv(tmp_path):
+    """A swept cache writes the stacked per-source figure and the diff CSV."""
     rng = np.random.default_rng(0)
     rows = []
     for src in ('wgn', 'hcp'):
@@ -127,8 +127,8 @@ def test_plot_cache_sweep_writes_metrics_and_diff(tmp_path):
     assert plot._infer_x(df) == 'effect_llr'
 
     plot.plot_cache('sweep_llr', df, tmp_path)
-    assert (tmp_path / 'sweep_llr_metrics.pdf').exists()
-    assert (tmp_path / 'sweep_llr_diff.pdf').exists()
+    # one stacked figure (HCP over WGN) plus the companion diff CSV
+    assert (tmp_path / 'sweep_llr.pdf').exists()
     assert (tmp_path / 'sweep_llr_diff.csv').exists()
 
     # the diff CSV carries one block per GLOW variant vs the best alternative
@@ -157,11 +157,101 @@ def test_plot_cache_splits_on_secondary_axis(tmp_path):
     assert plot._infer_x(df) == 'effect_llr'
 
     plot.plot_cache('sweep_llr', df, tmp_path)
-    # one figure-set per b, suffixed into the label; no un-split figure
+    # one figure per b, suffixed into the label; no un-split figure
     for b in (1, 2, 3):
-        assert (tmp_path / f'sweep_llr_b{b}_metrics.pdf').exists()
-        assert (tmp_path / f'sweep_llr_b{b}_diff.pdf').exists()
-    assert not (tmp_path / 'sweep_llr_metrics.pdf').exists()
+        assert (tmp_path / f'sweep_llr_b{b}.pdf').exists()
+    assert not (tmp_path / 'sweep_llr.pdf').exists()
+
+
+def test_plot_cache_sweep_writes_threshold_csv(tmp_path):
+    """A swept cache writes the GLOW-normalised threshold table, a column per b."""
+    rng = np.random.default_rng(0)
+    rows = []
+    for b in (1, 2, 3):
+        feats = ('od', 'fa', 'md')[:b]
+        for llr in (0.01, 0.03, 0.1):
+            for seed in range(3):
+                # both climb with llr; GLOW-Focus reaches 0.5 Dice the earlier
+                tp_glow = {0.01: 20, 0.03: 80, 0.1: 95}[llr]
+                tp_vba = {0.01: 5, 0.03: 20, 0.1: 90}[llr]
+                rows.append(_hcp_row('GLOW-Focus', seed, llr,
+                                     _score(tp_glow, 10, 800, 100 - tp_glow),
+                                     hcp_feats=feats))
+                rows.append(_hcp_row('VBA', seed, llr,
+                                     _score(tp_vba, 10, 800, 100 - tp_vba),
+                                     hcp_feats=feats))
+    df = plot.tidy_run_ana(pd.DataFrame(rows))
+
+    plot.plot_cache('sweep_llr', df, tmp_path)
+    assert (tmp_path / 'sweep_llr_threshold.csv').exists()
+    thr = pd.read_csv(tmp_path / 'sweep_llr_threshold.csv')
+    # one ratio column per b value; entries normalised to GLOW-Focus
+    assert {'source', 'method'}.issubset(thr.columns)
+    assert {'b=1', 'b=2', 'b=3'}.issubset(thr.columns)
+    bcols = ['b=1', 'b=2', 'b=3']
+    glow = thr[thr['method'] == 'GLOW-Focus']
+    assert np.allclose(glow[bcols].to_numpy(), 1.0)
+    # VBA needs a stronger effect than GLOW-Focus (ratio > 1)
+    vba = thr[thr['method'] == 'VBA']
+    assert (vba[bcols].to_numpy() > 1).all()
+
+
+def test_crossing_interpolates_in_log_x():
+    """_crossing geometric-interpolates the level, flagging the censored ends."""
+    thr, status = plot._crossing(np.array([1.0, 10.0]),
+                                 np.array([0.0, 1.0]), 0.5)
+    assert status == 'ok'
+    assert thr == pytest.approx(10 ** 0.5)  # geometric midpoint
+
+    # censored ends: already above level at the weakest x, or never reaching it
+    thr_lo, below = plot._crossing(np.array([1.0, 10.0]),
+                                   np.array([0.6, 0.9]), 0.5)
+    thr_hi, above = plot._crossing(np.array([1.0, 10.0]),
+                                   np.array([0.1, 0.3]), 0.5)
+    assert (below, above) == ('below', 'above')
+    assert np.isnan(thr_lo) and np.isnan(thr_hi)
+
+
+def test_threshold_ratio_normalised_to_glow():
+    """Entry = raw thr_method / thr_glow (LLR ratio), 1.0 at GLOW-Focus."""
+    df = pd.DataFrame({
+        'source': ['HCP'] * 6,
+        'b': [1] * 6,
+        'label': ['VBA'] * 3 + ['GLOW-Focus'] * 3,
+        'effect_llr': [0.01, 0.03, 0.1] * 2,
+        # VBA crosses between 0.03 and 0.1; GLOW between 0.01 and 0.03
+        'dice': [0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+    })
+    wide = plot.threshold_ratio_table(df, x='effect_llr', metric='dice',
+                                      level=0.5, ref_label='GLOW-Focus')
+    # b is constant here, so the single ratio column is named by x
+    w = wide.set_index('method')
+    thr_vba = (0.03 * 0.1) ** 0.5
+    thr_glow = (0.01 * 0.03) ** 0.5
+    assert w.loc['GLOW-Focus', 'effect_llr'] == pytest.approx(1.0)
+    # raw LLR ratio, no square root
+    assert w.loc['VBA', 'effect_llr'] == pytest.approx(thr_vba / thr_glow)
+
+
+def test_threshold_ratio_column_per_b():
+    """A sweep varying b yields one ratio column per b value."""
+    grid = [0.01, 0.02, 0.04, 0.08]
+    # (glow_cross, vba_cross) per b: VBA falls a step further behind at b=2
+    spec = {1: (0.02, 0.04), 2: (0.02, 0.08)}
+    rows = []
+    for b, (glow_cross, vba_cross) in spec.items():
+        for lab, cross in (('GLOW-Focus', glow_cross), ('VBA', vba_cross)):
+            for llr in grid:
+                rows.append({'source': 'HCP', 'b': b, 'label': lab,
+                             'effect_llr': llr,
+                             'dice': 1.0 if llr >= cross else 0.0})
+    wide = plot.threshold_ratio_table(pd.DataFrame(rows), x='effect_llr',
+                                      ref_label='GLOW-Focus')
+    assert {'b=1', 'b=2'}.issubset(wide.columns)
+    assert 'effect_llr' not in wide.columns  # b became the columns
+    vba = wide.set_index('method').loc['VBA']
+    # VBA's disadvantage is larger at b=2 (crosses a grid step later)
+    assert vba['b=2'] > vba['b=1'] > 1.0
 
 
 # ---------------------------------------------------------------------------

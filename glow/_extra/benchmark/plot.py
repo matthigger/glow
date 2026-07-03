@@ -16,9 +16,13 @@ what actually varies in the cache (no config spec): an all-null effect grid
 is the FWER calibration path, else the first of effect_llr / b / num_img /
 effect_perc that varies is swept.
 
-Each cache then gets either a faceted FWER calibration curve (null) or a
-faceted dice/sens/ppv sweep plus the GLOW-Focus head-to-head diff grid, WGN
-and HCP side by side.
+Each cache then gets either a faceted FWER calibration curve (null) or one
+stacked detection figure: an HCP block over a WGN block, each a 2 x 3 grid
+whose top row is the per-method mean score + central 95% percentile band and
+whose bottom row is the GLOW-Focus head-to-head diff, over the dice / sens /
+ppv columns. Alongside it a discovery-threshold table (write_threshold_table)
+records the effect strength at which each method's mean Dice crosses 0.5,
+normalised to GLOW-Focus (thr_method / thr_glow) with a column per b.
 
 The runtime family is plotted apart (tidy_runtime / plot_runtime): those caches
 hold detection fixed and sweep one cost knob, so the signal is the leaf wall
@@ -151,7 +155,8 @@ def tidy_run_ana(raw):
         raw: the provenance DataFrame (one row per run_ana leaf), with
             run_ana.in.ana (mapped to the method label via _LABEL_OF_ANA), the
             recursed run_ana.out.score.* columns, data_factory_{wgn,hcp}.in.*
-            and (when an effect was planted) effect_factory.in.* columns.
+            and (when an effect was planted) effect_factory_single.in.* columns
+            (the recorded builder, not the effect_factory dispatcher).
 
     Returns:
         a tidy DataFrame, one row per (trial, recipe), with columns label,
@@ -186,8 +191,12 @@ def tidy_run_ana(raw):
     # num_img is a WGN axis only (HCP's N is its cohort), so HCP rows stay NaN
     out['num_img'] = pd.to_numeric(col('data_factory_wgn.in.num_img'),
                                    errors='coerce')
-    out['effect_llr'] = pd.to_numeric(col('effect_factory.in.effect_llr'),
-                                      errors='coerce')
+    # the RECORDER logs the concrete builder effect_factory dispatches to
+    # (single / split), not the dispatcher, so the column is prefixed by it
+    out['effect_llr'] = pd.to_numeric(
+        col('effect_factory_single.in.effect_llr'), errors='coerce').fillna(
+        pd.to_numeric(col('effect_factory_split.in.effect_llr'),
+                      errors='coerce'))
     out['time_sec'] = pd.to_numeric(col('run_ana.time_sec'), errors='coerce')
 
     # run_ana recurses 'score', so flatten_to_df expands the dict into
@@ -360,185 +369,201 @@ def _plot_calibration_faceted(label: str, df, out,
 
 
 # ---------------------------------------------------------------------------
-# Metric sweeps (faceted by source: WGN | HCP)
+# Metric sweeps (one stacked figure: an HCP block over a WGN block)
 # ---------------------------------------------------------------------------
 
-def plot_metric_grid(label: str, df, *, x: str, metrics: list,
-                     facet: str = 'source', hue: str = 'label',
-                     ci: int = 90, out=None) -> None:
-    """Plot a faceted metric sweep: col=facet, row=metric, one curve per hue.
+def _draw_metric_band(ax, df, x: str, metric: str, palette: dict, *,
+                      ci: int = 95, hue: str = 'label') -> None:
+    """Draw a mean line plus a central ci% percentile band per method into ax.
 
-    Puts the swept axis on the x, the facet (source) across panel columns,
-    and each metric on its own panel row, aggregating the seed replicates
-    into a mean + percentile band -- so WGN and HCP sit side by side.
+    One curve per method (hue), the band spanning the (100-ci)/2 .. (100+ci)/2
+    percentiles of the seed replicates at each x (so the default ci=95 shades
+    the 2.5th-97.5th percentile). PPV is undefined for trials with no
+    detections (nan; glow.mask.stats_from_counts) and drops out of both.
 
     Args:
-        label (str): cache name; used in the title and output filename
-        df: the cache's tidy results
-        x (str): column for the x-axis
-        metrics (list): metric columns, one panel row each
-        facet (str): categorical column spread across panel columns
-        hue (str): column mapped to line colour (the method label)
+        ax: matplotlib Axes to draw into
+        df: one source's tidy rows (numeric x / metric, dropna'd on x)
+        x (str): the swept x-axis column
+        metric (str): the metric column plotted on the y-axis
+        palette (dict): label -> colour
         ci (int): central percentile-interval width for the band
-        out (pathlib.Path): directory the figure is written into
+        hue (str): the method-label column
+    """
+    lo_q, hi_q = (1 - ci / 100) / 2, (1 + ci / 100) / 2
+    for label in sorted(df[hue].dropna().unique().tolist()):
+        g = df[df[hue] == label].groupby(x)[metric]
+        mean, lo, hi = g.mean(), g.quantile(lo_q), g.quantile(hi_q)
+        ax.plot(mean.index, mean.values, lw=2, color=palette[label],
+                label=label)
+        ax.fill_between(mean.index, lo.values, hi.values,
+                        color=palette[label], alpha=0.15)
+
+
+def _draw_diff(ax, df, x: str, metric: str, *, one_label: str = 'GLOW-Focus',
+               hue: str = 'label', alpha: float = .5) -> list:
+    """Draw one_label minus the best non-GLOW method into ax; return CSV rows.
+
+    The head-to-head panel: the per-trial advantage of one_label (default
+    GLOW-Focus) over the best competing method -- the largest metric among the
+    non-GLOW labels (VBA / VBA-TFCE / CET) at the same (seed, x). A thin line
+    per seed plus a bold mean make the win / loss against the field legible;
+    the zero line is break-even. Only one_label's line is drawn, but the
+    returned rows cover every GLOW variant (each vs the same best alternative)
+    for the companion CSV. The axis is turned off when one_label draws nothing.
+
+    Args:
+        ax: matplotlib Axes to draw into
+        df: one source's tidy rows (numeric x / metric, dropna'd on x)
+        x (str): the swept x-axis column
+        metric (str): the metric column differenced on the y-axis
+        one_label (str): the method whose line is drawn
+        hue (str): the method-label column; GLOW* values are the "glow" pool,
+            the rest the "best alternative" pool
+        alpha (float): grid / zero-line alpha
+
+    Returns:
+        list[dict]: one row per (method, x) -- method (the GLOW variant), x,
+            metric, glow / other (seed-mean scores), mean_diff, win, n_seed.
+    """
+    agg = df.groupby([hue, 'seed', x], as_index=False)[metric].mean()
+    pivot = agg.pivot_table(index=['seed', x], columns=hue,
+                            values=metric).reset_index()
+    others = [c for c in pivot.columns
+              if c not in {'seed', x} and not str(c).startswith('GLOW')]
+    glow_cols = [c for c in pivot.columns
+                 if c not in {'seed', x} and str(c).startswith('GLOW')]
+    if not others or not glow_cols:
+        ax.axis('off')
+        return []
+    pivot['best_other'] = pivot[others].max(axis=1, skipna=True)
+
+    rows, drew = [], False
+    for gl in glow_cols:
+        valid = pivot[gl].notna() & pivot['best_other'].notna()
+        pv = pivot.loc[valid, ['seed', x, gl, 'best_other']].copy()
+        if pv.empty:
+            continue
+        pv['diff'] = pv[gl] - pv['best_other']
+        pv['win'] = (pv[gl] > pv['best_other']).astype(float)
+        agg_x = (pv.groupby(x).agg(
+                    mean_diff=('diff', 'mean'), glow=(gl, 'mean'),
+                    other=('best_other', 'mean'), win=('win', 'mean'),
+                    n_seed=('diff', 'size'))
+                 .reset_index().sort_values(x))
+        for _, row in agg_x.iterrows():
+            rows.append({'method': gl, x: row[x], 'metric': metric,
+                         'glow': row['glow'], 'other': row['other'],
+                         'mean_diff': row['mean_diff'], 'win': row['win'],
+                         'n_seed': int(row['n_seed'])})
+        if gl == one_label:
+            for _, seed_df in pv.groupby('seed'):
+                seed_df = seed_df.sort_values(x)
+                ax.plot(seed_df[x], seed_df['diff'], lw=0.5, color='black',
+                        alpha=0.3)
+            ax.plot(agg_x[x], agg_x['mean_diff'], lw=3, color='black')
+            drew = True
+
+    if not drew:
+        ax.axis('off')
+        return rows
+    ax.axhline(0, lw=.5, color='black', alpha=alpha)
+    ax.set_ylim(-1, 1)
+    ax.grid(True, alpha=alpha, linewidth=1.2)
+    return rows
+
+
+# WGN / HCP stack top-to-bottom, so the fixed order puts HCP first; a source
+# absent from the cache (sweep_nimg is WGN-only) just drops out.
+_SOURCE_ORDER = ('HCP', 'WGN')
+
+
+def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
+                     one_label: str = 'GLOW-Focus', ci: int = 95,
+                     thresh_metric: str = 'dice', level: float = 0.5) -> None:
+    """Plot the stacked per-source detection figure: two rows per source.
+
+    One SubFigure per source (its banner the source name), stacked HCP over
+    WGN; within each a 2 x len(metrics) grid whose top row is the mean score +
+    central ci% percentile band per method (_draw_metric_band) and whose bottom
+    row is one_label minus the best non-GLOW alternative (_draw_diff), with the
+    metrics (dice / sens / ppv) across the columns. A dashed line marks the
+    threshold level on the thresh_metric (Dice) panel, where the discovery
+    thresholds (write_threshold_table, plotted once per cache) are read.
+
+    Writes {label}.pdf and the companion {label}_diff.csv (one block per GLOW
+    variant; see _write_diff_csv).
+
+    Args:
+        label (str): cache name; the output filename stem and figure title
+        df: the cache's tidy_run_ana results (needs source / label / seed / x /
+            the metric columns)
+        x (str): the swept x-axis column
+        metrics (list): metric columns, one panel column each
+        out (pathlib.Path): directory the figure and CSV are written into
+        one_label (str): the method the diff row draws against the field
+        ci (int): central percentile-interval width for the top-row band
+        thresh_metric (str): the metric whose level line is drawn (Dice)
+        level (float): the threshold level line (0.5 = half-maximal Dice)
     """
     df = df.copy()
     for c in [x, *metrics]:
         df[c] = pd.to_numeric(df[c], errors='coerce')
     df = df.dropna(subset=[x])
 
-    long = df.melt(id_vars=[x, facet, hue], value_vars=metrics,
-                   var_name='metric', value_name='value')
-    long['metric'] = long['metric'].map(lambda m: _METRIC_TITLES.get(m, m))
-
-    palette = get_cmap_dict(sorted(df[hue].dropna().unique().tolist()))
-    g = sns.relplot(
-        data=long, x=x, y='value', hue=hue, col=facet, row='metric',
-        kind='line', estimator='mean', errorbar=('pi', ci), palette=palette,
-        facet_kws=dict(sharey='row', sharex=True), height=2.6, aspect=1.5)
-
-    xmin = df[x].min()
-    if pd.notnull(xmin) and xmin > 0:
-        g.set(xscale='log')
-    g.set_axis_labels(_X_PARAM_LABELS.get(x, x), 'score')
-    g.figure.suptitle(label, y=1.02, fontsize=13)
-    path = out / f'{label}_metrics.pdf'
-    g.figure.savefig(path, bbox_inches='tight')
-    plt.close('all')
-    print(f'saved: {path}')
-
-
-def plot_metric_diff_grid(label: str, df, *, x: str, metrics: list,
-                          one_label: str = 'GLOW-Focus',
-                          facet: str = 'source', hue: str = 'label',
-                          alpha: float = .5, out=None) -> None:
-    """Plot one_label minus the best alternative: col=facet, row=metric.
-
-    The head-to-head companion to plot_metric_grid. Each panel shows the
-    per-trial advantage of one_label (default GLOW-Focus) over the best
-    competing method -- the largest metric among the non-GLOW labels (VBA /
-    VBA-TFCE / CET) at the same (seed, x). A thin black line per seed plus a
-    bold black mean make the win / loss against the field legible; the dashed
-    zero line is break-even. PPV is undefined for trials with no detections
-    (nan; see glow.mask.stats_from_counts) so those drop out of the difference.
-
-    Also writes {label}_diff.csv: one row per (facet, method, x) -- a block for
-    every GLOW variant present, each against the same best non-GLOW
-    alternative -- with a glow_<m> / other_<m> / <m>_diff / <m>_win block per
-    metric. Only one_label's line is drawn. The figure is skipped (nothing
-    written) when one_label is absent or no non-GLOW alternative exists.
-
-    Args:
-        label (str): cache name; used in the title and output filename
-        df: the cache's tidy results
-        x (str): column for the x-axis
-        metrics (list): metric columns, one panel row each
-        one_label (str): the method differenced against the field
-        facet (str): categorical column spread across panel columns
-        hue (str): the method-label column; its GLOW* values are excluded
-            from the "best alternative" pool
-        alpha (float): grid / zero-line alpha
-        out (pathlib.Path): directory the figure and CSV are written into
-    """
-    df = df.copy()
-    for col in [x, *metrics]:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-    df = df.dropna(subset=[x])
-
-    if one_label not in set(df[hue].unique()):
-        print(f'  ({one_label} absent — skipping {label} diff grid)')
+    have = set(df['source'].dropna().unique())
+    sources = [s for s in _SOURCE_ORDER if s in have]
+    sources += [s for s in sorted(have) if s not in sources]
+    if not sources:
+        print(f'  (no rows for {label} — skipping)')
         return
 
-    sources = sorted(df[facet].dropna().unique().tolist())
-    nrows, ncols = len(metrics), len(sources)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, 2.8 * nrows),
-                             sharex=True, sharey='row', squeeze=False)
+    palette = get_cmap_dict(sorted(df['label'].dropna().unique().tolist()))
+    log_x = pd.notnull(df[x].min()) and df[x].min() > 0
+    ncols = len(metrics)
 
-    # tidy rows behind the bold mean line, for the companion CSV
+    fig = plt.figure(figsize=(4.2 * ncols, 4.6 * len(sources)),
+                     layout='constrained')
+    fig.suptitle(label, fontsize=13)
+    subfigs = np.atleast_1d(fig.subfigures(len(sources), 1))
+
     diff_rows = []
+    for si, (subfig, src) in enumerate(zip(subfigs, sources)):
+        subfig.suptitle(src, fontsize=14, fontweight='bold')
+        axes = subfig.subplots(2, ncols, sharex=True, squeeze=False)
+        dsrc = df[df['source'] == src]
+        for j, metric in enumerate(metrics):
+            _draw_metric_band(axes[0, j], dsrc, x, metric, palette, ci=ci)
+            axes[0, j].set_title(_METRIC_TITLES.get(metric, metric))
+            axes[0, j].set_ylim(0, 1)
+            axes[0, j].grid(True, alpha=0.3)
+            # the discovery-threshold level, read as a table below
+            if metric == thresh_metric:
+                axes[0, j].axhline(level, ls='--', lw=0.8, color='grey',
+                                   alpha=0.7)
 
-    for j, src in enumerate(sources):
-        # collapse replicate rows to one value per (label, seed, x)
-        agg = (df[df[facet] == src]
-               .groupby([hue, 'seed', x], as_index=False)[metrics].mean())
-        for i, metric in enumerate(metrics):
-            ax = axes[i, j]
-            pivot = agg.pivot_table(index=['seed', x], columns=hue,
-                                    values=metric).reset_index()
-            others = [c for c in pivot.columns
-                      if c not in {'seed', x}
-                      and not str(c).startswith('GLOW')]
-            glow_cols = [c for c in pivot.columns
-                         if c not in {'seed', x} and str(c).startswith('GLOW')]
+            rows = _draw_diff(axes[1, j], dsrc, x, metric, one_label=one_label)
+            for r in rows:
+                r['source'] = src
+            diff_rows += rows
+            axes[1, j].set_xlabel(_X_PARAM_LABELS.get(x, x))
+            if log_x:
+                axes[0, j].set_xscale('log')
+                axes[1, j].set_xscale('log')
 
-            if not others or not glow_cols:
-                ax.axis('off')
-                continue
-            pivot['best_other'] = pivot[others].max(axis=1, skipna=True)
+        axes[0, 0].set_ylabel(f'score (mean, {ci}% band)')
+        axes[1, 0].set_ylabel(f'{one_label} − best')
+        # one legend for the figure, on the first block's top-left panel
+        if si == 0:
+            axes[0, 0].legend(frameon=False, fontsize=8)
 
-            # each GLOW variant vs the best non-GLOW alternative: the CSV gets
-            # a row block per variant (method column); the panel draws only
-            # one_label's per-seed + bold mean line
-            drew = False
-            for gl in glow_cols:
-                valid = pivot[gl].notna() & pivot['best_other'].notna()
-                pv = pivot.loc[valid, ['seed', x, gl, 'best_other']].copy()
-                if pv.empty:
-                    continue
-                pv['diff'] = pv[gl] - pv['best_other']
-                pv['win'] = (pv[gl] > pv['best_other']).astype(float)
-                agg_x = (pv.groupby(x).agg(
-                            mean_diff=('diff', 'mean'),
-                            glow=(gl, 'mean'),
-                            other=('best_other', 'mean'),
-                            win=('win', 'mean'),
-                            n_seed=('diff', 'size'))
-                         .reset_index().sort_values(x))
-                for _, row in agg_x.iterrows():
-                    diff_rows.append({facet: src, 'method': gl, x: row[x],
-                                      'metric': metric, 'glow': row['glow'],
-                                      'other': row['other'],
-                                      'mean_diff': row['mean_diff'],
-                                      'win': row['win'],
-                                      'n_seed': int(row['n_seed'])})
-
-                if gl == one_label:
-                    for _, seed_df in pv.groupby('seed'):
-                        seed_df = seed_df.sort_values(x)
-                        ax.plot(seed_df[x], seed_df['diff'],
-                                lw=0.5, color='black', alpha=0.3)
-                    ax.plot(agg_x[x], agg_x['mean_diff'], lw=3, color='black')
-                    drew = True
-
-            if not drew:
-                ax.axis('off')
-                continue
-
-            ax.axhline(0, lw=.5, color='black', alpha=alpha)
-            ax.set_ylim(-1, 1)
-            ax.grid(True, alpha=alpha, linewidth=1.2)
-            if i == 0:
-                ax.set_title(f'{facet} = {src}')
-            if j == 0:
-                ax.set_ylabel(_METRIC_TITLES.get(metric, metric))
-            if i == nrows - 1:
-                ax.set_xlabel(_X_PARAM_LABELS.get(x, x))
-
-    xmin = df[x].min()
-    if pd.notnull(xmin) and xmin > 0:
-        for ax in axes.flat:
-            ax.set_xscale('log')
-
-    fig.suptitle(f'{label}: {one_label} − best alternative',
-                 y=1.02, fontsize=13)
-    fig.tight_layout()
-    path = out / f'{label}_diff.pdf'
+    path = out / f'{label}.pdf'
     fig.savefig(path, bbox_inches='tight')
     plt.close('all')
     print(f'saved: {path}')
 
     if diff_rows:
-        _write_diff_csv(label, pd.DataFrame(diff_rows), x=x, facet=facet,
+        _write_diff_csv(label, pd.DataFrame(diff_rows), x=x, facet='source',
                         metrics=metrics, out=out)
 
 
@@ -546,8 +571,8 @@ def _write_diff_csv(label: str, diff_long, *, x: str, facet: str,
                     metrics: list, out) -> None:
     """Write the diff-grid mean line to CSV and print where Dice peaks.
 
-    diff_long is the tidy mean line behind plot_metric_diff_grid, one row per
-    (facet, method, x, metric): the seed-averaged absolute scores (glow = the
+    diff_long is the tidy mean line behind the diff rows (_draw_diff), one row
+    per (facet, method, x, metric): the seed-averaged absolute scores (glow =
     GLOW variant named in method, other = best non-GLOW alternative), their
     difference (mean_diff), and the win rate (win = fraction of trials with
     the GLOW variant strictly above the best alternative). It is reshaped to
@@ -601,6 +626,158 @@ def _write_diff_csv(label: str, diff_long, *, x: str, facet: str,
               f'dice {peak["glow_dice"]:.4f} vs {peak["other_dice"]:.4f} '
               f'(Δ{peak["dice_diff"]:+.4f}, win {peak["dice_win"]:.0%})  '
               + others)
+
+
+# ---------------------------------------------------------------------------
+# Discovery threshold: the effect strength at which mean Dice crosses a level
+# ---------------------------------------------------------------------------
+
+def _crossing(x_vals, y_vals, level: float):
+    """Find the first upward crossing of level, interpolated in log10(x).
+
+    The x grid is log-spaced and the mean-metric curve is a monotone-ish
+    sigmoid, so the crossing is located by linear interpolation between the two
+    bracketing grid points in log10(x) (equivalently, geometric interpolation
+    in x). The first x with y >= level fixes the upper bracket; the crossing
+    lies between it and its predecessor.
+
+    Args:
+        x_vals (np.array): swept-axis values, sorted ascending, all > 0
+        y_vals (np.array): the mean metric at each x (same length)
+        level (float): the crossing level (0.5 for half-maximal Dice)
+
+    Returns:
+        (float, str): (threshold x, status). status is 'ok' with a finite
+            threshold; 'below' (nan) when the curve already sits at/above level
+            at the weakest x; 'above' (nan) when it never reaches level.
+    """
+    if len(x_vals) == 0:
+        return np.nan, 'above'
+    if y_vals[0] >= level:
+        return np.nan, 'below'
+    for i in range(1, len(x_vals)):
+        if y_vals[i] >= level:
+            t = (level - y_vals[i - 1]) / (y_vals[i] - y_vals[i - 1])
+            lx = (np.log10(x_vals[i - 1])
+                  + t * (np.log10(x_vals[i]) - np.log10(x_vals[i - 1])))
+            return float(10 ** lx), 'ok'
+    return np.nan, 'above'
+
+
+def threshold_ratio_table(df, *, x: str, metric: str = 'dice',
+                          level: float = 0.5,
+                          ref_label: str = 'GLOW-Focus'):
+    """Wide table of each method's discovery threshold, ref-normalised, per b.
+
+    A method's discovery threshold is the swept-axis value at which its mean
+    metric (averaged across trials) first crosses level -- the effect strength
+    at which it starts recovering the support. Using the half-maximal (level =
+    0.5) point of a monotone performance curve as a threshold is the standard
+    dose-response / psychometric convention (the EC50 / 50%-detection point,
+    the steepest, most reproducible part of the sigmoid); Dice itself is Dice
+    1945, with Dice > 0.7 the usual "good overlap" line (Zijdenbos 1994), so
+    level is a parameter.
+
+    Each entry is the raw threshold ratio thr_method / thr_ref (for x =
+    effect_llr, the LLR at which the method reaches level Dice divided by the
+    reference method's): ref_label is 1.0, and > 1 means the method needs a
+    stronger effect than the reference. A structural axis that varies alongside
+    x (b in the llr sweep) becomes the columns, so each b gets its own ratio
+    column; with none varying the single ratio column is named by x.
+
+    Args:
+        df: a tidy_run_ana frame (needs source / label / x / metric, and any
+            varying secondary axis such as b)
+        x (str): the swept-axis column (effect strength when x is effect_llr)
+        metric (str): the metric whose level crossing defines the threshold
+        level (float): the crossing level (0.5 = half-maximal)
+        ref_label (str): the reference method (its ratio is 1.0)
+
+    Returns:
+        a wide DataFrame with columns source, method, then one ratio column per
+        varying secondary value (e.g. b=1 / b=2 / b=3), or a single column named
+        by x when no secondary varies. Empty in, empty out.
+    """
+    df = df.copy()
+    df[x] = pd.to_numeric(df[x], errors='coerce')
+    df = df.dropna(subset=[x])
+    if df.empty:
+        return df
+
+    secondary = [a for a in _SECONDARY_AXES
+                 if a != x and a in df.columns and df[a].dropna().nunique() > 1]
+
+    rows = []
+    for keys, sub in df.groupby(['source', *secondary]):
+        keys = keys if isinstance(keys, tuple) else (keys,)
+        cell = dict(zip(['source', *secondary], keys))
+        mean_curve = sub.groupby(['label', x])[metric].mean()
+        thr = {}
+        for lab in mean_curve.index.get_level_values(0).unique().tolist():
+            s = mean_curve.loc[lab].dropna().sort_index()
+            thr[lab] = _crossing(np.asarray(s.index, dtype=float),
+                                 np.asarray(s.values, dtype=float), level)[0]
+        ref = thr.get(ref_label, np.nan)
+        for lab, t in thr.items():
+            ratio = (t / ref if np.isfinite(t) and np.isfinite(ref) and ref > 0
+                     else np.nan)
+            rows.append({**cell, 'method': lab, 'ratio': ratio})
+
+    long = pd.DataFrame(rows)
+    if secondary:
+        long['_col'] = long[secondary].apply(
+            lambda r: ' '.join(f'{s}={int(r[s])}' for s in secondary), axis=1)
+        wide = long.pivot_table(index=['source', 'method'], columns='_col',
+                                values='ratio').reset_index()
+        wide.columns.name = None
+    else:
+        wide = long.rename(columns={'ratio': x})
+
+    # reference method first per source, then others weakest-method first
+    ratio_cols = [c for c in wide.columns if c not in ('source', 'method')]
+    order = wide[ratio_cols].mean(axis=1)
+    wide = (wide.assign(_ref=wide['method'].ne(ref_label), _order=order)
+                .sort_values(['source', '_ref', '_order'],
+                             ascending=[True, True, False])
+                .drop(columns=['_ref', '_order']).reset_index(drop=True))
+    return wide
+
+
+def write_threshold_table(label: str, df, *, x: str, out, metric: str = 'dice',
+                          level: float = 0.5,
+                          ref_label: str = 'GLOW-Focus') -> None:
+    """Write and print the ref-normalised discovery-threshold table.
+
+    Args:
+        label (str): cache name; used in the output filename
+        df: the cache's tidy_run_ana results
+        x (str): the swept-axis column
+        out (pathlib.Path): directory the CSV is written into
+        metric (str): the metric whose level crossing defines the threshold
+        level (float): the crossing level (0.5 = half-maximal Dice)
+        ref_label (str): the reference method (its ratio is 1.0)
+    """
+    wide = threshold_ratio_table(df, x=x, metric=metric, level=level,
+                                 ref_label=ref_label)
+    if wide.empty:
+        return
+    path = out / f'{label}_threshold.csv'
+    wide.to_csv(path, index=False, float_format='%.3f')
+    print(f'saved: {path}')
+
+    ratio_cols = [c for c in wide.columns if c not in ('source', 'method')]
+    print(f'  {x} at Dice >= {level:g} (mean across trials), relative to '
+          f'{ref_label} (= 1.00; > 1 needs a stronger effect):')
+    for src, sub in wide.groupby('source'):
+        print(f'    source={src}')
+        print(f'      {"method":<11} '
+              + '  '.join(f'{c:>7}' for c in ratio_cols))
+        for _, r in sub.iterrows():
+            cells = '  '.join(
+                (f'{r[c]:>7.2f}' if pd.notnull(r[c]) else f'{"—":>7}')
+                for c in ratio_cols)
+            tag = ' (ref)' if r['method'] == ref_label else ''
+            print(f'      {r["method"]:<11} {cells}{tag}')
 
 
 # ---------------------------------------------------------------------------
@@ -731,20 +908,23 @@ def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0) -> None:
 
 def plot_cache(label: str, df, out,
                metrics: list = ['dice', 'sens', 'ppv']) -> None:
-    """Write one run_ana cache's figures, dispatching on its swept axis.
+    """Write one run_ana cache's figure, dispatching on its swept axis.
 
     The null path (no effect planted) gets a faceted FWER calibration curve;
-    every other cache gets the faceted metric sweep plus the GLOW-Focus
-    head-to-head diff grid. The x-axis is inferred from the data (_infer_x),
-    so no config plot spec is needed. A cache that also varies a structural
-    axis besides x (the llr sweep varies b) is drawn one figure-set per value
-    of it (_split_by_secondary), each suffixed into the label.
+    every other cache gets the stacked per-source detection figure
+    (plot_source_grid: an HCP block over a WGN block, each a mean-band row and
+    a GLOW-Focus diff row across the metric columns) plus one cache-level
+    discovery-threshold table (write_threshold_table). The x-axis is inferred
+    from the data (_infer_x), so no config plot spec is needed. A cache that
+    also varies a structural axis besides x (the llr sweep varies b) is drawn
+    one figure per value of it (_split_by_secondary), each suffixed into the
+    label, while the threshold table spreads that axis across its columns.
 
     Args:
         label (str): cache name; used in titles and output filenames
         df: the cache's tidy_run_ana results
         out (pathlib.Path): directory the figures are written into
-        metrics (list): metric columns plotted as the sweep panel rows
+        metrics (list): metric columns plotted as the panel columns
     """
     if df.empty:
         print(f'  (no rows for {label} — skipping)')
@@ -756,8 +936,11 @@ def plot_cache(label: str, df, out,
         return
 
     for sub_label, sub in _split_by_secondary(label, df, x):
-        plot_metric_grid(sub_label, sub, x=x, metrics=metrics, out=out)
-        plot_metric_diff_grid(sub_label, sub, x=x, metrics=metrics, out=out)
+        plot_source_grid(sub_label, sub, x=x, metrics=metrics, out=out)
+
+    # one discovery-threshold table for the whole cache, a column per secondary
+    # (b in the llr sweep); normalised to GLOW-Focus (see threshold_ratio_table)
+    write_threshold_table(label, df, x=x, out=out)
 
 
 def main(argv=None) -> None:
