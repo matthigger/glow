@@ -1,8 +1,13 @@
-"""worker.main: maps the array index to the right cell of the run bundle.
+"""worker.main: array-index cell selection and the real _run_data_cell call.
 
-The heavy parts (S3 sync, the actual fit) are stubbed; the test pins the one
-piece of worker logic that must be right -- AWS_BATCH_JOB_ARRAY_INDEX picking
-the correct data cell out of the bundle the driver pickled and shipped.
+test_array_index_selects_cell pins the index logic with the fit stubbed --
+AWS_BATCH_JOB_ARRAY_INDEX must pick the right cell of the bundle the driver
+shipped. test_runs_real_data_cell then drives the real _run_data_cell end to
+end (only S3 sync faked), so any drift between the worker's call and the driver
+signature fails in-process rather than silently on a Batch worker. A stubbed
+fit hides that drift: the stub's own signature drifts with the caller, so the
+real function is the only faithful guard. test_hcp_cell_pulls_only_its_features
+checks an HCP cell pulls just its feature bundle, not the whole panel.
 """
 
 import json
@@ -10,11 +15,30 @@ import pickle
 from unittest.mock import patch
 
 import joblib
+import pytest
 
 from glow._extra.aws import sync, worker
 from glow._extra.aws.bundle import fnc_to_ref
 from glow._extra.aws.units import resolve_cells
+from glow._extra.benchmark import data
 from test.aws.fakes import FakeS3
+
+# the real end-to-end test ships this as its leaf fnc (by import reference, so
+# it must be a top-level function); each call appends here for the assertions
+_FNC_CALLS = []
+
+
+def _spy_fnc(exp, mask_target_list, **kwargs):
+    """Record one leaf call and return a trivial score (end-to-end test fnc)."""
+    _FNC_CALLS.append({'mask_target_list': list(mask_target_list),
+                       'kwargs': kwargs})
+    return {'ok': True}
+
+
+@pytest.fixture(autouse=True)
+def _records_to_tmp(monkeypatch, tmp_path):
+    """Send the recorder's per-hash files to a tmp dir, not the real one."""
+    monkeypatch.setattr(data.RECORDER, 'folder', tmp_path)
 
 
 def _put_bundle(fake, bucket, prefix, run_id, bundle):
@@ -43,8 +67,7 @@ def test_array_index_selects_cell(monkeypatch):
     monkeypatch.setattr('glow._extra.aws.sync.sync_pairs', lambda p: [])
     seen = {}
     monkeypatch.setattr('glow._extra.benchmark.driver._run_data_cell',
-                        lambda kd, ke, kf, fnc, config_name=None:
-                        seen.update(kwargs_data=kd, config_name=config_name))
+                        lambda kd, ke, kf, fnc: seen.update(kwargs_data=kd))
     monkeypatch.setenv('AWS_BATCH_JOB_ARRAY_INDEX', '2')
 
     with patch('glow._extra.aws.worker.boto3.client', lambda *a, **k: fake):
@@ -55,7 +78,28 @@ def test_array_index_selects_cell(monkeypatch):
     # and after the pickle round-trip the worker holds a fresh object -- what
     # must match a local run is its hash, not its identity.
     assert joblib.hash(seen['kwargs_data']) == joblib.hash(data_cells[7])
-    assert seen['config_name'] == 'sweep_llr_b1'
+
+
+def test_runs_real_data_cell(monkeypatch):
+    # drive the real _run_data_cell (unstubbed) on one WGN null cell so the
+    # worker -> driver call binds against the live signature; a spy fnc stands
+    # in for the leaf so no permutation fit is paid. Only S3 sync is faked.
+    _FNC_CALLS.clear()
+    bucket, prefix = 'bkt', 'glow'
+    data_cells, *_ = resolve_cells('null')
+    bundle = ([data_cells[0]], [None], [{}], fnc_to_ref(_spy_fnc), 'null')
+    fake = FakeS3()
+    uri = _put_bundle(fake, bucket, prefix, 'run-r', bundle)
+
+    monkeypatch.setattr('glow._extra.aws.sync.sync_pairs', lambda p: [])
+    monkeypatch.setenv('AWS_BATCH_JOB_ARRAY_INDEX', '0')
+
+    with patch('glow._extra.aws.worker.boto3.client', lambda *a, **k: fake):
+        worker.main(uri)
+
+    # the real _run_data_cell reached the leaf once, on an empty (null) target
+    assert len(_FNC_CALLS) == 1
+    assert _FNC_CALLS[0] == {'mask_target_list': [], 'kwargs': {}}
 
 
 def test_hcp_cell_pulls_only_its_features(monkeypatch):

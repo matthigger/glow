@@ -114,8 +114,7 @@ def main(manifest_uri: str) -> None:
         # imported here so --help / a missing cell errors before the heavy
         # benchmark import chain (numpy / glow) is paid
         from glow._extra.benchmark.driver import _run_data_cell
-        _run_data_cell(kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
-                       config_name=config_name)
+        _run_data_cell(kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc)
     finally:
         n = uploader.stop()
         print(f'[worker] final flush uploaded {n} file(s)', flush=True)
