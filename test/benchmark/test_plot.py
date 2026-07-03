@@ -126,13 +126,13 @@ def test_plot_cache_sweep_writes_metrics_and_diff(tmp_path):
     df = plot.tidy_run_ana(pd.DataFrame(rows))
     assert plot._infer_x(df) == 'effect_llr'
 
-    plot.plot_cache('sweep_llr', df, tmp_path)
-    assert (tmp_path / 'sweep_llr_metrics.pdf').exists()
-    assert (tmp_path / 'sweep_llr_diff.pdf').exists()
-    assert (tmp_path / 'sweep_llr_diff.csv').exists()
+    plot.plot_cache('sweep_llr_b1', df, tmp_path)
+    assert (tmp_path / 'sweep_llr_b1_metrics.pdf').exists()
+    assert (tmp_path / 'sweep_llr_b1_diff.pdf').exists()
+    assert (tmp_path / 'sweep_llr_b1_diff.csv').exists()
 
     # the diff CSV carries one block per GLOW variant vs the best alternative
-    diff = pd.read_csv(tmp_path / 'sweep_llr_diff.csv')
+    diff = pd.read_csv(tmp_path / 'sweep_llr_b1_diff.csv')
     assert set(diff['method'].unique()) == {'GLOW-Focus'}
     assert {'source', 'effect_llr', 'dice_diff', 'dice_win'}.issubset(
         diff.columns)

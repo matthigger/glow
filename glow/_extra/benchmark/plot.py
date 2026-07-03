@@ -725,7 +725,7 @@ def main(argv=None) -> None:
 
     Args:
         argv (list | None): CLI args to parse; None reads sys.argv. Positional
-            args are cache names (e.g. sweep_llr, runtime); with none, every
+            args are cache names (e.g. sweep_llr_b1, runtime); with none, every
             detection and runtime cache in the catalogue is plotted.
     """
     import argparse
@@ -741,7 +741,7 @@ def main(argv=None) -> None:
                     'records.')
     parser.add_argument(
         'names', nargs='*',
-        help='cache names or fnmatch patterns (e.g. sweep_llr, runtime*); '
+        help='cache names or fnmatch patterns (e.g. sweep_llr_b1, runtime*); '
              'default: every detection and runtime cache in the catalogue')
     args = parser.parse_args(argv)
 

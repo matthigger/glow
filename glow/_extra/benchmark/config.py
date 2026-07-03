@@ -1,6 +1,6 @@
 """Paper-benchmark catalogue: the inputs to driver.drive for each figure.
 
-CONFIG maps a cache name (e.g. 'sweep_llr') to the four-tuple drive consumes
+CONFIG maps a cache name (e.g. 'sweep_llr_b1') to the four-tuple drive consumes
 -- (kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc): the data
 grid, the effect grid, the leaf-function kwargs grid, and the leaf function
 itself. So one benchmark figure is drive(*CONFIG[name]). Running the sweep is
@@ -39,13 +39,14 @@ on the recorded source column downstream. HCP has no num_img axis (its N is
 the cohort), so the num_img sweep is WGN-only.
 
 Scope. Most caches share the run_ana leaf (fit + score one Analysis per cell):
-null, sweep_llr, sweep_b, sweep_extent, sweep_nimg. Four caches swap in their
-own leaf over those same grids: segment (run_segment, a Ward-mode oracle, no
-fit), min_size (run_min_size, per-perm staircases, recorded not scored), stat
-(run_stat, a VBA / CET variant reading a shared voxel-stat walk), and prune
-(run_prune, three pruning rules on a shared GLOW fit). two-effect reuses the
-run_ana leaf unchanged -- score_effects already scores each planted half
-(target0 / target1) -- over a split effect stage (effect_factory kind='split').
+null, sweep_llr_b1 / _b2 / _b3, sweep_extent, sweep_nimg. Four caches swap in
+their own leaf over those same grids: segment (run_segment, a Ward-mode
+oracle, no fit), min_size (run_min_size, per-perm staircases, recorded not
+scored), stat (run_stat, a VBA / CET variant reading a shared voxel-stat
+walk), and prune (run_prune, three pruning rules on a shared GLOW fit).
+two-effect reuses the run_ana leaf unchanged -- score_effects already scores
+each planted half (target0 / target1) -- over a split effect stage
+(effect_factory kind='split').
 
 Runtime. A separate family measures wall time, not detection (HCP-only, so
 local-only): runtime (run_ana over a num_vox sweep, 1k -> full HCP, all
@@ -82,8 +83,8 @@ N_SEED_NULL = 1000
 EFFECT_LLR_GRID = np.logspace(np.log10(0.003), np.log10(0.3), 11)
 # the sweeps' shared centre: the grid's middle element. Taking it off the grid
 # (not typing 0.03, which misses grid[5] == 0.030000000000000013) is what makes
-# sweep_llr's midpoint hash equal to the default-effect anchor the other caches
-# plant. float() for a clean python-float hash matching effect_factory's
+# sweep_llr_b1's midpoint hash equal to the default-effect anchor the other
+# caches plant. float() for a clean python-float hash matching effect_factory's
 # float(effect_llr) cast; a single midpoint needs an odd-length grid.
 if len(EFFECT_LLR_GRID) % 2 == 0:
     warnings.warn('EFFECT_LLR_GRID is even-length; it has no single midpoint')
@@ -434,15 +435,23 @@ CONFIG = {
         get_kwargs_data_list(seeds=range(N_SEED_NULL)),
         get_kwargs_effect_list(llr_list=None),
         RUN_ANA_LIST, run_ana),
-    # B. Detection vs effect strength (b=1; HCP draws one random feature/seed).
-    'sweep_llr': (
-        get_kwargs_data_list(),
+    # B. Detection vs effect strength at b = 1 / 2 / 3 imaging features: the
+    #    univariate power curve and its two low-b multivariate counterparts,
+    #    each over the full effect_llr grid (HCP draws a random b-subset per
+    #    seed). The three share every other axis, so the b=1 grid matches the
+    #    standalone llr sweep, and each grid's midpoint llr coincides with the
+    #    moderate-effect anchor the other caches plant.
+    'sweep_llr_b1': (
+        get_kwargs_data_list(b_list=(1,)),
         get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
         RUN_ANA_LIST, run_ana),
-    # C. Detection vs feature count (the multivariate story).
-    'sweep_b': (
-        get_kwargs_data_list(b_list=B_GRID),
-        get_kwargs_effect_list(),
+    'sweep_llr_b2': (
+        get_kwargs_data_list(b_list=(2,)),
+        get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
+        RUN_ANA_LIST, run_ana),
+    'sweep_llr_b3': (
+        get_kwargs_data_list(b_list=(3,)),
+        get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
         RUN_ANA_LIST, run_ana),
     # D. Detection vs effect extent (fixed per-voxel effect_llr).
     'sweep_extent': (
@@ -456,13 +465,13 @@ CONFIG = {
         RUN_ANA_LIST, run_ana),
     # F. Segmentation quality: oracle best-Dice region per Ward mode (Naive /
     #    GLM Error / Focus), no significance test or pruning. Same grids as
-    #    sweep_llr; the leaf is run_segment over the mode grid.
+    #    sweep_llr_b1; the leaf is run_segment over the mode grid.
     'segment': (
         get_kwargs_data_list(),
         get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
         RUN_SEGMENT_LIST, run_segment),
     # J. Min-size sweep: per-perm (size -> max-z) staircases on HCP, mirroring
-    #    sweep_llr's effect grid, so min_vox sweeps post hoc from one run.
+    #    sweep_llr_b1's effect grid, so min_vox sweeps post hoc from one run.
     #    Seeds are offset clear of the other sweeps; HCP only.
     'min_size': (
         get_kwargs_data_list(

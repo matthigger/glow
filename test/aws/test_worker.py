@@ -32,10 +32,10 @@ def _put_bundle(fake, bucket, prefix, run_id, bundle):
 
 def test_array_index_selects_cell(monkeypatch):
     bucket, prefix = 'bkt', 'glow'
-    data_cells, eff, fnc_kw, fnc = resolve_cells('sweep_llr')
+    data_cells, eff, fnc_kw, fnc = resolve_cells('sweep_llr_b1')
     # the driver ships a subset (here cells 5, 6, 7); child i runs the i-th
     bundle = ([data_cells[5], data_cells[6], data_cells[7]], eff, fnc_kw,
-              fnc_to_ref(fnc), 'sweep_llr')
+              fnc_to_ref(fnc), 'sweep_llr_b1')
     fake = FakeS3()
     uri = _put_bundle(fake, bucket, prefix, 'run-x', bundle)
 
@@ -50,12 +50,12 @@ def test_array_index_selects_cell(monkeypatch):
     with patch('glow._extra.aws.worker.boto3.client', lambda *a, **k: fake):
         worker.main(uri)
 
-    # array index 2 -> the 3rd shipped cell is the 7th WGN cell of sweep_llr.
+    # array index 2 -> the 3rd shipped cell is the 7th WGN cell of sweep_llr_b1.
     # Compare by joblib.hash (the cache key): the cells have no value __eq__,
     # and after the pickle round-trip the worker holds a fresh object -- what
     # must match a local run is its hash, not its identity.
     assert joblib.hash(seen['kwargs_data']) == joblib.hash(data_cells[7])
-    assert seen['config_name'] == 'sweep_llr'
+    assert seen['config_name'] == 'sweep_llr_b1'
 
 
 def test_hcp_cell_pulls_only_its_features(monkeypatch):

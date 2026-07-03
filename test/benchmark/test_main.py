@@ -60,23 +60,23 @@ class TestResolveNames:
     def _catalogue(self, monkeypatch):
         # an ordered known catalogue so first-seen / glob order is assertable
         monkeypatch.setattr(config, 'CONFIG', dict.fromkeys(
-            ['null', 'sweep_llr', 'sweep_b', 'sweep_extent']))
+            ['null', 'sweep_llr_b1', 'sweep_llr_b2', 'sweep_extent']))
 
     def test_empty_selects_all(self):
         assert cli.resolve_names([]) == [
-            'null', 'sweep_llr', 'sweep_b', 'sweep_extent']
+            'null', 'sweep_llr_b1', 'sweep_llr_b2', 'sweep_extent']
 
     def test_literal(self):
-        assert cli.resolve_names(['sweep_b']) == ['sweep_b']
+        assert cli.resolve_names(['sweep_llr_b2']) == ['sweep_llr_b2']
 
     def test_glob(self):
         assert cli.resolve_names(['sweep_*']) == [
-            'sweep_llr', 'sweep_b', 'sweep_extent']
+            'sweep_llr_b1', 'sweep_llr_b2', 'sweep_extent']
 
     def test_dedup_first_seen(self):
         # the literal pins first position; the glob's later repeats are dropped
-        assert cli.resolve_names(['sweep_llr', 'sweep_*', 'null']) == [
-            'sweep_llr', 'sweep_b', 'sweep_extent', 'null']
+        assert cli.resolve_names(['sweep_llr_b1', 'sweep_*', 'null']) == [
+            'sweep_llr_b1', 'sweep_llr_b2', 'sweep_extent', 'null']
 
     def test_unknown_literal_raises(self):
         with pytest.raises(ValueError):
@@ -100,8 +100,8 @@ class TestParseArgs:
 
     def test_flags(self):
         ns = cli.parse_args(
-            ['sweep_llr', '-j', '4', '-q', '--csv-only', '--out-dir', '/x'])
-        assert ns.names == ['sweep_llr'] and ns.n_jobs == 4 and ns.quiet
+            ['sweep_llr_b1', '-j', '4', '-q', '--csv-only', '--out-dir', '/x'])
+        assert ns.names == ['sweep_llr_b1'] and ns.n_jobs == 4 and ns.quiet
         assert ns.csv_only and ns.out_dir == '/x'
 
     def test_no_csv_and_csv_only_mutually_exclusive(self):
@@ -169,7 +169,7 @@ class TestMain:
     def test_main_dispatches_to_run(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(cli, 'run', lambda **kw: captured.update(kw))
-        cli.main(['sweep_llr', '-j', '3', '-q', '--no-csv'])
-        assert captured['names'] == ['sweep_llr'] and captured['n_jobs'] == 3
+        cli.main(['sweep_llr_b1', '-j', '3', '-q', '--no-csv'])
+        assert captured['names'] == ['sweep_llr_b1'] and captured['n_jobs'] == 3
         assert captured['verbose'] is False and captured['write_csv'] is False
         assert captured['csv_only'] is False

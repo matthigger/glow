@@ -23,10 +23,11 @@ from glow.effect import ExtenterMinVar
 
 # every paper-figure cache, and the subset whose leaf is run_ana (the rest
 # carry their own fnc + kwargs grid -- segment its Ward-mode oracle, etc.)
-LABELS = ['null', 'sweep_llr', 'sweep_b', 'sweep_extent', 'sweep_nimg',
-          'segment', 'min_size', 'stat', 'prune', 'two-effect']
-RUN_ANA_LABELS = ['null', 'sweep_llr', 'sweep_b', 'sweep_extent', 'sweep_nimg',
-                  'two-effect']
+LABELS = ['null', 'sweep_llr_b1', 'sweep_llr_b2', 'sweep_llr_b3',
+          'sweep_extent', 'sweep_nimg', 'segment', 'min_size', 'stat', 'prune',
+          'two-effect']
+RUN_ANA_LABELS = ['null', 'sweep_llr_b1', 'sweep_llr_b2', 'sweep_llr_b3',
+                  'sweep_extent', 'sweep_nimg', 'two-effect']
 # non-paper helper caches in the catalogue (the tiny end-to-end smoke cache and
 # the runtime family); excluded from the paper-cardinality checks below
 NON_PAPER_LABELS = ['smoke', 'runtime', 'runtime_segment',
@@ -182,8 +183,9 @@ class TestGridCardinality:
              if label in LABELS}
         assert n == {
             'null': 2 * config.N_SEED_NULL * 5,
-            'sweep_llr': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID) * 5,
-            'sweep_b': 2 * config.N_SEED * len(config.B_GRID) * 5,
+            'sweep_llr_b1': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID) * 5,
+            'sweep_llr_b2': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID) * 5,
+            'sweep_llr_b3': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID) * 5,
             'sweep_extent': 2 * config.N_SEED * len(config.EXTENT_FRAC_GRID) * 5,
             'sweep_nimg': config.N_SEED * len(config.NIMG_GRID) * 5,
             'segment': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)

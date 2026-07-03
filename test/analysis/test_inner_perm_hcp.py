@@ -1,5 +1,5 @@
 """Regression: float64 accumulation in iter_llr_perm survives near-constant
-HCP voxels (the sweep_llr / GLOW-Focus / a55e7237 FWER collapse).
+HCP voxels (the sweep_llr_b1 / GLOW-Focus / a55e7237 FWER collapse).
 
 Real HCP-YA data, after ExperimentScaled's global mean-subtraction, contains
 near-constant background/edge voxels sitting at a large DC offset (a55e7237's
