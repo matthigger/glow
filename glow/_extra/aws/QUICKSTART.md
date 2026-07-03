@@ -9,7 +9,7 @@ written with the unchanged read path — so AWS and local runs produce the same
 artifacts.
 
 ```bash
-python -m glow._extra.benchmark --aws sweep_llr_b1     # one cache (WGN cells)
+python -m glow._extra.benchmark --aws sweep_llr     # one cache (WGN cells)
 python -m glow._extra.benchmark --aws 'sweep_*'     # fnmatch glob
 python -m glow._extra.benchmark --aws               # every cache
 python -m glow._extra.benchmark --list              # list cache names
@@ -98,7 +98,7 @@ worker imports: `glow/_extra/aws/worker.py`, `glow/_extra/benchmark/*`,
 
 ```bash
 # submit work (the benchmark CLI with --aws is the one way to run)
-python -m glow._extra.benchmark --aws sweep_llr_b1
+python -m glow._extra.benchmark --aws sweep_llr
 python -m glow._extra.benchmark --aws 'sweep_*'
 
 # monitor

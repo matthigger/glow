@@ -20,8 +20,8 @@ concern (python -m glow._extra.aws -- bootstrap / setup / status / ...).
 Usage:
     python -m glow._extra.benchmark                    # everything (local)
     python -m glow._extra.benchmark 'sweep_*'          # glob
-    python -m glow._extra.benchmark -j 4 sweep_llr_b1     # parallel local
-    python -m glow._extra.benchmark --aws sweep_llr_b1    # run on AWS Batch
+    python -m glow._extra.benchmark -j 4 sweep_llr     # parallel local
+    python -m glow._extra.benchmark --aws sweep_llr    # run on AWS Batch
     python -m glow._extra.benchmark --csv-only         # rebuild CSVs only
     python -m glow._extra.benchmark --list             # list cache names
 """

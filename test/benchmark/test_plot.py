@@ -126,16 +126,42 @@ def test_plot_cache_sweep_writes_metrics_and_diff(tmp_path):
     df = plot.tidy_run_ana(pd.DataFrame(rows))
     assert plot._infer_x(df) == 'effect_llr'
 
-    plot.plot_cache('sweep_llr_b1', df, tmp_path)
-    assert (tmp_path / 'sweep_llr_b1_metrics.pdf').exists()
-    assert (tmp_path / 'sweep_llr_b1_diff.pdf').exists()
-    assert (tmp_path / 'sweep_llr_b1_diff.csv').exists()
+    plot.plot_cache('sweep_llr', df, tmp_path)
+    assert (tmp_path / 'sweep_llr_metrics.pdf').exists()
+    assert (tmp_path / 'sweep_llr_diff.pdf').exists()
+    assert (tmp_path / 'sweep_llr_diff.csv').exists()
 
     # the diff CSV carries one block per GLOW variant vs the best alternative
-    diff = pd.read_csv(tmp_path / 'sweep_llr_b1_diff.csv')
+    diff = pd.read_csv(tmp_path / 'sweep_llr_diff.csv')
     assert set(diff['method'].unique()) == {'GLOW-Focus'}
     assert {'source', 'effect_llr', 'dice_diff', 'dice_win'}.issubset(
         diff.columns)
+
+
+def test_plot_cache_splits_on_secondary_axis(tmp_path):
+    """A sweep that also varies b is drawn one figure-set per b value."""
+    rng = np.random.default_rng(0)
+    rows = []
+    # the combined llr sweep: effect_llr is the x, b the secondary axis
+    for b in (1, 2, 3):
+        feats = ('od', 'fa', 'md')[:b]
+        for llr in (0.01, 0.1):
+            for seed in range(4):
+                score = _score(50, 10, 800, 50)
+                rows.append(_wgn_row('GLOW-Focus', seed, llr, score, b=b))
+                rows.append(_wgn_row('VBA', seed, llr, score, b=b))
+                rows.append(_hcp_row('GLOW-Focus', seed, llr, score,
+                                     hcp_feats=feats))
+                rows.append(_hcp_row('VBA', seed, llr, score, hcp_feats=feats))
+    df = plot.tidy_run_ana(pd.DataFrame(rows))
+    assert plot._infer_x(df) == 'effect_llr'
+
+    plot.plot_cache('sweep_llr', df, tmp_path)
+    # one figure-set per b, suffixed into the label; no un-split figure
+    for b in (1, 2, 3):
+        assert (tmp_path / f'sweep_llr_b{b}_metrics.pdf').exists()
+        assert (tmp_path / f'sweep_llr_b{b}_diff.pdf').exists()
+    assert not (tmp_path / 'sweep_llr_metrics.pdf').exists()
 
 
 # ---------------------------------------------------------------------------

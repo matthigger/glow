@@ -214,8 +214,10 @@ def _infer_x(df) -> str:
 
     No config spec is read: an all-null effect grid is the FWER calibration
     path (returns None); otherwise the first of effect_llr / b / num_img /
-    effect_perc that takes more than one value is the swept axis. The shared
-    baseline cell holds every other axis fixed, so exactly one varies.
+    effect_perc that takes more than one value is the swept axis. A cache may
+    vary a second, structural axis alongside it (the llr sweep varies b too);
+    that one is not the x -- plot_cache holds it fixed per figure via
+    _split_by_secondary, so exactly one axis moves in any drawn frame.
 
     Args:
         df: a tidy_run_ana frame.
@@ -229,6 +231,43 @@ def _infer_x(df) -> str:
         if df[cand].dropna().nunique() > 1:
             return cand
     return 'effect_llr'
+
+
+# Structural axes a detection cache may vary alongside its swept x. The metric
+# grids already spend both facet dimensions (col=source, row=metric) with the
+# method as hue, so a cache that also moves one of these (the llr sweep varies
+# b as well as effect_llr) is drawn one figure per value rather than crammed
+# into a third facet -- see _split_by_secondary.
+_SECONDARY_AXES = ('b', 'num_img')
+
+
+def _split_by_secondary(label: str, df, x: str):
+    """Yield (sub_label, sub_df) per value of a secondary axis that varies.
+
+    _infer_x gives the swept x; a cache that also varies a structural axis
+    (b / num_img) besides it is split so every drawn figure holds that axis
+    fixed -- the combined llr sweep yields sweep_llr_b1 / _b2 / _b3, matching
+    the per-b figures the separate caches used to produce. With nothing else
+    varying, yields (label, df) unchanged.
+
+    Args:
+        label (str): the cache name; the sub-label's prefix
+        df: a tidy_run_ana frame
+        x (str): the swept x-axis column (never split on)
+
+    Yields:
+        (str, DataFrame): a label suffixed with the held value (e.g.
+            sweep_llr_b1) and the matching sub-frame.
+    """
+    extra = [a for a in _SECONDARY_AXES
+             if a != x and df[a].dropna().nunique() > 1]
+    if not extra:
+        yield label, df
+        return
+    for values, sub in df.groupby(extra):
+        values = values if isinstance(values, tuple) else (values,)
+        suffix = ''.join(f'_{a}{int(v)}' for a, v in zip(extra, values))
+        yield f'{label}{suffix}', sub
 
 
 # ---------------------------------------------------------------------------
@@ -697,7 +736,9 @@ def plot_cache(label: str, df, out,
     The null path (no effect planted) gets a faceted FWER calibration curve;
     every other cache gets the faceted metric sweep plus the GLOW-Focus
     head-to-head diff grid. The x-axis is inferred from the data (_infer_x),
-    so no config plot spec is needed.
+    so no config plot spec is needed. A cache that also varies a structural
+    axis besides x (the llr sweep varies b) is drawn one figure-set per value
+    of it (_split_by_secondary), each suffixed into the label.
 
     Args:
         label (str): cache name; used in titles and output filenames
@@ -714,8 +755,9 @@ def plot_cache(label: str, df, out,
         _plot_calibration_faceted(label, df, out)
         return
 
-    plot_metric_grid(label, df, x=x, metrics=metrics, out=out)
-    plot_metric_diff_grid(label, df, x=x, metrics=metrics, out=out)
+    for sub_label, sub in _split_by_secondary(label, df, x):
+        plot_metric_grid(sub_label, sub, x=x, metrics=metrics, out=out)
+        plot_metric_diff_grid(sub_label, sub, x=x, metrics=metrics, out=out)
 
 
 def main(argv=None) -> None:
@@ -733,7 +775,7 @@ def main(argv=None) -> None:
 
     Args:
         argv (list | None): CLI args to parse; None reads sys.argv. Positional
-            args are cache names (e.g. sweep_llr_b1, runtime); with none, every
+            args are cache names (e.g. sweep_llr, runtime); with none, every
             detection and runtime cache in the catalogue is plotted.
     """
     import argparse
@@ -749,7 +791,7 @@ def main(argv=None) -> None:
                     'records.')
     parser.add_argument(
         'names', nargs='*',
-        help='cache names or fnmatch patterns (e.g. sweep_llr_b1, runtime*); '
+        help='cache names or fnmatch patterns (e.g. sweep_llr, runtime*); '
              'default: every detection and runtime cache in the catalogue')
     args = parser.parse_args(argv)
 

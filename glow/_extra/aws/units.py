@@ -33,7 +33,7 @@ def resolve_cells(name: str):
     the run bundle (see glow._extra.aws.driver).
 
     Args:
-        name (str): a CONFIG cache name (e.g. 'sweep_llr_b1').
+        name (str): a CONFIG cache name (e.g. 'sweep_llr').
 
     Returns:
         data_cells (list[dict]): the data_factory kwargs dicts, in CONFIG order.

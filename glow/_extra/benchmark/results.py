@@ -122,7 +122,7 @@ def config_leaf_keys(name: str) -> list:
     parallel run left on disk.
 
     Args:
-        name (str): a CONFIG cache name (e.g. 'sweep_llr_b1').
+        name (str): a CONFIG cache name (e.g. 'sweep_llr').
 
     Returns:
         list[str]: the leaf record keys for this cache (empty if none ran).
