@@ -27,10 +27,12 @@ LABELS = ['null', 'sweep_llr', 'sweep_extent', 'sweep_nimg', 'segment',
           'min_size', 'stat', 'prune', 'two-effect']
 RUN_ANA_LABELS = ['null', 'sweep_llr', 'sweep_extent', 'sweep_nimg',
                   'two-effect']
-# non-paper helper caches in the catalogue (the tiny end-to-end smoke cache and
-# the runtime family); excluded from the paper-cardinality checks below
+# non-paper helper caches in the catalogue (the tiny end-to-end smoke cache, the
+# runtime family, and the n_perm_inner convergence sweep); excluded from the
+# paper-cardinality checks below
 NON_PAPER_LABELS = ['smoke', 'runtime', 'runtime_segment',
-                    'runtime_n_perm_fwer', 'runtime_n_perm_inner', 'runtime_b']
+                    'runtime_n_perm_fwer', 'runtime_n_perm_inner', 'runtime_b',
+                    'sweep_n_perm_inner']
 # every catalogue entry (paper + helper); the shape / bind checks cover all
 ALL_LABELS = LABELS + NON_PAPER_LABELS
 

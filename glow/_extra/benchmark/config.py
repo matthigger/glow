@@ -56,6 +56,12 @@ runtime_n_perm_fwer / runtime_n_perm_inner (run_perm_fwer / run_perm_inner,
 GLOW's outer / inner perms at 1k voxels), and runtime_b (run_ana_time over the
 b sweep). run_ana_time fits every method at n_jobs=-1, so the curves are the
 wall-clock a user waits on an N-core machine. See the runtime section below.
+
+Convergence. sweep_n_perm_inner is the detection-side counterpart to
+runtime_n_perm_inner: run_inner_edge samples each outer perm's inner null once
+to MAX_INNER_PERM and records how the FWER max-z threshold converges as
+num_inner_perm grows (HCP only, moderate effect). The recommended n_perm_inner
+is read off where that threshold plateaus (benchmark.plot).
 """
 import itertools
 import math
@@ -71,9 +77,9 @@ from glow.analysis.mancova import (get_hotel_tr, get_wilks, stat_dict,
 from glow.effect import ExtenterMinVar, ExtenterSphere
 
 from . import hcp
-from .run import (run_ana, run_ana_time, run_min_size, run_perm_fwer,
-                  run_perm_inner, run_prune, run_segment, run_segment_time,
-                  run_stat)
+from .run import (run_ana, run_ana_time, run_inner_edge, run_min_size,
+                  run_perm_fwer, run_perm_inner, run_prune, run_segment,
+                  run_segment_time, run_stat)
 
 
 # ---------- shared knobs ------------------------------------------------------
@@ -421,6 +427,16 @@ RUN_PERM_INNER_LIST = [
     for label, mode in RUNTIME_GLOW_MODES
     for n in RUNTIME_N_PERM_INNER_GRID]
 
+# GLOW-only leaf grid for the inner-perm edge (num_inner_perm convergence)
+# cache: one run_inner_edge per GLOW arm, each sampling the inner null to
+# MAX_INNER_PERM and reporting the max-z edge at every num_inner_perm <= it. No
+# label is passed -- the arm is recovered from the recorded cluster_mode.
+MAX_INNER_PERM = 2_000
+RUN_INNER_EDGE_LIST = [
+    dict(cluster_mode=mode, max_inner_perm=MAX_INNER_PERM,
+         n_perm_fwer=N_PERM_FWER)
+    for label, mode in RUNTIME_GLOW_MODES]
+
 # segmentation timing: one run_segment_time per Ward mode (the segment cache's
 # modes), the mode riding as both cluster_mode and label.
 RUN_SEGMENT_TIME_LIST = [dict(cluster_mode=mode, label=str(mode))
@@ -554,4 +570,15 @@ CONFIG = {
             crop_n_vox_list=[RUNTIME_CROP_N_VOX], b_list=B_GRID),
         get_kwargs_effect_list(),
         GLOW_ANA_LIST, run_ana_time),
+    # n_perm_inner convergence: the detection-side counterpart to
+    # runtime_n_perm_inner. Holds the data + moderate effect fixed and, per GLOW
+    # arm, samples the inner null once to MAX_INNER_PERM (run_inner_edge),
+    # recording how the FWER max-z threshold settles as num_inner_perm grows.
+    # HCP only (the paper's real data; no point double-computing the WGN half),
+    # so local-only like the runtime family; shares the HCP detection cells, so
+    # their data / effect builds are cache hits off the other sweeps.
+    'sweep_n_perm_inner': (
+        get_kwargs_data_list(sources=['hcp']),
+        get_kwargs_effect_list(),
+        RUN_INNER_EDGE_LIST, run_inner_edge),
 }

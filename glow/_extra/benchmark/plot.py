@@ -31,12 +31,19 @@ method on log axes -- runtime (the paper figure) over the num_vox sweep to the
 full HCP support, and the diagnostic caches over the segmentation / permutation
 / feature-count knobs (see _RUNTIME_SPEC).
 
-With no arguments the CLI plots every detection and runtime cache in the
-catalogue; passing names restricts it. The remaining caches (segment / stat /
-prune / min_size) carry different leaf and score shapes, so this layer does not
-plot them (see config).
+The inner-edge cache (sweep_n_perm_inner) is plotted apart too (tidy_inner_edge
+/ plot_inner_edge): its run_inner_edge leaf records the per-outer-perm max-z at
+each num_inner_perm, from which the FWER critical value is derived, giving one
+threshold-vs-num_inner_perm convergence curve per GLOW arm (and the companion
+threshold JSON the recommended n_perm_inner is read off).
+
+With no arguments the CLI plots every detection, runtime, and inner-edge cache
+in the catalogue; passing names restricts it. The remaining caches (segment /
+stat / prune / min_size) carry different leaf and score shapes, so this layer
+does not plot them (see config).
 """
 import colorsys
+import json
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -44,7 +51,7 @@ import pandas as pd
 import seaborn as sns
 
 import glow._extra.benchmark
-from .config import ana_kwargs_dict
+from .config import ana_kwargs_dict, RUNTIME_GLOW_MODES
 from .file import add_metric_cols
 
 
@@ -80,6 +87,11 @@ COLOR_ANALYSIS = {
 # Analysis.__repr__ renders, = the recorded run_ana.in.ana cell). config owns
 # the labels; run_ana neither takes nor records one (see config / run).
 _LABEL_OF_ANA = {repr(ana): label for label, ana in ana_kwargs_dict.items()}
+
+# recover a run_inner_edge leaf's GLOW arm from its recorded cluster_mode.
+# ClusterMode is a StrEnum, so the recorded in.cluster_mode cell is its string
+# ('Focus' / 'GLM Error'); no label is stored (see run.run_inner_edge / config).
+_ARM_OF_MODE = {str(mode): label for label, mode in RUNTIME_GLOW_MODES}
 
 
 def get_cmap_dict(label_list) -> dict:
@@ -903,6 +915,143 @@ def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Inner-perm edge (num_inner_perm convergence)
+# ---------------------------------------------------------------------------
+
+def _fwer_threshold(max_z_col, alpha_fwer: float) -> float:
+    """Return the FWER critical value from one column of per-perm max-z.
+
+    The max-z a region must exceed for its Westfall-Young p-value to fall at or
+    below alpha_fwer, in Analysis.get_pval's convention: with n = len(max_z_col)
+    permuted-or-observed maxima, reject iff at least ceil((1 - alpha) * n) of
+    them are below the region's z, so the critical value is the
+    ceil((1 - alpha) * n) th smallest max-z.
+
+    Args:
+        max_z_col (np.array): (n_perm_fwer + 1,) max-z, one per outer perm.
+        alpha_fwer (float): the FWER level.
+
+    Returns:
+        the critical max-z (the significance bar) at alpha_fwer.
+    """
+    col = np.sort(np.asarray(max_z_col, dtype=float))
+    n = col.shape[0]
+    k = min(max(int(np.ceil((1 - alpha_fwer) * n)), 1), n)
+    return float(col[k - 1])
+
+
+def tidy_inner_edge(raw, alpha_fwer: float = 0.05):
+    """Normalise the inner-edge cache to one tidy row per (trial, arm, m).
+
+    Parses each run_inner_edge leaf's recorded curve JSON (the num_inner_perm
+    grid and the per-outer-perm max_z_null) into long form, and per
+    num_inner_perm derives the FWER critical value (_fwer_threshold) and the
+    observed (k=0) max-z. The GLOW arm is recovered from the recorded
+    cluster_mode (_ARM_OF_MODE); no label was stored. All cells are HCP or WGN,
+    so the source is read off which data_factory produced the row.
+
+    Args:
+        raw: the provenance DataFrame (one row per run_inner_edge leaf).
+        alpha_fwer (float): FWER level the critical value is reported at.
+
+    Returns:
+        a tidy DataFrame with columns source (WGN / HCP), seed, label (GLOW
+        arm), num_inner_perm, threshold (FWER critical max-z), obs_max_z;
+        empty in, empty out.
+    """
+    if raw.empty:
+        return raw
+
+    def col(c):
+        """Return raw[c], or an all-NaN column when absent."""
+        if c in raw.columns:
+            return raw[c]
+        return pd.Series(np.nan, index=raw.index)
+
+    wgn_seed = pd.to_numeric(col('data_factory_wgn.in.seed'), errors='coerce')
+    hcp_seed = pd.to_numeric(col('data_factory_hcp.in.seed'), errors='coerce')
+    arm = col('run_inner_edge.in.cluster_mode').map(_ARM_OF_MODE)
+    curve = col('run_inner_edge.out.curve')
+
+    rows = []
+    for idx in raw.index:
+        cell = curve.get(idx)
+        if not isinstance(cell, str):
+            continue
+        d = json.loads(cell)
+        max_z = np.asarray(d['max_z_null'], dtype=float)
+        src = 'HCP' if pd.notna(hcp_seed.get(idx)) else 'WGN'
+        seed = hcp_seed.get(idx) if src == 'HCP' else wgn_seed.get(idx)
+        for j, m in enumerate(d['num_inner_perm']):
+            rows.append({'source': src, 'seed': seed, 'label': arm.get(idx),
+                         'num_inner_perm': int(m),
+                         'threshold': _fwer_threshold(max_z[:, j], alpha_fwer),
+                         'obs_max_z': float(max_z[0, j])})
+    return pd.DataFrame(rows)
+
+
+def plot_inner_edge(name: str, df, out, alpha_fwer: float = 0.05) -> None:
+    """Plot the FWER threshold vs num_inner_perm and write the threshold JSON.
+
+    The convergence read for n_perm_inner: how the FWER max-z critical value
+    (the significance bar) settles as num_inner_perm grows, one curve per GLOW
+    arm and one axes per data source (HCP for sweep_n_perm_inner), seeds
+    aggregated to a median line with a min-max band on a log x-axis. Also writes
+    {name}_threshold.json -- the
+    seed-median threshold per (source, arm, num_inner_perm) -- the artifact the
+    recommended n_perm_inner is read off (the smallest num_inner_perm whose
+    threshold has plateaued).
+
+    Args:
+        name (str): cache name; used in the title and output filenames.
+        df: the tidy_inner_edge frame.
+        out (pathlib.Path): directory the figure and JSON are written into.
+        alpha_fwer (float): FWER level (annotated on the y-axis).
+    """
+    df = df.dropna(subset=['num_inner_perm', 'threshold', 'label'])
+    if df.empty:
+        print(f'  (no rows for {name} — skipping)')
+        return
+
+    sources = sorted(df['source'].dropna().unique().tolist())
+    labels = sorted(df['label'].dropna().unique().tolist())
+    palette = get_cmap_dict(labels)
+
+    fig, axes = plt.subplots(1, len(sources), figsize=(6 * len(sources), 4.5),
+                             squeeze=False, sharey=True)
+    summary = {}
+    for ax, src in zip(axes[0], sources):
+        sub = df[df['source'] == src]
+        summary[src] = {}
+        for lab in labels:
+            g = sub[sub['label'] == lab].groupby('num_inner_perm')['threshold']
+            if not len(g):
+                continue
+            med, lo, hi = g.median(), g.min(), g.max()
+            ax.plot(med.index, med.values, marker='o', ms=5, lw=2,
+                    color=palette[lab], label=lab)
+            ax.fill_between(med.index, lo.values, hi.values,
+                            color=palette[lab], alpha=0.15)
+            summary[src][lab] = {int(m): float(v) for m, v in med.items()}
+        ax.set_xscale('log')
+        ax.set_xlabel(_X_PARAM_LABELS['n_perm_inner'])
+        ax.set_title(f'{name} — {src}')
+        ax.grid(True, which='both', alpha=0.3)
+        ax.legend(frameon=False)
+    axes[0][0].set_ylabel(f'FWER max-z threshold ($\\alpha$={alpha_fwer:g})')
+    fig.tight_layout()
+    path = out / f'{name}_threshold.pdf'
+    fig.savefig(path, bbox_inches='tight')
+    plt.close('all')
+    print(f'saved: {path}')
+
+    json_path = out / f'{name}_threshold.json'
+    with open(json_path, 'w') as f:
+        json.dump({'alpha_fwer': alpha_fwer, 'threshold': summary}, f, indent=2)
+    print(f'saved: {json_path}')
+
+
+# ---------------------------------------------------------------------------
 # Per-cache dispatch + CLI
 # ---------------------------------------------------------------------------
 
@@ -966,7 +1115,7 @@ def main(argv=None) -> None:
     import matplotlib
     matplotlib.use('Agg')
     from .config import CONFIG
-    from .run import run_ana
+    from .run import run_ana, run_inner_edge
     from . import results
 
     parser = argparse.ArgumentParser(
@@ -984,6 +1133,7 @@ def main(argv=None) -> None:
     runtime_names = [n for n in CONFIG if n in _RUNTIME_SPEC]
     detect_names = [n for n, cfg in CONFIG.items()
                     if cfg[3] is run_ana and n not in _RUNTIME_SPEC]
+    edge_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_inner_edge]
     if args.names:
         # literal name, else fnmatch pattern; a pattern matching nothing is an
         # error (a typo surfaces rather than silently plotting nothing)
@@ -995,7 +1145,7 @@ def main(argv=None) -> None:
                 parser.error(f'no cache names match: {pattern}')
             names += [n for n in matches if n not in names]
     else:
-        names = detect_names + runtime_names
+        names = detect_names + runtime_names + edge_names
 
     out = glow._extra.benchmark.get_path_result() / '_latest'
     out.mkdir(exist_ok=True)
@@ -1017,6 +1167,14 @@ def main(argv=None) -> None:
                 continue
             print(f'\n=== {name}: {len(df)} run_ana rows ===')
             plot_cache(name, df, out)
+            n_plotted += 1
+        elif name in edge_names:
+            df = tidy_inner_edge(results.config_results_df(name))
+            if df.empty:
+                print(f'  (no records for {name} — skipping)')
+                continue
+            print(f'\n=== {name}: {len(df)} inner-edge rows ===')
+            plot_inner_edge(name, df, out)
             n_plotted += 1
         else:
             print(f'  ({name} is not a detection or runtime cache — skipping)')

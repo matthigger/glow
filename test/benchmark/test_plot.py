@@ -1,4 +1,6 @@
 """Tests for the benchmark plotters (detection + runtime)."""
+import json
+
 import matplotlib
 matplotlib.use('Agg')
 
@@ -331,3 +333,63 @@ def test_plot_runtime_writes_figure(tmp_path):
 
     plot.plot_runtime('runtime', df, tmp_path)
     assert (tmp_path / 'runtime_runtime.pdf').exists()
+
+
+# ---------------------------------------------------------------------------
+# inner-perm edge (num_inner_perm convergence)
+# ---------------------------------------------------------------------------
+
+def _edge_curve(num_inner_perm, max_z_null) -> str:
+    """Serialize one run_inner_edge leaf's recorded curve JSON (row 0 observed)."""
+    return json.dumps({'num_inner_perm': list(num_inner_perm),
+                       'max_z_null': [[float(v) for v in row]
+                                      for row in max_z_null],
+                       'min_vox': 1})
+
+
+def test_tidy_inner_edge_empty():
+    assert plot.tidy_inner_edge(pd.DataFrame()).empty
+
+
+def test_tidy_inner_edge_threshold_and_source():
+    # 3 outer perms (rows, k=0 observed), 2 grid points; with n=3 the FWER
+    # critical value (alpha=0.05) is the column max (k = ceil(0.95*3) = 3)
+    mz = [[5.0, 6.0], [1.0, 2.0], [3.0, 4.0]]
+    raw = pd.DataFrame([{'run_inner_edge.in.cluster_mode': 'Focus',
+                         'run_inner_edge.out.curve': _edge_curve([50, 100], mz),
+                         'data_factory_wgn.in.seed': 0}])
+    df = plot.tidy_inner_edge(raw)
+
+    assert set(df['num_inner_perm']) == {50, 100}
+    assert list(df['source'].unique()) == ['WGN']
+    assert list(df['label'].unique()) == ['GLOW-Focus']  # arm from cluster_mode
+    at100 = df[df['num_inner_perm'] == 100].iloc[0]
+    assert at100['threshold'] == 6.0        # max of column [6, 2, 4]
+    assert at100['obs_max_z'] == 6.0        # row 0
+
+
+def test_tidy_inner_edge_hcp_and_glm_arm():
+    raw = pd.DataFrame([{'run_inner_edge.in.cluster_mode': 'GLM Error',
+                         'run_inner_edge.out.curve':
+                             _edge_curve([50], [[2.0], [1.0]]),
+                         'data_factory_hcp.in.seed': 3}])
+    df = plot.tidy_inner_edge(raw)
+    assert list(df['source']) == ['HCP']
+    assert list(df['label']) == ['GLOW-GLM']
+
+
+def test_plot_inner_edge_writes_figure_and_json(tmp_path):
+    mz = [[5.0, 5.5], [1.0, 2.0], [3.0, 4.0]]
+    raw = pd.DataFrame([
+        {'run_inner_edge.in.cluster_mode': 'Focus',
+         'run_inner_edge.out.curve': _edge_curve([50, 100], mz),
+         'data_factory_wgn.in.seed': seed}
+        for seed in range(2)])
+    df = plot.tidy_inner_edge(raw)
+
+    plot.plot_inner_edge('sweep_n_perm_inner', df, tmp_path)
+    assert (tmp_path / 'sweep_n_perm_inner_threshold.pdf').exists()
+
+    js = json.loads((tmp_path / 'sweep_n_perm_inner_threshold.json').read_text())
+    # the threshold JSON: seed-median FWER critical value per (source, arm, m)
+    assert js['threshold']['WGN']['GLOW-Focus'] == {'50': 5.0, '100': 5.5}
