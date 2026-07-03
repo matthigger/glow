@@ -119,13 +119,13 @@ _X_PARAM_LABELS = {
 # runtime caches: name -> (leaf column prefix, swept x-axis column). The
 # runtime family plots wall time (leaf.time_sec) against one swept cost knob;
 # unlike the detection sweeps the x is not inferred (time is the signal, the
-# effect is held at the moderate default). run_ana leaves (runtime / runtime_b)
-# carry num_vox inside the recursed score and the method in the recipe; the
-# timed leaves (run_segment_time / run_perm_*) return num_vox bare and record
-# the method as an explicit label. See config's runtime section.
+# effect is held at the moderate default). run_ana_time (runtime / runtime_b)
+# carries the method in the recipe (in.ana); every timing leaf returns num_vox
+# bare, and run_segment_time / run_perm_* record the method as an explicit
+# label. See config's runtime section.
 _RUNTIME_SPEC = {
-    'runtime':              ('run_ana',          'num_vox'),
-    'runtime_b':            ('run_ana',          'b'),
+    'runtime':              ('run_ana_time',     'num_vox'),
+    'runtime_b':            ('run_ana_time',     'b'),
     'runtime_segment':      ('run_segment_time', 'num_vox'),
     'runtime_n_perm_fwer':  ('run_perm_fwer',    'n_perm_fwer'),
     'runtime_n_perm_inner': ('run_perm_inner',   'n_perm_inner'),
@@ -575,11 +575,12 @@ def tidy_runtime(name: str, raw):
     frame to one tidy row per timed leaf, reading the method label, the swept
     x-axis value, and the wall time. The leaf prefix and swept axis come from
     _RUNTIME_SPEC (time is the signal, so unlike the detection path the x is
-    not inferred from what varies). A run_ana-leaf cache (runtime / runtime_b)
-    reads num_vox off the recursed score and the method off the recipe (as
-    tidy_run_ana does); a timed leaf (run_segment_time / run_perm_*) returns
-    num_vox bare and records the method as an explicit label. All runtime
-    caches are HCP-only, so the seed is the HCP data seed.
+    not inferred from what varies). A run_ana_time cache (runtime / runtime_b)
+    reads the method off the recipe (in.ana), as tidy_run_ana does; the
+    dedicated leaves (run_segment_time / run_perm_*) record it as an explicit
+    label. Every timing leaf returns num_vox bare, so only the run_ana
+    detection path reads it from the recursed score. All runtime caches are
+    HCP-only, so the seed is the HCP data seed.
 
     Args:
         name (str): the runtime cache name (a key of _RUNTIME_SPEC).
@@ -606,14 +607,21 @@ def tidy_runtime(name: str, raw):
     out['seed'] = pd.to_numeric(col('data_factory_hcp.in.seed'),
                                 errors='coerce')
 
+    # method label: run_ana / run_ana_time carry the recipe (in.ana); the
+    # dedicated timing leaves record an explicit label
+    if leaf in ('run_ana', 'run_ana_time'):
+        out['label'] = col(f'{leaf}.in.ana').map(_LABEL_OF_ANA)
+    else:
+        out['label'] = col(f'{leaf}.in.label')
+
+    # num_vox: run_ana carries it inside the recursed score dict; every timing
+    # leaf (run_ana_time included) returns it bare
     if leaf == 'run_ana':
         out['num_vox'] = pd.to_numeric(col('run_ana.out.score.num_vox'),
                                        errors='coerce')
-        out['label'] = col('run_ana.in.ana').map(_LABEL_OF_ANA)
     else:
         out['num_vox'] = pd.to_numeric(col(f'{leaf}.out.num_vox'),
                                        errors='coerce')
-        out['label'] = col(f'{leaf}.in.label')
 
     # b is the HCP feature-subset length; every other knob is num_vox itself or
     # an explicit leaf input

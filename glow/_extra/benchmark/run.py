@@ -503,3 +503,37 @@ def run_segment_time(exp: Experiment, mask_target_list, cluster_mode,
     exp_s = ExperimentScaled.from_exp(exp)
     cluster(exp_s, mode=ClusterMode(cluster_mode))
     return int(exp_s.y.shape[2])
+
+
+@MEMORY.cache
+@RECORDER(output_name='num_vox')
+def run_ana_time(exp: Experiment, mask_target_list, ana: Analysis) -> int:
+    """Time one method's fit at full local parallelism (runtime leaf).
+
+    The cross-method runtime sweep's leaf: fit ana on exp with n_jobs=-1 (all
+    cores) and record wall time only, no detection scoring. Every method's fit
+    (GLOW / VBA / CET / TFCE) parallelises its permutation walk over
+    joblib.Parallel(n_jobs), so -1 is the wall time a user on an N-core machine
+    actually waits -- the wall-clock-in-practice counterpart to run_ana, which
+    scores and times fit serially. The result is bit-identical to n_jobs=1 (the
+    seed is derived from the permutation index, not the worker), so n_jobs is
+    timing-only and never enters the recipe / cache identity.
+
+    Kept distinct from run_ana so the detection caches (keyed on run_ana's code)
+    are untouched, and so time_sec isolates fit alone (run_ana's spans fit plus
+    score_effects). The method label is recovered from the ana recipe at read
+    time (config.ana_kwargs_dict), as for run_ana.
+
+    Args:
+        exp (Experiment): the experiment to analyze (raw or scaled; fit scales
+            it idempotently).
+        mask_target_list (list): planted supports; unused (uniform contract).
+        ana (Analysis): an unfitted analysis recipe (config knobs only).
+
+    Returns:
+        num_vox (int): analyzed voxel count (mask_active.sum()), recorded beside
+            time_sec as the sweep's x-axis.
+    """
+    ana = copy.deepcopy(ana)
+    ana.fit(exp, n_jobs=-1)
+    return int((exp.mask_idx > -1).sum())

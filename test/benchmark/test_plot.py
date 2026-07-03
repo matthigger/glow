@@ -143,10 +143,10 @@ def test_plot_cache_sweep_writes_metrics_and_diff(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _runtime_ana_row(label, seed, num_vox, time_sec, hcp_feats=('od',)):
-    """One run_ana runtime row (runtime / runtime_b): method in the recipe."""
-    return {'run_ana.in.ana': repr(ana_kwargs_dict[label]),
-            'run_ana.time_sec': time_sec,
-            'run_ana.out.score.num_vox': num_vox,
+    """One run_ana_time runtime row (runtime / runtime_b): method in recipe."""
+    return {'run_ana_time.in.ana': repr(ana_kwargs_dict[label]),
+            'run_ana_time.time_sec': time_sec,
+            'run_ana_time.out.num_vox': num_vox,
             'data_factory_hcp.in.hcp_feats': list(hcp_feats),
             'data_factory_hcp.in.seed': seed}
 
@@ -166,7 +166,7 @@ def test_tidy_runtime_empty():
 
 
 def test_tidy_runtime_run_ana_leaf():
-    """A run_ana runtime cache reads num_vox off score and label off ana."""
+    """A run_ana_time runtime cache reads num_vox bare and label off ana."""
     raw = pd.DataFrame([
         _runtime_ana_row('GLOW-Focus', seed=0, num_vox=1000, time_sec=25.0),
         _runtime_ana_row('VBA', seed=0, num_vox=224619, time_sec=480.0),

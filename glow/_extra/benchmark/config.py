@@ -49,12 +49,13 @@ each planted half (target0 / target1) -- over a split effect stage
 (effect_factory kind='split').
 
 Runtime. A separate family measures wall time, not detection (HCP-only, so
-local-only): runtime (run_ana over a num_vox sweep, 1k -> full HCP, all
+local-only): runtime (run_ana_time over a num_vox sweep, 1k -> full HCP, all
 methods), and four that time one piece of GLOW each -- runtime_segment
 (run_segment_time, Ward clustering per mode over the same num_vox sweep),
 runtime_n_perm_fwer / runtime_n_perm_inner (run_perm_fwer / run_perm_inner,
-GLOW's outer / inner perms at 1k voxels), and runtime_b (run_ana over the b
-sweep). See the runtime section below.
+GLOW's outer / inner perms at 1k voxels), and runtime_b (run_ana_time over the
+b sweep). run_ana_time fits every method at n_jobs=-1, so the curves are the
+wall-clock a user waits on an N-core machine. See the runtime section below.
 """
 import itertools
 import math
@@ -70,8 +71,9 @@ from glow.analysis.mancova import (get_hotel_tr, get_wilks, stat_dict,
 from glow.effect import ExtenterMinVar, ExtenterSphere
 
 from . import hcp
-from .run import (run_ana, run_min_size, run_perm_fwer, run_perm_inner,
-                  run_prune, run_segment, run_segment_time, run_stat)
+from .run import (run_ana, run_ana_time, run_min_size, run_perm_fwer,
+                  run_perm_inner, run_prune, run_segment, run_segment_time,
+                  run_stat)
 
 
 # ---------- shared knobs ------------------------------------------------------
@@ -344,8 +346,8 @@ def get_kwargs_two_effect_list(*, llr_list=TWO_EFFECT_LLR_GRID,
 # HCP data (see hcp / the aws package). Each cache gets its own seed offset so
 # its leaf timings are cold (never served from another cache's cached fit) and
 # independent. The timed leaves are run.run_perm_fwer / run_perm_inner /
-# run_segment_time; runtime and runtime_b reuse run_ana (its score carries
-# num_vox, and time_sec is the fit wall time).
+# run_segment_time; runtime and runtime_b use run_ana_time (fit at n_jobs=-1,
+# time_sec the fit wall time, num_vox returned bare -- no detection scoring).
 RUNTIME_N_SEED = 3
 RUNTIME_CROP_N_VOX = 1_000
 
@@ -512,13 +514,16 @@ CONFIG = {
         get_kwargs_effect_list(llr_list=None),
         RUN_ANA_LIST, run_ana),
     # Runtime: wall time vs num_vox (1k -> full HCP), all methods, b=1, the
-    # moderate effect. HCP-only / local-only (see the runtime section above).
+    # moderate effect. run_ana_time fits at n_jobs=-1 (all cores) so the curve
+    # is the wall-clock a user waits on an N-core machine, every method
+    # parallelised alike. HCP-only / local-only: the AWS worker has no HCP data,
+    # and Spot instance-type variance would make time_sec meaningless anyway.
     'runtime': (
         get_kwargs_data_runtime(
             seed_offset=RUNTIME_SEED_OFFSET['runtime'],
             crop_n_vox_list=RUNTIME_NUM_VOX_GRID),
         get_kwargs_effect_list(),
-        RUN_ANA_LIST, run_ana),
+        RUN_ANA_LIST, run_ana_time),
     # Runtime (segmentation): Ward-clustering wall time vs num_vox per mode
     # (Naive / GLM Error / Focus); run_segment_time times cluster only.
     'runtime_segment': (
@@ -544,11 +549,11 @@ CONFIG = {
         get_kwargs_effect_list(),
         RUN_PERM_INNER_LIST, run_perm_inner),
     # Runtime (b): fit wall time vs feature count b (1..6) at 1k voxels, GLOW
-    # only. b rides the data grid; the leaf is run_ana.
+    # only. b rides the data grid; the leaf is run_ana_time (n_jobs=-1).
     'runtime_b': (
         get_kwargs_data_runtime(
             seed_offset=RUNTIME_SEED_OFFSET['runtime_b'],
             crop_n_vox_list=[RUNTIME_CROP_N_VOX], b_list=B_GRID),
         get_kwargs_effect_list(),
-        GLOW_ANA_LIST, run_ana),
+        GLOW_ANA_LIST, run_ana_time),
 }
