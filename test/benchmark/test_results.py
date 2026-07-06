@@ -5,7 +5,10 @@ the recorded provenance DAG forward from the cache's data cells -- no stored tag
 (see results). These cover: config_leaf_keys selecting exactly a cache's leaves
 down the null path and the planted (effect-matching) path; a cell shared by two
 caches landing in both; that editing the config (dropping a cell) is reflected
-at once (the staleness fix a tag could not give); and the CSV writer.
+at once (the staleness fix a tag could not give); the CSV writer; and
+incomplete_cell_indices (the AWS driver's local-records skip -- empty when a
+cache is fully recorded, flagging an unrun cell down both the null and planted
+paths, and a cell missing one recipe's leaf).
 
 Run against a small monkeypatched CONFIG (the real grids run 15-1000 seeds); the
 recorder folder is redirected to a tmp dir and fresh seeds keep every cell a
@@ -119,6 +122,49 @@ def test_membership_follows_config_edits(small_config, monkeypatch):
     shrunk['cacheB'] = small_config['cacheA']       # only the shared cell now
     monkeypatch.setattr(config, 'CONFIG', shrunk)
     assert len(results.config_leaf_keys('cacheB')) == 1 * 2
+
+
+def test_incomplete_empty_when_fully_recorded(small_config):
+    # every cell of each cache was driven, so nothing is left to run
+    for name in ('cacheA', 'cacheB', 'planted'):
+        assert results.incomplete_cell_indices(name) == []
+
+
+def test_incomplete_flags_unrun_null_cell(small_config, monkeypatch):
+    # append a never-driven data cell to cacheB: only its index is returned
+    # (the driven cells are complete), in grid order
+    base = small_config['cacheB']
+    grown = dict(small_config)
+    grown['cacheB'] = ([*base[0], _data_cell(random.randrange(2 ** 31))],
+                       *base[1:])
+    monkeypatch.setattr(config, 'CONFIG', grown)
+    assert results.incomplete_cell_indices('cacheB') == [len(base[0])]
+
+
+def test_incomplete_flags_planted_unrun_cell(small_config, monkeypatch):
+    # the planted cache: a never-driven cell is flagged down the
+    # data -> effect -> run_ana chain, the driven cell stays complete
+    base = small_config['planted']
+    grown = dict(small_config)
+    grown['planted'] = ([*base[0], _data_cell(random.randrange(2 ** 31))],
+                        *base[1:])
+    monkeypatch.setattr(config, 'CONFIG', grown)
+    assert results.incomplete_cell_indices('planted') == [len(base[0])]
+
+
+def test_incomplete_flags_cell_missing_a_recipe(monkeypatch):
+    # a cell driven under one recipe is incomplete once the grid asks for two:
+    # the second recipe's leaf is missing (per-fnc-kwargs matching, not a count)
+    seed = random.randrange(2 ** 31)
+    one = [dict(ana=AnalysisVBA(n_perm_fwer=6))]
+    monkeypatch.setattr(config, 'CONFIG',
+                        {'c': ([_data_cell(seed)], [None], one, run_ana)})
+    drive(*config.CONFIG['c'])
+    assert results.incomplete_cell_indices('c') == []
+    monkeypatch.setattr(
+        config, 'CONFIG',
+        {'c': ([_data_cell(seed)], [None], _ana_grid(), run_ana)})
+    assert results.incomplete_cell_indices('c') == [0]
 
 
 def test_write_config_csvs(small_config, tmp_path):

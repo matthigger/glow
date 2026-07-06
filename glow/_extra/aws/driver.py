@@ -9,10 +9,13 @@ with the unchanged results.write_config_csvs -- the AWS path produces the same
 records a local run would, so the read side is identical.
 
 The driver is the single source of truth for what runs: it resolves a cache's
-cells locally (resolve_cells -- see glow._extra.aws.units) and ships the
-resolved run bundle -- the selected data cells plus the shared effect / fnc
-grids (params) and the leaf fnc (an import reference; see
-glow._extra.aws.bundle) -- as one pickle per submission to S3. The worker
+cells locally (resolve_cells -- see glow._extra.aws.units), drops the cells
+already complete in the local records (incomplete_cell_indices -- the local
+machine is the source of truth, so a cell whose full leaf set is on disk is
+never resubmitted to recompute from cold), and ships the resolved run bundle --
+the selected data cells plus the shared effect / fnc grids (params) and the
+leaf fnc (an import reference; see glow._extra.aws.bundle) -- as one pickle per
+submission to S3. The worker
 downloads + unpickles it and runs its array-index cell, looking nothing up in
 CONFIG (so a config edit ships at submit time, with no image rebuild; only a
 code change to glow itself still needs one). The manifest is a tiny JSON
@@ -61,12 +64,12 @@ def drive_aws(names, aws_config, *, write_csv: bool = True,
               verbose: bool = True, out_dir=None) -> dict:
     """Run the selected CONFIG caches on AWS Batch, then write their CSVs.
 
-    Each cache's data cells -- whatever sources its CONFIG grid declares -- are
-    submitted as a Batch array job and escalated through
-    aws_config.memory_mb_tiers for any OOM-killed cells. When every cache's
-    array has drained, the shared records are pulled from S3 and the per-config
-    CSVs written. (HCP cells need their reference data staged to S3 first; see
-    glow._extra.aws stage_hcp.)
+    Each cache's data cells -- whatever sources its CONFIG grid declares, minus
+    the cells already complete in the local records -- are submitted as a Batch
+    array job and escalated through aws_config.memory_mb_tiers for any
+    OOM-killed cells. When every cache's array has drained, the shared records
+    are pulled from S3 and the per-config CSVs written. (HCP cells need their
+    reference data staged to S3 first; see glow._extra.aws stage_hcp.)
 
     Args:
         names (str | list[str]): a CONFIG cache name or list of them.
@@ -89,16 +92,28 @@ def drive_aws(names, aws_config, *, write_csv: bool = True,
 
     # resolve each cache's run bundle once (its data cells + shared effect /
     # fnc grids + leaf fnc); remaining tracks the cell indices still to run,
-    # resolved holds the bundle to ship them from.
+    # resolved holds the bundle to ship them from. The local records are the
+    # source of truth: a cell already complete on disk is dropped from
+    # remaining (its full leaf set is present), so a rerun submits only the
+    # gaps. RECORDER is loaded once up front for the incomplete_cell_indices
+    # walk (which reads the in-memory records).
+    from glow._extra.benchmark.data import RECORDER
+    from glow._extra.benchmark.results import incomplete_cell_indices
+    RECORDER.load()
+
     remaining: Dict[str, List[int]] = {}
     resolved: Dict[str, tuple] = {}
     for name in names:
         data_cells, kwargs_effect_list, kwargs_fnc_list, fnc = resolve_cells(
             name)
-        remaining[name] = list(range(len(data_cells)))
+        remaining[name] = incomplete_cell_indices(name)
         resolved[name] = (data_cells, kwargs_effect_list, kwargs_fnc_list, fnc)
         if verbose:
-            print(f'[drive_aws] {name}: {len(data_cells)} cell(s)')
+            n_done = len(data_cells) - len(remaining[name])
+            done_note = (f' ({n_done} already complete locally, skipped)'
+                         if n_done else '')
+            print(f'[drive_aws] {name}: {len(remaining[name])} cell(s)'
+                  f'{done_note}')
 
     failures: Dict[str, List[Tuple[int, str]]] = {n: [] for n in remaining}
 

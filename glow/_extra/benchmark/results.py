@@ -182,6 +182,90 @@ def config_leaf_keys(name: str) -> list:
     return list(leaves)
 
 
+def incomplete_cell_indices(name: str) -> list:
+    """Return the data-cell indices of cache name not fully recorded on disk.
+
+    The source-of-truth skip for the AWS driver: a data cell is complete when
+    every leaf its grid would build -- each effect cell crossed with each
+    fnc-kwargs cell -- is already present in the local records, checked by the
+    same forward DAG walk config_leaf_keys uses (anchor at the data record,
+    match the effect record(s), then require one leaf per fnc-kwargs cell). A
+    cell whose data record is missing, or any of whose (effect, fnc-kwargs)
+    leaves is missing, is incomplete; its index (its position in the cache's
+    data grid) is returned, in grid order, so the driver submits only those and
+    skips the finished cells.
+
+    Reads only the in-memory records (never rebuilds an experiment), so it is
+    cheap; call RECORDER.load() first to fold in what other writers left on
+    disk. It shares config_leaf_keys' one fragility -- a missing intermediate
+    (effect) record hides the leaves below it -- but errs safe: a cell is read
+    as incomplete and rerun, never wrongly skipped.
+
+    Args:
+        name (str): a CONFIG cache name.
+
+    Returns:
+        list[int]: the data-grid indices still to run (empty when every cell of
+            the cache is already complete on disk).
+    """
+    kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc = (
+        config.CONFIG[name])
+    records = RECORDER.records
+
+    # forward edges: an output link-hash -> the records consuming it as input
+    consumers_of = defaultdict(set)
+    for key, rec in records.items():
+        for h in rec.get('input_hashes', {}).values():
+            if h is not None:
+                consumers_of[h].add(key)
+
+    def children_of(key):
+        """The records consuming any of this record's link outputs (no self)."""
+        kids = set()
+        for h in records[key].get('output_hashes', {}).values():
+            if h is not None:
+                kids |= consumers_of.get(h, set())
+        kids.discard(key)
+        return kids
+
+    fnc_name = _raw(fnc).__qualname__
+    # one input fingerprint per fnc-kwargs cell; exp / mask_target_list are
+    # driver-supplied, so dropped from the comparison (as exp is for effects)
+    fnc_expected = [
+        _expected_inputs(fnc, kwargs, drop=('exp', 'mask_target_list'))
+        for kwargs in kwargs_fnc_list]
+
+    def cell_complete(kwargs_data) -> bool:
+        """True if every (effect, fnc-kwargs) leaf of this cell is recorded."""
+        anchor = _data_record_key(kwargs_data)
+        if anchor not in records:
+            return False
+        for kwargs_effect in kwargs_effect_list:
+            # the effect frontier: the anchor itself on the null path, else the
+            # effect record(s) off it whose stored inputs match the effect cell
+            if kwargs_effect is None:
+                frontier = {anchor}
+            else:
+                kind = kwargs_effect.get('kind', 'single')
+                expected = _expected_inputs(
+                    _EFFECT_FACTORY[kind],
+                    {k: v for k, v in kwargs_effect.items() if k != 'kind'},
+                    drop=('exp',))
+                frontier = {c for c in children_of(anchor)
+                            if _inputs_match(records[c], expected)}
+                if not frontier:
+                    return False
+            leaves = [records[c] for p in frontier for c in children_of(p)
+                      if records[c]['function'] == fnc_name]
+            if any(not any(_inputs_match(rec, exp) for rec in leaves)
+                   for exp in fnc_expected):
+                return False
+        return True
+
+    return [i for i, kwargs_data in enumerate(kwargs_data_list)
+            if not cell_complete(kwargs_data)]
+
+
 def config_results_df(name: str):
     """Walk the shared provenance frame up from one cache's leaves.
 
