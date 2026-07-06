@@ -307,7 +307,7 @@ def plot_calibration(df, alpha_max: float = 0.20, n_pts: int = 200,
     if df2.empty:
         return
 
-    labels_sorted = sorted(df2['label'].unique().tolist())
+    labels_sorted = sorted(df2['label'].dropna().unique().tolist())
     color_map = get_cmap_dict(labels_sorted)
 
     alphas = np.linspace(0, alpha_max, n_pts)
