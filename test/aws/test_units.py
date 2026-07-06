@@ -12,20 +12,20 @@ from glow._extra.benchmark.config import CONFIG
 
 
 def test_deterministic():
-    a, *_ = resolve_cells('sweep_llr_b1')
-    b, *_ = resolve_cells('sweep_llr_b1')
+    a, *_ = resolve_cells('sweep_llr')
+    b, *_ = resolve_cells('sweep_llr')
     assert a == b
 
 
 def test_returns_full_config_grid():
-    full = CONFIG['sweep_llr_b2'][0]
-    cells, *_ = resolve_cells('sweep_llr_b2')
+    full = CONFIG['sweep_llr'][0]
+    cells, *_ = resolve_cells('sweep_llr')
     assert cells == list(full)
 
 
 def test_keeps_every_declared_source():
-    # sweep_llr_b2 spans both sources in CONFIG; resolve_cells keeps them all
-    cells, *_ = resolve_cells('sweep_llr_b2')
+    # sweep_llr spans both sources in CONFIG; resolve_cells keeps them all
+    cells, *_ = resolve_cells('sweep_llr')
     assert {c['source'] for c in cells} == {'wgn', 'hcp'}
 
 
