@@ -24,11 +24,14 @@ Array child i runs the i-th cell of the shipped bundle -- a position, not a
 re-derived index -- so the driver and worker can never disagree on the cell
 list.
 
-OOM escalation: a cell killed for memory is re-submitted at the next
-memory_mb_tier, and only at the last tier does it count as a permanent
-failure. Other failures (timeout, crash) are permanent
-and resurface on a rerun. Because the worker syncs its cache as it goes, a
-retried cell resumes from the fits it already completed rather than from cold.
+Failure handling is two-layered. At the Batch level a per-job retryStrategy
+(RETRY_EVALUATE_ON_EXIT) retries a Spot reclaim -- a host loss or the graceful
+SIGTERM -- in place on a fresh box, but lets an OOM exit rather than re-running
+it at the same memory. At the driver level an OOM-killed cell is re-submitted
+at the next memory_mb_tier (a permanent failure only at the last tier); other
+failures (timeout, crash) are permanent and resurface on a rerun. Because the
+worker syncs its cache as it goes, every resumed attempt -- a Batch Spot retry
+or a driver tier escalation -- continues from the fits already on S3, not cold.
 
 The whole sweep is correct to rerun: resubmitted cells whose fits are already
 on S3 come back as cache hits (the worker pulls the warm cache first), so a
@@ -58,6 +61,25 @@ ARRAY_MIN, ARRAY_MAX = 2, 10_000
 # children and tallies the rest by state, so Spot spin-up reads as movement.
 ACTIVE_STATES = ('SUBMITTED', 'PENDING', 'RUNNABLE', 'STARTING', 'RUNNING')
 TERMINAL_STATES = frozenset({'SUCCEEDED', 'FAILED'})
+
+# Per-job Batch retry policy (passed as retryStrategy.evaluateOnExit). Rules are
+# evaluated in order, first match wins; an attempt matching no rule retries by
+# default, so the trailing catch-all is explicit only for clarity. Batch caps
+# this at 5 rules. The split: an OOM (137) or abort/bad_alloc (134) exits so it
+# is NOT retried at the same memory -- the driver escalates it to the next
+# memory_mb_tier instead (retrying in place just re-OOMs). A wall-clock timeout
+# also exits 137, so it exits here too and resurfaces on a rerun (warm cache
+# shortens it). A Spot reclaim -- a hard host loss ('Host EC2 ... terminated',
+# no container exit) or the graceful SIGTERM Batch sends ~2 min ahead (worker
+# exits 143) -- retries in place on a fresh box, warm-resuming from the cache
+# synced so far. Anything else is treated as transient and retried.
+RETRY_EVALUATE_ON_EXIT = [
+    {'onExitCode': '137', 'action': 'EXIT'},
+    {'onExitCode': '134', 'action': 'EXIT'},
+    {'onStatusReason': 'Host EC2*', 'action': 'RETRY'},
+    {'onExitCode': '143', 'action': 'RETRY'},
+    {'onStatusReason': '*', 'action': 'RETRY'},
+]
 
 
 def drive_aws(names, aws_config, *, write_csv: bool = True,
@@ -306,7 +328,8 @@ def _submit_job(*, batch, aws_config, run_id: str, manifest_uri: str,
         jobQueue=aws_config.job_queue,
         jobDefinition=aws_config.job_definition,
         containerOverrides=overrides,
-        retryStrategy={'attempts': aws_config.retry_attempts},
+        retryStrategy={'attempts': aws_config.retry_attempts,
+                       'evaluateOnExit': RETRY_EVALUATE_ON_EXIT},
         timeout={'attemptDurationSeconds': aws_config.timeout_minutes * 60},
     )
     is_array = n >= ARRAY_MIN

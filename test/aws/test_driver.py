@@ -1,9 +1,10 @@
-"""drive_aws: helpers, submit shape, happy path, OOM tier escalation.
+"""drive_aws: helpers, submit shape, retry policy, happy path, OOM escalation.
 
 An in-memory FakeS3 + FakeBatch drive the submit -> poll -> classify ->
 escalate loop without provisioning AWS.
 """
 
+import fnmatch
 import json
 import pickle
 from unittest.mock import patch
@@ -12,8 +13,9 @@ import joblib
 import pytest
 
 from glow._extra.aws.config import AWSConfig
-from glow._extra.aws.driver import (_Attempt, _classify, _inflight_postfix,
-                                     _is_oom, _submit_job, drive_aws)
+from glow._extra.aws.driver import (RETRY_EVALUATE_ON_EXIT, _Attempt,
+                                     _classify, _inflight_postfix, _is_oom,
+                                     _submit_job, drive_aws)
 from glow._extra.aws.units import resolve_cells
 from glow._extra.benchmark import data
 from test.aws.fakes import FakeBatch, FakeS3, client_factory
@@ -71,6 +73,58 @@ def test_classify_partitions():
     assert [c for c, _ in other] == [12]
 
 
+def _batch_action(rules, *, exit_code=None, status_reason='', reason=''):
+    """Mimic AWS Batch evaluateOnExit: first matching rule wins, else RETRY.
+
+    A rule matches when every on* condition it lists matches (glob), so a
+    rule needs a listed condition to fire; a job matching no rule is retried.
+    """
+    for rule in rules:
+        conds = [k for k in ('onExitCode', 'onStatusReason', 'onReason')
+                 if k in rule]
+        matched = bool(conds)
+        for k in conds:
+            if k == 'onExitCode':
+                matched = matched and exit_code is not None and \
+                    fnmatch.fnmatch(str(exit_code), rule[k])
+            elif k == 'onStatusReason':
+                matched = matched and fnmatch.fnmatch(status_reason, rule[k])
+            else:
+                matched = matched and fnmatch.fnmatch(reason, rule[k])
+        if matched:
+            return rule['action']
+    return 'RETRY'
+
+
+def test_retry_evaluate_on_exit_policy():
+    rules = RETRY_EVALUATE_ON_EXIT
+    # Batch caps evaluateOnExit at 5; each rule needs an action + a condition
+    assert len(rules) <= 5
+    for r in rules:
+        assert r['action'] in ('RETRY', 'EXIT')
+        assert any(k in r for k in ('onExitCode', 'onStatusReason', 'onReason'))
+    # OOM (137) / abort (134) exit so the driver escalates the memory tier
+    # rather than Batch re-running the cell at the same, doomed, memory
+    assert _batch_action(rules, exit_code=137, reason='OutOfMemoryError',
+                         status_reason='Essential container in task exited') \
+        == 'EXIT'
+    assert _batch_action(rules, exit_code=134) == 'EXIT'
+    # a wall-clock timeout also exits 137 -> exits, resurfaces on a rerun
+    assert _batch_action(rules, exit_code=137,
+                         status_reason='duration exceeded timeout') == 'EXIT'
+    # Spot reclaim: a hard host loss and the graceful SIGTERM both retry in
+    # place on a fresh box (the worker warm-resumes from the synced cache)
+    assert _batch_action(
+        rules, status_reason='Host EC2 (instance i-0abc) terminated.') \
+        == 'RETRY'
+    assert _batch_action(rules, exit_code=143) == 'RETRY'
+    # any other failure is treated as transient and retried (bounded by
+    # attempts)
+    assert _batch_action(rules, exit_code=1,
+                         status_reason='Essential container in task exited') \
+        == 'RETRY'
+
+
 def test_inflight_postfix():
     a = _Attempt(name='c', cell_indices=[0, 1, 2], parent_id='p',
                  is_array=True)
@@ -94,6 +148,16 @@ def test_submit_job_array_vs_single():
             for r in batch.submitted[-1]['containerOverrides'][
                 'resourceRequirements']}
     assert reqs == {'VCPU': '1', 'MEMORY': '4000'}
+
+
+def test_submit_job_retry_strategy():
+    batch = FakeBatch(submit_then=[[OK]])
+    cfg = _cfg()
+    _submit_job(batch=batch, aws_config=cfg, run_id='r', manifest_uri='s3://x',
+                n=2, mem_mb=4000)
+    rs = batch.submitted[-1]['retryStrategy']
+    assert rs['attempts'] == cfg.retry_attempts
+    assert rs['evaluateOnExit'] == RETRY_EVALUATE_ON_EXIT
 
 
 # ---------- end-to-end orchestration ----------------------------------------
