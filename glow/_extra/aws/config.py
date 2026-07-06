@@ -46,7 +46,9 @@ class AWSConfig:
         s3_prefix (str): key prefix under s3_bucket for all glow objects (the
             shared cache, records, and per-run manifests live beneath it).
         memory_mb_tiers (List[int]): per-attempt memory limits; the driver
-            re-runs OOM-killed cells at the next larger tier.
+            re-runs OOM-killed cells at the next larger tier. The first tier
+            matches 2 GB/vCPU compute-optimized nodes so a 1-vcpu job packs
+            onto a single vCPU.
         max_concurrent (int): compute-environment maxvCpus ceiling.
         timeout_minutes (int): per-attempt wall-clock limit. A single data
             cell runs its whole effect x analysis subtree serially (the
@@ -63,7 +65,7 @@ class AWSConfig:
     region: str = 'us-east-1'
     vcpus: int = 1
     memory_mb_tiers: List[int] = field(
-        default_factory=lambda: [4000, 8000, 16000])
+        default_factory=lambda: [2000, 4000, 8000])
     max_concurrent: int = 4000
     timeout_minutes: int = 720
     retry_attempts: int = 3

@@ -17,7 +17,7 @@ def test_round_trip(tmp_path):
 def test_defaults():
     cfg = AWSConfig(s3_bucket='b', job_queue='q', job_definition='d')
     assert cfg.s3_prefix == ''
-    assert cfg.memory_mb_tiers == [4000, 8000, 16000]
+    assert cfg.memory_mb_tiers == [2000, 4000, 8000]
     # a single data cell runs its whole subtree serially, so the per-attempt
     # ceiling is generous (see config.py)
     assert cfg.timeout_minutes >= 600
