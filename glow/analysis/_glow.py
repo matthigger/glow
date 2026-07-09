@@ -9,6 +9,7 @@ import glow.graph
 from glow.experiment.exper import ExperimentScaled
 from ._base import Analysis
 from . import inner_perm
+from .inner_perm import RACE_INIT, RACE_P_KEEP_THRESH
 from .cluster import cluster, ClusterMode
 from .mancova import decompose
 from .prune import prune_greedy
@@ -67,8 +68,8 @@ class AnalysisGLOW(Analysis):
     def __init__(self, n_perm_fwer: int, n_perm_inner: int = 500,
                  alpha_fwer: float = .05, min_vox: int = 1,
                  cluster_mode: ClusterMode = ClusterMode.FOCUS,
-                 use_race: bool = True, race_init: int = 15,
-                 p_keep_thresh: float = 1e-6):
+                 use_race: bool = True, race_init: int = RACE_INIT,
+                 p_keep_thresh: float = RACE_P_KEEP_THRESH):
         """Configure a GLOW analysis.
 
         Args:
@@ -108,7 +109,8 @@ class AnalysisGLOW(Analysis):
     @classmethod
     def run_inner_perm(cls, exp, children, n_perm: int, *, q0, q1,
                        min_vox: int = 1, base_seed: int = 0, llr_obs=None,
-                       race_init: int = 15, p_keep_thresh: float = 1e-6,
+                       race_init: int = RACE_INIT,
+                       p_keep_thresh: float = RACE_P_KEEP_THRESH,
                        use_race: bool = True):
         """Compute per-region inner-null (mu, std) for the given Ward tree.
 
@@ -153,8 +155,8 @@ class AnalysisGLOW(Analysis):
     @classmethod
     def _run_outer(cls, exp, k: int, *, q0, q1, n_perm_inner: int,
                    min_vox: int, cluster_mode: ClusterMode,
-                   use_race: bool = True, race_init: int = 15,
-                   p_keep_thresh: float = 1e-6):
+                   use_race: bool = True, race_init: int = RACE_INIT,
+                   p_keep_thresh: float = RACE_P_KEEP_THRESH):
         """Run one outer perm: cluster, observed LLR, inner perms.
 
         Pure (no self, no shared state) so joblib workers can run it.

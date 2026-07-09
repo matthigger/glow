@@ -52,6 +52,15 @@ from glow.analysis import mancova
 from glow.experiment import permute
 
 
+# Standard race knobs (speed/power, never validity -- see cpu_perm_race). The
+# single source of truth for the survivor race's burn-in depth and keep-
+# probability floor: AnalysisGLOW's recipe defaults and the benchmark config
+# both reference these, so there is one canonical value, not a literal repeated
+# per call site.
+RACE_INIT = 15
+RACE_P_KEEP_THRESH = 1e-6
+
+
 def _welford_combine(chunk, n, mean, M2):
     """Fold one (Pc, num_reg) NaN-aware draw-chunk into running moments.
 
@@ -230,8 +239,8 @@ def _race_keep(*, llr_obs, mu, std, n, size, min_vox: int,
 
 
 def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
-                  children, min_vox: int, race_init: int = 15,
-                  p_keep_thresh: float = 1e-6):
+                  children, min_vox: int, race_init: int = RACE_INIT,
+                  p_keep_thresh: float = RACE_P_KEEP_THRESH):
     """Compute inner-perm (mu, std) via the burn-in / trim / tail race.
 
     Three stages, all folding into one Welford / Chan accumulator (Chan,

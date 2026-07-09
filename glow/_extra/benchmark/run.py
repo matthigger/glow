@@ -706,3 +706,149 @@ def run_inner_edge(exp: Experiment, mask_target_list, *, cluster_mode,
     return _inner_edge_curve(
         exp, cluster_mode=cluster_mode, max_inner_perm=max_inner_perm,
         n_perm_fwer=n_perm_fwer, min_vox=min_vox)
+
+
+# ---------- max-z race retention (survivor race vs full cpu_perm) ------------
+# The correctness counterpart to runtime_n_perm_inner's cost cache: per outer
+# perm, reduce the inner Freedman-Lane null twice off ONE shared seed -- the
+# full cpu_perm (use_race=False) and the survivor race (AnalysisGLOW's shipped
+# default) -- and record each path's max-z. Sharing the seed makes the two draw
+# identical inner permutations, so a matching max-z pair isolates the race's
+# survivor trim as the only difference: it confirms the race retains the
+# whole-tree max-z the outer FWER loop reads, on real data at scale (the unit
+# tests pin the equivalence on small synthetic trees).
+
+
+def _max_z(llr, mu, std, size, min_vox: int):
+    """Reduce one outer perm's per-region (llr, mu, std) to its max z.
+
+    The exact max-z AnalysisGLOW.fit assembles into max_z_null[k]: standardise
+    with the 1e-12 std floor and the nan/posinf/neginf handling, then take the
+    max over regions of size >= min_vox with a finite z. Returns (-inf, -1) when
+    no region qualifies.
+
+    Args:
+        llr (np.array): (num_reg,) observed per-region LLR.
+        mu (np.array): (num_reg,) inner-null mean per region.
+        std (np.array): (num_reg,) inner-null std per region.
+        size (np.array): (num_reg,) region sizes.
+        min_vox (int): regions smaller than this are excluded.
+
+    Returns:
+        max_z (float): the max per-region z (-inf if none qualify).
+        reg (int): the arg-max region index (-1 if none qualify).
+    """
+    std_safe = np.where(std < 1e-12, 1.0, std)
+    z = np.nan_to_num((llr - mu) / std_safe, nan=0.0, posinf=0.0, neginf=np.nan)
+    consider = (size >= min_vox) & np.isfinite(z)
+    if not consider.any():
+        return float('-inf'), -1
+    z_masked = np.where(consider, z, -np.inf)
+    reg = int(np.argmax(z_masked))
+    return float(z_masked[reg]), reg
+
+
+def _race_maxz_curve(exp, *, cluster_mode, n_perm_fwer: int, n_perm_inner: int,
+                     race_init: int, p_keep_thresh: float, min_vox: int) -> str:
+    """Capture each outer perm's max-z under the full inner null vs the race.
+
+    Runs GLOW's outer-perm loop by hand (mirroring AnalysisGLOW._run_outer, as
+    _inner_edge_curve does): per outer perm cluster the tree, compute the
+    observed LLR, then reduce the inner Freedman-Lane null to per-region moments
+    twice off the SAME base_seed -- the full cpu_perm (use_race=False) and the
+    survivor race (use_race=True, cpu_perm_race) -- and record each path's max-z
+    (and its arg-max region). Sharing base_seed makes the two draw identical
+    inner permutations, so the only difference is the race's survivor trim.
+
+    Args:
+        exp (Experiment): the experiment with the synthetic effect imposed.
+        cluster_mode (ClusterMode): Ward projection (Focus / GLM Error).
+        n_perm_fwer (int): outer FL perms (n_perm_fwer + 1 rows, incl. k=0).
+        n_perm_inner (int): inner FL draws per outer perm (both paths).
+        race_init (int): race burn-in draws before the survivor trim.
+        p_keep_thresh (float): race survivor keep-probability floor.
+        min_vox (int): regions smaller than this are left out of the max.
+
+    Returns:
+        a JSON string {n_perm_inner, race_init, p_keep_thresh, min_vox,
+        max_z_slow, max_z_race, reg_slow, reg_race}: the knobs, the two
+        (n_perm_fwer+1,) per-outer-perm max-z arrays (row 0 observed), and the
+        arg-max region each path selected (-1 if none). The race retains the
+        max-z where max_z_race == max_z_slow to float round-off, with
+        reg_slow == reg_race pinning the same region (a recall hit); parse with
+        json.loads.
+    """
+    exp_s = ExperimentScaled.from_exp(exp)
+    q0, q1, _ = decompose(x=exp_s.x, contrast=exp_s.contrast)
+
+    max_z_slow, max_z_race, reg_slow, reg_race = [], [], [], []
+    for k in range(n_perm_fwer + 1):
+        _exp = exp_s.permute(k) if k else exp_s
+        children = cluster(_exp, mode=ClusterMode(cluster_mode))
+        llr_k, size = glow.graph.compute_llr_batched(
+            _exp, children=children, q0=q0, q1=q1)
+        base_seed = (k + 1) * _SEED_OFFSET_DISTINCT
+        mu_s, std_s = AnalysisGLOW.run_inner_perm(
+            _exp, children, n_perm_inner, q0=q0, q1=q1, min_vox=min_vox,
+            base_seed=base_seed, use_race=False)
+        mu_r, std_r = AnalysisGLOW.run_inner_perm(
+            _exp, children, n_perm_inner, q0=q0, q1=q1, min_vox=min_vox,
+            base_seed=base_seed, llr_obs=llr_k, race_init=race_init,
+            p_keep_thresh=p_keep_thresh, use_race=True)
+        z_s, r_s = _max_z(llr_k, mu_s, std_s, size, min_vox)
+        z_r, r_r = _max_z(llr_k, mu_r, std_r, size, min_vox)
+        max_z_slow.append(z_s)
+        max_z_race.append(z_r)
+        reg_slow.append(r_s)
+        reg_race.append(r_r)
+
+    return json.dumps({'n_perm_inner': int(n_perm_inner),
+                       'race_init': int(race_init),
+                       'p_keep_thresh': float(p_keep_thresh),
+                       'min_vox': int(min_vox),
+                       'max_z_slow': max_z_slow, 'max_z_race': max_z_race,
+                       'reg_slow': reg_slow, 'reg_race': reg_race})
+
+
+@MEMORY.cache
+@RECORDER(output_name='curve')
+def run_race_maxz(exp: Experiment, mask_target_list, *, cluster_mode,
+                  n_perm_fwer: int, n_perm_inner: int, race_init: int,
+                  p_keep_thresh: float, min_vox: int = 1):
+    """Capture GLOW's per-outer-perm max-z under the full inner null vs race.
+
+    Records, it does not score. Per outer perm reduces the inner Freedman-Lane
+    null twice off one shared base_seed -- the full cpu_perm and the survivor
+    race (cpu_perm_race, AnalysisGLOW's default inner null) -- and records each
+    path's max-z (and arg-max region) via _race_maxz_curve. Because the two
+    share the inner permutations, a matching max-z pair confirms the race
+    retains the whole-tree max-z the outer FWER loop reads, on real data at
+    scale (the unit tests pin the equivalence on small synthetic trees). The
+    retention read is derived from the recorded pairs post hoc (benchmark.plot),
+    not here.
+
+    The GLOW arm is recovered from the recorded cluster_mode at read time; no
+    label is passed or recorded. mask_target_list rides the uniform leaf
+    contract but is unused (the curve is a pure function of exp); it stays in
+    the cache key for uniformity with run_ana.
+
+    Args:
+        exp (Experiment): the experiment with the synthetic effect imposed.
+        mask_target_list (list): planted supports; accepted for the uniform
+            contract but unused (this leaf records a curve, not a score).
+        cluster_mode (ClusterMode): Ward projection (Focus / GLM Error).
+        n_perm_fwer (int): outer FL perms feeding the max-z null.
+        n_perm_inner (int): inner FL draws per outer perm (both paths).
+        race_init (int): race burn-in draws before the survivor trim.
+        p_keep_thresh (float): race survivor keep-probability floor.
+        min_vox (int): regions smaller than this are left out of the max.
+
+    Returns:
+        curve (str): a JSON string {n_perm_inner, race_init, p_keep_thresh,
+            min_vox, max_z_slow, max_z_race, reg_slow, reg_race}; parse with
+            json.loads (see _race_maxz_curve).
+    """
+    return _race_maxz_curve(
+        exp, cluster_mode=cluster_mode, n_perm_fwer=n_perm_fwer,
+        n_perm_inner=n_perm_inner, race_init=race_init,
+        p_keep_thresh=p_keep_thresh, min_vox=min_vox)

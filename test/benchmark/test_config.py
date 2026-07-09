@@ -32,7 +32,7 @@ RUN_ANA_LABELS = ['null', 'sweep_llr', 'sweep_extent', 'sweep_nimg',
 # paper-cardinality checks below
 NON_PAPER_LABELS = ['smoke', 'runtime', 'runtime_segment',
                     'runtime_n_perm_fwer', 'runtime_n_perm_inner', 'runtime_b',
-                    'sweep_n_perm_inner']
+                    'sweep_n_perm_inner', 'race_maxz']
 # every catalogue entry (paper + helper); the shape / bind checks cover all
 ALL_LABELS = LABELS + NON_PAPER_LABELS
 
