@@ -2,13 +2,13 @@
 
 The driver ships one run bundle per submission as a pickle on S3; the worker
 downloads + unpickles it and runs its array-index cell (see
-glow._extra.aws.driver / glow._extra.aws.worker). The bundle is the five-tuple
+glow._extra.aws.driver / glow._extra.aws.worker). The bundle is the four-tuple
 
-    (data_cells, kwargs_effect_list, kwargs_fnc_list, fnc_ref, config_name)
+    (cells, kwargs_fnc_list, fnc_ref, config_name)
 
--- the resolved data cells and the shared effect / fnc-kwargs grids (params,
-pickled by value), the leaf fnc as an import reference (see fnc_to_ref), and
-the cache label.
+-- the resolved planted cells (each a (kwargs_data, kwargs_effect) pair) and
+the shared fnc-kwargs grid (params, pickled by value), the leaf fnc as an
+import reference (see fnc_to_ref), and the cache label.
 
 fnc rides as a 'module:qualname' reference, not a pickled object, for two
 reasons: a memoised leaf is not picklable by reference (run_ana is wrapped by

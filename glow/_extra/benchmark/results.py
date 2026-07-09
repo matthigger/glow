@@ -182,18 +182,41 @@ def config_leaf_keys(name: str) -> list:
     return list(leaves)
 
 
-def incomplete_cell_indices(name: str) -> list:
-    """Return the data-cell indices of cache name not fully recorded on disk.
+def planted_cells(name: str) -> list:
+    """Return cache name's (kwargs_data, kwargs_effect) cells in grid order.
 
-    The source-of-truth skip for the AWS driver: a data cell is complete when
-    every leaf its grid would build -- each effect cell crossed with each
-    fnc-kwargs cell -- is already present in the local records, checked by the
-    same forward DAG walk config_leaf_keys uses (anchor at the data record,
-    match the effect record(s), then require one leaf per fnc-kwargs cell). A
-    cell whose data record is missing, or any of whose (effect, fnc-kwargs)
-    leaves is missing, is incomplete; its index (its position in the cache's
-    data grid) is returned, in grid order, so the driver submits only those and
-    skips the finished cells.
+    One cell is a data cell crossed with a single effect cell -- the unit the
+    AWS driver submits and skips (an instance builds the data once, plants that
+    one effect, and runs the whole fnc grid on it; see glow._extra.aws). The
+    cross is data-major, effect-minor, both grids in CONFIG order, so the flat
+    list is reproducible across runs. A None effect cell (the null path) rides
+    through unchanged.
+
+    Args:
+        name (str): a CONFIG cache name.
+
+    Returns:
+        list[tuple[dict, dict | None]]: (kwargs_data, kwargs_effect) pairs,
+            one per (data cell, effect cell) of the cache.
+    """
+    kwargs_data_list, kwargs_effect_list, _, _ = config.CONFIG[name]
+    return [(kwargs_data, kwargs_effect)
+            for kwargs_data in kwargs_data_list
+            for kwargs_effect in kwargs_effect_list]
+
+
+def incomplete_cell_indices(name: str) -> list:
+    """Return the planted cells of cache name not fully recorded on disk.
+
+    The source-of-truth skip for the AWS driver: a cell is a data cell crossed
+    with one effect (planted_cells), and it is complete when every leaf that
+    effect builds -- one per fnc-kwargs cell -- is in the local records.
+    Completeness is the same forward DAG walk config_leaf_keys uses: anchor at
+    the data record, match the effect record(s) off it, then require one leaf
+    per fnc-kwargs cell. A cell whose data record is missing, or whose effect
+    frontier or any fnc-kwargs leaf is missing, is incomplete; its index (its
+    position in planted_cells) is returned in grid order, so the driver submits
+    only those and skips the finished cells.
 
     Reads only the in-memory records (never rebuilds an experiment), so it is
     cheap; call RECORDER.load() first to fold in what other writers left on
@@ -205,11 +228,10 @@ def incomplete_cell_indices(name: str) -> list:
         name (str): a CONFIG cache name.
 
     Returns:
-        list[int]: the data-grid indices still to run (empty when every cell of
-            the cache is already complete on disk).
+        list[int]: the planted-cell indices still to run (empty when every cell
+            of the cache is already complete on disk).
     """
-    kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc = (
-        config.CONFIG[name])
+    _, _, kwargs_fnc_list, fnc = config.CONFIG[name]
     records = RECORDER.records
 
     # forward edges: an output link-hash -> the records consuming it as input
@@ -235,35 +257,33 @@ def incomplete_cell_indices(name: str) -> list:
         _expected_inputs(fnc, kwargs, drop=('exp', 'mask_target_list'))
         for kwargs in kwargs_fnc_list]
 
-    def cell_complete(kwargs_data) -> bool:
-        """True if every (effect, fnc-kwargs) leaf of this cell is recorded."""
+    def cell_complete(kwargs_data, kwargs_effect) -> bool:
+        """True if every fnc-kwargs leaf of this cell is recorded."""
         anchor = _data_record_key(kwargs_data)
         if anchor not in records:
             return False
-        for kwargs_effect in kwargs_effect_list:
-            # the effect frontier: the anchor itself on the null path, else the
-            # effect record(s) off it whose stored inputs match the effect cell
-            if kwargs_effect is None:
-                frontier = {anchor}
-            else:
-                kind = kwargs_effect.get('kind', 'single')
-                expected = _expected_inputs(
-                    _EFFECT_FACTORY[kind],
-                    {k: v for k, v in kwargs_effect.items() if k != 'kind'},
-                    drop=('exp',))
-                frontier = {c for c in children_of(anchor)
-                            if _inputs_match(records[c], expected)}
-                if not frontier:
-                    return False
-            leaves = [records[c] for p in frontier for c in children_of(p)
-                      if records[c]['function'] == fnc_name]
-            if any(not any(_inputs_match(rec, exp) for rec in leaves)
-                   for exp in fnc_expected):
+        # the effect frontier: the anchor itself on the null path, else the
+        # effect record(s) off it whose stored inputs match the effect cell
+        if kwargs_effect is None:
+            frontier = {anchor}
+        else:
+            kind = kwargs_effect.get('kind', 'single')
+            expected = _expected_inputs(
+                _EFFECT_FACTORY[kind],
+                {k: v for k, v in kwargs_effect.items() if k != 'kind'},
+                drop=('exp',))
+            frontier = {c for c in children_of(anchor)
+                        if _inputs_match(records[c], expected)}
+            if not frontier:
                 return False
-        return True
+        leaves = [records[c] for p in frontier for c in children_of(p)
+                  if records[c]['function'] == fnc_name]
+        return all(any(_inputs_match(rec, exp) for rec in leaves)
+                   for exp in fnc_expected)
 
-    return [i for i, kwargs_data in enumerate(kwargs_data_list)
-            if not cell_complete(kwargs_data)]
+    return [i for i, (kwargs_data, kwargs_effect)
+            in enumerate(planted_cells(name))
+            if not cell_complete(kwargs_data, kwargs_effect)]
 
 
 def config_results_df(name: str):

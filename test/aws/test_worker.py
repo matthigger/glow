@@ -56,14 +56,14 @@ def _put_bundle(fake, bucket, prefix, run_id, bundle):
 
 def test_array_index_selects_cell(monkeypatch):
     bucket, prefix = 'bkt', 'glow'
-    data_cells, eff, fnc_kw, fnc = resolve_cells('sweep_llr')
+    cells, fnc_kw, fnc = resolve_cells('sweep_llr')
     # the driver ships a subset (here cells 5, 6, 7); child i runs the i-th
-    bundle = ([data_cells[5], data_cells[6], data_cells[7]], eff, fnc_kw,
+    bundle = ([cells[5], cells[6], cells[7]], fnc_kw,
               fnc_to_ref(fnc), 'sweep_llr')
     fake = FakeS3()
     uri = _put_bundle(fake, bucket, prefix, 'run-x', bundle)
 
-    # stub the sync (no real dirs / threads) and the fit (record its cell)
+    # stub the sync (no real dirs / threads) and the fit (record its data cell)
     monkeypatch.setattr('glow._extra.aws.sync.sync_pairs', lambda p: [])
     seen = {}
     monkeypatch.setattr('glow._extra.benchmark.driver._run_data_cell',
@@ -73,11 +73,12 @@ def test_array_index_selects_cell(monkeypatch):
     with patch('glow._extra.aws.worker.boto3.client', lambda *a, **k: fake):
         worker.main(uri)
 
-    # array index 2 -> the 3rd shipped cell, i.e. cell 7 of sweep_llr's grid.
+    # array index 2 -> the 3rd shipped cell, i.e. planted cell 7 of sweep_llr's
+    # grid; the worker unpacks its data half and passes it to _run_data_cell.
     # Compare by joblib.hash (the cache key): the cells have no value __eq__,
     # and after the pickle round-trip the worker holds a fresh object -- what
     # must match a local run is its hash, not its identity.
-    assert joblib.hash(seen['kwargs_data']) == joblib.hash(data_cells[7])
+    assert joblib.hash(seen['kwargs_data']) == joblib.hash(cells[7][0])
 
 
 def test_runs_real_data_cell(monkeypatch):
@@ -86,8 +87,8 @@ def test_runs_real_data_cell(monkeypatch):
     # in for the leaf so no permutation fit is paid. Only S3 sync is faked.
     _FNC_CALLS.clear()
     bucket, prefix = 'bkt', 'glow'
-    data_cells, *_ = resolve_cells('null')
-    bundle = ([data_cells[0]], [None], [{}], fnc_to_ref(_spy_fnc), 'null')
+    cells, *_ = resolve_cells('null')
+    bundle = ([cells[0]], [{}], fnc_to_ref(_spy_fnc), 'null')
     fake = FakeS3()
     uri = _put_bundle(fake, bucket, prefix, 'run-r', bundle)
 
@@ -106,9 +107,9 @@ def test_hcp_cell_pulls_only_its_features(monkeypatch):
     # an HCP cell pulls just the bundle files for its hcp_feats (+ shared
     # mask/affine/meta), via download_each -- not the whole panel
     bucket, prefix = 'bkt', 'glow'
-    all_cells, eff, fnc_kw, fnc = resolve_cells('smoke')
-    hcp_cells = [c for c in all_cells if c['source'] == 'hcp']
-    bundle = ([hcp_cells[0]], eff, fnc_kw, fnc_to_ref(fnc), 'smoke')
+    all_cells, fnc_kw, fnc = resolve_cells('smoke')
+    hcp_cells = [c for c in all_cells if c[0]['source'] == 'hcp']
+    bundle = ([hcp_cells[0]], fnc_kw, fnc_to_ref(fnc), 'smoke')
     fake = FakeS3()
     uri = _put_bundle(fake, bucket, prefix, 'run-h', bundle)
 
@@ -123,7 +124,7 @@ def test_hcp_cell_pulls_only_its_features(monkeypatch):
     with patch('glow._extra.aws.worker.boto3.client', lambda *a, **k: fake):
         worker.main(uri)
 
-    feats = hcp_cells[0]['hcp_feats']
+    feats = hcp_cells[0][0]['hcp_feats']
     assert pulled['pairs'] == sync.hcp_bundle_keys(prefix, feats)
     # mask + affine + meta + one file per feature, nothing more
     assert len(pulled['pairs']) == 3 + len(feats)

@@ -167,6 +167,25 @@ def test_incomplete_flags_cell_missing_a_recipe(monkeypatch):
     assert results.incomplete_cell_indices('c') == [0]
 
 
+def test_incomplete_indexes_planted_cells(monkeypatch):
+    # the unit is the planted cell (a data cell x one effect), so a cache with
+    # two effects per data cell has two indices per data cell: growing the data
+    # grid by one cell flags one index per effect, not a single data-cell index
+    seed_a, seed_b = (random.randrange(2 ** 31) for _ in range(2))
+    eff_two = [_effect_cell(), dict(_effect_cell(), effect_llr=0.1)]
+    one = [dict(ana=AnalysisVBA(n_perm_fwer=6))]
+    monkeypatch.setattr(config, 'CONFIG',
+                        {'c': ([_data_cell(seed_a)], eff_two, one, run_ana)})
+    drive(*config.CONFIG['c'])
+    assert results.incomplete_cell_indices('c') == []
+    # a fresh data cell adds two planted cells (its two effects): indices 2, 3
+    monkeypatch.setattr(
+        config, 'CONFIG',
+        {'c': ([_data_cell(seed_a), _data_cell(seed_b)], eff_two, one,
+               run_ana)})
+    assert results.incomplete_cell_indices('c') == [2, 3]
+
+
 def test_write_config_csvs(small_config, tmp_path):
     out = tmp_path / 'out'
     written = results.write_config_csvs(out_dir=out)

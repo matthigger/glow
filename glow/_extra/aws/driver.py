@@ -1,28 +1,29 @@
-"""Run a CONFIG cache's data cells on AWS Batch, then build its CSVs.
+"""Run a CONFIG cache's planted cells on AWS Batch, then build its CSVs.
 
 drive_aws is the AWS counterpart of glow._extra.benchmark.run.run: instead of
 sweeping the cells in local joblib workers, it submits them as a Batch array
-job (one child per data cell) and lets each worker rebuild + run its cell from
-CONFIG, writing its records and run_ana cache to a shared S3 prefix. When the
-array drains, the driver pulls the records down and writes the per-config CSVs
-with the unchanged results.write_config_csvs -- the AWS path produces the same
-records a local run would, so the read side is identical.
+job (one child per planted cell -- a data cell crossed with one effect) and
+lets each worker rebuild + run its cell from the shipped bundle, writing its
+records and run_ana cache to a shared S3 prefix. When the array drains, the
+driver pulls the records down and writes the per-config CSVs with the unchanged
+results.write_config_csvs -- the AWS path produces the same records a local run
+would, so the read side is identical.
 
 The driver is the single source of truth for what runs: it resolves a cache's
 cells locally (resolve_cells -- see glow._extra.aws.units), drops the cells
 already complete in the local records (incomplete_cell_indices -- the local
 machine is the source of truth, so a cell whose full leaf set is on disk is
 never resubmitted to recompute from cold), and ships the resolved run bundle --
-the selected data cells plus the shared effect / fnc grids (params) and the
-leaf fnc (an import reference; see glow._extra.aws.bundle) -- as one pickle per
-submission to S3. The worker
-downloads + unpickles it and runs its array-index cell, looking nothing up in
-CONFIG (so a config edit ships at submit time, with no image rebuild; only a
-code change to glow itself still needs one). The manifest is a tiny JSON
-pointing at the bundle (its key, the shared prefix / region, the cache label).
-Array child i runs the i-th cell of the shipped bundle -- a position, not a
-re-derived index -- so the driver and worker can never disagree on the cell
-list.
+the selected planted cells plus the shared fnc grid (params) and the leaf fnc
+(an import reference; see glow._extra.aws.bundle) -- as one pickle per
+submission to S3. The worker downloads + unpickles it and runs its array-index
+cell (build the data once, plant its one effect, fit each recipe), looking
+nothing up in CONFIG (so a config edit ships at submit time, with no image
+rebuild; only a code change to glow itself still needs one). The manifest is a
+tiny JSON pointing at the bundle (its key, the shared prefix / region, the
+cache label). Array child i runs the i-th cell of the shipped bundle -- a
+position, not a re-derived index -- so the driver and worker can never disagree
+on the cell list.
 
 Failure handling is two-layered. At the Batch level a per-job retryStrategy
 (RETRY_EVALUATE_ON_EXIT) retries a Spot reclaim -- a host loss or the graceful
@@ -112,8 +113,8 @@ def drive_aws(names, aws_config, *, write_csv: bool = True,
     s3_client = boto3.client('s3', region_name=aws_config.region)
     batch = boto3.client('batch', region_name=aws_config.region)
 
-    # resolve each cache's run bundle once (its data cells + shared effect /
-    # fnc grids + leaf fnc); remaining tracks the cell indices still to run,
+    # resolve each cache's run bundle once (its planted cells + shared fnc grid
+    # + leaf fnc); remaining tracks the cell indices still to run,
     # resolved holds the bundle to ship them from. The local records are the
     # source of truth: a cell already complete on disk is dropped from
     # remaining (its full leaf set is present), so a rerun submits only the
@@ -126,12 +127,11 @@ def drive_aws(names, aws_config, *, write_csv: bool = True,
     remaining: Dict[str, List[int]] = {}
     resolved: Dict[str, tuple] = {}
     for name in names:
-        data_cells, kwargs_effect_list, kwargs_fnc_list, fnc = resolve_cells(
-            name)
+        cells, kwargs_fnc_list, fnc = resolve_cells(name)
         remaining[name] = incomplete_cell_indices(name)
-        resolved[name] = (data_cells, kwargs_effect_list, kwargs_fnc_list, fnc)
+        resolved[name] = (cells, kwargs_fnc_list, fnc)
         if verbose:
-            n_done = len(data_cells) - len(remaining[name])
+            n_done = len(cells) - len(remaining[name])
             done_note = (f' ({n_done} already complete locally, skipped)'
                          if n_done else '')
             print(f'[drive_aws] {name}: {len(remaining[name])} cell(s)'
@@ -202,8 +202,8 @@ class _Attempt:
     Attributes:
         name (str): CONFIG cache this attempt belongs to; routes failures back
             and labels the progress bar.
-        cell_indices (list[int]): the original data-cell indices submitted, in
-            child order -- child i ran the i-th cell of its shipped bundle,
+        cell_indices (list[int]): the original planted-cell indices submitted,
+            in child order -- child i ran the i-th cell of its shipped bundle,
             which is cell cell_indices[i]; kept for failure reporting and OOM
             retry. At most ARRAY_MAX long.
         parent_id (str): the submitted job's id.
@@ -233,14 +233,14 @@ def _submit_run(*, s3, batch, aws_config, name: str, resolved: tuple,
                 cell_indices, mem_mb: int, verbose: bool):
     """Ship the run bundle(s) and submit one cache's array job(s) for a tier.
 
-    Each chunk's selected data cells are sliced out of the resolved bundle,
-    pickled with the shared effect / fnc grids + leaf-fnc reference + cache
-    label, and uploaded to S3; the manifest is a tiny JSON pointing at that
-    pickle (see glow._extra.aws.bundle for the bundle layout). Cell
-    counts above ARRAY_MAX are split across multiple submissions, each its own
-    bundle + manifest + _Attempt. Array child i runs the i-th cell of its
-    bundle, so _Attempt.cell_indices[i] (the original index, kept for failure
-    reporting / OOM retry) is the cell child i ran.
+    Each chunk's selected planted cells are sliced out of the resolved bundle,
+    pickled with the shared fnc grid + leaf-fnc reference + cache label, and
+    uploaded to S3; the manifest is a tiny JSON pointing at that pickle (see
+    glow._extra.aws.bundle for the bundle layout). Cell counts above ARRAY_MAX
+    are split across multiple submissions, each its own bundle + manifest +
+    _Attempt. Array child i runs the i-th cell of its bundle, so
+    _Attempt.cell_indices[i] (the original index, kept for failure reporting /
+    OOM retry) is the cell child i ran.
 
     Args:
         s3: boto3 S3 client.
@@ -248,9 +248,9 @@ def _submit_run(*, s3, batch, aws_config, name: str, resolved: tuple,
         aws_config (AWSConfig): bucket, prefix, queue, definition, region.
         name (str): CONFIG cache name; the bundle's label and each _Attempt's.
         resolved (tuple): the cache's full bundle
-            (data_cells, kwargs_effect_list, kwargs_fnc_list, fnc); this
-            tier's chunk slices its data cells out of data_cells.
-        cell_indices (list[int]): the data-cell indices to attempt this tier.
+            (cells, kwargs_fnc_list, fnc); this tier's chunk slices its planted
+            cells out of cells.
+        cell_indices (list[int]): planted-cell indices to attempt this tier.
         mem_mb (int): memory ceiling for this tier, in MB.
         verbose (bool): print a per-submission status line.
 
@@ -259,7 +259,7 @@ def _submit_run(*, s3, batch, aws_config, name: str, resolved: tuple,
     """
     bucket = aws_config.s3_bucket
     prefix = aws_config.s3_prefix
-    data_cells, kwargs_effect_list, kwargs_fnc_list, fnc = resolved
+    cells, kwargs_fnc_list, fnc = resolved
 
     attempts: List[_Attempt] = []
     chunks = [cell_indices[i:i + ARRAY_MAX]
@@ -268,8 +268,8 @@ def _submit_run(*, s3, batch, aws_config, name: str, resolved: tuple,
         run_id = f'{name}-{uuid.uuid4().hex[:8]}'
         # fnc rides as an import reference (code), the rest as pickled params;
         # see glow._extra.aws.bundle
-        bundle = ([data_cells[c] for c in chunk], kwargs_effect_list,
-                  kwargs_fnc_list, fnc_to_ref(fnc), name)
+        bundle = ([cells[c] for c in chunk], kwargs_fnc_list,
+                  fnc_to_ref(fnc), name)
         bundle_key = s3_key(prefix, 'runs', run_id, 'bundle.pkl')
         s3.put_object(Bucket=bucket, Key=bundle_key,
                       Body=pickle.dumps(bundle))
@@ -430,7 +430,7 @@ def _classify(statuses: List[dict], cell_indices: List[int]):
 
     Args:
         statuses (list): describe_jobs payload dicts, in child order.
-        cell_indices (list[int]): data-cell indices aligned with statuses.
+        cell_indices (list[int]): planted-cell indices aligned with statuses.
 
     Returns:
         completed (list[int]): cell indices that SUCCEEDED.

@@ -1,4 +1,4 @@
-"""AWS Batch worker: run one benchmark data cell on the shared S3 state.
+"""AWS Batch worker: run one benchmark planted cell on the shared S3 state.
 
 Invoked inside the container (the image ENTRYPOINT) as
 
@@ -9,20 +9,20 @@ the shared prefix / region for the shared state, and the cache label. The
 worker:
 
   1. downloads + unpickles the run bundle the driver shipped (the resolved
-     data cells + shared effect / fnc grids + leaf-fnc reference + cache
-     label) and takes its AWS_BATCH_JOB_ARRAY_INDEX-th cell -- nothing is
-     looked up in CONFIG, so the cell list cannot drift from what the driver
-     shipped (a config edit ships at submit time; only a glow code change
-     still needs an image rebuild);
+     planted cells + shared fnc grid + leaf-fnc reference + cache label) and
+     takes its AWS_BATCH_JOB_ARRAY_INDEX-th cell -- a (kwargs_data,
+     kwargs_effect) pair -- with nothing looked up in CONFIG, so the cell list
+     cannot drift from what the driver shipped (a config edit ships at submit
+     time; only a glow code change still needs an image rebuild);
   2. if the cell is HCP, pulls just its features from the staged npy bundle
      (mask / affine / meta + its hcp_feats arrays) into hcp.bundle_dir(), so
      data_factory_hcp builds from the bundle with no niftis and no DUA prompt
      (WGN cells skip this; see glow._extra.aws.sync.hcp_bundle_keys);
   3. pulls the shared records + run_ana cache from S3 so any fit a prior
      attempt or another run already computed is a cache hit (warm resume);
-  4. runs the cell's whole effect x analysis subtree (_run_data_cell -- build
-     the clean exp once, plant each effect, fit each recipe), while a
-     background thread ships finished records / cache entries up every minute;
+  4. runs the cell (_run_data_cell on the one effect -- build the clean exp
+     once, plant that effect, fit each recipe), while a background thread ships
+     finished records / cache entries up every minute;
   5. flushes the uploader on exit.
 
 Exits non-zero on any exception so AWS Batch marks the child FAILED -- the
@@ -75,14 +75,13 @@ def main(manifest_uri: str) -> None:
     # untrusted input.
     body = s3_client.get_object(
         Bucket=bucket, Key=manifest['bundle_key'])['Body'].read()
-    data_cells, kwargs_effect_list, kwargs_fnc_list, fnc_ref, config_name = \
-        pickle.loads(body)
+    cells, kwargs_fnc_list, fnc_ref, config_name = pickle.loads(body)
     # fnc ships as an import reference; resolving it here binds it to this
     # worker's MEMORY / RECORDER (the synced cache dir), see bundle module
     fnc = fnc_from_ref(fnc_ref)
 
     idx = int(os.environ.get('AWS_BATCH_JOB_ARRAY_INDEX', '0'))
-    kwargs_data = data_cells[idx]
+    kwargs_data, kwargs_effect = cells[idx]
     print(f'[worker] {config_name} array_idx={idx} '
           f'source={kwargs_data.get("source")}', flush=True)
 
@@ -114,7 +113,7 @@ def main(manifest_uri: str) -> None:
         # imported here so --help / a missing cell errors before the heavy
         # benchmark import chain (numpy / glow) is paid
         from glow._extra.benchmark.driver import _run_data_cell
-        _run_data_cell(kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc)
+        _run_data_cell(kwargs_data, [kwargs_effect], kwargs_fnc_list, fnc)
     finally:
         n = uploader.stop()
         print(f'[worker] final flush uploaded {n} file(s)', flush=True)
