@@ -246,8 +246,8 @@ class TestRunInnerEdge:
             n_perm_fwer=4))
         mz_max = np.array(curve['max_z_null'])[:, -1]
         ana = AnalysisGLOW(n_perm_fwer=4, n_perm_inner=30,
-                           cluster_mode=ClusterMode.FOCUS).fit(
-                               exp, use_race=False)
+                           cluster_mode=ClusterMode.FOCUS,
+                           use_race=False).fit(exp)
         np.testing.assert_allclose(mz_max, ana.max_z_null, rtol=1e-6, atol=1e-9)
 
     def test_cluster_mode_is_a_cache_axis(self):

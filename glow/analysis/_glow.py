@@ -39,6 +39,14 @@ class AnalysisGLOW(Analysis):
         alpha_fwer (float): family-wise error rate
         min_vox (int): smallest region size admitted to the FWER set
         cluster_mode (ClusterMode): Ward projection mode
+        use_race (bool): use the survivor race for the inner null
+        race_init (int): race burn-in draws before the trim
+        p_keep_thresh (float): race survivor keep-probability floor
+
+    use_race, race_init, and p_keep_thresh are part of the recipe (they can
+    alter the discovered effects), so they are in RECORD_FIELDS and enter the
+    ana's hash -- a run under a different race spec caches and records
+    separately rather than reusing a result generated under another spec.
 
     Fit outputs (populated by fit, for the observed k=0 tree):
         children (np.array): (num_reg - num_vox, 2) Ward tree.
@@ -54,11 +62,13 @@ class AnalysisGLOW(Analysis):
     """
 
     RECORD_FIELDS = ('n_perm_fwer', 'n_perm_inner', 'alpha_fwer', 'min_vox',
-                     'cluster_mode')
+                     'cluster_mode', 'use_race', 'race_init', 'p_keep_thresh')
 
     def __init__(self, n_perm_fwer: int, n_perm_inner: int = 500,
                  alpha_fwer: float = .05, min_vox: int = 1,
-                 cluster_mode: ClusterMode = ClusterMode.FOCUS):
+                 cluster_mode: ClusterMode = ClusterMode.FOCUS,
+                 use_race: bool = True, race_init: int = 15,
+                 p_keep_thresh: float = 1e-6):
         """Configure a GLOW analysis.
 
         Args:
@@ -70,6 +80,12 @@ class AnalysisGLOW(Analysis):
                 ClusterMode.FOCUS projects onto the contrast subspace;
                 ClusterMode.GLM_ERROR keeps bias + contrast;
                 ClusterMode.NAIVE clusters raw y.
+            use_race (bool): use the survivor race for the inner null
+                (inner_perm.cpu_perm_race). Default True. Set False for the
+                full cpu_perm reference. Part of the recipe / hash.
+            race_init (int): race burn-in draws before the trim. Recipe / hash.
+            p_keep_thresh (float): race survivor keep-probability floor.
+                Recipe / hash.
         """
         super().__init__()
         self.n_perm_fwer = n_perm_fwer
@@ -77,6 +93,9 @@ class AnalysisGLOW(Analysis):
         self.alpha_fwer = alpha_fwer
         self.min_vox = min_vox
         self.cluster_mode = cluster_mode
+        self.use_race = use_race
+        self.race_init = race_init
+        self.p_keep_thresh = p_keep_thresh
 
         self.children = None
         self.size = None
@@ -134,14 +153,15 @@ class AnalysisGLOW(Analysis):
     @classmethod
     def _run_outer(cls, exp, k: int, *, q0, q1, n_perm_inner: int,
                    min_vox: int, cluster_mode: ClusterMode,
-                   use_race: bool = True):
+                   use_race: bool = True, race_init: int = 15,
+                   p_keep_thresh: float = 1e-6):
         """Run one outer perm: cluster, observed LLR, inner perms.
 
         Pure (no self, no shared state) so joblib workers can run it.
         Returns (children, size, llr, mu, std) for outer-perm index k:
         children is (num_reg - num_vox, 2); size, llr, mu, std are each
-        (num_reg,). use_race is applied identically for every k, so the
-        FWER bound is preserved (see inner_perm.cpu_perm_race).
+        (num_reg,). The race config is applied identically for every k, so
+        the FWER bound is preserved (see inner_perm.cpu_perm_race).
         """
         _exp = exp.permute(k) if k else exp
         children = cluster(_exp, mode=cluster_mode)
@@ -150,16 +170,17 @@ class AnalysisGLOW(Analysis):
         mu, std = cls.run_inner_perm(
             _exp, children, n_perm_inner, q0=q0, q1=q1,
             min_vox=min_vox, base_seed=(k + 1) * _INNER_SEED_BLOCK,
-            llr_obs=llr, use_race=use_race)
+            llr_obs=llr, use_race=use_race, race_init=race_init,
+            p_keep_thresh=p_keep_thresh)
         return children, size, llr, mu, std
 
-    def fit(self, exp, *, n_jobs: int = 1, verbose: bool = False,
-            use_race: bool = True):
+    def fit(self, exp, *, n_jobs: int = 1, verbose: bool = False):
         """Run the analysis on exp and return self.
 
         Populates the observed-tree attributes (children, size, llr,
         mu, std, z), the FWER null (max_z_null), and the synthesis
-        output (pval, effect_list).
+        output (pval, effect_list). The inner null uses the race or the
+        full cpu_perm per self.use_race (part of the recipe).
 
         Args:
             exp (Experiment): experiment to analyze. fit scales it
@@ -170,11 +191,6 @@ class AnalysisGLOW(Analysis):
                 identical regardless of n_jobs (seed is derived from
                 outer-perm index).
             verbose (bool): print progress and show tqdm bar.
-            use_race (bool): use the survivor race for the inner null
-                (default). A speed knob, not a validity or identity knob
-                (like n_jobs): the FWER null is reproduced exactly and it
-                is not a cache axis. Set False for the full cpu_perm
-                reference (e.g. exact-prefix convergence studies).
         """
         exp = ExperimentScaled.from_exp(exp)
         q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
@@ -194,7 +210,9 @@ class AnalysisGLOW(Analysis):
                 n_perm_inner=self.n_perm_inner,
                 min_vox=self.min_vox,
                 cluster_mode=self.cluster_mode,
-                use_race=use_race)
+                use_race=self.use_race,
+                race_init=self.race_init,
+                p_keep_thresh=self.p_keep_thresh)
             for k in range(n_total))
 
         for k, (children, size, llr, mu, std) in enumerate(
