@@ -354,3 +354,56 @@ def test_race_keep_band():
         llr_obs=llr_obs, mu=mu, std=std, n=n, size=size, min_vox=2,
         p_keep_thresh=1e-6)
     assert keep.tolist() == [True, True, False, False, False]
+
+
+# ---------------------------------------------------------------------------
+# Poisoning safety -- near-constant regions (E cancels to rounding noise in
+# float32, std collapses, z explodes) must not poison the race's max-z null.
+# The race runs float64 throughout (iter_llr_perm burn-in + float64 kernel
+# tail), so the max-z stays finite/sane and matches cpu_perm even with a
+# degenerate block present.  The float32 collapse itself is exhibited at the
+# kernel level in test/test_graph.py.
+
+def _degenerate_plus_effect_exp(seed=1, n_img=30, shape=(6, 6, 6), beta=1.5):
+    """A general-Q0 exp with both a planted effect (first quarter) and a
+    near-constant block (last quarter: mean -0.76, across-image std 2e-4)."""
+    exp = _general_q0_exp(seed=seed, n_img=n_img, shape=shape)
+    interest = int(np.where(exp.contrast)[0][0])
+    y = exp.y.copy()
+    b, _, V = y.shape
+    y[:, :, :V // 4] += beta * exp.x[interest][None, :, None]
+    rng = np.random.default_rng(seed + 99)
+    ndeg = V - 3 * V // 4
+    y[:, :, 3 * V // 4:] = -0.76 + 2e-4 * rng.standard_normal((b, n_img, ndeg))
+    return Experiment(x=exp.x, y=y, contrast=exp.contrast,
+                      mask_idx=exp.mask_idx)
+
+
+def test_race_float64_no_poison():
+    """With a near-constant block present, the float64 race keeps the max-z
+    finite and sane (a std-collapse would send it into the hundreds/thousands)
+    and reproduces cpu_perm's max-z."""
+    prep = _prep(_degenerate_plus_effect_exp(), min_vox=2)
+    base_seed, n_perm, race_init, pk = 555, 40, 10, 1e-6
+    llr_obs, size = glow.graph.compute_llr_batched(
+        prep['exp'], children=prep['children'], q0=prep['q0'], q1=prep['q1'])
+    mu_f, std_f = inner_perm.cpu_perm(
+        exp=prep['exp'], base_seed=base_seed, n_perm=n_perm,
+        q0=prep['q0'], q1=prep['q1'], children=prep['children'],
+        min_vox=prep['min_vox'])
+    mu_r, std_r = inner_perm.cpu_perm_race(
+        exp=prep['exp'], llr_obs=llr_obs, base_seed=base_seed, n_perm=n_perm,
+        q0=prep['q0'], q1=prep['q1'], children=prep['children'],
+        min_vox=prep['min_vox'], race_init=race_init, p_keep_thresh=pk)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        z_f = (llr_obs - mu_f) / std_f
+        z_r = (llr_obs - mu_r) / std_r
+    active = (size >= prep['min_vox']) & np.isfinite(z_f) & np.isfinite(z_r)
+    assert active.any()
+    maxz_f = float(np.nanmax(np.where(active, z_f, np.nan)))
+    maxz_r = float(np.nanmax(np.where(active, z_r, np.nan)))
+    # float64 keeps the max-z finite and sane; a float32 std-collapse would
+    # blow it into the hundreds/thousands.
+    assert np.isfinite(maxz_r) and maxz_r < 200.0
+    # and the race reproduces the full run's max-z
+    np.testing.assert_allclose(maxz_r, maxz_f, rtol=1e-6, atol=1e-8)

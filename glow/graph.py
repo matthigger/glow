@@ -553,7 +553,8 @@ def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
         yield llr_chunk
 
 
-def build_survivor_kernels(y, children, survivor_idx, q0):
+def build_survivor_kernels(y, children, survivor_idx, q0,
+                           acc_dtype=np.float64):
     """Build per-survivor Freedman-Lane par/perp kernels (general Q0, low-rank).
 
     The general-nuisance counterpart of compute_llr_inner_fast's precompute.
@@ -586,6 +587,16 @@ def build_survivor_kernels(y, children, survivor_idx, q0):
         children (np.array): (num_reg - num_vox, 2) Ward tree
         survivor_idx (np.array): (num_surv,) region indices to build kernels for
         q0 (np.array): (a0, num_img) nuisance subspace (orthonormal rows)
+        acc_dtype: dtype the kernel arrays are stored in, and so the dtype
+            compute_llr_inner_kernel assembles E in. Default np.float64 keeps E
+            accurate for near-constant regions on a large DC offset, whose E
+            cancels two terms of magnitude trace(yout) down to a far smaller
+            residual; float32 there collapses E to rounding noise, its
+            inner-null std collapses, and the standardized z explodes, poisoning
+            the max-z null (see compute_llr_batched). Mirrors iter_llr_perm.
+            Exposed as float32 only to reproduce that collapse in tests. The
+            region sums are always built in float64 (the cumsum-and-diff below
+            has its own small/deep-region cancellation, orthogonal to E's).
 
     Returns:
         kernels (dict): with keys
@@ -594,9 +605,10 @@ def build_survivor_kernels(y, children, survivor_idx, q0):
             yout_u_S     (num_surv, b, b)         unpermuted per-region Y Y^T
             size_S       (num_surv,)              voxel count per survivor
             survivor_idx (num_surv,)              pass-through region indices
+        (K, ysum_u_S, yout_u_S are acc_dtype.)
     """
     num_vox = y.shape[2]
-    out_dtype = y.dtype if y.dtype == np.float32 else np.float64
+    out_dtype = np.dtype(acc_dtype)
     survivor_idx = np.asarray(survivor_idx, dtype=np.int64)
     leaf_ord, region_l, region_h = build_dfs_preorder(
         children=children, num_vox=num_vox)

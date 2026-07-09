@@ -625,3 +625,79 @@ def test_compute_llr_inner_kernel_matches_compute_llr_batched_intercept_only():
     x[1] = rng.standard_normal(num_img)
     contrast = np.array([False, True])
     _kernel_equivalence(x, contrast)
+
+
+def test_compute_llr_inner_kernel_float64_avoids_std_collapse():
+    """The kernel's inner null collapses in float32 for near-constant regions
+    but stays sane in float64.
+
+    E cancels two terms of magnitude trace(yout) down to the residual scatter;
+    for a near-constant region on a large DC offset that residual is orders of
+    magnitude smaller, so a float32 assembly loses every digit -- E goes
+    indefinite (draws NaN) and its inner-null std collapses, which would poison
+    the max-z null. build_survivor_kernels stores acc_dtype=float64 by default,
+    so the race tail is poison-safe; float32 is exposed only to exhibit the
+    collapse. Synthetic analogue of test/analysis/test_inner_perm_hcp.py.
+    """
+    from glow.experiment.exper import Experiment
+    from glow.experiment.permute import get_freed_lane, _perm_indices
+    from glow.analysis.mancova import decompose
+    from glow.analysis.cluster import cluster, ClusterMode
+    from glow.graph import (build_survivor_kernels, compute_llr_inner_kernel,
+                            build_dfs_preorder)
+
+    rng = np.random.default_rng(0)
+    num_img, b, nvox, min_vox = 40, 2, 256, 2
+    x = np.empty((3, num_img))
+    x[0] = 1.0
+    x[1] = rng.standard_normal(num_img)
+    x[2] = rng.standard_normal(num_img)
+    contrast = np.array([False, False, True])
+    # first half: healthy unit-noise voxels. second half: near-constant across
+    # images on a large DC offset (mean -0.76, across-image std 2e-4) -- the
+    # HCP-background poisoning case.
+    y = rng.standard_normal((b, num_img, nvox))
+    y[:, :, nvox // 2:] = -0.76 + 2e-4 * rng.standard_normal(
+        (b, num_img, nvox // 2))
+    exp = Experiment(x=x, y=y, contrast=contrast,
+                     mask_idx=np.arange(nvox).reshape(1, 1, nvox),
+                     add_bias=False)
+    children = cluster(exp=exp, mode=ClusterMode.FOCUS)
+    q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
+    leaf_ord, region_l, region_h = build_dfs_preorder(children=children,
+                                                      num_vox=nvox)
+    size = region_h - region_l
+    active = np.where(size >= min_vox)[0]
+    # regions whose every leaf sits in the near-constant half
+    const_reg = np.array([
+        r for r in active
+        if (leaf_ord[region_l[r]:region_h[r]] >= nvox // 2).all()])
+    assert const_reg.size >= 5, 'fixture has too few near-constant regions'
+
+    def _inner(acc_dtype):
+        # float32 deliberately drives E indefinite; silence the expected
+        # invalid-subtract / empty-slice RuntimeWarnings from the collapse.
+        with np.errstate(invalid='ignore', divide='ignore'), \
+                warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            kern = build_survivor_kernels(exp.y, children, active, q0,
+                                          acc_dtype=acc_dtype)
+            draws = np.vstack([
+                compute_llr_inner_kernel(
+                    kern, q0, q1,
+                    get_freed_lane(exp.x, exp.contrast, 100_000 + i),
+                    _perm_indices(100_000 + i, num_img), size.size,
+                    min_size=min_vox)
+                for i in range(32)])
+            return np.isnan(draws).mean(axis=0), np.nanstd(draws, axis=0)
+
+    nan32, _ = _inner(np.float32)
+    nan64, std64 = _inner(np.float64)
+
+    # float32: E cancels -> a large share of near-constant draws go NaN
+    assert nan32[const_reg].mean() > 0.2, \
+        f'float32 unexpectedly stable ({nan32[const_reg].mean():.2f} NaN frac)'
+    # float64: no collapse -- every near-constant region stays finite with a
+    # healthy inner-null std
+    assert nan64[const_reg].mean() == 0.0
+    assert float(np.nanmedian(std64[const_reg])) > 1e-3
