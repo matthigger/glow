@@ -41,7 +41,7 @@ from scipy.sparse.csgraph import connected_components
 
 @njit(cache=True, boundscheck=False)
 def _ward_dist(centroid, size, a, i, j):
-    """Compute the Ward (variance-increase) distance between clusters i and j."""
+    """Compute the Ward (variance-increase) distance between clusters i, j."""
     pa = 0.0
     for f in range(a):
         d = centroid[i, f] - centroid[j, f]
@@ -333,7 +333,7 @@ def _mullner_loop(
     return 0
 
 
-# -------------------------------------------------------- public entry point --
+# -------------------------------------------------------- public entry point -
 
 
 def ward_tree(X, connectivity, return_distance: bool = False):

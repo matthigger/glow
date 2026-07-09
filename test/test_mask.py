@@ -1,5 +1,7 @@
 from collections import namedtuple
 
+import pandas as pd
+
 from glow.mask import *
 
 
@@ -40,61 +42,69 @@ def test_get_entropy():
         assert np.isclose(get_entropy(label_map), h_exp)
 
 
-def test_get_score():
-    # validates the same dice/sens/spec metrics as
-    # test_graph.py::test_get_dice_sens_spec, but via get_score's sklearn
-    # voxel-level path (the other exercises the node_sum tree path)
-    Case = namedtuple('Case', ['y_true', 'y_pred', 'dice', 'sens', 'spec',
-                               'mask_active'])
+def test_confusion_counts():
+    # voxel-level confusion counts; stats_from_counts then
+    # turns these into dice/sens/ppv/spec (tested separately below)
+    Case = namedtuple('Case', ['y_true', 'y_pred', 'mask_active',
+                               'tp', 'fp', 'tn', 'fn'])
 
     cases = [
-        # Normal mix of positives/negatives
-        Case(
-            y_true=np.array([0, 0, 1, 1], dtype=int),
-            y_pred=np.array([0, 1, 1, 0], dtype=int),
-            dice=0.5,
-            sens=0.5,
-            spec=0.5,
-            mask_active=None
-        ),
-        # No actual positives → sens=0, spec computed normally
-        Case(
-            y_true=np.array([0, 0, 0, 0], dtype=int),
-            y_pred=np.array([0, 1, 0, 1], dtype=int),
-            dice=0.0,
-            sens=0.0,
-            spec=0.5,
-            mask_active=None
-        ),
-        # No actual negatives → spec=1
-        Case(
-            y_true=np.array([1, 1, 1, 1], dtype=int),
-            y_pred=np.array([1, 0, 1, 0], dtype=int),
-            dice=4 / 6,
-            sens=0.5,
-            spec=1.0,
-            mask_active=None
-        ),
-        # With mask_active filtering
-        Case(
-            y_true=np.array([0, 0, 1, 1], dtype=int),
-            y_pred=np.array([0, 1, 1, 0], dtype=int),
-            dice=0.0,
-            sens=0.0,
-            spec=0.5,
-            mask_active=np.array([True, True, False, False])
-        )
+        # normal mix of positives/negatives
+        Case(np.array([0, 0, 1, 1]), np.array([0, 1, 1, 0]), None,
+             tp=1, fp=1, tn=1, fn=1),
+        # no actual positives
+        Case(np.array([0, 0, 0, 0]), np.array([0, 1, 0, 1]), None,
+             tp=0, fp=2, tn=2, fn=0),
+        # no actual negatives
+        Case(np.array([1, 1, 1, 1]), np.array([1, 0, 1, 0]), None,
+             tp=2, fp=0, tn=0, fn=2),
+        # mask_active keeps only the first two voxels
+        Case(np.array([0, 0, 1, 1]), np.array([0, 1, 1, 0]),
+             np.array([True, True, False, False]),
+             tp=0, fp=1, tn=1, fn=0),
     ]
 
     for i, case in enumerate(cases, start=1):
-        dice, sens, spec = get_score(
-            mask_pred=case.y_pred,
-            mask_target=case.y_true,
-            mask_active=case.mask_active
-        )
-        assert np.isclose(dice, case.dice), f'Case {i} failed Dice'
-        assert np.isclose(sens, case.sens), f'Case {i} failed Sensitivity'
-        assert np.isclose(spec, case.spec), f'Case {i} failed Specificity'
+        counts = confusion_counts(mask_pred=case.y_pred, mask_target=case.y_true,
+                                  mask_active=case.mask_active)
+        assert counts == {'tp': case.tp, 'fp': case.fp,
+                          'tn': case.tn, 'fn': case.fn}, f'case {i}'
+
+
+def test_stats_from_counts():
+    # the four test_confusion_counts regions, plus an empty region (all zero)
+    # to exercise 0/0 fills: dice/sens -> 0; ppv/spec -> nan
+    tp = np.array([1, 0, 2, 0, 0])
+    fp = np.array([1, 2, 0, 1, 0])
+    tn = np.array([1, 2, 0, 1, 0])
+    fn = np.array([1, 0, 2, 0, 0])
+
+    stats = stats_from_counts(tp=tp, fp=fp, tn=tn, fn=fn)
+
+    assert np.allclose(stats['dice'], [0.5, 0.0, 4 / 6, 0.0, 0.0])
+    assert np.allclose(stats['sens'], [0.5, 0.0, 0.5, 0.0, 0.0])
+    # ppv[4]: tp+fp=0 -> nan
+    assert np.allclose(stats['ppv'], [0.5, 0.0, 1.0, 0.0, np.nan],
+                       equal_nan=True)
+    # spec[2]: tn+fp=0 -> nan; spec[4]: tn+fp=0 -> nan
+    assert np.allclose(stats['spec'], [0.5, 0.5, np.nan, 0.5, np.nan],
+                       equal_nan=True)
+
+
+def test_stats_from_counts_preserves_series():
+    # pandas Series in -> Series out, with the index intact
+    idx = pd.Index([10, 20], name='region_idx')
+    counts = {k: pd.Series([v, 0], index=idx)
+              for k, v in (('tp', 1), ('fp', 1), ('tn', 1), ('fn', 1))}
+
+    stats = stats_from_counts(**counts)
+
+    for key in ('dice', 'sens', 'ppv', 'spec'):
+        assert isinstance(stats[key], pd.Series)
+        assert stats[key].index.equals(idx)
+    # the all-zero second region: ppv and spec are 0/0 -> nan
+    assert np.isnan(stats['spec'].iloc[1])
+    assert np.isnan(stats['ppv'].iloc[1])
 
 
 Case = namedtuple("Case", ["conn", "not_reflexive", "offset_exp"])

@@ -3,9 +3,9 @@
 import warnings
 
 import numpy as np
-from scipy.optimize import minimize
+from scipy.optimize import brentq, minimize
 
-from glow.analysis.mancova import decompose, get_llr
+from glow.analysis.mancova import decompose, get_llr, get_mancova
 
 
 def compute_offset(x, y, contrast, effect_llr: float):
@@ -112,7 +112,7 @@ def _fix_alpha_signs(alpha, obj_fn):
 
     Args:
         alpha (np.array): (2,) the (alpha1, alpha2) scalings to correct
-        obj_fn (Callable): objective used to assert the flip is value-preserving
+        obj_fn (Callable): objective used to assert the flip preserves value
 
     Returns:
         x_opt (np.array): (2,) sign-corrected scalings
@@ -123,3 +123,144 @@ def _fix_alpha_signs(alpha, obj_fn):
             x_opt[idx] = -2 - x_opt[idx]
     assert np.isclose(obj_fn(alpha), obj_fn(x_opt)), 'alpha sign flip failure'
     return x_opt
+
+
+def sample_beta_direction(a1: int, b: int, angle: float, seed: int):
+    """Sample a unit (a1, b) coefficient direction at a seeded rotation angle.
+
+    Draws a fixed orthonormal pair (u_base, w) spanning a random 2-plane in
+    the a1*b-dimensional coefficient space from seed -- crucially
+    independent of angle -- then returns cos(angle) u_base + sin(angle) w,
+    reshaped to (a1, b) and Frobenius-normalized. Because the plane depends
+    only on (a1, b, seed), two draws sharing a seed are separated by exactly
+    their angle difference: sample(a1, b, 0, s) and sample(a1, b, 60, s)
+    span 60 degrees; sample(a1, b, -30, s) and sample(a1, b, 30, s) likewise.
+
+    Args:
+        a1 (int): interest-contrast count (coefficient rows)
+        b (int): imaging-feature count (coefficient columns)
+        angle (float): rotation in degrees from the base direction
+        seed (int): seeds the (u_base, w) plane
+
+    Returns:
+        beta_direction (np.array): (a1, b) unit (Frobenius) coefficient
+            direction
+
+    Raises:
+        ValueError: if a1*b < 2 (a one-dimensional coefficient space has a
+            single direction, so no angle can be imposed)
+    """
+    dim = a1 * b
+    if dim < 2:
+        raise ValueError(
+            f'a1*b={dim} < 2: a one-dimensional coefficient space has a '
+            'single direction, so no angle can be imposed')
+
+    theta = np.radians(angle)
+    rng = np.random.default_rng(seed)
+
+    # (u, w): an orthonormal basis for a random 2-plane. Both are drawn from
+    # seed independent of angle, so draws sharing a seed sit exactly their
+    # angle difference apart.
+    u = rng.standard_normal(dim)
+    u /= np.linalg.norm(u)
+    w = rng.standard_normal(dim)
+    w -= (w @ u) * u
+    w /= np.linalg.norm(w)
+
+    beta = np.cos(theta) * u + np.sin(theta) * w
+    return (beta / np.linalg.norm(beta)).reshape(a1, b)
+
+
+def _solve_alpha(e, d, num_vox: int, effect_llr: float) -> float:
+    """Scale d so that imposing alpha*d hits the target per-voxel LLR.
+
+    The size-normalized LLR of a region whose interest coefficient is
+    alpha*d (d a unit (b, a1) direction) is, by Sylvester's identity,
+        (1/2) sum_i ln(1 + alpha^2 mu_i),
+    where mu_i are the eigenvalues of num_vox * d.T E^-1 d (a1 x a1, PD).
+    Strictly increasing in alpha^2, so a unique alpha hits any positive
+    target: closed-form for one interest contrast (a1 == 1), a bracketed
+    1-D solve otherwise.
+
+    Args:
+        e (np.array): (b, b) region error matrix
+        d (np.array): (b, a1) unit (Frobenius) coefficient direction
+        num_vox (int): voxel count of the region
+        effect_llr (float): target size-normalized LLR
+
+    Returns:
+        alpha (float): nonnegative scale for d
+    """
+    if effect_llr <= 0:
+        return 0.0
+
+    mu = np.linalg.eigvalsh(num_vox * (d.T @ np.linalg.solve(e, d)))
+    target = 2.0 * effect_llr
+    if mu.size == 1:
+        return float(np.sqrt((np.exp(target) - 1.0) / mu[0]))
+
+    # monotone in t = alpha^2; the largest eigenvalue's log term alone
+    # reaches the target, so [0, t_hi] brackets the root
+    t_hi = (np.exp(target) - 1.0) / mu.max()
+    t = brentq(lambda t: np.sum(np.log1p(t * mu)) - target, 0.0, t_hi)
+    return float(np.sqrt(t))
+
+
+def impose_effect(x, y, contrast, *, beta_direction, effect_llr: float,
+                  purge_interest: bool = True):
+    """Scale a chosen coefficient direction to a target effect size.
+
+    Plants a pure mean-shift along beta_direction in the interest subspace:
+    the offset is beta_direction.T @ q1, which lies entirely in the row space
+    of q1, so it grows the hypothesis matrix H without touching the error
+    matrix E. A single scale alpha then hits the target size-normalized LLR
+    (1/2) ln det(I + E^-1 H): with d the unit (Frobenius) coefficient
+    direction (beta_direction.T normalized) and mu the eigenvalues of
+    num_vox d.T E^-1 d, the LLR is (1/2) sum_i ln(1 + alpha^2 mu_i), strictly
+    increasing in alpha, so alpha is unique (closed-form for one interest
+    contrast, a bracketed 1-D solve for several -- see _solve_alpha).
+    purge_interest subtracts the region's existing interest coefficient so
+    the least-squares-recovered effect equals alpha * beta_direction.T
+    exactly; otherwise the planted effect adds on top of the baseline.
+
+    Args:
+        x (np.array): (a, num_img) design matrix
+        y (np.array): (b, num_img, num_vox) region image intensities
+        contrast (np.array): (a,) boolean, True for the interest contrasts
+        beta_direction (np.array): (a1, b) coefficient direction; magnitude
+            is ignored. A (b,) vector is accepted as the a1 == 1 case.
+        effect_llr (float): target size-normalized (per-voxel) LLR
+        purge_interest (bool): if True, cancel the region's existing interest
+            coefficient so the recovered effect is exactly along
+            beta_direction; if False, add the effect on top of the baseline
+
+    Returns:
+        offset (np.array): (b, num_img) constant offset across voxels
+    """
+    b, num_img, num_vox = y.shape
+    contrast = np.asarray(contrast)
+    a1 = int(contrast.sum())
+
+    beta_direction = np.asarray(beta_direction, dtype=float)
+    if beta_direction.ndim == 1:
+        beta_direction = beta_direction.reshape(1, b)
+    assert beta_direction.shape == (a1, b), (
+        f'beta_direction must be (a1, b)=({a1}, {b}), '
+        f'got {beta_direction.shape}')
+
+    q1 = decompose(x, contrast)[1]
+    y_mean = y.mean(axis=2)
+    e, _, _ = get_mancova(x=x, y=y, contrast=contrast)
+
+    # only the direction of beta_direction matters; its magnitude is set by
+    # alpha to hit effect_llr, so normalize (Frobenius) before scaling
+    d = beta_direction.T / np.linalg.norm(beta_direction)
+    alpha = _solve_alpha(e, d, num_vox, effect_llr)
+
+    # The offset lives purely in span(q1); offset @ q1.T == coef_add, so the
+    # least-squares interest coefficient becomes y_mean @ q1.T + coef_add.
+    coef_add = alpha * d
+    if purge_interest:
+        coef_add = coef_add - y_mean @ q1.T
+    return coef_add @ q1

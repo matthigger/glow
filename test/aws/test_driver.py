@@ -1,452 +1,243 @@
-"""driver_aws: happy path, OOM tier escalation, failure handling.
+"""drive_aws: helpers, submit shape, retry policy, happy path, OOM escalation.
 
-Uses an in-memory FakeS3 + FakeBatch so the orchestration logic is
-exercised without provisioning AWS.  A separate @pytest.mark.runaws
-test exercises the same flow against real AWS.
+An in-memory FakeS3 + FakeBatch drive the submit -> poll -> classify ->
+escalate loop without provisioning AWS.
 """
 
+import fnmatch
+import json
+import pickle
 from unittest.mock import patch
 
-import cloudpickle
+import joblib
 import pytest
 
-from glow.aws.config import AWSConfig
-from glow.aws.driver import (
-    _is_oom, driver_aws, driver_aws_multi)
-from glow.benchmark.data import DataSource, DataSourceWGN
-from glow.benchmark.trial_cache import TrialCache
-from glow.util import stable_hash
-from test.aws.test_datasource import FakeS3
+from glow._extra.aws.config import AWSConfig
+from glow._extra.aws.driver import (RETRY_EVALUATE_ON_EXIT, _Attempt,
+                                     _classify, _inflight_postfix, _is_oom,
+                                     _submit_job, drive_aws)
+from glow._extra.aws.units import resolve_cells
+from glow._extra.benchmark import data
+from test.aws.fakes import FakeBatch, FakeS3, client_factory
 
 
-# ---------- fakes -----------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _empty_records(monkeypatch, tmp_path):
+    """Start from empty records so drive_aws's local-records skip finds
+    nothing complete -- every cell submits, keeping the array sizes below
+    deterministic regardless of what has actually been run locally."""
+    monkeypatch.setattr(data.RECORDER, 'folder', tmp_path)
+    data.RECORDER.records.clear()
+
+OOM = {'status': 'FAILED',
+       'container': {'exitCode': 137, 'reason': 'OutOfMemoryError'}}
+OK = {'status': 'SUCCEEDED'}
+# a non-OOM crash. NB _is_oom matches 'oom'/'memory' as a substring (faithful
+# to the old driver), so the reason must avoid them -- e.g. not 'boom'.
+CRASH = {'status': 'FAILED',
+         'container': {'exitCode': 1, 'reason': 'nonzero exit'}}
 
 
-class FakeBatch:
-    """Tracks submit_job calls; ``describe_jobs`` returns scripted statuses.
+def _cfg():
+    return AWSConfig(s3_bucket='bkt', job_queue='q', job_definition='d',
+                     s3_prefix='glow', poll_seconds=0,
+                     memory_mb_tiers=[4000, 8000])
 
-    ``submit_then`` is a list of ``[(per_child_status_dict_or_callable), ...]``
-    indexed by submission order.  Each entry decides what each child
-    looks like when described.
 
-    Worked example — one OOM-then-success scenario across two memory tiers::
+# ---------- pure helpers ----------------------------------------------------
 
-        FakeBatch(submit_then=[
-            # submission 0 (tier 0, e.g. 2000 MB): child 0 OOMs, child 1 ok
-            [{'status': 'FAILED',
-              'container': {'exitCode': 137, 'reason': 'OutOfMemoryError'}},
-             {'status': 'SUCCEEDED'}],
-            # submission 1 (tier 1, e.g. 4000 MB): only the OOM child retried
-            [{'status': 'SUCCEEDED'}],
-        ])
 
-    The driver makes one ``submit_job`` per tier attempt, so ``submit_then[i]``
-    is the scripted outcome of the i-th tier the driver escalates through.
+def test_attempt_child_ids_array_vs_single():
+    arr = _Attempt(name='c', cell_indices=[3, 4], parent_id='p', is_array=True)
+    assert arr.child_ids == ['p:0', 'p:1']
+    one = _Attempt(name='c', cell_indices=[3], parent_id='p', is_array=False)
+    assert one.child_ids == ['p']
+
+
+def test_is_oom():
+    assert _is_oom(OOM)
+    assert _is_oom({'status': 'FAILED',
+                    'statusReason': 'Task failed: OutOfMemory'})
+    assert not _is_oom(CRASH)
+    # a timeout also exits 137 but must not be treated as OOM
+    assert not _is_oom({'status': 'FAILED',
+                        'statusReason': 'duration exceeded timeout',
+                        'container': {'exitCode': 137}})
+
+
+def test_classify_partitions():
+    statuses = [OK, OOM, CRASH]
+    completed, oom, other = _classify(statuses, [10, 11, 12])
+    assert completed == [10]
+    assert oom == [11]
+    assert [c for c, _ in other] == [12]
+
+
+def _batch_action(rules, *, exit_code=None, status_reason='', reason=''):
+    """Mimic AWS Batch evaluateOnExit: first matching rule wins, else RETRY.
+
+    A rule matches when every on* condition it lists matches (glob), so a
+    rule needs a listed condition to fire; a job matching no rule is retried.
     """
-
-    def __init__(self, submit_then):
-        self.submit_then = list(submit_then)
-        self.submitted = []
-        self._next_parent_id = iter(
-            f'p-{i:03d}' for i in range(1000))
-
-    def submit_job(self, **kwargs):
-        parent = next(self._next_parent_id)
-        self.submitted.append({'parent_id': parent, **kwargs})
-        return {'jobId': parent}
-
-    def describe_jobs(self, *, jobs):
-        # Match each requested ``<parent>:<idx>`` (or plain parent) to a
-        # status from submit_then.  jobs[0] tells us which submission.
-        out = []
-        for job_id in jobs:
-            if ':' in job_id:
-                parent, idx_s = job_id.rsplit(':', 1)
-                idx = int(idx_s)
+    for rule in rules:
+        conds = [k for k in ('onExitCode', 'onStatusReason', 'onReason')
+                 if k in rule]
+        matched = bool(conds)
+        for k in conds:
+            if k == 'onExitCode':
+                matched = matched and exit_code is not None and \
+                    fnmatch.fnmatch(str(exit_code), rule[k])
+            elif k == 'onStatusReason':
+                matched = matched and fnmatch.fnmatch(status_reason, rule[k])
             else:
-                parent, idx = job_id, 0
-            sub_idx = next(
-                i for i, s in enumerate(self.submitted)
-                if s['parent_id'] == parent)
-            child_status = self.submit_then[sub_idx][idx]
-            if callable(child_status):
-                child_status = child_status(job_id)
-            payload = {'jobId': job_id, **child_status}
-            out.append(payload)
-        return {'jobs': out}
+                matched = matched and fnmatch.fnmatch(reason, rule[k])
+        if matched:
+            return rule['action']
+    return 'RETRY'
 
 
-def _run_fnc(*, ds, seed):
-    """Trial body; uses ``ds`` so we can verify WGN-pass-through."""
-    exp = ds.exp
-    return {'shape': str(exp.y.shape), 'seed': seed}
+def test_retry_evaluate_on_exit_policy():
+    rules = RETRY_EVALUATE_ON_EXIT
+    # Batch caps evaluateOnExit at 5; each rule needs an action + a condition
+    assert len(rules) <= 5
+    for r in rules:
+        assert r['action'] in ('RETRY', 'EXIT')
+        assert any(k in r for k in ('onExitCode', 'onStatusReason', 'onReason'))
+    # OOM (137) / abort (134) exit so the driver escalates the memory tier
+    # rather than Batch re-running the cell at the same, doomed, memory
+    assert _batch_action(rules, exit_code=137, reason='OutOfMemoryError',
+                         status_reason='Essential container in task exited') \
+        == 'EXIT'
+    assert _batch_action(rules, exit_code=134) == 'EXIT'
+    # a wall-clock timeout also exits 137 -> exits, resurfaces on a rerun
+    assert _batch_action(rules, exit_code=137,
+                         status_reason='duration exceeded timeout') == 'EXIT'
+    # Spot reclaim: a hard host loss and the graceful SIGTERM both retry in
+    # place on a fresh box (the worker warm-resumes from the synced cache)
+    assert _batch_action(
+        rules, status_reason='Host EC2 (instance i-0abc) terminated.') \
+        == 'RETRY'
+    assert _batch_action(rules, exit_code=143) == 'RETRY'
+    # any other failure is treated as transient and retried (bounded by
+    # attempts)
+    assert _batch_action(rules, exit_code=1,
+                         status_reason='Essential container in task exited') \
+        == 'RETRY'
 
 
-def _make_cache(tmp_path, n_trials=3):
-    DataSource._exp_cache.clear()
-    ds = DataSourceWGN(seed=0, shape=(2, 2, 2), b=1, num_img=5)
-    return TrialCache(
-        folder=tmp_path / 'cache',
-        iter_kwargs={'seed': list(range(n_trials))},
-        kwargs={'ds': ds})
+def test_inflight_postfix():
+    a = _Attempt(name='c', cell_indices=[0, 1, 2], parent_id='p',
+                 is_array=True)
+    statuses = {'p:0': {'status': 'SUCCEEDED'}, 'p:1': {'status': 'RUNNING'},
+                'p:2': {'status': 'RUNNABLE'}}
+    # terminal child omitted; the rest tallied by state
+    assert _inflight_postfix(a, statuses) == 'RUNNABLE=1 RUNNING=1'
 
 
-def _cfg(**overrides):
-    base = dict(
-        s3_bucket='b', s3_prefix='pre',
-        job_queue='q', job_definition='d',
-        poll_seconds=0)        # no real sleeping in tests
-    base.update(overrides)
-    return AWSConfig(**base)
+def test_submit_job_array_vs_single():
+    batch = FakeBatch(submit_then=[[OK]])
+    cfg = _cfg()
+    _submit_job(batch=batch, aws_config=cfg, run_id='r', manifest_uri='s3://x',
+                n=2, mem_mb=4000)
+    assert batch.submitted[-1]['arrayProperties'] == {'size': 2}
+    _submit_job(batch=batch, aws_config=cfg, run_id='r', manifest_uri='s3://x',
+                n=1, mem_mb=4000)
+    assert 'arrayProperties' not in batch.submitted[-1]
+    # vcpus + memory land in the container override
+    reqs = {r['type']: r['value']
+            for r in batch.submitted[-1]['containerOverrides'][
+                'resourceRequirements']}
+    assert reqs == {'VCPU': '1', 'MEMORY': '4000'}
 
 
-def _seed_results(fake_s3, *, bucket, prefix, manifest, results):
-    """Pre-populate result.pkl objects for each trial_hash in manifest.
-
-    Mimics what the worker would have uploaded.
-    """
-    for trial_hash, payload in zip(manifest, results):
-        key = f'{prefix}/jobs/{trial_hash}/result.pkl'
-        fake_s3.store[(bucket, key)] = cloudpickle.dumps(payload)
-
-
-# ---------- _is_oom ---------------------------------------------------------
+def test_submit_job_retry_strategy():
+    batch = FakeBatch(submit_then=[[OK]])
+    cfg = _cfg()
+    _submit_job(batch=batch, aws_config=cfg, run_id='r', manifest_uri='s3://x',
+                n=2, mem_mb=4000)
+    rs = batch.submitted[-1]['retryStrategy']
+    assert rs['attempts'] == cfg.retry_attempts
+    assert rs['evaluateOnExit'] == RETRY_EVALUATE_ON_EXIT
 
 
-@pytest.mark.parametrize('job, expected', [
-    # exit 137 with no timeout phrasing -> OOM
-    ({'container': {'exitCode': 137}}, True),
-    # exit 137 but reason names a timeout -> NOT OOM (don't escalate timeouts)
-    ({'statusReason': 'Job attempt duration exceeded timeout',
-      'container': {'exitCode': 137}}, False),
-    # text match on the reason -> OOM
-    ({'container': {'reason': 'OutOfMemoryError'}}, True),
-    # clean non-OOM failure (exit 1) -> NOT OOM
-    ({'container': {'exitCode': 1, 'reason': 'application error'}}, False),
-])
-def test_is_oom(job, expected):
-    assert _is_oom(job) is expected
+# ---------- end-to-end orchestration ----------------------------------------
+
+# sweep_llr's full CONFIG grid (both sources) -- the array size the driver
+# submits; derived so it tracks config rather than a hard-coded count.
+N_CELLS = len(resolve_cells('sweep_llr')[0])
 
 
-# ---------- driver_aws happy path ------------------------------------------
+def _run(fake_s3, fake_batch, **kw):
+    with patch('glow._extra.aws.driver.boto3.client',
+               client_factory(fake_s3, fake_batch)):
+        return drive_aws('sweep_llr', _cfg(), write_csv=False, verbose=False,
+                         **kw)
 
 
-def test_happy_path_single_tier(tmp_path):
-    cache = _make_cache(tmp_path, n_trials=3)
-    trials = list(cache.iter_trial_no_repeat())
-    hashes = [stable_hash(t) for t in trials]
-
-    fake_s3 = FakeS3()
-    # Pre-write result.pkls (driver will download these after "success").
-    _seed_results(
-        fake_s3, bucket='b', prefix='pre',
-        manifest=hashes,
-        results=[{'shape': '(1, 5, 8)', 'seed': i} for i in range(3)])
-
-    fake_batch = FakeBatch(submit_then=[
-        [{'status': 'SUCCEEDED'}] * 3,    # one submission, 3 children
-    ])
-
-    with patch('glow.aws.driver.boto3.client',
-               side_effect=lambda kind, **_:
-               fake_s3 if kind == 's3' else fake_batch):
-        driver_aws(cache, _run_fnc, _cfg(), verbose=False)
-
-    # results.csv populated with all 3 trial hashes.  The saved index must
-    # equal the LOCAL stable_hash values: local and AWS runs share results.csv
-    # keying, so a trial run on AWS is later seen as cached locally.
-    assert len(cache._load_results()) == 3
-    assert set(cache._load_results().index.astype(str)) == set(hashes)
-
-
-def test_success_deletes_s3_objects(tmp_path):
-    """Each succeeded trial's job + result pickles are dropped from S3."""
-    cache = _make_cache(tmp_path, n_trials=3)
-    trials = list(cache.iter_trial_no_repeat())
-    hashes = [stable_hash(t) for t in trials]
-
-    fake_s3 = FakeS3()
-    _seed_results(
-        fake_s3, bucket='b', prefix='pre', manifest=hashes,
-        results=[{'shape': 'x', 'seed': i} for i in range(3)])
-
-    fake_batch = FakeBatch(submit_then=[[{'status': 'SUCCEEDED'}] * 3])
-
-    with patch('glow.aws.driver.boto3.client',
-               side_effect=lambda kind, **_:
-               fake_s3 if kind == 's3' else fake_batch):
-        driver_aws(cache, _run_fnc, _cfg(), verbose=False)
-
-    # Both job.pkl and result.pkl are gone for every trial.
-    for h in hashes:
-        assert ('b', f'pre/jobs/{h}/job.pkl') not in fake_s3.store
-        assert ('b', f'pre/jobs/{h}/result.pkl') not in fake_s3.store
-    deleted = {key for kind, _, key in fake_s3.calls if kind == 'delete'}
-    assert deleted == {f'pre/jobs/{h}/{name}'
-                       for h in hashes for name in ('job.pkl', 'result.pkl')}
-
-
-def test_failed_trial_objects_are_not_deleted(tmp_path):
-    """A non-OOM failure leaves its S3 objects in place (no delete)."""
-    cache = _make_cache(tmp_path, n_trials=2)
-    trials = list(cache.iter_trial_no_repeat())
-    hashes = [stable_hash(t) for t in trials]
-
-    fake_s3 = FakeS3()
-    _seed_results(
-        fake_s3, bucket='b', prefix='pre', manifest=hashes,
-        results=[{'shape': 'x', 'seed': 0}, {'shape': 'x', 'seed': 1}])
-
-    # Child 0 fails (non-OOM), child 1 succeeds.
-    fake_batch = FakeBatch(submit_then=[
-        [{'status': 'FAILED',
-          'container': {'exitCode': 1, 'reason': 'application error'}},
-         {'status': 'SUCCEEDED'}],
-    ])
-
-    with patch('glow.aws.driver.boto3.client',
-               side_effect=lambda kind, **_:
-               fake_s3 if kind == 's3' else fake_batch):
-        driver_aws(cache, _run_fnc, _cfg(), verbose=False)
-
-    deleted = {key for kind, _, key in fake_s3.calls if kind == 'delete'}
-    # Only the succeeded trial (child 1) is cleaned up.
-    assert f'pre/jobs/{hashes[1]}/result.pkl' in deleted
-    assert f'pre/jobs/{hashes[0]}/result.pkl' not in deleted
-    assert f'pre/jobs/{hashes[0]}/job.pkl' not in deleted
-
-
-def test_oom_escalation(tmp_path):
-    cache = _make_cache(tmp_path, n_trials=2)
-    trials = list(cache.iter_trial_no_repeat())
-    hashes = [stable_hash(t) for t in trials]
-
-    fake_s3 = FakeS3()
-    _seed_results(
-        fake_s3, bucket='b', prefix='pre',
-        manifest=hashes,
-        results=[{'shape': 'x', 'seed': 0}, {'shape': 'x', 'seed': 1}])
-
-    # First submission (2k MB): child 0 OOM, child 1 SUCCEEDED.
-    # Second submission (4k MB): only child 0 retried, SUCCEEDED.
-    fake_batch = FakeBatch(submit_then=[
-        [{'status': 'FAILED',
-          'container': {'exitCode': 137, 'reason': 'OutOfMemoryError'}},
-         {'status': 'SUCCEEDED'}],
-        [{'status': 'SUCCEEDED'}],
-    ])
-
-    with patch('glow.aws.driver.boto3.client',
-               side_effect=lambda kind, **_:
-               fake_s3 if kind == 's3' else fake_batch):
-        driver_aws(cache, _run_fnc, _cfg(), verbose=False)
-
-    assert len(cache._load_results()) == 2
-    # Second submission must have used the next tier
-    mem_at_tier_1 = next(
-        r['value'] for r in
-        fake_batch.submitted[1]['containerOverrides']['resourceRequirements']
-        if r['type'] == 'MEMORY')
-    assert mem_at_tier_1 == '4000'
-
-
-def test_non_oom_failure_is_skipped(tmp_path):
-    cache = _make_cache(tmp_path, n_trials=2)
-    trials = list(cache.iter_trial_no_repeat())
-    hashes = [stable_hash(t) for t in trials]
-
-    fake_s3 = FakeS3()
-    _seed_results(
-        fake_s3, bucket='b', prefix='pre',
-        manifest=hashes,
-        results=[{'shape': 'x', 'seed': 0}, {'shape': 'x', 'seed': 1}])
-
-    # Child 0 fails with a non-OOM exit; child 1 succeeds.
-    # Driver should save child 1 only, skip child 0, NOT escalate.
-    fake_batch = FakeBatch(submit_then=[
-        [{'status': 'FAILED',
-          'container': {'exitCode': 1, 'reason': 'application error'}},
-         {'status': 'SUCCEEDED'}],
-    ])
-
-    with patch('glow.aws.driver.boto3.client',
-               side_effect=lambda kind, **_:
-               fake_s3 if kind == 's3' else fake_batch):
-        driver_aws(cache, _run_fnc, _cfg(), verbose=False)
-
-    saved = cache._load_results()
-    assert len(saved) == 1
-    assert hashes[1] in set(saved.index.astype(str))
-    assert hashes[0] not in set(saved.index.astype(str))
-    # No re-submission
+def test_happy_path_submits_one_array_and_finishes():
+    # sweep_llr's full grid -> one array job of size N_CELLS, all succeed
+    fake_s3, fake_batch = FakeS3(), FakeBatch(submit_then=[[OK] * N_CELLS])
+    _run(fake_s3, fake_batch)
     assert len(fake_batch.submitted) == 1
+    assert fake_batch.submitted[0]['arrayProperties'] == {'size': N_CELLS}
+    # the manifest points at the pickled bundle; the bundle carries this
+    # attempt's resolved cells + the shared grids + leaf fnc + cache label
+    (_, manifest_key), = [k for k in fake_s3.store
+                          if k[1].endswith('manifest.json')]
+    manifest = json.loads(fake_s3.store[('bkt', manifest_key)])
+    assert manifest['config_name'] == 'sweep_llr'
+    assert manifest['n_cells'] == N_CELLS
+    data_cells, *_, label = pickle.loads(
+        fake_s3.store[('bkt', manifest['bundle_key'])])
+    expected, *_ = resolve_cells('sweep_llr')
+    assert label == 'sweep_llr'
+    # cells have no value __eq__; the cache key (joblib.hash) is what matters
+    assert joblib.hash(data_cells) == joblib.hash(expected)
 
 
-def test_oom_at_last_tier_is_skipped(tmp_path):
-    cache = _make_cache(tmp_path, n_trials=1)
-    trials = list(cache.iter_trial_no_repeat())
-    [h] = [stable_hash(t) for t in trials]
-
+def test_oom_escalates_to_next_tier():
+    # cell 0 OOMs at tier 0, only it is retried at tier 1 (where it succeeds)
+    tier0 = [OOM] + [OK] * (N_CELLS - 1)
+    tier1 = [OK]  # one cell -> single (non-array) job
     fake_s3 = FakeS3()
-    # Even though we seed a result.pkl, OOM at last tier => never downloaded
-    _seed_results(fake_s3, bucket='b', prefix='pre',
-                  manifest=[h], results=[{'shape': 'x', 'seed': 0}])
-
-    cfg = _cfg(memory_mb_tiers=[2000])    # only one tier
-    fake_batch = FakeBatch(submit_then=[
-        # 1-trial submission goes through the non-array path: single status
-        [{'status': 'FAILED',
-          'container': {'exitCode': 137, 'reason': 'OutOfMemoryError'}}],
-    ])
-
-    with patch('glow.aws.driver.boto3.client',
-               side_effect=lambda kind, **_:
-               fake_s3 if kind == 's3' else fake_batch):
-        driver_aws(cache, _run_fnc, cfg, verbose=False)
-
-    assert len(cache._load_results()) == 0
-    # No retry — was the last tier
-    assert len(fake_batch.submitted) == 1
-
-
-def test_no_uncached_trials_short_circuits(tmp_path):
-    cache = _make_cache(tmp_path, n_trials=2)
-    # Save results for both trials so iter_trial_no_repeat yields nothing.
-    for trial in cache.iter_trial():
-        cache.save_result({'dummy': 1}, trial)
-
-    with patch('glow.aws.driver.boto3.client') as client:
-        driver_aws(cache, _run_fnc, _cfg(), verbose=False)
-    # The real short-circuit guarantee: with nothing uncached, the driver
-    # returns before touching AWS at all (no s3/batch client, no submit_job).
-    client.assert_not_called()
-    assert len(cache._load_results()) == 2
-
-
-def test_single_trial_uses_non_array_submit(tmp_path):
-    cache = _make_cache(tmp_path, n_trials=1)
-    [trial] = list(cache.iter_trial_no_repeat())
-    [h] = [stable_hash(trial)]
-
-    fake_s3 = FakeS3()
-    _seed_results(fake_s3, bucket='b', prefix='pre',
-                  manifest=[h], results=[{'shape': 'x', 'seed': 0}])
-
-    fake_batch = FakeBatch(submit_then=[[{'status': 'SUCCEEDED'}]])
-
-    with patch('glow.aws.driver.boto3.client',
-               side_effect=lambda kind, **_:
-               fake_s3 if kind == 's3' else fake_batch):
-        driver_aws(cache, _run_fnc, _cfg(), verbose=False)
-
-    # For n=1, arrayProperties must NOT be passed to submit_job
-    assert 'arrayProperties' not in fake_batch.submitted[0]
-    assert len(cache._load_results()) == 1
-
-
-# ---------- driver_aws_multi ------------------------------------------------
-
-
-def test_multi_cache_submits_all_before_polling(tmp_path):
-    """Two caches submit one array job each in the same tier, then poll.
-
-    The old per-cache loop drained one cache to completion before
-    submitting the next; driver_aws_multi must instead have both array
-    jobs in flight (two submissions, one tier) and save both caches.
-    """
-    DataSource._exp_cache.clear()
-    ds = DataSourceWGN(seed=0, shape=(2, 2, 2), b=1, num_img=5)
-
-    def _cache(name, seeds):
-        return TrialCache(folder=tmp_path / name,
-                          iter_kwargs={'seed': seeds}, kwargs={'ds': ds})
-
-    cache_a = _cache('a', [0, 1])
-    cache_b = _cache('b', [2, 3])
-    hashes_a = [stable_hash(t) for t in cache_a.iter_trial_no_repeat()]
-    hashes_b = [stable_hash(t) for t in cache_b.iter_trial_no_repeat()]
-
-    fake_s3 = FakeS3()
-    _seed_results(fake_s3, bucket='b', prefix='pre', manifest=hashes_a,
-                  results=[{'seed': 0}, {'seed': 1}])
-    _seed_results(fake_s3, bucket='b', prefix='pre', manifest=hashes_b,
-                  results=[{'seed': 2}, {'seed': 3}])
-
-    # One array submission per cache (submission order = job order), all ok.
-    fake_batch = FakeBatch(submit_then=[
-        [{'status': 'SUCCEEDED'}] * 2,
-        [{'status': 'SUCCEEDED'}] * 2,
-    ])
-
-    with patch('glow.aws.driver.boto3.client',
-               side_effect=lambda kind, **_:
-               fake_s3 if kind == 's3' else fake_batch):
-        driver_aws_multi(
-            [('a', cache_a, _run_fnc), ('b', cache_b, _run_fnc)],
-            _cfg(), verbose=False)
-
-    assert len(cache_a._load_results()) == 2
-    assert len(cache_b._load_results()) == 2
-    # Both caches submitted in one tier as array jobs (not one drained first).
+    fake_batch = FakeBatch(submit_then=[tier0, tier1])
+    _run(fake_s3, fake_batch)
     assert len(fake_batch.submitted) == 2
-    assert all('arrayProperties' in s for s in fake_batch.submitted)
+    # tier 1 resubmits exactly the OOM cell, at the larger memory tier
+    second = fake_batch.submitted[1]
+    mem = {r['type']: r['value']
+           for r in second['containerOverrides']['resourceRequirements']}
+    assert mem['MEMORY'] == '8000'
+    manifests = [json.loads(v) for (b, k), v in fake_s3.store.items()
+                 if k.endswith('manifest.json')]
+    # two manifests: the full tier-0 grid and the tier-1 retry of one cell
+    assert sorted(m['n_cells'] for m in manifests) == [1, N_CELLS]
+    # the tier-1 retry ships exactly the OOM cell (cell 0)
+    retry = next(m for m in manifests if m['n_cells'] == 1)
+    cells, *_ = pickle.loads(fake_s3.store[('bkt', retry['bundle_key'])])
+    expected, *_ = resolve_cells('sweep_llr')
+    assert joblib.hash(cells) == joblib.hash([expected[0]])
 
 
-def test_multi_cache_per_cache_oom_escalation(tmp_path):
-    """OOM children escalate per cache while the other cache stays put."""
-    DataSource._exp_cache.clear()
-    ds = DataSourceWGN(seed=0, shape=(2, 2, 2), b=1, num_img=5)
-
-    def _cache(name, seeds):
-        return TrialCache(folder=tmp_path / name,
-                          iter_kwargs={'seed': seeds}, kwargs={'ds': ds})
-
-    cache_a = _cache('a', [0, 1])
-    cache_b = _cache('b', [2, 3])
-    hashes_a = [stable_hash(t) for t in cache_a.iter_trial_no_repeat()]
-    hashes_b = [stable_hash(t) for t in cache_b.iter_trial_no_repeat()]
-
+def test_permanent_failure_not_retried():
+    # a non-OOM crash is permanent: no escalation, reported as a failure
     fake_s3 = FakeS3()
-    _seed_results(fake_s3, bucket='b', prefix='pre', manifest=hashes_a,
-                  results=[{'seed': 0}, {'seed': 1}])
-    _seed_results(fake_s3, bucket='b', prefix='pre', manifest=hashes_b,
-                  results=[{'seed': 2}, {'seed': 3}])
-
-    # Tier 0: cache a (sub 0) both ok; cache b (sub 1) child 0 OOMs.
-    # Tier 1: only cache b's OOM child retried (sub 2), succeeds.
-    fake_batch = FakeBatch(submit_then=[
-        [{'status': 'SUCCEEDED'}] * 2,
-        [{'status': 'FAILED',
-          'container': {'exitCode': 137, 'reason': 'OutOfMemoryError'}},
-         {'status': 'SUCCEEDED'}],
-        [{'status': 'SUCCEEDED'}],
-    ])
-
-    with patch('glow.aws.driver.boto3.client',
-               side_effect=lambda kind, **_:
-               fake_s3 if kind == 's3' else fake_batch):
-        driver_aws_multi(
-            [('a', cache_a, _run_fnc), ('b', cache_b, _run_fnc)],
-            _cfg(), verbose=False)
-
-    assert len(cache_a._load_results()) == 2
-    assert len(cache_b._load_results()) == 2
-    # Three submissions: two at tier 0 (a, b) and only b retried at tier 1.
-    assert len(fake_batch.submitted) == 3
-    mem_at_tier_1 = next(
-        r['value'] for r in
-        fake_batch.submitted[2]['containerOverrides']['resourceRequirements']
-        if r['type'] == 'MEMORY')
-    assert mem_at_tier_1 == '4000'
+    fake_batch = FakeBatch(submit_then=[[CRASH] + [OK] * (N_CELLS - 1)])
+    _run(fake_s3, fake_batch)
+    assert len(fake_batch.submitted) == 1  # no tier-1 resubmission
 
 
-# ---------- real-AWS smoke test --------------------------------------------
+def test_write_csv_pulls_records_and_writes(monkeypatch):
+    calls = {}
 
-
-@pytest.mark.runaws
-def test_driver_aws_smoke(tmp_path):
-    """End-to-end on real AWS.  Requires .glow_aws_config + provisioned infra."""
-    cfg = AWSConfig.from_file('.glow_aws_config')
-    cache = _make_cache(tmp_path, n_trials=2)
-    driver_aws(cache, _run_fnc, cfg, verbose=True)
-    assert len(cache._load_results()) == 2
+    def _stub(out_dir=None, names=None):
+        calls['names'] = list(names)
+        return {}
+    monkeypatch.setattr('glow._extra.benchmark.results.write_config_csvs',
+                        _stub)
+    fake_s3, fake_batch = FakeS3(), FakeBatch(submit_then=[[OK] * N_CELLS])
+    with patch('glow._extra.aws.driver.boto3.client',
+               client_factory(fake_s3, fake_batch)):
+        written = drive_aws('sweep_llr', _cfg(), write_csv=True, verbose=False)
+    assert written == {}
+    assert calls['names'] == ['sweep_llr']

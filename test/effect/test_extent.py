@@ -1,11 +1,16 @@
 import numpy as np
 import pytest
+from scipy.ndimage import generate_binary_structure, label
 
 from glow.effect.extent import (
     ContiguousRegionNotFound,
     ExtenterMinVar,
     ExtenterSphere,
+    ExtenterSplit,
+    get_diameter,
+    iter_bfs,
     iter_vox_neighbor,
+    split_mask_spectral,
 )
 from glow.mask import get_mask_idx
 
@@ -72,8 +77,8 @@ class TestExtenterSphere:
                       [1, 1, 1, 1, 1, 1, 1, 1]])
 
         for radius, mask_expect in zip((3, 10), mask_expect_tup):
-            extenter = ExtenterSphere(radius=radius)
-            mask = extenter(mask_idx=mask_idx, seed=0)
+            extenter = ExtenterSphere(radius=radius, seed=0)
+            mask = extenter(mask_idx=mask_idx)
 
             assert np.allclose(mask, mask_expect)
 
@@ -85,23 +90,23 @@ class TestExtenterSphere:
                          [1, 1, 1]])
         mask_idx = get_mask_idx(mask)
 
-        extenter = ExtenterSphere(radius=4)
+        extenter = ExtenterSphere(radius=4, seed=0, contiguous=True)
 
         with pytest.raises(ContiguousRegionNotFound):
-            extenter(mask_idx=mask_idx, seed=0, contiguous=True)
+            extenter(mask_idx=mask_idx)
 
     def test_contiguous_reachable_succeeds(self):
         # fully-connected grid: the produced region is contiguous, so the
         # contiguous=True request succeeds and fills the grid.
-        extenter = ExtenterSphere(radius=4)
+        extenter = ExtenterSphere(radius=4, seed=0, contiguous=True)
         mask_idx = np.arange(9).reshape(3, 3)
-        mask = extenter(mask_idx=mask_idx, seed=0, contiguous=True)
+        mask = extenter(mask_idx=mask_idx)
         assert np.allclose(np.ones((3, 3)), mask)
 
     def test_n_vox(self):
         mask_idx = np.arange(25).reshape((5, 5))
-        extenter = ExtenterSphere(n_vox=7)
-        mask = extenter(mask_idx=mask_idx, vox_init=12)
+        extenter = ExtenterSphere(n_vox=7, vox_init=12)
+        mask = extenter(mask_idx=mask_idx)
         assert mask.sum() == 7
         assert mask.shape == mask_idx.shape
 
@@ -112,9 +117,9 @@ class TestExtenterSphere:
                          [0, 0, 0, 0, 0],
                          [1, 1, 1, 1, 1]])
         mask_idx = get_mask_idx(mask)
-        extenter = ExtenterSphere(n_vox=5, connected=True)
         vox_init = mask_idx[0, 0]
-        mask_obs = extenter(mask_idx=mask_idx, vox_init=vox_init)
+        extenter = ExtenterSphere(n_vox=5, connected=True, vox_init=vox_init)
+        mask_obs = extenter(mask_idx=mask_idx)
 
         comp_mask = np.zeros_like(mask, dtype=bool)
         comp_mask[0, :] = True
@@ -127,9 +132,9 @@ class TestExtenterSphere:
                          [0, 0, 1, 1],
                          [0, 0, 1, 1]])
         mask_idx = get_mask_idx(mask)
-        extenter = ExtenterSphere(n_vox=5, connected=True)
+        extenter = ExtenterSphere(n_vox=5, connected=True, seed=0)
         with pytest.raises(ValueError):
-            extenter(mask_idx=mask_idx, seed=0)
+            extenter(mask_idx=mask_idx)
 
 
 class TestExtenterMinVar:
@@ -143,11 +148,11 @@ class TestExtenterMinVar:
                          [0., 0., 0., 0., 0., 0., 0.]])
         mask_idx = np.arange(mask.size).reshape(mask.shape)
 
-        extenter_min_var = ExtenterMinVar(n_vox=mask.sum())
+        extenter_min_var = ExtenterMinVar(n_vox=mask.sum(), vox_init=17)
 
         # test case 1: no noise, single image
         mask_obs = extenter_min_var(y=mask.reshape((1, 1, mask.size)),
-                                    mask_idx=mask_idx, vox_init=17)
+                                    mask_idx=mask_idx)
         np.testing.assert_equal(mask_obs, mask)
 
         # test case 2: noise, multi-image
@@ -156,16 +161,199 @@ class TestExtenterMinVar:
                             (1, n_img, mask.size))
         rng = np.random.default_rng(seed=0)
         y = y + rng.standard_normal(y.shape) / 10
-        mask_obs = extenter_min_var(y=y, mask_idx=mask_idx, vox_init=17)
+        mask_obs = extenter_min_var(y=y, mask_idx=mask_idx)
         np.testing.assert_equal(mask_obs, mask)
 
     def test_random_init_reaches_n_vox(self):
         # without vox_init the seed voxel is chosen randomly; the grown
         # region must still reach the requested size and grid shape.
         mask_idx = np.arange(64).reshape((8, 8))
-        extenter = ExtenterMinVar(n_vox=10)
+        extenter = ExtenterMinVar(n_vox=10, seed=42)
         rng = np.random.default_rng(42)
         y = rng.standard_normal((1, 1, 64))
-        mask = extenter(mask_idx=mask_idx, y=y, seed=42)
+        mask = extenter(mask_idx=mask_idx, y=y)
         assert mask.sum() == 10
         assert mask.shape == mask_idx.shape
+
+
+def _is_contiguous(mask):
+    # single connected component under the same face-connectivity the
+    # extent functions use (4-conn in 2D, 6-conn in 3D)
+    structure = (generate_binary_structure(3, 1) if mask.ndim == 3
+                 else generate_binary_structure(2, 1))
+    _, n_components = label(mask, structure=structure)
+    return n_components == 1
+
+
+def _assert_valid_split(mask, mask0, mask1):
+    # the two pieces partition mask exactly, are disjoint, and each is a
+    # single connected component (an empty piece is allowed, e.g. one voxel)
+    assert np.array_equal(mask0 | mask1, mask)
+    assert not (mask0 & mask1).any()
+    assert _is_contiguous(mask0)
+    if mask1.any():
+        assert _is_contiguous(mask1)
+
+
+class TestIterBfs:
+    def test_distances_along_a_line(self):
+        # a 1x5 line; BFS from the (0, 0) end visits voxels in order with
+        # graph distances 0, 1, 2, 3, 4.
+        mask = np.ones((1, 5), dtype=bool)
+        visited = list(iter_bfs(mask, (0, 0)))
+        assert [ijk for ijk, _ in visited] == [(0, 0), (0, 1), (0, 2),
+                                               (0, 3), (0, 4)]
+        assert [d for _, d in visited] == [0, 1, 2, 3, 4]
+
+    def test_blocked_halts_the_front(self):
+        # blocking the (0, 2) voxel walls off everything beyond it: the front
+        # neither yields nor expands through a blocked voxel, so only
+        # (0, 0) and (0, 1) are reached.
+        mask = np.ones((1, 5), dtype=bool)
+        blocked = np.zeros_like(mask)
+        blocked[0, 2] = True
+        reached = [ijk for ijk, _ in iter_bfs(mask, (0, 0), blocked=blocked)]
+        assert reached == [(0, 0), (0, 1)]
+
+    def test_seed_outside_mask_raises(self):
+        mask = np.zeros((3, 3), dtype=bool)
+        mask[1, 1] = True
+        with pytest.raises(AssertionError):
+            list(iter_bfs(mask, (0, 0)))
+
+
+class TestGetDiameter:
+    def test_line_endpoints(self):
+        # the diameter of a 1x6 line is its two ends.
+        mask = np.ones((1, 6), dtype=bool)
+        ijk0, ijk1 = get_diameter(mask)
+        assert {ijk0, ijk1} == {(0, 0), (0, 5)}
+
+    def test_disconnected_raises(self):
+        # two separated rows are not a single connected component.
+        mask = np.array([[1, 1, 1],
+                         [0, 0, 0],
+                         [1, 1, 1]], dtype=bool)
+        with pytest.raises(ValueError):
+            get_diameter(mask)
+
+
+@pytest.fixture(scope='module')
+def hcp_img_exp():
+    """Image-only HCP Experiment: first 10 subjects, FA only.
+
+    Skipped at collection time when the HCP dataset is absent from disk.
+    """
+    from glow._extra.benchmark import hcp
+    import glow.experiment
+
+    if not hcp.is_present():
+        pytest.skip('HCP data not on disk')
+    folder = hcp.data_dir()
+    df = glow.experiment.ExperimentImageOnly._search_files(
+        folder, hcp.SBJ_REGEX, {'fa': hcp.IMG_GLOB_DICT['fa']})
+    df = df.iloc[:10]
+    return glow.experiment.ExperimentImageOnly.from_paths(df)
+
+
+class TestSplitMaskSpectral:
+    def test_even_line_splits_in_half(self):
+        # a 1x6 line splits into two contiguous runs of three voxels.
+        mask = np.ones((1, 6), dtype=bool)
+        mask0, mask1 = split_mask_spectral(mask)
+        _assert_valid_split(mask, mask0, mask1)
+        assert mask0.sum() == 3
+        assert mask1.sum() == 3
+
+    def test_odd_line_differs_by_one(self):
+        # a 1x7 line cannot split evenly; the pieces differ by one voxel.
+        mask = np.ones((1, 7), dtype=bool)
+        mask0, mask1 = split_mask_spectral(mask)
+        _assert_valid_split(mask, mask0, mask1)
+        assert abs(int(mask0.sum()) - int(mask1.sum())) == 1
+
+    def test_square_block_2d(self):
+        # a solid 4x4 block splits into two contiguous halves of eight.
+        mask = np.ones((4, 4), dtype=bool)
+        mask0, mask1 = split_mask_spectral(mask)
+        _assert_valid_split(mask, mask0, mask1)
+        assert mask0.sum() == 8
+        assert mask1.sum() == 8
+
+    def test_cube_block_3d(self):
+        # a solid 2x2x2 cube splits into two contiguous halves of four.
+        mask = np.ones((2, 2, 2), dtype=bool)
+        mask0, mask1 = split_mask_spectral(mask)
+        _assert_valid_split(mask, mask0, mask1)
+        assert mask0.sum() == 4
+        assert mask1.sum() == 4
+
+    def test_l_shape_stays_contiguous(self):
+        # an L-shaped region: a straight cut would sever a piece, so this
+        # exercises the curved seam the BFS fronts grow.
+        mask = np.array([[1, 0, 0, 0],
+                         [1, 0, 0, 0],
+                         [1, 1, 1, 1]], dtype=bool)
+        mask0, mask1 = split_mask_spectral(mask)
+        _assert_valid_split(mask, mask0, mask1)
+        assert abs(int(mask0.sum()) - int(mask1.sum())) <= 1
+
+    def test_single_voxel(self):
+        # one voxel cannot be split; it lands wholly in one piece.
+        mask = np.zeros((3, 3), dtype=bool)
+        mask[1, 1] = True
+        mask0, mask1 = split_mask_spectral(mask)
+        _assert_valid_split(mask, mask0, mask1)
+        assert mask0.sum() == 1
+        assert mask1.sum() == 0
+
+    def test_disconnected_raises(self):
+        mask = np.array([[1, 1, 1],
+                         [0, 0, 0],
+                         [1, 1, 1]], dtype=bool)
+        with pytest.raises(ValueError):
+            split_mask_spectral(mask)
+
+    def test_piece_order_is_deterministic(self):
+        # the Fiedler sign is arbitrary (eigsh random start); the piece
+        # labeling must still be stable across calls, or ExtenterSplit's two
+        # halves disagree on which is 0
+        mask = np.ones((4, 4), dtype=bool)
+        first0, first1 = split_mask_spectral(mask)
+        for _ in range(8):
+            m0, m1 = split_mask_spectral(mask)
+            np.testing.assert_array_equal(m0, first0)
+            np.testing.assert_array_equal(m1, first1)
+
+    @pytest.mark.slow
+    def test_hcp_minvar_region(self, hcp_img_exp):
+        # sample a 500-voxel MinVar region from HCP FA and verify that
+        # spectral split produces two roughly equal connected pieces.
+        # Balance tolerance is 10% of n_vox: the "trapped-front" case
+        # documented in the split_mask_spectral docstring can produce more
+        # than a 1-voxel difference on irregular 3-D regions.
+        extenter = ExtenterMinVar(n_vox=500, seed=0)
+        region = extenter(y=hcp_img_exp.y, mask_idx=hcp_img_exp.mask_idx)
+        mask0, mask1 = split_mask_spectral(region)
+        _assert_valid_split(region, mask0, mask1)
+        total = int(region.sum())
+        assert abs(int(mask0.sum()) - int(mask1.sum())) <= total // 10
+
+
+class TestExtenterSplit:
+    def test_fit_returns_two_partitioning_halves(self):
+        # a 1x6 line: one ExtenterSplit over a sphere base returns both halves,
+        # matching a direct split of the base extent and partitioning it
+        mask_idx = get_mask_idx(np.ones((1, 6), dtype=bool))
+        base = ExtenterSphere(n_vox=6, vox_init=0)
+        full = base(mask_idx=mask_idx)
+        ref0, ref1 = split_mask_spectral(full)
+
+        mask0, mask1 = ExtenterSplit(base=base).fit(mask_idx=mask_idx)
+        np.testing.assert_array_equal(mask0, ref0)
+        np.testing.assert_array_equal(mask1, ref1)
+        _assert_valid_split(full, mask0, mask1)
+
+    def test_missing_base_raises(self):
+        with pytest.raises(ValueError, match='base'):
+            ExtenterSplit()

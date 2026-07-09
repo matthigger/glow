@@ -5,32 +5,61 @@ from bisect import bisect_left
 from typing import Callable
 
 import numpy as np
+from joblib import Parallel, delayed
 from scipy.ndimage import label
+from tqdm import tqdm
 
 import glow.effect
 import glow.graph
-from glow.experiment.exper import ExperimentScaled
 
 
 class Analysis(ABC):
     """Perform effect discovery (GLOW or TFCE) and compute FWER p-values.
 
+    An Analysis is a reusable recipe -- its config knobs only. The
+    experiment is not stored; it is passed to fit(), which scales it
+    (ExperimentScaled) on the way in, so the same recipe can be fit
+    against any experiment.
+
     Attributes:
-        exp (Experiment): source data
         effect_list (list): discovered Effect objects (populated by fit)
         pval (np.array): (num_reg,) FWER-controlled p-values (set by fit)
     """
 
-    def __init__(self, exp):
-        if not isinstance(exp, ExperimentScaled):
-            exp = ExperimentScaled.from_exp(exp)
-        self.exp = exp
+    # the __init__ config knobs that identify the recipe -- the fields __repr__
+    # renders. Subclasses declare their own. Never includes exp, the fitted
+    # arrays, or pval -- only the immutable recipe.
+    RECORD_FIELDS = ()
+
+    def __init__(self):
         self.effect_list = None
         self.pval = None
 
+    def __repr__(self):
+        """A compact recipe string: class name + the RECORD_FIELDS knobs.
+
+        Reuses RECORD_FIELDS (the config subset that identifies the recipe) as
+        the single source of truth, so the repr tracks the recipe automatically
+        and never shows fitted arrays or the experiment. A stat-function knob
+        renders as its __name__, so it stays an address-free name rather than
+        '<function ... at 0x...>'.
+        """
+        parts = []
+        for name in self.RECORD_FIELDS:
+            v = getattr(self, name)
+            if callable(v) and not isinstance(v, type):
+                v = getattr(v, '__name__', v)
+            parts.append(f'{name}={v}')
+        return f'{type(self).__name__}({", ".join(parts)})'
+
     @abstractmethod
-    def fit(self):
-        """Run the analysis computation and return self."""
+    def fit(self, exp):
+        """Run the analysis computation on exp and return self.
+
+        Implementations scale exp with ExperimentScaled.from_exp(exp)
+        first (idempotent -- a raw exp is scaled, an already-scaled one
+        passes through), then compute.
+        """
 
     @classmethod
     def get_pval(cls, stat, reg_active=None, *, stat_null=None):
@@ -41,12 +70,12 @@ class Analysis(ABC):
 
         Two modes, sharing the same max-stat bisect:
 
-        * Single tree (VBA / CET): pass stat as the full
+        - Single tree (VBA / CET): pass stat as the full
           (n_perm+1, num_reg) matrix (row 0 observed). The max-stat null
           is built column-wise as sort(nanmax(stat[:, reg_active])) and
           the observed per-region statistic is stat[0].
 
-        * Per-permutation trees (GLOW): the null cannot be read off a
+        - Per-permutation trees (GLOW): the null cannot be read off a
           single matrix because each permutation has its own tree, so
           pass the precomputed max-stat null as stat_null (one entry per
           permutation incl. observed) and the observed per-region
@@ -103,7 +132,7 @@ class Analysis(ABC):
     def z_score_stat(cls, stat):
         """Z-score each voxel across permutations (observed row included).
 
-        For each voxel, the mean and std are computed from **all** rows
+        For each voxel, the mean and std are computed from all rows
         — the observed row (0) together with the permutation null (1:) —
         then every row is standardized by that voxel's empirical mean and
         std.  This equalizes per-voxel scale so max-stat FWER is not
@@ -164,8 +193,8 @@ class AnalysisVoxel(Analysis):
         stat (np.array): (n_perm+1, num_reg) statistics (set by fit)
     """
 
-    def __init__(self, exp, get_stat: Callable = None):
-        super().__init__(exp)
+    def __init__(self, get_stat: Callable = None):
+        super().__init__()
         if get_stat is None:
             from .mancova import get_wilks
             get_stat = get_wilks
@@ -173,7 +202,8 @@ class AnalysisVoxel(Analysis):
         self.stat = None
 
     @classmethod
-    def get_stat_perm_multi(cls, exp, get_stat_list: list, children=None) -> dict:
+    def get_stat_perm_multi(cls, exp, get_stat_list: list,
+                            children=None) -> dict:
         """Compute multiple test statistics from a single tree walk.
 
         Avoids redundant E/H computation when comparing stat functions.
@@ -208,6 +238,39 @@ class AnalysisVoxel(Analysis):
 
         return result
 
+    @staticmethod
+    def _walk_stat(exp, get_stat: Callable, children=None):
+        """Compute one stat per region for a fixed (already-permuted) exp.
+
+        The shared MANCOVA tree-walk behind get_stat_perm and the joblib
+        worker _stat_row. get_stat is passed explicitly (not read off
+        self) so a joblib task carries no instance state.
+
+        Args:
+            exp (Experiment): experiment to evaluate (already permuted if
+                this is a permutation draw)
+            get_stat (Callable): per-region stat function (e, h, n)
+            children (np.array): (num_reg - num_vox, 2) child index array.
+                If None, only iterates through individual voxels.
+
+        Returns:
+            stat (np.array): (num_reg,) test statistics
+        """
+        num_vox = exp.y.shape[2]
+        num_reg = num_vox
+        if children is not None:
+            num_reg += children.shape[0]
+
+        stat = np.full(num_reg, fill_value=np.nan)
+        for reg_idx, size, e, h in glow.graph.iter_mancova(exp=exp,
+                                                           children=children):
+            try:
+                stat[reg_idx] = get_stat(e=e, h=h, n=size)
+            except np.linalg.LinAlgError:
+                pass
+
+        return stat
+
     def get_stat_perm(self, exp, children=None):
         """Compute the test statistic for each region.
 
@@ -218,41 +281,59 @@ class AnalysisVoxel(Analysis):
         Args:
             exp (Experiment): experiment to evaluate (already permuted
                 if this is a permutation draw)
-            children (np.array): (num_reg, 2) child index array. If None,
-                only iterates through individual voxels.
+            children (np.array): (num_reg - num_vox, 2) child index array.
+                If None, only iterates through individual voxels.
 
         Returns:
             stat (np.array): (num_reg,) test statistics
         """
-        b, num_img, num_vox = exp.y.shape
-        num_reg = num_vox
-        if children is not None:
-            num_reg += children.shape[0]
+        return self._walk_stat(exp, self.get_stat, children=children)
 
-        stat = np.full(num_reg, fill_value=np.nan)
-        for reg_idx, size, e, h in glow.graph.iter_mancova(exp=exp,
-                                                           children=children):
-            try:
-                stat[reg_idx] = self.get_stat(e=e, h=h, n=size)
-            except np.linalg.LinAlgError:
-                pass
+    @classmethod
+    def _stat_row(cls, exp, k: int, get_stat: Callable, children=None):
+        """Per-region stat row for outer perm k (pure, for joblib workers).
 
-        return stat
+        Permutes exp by outer-perm index k (k=0 = observed data), then
+        computes one stat per region. Kept free of instance state so
+        joblib workers can run it; k seeds the permutation, so the row
+        is a deterministic function of k alone.
+        """
+        _exp = exp.permute(k) if k else exp
+        return cls._walk_stat(_exp, get_stat, children=children)
 
-    def build_stat_matrix(self, _stat=None):
+    def build_stat_matrix(self, exp, _stat=None, *, n_jobs: int = 1,
+                          verbose: bool = False):
         """Per-voxel stat matrix for the FWER walk, (n_perm_fwer+1, num_vox).
 
-        If ``_stat`` is None, runs the Freedman-Lane permutation walk
-        (row 0 observed, rows 1: permuted).  If provided, validates its
-        permutation count against ``self.n_perm_fwer`` and returns it
-        unchanged (the caller owns the copy).
+        If _stat is None, runs the Freedman-Lane permutation walk on exp
+        (row 0 observed, rows 1: permuted), parallelised over
+        permutations with joblib. If provided, validates its permutation
+        count against self.n_perm_fwer and returns it unchanged (the
+        caller owns the copy).
+
+        Row k depends only on k (exp.permute(k) is seeded by k), so the
+        matrix is identical regardless of n_jobs.
+
+        Args:
+            exp (Experiment): experiment to walk (already scaled).
+            _stat (np.array): optional precomputed (n_perm_fwer+1,
+                num_vox) stat matrix; returned unchanged after a shape
+                check.
+            n_jobs (int): permutation-level parallelism via joblib. 1
+                (default) runs in-process; -1 uses all cores.
+            verbose (bool): show a tqdm bar over permutations.
         """
         if _stat is None:
-            num_vox = self.exp.y.shape[2]
-            _stat = np.full((self.n_perm_fwer + 1, num_vox), np.nan)
-            for k in range(self.n_perm_fwer + 1):
-                _exp = self.exp.permute(k) if k else self.exp
-                _stat[k, :] = self.get_stat_perm(_exp, children=None)
+            n_total = self.n_perm_fwer + 1
+            num_vox = exp.y.shape[2]
+            _stat = np.full((n_total, num_vox), np.nan)
+            rows = Parallel(n_jobs=n_jobs, return_as='generator')(
+                delayed(self._stat_row)(exp, k, self.get_stat, children=None)
+                for k in range(n_total))
+            for k, row in enumerate(tqdm(rows, total=n_total,
+                                         desc='fwer perms',
+                                         disable=not verbose)):
+                _stat[k, :] = row
         elif _stat.shape[0] - 1 != self.n_perm_fwer:
             raise ValueError(
                 f'_stat has {_stat.shape[0] - 1} permutations but '

@@ -5,9 +5,9 @@ import sys
 import numpy as np
 import pytest
 
-from glow.viewer.app import (_create_app, _display_region_ids,
+from glow._extra.viewer.app import (_create_app, _display_region_ids,
                              _resolve_min_vox, _suggest_min_vox)
-from glow.viewer.scatter import build_scatter
+from glow._extra.viewer.scatter import build_scatter
 
 
 def _main_marker_trace(fig):
@@ -43,15 +43,15 @@ def _find_component(component, target_id, depth=20):
 class TestBuildScatterMinVox:
     """min_vox drops the smaller regions from the scattered set."""
 
-    def test_zero_scatters_every_region(self, df_with_target, ana):
+    def test_zero_scatters_every_region(self, df_with_target, ana, exp):
         num_reg = len(df_with_target)
-        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr',
+        fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr',
                             '__none__', min_vox=0)
         assert len(_main_marker_trace(fig).customdata) == num_reg
 
-    def test_cut_excludes_small_regions(self, df_with_target, ana):
+    def test_cut_excludes_small_regions(self, df_with_target, ana, exp):
         min_vox = 3
-        fig = build_scatter(df_with_target, ana, 'n_voxel', 'llr',
+        fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr',
                             '__none__', min_vox=min_vox)
         shown = list(_main_marker_trace(fig).customdata)
         size_by_reg = dict(zip(df_with_target['region_idx'],
@@ -61,12 +61,12 @@ class TestBuildScatterMinVox:
         expected = int((df_with_target['n_voxel'] >= min_vox).sum())
         assert len(shown) == expected
 
-    def test_cut_reduces_point_count(self, df_with_target, ana):
+    def test_cut_reduces_point_count(self, df_with_target, ana, exp):
         n_all = len(_main_marker_trace(
-            build_scatter(df_with_target, ana, 'n_voxel', 'llr',
+            build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr',
                           '__none__', min_vox=0)).customdata)
         n_cut = len(_main_marker_trace(
-            build_scatter(df_with_target, ana, 'n_voxel', 'llr',
+            build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr',
                           '__none__', min_vox=2)).customdata)
         # the tree has many size-1 leaves, so a cut at 2 must shrink it
         assert n_cut < n_all
@@ -128,13 +128,13 @@ class TestResolveMinVox:
 
 
 class TestDisplayRegionIds:
-    def test_zero_returns_all(self, ana):
-        num_reg = ana.exp.y.shape[2] + ana.children.shape[0]
-        ids = _display_region_ids(ana, 0)
+    def test_zero_returns_all(self, ana, exp):
+        num_reg = exp.y.shape[2] + ana.children.shape[0]
+        ids = _display_region_ids(ana, exp, 0)
         assert np.array_equal(ids, np.arange(num_reg))
 
-    def test_cut_matches_size_threshold(self, ana):
-        ids = _display_region_ids(ana, 3)
+    def test_cut_matches_size_threshold(self, ana, exp):
+        ids = _display_region_ids(ana, exp, 3)
         assert np.array_equal(ids, np.flatnonzero(ana.size >= 3))
         assert (ana.size[ids] >= 3).all()
 
@@ -142,16 +142,19 @@ class TestDisplayRegionIds:
 class TestRegionLookupDropdown:
     """The 'Add by index' dropdown offers exactly the displayed regions."""
 
-    def test_dropdown_restricted_to_displayed(self, ana_2d, mask_target_2d):
+    def test_dropdown_restricted_to_displayed(self, ana_2d, exp_2d,
+                                              mask_target_2d):
         min_vox = 2
-        app = _create_app(ana_2d, mask_target=mask_target_2d, min_vox=min_vox)
+        app = _create_app(ana_2d, exp_2d, mask_target=mask_target_2d,
+                          min_vox=min_vox)
         dd = _find_component(app.layout, 'dd-region-lookup')
         values = [opt['value'] for opt in dd.options]
         assert all(ana_2d.size[v] >= min_vox for v in values)
-        assert len(values) == len(_display_region_ids(ana_2d, min_vox))
+        assert len(values) == len(_display_region_ids(ana_2d, exp_2d, min_vox))
 
-    def test_dropdown_default_has_all_regions(self, ana_2d, mask_target_2d):
-        num_reg = ana_2d.exp.y.shape[2] + ana_2d.children.shape[0]
-        app = _create_app(ana_2d, mask_target=mask_target_2d)
+    def test_dropdown_default_has_all_regions(self, ana_2d, exp_2d,
+                                             mask_target_2d):
+        num_reg = exp_2d.y.shape[2] + ana_2d.children.shape[0]
+        app = _create_app(ana_2d, exp_2d, mask_target=mask_target_2d)
         dd = _find_component(app.layout, 'dd-region-lookup')
         assert len(dd.options) == num_reg

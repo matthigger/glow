@@ -51,6 +51,38 @@ class TestExperimentOnlyImage:
                 for feat_idx, intense in feat_intense.items():
                     assert (exp.y[feat_idx, img_idx, :] == intense).all()
 
+    def test_search_files_bids_repeated_sbj(self, tmp_path):
+        # BIDS-derivatives paths repeat the subject id in both the directory
+        # and the filename, so a natural regex matches it twice; _search_files
+        # must dedupe rather than trip its uniqueness assert.
+        for sbj in ('sub-100307', 'sub-200614'):
+            dwi = tmp_path / sbj / 'dwi'
+            dwi.mkdir(parents=True)
+            for feat in ('fa', 'md'):
+                (dwi / f'{sbj}_space-MNI152_param-{feat}_dwimap.nii.gz').touch()
+
+        df = ExperimentImageOnly._search_files(
+            folder=tmp_path,
+            sbj_regex=r'sub-\d+',
+            img_glob_dict={'fa': '**/*param-fa*.nii.gz',
+                           'md': '**/*param-md*.nii.gz'})
+
+        assert sorted(df.index) == ['sub-100307', 'sub-200614']
+        assert sorted(df.columns) == ['fa', 'md']
+
+    def test_search_files_ambiguous_sbj_raises(self, tmp_path):
+        # a path carrying two genuinely different subject ids stays ambiguous;
+        # the dedupe must not paper over it.
+        dwi = tmp_path / 'sub-100307' / 'dwi'
+        dwi.mkdir(parents=True)
+        (dwi / 'sub-200614_param-fa_dwimap.nii.gz').touch()
+
+        with pytest.raises(AssertionError):
+            ExperimentImageOnly._search_files(
+                folder=tmp_path,
+                sbj_regex=r'sub-\d+',
+                img_glob_dict={'fa': '**/*param-fa*.nii.gz'})
+
     # NOTE: the EffectSynthetic.fit effect_llr round-trip is covered in
     # test/effect/ (test_impose.py::test_compute_offset and
     # test_eff_synthetic.py::test_effect_llr_preserved), so the former

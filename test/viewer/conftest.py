@@ -10,12 +10,16 @@ import pytest
 from glow.experiment.exper import Experiment
 from glow.effect import EffectSynthetic
 from glow.analysis import AnalysisGLOW
-from glow.viewer.data import prep_df, get_feature_columns, compute_target_stats
+from glow._extra.viewer.data import prep_df, get_feature_columns, compute_target_stats
 
 
 @pytest.fixture(scope='session')
 def demo_analysis():
-    """Small 3D analysis (5x5x5 cube, sphere effect) for viewer tests."""
+    """Small 3D analysis (5x5x5 cube, sphere effect) for viewer tests.
+
+    Returns (ana, exp_eff, mask_sphere): the analysis no longer stores the
+    experiment, so the fixture exposes exp_eff for the viewer to consume.
+    """
     shape = (5, 5, 5)
     center = np.array([s // 2 for s in shape])
     coords = np.indices(shape).reshape(3, -1).T
@@ -23,14 +27,17 @@ def demo_analysis():
     mask_sphere = (dist <= 2.0).reshape(shape)
 
     exp = Experiment.from_gauss(b=1, num_img=10, shape=shape, seed=0, a=2)
-    exp_eff = EffectSynthetic(mask=mask_sphere, effect_llr=2.0, seed=0).fit(exp)
-    ana = AnalysisGLOW(exp_eff, n_perm_fwer=5, n_perm_inner=10).fit()
-    return ana, mask_sphere
+    exp_eff = EffectSynthetic(mask=mask_sphere, effect_llr=2.0, seed=0).fit(exp)[0]
+    ana = AnalysisGLOW(n_perm_fwer=5, n_perm_inner=10).fit(exp_eff)
+    return ana, exp_eff, mask_sphere
 
 
 @pytest.fixture(scope='session')
 def demo_analysis_2d():
-    """Small 2D analysis (8x8, circle effect) for viewer layout tests."""
+    """Small 2D analysis (8x8, circle effect) for viewer layout tests.
+
+    Returns (ana, exp_eff, mask_circle); see demo_analysis.
+    """
     shape = (8, 8)
     center = np.array([s // 2 for s in shape])
     coords = np.indices(shape).reshape(2, -1).T
@@ -38,9 +45,9 @@ def demo_analysis_2d():
     mask_circle = (dist <= 2.5).reshape(shape)
 
     exp = Experiment.from_gauss(b=1, num_img=6, shape=shape, seed=42, a=2)
-    exp_eff = EffectSynthetic(mask=mask_circle, effect_llr=2.0, seed=42).fit(exp)
-    ana = AnalysisGLOW(exp_eff, n_perm_fwer=5, n_perm_inner=10).fit()
-    return ana, mask_circle
+    exp_eff = EffectSynthetic(mask=mask_circle, effect_llr=2.0, seed=42).fit(exp)[0]
+    ana = AnalysisGLOW(n_perm_fwer=5, n_perm_inner=10).fit(exp_eff)
+    return ana, exp_eff, mask_circle
 
 
 @pytest.fixture(scope='session')
@@ -49,8 +56,13 @@ def ana_2d(demo_analysis_2d):
 
 
 @pytest.fixture(scope='session')
-def mask_target_2d(demo_analysis_2d):
+def exp_2d(demo_analysis_2d):
     return demo_analysis_2d[1]
+
+
+@pytest.fixture(scope='session')
+def mask_target_2d(demo_analysis_2d):
+    return demo_analysis_2d[2]
 
 
 @pytest.fixture(scope='session')
@@ -59,23 +71,28 @@ def ana(demo_analysis):
 
 
 @pytest.fixture(scope='session')
-def mask_target(demo_analysis):
+def exp(demo_analysis):
     return demo_analysis[1]
 
 
 @pytest.fixture(scope='session')
-def df_no_target(ana):
-    return prep_df(ana)
+def mask_target(demo_analysis):
+    return demo_analysis[2]
 
 
 @pytest.fixture(scope='session')
-def df_with_target(ana, mask_target):
-    return prep_df(ana, mask_target=mask_target)
+def df_no_target(ana, exp):
+    return prep_df(ana, exp)
 
 
 @pytest.fixture(scope='session')
-def target_stats(ana, mask_target):
-    return compute_target_stats(ana, mask_target)
+def df_with_target(ana, exp, mask_target):
+    return prep_df(ana, exp, mask_target=mask_target)
+
+
+@pytest.fixture(scope='session')
+def target_stats(exp, mask_target):
+    return compute_target_stats(exp, mask_target)
 
 
 @pytest.fixture(scope='session')

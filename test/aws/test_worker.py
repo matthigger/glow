@@ -1,109 +1,129 @@
-"""worker.main: roundtrip via the in-memory FakeS3 stub."""
+"""worker.main: array-index cell selection and the real _run_data_cell call.
 
-import os
+test_array_index_selects_cell pins the index logic with the fit stubbed --
+AWS_BATCH_JOB_ARRAY_INDEX must pick the right cell of the bundle the driver
+shipped. test_runs_real_data_cell then drives the real _run_data_cell end to
+end (only S3 sync faked), so any drift between the worker's call and the driver
+signature fails in-process rather than silently on a Batch worker. A stubbed
+fit hides that drift: the stub's own signature drifts with the caller, so the
+real function is the only faithful guard. test_hcp_cell_pulls_only_its_features
+checks an HCP cell pulls just its feature bundle, not the whole panel.
+"""
+
+import json
+import pickle
 from unittest.mock import patch
 
-import cloudpickle
-import pandas as pd
+import joblib
 import pytest
 
-from glow.aws import worker
-from test.aws.test_datasource import FakeS3
+from glow._extra.aws import sync, worker
+from glow._extra.aws.bundle import fnc_to_ref
+from glow._extra.aws.units import resolve_cells
+from glow._extra.benchmark import data
+from test.aws.fakes import FakeS3
+
+# the real end-to-end test ships this as its leaf fnc (by import reference, so
+# it must be a top-level function); each call appends here for the assertions
+_FNC_CALLS = []
 
 
-def _run_fnc(*, x, y):
-    return {'sum': x + y}
+def _spy_fnc(exp, mask_target_list, **kwargs):
+    """Record one leaf call and return a trivial score (end-to-end test fnc)."""
+    _FNC_CALLS.append({'mask_target_list': list(mask_target_list),
+                       'kwargs': kwargs})
+    return {'ok': True}
 
 
-def _run_fnc_df(*, x):
-    return pd.DataFrame([{'sq': x * x}, {'sq': x * x + 1}])
+@pytest.fixture(autouse=True)
+def _records_to_tmp(monkeypatch, tmp_path):
+    """Send the recorder's per-hash files to a tmp dir, not the real one."""
+    monkeypatch.setattr(data.RECORDER, 'folder', tmp_path)
 
 
-def _seed(fake, *, bucket, manifest_key, trial_hash, run_fnc, trial):
-    """Populate manifest.pkl + job.pkl for one array index."""
-    manifest = [trial_hash]
-    fake.store[(bucket, manifest_key)] = cloudpickle.dumps(manifest)
-
-    job_key = f'{manifest_key.rsplit("/", 2)[0]}/{trial_hash}/job.pkl'
-    fake.store[(bucket, job_key)] = cloudpickle.dumps((run_fnc, trial))
-    return job_key
-
-
-def _check_dict(result):
-    assert result == {'sum': 7}
-
-
-def _check_df(result):
-    assert isinstance(result, pd.DataFrame)
-    assert result['sq'].tolist() == [9, 10]
+def _put_bundle(fake, bucket, prefix, run_id, bundle):
+    """Pickle bundle to S3 and write a manifest pointing at it; return URI."""
+    bundle_key = f'{prefix}/runs/{run_id}/bundle.pkl'
+    fake.put_object(Bucket=bucket, Key=bundle_key, Body=pickle.dumps(bundle))
+    manifest = {'config_name': bundle[-1], 'bundle_key': bundle_key,
+                's3_prefix': prefix, 'region': 'us-east-1',
+                'n_cells': len(bundle[0])}
+    manifest_key = f'{prefix}/runs/{run_id}/manifest.json'
+    fake.put_object(Bucket=bucket, Key=manifest_key,
+                    Body=json.dumps(manifest).encode())
+    return f's3://{bucket}/{manifest_key}'
 
 
-@pytest.mark.parametrize('trial_hash, run_fnc, trial, check', [
-    # worker cloudpickles whatever run_fnc returns — no type branching
-    ('deadbeef', _run_fnc, {'x': 2, 'y': 5}, _check_dict),
-    ('cafebabe', _run_fnc_df, {'x': 3}, _check_df),
-])
-def test_worker_result_roundtrip(trial_hash, run_fnc, trial, check):
+def test_array_index_selects_cell(monkeypatch):
+    bucket, prefix = 'bkt', 'glow'
+    data_cells, eff, fnc_kw, fnc = resolve_cells('sweep_llr')
+    # the driver ships a subset (here cells 5, 6, 7); child i runs the i-th
+    bundle = ([data_cells[5], data_cells[6], data_cells[7]], eff, fnc_kw,
+              fnc_to_ref(fnc), 'sweep_llr')
     fake = FakeS3()
-    bucket = 'b'
-    manifest_key = f'pre/jobs/run-{trial_hash}/manifest.pkl'
-    job_key = _seed(fake, bucket=bucket, manifest_key=manifest_key,
-                    trial_hash=trial_hash, run_fnc=run_fnc, trial=trial)
+    uri = _put_bundle(fake, bucket, prefix, 'run-x', bundle)
 
-    with patch('glow.aws.worker.boto3.client', return_value=fake), \
-         patch.dict(os.environ, {'AWS_BATCH_JOB_ARRAY_INDEX': '0'}):
-        worker.main(f's3://{bucket}/{manifest_key}')
+    # stub the sync (no real dirs / threads) and the fit (record its cell)
+    monkeypatch.setattr('glow._extra.aws.sync.sync_pairs', lambda p: [])
+    seen = {}
+    monkeypatch.setattr('glow._extra.benchmark.driver._run_data_cell',
+                        lambda kd, ke, kf, fnc: seen.update(kwargs_data=kd))
+    monkeypatch.setenv('AWS_BATCH_JOB_ARRAY_INDEX', '2')
 
-    result_key = job_key.rsplit('/', 1)[0] + '/result.pkl'
-    check(cloudpickle.loads(fake.store[(bucket, result_key)]))
+    with patch('glow._extra.aws.worker.boto3.client', lambda *a, **k: fake):
+        worker.main(uri)
+
+    # array index 2 -> the 3rd shipped cell, i.e. cell 7 of sweep_llr's grid.
+    # Compare by joblib.hash (the cache key): the cells have no value __eq__,
+    # and after the pickle round-trip the worker holds a fresh object -- what
+    # must match a local run is its hash, not its identity.
+    assert joblib.hash(seen['kwargs_data']) == joblib.hash(data_cells[7])
 
 
-@pytest.mark.parametrize('env_index, expected_hash, expected_sum', [
-    # AWS_BATCH_JOB_ARRAY_INDEX selects the manifest entry to run
-    ('1', 'hash_b', 21),
-    # env missing -> worker defaults to index 0 (the single-job case)
-    (None, 'hash_a', 11),
-])
-def test_worker_picks_correct_array_index(env_index, expected_hash,
-                                          expected_sum):
+def test_runs_real_data_cell(monkeypatch):
+    # drive the real _run_data_cell (unstubbed) on one WGN null cell so the
+    # worker -> driver call binds against the live signature; a spy fnc stands
+    # in for the leaf so no permutation fit is paid. Only S3 sync is faked.
+    _FNC_CALLS.clear()
+    bucket, prefix = 'bkt', 'glow'
+    data_cells, *_ = resolve_cells('null')
+    bundle = ([data_cells[0]], [None], [{}], fnc_to_ref(_spy_fnc), 'null')
     fake = FakeS3()
-    bucket = 'b'
-    manifest_key = 'pre/jobs/run-multi/manifest.pkl'
-    fake.store[(bucket, manifest_key)] = cloudpickle.dumps(
-        ['hash_a', 'hash_b', 'hash_c'])
+    uri = _put_bundle(fake, bucket, prefix, 'run-r', bundle)
 
-    for h, val in [('hash_a', 10), ('hash_b', 20), ('hash_c', 30)]:
-        job_key = f'pre/jobs/{h}/job.pkl'
-        fake.store[(bucket, job_key)] = cloudpickle.dumps(
-            (_run_fnc, {'x': val, 'y': 1}))
+    monkeypatch.setattr('glow._extra.aws.sync.sync_pairs', lambda p: [])
+    monkeypatch.setenv('AWS_BATCH_JOB_ARRAY_INDEX', '0')
 
-    with patch('glow.aws.worker.boto3.client', return_value=fake), \
-         patch.dict(os.environ, {}, clear=False):
-        if env_index is None:
-            os.environ.pop('AWS_BATCH_JOB_ARRAY_INDEX', None)
-        else:
-            os.environ['AWS_BATCH_JOB_ARRAY_INDEX'] = env_index
-        worker.main(f's3://{bucket}/{manifest_key}')
+    with patch('glow._extra.aws.worker.boto3.client', lambda *a, **k: fake):
+        worker.main(uri)
 
-    result_key = f'pre/jobs/{expected_hash}/result.pkl'
-    assert cloudpickle.loads(fake.store[(bucket, result_key)]) \
-        == {'sum': expected_sum}
+    # the real _run_data_cell reached the leaf once, on an empty (null) target
+    assert len(_FNC_CALLS) == 1
+    assert _FNC_CALLS[0] == {'mask_target_list': [], 'kwargs': {}}
 
 
-def test_worker_propagates_run_fnc_exception():
+def test_hcp_cell_pulls_only_its_features(monkeypatch):
+    # an HCP cell pulls just the bundle files for its hcp_feats (+ shared
+    # mask/affine/meta), via download_each -- not the whole panel
+    bucket, prefix = 'bkt', 'glow'
+    all_cells, eff, fnc_kw, fnc = resolve_cells('smoke')
+    hcp_cells = [c for c in all_cells if c['source'] == 'hcp']
+    bundle = ([hcp_cells[0]], eff, fnc_kw, fnc_to_ref(fnc), 'smoke')
     fake = FakeS3()
-    bucket = 'b'
-    manifest_key = 'pre/jobs/run-bad/manifest.pkl'
+    uri = _put_bundle(fake, bucket, prefix, 'run-h', bundle)
 
-    def _boom(**kw):
-        raise RuntimeError('worker should crash')
+    monkeypatch.setattr('glow._extra.aws.sync.sync_pairs', lambda p: [])
+    monkeypatch.setattr('glow._extra.benchmark.driver._run_data_cell',
+                        lambda *a, **k: None)
+    pulled = {}
+    monkeypatch.setattr('glow._extra.aws.s3.download_each',
+                        lambda c, b, pairs: pulled.update(pairs=list(pairs)))
+    monkeypatch.setenv('AWS_BATCH_JOB_ARRAY_INDEX', '0')
 
-    _seed(fake, bucket=bucket, manifest_key=manifest_key,
-          trial_hash='bad', run_fnc=_boom, trial={})
+    with patch('glow._extra.aws.worker.boto3.client', lambda *a, **k: fake):
+        worker.main(uri)
 
-    with patch('glow.aws.worker.boto3.client', return_value=fake), \
-         patch.dict(os.environ, {'AWS_BATCH_JOB_ARRAY_INDEX': '0'}):
-        with pytest.raises(RuntimeError, match='worker should crash'):
-            worker.main(f's3://{bucket}/{manifest_key}')
-
-    assert (bucket, 'pre/jobs/bad/result.pkl') not in fake.store
+    feats = hcp_cells[0]['hcp_feats']
+    assert pulled['pairs'] == sync.hcp_bundle_keys(prefix, feats)
+    # mask + affine + meta + one file per feature, nothing more
+    assert len(pulled['pairs']) == 3 + len(feats)

@@ -22,7 +22,6 @@ from .load_image import load_image_color, load_image_nii
 from .permute import get_freed_lane
 from .sigma import stretch_sigma
 from ..mask import get_mask_idx
-from ..util import hash_array
 
 
 class NoBiasTermWarning(UserWarning):
@@ -64,18 +63,18 @@ class ExperimentImageOnly:
         """Return the dtype of the underlying y array, or None when unset."""
         return self.y.dtype if self.y is not None else None
 
-    @property
-    def _hash_arrays(self):
-        """Tuple of arrays that define this object's identity for hashing."""
-        return (self.y, self.mask_idx)
+    def __repr__(self):
+        """A compact identity string: class name + the y dimensions.
 
-    def _hash(self) -> str:
-        """Probabilistic SHA-256 hash over data arrays (16-char hex digest).
-
-        Used as an S3 cache key (see Config.run_cloud) to dedup uploads
-        of identical experiment data.  See glow.util.hash_array.
+        Cheap and human-readable (no array hashing): the (b, num_img,
+        num_vox) shape names what the object is in a log line, traceback, or
+        recorded DataFrame cell. y is None only for a half-built instance.
         """
-        return hash_array(*self._hash_arrays)
+        if self.y is None:
+            return f'{type(self).__name__}(empty)'
+        b, num_img, num_vox = self.y.shape
+        return (f'{type(self).__name__}(b={b}, num_img={num_img}, '
+                f'num_vox={num_vox})')
 
     @classmethod
     def from_gauss(cls, b: int = None, num_img: int = 10,
@@ -126,7 +125,8 @@ class ExperimentImageOnly:
 
         meta = kwargs.pop('meta', {})
         meta.setdefault('features', [f'feat_{i}' for i in range(b)])
-        meta.setdefault('subjects', [f'subject_{i:03d}' for i in range(num_img)])
+        meta.setdefault('subjects',
+                        [f'subject_{i:03d}' for i in range(num_img)])
         # single cast at the public factory; the constructor would also
         # handle this but doing it explicitly documents the contract.
         y = y.reshape((b, num_img, num_vox)).astype(dtype, copy=False)
@@ -152,15 +152,22 @@ class ExperimentImageOnly:
         df = pd.DataFrame()
         for y_feat, y_glob in img_glob_dict.items():
             for file in folder.glob(y_glob):
-                sbj_list = re.findall(sbj_regex, str(file))
-                assert len(sbj_list) == 1, \
+                # dedupe before asserting: BIDS-derivatives paths repeat the
+                # subject id in both the directory and the filename (e.g.
+                # sub-100307/dwi/sub-100307_..._param-fa_dwimap.nii.gz), so a
+                # natural regex like sub-\d+ matches more than once. Collapse
+                # identical matches to one; still reject a path that yields two
+                # genuinely different ids.
+                sbj_set = set(re.findall(sbj_regex, str(file)))
+                assert len(sbj_set) == 1, \
                     f'unique sbj not found in file: {file}'
-                sbj = sbj_list[0]
+                sbj = sbj_set.pop()
                 df.loc[sbj, y_feat] = file
         return df
 
     @classmethod
-    def list_subjects(cls, folder, sbj_regex: str, img_glob_dict: dict) -> list:
+    def list_subjects(cls, folder, sbj_regex: str,
+                      img_glob_dict: dict) -> list:
         """Return the sorted list of subject ids discovered under folder.
 
         Canonical across regex rewrites that select the same files — useful
@@ -180,7 +187,7 @@ class ExperimentImageOnly:
 
     @classmethod
     def from_search(cls, folder, sbj_regex: str, img_glob_dict: dict,
-                    dtype=np.float32, **kwargs):
+                    dtype=np.float32, mask=None, **kwargs):
         """Search a folder for images and build an experiment.
 
         Args:
@@ -189,16 +196,18 @@ class ExperimentImageOnly:
             img_glob_dict (dict): feature_name -> glob pattern
             dtype: numpy dtype for the loaded y array (default np.float32;
                 see from_paths)
+            mask (path): optional brain-mask NIfTI defining the analysis
+                support (NIfTI inputs only); see from_paths
 
         Returns:
             Experiment built from discovered images
         """
         df = cls._search_files(folder, sbj_regex, img_glob_dict)
-        return cls.from_paths(df, dtype=dtype, **kwargs)
+        return cls.from_paths(df, dtype=dtype, mask=mask, **kwargs)
 
     @classmethod
     def from_paths(cls, paths, *, channel_names: dict = None,
-                   dtype=np.float32, **kwargs):
+                   dtype=np.float32, mask=None, **kwargs):
         """Build an experiment from an explicit (subject x feature) path map.
 
         Args:
@@ -210,6 +219,10 @@ class ExperimentImageOnly:
                 splits into multiple channels (e.g. RGB ->
                 {'rgb': ['red', 'green', 'blue']})
             dtype: numpy dtype for the loaded y array (default np.float32)
+            mask (path): optional path to a brain-mask NIfTI on the images'
+                grid (NIfTI inputs only).  When given, its nonzero voxels
+                are the analysis support; when None the support is inferred
+                as the voxels nonzero in every image (see load_image_nii).
 
         Returns:
             Experiment built from the listed images
@@ -223,11 +236,12 @@ class ExperimentImageOnly:
         assert len(set(df.values.flatten())) == np.prod(df.shape), \
             'file repeated for more than one subject-feature pair'
 
-        # check if any subject is missing any imaging feature
+        # warn rather than fail: a subject missing a feature is often a
+        # recoverable data-collection gap the caller wants to see, not stop on.
         s_missing = df.isna().mean(axis=1)
         if s_missing.any():
-            print('some sbj missing files:')
-            print(df.loc[s_missing, :].notnull().astype('int'))
+            missing = df.index[s_missing > 0].tolist()
+            warnings.warn(f'some subjects missing imaging files: {missing}')
 
         nii_in_file = ['.nii' in str(file) for file in df.values.flatten()]
         affine = None
@@ -236,8 +250,10 @@ class ExperimentImageOnly:
             # NIfTI path streams to y directly (no per-image dict held in
             # memory).  The loader controls dtype; we pass the public
             # factory's choice (float32 by default).
-            y, y_names, mask_idx, affine = load_image_nii(df, dtype=dtype)
+            y, y_names, mask_idx, affine = load_image_nii(
+                df, dtype=dtype, mask=mask)
         elif not any(nii_in_file):
+            assert mask is None, 'explicit mask only supported for NIfTI'
             feat_sbj_img, mask_idx = load_image_color(
                 df, channel_names=channel_names)
 
@@ -461,10 +477,14 @@ class Experiment(ExperimentImageOnly):
                           'origin (consider add_bias=True)',
                           NoBiasTermWarning)
 
-    @property
-    def _hash_arrays(self):
-        """Tuple of arrays that define this object's identity for hashing."""
-        return (*super()._hash_arrays, self.x, self.contrast)
+    def __repr__(self):
+        """Extend the image-only repr with the design width a (== x rows)."""
+        a = self.x.shape[0]
+        if self.y is None:
+            return f'{type(self).__name__}(a={a})'
+        b, num_img, num_vox = self.y.shape
+        return (f'{type(self).__name__}(b={b}, num_img={num_img}, '
+                f'num_vox={num_vox}, a={a})')
 
     def permute(self, perm_idx: int):
         """Return a new experiment with Freedman-Lane permuted images.
@@ -511,12 +531,19 @@ class ExperimentScaled(Experiment):
     def from_exp(cls, exp):
         """Build an ExperimentScaled from an existing Experiment.
 
+        Idempotent: an exp that is already an ExperimentScaled is returned
+        unchanged (never re-scaled), so each Analysis.fit can pass whatever
+        it was handed -- raw or already-scaled -- through this one call.
+
         Args:
             exp: source Experiment (provides y, mask_idx, x, contrast, meta)
 
         Returns:
-            ExperimentScaled with pre-processing applied to exp.y
+            ExperimentScaled with pre-processing applied to exp.y, or exp
+            itself when it is already an ExperimentScaled
         """
+        if isinstance(exp, cls):
+            return exp
         return cls(y=exp.y, mask_idx=exp.mask_idx, x=exp.x,
                    contrast=exp.contrast,
                    meta=dict(exp.meta) if getattr(exp, 'meta', None) else None)
@@ -547,7 +574,7 @@ class ExperimentScaled(Experiment):
                          np.linalg.inv(self.pre_scale),
                          y) + self.mean_orig
 
-    def __init__(self, y, *args, **kwargs):
+    def __init__(self, y, **kwargs):
         """Fit the pre-processing transform on y, then store the scaled y.
 
         Args:
@@ -585,4 +612,4 @@ class ExperimentScaled(Experiment):
         evals, evecs = np.linalg.eigh(cov_scale)
         self.pre_scale = (evecs.T @ self.pre_scale).astype(y_dtype, copy=False)
 
-        super().__init__(y=self.prep(y), *args, **kwargs)
+        super().__init__(y=self.prep(y), **kwargs)
