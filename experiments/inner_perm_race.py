@@ -14,9 +14,10 @@ signature (plus race_init, p_keep_thresh, and an observed-LLR arg the trim
 needs), so it drops into inner_perm.py verbatim on the next commit. It returns
 (mu, std, info); the drop-in discards info.
 
-run_experiment() compares the race against the full streaming cpu_perm at
-num_vox=1024, n_perm_inner=1000, on a general-Q0 (non-intercept) design with a
+run_experiment(num_vox=...) compares the race against the full streaming
+cpu_perm at n_perm_inner=1000 on a general-Q0 (non-intercept) design with a
 planted effect, and reports the speedup plus that the max-z is unchanged.
+Run as a script it defaults to num_vox=25000 (pass an int arg to override).
 """
 import time
 
@@ -184,10 +185,10 @@ def _build_exp(*, num_img=40, b=2, num_vox=1024, seed=0,
     return exp
 
 
-def run_experiment(*, n_perm=1000, race_init=15, p_keep_thresh=1e-6,
-                   min_vox=4, base_seed=1):
-    """Compare the race vs full cpu_perm at 1024 voxels, n_perm_inner=1000."""
-    exp = _build_exp()
+def run_experiment(*, num_vox=1024, n_perm=1000, race_init=15,
+                   p_keep_thresh=1e-6, min_vox=4, base_seed=1, n_rep=3):
+    """Compare the race vs full cpu_perm at num_vox, n_perm_inner=n_perm."""
+    exp = _build_exp(num_vox=num_vox)
     from glow.analysis.mancova import is_intercept_only_nuisance
     children = cluster(exp=exp, mode=ClusterMode.FOCUS)
     q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
@@ -211,7 +212,7 @@ def run_experiment(*, n_perm=1000, race_init=15, p_keep_thresh=1e-6,
         q0=q0, q1=q1, children=children, min_vox=min_vox,
         race_init=race_init, p_keep_thresh=p_keep_thresh)
 
-    def _best_time(fn, n_rep=3):
+    def _best_time(fn):
         fn()  # warmup (BLAS / cache), then report the fastest of n_rep
         best = float('inf')
         for _ in range(n_rep):
@@ -261,4 +262,6 @@ def run_experiment(*, n_perm=1000, race_init=15, p_keep_thresh=1e-6,
 
 if __name__ == '__main__':
     import sys
-    sys.exit(0 if run_experiment() else 1)
+    nv = int(sys.argv[1]) if len(sys.argv) > 1 else 25000
+    sys.exit(0 if run_experiment(num_vox=nv, n_rep=2 if nv >= 10000 else 3)
+             else 1)
