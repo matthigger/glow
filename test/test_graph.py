@@ -548,3 +548,76 @@ class TestSubgraph:
 
         # descendants of 6 should show 4 branch intact, 2 and 3 under 6
         assert list(g.iter_desc(6)) == [1, 5, 3]
+
+
+def _kernel_equivalence(x, contrast, *, b=2, nvox=64, seed=0):
+    """Assert compute_llr_inner_kernel == compute_llr_batched to fp64 round-off.
+
+    Builds a float64 experiment, kernels for all size>=4 survivors, and checks
+    the per-draw kernel LLR against the batched path on the FL-permuted
+    experiment over several perms (rel-err < 1e-9 -- the kernel is an exact
+    reorganisation, unlike iter_llr_perm's fp32 cumsum).
+    """
+    from glow.experiment.exper import Experiment
+    from glow.experiment.permute import get_freed_lane, _perm_indices
+    from glow.analysis.mancova import decompose
+    from glow.analysis.cluster import cluster, ClusterMode
+    from glow.graph import (compute_llr_batched, build_survivor_kernels,
+                            compute_llr_inner_kernel, build_dfs_preorder)
+
+    num_img = x.shape[1]
+    rng = np.random.default_rng(seed)
+    y = rng.standard_normal((b, num_img, nvox)).astype(np.float64)
+    mask_idx = np.arange(nvox).reshape(1, 1, nvox)
+    exp = Experiment(x=x, y=y, contrast=contrast, mask_idx=mask_idx,
+                     add_bias=False)
+    children = cluster(exp=exp, mode=ClusterMode.FOCUS)
+    q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
+    _, region_l, region_h = build_dfs_preorder(
+        children=children, num_vox=exp.y.shape[2])
+    size = region_h - region_l
+    num_reg = size.size
+    survivor_idx = np.where(size >= 4)[0]
+    kernels = build_survivor_kernels(exp.y, children, survivor_idx, q0)
+
+    for perm_idx in [1, 2, 7, 42, 999]:
+        _exp = exp.permute(perm_idx)
+        llr_ref, _ = compute_llr_batched(
+            _exp, children=children, q0=q0, q1=q1, min_size=4)
+        fl = get_freed_lane(exp.x, exp.contrast, perm_idx)
+        perm = _perm_indices(perm_idx, num_img)
+        llr_k = compute_llr_inner_kernel(
+            kernels, q0, q1, fl, perm, num_reg, min_size=4)
+        both = np.isfinite(llr_ref) & np.isfinite(llr_k) & (size >= 4)
+        assert both.any()
+        rel = (np.abs(llr_ref[both] - llr_k[both])
+               / np.maximum(np.abs(llr_ref[both]), 1e-8)).max()
+        assert rel < 1e-9, f'perm_idx={perm_idx}: rel_err={rel:.3e} exceeds 1e-9'
+
+
+def test_compute_llr_inner_kernel_matches_compute_llr_batched_general_q0():
+    """The general-Q0 par/perp gather kernel matches the batched LLR exactly.
+
+    Rank>=2 nuisance (bias + non-constant nuisance regressors) where Q0Q0^T
+    does NOT commute with permutations, so the intercept-only fast kernel is
+    invalid but compute_llr_inner_kernel is exact.
+    """
+    rng = np.random.default_rng(0)
+    num_img = 30
+    x = np.empty((1 + 2 + 2, num_img))
+    x[0] = 1.0
+    x[1:3] = rng.standard_normal((2, num_img))
+    x[3:] = rng.standard_normal((2, num_img))
+    contrast = np.array([False] * 3 + [True] * 2)
+    _kernel_equivalence(x, contrast)
+
+
+def test_compute_llr_inner_kernel_matches_compute_llr_batched_intercept_only():
+    """The general kernel also reproduces the intercept-only case exactly."""
+    rng = np.random.default_rng(1)
+    num_img = 30
+    x = np.empty((2, num_img))
+    x[0] = 1.0
+    x[1] = rng.standard_normal(num_img)
+    contrast = np.array([False, True])
+    _kernel_equivalence(x, contrast)

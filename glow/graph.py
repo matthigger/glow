@@ -544,6 +544,171 @@ def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
         yield llr_chunk
 
 
+def build_survivor_kernels(y, children, survivor_idx, q0):
+    """Build per-survivor Freedman-Lane par/perp kernels (general Q0, low-rank).
+
+    The general-nuisance counterpart of compute_llr_inner_fast's precompute.
+    Under Freedman-Lane (Y_v* = P (I - Q0Q0^T) Y_v + Q0Q0^T Y_v) the
+    sum-over-voxels b x b second moment of a region r decomposes as
+
+        yout_perm[r] = yout_u[r] + C[r] + C[r]^T,
+        C[r][i, j]   = sum_k y_par[i, k, .] . y_perp[j, perm[k], .]  (over r),
+
+    with y_par = Q0Q0^T y, y_perp = y - y_par. The naive cross kernel
+    M_r[i,j,k,l] = sum_v y_par[i,k,v] y_perp[j,l,v] is (b, b, N, N); but y_par
+    lives in the a0-dim column space of Q0 (y_par[i,k,v] = sum_a Q0[a,k] s0[i,a,v],
+    s0 = Q0 y), so M factors as M_r[i,j,k,l] = sum_a Q0[a,k] K_r[i,j,a,l]. We
+    therefore store the LOW-RANK kernel
+
+        K_r[i, j, a, l] = sum_{v in r} s0[i, a, v] y_perp[j, l, v]
+
+    of shape (b, b, a0, N) -- a num_img/a0 reduction in both storage and build
+    cost vs M. The per-draw cross term is then a contraction with a
+    column-permuted Q0 (see compute_llr_inner_kernel), no gather of a dense
+    tensor. Valid for ANY nuisance; survivor leaves are read off
+    build_dfs_preorder's contiguous ranges. See freedman_lane_trick.tex and
+    docs/notes/general_q0_race_kernel.md.
+
+    Memory: num_surv * b^2 * a0 * num_img floats for K (vs the dense M's
+    num_surv * b^2 * num_img^2).
+
+    Args:
+        y (np.array): (b, num_img, num_vox) raw voxel data, unpermuted
+        children (np.array): (num_reg - num_vox, 2) Ward tree
+        survivor_idx (np.array): (num_surv,) region indices to build kernels for
+        q0 (np.array): (a0, num_img) nuisance subspace (orthonormal rows)
+
+    Returns:
+        kernels (dict): with keys
+            K            (num_surv, b, b, a0, num_img) low-rank par/perp kernel
+            ysum_u_S     (num_surv, b, num_img)  unpermuted per-region image sum
+            yout_u_S     (num_surv, b, b)         unpermuted per-region Y Y^T
+            size_S       (num_surv,)              voxel count per survivor
+            survivor_idx (num_surv,)              pass-through region indices
+    """
+    num_vox = y.shape[2]
+    out_dtype = y.dtype if y.dtype == np.float32 else np.float64
+    survivor_idx = np.asarray(survivor_idx, dtype=np.int64)
+    leaf_ord, region_l, region_h = build_dfs_preorder(
+        children=children, num_vox=num_vox)
+    rl = region_l[survivor_idx]
+    rh = region_h[survivor_idx] - 1
+
+    def reg_sum(xvox):
+        # Survivor region sums of a per-voxel array (DFS-ordered on the last
+        # axis) by cumsum-and-diff, reading only the survivor [l, h) boundaries
+        # -- every voxel touched once, no re-gathering of leaves shared by
+        # nested survivors (the per-survivor loop's bottleneck). Accumulated in
+        # float64: a small/deep region is the difference of two large partial
+        # sums, so a float32 cumsum loses it to catastrophic cancellation
+        # (a 4-voxel region at leaf ~6e5 carries ~1e-2 relative error in fp32).
+        np.cumsum(xvox, axis=-1, out=xvox)
+        hi = xvox[..., rh]
+        lo = xvox[..., np.maximum(rl - 1, 0)]
+        lo[..., rl == 0] = 0.0
+        return np.ascontiguousarray(np.moveaxis(hi - lo, -1, 0))
+
+    # per-voxel sufficient statistics in DFS leaf order (float64 for reg_sum)
+    yf = y.astype(np.float64, copy=False)
+    q0f = q0.astype(np.float64, copy=False)
+    s0 = np.einsum('an,inv->iav', q0f, yf, optimize=True)      # (b, a0, num_vox)
+    y_perp = yf - np.einsum('ak,iav->ikv', q0f, s0, optimize=True)
+    yf_dfs = yf[:, :, leaf_ord]
+    s0_dfs = s0[:, :, leaf_ord]
+    y_perp_dfs = y_perp[:, :, leaf_ord]
+    del yf, s0, y_perp
+
+    # yout_u (b,b) reads yf_dfs; ysum_u (b,N) consumes it (in-place cumsum).
+    yout_u = reg_sum(np.einsum('inv,jnv->ijv', yf_dfs, yf_dfs, optimize=True))
+    ysum_u = reg_sum(yf_dfs)
+    # K (b,b,a0,N): per-voxel kvox[i,j,a,l,v] = s0[i,a,v] y_perp[j,l,v]; the
+    # full (b,b,a0,num_vox) prefix is transient, only survivor K is kept.
+    kvox = s0_dfs[:, None, :, None, :] * y_perp_dfs[None, :, None, :, :]
+    K = reg_sum(kvox)
+    size = (region_h[survivor_idx] - region_l[survivor_idx]).astype(np.int64)
+    return dict(K=K.astype(out_dtype, copy=False),
+                ysum_u_S=ysum_u.astype(out_dtype, copy=False),
+                yout_u_S=yout_u.astype(out_dtype, copy=False),
+                size_S=size, survivor_idx=survivor_idx)
+
+
+def compute_llr_inner_kernel(kernels, q0, q1, freed_lane, perm, num_reg,
+                             min_size: int = 1):
+    """Per-perm LLR for survivors only via the low-rank par/perp kernel (general Q0).
+
+    The general-nuisance per-draw kernel: given build_survivor_kernels' output
+    and one Freedman-Lane draw (freed_lane plus its index array perm), forms
+    each survivor's permuted (ysum, yout), then the usual E / H / LLR. The
+    cross term collapses to a contraction with a column-permuted Q0,
+
+        C[s, i, j] = sum_{a, l} K[s, i, j, a, l] Q0[a, perm_inv[l]],
+
+    so no dense tensor is gathered per draw; the permuted image sum folds the
+    FL matrix into the (small) q0 / q1 bases first. Per-draw cost is
+    O(num_surv * b^2 * a0 * num_img). Returns the same LLR as
+    compute_llr_batched on the FL-permuted experiment (verified to fp).
+
+    Args:
+        kernels (dict): output of build_survivor_kernels
+        q0 (np.array): (a0, num_img) nuisance basis (rows) -- the SAME passed to
+            build_survivor_kernels
+        q1 (np.array): (a1, num_img) interest basis (rows)
+        freed_lane (np.array): (num_img, num_img) FL matrix from get_freed_lane
+            (applied along the image axis), for the SAME draw as perm
+        perm (np.array): (num_img,) the index array behind freed_lane
+            (= permute._perm_indices(seed, num_img))
+        num_reg (int): total region count (output array size)
+        min_size (int): survivors with size < min_size get NaN LLR
+
+    Returns:
+        llr (np.array): (num_reg,) LLR -- NaN off-survivor and below min_size
+    """
+    K = kernels['K']
+    ysum_u_S = kernels['ysum_u_S']
+    yout_u_S = kernels['yout_u_S']
+    size_S = kernels['size_S']
+    survivor_idx = kernels['survivor_idx']
+    dtype = K.dtype
+
+    llr = np.full(num_reg, np.nan, dtype=np.float64)
+    if survivor_idx.size == 0:
+        return llr
+    active_S = size_S >= min_size
+    if not active_S.any():
+        return llr
+
+    # fold the FL matrix into the bases once (shared across survivors): the
+    # permuted image sum only ever enters via its q0 / q1 projections.
+    fl = freed_lane.astype(dtype, copy=False)
+    fl_q0 = fl @ q0.T.astype(dtype, copy=False)            # (num_img, a0)
+    fl_q1 = fl @ q1.T.astype(dtype, copy=False)            # (num_img, a1)
+
+    # C[s, i, j] = sum_{a, l} K[s, i, j, a, l] Q0[a, perm_inv[l]]: one
+    # contraction of K against the column-permuted Q0 (perm is a bijection, so
+    # the gather k -> perm[k] becomes a reindex of Q0's columns by perm_inv).
+    perm_inv = np.argsort(perm)
+    q0pi = q0[:, perm_inv].astype(dtype, copy=False)       # (a0, num_img)
+    C = np.einsum('sijal,al->sij', K, q0pi, optimize=True)  # (num_surv, b, b)
+    yout_perm_S = yout_u_S + C + C.transpose(0, 2, 1)
+
+    sz_a = size_S[active_S].astype(dtype)[:, None, None]
+    ysum_a = ysum_u_S[active_S]
+    yout_a = yout_perm_S[active_S]
+    a0_S = np.einsum('sbn,na->sba', ysum_a, fl_q0, optimize=True)
+    t_S = yout_a - np.einsum('sba,sca->sbc', a0_S, a0_S, optimize=True) / sz_a
+    a1_S = np.einsum('sbn,na->sba', ysum_a, fl_q1, optimize=True)
+    h_S = np.einsum('sba,sca->sbc', a1_S, a1_S, optimize=True) / sz_a
+    e_S = t_S - h_S
+
+    sign_t, ld_t = np.linalg.slogdet(e_S + h_S)
+    sign_e, ld_e = np.linalg.slogdet(e_S)
+    valid = (sign_t > 0) & (sign_e > 0)
+    sz_1d = size_S[active_S]
+    llr[survivor_idx[active_S]] = np.where(
+        valid, (sz_1d / 2.0) * (ld_t - ld_e), np.nan)
+    return llr
+
+
 def node_sum(x, children):
     """Sum leaf values up through the tree to every node.
 
