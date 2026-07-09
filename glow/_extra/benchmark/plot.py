@@ -21,8 +21,8 @@ stacked detection figure: an HCP block over a WGN block, each a 2 x 3 grid
 whose top row is the per-method mean score + central 95% percentile band and
 whose bottom row is the GLOW-Focus head-to-head diff, over the dice / sens /
 ppv columns. Alongside it a discovery-threshold table (write_threshold_table)
-records the effect strength at which each method's mean Dice crosses 0.5,
-normalised to GLOW-Focus (thr_method / thr_glow) with a column per b.
+records, per method, the absolute effect strength at which its mean Dice first
+reaches 0.5 -- rows the methods, a column per b.
 
 The runtime family is plotted apart (tidy_runtime / plot_runtime): those caches
 hold detection fixed and sweep one cost knob, so the signal is the leaf wall
@@ -587,7 +587,7 @@ def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
 
 def _write_diff_csv(label: str, diff_long, *, x: str, facet: str,
                     metrics: list, out) -> None:
-    """Write the diff-grid mean line to CSV and print where Dice peaks.
+    """Write the diff-grid mean line to CSV.
 
     diff_long is the tidy mean line behind the diff rows (_draw_diff), one row
     per (facet, method, x, metric): the seed-averaged absolute scores (glow =
@@ -595,8 +595,7 @@ def _write_diff_csv(label: str, diff_long, *, x: str, facet: str,
     difference (mean_diff), and the win rate (win = fraction of trials with
     the GLOW variant strictly above the best alternative). It is reshaped to
     one row per (facet, method, x) with a glow_<m> / other_<m> / <m>_diff /
-    <m>_win block per metric, written to {label}_diff.csv; then the x of the
-    maximum mean Dice delta is printed per (facet, method).
+    <m>_win block per metric, written to {label}_diff.csv.
 
     Args:
         label (str): cache name; used in the output filename
@@ -622,28 +621,6 @@ def _write_diff_csv(label: str, diff_long, *, x: str, facet: str,
     csv_path = out / f'{label}_diff.csv'
     wide.to_csv(csv_path, index=False, float_format='%.4f')
     print(f'saved: {csv_path}')
-
-    if 'dice_diff' not in wide.columns:
-        return
-    # peak mean Dice delta per (facet, method): scores, delta, win, other
-    # deltas
-    n_dice = (diff_long[diff_long['metric'] == 'dice']
-              .set_index([facet, 'method', x])['n_seed'])
-    print('  GLOW variant − best alternative, peak mean Dice delta:')
-    for (src, method), sub in wide.groupby([facet, 'method']):
-        sub = sub.dropna(subset=['dice_diff'])
-        if sub.empty:
-            continue
-        peak = sub.loc[sub['dice_diff'].idxmax()]
-        n = int(n_dice.get((src, method, peak[x]), 0))
-        others = '  '.join(
-            f'{m}={peak[f"{m}_diff"]:+.4f}'
-            for m in metrics if m != 'dice' and f'{m}_diff' in wide.columns
-            and pd.notnull(peak[f'{m}_diff']))
-        print(f'    {facet}={src} {method}: at {x}={peak[x]:g} (n={n})  '
-              f'dice {peak["glow_dice"]:.4f} vs {peak["other_dice"]:.4f} '
-              f'(Δ{peak["dice_diff"]:+.4f}, win {peak["dice_win"]:.0%})  '
-              + others)
 
 
 # ---------------------------------------------------------------------------
@@ -682,10 +659,24 @@ def _crossing(x_vals, y_vals, level: float):
     return np.nan, 'above'
 
 
-def threshold_ratio_table(df, *, x: str, metric: str = 'dice',
-                          level: float = 0.5,
-                          ref_label: str = 'GLOW-Focus'):
-    """Wide table of each method's discovery threshold, ref-normalised, per b.
+def _order_threshold_rows(wide):
+    """Sort a threshold table by source order, then canonical method order.
+
+    Methods follow the config catalogue order (the two GLOW arms first, then
+    the voxel-wise methods; see config.ana_kwargs_dict); a label outside the
+    catalogue sorts last. Sources follow _SOURCE_ORDER (HCP over WGN).
+    """
+    m_rank = {m: i for i, m in enumerate(ana_kwargs_dict)}
+    s_rank = {s: i for i, s in enumerate(_SOURCE_ORDER)}
+    keyed = wide.assign(
+        _s=wide['source'].map(lambda s: s_rank.get(s, len(s_rank))),
+        _m=wide['method'].map(lambda m: m_rank.get(m, len(m_rank))))
+    return (keyed.sort_values(['_s', '_m'])
+                 .drop(columns=['_s', '_m']).reset_index(drop=True))
+
+
+def threshold_table(df, *, x: str, metric: str = 'dice', level: float = 0.5):
+    """Wide table of each method's discovery threshold in absolute x, per b.
 
     A method's discovery threshold is the swept-axis value at which its mean
     metric (averaged across trials) first crosses level -- the effect strength
@@ -696,12 +687,13 @@ def threshold_ratio_table(df, *, x: str, metric: str = 'dice',
     1945, with Dice > 0.7 the usual "good overlap" line (Zijdenbos 1994), so
     level is a parameter.
 
-    Each entry is the raw threshold ratio thr_method / thr_ref (for x =
-    effect_llr, the LLR at which the method reaches level Dice divided by the
-    reference method's): ref_label is 1.0, and > 1 means the method needs a
-    stronger effect than the reference. A structural axis that varies alongside
-    x (b in the llr sweep) becomes the columns, so each b gets its own ratio
-    column; with none varying the single ratio column is named by x.
+    Each entry is the raw threshold, not a ratio: for x = effect_llr, the LLR
+    at which the method reaches level Dice, read directly. A structural axis
+    that varies alongside x (b in the llr sweep) becomes the columns, so each b
+    gets its own threshold column; with none varying the single column is named
+    by x. A method whose mean curve never reaches level within the swept range,
+    or already sits at/above it at the weakest x, has no finite crossing -- its
+    cell is nan, the reason in the returned status ('above' / 'below').
 
     Args:
         df: a tidy_run_ana frame (needs source / label / x / metric, and any
@@ -709,12 +701,14 @@ def threshold_ratio_table(df, *, x: str, metric: str = 'dice',
         x (str): the swept-axis column (effect strength when x is effect_llr)
         metric (str): the metric whose level crossing defines the threshold
         level (float): the crossing level (0.5 = half-maximal)
-        ref_label (str): the reference method (its ratio is 1.0)
 
     Returns:
-        a wide DataFrame with columns source, method, then one ratio column per
-        varying secondary value (e.g. b=1 / b=2 / b=3), or a single column named
-        by x when no secondary varies. Empty in, empty out.
+        (wide, status): wide is a DataFrame with columns source, method, then
+            one threshold column per varying secondary value (b=1 / b=2 / b=3),
+            or a single column named by x when none varies; status maps
+            (source, method, column) to the _crossing status ('ok' / 'below' /
+            'above'), for rendering the censored (nan) cells. Empty frame and
+            empty dict in, empty out.
     """
     df = df.copy()
     df[x] = pd.to_numeric(df[x], errors='coerce')
@@ -724,55 +718,47 @@ def threshold_ratio_table(df, *, x: str, metric: str = 'dice',
     # then yields an empty table rather than a groupby that silently drops
     # every NaN-label row and leaves wide without a method column.
     df = df.dropna(subset=[x, 'label'])
-    # every ratio normalises to ref_label, so a frame missing it (only the
-    # non-reference methods resolved) has no reference to divide by and yields
-    # an all-blank table; skip it as empty rather than emit one.
-    if df.empty or ref_label not in set(df['label']):
-        return df.iloc[0:0]
+    if df.empty:
+        return df.iloc[0:0], {}
 
     secondary = [a for a in _SECONDARY_AXES
                  if a != x and a in df.columns and df[a].dropna().nunique() > 1]
 
     rows = []
+    status = {}
     for keys, sub in df.groupby(['source', *secondary]):
         keys = keys if isinstance(keys, tuple) else (keys,)
         cell = dict(zip(['source', *secondary], keys))
+        col = (' '.join(f'{s}={int(cell[s])}' for s in secondary)
+               if secondary else x)
         mean_curve = sub.groupby(['label', x])[metric].mean()
-        thr = {}
         for lab in mean_curve.index.get_level_values(0).unique().tolist():
             s = mean_curve.loc[lab].dropna().sort_index()
-            thr[lab] = _crossing(np.asarray(s.index, dtype=float),
-                                 np.asarray(s.values, dtype=float), level)[0]
-        ref = thr.get(ref_label, np.nan)
-        for lab, t in thr.items():
-            ratio = (t / ref if np.isfinite(t) and np.isfinite(ref) and ref > 0
-                     else np.nan)
-            rows.append({**cell, 'method': lab, 'ratio': ratio})
+            thr, st = _crossing(np.asarray(s.index, dtype=float),
+                                np.asarray(s.values, dtype=float), level)
+            rows.append({'source': cell['source'], 'method': lab,
+                         '_col': col, 'thr': thr})
+            status[(cell['source'], lab, col)] = st
 
     long = pd.DataFrame(rows)
-    if secondary:
-        long['_col'] = long[secondary].apply(
-            lambda r: ' '.join(f'{s}={int(r[s])}' for s in secondary), axis=1)
-        wide = long.pivot_table(index=['source', 'method'], columns='_col',
-                                values='ratio').reset_index()
-        wide.columns.name = None
-    else:
-        wide = long.rename(columns={'ratio': x})
-
-    # reference method first per source, then others weakest-method first
-    ratio_cols = [c for c in wide.columns if c not in ('source', 'method')]
-    order = wide[ratio_cols].mean(axis=1)
-    wide = (wide.assign(_ref=wide['method'].ne(ref_label), _order=order)
-                .sort_values(['source', '_ref', '_order'],
-                             ascending=[True, True, False])
-                .drop(columns=['_ref', '_order']).reset_index(drop=True))
-    return wide
+    # dropna=False keeps a method whose crossing is nan at every b (censored),
+    # so the row survives to be rendered from its status rather than vanishing
+    wide = long.pivot_table(index=['source', 'method'], columns='_col',
+                            values='thr', dropna=False).reset_index()
+    wide.columns.name = None
+    return _order_threshold_rows(wide), status
 
 
 def write_threshold_table(label: str, df, *, x: str, out, metric: str = 'dice',
-                          level: float = 0.5,
-                          ref_label: str = 'GLOW-Focus') -> None:
-    """Write and print the ref-normalised discovery-threshold table.
+                          level: float = 0.5) -> None:
+    """Write and print the absolute discovery-threshold table.
+
+    Rows are the methods (the GLOW arms first), the columns the varying
+    secondary axis (b in the llr sweep); each cell is the effect_llr at which
+    that method's mean Dice first reaches level (threshold_table). Printed once
+    per source and written to {label}_threshold.csv. A censored cell prints as
+    < the weakest tested effect (already above level there) or > the strongest
+    (never reaches it).
 
     Args:
         label (str): cache name; used in the output filename
@@ -781,29 +767,40 @@ def write_threshold_table(label: str, df, *, x: str, out, metric: str = 'dice',
         out (pathlib.Path): directory the CSV is written into
         metric (str): the metric whose level crossing defines the threshold
         level (float): the crossing level (0.5 = half-maximal Dice)
-        ref_label (str): the reference method (its ratio is 1.0)
     """
-    wide = threshold_ratio_table(df, x=x, metric=metric, level=level,
-                                 ref_label=ref_label)
+    wide, status = threshold_table(df, x=x, metric=metric, level=level)
     if wide.empty:
         return
     path = out / f'{label}_threshold.csv'
-    wide.to_csv(path, index=False, float_format='%.3f')
+    wide.to_csv(path, index=False, float_format='%.4f')
     print(f'saved: {path}')
 
-    ratio_cols = [c for c in wide.columns if c not in ('source', 'method')]
-    print(f'  {x} at Dice >= {level:g} (mean across trials), relative to '
-          f'{ref_label} (= 1.00; > 1 needs a stronger effect):')
-    for src, sub in wide.groupby('source'):
+    val_cols = [c for c in wide.columns if c not in ('source', 'method')]
+    xlo, xhi = float(df[x].min()), float(df[x].max())
+
+    def render(src, method, col, value):
+        """Format one threshold cell, censored ends read off the status map."""
+        if pd.notnull(value):
+            return f'{value:>10.4f}'
+        st = status.get((src, method, col))
+        if st == 'below':
+            return f'{f"<{xlo:g}":>10}'
+        if st == 'above':
+            return f'{f">{xhi:g}":>10}'
+        return f'{"—":>10}'
+
+    metric_title = _METRIC_TITLES.get(metric, metric)
+    print(f'  {_X_PARAM_LABELS.get(x, x)} at {metric_title} >= {level:g} '
+          f'(mean across trials):')
+    for src in wide['source'].drop_duplicates():
+        sub = wide[wide['source'] == src]
         print(f'    source={src}')
-        print(f'      {"method":<11} '
-              + '  '.join(f'{c:>7}' for c in ratio_cols))
+        header = ' '.join(f'{c:>10}' for c in val_cols)
+        print(f'      {"method":<11} {header}')
         for _, r in sub.iterrows():
-            cells = '  '.join(
-                (f'{r[c]:>7.2f}' if pd.notnull(r[c]) else f'{"—":>7}')
-                for c in ratio_cols)
-            tag = ' (ref)' if r['method'] == ref_label else ''
-            print(f'      {r["method"]:<11} {cells}{tag}')
+            cells = ' '.join(render(src, r['method'], c, r[c])
+                             for c in val_cols)
+            print(f'      {r["method"]:<11} {cells}')
 
 
 # ---------------------------------------------------------------------------
@@ -1227,7 +1224,7 @@ def plot_cache(label: str, df, out,
         plot_source_grid(sub_label, sub, x=x, metrics=metrics, out=out)
 
     # one discovery-threshold table for the whole cache, a column per secondary
-    # (b in the llr sweep); normalised to GLOW-Focus (see threshold_ratio_table)
+    # (b in the llr sweep); absolute effect_llr per method (threshold_table)
     write_threshold_table(label, df, x=x, out=out)
 
 

@@ -166,8 +166,7 @@ def test_plot_cache_splits_on_secondary_axis(tmp_path):
 
 
 def test_plot_cache_sweep_writes_threshold_csv(tmp_path):
-    """A swept cache writes the GLOW-normalised threshold table, a column per b."""
-    rng = np.random.default_rng(0)
+    """A swept cache writes the absolute threshold table, a column per b."""
     rows = []
     for b in (1, 2, 3):
         feats = ('od', 'fa', 'md')[:b]
@@ -187,15 +186,16 @@ def test_plot_cache_sweep_writes_threshold_csv(tmp_path):
     plot.plot_cache('sweep_llr', df, tmp_path)
     assert (tmp_path / 'sweep_llr_threshold.csv').exists()
     thr = pd.read_csv(tmp_path / 'sweep_llr_threshold.csv')
-    # one ratio column per b value; entries normalised to GLOW-Focus
+    # one threshold column per b value; entries are absolute effect_llr
     assert {'source', 'method'}.issubset(thr.columns)
     assert {'b=1', 'b=2', 'b=3'}.issubset(thr.columns)
     bcols = ['b=1', 'b=2', 'b=3']
-    glow = thr[thr['method'] == 'GLOW-Focus']
-    assert np.allclose(glow[bcols].to_numpy(), 1.0)
-    # VBA needs a stronger effect than GLOW-Focus (ratio > 1)
-    vba = thr[thr['method'] == 'VBA']
-    assert (vba[bcols].to_numpy() > 1).all()
+    glow = thr[thr['method'] == 'GLOW-Focus'][bcols].to_numpy()
+    vba = thr[thr['method'] == 'VBA'][bcols].to_numpy()
+    # thresholds fall inside the swept 0.01..0.1 range
+    assert ((glow > 0.01) & (glow < 0.1)).all()
+    # GLOW-Focus reaches Dice 0.5 at a weaker effect than VBA
+    assert (glow < vba).all()
 
 
 def test_crossing_interpolates_in_log_x():
@@ -214,8 +214,8 @@ def test_crossing_interpolates_in_log_x():
     assert np.isnan(thr_lo) and np.isnan(thr_hi)
 
 
-def test_threshold_ratio_normalised_to_glow():
-    """Entry = raw thr_method / thr_glow (LLR ratio), 1.0 at GLOW-Focus."""
+def test_threshold_absolute_crossing():
+    """Entry = the absolute x at which mean Dice reaches level (log-interp)."""
     df = pd.DataFrame({
         'source': ['HCP'] * 6,
         'b': [1] * 6,
@@ -224,19 +224,18 @@ def test_threshold_ratio_normalised_to_glow():
         # VBA crosses between 0.03 and 0.1; GLOW between 0.01 and 0.03
         'dice': [0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
     })
-    wide = plot.threshold_ratio_table(df, x='effect_llr', metric='dice',
-                                      level=0.5, ref_label='GLOW-Focus')
-    # b is constant here, so the single ratio column is named by x
+    wide, status = plot.threshold_table(df, x='effect_llr', metric='dice',
+                                        level=0.5)
+    # b is constant here, so the single threshold column is named by x
     w = wide.set_index('method')
-    thr_vba = (0.03 * 0.1) ** 0.5
-    thr_glow = (0.01 * 0.03) ** 0.5
-    assert w.loc['GLOW-Focus', 'effect_llr'] == pytest.approx(1.0)
-    # raw LLR ratio, no square root
-    assert w.loc['VBA', 'effect_llr'] == pytest.approx(thr_vba / thr_glow)
+    assert w.loc['GLOW-Focus', 'effect_llr'] == pytest.approx(
+        (0.01 * 0.03) ** 0.5)
+    assert w.loc['VBA', 'effect_llr'] == pytest.approx((0.03 * 0.1) ** 0.5)
+    assert status[('HCP', 'GLOW-Focus', 'effect_llr')] == 'ok'
 
 
-def test_threshold_ratio_column_per_b():
-    """A sweep varying b yields one ratio column per b value."""
+def test_threshold_column_per_b():
+    """A sweep varying b yields one absolute-threshold column per b value."""
     grid = [0.01, 0.02, 0.04, 0.08]
     # (glow_cross, vba_cross) per b: VBA falls a step further behind at b=2
     spec = {1: (0.02, 0.04), 2: (0.02, 0.08)}
@@ -247,16 +246,18 @@ def test_threshold_ratio_column_per_b():
                 rows.append({'source': 'HCP', 'b': b, 'label': lab,
                              'effect_llr': llr,
                              'dice': 1.0 if llr >= cross else 0.0})
-    wide = plot.threshold_ratio_table(pd.DataFrame(rows), x='effect_llr',
-                                      ref_label='GLOW-Focus')
+    wide, _ = plot.threshold_table(pd.DataFrame(rows), x='effect_llr')
     assert {'b=1', 'b=2'}.issubset(wide.columns)
     assert 'effect_llr' not in wide.columns  # b became the columns
-    vba = wide.set_index('method').loc['VBA']
-    # VBA's disadvantage is larger at b=2 (crosses a grid step later)
-    assert vba['b=2'] > vba['b=1'] > 1.0
+    w = wide.set_index('method')
+    # VBA needs a stronger effect at b=2 (crosses a grid step later)
+    assert w.loc['VBA', 'b=2'] > w.loc['VBA', 'b=1']
+    # GLOW-Focus reaches 0.5 at a weaker effect than VBA at both b
+    assert w.loc['GLOW-Focus', 'b=1'] < w.loc['VBA', 'b=1']
+    assert w.loc['GLOW-Focus', 'b=2'] < w.loc['VBA', 'b=2']
 
 
-def test_threshold_ratio_unlabelled_returns_empty():
+def test_threshold_unlabelled_returns_empty():
     """All-NaN labels (stale records) yield an empty table, not a KeyError."""
     df = pd.DataFrame({
         'source': ['WGN'] * 3,
@@ -265,20 +266,42 @@ def test_threshold_ratio_unlabelled_returns_empty():
         'effect_llr': [0.01, 0.03, 0.1],
         'dice': [0.0, 0.5, 1.0],
     })
-    assert plot.threshold_ratio_table(df, x='effect_llr').empty
+    wide, status = plot.threshold_table(df, x='effect_llr')
+    assert wide.empty and status == {}
 
 
-def test_threshold_ratio_missing_ref_returns_empty():
-    """Only non-reference methods resolve -> nothing to normalise by; skip."""
+def test_threshold_needs_no_reference():
+    """Absolute thresholds need no reference: a lone method still tables."""
     df = pd.DataFrame({
         'source': ['HCP'] * 3,
         'b': [1] * 3,
         'label': ['VBA'] * 3,
         'effect_llr': [0.01, 0.03, 0.1],
-        'dice': [0.0, 0.5, 1.0],
+        'dice': [0.0, 1.0, 1.0],
     })
-    assert plot.threshold_ratio_table(df, x='effect_llr',
-                                      ref_label='GLOW-Focus').empty
+    wide, _ = plot.threshold_table(df, x='effect_llr')
+    assert list(wide['method']) == ['VBA']
+    assert wide.set_index('method').loc['VBA', 'effect_llr'] == pytest.approx(
+        (0.01 * 0.03) ** 0.5)
+
+
+def test_threshold_censored_status():
+    """A method already above level at the weakest x is 'below'; one that never
+    reaches it is 'above' -- both nan thresholds, split by the status map."""
+    df = pd.DataFrame({
+        'source': ['HCP'] * 6,
+        'b': [1] * 6,
+        'label': ['GLOW-Focus'] * 3 + ['VBA'] * 3,
+        'effect_llr': [0.01, 0.03, 0.1] * 2,
+        # GLOW already >= 0.5 at the weakest effect; VBA never reaches 0.5
+        'dice': [0.6, 0.8, 0.9, 0.0, 0.1, 0.2],
+    })
+    wide, status = plot.threshold_table(df, x='effect_llr')
+    w = wide.set_index('method')
+    assert pd.isna(w.loc['GLOW-Focus', 'effect_llr'])
+    assert pd.isna(w.loc['VBA', 'effect_llr'])
+    assert status[('HCP', 'GLOW-Focus', 'effect_llr')] == 'below'
+    assert status[('HCP', 'VBA', 'effect_llr')] == 'above'
 
 
 # ---------------------------------------------------------------------------
