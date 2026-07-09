@@ -212,6 +212,10 @@ def test_compute_llr_batched_matches_iter_mancova(exp, children):
         warnings.simplefilter('ignore', NoBiasTermWarning)
         exp = exp.sample_x(a=a, seed=0, add_bias=True)
 
+    # compute_llr_batched accumulates in float64; compare against a float64
+    # reference so this checks the batched math, not float32 rounding.
+    exp.y = exp.y.astype(np.float64)
+
     q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
 
     # cover unpermuted (perm_idx=0) and a few FL draws

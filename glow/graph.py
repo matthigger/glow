@@ -123,7 +123,8 @@ def iter_mancova(exp, **kwargs):
         yield reg_idx, size, e, h
 
 
-def compute_llr_batched(exp, children, q0, q1, min_size: int = 1):
+def compute_llr_batched(exp, children, q0, q1, min_size: int = 1,
+                        acc_dtype=np.float64):
     """Compute vectorised per-region LLR for one (already-permuted) exp.
 
     Computes the same per-region LLR statistic as the per-region loop:
@@ -153,18 +154,34 @@ def compute_llr_batched(exp, children, q0, q1, min_size: int = 1):
         min_size (int): regions with size < min_size get NaN LLR (and
             their E / H matrices are never computed). Default 1 keeps
             every region.
+        acc_dtype: accumulation dtype for the sufficient statistics and the
+            E / H assembly. Default np.float64 keeps E accurate for
+            low-variance regions on a large DC offset, whose E cancels two
+            terms of magnitude trace(yout) down to a far smaller residual;
+            float32 there collapses E to rounding noise (see the Note).
+            Exposed as float32 only to reproduce that collapse in tests.
 
     Returns:
         llr (np.array): (num_reg,) LLR per region. NaN where size <
-            min_size, or where the error matrix E is not positive-definite
-            to within the float rounding floor M * eps * trace(yout)
-            (M = num_img * size) -- i.e. degenerate near-constant regions
-            whose E is cancellation noise, not genuine residual scatter.
+            min_size, or where E (or E + H) is not positive definite (its
+            slogdet sign <= 0) -- a genuinely degenerate region.
         size (np.array): (num_reg,) int voxel count per region.
+
+    Note:
+        E is formed by cancelling two terms of magnitude trace(yout) (the
+        region's un-centred energy Sum y^2) down to the residual scatter,
+        which for a near-constant region on a large offset is orders of
+        magnitude smaller. In float32 that subtraction loses every digit: E
+        becomes rounding noise, its inner-null std collapses, and the
+        standardized z explodes, poisoning the max-z null. Accumulating in
+        float64 keeps E accurate, so a plain positive-definite (sign) check
+        suffices and a healthy large region -- which aggregates more voxels
+        and so is better conditioned, not worse -- keeps its LLR. This
+        mirrors iter_llr_perm, which computes the inner null the same way.
     """
-    y = exp.y
+    dtype = np.dtype(acc_dtype)
+    y = np.asarray(exp.y, dtype=dtype)
     b, num_img, num_vox = y.shape
-    dtype = y.dtype if y.dtype == np.float32 else np.float64
     num_reg = num_vox + children.shape[0]
 
     # --- Phase 1: bottom-up build of ysum / yout / size for ALL regions ---
@@ -195,25 +212,17 @@ def compute_llr_batched(exp, children, q0, q1, min_size: int = 1):
 
     e = t - h
 
-    # LLR = (size/2) * (ln|E+H| - ln|E|).  NaN where E is not positive
-    # definite.  A plain sign>0 check is too lax in float32: E is formed by
-    # cancelling two terms of magnitude S = trace(yout) (the region's
-    # un-centred energy Sum y^2), so for near-constant low-variance regions
-    # its true value falls below the summation rounding floor ~ M * eps * S,
-    # where M = num_img * size is the number of (image, voxel) terms summed.
-    # There slogdet's sign is noise; left in, such a region's per-permutation
-    # z explodes (mu, std collapse to float scale) and dead near-constant
-    # voxels poison the Westfall-Young max-z null (see the dead-voxel FWER
-    # analysis).  Require lambda_min(E) above that floor; since H is PSD,
-    # lambda_min(E) >= tol implies E + H is safe too (Weyl).
+    # LLR = (size/2) * (ln|E+H| - ln|E|).  NaN where E or E + H is not
+    # positive definite.  With float64 accumulation (acc_dtype) E is exact
+    # enough that its slogdet sign is a reliable positive-definite test (see
+    # the Note), so no scale floor is needed: a genuinely degenerate region
+    # is dropped while a healthy large region -- better conditioned, not
+    # worse -- keeps its LLR.  Matches iter_llr_perm's inner-null check.
     sign_t, logdet_t = np.linalg.slogdet(e + h)
     sign_e, logdet_e = np.linalg.slogdet(e)
 
     sz_a_1d = size[active]
-    energy_a = np.einsum('rbb->r', yout_a)
-    tol_a = num_img * sz_a_1d * np.finfo(dtype).eps * energy_a
-    lam_min_e = np.linalg.eigvalsh(e)[:, 0]
-    valid_a = (sign_t > 0) & (sign_e > 0) & (lam_min_e > tol_a)
+    valid_a = (sign_t > 0) & (sign_e > 0)
 
     llr_a = np.where(valid_a,
                      (sz_a_1d / 2.0) * (logdet_t - logdet_e),
