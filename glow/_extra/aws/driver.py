@@ -4,10 +4,11 @@ drive_aws is the AWS counterpart of glow._extra.benchmark.run.run: instead of
 sweeping the cells in local joblib workers, it submits them as a Batch array
 job (one child per planted cell -- a data cell crossed with one effect) and
 lets each worker rebuild + run its cell from the shipped bundle, writing its
-records and run_ana cache to a shared S3 prefix. When the array drains, the
-driver pulls the records down and writes the per-config CSVs with the unchanged
-results.write_config_csvs -- the AWS path produces the same records a local run
-would, so the read side is identical.
+records and run_ana cache to a shared S3 prefix. The driver pulls finished
+records down as the workers ship them (so results land locally as they
+complete), and when the array drains does a final pull and writes the
+per-config CSVs with the unchanged results.write_config_csvs -- the AWS path
+produces the same records a local run would, so the read side is identical.
 
 The driver is the single source of truth for what runs: it resolves a cache's
 cells locally (resolve_cells -- see glow._extra.aws.units), drops the cells
@@ -139,6 +140,10 @@ def drive_aws(names, aws_config, *, write_csv: bool = True,
 
     failures: Dict[str, List[Tuple[int, str]]] = {n: [] for n in remaining}
 
+    # the records tree to pull down while the arrays run -- the same pair the
+    # final pull + CSV write below uses (see _poll_attempts / _pull_finished)
+    download_pairs = [sync.records_pair(aws_config.s3_prefix)]
+
     for tier_idx, mem_mb in enumerate(aws_config.memory_mb_tiers):
         active = {n: cells for n, cells in remaining.items() if cells}
         if not active:
@@ -158,7 +163,9 @@ def drive_aws(names, aws_config, *, write_csv: bool = True,
 
         statuses_per_attempt = _poll_attempts(
             batch=batch, attempts=attempts,
-            poll_seconds=aws_config.poll_seconds, verbose=verbose)
+            poll_seconds=aws_config.poll_seconds, verbose=verbose,
+            s3_client=s3_client, bucket=aws_config.s3_bucket,
+            download_pairs=download_pairs)
 
         oom: Dict[str, List[int]] = {n: [] for n in active}
         for attempt, statuses in zip(attempts, statuses_per_attempt):
@@ -340,7 +347,9 @@ def _submit_job(*, batch, aws_config, run_id: str, manifest_uri: str,
 
 
 def _poll_attempts(*, batch, attempts: List['_Attempt'],
-                   poll_seconds: float, verbose: bool):
+                   poll_seconds: float, verbose: bool,
+                   s3_client=None, bucket: str = None, download_pairs=None,
+                   download_interval: float = s3.SYNC_INTERVAL_SEC):
     """Block until every child of every attempt reaches a terminal state.
 
     All attempts are polled in one describe_jobs sweep per interval and each
@@ -349,11 +358,23 @@ def _poll_attempts(*, batch, attempts: List['_Attempt'],
     still-in-flight children by Batch state (_inflight_postfix) so Spot spin-up
     shows as movement before any child finishes the bar.
 
+    Between sweeps the finished records are pulled down (download_pairs), so
+    results land locally as the workers ship them up rather than only at the
+    end; the pull is incremental (download_prefix skips files already local)
+    and gated to download_interval so a fast status poll does not re-LIST S3
+    every sweep.
+
     Args:
         batch: boto3 Batch client.
         attempts (list): _Attempt records to wait on.
         poll_seconds (float): sleep between describe_jobs sweeps.
         verbose (bool): show one tqdm bar per attempt.
+        s3_client: boto3 S3 client for the mid-run pull (None disables it).
+        bucket (str): S3 bucket the records live in.
+        download_pairs (list[tuple] | None): (local_dir, key_prefix) trees to
+            pull down between sweeps; None skips the mid-run pull entirely.
+        download_interval (float): minimum seconds between pulls; defaults to
+            the worker's upload interval (s3.SYNC_INTERVAL_SEC).
 
     Returns:
         statuses_per_attempt (list): aligned with attempts; each element is
@@ -366,6 +387,7 @@ def _poll_attempts(*, batch, attempts: List['_Attempt'],
                  disable=not verbose)
             for i, a in enumerate(attempts)]
     handled: List[set] = [set() for _ in attempts]
+    last_download = time.time()
 
     while True:
         for batch_ids in _chunked(all_child_ids, 100):  # describe max 100/call
@@ -391,11 +413,41 @@ def _poll_attempts(*, batch, attempts: List['_Attempt'],
 
         if all_done:
             break
+        # pull finished records down between sweeps so results land locally as
+        # workers ship them up; the drain-time pull in drive_aws is the final
+        # catch-up
+        if download_pairs and time.time() - last_download >= download_interval:
+            _pull_finished(s3_client, bucket, download_pairs, verbose)
+            last_download = time.time()
         time.sleep(poll_seconds)
 
     for bar in bars:
         bar.close()
     return [[statuses[cid] for cid in a.child_ids] for a in attempts]
+
+
+def _pull_finished(s3_client, bucket: str, pairs, verbose: bool) -> int:
+    """Pull records the workers have shipped since the last sweep.
+
+    Incremental: download_prefix skips files already local, so only records
+    finished since the previous pull move. Reports via tqdm.write so the live
+    poll bars are not clobbered.
+
+    Args:
+        s3_client: boto3 S3 client.
+        bucket (str): source bucket.
+        pairs (list[tuple]): (local_dir, key_prefix) trees to pull down.
+        verbose (bool): print a note when files were downloaded.
+
+    Returns:
+        n (int): number of files pulled this call.
+    """
+    n = 0
+    for local_dir, key_prefix in pairs:
+        n += s3.download_prefix(s3_client, bucket, key_prefix, local_dir)
+    if verbose and n:
+        tqdm.write(f'[drive_aws] pulled {n} new result file(s)')
+    return n
 
 
 def _inflight_postfix(attempt: '_Attempt', statuses: Dict[str, dict]) -> str:

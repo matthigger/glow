@@ -15,6 +15,7 @@ import pytest
 from glow._extra.aws.config import AWSConfig
 from glow._extra.aws.driver import (RETRY_EVALUATE_ON_EXIT, _Attempt,
                                      _classify, _inflight_postfix, _is_oom,
+                                     _poll_attempts, _pull_finished,
                                      _submit_job, drive_aws)
 from glow._extra.aws.units import resolve_cells
 from glow._extra.benchmark import data
@@ -132,6 +133,50 @@ def test_inflight_postfix():
                 'p:2': {'status': 'RUNNABLE'}}
     # terminal child omitted; the rest tallied by state
     assert _inflight_postfix(a, statuses) == 'RUNNABLE=1 RUNNING=1'
+
+
+def test_pull_finished_incremental(tmp_path):
+    # a record already on S3 is pulled once, then skipped (download_prefix is
+    # incremental) -- so a repeated mid-run pull only moves new work
+    fake_s3 = FakeS3()
+    fake_s3.store[('bkt', 'glow/records/a.json')] = b'1'
+    local_dir = tmp_path / 'records'
+    pairs = [(local_dir, 'glow/records')]
+    assert _pull_finished(fake_s3, 'bkt', pairs, verbose=False) == 1
+    assert (local_dir / 'a.json').read_bytes() == b'1'
+    assert _pull_finished(fake_s3, 'bkt', pairs, verbose=False) == 0
+
+
+class _TransientBatch:
+    """describe_jobs returns RUNNING on the first sweep, SUCCEEDED after.
+
+    So _poll_attempts runs one full non-terminal sweep -- exercising the
+    mid-run pull -- before the child goes terminal and the loop breaks.
+    """
+
+    def __init__(self):
+        self._n = 0
+
+    def describe_jobs(self, *, jobs):
+        self._n += 1
+        status = 'RUNNING' if self._n == 1 else 'SUCCEEDED'
+        return {'jobs': [{'jobId': j, 'status': status} for j in jobs]}
+
+
+def test_poll_attempts_pulls_mid_run(tmp_path):
+    # with the gate open (interval 0), the first non-terminal sweep pulls the
+    # record already on S3 down before the job finishes
+    fake_s3 = FakeS3()
+    fake_s3.store[('bkt', 'glow/records/abc.json')] = b'{}'
+    local_dir = tmp_path / 'records'
+    attempt = _Attempt(name='c', cell_indices=[0], parent_id='p-000',
+                       is_array=False)
+    statuses = _poll_attempts(
+        batch=_TransientBatch(), attempts=[attempt], poll_seconds=0,
+        verbose=False, s3_client=fake_s3, bucket='bkt',
+        download_pairs=[(local_dir, 'glow/records')], download_interval=0)
+    assert (local_dir / 'abc.json').read_bytes() == b'{}'
+    assert statuses[0][0]['status'] == 'SUCCEEDED'
 
 
 def test_submit_job_array_vs_single():
