@@ -226,3 +226,131 @@ def test_min_vox_drops_small_regions_cpu_reliable_full(prep_intercept_fp64):
     assert small.any(), 'fixture has no size<4 regions; raise min_vox'
     assert np.isnan(draws[:, small]).all(), \
         'cpu_reliable_full: size<min_vox cells leaked finite values'
+
+
+# ---------------------------------------------------------------------------
+# cpu_perm_race vs cpu_perm -- the survivor race reproduces the full run on the
+# outputs the FWER test consumes.  The race draws the same seeds as cpu_perm
+# (burn-in identical, survivors drawn to full n_perm through the low-rank
+# kernel), so (a) survivor moments match cpu_perm to fp round-off regardless of
+# what gets trimmed, and (b) with a real effect the arg-max region survives, so
+# the per-perm max-z -- the only number the outer FWER loop reads -- is
+# reproduced exactly.  The trim never touches validity (see cpu_perm_race).
+
+def _planted_exp(*, intercept_only, seed=1, n_img=30, shape=(6, 6, 6),
+                 beta=1.5):
+    """A builder exp with a strong effect planted along the first interest
+    column into a contiguous voxel block, giving a stable dominant max-z
+    region (so the arg-max reliably survives the trim)."""
+    exp = (_intercept_only_exp(seed=seed, n_img=n_img, shape=shape)
+           if intercept_only else
+           _general_q0_exp(seed=seed, n_img=n_img, shape=shape))
+    interest = int(np.where(exp.contrast)[0][0])
+    y = exp.y.copy()
+    blk = slice(0, max(8, y.shape[2] // 4))
+    y[:, :, blk] += beta * exp.x[interest][None, :, None]
+    return Experiment(x=exp.x, y=y, contrast=exp.contrast,
+                      mask_idx=exp.mask_idx)
+
+
+def _race_survivors(prep, *, base_seed, race_init, p_keep_thresh):
+    """Reproduce the race burn-in + trim to recover the survivor mask and the
+    observed LLR (so a test can check survivor moments against cpu_perm)."""
+    exp = prep['exp']
+    num_vox, num_img = exp.y.shape[2], exp.y.shape[1]
+    leaf_ord, region_l, region_h = glow.graph.build_dfs_preorder(
+        children=prep['children'], num_vox=num_vox)
+    llr_obs, size = glow.graph.compute_llr_batched(
+        exp, children=prep['children'], q0=prep['q0'], q1=prep['q1'],
+        min_size=prep['min_vox'])
+    perms = np.stack([permute._perm_indices(base_seed + i, num_img)
+                      for i in range(race_init)])
+    n = np.zeros(size.size)
+    mean = np.zeros(size.size)
+    M2 = np.zeros(size.size)
+    for chunk in glow.graph.iter_llr_perm(
+            y=exp.y, q0=prep['q0'], q1=prep['q1'], perms=perms,
+            leaf_ord=leaf_ord, region_l=region_l, region_h=region_h,
+            min_size=prep['min_vox']):
+        n, mean, M2 = inner_perm._welford_combine(chunk, n, mean, M2)
+    mu_bi, std_bi = inner_perm._welford_finalize(n, mean, M2)
+    keep = inner_perm._race_keep(
+        llr_obs=llr_obs, mu=mu_bi, std=std_bi, n=n, size=size,
+        min_vox=prep['min_vox'], p_keep_thresh=p_keep_thresh)
+    return keep, llr_obs, size
+
+
+@pytest.mark.parametrize('intercept_only', [False, True],
+                         ids=['general', 'intercept'])
+def test_race_reproduces_cpu_perm_maxz(intercept_only):
+    """The race's per-perm max-z equals the full cpu_perm's, and the full
+    run's arg-max region survives -- for general and intercept-only Q0."""
+    prep = _prep(_planted_exp(intercept_only=intercept_only), min_vox=2)
+    base_seed, n_perm, race_init, pk = 777, 40, 10, 1e-6
+
+    mu_f, std_f = inner_perm.cpu_perm(
+        exp=prep['exp'], base_seed=base_seed, n_perm=n_perm,
+        q0=prep['q0'], q1=prep['q1'], children=prep['children'],
+        min_vox=prep['min_vox'])
+    keep, llr_obs, size = _race_survivors(
+        prep, base_seed=base_seed, race_init=race_init, p_keep_thresh=pk)
+    mu_r, std_r = inner_perm.cpu_perm_race(
+        exp=prep['exp'], llr_obs=llr_obs, base_seed=base_seed, n_perm=n_perm,
+        q0=prep['q0'], q1=prep['q1'], children=prep['children'],
+        min_vox=prep['min_vox'], race_init=race_init, p_keep_thresh=pk)
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        z_f = (llr_obs - mu_f) / std_f
+        z_r = (llr_obs - mu_r) / std_r
+    active = (size >= prep['min_vox']) & np.isfinite(z_f) & np.isfinite(z_r)
+    assert active.any()
+    amax = int(np.argmax(np.where(active, z_f, -np.inf)))
+
+    assert keep[amax], 'the full-run arg-max region was trimmed (recall miss)'
+    assert keep.sum() >= 1
+    np.testing.assert_allclose(z_r[amax], z_f[amax], rtol=1e-6, atol=1e-8)
+    np.testing.assert_allclose(
+        float(np.nanmax(np.where(active, z_r, np.nan))),
+        float(np.nanmax(np.where(active, z_f, np.nan))),
+        rtol=1e-6, atol=1e-8)
+
+
+def test_race_survivor_moments_match_cpu_perm(prep_general_fp64):
+    """Survivor moments equal cpu_perm to fp round-off (independent of what
+    gets trimmed): survivors are drawn to full n_perm on the same seeds."""
+    prep = prep_general_fp64
+    base_seed, n_perm, race_init, pk = 4242, 40, 10, 1e-6
+    keep, llr_obs, _ = _race_survivors(
+        prep, base_seed=base_seed, race_init=race_init, p_keep_thresh=pk)
+    mu_f, std_f = inner_perm.cpu_perm(
+        exp=prep['exp'], base_seed=base_seed, n_perm=n_perm,
+        q0=prep['q0'], q1=prep['q1'], children=prep['children'],
+        min_vox=prep['min_vox'])
+    mu_r, std_r = inner_perm.cpu_perm_race(
+        exp=prep['exp'], llr_obs=llr_obs, base_seed=base_seed, n_perm=n_perm,
+        q0=prep['q0'], q1=prep['q1'], children=prep['children'],
+        min_vox=prep['min_vox'], race_init=race_init, p_keep_thresh=pk)
+    assert keep.sum() >= 1
+    fin = keep & np.isfinite(mu_f) & np.isfinite(mu_r)
+    assert fin.any()
+    np.testing.assert_allclose(mu_r[fin], mu_f[fin], rtol=1e-7, atol=1e-9)
+    fin_s = keep & np.isfinite(std_f) & np.isfinite(std_r)
+    np.testing.assert_allclose(std_r[fin_s], std_f[fin_s],
+                               rtol=1e-7, atol=1e-9)
+
+
+def test_race_keep_band():
+    """_race_keep is a scale-free k_sigma band around the interim leader:
+    keeps the leader and near rivals, drops far-below, small, and non-finite
+    regions."""
+    n = np.full(5, 50.0)
+    std = np.ones(5)
+    mu = np.zeros(5)
+    # z_hat = llr_obs here (mu=0, std=1). Region 3 has the highest z but is
+    # too small; region 4 is non-finite. Leader is region 0 (z=10).
+    llr_obs = np.array([10.0, 9.5, 2.0, 100.0, np.nan])
+    size = np.array([10, 10, 10, 1, 10])
+    keep = inner_perm._race_keep(
+        llr_obs=llr_obs, mu=mu, std=std, n=n, size=size, min_vox=2,
+        p_keep_thresh=1e-6)
+    assert keep.tolist() == [True, True, False, False, False]
