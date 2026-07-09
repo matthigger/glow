@@ -465,7 +465,9 @@ def run_perm_inner(exp: Experiment, mask_target_list, *, n_perm_inner: int,
     once, then run its inner FL null (AnalysisGLOW.run_inner_perm) with
     n_perm_inner draws. Decoupled from the outer FWER loop, so the recorded
     time_sec is the pure inner-permutation cost, linear in n_perm_inner (the
-    one-time clustering is a fixed intercept).
+    one-time clustering is a fixed intercept). Uses the full cpu_perm
+    (use_race=False) so the swept cost stays the linear-in-n_perm_inner
+    reference; the race's tail is not linear and would be a separate leaf.
 
     Args:
         exp (Experiment): the experiment with the synthetic effect imposed.
@@ -483,7 +485,7 @@ def run_perm_inner(exp: Experiment, mask_target_list, *, n_perm_inner: int,
     q0, q1, _ = decompose(x=exp_s.x, contrast=exp_s.contrast)
     children = cluster(exp_s, mode=ClusterMode(cluster_mode))
     AnalysisGLOW.run_inner_perm(exp_s, children, n_perm_inner, q0=q0, q1=q1,
-                                min_vox=min_vox)
+                                min_vox=min_vox, use_race=False)
     return int(exp_s.y.shape[2])
 
 

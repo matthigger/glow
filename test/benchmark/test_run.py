@@ -236,14 +236,18 @@ class TestRunInnerEdge:
     def test_prefix_snapshot_equals_real_fit(self):
         # the whole point: the num_inner_perm=max snapshot reproduces a real
         # AnalysisGLOW fit at n_perm_inner=max (nested seeds -> shared draws), so
-        # one sampling stands in for a fit at every num_inner_perm <= it
+        # one sampling stands in for a fit at every num_inner_perm <= it. The
+        # edge curve is built on the exact cpu_perm draw prefixes, so it models
+        # the full (use_race=False) inner null -- the race trims per perm and
+        # has no exact-prefix property to snapshot.
         exp, mask = self._planted()
         curve = json.loads(run_inner_edge(
             exp, [mask], cluster_mode=ClusterMode.FOCUS, max_inner_perm=30,
             n_perm_fwer=4))
         mz_max = np.array(curve['max_z_null'])[:, -1]
         ana = AnalysisGLOW(n_perm_fwer=4, n_perm_inner=30,
-                           cluster_mode=ClusterMode.FOCUS).fit(exp)
+                           cluster_mode=ClusterMode.FOCUS).fit(
+                               exp, use_race=False)
         np.testing.assert_allclose(mz_max, ana.max_z_null, rtol=1e-6, atol=1e-9)
 
     def test_cluster_mode_is_a_cache_axis(self):

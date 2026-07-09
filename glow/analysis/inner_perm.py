@@ -2,7 +2,7 @@
 
 For one outer permutation: given the outer-perm tree (Ward children)
 and an experiment, draw n_perm inner-perm LLR samples (Freedman & Lane
-1983) and reduce them to per-region (mu, std). Two production backends:
+1983) and reduce them to per-region (mu, std). Three production backends:
 
   - cpu_perm -- the work horse. Rides glow.graph.iter_llr_perm:
     per-voxel sufficient statistics are computed once; per perm-chunk
@@ -14,6 +14,13 @@ and an experiment, draw n_perm inner-perm LLR samples (Freedman & Lane
     under intercept-only Q0 commutes with P, so the rho and X_v terms
     come out numerically zero and the rest of the algorithm is
     unaffected.
+  - cpu_perm_race -- the fast path. Draws a short burn-in over all
+    regions on cpu_perm's streaming kernel, trims to the survivors that
+    could still be the per-permutation max-z region, then draws the
+    remaining perms for survivors only via the low-rank general-Q0
+    kernel (glow.graph.compute_llr_inner_kernel). Same draws as cpu_perm
+    per seed, so survivor moments match to float round-off; the trim
+    only costs power, never validity (see cpu_perm_race).
   - cpu_reliable -- trust anchor for tests. Drives the per-region
     iter_mancova + get_llr path per draw -- an independent code path
     used to cross-validate cpu_perm.
@@ -38,6 +45,7 @@ returns only the reduced (mu, std); callers that need per-draw output
 materialize via np.vstack(list(glow.graph.iter_llr_perm(...))).
 """
 import numpy as np
+from scipy.stats import norm
 
 import glow.graph
 from glow.analysis import mancova
@@ -173,6 +181,141 @@ def cpu_perm(*, exp, base_seed: int, n_perm: int, q0, q1, children,
         leaf_ord=leaf_ord, region_l=region_l, region_h=region_h,
         min_size=min_vox)
     return _welford_moments(chunks, num_reg)
+
+
+def _race_keep(*, llr_obs, mu, std, n, size, min_vox: int,
+               p_keep_thresh: float):
+    """Return the survivor mask over regions after the race burn-in.
+
+    Models each region's true standardised score as z_r ~ N(z_hat_r,
+    se_r^2), with the delta-method standard error
+    se_r = sqrt((1 + z_hat_r^2 / 2) / n_r) -- the mean contributes 1/n, the
+    std estimate z_hat^2 / 2n. A region is kept iff it still has more than
+    p_keep_thresh probability of beating the interim leader L = argmax z_hat,
+    i.e. (z_hat_r - z_hat_L) / sqrt(se_r^2 + se_L^2) > Phi^{-1}(p_keep_thresh).
+    Inactive regions (size < min_vox, non-finite z_hat, or n < 2) are dropped;
+    the leader is always retained.
+
+    Writing p_keep_thresh = Phi(-k_sigma) makes this a scale-free k_sigma
+    band, so the survivor count adapts per permutation rather than a fixed
+    top-k.
+
+    Args:
+        llr_obs (np.array): (num_reg,) observed (unpermuted) region LLR
+        mu (np.array): (num_reg,) burn-in inner-null mean
+        std (np.array): (num_reg,) burn-in inner-null std
+        n (np.array): (num_reg,) burn-in valid-sample count per region
+        size (np.array): (num_reg,) voxel count per region
+        min_vox (int): regions smaller than this are inactive
+        p_keep_thresh (float): survivor keep-probability floor (e.g. 1e-6)
+
+    Returns:
+        keep (np.array): (num_reg,) bool survivor mask
+    """
+    with np.errstate(divide='ignore', invalid='ignore'):
+        z_hat = (llr_obs - mu) / std
+        se = np.sqrt((1.0 + z_hat ** 2 / 2.0) / n)
+    active = ((size >= min_vox) & np.isfinite(z_hat)
+              & np.isfinite(se) & (n >= 2))
+    keep = np.zeros_like(active)
+    if not active.any():
+        return keep
+    leader = int(np.argmax(np.where(active, z_hat, -np.inf)))
+    thresh = float(norm.ppf(p_keep_thresh))
+    with np.errstate(invalid='ignore'):
+        score = (z_hat - z_hat[leader]) / np.sqrt(se ** 2 + se[leader] ** 2)
+    keep = active & (score > thresh)
+    keep[leader] = True
+    return keep
+
+
+def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
+                  children, min_vox: int, race_init: int = 15,
+                  p_keep_thresh: float = 1e-6):
+    """Compute inner-perm (mu, std) via the burn-in / trim / tail race.
+
+    Three stages, all folding into one Welford / Chan accumulator (Chan,
+    Golub & LeVeque 1979): burn-in draws race_init permutations over all
+    regions on cpu_perm's streaming iter_llr_perm path; _race_keep trims to
+    the survivors that could still be the per-permutation max-z region; the
+    tail draws the remaining n_perm - race_init permutations for survivors
+    only via the low-rank general-Q0 kernel (graph.build_survivor_kernels
+    once, graph.compute_llr_inner_kernel per draw). Non-survivors stay frozen
+    at their burn-in moments. Draw i uses seed base_seed + i, exactly as
+    cpu_perm, so survivor moments equal the full-run moments to float
+    round-off. Valid for any nuisance design.
+
+    The trim only costs power (dropping a region that would have won), never
+    validity: the race is applied identically on every outer permutation, so
+    the Westfall-Young / Freedman-Lane FWER bound is untouched (Lehmann &
+    Romano Thm 15.2.1; Hemerik & Goeman 2018). The leader is always kept, so
+    the max over survivors equals the whole-tree max whenever the true
+    arg-max survives, and discoveries are restricted to the survivor set.
+    race_init and p_keep_thresh are speed/power knobs, never validity knobs.
+
+    Args match cpu_perm plus the observed region LLR (the trim's z_hat
+    numerator) and the two race knobs.
+
+    Args:
+        exp (Experiment): experiment to sample inner perms from
+        llr_obs (np.array): (num_reg,) observed region LLR, from
+            compute_llr_batched on the (this-outer-perm) exp
+        base_seed (int): draw i uses seed base_seed + i
+        n_perm (int): number of inner FL draws
+        q0 (np.array): (a0, num_img) nuisance subspace
+        q1 (np.array): (a1, num_img) interest subspace
+        children (np.array): (num_reg - num_vox, 2) Ward tree
+        min_vox (int): regions smaller than this are left NaN
+        race_init (int): burn-in draws over all regions before the trim
+        p_keep_thresh (float): survivor keep-probability floor
+
+    Returns:
+        mu (np.array): (num_reg,) inner-null mean per region
+        std (np.array): (num_reg,) inner-null std per region
+    """
+    num_vox = exp.y.shape[2]
+    num_img = exp.y.shape[1]
+    race_init = min(race_init, n_perm)
+    leaf_ord, region_l, region_h = glow.graph.build_dfs_preorder(
+        children=children, num_vox=num_vox)
+    num_reg = int(region_l.shape[0])
+    size = region_h - region_l
+
+    # burn-in: race_init streamed draws over ALL regions (== cpu_perm draws)
+    perms = np.empty((race_init, num_img), dtype=np.int64)
+    for i in range(race_init):
+        perms[i] = permute._perm_indices(base_seed + i, num_img)
+    n = np.zeros(num_reg, dtype=np.float64)
+    mean = np.zeros(num_reg, dtype=np.float64)
+    M2 = np.zeros(num_reg, dtype=np.float64)
+    for chunk in glow.graph.iter_llr_perm(
+            y=exp.y, q0=q0, q1=q1, perms=perms,
+            leaf_ord=leaf_ord, region_l=region_l, region_h=region_h,
+            min_size=min_vox):
+        n, mean, M2 = _welford_combine(chunk, n, mean, M2)
+    mu_bi, std_bi = _welford_finalize(n, mean, M2)
+
+    # trim to survivors
+    keep = _race_keep(llr_obs=llr_obs, mu=mu_bi, std=std_bi, n=n, size=size,
+                      min_vox=min_vox, p_keep_thresh=p_keep_thresh)
+    survivor_idx = np.where(keep)[0]
+
+    # tail: kernel draws for survivors only, into the same accumulator. Build
+    # the FL matrix inline from the cached nuisance projector -- get_freed_lane
+    # re-runs decompose (a QR) per call; (I - Q0Q0^T)[:, perm] + Q0Q0^T is
+    # identical and needs no seed-0 guard (it never calls get_freed_lane).
+    kernels = glow.graph.build_survivor_kernels(
+        exp.y, children, survivor_idx, q0)
+    q0q0 = q0.T @ q0
+    eye = np.eye(num_img, dtype=q0q0.dtype)
+    tail = np.empty((n_perm - race_init, num_reg), dtype=np.float64)
+    for j, i in enumerate(range(race_init, n_perm)):
+        perm = permute._perm_indices(base_seed + i, num_img)
+        fl = (eye - q0q0)[:, perm] + q0q0
+        tail[j] = glow.graph.compute_llr_inner_kernel(
+            kernels, q0, q1, fl, perm, num_reg, min_size=min_vox)
+    n, mean, M2 = _welford_combine(tail, n, mean, M2)
+    return _welford_finalize(n, mean, M2)
 
 
 def cpu_reliable_full(*, exp, base_seed: int, n_perm: int,

@@ -88,12 +88,17 @@ class AnalysisGLOW(Analysis):
 
     @classmethod
     def run_inner_perm(cls, exp, children, n_perm: int, *, q0, q1,
-                       min_vox: int = 1, base_seed: int = 0):
+                       min_vox: int = 1, base_seed: int = 0, llr_obs=None,
+                       race_init: int = 15, p_keep_thresh: float = 1e-6,
+                       use_race: bool = True):
         """Compute per-region inner-null (mu, std) for the given Ward tree.
 
         Runs n_perm Freedman-Lane (Freedman & Lane 1983) inner draws against
-        the tree via inner_perm.cpu_perm and reduces them to per-region
-        moments.
+        the tree and reduces them to per-region moments. By default uses the
+        survivor race (inner_perm.cpu_perm_race), which reproduces cpu_perm's
+        per-region moments to float round-off on survivors while spending the
+        bulk of the draws only on regions that could be the max-z (exact FWER,
+        see cpu_perm_race). Set use_race=False for the full cpu_perm reference.
 
         Args:
             exp (Experiment): pre-permute if drawing against an
@@ -104,24 +109,39 @@ class AnalysisGLOW(Analysis):
             q1 (np.array): (a1, num_img) interest subspace.
             min_vox (int): regions smaller than this are left NaN.
             base_seed (int): draw i uses seed base_seed + i.
+            llr_obs (np.array): (num_reg,) observed region LLR for this tree,
+                the race trim's z_hat numerator. Computed here if None.
+            race_init (int): race burn-in draws before the trim.
+            p_keep_thresh (float): race survivor keep-probability floor.
+            use_race (bool): race when True, else the full cpu_perm.
 
         Returns:
             mu (np.array): (num_reg,) inner-null mean per region
             std (np.array): (num_reg,) inner-null std per region
         """
-        return inner_perm.cpu_perm(
-            exp=exp, base_seed=base_seed, n_perm=n_perm,
-            q0=q0, q1=q1, children=children, min_vox=min_vox)
+        if not use_race:
+            return inner_perm.cpu_perm(
+                exp=exp, base_seed=base_seed, n_perm=n_perm,
+                q0=q0, q1=q1, children=children, min_vox=min_vox)
+        if llr_obs is None:
+            llr_obs, _ = glow.graph.compute_llr_batched(
+                exp, children=children, q0=q0, q1=q1)
+        return inner_perm.cpu_perm_race(
+            exp=exp, llr_obs=llr_obs, base_seed=base_seed, n_perm=n_perm,
+            q0=q0, q1=q1, children=children, min_vox=min_vox,
+            race_init=race_init, p_keep_thresh=p_keep_thresh)
 
     @classmethod
     def _run_outer(cls, exp, k: int, *, q0, q1, n_perm_inner: int,
-                   min_vox: int, cluster_mode: ClusterMode):
+                   min_vox: int, cluster_mode: ClusterMode,
+                   use_race: bool = True):
         """Run one outer perm: cluster, observed LLR, inner perms.
 
         Pure (no self, no shared state) so joblib workers can run it.
         Returns (children, size, llr, mu, std) for outer-perm index k:
         children is (num_reg - num_vox, 2); size, llr, mu, std are each
-        (num_reg,).
+        (num_reg,). use_race is applied identically for every k, so the
+        FWER bound is preserved (see inner_perm.cpu_perm_race).
         """
         _exp = exp.permute(k) if k else exp
         children = cluster(_exp, mode=cluster_mode)
@@ -129,10 +149,12 @@ class AnalysisGLOW(Analysis):
             _exp, children=children, q0=q0, q1=q1)
         mu, std = cls.run_inner_perm(
             _exp, children, n_perm_inner, q0=q0, q1=q1,
-            min_vox=min_vox, base_seed=(k + 1) * _INNER_SEED_BLOCK)
+            min_vox=min_vox, base_seed=(k + 1) * _INNER_SEED_BLOCK,
+            llr_obs=llr, use_race=use_race)
         return children, size, llr, mu, std
 
-    def fit(self, exp, *, n_jobs: int = 1, verbose: bool = False):
+    def fit(self, exp, *, n_jobs: int = 1, verbose: bool = False,
+            use_race: bool = True):
         """Run the analysis on exp and return self.
 
         Populates the observed-tree attributes (children, size, llr,
@@ -148,6 +170,11 @@ class AnalysisGLOW(Analysis):
                 identical regardless of n_jobs (seed is derived from
                 outer-perm index).
             verbose (bool): print progress and show tqdm bar.
+            use_race (bool): use the survivor race for the inner null
+                (default). A speed knob, not a validity or identity knob
+                (like n_jobs): the FWER null is reproduced exactly and it
+                is not a cache axis. Set False for the full cpu_perm
+                reference (e.g. exact-prefix convergence studies).
         """
         exp = ExperimentScaled.from_exp(exp)
         q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
@@ -166,7 +193,8 @@ class AnalysisGLOW(Analysis):
                 exp, k, q0=q0, q1=q1,
                 n_perm_inner=self.n_perm_inner,
                 min_vox=self.min_vox,
-                cluster_mode=self.cluster_mode)
+                cluster_mode=self.cluster_mode,
+                use_race=use_race)
             for k in range(n_total))
 
         for k, (children, size, llr, mu, std) in enumerate(
