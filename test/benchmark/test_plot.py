@@ -256,6 +256,31 @@ def test_threshold_ratio_column_per_b():
     assert vba['b=2'] > vba['b=1'] > 1.0
 
 
+def test_threshold_ratio_unlabelled_returns_empty():
+    """All-NaN labels (stale records) yield an empty table, not a KeyError."""
+    df = pd.DataFrame({
+        'source': ['WGN'] * 3,
+        'b': [3] * 3,
+        'label': [np.nan] * 3,
+        'effect_llr': [0.01, 0.03, 0.1],
+        'dice': [0.0, 0.5, 1.0],
+    })
+    assert plot.threshold_ratio_table(df, x='effect_llr').empty
+
+
+def test_threshold_ratio_missing_ref_returns_empty():
+    """Only non-reference methods resolve -> nothing to normalise by; skip."""
+    df = pd.DataFrame({
+        'source': ['HCP'] * 3,
+        'b': [1] * 3,
+        'label': ['VBA'] * 3,
+        'effect_llr': [0.01, 0.03, 0.1],
+        'dice': [0.0, 0.5, 1.0],
+    })
+    assert plot.threshold_ratio_table(df, x='effect_llr',
+                                      ref_label='GLOW-Focus').empty
+
+
 # ---------------------------------------------------------------------------
 # Runtime plotters
 # ---------------------------------------------------------------------------

@@ -712,9 +712,17 @@ def threshold_ratio_table(df, *, x: str, metric: str = 'dice',
     """
     df = df.copy()
     df[x] = pd.to_numeric(df[x], errors='coerce')
-    df = df.dropna(subset=[x])
-    if df.empty:
-        return df
+    # keyed by method label, so rows whose ana repr did not resolve to a
+    # catalogue label (stale records from a since-changed knob such as
+    # n_perm_inner) carry no method and are dropped; an all-unlabelled cache
+    # then yields an empty table rather than a groupby that silently drops
+    # every NaN-label row and leaves wide without a method column.
+    df = df.dropna(subset=[x, 'label'])
+    # every ratio normalises to ref_label, so a frame missing it (only the
+    # non-reference methods resolved) has no reference to divide by and yields
+    # an all-blank table; skip it as empty rather than emit one.
+    if df.empty or ref_label not in set(df['label']):
+        return df.iloc[0:0]
 
     secondary = [a for a in _SECONDARY_AXES
                  if a != x and a in df.columns and df[a].dropna().nunique() > 1]
