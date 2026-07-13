@@ -316,11 +316,15 @@ def test_race_reproduces_cpu_perm_maxz(intercept_only):
 
 
 def test_race_survivor_moments_match_cpu_perm(prep_general_fp64):
-    """Survivor moments equal cpu_perm to fp round-off (independent of what
-    gets trimmed): survivors are drawn to full n_perm on the same seeds."""
+    """A region drawn to the full n_perm matches cpu_perm to fp round-off.
+
+    Under the progressive race only regions surviving to the last round run
+    all n_perm draws; the arg-max always does (retention), so its moments
+    equal the full cpu_perm run's on the same seeds. Regions dropped mid-race
+    carry prefix moments by design and are not compared."""
     prep = prep_general_fp64
     base_seed, n_perm, race_init, pk = 4242, 40, 10, 1e-6
-    keep, llr_obs, _ = _race_survivors(
+    keep, llr_obs, size = _race_survivors(
         prep, base_seed=base_seed, race_init=race_init, p_keep_thresh=pk)
     mu_f, std_f = inner_perm.cpu_perm(
         exp=prep['exp'], base_seed=base_seed, n_perm=n_perm,
@@ -330,13 +334,13 @@ def test_race_survivor_moments_match_cpu_perm(prep_general_fp64):
         exp=prep['exp'], llr_obs=llr_obs, base_seed=base_seed, n_perm=n_perm,
         q0=prep['q0'], q1=prep['q1'], children=prep['children'],
         min_vox=prep['min_vox'], race_init=race_init, p_keep_thresh=pk)
-    assert keep.sum() >= 1
-    fin = keep & np.isfinite(mu_f) & np.isfinite(mu_r)
-    assert fin.any()
-    np.testing.assert_allclose(mu_r[fin], mu_f[fin], rtol=1e-7, atol=1e-9)
-    fin_s = keep & np.isfinite(std_f) & np.isfinite(std_r)
-    np.testing.assert_allclose(std_r[fin_s], std_f[fin_s],
-                               rtol=1e-7, atol=1e-9)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        z_f = (llr_obs - mu_f) / std_f
+    active = (size >= prep['min_vox']) & np.isfinite(z_f)
+    amax = int(np.argmax(np.where(active, z_f, -np.inf)))
+    assert keep[amax]
+    np.testing.assert_allclose(mu_r[amax], mu_f[amax], rtol=1e-7, atol=1e-9)
+    np.testing.assert_allclose(std_r[amax], std_f[amax], rtol=1e-7, atol=1e-9)
 
 
 def test_race_keep_band():

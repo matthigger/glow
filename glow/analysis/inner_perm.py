@@ -246,29 +246,72 @@ def _race_keep(*, llr_obs, mu, std, n, size, min_vox: int,
     return keep
 
 
+def _draw_survivors(kernels, local_idx, i_lo, i_hi, *, base_seed, num_img,
+                    q0, q1, q0q0, eye, num_reg, min_vox, n, mean, M2):
+    """Fold inner FL draws [i_lo, i_hi) for a subset of the kernel's survivors.
+
+    local_idx selects rows of the survivor kernels (build_survivor_kernels
+    output), so only those regions are drawn and every other region stays NaN
+    in each draw (untouched by the Welford fold). Draws fold _TAIL_FOLD_CHUNK
+    at a time rather than materialize; draw i uses seed base_seed + i.
+
+    Args:
+        kernels (dict): build_survivor_kernels output for the whole band
+        local_idx (np.array): (m,) int rows of kernels to draw
+        i_lo (int): first perm index to draw
+        i_hi (int): stop before this perm index
+        n (np.array): (num_reg,) running Welford valid-sample count
+        mean (np.array): (num_reg,) running Welford mean
+        M2 (np.array): (num_reg,) running Welford sum of squared deviations
+
+    Returns:
+        n, mean, M2 (np.array): the accumulators with these draws folded in
+    """
+    sub = {k: kernels[k][local_idx] for k in
+           ('K', 'ysum_u_S', 'yout_u_S', 'size_S', 'survivor_idx')}
+    buf = np.empty((_TAIL_FOLD_CHUNK, num_reg), dtype=np.float64)
+    filled = 0
+    for i in range(i_lo, i_hi):
+        perm = permute._perm_indices(base_seed + i, num_img)
+        fl = (eye - q0q0)[:, perm] + q0q0
+        buf[filled] = glow.graph.compute_llr_inner_kernel(
+            sub, q0, q1, fl, perm, num_reg, min_size=min_vox)
+        filled += 1
+        if filled == _TAIL_FOLD_CHUNK:
+            n, mean, M2 = _welford_combine(buf, n, mean, M2)
+            filled = 0
+    if filled:
+        n, mean, M2 = _welford_combine(buf[:filled], n, mean, M2)
+    return n, mean, M2
+
+
 def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
                   children, min_vox: int, race_init: int = RACE_INIT,
                   p_keep_thresh: float = RACE_P_KEEP_THRESH):
-    """Compute inner-perm (mu, std) via the burn-in / trim / tail race.
+    """Compute inner-perm (mu, std) via a progressive survivor race.
 
-    Three stages, all folding into one Welford / Chan accumulator (Chan,
-    Golub & LeVeque 1979): burn-in draws race_init permutations over all
-    regions on cpu_perm's streaming iter_llr_perm path; _race_keep trims to
-    the survivors that could still be the per-permutation max-z region; the
-    tail draws the remaining n_perm - race_init permutations for survivors
-    only via the low-rank general-Q0 kernel (graph.build_survivor_kernels
-    once, graph.compute_llr_inner_kernel per draw). Non-survivors stay frozen
-    at their burn-in moments. Draw i uses seed base_seed + i, exactly as
-    cpu_perm, so survivor moments equal the full-run moments to float
-    round-off. Valid for any nuisance design.
+    Burn-in draws race_init permutations over all regions on cpu_perm's
+    streaming iter_llr_perm path, folding into one Welford / Chan accumulator
+    (Chan, Golub & LeVeque 1979). The tail then draws the surviving band in
+    geometrically growing rounds via the low-rank general-Q0 kernel
+    (graph.build_survivor_kernels once, graph.compute_llr_inner_kernel per
+    draw): _race_keep re-trims after each round to the regions that could
+    still be the per-permutation max-z, so the field shrinks, and a region
+    whose band re-opens (the interim leader's z drifts down) re-enters and
+    closes the gap it sat out. Every active region is drawn to the round's
+    frontier, so the eventual arg-max reaches the full n_perm with contiguous
+    draws. Regions outside the burn-in band stay frozen at their burn-in
+    moments. Draw i uses seed base_seed + i, exactly as cpu_perm, so a
+    survivor's moments equal the full-run moments to float round-off. Valid
+    for any nuisance design.
 
     The trim only costs power (dropping a region that would have won), never
     validity: the race is applied identically on every outer permutation, so
     the Westfall-Young / Freedman-Lane FWER bound is untouched (Lehmann &
     Romano Thm 15.2.1; Hemerik & Goeman 2018). The leader is always kept, so
     the max over survivors equals the whole-tree max whenever the true
-    arg-max survives, and discoveries are restricted to the survivor set.
-    race_init and p_keep_thresh are speed/power knobs, never validity knobs.
+    arg-max survives. race_init and p_keep_thresh are speed/power knobs, never
+    validity knobs.
 
     Args match cpu_perm plus the observed region LLR (the trim's z_hat
     numerator) and the two race knobs.
@@ -312,34 +355,42 @@ def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
         n, mean, M2 = _welford_combine(chunk, n, mean, M2)
     mu_bi, std_bi = _welford_finalize(n, mean, M2)
 
-    # trim to survivors
+    # Initial band: survivors that could be the max-z at burn-in. Build their
+    # FL kernels once ((I - Q0Q0^T)[:, perm] + Q0Q0^T needs no get_freed_lane
+    # QR); re-admission stays within this band, regions outside it stay frozen
+    # at their burn-in moments.
     keep = _race_keep(llr_obs=llr_obs, mu=mu_bi, std=std_bi, n=n, size=size,
                       min_vox=min_vox, p_keep_thresh=p_keep_thresh)
-    survivor_idx = np.where(keep)[0]
-
-    # tail: kernel draws for survivors only, folded into the accumulator in
-    # _TAIL_FOLD_CHUNK-draw sub-chunks (never the whole (n_perm - race_init,
-    # num_reg) array at once). Build the FL matrix inline from the cached
-    # nuisance projector -- get_freed_lane re-runs decompose (a QR) per call;
-    # (I - Q0Q0^T)[:, perm] + Q0Q0^T is identical and needs no seed-0 guard
-    # (it never calls get_freed_lane).
-    kernels = glow.graph.build_survivor_kernels(
-        exp.y, children, survivor_idx, q0)
+    band = np.where(keep)[0]
+    kernels = glow.graph.build_survivor_kernels(exp.y, children, band, q0)
     q0q0 = q0.T @ q0
     eye = np.eye(num_img, dtype=q0q0.dtype)
-    buf = np.empty((_TAIL_FOLD_CHUNK, num_reg), dtype=np.float64)
-    filled = 0
-    for i in range(race_init, n_perm):
-        perm = permute._perm_indices(base_seed + i, num_img)
-        fl = (eye - q0q0)[:, perm] + q0q0
-        buf[filled] = glow.graph.compute_llr_inner_kernel(
-            kernels, q0, q1, fl, perm, num_reg, min_size=min_vox)
-        filled += 1
-        if filled == _TAIL_FOLD_CHUNK:
-            n, mean, M2 = _welford_combine(buf, n, mean, M2)
-            filled = 0
-    if filled:
-        n, mean, M2 = _welford_combine(buf[:filled], n, mean, M2)
+
+    # Progressive race: draw the band in geometrically growing rounds and
+    # re-trim after each, so the field shrinks (and a region whose band
+    # re-opens, as the interim leader's z drifts down, re-enters). d is each
+    # region's contiguous draw count; a round draws every active region from
+    # its own d up to the frontier -- a continuously-active region just
+    # advances, a re-admitted one also closes the gap it sat out -- so the
+    # eventual max-z region always reaches the full n_perm.
+    d = np.full(num_reg, race_init, dtype=np.int64)
+    frontier = race_init
+    while frontier < n_perm:
+        new_frontier = min(2 * frontier, n_perm)
+        mu, std = _welford_finalize(n, mean, M2)
+        keep = _race_keep(llr_obs=llr_obs, mu=mu, std=std, n=n, size=size,
+                          min_vox=min_vox, p_keep_thresh=p_keep_thresh)
+        active = band[keep[band]]
+        for d_val in np.unique(d[active]):
+            grp = active[d[active] == d_val]
+            local = np.searchsorted(band, grp)
+            n, mean, M2 = _draw_survivors(
+                kernels, local, int(d_val), new_frontier,
+                base_seed=base_seed, num_img=num_img, q0=q0, q1=q1,
+                q0q0=q0q0, eye=eye, num_reg=num_reg, min_vox=min_vox,
+                n=n, mean=mean, M2=M2)
+            d[grp] = new_frontier
+        frontier = new_frontier
     return _welford_finalize(n, mean, M2)
 
 
