@@ -60,6 +60,14 @@ from glow.experiment import permute
 RACE_INIT = 15
 RACE_P_KEEP_THRESH = 1e-6
 
+# Tail draws are folded into the Welford accumulator this many at a time rather
+# than materialized as one (n_perm - race_init, num_reg) array: a single
+# _welford_combine over the whole tail allocates several temporaries that size
+# (chunk_safe, the mean-centred deviations, their square), which dominates the
+# inner-perm peak at large num_reg. Matches the burn-in's iter_llr_perm
+# streaming granularity.
+_TAIL_FOLD_CHUNK = 8
+
 
 def _welford_combine(chunk, n, mean, M2):
     """Fold one (Pc, num_reg) NaN-aware draw-chunk into running moments.
@@ -309,21 +317,29 @@ def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
                       min_vox=min_vox, p_keep_thresh=p_keep_thresh)
     survivor_idx = np.where(keep)[0]
 
-    # tail: kernel draws for survivors only, into the same accumulator. Build
-    # the FL matrix inline from the cached nuisance projector -- get_freed_lane
-    # re-runs decompose (a QR) per call; (I - Q0Q0^T)[:, perm] + Q0Q0^T is
-    # identical and needs no seed-0 guard (it never calls get_freed_lane).
+    # tail: kernel draws for survivors only, folded into the accumulator in
+    # _TAIL_FOLD_CHUNK-draw sub-chunks (never the whole (n_perm - race_init,
+    # num_reg) array at once). Build the FL matrix inline from the cached
+    # nuisance projector -- get_freed_lane re-runs decompose (a QR) per call;
+    # (I - Q0Q0^T)[:, perm] + Q0Q0^T is identical and needs no seed-0 guard
+    # (it never calls get_freed_lane).
     kernels = glow.graph.build_survivor_kernels(
         exp.y, children, survivor_idx, q0)
     q0q0 = q0.T @ q0
     eye = np.eye(num_img, dtype=q0q0.dtype)
-    tail = np.empty((n_perm - race_init, num_reg), dtype=np.float64)
-    for j, i in enumerate(range(race_init, n_perm)):
+    buf = np.empty((_TAIL_FOLD_CHUNK, num_reg), dtype=np.float64)
+    filled = 0
+    for i in range(race_init, n_perm):
         perm = permute._perm_indices(base_seed + i, num_img)
         fl = (eye - q0q0)[:, perm] + q0q0
-        tail[j] = glow.graph.compute_llr_inner_kernel(
+        buf[filled] = glow.graph.compute_llr_inner_kernel(
             kernels, q0, q1, fl, perm, num_reg, min_size=min_vox)
-    n, mean, M2 = _welford_combine(tail, n, mean, M2)
+        filled += 1
+        if filled == _TAIL_FOLD_CHUNK:
+            n, mean, M2 = _welford_combine(buf, n, mean, M2)
+            filled = 0
+    if filled:
+        n, mean, M2 = _welford_combine(buf[:filled], n, mean, M2)
     return _welford_finalize(n, mean, M2)
 
 
