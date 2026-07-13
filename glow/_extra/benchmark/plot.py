@@ -50,6 +50,7 @@ score shapes, so this layer does not plot them (see config).
 """
 import colorsys
 import json
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -57,7 +58,8 @@ import pandas as pd
 import seaborn as sns
 
 import glow._extra.benchmark
-from .config import ana_kwargs_dict, RUNTIME_GLOW_MODES
+from glow.analysis.mancova import stat_dict
+from .config import ana_kwargs_dict, RUN_STAT_LIST, RUNTIME_GLOW_MODES
 from .file import add_metric_cols
 
 
@@ -98,6 +100,31 @@ _LABEL_OF_ANA = {repr(ana): label for label, ana in ana_kwargs_dict.items()}
 # ClusterMode is a StrEnum, so the recorded in.cluster_mode cell is its string
 # ('Focus' / 'GLM Error'); no label is stored (see run.run_inner_edge / config).
 _ARM_OF_MODE = {str(mode): label for label, mode in RUNTIME_GLOW_MODES}
+
+# stat bake-off vocabulary. The method (VBA / VBA-TFCE / CET) and the raw/z arm
+# are recovered from the recorded recipe -- its class and tfce_flag / z_flag --
+# the same way _LABEL_OF_ANA recovers a run_ana method; the stat is the recorded
+# stat_name. stat_dict order (llr..roys_root) fixes the column order (= the
+# get_run_stat_list build order, so an interrupted cell drops the last stats).
+_STAT_METHOD_ORDER = ['VBA', 'VBA-TFCE', 'CET']
+_STAT_ORDER = list(stat_dict)
+_STAT_PRETTY = {'llr': 'LLR', 'wilks': 'Wilks', 'pillai': 'Pillai',
+                'hotel_tr': 'Hotelling', 'roys_root': 'Roy'}
+
+
+def _stat_method_zt(ana):
+    """Recover (method, zt) from a stat-cache recipe (see get_run_stat_list)."""
+    if type(ana).__name__ == 'AnalysisCET':
+        method = 'CET'
+    else:
+        method = 'VBA-TFCE' if getattr(ana, 'tfce_flag', False) else 'VBA'
+    return method, ('z' if getattr(ana, 'z_flag', False) else 'raw')
+
+
+# (recipe repr, stat_name) -> (method, zt, stat), the address-free variant id
+_STAT_VARIANT = {(repr(s['ana']), s['stat_name']):
+                 (*_stat_method_zt(s['ana']), s['stat_name'])
+                 for s in RUN_STAT_LIST}
 
 
 def get_cmap_dict(label_list) -> dict:
@@ -804,6 +831,187 @@ def write_threshold_table(label: str, df, *, x: str, out, metric: str = 'dice',
 
 
 # ---------------------------------------------------------------------------
+# MANCOVA stat bake-off (stat cache): VBA / VBA-TFCE / CET x 5 stats x {raw, z}
+# ---------------------------------------------------------------------------
+
+def tidy_stat(raw):
+    """Normalise the stat cache's leaves to a tidy per-variant frame.
+
+    Maps each run_stat leaf (results.stat_cell_df) to its (method, stat, zt)
+    variant via the recorded recipe (_STAT_VARIANT) and derives Dice from the
+    confusion counts. Rows whose recipe is not a stat-cache variant, or that
+    lack counts, drop out; a variant recorded twice (a rerun) collapses to one
+    row (the value is deterministic).
+
+    Args:
+        raw: the stat_cell_df frame (cell / ana / stat_name / count columns).
+
+    Returns:
+        a DataFrame with cell, method, stat, zt, dice (one row per variant).
+    """
+    if raw.empty:
+        return raw
+    var = [_STAT_VARIANT.get(k) for k in zip(raw['ana'], raw['stat_name'])]
+    out = pd.DataFrame({'cell': raw['cell'].values})
+    out['method'] = [v[0] if v else None for v in var]
+    out['stat'] = [v[2] if v else None for v in var]
+    out['zt'] = [v[1] if v else None for v in var]
+    tp, fp, fn = (pd.to_numeric(raw[c], errors='coerce').values
+                  for c in ('tp', 'fp', 'fn'))
+    denom = 2 * tp + fp + fn
+    out['dice'] = np.where(denom > 0, 2 * tp / denom, np.nan)
+    out = out.dropna(subset=['method'])
+    return out.drop_duplicates(['cell', 'method', 'stat', 'zt'])
+
+
+def _stat_balanced(df):
+    """Keep only cells recorded with the full variant grid (balanced N).
+
+    A cell fit by an interrupted worker is missing its last-computed variants
+    (get_run_stat_list runs stat-major, llr..roys_root), which would give each
+    method a different trial count. Restricting to cells with all
+    len(RUN_STAT_LIST) variants makes every method's panel the same cells.
+
+    Returns:
+        (DataFrame, int, int): the filtered frame, kept cell count, dropped.
+    """
+    per_cell = df.groupby('cell')['dice'].size()
+    full = per_cell.index[per_cell == len(RUN_STAT_LIST)]
+    return df[df['cell'].isin(full)], len(full), df['cell'].nunique() - len(full)
+
+
+def stat_tables(df, tol: float = 1e-9, decisive: float = 0.01):
+    """Build the two stat-comparison tables from a tidy_stat frame.
+
+    Restricts to the balanced panel (_stat_balanced), then per (cell, method,
+    zt) group of the five stats takes the Dice spread (max - min). Table 1
+    summarises per method how often the stat choice matters; Table 2 gives mean
+    Dice per stat with the best-worst gap. Both read the same panel, so their
+    per-method trial counts agree.
+
+    Args:
+        df: a tidy_stat frame.
+        tol (float): Dice spread at / below which the five stats count as tied.
+        decisive (float): Dice spread above which a trial counts as decisive.
+
+    Returns:
+        (t1, t2, meta): t1 indexed by method (pct_all_tie, pct_decisive,
+            mean_spread, median_spread); t2 indexed by method (one column per
+            stat in _STAT_ORDER, plus gap); meta holds n_cells and n_dropped
+            (partial cells excluded from the panel).
+    """
+    kept, n_cells, n_drop = _stat_balanced(df)
+
+    # the balanced panel scores every stat on the same trials; if not (a stat
+    # missing across cells, or the filter let a lopsided cell through) the
+    # per-stat means are not comparable, so surface it rather than average over
+    # unequal supports
+    per_stat = kept.groupby('stat').size().reindex(_STAT_ORDER)
+    if per_stat.nunique(dropna=False) > 1:
+        warnings.warn('stat bake-off: unequal trials per stat '
+                      f'{per_stat.to_dict()} -- the balanced panel should give '
+                      'every stat the same count; means are not comparable.')
+
+    g = kept.groupby(['cell', 'method', 'zt'])['dice']
+    spread = (g.max() - g.min()).rename('spread').reset_index()
+    t1 = spread.groupby('method').agg(
+        pct_all_tie=('spread', lambda s: 100 * (s <= tol).mean()),
+        pct_decisive=('spread', lambda s: 100 * (s > decisive).mean()),
+        mean_spread=('spread', 'mean'),
+        median_spread=('spread', 'median'),
+    ).reindex(_STAT_METHOD_ORDER)
+    t2 = (kept.groupby(['method', 'stat'])['dice'].mean()
+          .unstack()[_STAT_ORDER].reindex(_STAT_METHOD_ORDER))
+    t2['gap'] = t2.max(axis=1) - t2.min(axis=1)
+    return t1, t2, {'n_cells': n_cells, 'n_dropped': n_drop}
+
+
+def _latex_table(path, colspec: str, header: list, rows: list) -> None:
+    """Write one booktabs tabular fragment for \\input into the paper.
+
+    Just the tabular (no table float, caption or label) so the paper owns the
+    surrounding environment and all prose; running .plot only refreshes the
+    numbers.
+
+    Args:
+        path (pathlib.Path): destination .tex file.
+        colspec (str): the tabular column spec (e.g. 'lrrrr').
+        header (list): already-escaped column titles.
+        rows (list): each an already-escaped list of cell strings.
+    """
+    lines = ['% requires \\usepackage{booktabs}; \\input inside a table env',
+             f'\\begin{{tabular}}{{{colspec}}}', '  \\toprule',
+             '  ' + ' & '.join(header) + r' \\', '  \\midrule']
+    lines += ['  ' + ' & '.join(r) + r' \\' for r in rows]
+    lines += ['  \\bottomrule', '\\end{tabular}', '']
+    path.write_text('\n'.join(lines))
+
+
+def write_stat_tables(label: str, df, out) -> None:
+    """Write (and print) the stat bake-off's two paper tables as .tex.
+
+    Each file is a bare booktabs tabular (no caption / label); the paper owns
+    the table environment and prose (see _latex_table). Table 1
+    (stat_matters.tex): per method, does the MANCOVA stat choice change Dice --
+    all-tie / decisive fractions and the mean / median Dice spread across the
+    five stats. Table 2 (stat_dice.tex): per method, mean Dice per stat with the
+    best-worst gap, the best stat(s) bolded. Both use the balanced panel (cells
+    recorded with the full variant grid), so every stat is scored on the same
+    trials (stat_tables warns otherwise).
+
+    Args:
+        label (str): cache name; unused in the output but kept for the dispatch
+            signature symmetry with plot_cache / plot_runtime.
+        df: a tidy_stat frame.
+        out (pathlib.Path): directory the .tex files are written into.
+    """
+    if df.empty:
+        print(f'  (no rows for {label} — skipping)')
+        return
+    t1, t2, meta = stat_tables(df)
+    panel = (f'{meta["n_cells"]} planted cells, b=2'
+             + (f'; {meta["n_dropped"]} partial cells excluded'
+                if meta['n_dropped'] else ''))
+
+    _latex_table(
+        out / 'stat_matters.tex', 'lrrrr',
+        ['Method', 'All tie (\\%)', 'Decisive (\\%)', 'Mean spread',
+         'Median spread'],
+        [[m, f'{r.pct_all_tie:.1f}', f'{r.pct_decisive:.1f}',
+          f'{r.mean_spread:.4f}', f'{r.median_spread:.4f}']
+         for m, r in t1.iterrows()])
+
+    def dice_row(method, row):
+        """Render a Table 2 row, bolding the winning stat class.
+
+        Nothing is bolded when the best-worst gap is under 0.01 (the stat
+        choice is immaterial for that method); otherwise every stat within 0.005
+        Dice of the best is bolded, so a tied class (wilks/pillai, hotel/roy) is
+        marked together rather than an arbitrary single winner.
+        """
+        best = row[_STAT_ORDER].max()
+        mark = row['gap'] >= 0.01
+        cells = [method]
+        for s in _STAT_ORDER:
+            v = f'{row[s]:.3f}'
+            cells.append(f'\\textbf{{{v}}}'
+                         if mark and row[s] >= best - 0.005 else v)
+        return cells + [f'{row["gap"]:.3f}']
+
+    _latex_table(
+        out / 'stat_dice.tex', 'l' + 'r' * (len(_STAT_ORDER) + 1),
+        ['Method'] + [_STAT_PRETTY[s] for s in _STAT_ORDER] + ['Gap'],
+        [dice_row(m, row) for m, row in t2.iterrows()])
+
+    print(f'saved: {out / "stat_matters.tex"}, {out / "stat_dice.tex"}')
+    print(f'  panel: {panel}')
+    print('  Table 1 (does the stat matter):')
+    print(t1.to_string(float_format=lambda v: f'{v:.4f}'))
+    print('  Table 2 (mean Dice per stat):')
+    print(t2.to_string(float_format=lambda v: f'{v:.3f}'))
+
+
+# ---------------------------------------------------------------------------
 # Runtime sweeps (wall time vs one cost knob)
 # ---------------------------------------------------------------------------
 
@@ -1236,10 +1444,12 @@ def main(argv=None) -> None:
     frame (results.config_results_df) and plots it: a runtime cache is
     normalised with tidy_runtime and drawn by plot_runtime (wall time vs its
     cost knob); every other run_ana cache is normalised with tidy_run_ana and
-    drawn by plot_cache (detection sweep / calibration). Figures land in
-    results/_latest, so a mid-benchmark run yields intermediate figures. The
-    remaining caches (segment / stat / prune / min_size) carry other leaf and
-    score shapes and are skipped.
+    drawn by plot_cache (detection sweep / calibration). The stat bake-off is
+    read straight from the run_stat leaves (results.stat_cell_df) and written as
+    two paper tables by write_stat_tables. Figures / tables land in
+    results/_latest, so a mid-benchmark run yields intermediate output. The
+    remaining caches (segment / prune / min_size) carry other leaf and score
+    shapes and are skipped.
 
     Args:
         argv (list | None): CLI args to parse; None reads sys.argv. Positional
@@ -1251,7 +1461,7 @@ def main(argv=None) -> None:
     import matplotlib
     matplotlib.use('Agg')
     from .config import CONFIG
-    from .run import run_ana, run_inner_edge, run_race_maxz
+    from .run import run_ana, run_inner_edge, run_race_maxz, run_stat
     from . import results
 
     parser = argparse.ArgumentParser(
@@ -1271,6 +1481,7 @@ def main(argv=None) -> None:
                     if cfg[3] is run_ana and n not in _RUNTIME_SPEC]
     edge_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_inner_edge]
     race_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_race_maxz]
+    stat_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_stat]
     if args.names:
         # literal name, else fnmatch pattern; a pattern matching nothing is an
         # error (a typo surfaces rather than silently plotting nothing)
@@ -1282,7 +1493,8 @@ def main(argv=None) -> None:
                 parser.error(f'no cache names match: {pattern}')
             names += [n for n in matches if n not in names]
     else:
-        names = detect_names + runtime_names + edge_names + race_names
+        names = (detect_names + runtime_names + edge_names + race_names
+                 + stat_names)
 
     out = glow._extra.benchmark.get_path_result() / '_latest'
     out.mkdir(exist_ok=True)
@@ -1320,6 +1532,15 @@ def main(argv=None) -> None:
                 continue
             print(f'\n=== {name}: {len(df)} race-retention rows ===')
             plot_race_maxz(name, df, out)
+            n_plotted += 1
+        elif name in stat_names:
+            df = tidy_stat(results.stat_cell_df())
+            if df.empty:
+                print(f'  (no records for {name} — skipping)')
+                continue
+            print(f'\n=== {name}: {df["cell"].nunique()} cells, '
+                  f'{len(df)} variant rows ===')
+            write_stat_tables(name, df, out)
             n_plotted += 1
         else:
             print(f'  ({name} is not a detection or runtime cache — skipping)')

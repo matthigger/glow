@@ -306,6 +306,45 @@ def config_results_df(name: str):
     return RECORDER.flatten_to_df(leaf_keys=config_leaf_keys(name))
 
 
+def stat_cell_df():
+    """Return the stat cache's run_stat leaves, keyed by planted cell.
+
+    The stat bake-off is fit by AWS workers that ship the run_stat leaf back
+    without its data_factory / effect_factory ancestors, so the forward DAG
+    walk (config_leaf_keys) can attach neither source nor effect_llr and drops
+    those leaves -- config_results_df('stat') sees only the locally-run subset.
+    The stat comparison is within a planted cell (the five stats fit on one
+    experiment), so this reads the run_stat records directly and tags each with
+    its planted-exp link hash -- the cell id every variant of a cell shares --
+    sidestepping the missing ancestors. Source / effect_llr are not recovered
+    (they live in the absent ancestors); the comparison does not need them.
+
+    Returns:
+        pandas.DataFrame: one row per run_stat leaf, columns cell (the planted
+            exp hash), ana (recipe repr), stat_name, and the score confusion
+            counts num_vox / tp / fp / tn / fn (NaN where a leaf lacks them).
+    """
+    import pandas as pd
+
+    RECORDER.load()
+    rows = []
+    for key, rec in RECORDER.records.items():
+        if rec.get('function') != 'run_stat':
+            continue
+        inp = rec.get('inputs', {})
+        score = (rec.get('outputs') or {}).get('score') or {}
+        target = score.get('target') or {}
+        rows.append({
+            'cell': rec.get('input_hashes', {}).get('exp', key),
+            'ana': inp.get('ana'),
+            'stat_name': inp.get('stat_name'),
+            'num_vox': score.get('num_vox'),
+            'tp': target.get('tp'), 'fp': target.get('fp'),
+            'tn': target.get('tn'), 'fn': target.get('fn'),
+        })
+    return pd.DataFrame(rows)
+
+
 def write_config_csvs(out_dir=None, names=None) -> dict:
     """Write one name.csv per CONFIG cache with leaves on disk.
 

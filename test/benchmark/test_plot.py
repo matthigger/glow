@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from glow._extra.benchmark import plot
-from glow._extra.benchmark.config import ana_kwargs_dict
+from glow._extra.benchmark.config import ana_kwargs_dict, RUN_STAT_LIST
 
 
 def _score(tp, fp, tn, fn, min_pval=0.5, n_pred=1):
@@ -441,3 +441,111 @@ def test_plot_inner_edge_writes_figure_and_json(tmp_path):
     js = json.loads((tmp_path / 'sweep_n_perm_inner_threshold.json').read_text())
     # the threshold JSON: seed-median FWER critical value per (source, arm, m)
     assert js['threshold']['WGN']['GLOW-Focus'] == {'50': 5.0, '100': 5.5}
+
+
+# --- stat bake-off (stat cache) ------------------------------------------
+
+def _stat_counts(dice, size=100):
+    """Confusion counts (a stat_cell_df row) realising a target Dice.
+
+    With tp = round(dice*size) and fp = fn = size - tp, Dice = tp / size, so a
+    round-number Dice comes out exactly.
+    """
+    tp = round(dice * size)
+    k = size - tp
+    return {'num_vox': 4 * size, 'tp': tp, 'fp': k, 'fn': k,
+            'tn': 4 * size - tp - 2 * k}
+
+
+def _stat_rows(cell, dice_map=None, default=0.4, drop=()):
+    """One stat_cell_df row per RUN_STAT_LIST variant for a planted cell.
+
+    dice_map overrides the Dice of specific (method, stat, zt) variants; the
+    rest take default. drop omits variants (a partial, interrupted cell).
+    """
+    rows = []
+    for spec in RUN_STAT_LIST:
+        method, zt, stat = plot._STAT_VARIANT[(repr(spec['ana']),
+                                               spec['stat_name'])]
+        if (method, stat, zt) in drop:
+            continue
+        dice = (dice_map or {}).get((method, stat, zt), default)
+        rows.append({'cell': cell, 'ana': repr(spec['ana']),
+                     'stat_name': spec['stat_name'], **_stat_counts(dice)})
+    return rows
+
+
+def test_tidy_stat_empty():
+    """An empty frame in gives an empty frame out."""
+    assert plot.tidy_stat(pd.DataFrame()).empty
+
+
+def test_tidy_stat_recovers_variant_and_dice():
+    """tidy_stat recovers (method, stat, zt) from the recipe and derives Dice."""
+    df = plot.tidy_stat(pd.DataFrame(_stat_rows('cellA')))
+    # every RUN_STAT_LIST variant is mapped (nothing dropped)
+    assert set(df['method']) == {'VBA', 'VBA-TFCE', 'CET'}
+    assert set(df['stat']) == {'llr', 'wilks', 'pillai', 'hotel_tr',
+                               'roys_root'}
+    assert set(df['zt']) == {'raw', 'z'}
+    assert len(df) == len(RUN_STAT_LIST)
+    assert df['dice'].eq(0.4).all()
+
+
+def test_stat_tables_balanced_panel_and_spread():
+    """Partial cells drop out; ties vs a decisive winner read per method."""
+    # two complete cells: VBA / CET all-tie, VBA-TFCE decided by wilks/pillai
+    win = {(m, s, zt): 0.6 for m in ['VBA-TFCE'] for zt in ['raw', 'z']
+           for s in ['wilks', 'pillai']}
+    rows = _stat_rows('cellA', dice_map=win) + _stat_rows('cellB', dice_map=win)
+    # a third cell missing its last stat is not a full grid -> excluded
+    rows += _stat_rows('cellC', drop=[('CET', 'roys_root', 'z')])
+    t1, t2, meta = plot.stat_tables(plot.tidy_stat(pd.DataFrame(rows)))
+
+    assert meta == {'n_cells': 2, 'n_dropped': 1}
+    assert t1.loc['VBA', 'pct_all_tie'] == 100.0
+    assert t1.loc['VBA', 'pct_decisive'] == 0.0
+    assert t1.loc['VBA-TFCE', 'pct_decisive'] == 100.0
+    assert t1.loc['VBA-TFCE', 'mean_spread'] == pytest.approx(0.2)
+
+    assert t2.loc['VBA-TFCE', 'wilks'] == pytest.approx(0.6)
+    assert t2.loc['VBA-TFCE', 'llr'] == pytest.approx(0.4)
+    assert t2.loc['VBA-TFCE', 'gap'] == pytest.approx(0.2)
+    assert t2.loc['VBA', 'gap'] == pytest.approx(0.0)
+
+
+def test_stat_tables_warns_on_unequal_stat_trials():
+    """A panel that scores the stats on unequal trial counts warns."""
+    recs = [{'cell': 'A', 'method': m, 'stat': s, 'zt': zt, 'dice': 0.4}
+            for m in plot._STAT_METHOD_ORDER for zt in ('raw', 'z')
+            for s in plot._STAT_ORDER]
+    # relabel one wilks trial as llr: cell A still has the full-grid row count
+    # (so it survives the panel) but the stats no longer share a trial count
+    df = pd.DataFrame(recs)
+    df.loc[df.index[df['stat'] == 'wilks'][0], 'stat'] = 'llr'
+    with pytest.warns(UserWarning, match='unequal trials per stat'):
+        plot.stat_tables(df)
+
+
+def test_write_stat_tables_writes_bare_tabular(tmp_path):
+    """write_stat_tables emits bare booktabs tabulars (no float/caption/label)."""
+    win = {(m, s, zt): 0.6 for m in ['VBA-TFCE'] for zt in ['raw', 'z']
+           for s in ['wilks', 'pillai']}
+    df = plot.tidy_stat(pd.DataFrame(
+        _stat_rows('cellA', dice_map=win) + _stat_rows('cellB', dice_map=win)))
+    plot.write_stat_tables('stat', df, tmp_path)
+
+    matters = (tmp_path / 'stat_matters.tex').read_text()
+    dice = (tmp_path / 'stat_dice.tex').read_text()
+    # bare tabular: the paper owns the float, caption and label
+    for tex in (matters, dice):
+        assert '\\begin{tabular}' in tex and '\\toprule' in tex
+        assert '\\begin{table}' not in tex
+        assert '\\caption' not in tex and '\\label' not in tex
+    # Table 1 no longer carries a Trials column
+    assert 'Trials' not in matters
+    # the decisive winner is bolded; the tied-everywhere VBA row is not
+    assert '\\textbf{0.600}' in dice
+    vba_line = next(ln for ln in dice.splitlines()
+                    if ln.strip().startswith('VBA &'))
+    assert '\\textbf' not in vba_line
