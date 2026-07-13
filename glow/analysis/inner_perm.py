@@ -202,20 +202,20 @@ def cpu_perm(*, exp, base_seed: int, n_perm: int, q0, q1, children,
 
 def _race_keep(*, llr_obs, mu, std, n, size, min_vox: int,
                p_keep_thresh: float):
-    """Return the survivor mask over regions after the race burn-in.
+    """Return the survivor mask: the LUCB confusion set around the leader.
 
     Models each region's true standardised score as z_r ~ N(z_hat_r,
     se_r^2), with the delta-method standard error
     se_r = sqrt((1 + z_hat_r^2 / 2) / n_r) -- the mean contributes 1/n, the
-    std estimate z_hat^2 / 2n. A region is kept iff it still has more than
-    p_keep_thresh probability of beating the interim leader L = argmax z_hat,
-    i.e. (z_hat_r - z_hat_L) / sqrt(se_r^2 + se_L^2) > Phi^{-1}(p_keep_thresh).
-    Inactive regions (size < min_vox, non-finite z_hat, or n < 2) are dropped;
-    the leader is always retained.
-
-    Writing p_keep_thresh = Phi(-k_sigma) makes this a scale-free k_sigma
-    band, so the survivor count adapts per permutation rather than a fixed
-    top-k.
+    std estimate z_hat^2 / 2n. With radius k_sigma = -Phi^{-1}(p_keep_thresh),
+    give each region the interval [z_hat_r - k se_r, z_hat_r + k se_r] and keep
+    it iff its upper bound reaches the lower bound of the most-confident region
+    (best = argmax (z_hat_r - k se_r)): ucb_r >= lcb_best. That is the LUCB /
+    racing rule -- keep every region whose interval still overlaps the
+    leader's. The survivor count adapts per permutation rather than a fixed
+    top-k. Inactive regions (size < min_vox, non-finite z_hat, or n < 2) are
+    dropped; the interim arg-max-z region is always retained so the reported
+    max-z is never trimmed.
 
     Args:
         llr_obs (np.array): (num_reg,) observed (unpermuted) region LLR
@@ -237,12 +237,13 @@ def _race_keep(*, llr_obs, mu, std, n, size, min_vox: int,
     keep = np.zeros_like(active)
     if not active.any():
         return keep
-    leader = int(np.argmax(np.where(active, z_hat, -np.inf)))
-    thresh = float(norm.ppf(p_keep_thresh))
-    with np.errstate(invalid='ignore'):
-        score = (z_hat - z_hat[leader]) / np.sqrt(se ** 2 + se[leader] ** 2)
-    keep = active & (score > thresh)
-    keep[leader] = True
+    k = float(-norm.ppf(p_keep_thresh))
+    lcb = z_hat - k * se
+    ucb = z_hat + k * se
+    best = int(np.argmax(np.where(active, lcb, -np.inf)))
+    keep = active & (ucb >= lcb[best])
+    # always keep the reported max-z region (arg-max z_hat) so retention holds
+    keep[int(np.argmax(np.where(active, z_hat, -np.inf)))] = True
     return keep
 
 
