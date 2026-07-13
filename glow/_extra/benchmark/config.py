@@ -126,7 +126,7 @@ B_GRID = list(range(1, len(hcp.HCP_FEATS) + 1))
 # the llr sweep's feature-count axis: b = 1 (the univariate power curve) plus
 # two low-b multivariate counterparts. A subset of B_GRID, swept alongside
 # effect_llr in one cache (see the sweep_llr entry).
-B_LLR_SWEEP = (1, 2, 3)
+B_LLR_SWEEP = (1, 2)
 EXTENT_FRAC_GRID = list(np.geomspace(0.01, 1.0, 15))
 NIMG_GRID = [10, 18, 30, 55, 100, 180, 300]
 
@@ -368,7 +368,6 @@ def get_kwargs_two_effect_list(*, llr_list=TWO_EFFECT_LLR_GRID,
 # run_segment_time; runtime and runtime_b use run_ana_time (fit at n_jobs=-1,
 # time_sec the fit wall time, num_vox returned bare -- no detection scoring).
 RUNTIME_N_SEED = 3
-RUNTIME_CROP_N_VOX = 1_000
 
 # num_vox sweep: 1k -> the full HCP support (224,619 voxels, one connected
 # component), roughly doubling.
@@ -456,7 +455,6 @@ RUN_INNER_EDGE_LIST = [
 # a figure, so it need not run at paper scale.
 RACE_MAXZ_SEED_OFFSET = 300_000
 RACE_MAXZ_N_SEED = 3
-RACE_MAXZ_CROP_N_VOX = RUNTIME_CROP_N_VOX
 RUN_RACE_MAXZ_LIST = [
     dict(cluster_mode=mode, n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER,
          race_init=RACE_INIT, p_keep_thresh=RACE_P_KEEP_THRESH)
@@ -571,28 +569,29 @@ CONFIG = {
             crop_n_vox_list=RUNTIME_NUM_VOX_GRID),
         get_kwargs_effect_list(),
         RUN_SEGMENT_TIME_LIST, run_segment_time),
-    # Runtime (n_perm_fwer): outer-loop wall time vs n_perm_fwer at 1k voxels,
-    # GLOW only, n_perm_inner held at N_PERM_INNER.
+    # Runtime (n_perm_fwer): outer-loop wall time vs n_perm_fwer at the shared
+    # crop (CROP_N_VOX), GLOW only, n_perm_inner held at N_PERM_INNER.
     'runtime_n_perm_fwer': (
         get_kwargs_data_runtime(
             seed_offset=RUNTIME_SEED_OFFSET['runtime_n_perm_fwer'],
-            crop_n_vox_list=[RUNTIME_CROP_N_VOX]),
+            crop_n_vox_list=[CROP_N_VOX]),
         get_kwargs_effect_list(),
         RUN_PERM_FWER_LIST, run_perm_fwer),
-    # Runtime (n_perm_inner): inner-null wall time vs n_perm_inner at 1k
-    # voxels, GLOW only (one observed tree; run_perm_inner).
+    # Runtime (n_perm_inner): inner-null wall time vs n_perm_inner at the
+    # shared crop (CROP_N_VOX), GLOW only (one observed tree; run_perm_inner).
     'runtime_n_perm_inner': (
         get_kwargs_data_runtime(
             seed_offset=RUNTIME_SEED_OFFSET['runtime_n_perm_inner'],
-            crop_n_vox_list=[RUNTIME_CROP_N_VOX]),
+            crop_n_vox_list=[CROP_N_VOX]),
         get_kwargs_effect_list(),
         RUN_PERM_INNER_LIST, run_perm_inner),
-    # Runtime (b): fit wall time vs feature count b (1..6) at 1k voxels, GLOW
-    # only. b rides the data grid; the leaf is run_ana_time (n_jobs=-1).
+    # Runtime (b): fit wall time vs feature count b (1..6) at the shared crop
+    # (CROP_N_VOX), GLOW only. b rides the data grid; the leaf is
+    # run_ana_time (n_jobs=-1).
     'runtime_b': (
         get_kwargs_data_runtime(
             seed_offset=RUNTIME_SEED_OFFSET['runtime_b'],
-            crop_n_vox_list=[RUNTIME_CROP_N_VOX], b_list=B_GRID),
+            crop_n_vox_list=[CROP_N_VOX], b_list=B_GRID),
         get_kwargs_effect_list(),
         GLOW_ANA_LIST, run_ana_time),
     # n_perm_inner convergence: the detection-side counterpart to
@@ -619,7 +618,7 @@ CONFIG = {
         get_kwargs_data_list(
             seeds=range(RACE_MAXZ_SEED_OFFSET,
                         RACE_MAXZ_SEED_OFFSET + RACE_MAXZ_N_SEED),
-            crop_n_vox=RACE_MAXZ_CROP_N_VOX),
+            crop_n_vox=CROP_N_VOX),
         get_kwargs_effect_list(),
         RUN_RACE_MAXZ_LIST, run_race_maxz),
 }
