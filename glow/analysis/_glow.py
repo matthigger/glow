@@ -9,7 +9,7 @@ import glow.graph
 from glow.experiment.exper import ExperimentScaled
 from ._base import Analysis
 from . import inner_perm
-from .inner_perm import RACE_INIT, RACE_P_KEEP_THRESH
+from .inner_perm import N_PERM_INNER_RACE, RACE_P_KEEP_THRESH
 from .cluster import cluster, ClusterMode
 from .mancova import decompose
 from .prune import prune_greedy
@@ -41,13 +41,14 @@ class AnalysisGLOW(Analysis):
         min_vox (int): smallest region size admitted to the FWER set
         cluster_mode (ClusterMode): Ward projection mode
         use_race (bool): use the survivor race for the inner null
-        race_init (int): race burn-in draws before the trim
+        n_perm_inner_race (int): race burn-in draws before the trim
         p_keep_thresh (float): race survivor keep-probability floor
 
-    use_race, race_init, and p_keep_thresh are part of the recipe (they can
-    alter the discovered effects), so they are in RECORD_FIELDS and enter the
-    ana's hash -- a run under a different race spec caches and records
-    separately rather than reusing a result generated under another spec.
+    use_race, n_perm_inner_race, and p_keep_thresh are part of the recipe
+    (they can alter the discovered effects), so they are in RECORD_FIELDS and
+    enter the ana's hash -- a run under a different race spec caches and
+    records separately rather than reusing a result generated under another
+    spec.
 
     Fit outputs (populated by fit, for the observed k=0 tree):
         children (np.array): (num_reg - num_vox, 2) Ward tree.
@@ -63,12 +64,14 @@ class AnalysisGLOW(Analysis):
     """
 
     RECORD_FIELDS = ('n_perm_fwer', 'n_perm_inner', 'alpha_fwer', 'min_vox',
-                     'cluster_mode', 'use_race', 'race_init', 'p_keep_thresh')
+                     'cluster_mode', 'use_race', 'n_perm_inner_race',
+                     'p_keep_thresh')
 
     def __init__(self, n_perm_fwer: int, n_perm_inner: int = 500,
                  alpha_fwer: float = .05, min_vox: int = 1,
                  cluster_mode: ClusterMode = ClusterMode.FOCUS,
-                 use_race: bool = True, race_init: int = RACE_INIT,
+                 use_race: bool = True,
+                 n_perm_inner_race: int = N_PERM_INNER_RACE,
                  p_keep_thresh: float = RACE_P_KEEP_THRESH):
         """Configure a GLOW analysis.
 
@@ -84,7 +87,8 @@ class AnalysisGLOW(Analysis):
             use_race (bool): use the survivor race for the inner null
                 (inner_perm.cpu_perm_race). Default True. Set False for the
                 full cpu_perm reference. Part of the recipe / hash.
-            race_init (int): race burn-in draws before the trim. Recipe / hash.
+            n_perm_inner_race (int): race burn-in draws before the trim.
+                Recipe / hash.
             p_keep_thresh (float): race survivor keep-probability floor.
                 Recipe / hash.
         """
@@ -95,7 +99,7 @@ class AnalysisGLOW(Analysis):
         self.min_vox = min_vox
         self.cluster_mode = cluster_mode
         self.use_race = use_race
-        self.race_init = race_init
+        self.n_perm_inner_race = n_perm_inner_race
         self.p_keep_thresh = p_keep_thresh
 
         self.children = None
@@ -109,7 +113,7 @@ class AnalysisGLOW(Analysis):
     @classmethod
     def run_inner_perm(cls, exp, children, n_perm: int, *, q0, q1,
                        min_vox: int = 1, base_seed: int = 0, llr_obs=None,
-                       race_init: int = RACE_INIT,
+                       n_perm_inner_race: int = N_PERM_INNER_RACE,
                        p_keep_thresh: float = RACE_P_KEEP_THRESH,
                        use_race: bool = True):
         """Compute per-region inner-null (mu, std) for the given Ward tree.
@@ -132,7 +136,7 @@ class AnalysisGLOW(Analysis):
             base_seed (int): draw i uses seed base_seed + i.
             llr_obs (np.array): (num_reg,) observed region LLR for this tree,
                 the race trim's z_hat numerator. Computed here if None.
-            race_init (int): race burn-in draws before the trim.
+            n_perm_inner_race (int): race burn-in draws before the trim.
             p_keep_thresh (float): race survivor keep-probability floor.
             use_race (bool): race when True, else the full cpu_perm.
 
@@ -150,12 +154,13 @@ class AnalysisGLOW(Analysis):
         return inner_perm.cpu_perm_race(
             exp=exp, llr_obs=llr_obs, base_seed=base_seed, n_perm=n_perm,
             q0=q0, q1=q1, children=children, min_vox=min_vox,
-            race_init=race_init, p_keep_thresh=p_keep_thresh)
+            n_perm_inner_race=n_perm_inner_race, p_keep_thresh=p_keep_thresh)
 
     @classmethod
     def _run_outer(cls, exp, k: int, *, q0, q1, n_perm_inner: int,
                    min_vox: int, cluster_mode: ClusterMode,
-                   use_race: bool = True, race_init: int = RACE_INIT,
+                   use_race: bool = True,
+                   n_perm_inner_race: int = N_PERM_INNER_RACE,
                    p_keep_thresh: float = RACE_P_KEEP_THRESH):
         """Run one outer perm: cluster, observed LLR, inner perms.
 
@@ -172,8 +177,8 @@ class AnalysisGLOW(Analysis):
         mu, std = cls.run_inner_perm(
             _exp, children, n_perm_inner, q0=q0, q1=q1,
             min_vox=min_vox, base_seed=(k + 1) * _INNER_SEED_BLOCK,
-            llr_obs=llr, use_race=use_race, race_init=race_init,
-            p_keep_thresh=p_keep_thresh)
+            llr_obs=llr, use_race=use_race,
+            n_perm_inner_race=n_perm_inner_race, p_keep_thresh=p_keep_thresh)
         return children, size, llr, mu, std
 
     def fit(self, exp, *, n_jobs: int = 1, verbose: bool = False):
@@ -213,7 +218,7 @@ class AnalysisGLOW(Analysis):
                 min_vox=self.min_vox,
                 cluster_mode=self.cluster_mode,
                 use_race=self.use_race,
-                race_init=self.race_init,
+                n_perm_inner_race=self.n_perm_inner_race,
                 p_keep_thresh=self.p_keep_thresh)
             for k in range(n_total))
 

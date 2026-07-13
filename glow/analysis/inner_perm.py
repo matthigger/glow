@@ -57,15 +57,15 @@ from glow.experiment import permute
 # probability floor: AnalysisGLOW's recipe defaults and the benchmark config
 # both reference these, so there is one canonical value, not a literal repeated
 # per call site.
-RACE_INIT = 15
+N_PERM_INNER_RACE = 15
 RACE_P_KEEP_THRESH = 1e-6
 
-# Tail draws are folded into the Welford accumulator this many at a time rather
-# than materialized as one (n_perm - race_init, num_reg) array: a single
-# _welford_combine over the whole tail allocates several temporaries that size
-# (chunk_safe, the mean-centred deviations, their square), which dominates the
-# inner-perm peak at large num_reg. Matches the burn-in's iter_llr_perm
-# streaming granularity.
+# Tail draws are folded into the Welford accumulator this many at a time
+# rather than materialized as one (n_perm - n_perm_inner_race, num_reg)
+# array: one _welford_combine over the whole tail allocates several
+# temporaries that size (chunk_safe, the mean-centred deviations, their
+# square), which dominates the inner-perm peak at large num_reg. Matches the
+# burn-in's iter_llr_perm streaming granularity.
 _TAIL_FOLD_CHUNK = 8
 
 
@@ -287,11 +287,12 @@ def _draw_survivors(kernels, local_idx, i_lo, i_hi, *, base_seed, num_img,
 
 
 def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
-                  children, min_vox: int, race_init: int = RACE_INIT,
+                  children, min_vox: int,
+                  n_perm_inner_race: int = N_PERM_INNER_RACE,
                   p_keep_thresh: float = RACE_P_KEEP_THRESH):
     """Compute inner-perm (mu, std) via a progressive survivor race.
 
-    Burn-in draws race_init permutations over all regions on cpu_perm's
+    Burn-in draws n_perm_inner_race permutations over all regions on cpu_perm's
     streaming iter_llr_perm path, folding into one Welford / Chan accumulator
     (Chan, Golub & LeVeque 1979). The tail then draws the surviving band in
     geometrically growing rounds via the low-rank general-Q0 kernel
@@ -311,8 +312,8 @@ def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
     the Westfall-Young / Freedman-Lane FWER bound is untouched (Lehmann &
     Romano Thm 15.2.1; Hemerik & Goeman 2018). The leader is always kept, so
     the max over survivors equals the whole-tree max whenever the true
-    arg-max survives. race_init and p_keep_thresh are speed/power knobs, never
-    validity knobs.
+    arg-max survives. n_perm_inner_race and p_keep_thresh are speed/power
+    knobs, never validity knobs.
 
     Args match cpu_perm plus the observed region LLR (the trim's z_hat
     numerator) and the two race knobs.
@@ -327,7 +328,7 @@ def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
         q1 (np.array): (a1, num_img) interest subspace
         children (np.array): (num_reg - num_vox, 2) Ward tree
         min_vox (int): regions smaller than this are left NaN
-        race_init (int): burn-in draws over all regions before the trim
+        n_perm_inner_race (int): burn-in draws over all regions before the trim
         p_keep_thresh (float): survivor keep-probability floor
 
     Returns:
@@ -336,15 +337,15 @@ def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
     """
     num_vox = exp.y.shape[2]
     num_img = exp.y.shape[1]
-    race_init = min(race_init, n_perm)
+    n_perm_inner_race = min(n_perm_inner_race, n_perm)
     leaf_ord, region_l, region_h = glow.graph.build_dfs_preorder(
         children=children, num_vox=num_vox)
     num_reg = int(region_l.shape[0])
     size = region_h - region_l
 
-    # burn-in: race_init streamed draws over ALL regions (== cpu_perm draws)
-    perms = np.empty((race_init, num_img), dtype=np.int64)
-    for i in range(race_init):
+    # burn-in: n_perm_inner_race streamed draws over ALL regions, == cpu_perm
+    perms = np.empty((n_perm_inner_race, num_img), dtype=np.int64)
+    for i in range(n_perm_inner_race):
         perms[i] = permute._perm_indices(base_seed + i, num_img)
     n = np.zeros(num_reg, dtype=np.float64)
     mean = np.zeros(num_reg, dtype=np.float64)
@@ -374,8 +375,8 @@ def cpu_perm_race(*, exp, llr_obs, base_seed: int, n_perm: int, q0, q1,
     # its own d up to the frontier -- a continuously-active region just
     # advances, a re-admitted one also closes the gap it sat out -- so the
     # eventual max-z region always reaches the full n_perm.
-    d = np.full(num_reg, race_init, dtype=np.int64)
-    frontier = race_init
+    d = np.full(num_reg, n_perm_inner_race, dtype=np.int64)
+    frontier = n_perm_inner_race
     while frontier < n_perm:
         new_frontier = min(2 * frontier, n_perm)
         mu, std = _welford_finalize(n, mean, M2)

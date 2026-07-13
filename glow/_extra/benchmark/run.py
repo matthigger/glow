@@ -749,7 +749,7 @@ def _max_z(llr, mu, std, size, min_vox: int):
 
 
 def _race_maxz_curve(exp, *, cluster_mode, n_perm_fwer: int, n_perm_inner: int,
-                     race_init: int, p_keep_thresh: float, min_vox: int) -> str:
+                     n_perm_inner_race: int, p_keep_thresh: float, min_vox: int) -> str:
     """Capture each outer perm's max-z under the full inner null vs the race.
 
     Runs GLOW's outer-perm loop by hand (mirroring AnalysisGLOW._run_outer, as
@@ -765,12 +765,12 @@ def _race_maxz_curve(exp, *, cluster_mode, n_perm_fwer: int, n_perm_inner: int,
         cluster_mode (ClusterMode): Ward projection (Focus / GLM Error).
         n_perm_fwer (int): outer FL perms (n_perm_fwer + 1 rows, incl. k=0).
         n_perm_inner (int): inner FL draws per outer perm (both paths).
-        race_init (int): race burn-in draws before the survivor trim.
+        n_perm_inner_race (int): race burn-in draws before the survivor trim.
         p_keep_thresh (float): race survivor keep-probability floor.
         min_vox (int): regions smaller than this are left out of the max.
 
     Returns:
-        a JSON string {n_perm_inner, race_init, p_keep_thresh, min_vox,
+        a JSON string {n_perm_inner, n_perm_inner_race, p_keep_thresh, min_vox,
         max_z_slow, max_z_race, reg_slow, reg_race}: the knobs, the two
         (n_perm_fwer+1,) per-outer-perm max-z arrays (row 0 observed), and the
         arg-max region each path selected (-1 if none). The race retains the
@@ -793,7 +793,7 @@ def _race_maxz_curve(exp, *, cluster_mode, n_perm_fwer: int, n_perm_inner: int,
             base_seed=base_seed, use_race=False)
         mu_r, std_r = AnalysisGLOW.run_inner_perm(
             _exp, children, n_perm_inner, q0=q0, q1=q1, min_vox=min_vox,
-            base_seed=base_seed, llr_obs=llr_k, race_init=race_init,
+            base_seed=base_seed, llr_obs=llr_k, n_perm_inner_race=n_perm_inner_race,
             p_keep_thresh=p_keep_thresh, use_race=True)
         z_s, r_s = _max_z(llr_k, mu_s, std_s, size, min_vox)
         z_r, r_r = _max_z(llr_k, mu_r, std_r, size, min_vox)
@@ -803,7 +803,7 @@ def _race_maxz_curve(exp, *, cluster_mode, n_perm_fwer: int, n_perm_inner: int,
         reg_race.append(r_r)
 
     return json.dumps({'n_perm_inner': int(n_perm_inner),
-                       'race_init': int(race_init),
+                       'n_perm_inner_race': int(n_perm_inner_race),
                        'p_keep_thresh': float(p_keep_thresh),
                        'min_vox': int(min_vox),
                        'max_z_slow': max_z_slow, 'max_z_race': max_z_race,
@@ -813,7 +813,7 @@ def _race_maxz_curve(exp, *, cluster_mode, n_perm_fwer: int, n_perm_inner: int,
 @MEMORY.cache
 @RECORDER(output_name='curve')
 def run_race_maxz(exp: Experiment, mask_target_list, *, cluster_mode,
-                  n_perm_fwer: int, n_perm_inner: int, race_init: int,
+                  n_perm_fwer: int, n_perm_inner: int, n_perm_inner_race: int,
                   p_keep_thresh: float, min_vox: int = 1):
     """Capture GLOW's per-outer-perm max-z under the full inner null vs race.
 
@@ -839,16 +839,16 @@ def run_race_maxz(exp: Experiment, mask_target_list, *, cluster_mode,
         cluster_mode (ClusterMode): Ward projection (Focus / GLM Error).
         n_perm_fwer (int): outer FL perms feeding the max-z null.
         n_perm_inner (int): inner FL draws per outer perm (both paths).
-        race_init (int): race burn-in draws before the survivor trim.
+        n_perm_inner_race (int): race burn-in draws before the survivor trim.
         p_keep_thresh (float): race survivor keep-probability floor.
         min_vox (int): regions smaller than this are left out of the max.
 
     Returns:
-        curve (str): a JSON string {n_perm_inner, race_init, p_keep_thresh,
+        curve (str): a JSON string {n_perm_inner, n_perm_inner_race, p_keep_thresh,
             min_vox, max_z_slow, max_z_race, reg_slow, reg_race}; parse with
             json.loads (see _race_maxz_curve).
     """
     return _race_maxz_curve(
         exp, cluster_mode=cluster_mode, n_perm_fwer=n_perm_fwer,
-        n_perm_inner=n_perm_inner, race_init=race_init,
+        n_perm_inner=n_perm_inner, n_perm_inner_race=n_perm_inner_race,
         p_keep_thresh=p_keep_thresh, min_vox=min_vox)

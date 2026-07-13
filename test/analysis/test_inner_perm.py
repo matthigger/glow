@@ -253,7 +253,7 @@ def _planted_exp(*, intercept_only, seed=1, n_img=30, shape=(6, 6, 6),
                       mask_idx=exp.mask_idx)
 
 
-def _race_survivors(prep, *, base_seed, race_init, p_keep_thresh):
+def _race_survivors(prep, *, base_seed, n_perm_inner_race, p_keep_thresh):
     """Reproduce the race burn-in + trim to recover the survivor mask and the
     observed LLR (so a test can check survivor moments against cpu_perm)."""
     exp = prep['exp']
@@ -264,7 +264,7 @@ def _race_survivors(prep, *, base_seed, race_init, p_keep_thresh):
         exp, children=prep['children'], q0=prep['q0'], q1=prep['q1'],
         min_size=prep['min_vox'])
     perms = np.stack([permute._perm_indices(base_seed + i, num_img)
-                      for i in range(race_init)])
+                      for i in range(n_perm_inner_race)])
     n = np.zeros(size.size)
     mean = np.zeros(size.size)
     M2 = np.zeros(size.size)
@@ -286,18 +286,18 @@ def test_race_reproduces_cpu_perm_maxz(intercept_only):
     """The race's per-perm max-z equals the full cpu_perm's, and the full
     run's arg-max region survives -- for general and intercept-only Q0."""
     prep = _prep(_planted_exp(intercept_only=intercept_only), min_vox=2)
-    base_seed, n_perm, race_init, pk = 777, 40, 10, 1e-6
+    base_seed, n_perm, n_perm_inner_race, pk = 777, 40, 10, 1e-6
 
     mu_f, std_f = inner_perm.cpu_perm(
         exp=prep['exp'], base_seed=base_seed, n_perm=n_perm,
         q0=prep['q0'], q1=prep['q1'], children=prep['children'],
         min_vox=prep['min_vox'])
     keep, llr_obs, size = _race_survivors(
-        prep, base_seed=base_seed, race_init=race_init, p_keep_thresh=pk)
+        prep, base_seed=base_seed, n_perm_inner_race=n_perm_inner_race, p_keep_thresh=pk)
     mu_r, std_r = inner_perm.cpu_perm_race(
         exp=prep['exp'], llr_obs=llr_obs, base_seed=base_seed, n_perm=n_perm,
         q0=prep['q0'], q1=prep['q1'], children=prep['children'],
-        min_vox=prep['min_vox'], race_init=race_init, p_keep_thresh=pk)
+        min_vox=prep['min_vox'], n_perm_inner_race=n_perm_inner_race, p_keep_thresh=pk)
 
     with np.errstate(divide='ignore', invalid='ignore'):
         z_f = (llr_obs - mu_f) / std_f
@@ -323,9 +323,9 @@ def test_race_survivor_moments_match_cpu_perm(prep_general_fp64):
     equal the full cpu_perm run's on the same seeds. Regions dropped mid-race
     carry prefix moments by design and are not compared."""
     prep = prep_general_fp64
-    base_seed, n_perm, race_init, pk = 4242, 40, 10, 1e-6
+    base_seed, n_perm, n_perm_inner_race, pk = 4242, 40, 10, 1e-6
     keep, llr_obs, size = _race_survivors(
-        prep, base_seed=base_seed, race_init=race_init, p_keep_thresh=pk)
+        prep, base_seed=base_seed, n_perm_inner_race=n_perm_inner_race, p_keep_thresh=pk)
     mu_f, std_f = inner_perm.cpu_perm(
         exp=prep['exp'], base_seed=base_seed, n_perm=n_perm,
         q0=prep['q0'], q1=prep['q1'], children=prep['children'],
@@ -333,7 +333,7 @@ def test_race_survivor_moments_match_cpu_perm(prep_general_fp64):
     mu_r, std_r = inner_perm.cpu_perm_race(
         exp=prep['exp'], llr_obs=llr_obs, base_seed=base_seed, n_perm=n_perm,
         q0=prep['q0'], q1=prep['q1'], children=prep['children'],
-        min_vox=prep['min_vox'], race_init=race_init, p_keep_thresh=pk)
+        min_vox=prep['min_vox'], n_perm_inner_race=n_perm_inner_race, p_keep_thresh=pk)
     with np.errstate(divide='ignore', invalid='ignore'):
         z_f = (llr_obs - mu_f) / std_f
     active = (size >= prep['min_vox']) & np.isfinite(z_f)
@@ -388,7 +388,7 @@ def test_race_float64_no_poison():
     finite and sane (a std-collapse would send it into the hundreds/thousands)
     and reproduces cpu_perm's max-z."""
     prep = _prep(_degenerate_plus_effect_exp(), min_vox=2)
-    base_seed, n_perm, race_init, pk = 555, 40, 10, 1e-6
+    base_seed, n_perm, n_perm_inner_race, pk = 555, 40, 10, 1e-6
     llr_obs, size = glow.graph.compute_llr_batched(
         prep['exp'], children=prep['children'], q0=prep['q0'], q1=prep['q1'])
     mu_f, std_f = inner_perm.cpu_perm(
@@ -398,7 +398,7 @@ def test_race_float64_no_poison():
     mu_r, std_r = inner_perm.cpu_perm_race(
         exp=prep['exp'], llr_obs=llr_obs, base_seed=base_seed, n_perm=n_perm,
         q0=prep['q0'], q1=prep['q1'], children=prep['children'],
-        min_vox=prep['min_vox'], race_init=race_init, p_keep_thresh=pk)
+        min_vox=prep['min_vox'], n_perm_inner_race=n_perm_inner_race, p_keep_thresh=pk)
     with np.errstate(divide='ignore', invalid='ignore'):
         z_f = (llr_obs - mu_f) / std_f
         z_r = (llr_obs - mu_r) / std_r

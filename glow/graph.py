@@ -557,7 +557,7 @@ def build_survivor_kernels(y, children, survivor_idx, q0,
                            acc_dtype=np.float64):
     """Build per-survivor Freedman-Lane par/perp kernels (general Q0, low-rank).
 
-    The general-nuisance counterpart of compute_llr_inner_fast's precompute.
+    The survivor-only precompute for the race tail (inner_perm.cpu_perm_race).
     Under Freedman-Lane (Y_v* = P (I - Q0Q0^T) Y_v + Q0Q0^T Y_v) the
     sum-over-voxels b x b second moment of a region r decomposes as
 
@@ -576,7 +576,8 @@ def build_survivor_kernels(y, children, survivor_idx, q0,
     cost vs M. The per-draw cross term is then a contraction with a
     column-permuted Q0 (see compute_llr_inner_kernel), no gather of a dense
     tensor. Valid for ANY nuisance; survivor leaves are read off
-    build_dfs_preorder's contiguous ranges. See freedman_lane_trick.tex and
+    build_dfs_preorder's contiguous ranges. See
+    publications/submissions/2026_glow/notes/inner_perm_race.tex and
     docs/notes/general_q0_race_kernel.md.
 
     Memory: num_surv * b^2 * a0 * num_img floats for K (vs the dense M's

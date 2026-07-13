@@ -79,7 +79,7 @@ import numpy as np
 from glow.analysis import (AnalysisCET, AnalysisGLOW, AnalysisVBA,
                            DEFAULT_CET_CFT_PVAL)
 from glow.analysis.cluster import ClusterMode
-from glow.analysis.inner_perm import RACE_INIT, RACE_P_KEEP_THRESH
+from glow.analysis.inner_perm import N_PERM_INNER_RACE, RACE_P_KEEP_THRESH
 from glow.analysis.mancova import (get_hotel_tr, get_wilks, stat_dict,
                                    stat_dict_inv)
 from glow.effect import ExtenterMinVar, ExtenterSphere
@@ -447,7 +447,7 @@ RUN_INNER_EDGE_LIST = [
 # GLOW-only leaf grid for the max-z race-retention check: one run_race_maxz per
 # GLOW arm, each recording the per-outer-perm max-z under the full inner null
 # (cpu_perm) and the survivor race (cpu_perm_race) off one shared seed. The race
-# knobs are glow's standard RACE_INIT / RACE_P_KEEP_THRESH (AnalysisGLOW's
+# knobs are glow's standard N_PERM_INNER_RACE / RACE_P_KEEP_THRESH (AnalysisGLOW's
 # recipe defaults), passed explicitly here so the check pins the shipped inner
 # null rather than relying on the leaf's own defaults; no label is passed (the
 # arm is recovered from cluster_mode). Its own seed offset (clear of the runtime
@@ -457,7 +457,7 @@ RACE_MAXZ_SEED_OFFSET = 300_000
 RACE_MAXZ_N_SEED = 3
 RUN_RACE_MAXZ_LIST = [
     dict(cluster_mode=mode, n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER,
-         race_init=RACE_INIT, p_keep_thresh=RACE_P_KEEP_THRESH)
+         n_perm_inner_race=N_PERM_INNER_RACE, p_keep_thresh=RACE_P_KEEP_THRESH)
     for label, mode in RUNTIME_GLOW_MODES]
 
 # segmentation timing: one run_segment_time per Ward mode (the segment cache's
