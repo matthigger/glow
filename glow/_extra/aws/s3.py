@@ -33,6 +33,7 @@ a file visible under these trees is already complete -- the uploader never
 races a half-written artifact.
 """
 
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -83,6 +84,24 @@ def _iter_files(local_dir: Path):
             yield p
 
 
+def _log_upload(p: Path, key: str) -> None:
+    """Print one line per uploaded object for the worker's CloudWatch stream.
+
+    Tags a <hash>.json record with its 'function' so the log names what shipped
+    (run_stat / effect_factory_single / ...) and when; a cache file logs by key
+    alone. Diagnostic only: it lets a Spot-killed attempt reveal what it never
+    got to upload -- pair it with the recorder's [record] write log (see
+    glow._extra.benchmark.recorder) to tell lost from never-written.
+    """
+    label = key
+    if p.suffix == '.json':
+        try:
+            label = f"{json.loads(p.read_text()).get('function', '?')} {key}"
+        except Exception:
+            pass
+    print(f'[upload] {label}', flush=True)
+
+
 def upload_dir(s3, bucket: str, local_dir, key_prefix: str, *,
                skip_existing: bool = True, threads: int = UPLOAD_THREADS,
                seen: set = None) -> int:
@@ -119,6 +138,7 @@ def upload_dir(s3, bucket: str, local_dir, key_prefix: str, *,
         if skip_existing and _object_exists(s3, bucket, key):
             return False
         s3.upload_file(str(p), bucket, key)
+        _log_upload(p, key)
         return True
 
     n = 0

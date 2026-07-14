@@ -368,13 +368,20 @@ class Recorder:
 
         A repeat key is the collision the module docstring describes; we keep
         the latest and warn so it is never silent. With a folder, it also
-        mirrors to <hash>.json.
+        mirrors to <hash>.json. When GLOW_RECORD_LOG is set (the AWS worker
+        turns it on) it also prints one [record] line per write, to pair with
+        the uploader's [upload] log for diagnosing lost records.
         """
         if key in self.records:
             warnings.warn(
                 f"recorder overwriting record for hash {key} "
                 f"({record['function']}); a prior call shared this args hash")
         self.records[key] = record
+        # opt-in write log: one line per record as it is written, so a worker's
+        # CloudWatch stream tells a record that was written-then-lost (a Spot
+        # kill before its upload) from one never written. Silent for local runs.
+        if os.environ.get('GLOW_RECORD_LOG'):
+            print(f"[record] {record['function']} {key}", flush=True)
         if self.folder is not None:
             self._write(key, record)
 

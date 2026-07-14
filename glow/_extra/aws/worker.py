@@ -59,6 +59,12 @@ def main(manifest_uri: str) -> None:
     Args:
         manifest_uri (str): s3:// URI of the run's manifest.json.
     """
+    # turn on the recorder's per-record write log (silent locally); paired with
+    # s3._log_upload's [upload] line it shows, in this child's CloudWatch stream,
+    # every record written vs shipped -- so a Spot-killed attempt reveals what
+    # it lost (see glow._extra.benchmark.recorder._store).
+    os.environ['GLOW_RECORD_LOG'] = '1'
+
     bucket, manifest_key = s3.parse_s3_uri(manifest_uri)
     manifest = _load_manifest(boto3.client('s3'), bucket, manifest_key)
 
