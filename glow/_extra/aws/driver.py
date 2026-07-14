@@ -31,9 +31,11 @@ Failure handling is two-layered. At the Batch level a per-job retryStrategy
 SIGTERM -- in place on a fresh box, but lets an OOM exit rather than re-running
 it at the same memory. At the driver level an OOM-killed cell is re-submitted
 at the next memory_mb_tier (a permanent failure only at the last tier); other
-failures (timeout, crash) are permanent and resurface on a rerun. A resumed
-attempt -- a Batch Spot retry or a driver tier escalation -- recomputes its
-cell from cold.
+failures (timeout, crash) are permanent and resurface on a rerun. A
+Spot-reclaimed worker checkpoints its partial progress (on the SIGTERM ~2 min
+ahead), so a Batch Spot retry resumes from the recipes it already finished
+rather than from cold; a later resubmit (a tier escalation or a rerun) restores
+that checkpoint too if it is still present.
 
 The whole sweep is correct to rerun: the local records are the source of truth
 for what is done, so a rerun resubmits only the cells not already complete on

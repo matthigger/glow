@@ -1,7 +1,29 @@
-"""sync: the HCP bundle S3 layout (stage dir + selective per-feature keys)."""
+"""sync: HCP bundle S3 layout + the per-cell checkpoint key."""
 
 from glow._extra.aws import sync
 from glow._extra.benchmark import hcp
+
+
+def test_checkpoint_key_layout():
+    assert (sync.checkpoint_key('glow', 'deadbeef')
+            == 'glow/checkpoint/deadbeef.tar.gz')
+    # an empty prefix keeps the key off the bucket root's leading slash
+    assert sync.checkpoint_key('', 'deadbeef') == 'checkpoint/deadbeef.tar.gz'
+
+
+def test_checkpoint_dirs_plain_fnc_is_records_only():
+    # a plain (un-memoised) leaf has no joblib cache dir to capture
+    dirs = sync.checkpoint_dirs(lambda: None)
+    assert [arc for _, arc in dirs] == ['records']
+
+
+def test_checkpoint_dirs_memoised_fnc_adds_cache():
+    # a MemorizedFunc leaf contributes its own cache dir (not a hardcoded one)
+    from glow._extra.benchmark.run import run_ana
+    dirs = sync.checkpoint_dirs(run_ana)
+    assert [arc for _, arc in dirs] == ['records', 'cache']
+    cache_dir = dict((arc, d) for d, arc in dirs)['cache']
+    assert cache_dir.name == run_ana.func_id.rsplit('/', 1)[-1]
 
 
 def test_hcp_bundle_pair_is_whole_dir():

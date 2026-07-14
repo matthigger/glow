@@ -2,7 +2,8 @@
 
 FakeS3 backs the object store with a dict and supports the calls the s3 /
 driver / worker modules make (head/get/put + upload_file/download_file +
-list_objects_v2 paginator + delete_objects). FakeBatch records submit_job
+list_objects_v2 paginator + delete_object / delete_objects). FakeBatch records
+submit_job
 calls and returns scripted per-child statuses from describe_jobs, so the
 driver's submit -> poll -> classify -> OOM-escalate loop can be driven with a
 small script.
@@ -50,6 +51,11 @@ class FakeS3:
     def download_file(self, Bucket, Key, filename):
         self.calls.append(('download_file', Bucket, Key))
         Path(filename).write_bytes(self.store[(Bucket, Key)])
+
+    def delete_object(self, *, Bucket, Key):
+        self.calls.append(('delete', Bucket, Key))
+        self.store.pop((Bucket, Key), None)
+        return {}
 
     def delete_objects(self, *, Bucket, Delete):
         for obj in Delete['Objects']:

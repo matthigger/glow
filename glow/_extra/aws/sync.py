@@ -16,6 +16,11 @@ the heavy exp caches (data_factory_wgn / data_factory_hcp / effect_factory)
 rebuild on the worker (a WGN seed draw, or an HCP nifti load from the staged
 data below), cheaper than shipping tens of MB.
 
+Spot-resume is a per-cell exception, not a shared cache: a reclaimed worker
+tars its own records + leaf-fnc cache dirs into one checkpoint object
+(checkpoint_dirs / checkpoint_key) and the retry restores just that, so a long
+cell interrupted mid-run resumes rather than recomputing from cold.
+
 HCP reference data (the npy bundle, pulled one way): a brain mask + one
 float32 (num_img, num_vox) array per feature + small meta (see hcp.py). It is
 staged to S3 once with infra.stage_hcp (hcp_bundle_pair, the whole dir), and an
@@ -39,6 +44,9 @@ Pair = Tuple[Path, str]
 # S3 key prefix (under the run prefix) the HCP npy bundle is mirrored to.
 HCP_BUNDLE_PREFIX = 'hcp_bundle'
 
+# S3 key prefix (under the run prefix) per-cell Spot-resume checkpoints live in.
+CHECKPOINT_PREFIX = 'checkpoint'
+
 
 def records_pair(prefix: str) -> Pair:
     """The (local records dir, S3 key prefix) pair for the per-hash records.
@@ -53,6 +61,48 @@ def records_pair(prefix: str) -> Pair:
         (local_dir, key_prefix): the local records dir and its S3 key prefix.
     """
     return get_path_records(), s3_key(prefix, 'records')
+
+
+def checkpoint_key(prefix: str, cell_hash: str) -> str:
+    """S3 key of one cell's Spot-resume checkpoint (a single tar.gz).
+
+    Keyed by the cell's content hash, not its array index, so the checkpoint a
+    reclaimed attempt writes is found again after a driver tier-escalation
+    resubmit re-slices the bundle (a fresh array index for the same cell).
+
+    Args:
+        prefix (str): the run's s3_prefix.
+        cell_hash (str): joblib.hash of the (kwargs_data, kwargs_effect) cell.
+
+    Returns:
+        key (str): the checkpoint object's S3 key.
+    """
+    return s3_key(prefix, CHECKPOINT_PREFIX, f'{cell_hash}.tar.gz')
+
+
+def checkpoint_dirs(fnc) -> List[Pair]:
+    """The (local_dir, arcname) trees a worker checkpoints for Spot-resume.
+
+    The records its cell has produced plus the leaf fnc's joblib cache entries
+    backing them -- tarred into one per-cell object (s3.write_checkpoint) on a
+    Spot reclaim and restored on the retry (s3.read_checkpoint), so the recipes
+    it already finished are cache hits and only the ones the reclaim cut short
+    recompute. The worker pulls no shared state, so each dir holds only this
+    cell's output.
+
+    Args:
+        fnc: the cell's leaf measurement (a joblib MemorizedFunc, e.g. run_ana);
+            a plain un-memoised fnc contributes only the records dir.
+
+    Returns:
+        list[(local_dir, arcname)]: the records dir, plus the leaf fnc's cache
+            dir when it is memoised, each with its name inside the tar.
+    """
+    dirs: List[Pair] = [(get_path_records(), 'records')]
+    store = getattr(fnc, 'store_backend', None)
+    if store is not None:
+        dirs.append((Path(store.location) / fnc.func_id, 'cache'))
+    return dirs
 
 
 def hcp_bundle_pair(prefix: str) -> Pair:

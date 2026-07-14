@@ -29,6 +29,10 @@ therefore just copying files down from S3 (no locking, no merge):
   worker computed helps it. A background thread ships each finished record up
   every minute, so results land at the driver as workers go, and a
   Spot-interrupted worker has already shipped the records it finished.
+- Spot-resume is per-cell, not a shared cache: a reclaimed worker tars its own
+  partial progress (its records + the leaf fnc's cache) to one checkpoint
+  object, and the retry restores just that — so a long cell interrupted mid-run
+  resumes instead of recomputing from cold.
 - The heavy WGN/HCP exp caches are *not* synced — they rebuild deterministically
   on the worker (a seed draw, or a nifti load from the staged data), cheaper
   than shipping tens of MB.
@@ -124,8 +128,9 @@ in-flight children finish, queued ones park. `clear_jobs` terminates the
 
 ## Failure handling
 
-- **Spot reclamation** is retried automatically by Batch; the cell recomputes
-  from cold.
+- **Spot reclamation** is retried automatically by Batch, and the retry resumes
+  from the reclaimed worker's per-cell checkpoint (only the recipes the reclaim
+  cut short recompute).
 - **Out-of-memory** cells are resubmitted at the next memory tier
   (`AWSConfig.memory_mb_tiers`, default `[4000, 8000, 16000]`).
 - **Timeouts, crashes, and last-tier OOM** are reported and skipped; the local

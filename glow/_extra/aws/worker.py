@@ -18,17 +18,24 @@ worker:
      (mask / affine / meta + its hcp_feats arrays) into hcp.bundle_dir(), so
      data_factory_hcp builds from the bundle with no niftis and no DUA prompt
      (WGN cells skip this; see glow._extra.aws.sync.hcp_bundle_keys);
-  3. runs the cell (_run_data_cell on the one effect -- build the clean exp
+  3. restores this cell's Spot-resume checkpoint if a prior attempt left one
+     (glow._extra.aws.sync.checkpoint_dirs), so recipes it already finished are
+     cache hits;
+  4. runs the cell (_run_data_cell on the one effect -- build the clean exp
      once, plant that effect, fit each recipe) start to finish, building
-     everything it needs locally, while a background thread ships each finished
-     record up every minute;
-  4. flushes the uploader on exit.
+     everything else it needs locally, while a background thread ships each
+     finished record up every minute;
+  5. on a Spot reclaim (SIGTERM ~2 min ahead) tars its partial progress to the
+     checkpoint object; on clean completion drops the checkpoint and flushes
+     the uploader.
 
 The worker pulls no shared cache: it runs one whole cell, so nothing another
 worker computed can help it, and it uploads only the records its cell produces
-(the driver builds the CSVs from those; see glow._extra.aws.sync). Exits
-non-zero on any exception so AWS Batch marks the child FAILED -- the driver
-retries it (recomputing the cell from cold) and escalates an OOM-killed cell to
+(the driver builds the CSVs from those; see glow._extra.aws.sync). Its one
+resume path is the per-cell checkpoint (steps 3 and 5), which restores just
+this cell's partial progress, so a long cell reclaimed mid-run continues rather
+than recomputing from cold. Exits non-zero on any exception so AWS Batch marks
+the child FAILED -- the driver retries it and escalates an OOM-killed cell to
 the next memory tier (see glow._extra.aws.driver).
 """
 
@@ -39,6 +46,7 @@ import signal
 import sys
 
 import boto3
+import joblib
 
 from . import s3, sync
 from .bundle import fnc_from_ref
@@ -85,7 +93,7 @@ def main(manifest_uri: str) -> None:
         Bucket=bucket, Key=manifest['bundle_key'])['Body'].read()
     cells, kwargs_fnc_list, fnc_ref, config_name = pickle.loads(body)
     # fnc ships as an import reference; resolving it here binds it to this
-    # worker's MEMORY / RECORDER (the synced cache dir), see bundle module
+    # worker's local MEMORY / RECORDER, see bundle module
     fnc = fnc_from_ref(fnc_ref)
 
     idx = int(os.environ.get('AWS_BATCH_JOB_ARRAY_INDEX', '0'))
@@ -103,6 +111,17 @@ def main(manifest_uri: str) -> None:
         print(f'[worker] HCP bundle: {n_hcp} file(s) pulled for feats '
               f'{list(kwargs_data["hcp_feats"])}', flush=True)
 
+    # per-cell Spot-resume checkpoint: a reclaimed attempt tars its partial
+    # progress to one S3 object (on the SIGTERM below) and the retry restores it
+    # here, so only the recipes the reclaim cut short recompute. Keyed by the
+    # cell's content hash so it survives a driver tier-escalation resubmit (a
+    # fresh array index for the same cell).
+    cell_hash = joblib.hash((kwargs_data, kwargs_effect))
+    ckpt_key = sync.checkpoint_key(prefix, cell_hash)
+    ckpt_dirs = sync.checkpoint_dirs(fnc)
+    if s3.read_checkpoint(s3_client, bucket, ckpt_key, ckpt_dirs):
+        print('[worker] resumed from Spot checkpoint', flush=True)
+
     # ship only the records this cell produces (the driver builds the CSVs from
     # them); the worker pulls no shared state, since one whole cell runs here
     # and no other worker's cache helps it. A background thread sweeps every
@@ -110,15 +129,28 @@ def main(manifest_uri: str) -> None:
     pairs = [sync.records_pair(prefix)]
     uploader = s3.BackgroundUploader(s3_client, bucket, pairs).start()
 
-    # on a Spot reclaim Batch sends SIGTERM ~2 min ahead; turn it into a clean
-    # exit so the finally below flushes before the process dies
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    # on a Spot reclaim Batch sends SIGTERM ~2 min ahead; ship the finished
+    # records and tar this cell's partial progress to the checkpoint, then exit
+    # 143 so Batch retries it and the retry resumes from that checkpoint.
+    def _on_spot_reclaim(*_):
+        try:
+            uploader.flush()
+            s3.write_checkpoint(s3_client, bucket, ckpt_key, ckpt_dirs)
+            print('[worker] Spot checkpoint written', flush=True)
+        except Exception as exc:
+            print(f'[worker] Spot checkpoint failed: {exc}', flush=True)
+        sys.exit(143)
+
+    signal.signal(signal.SIGTERM, _on_spot_reclaim)
 
     try:
         # imported here so --help / a missing cell errors before the heavy
         # benchmark import chain (numpy / glow) is paid
         from glow._extra.benchmark.driver import _run_data_cell
         _run_data_cell(kwargs_data, [kwargs_effect], kwargs_fnc_list, fnc)
+        # cell finished cleanly: its records are shipped, so the checkpoint is
+        # obsolete -- drop it rather than leave an orphan for the retry path
+        s3.delete_checkpoint(s3_client, bucket, ckpt_key)
     finally:
         n = uploader.stop()
         print(f'[worker] final flush uploaded {n} file(s)', flush=True)

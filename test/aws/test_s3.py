@@ -1,4 +1,4 @@
-"""s3: uri parse, dir upload/download round-trip, background uploader."""
+"""s3: uri parse, dir upload/download round-trip, uploader, checkpoint."""
 
 import pytest
 
@@ -79,6 +79,40 @@ def test_background_uploader_thread(tmp_path):
     with s3.BackgroundUploader(fake, 'bkt', [(src, 'p')], interval=0.01):
         pass  # __exit__ stops + final flush
     assert ('bkt', 'p/a.json') in fake.store
+
+
+def test_checkpoint_round_trip(tmp_path):
+    # a worker tars two local dirs into one object; a fresh worker restores them
+    rec = tmp_path / 'records'
+    cache = tmp_path / 'cache'
+    _write(rec / 'abc.json', 'REC')
+    _write(cache / 'run_ana' / 'h' / 'output.pkl', 'BLOB')
+    dirs = [(rec, 'records'), (cache, 'cache')]
+    fake = FakeS3()
+
+    assert s3.write_checkpoint(fake, 'bkt', 'ckpt/x.tar.gz', dirs)
+    assert ('bkt', 'ckpt/x.tar.gz') in fake.store
+
+    # a fresh box: empty local dirs, restore from the checkpoint
+    rec2, cache2 = tmp_path / 'r2', tmp_path / 'c2'
+    assert s3.read_checkpoint(fake, 'bkt', 'ckpt/x.tar.gz',
+                              [(rec2, 'records'), (cache2, 'cache')])
+    assert (rec2 / 'abc.json').read_text() == 'REC'
+    assert (cache2 / 'run_ana' / 'h' / 'output.pkl').read_text() == 'BLOB'
+
+    # delete removes it; a subsequent read restores nothing
+    s3.delete_checkpoint(fake, 'bkt', 'ckpt/x.tar.gz')
+    assert ('bkt', 'ckpt/x.tar.gz') not in fake.store
+    assert not s3.read_checkpoint(fake, 'bkt', 'ckpt/x.tar.gz',
+                                  [(rec2, 'records')])
+
+
+def test_write_checkpoint_no_dirs_writes_nothing(tmp_path):
+    fake = FakeS3()
+    # an absent dir contributes nothing, so no object is written
+    assert not s3.write_checkpoint(fake, 'bkt', 'ckpt/x.tar.gz',
+                                   [(tmp_path / 'nope', 'records')])
+    assert ('bkt', 'ckpt/x.tar.gz') not in fake.store
 
 
 def test_download_each_selective(tmp_path):

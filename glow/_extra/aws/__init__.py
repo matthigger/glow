@@ -13,7 +13,10 @@ state: the per-hash records are keyed by the call's args hash, so the same call
 writes the same file on any machine. Collecting results across workers
 therefore reduces to copying each worker's <hash>.json files down from S3 (no
 live cache backend, no locking); see the s3 / sync modules. A worker pulls no
-shared cache -- it runs one whole cell and uploads only its records.
+shared cache -- it runs one whole cell and uploads only its records. Its one
+resume path is a per-cell checkpoint: a Spot-reclaimed worker tars its partial
+progress to a single object the retry restores, so a long cell interrupted
+mid-run continues rather than recomputing from cold.
 
 Modules:
     config   -- AWSConfig (bucket / queue / definition / memory tiers), JSON.

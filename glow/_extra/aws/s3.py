@@ -19,6 +19,9 @@ directories under glow's per-user data dir to an S3 prefix and back:
     worker computes, so finished records land at the driver as the worker goes
     (and a Spot-interrupted worker has already shipped the records it
     finished), each a small <hash>.json.
+  - write_checkpoint / read_checkpoint tar a set of directories into one
+    per-cell object and back, so a Spot-reclaimed worker persists its partial
+    progress as a single object the retry restores (see the worker).
 
 What to sync is the caller's policy (see the driver / worker): the records dir
 (tiny, and it carries the provenance DAG the CSVs are built from). The compute
@@ -236,6 +239,82 @@ def download_each(s3, bucket: str, pairs, *, skip_existing: bool = True,
         for downloaded in pool.map(_get_one, pairs):
             n += int(downloaded)
     return n
+
+
+def write_checkpoint(s3, bucket: str, key: str, dirs) -> bool:
+    """Tar the given (local_dir, arcname) trees into one gz object at key.
+
+    Writes a single per-cell object capturing a worker's partial progress, so a
+    Spot-reclaimed attempt's retry resumes from it (read_checkpoint) rather than
+    recomputing the cell from cold. Absent / empty dirs contribute nothing; if
+    none exist, no object is written.
+
+    Args:
+        s3: boto3 S3 client.
+        bucket (str): destination bucket.
+        key (str): the checkpoint object's key.
+        dirs (iterable[(str | Path, str)]): (local_dir, arcname) trees to bundle;
+            each is stored under its arcname inside the tar.
+
+    Returns:
+        wrote (bool): True if an object was uploaded.
+    """
+    import tarfile
+    import tempfile
+
+    dirs = [(Path(d), arc) for d, arc in dirs if Path(d).is_dir()]
+    if not dirs:
+        return False
+    with tempfile.NamedTemporaryFile(suffix='.tar.gz') as tf:
+        with tarfile.open(tf.name, 'w:gz') as tar:
+            for local_dir, arc in dirs:
+                tar.add(str(local_dir), arcname=arc)
+        s3.upload_file(tf.name, bucket, key)
+    return True
+
+
+def read_checkpoint(s3, bucket: str, key: str, dirs) -> bool:
+    """Restore a checkpoint written by write_checkpoint into the local dirs.
+
+    Downloads the single object at key (if present) and merges each arcname
+    subtree back into its local_dir (existing local files kept). A missing
+    object restores nothing.
+
+    Args:
+        s3: boto3 S3 client.
+        bucket (str): source bucket.
+        key (str): the checkpoint object's key.
+        dirs (iterable[(str | Path, str)]): the same (local_dir, arcname) trees
+            passed to write_checkpoint; each arcname subtree lands in local_dir.
+
+    Returns:
+        restored (bool): True if the checkpoint existed and was unpacked.
+    """
+    import shutil
+    import tarfile
+    import tempfile
+
+    if not _object_exists(s3, bucket, key):
+        return False
+    with tempfile.TemporaryDirectory() as td:
+        tar_path = Path(td) / 'ckpt.tar.gz'
+        s3.download_file(bucket, key, str(tar_path))
+        extract_root = Path(td) / 'extracted'
+        with tarfile.open(str(tar_path), 'r:gz') as tar:
+            try:
+                tar.extractall(extract_root, filter='data')
+            except TypeError:
+                tar.extractall(extract_root)
+        for local_dir, arc in dirs:
+            src = extract_root / arc
+            if src.is_dir():
+                shutil.copytree(src, Path(local_dir), dirs_exist_ok=True)
+    return True
+
+
+def delete_checkpoint(s3, bucket: str, key: str) -> None:
+    """Delete a cell's checkpoint object (a no-op if already gone)."""
+    s3.delete_object(Bucket=bucket, Key=key)
 
 
 class BackgroundUploader:
