@@ -21,6 +21,8 @@ def test_defaults():
     # a single data cell runs its whole subtree serially, so the per-attempt
     # ceiling is generous (see config.py)
     assert cfg.timeout_minutes >= 600
+    # budget must survive a short run of correlated Spot reclaims (see config.py)
+    assert cfg.retry_attempts == 6
 
 
 def test_unknown_key_rejected():

@@ -55,6 +55,13 @@ class AWSConfig:
             heaviest, sweep_extent, is hours), and a Spot-killed attempt
             resumes from the synced cache on retry (see the driver / s3
             modules), so a generous ceiling is safe.
+        retry_attempts (int): per-job Batch attempt budget. A Spot reclaim is
+            transient, not a real failure, so the budget mostly buffers host
+            loss (the driver's evaluateOnExit retries it in place, warm-
+            resuming from cache); set high enough that a short correlated
+            capacity crunch -- several reclaims in a row -- does not exhaust it.
+            OOM is held separate (it EXITs and the driver escalates memory), so
+            a larger budget never re-loops an OOM.
         poll_seconds (int): interval between describe_jobs status polls.
     """
 
@@ -68,7 +75,7 @@ class AWSConfig:
         default_factory=lambda: [2000, 4000, 8000])
     max_concurrent: int = 4000
     timeout_minutes: int = 720
-    retry_attempts: int = 3
+    retry_attempts: int = 6
     poll_seconds: int = 10
 
     def to_dict(self) -> dict:

@@ -445,12 +445,41 @@ def _setup_job_definition(cfg: AWSConfig, *, image_uri: str,
           f'(revision {response["revision"]})')
 
 
-def _setup_compute_environment(cfg: AWSConfig, *, account_id: str) -> str:
-    """Create (or update) the Spot compute environment (idempotent).
+def _default_subnets(ec2) -> list:
+    """Return the default subnet of every availability zone, AZ-sorted.
 
-    On rerun only maxvCpus is updated; every other compute-resource field
-    is immutable on an existing environment. A new environment is placed
-    in the account's default VPC (first default subnet, default SG).
+    One default subnet per AZ in the account's default VPC, ordered by AZ so
+    the compute environment spans every zone deterministically. Spot capacity
+    and reclaim risk are per-AZ pools, so spreading over all zones lets a
+    capacity-aware allocation strategy re-place a reclaimed instance in a
+    healthy zone instead of relaunching into the same crunched one.
+
+    Args:
+        ec2: boto3 EC2 client.
+
+    Returns:
+        subnets (list[dict]): describe_subnets records, one per AZ, sorted by
+            AvailabilityZone.
+    """
+    subnets = ec2.describe_subnets(
+        Filters=[{'Name': 'default-for-az', 'Values': ['true']}])['Subnets']
+    if not subnets:
+        raise SystemExit(
+            'no default subnets found; pass --vpc-subnet / --vpc-sg manually')
+    return sorted(subnets, key=lambda s: s['AvailabilityZone'])
+
+
+def _setup_compute_environment(cfg: AWSConfig, *, account_id: str) -> str:
+    """Create or reconcile the Spot compute environment (idempotent).
+
+    A new environment spans every default subnet of the account's default VPC
+    -- one per availability zone -- so Batch spreads Spot instances across all
+    zones and a reclaim in one zone re-lands in another (see _default_subnets).
+    On rerun an existing environment is updated in place: maxvCpus always, and
+    its subnet set whenever it drifts from the current default subnets. Growing
+    a single-AZ environment to all zones is an in-place infrastructure update
+    (the SPOT_PRICE_CAPACITY_OPTIMIZED strategy supports it); it only replaces
+    instances, and idle at desiredvCpus 0 there are none to replace.
 
     Args:
         cfg (AWSConfig): supplies region and max_concurrent.
@@ -463,25 +492,29 @@ def _setup_compute_environment(cfg: AWSConfig, *, account_id: str) -> str:
     batch = boto3.client('batch', region_name=cfg.region)
     ec2 = boto3.client('ec2', region_name=cfg.region)
 
+    subnets = _default_subnets(ec2)
+    subnet_ids = [s['SubnetId'] for s in subnets]
+    n_az = len({s['AvailabilityZone'] for s in subnets})
+
     existing = batch.describe_compute_environments(
         computeEnvironments=[COMPUTE_ENV_NAME])['computeEnvironments']
     if existing:
         arn = existing[0]['computeEnvironmentArn']
+        update = {'maxvCpus': cfg.max_concurrent}
+        live = existing[0].get('computeResources', {}).get('subnets', [])
+        if set(live) != set(subnet_ids):
+            update['subnets'] = subnet_ids
         try:
             batch.update_compute_environment(
-                computeEnvironment=COMPUTE_ENV_NAME,
-                computeResources={'maxvCpus': cfg.max_concurrent})
+                computeEnvironment=COMPUTE_ENV_NAME, computeResources=update)
+            azs = (f', subnets → {len(subnet_ids)} across {n_az} AZ(s)'
+                   if 'subnets' in update else '')
             print(f'  ✓ compute env {COMPUTE_ENV_NAME} exists '
-                  f'(maxvCpus → {cfg.max_concurrent})')
+                  f'(maxvCpus → {cfg.max_concurrent}{azs})')
         except ClientError as e:
             print(f'  ⚠ compute env update failed: {e}')
         return arn
 
-    subnets = ec2.describe_subnets(
-        Filters=[{'Name': 'default-for-az', 'Values': ['true']}])['Subnets']
-    if not subnets:
-        raise SystemExit(
-            'no default subnets found; pass --vpc-subnet / --vpc-sg manually')
     vpc_id = subnets[0]['VpcId']
     sg = ec2.describe_security_groups(
         Filters=[
@@ -509,14 +542,15 @@ def _setup_compute_environment(cfg: AWSConfig, *, account_id: str) -> str:
             'maxvCpus': cfg.max_concurrent,
             'desiredvCpus': 0,
             'instanceTypes': INSTANCE_TYPES,
-            'subnets': [s['SubnetId'] for s in subnets],
+            'subnets': subnet_ids,
             'securityGroupIds': [sg['GroupId']],
             'instanceRole': instance_profile,
             'spotIamFleetRole': spot_fleet,
         },
     )
     arn = response['computeEnvironmentArn']
-    print(f'  ✓ created compute env {COMPUTE_ENV_NAME}')
+    print(f'  ✓ created compute env {COMPUTE_ENV_NAME} '
+          f'({len(subnet_ids)} subnets across {n_az} AZ(s))')
     _wait_for_ce_valid(batch)
     return arn
 
