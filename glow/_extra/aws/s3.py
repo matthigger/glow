@@ -16,16 +16,15 @@ directories under glow's per-user data dir to an S3 prefix and back:
     moves the new artifacts, and the content-addressing makes "already there"
     safe to skip.
   - BackgroundUploader pushes a set of directories on an interval while the
-    worker computes, so a Spot-interrupted worker has already shipped most of
-    its finished work (each completed fit is a small <hash>.json record plus a
-    KB score-dict cache entry) and a retry resumes from it rather than from
-    scratch.
+    worker computes, so finished records land at the driver as the worker goes
+    (and a Spot-interrupted worker has already shipped the records it
+    finished), each a small <hash>.json.
 
-What to sync is the caller's policy (see the driver / worker): the records
-dir always (tiny, and it carries the provenance DAG the CSVs are built from),
-and the expensive-compute cache dirs (run_ana) for Spot-resume; the heavy but
-cheap-to-rebuild exp caches (WGN data_factory) are left to rebuild on the
-worker rather than shipped.
+What to sync is the caller's policy (see the driver / worker): the records dir
+(tiny, and it carries the provenance DAG the CSVs are built from). The compute
+caches are not shipped -- a worker runs one whole cell and shares no cache with
+another, and the exp caches (WGN data_factory) rebuild on the worker rather
+than ship.
 
 Upload safety: joblib writes a cache entry to a temp dir and renames it into
 place, and the recorder writes each <hash>.json via temp-file + os.replace, so
@@ -242,13 +241,13 @@ def download_each(s3, bucket: str, pairs, *, skip_existing: bool = True,
 class BackgroundUploader:
     """Periodically upload a set of (local_dir, key_prefix) pairs in a thread.
 
-    Ships finished work off the worker while it keeps computing, so a
-    Spot-interrupted attempt has already persisted most of its completed fits
-    (and a retry resumes from them). The compute thread is never blocked: S3
-    PUT is I/O-bound and releases the GIL, and the sweep only walks for new
-    files. A per-pair seen set means each file is probed/uploaded once across
-    sweeps. flush() forces an immediate sweep (called on normal exit and on
-    the SIGTERM Batch sends ~2 min before a Spot reclaim).
+    Ships finished records off the worker while it keeps computing, so the
+    driver lands results as workers finish them (and a Spot-interrupted attempt
+    has already persisted the records it finished). The compute thread is never
+    blocked: S3 PUT is I/O-bound and releases the GIL, and the sweep only walks
+    for new files. A per-pair seen set means each file is probed/uploaded once
+    across sweeps. flush() forces an immediate sweep (called on normal exit and
+    on the SIGTERM Batch sends ~2 min before a Spot reclaim).
 
     Attributes:
         pairs (list[tuple]): the (local_dir, key_prefix) trees to mirror up.

@@ -3,18 +3,17 @@
 The AWS counterpart of the local benchmark sweep (glow._extra.benchmark): the
 driver submits a CONFIG cache's data cells as a Batch array job (one child per
 cell) and each worker rebuilds + runs its cell from CONFIG, writing its records
-and run_ana cache to a shared S3 prefix; when the array drains, the records are
-pulled down and the per-config CSVs written with the unchanged benchmark read
-path. The work split needs no per-cell shipping -- the array index addresses a
-cell, since the cell enumeration is a pure function of the catalogue.
+to a shared S3 prefix; when the array drains, the records are pulled down and
+the per-config CSVs written with the unchanged benchmark read path. The work
+split needs no per-cell shipping -- the array index addresses a cell, since the
+cell enumeration is a pure function of the catalogue.
 
 The whole approach rests on the benchmark layer's content-addressed on-disk
-state: the joblib cache and per-hash records are keyed by the call's args hash,
-so the same call writes the same file on any machine. "Share the cache across
-workers" therefore reduces to copying files to and from S3 (no live cache
-backend, no locking); see the s3 / sync modules. A worker pulls the cheap,
-high-value run_ana cache first, so a Spot-retried cell resumes from the fits it
-already completed rather than from cold.
+state: the per-hash records are keyed by the call's args hash, so the same call
+writes the same file on any machine. Collecting results across workers
+therefore reduces to copying each worker's <hash>.json files down from S3 (no
+live cache backend, no locking); see the s3 / sync modules. A worker pulls no
+shared cache -- it runs one whole cell and uploads only its records.
 
 Modules:
     config   -- AWSConfig (bucket / queue / definition / memory tiers), JSON.

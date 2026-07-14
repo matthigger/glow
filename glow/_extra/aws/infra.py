@@ -1157,16 +1157,15 @@ def cmd_stage_hcp(args, cfg: AWSConfig) -> None:
 
 
 def cmd_pull(args, cfg: AWSConfig) -> None:
-    """Download the shared records and run_ana cache from S3 to local.
+    """Download the shared records from S3 to local.
 
-    The pull side of the sync the workers push while they compute (see
-    glow._extra.aws.sync.sync_pairs): the per-hash records/ (the provenance
-    the CSVs are built from) and the run_ana cache (the expensive score-dict
-    compute). drive_aws pulls the records at the end of a run to write the
-    CSVs; this exposes the same pull on its own, so an interrupted or
-    cancelled run's partial results are recoverable without waiting for a
-    fresh run to drain. Non-destructive: existing local files are skipped
-    (s3.download_prefix), so nothing local is overwritten.
+    The pull side of the records the workers push while they compute (see
+    glow._extra.aws.sync.records_pair): the per-hash records/ the CSVs are
+    built from. drive_aws pulls them at the end of a run to write the CSVs;
+    this exposes the same pull on its own, so an interrupted or cancelled run's
+    partial results are recoverable without waiting for a fresh run to drain.
+    Non-destructive: existing local files are skipped (s3.download_prefix), so
+    nothing local is overwritten.
 
     Args:
         args: parsed argparse Namespace (unused; kept for CLI dispatch).
@@ -1175,10 +1174,10 @@ def cmd_pull(args, cfg: AWSConfig) -> None:
     from glow._extra.aws import s3, sync
 
     s3_client = boto3.client('s3', region_name=cfg.region)
-    for local_dir, key_prefix in sync.sync_pairs(cfg.s3_prefix):
-        print(f'[pull] s3://{cfg.s3_bucket}/{key_prefix} -> {local_dir}')
-        n = s3.download_prefix(s3_client, cfg.s3_bucket, key_prefix, local_dir)
-        print(f'[pull] downloaded {n} new file(s) (existing skipped)')
+    local_dir, key_prefix = sync.records_pair(cfg.s3_prefix)
+    print(f'[pull] s3://{cfg.s3_bucket}/{key_prefix} -> {local_dir}')
+    n = s3.download_prefix(s3_client, cfg.s3_bucket, key_prefix, local_dir)
+    print(f'[pull] downloaded {n} new file(s) (existing skipped)')
 
 
 # ---------- clear_jobs ------------------------------------------------------
@@ -1327,8 +1326,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_stage_hcp)
 
     sp = subs.add_parser('pull',
-                         help='download shared records + run_ana cache from '
-                              'S3 (recover an interrupted run)')
+                         help='download shared records from S3 '
+                              '(recover an interrupted run)')
     sp.set_defaults(func=cmd_pull)
 
     sp = subs.add_parser('pause', help='disable job queue dispatch')

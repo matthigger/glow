@@ -6,10 +6,10 @@ per-user config directory (platformdirs user_config_dir, e.g.
 user_data_dir glow already writes benchmark cache / records / results to.
 Callers override it with the --config CLI flag or the path argument.
 
-The worker reads the same bucket / prefix / region to sync the shared cache
-and records folders to and from S3 (see glow._extra.aws.s3); the driver reads
-the Batch queue / definition / memory tiers to submit and escalate array jobs
-(see glow._extra.aws.driver).
+The worker reads the same bucket / prefix / region to sync the shared records
+folder to and from S3 (see glow._extra.aws.s3); the driver reads the Batch
+queue / definition / memory tiers to submit and escalate array jobs (see
+glow._extra.aws.driver).
 """
 
 import json
@@ -44,7 +44,7 @@ class AWSConfig:
 
     Attributes:
         s3_prefix (str): key prefix under s3_bucket for all glow objects (the
-            shared cache, records, and per-run manifests live beneath it).
+            shared records and per-run manifests live beneath it).
         memory_mb_tiers (List[int]): per-attempt memory limits; the driver
             re-runs OOM-killed cells at the next larger tier. The first tier
             matches 2 GB/vCPU compute-optimized nodes so a 1-vcpu job packs

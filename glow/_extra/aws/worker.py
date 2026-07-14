@@ -18,16 +18,18 @@ worker:
      (mask / affine / meta + its hcp_feats arrays) into hcp.bundle_dir(), so
      data_factory_hcp builds from the bundle with no niftis and no DUA prompt
      (WGN cells skip this; see glow._extra.aws.sync.hcp_bundle_keys);
-  3. pulls the shared records + run_ana cache from S3 so any fit a prior
-     attempt or another run already computed is a cache hit (warm resume);
-  4. runs the cell (_run_data_cell on the one effect -- build the clean exp
-     once, plant that effect, fit each recipe), while a background thread ships
-     finished records / cache entries up every minute;
-  5. flushes the uploader on exit.
+  3. runs the cell (_run_data_cell on the one effect -- build the clean exp
+     once, plant that effect, fit each recipe) start to finish, building
+     everything it needs locally, while a background thread ships each finished
+     record up every minute;
+  4. flushes the uploader on exit.
 
-Exits non-zero on any exception so AWS Batch marks the child FAILED -- the
-driver then retries it (resuming from the synced cache) and escalates an
-OOM-killed cell to the next memory tier (see glow._extra.aws.driver).
+The worker pulls no shared cache: it runs one whole cell, so nothing another
+worker computed can help it, and it uploads only the records its cell produces
+(the driver builds the CSVs from those; see glow._extra.aws.sync). Exits
+non-zero on any exception so AWS Batch marks the child FAILED -- the driver
+retries it (recomputing the cell from cold) and escalates an OOM-killed cell to
+the next memory tier (see glow._extra.aws.driver).
 """
 
 import json
@@ -101,14 +103,11 @@ def main(manifest_uri: str) -> None:
         print(f'[worker] HCP bundle: {n_hcp} file(s) pulled for feats '
               f'{list(kwargs_data["hcp_feats"])}', flush=True)
 
-    # warm the local state: anything a prior attempt / run already computed is
-    # then a cache hit (the records carry it; run_ana hits skip the ~450 s fit)
-    pairs = sync.sync_pairs(prefix)
-    for local_dir, key_prefix in pairs:
-        s3.download_prefix(s3_client, bucket, key_prefix, local_dir)
-
-    # run the cell while a background thread ships finished work up; the GIL is
-    # released inside numpy, so sweeps proceed even mid-fit (see s3 module)
+    # ship only the records this cell produces (the driver builds the CSVs from
+    # them); the worker pulls no shared state, since one whole cell runs here
+    # and no other worker's cache helps it. A background thread sweeps every
+    # minute; the GIL is released inside numpy, so sweeps proceed even mid-fit.
+    pairs = [sync.records_pair(prefix)]
     uploader = s3.BackgroundUploader(s3_client, bucket, pairs).start()
 
     # on a Spot reclaim Batch sends SIGTERM ~2 min ahead; turn it into a clean

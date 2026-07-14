@@ -3,10 +3,9 @@
 Run the paper benchmark on AWS Batch instead of your laptop. It's the same
 benchmark CLI with `--aws`: each CONFIG cache's data cells go out as one Batch
 array job (one child per cell), each worker rebuilds its cell from CONFIG and
-runs it, writing its records and `run_ana` cache to a shared S3 prefix, and
-when the array drains the records are pulled down and the per-config CSVs
-written with the unchanged read path — so AWS and local runs produce the same
-artifacts.
+runs it, writing its records to a shared S3 prefix, and when the array drains
+the records are pulled down and the per-config CSVs written with the unchanged
+read path — so AWS and local runs produce the same artifacts.
 
 ```bash
 python -m glow._extra.benchmark --aws sweep_llr     # one cache (WGN cells)
@@ -19,22 +18,20 @@ That is the only way to launch a run — the same CLI as a local sweep, just
 with `--aws`. `python -m glow._extra.aws` is the separate provisioning CLI
 (setup, status, teardown — below); it does not run sweeps.
 
-## How the shared cache works
+## How the shared state works
 
-There is no live S3 cache backend. The benchmark's on-disk state — the joblib
-cache and the per-hash `<hash>.json` records — is content-addressed (keyed by
-the call's args hash), so the same call writes the same file on any machine.
-"Share the cache across workers" is therefore just copying files to and from
-S3 (no locking, no merge):
+There is no live S3 cache backend. The benchmark's per-hash `<hash>.json`
+records are content-addressed (keyed by the call's args hash), so the same call
+writes the same file on any machine. Collecting results across workers is
+therefore just copying files down from S3 (no locking, no merge):
 
-- A worker pulls the records + the `run_ana` cache before computing, so any fit
-  a prior attempt or another run already did is a cache hit.
-- A background thread ships finished records / cache entries up every minute,
-  so a Spot-interrupted worker has already persisted most of its completed
-  fits, and a retry resumes from them rather than from cold.
-- `run_ana` is the ~450 s compute but caches as a KB score dict, so shipping it
-  is cheap; the heavy WGN exp caches are *not* synced — they rebuild
-  deterministically from a seed on the worker, cheaper than shipping tens of MB.
+- A worker runs one whole cell and pulls no shared cache — nothing another
+  worker computed helps it. A background thread ships each finished record up
+  every minute, so results land at the driver as workers go, and a
+  Spot-interrupted worker has already shipped the records it finished.
+- The heavy WGN/HCP exp caches are *not* synced — they rebuild deterministically
+  on the worker (a seed draw, or a nifti load from the staged data), cheaper
+  than shipping tens of MB.
 
 A cache runs whatever sources its CONFIG data grid declares (sources are a
 CONFIG property, not a CLI knob). WGN cells run out of the box (they rebuild
@@ -55,8 +52,8 @@ python -m glow._extra.benchmark --aws smoke
 ```
 
 The heavy HCP exp caches are still not synced -- each worker rebuilds its exp
-by loading the staged niftis (cheaper than shipping them); only the records and
-the run_ana cache are mirrored both ways.
+by loading the staged niftis (cheaper than shipping them); only the records are
+mirrored both ways.
 
 ## One-time setup
 
@@ -113,8 +110,8 @@ python -m glow._extra.aws resume
 python -m glow._extra.aws clear_jobs --yes
 
 # delete shared S3 state
-python -m glow._extra.aws clear_storage --runs --yes              # stale manifests
-python -m glow._extra.aws clear_storage --records --cache --yes   # force a cold rerun
+python -m glow._extra.aws clear_storage --runs --yes       # stale manifests
+python -m glow._extra.aws clear_storage --records --yes    # force a cold rerun
 
 # tear down Batch (keep the bucket)
 python -m glow._extra.aws teardown --yes
@@ -127,10 +124,10 @@ in-flight children finish, queued ones park. `clear_jobs` terminates the
 
 ## Failure handling
 
-- **Spot reclamation** is retried automatically by Batch, and the worker
-  resumes from its synced cache.
+- **Spot reclamation** is retried automatically by Batch; the cell recomputes
+  from cold.
 - **Out-of-memory** cells are resubmitted at the next memory tier
   (`AWSConfig.memory_mb_tiers`, default `[4000, 8000, 16000]`).
-- **Timeouts, crashes, and last-tier OOM** are reported and skipped; rerunning
-  re-submits them and the finished fits come back as cache hits, so a rerun
-  fills the gaps without recomputing completed work.
+- **Timeouts, crashes, and last-tier OOM** are reported and skipped; the local
+  records are the source of truth for what is done, so rerunning re-submits
+  only the incomplete cells and fills the gaps without touching finished work.

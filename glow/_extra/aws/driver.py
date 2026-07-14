@@ -4,11 +4,11 @@ drive_aws is the AWS counterpart of glow._extra.benchmark.run.run: instead of
 sweeping the cells in local joblib workers, it submits them as a Batch array
 job (one child per planted cell -- a data cell crossed with one effect) and
 lets each worker rebuild + run its cell from the shipped bundle, writing its
-records and run_ana cache to a shared S3 prefix. The driver pulls finished
-records down as the workers ship them (so results land locally as they
-complete), and when the array drains does a final pull and writes the
-per-config CSVs with the unchanged results.write_config_csvs -- the AWS path
-produces the same records a local run would, so the read side is identical.
+records to a shared S3 prefix. The driver pulls finished records down as the
+workers ship them (so results land locally as they complete), and when the
+array drains does a final pull and writes the per-config CSVs with the
+unchanged results.write_config_csvs -- the AWS path produces the same records a
+local run would, so the read side is identical.
 
 The driver is the single source of truth for what runs: it resolves a cache's
 cells locally (resolve_cells -- see glow._extra.aws.units), drops the cells
@@ -31,13 +31,13 @@ Failure handling is two-layered. At the Batch level a per-job retryStrategy
 SIGTERM -- in place on a fresh box, but lets an OOM exit rather than re-running
 it at the same memory. At the driver level an OOM-killed cell is re-submitted
 at the next memory_mb_tier (a permanent failure only at the last tier); other
-failures (timeout, crash) are permanent and resurface on a rerun. Because the
-worker syncs its cache as it goes, every resumed attempt -- a Batch Spot retry
-or a driver tier escalation -- continues from the fits already on S3, not cold.
+failures (timeout, crash) are permanent and resurface on a rerun. A resumed
+attempt -- a Batch Spot retry or a driver tier escalation -- recomputes its
+cell from cold.
 
-The whole sweep is correct to rerun: resubmitted cells whose fits are already
-on S3 come back as cache hits (the worker pulls the warm cache first), so a
-rerun re-tags membership and fills gaps without recomputing finished work.
+The whole sweep is correct to rerun: the local records are the source of truth
+for what is done, so a rerun resubmits only the cells not already complete on
+disk and recomputes them, filling gaps without touching finished work.
 """
 
 import json

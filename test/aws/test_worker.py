@@ -35,6 +35,22 @@ def _spy_fnc(exp, mask_target_list, **kwargs):
     return {'ok': True}
 
 
+class _NoopUploader:
+    """Stand-in for s3.BackgroundUploader: no dirs walked, no thread started."""
+
+    def __init__(self, *a, **k):
+        pass
+
+    def start(self):
+        return self
+
+    def stop(self):
+        return 0
+
+    def flush(self):
+        return 0
+
+
 @pytest.fixture(autouse=True)
 def _records_to_tmp(monkeypatch, tmp_path):
     """Send the recorder's per-hash files to a tmp dir, not the real one."""
@@ -63,8 +79,8 @@ def test_array_index_selects_cell(monkeypatch):
     fake = FakeS3()
     uri = _put_bundle(fake, bucket, prefix, 'run-x', bundle)
 
-    # stub the sync (no real dirs / threads) and the fit (record its data cell)
-    monkeypatch.setattr('glow._extra.aws.sync.sync_pairs', lambda p: [])
+    # stub the uploader (no real dirs / threads) and the fit (record its cell)
+    monkeypatch.setattr('glow._extra.aws.s3.BackgroundUploader', _NoopUploader)
     seen = {}
     monkeypatch.setattr('glow._extra.benchmark.driver._run_data_cell',
                         lambda kd, ke, kf, fnc: seen.update(kwargs_data=kd))
@@ -92,7 +108,7 @@ def test_runs_real_data_cell(monkeypatch):
     fake = FakeS3()
     uri = _put_bundle(fake, bucket, prefix, 'run-r', bundle)
 
-    monkeypatch.setattr('glow._extra.aws.sync.sync_pairs', lambda p: [])
+    monkeypatch.setattr('glow._extra.aws.s3.BackgroundUploader', _NoopUploader)
     monkeypatch.setenv('AWS_BATCH_JOB_ARRAY_INDEX', '0')
 
     with patch('glow._extra.aws.worker.boto3.client', lambda *a, **k: fake):
@@ -113,7 +129,7 @@ def test_hcp_cell_pulls_only_its_features(monkeypatch):
     fake = FakeS3()
     uri = _put_bundle(fake, bucket, prefix, 'run-h', bundle)
 
-    monkeypatch.setattr('glow._extra.aws.sync.sync_pairs', lambda p: [])
+    monkeypatch.setattr('glow._extra.aws.s3.BackgroundUploader', _NoopUploader)
     monkeypatch.setattr('glow._extra.benchmark.driver._run_data_cell',
                         lambda *a, **k: None)
     pulled = {}
