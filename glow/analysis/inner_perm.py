@@ -15,12 +15,14 @@ and an experiment, draw n_perm inner-perm LLR samples (Freedman & Lane
     come out numerically zero and the rest of the algorithm is
     unaffected.
   - cpu_perm_race -- the fast path. Draws a short burn-in over all
-    regions on cpu_perm's streaming kernel, trims to the survivors that
-    could still be the per-permutation max-z region, then draws the
-    remaining perms for survivors only via the low-rank general-Q0
-    kernel (glow.graph.compute_llr_inner_kernel). Same draws as cpu_perm
-    per seed, so survivor moments match to float round-off; the trim
-    only costs power, never validity (see cpu_perm_race).
+    regions on cpu_perm's streaming kernel, then spends the remaining
+    draws on a shrinking confusion set of contenders for the
+    per-permutation max-z, drawn in geometrically growing rounds via the
+    low-rank general-Q0 kernel (glow.graph.compute_llr_inner_kernel) and
+    re-trimmed / re-admitted each round on an LUCB confidence-interval
+    rule. Same contiguous draws as cpu_perm per seed, so a contender's
+    moments match to float round-off; the trim only costs power, never
+    validity (see cpu_perm_race).
   - cpu_reliable -- trust anchor for tests. Drives the per-region
     iter_mancova + get_llr path per draw -- an independent code path
     used to cross-validate cpu_perm.

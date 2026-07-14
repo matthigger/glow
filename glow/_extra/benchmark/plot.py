@@ -19,7 +19,7 @@ effect_perc that varies is swept.
 Each cache then gets either a faceted FWER calibration curve (null) or one
 stacked detection figure: an HCP block over a WGN block, each a 2 x 3 grid
 whose top row is the per-method mean score + central 95% percentile band and
-whose bottom row is the GLOW-Focus head-to-head diff, over the dice / sens /
+whose bottom row is the GLOW-GLM head-to-head diff, over the dice / sens /
 ppv columns. Alongside it a discovery-threshold table (write_threshold_table)
 records, per method, the absolute effect strength at which its mean Dice first
 reaches 0.5 -- rows the methods, a column per b.
@@ -445,12 +445,12 @@ def _draw_metric_band(ax, df, x: str, metric: str, palette: dict, *,
                         color=palette[label], alpha=0.15)
 
 
-def _draw_diff(ax, df, x: str, metric: str, *, one_label: str = 'GLOW-Focus',
+def _draw_diff(ax, df, x: str, metric: str, *, one_label: str = 'GLOW-GLM',
                hue: str = 'label', alpha: float = .5) -> list:
     """Draw one_label minus the best non-GLOW method into ax; return CSV rows.
 
     The head-to-head panel: the per-trial advantage of one_label (default
-    GLOW-Focus) over the best competing method -- the largest metric among the
+    GLOW-GLM) over the best competing method -- the largest metric among the
     non-GLOW labels (VBA / VBA-TFCE / CET) at the same (seed, x). A thin line
     per seed plus a bold mean make the win / loss against the field legible;
     the zero line is break-even. Only one_label's line is drawn, but the
@@ -524,17 +524,18 @@ _SOURCE_ORDER = ('HCP', 'WGN')
 
 
 def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
-                     one_label: str = 'GLOW-Focus', ci: int = 95,
+                     one_label: str = 'GLOW-GLM', ci: int = 95,
                      thresh_metric: str = 'dice', level: float = 0.5) -> None:
     """Plot the stacked per-source detection figure: two rows per source.
 
     One SubFigure per source (its banner the source name), stacked HCP over
     WGN; within each a 2 x len(metrics) grid whose top row is the mean score +
     central ci% percentile band per method (_draw_metric_band) and whose bottom
-    row is one_label minus the best non-GLOW alternative (_draw_diff), with the
-    metrics (dice / sens / ppv) across the columns. A dashed line marks the
-    threshold level on the thresh_metric (Dice) panel, where the discovery
-    thresholds (write_threshold_table, plotted once per cache) are read.
+    row is one_label (GLOW-GLM) minus the best non-GLOW alternative
+    (_draw_diff), with the metrics (dice / sens / ppv) across the columns. A
+    dashed line marks the threshold level on the thresh_metric (Dice) panel,
+    where the discovery thresholds (write_threshold_table, plotted once per
+    cache) are read.
 
     Writes {label}.pdf and the companion {label}_diff.csv (one block per GLOW
     variant; see _write_diff_csv).
@@ -1406,7 +1407,7 @@ def plot_cache(label: str, df, out,
     The null path (no effect planted) gets a faceted FWER calibration curve;
     every other cache gets the stacked per-source detection figure
     (plot_source_grid: an HCP block over a WGN block, each a mean-band row and
-    a GLOW-Focus diff row across the metric columns) plus one cache-level
+    a GLOW-GLM diff row across the metric columns) plus one cache-level
     discovery-threshold table (write_threshold_table). The x-axis is inferred
     from the data (_infer_x), so no config plot spec is needed. A cache that
     also varies a structural axis besides x (the llr sweep varies b) is drawn
