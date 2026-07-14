@@ -27,6 +27,66 @@ def test_compute_offset(effect_llr_exp):
     assert np.isclose(effect_llr_exp, effect_llr_obs)
 
 
+def _make_flat_interest_region(num_img=100, num_vox=2000, tiny=1e-2,
+                               scatter=7.0, seed=0):
+    """Build (x, y, contrast) whose region mean is near-orthogonal to interest.
+
+    b == 1 with a bias + one interest regressor. The per-image voxel-mean sits
+    almost entirely off the interest direction (only a tiny component along q1)
+    while the within-region scatter is large, so the baseline interest-to-error
+    ratio h0/e0 ~= tiny**2 / (scatter**2 * num_img) collapses toward zero --
+    the regime where the offset solve's constraint gradient underflows the
+    solver tolerance (see glow.effect.impose._solve_offset_only).
+
+    Args:
+        num_img (int): images (subjects).
+        num_vox (int): voxels in the region.
+        tiny (float): interest-direction component of the region mean.
+        scatter (float): within-region noise scale (drives sigma_orig).
+        seed (int): RNG seed.
+
+    Returns:
+        x (np.array): (2, num_img) bias + interest design.
+        y (np.array): (1, num_img, num_vox) images; voxel-mean == tiny * q1.
+        contrast (np.array): (2,) boolean, True on the interest column.
+    """
+    rng = np.random.default_rng(seed)
+    x = np.vstack([np.ones(num_img), rng.standard_normal(num_img)])
+    contrast = np.array([False, True])
+    q1 = decompose(x, contrast)[1]
+    m_vec = tiny * q1[0]
+    noise = rng.standard_normal((1, num_img, num_vox))
+    # exact zero voxel-mean, so y.mean(axis=2) == m_vec (a clean tiny c1)
+    noise -= noise.mean(axis=2, keepdims=True)
+    y = m_vec[None, :, None] + scatter * noise
+    return x, y, contrast
+
+
+@pytest.mark.parametrize('effect_llr', [0.003, 0.03, 0.3])
+def test_compute_offset_near_orthogonal_mean(effect_llr):
+    """Offset solve converges when the region mean is near-orthogonal to q1.
+
+    Regression for the runtime_n_perm_inner crash: at the naive start alpha = 0
+    the LLR constraint gradient is ~ h0/e0, which underflowed the solver
+    tolerance for a near-orthogonal region mean and left the solve stuck at the
+    origin (assert 'optimization failed'). The warm start seeds alpha1 on the
+    constraint manifold, so the solve succeeds and still hits the target LLR.
+    """
+    x, y, contrast = _make_flat_interest_region(seed=0)
+
+    # guard: this is the pathological regime the crash needs (ratio0 << gtol)
+    e0, h0, _ = get_mancova(x=x, y=y, contrast=contrast)
+    assert h0[0, 0] / e0[0, 0] < 1e-6
+
+    offset, sigma_scale = compute_offset(
+        x=x, y=y, contrast=contrast, effect_llr=effect_llr)
+    assert sigma_scale is None
+
+    e, h, _ = get_mancova(x=x, y=y + offset[..., np.newaxis],
+                          contrast=contrast)
+    assert np.isclose(get_llr(e, h, n=1), effect_llr, rtol=1e-4, atol=1e-8)
+
+
 def _fro_angle_deg(a, b):
     """Angle (degrees) between two arrays under the Frobenius inner product."""
     a, b = a.ravel(), b.ravel()

@@ -90,7 +90,15 @@ def _solve_offset_only(y_mean, q, yq1_norm2, yq2_norm2, yq1q1y, yq2q2y,
         a1, a2 = alpha
         return a1 ** 2 * yq1_norm2 + a2 ** 2 * yq2_norm2
 
-    x0 = np.zeros(2)
+    # Warm-start onto the constraint manifold. At alpha = 0 the constraint
+    # gradient is ~ yq1q1y / e0 (the baseline interest-to-error ratio); when
+    # the region mean is near-orthogonal to the interest contrast this
+    # underflows trust-constr's gtol and the solve stalls on a flat start.
+    # Seed (1 + alpha1) at the feasible interest scaling (nuisance held at
+    # alpha2 = 0), where the LLR is no longer flat.
+    e0 = yq2q2y * num_vox + sigma_orig
+    alpha1_ws = _warm_start_alpha1(y_mean @ q[1].T, e0, num_vox, effect_llr)
+    x0 = np.array([alpha1_ws, 0.0])
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', message='delta_grad == 0.0')
         warnings.filterwarnings('ignore', message='Singular Jacobian')
@@ -105,6 +113,47 @@ def _solve_offset_only(y_mean, q, yq1_norm2, yq2_norm2, yq1q1y, yq2q2y,
     offset = alpha1 * y_mean @ q[1].T @ q[1] + \
              alpha2 * y_mean @ q[2].T @ q[2]
     return offset, None
+
+
+def _warm_start_alpha1(m, e0, num_vox: int, effect_llr: float) -> float:
+    """Interest scaling that hits effect_llr with the nuisance held fixed.
+
+    Warm-starts _solve_offset_only. Holding alpha2 = 0 (nuisance component
+    left at its observed magnitude, so the error matrix stays e0), the LLR
+    reduces to a monotone equation in t = (1 + alpha1)**2,
+        (1/2) sum_i ln(1 + t mu_i) = effect_llr,
+    with mu_i the eigenvalues of num_vox m.T E0^-1 m. Its root is the feasible
+    interest scaling on the alpha2 = 0 slice, which seeds the full solve onto
+    the constraint manifold -- away from the alpha = 0 origin, where the
+    constraint gradient (~ mu) underflows the solver tolerance for a
+    near-orthogonal region mean and the solve stalls. Same LLR-in-t inversion
+    as _solve_alpha, with the region mean's own (un-normalised) interest
+    projection m as the direction, so the returned scale is 1 + alpha1.
+
+    Args:
+        m (np.array): (b, a1) interest projection of the region mean
+            (y_mean q1.T)
+        e0 (np.array): (b, b) error matrix at alpha2 = 0 (nuisance unscaled)
+        num_vox (int): voxel count of the region
+        effect_llr (float): target size-normalized LLR
+
+    Returns:
+        alpha1 (float): interest scaling; 0.0 when the region mean carries no
+            interest signal (mu = 0, so no positive target is reachable)
+    """
+    if effect_llr <= 0:
+        return 0.0
+    mu = np.linalg.eigvalsh(num_vox * (m.T @ np.linalg.solve(e0, m)))
+    mu = mu[mu > 0]
+    if mu.size == 0:
+        return 0.0
+    target = 2.0 * effect_llr
+    if mu.size == 1:
+        t = (np.exp(target) - 1.0) / mu[0]
+    else:
+        t_hi = (np.exp(target) - 1.0) / mu.max()
+        t = brentq(lambda t: np.sum(np.log1p(t * mu)) - target, 0.0, t_hi)
+    return float(np.sqrt(t) - 1.0)
 
 
 def _fix_alpha_signs(alpha, obj_fn):
