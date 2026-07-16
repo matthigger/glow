@@ -549,3 +549,129 @@ def test_write_stat_tables_writes_bare_tabular(tmp_path):
     vba_line = next(ln for ln in dice.splitlines()
                     if ln.strip().startswith('VBA &'))
     assert '\\textbf' not in vba_line
+
+
+# ---------------------------------------------------------------------------
+# flat-score caches (segment / prune): source x metric grid vs effect_llr
+# ---------------------------------------------------------------------------
+
+def _flat_score(leaf, tp, fp, tn, fn, extra=None):
+    """Build the recursed {leaf}.out.score.* columns for one flat-score row.
+
+    run_segment / run_prune return a flat {tp,fp,tn,fn} score (prune adds
+    n_selected), so the columns sit directly under out.score, not out.score.target.
+    """
+    base = f'{leaf}.out.score'
+    out = {f'{base}.tp': tp, f'{base}.fp': fp,
+           f'{base}.tn': tn, f'{base}.fn': fn}
+    if extra:
+        out.update({f'{base}.{k}': v for k, v in extra.items()})
+    return out
+
+
+def _segment_row(mode, seed, effect_llr, tp, fp, tn, fn, source='wgn'):
+    """Build one segment provenance row (run_segment leaf + its ancestors)."""
+    row = {'run_segment.in.cluster_mode': mode,
+           'effect_factory_single.in.effect_llr': effect_llr,
+           **_flat_score('run_segment', tp, fp, tn, fn)}
+    if source == 'wgn':
+        row.update({'data_factory_wgn.in.b': 1,
+                    'data_factory_wgn.in.seed': seed})
+    else:
+        row.update({'data_factory_hcp.in.hcp_feats': ['od'],
+                    'data_factory_hcp.in.seed': seed})
+    return row
+
+
+def _prune_row(rule, seed, effect_llr, tp, fp, tn, fn, source='wgn',
+               cluster_mode='Focus'):
+    """Build one prune provenance row (run_prune leaf + its ancestors)."""
+    row = {'run_prune.in.rule': rule,
+           'run_prune.in.cluster_mode': cluster_mode,
+           'effect_factory_single.in.effect_llr': effect_llr,
+           **_flat_score('run_prune', tp, fp, tn, fn, extra={'n_selected': 1})}
+    if source == 'wgn':
+        row.update({'data_factory_wgn.in.b': 1,
+                    'data_factory_wgn.in.seed': seed})
+    else:
+        row.update({'data_factory_hcp.in.hcp_feats': ['od'],
+                    'data_factory_hcp.in.seed': seed})
+    return row
+
+
+def test_tidy_segment_empty():
+    """An empty frame in gives an empty frame out."""
+    assert plot.tidy_segment(pd.DataFrame()).empty
+
+
+def test_tidy_segment_label_source_and_metrics():
+    """tidy_segment reads the Ward mode as-is and the source off data_factory."""
+    df = plot.tidy_segment(pd.DataFrame([
+        _segment_row('Focus', 0, 0.03, 80, 10, 890, 20, source='wgn'),
+        _segment_row('GLM Error', 1, 0.03, 40, 30, 870, 60, source='hcp'),
+    ]))
+    assert list(df['label']) == ['Focus', 'GLM Error']
+    assert list(df['source']) == ['WGN', 'HCP']
+    focus = df[df['label'] == 'Focus'].iloc[0]
+    assert focus['dice'] == pytest.approx(2 * 80 / (2 * 80 + 10 + 20))
+    assert {'dice', 'sens', 'ppv', 'spec'}.issubset(df.columns)
+
+
+def test_tidy_prune_label_prefixes_rule():
+    """tidy_prune maps the recorded rule to the GLOW-<rule> method label."""
+    df = plot.tidy_prune(pd.DataFrame([
+        _prune_row('maxllr', 0, 0.03, 90, 5, 900, 5, source='wgn'),
+        _prune_row('dp', 0, 0.03, 60, 40, 880, 20, source='hcp'),
+    ]))
+    assert set(df['label']) == {'GLOW-maxllr', 'GLOW-dp'}
+    assert list(df['source']) == ['WGN', 'HCP']
+
+
+def test_tidy_prune_carries_cluster_mode():
+    """tidy_prune rides the recorded Ward mode through as cluster_mode.
+
+    A row missing the mode column (a legacy record predating the axis) reads
+    back as the Focus default.
+    """
+    df = plot.tidy_prune(pd.DataFrame([
+        _prune_row('greedy', 0, 0.03, 90, 5, 900, 5, cluster_mode='Focus'),
+        _prune_row('greedy', 1, 0.03, 60, 40, 880, 20,
+                   cluster_mode='GLM Error'),
+    ]))
+    assert set(df['cluster_mode']) == {'Focus', 'GLM Error'}
+
+    legacy = _prune_row('greedy', 0, 0.03, 90, 5, 900, 5)
+    del legacy['run_prune.in.cluster_mode']
+    assert plot.tidy_prune(pd.DataFrame([legacy]))['cluster_mode'].iloc[0] \
+        == 'Focus'
+
+
+def test_plot_metric_grid_writes_figure(tmp_path):
+    """plot_metric_grid writes one {label}.pdf for a flat-score cache."""
+    rows = []
+    for mode in ('Focus', 'GLM Error', 'Naive'):
+        for source in ('wgn', 'hcp'):
+            for effect_llr in (0.003, 0.03, 0.3):
+                for seed in range(3):
+                    rows.append(_segment_row(mode, seed, effect_llr,
+                                             80, 10, 890, 20, source=source))
+    df = plot.tidy_segment(pd.DataFrame(rows))
+    plot.plot_metric_grid('segment', df, tmp_path)
+    assert (tmp_path / 'segment.pdf').exists()
+
+
+def test_plot_prune_writes_one_figure_per_mode(tmp_path):
+    """plot_prune writes one {label}_{mode}.pdf per Ward clustering mode."""
+    rows = []
+    for mode in ('Focus', 'GLM Error'):
+        for rule in ('maxllr', 'greedy', 'dp'):
+            for source in ('wgn', 'hcp'):
+                for effect_llr in (0.003, 0.03, 0.3):
+                    for seed in range(3):
+                        rows.append(_prune_row(rule, seed, effect_llr,
+                                               80, 10, 890, 20, source=source,
+                                               cluster_mode=mode))
+    df = plot.tidy_prune(pd.DataFrame(rows))
+    plot.plot_prune('prune', df, tmp_path)
+    assert (tmp_path / 'prune_Focus.pdf').exists()
+    assert (tmp_path / 'prune_GLM_Error.pdf').exists()

@@ -218,16 +218,22 @@ def get_run_stat_list():
 
 RUN_STAT_LIST = get_run_stat_list()
 
-# the prune cache's leaf grid: three rules scored on one shared GLOW fit per
-# cell (greedy / DP / the single max-LLR region). All carry the same GLOW fit
-# knobs (so run_prune's glow_fit_for_prune is shared across them); the rule
-# rides in as the cache axis (and names the method: GLOW-<rule>).
+# the prune cache's leaf grid: three rules (greedy / DP / the single max-LLR
+# region) crossed with the two Ward clustering modes (Focus / GLM Error). All
+# carry the same GLOW fit knobs, so run_prune's glow_fit_for_prune is shared
+# across the three rules at a given mode (one fit per (cell, mode), the first
+# rule fits and the rest hit). The rule names the method (GLOW-<rule>) and
+# cluster_mode is the second cache axis -- benchmark.plot splits it into one
+# metric grid per mode. Mode is the outer loop so a mode's three rules are
+# contiguous (the shared-fit hits land back to back).
 _PRUNE_GLOW_KWARGS = dict(n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER,
                           alpha_fwer=ALPHA_FWER)
+PRUNE_RULES = ['maxllr', 'greedy', 'dp']
+PRUNE_CLUSTER_MODES = [ClusterMode.FOCUS, ClusterMode.GLM_ERROR]
 RUN_PRUNE_LIST = [
-    dict(rule='maxllr', **_PRUNE_GLOW_KWARGS),
-    dict(rule='greedy', **_PRUNE_GLOW_KWARGS),
-    dict(rule='dp', **_PRUNE_GLOW_KWARGS),
+    dict(rule=rule, cluster_mode=mode, **_PRUNE_GLOW_KWARGS)
+    for mode in PRUNE_CLUSTER_MODES
+    for rule in PRUNE_RULES
 ]
 
 
@@ -526,8 +532,10 @@ CONFIG = {
         get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
         RUN_STAT_LIST, run_stat),
     # H. Pruning rule: greedy max-LLR vs DP max-likelihood cut vs the single
-    #    max-LLR region, scored on one shared GLOW-Focus fit per cell (so the
-    #    comparison isolates the rule, not the permutation test).
+    #    max-LLR region, scored on one shared GLOW fit per (cell, Ward mode) so
+    #    the comparison isolates the rule, not the permutation test. Crossed
+    #    with both clustering modes (Focus / GLM Error); benchmark.plot draws
+    #    one metric grid per mode.
     'prune': (
         get_kwargs_data_list(),
         get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),

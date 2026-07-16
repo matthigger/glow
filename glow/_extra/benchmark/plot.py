@@ -43,10 +43,21 @@ the full cpu_perm and the survivor race, giving a race-vs-full scatter on y=x
 per source (and the companion retention JSON: the max abs difference and
 mismatch count that certify the race keeps the max-z).
 
-With no arguments the CLI plots every detection, runtime, inner-edge, and
-race-retention cache in the catalogue; passing names restricts it. The
-remaining caches (segment / stat / prune / min_size) carry different leaf and
-score shapes, so this layer does not plot them (see config).
+The segment and prune caches share a flatter path (tidy_segment / tidy_prune /
+plot_metric_grid): their leaves return a flat {tp, fp, tn, fn} score (the oracle
+best-Dice Ward region per mode; one pruning rule's selection) rather than
+run_ana's nested score.target block. Each is drawn as a source x metric grid --
+HCP over WGN, the Dice / sensitivity / PPV columns -- of the per-method
+seed-mean with a 95% CI error bar vs effect_llr, x-dodged and styled per method
+(the Ward mode / prune rule) in the Okabe-Ito palette. Prune crosses its rules
+with both Ward modes, so plot_prune draws one such grid per clustering mode
+(prune_Focus / prune_GLM_Error), a line per rule within each.
+
+With no arguments the CLI plots every cache it knows how to draw: the detection
+sweeps, the runtime family, the inner-edge and race-retention checks, the stat
+bake-off tables, and the segment / prune metric grids; passing names restricts
+it. min_size is the one catalogue cache still unplotted (its per-perm staircase
+leaf carries a different shape; see config).
 """
 import colorsys
 import json
@@ -58,6 +69,7 @@ import pandas as pd
 import seaborn as sns
 
 import glow._extra.benchmark
+from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import stat_dict
 from .config import ana_kwargs_dict, RUN_STAT_LIST, RUNTIME_GLOW_MODES
 from .file import add_metric_cols
@@ -145,6 +157,36 @@ def get_cmap_dict(label_list) -> dict:
         fallback = sns.husl_palette(n_colors=len(missing), h=0.9)
         for lab, c in zip(missing, fallback):
             out[lab] = c
+    return out
+
+
+# Okabe-Ito colourblind-safe qualitative palette, for the flat-score caches
+# whose methods sit outside COLOR_ANALYSIS (segment Ward modes, prune rules).
+# Paired with line styles so overlapping curves stay distinct where the colours
+# muddy (Okabe & Ito 2008; Wong 2011). Ordered for high pairwise contrast at the
+# small counts these caches use (3 methods).
+_OKABE_ITO = ['#0072B2', '#D55E00', '#009E73', '#E69F00', '#CC79A7',
+              '#56B4E9', '#F0E442', '#000000']
+_LINE_STYLES = ['-', '--', ':', '-.']
+
+
+def _qual_style(label_list) -> dict:
+    """Map labels to an Okabe-Ito (colour, line style), assigned in sorted order.
+
+    A deterministic qualitative style for the flat-score caches: each label
+    takes the next Okabe-Ito colour and line style, so a cache's methods are
+    coloured the same across runs (sorted-order, not palette-position, stable).
+
+    Args:
+        label_list: the method labels to style.
+
+    Returns:
+        dict: label -> {'color': str, 'ls': str}.
+    """
+    out = {}
+    for i, lab in enumerate(sorted(label_list)):
+        out[lab] = {'color': _OKABE_ITO[i % len(_OKABE_ITO)],
+                    'ls': _LINE_STYLES[i % len(_LINE_STYLES)]}
     return out
 
 
@@ -1013,6 +1055,226 @@ def write_stat_tables(label: str, df, out) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Flat-score caches (segment / prune): a source x metric grid vs effect_llr
+# ---------------------------------------------------------------------------
+
+def _tidy_flat_cache(raw, leaf: str, label_col: str, label_fn=None):
+    """Normalise a flat-score cache to a tidy per-(trial, method) metric frame.
+
+    The tidy path for leaves that return a flat {tp, fp, tn, fn} score
+    (run_segment / run_prune) rather than run_ana's nested score.target block.
+    Reads the shared data / effect ancestors and the flat counts, attaches the
+    method label off a recorded input column (the Ward mode / prune rule -- the
+    cache axis), and derives dice/sens/ppv/spec (add_metric_cols).
+
+    Args:
+        raw: the provenance DataFrame (one row per leaf).
+        leaf (str): the leaf function name = the score column prefix
+            (run_segment / run_prune).
+        label_col (str): the recorded input column naming the method.
+        label_fn (Callable | None): maps a label_col value to the method label
+            (prune's 'greedy' -> 'GLOW-greedy'); None uses the value as-is
+            (segment's Ward-mode string).
+
+    Returns:
+        a tidy DataFrame, one row per (trial, method), with columns label,
+        source (WGN / HCP), seed, b, effect_llr, the four confusion counts, and
+        the derived dice/sens/ppv/spec (empty in, empty out).
+    """
+    def col(name):
+        """Return raw[name], or an all-NaN column when absent."""
+        if name in raw.columns:
+            return raw[name]
+        return pd.Series(np.nan, index=raw.index)
+
+    hcp_seed = pd.to_numeric(col('data_factory_hcp.in.seed'), errors='coerce')
+    wgn_seed = pd.to_numeric(col('data_factory_wgn.in.seed'), errors='coerce')
+
+    label = col(label_col)
+    if label_fn is not None:
+        label = label.map(lambda v: label_fn(v) if isinstance(v, str) else v)
+
+    out = pd.DataFrame(index=raw.index)
+    out['label'] = label
+    out['source'] = np.where(hcp_seed.notna(), 'HCP', 'WGN')
+    out['seed'] = wgn_seed.fillna(hcp_seed)
+    hcp_b = col('data_factory_hcp.in.hcp_feats').map(
+        lambda v: len(v) if isinstance(v, (list, tuple)) else np.nan)
+    out['b'] = pd.to_numeric(col('data_factory_wgn.in.b'),
+                             errors='coerce').fillna(hcp_b)
+    out['effect_llr'] = pd.to_numeric(
+        col('effect_factory_single.in.effect_llr'), errors='coerce')
+    for cnt in ('tp', 'fp', 'tn', 'fn'):
+        out[cnt] = pd.to_numeric(col(f'{leaf}.out.score.{cnt}'),
+                                 errors='coerce')
+    return add_metric_cols(out)
+
+
+def tidy_segment(raw):
+    """Normalise the segment cache to a tidy per-(trial, Ward mode) frame.
+
+    The method label is the recorded Ward mode (config records str(mode), so
+    the cell is already the mode string Naive / GLM Error / Focus).
+
+    Args:
+        raw: the segment cache's provenance frame (one row per run_segment leaf).
+
+    Returns:
+        a tidy_flat_cache frame (label = Ward mode); empty in, empty out.
+    """
+    if raw.empty:
+        return raw
+    return _tidy_flat_cache(raw, 'run_segment', 'run_segment.in.cluster_mode')
+
+
+def tidy_prune(raw):
+    """Normalise the prune cache to a tidy per-(trial, rule) frame.
+
+    The method label is GLOW-<rule> off the recorded rule (maxllr / greedy /
+    dp); the recorded Ward mode (run_prune.in.cluster_mode) rides along as the
+    cluster_mode column, so plot_prune can split it into one figure per mode. A
+    legacy record predating the mode axis carried the Focus default, so a
+    missing mode reads back as Focus.
+
+    Args:
+        raw: the prune cache's provenance frame (one row per run_prune leaf).
+
+    Returns:
+        a tidy_flat_cache frame (label = GLOW-<rule>) plus a cluster_mode
+        column (the Ward-mode string); empty in, empty out.
+    """
+    if raw.empty:
+        return raw
+    out = _tidy_flat_cache(raw, 'run_prune', 'run_prune.in.rule',
+                           label_fn=lambda r: f'GLOW-{r}')
+    mode_col = 'run_prune.in.cluster_mode'
+    mode = (raw[mode_col] if mode_col in raw.columns
+            else pd.Series(np.nan, index=raw.index))
+    out['cluster_mode'] = mode.reindex(out.index).fillna(str(ClusterMode.FOCUS))
+    return out
+
+
+def _draw_metric_errbar(ax, df, x: str, metric: str, style: dict, *,
+                        hue: str = 'label', z_mult: float = 1.96,
+                        dodge: float = 0.03) -> None:
+    """Draw each method's mean +/- 95% CI as x-dodged error bars into ax.
+
+    Per x, the seed-mean of the metric with a 95% CI-of-the-mean bar
+    (z_mult * SEM, SEM = std / sqrt(n_seed)), markers joined by a thin line in
+    the method's style. Unlike a percentile band the CI narrows as sqrt(n_seed),
+    so more seeds tighten it. The bars are dodged multiplicatively about each x
+    (a fixed fraction per method, centred on the group) so overlapping methods
+    stay legible on the log axis. PPV is nan for trials with no detections
+    (glow.mask.stats_from_counts) and drops from its mean / SEM.
+
+    Args:
+        ax: matplotlib Axes to draw into.
+        df: one source's tidy rows (numeric x / metric).
+        x (str): the swept x-axis column.
+        metric (str): the metric column plotted on the y-axis.
+        style (dict): label -> {'color', 'ls'} (from _qual_style).
+        hue (str): the method-label column.
+        z_mult (float): SEM multiplier for the error bar (1.96 ~ 95% CI).
+        dodge (float): fractional multiplicative x-dodge between methods.
+    """
+    labels = sorted(df[hue].dropna().unique().tolist())
+    n = len(labels)
+    for i, lab in enumerate(labels):
+        g = df[df[hue] == lab].groupby(x)[metric]
+        mean, sem = g.mean(), g.std() / np.sqrt(g.count())
+        # centre the per-method dodge on the group so it sits over the true x
+        factor = 1 + dodge * (i - (n - 1) / 2)
+        st = style[lab]
+        ax.errorbar(mean.index.values * factor, mean.values,
+                    yerr=z_mult * sem.values, marker='o', ms=4, lw=1.5,
+                    ls=st['ls'], color=st['color'], capsize=2, label=lab)
+
+
+def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
+                     metrics=('dice', 'sens', 'ppv')) -> None:
+    """Plot a source x metric grid of per-method mean +/- 95% CI vs the swept x.
+
+    A 2 x len(metrics) grid: one row per data source (HCP over WGN), one column
+    per metric (Dice / Sensitivity / PPV). Each panel draws the per-method
+    seed-mean with a 95% CI-of-the-mean error bar, x-dodged so the methods stay
+    legible (_draw_metric_errbar), against effect_llr on a log x-axis, one series
+    per method (the Ward mode for segment, the prune rule for prune). Methods
+    take the Okabe-Ito qualitative style (_qual_style: colour + line style).
+    Writes {label}.pdf.
+
+    Args:
+        label (str): cache name; the figure title and output filename stem.
+        df: a tidy frame (needs source / label / seed / x / the metric columns).
+        out (pathlib.Path): directory the figure is written into.
+        x (str): the swept x-axis column (effect_llr).
+        metrics (iterable): the metric columns, one panel column each.
+    """
+    metrics = list(metrics)
+    df = df.copy()
+    for c in [x, *metrics]:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+    df = df.dropna(subset=[x])
+
+    have = set(df['source'].dropna().unique())
+    sources = [s for s in _SOURCE_ORDER if s in have]
+    sources += [s for s in sorted(have) if s not in sources]
+    if not sources:
+        print(f'  (no rows for {label} — skipping)')
+        return
+
+    style = _qual_style(df['label'].dropna().unique().tolist())
+    log_x = pd.notnull(df[x].min()) and df[x].min() > 0
+    ncols = len(metrics)
+
+    fig, axes = plt.subplots(len(sources), ncols, sharex=True,
+                             figsize=(4.2 * ncols, 3.8 * len(sources)),
+                             squeeze=False)
+    fig.suptitle(label, fontsize=13)
+    for i, src in enumerate(sources):
+        dsrc = df[df['source'] == src]
+        for j, metric in enumerate(metrics):
+            ax = axes[i, j]
+            _draw_metric_errbar(ax, dsrc, x, metric, style)
+            ax.set_ylim(0, 1)
+            ax.grid(True, alpha=0.3)
+            if log_x:
+                ax.set_xscale('log')
+            if i == 0:
+                ax.set_title(_METRIC_TITLES.get(metric, metric))
+            if i == len(sources) - 1:
+                ax.set_xlabel(_X_PARAM_LABELS.get(x, x))
+        axes[i, 0].set_ylabel(f'{src}\nmean (95% CI)')
+    axes[0, 0].legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    path = out / f'{label}.pdf'
+    fig.savefig(path, bbox_inches='tight')
+    plt.close('all')
+    print(f'saved: {path}')
+
+
+def _mode_slug(mode: str) -> str:
+    """Filename-safe token for a Ward mode ('GLM Error' -> 'GLM_Error')."""
+    return str(mode).replace(' ', '_')
+
+
+def plot_prune(label: str, df, out) -> None:
+    """Plot one metric grid per Ward clustering mode for the prune cache.
+
+    The prune cache crosses the three rules with both Ward modes (Focus / GLM
+    Error), so a single grid would overlay two clusterings. This draws one
+    source x metric grid per mode (plot_metric_grid), writing {label}_{mode}.pdf
+    so the clusterings are compared side by side rather than on one axis.
+
+    Args:
+        label (str): cache name; each figure's stem is {label}_{mode}.
+        df: a tidy_prune frame (needs the cluster_mode column).
+        out (pathlib.Path): directory the figures are written into.
+    """
+    for mode, df_mode in df.groupby('cluster_mode'):
+        plot_metric_grid(f'{label}_{_mode_slug(mode)}', df_mode, out)
+
+
+# ---------------------------------------------------------------------------
 # Runtime sweeps (wall time vs one cost knob)
 # ---------------------------------------------------------------------------
 
@@ -1447,10 +1709,12 @@ def main(argv=None) -> None:
     cost knob); every other run_ana cache is normalised with tidy_run_ana and
     drawn by plot_cache (detection sweep / calibration). The stat bake-off is
     read straight from the run_stat leaves (results.stat_cell_df) and written as
-    two paper tables by write_stat_tables. Figures / tables land in
-    results/_latest, so a mid-benchmark run yields intermediate output. The
-    remaining caches (segment / prune / min_size) carry other leaf and score
-    shapes and are skipped.
+    two paper tables by write_stat_tables. The segment / prune caches are
+    normalised with tidy_segment / tidy_prune and drawn as a source x metric
+    grid vs effect_llr: segment by plot_metric_grid, prune by plot_prune (one
+    grid per Ward clustering mode). Figures / tables land in results/_latest,
+    so a mid-benchmark run yields intermediate output. min_size carries a
+    different leaf shape and is skipped.
 
     Args:
         argv (list | None): CLI args to parse; None reads sys.argv. Positional
@@ -1462,7 +1726,8 @@ def main(argv=None) -> None:
     import matplotlib
     matplotlib.use('Agg')
     from .config import CONFIG
-    from .run import run_ana, run_inner_edge, run_race_maxz, run_stat
+    from .run import (run_ana, run_inner_edge, run_prune, run_race_maxz,
+                      run_segment, run_stat)
     from . import results
 
     parser = argparse.ArgumentParser(
@@ -1483,6 +1748,8 @@ def main(argv=None) -> None:
     edge_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_inner_edge]
     race_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_race_maxz]
     stat_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_stat]
+    segment_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_segment]
+    prune_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_prune]
     if args.names:
         # literal name, else fnmatch pattern; a pattern matching nothing is an
         # error (a typo surfaces rather than silently plotting nothing)
@@ -1495,7 +1762,7 @@ def main(argv=None) -> None:
             names += [n for n in matches if n not in names]
     else:
         names = (detect_names + runtime_names + edge_names + race_names
-                 + stat_names)
+                 + stat_names + segment_names + prune_names)
 
     out = glow._extra.benchmark.get_path_result() / '_latest'
     out.mkdir(exist_ok=True)
@@ -1542,6 +1809,22 @@ def main(argv=None) -> None:
             print(f'\n=== {name}: {df["cell"].nunique()} cells, '
                   f'{len(df)} variant rows ===')
             write_stat_tables(name, df, out)
+            n_plotted += 1
+        elif name in segment_names:
+            df = tidy_segment(results.config_results_df(name))
+            if df.empty:
+                print(f'  (no records for {name} — skipping)')
+                continue
+            print(f'\n=== {name}: {len(df)} segment rows ===')
+            plot_metric_grid(name, df, out)
+            n_plotted += 1
+        elif name in prune_names:
+            df = tidy_prune(results.config_results_df(name))
+            if df.empty:
+                print(f'  (no records for {name} — skipping)')
+                continue
+            print(f'\n=== {name}: {len(df)} prune rows ===')
+            plot_prune(name, df, out)
             n_plotted += 1
         else:
             print(f'  ({name} is not a detection or runtime cache — skipping)')
