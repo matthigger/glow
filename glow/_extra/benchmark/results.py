@@ -205,33 +205,39 @@ def planted_cells(name: str) -> list:
             for kwargs_effect in kwargs_effect_list]
 
 
-def incomplete_cell_indices(name: str) -> list:
-    """Return the planted cells of cache name not fully recorded on disk.
+def get_cell_complete(kwargs_fnc_list, fnc):
+    """Build the predicate deciding whether one planted cell is finished.
 
-    The source-of-truth skip for the AWS driver: a cell is a data cell crossed
-    with one effect (planted_cells), and it is complete when every leaf that
-    effect builds -- one per fnc-kwargs cell -- is in the local records.
-    Completeness is the same forward DAG walk config_leaf_keys uses: anchor at
-    the data record, match the effect record(s) off it, then require one leaf
-    per fnc-kwargs cell. A cell whose data record is missing, or whose effect
-    frontier or any fnc-kwargs leaf is missing, is incomplete; its index (its
-    position in planted_cells) is returned in grid order, so the driver submits
-    only those and skips the finished cells.
+    The records-side source of truth behind every rerun skip, local (driver)
+    and AWS alike: a cell is a data cell crossed with one effect
+    (planted_cells), and it is complete when every leaf that effect builds --
+    one per fnc-kwargs cell -- is in the local records. Completeness is the
+    same forward DAG walk config_leaf_keys uses: anchor at the data record,
+    match the effect record(s) off it, then require one leaf per fnc-kwargs
+    cell.
 
-    Reads only the in-memory records (never rebuilds an experiment), so it is
-    cheap; call RECORDER.load() first to fold in what other writers left on
-    disk. It shares config_leaf_keys' one fragility -- a missing intermediate
-    (effect) record hides the leaves below it -- but errs safe: a cell is read
-    as incomplete and rerun, never wrongly skipped.
+    The forward-edge index is built once here and closed over, so the returned
+    predicate is cheap per cell -- it reads only the in-memory records and
+    never rebuilds an experiment. Call RECORDER.load() first to fold in what
+    other writers left on disk.
+
+    A cell whose data record is missing, or whose effect frontier or any
+    fnc-kwargs leaf is missing, reads as incomplete. That inherits
+    config_leaf_keys' one fragility -- a missing intermediate (effect) record
+    hides the leaves below it -- but errs safe: such a cell is rerun, never
+    wrongly skipped.
 
     Args:
-        name (str): a CONFIG cache name.
+        kwargs_fnc_list (list[dict]): the fnc-kwargs grid; a cell counts as
+            complete only with one recorded leaf per entry.
+        fnc (Callable): the leaf measurement (memoised + recorded); its
+            recorded name selects the cache's leaves off the frontier.
 
     Returns:
-        list[int]: the planted-cell indices still to run (empty when every cell
-            of the cache is already complete on disk).
+        cell_complete (Callable): cell_complete(kwargs_data, kwargs_effect)
+            -> bool, True when the cell's whole leaf set is recorded. A None
+            kwargs_effect is the null path, whose frontier is the data record.
     """
-    _, _, kwargs_fnc_list, fnc = config.CONFIG[name]
     records = RECORDER.records
 
     # forward edges: an output link-hash -> the records consuming it as input
@@ -281,6 +287,27 @@ def incomplete_cell_indices(name: str) -> list:
         return all(any(_inputs_match(rec, exp) for rec in leaves)
                    for exp in fnc_expected)
 
+    return cell_complete
+
+
+def incomplete_cell_indices(name: str) -> list:
+    """Return the planted cells of cache name not fully recorded on disk.
+
+    The AWS driver's rerun skip: it submits only these indices, so a rerun
+    fills the gaps without recomputing finished work. Indices are positions in
+    planted_cells, in grid order. See get_cell_complete for what counts as
+    complete (and why it errs safe), and call RECORDER.load() first to fold in
+    what other writers left on disk.
+
+    Args:
+        name (str): a CONFIG cache name.
+
+    Returns:
+        list[int]: the planted-cell indices still to run (empty when every cell
+            of the cache is already complete on disk).
+    """
+    _, _, kwargs_fnc_list, fnc = config.CONFIG[name]
+    cell_complete = get_cell_complete(kwargs_fnc_list, fnc)
     return [i for i, (kwargs_data, kwargs_effect)
             in enumerate(planted_cells(name))
             if not cell_complete(kwargs_data, kwargs_effect)]

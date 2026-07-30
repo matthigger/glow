@@ -17,6 +17,16 @@ run), so a repeated cell is a cache hit and the driver never worries about
 issuing the same call twice: a re-run, an overlapping grid, or a resumed
 sweep all reuse the stored artifacts.
 
+That memoisation reaches only the local joblib cache, which is why drive takes
+skip_recorded: the records travel where the cache does not. An AWS run ships
+its records home but not its cache entries (see glow._extra.aws), so its
+finished cells are provably done yet miss locally and would recompute from
+cold. skip_recorded drops any (data, effect) cell whose whole leaf set is
+already recorded before the sweep starts -- the same records-as-source-of-truth
+skip the AWS driver applies to its cells (results.get_cell_complete) -- so a
+local rerun fills only the gaps, and a cell with nothing left to run never
+builds its exp.
+
 fnc is the leaf measurement, swept over its own kwargs grid so one (data,
 effect) cell can be measured several ways at once (e.g. run_ana under several
 Analysis recipes). It is called fnc(exp, mask_target_list=..., **kwargs) and,
@@ -59,13 +69,13 @@ fnc carries no live Experiments and stays light to ship -- see
 glow._extra.benchmark.recorder.)
 
 A verbose drive shows a tqdm bar over the total leaf count, known up front
-from the grid sizes (n_data * n_effect * n_fnc) and advanced one leaf per fnc
-call. It makes no attempt to tell a real compute from a cache hit, so the bar
-lurches -- racing through cached cells, crawling through the ones that
-actually run -- but it stays bounded and honest about how far the sweep has
-left to go. The serial bar ticks per leaf; the parallel bar ticks per data
-cell as each task returns its scores, since a worker cannot reach the caller's
-bar.
+from the grid sizes (n_data * n_effect * n_fnc, less whatever skip_recorded
+dropped) and advanced one leaf per fnc call. It makes no attempt to tell a
+real compute from a cache hit, so the bar lurches -- racing through cached
+cells, crawling through the ones that actually run -- but it stays bounded and
+honest about how far the sweep has left to go. The serial bar ticks per leaf;
+the parallel bar ticks per data cell as each task returns its scores, since a
+worker cannot reach the caller's bar.
 """
 
 from tqdm import tqdm
@@ -114,7 +124,7 @@ def _run_data_cell(kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
 
 
 def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
-          n_jobs=1, verbose=False):
+          n_jobs=1, verbose=False, skip_recorded=False):
     """Sweep data x effect, run fnc per cell over its kwargs, return scores.
 
     The two upstream lists are kwargs grids for the data and effect stages;
@@ -131,6 +141,16 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
     (they are re-iterated once per data / per data x effect cell), so one-shot
     generators are fine -- as the config layer passes; kwargs_data_list is
     iterated once and stays lazy.
+
+    skip_recorded drops the (data, effect) cells the records already hold in
+    full before anything runs (results.get_cell_complete). The memoised stages
+    already dedupe a repeat, but only against the local joblib cache, which
+    holds nothing a run elsewhere computed -- the AWS path ships records, not
+    cache entries, so its finished cells would otherwise recompute from cold
+    here. Skipping a cell whose whole effect subtree is done also skips
+    building its exp, the expensive part. The records are the source of truth
+    either way (the same skip the AWS driver applies), and a cell reads as
+    incomplete unless every leaf is present, so a partial cell reruns whole.
 
     With n_jobs != 1 the sweep runs in parallel over joblib, one task per data
     cell (the whole effect x fnc subtree); see the module docstring for why
@@ -164,11 +184,15 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
             cells run in parallel over joblib.Parallel(n_jobs=n_jobs).
         verbose (bool): False (default) runs silently; True shows a tqdm bar
             over the total leaf count, advanced per fnc call (see module
-            docstring).
+            docstring), and reports how many cells the records skipped.
+        skip_recorded (bool): False (default) runs every cell of the grid;
+            True drops the cells already complete in the records, which
+            materialises kwargs_data_list (the walk needs it up front).
 
     Returns:
         list[dict]: the fnc score dicts, one per (data, effect, fnc-kwargs)
-            cell in data-cell order (effect then fnc-kwargs within a cell). See
+            cell in data-cell order (effect then fnc-kwargs within a cell),
+            covering only the cells that ran under skip_recorded. See
             glow._extra.benchmark.score.score_effects for the schema; the
             per-cell provenance is on the shared recorder, not here.
     """
@@ -179,21 +203,50 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
     kwargs_effect_list = list(kwargs_effect_list)
     kwargs_fnc_list = list(kwargs_fnc_list)
 
-    # the bar spans the total leaf count, known once data is a list;
-    # materialise data when verbose (else keep it lazy, iterated once, as
-    # documented above).
+    # the sweep as (kwargs_data, that cell's effect grid) pairs: the whole
+    # effect grid per data cell, or -- under skip_recorded -- only the effect
+    # cells the records lack, dropping a data cell left with none so its exp is
+    # never built.
     total = None
-    if verbose:
-        kwargs_data_list = list(kwargs_data_list)
-        total = (len(kwargs_data_list) * len(kwargs_effect_list)
-                 * len(kwargs_fnc_list))
+    if skip_recorded:
+        # imported here: results pulls in the CONFIG catalogue, which a plain
+        # drive never needs. RECORDER.load first, so the walk sees what other
+        # writers (an AWS run, a parallel sweep) left on disk.
+        from .results import get_cell_complete
+
+        RECORDER.load()
+        cell_complete = get_cell_complete(kwargs_fnc_list, fnc)
+
+        plan, n_skip = [], 0
+        for kwargs_data in kwargs_data_list:
+            todo = [kwargs_effect for kwargs_effect in kwargs_effect_list
+                    if not cell_complete(kwargs_data, kwargs_effect)]
+            n_skip += len(kwargs_effect_list) - len(todo)
+            if todo:
+                plan.append((kwargs_data, todo))
+
+        n_run = sum(len(todo) for _, todo in plan)
+        total = n_run * len(kwargs_fnc_list)
+        if verbose and n_skip:
+            print(f'[drive] {n_skip} cell(s) already complete in records, '
+                  f'skipped; {n_run} to run')
+    else:
+        # the bar spans the total leaf count, known once data is a list;
+        # materialise data when verbose (else keep it lazy, iterated once, as
+        # documented above).
+        if verbose:
+            kwargs_data_list = list(kwargs_data_list)
+            total = (len(kwargs_data_list) * len(kwargs_effect_list)
+                     * len(kwargs_fnc_list))
+        plan = ((kwargs_data, kwargs_effect_list)
+                for kwargs_data in kwargs_data_list)
 
     if n_jobs == 1:
         score_list = []
         with tqdm(total=total, desc='drive', disable=not verbose) as bar:
-            for kwargs_data in kwargs_data_list:
+            for kwargs_data, effect_list in plan:
                 score_list.extend(_run_data_cell(
-                    kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
+                    kwargs_data, effect_list, kwargs_fnc_list, fnc,
                     bar=bar))
         return score_list
 
@@ -206,8 +259,8 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
     # per cell.
     results = Parallel(n_jobs=n_jobs, return_as='generator')(
         delayed(_run_data_cell)(
-            kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc)
-        for kwargs_data in kwargs_data_list)
+            kwargs_data, effect_list, kwargs_fnc_list, fnc)
+        for kwargs_data, effect_list in plan)
 
     cell_scores = []
     with tqdm(total=total, desc='drive', disable=not verbose) as bar:

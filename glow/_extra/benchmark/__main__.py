@@ -6,9 +6,11 @@ sweep it writes one <name>.csv per cache from the shared provenance
 records (results.write_config_csvs), which recomputes each cache's leaves by
 walking the records forward from its data cells (see driver / results).
 
---csv-only skips the sweep and rebuilds those CSVs from the records
-already on disk -- the path to take after editing config.py / results.py when
-the records are still good and no new experiments are needed.
+A sweep runs only the cells the records do not already hold in full, so a
+rerun fills the gaps rather than recomputing finished work (--no-skip forces
+the whole grid). --csv-only skips the sweep entirely and rebuilds those CSVs
+from the records already on disk -- the path to take after editing config.py /
+results.py when the records are still good and no new experiments are needed.
 
 --aws runs the sweep on AWS Batch instead of locally: it hands the same
 resolved cache names to glow._extra.aws.drive_aws, which submits each cache's
@@ -23,6 +25,7 @@ Usage:
     python -m glow._extra.benchmark -j 4 sweep_llr     # parallel local
     python -m glow._extra.benchmark --aws sweep_llr    # run on AWS Batch
     python -m glow._extra.benchmark --csv-only         # rebuild CSVs only
+    python -m glow._extra.benchmark --no-skip sweep_llr # recompute every cell
     python -m glow._extra.benchmark --list             # list cache names
 """
 import argparse
@@ -84,7 +87,8 @@ def _report_csvs(written: dict) -> None:
 
 def run(names=None, n_jobs: int = 1, verbose: bool = True,
         write_csv: bool = True, csv_only: bool = False, out_dir=None,
-        aws: bool = False, aws_config_path=None) -> dict:
+        aws: bool = False, aws_config_path=None,
+        skip_recorded: bool = True) -> dict:
     """Drive the selected CONFIG caches, then write their per-config CSVs.
 
     For each resolved cache name, runs drive(*CONFIG[name], n_jobs=n_jobs),
@@ -94,6 +98,11 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
     just rebuilds those CSVs from the records already on disk -- the path to
     take after editing config.py / results.py when no new experiments are
     needed.
+
+    A local sweep skips the cells already complete in the records by default,
+    matching the AWS path, so a rerun (or a grid widened by a config edit)
+    computes only what is missing rather than everything the local joblib
+    cache happens not to hold; see drive.
 
     aws runs the sweep on AWS Batch instead of locally: the resolved names are
     handed to glow._extra.aws.drive_aws, which submits each cache's cells as a
@@ -120,6 +129,9 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
         aws (bool): run the sweep on AWS Batch (drive_aws) rather than locally.
         aws_config_path (str | None): AWSConfig JSON path for aws; None uses
             the per-user default (config.AWSConfig.from_file).
+        skip_recorded (bool): skip the cells already complete in the records
+            (default); False recomputes every cell of the grid. Applies to a
+            local sweep -- the AWS driver always skips its finished cells.
 
     Returns:
         written (dict): {cache name: csv path} for the caches that had rows
@@ -153,7 +165,8 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
     for name in resolved:
         if verbose:
             print(f'\n=== {name} ({RECORDER.folder}) ===')
-        drive(*CONFIG[name], n_jobs=n_jobs, verbose=verbose)
+        drive(*CONFIG[name], n_jobs=n_jobs, verbose=verbose,
+              skip_recorded=skip_recorded)
 
     written = (write_config_csvs(out_dir=out_dir, names=resolved)
                if write_csv else {})
@@ -189,6 +202,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help='AWSConfig JSON for --aws (default: per-user)')
     parser.add_argument('--list', action='store_true', dest='list_names',
                         help='print the catalogue cache names and exit')
+    parser.add_argument('--no-skip', action='store_true',
+                        help='recompute every cell, including those already '
+                             'complete in the records')
     csv_group = parser.add_mutually_exclusive_group()
     csv_group.add_argument('--no-csv', action='store_true',
                            help='run the sweep but skip writing the CSVs')
@@ -215,7 +231,7 @@ def main(argv=None) -> None:
     run(names=args.names, n_jobs=args.n_jobs, verbose=not args.quiet,
         write_csv=not args.no_csv, csv_only=args.csv_only,
         out_dir=args.out_dir, aws=args.aws,
-        aws_config_path=args.aws_config)
+        aws_config_path=args.aws_config, skip_recorded=not args.no_skip)
 
 
 if __name__ == '__main__':

@@ -6,8 +6,9 @@ test_recorder.py, so these cover only what is novel to ``drive``: that it runs
 the full cartesian product of its two upstream grids fanned across the fnc's
 kwargs grid (one score per cell), that it threads each stage's output into the
 next (the clean exp into the plant, the planted exp + its mask into fnc as the
-target), and that every cell lands in the shared provenance DAG as a complete
-data -> plant -> score chain.
+target), that every cell lands in the shared provenance DAG as a complete
+data -> plant -> score chain, and that skip_recorded drops exactly the cells
+the records already hold in full.
 
 Fresh seeds keep every cell a cache miss, so each really runs and records (a hit
 would neither recompute nor record); the grids are tiny WGN + cheap VBA so the
@@ -203,3 +204,60 @@ class TestParallel:
             dict(source='wgn', shape=(5, 5, 5), b=2, num_img=16, a=2, seed=0),
             [None], _ana_grid(1), run_ana))
         assert len(payload) < 100_000
+
+
+# ---------------------------------------------------------------------------
+# skip_recorded: the records -- not the local joblib cache -- decide what
+# reruns, so work done elsewhere (an AWS run ships records, not cache entries)
+# is not recomputed here. Each test sweeps once to lay down the records, then
+# re-drives to see what the skip leaves to run.
+# ---------------------------------------------------------------------------
+
+class TestSkipRecorded:
+    def test_repeat_sweep_runs_nothing(self):
+        grid, eff, ana = _data_grid(2), _effect_grid(2), _ana_grid(2)
+        assert len(drive(grid, eff, ana, run_ana)) == 2 * 2 * 2
+        assert drive(grid, eff, ana, run_ana, skip_recorded=True) == []
+
+    def test_off_by_default(self):
+        # the plain grid contract is unchanged: every cell runs again
+        grid, eff, ana = _data_grid(2), _effect_grid(1), _ana_grid(1)
+        drive(grid, eff, ana, run_ana)
+        assert len(drive(grid, eff, ana, run_ana)) == 2
+
+    def test_null_cell_skips(self):
+        # the null path has no effect record, so its frontier is the data
+        # record itself -- the skip has to read that chain too
+        grid, ana = _data_grid(2), _ana_grid(1)
+        assert len(drive(grid, [None], ana, run_ana)) == 2
+        assert drive(grid, [None], ana, run_ana, skip_recorded=True) == []
+
+    def test_widened_effect_grid_runs_only_the_new_cell(self):
+        grid, ana = _data_grid(1), _ana_grid(1)
+        drive(grid, _effect_grid(1), ana, run_ana)
+        scores = drive(grid, _effect_grid(2), ana, run_ana, skip_recorded=True)
+        assert len(scores) == 1
+
+    def test_widened_data_grid_runs_only_the_new_cell(self):
+        eff, ana = _effect_grid(1), _ana_grid(1)
+        grid = _data_grid(1)
+        drive(grid, eff, ana, run_ana)
+        scores = drive(grid + _data_grid(1), eff, ana, run_ana,
+                       skip_recorded=True)
+        assert len(scores) == 1
+
+    def test_partial_cell_reruns_whole(self):
+        # completeness is per (data, effect) cell, not per leaf: a cell short
+        # one fnc-kwargs leaf reruns its whole fnc grid (the done leaf is a
+        # joblib cache hit, so only the missing one really computes)
+        grid, eff = _data_grid(1), _effect_grid(1)
+        drive(grid, eff, _ana_grid(1), run_ana)
+        scores = drive(grid, eff, _ana_grid(2), run_ana, skip_recorded=True)
+        assert len(scores) == 2
+
+    def test_parallel_skips_too(self):
+        grid, eff, ana = _data_grid(2), _effect_grid(2), _ana_grid(1)
+        drive(grid, eff, ana, run_ana)
+        with parallel_config(backend='threading'):
+            assert drive(grid, eff, ana, run_ana, n_jobs=2,
+                         skip_recorded=True) == []
