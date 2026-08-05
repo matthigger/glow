@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 from joblib.func_inspect import filter_args
 
+from glow._extra.benchmark.recipe import ComputedArrayError, recipe_id
 from glow._extra.benchmark.recorder import Recorder
 
 
@@ -39,6 +40,12 @@ class _Thing:
         self.k = k
     def go(self, x):
         return self.k + x
+
+
+class _Link:
+    """Stand-in for a link_types domain object (an Experiment)."""
+    def __init__(self, tag='x'):
+        self.tag = tag
 
 
 class _A:
@@ -757,3 +764,85 @@ def test_flatten_to_df_leaf_keys_skips_unknown(rec):
     real = next(iter(rec.records))
     df = rec.flatten_to_df(leaf_keys=[real, 'no-such-key'])
     assert len(df) == 1
+
+
+# --- declared identity (recipe fields) --------------------------------------
+
+def test_root_call_records_its_recipe(rec):
+    # a call consuming no linked input is a root: its recipe needs no parent
+    @rec(output_name='out')
+    def build(seed, scale=2.0):
+        return seed * scale
+
+    build(3)
+    record = _only(rec.records)
+    assert record['op'].endswith('.build')
+    assert record['kwargs'] == {'seed': 3, 'scale': 2.0}
+    assert record['parents'] == []
+    assert record['uid'] == recipe_id(record['op'],
+                                      {'seed': 3, 'scale': 2.0})
+    assert record['impl_version'] == 0
+    assert record['cache_key'] == record['hash']
+
+
+def test_linked_call_without_parent_uid_records_no_recipe():
+    # lineage cannot be named, so no uid is invented for it
+    rec = Recorder(link_types=(_Link,))
+
+    @rec(output_name='out')
+    def consume(link, k):
+        return k
+
+    consume(_Link(), 1)
+    record = _only(rec.records)
+    assert 'uid' not in record
+    assert 'parents' not in record
+    assert record['input_hashes']                    # legacy edge still there
+
+
+def test_parent_uid_declares_the_edge():
+    # given its parent's uid, a linked call records a full recipe
+    rec = Recorder(link_types=(_Link,))
+
+    @rec(output_name='out')
+    def consume(link, k, *, parent_uid):
+        return k
+
+    consume(_Link(), 1, parent_uid='PARENT')
+    record = _only(rec.records)
+    assert record['parents'] == ['PARENT']
+    assert record['kwargs'] == {'k': 1}             # link dropped, uid dropped
+    assert record['uid'] == recipe_id(record['op'], {'k': 1},
+                                      parents=['PARENT'])
+
+
+def test_ignore_keeps_a_companion_out_of_the_recipe():
+    # an array companion is not declarative, so it changes no uid
+    rec = Recorder(link_types=(_Link,))
+
+    @rec(output_name='out', ignore=('mask_target_list',))
+    def consume(link, mask_target_list, k, *, parent_uid):
+        return k
+
+    consume(_Link(), [np.ones(4096)], 1, parent_uid='P')
+    record = _only(rec.records)
+    assert record['kwargs'] == {'k': 1}
+    assert record['uid'] == recipe_id(record['op'], {'k': 1}, parents=['P'])
+
+
+def test_recipe_kwargs_reject_a_computed_array():
+    # a big array left out of ignore is a computed payload: it must not key
+    rec = Recorder(link_types=(_Link,))
+
+    @rec(output_name='out')
+    def consume(link, payload, *, parent_uid):
+        return 1
+
+    with pytest.raises(ComputedArrayError):
+        consume(_Link(), np.zeros(4096), parent_uid='P')
+    assert rec.records == {}
+
+
+def test_ignore_must_name_strings(rec):
+    with pytest.raises(TypeError, match='ignore must be'):
+        rec(output_name='out', ignore=(1,))

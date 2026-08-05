@@ -2,17 +2,28 @@
 
 A Recorder decorates a function so every successful call stores one record:
 
-    {hash, function, inputs, outputs, input_hashes, output_hashes,
-     time_sec, recurse?}
+    {hash, cache_key, function, inputs, outputs, input_hashes, output_hashes,
+     time_sec, uid?, op?, kwargs?, parents?, impl_version?, recurse?}
 
 The key is joblib.hash(filter_args(fnc, [], args, kwargs)) -- the key
-joblib.Memory files the result under. Nest the recorder inside @MEMORY.cache
-and a miss records just the calls that ran, each matching its cached artifact.
-A repeat key overwrites and warns; a raising call records nothing.
+joblib.Memory files the result under, also stored as cache_key so the cache
+entry stays locatable however the record is named. Nest the recorder inside
+@MEMORY.cache and a miss records just the calls that ran, each matching its
+cached artifact. A repeat key overwrites and warns; a raising call records
+nothing.
 
 inputs/outputs are _cell snapshots, so a record holds no live Experiment.
 With a folder, each mirrors to <hash>.json atomically (one file per hash, so
 parallel workers never contend); load() reads them back.
+
+Declared identity: uid / op / kwargs / parents / impl_version hold the call's
+recipe (see glow._extra.benchmark.recipe) -- a portable id built from the
+declaration rather than from any array's bytes, and lineage the consumer
+declares rather than a reader rediscovering it. A call whose parent cannot be
+named (it takes a link_types input but no parent_uid) records no recipe
+fields, so a uid is never a guess. Pass ignore to keep a non-declarative
+parameter (an array companion) out of the recipe, mirroring the ignore list
+given to @MEMORY.cache.
 
 Provenance DAG: input_hashes/output_hashes hold joblib.hash of inputs/outputs
 whose type is in link_types (e.g. (Experiment,); narrow, so trivial values
@@ -34,6 +45,8 @@ from pathlib import Path
 import joblib
 import numpy as np
 from joblib.func_inspect import filter_args
+
+from .recipe import Recipe
 
 
 # Sentinel label values for trials that produced no scored result, used by
@@ -207,7 +220,7 @@ class Recorder:
         return joblib.hash(filter_args(fnc, [], args, kwargs))
 
     def __call__(self, output_name=None, output_name_list=None,
-                 recurse_out_list=None):
+                 recurse_out_list=None, ignore=()):
         """Build a decorator that records calls under one or more output names.
 
         Pass exactly one of output_name (the whole return under one name) or
@@ -222,6 +235,11 @@ class Recorder:
                 tuple/list return; non-empty, no duplicates.
             recurse_out_list (tuple | list | None): output names to expand per
                 key-path; each must be a declared output. None recurses none.
+            ignore (tuple | list): parameter names to leave out of the recipe
+                kwargs -- the non-declarative companions (an array a caller
+                passes alongside the linked Experiment). Mirror the list given
+                to @MEMORY.cache. link_types inputs and parent_uid are always
+                excluded, so they need no entry here.
 
         Returns:
             a decorator that wraps a function for recording.
@@ -265,6 +283,10 @@ class Recorder:
         if unknown:
             raise ValueError(
                 f"recurse_out_list names not declared outputs: {unknown}")
+
+        ignore_names = tuple(ignore)
+        if not all(isinstance(n, str) for n in ignore_names):
+            raise TypeError("ignore must be a tuple/list of str param names")
 
         def decorator(fnc):
             """Wrap fnc so each successful call records under its args hash."""
@@ -337,6 +359,23 @@ class Recorder:
                 output_hashes = {n: joblib.hash(v) for n, v in outputs.items()
                                  if isinstance(v, self.link_types)}
 
+                # the declared identity of this call (see the module
+                # docstring). A call that consumes a linked input without being
+                # told its parent_uid cannot name its lineage, so it records no
+                # recipe rather than a uid claiming to be a root.
+                parent_uid = inputs.get('parent_uid')
+                consumes_link = any(isinstance(v, self.link_types)
+                                    for v in inputs.values())
+                recipe_fields = {}
+                if parent_uid is not None or not consumes_link:
+                    recipe_kwargs = {
+                        n: v for n, v in inputs.items()
+                        if n not in ignore_names and n != 'parent_uid'
+                        and not isinstance(v, self.link_types)}
+                    recipe_fields = Recipe(
+                        fnc.__qualname__, recipe_kwargs,
+                        parents=(parent_uid,) if parent_uid else ()).as_dict()
+
                 # snapshot to _cell form now, so the record keeps no live
                 # reference to the (heavy) call values -- they can be collected
                 # once the call returns. The DAG hashes above used the live
@@ -349,7 +388,9 @@ class Recorder:
                 key = self._args_hash(fnc, args, kwargs)
                 self._store(key, {
                     "hash": key,
+                    "cache_key": key,
                     "function": fnc.__qualname__,
+                    **recipe_fields,
                     **({"recurse": list(recurse)} if recurse else {}),
                     "inputs": inputs,
                     "outputs": outputs,
