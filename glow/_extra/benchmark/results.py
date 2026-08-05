@@ -102,10 +102,51 @@ def _expected_inputs(fnc, kwargs, drop=()) -> dict:
     return {k: _cell(v) for k, v in bound.arguments.items() if k not in drop}
 
 
-def _inputs_match(record, expected) -> bool:
-    """True if the record's inputs equal expected on every expected key."""
+def _optional_inputs(fnc, kwargs, drop=()) -> set:
+    """Return the expected-input names that come from fnc's defaults.
+
+    A cell specifies some of a builder's parameters and leaves the rest at their
+    defaults. Only the specified ones must appear in a record: a parameter added
+    to the builder since a record was written is absent from it, and its absence
+    means the default (see _inputs_match).
+
+    Args:
+        fnc (Callable): the recorded builder.
+        kwargs (dict): the config cell's kwargs (dispatch keys removed).
+        drop (tuple[str]): input names left out of the comparison.
+
+    Returns:
+        set[str]: expected names the cell did not specify.
+    """
+    return set(_expected_inputs(fnc, kwargs, drop=drop)) - set(kwargs)
+
+
+def _inputs_match(record, expected, optional=()) -> bool:
+    """True if the record's inputs equal expected on every expected key.
+
+    A name in optional may be missing from the record -- it comes from a builder
+    default, and a record written before that parameter existed stored nothing
+    for it, so requiring it would drop every older record of that builder. A
+    name the record does carry must still match.
+
+    Args:
+        record (dict): the stored record.
+        expected (dict): {input name: celled value} to match (_expected_inputs).
+        optional (iterable[str]): expected names allowed to be absent
+            (_optional_inputs).
+
+    Returns:
+        bool: True if the record matches on every required key.
+    """
     inputs = record.get('inputs', {})
-    return all(inputs.get(k) == v for k, v in expected.items())
+    for name, value in expected.items():
+        if name not in inputs:
+            if name in optional:
+                continue
+            return False
+        if inputs[name] != value:
+            return False
+    return True
 
 
 def config_leaf_keys(name: str) -> list:
@@ -173,13 +214,12 @@ def config_leaf_keys(name: str) -> list:
             parents |= anchors
             continue
         kind = kwargs_effect.get('kind', 'single')
-        expected = _expected_inputs(
-            _EFFECT_FACTORY[kind],
-            {k: v for k, v in kwargs_effect.items() if k != 'kind'},
-            drop=('exp',))
+        cell = {k: v for k, v in kwargs_effect.items() if k != 'kind'}
+        expected = _expected_inputs(_EFFECT_FACTORY[kind], cell, drop=('exp',))
+        optional = _optional_inputs(_EFFECT_FACTORY[kind], cell, drop=('exp',))
         for a in anchors:
             parents |= {c for c in children_of(a)
-                        if _inputs_match(records[c], expected)}
+                        if _inputs_match(records[c], expected, optional)}
 
     # leaves: the fnc records off the frontier. A cache runs its whole fnc grid,
     # and a cache sharing a (data, effect) cell runs a different leaf function
@@ -320,7 +360,8 @@ def get_cell_complete(kwargs_fnc_list, fnc):
     # one input fingerprint per fnc-kwargs cell; exp / mask_target_list are
     # driver-supplied, so dropped from the comparison (as exp is for effects)
     fnc_expected = [
-        _expected_inputs(fnc, kwargs, drop=('exp', 'mask_target_list'))
+        (_expected_inputs(fnc, kwargs, drop=('exp', 'mask_target_list')),
+         _optional_inputs(fnc, kwargs, drop=('exp', 'mask_target_list')))
         for kwargs in kwargs_fnc_list]
 
     def cell_complete(kwargs_data, kwargs_effect) -> bool:
@@ -337,18 +378,19 @@ def get_cell_complete(kwargs_fnc_list, fnc):
             frontier = {anchor}
         else:
             kind = kwargs_effect.get('kind', 'single')
-            expected = _expected_inputs(
-                _EFFECT_FACTORY[kind],
-                {k: v for k, v in kwargs_effect.items() if k != 'kind'},
-                drop=('exp',))
+            cell = {k: v for k, v in kwargs_effect.items() if k != 'kind'}
+            builder = _EFFECT_FACTORY[kind]
+            expected = _expected_inputs(builder, cell, drop=('exp',))
+            optional = _optional_inputs(builder, cell, drop=('exp',))
             frontier = {c for c in children_of(anchor)
-                        if _inputs_match(records[c], expected)}
+                        if _inputs_match(records[c], expected, optional)}
             if not frontier:
                 return False
         leaves = [records[c] for p in frontier for c in children_of(p)
                   if records[c]['function'] == fnc_name]
-        return all(any(_inputs_match(rec, exp) for rec in leaves)
-                   for exp in fnc_expected)
+        return all(any(_inputs_match(rec, expected, optional)
+                       for rec in leaves)
+                   for expected, optional in fnc_expected)
 
     return cell_complete
 

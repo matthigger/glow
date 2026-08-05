@@ -14,6 +14,28 @@ if _FSL_DIR.is_dir():
         os.environ['PATH'] = fsl_bin + os.pathsep + os.environ.get('PATH', '')
 
 
+@pytest.fixture(autouse=True)
+def _cache_to_tmp(monkeypatch, tmp_path):
+    """Redirect the benchmark's shared joblib cache to a tmp dir, every test.
+
+    glow._extra.benchmark.data.MEMORY points at the user's real cache and the
+    tests call the memoised builders and leaves directly, so without this the
+    suite reads and writes tens of GB of production artifacts. Worse, joblib
+    stores each memoised function's source and clears that function's whole
+    cache directory when it changes -- and what it stores is the recorder
+    wrapper every one of them is nested in, so a single edit there wipes the real
+    cache the next time the suite runs.
+
+    Rebinding MEMORY would not do it: the decorators captured the store at
+    import time, so the location moves on the shared backend the already-built
+    MemorizedFuncs hold. Imported inside the fixture to keep collection of the
+    unrelated suites free of the benchmark import chain.
+    """
+    from glow._extra.benchmark import data
+
+    monkeypatch.setattr(data.MEMORY.store_backend, 'location', str(tmp_path))
+
+
 def pytest_addoption(parser):
     """Register --runslow and --runaws CLI flags."""
     parser.addoption(
