@@ -46,6 +46,7 @@ import time
 import warnings
 from collections import defaultdict, deque
 from pathlib import Path
+from typing import NamedTuple
 
 import joblib
 import numpy as np
@@ -60,6 +61,33 @@ from .recipe import Recipe
 ERROR_LABEL = 'ERROR'
 SKIP_LABEL = 'SKIP'
 NON_RESULT_LABELS = (ERROR_LABEL, SKIP_LABEL)
+
+
+class _CallSpec(NamedTuple):
+    """What one decorated call needs to record itself, fixed at decoration.
+
+    Passed to Recorder._record_call so the memoised wrapper's own body can stay
+    a fixed one-liner (see there for why that matters).
+
+    Attributes:
+        sig (inspect.Signature): the decorated function's signature.
+        is_method (bool): True when it is a bound method, whose receiver is
+            recorded as the 'self' input.
+        var_kw (str | None): the name of its **kwargs parameter, or None.
+        output_name (str | None): single name for the whole return.
+        output_name_list (tuple | list | None): names for an unpacked return.
+        recurse (tuple[str]): output names flatten_to_df expands per key-path.
+        ignore (tuple[str]): parameter names kept out of the record key and the
+            recipe.
+    """
+
+    sig: inspect.Signature
+    is_method: bool
+    var_kw: str
+    output_name: str
+    output_name_list: tuple
+    recurse: tuple
+    ignore: tuple
 
 
 def _json_default(obj):
@@ -317,97 +345,23 @@ class Recorder:
                 if param.kind is inspect.Parameter.VAR_KEYWORD:
                     var_kw = name
 
+            spec = _CallSpec(sig=sig, is_method=is_method, var_kw=var_kw,
+                             output_name=output_name,
+                             output_name_list=output_name_list,
+                             recurse=recurse, ignore=ignore_names)
+
+            # KEEP THIS BODY FIXED. joblib stores the source of the function it
+            # memoises -- which, with the recorder nested inside @MEMORY.cache,
+            # is this wrapper -- and clears that function's whole cache
+            # directory when the text changes. Every recording rule therefore
+            # lives in _record_call, where it can be edited without discarding
+            # every memoised result in the project. joblib compares the text
+            # only (the first line number is excluded), so moving this function
+            # is safe; changing it is not.
             @functools.wraps(fnc)
             def wrapped(*args, **kwargs):
                 """Run fnc, then snapshot its inputs/outputs into a record."""
-                # capture inputs (incl. defaults); serialised at record time
-                bound = sig.bind(*args, **kwargs)
-                bound.apply_defaults()
-                inputs = dict(bound.arguments)
-
-                # bound-method receiver as the 'self' input (first, for
-                # readability), from __self__ since the signature omits it
-                if is_method:
-                    inputs = {'self': fnc.__self__, **inputs}
-
-                # splice **kwargs up a level: {'kwargs': {'x': 1}} -> {'x': 1};
-                # sig.bind already routes named keywords, so no collision here
-                if var_kw is not None:
-                    inputs.update(inputs.pop(var_kw))
-
-                # time only the wrapped call; an exception propagates, nothing
-                # recorded (like joblib.Memory on a failed call)
-                t0 = time.perf_counter()
-                out = fnc(*args, **kwargs)
-                time_sec = time.perf_counter() - t0
-
-                # name the outputs; the shape checks raise without recording
-                if output_name is not None:
-                    outputs = {output_name: out}
-                else:
-                    if not isinstance(out, (tuple, list)):
-                        raise TypeError(
-                            f"{fnc.__name__} declared output_name_list "
-                            f"but returned {type(out).__name__}; "
-                            f"expected a tuple/list"
-                        )
-                    if len(out) != len(output_name_list):
-                        raise ValueError(
-                            f"{fnc.__name__} returned {len(out)} values "
-                            f"but output_name_list has "
-                            f"{len(output_name_list)} names"
-                        )
-                    outputs = dict(zip(output_name_list, out))
-
-                # content-hash the link_types inputs/outputs from the live
-                # values (before the snapshot): an input that is another call's
-                # output shares its joblib.hash, so flatten_to_df links them.
-                # Hashing only domain types avoids trivial-value edges.
-                input_hashes = {n: joblib.hash(v) for n, v in inputs.items()
-                                if isinstance(v, self.link_types)}
-                output_hashes = {n: joblib.hash(v) for n, v in outputs.items()
-                                 if isinstance(v, self.link_types)}
-
-                # the declared identity of this call (see the module
-                # docstring). A call that consumes a linked input without being
-                # told its parent_uid cannot name its lineage, so it records no
-                # recipe rather than a uid claiming to be a root.
-                parent_uid = inputs.get('parent_uid')
-                consumes_link = any(isinstance(v, self.link_types)
-                                    for v in inputs.values())
-                recipe_fields = {}
-                if parent_uid is not None or not consumes_link:
-                    recipe_kwargs = {
-                        n: v for n, v in inputs.items()
-                        if n not in ignore_names and n != 'parent_uid'
-                        and not isinstance(v, self.link_types)}
-                    recipe_fields = Recipe(
-                        fnc.__qualname__, recipe_kwargs,
-                        parents=(parent_uid,) if parent_uid else ()).as_dict()
-
-                # snapshot to _cell form now, so the record keeps no live
-                # reference to the (heavy) call values -- they can be collected
-                # once the call returns. The DAG hashes above used the live
-                # values, so nothing is lost.
-                inputs = {n: _cell(v) for n, v in inputs.items()}
-                outputs = {n: _cell(v) for n, v in outputs.items()}
-
-                # key by joblib's args hash, matching the cache entry the same
-                # call writes
-                key = self._args_hash(fnc, args, kwargs, ignore_names)
-                self._store(key, {
-                    "hash": key,
-                    "cache_key": key,
-                    "function": fnc.__qualname__,
-                    **recipe_fields,
-                    **({"recurse": list(recurse)} if recurse else {}),
-                    "inputs": inputs,
-                    "outputs": outputs,
-                    "input_hashes": input_hashes,
-                    "output_hashes": output_hashes,
-                    "time_sec": time_sec,
-                })
-                return out
+                return self._record_call(fnc, spec, args, kwargs)
 
             # stamp the filter onto the wrapper so a reader naming this call's
             # uid (recipe.recipe_for_call) drops exactly what was dropped here,
@@ -416,6 +370,112 @@ class Recorder:
             return wrapped
 
         return decorator
+
+    def _record_call(self, fnc, spec, args, kwargs):
+        """Run one decorated call and store its record; return its output.
+
+        Every recording rule lives here rather than in the wrapper, so editing
+        one does not invalidate a single cached result (see wrapped).
+
+        Args:
+            fnc (Callable): the decorated function to call.
+            spec (_CallSpec): what its decoration fixed.
+            args (tuple): positional call arguments.
+            kwargs (dict): keyword call arguments.
+
+        Returns:
+            the wrapped function's own return value, unchanged.
+
+        Raises:
+            TypeError: the return is not a tuple/list under output_name_list.
+            ValueError: it has the wrong length for output_name_list.
+        """
+        # capture inputs (incl. defaults); serialised at record time
+        bound = spec.sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        inputs = dict(bound.arguments)
+
+        # bound-method receiver as the 'self' input (first, for readability),
+        # from __self__ since the signature omits it
+        if spec.is_method:
+            inputs = {'self': fnc.__self__, **inputs}
+
+        # splice **kwargs up a level: {'kwargs': {'x': 1}} -> {'x': 1};
+        # sig.bind already routes named keywords, so no collision here
+        if spec.var_kw is not None:
+            inputs.update(inputs.pop(spec.var_kw))
+
+        # time only the wrapped call; an exception propagates, nothing recorded
+        # (like joblib.Memory on a failed call)
+        t0 = time.perf_counter()
+        out = fnc(*args, **kwargs)
+        time_sec = time.perf_counter() - t0
+
+        # name the outputs; the shape checks raise without recording
+        if spec.output_name is not None:
+            outputs = {spec.output_name: out}
+        else:
+            if not isinstance(out, (tuple, list)):
+                raise TypeError(
+                    f"{fnc.__name__} declared output_name_list "
+                    f"but returned {type(out).__name__}; "
+                    f"expected a tuple/list"
+                )
+            if len(out) != len(spec.output_name_list):
+                raise ValueError(
+                    f"{fnc.__name__} returned {len(out)} values "
+                    f"but output_name_list has "
+                    f"{len(spec.output_name_list)} names"
+                )
+            outputs = dict(zip(spec.output_name_list, out))
+
+        # content-hash the link_types inputs/outputs from the live values
+        # (before the snapshot): the legacy edge, matched by equality. See the
+        # module docstring for why the declared edge below supersedes it.
+        input_hashes = {n: joblib.hash(v) for n, v in inputs.items()
+                        if isinstance(v, self.link_types)}
+        output_hashes = {n: joblib.hash(v) for n, v in outputs.items()
+                         if isinstance(v, self.link_types)}
+
+        # the declared identity of this call (see the module docstring). A call
+        # that consumes a linked input without being told its parent_uid cannot
+        # name its lineage, so it records no recipe rather than a uid claiming
+        # to be a root.
+        parent_uid = inputs.get('parent_uid')
+        consumes_link = any(isinstance(v, self.link_types)
+                            for v in inputs.values())
+        recipe_fields = {}
+        if parent_uid is not None or not consumes_link:
+            recipe_kwargs = {
+                n: v for n, v in inputs.items()
+                if n not in spec.ignore and n != 'parent_uid'
+                and not isinstance(v, self.link_types)}
+            recipe_fields = Recipe(
+                fnc.__qualname__, recipe_kwargs,
+                parents=(parent_uid,) if parent_uid else ()).as_dict()
+
+        # snapshot to _cell form now, so the record keeps no live reference to
+        # the (heavy) call values -- they can be collected once the call
+        # returns. The hashes above used the live values, so nothing is lost.
+        inputs = {n: _cell(v) for n, v in inputs.items()}
+        outputs = {n: _cell(v) for n, v in outputs.items()}
+
+        # key by joblib's args hash, matching the cache entry the same call
+        # writes
+        key = self._args_hash(fnc, args, kwargs, spec.ignore)
+        self._store(key, {
+            "hash": key,
+            "cache_key": key,
+            "function": fnc.__qualname__,
+            **recipe_fields,
+            **({"recurse": list(spec.recurse)} if spec.recurse else {}),
+            "inputs": inputs,
+            "outputs": outputs,
+            "input_hashes": input_hashes,
+            "output_hashes": output_hashes,
+            "time_sec": time_sec,
+        })
+        return out
 
     def _store(self, key, record) -> None:
         """Store a record by its hash key, overwriting and warning on repeat.

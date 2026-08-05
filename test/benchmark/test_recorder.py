@@ -846,3 +846,33 @@ def test_recipe_kwargs_reject_a_computed_array():
 def test_ignore_must_name_strings(rec):
     with pytest.raises(TypeError, match='ignore must be'):
         rec(output_name='out', ignore=(1,))
+
+
+def test_memoised_wrapper_body_is_fixed():
+    """The wrapper joblib memoises must not vary, so its cache survives.
+
+    joblib stores the source of the function it memoises -- with the recorder
+    nested inside @MEMORY.cache that is the recorder's wrapper -- and clears
+    that function's whole cache directory when the text changes. So the wrapper
+    only delegates: it carries none of the recording rules, and two differently
+    decorated functions present joblib the same text.
+    """
+    from joblib.func_inspect import get_func_code
+
+    rec = Recorder()
+
+    @rec(output_name='a')
+    def one(x):
+        return x
+
+    @rec(output_name_list=['a', 'b'], recurse_out_list=['a'], ignore=('y',))
+    def two(x, y):
+        return x, y
+
+    code_one, _, _ = get_func_code(one)
+    code_two, _, _ = get_func_code(two)
+    assert code_one == code_two
+    assert '_record_call' in code_one
+    # the rules live in _record_call, not here
+    for rule in ('input_hashes', 'Recipe', 'perf_counter', '_store'):
+        assert rule not in code_one
