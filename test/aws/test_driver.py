@@ -1,4 +1,5 @@
-"""drive_aws: helpers, submit shape, retry policy, happy path, OOM escalation.
+"""drive_aws: helpers, submit shape, retry policy, happy path, OOM escalation,
+and the per-method rerun (a narrowed fnc grid shipped in the bundle).
 
 An in-memory FakeS3 + FakeBatch drive the submit -> poll -> classify ->
 escalate loop without provisioning AWS.
@@ -19,6 +20,7 @@ from glow._extra.aws.driver import (RETRY_EVALUATE_ON_EXIT, _Attempt,
                                      _submit_job, drive_aws)
 from glow._extra.aws.units import resolve_cells
 from glow._extra.benchmark import data
+from glow._extra.benchmark.config import ana_kwargs_dict
 from test.aws.fakes import FakeBatch, FakeS3, client_factory
 
 
@@ -238,6 +240,32 @@ def test_happy_path_submits_one_array_and_finishes():
     assert label == 'sweep_llr'
     # cells have no value __eq__; the cache key (joblib.hash) is what matters
     assert joblib.hash(data_cells) == joblib.hash(expected)
+
+
+def test_methods_ships_only_the_named_recipes():
+    # a per-method rerun narrows the shipped fnc grid, so a worker fits only
+    # those recipes -- the siblings already computed are not refit (the skip is
+    # narrowed with it; see results.incomplete_cell_indices)
+    fake_s3, fake_batch = FakeS3(), FakeBatch(submit_then=[[OK] * N_CELLS])
+    _run(fake_s3, fake_batch, methods=['VBA', 'CET'])
+    (_, manifest_key), = [k for k in fake_s3.store
+                          if k[1].endswith('manifest.json')]
+    manifest = json.loads(fake_s3.store[('bkt', manifest_key)])
+    _, kwargs_fnc_list, *_ = pickle.loads(
+        fake_s3.store[('bkt', manifest['bundle_key'])])
+    assert [repr(kwargs['ana']) for kwargs in kwargs_fnc_list] == [
+        repr(ana_kwargs_dict[label]) for label in ('VBA', 'CET')]
+
+
+def test_methods_skips_a_cache_with_no_named_recipe():
+    # segment's leaf grid is Ward modes, not recipes: no per-method axis, so the
+    # cache is skipped whole rather than resubmitted in full
+    fake_s3, fake_batch = FakeS3(), FakeBatch(submit_then=[])
+    with patch('glow._extra.aws.driver.boto3.client',
+               client_factory(fake_s3, fake_batch)):
+        drive_aws('segment', _cfg(), write_csv=False, verbose=False,
+                  methods=['VBA'])
+    assert fake_batch.submitted == []
 
 
 def test_oom_escalates_to_next_tier():

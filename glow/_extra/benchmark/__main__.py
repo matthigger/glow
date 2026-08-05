@@ -12,6 +12,13 @@ the whole grid). --csv-only skips the sweep entirely and rebuilds those CSVs
 from the records already on disk -- the path to take after editing config.py /
 results.py when the records are still good and no new experiments are needed.
 
+--method narrows the sweep to one analysis recipe (repeatable), the path to
+take after changing one method's recipe: a changed knob is a new hash, so that
+method's leaves go missing everywhere while its siblings' stay valid, and
+completeness is judged against the narrowed grid -- so only the named recipes
+run and no sibling fit is recomputed. It applies to the local and the AWS
+sweep alike; the CSVs are written from the full records either way.
+
 --aws runs the sweep on AWS Batch instead of locally: it hands the same
 resolved cache names to glow._extra.aws.drive_aws, which submits each cache's
 data cells as a Batch array job and writes the same per-config CSVs from the
@@ -26,6 +33,7 @@ Usage:
     python -m glow._extra.benchmark --aws sweep_llr    # run on AWS Batch
     python -m glow._extra.benchmark --csv-only         # rebuild CSVs only
     python -m glow._extra.benchmark --no-skip sweep_llr # recompute every cell
+    python -m glow._extra.benchmark --method VBA --method CET   # one recipe
     python -m glow._extra.benchmark --list             # list cache names
 """
 import argparse
@@ -88,7 +96,7 @@ def _report_csvs(written: dict) -> None:
 def run(names=None, n_jobs: int = 1, verbose: bool = True,
         write_csv: bool = True, csv_only: bool = False, out_dir=None,
         aws: bool = False, aws_config_path=None,
-        skip_recorded: bool = True) -> dict:
+        skip_recorded: bool = True, methods=None) -> dict:
     """Drive the selected CONFIG caches, then write their per-config CSVs.
 
     For each resolved cache name, runs drive(*CONFIG[name], n_jobs=n_jobs),
@@ -103,6 +111,14 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
     matching the AWS path, so a rerun (or a grid widened by a config edit)
     computes only what is missing rather than everything the local joblib
     cache happens not to hold; see drive.
+
+    methods narrows each cache's leaf grid to the named analysis recipes
+    (config.filter_ana_list), which is how one method is rerun on its own after
+    its recipe changed: completeness is judged against the narrowed grid, so a
+    cell already holding those leaves is skipped and the recipes left out are
+    never called -- the sibling methods' fits are not recomputed. A selected
+    cache with no matching recipe (a segment / prune / stat leaf grid, which has
+    no per-method axis) is skipped.
 
     aws runs the sweep on AWS Batch instead of locally: the resolved names are
     handed to glow._extra.aws.drive_aws, which submits each cache's cells as a
@@ -132,6 +148,9 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
         skip_recorded (bool): skip the cells already complete in the records
             (default); False recomputes every cell of the grid. Applies to a
             local sweep -- the AWS driver always skips its finished cells.
+        methods (list[str] | None): analysis-recipe labels
+            (config.ana_kwargs_dict keys, e.g. ['VBA', 'CET']) to run; None
+            (default) runs each cache's whole leaf grid.
 
     Returns:
         written (dict): {cache name: csv path} for the caches that had rows
@@ -152,9 +171,9 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
         aws_config = (AWSConfig.from_file(aws_config_path) if aws_config_path
                       else AWSConfig.from_file())
         return drive_aws(resolved, aws_config, write_csv=write_csv,
-                         verbose=verbose, out_dir=out_dir)
+                         verbose=verbose, out_dir=out_dir, methods=methods)
 
-    from .config import CONFIG
+    from .config import CONFIG, filter_ana_list
     from .data import RECORDER
     from .driver import drive
     from .hcp import ensure_hcp_data
@@ -163,10 +182,19 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
     ensure_hcp_data()
 
     for name in resolved:
+        kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc = \
+            CONFIG[name]
+        if methods:
+            kwargs_fnc_list = filter_ana_list(kwargs_fnc_list, methods)
+            if not kwargs_fnc_list:
+                if verbose:
+                    print(f'\n=== {name}: no {methods} recipe in its leaf '
+                          f'grid, skipped ===')
+                continue
         if verbose:
             print(f'\n=== {name} ({RECORDER.folder}) ===')
-        drive(*CONFIG[name], n_jobs=n_jobs, verbose=verbose,
-              skip_recorded=skip_recorded)
+        drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc,
+              n_jobs=n_jobs, verbose=verbose, skip_recorded=skip_recorded)
 
     written = (write_config_csvs(out_dir=out_dir, names=resolved)
                if write_csv else {})
@@ -205,6 +233,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument('--no-skip', action='store_true',
                         help='recompute every cell, including those already '
                              'complete in the records')
+    parser.add_argument('--method', action='append', dest='methods',
+                        default=None, metavar='LABEL',
+                        help='run only this analysis recipe (repeatable; a '
+                             'config.ana_kwargs_dict key, e.g. VBA)')
     csv_group = parser.add_mutually_exclusive_group()
     csv_group.add_argument('--no-csv', action='store_true',
                            help='run the sweep but skip writing the CSVs')
@@ -231,7 +263,8 @@ def main(argv=None) -> None:
     run(names=args.names, n_jobs=args.n_jobs, verbose=not args.quiet,
         write_csv=not args.no_csv, csv_only=args.csv_only,
         out_dir=args.out_dir, aws=args.aws,
-        aws_config_path=args.aws_config, skip_recorded=not args.no_skip)
+        aws_config_path=args.aws_config, skip_recorded=not args.no_skip,
+        methods=args.methods)
 
 
 if __name__ == '__main__':

@@ -12,6 +12,7 @@ deep in a multi-day sweep -- without executing any stage. The stages
 """
 import inspect
 import math
+import pickle
 
 import pytest
 
@@ -75,6 +76,32 @@ class TestCatalogueShape:
         assert all(set(c) == {'ana'} for c in config.RUN_ANA_LIST)
         assert ([c['ana'] for c in config.RUN_ANA_LIST]
                 == list(config.ana_kwargs_dict.values()))
+
+
+class TestFilterAnaList:
+    def test_keeps_named_recipes_in_grid_order(self):
+        kept = config.filter_ana_list(config.RUN_ANA_LIST, ['CET', 'VBA'])
+        assert [c['ana'] for c in kept] == [config.ana_kwargs_dict['VBA'],
+                                            config.ana_kwargs_dict['CET']]
+
+    def test_matches_a_rebuilt_equal_recipe(self):
+        # matched on the recipe repr, not identity, so an equal recipe rebuilt
+        # elsewhere still selects -- the round trip the AWS run bundle does to
+        # a recipe (a pickle this test wrote itself, see glow._extra.aws.bundle)
+        grid = [dict(ana=pickle.loads(pickle.dumps(ana)))
+                for ana in config.ana_kwargs_dict.values()]
+        kept = config.filter_ana_list(grid, ['VBA-TFCE'])
+        assert [repr(c['ana']) for c in kept] == [
+            repr(config.ana_kwargs_dict['VBA-TFCE'])]
+
+    def test_unknown_label_raises(self):
+        with pytest.raises(ValueError):
+            config.filter_ana_list(config.RUN_ANA_LIST, ['VBA', 'TFCE'])
+
+    def test_grid_without_a_recipe_axis_is_empty(self):
+        # a non-run_ana leaf grid (segment / prune / ...) has no ana to select
+        _, _, fnc_kwargs, _ = config.CONFIG['segment']
+        assert config.filter_ana_list(fnc_kwargs, ['VBA']) == []
 
 
 class TestIterKwargsData:

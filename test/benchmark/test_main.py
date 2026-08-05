@@ -108,6 +108,11 @@ class TestParseArgs:
         with pytest.raises(SystemExit):
             cli.parse_args(['--no-csv', '--csv-only'])
 
+    def test_method_repeats_into_a_list(self):
+        assert cli.parse_args([]).methods is None
+        assert cli.parse_args(['--method', 'VBA', '--method', 'CET']).methods \
+            == ['VBA', 'CET']
+
 
 # ---------------------------------------------------------------------------
 # run: drive a sweep then write its CSV, vs. csv-only rebuild
@@ -139,6 +144,48 @@ class TestRun:
         assert _tiny == [1]
         assert any(r['function'] == 'run_ana'
                    for r in data.RECORDER.records.values())
+
+    @pytest.fixture
+    def _two_recipes(self, monkeypatch):
+        """A tiny two-recipe cache, its recipes labelled as --method resolves.
+
+        The catalogue's own recipes are far too costly to fit here, so
+        ana_kwargs_dict -- the label source the filter reads -- is patched to
+        two cheap VBA fits (distinct n_perm_fwer, hence distinct leaves).
+        """
+        ana_a, ana_b = AnalysisVBA(n_perm_fwer=6), AnalysisVBA(n_perm_fwer=7)
+        monkeypatch.setattr(config, 'ana_kwargs_dict',
+                            {'A': ana_a, 'B': ana_b})
+        data_list, effect_list, _, fnc = _tiny_entry()
+        monkeypatch.setattr(config, 'CONFIG', {'tiny': (
+            data_list, effect_list, [dict(ana=ana_a), dict(ana=ana_b)], fnc)})
+        monkeypatch.setattr(hcp, 'ensure_hcp_data', lambda: None)
+        return ana_a, ana_b
+
+    def _ana_reprs(self):
+        """The recipes the recorded run_ana leaves were fit under."""
+        return [rec['inputs']['ana']
+                for rec in data.RECORDER.records.values()
+                if rec['function'] == 'run_ana']
+
+    def test_methods_runs_only_the_named_recipe(self, _two_recipes):
+        # the rerun-one-method path: the sibling recipe is never called, so its
+        # fit is not recomputed (see run / config.filter_ana_list)
+        _, ana_b = _two_recipes
+        cli.run(names=['tiny'], write_csv=False, verbose=False, methods=['B'])
+        assert self._ana_reprs() == [repr(ana_b)]
+
+    def test_methods_skips_a_cache_with_no_named_recipe(self, _two_recipes,
+                                                       monkeypatch, capsys):
+        # a leaf grid with no recipe of that name (a segment / prune grid in the
+        # real catalogue) has no per-method axis, so the cache is skipped whole
+        data_list, effect_list, _, fnc = _tiny_entry()
+        monkeypatch.setattr(config, 'CONFIG', {'other': (
+            data_list, effect_list, [dict(ana=AnalysisVBA(n_perm_fwer=8))],
+            fnc)})
+        cli.run(names=['other'], write_csv=False, methods=['A'])
+        assert 'skipped' in capsys.readouterr().out
+        assert self._ana_reprs() == []
 
     def test_csv_only_rebuilds_without_running(self, _tiny, tmp_path):
         # a first sweep populates the records (no CSV written)

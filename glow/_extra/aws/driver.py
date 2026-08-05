@@ -39,7 +39,9 @@ that checkpoint too if it is still present.
 
 The whole sweep is correct to rerun: the local records are the source of truth
 for what is done, so a rerun resubmits only the cells not already complete on
-disk and recomputes them, filling gaps without touching finished work.
+disk and recomputes them, filling gaps without touching finished work. A rerun
+of one method (drive_aws methods=...) narrows the shipped fnc grid, so both the
+skip and the worker see only those recipes -- the siblings are not refit.
 """
 
 import json
@@ -87,7 +89,7 @@ RETRY_EVALUATE_ON_EXIT = [
 
 
 def drive_aws(names, aws_config, *, write_csv: bool = True,
-              verbose: bool = True, out_dir=None) -> dict:
+              verbose: bool = True, out_dir=None, methods=None) -> dict:
     """Run the selected CONFIG caches on AWS Batch, then write their CSVs.
 
     Each cache's data cells -- whatever sources its CONFIG grid declares, minus
@@ -97,6 +99,13 @@ def drive_aws(names, aws_config, *, write_csv: bool = True,
     are pulled from S3 and the per-config CSVs written. (HCP cells need their
     reference data staged to S3 first; see glow._extra.aws stage_hcp.)
 
+    methods narrows each cache's shipped leaf grid to the named analysis
+    recipes (config.filter_ana_list), the path for rerunning one method after
+    its recipe changed: the cells to submit are the ones missing those leaves
+    (not the cache's whole grid), and a worker fits only the shipped recipes, so
+    the siblings already computed are neither resubmitted nor refit. A selected
+    cache whose leaf grid has no matching recipe is skipped.
+
     Args:
         names (str | list[str]): a CONFIG cache name or list of them.
         aws_config (AWSConfig): bucket, prefix, queue, definition, tiers.
@@ -105,6 +114,9 @@ def drive_aws(names, aws_config, *, write_csv: bool = True,
         verbose (bool): tqdm progress bars and status prints.
         out_dir (str | Path | None): CSV destination forwarded to
             write_config_csvs; None is glow's per-user results dir.
+        methods (list[str] | None): analysis-recipe labels
+            (config.ana_kwargs_dict keys, e.g. ['VBA', 'CET']) to run; None
+            (default) ships each cache's whole leaf grid.
 
     Returns:
         written (dict): {cache name: csv path} for caches that had rows
@@ -123,6 +135,7 @@ def drive_aws(names, aws_config, *, write_csv: bool = True,
     # remaining (its full leaf set is present), so a rerun submits only the
     # gaps. RECORDER is loaded once up front for the incomplete_cell_indices
     # walk (which reads the in-memory records).
+    from glow._extra.benchmark.config import filter_ana_list
     from glow._extra.benchmark.data import RECORDER
     from glow._extra.benchmark.results import incomplete_cell_indices
     RECORDER.load()
@@ -131,7 +144,15 @@ def drive_aws(names, aws_config, *, write_csv: bool = True,
     resolved: Dict[str, tuple] = {}
     for name in names:
         cells, kwargs_fnc_list, fnc = resolve_cells(name)
-        remaining[name] = incomplete_cell_indices(name)
+        if methods:
+            kwargs_fnc_list = filter_ana_list(kwargs_fnc_list, methods)
+            if not kwargs_fnc_list:
+                if verbose:
+                    print(f'[drive_aws] {name}: no {methods} recipe in its '
+                          f'leaf grid, skipped')
+                continue
+        remaining[name] = incomplete_cell_indices(
+            name, kwargs_fnc_list=kwargs_fnc_list)
         resolved[name] = (cells, kwargs_fnc_list, fnc)
         if verbose:
             n_done = len(cells) - len(remaining[name])

@@ -8,7 +8,8 @@ caches landing in both; that editing the config (dropping a cell) is reflected
 at once (the staleness fix a tag could not give); the CSV writer; and
 incomplete_cell_indices (the AWS driver's local-records skip -- empty when a
 cache is fully recorded, flagging an unrun cell down both the null and planted
-paths, and a cell missing one recipe's leaf).
+paths, a cell missing one recipe's leaf, and judging completeness against a
+narrowed leaf grid when one is passed).
 
 Run against a small monkeypatched CONFIG (the real grids run 15-1000 seeds); the
 recorder folder is redirected to a tmp dir and fresh seeds keep every cell a
@@ -165,6 +166,24 @@ def test_incomplete_flags_cell_missing_a_recipe(monkeypatch):
         config, 'CONFIG',
         {'c': ([_data_cell(seed)], [None], _ana_grid(), run_ana)})
     assert results.incomplete_cell_indices('c') == [0]
+
+
+def test_incomplete_judged_against_a_narrowed_grid(monkeypatch):
+    # the rerun-one-recipe skip: completeness is judged against the grid handed
+    # in, so a cell holding the narrowed grid's leaf reads complete though the
+    # cache's own grid asks for two -- the recipe already computed is not resub-
+    # mitted. The recipe that never ran is still flagged.
+    seed = random.randrange(2 ** 31)
+    ran, missing = [_ana_grid()[0]], [_ana_grid()[1]]
+    monkeypatch.setattr(config, 'CONFIG',
+                        {'c': ([_data_cell(seed)], [None], ran, run_ana)})
+    drive(*config.CONFIG['c'])
+    monkeypatch.setattr(
+        config, 'CONFIG',
+        {'c': ([_data_cell(seed)], [None], _ana_grid(), run_ana)})
+    assert results.incomplete_cell_indices('c') == [0]
+    assert results.incomplete_cell_indices('c', kwargs_fnc_list=ran) == []
+    assert results.incomplete_cell_indices('c', kwargs_fnc_list=missing) == [0]
 
 
 def test_incomplete_indexes_planted_cells(monkeypatch):

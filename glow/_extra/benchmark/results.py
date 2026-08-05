@@ -290,7 +290,7 @@ def get_cell_complete(kwargs_fnc_list, fnc):
     return cell_complete
 
 
-def incomplete_cell_indices(name: str) -> list:
+def incomplete_cell_indices(name: str, kwargs_fnc_list=None) -> list:
     """Return the planted cells of cache name not fully recorded on disk.
 
     The AWS driver's rerun skip: it submits only these indices, so a rerun
@@ -299,14 +299,23 @@ def incomplete_cell_indices(name: str) -> list:
     complete (and why it errs safe), and call RECORDER.load() first to fold in
     what other writers left on disk.
 
+    kwargs_fnc_list narrows the leaf grid completeness is judged against -- the
+    grid the caller will actually run (e.g. one method's recipes,
+    config.filter_ana_list), so a cell holding those leaves is skipped whatever
+    the cache's other recipes are missing.
+
     Args:
         name (str): a CONFIG cache name.
+        kwargs_fnc_list (list[dict] | None): the leaf grid to require; None
+            (default) is the cache's own full grid.
 
     Returns:
         list[int]: the planted-cell indices still to run (empty when every cell
             of the cache is already complete on disk).
     """
-    _, _, kwargs_fnc_list, fnc = config.CONFIG[name]
+    _, _, config_fnc_list, fnc = config.CONFIG[name]
+    if kwargs_fnc_list is None:
+        kwargs_fnc_list = config_fnc_list
     cell_complete = get_cell_complete(kwargs_fnc_list, fnc)
     return [i for i, (kwargs_data, kwargs_effect)
             in enumerate(planted_cells(name))

@@ -17,20 +17,23 @@ class _FakeCfg:
 def test_aws_flag_routes_to_drive_aws(monkeypatch):
     captured = {}
 
-    def fake_drive(names, cfg, *, write_csv, verbose, out_dir):
+    def fake_drive(names, cfg, *, write_csv, verbose, out_dir, methods):
         captured.update(names=names, cfg=cfg, write_csv=write_csv,
-                        out_dir=out_dir)
+                        out_dir=out_dir, methods=methods)
         return {'sweep_llr': 'path'}
 
     monkeypatch.setattr('glow._extra.aws.AWSConfig', _FakeCfg)
     monkeypatch.setattr('glow._extra.aws.drive_aws', fake_drive)
 
     out = cli.run(names=['sweep_llr'], aws=True, write_csv=False,
-                  verbose=False)
+                  verbose=False, methods=['VBA'])
     assert out == {'sweep_llr': 'path'}
     assert captured['names'] == ['sweep_llr']
     assert captured['cfg'] == 'CFG(None)'        # default per-user config
     assert captured['write_csv'] is False
+    # a per-method rerun rides through to the AWS driver, which narrows the
+    # shipped fnc grid with it (see glow._extra.aws.driver)
+    assert captured['methods'] == ['VBA']
 
 
 def test_aws_config_path_forwarded(monkeypatch):

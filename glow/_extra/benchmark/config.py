@@ -168,6 +168,48 @@ ana_kwargs_dict = {
 # enters the call or the cache key.
 RUN_ANA_LIST = [dict(ana=ana) for ana in ana_kwargs_dict.values()]
 
+
+def filter_ana_list(kwargs_fnc_list, labels) -> list:
+    """Keep the fnc-kwargs cells whose recipe is one of the named methods.
+
+    Narrows a cache's leaf grid to a subset of the analysis recipes, so a rerun
+    touches only those methods. This is what makes a per-method rerun cheap:
+    completeness is judged against the grid handed to the driver (see
+    results.get_cell_complete), so a cell whose named-method leaves are all
+    recorded is skipped, and the recipes left out are never called -- no
+    already-computed fit is recomputed just because a sibling recipe changed
+    (as one does whenever a recipe knob moves: a new knob is a new hash, hence
+    a missing leaf).
+
+    Cells are matched on the recipe repr (the address-free recipe id the read
+    path identifies a leaf by), not identity, so a rebuilt equal recipe matches.
+    A cell carrying no ana (a non-run_ana leaf grid -- segment / prune / ...)
+    never matches, so filtering such a cache yields an empty grid: it has no
+    per-method axis to select on.
+
+    Args:
+        kwargs_fnc_list (iterable[dict]): a leaf-fnc kwargs grid, e.g.
+            RUN_ANA_LIST.
+        labels (iterable[str]): ana_kwargs_dict keys (method names) to keep.
+
+    Returns:
+        list[dict]: the kept cells, in the input grid's order (empty when none
+            match).
+
+    Raises:
+        ValueError: a label is not an ana_kwargs_dict key (a typo would
+            otherwise silently select nothing).
+    """
+    labels = list(labels)
+    unknown = [label for label in labels if label not in ana_kwargs_dict]
+    if unknown:
+        raise ValueError(f'unknown method label(s): {unknown}; '
+                         f'known: {list(ana_kwargs_dict)}')
+    keep = {repr(ana_kwargs_dict[label]) for label in labels}
+    return [kwargs for kwargs in kwargs_fnc_list
+            if 'ana' in kwargs and repr(kwargs['ana']) in keep]
+
+
 # the segment cache's leaf grid: one run_segment call per Ward mode (Naive /
 # GLM Error / Focus). The mode rides in as cluster_mode; the method name is
 # str(mode), recovered from the record at read time.
