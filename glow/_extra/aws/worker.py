@@ -26,8 +26,9 @@ worker:
      everything else it needs locally, while a background thread ships each
      finished record up every minute;
   5. on a Spot reclaim (SIGTERM ~2 min ahead) tars its partial progress to the
-     checkpoint object; on clean completion drops the checkpoint and flushes
-     the uploader.
+     checkpoint object; on clean completion drops the checkpoint -- best
+     effort, since a failed drop costs one orphan object and must not fail a
+     cell whose records are already shipped -- and flushes the uploader.
 
 The worker pulls no shared cache: it runs one whole cell, so nothing another
 worker computed can help it, and it uploads only the records its cell produces
@@ -149,8 +150,14 @@ def main(manifest_uri: str) -> None:
         from glow._extra.benchmark.driver import _run_data_cell
         _run_data_cell(kwargs_data, [kwargs_effect], kwargs_fnc_list, fnc)
         # cell finished cleanly: its records are shipped, so the checkpoint is
-        # obsolete -- drop it rather than leave an orphan for the retry path
-        s3.delete_checkpoint(s3_client, bucket, ckpt_key)
+        # obsolete -- drop it rather than leave an orphan for the retry path.
+        # A failure here costs only that orphan, so it must not propagate: the
+        # cell's work is done and shipped, and raising would exit non-zero and
+        # hand Batch a finished cell to retry.
+        try:
+            s3.delete_checkpoint(s3_client, bucket, ckpt_key)
+        except Exception as exc:
+            print(f'[worker] checkpoint cleanup failed: {exc}', flush=True)
     finally:
         n = uploader.stop()
         print(f'[worker] final flush uploaded {n} file(s)', flush=True)
