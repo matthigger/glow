@@ -93,7 +93,7 @@ from .run import (run_ana, run_ana_time, run_inner_edge, run_min_size,
 # ---------- shared knobs ------------------------------------------------------
 SOURCES = ['wgn', 'hcp']
 
-N_SEED = 15
+N_SEED = 50
 N_SEED_NULL = 1000
 
 EFFECT_LLR_GRID = np.logspace(np.log10(0.003), np.log10(0.3), 11)
@@ -502,7 +502,6 @@ RUN_INNER_EDGE_LIST = [
 # / min_size offsets) and a modest crop / few seeds -- a correctness check, not
 # a figure, so it need not run at paper scale.
 RACE_MAXZ_SEED_OFFSET = 300_000
-RACE_MAXZ_N_SEED = 3
 RUN_RACE_MAXZ_LIST = [
     dict(cluster_mode=mode, n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER,
          n_perm_inner_race=N_PERM_INNER_RACE, p_keep_thresh=RACE_P_KEEP_THRESH)
@@ -667,7 +666,7 @@ CONFIG = {
     'race_maxz': (
         get_kwargs_data_list(
             seeds=range(RACE_MAXZ_SEED_OFFSET,
-                        RACE_MAXZ_SEED_OFFSET + RACE_MAXZ_N_SEED),
+                        RACE_MAXZ_SEED_OFFSET + N_SEED),
             crop_n_vox=CROP_N_VOX),
         get_kwargs_effect_list(),
         RUN_RACE_MAXZ_LIST, run_race_maxz),
