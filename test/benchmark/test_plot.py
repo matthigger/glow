@@ -444,6 +444,107 @@ def test_plot_inner_edge_writes_figure_and_json(tmp_path):
     assert js['threshold']['WGN']['GLOW'] == {'50': 5.0, '100': 5.5}
 
 
+# ---------------------------------------------------------------------------
+# max-z race retention (survivor race vs full cpu_perm)
+# ---------------------------------------------------------------------------
+
+def _race_curve(max_z_slow, max_z_race, reg_slow=None, reg_race=None) -> str:
+    """Serialize one run_race_maxz leaf's curve JSON (row 0 observed).
+
+    The regions default to agreeing on every outer perm, so a fixture only
+    spells out the arg-max regions when it plants a leader miss.
+    """
+    n = len(max_z_slow)
+    return json.dumps({'n_perm_inner': 1000, 'n_perm_inner_race': 15,
+                       'p_keep_thresh': 1e-6, 'min_vox': 1,
+                       'max_z_slow': [float(v) for v in max_z_slow],
+                       'max_z_race': [float(v) for v in max_z_race],
+                       'reg_slow': list(reg_slow or range(n)),
+                       'reg_race': list(reg_race or range(n))})
+
+
+def _race_row(cluster_mode, seed, curve, source='wgn') -> dict:
+    """Build one run_race_maxz provenance row (leaf + its data ancestor)."""
+    return {'run_race_maxz.in.cluster_mode': cluster_mode,
+            'run_race_maxz.out.curve': curve,
+            f'data_factory_{source}.in.seed': seed}
+
+
+# two fits: one the race reproduces exactly, one where its max-z drifts past
+# round-off on k=2 (same region) and displaces the leader on k=3.
+_RACE_RAW = pd.DataFrame([
+    _race_row('Focus', 0, _race_curve([10, 1, 2, 3], [10, 1, 2, 3])),
+    _race_row('GLM Error', 1,
+              _race_curve([5, 1, 2, 4], [5, 1, 2.5, 6],
+                          reg_slow=[0, 1, 2, 3], reg_race=[0, 1, 2, 9]),
+              source='hcp')])
+
+
+def test_tidy_race_maxz_empty():
+    assert plot.tidy_race_maxz(pd.DataFrame()).empty
+
+
+def test_tidy_race_maxz_pairs_and_source():
+    """One row per (fit, outer perm), carrying the diff and region agreement."""
+    df = plot.tidy_race_maxz(_RACE_RAW)
+
+    assert len(df) == 8
+    assert set(df['source']) == {'WGN', 'HCP'}
+    assert set(df['label']) == {'GLOW-Focus', 'GLOW-GLM'}
+    # the planted miss: race 2 above the full null, on a disagreeing region
+    miss = df[~df['same_reg']]
+    assert list(miss['k']) == [3]
+    assert miss['diff'].iloc[0] == pytest.approx(2.0)
+
+
+def test_summarize_race_maxz_counts_agreement_and_region():
+    """The summary counts the round-off agreements and the shared arg-maxes."""
+    s = plot.summarize_race_maxz(plot.tidy_race_maxz(_RACE_RAW))
+
+    # 8 pairs, 2 off by more than round-off (k=2 and the k=3 leader miss), of
+    # which only the miss changes the arg-max region
+    assert (s['n_pair'], s['n_fit']) == (8, 2)
+    assert (s['n_agree'], s['n_same_reg']) == (6, 7)
+    # both arms are kept: the check is over the segmentation objectives
+    assert s['per_arm']['WGN']['GLOW-Focus'] == {'n_pair': 4, 'n_agree': 4,
+                                                'n_same_reg': 4}
+    assert s['per_arm']['HCP']['GLOW-GLM'] == {'n_pair': 4, 'n_agree': 2,
+                                               'n_same_reg': 3}
+
+
+def test_summarize_race_maxz_tolerance_is_relative():
+    """A gap is judged against the magnitude, not on one absolute bar."""
+    # the same absolute gap (1e-3) on a max-z of 1e6 and of 1.0
+    raw = pd.DataFrame([
+        _race_row('Focus', 0, _race_curve([1e6, 1.0], [1e6 + 1e-3, 1.001]))])
+    s = plot.summarize_race_maxz(plot.tidy_race_maxz(raw))
+
+    assert (s['n_pair'], s['n_agree'], s['n_same_reg']) == (2, 1, 2)
+
+
+def test_summarize_race_maxz_empty():
+    assert plot.summarize_race_maxz(pd.DataFrame()) == {}
+    assert plot.format_race_maxz_summary({}) == ''
+
+
+def test_plot_race_maxz_writes_figure_json_and_text(tmp_path):
+    """The figure, the JSON, and the line the paper quotes all land."""
+    df = plot.tidy_race_maxz(_RACE_RAW)
+
+    plot.plot_race_maxz('race_maxz', df, tmp_path)
+    assert (tmp_path / 'race_maxz_retention.pdf').exists()
+
+    js = json.loads((tmp_path / 'race_maxz_retention.json').read_text())
+    assert js['tol'] == plot._RACE_MAXZ_TOL
+    assert js['retention']['n_same_reg'] == 7
+    assert js['retention']['per_arm']['HCP']['GLOW-GLM']['n_agree'] == 2
+
+    text = (tmp_path / 'race_maxz_retention.txt').read_text()
+    assert '8 max-z pairs (2 fits)' in text
+    assert '6 (75.000%) agree on max-z' in text
+    assert '7 (87.500%) take the max in the same region' in text
+
+
 # --- stat bake-off (stat cache) ------------------------------------------
 
 def _stat_counts(dice, size=100):
