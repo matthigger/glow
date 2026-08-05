@@ -27,6 +27,7 @@ still invalidates everything built from it.
 """
 
 import hashlib
+import inspect
 import json
 
 import numpy as np
@@ -206,6 +207,46 @@ class Recipe:
     def __repr__(self) -> str:
         return (f'Recipe(op={self.op!r}, kwargs={self.kwargs!r}, '
                 f'parents={self.parents!r})')
+
+
+def raw_fnc(fnc):
+    """Return the undecorated function under a memoised + recorded callable.
+
+    Peels joblib.Memory's .func then the recorder wrapper, so the signature and
+    qualname match what the recorder recorded under.
+    """
+    return inspect.unwrap(getattr(fnc, 'func', fnc))
+
+
+def recipe_for_call(fnc, kwargs, parents=(), ignore=()) -> Recipe:
+    """Return the recipe a recorded call to fnc(**kwargs) files under.
+
+    The caller-side twin of what the recorder computes at record time: bind
+    kwargs to the signature and apply defaults (so an omitted default keys the
+    same either way), then drop the non-declarative names. A parameter with no
+    default that kwargs omits -- the linked exp, its mask_target_list companion
+    -- stays absent, which is why the two agree.
+
+    Use it to name a cell's uid without building anything: a CONFIG cell's
+    kwargs are enough to say what its artifacts will be called.
+
+    Args:
+        fnc (Callable): the memoised + recorded op (or the raw function).
+        kwargs (dict): the call's declarative kwargs.
+        parents (iterable[str]): parent uids, order significant.
+        ignore (iterable[str]): parameter names to leave out of the recipe,
+            matching the decorator's ignore list.
+
+    Returns:
+        recipe (Recipe): the call's declared identity.
+    """
+    fnc = raw_fnc(fnc)
+    bound = inspect.signature(fnc).bind_partial(**kwargs)
+    bound.apply_defaults()
+    drop = set(ignore) | {'parent_uid'}
+    return Recipe(fnc.__qualname__,
+                  {k: v for k, v in bound.arguments.items() if k not in drop},
+                  parents)
 
 
 def seed_from_uid(uid: str, bits: int = 32) -> int:

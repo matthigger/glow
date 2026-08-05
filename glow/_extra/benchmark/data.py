@@ -26,6 +26,7 @@ from glow.experiment import Experiment, ExperimentImageOnly
 
 from . import hcp
 from .file import get_path_cache, get_path_records
+from .recipe import recipe_for_call, seed_from_uid
 from .recorder import Recorder
 
 # disk memoisation of the experiment builds, keyed on the build inputs, so a
@@ -170,39 +171,86 @@ def data_factory(source: str, **kwargs):
     Raises:
         ValueError: if source is neither 'wgn' nor 'hcp'.
     """
-    if source == 'wgn':
-        return data_factory_wgn(**kwargs)
-    if source == 'hcp':
-        return data_factory_hcp(**kwargs)
-    raise ValueError(f"source must be 'wgn' or 'hcp', got {source!r}")
+    if source not in DATA_FACTORY:
+        raise ValueError(f"source must be 'wgn' or 'hcp', got {source!r}")
+    return DATA_FACTORY[source](**kwargs)
 
 
-def _resolve_seed(exp, seed, seed_from_exp: bool) -> int:
-    """Resolve a placement seed from the seed XOR seed_from_exp pair.
+def _resolve_seed(exp, seed, seed_from_exp: bool, seed_from_parent: bool,
+                  parent_uid) -> int:
+    """Resolve a placement seed from exactly one of the three seed sources.
 
-    seed_from_exp derives the seed from joblib.hash(exp), so a fixed config
-    plants in a different but reproducible place in each experiment: the driver
-    shares one effect grid across every data cell, so a single fixed seed would
-    plant identically everywhere; hashing exp gives each data realization its
-    own placement without threading the data seed through the grid. The clean
-    exp is shared across effect_llr, so the placement is identical across
-    strengths and varies only across data realizations.
+    All three answer the same need: the driver shares one effect grid across
+    every data cell, so a single fixed seed would plant identically everywhere.
+    A derived seed gives each data realization its own placement, constant
+    across the effect_llr grid (which shares one clean exp).
+
+    seed_from_parent derives it from the parent's uid -- a declaration, so the
+    placement cannot drift with a BLAS kernel. seed_from_exp derives it from
+    joblib.hash(exp) instead, which ties the planted support to the clean exp's
+    bytes; it reproduces cells planted that way, so prefer seed_from_parent for
+    new work (see glow._extra.benchmark.recipe).
 
     Args:
         exp: the clean Experiment the effect is planted on.
-        seed (int | None): explicit placement seed; XOR seed_from_exp.
-        seed_from_exp (bool): derive the seed from a hash of exp; pass this
-            XOR seed.
+        seed (int | None): explicit placement seed.
+        seed_from_exp (bool): derive the seed from a hash of exp's bytes.
+        seed_from_parent (bool): derive the seed from parent_uid.
+        parent_uid (str | None): the clean exp's declared uid; required by
+            seed_from_parent.
 
     Returns:
         the resolved placement seed.
 
     Raises:
-        ValueError: if not exactly one of seed / seed_from_exp is given.
+        ValueError: unless exactly one source is given, or seed_from_parent
+            without a parent_uid.
     """
-    if (seed is not None) == seed_from_exp:
-        raise ValueError('pass exactly one of seed / seed_from_exp')
-    return int(joblib.hash(exp), 16) if seed_from_exp else seed
+    given = [seed is not None, bool(seed_from_exp), bool(seed_from_parent)]
+    if sum(given) != 1:
+        raise ValueError('pass exactly one of seed / seed_from_exp / '
+                         'seed_from_parent')
+    if seed_from_parent:
+        if not parent_uid:
+            raise ValueError('seed_from_parent needs a parent_uid')
+        return seed_from_uid(parent_uid)
+    if seed_from_exp:
+        return int(joblib.hash(exp), 16)
+    return seed
+
+
+# Each planting builder takes parent_uid as its first keyword-only parameter,
+# ahead of the defaulted ones: joblib's filter_args resolves an omitted default
+# by indexing from the end of the signature, so a required parameter after a
+# defaulted one makes every call raise (see the note in run.py).
+def data_recipe(kwargs_data):
+    """Return the recipe of one data cell, building nothing.
+
+    Args:
+        kwargs_data (dict): one data_factory cell, e.g. {'source': 'wgn', ...}.
+
+    Returns:
+        recipe (Recipe): the clean exp's declared identity; its uid is the
+            parent_uid every consumer of that exp is passed.
+    """
+    kwargs = {k: v for k, v in kwargs_data.items() if k != 'source'}
+    return recipe_for_call(DATA_FACTORY[kwargs_data['source']], kwargs)
+
+
+def effect_recipe(kwargs_effect, parent_uid: str):
+    """Return the recipe of one effect cell planted on a given clean exp.
+
+    Args:
+        kwargs_effect (dict): one effect_factory cell, e.g. {'kind': 'single',
+            ...}.
+        parent_uid (str): the clean exp's uid (data_recipe(...).uid).
+
+    Returns:
+        recipe (Recipe): the planted exp's declared identity.
+    """
+    kwargs = {k: v for k, v in kwargs_effect.items() if k != 'kind'}
+    return recipe_for_call(EFFECT_FACTORY[kwargs_effect.get('kind', 'single')],
+                           kwargs, parents=(parent_uid,))
 
 
 def effect_factory(exp, *, kind: str = 'single', **kwargs):
@@ -219,7 +267,8 @@ def effect_factory(exp, *, kind: str = 'single', **kwargs):
         exp: clean Experiment (a data_factory output) to add the effect(s) to.
         kind (str): 'single' (effect_factory_single) or 'split' (two adjacent
             effects, effect_factory_split).
-        **kwargs: forwarded to the selected builder.
+        **kwargs: forwarded to the selected builder, including the parent_uid
+            it requires (the clean exp's uid; see data_recipe).
 
     Returns:
         exp: the Experiment with the effect(s) added.
@@ -229,17 +278,17 @@ def effect_factory(exp, *, kind: str = 'single', **kwargs):
     Raises:
         ValueError: if kind is neither 'single' nor 'split'.
     """
-    if kind == 'single':
-        return effect_factory_single(exp, **kwargs)
-    if kind == 'split':
-        return effect_factory_split(exp, **kwargs)
-    raise ValueError(f"kind must be 'single' or 'split', got {kind!r}")
+    if kind not in EFFECT_FACTORY:
+        raise ValueError(f"kind must be 'single' or 'split', got {kind!r}")
+    return EFFECT_FACTORY[kind](exp, **kwargs)
 
 
-@MEMORY.cache
-@RECORDER(output_name_list=['exp', 'mask_target_list'])
-def effect_factory_single(exp, *, effect_llr, extenter_cls, n_vox_frac=0.1,
-                          seed: int = None, seed_from_exp: bool = False):
+@MEMORY.cache(ignore=['exp'])
+@RECORDER(output_name_list=['exp', 'mask_target_list'], ignore=['exp'])
+def effect_factory_single(exp, *, parent_uid: str, effect_llr, extenter_cls,
+                          n_vox_frac=0.1, seed: int = None,
+                          seed_from_exp: bool = False,
+                          seed_from_parent: bool = False):
     """Plant one synthetic effect on a clean Experiment.
 
     The support extenter is built here from extenter_cls + the resolved n_vox
@@ -258,9 +307,13 @@ def effect_factory_single(exp, *, effect_llr, extenter_cls, n_vox_frac=0.1,
         n_vox_frac (float): support size as a fraction of the analysis volume
             (num_vox = count of mask_idx > -1); resolved to
             round(n_vox_frac * num_vox).
-        seed (int): support placement seed; pass this XOR seed_from_exp.
-        seed_from_exp (bool): derive the seed from a hash of exp; pass this
-            XOR seed.
+        seed (int): support placement seed; pass exactly one seed source.
+        seed_from_exp (bool): derive the seed from a hash of exp's bytes.
+        seed_from_parent (bool): derive the seed from parent_uid (preferred;
+            see _resolve_seed).
+        parent_uid (str): the clean exp's declared uid. Required: exp is
+            ignored by the cache, so this is what distinguishes one clean
+            experiment's planting from another's.
 
     Returns:
         exp: the Experiment with the effect added.
@@ -268,9 +321,10 @@ def effect_factory_single(exp, *, effect_llr, extenter_cls, n_vox_frac=0.1,
             as a one-element list.
 
     Raises:
-        ValueError: if not exactly one of seed / seed_from_exp is given.
+        ValueError: unless exactly one seed source is given.
     """
-    seed = _resolve_seed(exp, seed, seed_from_exp)
+    seed = _resolve_seed(exp, seed, seed_from_exp, seed_from_parent,
+                         parent_uid)
     n_vox = round(n_vox_frac * int((exp.mask_idx > -1).sum()))
     extenter = extenter_cls(n_vox=n_vox, seed=seed)
     exp, mask = EffectSynthetic(
@@ -280,10 +334,12 @@ def effect_factory_single(exp, *, effect_llr, extenter_cls, n_vox_frac=0.1,
     return _with_canonical_y(exp), [mask]
 
 
-@MEMORY.cache
-@RECORDER(output_name_list=['exp', 'mask_target_list'])
-def effect_factory_split(exp, *, effect_llr, extenter_cls, n_vox_frac=0.1,
-                         angle, seed: int = None, seed_from_exp: bool = False):
+@MEMORY.cache(ignore=['exp'])
+@RECORDER(output_name_list=['exp', 'mask_target_list'], ignore=['exp'])
+def effect_factory_split(exp, *, parent_uid: str, effect_llr, extenter_cls,
+                         angle, n_vox_frac=0.1, seed: int = None,
+                         seed_from_exp: bool = False,
+                         seed_from_parent: bool = False):
     """Plant two adjacent equal-LLR effects at a controlled direction angle.
 
     The cleaving setup: an extenter_cls extent of n_vox voxels (n_vox_frac of
@@ -312,9 +368,13 @@ def effect_factory_split(exp, *, effect_llr, extenter_cls, n_vox_frac=0.1,
             analysis volume (split into halves); resolved to
             round(n_vox_frac * num_vox).
         angle (float): feature-direction angle between the two effects (deg).
-        seed (int): placement + direction seed; pass this XOR seed_from_exp.
-        seed_from_exp (bool): derive the seed from a hash of exp; pass this
-            XOR seed.
+        seed (int): placement + direction seed; pass exactly one seed source.
+        seed_from_exp (bool): derive the seed from a hash of exp's bytes.
+        seed_from_parent (bool): derive the seed from parent_uid (preferred;
+            see _resolve_seed).
+        parent_uid (str): the clean exp's declared uid. Required: exp is
+            ignored by the cache, so this is what distinguishes one clean
+            experiment's planting from another's.
 
     Returns:
         exp: the Experiment with both effects added.
@@ -322,9 +382,10 @@ def effect_factory_split(exp, *, effect_llr, extenter_cls, n_vox_frac=0.1,
             (mask0 | mask1 is the grown extent, the two disjoint).
 
     Raises:
-        ValueError: if not exactly one of seed / seed_from_exp is given.
+        ValueError: unless exactly one seed source is given.
     """
-    seed = _resolve_seed(exp, seed, seed_from_exp)
+    seed = _resolve_seed(exp, seed, seed_from_exp, seed_from_parent,
+                         parent_uid)
     n_vox = round(n_vox_frac * int((exp.mask_idx > -1).sum()))
     splitter = ExtenterSplit(base=extenter_cls(n_vox=n_vox, seed=seed))
     mask0, mask1 = splitter.fit(mask_idx=exp.mask_idx, y=exp.y)
@@ -336,3 +397,12 @@ def effect_factory_split(exp, *, effect_llr, extenter_cls, n_vox_frac=0.1,
     # canonicalise y's layout so the planted exp hashes stably (see
     # _with_canonical_y)
     return _with_canonical_y(exp), [mask0, mask1]
+
+
+# the dispatch tables data_factory / effect_factory select a builder from, and
+# the one place a source / kind name maps to its op -- data_recipe and
+# effect_recipe name a cell's uid off the same tables, so a reader and a runner
+# cannot disagree about which builder a cell means.
+DATA_FACTORY = {'wgn': data_factory_wgn, 'hcp': data_factory_hcp}
+EFFECT_FACTORY = {'single': effect_factory_single,
+                  'split': effect_factory_split}

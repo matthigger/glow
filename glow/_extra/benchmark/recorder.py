@@ -200,24 +200,26 @@ class Recorder:
                 "isinstance(value, link_types))")
 
     @staticmethod
-    def _args_hash(fnc, args, kwargs) -> str:
+    def _args_hash(fnc, args, kwargs, ignore=()) -> str:
         """Compute the args hash joblib keys a cached call by.
 
         filter_args (bind, apply defaults, drop ignored) then joblib.hash, so
         a record keys by the same id joblib caches under, without touching the
-        MemorizedFunc. ignore=[] matches MEMORY.cache and coerce_mmap=False its
-        mmap_mode=None. A bound method's receiver is included, so distinct
-        receivers hash distinctly.
+        MemorizedFunc. Pass the same ignore list given to MEMORY.cache, or the
+        two keys diverge; coerce_mmap=False matches its mmap_mode=None. A bound
+        method's receiver is included, so distinct receivers hash distinctly.
 
         Args:
             fnc: the function being hashed (its signature drives filter_args).
             args (tuple): positional call arguments.
             kwargs (dict): keyword call arguments.
+            ignore (iterable[str]): parameter names dropped before hashing,
+                matching MEMORY.cache's ignore list.
 
         Returns:
             the joblib args hash (hex digest), the on-disk cache-entry key.
         """
-        return joblib.hash(filter_args(fnc, [], args, kwargs))
+        return joblib.hash(filter_args(fnc, list(ignore), args, kwargs))
 
     def __call__(self, output_name=None, output_name_list=None,
                  recurse_out_list=None, ignore=()):
@@ -235,11 +237,13 @@ class Recorder:
                 tuple/list return; non-empty, no duplicates.
             recurse_out_list (tuple | list | None): output names to expand per
                 key-path; each must be a declared output. None recurses none.
-            ignore (tuple | list): parameter names to leave out of the recipe
-                kwargs -- the non-declarative companions (an array a caller
-                passes alongside the linked Experiment). Mirror the list given
-                to @MEMORY.cache. link_types inputs and parent_uid are always
-                excluded, so they need no entry here.
+            ignore (tuple | list): parameter names to drop from both the
+                record key and the recipe kwargs -- the non-declarative
+                arguments (the linked Experiment, an array companion, a label).
+                Must be the same list given to @MEMORY.cache: the key is
+                joblib's args hash, so filtering anything different would name
+                a cache entry that does not exist. link_types inputs and
+                parent_uid leave the recipe regardless.
 
         Returns:
             a decorator that wraps a function for recording.
@@ -385,7 +389,7 @@ class Recorder:
 
                 # key by joblib's args hash, matching the cache entry the same
                 # call writes
-                key = self._args_hash(fnc, args, kwargs)
+                key = self._args_hash(fnc, args, kwargs, ignore_names)
                 self._store(key, {
                     "hash": key,
                     "cache_key": key,

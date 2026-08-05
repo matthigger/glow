@@ -80,7 +80,8 @@ worker cannot reach the caller's bar.
 
 from tqdm import tqdm
 
-from .data import RECORDER, data_factory, effect_factory
+from .data import (RECORDER, data_factory, data_recipe, effect_factory,
+                   effect_recipe)
 
 
 def _run_data_cell(kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
@@ -105,18 +106,28 @@ def _run_data_cell(kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
     Returns:
         list[dict]: this cell's fnc scores, in (effect, fnc-kwargs) order.
     """
+    # the cell's uid chain, named from the kwargs before anything is built:
+    # each stage is told its parent's uid, so provenance is declared on the way
+    # down rather than rediscovered afterwards from array content hashes (see
+    # glow._extra.benchmark.recipe).
+    uid_data = data_recipe(kwargs_data).uid
     exp = data_factory(**kwargs_data)
     score_list = []
     for kwargs_effect in kwargs_effect_list:
         if kwargs_effect is None:
-            # null / FWER-calibration cell: no effect, empty target
+            # null / FWER-calibration cell: no effect, empty target, so the
+            # leaf hangs off the clean exp itself
             exp_eff, mask_target_list = exp, []
+            uid_parent = uid_data
         else:
             # effect_factory returns the realized supports as a list (one
             # entry for a single effect, two for a split), threaded as-is
-            exp_eff, mask_target_list = effect_factory(exp, **kwargs_effect)
+            exp_eff, mask_target_list = effect_factory(
+                exp, parent_uid=uid_data, **kwargs_effect)
+            uid_parent = effect_recipe(kwargs_effect, uid_data).uid
         for kwargs in kwargs_fnc_list:
-            score = fnc(exp_eff, mask_target_list=mask_target_list, **kwargs)
+            score = fnc(exp_eff, mask_target_list=mask_target_list,
+                        parent_uid=uid_parent, **kwargs)
             score_list.append(score)
             if bar is not None:
                 bar.update(1)

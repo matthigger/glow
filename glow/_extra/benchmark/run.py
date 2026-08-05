@@ -11,6 +11,14 @@ score, score inline. The method name (GLOW-Focus, VBA-TFCE-Wilks-z, ...) is not
 passed or recorded: it is recovered from the recipe at read time from config.py
 (see config.ana_kwargs_dict / benchmark.plot).
 
+Every leaf requires parent_uid, the declared uid of the Experiment it measures
+(glow._extra.benchmark.recipe): the driver names it from the cell's kwargs on
+the way down, and each leaf's own uid is built from it. It is what identifies
+the experiment, since exp itself is kept out of the key -- so a leaf's identity
+is the same on any machine, where the exp's bytes would not be. Two leaves
+given one parent_uid claim to measure the same experiment, so a caller must
+never reuse one across distinct experiments.
+
 A leaf may lean on a separately-memoised heavy intermediate rather than a
 driver stage: run_stat reads voxel_stat_walk (every MANCOVA stat for one exp)
 and run_prune reads glow_fit_for_prune (one GLOW fit's children / per-region
@@ -68,10 +76,32 @@ from .data import MEMORY, RECORDER
 from .score import (curve_json, score_effects, score_oracle_tree, score_prune,
                     size_max_z_curve)
 
+# Neither exp nor its mask_target_list companion is an identity: exp is named
+# by the parent_uid every leaf requires, and the masks are determined by that
+# same parent. Keeping both out of every cache key and recipe is what makes a
+# leaf's id portable -- and cheap, since a key no longer digests a (b, num_img,
+# num_vox) array (see glow._extra.benchmark.recipe).
+LEAF_IGNORE = ['exp', 'mask_target_list']
 
-@MEMORY.cache
-@RECORDER(output_name='score', recurse_out_list=['score'])
-def run_ana(exp: Experiment, ana: Analysis, mask_target_list):
+# The same list goes to @MEMORY.cache and @RECORDER: the recorder keys a record
+# by joblib's args hash, so it must filter exactly what joblib filters or the
+# record stops naming its own cache entry.
+TIMING_IGNORE = [*LEAF_IGNORE, 'label']
+
+# parent_uid is declared before every defaulted parameter below, not last where
+# a mandatory keyword would read more naturally: joblib's filter_args resolves
+# an omitted default by indexing its defaults list from the end of the
+# signature (arg_defaults[position - len(arg_names)]), which assumes the
+# defaulted parameters are a suffix. A required parameter after a defaulted one
+# makes that index run off the front and every call raise "Wrong number of
+# arguments".
+
+
+@MEMORY.cache(ignore=LEAF_IGNORE)
+@RECORDER(output_name='score', recurse_out_list=['score'],
+          ignore=LEAF_IGNORE)
+def run_ana(exp: Experiment, ana: Analysis, mask_target_list, *,
+            parent_uid: str):
     """Fit ana on exp and score it against the planted target(s).
 
     Calls ana.fit(exp) (every Analysis scales exp on the way in and returns
@@ -103,6 +133,7 @@ def run_ana(exp: Experiment, ana: Analysis, mask_target_list):
         mask_target_list (list): the planted effect supports, one (X, Y, Z)
             bool mask per EffectSynthetic (effect_factory's mask output);
             empty for the null / FWER-calibration path.
+        parent_uid (str): the exp's declared uid (see the module docstring).
 
     Returns:
         score (dict): the detection score (see .score.score_effects):
@@ -114,9 +145,11 @@ def run_ana(exp: Experiment, ana: Analysis, mask_target_list):
     return score_effects(ana, mask_target_list, mask_active=exp.mask_idx > -1)
 
 
-@MEMORY.cache
-@RECORDER(output_name='score', recurse_out_list=['score'])
-def run_segment(exp: Experiment, mask_target_list, cluster_mode):
+@MEMORY.cache(ignore=LEAF_IGNORE)
+@RECORDER(output_name='score', recurse_out_list=['score'],
+          ignore=LEAF_IGNORE)
+def run_segment(exp: Experiment, mask_target_list, cluster_mode, *,
+                parent_uid: str):
     """Segment exp in one Ward mode and score the oracle best-Dice region.
 
     The segmentation-quality leaf: build the Ward tree in cluster_mode and
@@ -131,6 +164,7 @@ def run_segment(exp: Experiment, mask_target_list, cluster_mode):
         exp (Experiment): the experiment to segment (raw or scaled).
         mask_target_list (list): planted (X, Y, Z) bool supports; their union
             is the target scored (empty -> all-background counts).
+        parent_uid (str): the exp's declared uid (see the module docstring).
         cluster_mode (ClusterMode | str): the Ward projection to segment with.
 
     Returns:
@@ -206,10 +240,10 @@ def _min_size_curves(exp, *, n_perm_fwer, n_perm_inner, min_vox_floor,
     return curve_json(curve_list)
 
 
-@MEMORY.cache
-@RECORDER(output_name='curve')
-def run_min_size(exp: Experiment, mask_target_list, *, n_perm_fwer,
-                 n_perm_inner, min_vox_floor=1,
+@MEMORY.cache(ignore=LEAF_IGNORE)
+@RECORDER(output_name='curve', ignore=LEAF_IGNORE)
+def run_min_size(exp: Experiment, mask_target_list, *, parent_uid: str,
+                 n_perm_fwer, n_perm_inner, min_vox_floor=1,
                  cluster_mode=ClusterMode.FOCUS):
     """Capture GLOW's per-perm (size -> max-z) staircases for a min_vox sweep.
 
@@ -226,6 +260,7 @@ def run_min_size(exp: Experiment, mask_target_list, *, n_perm_fwer,
         exp (Experiment): the experiment with the synthetic effect imposed.
         mask_target_list (list): planted supports; accepted for the uniform
             contract but unused (this leaf records curves, not a score).
+        parent_uid (str): the exp's declared uid (see the module docstring).
         n_perm_fwer (int): outer FL perms (n_perm_fwer + 1 curves, incl. k=0).
         n_perm_inner (int): inner FL draws per outer perm.
         min_vox_floor (int): smallest region size given a z; the sweep's lower
@@ -241,8 +276,8 @@ def run_min_size(exp: Experiment, mask_target_list, *, n_perm_fwer,
         min_vox_floor=min_vox_floor, cluster_mode=cluster_mode)
 
 
-@MEMORY.cache
-def voxel_stat_walk(exp, n_perm_fwer: int) -> dict:
+@MEMORY.cache(ignore=['exp'])
+def voxel_stat_walk(exp, n_perm_fwer: int, *, parent_uid: str) -> dict:
     """Compute the (n_perm+1, num_vox) matrix of every stat for one exp.
 
     The stat cache's shared heavy intermediate: one Freedman-Lane permutation
@@ -265,6 +300,8 @@ def voxel_stat_walk(exp, n_perm_fwer: int) -> dict:
 
     Args:
         exp (Experiment): the experiment to walk (scaled here).
+        parent_uid (str): the exp's declared uid (see the module docstring);
+            what identifies the walk, since exp is out of the key.
         n_perm_fwer (int): number of FWER permutations (the walk has n+1 rows,
             row 0 observed).
 
@@ -285,9 +322,11 @@ def voxel_stat_walk(exp, n_perm_fwer: int) -> dict:
     return out
 
 
-@MEMORY.cache
-@RECORDER(output_name='score', recurse_out_list=['score'])
-def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name):
+@MEMORY.cache(ignore=LEAF_IGNORE)
+@RECORDER(output_name='score', recurse_out_list=['score'],
+          ignore=LEAF_IGNORE)
+def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name, *,
+             parent_uid: str):
     """Fit one VBA / CET MANCOVA-stat variant (reading the shared walk), score.
 
     The stat bake-off's leaf: fit ana (a VBA / VBA-TFCE / CET recipe around one
@@ -302,6 +341,7 @@ def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name):
     Args:
         exp (Experiment): the experiment to analyze (raw or scaled).
         mask_target_list (list): the planted effect supports (score target).
+        parent_uid (str): the exp's declared uid (see the module docstring).
         ana (Analysis): an unfitted AnalysisVBA / AnalysisCET recipe; its
             n_perm_fwer sizes the walk and its get_stat picks the stat.
         stat_name (str): the stat_dict key picking which walk matrix to inject
@@ -310,15 +350,15 @@ def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name):
     Returns:
         score (dict): the detection score (see score.score_effects).
     """
-    walk = voxel_stat_walk(exp, ana.n_perm_fwer)
+    walk = voxel_stat_walk(exp, ana.n_perm_fwer, parent_uid=parent_uid)
     ana = copy.deepcopy(ana)
     ana.fit(exp, _stat=walk[stat_name].copy())
     return score_effects(ana, mask_target_list, mask_active=exp.mask_idx > -1)
 
 
-@MEMORY.cache
-def glow_fit_for_prune(exp, *, n_perm_fwer: int, n_perm_inner: int,
-                       alpha_fwer: float,
+@MEMORY.cache(ignore=['exp'])
+def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
+                       n_perm_inner: int, alpha_fwer: float,
                        cluster_mode=ClusterMode.FOCUS) -> tuple:
     """Fit GLOW once and return the pruning inputs (shared by the rules).
 
@@ -333,6 +373,8 @@ def glow_fit_for_prune(exp, *, n_perm_fwer: int, n_perm_inner: int,
 
     Args:
         exp (Experiment): the experiment to fit (raw or scaled).
+        parent_uid (str): the exp's declared uid (see the module docstring);
+            what identifies the fit, since exp is out of the key.
         n_perm_fwer (int): outer FWER permutations.
         n_perm_inner (int): inner FL draws per outer perm.
         alpha_fwer (float): FWER significance level (selects sig_reg_list).
@@ -352,10 +394,11 @@ def glow_fit_for_prune(exp, *, n_perm_fwer: int, n_perm_inner: int,
     return ana.children, llr, sig_reg_list
 
 
-@MEMORY.cache
-@RECORDER(output_name='score', recurse_out_list=['score'])
-def run_prune(exp: Experiment, mask_target_list, rule, *, n_perm_fwer: int,
-              n_perm_inner: int, alpha_fwer: float,
+@MEMORY.cache(ignore=LEAF_IGNORE)
+@RECORDER(output_name='score', recurse_out_list=['score'],
+          ignore=LEAF_IGNORE)
+def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
+              n_perm_fwer: int, n_perm_inner: int, alpha_fwer: float,
               cluster_mode=ClusterMode.FOCUS):
     """Score one pruning rule's selection on a shared GLOW fit.
 
@@ -373,6 +416,7 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, n_perm_fwer: int,
     Args:
         exp (Experiment): the experiment to analyze (raw or scaled).
         mask_target_list (list): the planted effect supports (score target).
+        parent_uid (str): the exp's declared uid (see the module docstring).
         rule (str): 'greedy', 'dp', or 'maxllr'.
         n_perm_fwer (int): outer FWER permutations (the shared fit's).
         n_perm_inner (int): inner FL draws per outer perm (the shared fit's).
@@ -387,8 +431,9 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, n_perm_fwer: int,
         ValueError: if rule is not 'greedy' / 'dp' / 'maxllr'.
     """
     children, llr, sig_reg_list = glow_fit_for_prune(
-        exp, n_perm_fwer=n_perm_fwer, n_perm_inner=n_perm_inner,
-        alpha_fwer=alpha_fwer, cluster_mode=cluster_mode)
+        exp, parent_uid=parent_uid, n_perm_fwer=n_perm_fwer,
+        n_perm_inner=n_perm_inner, alpha_fwer=alpha_fwer,
+        cluster_mode=cluster_mode)
 
     if rule == 'greedy':
         reg_out_list, _ = prune_greedy(sig_reg_list=sig_reg_list,
@@ -417,11 +462,12 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, n_perm_fwer: int,
 # is effect-independent).
 
 
-@MEMORY.cache(ignore=['label'])
-@RECORDER(output_name='num_vox')
-def run_perm_fwer(exp: Experiment, mask_target_list, *, n_perm_fwer: int,
-                  n_perm_inner: int, cluster_mode=ClusterMode.FOCUS,
-                  min_vox: int = 1, label=None) -> int:
+@MEMORY.cache(ignore=TIMING_IGNORE)
+@RECORDER(output_name='num_vox', ignore=TIMING_IGNORE)
+def run_perm_fwer(exp: Experiment, mask_target_list, *, parent_uid: str,
+                  n_perm_fwer: int, n_perm_inner: int,
+                  cluster_mode=ClusterMode.FOCUS, min_vox: int = 1,
+                  label=None) -> int:
     """Time GLOW's outer FWER loop for a fixed n_perm_inner (runtime leaf).
 
     The n_perm_fwer runtime sweep's leaf: run GLOW's outer loop by hand
@@ -433,6 +479,7 @@ def run_perm_fwer(exp: Experiment, mask_target_list, *, n_perm_fwer: int,
     Args:
         exp (Experiment): the experiment with the synthetic effect imposed.
         mask_target_list (list): planted supports; unused (uniform contract).
+        parent_uid (str): the exp's declared uid (see the module docstring).
         n_perm_fwer (int): outer FL perms (n_perm_fwer + 1 outer passes, incl.
             the observed k=0); the swept axis.
         n_perm_inner (int): inner FL draws per outer perm (held fixed).
@@ -454,11 +501,11 @@ def run_perm_fwer(exp: Experiment, mask_target_list, *, n_perm_fwer: int,
     return int(exp_s.y.shape[2])
 
 
-@MEMORY.cache(ignore=['label'])
-@RECORDER(output_name='num_vox')
-def run_perm_inner(exp: Experiment, mask_target_list, *, n_perm_inner: int,
-                   cluster_mode=ClusterMode.FOCUS, min_vox: int = 1,
-                   label=None) -> int:
+@MEMORY.cache(ignore=TIMING_IGNORE)
+@RECORDER(output_name='num_vox', ignore=TIMING_IGNORE)
+def run_perm_inner(exp: Experiment, mask_target_list, *, parent_uid: str,
+                   n_perm_inner: int, cluster_mode=ClusterMode.FOCUS,
+                   min_vox: int = 1, label=None) -> int:
     """Time one observed tree's inner Freedman-Lane null (runtime leaf).
 
     The n_perm_inner runtime sweep's leaf: cluster the observed (k=0) Ward tree
@@ -472,6 +519,7 @@ def run_perm_inner(exp: Experiment, mask_target_list, *, n_perm_inner: int,
     Args:
         exp (Experiment): the experiment with the synthetic effect imposed.
         mask_target_list (list): planted supports; unused (uniform contract).
+        parent_uid (str): the exp's declared uid (see the module docstring).
         n_perm_inner (int): inner FL draws over the observed tree; swept axis.
         cluster_mode (ClusterMode): Ward projection (Focus / GLM_ERROR).
         min_vox (int): regions smaller than this are left NaN.
@@ -489,10 +537,10 @@ def run_perm_inner(exp: Experiment, mask_target_list, *, n_perm_inner: int,
     return int(exp_s.y.shape[2])
 
 
-@MEMORY.cache(ignore=['label'])
-@RECORDER(output_name='num_vox')
-def run_segment_time(exp: Experiment, mask_target_list, cluster_mode,
-                     label=None) -> int:
+@MEMORY.cache(ignore=TIMING_IGNORE)
+@RECORDER(output_name='num_vox', ignore=TIMING_IGNORE)
+def run_segment_time(exp: Experiment, mask_target_list, cluster_mode, *,
+                     parent_uid: str, label=None) -> int:
     """Time Ward segmentation in one mode (runtime leaf, cluster only).
 
     The segmentation runtime sweep's leaf: scale exp and build its Ward tree in
@@ -505,6 +553,7 @@ def run_segment_time(exp: Experiment, mask_target_list, cluster_mode,
     Args:
         exp (Experiment): the experiment to segment (raw or scaled).
         mask_target_list (list): planted supports; unused (uniform contract).
+        parent_uid (str): the exp's declared uid (see the module docstring).
         cluster_mode (ClusterMode | str): the Ward projection to segment with.
         label (str): mode label recorded beside the timing; not a cache axis.
 
@@ -516,9 +565,10 @@ def run_segment_time(exp: Experiment, mask_target_list, cluster_mode,
     return int(exp_s.y.shape[2])
 
 
-@MEMORY.cache
-@RECORDER(output_name='num_vox')
-def run_ana_time(exp: Experiment, mask_target_list, ana: Analysis) -> int:
+@MEMORY.cache(ignore=LEAF_IGNORE)
+@RECORDER(output_name='num_vox', ignore=LEAF_IGNORE)
+def run_ana_time(exp: Experiment, mask_target_list, ana: Analysis, *,
+                 parent_uid: str) -> int:
     """Time one method's fit at full local parallelism (runtime leaf).
 
     The cross-method runtime sweep's leaf: fit ana on exp with n_jobs=-1 (all
@@ -539,6 +589,7 @@ def run_ana_time(exp: Experiment, mask_target_list, ana: Analysis) -> int:
         exp (Experiment): the experiment to analyze (raw or scaled; fit scales
             it idempotently).
         mask_target_list (list): planted supports; unused (uniform contract).
+        parent_uid (str): the exp's declared uid (see the module docstring).
         ana (Analysis): an unfitted analysis recipe (config knobs only).
 
     Returns:
@@ -671,10 +722,11 @@ def _inner_edge_curve(exp, *, cluster_mode, max_inner_perm: int,
                        'min_vox': int(min_vox)})
 
 
-@MEMORY.cache
-@RECORDER(output_name='curve')
-def run_inner_edge(exp: Experiment, mask_target_list, *, cluster_mode,
-                   max_inner_perm: int, n_perm_fwer: int, min_vox: int = 1):
+@MEMORY.cache(ignore=LEAF_IGNORE)
+@RECORDER(output_name='curve', ignore=LEAF_IGNORE)
+def run_inner_edge(exp: Experiment, mask_target_list, *, parent_uid: str,
+                   cluster_mode, max_inner_perm: int, n_perm_fwer: int,
+                   min_vox: int = 1):
     """Capture GLOW's max-z edge as a function of num_inner_perm (one sampling).
 
     Records, it does not score. Samples each outer perm's inner FL null once to
@@ -693,6 +745,7 @@ def run_inner_edge(exp: Experiment, mask_target_list, *, cluster_mode,
         exp (Experiment): the experiment with the synthetic effect imposed.
         mask_target_list (list): planted supports; accepted for the uniform
             contract but unused (this leaf records a curve, not a score).
+        parent_uid (str): the exp's declared uid (see the module docstring).
         cluster_mode (ClusterMode): Ward projection (Focus / GLM Error).
         max_inner_perm (int): inner FL draws sampled per outer perm; the deepest
             num_inner_perm the edge is reported at.
@@ -810,11 +863,12 @@ def _race_maxz_curve(exp, *, cluster_mode, n_perm_fwer: int, n_perm_inner: int,
                        'reg_slow': reg_slow, 'reg_race': reg_race})
 
 
-@MEMORY.cache
-@RECORDER(output_name='curve')
-def run_race_maxz(exp: Experiment, mask_target_list, *, cluster_mode,
-                  n_perm_fwer: int, n_perm_inner: int, n_perm_inner_race: int,
-                  p_keep_thresh: float, min_vox: int = 1):
+@MEMORY.cache(ignore=LEAF_IGNORE)
+@RECORDER(output_name='curve', ignore=LEAF_IGNORE)
+def run_race_maxz(exp: Experiment, mask_target_list, *, parent_uid: str,
+                  cluster_mode, n_perm_fwer: int, n_perm_inner: int,
+                  n_perm_inner_race: int, p_keep_thresh: float,
+                  min_vox: int = 1):
     """Capture GLOW's per-outer-perm max-z under the full inner null vs race.
 
     Records, it does not score. Per outer perm reduces the inner Freedman-Lane
@@ -836,6 +890,7 @@ def run_race_maxz(exp: Experiment, mask_target_list, *, cluster_mode,
         exp (Experiment): the experiment with the synthetic effect imposed.
         mask_target_list (list): planted supports; accepted for the uniform
             contract but unused (this leaf records a curve, not a score).
+        parent_uid (str): the exp's declared uid (see the module docstring).
         cluster_mode (ClusterMode): Ward projection (Focus / GLM Error).
         n_perm_fwer (int): outer FL perms feeding the max-z null.
         n_perm_inner (int): inner FL draws per outer perm (both paths).
