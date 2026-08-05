@@ -194,6 +194,28 @@ class TestProvenanceDAG:
 # run_segment: oracle best-Dice region of one Ward tree (segmentation quality)
 # ---------------------------------------------------------------------------
 
+class TestIdentityNeverHashesArrays:
+    """Naming a leaf's cache entry touches no array (the recipe invariant)."""
+
+    def test_cache_key_ignores_exp_and_masks(self, no_array_hashing):
+        # exp and mask_target_list are ignored, so the key is built from
+        # parent_uid + the recipe alone -- stand-ins prove neither is hashed
+        run_ana.check_call_in_cache(object(), AnalysisVBA(n_perm_fwer=6),
+                                    [np.ones((8, 8, 8), dtype=bool)],
+                                    parent_uid='u0')
+
+    def test_distinct_parents_give_distinct_keys(self):
+        # ...and the key still separates two parents, which is what makes
+        # ignoring exp safe
+        ana = AnalysisVBA(n_perm_fwer=6)
+        args_a = run_ana._get_args_id(object(), ana, [], parent_uid='u0')
+        args_b = run_ana._get_args_id(object(), ana, [], parent_uid='u1')
+        assert args_a != args_b
+        # while the ignored arguments cannot change it
+        assert args_a == run_ana._get_args_id(
+            object(), ana, [np.ones(4)], parent_uid='u0')
+
+
 class TestRunSegment:
     def _planted(self):
         """A clean WGN exp with one planted effect (see _planted_cell)."""

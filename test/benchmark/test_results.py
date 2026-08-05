@@ -221,3 +221,66 @@ def test_empty_cache_is_skipped(monkeypatch, tmp_path):
                                    [None], _ana_grid(), run_ana)})
     written = results.write_config_csvs(out_dir=tmp_path / 'out')
     assert written == {}
+
+
+def test_cell_leaf_uids_named_without_building_or_hashing(no_array_hashing):
+    # a cell's leaf ids come from its kwargs alone: nothing is built, no record
+    # is read, and no array is hashed (so the ids are the same on any machine)
+    uids = results.cell_leaf_uids(_data_cell(7), _effect_cell(), _ana_grid(),
+                                  run_ana)
+    assert len(uids) == len(_ana_grid())
+    assert len(set(uids)) == len(uids)
+    # the null path names the clean exp as the parent instead of a plant
+    assert results.cell_parent_uid(_data_cell(7), None) != \
+        results.cell_parent_uid(_data_cell(7), _effect_cell())
+
+
+# ---------------------------------------------------------------------------
+# a leaf computed on another machine still counts for its cell
+# ---------------------------------------------------------------------------
+
+def test_divergent_experiment_leaf_still_completes_its_cell(monkeypatch):
+    """The regression the declared uids exist for.
+
+    Two CPUs plant the same effect to different last bits, so the leaves an AWS
+    worker ships reference an Experiment whose content hash nothing local
+    produces. Simulated here by rewriting the recorded content hashes after the
+    fact: the legacy walk cannot link those leaves to the local ancestor, and
+    the cell must still read complete on its declared uids -- otherwise the
+    driver resubmits it on every sweep, forever.
+    """
+    seed = random.randrange(2 ** 31)
+    one = [dict(ana=AnalysisVBA(n_perm_fwer=6))]
+    monkeypatch.setattr(
+        config, 'CONFIG',
+        {'c': ([_data_cell(seed)], [_effect_cell()], one, run_ana)})
+    drive(*config.CONFIG['c'])
+    assert results.incomplete_cell_indices('c') == []
+
+    # Diverge the ancestors' produced-exp hashes, leaving what the leaves
+    # reference untouched: exactly the asymmetry a second CPU's planting
+    # creates, where the local record says it produced exp A and the shipped
+    # leaves consume exp B. The legacy join has nothing to match on.
+    for rec in data.RECORDER.records.values():
+        rec['output_hashes'] = {name: (h and f'divergent-{h}') for name, h
+                                in rec.get('output_hashes', {}).items()}
+
+    # the declared uids carry the cell...
+    assert results.config_leaf_keys('c')
+    assert results.incomplete_cell_indices('c') == []
+
+    # ...and they are what carries it: with the recipe fields stripped, only
+    # the legacy join is left and the finished cell reads unrun (the loop)
+    stripped = {key: {k: v for k, v in rec.items()
+                      if k not in ('uid', 'parents')}
+                for key, rec in data.RECORDER.records.items()}
+    monkeypatch.setattr(data.RECORDER, 'records', stripped)
+    assert results.incomplete_cell_indices('c') == [0]
+    monkeypatch.undo()
+
+    # and a genuinely unrun cell is still flagged (the test is not vacuous)
+    monkeypatch.setattr(
+        config, 'CONFIG',
+        {'c': ([_data_cell(seed), _data_cell(random.randrange(2 ** 31))],
+               [_effect_cell()], one, run_ana)})
+    assert results.incomplete_cell_indices('c') == [1]

@@ -218,7 +218,20 @@ def raw_fnc(fnc):
     return inspect.unwrap(getattr(fnc, 'func', fnc))
 
 
-def recipe_for_call(fnc, kwargs, parents=(), ignore=()) -> Recipe:
+def declared_ignore(fnc):
+    """Return the ignore list fnc was decorated with (() if undecorated).
+
+    The recorder stamps its list onto the wrapper, so a reader naming a call's
+    uid filters exactly what the writer filtered without being told twice.
+    """
+    for obj in (fnc, getattr(fnc, 'func', None)):
+        names = getattr(obj, '_recipe_ignore', None)
+        if names is not None:
+            return names
+    return ()
+
+
+def recipe_for_call(fnc, kwargs, parents=(), ignore=None) -> Recipe:
     """Return the recipe a recorded call to fnc(**kwargs) files under.
 
     The caller-side twin of what the recorder computes at record time: bind
@@ -234,12 +247,15 @@ def recipe_for_call(fnc, kwargs, parents=(), ignore=()) -> Recipe:
         fnc (Callable): the memoised + recorded op (or the raw function).
         kwargs (dict): the call's declarative kwargs.
         parents (iterable[str]): parent uids, order significant.
-        ignore (iterable[str]): parameter names to leave out of the recipe,
-            matching the decorator's ignore list.
+        ignore (iterable[str] | None): parameter names to leave out of the
+            recipe; None (default) reads the decorator's own list
+            (declared_ignore), which is what keeps a reader in step with it.
 
     Returns:
         recipe (Recipe): the call's declared identity.
     """
+    if ignore is None:
+        ignore = declared_ignore(fnc)
     fnc = raw_fnc(fnc)
     bound = inspect.signature(fnc).bind_partial(**kwargs)
     bound.apply_defaults()

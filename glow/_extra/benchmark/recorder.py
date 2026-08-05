@@ -25,11 +25,16 @@ fields, so a uid is never a guess. Pass ignore to keep a non-declarative
 parameter (an array companion) out of the recipe, mirroring the ignore list
 given to @MEMORY.cache.
 
-Provenance DAG: input_hashes/output_hashes hold joblib.hash of inputs/outputs
-whose type is in link_types (e.g. (Experiment,); narrow, so trivial values
-forge no edges). B depends on A when a B input hash equals an A output hash.
-flatten_to_df walks it to one row per leaf carrying its ancestors' fields, so
-a trial's setup, fit and score land in one row.
+Provenance DAG: an edge is declared -- B depends on A when B lists A's uid in
+parents -- so it holds on any machine. flatten_to_df walks it to one row per
+leaf carrying its ancestors' fields, so a trial's setup, fit and score land in
+one row.
+
+input_hashes/output_hashes are the legacy edge: joblib.hash of the inputs and
+outputs whose type is in link_types (e.g. (Experiment,)), matched by equality.
+They are still written, and read for any record lacking a recipe, so records
+written before the recipe fields stay linkable; being a hash of computed arrays
+they are not portable across machines, and they retire with those records.
 """
 
 import functools
@@ -404,6 +409,10 @@ class Recorder:
                 })
                 return out
 
+            # stamp the filter onto the wrapper so a reader naming this call's
+            # uid (recipe.recipe_for_call) drops exactly what was dropped here,
+            # without the list being repeated at the call site
+            wrapped._recipe_ignore = ignore_names
             return wrapped
 
         return decorator
@@ -464,9 +473,10 @@ class Recorder:
     def flatten_to_df(self, prefix_sep='.', leaf_keys=None):
         """Flatten the records into a leaf-per-row provenance DataFrame.
 
-        Reads records as a DAG: B depends on A when a B input_hash equals an A
-        output_hash (the same joblib.hash, so the edge holds across processes
-        and runs). Each leaf -- a record whose outputs feed no other -- becomes
+        Reads records as a DAG: B depends on A when B declares A's uid among
+        its parents. A record written before the recipe fields is walked by the
+        legacy edge instead (its input_hash equals an output_hash), so old and
+        new records flatten together. Each leaf -- one no other feeds -- is
         one row carrying its own fields plus every ancestor's. A benchmark leaf
         is usually a score step over the fit it scored and the setup that built
         the data, so one row holds a whole trial: swept axes (setup), recipe
@@ -499,10 +509,15 @@ class Recorder:
 
         records = self.records
 
-        # output content hash -> the record that produced it. A collision (two
-        # calls emitting an equal value) keeps the last writer; in practice the
-        # heavy domain objects are unique per trial. Hashes are always
-        # joblib.hash digests, so the is-not-None guards below are defensive.
+        # uid -> its record, for the declared edges below
+        key_of_uid = {rec['uid']: key for key, rec in records.items()
+                      if rec.get('uid')}
+
+        # output content hash -> the record that produced it, for the legacy
+        # edges. A collision (two calls emitting an equal value) keeps the last
+        # writer; in practice the heavy domain objects are unique per trial.
+        # Hashes are always joblib.hash digests, so the is-not-None guards
+        # below are defensive.
         producer_of = {}
         for key, rec in records.items():
             for h in rec.get('output_hashes', {}).values():
@@ -510,30 +525,45 @@ class Recorder:
                     producer_of[h] = key
 
         def parents_of(key):
-            """Records that produced this record's inputs (no self-edge)."""
-            ps = set()
-            for h in records[key].get('input_hashes', {}).values():
-                producer = producer_of.get(h)
-                if producer is not None and producer != key:
-                    ps.add(producer)
-            return ps
+            """Records that produced this record's inputs (no self-edge).
+
+            The union of both edge kinds: the declared parents (naming their
+            producers by uid, an edge that holds on any machine) and the legacy
+            content-hash join. Taking both keeps a mixed record set linked -- a
+            new leaf whose ancestor predates the recipe fields, or an old leaf
+            under a rebuilt ancestor -- and neither kind can invent an edge the
+            other would deny.
+            """
+            rec = records[key]
+            ps = {key_of_uid[uid] for uid in (rec.get('parents') or ())
+                  if uid in key_of_uid}
+            ps |= {producer_of[h]
+                   for h in rec.get('input_hashes', {}).values()
+                   if producer_of.get(h) is not None}
+            return ps - {key}
 
         if leaf_keys is not None:
             # caller-chosen leaves; skip keys with no record (stale/dead-end)
             leaves = [key for key in leaf_keys if key in records]
         else:
-            # input content hash -> records consuming it. A leaf's (hashable)
-            # outputs are consumed by no other record; the self-exclusion keeps
-            # an identity call a leaf, and a None hash never disqualifies one.
+            # a leaf feeds no other record by either edge kind: no record names
+            # its uid as a parent, and none of its output hashes is another's
+            # input (the self-exclusion keeps an identity call a leaf, and a
+            # None hash never disqualifies one). Both must hold, so a record
+            # consumed only through the legacy edge is not mistaken for a leaf.
+            claimed = {uid for rec in records.values()
+                       for uid in (rec.get('parents') or ())}
             consumers_of = defaultdict(set)
             for key, rec in records.items():
                 for h in rec.get('input_hashes', {}).values():
                     if h is not None:
                         consumers_of[h].add(key)
-            leaves = [key for key, rec in records.items()
-                      if all(not (consumers_of[h] - {key})
-                             for h in rec.get('output_hashes', {}).values()
-                             if h is not None)]
+            leaves = [
+                key for key, rec in records.items()
+                if rec.get('uid') not in claimed
+                and all(not (consumers_of[h] - {key})
+                        for h in rec.get('output_hashes', {}).values()
+                        if h is not None)]
 
         rows = []
         for leaf in leaves:
