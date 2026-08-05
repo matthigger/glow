@@ -99,7 +99,7 @@ def test_plot_cache_null_writes_calibration(tmp_path):
     rows = []
     for src in ('wgn', 'hcp'):
         mk = _wgn_row if src == 'wgn' else _hcp_row
-        for label in ('GLOW-Focus', 'VBA'):
+        for label in ('GLOW-GLM', 'GLOW-Focus', 'VBA'):
             for seed in range(3):
                 rows.append(mk(label, seed=seed, effect_llr=np.nan,
                                score=_score(0, 0, 1000, 0, min_pval=0.3)))
@@ -118,10 +118,10 @@ def test_plot_cache_sweep_writes_grid_and_diff_csv(tmp_path):
         mk = _wgn_row if src == 'wgn' else _hcp_row
         for llr in (0.01, 0.1):
             for seed in range(4):
-                # GLOW-Focus beats VBA, more so at the stronger effect
+                # GLOW-GLM beats VBA, more so at the stronger effect
                 tp_glow = int(40 + 400 * llr + rng.integers(0, 5))
                 tp_vba = int(20 + 200 * llr + rng.integers(0, 5))
-                rows.append(mk('GLOW-Focus', seed, llr,
+                rows.append(mk('GLOW-GLM', seed, llr,
                                _score(tp_glow, 10, 800, 100 - tp_glow)))
                 rows.append(mk('VBA', seed, llr,
                                _score(tp_vba, 30, 800, 100 - tp_vba)))
@@ -135,7 +135,7 @@ def test_plot_cache_sweep_writes_grid_and_diff_csv(tmp_path):
 
     # the diff CSV carries one block per GLOW variant vs the best alternative
     diff = pd.read_csv(tmp_path / 'sweep_llr_diff.csv')
-    assert set(diff['method'].unique()) == {'GLOW-Focus'}
+    assert set(diff['method'].unique()) == {'GLOW'}
     assert {'source', 'effect_llr', 'dice_diff', 'dice_win'}.issubset(
         diff.columns)
 
@@ -150,9 +150,9 @@ def test_plot_cache_splits_on_secondary_axis(tmp_path):
         for llr in (0.01, 0.1):
             for seed in range(4):
                 score = _score(50, 10, 800, 50)
-                rows.append(_wgn_row('GLOW-Focus', seed, llr, score, b=b))
+                rows.append(_wgn_row('GLOW-GLM', seed, llr, score, b=b))
                 rows.append(_wgn_row('VBA', seed, llr, score, b=b))
-                rows.append(_hcp_row('GLOW-Focus', seed, llr, score,
+                rows.append(_hcp_row('GLOW-GLM', seed, llr, score,
                                      hcp_feats=feats))
                 rows.append(_hcp_row('VBA', seed, llr, score, hcp_feats=feats))
     df = plot.tidy_run_ana(pd.DataFrame(rows))
@@ -172,10 +172,10 @@ def test_plot_cache_sweep_writes_threshold_csv(tmp_path):
         feats = ('od', 'fa', 'md')[:b]
         for llr in (0.01, 0.03, 0.1):
             for seed in range(3):
-                # both climb with llr; GLOW-Focus reaches 0.5 Dice the earlier
+                # both climb with llr; GLOW-GLM reaches 0.5 Dice the earlier
                 tp_glow = {0.01: 20, 0.03: 80, 0.1: 95}[llr]
                 tp_vba = {0.01: 5, 0.03: 20, 0.1: 90}[llr]
-                rows.append(_hcp_row('GLOW-Focus', seed, llr,
+                rows.append(_hcp_row('GLOW-GLM', seed, llr,
                                      _score(tp_glow, 10, 800, 100 - tp_glow),
                                      hcp_feats=feats))
                 rows.append(_hcp_row('VBA', seed, llr,
@@ -190,11 +190,12 @@ def test_plot_cache_sweep_writes_threshold_csv(tmp_path):
     assert {'source', 'method'}.issubset(thr.columns)
     assert {'b=1', 'b=2', 'b=3'}.issubset(thr.columns)
     bcols = ['b=1', 'b=2', 'b=3']
-    glow = thr[thr['method'] == 'GLOW-Focus'][bcols].to_numpy()
+    glow = thr[thr['method'] == 'GLOW'][bcols].to_numpy()
     vba = thr[thr['method'] == 'VBA'][bcols].to_numpy()
     # thresholds fall inside the swept 0.01..0.1 range
+    assert glow.size and vba.size
     assert ((glow > 0.01) & (glow < 0.1)).all()
-    # GLOW-Focus reaches Dice 0.5 at a weaker effect than VBA
+    # GLOW-GLM reaches Dice 0.5 at a weaker effect than VBA
     assert (glow < vba).all()
 
 
@@ -429,7 +430,7 @@ def test_tidy_inner_edge_hcp_and_glm_arm():
 def test_plot_inner_edge_writes_figure_and_json(tmp_path):
     mz = [[5.0, 5.5], [1.0, 2.0], [3.0, 4.0]]
     raw = pd.DataFrame([
-        {'run_inner_edge.in.cluster_mode': 'Focus',
+        {'run_inner_edge.in.cluster_mode': 'GLM Error',
          'run_inner_edge.out.curve': _edge_curve([50, 100], mz),
          'data_factory_wgn.in.seed': seed}
         for seed in range(2)])
@@ -440,7 +441,7 @@ def test_plot_inner_edge_writes_figure_and_json(tmp_path):
 
     js = json.loads((tmp_path / 'sweep_n_perm_inner_threshold.json').read_text())
     # the threshold JSON: seed-median FWER critical value per (source, arm, m)
-    assert js['threshold']['WGN']['GLOW-Focus'] == {'50': 5.0, '100': 5.5}
+    assert js['threshold']['WGN']['GLOW'] == {'50': 5.0, '100': 5.5}
 
 
 # --- stat bake-off (stat cache) ------------------------------------------
@@ -457,11 +458,12 @@ def _stat_counts(dice, size=100):
             'tn': 4 * size - tp - 2 * k}
 
 
-def _stat_rows(cell, dice_map=None, default=0.4, drop=()):
+def _stat_rows(cell, dice_map=None, default=0.4, drop=(), size=100):
     """One stat_cell_df row per RUN_STAT_LIST variant for a planted cell.
 
     dice_map overrides the Dice of specific (method, stat, zt) variants; the
-    rest take default. drop omits variants (a partial, interrupted cell).
+    rest take default. drop omits variants (a partial, interrupted cell). size
+    sets the Dice granularity (1 / size), so finer targets need a bigger size.
     """
     rows = []
     for spec in RUN_STAT_LIST:
@@ -471,7 +473,8 @@ def _stat_rows(cell, dice_map=None, default=0.4, drop=()):
             continue
         dice = (dice_map or {}).get((method, stat, zt), default)
         rows.append({'cell': cell, 'ana': repr(spec['ana']),
-                     'stat_name': spec['stat_name'], **_stat_counts(dice)})
+                     'stat_name': spec['stat_name'],
+                     **_stat_counts(dice, size=size)})
     return rows
 
 
@@ -492,8 +495,8 @@ def test_tidy_stat_recovers_variant_and_dice():
     assert df['dice'].eq(0.4).all()
 
 
-def test_stat_tables_balanced_panel_and_spread():
-    """Partial cells drop out; ties vs a decisive winner read per method."""
+def test_stat_tables_balanced_panel_and_range():
+    """Partial cells drop out; ties vs a decisive winner read per arm."""
     # two complete cells: VBA / CET all-tie, VBA-TFCE decided by wilks/pillai
     win = {(m, s, zt): 0.6 for m in ['VBA-TFCE'] for zt in ['raw', 'z']
            for s in ['wilks', 'pillai']}
@@ -502,16 +505,71 @@ def test_stat_tables_balanced_panel_and_spread():
     rows += _stat_rows('cellC', drop=[('CET', 'roys_root', 'z')])
     t1, t2, meta = plot.stat_tables(plot.tidy_stat(pd.DataFrame(rows)))
 
-    assert meta == {'n_cells': 2, 'n_dropped': 1}
-    assert t1.loc['VBA', 'pct_all_tie'] == 100.0
-    assert t1.loc['VBA', 'pct_decisive'] == 0.0
-    assert t1.loc['VBA-TFCE', 'pct_decisive'] == 100.0
-    assert t1.loc['VBA-TFCE', 'mean_spread'] == pytest.approx(0.2)
+    assert meta == {'n_cells': 2, 'n_dropped': 1, 'tol': 1e-9,
+                    'decisive': 0.01}
+    # both frames are indexed by (method, zt): the raw and z arms stay apart
+    assert list(t1.index) == list(t2.index)
+    assert list(t1.index) == [(m, zt) for m in plot._STAT_METHOD_ORDER
+                              for zt in ('raw', 'z')]
+    assert t1.loc[('VBA', 'raw'), 'pct_all_tie'] == 100.0
+    assert t1.loc[('VBA', 'z'), 'pct_decisive'] == 0.0
+    assert t1.loc[('VBA-TFCE', 'raw'), 'pct_decisive'] == 100.0
+    for col in ('mean_range', 'median_range', 'max_range'):
+        assert t1.loc[('VBA-TFCE', 'z'), col] == pytest.approx(0.2)
+        assert t1.loc[('VBA', 'raw'), col] == pytest.approx(0.0)
 
-    assert t2.loc['VBA-TFCE', 'wilks'] == pytest.approx(0.6)
-    assert t2.loc['VBA-TFCE', 'llr'] == pytest.approx(0.4)
-    assert t2.loc['VBA-TFCE', 'gap'] == pytest.approx(0.2)
-    assert t2.loc['VBA', 'gap'] == pytest.approx(0.0)
+    assert t2.loc[('VBA-TFCE', 'z'), 'wilks'] == pytest.approx(0.6)
+    assert t2.loc[('VBA-TFCE', 'raw'), 'llr'] == pytest.approx(0.4)
+    assert t2.loc[('VBA-TFCE', 'z'), 'gap'] == pytest.approx(0.2)
+    assert t2.loc[('VBA', 'raw'), 'gap'] == pytest.approx(0.0)
+
+
+def test_write_stat_tables_bolds_one_cell_even_when_near_tied(tmp_path):
+    """A method's one bold lands on its max, however close the rest print."""
+    # z-scored wilks wins; pillai trails by 0.002 and roys_root by 0.0004
+    # (which prints 0.600 too); the raw arm sits 0.1 below throughout
+    win = {('VBA-TFCE', 'wilks', 'z'): 0.6, ('VBA-TFCE', 'pillai', 'z'): 0.598,
+           ('VBA-TFCE', 'roys_root', 'z'): 0.5996,
+           ('VBA-TFCE', 'wilks', 'raw'): 0.5}
+    df = plot.tidy_stat(pd.DataFrame(
+        _stat_rows('cellA', dice_map=win, size=10000)))
+    plot.write_stat_tables('stat', df, tmp_path)
+
+    dice = (tmp_path / 'stat_dice.tex').read_text()
+    rows = [r.split(' & ') for r in _tex_body(dice)]
+    assert dice.count('\\textbf') == len(plot._STAT_METHOD_ORDER)
+    # the bold sits in the z-scored half on wilks -- the raw block runs columns
+    # 2-6, so z-scored wilks is column 8 -- and near-tied roys_root stays plain
+    tfce = next(c for c in rows if c[0] == 'VBA-TFCE')
+    assert tfce[7] == '\\textbf{0.600}'
+    assert '\\textbf{0.598}' not in dice and '\\textbf{0.500}' not in dice
+
+
+def test_stat_tables_max_range_is_the_worst_trial():
+    """max_range reports the worst single trial, not the average one."""
+    a = _stat_rows('cellA', dice_map={('CET', 'wilks', 'z'): 0.5})
+    b = _stat_rows('cellB', dice_map={('CET', 'wilks', 'z'): 0.9})
+    t1, _, _ = plot.stat_tables(plot.tidy_stat(pd.DataFrame(a + b)))
+
+    row = t1.loc[('CET', 'z')]
+    assert row['max_range'] == pytest.approx(0.5)
+    assert row['mean_range'] == pytest.approx(0.3)
+    assert row['median_range'] == pytest.approx(0.3)
+
+
+def test_stat_tables_keeps_zt_arms_apart():
+    """A stat winning only in the z arm does not bleed into the raw arm."""
+    # wilks wins for z-scored VBA-TFCE only; its raw arm ties everywhere
+    win = {('VBA-TFCE', 'wilks', 'z'): 0.9}
+    df = plot.tidy_stat(pd.DataFrame(_stat_rows('cellA', dice_map=win)))
+    t1, t2, _ = plot.stat_tables(df)
+
+    assert t2.loc[('VBA-TFCE', 'z'), 'wilks'] == pytest.approx(0.9)
+    assert t2.loc[('VBA-TFCE', 'raw'), 'wilks'] == pytest.approx(0.4)
+    assert t2.loc[('VBA-TFCE', 'z'), 'gap'] == pytest.approx(0.5)
+    assert t2.loc[('VBA-TFCE', 'raw'), 'gap'] == pytest.approx(0.0)
+    assert t1.loc[('VBA-TFCE', 'z'), 'pct_decisive'] == 100.0
+    assert t1.loc[('VBA-TFCE', 'raw'), 'pct_all_tie'] == 100.0
 
 
 def test_stat_tables_warns_on_unequal_stat_trials():
@@ -527,28 +585,52 @@ def test_stat_tables_warns_on_unequal_stat_trials():
         plot.stat_tables(df)
 
 
+def _tex_body(tex):
+    """The data rows of a written tabular, stripped, method rows only."""
+    return [ln.strip() for ln in tex.splitlines()
+            if ln.strip().split(' &')[0] in plot._STAT_METHOD_ORDER]
+
+
 def test_write_stat_tables_writes_bare_tabular(tmp_path):
-    """write_stat_tables emits bare booktabs tabulars (no float/caption/label)."""
+    """write_stat_tables emits two bare booktabs tabulars, one per table."""
     win = {(m, s, zt): 0.6 for m in ['VBA-TFCE'] for zt in ['raw', 'z']
            for s in ['wilks', 'pillai']}
     df = plot.tidy_stat(pd.DataFrame(
         _stat_rows('cellA', dice_map=win) + _stat_rows('cellB', dice_map=win)))
     plot.write_stat_tables('stat', df, tmp_path)
 
-    matters = (tmp_path / 'stat_matters.tex').read_text()
     dice = (tmp_path / 'stat_dice.tex').read_text()
-    # bare tabular: the paper owns the float, caption and label
-    for tex in (matters, dice):
-        assert '\\begin{tabular}' in tex and '\\toprule' in tex
+    matters = (tmp_path / 'stat_matters.tex').read_text()
+    # two narrow tabulars, one table each; the paper owns float/caption/label
+    for tex in (dice, matters):
+        assert tex.count('\\begin{tabular}') == 1
+        assert '\\toprule' in tex
         assert '\\begin{table}' not in tex
         assert '\\caption' not in tex and '\\label' not in tex
-    # Table 1 no longer carries a Trials column
-    assert 'Trials' not in matters
-    # the decisive winner is bolded; the tied-everywhere VBA row is not
+        assert 'Trials' not in tex
+    # the dice table glues a method's two arms into one banded, ruled row
+    assert '\\begin{tabular}{l|rrrrr|rrrrr}' in dice
+    assert '\\multicolumn{5}{c|}{raw}' in dice
+    assert '\\multicolumn{5}{c}{z-scored}' in dice
+    assert '\\cmidrule(lr){2-6} \\cmidrule(lr){7-11}' in dice
+    dice_rows = _tex_body(dice)
+    assert len(dice_rows) == len(plot._STAT_METHOD_ORDER)
+    assert all(r.count('&') == 10 for r in dice_rows)
+    # the matters table stays one row per arm, labelled with its scaling
+    matters_rows = _tex_body(matters)
+    assert len(matters_rows) == 2 * len(plot._STAT_METHOD_ORDER)
+    assert [r.split(' & ')[1] for r in matters_rows] == ['raw', 'z'] * 3
+    assert all(r.count('&') == 5 for r in matters_rows)
+    assert '\\cmidrule' not in matters
+    # one bold per method: its best (scaling, stat) cell of the ten
+    assert dice.count('\\textbf') == len(plot._STAT_METHOD_ORDER)
+    assert all(r.count('\\textbf') == 1 for r in dice_rows)
     assert '\\textbf{0.600}' in dice
-    vba_line = next(ln for ln in dice.splitlines()
-                    if ln.strip().startswith('VBA &'))
-    assert '\\textbf' not in vba_line
+    # sizing a win is the matters table's job, and max range is not in it
+    assert 'Gap' not in dice
+    assert 'Max range' not in matters
+    tfce_z = next(r for r in matters_rows if r.startswith('VBA-TFCE & z'))
+    assert tfce_z.endswith('0.2000 & 0.2000 \\\\')
 
 
 # ---------------------------------------------------------------------------
@@ -675,3 +757,42 @@ def test_plot_prune_writes_one_figure_per_mode(tmp_path):
     plot.plot_prune('prune', df, tmp_path)
     assert (tmp_path / 'prune_Focus.pdf').exists()
     assert (tmp_path / 'prune_GLM_Error.pdf').exists()
+
+
+# ---------------------------------------------------------------------------
+# Reported GLOW arm
+# ---------------------------------------------------------------------------
+
+def test_select_glow_arm_spares_mode_and_rule_labels():
+    """The filter drops the GLOW-Focus arm, not the Ward mode of that name.
+
+    The surviving arm is relabelled GLOW. segment labels by Ward mode
+    ('Focus') and prune by rule ('GLOW-greedy'), so neither family can be
+    caught by a filter keyed on the analysis arm.
+    """
+    df = pd.DataFrame({'label': ['GLOW-GLM', 'GLOW-Focus', 'Focus',
+                                 'GLOW-greedy', 'VBA']})
+    assert list(plot._select_glow_arm(df)['label']) == [
+        'GLOW', 'Focus', 'GLOW-greedy', 'VBA']
+
+
+def test_plot_cache_drops_focus_arm(tmp_path):
+    """A detection cache reports one arm, labelled GLOW, in figure + CSVs."""
+    rows = []
+    for llr in (0.01, 0.03, 0.1):
+        for seed in range(3):
+            tp = {0.01: 20, 0.03: 80, 0.1: 95}[llr]
+            for label in ('GLOW-GLM', 'GLOW-Focus', 'VBA'):
+                rows.append(_hcp_row(label, seed, llr,
+                                     _score(tp, 10, 800, 100 - tp)))
+    df = plot.tidy_run_ana(pd.DataFrame(rows))
+    # the arm is present in the tidy frame; only the plot layer drops it
+    assert 'GLOW-Focus' in set(df['label'])
+
+    plot.plot_cache('sweep_llr', df, tmp_path)
+    thr = pd.read_csv(tmp_path / 'sweep_llr_threshold.csv')
+    # neither raw arm label reaches the output; the reported arm reads GLOW
+    assert not {'GLOW-Focus', 'GLOW-GLM'} & set(thr['method'])
+    assert 'GLOW' in set(thr['method'])
+    diff = pd.read_csv(tmp_path / 'sweep_llr_diff.csv')
+    assert set(diff['method'].unique()) == {'GLOW'}

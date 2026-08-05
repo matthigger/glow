@@ -1,5 +1,52 @@
 import numpy as np
+import pytest
+
 from glow.analysis.prune import prune_greedy, prune_dp, dp_antichain
+from glow.graph import SCGraph
+
+
+def _region_size(children, num_vox: int):
+    """Voxel count per region index (a leaf 1, a node its children's sum).
+
+    Args:
+        children (np.array): (num_internal, 2) Ward child-index pairs
+        num_vox (int): leaf count
+
+    Returns:
+        size (np.array): (num_reg,) int voxels per region
+    """
+    size = np.zeros(num_vox + children.shape[0], dtype=int)
+    size[:num_vox] = 1
+    for i, (c0, c1) in enumerate(children):
+        size[num_vox + i] = size[c0] + size[c1]
+    return size
+
+
+def _cover_frac(reg_idx_list, sig_reg_list, children, num_vox: int):
+    """Share of each region's voxels its nearest significant descendants cover.
+
+    prune_dp weighs a region against the antichain of its nearest significant
+    descendants (the short-circuited SCGraph it runs over), not against its two
+    Ward children, and those descendants tile the region only when the share is
+    1. Below 1 the shortfall is sub-threshold voxels that no selection of
+    significant regions can claim, which is what makes blooming the region
+    worth more than the parts.
+
+    Args:
+        reg_idx_list (list): the regions to measure (a rule's output)
+        sig_reg_list (list): int regions declared significant (via FWER)
+        children (np.array): (num_internal, 2) Ward child-index pairs
+        num_vox (int): leaf count
+
+    Returns:
+        list[float]: one share per region, in reg_idx_list order; 0.0 for a
+            region with no significant descendant (already minimal)
+    """
+    size = _region_size(children, num_vox)
+    subgraph = SCGraph.from_children(children, num_leaf=num_vox,
+                                     subset=sig_reg_list)
+    return [sum(size[k] for k in subgraph.children.get(reg, [])) / size[reg]
+            for reg in reg_idx_list]
 
 
 def _make_tree_8():
@@ -111,6 +158,33 @@ class TestPruneGreedy:
 class TestPruneDp:
     """Test DP antichain pruning."""
 
+    def test_never_blooms_a_region_its_significant_parts_partition(self):
+        """A region the significant regions tile is never output.
+
+        Region LLR is subadditive under a Ward merge -- the fixture's
+        llr[12] = 8 is below llr[8] + llr[9] = 9 -- so when both halves are
+        themselves significant, splitting scores higher and the parent loses.
+        Drop one half from the significant set and the comparison changes: the
+        parent beats its only selectable part (8 > 5) and blooms, carrying the
+        sub-threshold voxels of 9 that nothing else can claim. Greedy, ranking
+        by raw LLR alone, does output the tiled parent.
+        """
+        children = _make_tree_8()
+        llr = _make_llr_8()
+
+        tiled, _ = prune_dp([8, 9, 12], children, llr)
+        assert tiled == [8, 9]
+        assert _cover_frac(tiled, [8, 9, 12], children, 8) == [0.0, 0.0]
+
+        partial, _ = prune_dp([8, 12], children, llr)
+        assert partial == [12]
+        # region 8 is 2 of region 12's 4 voxels: a tiling would read 1.0
+        assert _cover_frac(partial, [8, 12], children, 8) == [0.5]
+
+        greedy_out, _ = prune_greedy([8, 9, 12], children, llr)
+        assert greedy_out == [12]
+        assert _cover_frac(greedy_out, [8, 9, 12], children, 8) == [1.0]
+
     def test_empty_sig_list(self):
         children = _make_tree_8()
         llr = _make_llr_8()
@@ -210,3 +284,114 @@ class TestDpAntichain:
         assert selected == []
 
 
+
+
+# ---------------------------------------------------------------------------
+# Empirical: the same invariant on real GLOW fits
+# ---------------------------------------------------------------------------
+# The synthetic case above fixes the LLRs by hand. These fit GLOW on planted
+# data and check every region prune_dp outputs against the significant set it
+# pruned, so the invariant is confirmed on trees and significance the analysis
+# actually produced. Slow (a real permutation test per fit); the HCP case is
+# skipped where the reference dataset is absent.
+
+_CROP_N_VOX = 5_000
+_N_PERM_FWER = 100
+_N_PERM_INNER = 250
+_EFFECT_LLR = 0.03
+
+
+def _plant(exp_img, seed: int):
+    """Crop an image-only experiment to a sphere and plant one effect."""
+    from glow._extra.benchmark.data import _sample_x_and_crop
+    from glow.effect import EffectSynthetic, ExtenterMinVar, ExtenterSphere
+
+    # the benchmark's data_factory / effect_factory are memoised and recorded;
+    # these call the builders underneath so the test writes no cache or records
+    exp = _sample_x_and_crop(
+        exp_img, a=1, contrast=None, has_bias=True, seed=seed,
+        extenter=ExtenterSphere(n_vox=_CROP_N_VOX, connected=True,
+                                contiguous=True, seed=seed))
+    n_vox = round(0.1 * int((exp.mask_idx > -1).sum()))
+    exp, _ = EffectSynthetic(
+        extenter=ExtenterMinVar(n_vox=n_vox, seed=seed),
+        effect_llr=_EFFECT_LLR).fit(exp)
+    return exp
+
+
+def _dp_cover(exp, cluster_mode):
+    """Fit GLOW, prune by DP, and return (n_sig, selected, cover fractions)."""
+    from glow.analysis import AnalysisGLOW
+
+    ana = AnalysisGLOW(n_perm_fwer=_N_PERM_FWER, n_perm_inner=_N_PERM_INNER,
+                       alpha_fwer=0.05, cluster_mode=cluster_mode).fit(exp)
+    sig = np.where(ana.pval <= ana.alpha_fwer)[0].tolist()
+    if not sig:
+        return 0, [], []
+    # the rules rank by raw LLR, NaN / inf zeroed (glow_fit_for_prune)
+    llr = np.nan_to_num(ana.llr.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
+    num_vox = len(llr) - ana.children.shape[0]
+    selected, _ = prune_dp(sig_reg_list=sig, children=ana.children, stat=llr)
+    cover = _cover_frac(selected, sig, ana.children, num_vox)
+    return len(sig), selected, cover
+
+
+def _assert_no_tiled_selection(exp_img, source: str):
+    """Assert no DP selection is tiled by significant regions, both Ward modes.
+
+    Also asserts the check is not vacuous: the fits must produce significant
+    regions, and at least one selection must have a significant descendant (a
+    bloom) -- the only case where a tiling could arise. Prints the per-fit
+    tally (pytest -s to see it), the cover fractions being the measurement:
+    how close the significant parts come to tiling a region that was output
+    whole.
+    """
+    from glow.analysis.cluster import ClusterMode
+
+    n_bloom = 0
+    n_sel = 0
+    worst = 0.0
+    for seed in (0, 1):
+        exp = _plant(exp_img, seed)
+        for mode in (ClusterMode.FOCUS, ClusterMode.GLM_ERROR):
+            n_sig, selected, cover = _dp_cover(exp, mode)
+            for reg, frac in zip(selected, cover):
+                assert frac < 1.0, (
+                    f'{source} seed={seed} {mode}: region {reg} is tiled by '
+                    f'significant regions (cover {frac:.4f}) yet prune_dp '
+                    f'output it whole ({n_sig} significant regions)')
+            n_bloom += sum(frac > 0 for frac in cover)
+            n_sel += len(selected)
+            worst = max([worst, *cover])
+            print(f'{source} seed={seed} {str(mode):>9}: {n_sig:5d} '
+                  f'significant, {len(selected):4d} output, '
+                  f'{sum(frac > 0 for frac in cover):4d} bloomed over '
+                  f'significant parts, max cover '
+                  f'{max(cover, default=0.0):.4f}')
+    print(f'{source}: {n_sel} regions output, {n_bloom} bloomed over '
+          f'significant parts, none tiled (max cover {worst:.4f})')
+    assert n_bloom, (
+        f'{source}: no selection had a significant descendant -- the check '
+        f'never saw a bloom, so it proves nothing')
+
+
+@pytest.mark.slow
+def test_dp_never_outputs_a_tiled_region_wgn():
+    """No prune_dp output is tiled by significant regions, on WGN fits."""
+    from glow.experiment import ExperimentImageOnly
+
+    side = round(_CROP_N_VOX ** (1 / 3)) + 1
+    exp_img = ExperimentImageOnly.from_gauss(shape=(side,) * 3, b=1,
+                                             num_img=100, seed=0)
+    _assert_no_tiled_selection(exp_img, 'WGN')
+
+
+@pytest.mark.slow
+def test_dp_never_outputs_a_tiled_region_hcp():
+    """No prune_dp output is tiled by significant regions, on HCP fits."""
+    from glow._extra.benchmark import hcp
+
+    if not hcp.is_present():
+        pytest.skip('HCP reference dataset not present '
+                    '(see glow._extra.benchmark.hcp)')
+    _assert_no_tiled_selection(hcp.build_exp_img_from_bundle(('fa',)), 'HCP')
