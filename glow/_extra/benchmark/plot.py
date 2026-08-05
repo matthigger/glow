@@ -16,10 +16,19 @@ what actually varies in the cache (no config spec): an all-null effect grid
 is the FWER calibration path, else the first of effect_llr / b / num_img /
 effect_perc that varies is swept.
 
-Each cache then gets either a faceted FWER calibration curve (null) or one
-stacked detection figure: an HCP block over a WGN block, each a 2 x 3 grid
+Every figure outside the segment / prune families reports one GLOW arm, the
+GLM-Error clustering, labelled plainly GLOW: the Focus arm is dropped and the
+survivor relabelled at the plot layer (_select_glow_arm), not in the caches or
+records.
+
+Each cache then gets either a GLOW-only FWER calibration row (null) -- a single
+row of source x GLOW arm cells (HCP / WGN x GLOW),
+each the nominal-alpha vs empirical-rejection-rate curve with a
+Clopper-Pearson 95% band on 0..1 -- or one stacked detection figure: an HCP
+block over a WGN block,
+each a 2 x 3 grid
 whose top row is the per-method mean score + central 95% percentile band and
-whose bottom row is the GLOW-GLM head-to-head diff, over the dice / sens /
+whose bottom row is the GLOW head-to-head diff, over the dice / sens /
 ppv columns. Alongside it a discovery-threshold table (write_threshold_table)
 records, per method, the absolute effect strength at which its mean Dice first
 reaches 0.5 -- rows the methods, a column per b.
@@ -67,6 +76,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from scipy.stats import beta
 
 import glow._extra.benchmark
 from glow.analysis.cluster import ClusterMode
@@ -90,10 +100,11 @@ def _hls_hex(h: float, l: float = _L, s: float = _S) -> str:
 
 
 COLOR_ANALYSIS = {
-    # teal (180 deg)
+    # teal (180 deg) -- the Focus arm, which no figure reports (_ARMS_SKIP)
     'GLOW-Focus': _hls_hex(0/4 + _H),
-    # darker teal
+    # darker teal, the reported arm under both its recipe and figure label
     'GLOW-GLM':   _hls_hex(0/4 + _H, l=_L * 0.6),
+    'GLOW':       _hls_hex(0/4 + _H, l=_L * 0.6),
     # purple (270 deg)
     'VBA-TFCE':   _hls_hex(1/4 + _H),
     # coral (0 deg)
@@ -113,12 +124,42 @@ _LABEL_OF_ANA = {repr(ana): label for label, ana in ana_kwargs_dict.items()}
 # ('Focus' / 'GLM Error'); no label is stored (see run.run_inner_edge / config).
 _ARM_OF_MODE = {str(mode): label for label, mode in RUNTIME_GLOW_MODES}
 
+# One GLOW arm is reported, the GLM-Error clustering, and the figures call it
+# plainly GLOW: the Focus arm is dropped (_ARMS_SKIP) and the survivor
+# relabelled (_ARM_LABEL), so the arm choice does not have to be re-argued on
+# each panel. Both arms stay in the caches and the records -- Focus is a real
+# recipe, and the segment / prune families exist to compare the two
+# clusterings. Those families label by Ward mode (Focus / GLM Error) and prune
+# rule (GLOW-greedy / GLOW-dp) rather than by analysis arm, so neither the drop
+# nor the relabel reaches them.
+_ARMS_SKIP = ('GLOW-Focus',)
+_ARM_LABEL = {'GLOW-GLM': 'GLOW'}
+
+
+def _select_glow_arm(df):
+    """Drop the unreported GLOW arm and label the reported one GLOW.
+
+    Args:
+        df: a tidy frame from any family; needs a label column to filter on
+
+    Returns:
+        the frame without its _ARMS_SKIP rows, its GLOW-GLM rows relabelled
+        GLOW (_ARM_LABEL); unchanged when empty or unlabelled (the segment /
+        prune frames label by mode / rule).
+    """
+    if df.empty or 'label' not in df.columns:
+        return df
+    df = df[~df['label'].isin(_ARMS_SKIP)]
+    return df.assign(label=df['label'].replace(_ARM_LABEL))
+
 # stat bake-off vocabulary. The method (VBA / VBA-TFCE / CET) and the raw/z arm
 # are recovered from the recorded recipe -- its class and tfce_flag / z_flag --
 # the same way _LABEL_OF_ANA recovers a run_ana method; the stat is the recorded
 # stat_name. stat_dict order (llr..roys_root) fixes the column order (= the
 # get_run_stat_list build order, so an interrupted cell drops the last stats).
 _STAT_METHOD_ORDER = ['VBA', 'VBA-TFCE', 'CET']
+_ZT_ORDER = ['raw', 'z']
+_ZT_PRETTY = {'raw': 'raw', 'z': 'z-scored'}
 _STAT_ORDER = list(stat_dict)
 _STAT_PRETTY = {'llr': 'LLR', 'wilks': 'Wilks', 'pillai': 'Pillai',
                 'hotel_tr': 'Hotelling', 'roys_root': 'Roy'}
@@ -197,8 +238,12 @@ _METRIC_TITLES = {
     'spec': 'Specificity',
 }
 
+# effect_llr is the size-normalized effect strength the factory plants -- the
+# per-voxel LLR contribution, so a planted region's observed LLR is
+# ~ effect_llr * |r| (glow.effect.impose.compute_offset). The axis is labelled
+# in that quantity, LLR / |r|, not the bare region LLR.
 _X_PARAM_LABELS = {
-    'effect_llr': 'Effect LLR',
+    'effect_llr': 'LLR / |r|',
     'effect_perc': 'Effect Size (% of Volume)',
     'num_img': 'Number of Subjects',
     'b': 'Number of Imaging Features',
@@ -370,84 +415,132 @@ def _split_by_secondary(label: str, df, x: str):
 # FWER calibration (null caches)
 # ---------------------------------------------------------------------------
 
-def plot_calibration(df, alpha_max: float = 0.20, n_pts: int = 200,
-                     title: str = None, ax=None) -> None:
-    """Plot FWER calibration curve: nominal alpha vs empirical rejection rate.
+def _binom_ci(n0, n: int, conf: float = 0.95):
+    """Clopper-Pearson exact confidence interval for a binomial proportion.
 
-    Each method (label) gets its own curve; the diagonal is the reference.
+    The exact interval (Clopper & Pearson 1934) for the success probability p
+    given n0 successes in n trials, from the Beta-quantile identity: lo is the
+    (1-conf)/2 quantile of Beta(n0, n-n0+1), hi the (1+conf)/2 quantile of
+    Beta(n0+1, n-n0). The degenerate ends (n0 = 0, n0 = n) clamp to 0 and 1,
+    where the Beta quantile is undefined.
 
     Args:
-        df: tidy results frame; requires a min_pval column (smallest
-            FWER-corrected region p-value per trial)
+        n0 (np.array): (k,) successes, each 0..n
+        n (int): trials
+        conf (float): confidence level
+
+    Returns:
+        (lo, hi) (np.array, np.array): (k,) elementwise lower / upper bounds
+    """
+    n0 = np.asarray(n0, dtype=float)
+    a = 1 - conf
+    lo = beta.ppf(a / 2, n0, n - n0 + 1)
+    hi = beta.ppf(1 - a / 2, n0 + 1, n - n0)
+    lo = np.where(n0 <= 0, 0.0, lo)
+    hi = np.where(n0 >= n, 1.0, hi)
+    return lo, hi
+
+
+def plot_calibration(pvals, color, *, alpha_max: float = 1.0, n_pts: int = 200,
+                     conf: float = 0.95, ax=None) -> None:
+    """Plot one method's FWER calibration curve with a binomial CI band.
+
+    The empirical rejection rate -- the fraction of null trials whose smallest
+    FWER-corrected region p-value falls at or below the nominal alpha --
+    against nominal alpha, with the y=x ideal for reference. Rather than a
+    single-alpha error bar, two lines trace the Clopper-Pearson 95% confidence
+    interval for the true rejection probability p at each nominal alpha, given
+    n0 of n null trials rejected there (_binom_ci); a well-calibrated method's
+    curve tracks the diagonal and its band brackets it.
+
+    Args:
+        pvals (np.array): (n,) per-trial smallest FWER-corrected p-value for
+            one (source, method) cell
+        color: the method's curve / band colour
         alpha_max (float): right edge of the nominal-alpha axis
         n_pts (int): number of nominal-alpha sample points
-        title (str): plot title, or None for the default
+        conf (float): confidence level for the CI band
         ax: matplotlib Axes to draw into; None makes its own square figure
     """
-    if 'min_pval' not in df.columns:
-        print('  (no min_pval column — skipping calibration plot)')
-        return
-
-    df2 = df.copy()
-    df2['min_pval'] = pd.to_numeric(df2['min_pval'], errors='coerce')
-    df2 = df2.dropna(subset=['min_pval'])
-    if df2.empty:
-        return
-
-    labels_sorted = sorted(df2['label'].dropna().unique().tolist())
-    color_map = get_cmap_dict(labels_sorted)
-
-    alphas = np.linspace(0, alpha_max, n_pts)
-
     owns_fig = ax is None
     if owns_fig:
-        _, ax = plt.subplots(figsize=(5, 5))
+        _, ax = plt.subplots(figsize=(4, 4))
+
     ax.plot([0, alpha_max], [0, alpha_max], ls='--', color='grey', lw=1,
-            label='ideal')
+            label='ideal', zorder=1)
 
-    for label in labels_sorted:
-        pvals = df2.loc[df2['label'] == label, 'min_pval'].values
-        n = len(pvals)
-        if n == 0:
-            continue
-        rates = np.array([(pvals <= a).mean() for a in alphas])
+    pvals = np.asarray(pvals, dtype=float)
+    pvals = pvals[np.isfinite(pvals)]
+    n = pvals.size
+    if n:
+        alphas = np.linspace(0, alpha_max, n_pts)
+        n0 = (pvals[None, :] <= alphas[:, None]).sum(axis=1)
+        rate = n0 / n
+        lo, hi = _binom_ci(n0, n, conf=conf)
+        ax.plot(alphas, rate, lw=2.5, color=color, zorder=3)
+        # the CI as two lines (not an error bar): the interval for the true
+        # rejection probability at each nominal alpha, faintly filled between
+        ax.plot(alphas, lo, lw=1, color=color, alpha=0.7, zorder=2,
+                label=f'{int(conf * 100)}% CI')
+        ax.plot(alphas, hi, lw=1, color=color, alpha=0.7, zorder=2)
+        ax.fill_between(alphas, lo, hi, color=color, alpha=0.12, zorder=0)
 
-        ax.plot(alphas, rates, lw=2.5, color=color_map[label], label=label)
-
-        # binomial 95% CI at nominal alpha = 0.05
-        a05 = 0.05
-        r05 = (pvals <= a05).mean()
-        se = np.sqrt(r05 * (1 - r05) / n) if n > 1 else 0
-        ax.errorbar(a05, r05, yerr=1.96 * se, fmt='o', ms=5,
-                    color=color_map[label], capsize=3)
-
-    ax.set_xlabel('nominal $\\alpha$')
-    ax.set_ylabel('empirical rejection rate')
-    ax.set_title(title if title else 'FWER Calibration (Null)')
-    ax.legend(frameon=False)
     ax.set_xlim(0, alpha_max)
-    ax.set_ylim(0, alpha_max)
+    ax.set_ylim(0, 1)
     ax.set_aspect('equal')
     ax.grid(True, alpha=0.3)
     if owns_fig:
         plt.tight_layout()
 
 
+# The null calibration figure shows only GLOW (the paper's FWER claim is about
+# GLOW); the voxel-wise methods are dropped, and the Focus arm before that
+# (_ARMS_SKIP / _select_glow_arm). Left-to-right column order.
+_CALIB_METHODS = ('GLOW',)
+
+
 def _plot_calibration_faceted(label: str, df, out,
                               facet: str = 'source') -> None:
-    """Lay out one FWER-calibration axes per facet value, side by side.
+    """Lay out the GLOW-only FWER calibration as a single source x arm row.
+
+    One full row of source x GLOW-arm cells, source-major; every method
+    outside _CALIB_METHODS is dropped (the voxel-wise arms; the Focus arm goes
+    earlier, in _select_glow_arm). Each cell is one (source, arm) calibration
+    curve with its Clopper-Pearson 95% band (plot_calibration), both axes on
+    0..1, titled 'arm (source)'.
 
     Args:
-        label (str): cache name; used in titles and the output filename
+        label (str): cache name; used in the output filename
         df: the null cache's tidy results (needs min_pval, label, facet)
         out (pathlib.Path): directory the figure is written into
-        facet (str): categorical column to split across axes
+        facet (str): categorical source column crossed with the GLOW arm
     """
-    sources = sorted(df[facet].dropna().unique().tolist())
-    fig, axes = plt.subplots(1, len(sources), figsize=(5 * len(sources), 5),
+    df = df.copy()
+    df['min_pval'] = pd.to_numeric(df['min_pval'], errors='coerce')
+    df = df.dropna(subset=['min_pval'])
+
+    have_src = set(df[facet].dropna().unique())
+    have_lab = set(df['label'].dropna().unique())
+    sources = [s for s in _SOURCE_ORDER if s in have_src]
+    methods = [m for m in _CALIB_METHODS if m in have_lab]
+    if not sources or not methods:
+        print(f'  (no GLOW null rows for {label} — skipping calibration)')
+        return
+
+    palette = get_cmap_dict(methods)
+    cells = [(src, method) for src in sources for method in methods]
+    fig, axes = plt.subplots(1, len(cells), figsize=(4 * len(cells), 4),
                              squeeze=False)
-    for ax, src in zip(axes[0], sources):
-        plot_calibration(df[df[facet] == src], title=f'{label} — {src}', ax=ax)
+    for k, (src, method) in enumerate(cells):
+        ax = axes[0, k]
+        pvals = df.loc[(df[facet] == src) & (df['label'] == method),
+                       'min_pval'].values
+        plot_calibration(pvals, palette[method], ax=ax)
+        ax.set_title(f'{method} ({src})')
+        ax.set_xlabel('nominal $\\alpha$')
+        if k == 0:
+            ax.set_ylabel('empirical rejection rate')
+    axes[0, 0].legend(frameon=False, fontsize=8, loc='lower right')
     fig.tight_layout()
     path = out / f'{label}_calibration.pdf'
     fig.savefig(path, bbox_inches='tight')
@@ -487,12 +580,12 @@ def _draw_metric_band(ax, df, x: str, metric: str, palette: dict, *,
                         color=palette[label], alpha=0.15)
 
 
-def _draw_diff(ax, df, x: str, metric: str, *, one_label: str = 'GLOW-GLM',
+def _draw_diff(ax, df, x: str, metric: str, *, one_label: str = 'GLOW',
                hue: str = 'label', alpha: float = .5) -> list:
     """Draw one_label minus the best non-GLOW method into ax; return CSV rows.
 
     The head-to-head panel: the per-trial advantage of one_label (default
-    GLOW-GLM) over the best competing method -- the largest metric among the
+    GLOW) over the best competing method -- the largest metric among the
     non-GLOW labels (VBA / VBA-TFCE / CET) at the same (seed, x). A thin line
     per seed plus a bold mean make the win / loss against the field legible;
     the zero line is break-even. Only one_label's line is drawn, but the
@@ -566,14 +659,14 @@ _SOURCE_ORDER = ('HCP', 'WGN')
 
 
 def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
-                     one_label: str = 'GLOW-GLM', ci: int = 95,
+                     one_label: str = 'GLOW', ci: int = 95,
                      thresh_metric: str = 'dice', level: float = 0.5) -> None:
     """Plot the stacked per-source detection figure: two rows per source.
 
     One SubFigure per source (its banner the source name), stacked HCP over
     WGN; within each a 2 x len(metrics) grid whose top row is the mean score +
     central ci% percentile band per method (_draw_metric_band) and whose bottom
-    row is one_label (GLOW-GLM) minus the best non-GLOW alternative
+    row is one_label (GLOW) minus the best non-GLOW alternative
     (_draw_diff), with the metrics (dice / sens / ppv) across the columns. A
     dashed line marks the threshold level on the thresh_metric (Dice) panel,
     where the discovery thresholds (write_threshold_table, plotted once per
@@ -583,7 +676,7 @@ def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
     variant; see _write_diff_csv).
 
     Args:
-        label (str): cache name; the output filename stem and figure title
+        label (str): cache name; the output filename stem
         df: the cache's tidy_run_ana results (needs source / label / seed / x /
             the metric columns)
         x (str): the swept x-axis column
@@ -612,7 +705,6 @@ def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
 
     fig = plt.figure(figsize=(4.2 * ncols, 4.6 * len(sources)),
                      layout='constrained')
-    fig.suptitle(label, fontsize=13)
     subfigs = np.atleast_1d(fig.subfigures(len(sources), 1))
 
     diff_rows = []
@@ -732,11 +824,13 @@ def _crossing(x_vals, y_vals, level: float):
 def _order_threshold_rows(wide):
     """Sort a threshold table by source order, then canonical method order.
 
-    Methods follow the config catalogue order (the two GLOW arms first, then
-    the voxel-wise methods; see config.ana_kwargs_dict); a label outside the
-    catalogue sorts last. Sources follow _SOURCE_ORDER (HCP over WGN).
+    Methods follow the config catalogue order under their figure labels (GLOW
+    first, then the voxel-wise methods; see config.ana_kwargs_dict and
+    _ARM_LABEL); a label outside the catalogue sorts last. Sources follow
+    _SOURCE_ORDER (HCP over WGN).
     """
-    m_rank = {m: i for i, m in enumerate(ana_kwargs_dict)}
+    m_rank = {_ARM_LABEL.get(m, m): i
+              for i, m in enumerate(ana_kwargs_dict)}
     s_rank = {s: i for i, s in enumerate(_SOURCE_ORDER)}
     keyed = wide.assign(
         _s=wide['source'].map(lambda s: s_rank.get(s, len(s_rank))),
@@ -757,11 +851,12 @@ def threshold_table(df, *, x: str, metric: str = 'dice', level: float = 0.5):
     1945, with Dice > 0.7 the usual "good overlap" line (Zijdenbos 1994), so
     level is a parameter.
 
-    Each entry is the raw threshold, not a ratio: for x = effect_llr, the LLR
-    at which the method reaches level Dice, read directly. A structural axis
-    that varies alongside x (b in the llr sweep) becomes the columns, so each b
-    gets its own threshold column; with none varying the single column is named
-    by x. A method whose mean curve never reaches level within the swept range,
+    Each entry is the raw threshold, not a ratio: for x = effect_llr, the
+    size-normalized LLR / |r| at which the method reaches level Dice, read
+    directly off the swept axis. A structural axis that varies alongside x (b
+    in the llr sweep) becomes the columns, so each b gets its own threshold
+    column; with none varying the single column is named by x. A method whose
+    mean curve never reaches level within the swept range,
     or already sits at/above it at the weakest x, has no finite crossing -- its
     cell is nan, the reason in the returned status ('above' / 'below').
 
@@ -824,11 +919,11 @@ def write_threshold_table(label: str, df, *, x: str, out, metric: str = 'dice',
     """Write and print the absolute discovery-threshold table.
 
     Rows are the methods (the GLOW arms first), the columns the varying
-    secondary axis (b in the llr sweep); each cell is the effect_llr at which
-    that method's mean Dice first reaches level (threshold_table). Printed once
-    per source and written to {label}_threshold.csv. A censored cell prints as
-    < the weakest tested effect (already above level there) or > the strongest
-    (never reaches it).
+    secondary axis (b in the llr sweep); each cell is the effect_llr (the
+    size-normalized LLR / |r|) at which that method's mean Dice first reaches
+    level (threshold_table). Printed once per source and written to
+    {label}_threshold.csv. A censored cell prints as < the weakest tested
+    effect (already above level there) or > the strongest (never reaches it).
 
     Args:
         label (str): cache name; used in the output filename
@@ -924,24 +1019,32 @@ def _stat_balanced(df):
 
 
 def stat_tables(df, tol: float = 1e-9, decisive: float = 0.01):
-    """Build the two stat-comparison tables from a tidy_stat frame.
+    """Build the two stat-comparison frames from a tidy_stat frame.
 
     Restricts to the balanced panel (_stat_balanced), then per (cell, method,
-    zt) group of the five stats takes the Dice spread (max - min). Table 1
-    summarises per method how often the stat choice matters; Table 2 gives mean
-    Dice per stat with the best-worst gap. Both read the same panel, so their
-    per-method trial counts agree.
+    zt) group of the five stats takes the Dice range (max - min). Both frames
+    are indexed by (method, zt) -- the raw and z-scored arms are separate
+    methods, not two draws of one, and z-scoring interacts with the stat
+    (it lifts TFCE far more than it lifts VBA / CET), so pooling them would
+    average a good arm with a bad one. t1 summarises how often the stat choice
+    matters; t2 gives mean Dice per stat with the best-worst gap. Both read the
+    same panel, so their trial counts agree and their rows line up (one paper
+    table each -- see write_stat_tables).
 
     Args:
         df: a tidy_stat frame.
-        tol (float): Dice spread at / below which the five stats count as tied.
-        decisive (float): Dice spread above which a trial counts as decisive.
+        tol (float): Dice range at / below which the five stats count as tied.
+        decisive (float): Dice range above which the stat choice counts as
+            decisive on that trial -- best vs worst stat moves Dice by more
+            than this, so a reader picking the wrong one pays for it.
 
     Returns:
-        (t1, t2, meta): t1 indexed by method (pct_all_tie, pct_decisive,
-            mean_spread, median_spread); t2 indexed by method (one column per
-            stat in _STAT_ORDER, plus gap); meta holds n_cells and n_dropped
-            (partial cells excluded from the panel).
+        (t1, t2, meta): t1 indexed by (method, zt) with pct_all_tie,
+            pct_decisive, mean_range, median_range, max_range; t2 indexed by
+            (method, zt) with one column per stat in _STAT_ORDER, plus gap;
+            meta is
+            {n_cells, n_dropped, tol, decisive} -- the panel size, the partial
+            cells excluded from it, and the two thresholds t1 was cut at.
     """
     kept, n_cells, n_drop = _stat_balanced(df)
 
@@ -955,21 +1058,26 @@ def stat_tables(df, tol: float = 1e-9, decisive: float = 0.01):
                       f'{per_stat.to_dict()} -- the balanced panel should give '
                       'every stat the same count; means are not comparable.')
 
+    rows = pd.MultiIndex.from_product([_STAT_METHOD_ORDER, _ZT_ORDER],
+                                      names=['method', 'zt'])
     g = kept.groupby(['cell', 'method', 'zt'])['dice']
-    spread = (g.max() - g.min()).rename('spread').reset_index()
-    t1 = spread.groupby('method').agg(
-        pct_all_tie=('spread', lambda s: 100 * (s <= tol).mean()),
-        pct_decisive=('spread', lambda s: 100 * (s > decisive).mean()),
-        mean_spread=('spread', 'mean'),
-        median_spread=('spread', 'median'),
-    ).reindex(_STAT_METHOD_ORDER)
-    t2 = (kept.groupby(['method', 'stat'])['dice'].mean()
-          .unstack()[_STAT_ORDER].reindex(_STAT_METHOD_ORDER))
+    rng = (g.max() - g.min()).rename('range').reset_index()
+    t1 = rng.groupby(['method', 'zt']).agg(
+        pct_all_tie=('range', lambda s: 100 * (s <= tol).mean()),
+        pct_decisive=('range', lambda s: 100 * (s > decisive).mean()),
+        mean_range=('range', 'mean'),
+        median_range=('range', 'median'),
+        max_range=('range', 'max'),
+    ).reindex(rows)
+    t2 = (kept.groupby(['method', 'zt', 'stat'])['dice'].mean()
+          .unstack()[_STAT_ORDER].reindex(rows))
     t2['gap'] = t2.max(axis=1) - t2.min(axis=1)
-    return t1, t2, {'n_cells': n_cells, 'n_dropped': n_drop}
+    return t1, t2, {'n_cells': n_cells, 'n_dropped': n_drop, 'tol': tol,
+                    'decisive': decisive}
 
 
-def _latex_table(path, colspec: str, header: list, rows: list) -> None:
+def _latex_table(path, colspec: str, header: list, rows: list,
+                 group_header: list = None, note: list = None) -> None:
     """Write one booktabs tabular fragment for \\input into the paper.
 
     Just the tabular (no table float, caption or label) so the paper owns the
@@ -981,10 +1089,31 @@ def _latex_table(path, colspec: str, header: list, rows: list) -> None:
         colspec (str): the tabular column spec (e.g. 'lrrrr').
         header (list): already-escaped column titles.
         rows (list): each an already-escaped list of cell strings.
+        group_header (list): optional (title, span, align) triples banding the
+            header columns into a \\multicolumn row above it; spans must cover
+            every column. align is that cell's own column spec ('c', 'c|'), so
+            the caller keeps whatever vertical rules colspec draws. A titled
+            group also gets a \\cmidrule(lr); an empty title just spans.
+        note (list): optional lines emitted as LaTeX comments above the
+            tabular, to pin down how the numbers were computed without
+            printing anything into the paper.
     """
-    lines = ['% requires \\usepackage{booktabs}; \\input inside a table env',
-             f'\\begin{{tabular}}{{{colspec}}}', '  \\toprule',
-             '  ' + ' & '.join(header) + r' \\', '  \\midrule']
+    lines = ['% requires \\usepackage{booktabs}; \\input inside a table env']
+    lines += [f'% {n}' for n in note or []]
+    lines += [f'\\begin{{tabular}}{{{colspec}}}', '  \\toprule']
+    if group_header:
+        spans = sum(span for _, span, _ in group_header)
+        if spans != len(header):
+            raise ValueError(f'group_header spans {spans} columns, header has '
+                             f'{len(header)}')
+        cells, rules, col = [], [], 1
+        for title, span, align in group_header:
+            cells.append(f'\\multicolumn{{{span}}}{{{align}}}{{{title}}}')
+            if title:
+                rules.append(f'\\cmidrule(lr){{{col}-{col + span - 1}}}')
+            col += span
+        lines += ['  ' + ' & '.join(cells) + r' \\', '  ' + ' '.join(rules)]
+    lines += ['  ' + ' & '.join(header) + r' \\', '  \\midrule']
     lines += ['  ' + ' & '.join(r) + r' \\' for r in rows]
     lines += ['  \\bottomrule', '\\end{tabular}', '']
     path.write_text('\n'.join(lines))
@@ -993,14 +1122,19 @@ def _latex_table(path, colspec: str, header: list, rows: list) -> None:
 def write_stat_tables(label: str, df, out) -> None:
     """Write (and print) the stat bake-off's two paper tables as .tex.
 
-    Each file is a bare booktabs tabular (no caption / label); the paper owns
-    the table environment and prose (see _latex_table). Table 1
-    (stat_matters.tex): per method, does the MANCOVA stat choice change Dice --
-    all-tie / decisive fractions and the mean / median Dice spread across the
-    five stats. Table 2 (stat_dice.tex): per method, mean Dice per stat with the
-    best-worst gap, the best stat(s) bolded. Both use the balanced panel (cells
-    recorded with the full variant grid), so every stat is scored on the same
-    trials (stat_tables warns otherwise).
+    Both split the raw and z-scored arms -- z-scoring interacts with the stat,
+    so they never pool (see stat_tables) -- and both read the same balanced
+    panel (cells recorded with the full variant grid), so every stat is scored
+    on the same trials (stat_tables warns otherwise).
+
+    stat_dice.tex is one row per method, its five stat means banded under raw
+    and again under z-scored, with one bold on the method's best (scaling,
+    stat) cell of the ten. stat_matters.tex is one row per arm: whether the
+    choice matters at all -- the all-tie / decisive fractions and the mean /
+    median per-trial Dice range, which is where a reader sizes up a win. Two
+    narrow tables rather than one wide one, to fit a single paper column. Each
+    file is a bare booktabs tabular (no caption / label); the paper owns the
+    table environment and prose (see _latex_table).
 
     Args:
         label (str): cache name; unused in the output but kept for the dispatch
@@ -1015,42 +1149,59 @@ def write_stat_tables(label: str, df, out) -> None:
     panel = (f'{meta["n_cells"]} planted cells, b=2'
              + (f'; {meta["n_dropped"]} partial cells excluded'
                 if meta['n_dropped'] else ''))
+    scaling = ('scaling: z = each voxel z-scored across the permutations '
+               'before the max-stat null (AnalysisVoxel.z_score_stat)')
 
-    _latex_table(
-        out / 'stat_matters.tex', 'lrrrr',
-        ['Method', 'All tie (\\%)', 'Decisive (\\%)', 'Mean spread',
-         'Median spread'],
-        [[m, f'{r.pct_all_tie:.1f}', f'{r.pct_decisive:.1f}',
-          f'{r.mean_spread:.4f}', f'{r.median_spread:.4f}']
-         for m, r in t1.iterrows()])
+    # one bold per method, not per row: the best (scaling, stat) cell over both
+    # of its rows, so the mark reads as the best this method can do. Ties break
+    # by (_ZT_ORDER, _STAT_ORDER) -- hotel_tr takes it over the bitwise-
+    # identical roys_root of a rank-1 hypothesis matrix.
+    best_cell = {m: t2.loc[m, _STAT_ORDER].stack().idxmax()
+                 for m in _STAT_METHOD_ORDER}
 
-    def dice_row(method, row):
-        """Render a Table 2 row, bolding the winning stat class.
+    def dice_row(method):
+        """Render a method's row: the five stats raw, then the five z-scored.
 
-        Nothing is bolded when the best-worst gap is under 0.01 (the stat
-        choice is immaterial for that method); otherwise every stat within 0.005
-        Dice of the best is bolded, so a tied class (wilks/pillai, hotel/roy) is
-        marked together rather than an arbitrary single winner.
+        Whether the bolded win means anything is stat_matters.tex's job -- the
+        bold marks the max, not a margin.
         """
-        best = row[_STAT_ORDER].max()
-        mark = row['gap'] >= 0.01
         cells = [method]
-        for s in _STAT_ORDER:
-            v = f'{row[s]:.3f}'
-            cells.append(f'\\textbf{{{v}}}'
-                         if mark and row[s] >= best - 0.005 else v)
-        return cells + [f'{row["gap"]:.3f}']
+        for zt in _ZT_ORDER:
+            row = t2.loc[(method, zt)]
+            for s in _STAT_ORDER:
+                v = f'{row[s]:.3f}'
+                cells.append(f'\\textbf{{{v}}}'
+                             if best_cell[method] == (zt, s) else v)
+        return cells
+
+    n_stat = len(_STAT_ORDER)
+    stat_names = [_STAT_PRETTY[s] for s in _STAT_ORDER]
+    _latex_table(
+        out / 'stat_dice.tex',
+        'l|' + '|'.join(['r' * n_stat] * len(_ZT_ORDER)),
+        ['Method'] + stat_names * len(_ZT_ORDER),
+        [dice_row(m) for m in _STAT_METHOD_ORDER],
+        group_header=[('', 1, 'l|')] + [
+            (_ZT_PRETTY[zt], n_stat, 'c|' if zt != _ZT_ORDER[-1] else 'c')
+            for zt in _ZT_ORDER],
+        note=[f'panel: {panel}', scaling])
 
     _latex_table(
-        out / 'stat_dice.tex', 'l' + 'r' * (len(_STAT_ORDER) + 1),
-        ['Method'] + [_STAT_PRETTY[s] for s in _STAT_ORDER] + ['Gap'],
-        [dice_row(m, row) for m, row in t2.iterrows()])
+        out / 'stat_matters.tex', 'llrrrr',
+        ['Method', 'Scaling', 'All tie (\\%)', 'Decisive (\\%)',
+         'Mean range', 'Median range'],
+        [[m, zt, f'{r.pct_all_tie:.1f}', f'{r.pct_decisive:.1f}',
+          f'{r.mean_range:.4f}', f'{r.median_range:.4f}']
+         for (m, zt), r in t1.iterrows()],
+        note=[f'panel: {panel}', scaling,
+              'range: per-trial (max - min) Dice over the five stats; '
+              f'all tie <= {meta["tol"]:g}, decisive > {meta["decisive"]:g}'])
 
-    print(f'saved: {out / "stat_matters.tex"}, {out / "stat_dice.tex"}')
+    print(f'saved: {out / "stat_dice.tex"}, {out / "stat_matters.tex"}')
     print(f'  panel: {panel}')
-    print('  Table 1 (does the stat matter):')
+    print('  does the stat matter:')
     print(t1.to_string(float_format=lambda v: f'{v:.4f}'))
-    print('  Table 2 (mean Dice per stat):')
+    print('  mean Dice per stat:')
     print(t2.to_string(float_format=lambda v: f'{v:.3f}'))
 
 
@@ -1203,7 +1354,7 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
     Writes {label}.pdf.
 
     Args:
-        label (str): cache name; the figure title and output filename stem.
+        label (str): cache name; the output filename stem.
         df: a tidy frame (needs source / label / seed / x / the metric columns).
         out (pathlib.Path): directory the figure is written into.
         x (str): the swept x-axis column (effect_llr).
@@ -1229,7 +1380,6 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
     fig, axes = plt.subplots(len(sources), ncols, sharex=True,
                              figsize=(4.2 * ncols, 3.8 * len(sources)),
                              squeeze=False)
-    fig.suptitle(label, fontsize=13)
     for i, src in enumerate(sources):
         dsrc = df[df['source'] == src]
         for j, metric in enumerate(metrics):
@@ -1257,21 +1407,30 @@ def _mode_slug(mode: str) -> str:
     return str(mode).replace(' ', '_')
 
 
+# prune rules kept in the cache and records but dropped from the paper figures:
+# maxllr (the single max-LLR region) is a diagnostic baseline, not a paper
+# method, so plot_prune skips it (see PRUNE_RULES in config).
+_PRUNE_LABELS_SKIP = ('GLOW-maxllr',)
+
+
 def plot_prune(label: str, df, out) -> None:
     """Plot one metric grid per Ward clustering mode for the prune cache.
 
-    The prune cache crosses the three rules with both Ward modes (Focus / GLM
+    The prune cache crosses the pruning rules with both Ward modes (Focus / GLM
     Error), so a single grid would overlay two clusterings. This draws one
     source x metric grid per mode (plot_metric_grid), writing {label}_{mode}.pdf
-    so the clusterings are compared side by side rather than on one axis.
+    so the clusterings are compared side by side rather than on one axis. The
+    diagnostic maxllr rule is dropped (_PRUNE_LABELS_SKIP).
 
     Args:
         label (str): cache name; each figure's stem is {label}_{mode}.
         df: a tidy_prune frame (needs the cluster_mode column).
         out (pathlib.Path): directory the figures are written into.
     """
+    df = df[~df['label'].isin(_PRUNE_LABELS_SKIP)]
     for mode, df_mode in df.groupby('cluster_mode'):
         plot_metric_grid(f'{label}_{_mode_slug(mode)}', df_mode, out)
+
 
 
 # ---------------------------------------------------------------------------
@@ -1357,13 +1516,13 @@ def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0) -> None:
     labels of runtime_segment take a seaborn fallback (get_cmap_dict).
 
     Args:
-        name (str): cache name; used in the title and output filename.
+        name (str): cache name; used in the output filename.
         df: the cache's tidy_runtime results.
         out (pathlib.Path): directory the figure is written into.
         log_x_ratio (float): x max/min ratio at or above which the x-axis is
             log-scaled.
     """
-    df = df.dropna(subset=['x', 'time_sec', 'label'])
+    df = _select_glow_arm(df.dropna(subset=['x', 'time_sec', 'label']))
     if df.empty:
         print(f'  (no timed rows for {name} — skipping)')
         return
@@ -1386,7 +1545,6 @@ def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0) -> None:
     ax.set_yscale('log')
     ax.set_xlabel(_X_PARAM_LABELS.get(x_name, x_name))
     ax.set_ylabel('wall time (s)')
-    ax.set_title(name)
     ax.legend(frameon=False)
     ax.grid(True, which='both', alpha=0.3)
     fig.tight_layout()
@@ -1485,12 +1643,13 @@ def plot_inner_edge(name: str, df, out, alpha_fwer: float = 0.05) -> None:
     threshold has plateaued).
 
     Args:
-        name (str): cache name; used in the title and output filenames.
+        name (str): cache name; used in the output filenames.
         df: the tidy_inner_edge frame.
         out (pathlib.Path): directory the figure and JSON are written into.
         alpha_fwer (float): FWER level (annotated on the y-axis).
     """
-    df = df.dropna(subset=['num_inner_perm', 'threshold', 'label'])
+    df = _select_glow_arm(
+        df.dropna(subset=['num_inner_perm', 'threshold', 'label']))
     if df.empty:
         print(f'  (no rows for {name} — skipping)')
         return
@@ -1517,7 +1676,7 @@ def plot_inner_edge(name: str, df, out, alpha_fwer: float = 0.05) -> None:
             summary[src][lab] = {int(m): float(v) for m, v in med.items()}
         ax.set_xscale('log')
         ax.set_xlabel(_X_PARAM_LABELS['n_perm_inner'])
-        ax.set_title(f'{name} — {src}')
+        ax.set_title(src)
         ax.grid(True, which='both', alpha=0.3)
         ax.legend(frameon=False)
     axes[0][0].set_ylabel(f'FWER max-z threshold ($\\alpha$={alpha_fwer:g})')
@@ -1606,11 +1765,12 @@ def plot_race_maxz(name: str, df, out) -> None:
     max-z (max_abs_diff ~ 0, n_mismatch 0).
 
     Args:
-        name (str): cache name; used in the title and output filenames.
+        name (str): cache name; used in the output filenames.
         df: the tidy_race_maxz frame.
         out (pathlib.Path): directory the figure and JSON are written into.
     """
-    df = df.dropna(subset=['max_z_slow', 'max_z_race', 'label'])
+    df = _select_glow_arm(
+        df.dropna(subset=['max_z_slow', 'max_z_race', 'label']))
     df = df[np.isfinite(df['max_z_slow']) & np.isfinite(df['max_z_race'])]
     if df.empty:
         print(f'  (no rows for {name} — skipping)')
@@ -1642,7 +1802,7 @@ def plot_race_maxz(name: str, df, out) -> None:
         hi = float(max(sub['max_z_slow'].max(), sub['max_z_race'].max()))
         ax.plot([lo, hi], [lo, hi], color='0.5', lw=1, ls='--', zorder=0)
         ax.set_xlabel('full cpu_perm max-z')
-        ax.set_title(f'{name} — {src}')
+        ax.set_title(src)
         ax.grid(True, alpha=0.3)
         ax.legend(frameon=False)
     axes[0][0].set_ylabel('survivor race max-z')
@@ -1669,7 +1829,7 @@ def plot_cache(label: str, df, out,
     The null path (no effect planted) gets a faceted FWER calibration curve;
     every other cache gets the stacked per-source detection figure
     (plot_source_grid: an HCP block over a WGN block, each a mean-band row and
-    a GLOW-GLM diff row across the metric columns) plus one cache-level
+    a GLOW diff row across the metric columns) plus one cache-level
     discovery-threshold table (write_threshold_table). The x-axis is inferred
     from the data (_infer_x), so no config plot spec is needed. A cache that
     also varies a structural axis besides x (the llr sweep varies b) is drawn
@@ -1677,11 +1837,12 @@ def plot_cache(label: str, df, out,
     label, while the threshold table spreads that axis across its columns.
 
     Args:
-        label (str): cache name; used in titles and output filenames
+        label (str): cache name; used in output filenames
         df: the cache's tidy_run_ana results
         out (pathlib.Path): directory the figures are written into
         metrics (list): metric columns plotted as the panel columns
     """
+    df = _select_glow_arm(df)
     if df.empty:
         print(f'  (no rows for {label} — skipping)')
         return
