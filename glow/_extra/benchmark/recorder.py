@@ -2,23 +2,39 @@
 
 A Recorder decorates a function so every successful call stores one record:
 
-    {hash, function, inputs, outputs, input_hashes, output_hashes,
-     time_sec, recurse?}
+    {hash, cache_key, function, inputs, outputs, input_hashes, output_hashes,
+     time_sec, uid?, op?, kwargs?, parents?, impl_version?, recurse?}
 
 The key is joblib.hash(filter_args(fnc, [], args, kwargs)) -- the key
-joblib.Memory files the result under. Nest the recorder inside @MEMORY.cache
-and a miss records just the calls that ran, each matching its cached artifact.
-A repeat key overwrites and warns; a raising call records nothing.
+joblib.Memory files the result under, also stored as cache_key so the cache
+entry stays locatable however the record is named. Nest the recorder inside
+@MEMORY.cache and a miss records just the calls that ran, each matching its
+cached artifact. A repeat key overwrites and warns; a raising call records
+nothing.
 
 inputs/outputs are _cell snapshots, so a record holds no live Experiment.
 With a folder, each mirrors to <hash>.json atomically (one file per hash, so
 parallel workers never contend); load() reads them back.
 
-Provenance DAG: input_hashes/output_hashes hold joblib.hash of inputs/outputs
-whose type is in link_types (e.g. (Experiment,); narrow, so trivial values
-forge no edges). B depends on A when a B input hash equals an A output hash.
-flatten_to_df walks it to one row per leaf carrying its ancestors' fields, so
-a trial's setup, fit and score land in one row.
+Declared identity: uid / op / kwargs / parents / impl_version hold the call's
+recipe (see glow._extra.benchmark.recipe) -- a portable id built from the
+declaration rather than from any array's bytes, and lineage the consumer
+declares rather than a reader rediscovering it. A call whose parent cannot be
+named (it takes a link_types input but no parent_uid) records no recipe
+fields, so a uid is never a guess. Pass ignore to keep a non-declarative
+parameter (an array companion) out of the recipe, mirroring the ignore list
+given to @MEMORY.cache.
+
+Provenance DAG: an edge is declared -- B depends on A when B lists A's uid in
+parents -- so it holds on any machine. flatten_to_df walks it to one row per
+leaf carrying its ancestors' fields, so a trial's setup, fit and score land in
+one row.
+
+input_hashes/output_hashes are the legacy edge: joblib.hash of the inputs and
+outputs whose type is in link_types (e.g. (Experiment,)), matched by equality.
+They are still written, and read for any record lacking a recipe, so records
+written before the recipe fields stay linkable; being a hash of computed arrays
+they are not portable across machines, and they retire with those records.
 """
 
 import functools
@@ -30,10 +46,13 @@ import time
 import warnings
 from collections import defaultdict, deque
 from pathlib import Path
+from typing import NamedTuple
 
 import joblib
 import numpy as np
 from joblib.func_inspect import filter_args
+
+from .recipe import Recipe
 
 
 # Sentinel label values for trials that produced no scored result, used by
@@ -42,6 +61,33 @@ from joblib.func_inspect import filter_args
 ERROR_LABEL = 'ERROR'
 SKIP_LABEL = 'SKIP'
 NON_RESULT_LABELS = (ERROR_LABEL, SKIP_LABEL)
+
+
+class _CallSpec(NamedTuple):
+    """What one decorated call needs to record itself, fixed at decoration.
+
+    Passed to Recorder._record_call so the memoised wrapper's own body can stay
+    a fixed one-liner (see there for why that matters).
+
+    Attributes:
+        sig (inspect.Signature): the decorated function's signature.
+        is_method (bool): True when it is a bound method, whose receiver is
+            recorded as the 'self' input.
+        var_kw (str | None): the name of its **kwargs parameter, or None.
+        output_name (str | None): single name for the whole return.
+        output_name_list (tuple | list | None): names for an unpacked return.
+        recurse (tuple[str]): output names flatten_to_df expands per key-path.
+        ignore (tuple[str]): parameter names kept out of the record key and the
+            recipe.
+    """
+
+    sig: inspect.Signature
+    is_method: bool
+    var_kw: str
+    output_name: str
+    output_name_list: tuple
+    recurse: tuple
+    ignore: tuple
 
 
 def _json_default(obj):
@@ -187,27 +233,29 @@ class Recorder:
                 "isinstance(value, link_types))")
 
     @staticmethod
-    def _args_hash(fnc, args, kwargs) -> str:
+    def _args_hash(fnc, args, kwargs, ignore=()) -> str:
         """Compute the args hash joblib keys a cached call by.
 
         filter_args (bind, apply defaults, drop ignored) then joblib.hash, so
         a record keys by the same id joblib caches under, without touching the
-        MemorizedFunc. ignore=[] matches MEMORY.cache and coerce_mmap=False its
-        mmap_mode=None. A bound method's receiver is included, so distinct
-        receivers hash distinctly.
+        MemorizedFunc. Pass the same ignore list given to MEMORY.cache, or the
+        two keys diverge; coerce_mmap=False matches its mmap_mode=None. A bound
+        method's receiver is included, so distinct receivers hash distinctly.
 
         Args:
             fnc: the function being hashed (its signature drives filter_args).
             args (tuple): positional call arguments.
             kwargs (dict): keyword call arguments.
+            ignore (iterable[str]): parameter names dropped before hashing,
+                matching MEMORY.cache's ignore list.
 
         Returns:
             the joblib args hash (hex digest), the on-disk cache-entry key.
         """
-        return joblib.hash(filter_args(fnc, [], args, kwargs))
+        return joblib.hash(filter_args(fnc, list(ignore), args, kwargs))
 
     def __call__(self, output_name=None, output_name_list=None,
-                 recurse_out_list=None):
+                 recurse_out_list=None, ignore=()):
         """Build a decorator that records calls under one or more output names.
 
         Pass exactly one of output_name (the whole return under one name) or
@@ -222,6 +270,13 @@ class Recorder:
                 tuple/list return; non-empty, no duplicates.
             recurse_out_list (tuple | list | None): output names to expand per
                 key-path; each must be a declared output. None recurses none.
+            ignore (tuple | list): parameter names to drop from both the
+                record key and the recipe kwargs -- the non-declarative
+                arguments (the linked Experiment, an array companion, a label).
+                Must be the same list given to @MEMORY.cache: the key is
+                joblib's args hash, so filtering anything different would name
+                a cache entry that does not exist. link_types inputs and
+                parent_uid leave the recipe regardless.
 
         Returns:
             a decorator that wraps a function for recording.
@@ -266,6 +321,10 @@ class Recorder:
             raise ValueError(
                 f"recurse_out_list names not declared outputs: {unknown}")
 
+        ignore_names = tuple(ignore)
+        if not all(isinstance(n, str) for n in ignore_names):
+            raise TypeError("ignore must be a tuple/list of str param names")
+
         def decorator(fnc):
             """Wrap fnc so each successful call records under its args hash."""
             sig = inspect.signature(fnc)
@@ -286,82 +345,137 @@ class Recorder:
                 if param.kind is inspect.Parameter.VAR_KEYWORD:
                     var_kw = name
 
+            spec = _CallSpec(sig=sig, is_method=is_method, var_kw=var_kw,
+                             output_name=output_name,
+                             output_name_list=output_name_list,
+                             recurse=recurse, ignore=ignore_names)
+
+            # KEEP THIS BODY FIXED. joblib stores the source of the function it
+            # memoises -- which, with the recorder nested inside @MEMORY.cache,
+            # is this wrapper -- and clears that function's whole cache
+            # directory when the text changes. Every recording rule therefore
+            # lives in _record_call, where it can be edited without discarding
+            # every memoised result in the project. joblib compares the text
+            # only (the first line number is excluded), so moving this function
+            # is safe; changing it is not.
             @functools.wraps(fnc)
             def wrapped(*args, **kwargs):
                 """Run fnc, then snapshot its inputs/outputs into a record."""
-                # capture inputs (incl. defaults); serialised at record time
-                bound = sig.bind(*args, **kwargs)
-                bound.apply_defaults()
-                inputs = dict(bound.arguments)
+                return self._record_call(fnc, spec, args, kwargs)
 
-                # bound-method receiver as the 'self' input (first, for
-                # readability), from __self__ since the signature omits it
-                if is_method:
-                    inputs = {'self': fnc.__self__, **inputs}
-
-                # splice **kwargs up a level: {'kwargs': {'x': 1}} -> {'x': 1};
-                # sig.bind already routes named keywords, so no collision here
-                if var_kw is not None:
-                    inputs.update(inputs.pop(var_kw))
-
-                # time only the wrapped call; an exception propagates, nothing
-                # recorded (like joblib.Memory on a failed call)
-                t0 = time.perf_counter()
-                out = fnc(*args, **kwargs)
-                time_sec = time.perf_counter() - t0
-
-                # name the outputs; the shape checks raise without recording
-                if output_name is not None:
-                    outputs = {output_name: out}
-                else:
-                    if not isinstance(out, (tuple, list)):
-                        raise TypeError(
-                            f"{fnc.__name__} declared output_name_list "
-                            f"but returned {type(out).__name__}; "
-                            f"expected a tuple/list"
-                        )
-                    if len(out) != len(output_name_list):
-                        raise ValueError(
-                            f"{fnc.__name__} returned {len(out)} values "
-                            f"but output_name_list has "
-                            f"{len(output_name_list)} names"
-                        )
-                    outputs = dict(zip(output_name_list, out))
-
-                # content-hash the link_types inputs/outputs from the live
-                # values (before the snapshot): an input that is another call's
-                # output shares its joblib.hash, so flatten_to_df links them.
-                # Hashing only domain types avoids trivial-value edges.
-                input_hashes = {n: joblib.hash(v) for n, v in inputs.items()
-                                if isinstance(v, self.link_types)}
-                output_hashes = {n: joblib.hash(v) for n, v in outputs.items()
-                                 if isinstance(v, self.link_types)}
-
-                # snapshot to _cell form now, so the record keeps no live
-                # reference to the (heavy) call values -- they can be collected
-                # once the call returns. The DAG hashes above used the live
-                # values, so nothing is lost.
-                inputs = {n: _cell(v) for n, v in inputs.items()}
-                outputs = {n: _cell(v) for n, v in outputs.items()}
-
-                # key by joblib's args hash, matching the cache entry the same
-                # call writes
-                key = self._args_hash(fnc, args, kwargs)
-                self._store(key, {
-                    "hash": key,
-                    "function": fnc.__qualname__,
-                    **({"recurse": list(recurse)} if recurse else {}),
-                    "inputs": inputs,
-                    "outputs": outputs,
-                    "input_hashes": input_hashes,
-                    "output_hashes": output_hashes,
-                    "time_sec": time_sec,
-                })
-                return out
-
+            # stamp the filter onto the wrapper so a reader naming this call's
+            # uid (recipe.recipe_for_call) drops exactly what was dropped here,
+            # without the list being repeated at the call site
+            wrapped._recipe_ignore = ignore_names
             return wrapped
 
         return decorator
+
+    def _record_call(self, fnc, spec, args, kwargs):
+        """Run one decorated call and store its record; return its output.
+
+        Every recording rule lives here rather than in the wrapper, so editing
+        one does not invalidate a single cached result (see wrapped).
+
+        Args:
+            fnc (Callable): the decorated function to call.
+            spec (_CallSpec): what its decoration fixed.
+            args (tuple): positional call arguments.
+            kwargs (dict): keyword call arguments.
+
+        Returns:
+            the wrapped function's own return value, unchanged.
+
+        Raises:
+            TypeError: the return is not a tuple/list under output_name_list.
+            ValueError: it has the wrong length for output_name_list.
+        """
+        # capture inputs (incl. defaults); serialised at record time
+        bound = spec.sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        inputs = dict(bound.arguments)
+
+        # bound-method receiver as the 'self' input (first, for readability),
+        # from __self__ since the signature omits it
+        if spec.is_method:
+            inputs = {'self': fnc.__self__, **inputs}
+
+        # splice **kwargs up a level: {'kwargs': {'x': 1}} -> {'x': 1};
+        # sig.bind already routes named keywords, so no collision here
+        if spec.var_kw is not None:
+            inputs.update(inputs.pop(spec.var_kw))
+
+        # time only the wrapped call; an exception propagates, nothing recorded
+        # (like joblib.Memory on a failed call)
+        t0 = time.perf_counter()
+        out = fnc(*args, **kwargs)
+        time_sec = time.perf_counter() - t0
+
+        # name the outputs; the shape checks raise without recording
+        if spec.output_name is not None:
+            outputs = {spec.output_name: out}
+        else:
+            if not isinstance(out, (tuple, list)):
+                raise TypeError(
+                    f"{fnc.__name__} declared output_name_list "
+                    f"but returned {type(out).__name__}; "
+                    f"expected a tuple/list"
+                )
+            if len(out) != len(spec.output_name_list):
+                raise ValueError(
+                    f"{fnc.__name__} returned {len(out)} values "
+                    f"but output_name_list has "
+                    f"{len(spec.output_name_list)} names"
+                )
+            outputs = dict(zip(spec.output_name_list, out))
+
+        # content-hash the link_types inputs/outputs from the live values
+        # (before the snapshot): the legacy edge, matched by equality. See the
+        # module docstring for why the declared edge below supersedes it.
+        input_hashes = {n: joblib.hash(v) for n, v in inputs.items()
+                        if isinstance(v, self.link_types)}
+        output_hashes = {n: joblib.hash(v) for n, v in outputs.items()
+                         if isinstance(v, self.link_types)}
+
+        # the declared identity of this call (see the module docstring). A call
+        # that consumes a linked input without being told its parent_uid cannot
+        # name its lineage, so it records no recipe rather than a uid claiming
+        # to be a root.
+        parent_uid = inputs.get('parent_uid')
+        consumes_link = any(isinstance(v, self.link_types)
+                            for v in inputs.values())
+        recipe_fields = {}
+        if parent_uid is not None or not consumes_link:
+            recipe_kwargs = {
+                n: v for n, v in inputs.items()
+                if n not in spec.ignore and n != 'parent_uid'
+                and not isinstance(v, self.link_types)}
+            recipe_fields = Recipe(
+                fnc.__qualname__, recipe_kwargs,
+                parents=(parent_uid,) if parent_uid else ()).as_dict()
+
+        # snapshot to _cell form now, so the record keeps no live reference to
+        # the (heavy) call values -- they can be collected once the call
+        # returns. The hashes above used the live values, so nothing is lost.
+        inputs = {n: _cell(v) for n, v in inputs.items()}
+        outputs = {n: _cell(v) for n, v in outputs.items()}
+
+        # key by joblib's args hash, matching the cache entry the same call
+        # writes
+        key = self._args_hash(fnc, args, kwargs, spec.ignore)
+        self._store(key, {
+            "hash": key,
+            "cache_key": key,
+            "function": fnc.__qualname__,
+            **recipe_fields,
+            **({"recurse": list(spec.recurse)} if spec.recurse else {}),
+            "inputs": inputs,
+            "outputs": outputs,
+            "input_hashes": input_hashes,
+            "output_hashes": output_hashes,
+            "time_sec": time_sec,
+        })
+        return out
 
     def _store(self, key, record) -> None:
         """Store a record by its hash key, overwriting and warning on repeat.
@@ -419,9 +533,10 @@ class Recorder:
     def flatten_to_df(self, prefix_sep='.', leaf_keys=None):
         """Flatten the records into a leaf-per-row provenance DataFrame.
 
-        Reads records as a DAG: B depends on A when a B input_hash equals an A
-        output_hash (the same joblib.hash, so the edge holds across processes
-        and runs). Each leaf -- a record whose outputs feed no other -- becomes
+        Reads records as a DAG: B depends on A when B declares A's uid among
+        its parents. A record written before the recipe fields is walked by the
+        legacy edge instead (its input_hash equals an output_hash), so old and
+        new records flatten together. Each leaf -- one no other feeds -- is
         one row carrying its own fields plus every ancestor's. A benchmark leaf
         is usually a score step over the fit it scored and the setup that built
         the data, so one row holds a whole trial: swept axes (setup), recipe
@@ -454,10 +569,15 @@ class Recorder:
 
         records = self.records
 
-        # output content hash -> the record that produced it. A collision (two
-        # calls emitting an equal value) keeps the last writer; in practice the
-        # heavy domain objects are unique per trial. Hashes are always
-        # joblib.hash digests, so the is-not-None guards below are defensive.
+        # uid -> its record, for the declared edges below
+        key_of_uid = {rec['uid']: key for key, rec in records.items()
+                      if rec.get('uid')}
+
+        # output content hash -> the record that produced it, for the legacy
+        # edges. A collision (two calls emitting an equal value) keeps the last
+        # writer; in practice the heavy domain objects are unique per trial.
+        # Hashes are always joblib.hash digests, so the is-not-None guards
+        # below are defensive.
         producer_of = {}
         for key, rec in records.items():
             for h in rec.get('output_hashes', {}).values():
@@ -465,30 +585,45 @@ class Recorder:
                     producer_of[h] = key
 
         def parents_of(key):
-            """Records that produced this record's inputs (no self-edge)."""
-            ps = set()
-            for h in records[key].get('input_hashes', {}).values():
-                producer = producer_of.get(h)
-                if producer is not None and producer != key:
-                    ps.add(producer)
-            return ps
+            """Records that produced this record's inputs (no self-edge).
+
+            The union of both edge kinds: the declared parents (naming their
+            producers by uid, an edge that holds on any machine) and the legacy
+            content-hash join. Taking both keeps a mixed record set linked -- a
+            new leaf whose ancestor predates the recipe fields, or an old leaf
+            under a rebuilt ancestor -- and neither kind can invent an edge the
+            other would deny.
+            """
+            rec = records[key]
+            ps = {key_of_uid[uid] for uid in (rec.get('parents') or ())
+                  if uid in key_of_uid}
+            ps |= {producer_of[h]
+                   for h in rec.get('input_hashes', {}).values()
+                   if producer_of.get(h) is not None}
+            return ps - {key}
 
         if leaf_keys is not None:
             # caller-chosen leaves; skip keys with no record (stale/dead-end)
             leaves = [key for key in leaf_keys if key in records]
         else:
-            # input content hash -> records consuming it. A leaf's (hashable)
-            # outputs are consumed by no other record; the self-exclusion keeps
-            # an identity call a leaf, and a None hash never disqualifies one.
+            # a leaf feeds no other record by either edge kind: no record names
+            # its uid as a parent, and none of its output hashes is another's
+            # input (the self-exclusion keeps an identity call a leaf, and a
+            # None hash never disqualifies one). Both must hold, so a record
+            # consumed only through the legacy edge is not mistaken for a leaf.
+            claimed = {uid for rec in records.values()
+                       for uid in (rec.get('parents') or ())}
             consumers_of = defaultdict(set)
             for key, rec in records.items():
                 for h in rec.get('input_hashes', {}).values():
                     if h is not None:
                         consumers_of[h].add(key)
-            leaves = [key for key, rec in records.items()
-                      if all(not (consumers_of[h] - {key})
-                             for h in rec.get('output_hashes', {}).values()
-                             if h is not None)]
+            leaves = [
+                key for key, rec in records.items()
+                if rec.get('uid') not in claimed
+                and all(not (consumers_of[h] - {key})
+                        for h in rec.get('output_hashes', {}).values()
+                        if h is not None)]
 
         rows = []
         for leaf in leaves:

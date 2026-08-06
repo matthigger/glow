@@ -1,20 +1,27 @@
-"""Sync the benchmark's content-addressed state to and from S3.
+"""Sync the benchmark's call-addressed state to and from S3.
 
-The whole AWS path rests on one property of the rebuilt benchmark layer: its
-on-disk state -- the joblib.Memory cache and the per-hash <hash>.json records
--- is content-addressed. Each artifact's path is a pure function of the call
-that produced it (joblib's args hash; see glow._extra.benchmark.recorder), so
-the same call writes the same file on any machine. Two workers computing
-different cells therefore write disjoint files, and "share the cache" reduces
-to copying files: no locking, no coordination, no merge.
+The whole AWS path rests on one property of the benchmark layer: its on-disk
+state -- the joblib.Memory cache and the per-hash <hash>.json records -- is
+addressed by the call that produced it, not by the bytes it holds. Each path is
+a pure function of that call (joblib's args hash; see
+glow._extra.benchmark.recorder), and since no key depends on a computed array
+(glow._extra.benchmark.recipe) one call names one file on any machine. Two
+workers computing different cells therefore write disjoint files, and sharing
+the cache reduces to copying files: no locking, no coordination, no merge.
+
+What it does not promise is identical bytes under one key: two machines' record
+of a call differs in its timings and in the last bits of any float payload.
+That is why a reader joins records on their declared uid and parents, not on a
+hash of their contents.
 
 So this module is a thin file mover, not a cache backend. It mirrors local
 directories under glow's per-user data dir to an S3 prefix and back:
 
   - upload_dir / download_prefix copy a directory tree, skipping objects that
     already exist (a HEAD probe up, a local-stat down) -- so a re-sync only
-    moves the new artifacts, and the content-addressing makes "already there"
-    safe to skip.
+    moves the new artifacts. A key present on both sides names the same call on
+    both, which is what makes skipping safe (see above: not that its bytes
+    match).
   - BackgroundUploader pushes a set of directories on an interval while the
     worker computes, so finished records land at the driver as the worker goes
     (and a Spot-interrupted worker has already shipped the records it
@@ -111,8 +118,11 @@ def upload_dir(s3, bucket: str, local_dir, key_prefix: str, *,
 
     A file at local_dir/<rel> becomes the object key_prefix/<rel>. Existing
     objects are skipped (a head_object probe) when skip_existing, so a re-sync
-    only ships new artifacts -- safe because the tree is content-addressed (an
-    object that exists holds the same bytes). A missing local_dir uploads
+    only ships new artifacts. A key names the call that produced it, not the
+    bytes it holds, so two machines can write one key with different bytes
+    (differing timings, last-bit-different floats); skipping is safe because
+    what a reader joins on -- a record's declared uid and parents -- is equal
+    either way, not because the bytes are. A missing local_dir uploads
     nothing.
 
     Args:

@@ -182,22 +182,23 @@ class TestCellsBindToStages:
 
     @pytest.mark.parametrize('label', ALL_LABELS)
     def test_effect_cells_bind(self, label):
-        # kind selects the builder (effect_factory dispatches on it); exp is
-        # supplied by the driver; a None cell is the no-plant null path
+        # kind selects the builder (effect_factory dispatches on it); exp and
+        # its parent_uid are supplied by the driver; a None cell is the
+        # no-plant null path
         for cell in config.CONFIG[label][1]:
             if cell is None:
                 continue
             sig = self._SIG_EFFECT[cell['kind']]
-            sig.bind(exp=None,
+            sig.bind(exp=None, parent_uid='',
                      **{k: v for k, v in cell.items() if k != 'kind'})
 
     @pytest.mark.parametrize('label', ALL_LABELS)
     def test_fnc_cells_bind(self, label):
-        # exp / mask_target_list are supplied by the driver
+        # exp / mask_target_list / parent_uid are supplied by the driver
         _, _, fnc_kwargs, fnc = config.CONFIG[label]
         sig = inspect.signature(fnc)
         for cell in fnc_kwargs:
-            sig.bind(exp=None, mask_target_list=[], **cell)
+            sig.bind(exp=None, mask_target_list=[], parent_uid='', **cell)
 
 
 class TestGridCardinality:

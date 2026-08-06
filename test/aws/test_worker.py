@@ -114,9 +114,14 @@ def test_runs_real_data_cell(monkeypatch):
     with patch('glow._extra.aws.worker.boto3.client', lambda *a, **k: fake):
         worker.main(uri)
 
-    # the real _run_data_cell reached the leaf once, on an empty (null) target
+    # the real _run_data_cell reached the leaf once, on an empty (null) target,
+    # and told it the cell's declared parent: for a null cell that is the clean
+    # exp's own uid (nothing planted). It is named from the cell's kwargs, so a
+    # worker and a local reader agree on it without comparing any array.
     assert len(_FNC_CALLS) == 1
-    assert _FNC_CALLS[0] == {'mask_target_list': [], 'kwargs': {}}
+    assert _FNC_CALLS[0] == {
+        'mask_target_list': [],
+        'kwargs': {'parent_uid': data.data_recipe(cells[0][0]).uid}}
 
 
 def test_hcp_cell_pulls_only_its_features(monkeypatch):
