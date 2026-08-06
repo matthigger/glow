@@ -15,7 +15,7 @@ import random
 import numpy as np
 import pytest
 
-from glow._extra.benchmark import data
+from glow._extra.benchmark import data, run
 from glow._extra.benchmark.run import (glow_fit_for_prune, run_ana,
                                        run_inner_edge, run_perm_fwer,
                                        run_perm_inner, run_prune, run_segment,
@@ -320,12 +320,24 @@ class TestRunStat:
                                                    parent_uid=uid)
 
     def test_variants_share_one_walk(self):
-        # the first variant computes voxel_stat_walk; the rest are cache hits
+        # the first variant computes the walk, the rest read the same object
+        # back from the memo (nothing re-walks the permutations)
         exp, mask, uid = self._planted()
-        assert not voxel_stat_walk.check_call_in_cache(exp, 15, parent_uid=uid)
+        walk = voxel_stat_walk(exp, 15, parent_uid=uid)
         run_stat(exp, [mask], AnalysisVBA(get_stat=get_wilks, n_perm_fwer=15),
                  stat_dict_inv[get_wilks], parent_uid=uid)
-        assert voxel_stat_walk.check_call_in_cache(exp, 15, parent_uid=uid)
+        assert voxel_stat_walk(exp, 15, parent_uid=uid) is walk
+
+    def test_walk_is_never_persisted(self):
+        # the walk is ~250 MB a cell, so it stays in memory: no cache dir of
+        # its own, and the memo holds one cell (the previous one is dropped)
+        exp_a, _, uid_a = self._planted()
+        exp_b, _, uid_b = self._planted()
+        assert not hasattr(voxel_stat_walk, 'check_call_in_cache')
+        walk_a = voxel_stat_walk(exp_a, 15, parent_uid=uid_a)
+        voxel_stat_walk(exp_b, 15, parent_uid=uid_b)
+        assert len(run._WALK_MEMO) == 1
+        assert voxel_stat_walk(exp_a, 15, parent_uid=uid_a) is not walk_a
 
     def test_recipe_is_a_cache_axis(self):
         exp, mask, uid = self._planted()
