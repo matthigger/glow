@@ -179,10 +179,11 @@ def test_rho_vanishes_for_intercept_only():
     """
     import torch
     prep = _prep(2, 'intercept')
-    state = inner_perm_gpu._prep_state(
-        y=prep['exp'].y, q0=prep['q0'], q1=prep['q1'],
-        children=prep['children'], min_vox=prep['min_vox'],
-        device='cuda', acc_dtype=np.float64)
+    state = inner_perm_gpu.prep_tree(
+        inner_perm_gpu.prep_shared(
+            prep['exp'], q0=prep['q0'], q1=prep['q1'],
+            acc_dtype=np.float64),
+        children=prep['children'], min_vox=prep['min_vox'])
     perms = inner_perm_gpu._build_perms(7, 4, prep['exp'].y.shape[1])
     src = inner_perm_gpu._build_perm_inv_tensor(perms, state['dev'])
     q01_perm = state['Q01'][:, src].permute(1, 0, 2).contiguous()
@@ -190,6 +191,55 @@ def test_rho_vanishes_for_intercept_only():
     rho = alpha[:, :state['a0']]
     assert float(rho.abs().max()) < 1e-12, \
         f'rho should vanish for intercept-only, got {float(rho.abs().max()):.2e}'
+
+
+# ---------------------------------------------------------------------------
+# Hoisting the prep out of the outer-perm loop
+
+@requires_cuda
+@pytest.mark.parametrize('design', DESIGNS)
+def test_shared_prep_matches_per_tree_prep(design):
+    """A reused per-fit state reproduces a from-scratch per-tree prep.
+
+    The hoist's correctness condition. For outer perm k the shared path
+    derives u_k = u_0[:, perm_k], s0_k = Q0 u_k + s0_0 and an unchanged
+    T_v from the UNPERMUTED state by index gathers alone; that must equal
+    building the state from exp.permute(k) directly. Run at float64 so the
+    comparison is of the algebra, not of dtype round-off.
+    """
+    prep = _prep(2, design)
+    exp = prep['exp']
+    k = 7
+    exp_k = exp.permute(k)
+    children = cluster(exp=exp_k, mode='Focus')
+
+    mu_ref, std_ref = inner_perm_gpu.gpu_perm(
+        exp=exp_k, base_seed=99, n_perm=12, q0=prep['q0'], q1=prep['q1'],
+        children=children, min_vox=2, acc_dtype=np.float64)
+
+    shared = inner_perm_gpu.prep_shared(
+        exp, q0=prep['q0'], q1=prep['q1'], acc_dtype=np.float64)
+    mu_got, std_got = inner_perm_gpu.gpu_perm_shared(
+        shared, children=children, base_seed=99, n_perm=12, min_vox=2,
+        outer_perm=k)
+
+    _assert_cells_match(mu_got, mu_ref, atol=1e-9, label=f'mu {design}')
+    _assert_cells_match(std_got, std_ref, atol=1e-9, label=f'std {design}')
+
+
+@requires_cuda
+def test_shared_prep_unpermuted_is_the_observed_draw():
+    """outer_perm=0 leaves the data unpermuted, as AnalysisGLOW expects."""
+    prep = _prep(2, 'general')
+    ref = _call(inner_perm_gpu.gpu_perm, prep, n_perm=10,
+                acc_dtype=np.float64)
+    shared = inner_perm_gpu.prep_shared(
+        prep['exp'], q0=prep['q0'], q1=prep['q1'], acc_dtype=np.float64)
+    got = inner_perm_gpu.gpu_perm_shared(
+        shared, children=prep['children'], base_seed=12_345, n_perm=10,
+        min_vox=prep['min_vox'], outer_perm=0)
+    _assert_cells_match(got[0], ref[0], atol=1e-12, label='mu k=0')
+    _assert_cells_match(got[1], ref[1], atol=1e-12, label='std k=0')
 
 
 # ---------------------------------------------------------------------------

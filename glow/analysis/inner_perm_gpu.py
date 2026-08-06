@@ -251,57 +251,46 @@ def _reg_sum_cumsum(x_dfs, dim, region_l, region_h):
 # ---------------------------------------------------------------------------
 # Phase 1 precompute + per-chunk hot loop (one path, any nuisance)
 
-def _prep_state(*, y, q0, q1, children, min_vox, device, acc_dtype,
-                scan_dtype=np.float64):
-    """Build the permutation-invariant device state.
+def prep_shared(exp, *, q0, q1, device: str = 'cuda',
+                acc_dtype=np.float32, scan_dtype=np.float64):
+    """Build the per-FIT device state: independent of tree and outer perm.
 
     Splits y once, in float64, into the nuisance coefficients and the
     per-voxel residual:
 
         s0 = Q0 y                (a0, b, num_vox)
         u  = y - Q0^T s0         (b, num_img, num_vox),   Q0 u = 0
+        T_v = sum_n u u^T        (b, b, num_vox)
 
-    and forms the residual's per-voxel Gram T_v = sum_n u u^T. Everything
-    the hot loop needs is then a contraction against u, never against y --
-    which is what makes float32 viable (see the module docstring) and what
-    lets a caller hold u once for a whole fit.
-
-    Uploads and reorders to DFS pre-order on device: a host-side
-    y[:, :, leaf_ord] gather costs ~14ms at num_vox=25k and blocks the CPU
-    that could be building the next tree.
+    All three are computed on the UNPERMUTED experiment and reused for
+    every outer permutation (see prep_tree): the outer Freedman-Lane
+    permutation acts on u as a gather along the image axis, leaves the
+    nuisance-fitted part alone, and cannot change T_v at all because that
+    is a sum over the image axis. So the float64 split, the host-to-device
+    transfer, and the T_v contraction -- the bulk of a per-tree prep --
+    happen once per fit rather than once per outer perm.
 
     Args:
-        y (np.array): (b, num_img, num_vox) imaging features, unpermuted
+        exp (Experiment): the unpermuted experiment
         q0 (np.array): (a0, num_img) nuisance subspace from decompose
         q1 (np.array): (a1, num_img) interest subspace
-        children (np.array): (num_reg - num_vox, 2) Ward tree
-        min_vox (int): regions smaller than this are inactive
         device (str): torch device string
         acc_dtype: hot-loop dtype (module docstring)
-        scan_dtype: dtype for the region scans of s_star, the one group
-            that still carries the DC offset (module docstring)
+        scan_dtype: dtype for the DC-carrying prep scans
 
     Returns:
-        state (dict):
-            {dev, torch_dtype, scan_torch, b, num_img, num_vox, a0, a1, ak,
-             num_reg, U (b, num_img, num_vox) DFS-ordered residual,
-             Q01 (a0 + a1, num_img), s0 (a0, b, num_vox) DFS-ordered,
-             T_v (b, b, num_vox), region_l_t, region_h_t, size_f,
-             inv_size_scan, active}
+        shared (dict): {dev, torch_dtype, scan_torch, b, num_img, num_vox,
+            a0, a1, ak, U0 (b, num_img, num_vox) residual in ORIGINAL voxel
+            order, s0_0 (a0, b, num_vox), T_v (b, b, num_vox),
+            Q0 (a0, num_img), Q01 (a0 + a1, num_img)}
     """
     import torch
 
+    y = exp.y
     b, num_img, num_vox = y.shape
     np_dtype, torch_dtype = _torch_dtype(acc_dtype)
     _, scan_torch = _torch_dtype(scan_dtype)
     dev = torch.device(device)
-
-    leaf_ord, region_l, region_h = glow.graph.build_dfs_preorder(
-        children=children, num_vox=num_vox)
-    region_l_t = torch.from_numpy(region_l.astype(np.int64)).to(dev)
-    region_h_t = torch.from_numpy(region_h.astype(np.int64)).to(dev)
-    leaf_ord_t = torch.from_numpy(leaf_ord.astype(np.int64)).to(dev)
-    num_reg = int(region_l.shape[0])
 
     # The one place the DC offset is removed, done in float64 before the
     # narrowing cast: u for a near-constant voxel is ~1e-4 of y, so
@@ -311,17 +300,99 @@ def _prep_state(*, y, q0, q1, children, min_vox, device, acc_dtype,
     s0_np = np.einsum('an,bnv->abv', q064, y64, optimize=True)
     u_np = y64 - np.einsum('an,abv->bnv', q064, s0_np, optimize=True)
 
-    u_dfs = torch.from_numpy(
-        np.ascontiguousarray(u_np).astype(np_dtype, copy=False)
-    ).to(dev).index_select(2, leaf_ord_t).contiguous()
-    s0 = torch.from_numpy(
-        np.ascontiguousarray(s0_np)
-    ).to(dev).to(scan_torch).index_select(2, leaf_ord_t).contiguous()
+    u0 = torch.from_numpy(
+        np.ascontiguousarray(u_np).astype(np_dtype, copy=False)).to(dev)
+    s0_0 = torch.from_numpy(np.ascontiguousarray(s0_np)).to(dev).to(scan_torch)
     del y64, q064, s0_np, u_np
 
-    q01 = torch.from_numpy(
-        np.ascontiguousarray(np.vstack([q0, q1])).astype(np_dtype, copy=False)
-    ).to(dev)
+    return dict(
+        dev=dev, torch_dtype=torch_dtype, scan_torch=scan_torch,
+        b=b, num_img=num_img, num_vox=num_vox,
+        a0=int(q0.shape[0]), a1=int(q1.shape[0]),
+        ak=int(q0.shape[0]) + int(q1.shape[0]),
+        U0=u0, s0_0=s0_0,
+        T_v=torch.einsum('bnv,cnv->bcv', u0, u0).to(scan_torch),
+        Q0=torch.from_numpy(
+            np.ascontiguousarray(q0).astype(np_dtype, copy=False)).to(dev),
+        Q01=torch.from_numpy(
+            np.ascontiguousarray(np.vstack([q0, q1])).astype(np_dtype,
+                                                             copy=False)
+        ).to(dev))
+
+
+def prep_tree(shared, *, children, min_vox: int, outer_perm: int = 0):
+    """Derive one outer perm's state from the shared per-fit state.
+
+    Everything here is either a gather of shared arrays, a rank-a0
+    correction, or a region scan on the tree -- no host work and no
+    transfer. The outer permutation enters as an index array:
+
+        u_k   = u_0[:, perm_k]         (a gather along the image axis)
+        rho_k = Q0 u_k                 (zero iff Q0's rows are constant)
+        u_k'  = u_k - Q0^T rho_k       (re-project: a permutation does NOT
+                                        commute with Q0 Q0^T, so the
+                                        gathered residual is not yet the
+                                        permuted data's residual)
+        s0_k  = s0_0 + rho_k
+        T_v,k = T_v,0 - sum_a rho_k rho_k^T
+
+    which is why prep_shared's float64 split and transfer need not repeat.
+    The tree-dependent work that remains is the DFS gather, the two region
+    scans that build T_inv (see _chunk_llr), and s0_r.
+
+    Args:
+        shared (dict): prep_shared output
+        children (np.array): (num_reg - num_vox, 2) Ward tree
+        min_vox (int): regions smaller than this are inactive
+        outer_perm (int): outer Freedman-Lane permutation index; 0 leaves
+            the data unpermuted, matching AnalysisGLOW's convention
+
+    Returns:
+        state (dict): consumed by _chunk_llr -- {dev, torch_dtype,
+            scan_torch, b, num_img, num_vox, a0, a1, ak, num_reg,
+            U (DFS-ordered residual), Q01, s0, s0_r, T_inv, region_l_t,
+            region_h_t, size_f, inv_size, active}
+    """
+    import torch
+
+    dev = shared['dev']
+    scan_torch = shared['scan_torch']
+    torch_dtype = shared['torch_dtype']
+    num_vox = shared['num_vox']
+
+    leaf_ord, region_l, region_h = glow.graph.build_dfs_preorder(
+        children=children, num_vox=num_vox)
+    region_l_t = torch.from_numpy(region_l.astype(np.int64)).to(dev)
+    region_h_t = torch.from_numpy(region_h.astype(np.int64)).to(dev)
+    leaf_ord_t = torch.from_numpy(leaf_ord.astype(np.int64)).to(dev)
+    num_reg = int(region_l.shape[0])
+
+    u_dfs = shared['U0']
+    if outer_perm:
+        perm_k = permute._perm_indices(outer_perm, shared['num_img'])
+        u_dfs = u_dfs.index_select(
+            1, torch.from_numpy(perm_k.astype(np.int64)).to(dev))
+    u_dfs = u_dfs.index_select(2, leaf_ord_t).contiguous()
+
+    s0 = shared['s0_0'].index_select(2, leaf_ord_t).contiguous()
+    t_v = shared['T_v'].index_select(2, leaf_ord_t).contiguous()
+
+    if outer_perm:
+        # The gathered residual is NOT the nuisance residual of the
+        # permuted data: a permutation does not commute with Q0 Q0^T, so
+        # Q0 u_k = rho_k is nonzero (identically zero only for constant Q0
+        # rows). Re-project, and carry the same correction into the two
+        # statistics derived from it:
+        #     u_k'  = u_k - Q0^T rho_k
+        #     s0_k  = s0_0 + rho_k
+        #     T_v,k = T_v,0 - sum_a rho_k rho_k^T
+        # all three exact, and all three cheap next to prep_shared's split.
+        rho_k = torch.einsum('an,bnv->abv', shared['Q0'], u_dfs)
+        u_dfs = u_dfs - torch.einsum('an,abv->bnv', shared['Q0'], rho_k)
+        s0 = s0 + rho_k.to(scan_torch)
+        t_v = t_v - (rho_k.unsqueeze(2) * rho_k.unsqueeze(1)
+                     ).sum(dim=0).to(scan_torch)
+        del rho_k
 
     size_d = region_h_t - region_l_t
     inv_size_scan = torch.where(
@@ -332,9 +403,7 @@ def _prep_state(*, y, q0, q1, children, min_vox, device, acc_dtype,
     # part of T = E + H, and the whole of its DC-carrying cancellation.
     # Both region scans run once per tree at scan_dtype, so the per-draw
     # loop never touches float64 (see the module docstring).
-    t_v = torch.einsum('bnv,cnv->bcv', u_dfs, u_dfs).to(scan_torch)
     t_v_r = _reg_sum_cumsum(t_v, -1, region_l_t, region_h_t)
-    del t_v
     s0_sq_r = _reg_sum_cumsum(
         (s0.unsqueeze(2) * s0.unsqueeze(1)).sum(dim=0), -1,
         region_l_t, region_h_t)
@@ -342,14 +411,13 @@ def _prep_state(*, y, q0, q1, children, min_vox, device, acc_dtype,
     t_inv = (t_v_r + s0_sq_r
              - (s0_r.unsqueeze(1) * s0_r.unsqueeze(2)).sum(dim=0)
                * inv_size_scan[None, None, :])
-    del t_v_r, s0_sq_r
+    del t_v, t_v_r, s0_sq_r
 
     return dict(
         dev=dev, torch_dtype=torch_dtype, scan_torch=scan_torch,
-        b=b, num_img=num_img, num_vox=num_vox,
-        a0=int(q0.shape[0]), a1=int(q1.shape[0]),
-        ak=int(q0.shape[0]) + int(q1.shape[0]), num_reg=num_reg,
-        U=u_dfs, Q01=q01,
+        b=shared['b'], num_img=shared['num_img'], num_vox=num_vox,
+        a0=shared['a0'], a1=shared['a1'], ak=shared['ak'], num_reg=num_reg,
+        U=u_dfs, Q01=shared['Q01'],
         s0=s0.to(torch_dtype), s0_r=s0_r.to(torch_dtype),
         T_inv=t_inv.to(torch_dtype),
         region_l_t=region_l_t, region_h_t=region_h_t,
@@ -544,9 +612,10 @@ def gpu_perm_full(*, exp, base_seed: int, n_perm: int, q0, q1, children,
     """
     import torch
 
-    state = _prep_state(
-        y=exp.y, q0=q0, q1=q1, children=children, min_vox=min_vox,
-        device=device, acc_dtype=acc_dtype, scan_dtype=scan_dtype)
+    state = prep_tree(
+        prep_shared(exp, q0=q0, q1=q1, device=device, acc_dtype=acc_dtype,
+                    scan_dtype=scan_dtype),
+        children=children, min_vox=min_vox)
     perms = _build_perms(base_seed, n_perm, exp.y.shape[1])
     src = _build_perm_inv_tensor(perms, state['dev'])
 
@@ -591,9 +660,10 @@ def gpu_perm(*, exp, base_seed: int, n_perm: int, q0, q1, children,
     """
     import torch
 
-    state = _prep_state(
-        y=exp.y, q0=q0, q1=q1, children=children, min_vox=min_vox,
-        device=device, acc_dtype=acc_dtype, scan_dtype=scan_dtype)
+    state = prep_tree(
+        prep_shared(exp, q0=q0, q1=q1, device=device, acc_dtype=acc_dtype,
+                    scan_dtype=scan_dtype),
+        children=children, min_vox=min_vox)
     perms = _build_perms(base_seed, n_perm, exp.y.shape[1])
     src = _build_perm_inv_tensor(perms, state['dev'])
 
@@ -605,5 +675,47 @@ def gpu_perm(*, exp, base_seed: int, n_perm: int, q0, q1, children,
 
     for s in range(0, n_perm, perm_chunk):
         llr, valid = _chunk_llr(src[s:s + perm_chunk], state)
+        n, mean, m2 = _chan_combine(llr, valid, n, mean, m2)
+    return _chan_finalize(n, mean, m2)
+
+
+def gpu_perm_shared(shared, *, children, base_seed: int, n_perm: int,
+                    min_vox: int, outer_perm: int = 0,
+                    perm_chunk: int = 8):
+    """Compute one outer perm's (mu, std) reusing a shared per-fit state.
+
+    The pipelined-driver entry point: prep_shared once per fit, then one
+    call per outer perm, each shipping only its tree. Equivalent to
+    gpu_perm on exp.permute(outer_perm) -- see
+    test_shared_prep_matches_per_tree_prep -- but without repeating the
+    float64 split, the transfer, or the T_v contraction.
+
+    Args:
+        shared (dict): prep_shared output, built from the UNPERMUTED exp
+        children (np.array): (num_reg - num_vox, 2) this outer perm's tree
+        base_seed (int): draw i uses seed base_seed + i
+        n_perm (int): number of inner FL draws
+        min_vox (int): regions smaller than this are left NaN
+        outer_perm (int): outer FL permutation index, 0 for the observed
+        perm_chunk (int): draws per device chunk
+
+    Returns:
+        mu (np.array): (num_reg,) inner-null mean per region
+        std (np.array): (num_reg,) inner-null std per region
+    """
+    import torch
+
+    state = prep_tree(shared, children=children, min_vox=min_vox,
+                      outer_perm=outer_perm)
+    perms = _build_perms(base_seed, n_perm, shared['num_img'])
+    src = _build_perm_inv_tensor(perms, state['dev'])
+
+    num_reg = state['num_reg']
+    dev = state['dev']
+    n = torch.zeros(num_reg, dtype=torch.float64, device=dev)
+    mean = torch.zeros(num_reg, dtype=torch.float64, device=dev)
+    m2 = torch.zeros(num_reg, dtype=torch.float64, device=dev)
+    for s_i in range(0, n_perm, perm_chunk):
+        llr, valid = _chunk_llr(src[s_i:s_i + perm_chunk], state)
         n, mean, m2 = _chan_combine(llr, valid, n, mean, m2)
     return _chan_finalize(n, mean, m2)
