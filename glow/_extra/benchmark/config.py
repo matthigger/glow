@@ -161,7 +161,7 @@ ana_kwargs_dict = {
 # right, and a checked-in True would break every CPU-only runner. Both knobs
 # multiply against the sweep's own -j; driver.check_fit_params refuses the
 # products that would oversubscribe.
-GLOW_FIT_N_JOBS = 32
+GLOW_FIT_N_JOBS = 10
 GLOW_FIT_PARAMS = dict(n_jobs=GLOW_FIT_N_JOBS, gpu='auto')
 
 
