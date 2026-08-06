@@ -38,24 +38,23 @@ WGN and HCP share each cache (both sources in one data grid); they face apart
 on the recorded source column downstream. HCP has no num_img axis (its N is
 the cohort), so the num_img sweep is WGN-only.
 
-Scope. Most caches share the run_ana leaf (fit + score one Analysis per cell):
-null, sweep_llr, sweep_extent, sweep_nimg. Four caches swap in
-their own leaf over those same grids: segment (run_segment, a Ward-mode
-oracle, no fit), min_size (run_min_size, per-perm staircases, recorded not
-scored), stat (run_stat, a VBA / CET variant reading a shared voxel-stat
-walk), and prune (run_prune, three pruning rules on a shared GLOW fit).
-two-effect reuses the run_ana leaf unchanged -- score_effects already scores
-each planted half (target0 / target1) -- over a split effect stage
-(effect_factory kind='split').
+Every cache here backs a figure, table or quantitative claim in the paper, bar
+smoke (an end-to-end pipeline check). Adding one is cheap; the catalogue is
+kept at what is cited.
 
-Runtime. A separate family measures wall time, not detection (HCP-only, so
-local-only): runtime (run_ana_time over a num_vox sweep, 1k -> full HCP, all
-methods), and four that time one piece of GLOW each -- runtime_segment
-(run_segment_time, Ward clustering per mode over the same num_vox sweep),
-runtime_n_perm_fwer / runtime_n_perm_inner (run_perm_fwer / run_perm_inner,
-GLOW's outer / inner perms at 1k voxels), and runtime_b (run_ana_time over the
-b sweep). run_ana_time fits every method at n_jobs=-1, so the curves are the
-wall-clock a user waits on an N-core machine. See the runtime section below.
+Scope. Three caches share the run_ana leaf (fit + score one Analysis per cell):
+null, sweep_llr, sweep_extent. Three swap in their own leaf over those same
+grids: segment (run_segment, a Ward-mode oracle, no fit), stat (run_stat, a
+VBA / CET variant reading a shared voxel-stat walk), and prune (run_prune,
+three pruning rules on a shared GLOW fit).
+
+Runtime. A separate family measures wall time, not detection, and runs locally
+only: runtime (run_ana_time over a num_vox sweep, 1k -> full HCP, all methods),
+and three that time GLOW alone -- runtime_n_perm_fwer / runtime_n_perm_inner
+(run_perm_fwer / run_perm_inner, GLOW's outer / inner perms at the shared crop)
+and runtime_b / runtime_nimg (run_ana_time over the b and num_img sweeps).
+run_ana_time fits every method at n_jobs=-1, so the curves are the wall-clock a
+user waits on an N-core machine. See the runtime section below.
 
 Convergence. sweep_n_perm_inner is the detection-side counterpart to
 runtime_n_perm_inner: run_inner_edge samples each outer perm's inner null once
@@ -78,9 +77,8 @@ from glow.analysis.mancova import (get_hotel_tr, get_wilks, stat_dict,
 from glow.effect import ExtenterMinVar, ExtenterSphere
 
 from . import hcp
-from .run import (run_ana, run_ana_time, run_inner_edge, run_min_size,
-                  run_perm_fwer, run_perm_inner, run_prune,
-                  run_segment, run_segment_time, run_stat)
+from .run import (run_ana, run_ana_time, run_inner_edge, run_perm_fwer,
+                  run_perm_inner, run_prune, run_segment, run_stat)
 
 
 # ---------- shared knobs ------------------------------------------------------
@@ -114,23 +112,16 @@ N_PERM_INNER = 1000
 ALPHA_FWER = 0.05
 
 # Structural grids. B caps at the HCP pool (6) so every HCP cell is feasible;
-# the extent grid spans 1%..100% of the volume; the subject grid is WGN-only.
+# the extent grid spans 1%..100% of the volume; the subject grid is WGN-only
+# (HCP's N is its cohort), and times the fit rather than scoring it -- it is
+# the runtime_nimg axis (see the runtime section).
 B_GRID = list(range(1, len(hcp.HCP_FEATS) + 1))
 # the llr sweep's feature-count axis: b = 1 (the univariate power curve) plus
-# two low-b multivariate counterparts. A subset of B_GRID, swept alongside
+# its low-b multivariate counterpart. A subset of B_GRID, swept alongside
 # effect_llr in one cache (see the sweep_llr entry).
 B_LLR_SWEEP = (1, 2)
 EXTENT_FRAC_GRID = list(np.geomspace(0.01, 1.0, 15))
 NIMG_GRID = [10, 18, 30, 55, 100, 180, 300]
-
-# Two-effect (cleaving) grids. The angle between the two effects' feature
-# directions sweeps 0..90 deg in 10 steps; the per-voxel llr spans weaker SNRs
-# (at 25k a ~1250-vox half is very high-SNR at the moderate llr, where GLOW
-# favours the merged region), the right level read off the resulting ARI /
-# dice curves. b=3 so the direction rotation has a plane to turn in.
-B_TWO_EFFECT = 3
-ANGLE_GRID = [float(a) for a in np.linspace(0, 90, 10)]
-TWO_EFFECT_LLR_GRID = [0.003, 0.01, 0.03]
 
 
 # ---------- analysis recipes -------------------------------------------------
@@ -208,13 +199,6 @@ def filter_ana_list(kwargs_fnc_list, labels) -> list:
 # str(mode), recovered from the record at read time.
 SEGMENT_MODES = [ClusterMode.NAIVE, ClusterMode.GLM_ERROR, ClusterMode.FOCUS]
 RUN_SEGMENT_LIST = [dict(cluster_mode=mode) for mode in SEGMENT_MODES]
-
-# the min_size cache's leaf grid: one run_min_size call capturing GLOW's
-# per-perm (size -> max-z) staircases (its one method, GLOW), swept over
-# min_vox post hoc from the recorded curves. Its trial seeds are offset clear
-# of the other sweeps (MIN_SIZE_SEED_OFFSET), each its own HCP null.
-MIN_SIZE_SEED_OFFSET = 100_000
-RUN_MIN_SIZE_LIST = [dict(n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER)]
 
 
 def get_run_stat_list():
@@ -364,17 +348,21 @@ def get_kwargs_effect_list(*, llr_list=(MODERATE_EFFECT_LLR,),
     return kwargs_effect_list
 
 
-def get_kwargs_two_effect_list(*, llr_list=TWO_EFFECT_LLR_GRID,
-                               angle_list=ANGLE_GRID,
+def get_kwargs_two_effect_list(*, llr_list, angle_list,
                                n_vox_frac=EFFECT_N_VOX_FRAC,
                                extenter_cls=ExtenterMinVar):
-    """Build the cleaving grid: effect_factory_split kwargs over (llr, angle).
+    """Build a cleaving grid: effect_factory_split kwargs over (llr, angle).
 
     Two adjacent equal-LLR effects planted on the spectral halves of one n_vox
     extent, their feature directions angle degrees apart. Each cell carries
     kind='split' and seed_from_exp=True, so both the support placement and the
     direction pair are derived from the experiment (see effect_factory_split).
     The angle sweep at fixed llr is the cleaving / merge-cost curve.
+
+    No CONFIG cache declares this grid; it is the entry point for adding one
+    (the split effect stage it feeds stays wired up and tested). Hence llr_list
+    and angle_list are required -- the sweep's shape is the caller's to choose.
+    b=3 or more gives the direction rotation a plane to turn in.
 
     extenter_cls is the split base: ExtenterMinVar (the default) grows the
     lowest-variance region from its own seeded start -- the same data-driven
@@ -399,15 +387,21 @@ def get_kwargs_two_effect_list(*, llr_list=TWO_EFFECT_LLR_GRID,
             for llr, angle in itertools.product(llr_list, angle_list)]
 
 
-# ---------- runtime benchmarks (HCP-only, local-only) -----------------------
+# ---------- runtime benchmarks (local-only) ---------------------------------
 # Wall-time scaling of the methods, not detection. The effect is the moderate
 # default (10% of each cell's volume, see get_kwargs_effect_list); only the
-# timed axis varies. HCP-only, so these run locally -- the AWS worker has no
-# HCP data (see hcp / the aws package). Each cache gets its own seed offset so
-# its leaf timings are cold (never served from another cache's cached fit) and
-# independent. The timed leaves are run.run_perm_fwer / run_perm_inner /
-# run_segment_time; runtime and runtime_b use run_ana_time (fit at n_jobs=-1,
-# time_sec the fit wall time, num_vox returned bare -- no detection scoring).
+# timed axis varies. Local-only: a Batch array lands on whatever Spot instance
+# type is free, so a time recorded there is hardware variance rather than cost
+# (the CLI warns -- see benchmark.__main__.confirm_aws), and the HCP caches
+# have no worker-side data anyway (see hcp / the aws package). Each cache gets
+# its own seed offset so its leaf timings are cold (never served from another
+# cache's cached fit) and independent. The timed leaves are run.run_perm_fwer /
+# run_perm_inner; runtime / runtime_b / runtime_nimg use run_ana_time (fit at
+# n_jobs=-1, time_sec the fit wall time, num_vox returned bare -- no scoring).
+#
+# Between them these caches cover the cost model the paper claims: linear in
+# num_vox (runtime), linear in num_img (runtime_nimg) and quadratic in b
+# (runtime_b), plus the two permutation counts.
 RUNTIME_N_SEED = 3
 
 # num_vox sweep: 1k -> the full HCP support (224,619 voxels, one connected
@@ -424,25 +418,36 @@ RUNTIME_GLOW_MODES = [('GLOW-Focus', ClusterMode.FOCUS),
 RUNTIME_N_PERM_FWER_GRID = [50, 100, 200, 400, 800]
 RUNTIME_N_PERM_INNER_GRID = [250, 500, 1_000, 2_000, 4_000]
 
-# per-cache seed offsets, clear of each other and of MIN_SIZE_SEED_OFFSET, so
-# no two runtime caches share a data cell (hence a cached leaf timing).
+# The num_img sweep's crop. Small (not CROP_N_VOX): the claim is a slope in
+# num_img, so the cheapest volume that still exercises the whole fit will do,
+# and NIMG_GRID's 30x span is where the signal is.
+RUNTIME_NIMG_CROP_N_VOX = 4_000
+
+# per-cache seed offsets, clear of each other, so no two runtime caches share a
+# data cell (hence a cached leaf timing).
 RUNTIME_SEED_OFFSET = {
     'runtime': 200_000,
-    'runtime_segment': 210_000,
     'runtime_n_perm_fwer': 220_000,
     'runtime_n_perm_inner': 230_000,
     'runtime_b': 240_000,
+    'runtime_nimg': 250_000,
 }
 
 
-def get_kwargs_data_runtime(*, seed_offset, crop_n_vox_list, b_list=(1,)):
-    """Build the HCP data grid for a runtime cache (num_vox = crop, HCP only).
+def get_kwargs_data_runtime(*, seed_offset, crop_n_vox_list, b_list=(1,),
+                            sources=('hcp',), num_img_list=(100,)):
+    """Build the data grid for a runtime cache (num_vox = the analysis crop).
 
     Concatenates get_kwargs_data_list over crop_n_vox_list, so one grid spans
-    several analysis volumes (each an ExtenterSphere crop of the HCP brain).
-    HCP only (the runtime caches are local-only) and RUNTIME_N_SEED seeds from
-    seed_offset, keeping each cache's cells (and their cached leaf timings)
-    distinct.
+    several analysis volumes (each an ExtenterSphere crop), with RUNTIME_N_SEED
+    seeds from seed_offset -- keeping each cache's cells (and their cached leaf
+    timings) distinct.
+
+    HCP by default, the paper's real data. The num_img sweep passes
+    sources=['wgn'] instead, because HCP's N is its fixed cohort: data_factory
+    has no subject-subset axis, and adding one would rehash every HCP cell of
+    every cache. Timing is a function of the (b, num_img, num_vox) shapes, not
+    of what filled the array, so WGN measures the num_img slope faithfully.
 
     Args:
         seed_offset (int): first seed; the cache uses
@@ -450,15 +455,18 @@ def get_kwargs_data_runtime(*, seed_offset, crop_n_vox_list, b_list=(1,)):
         crop_n_vox_list (iterable[int]): analysis-crop sizes to span (the
             num_vox axis); a single-element list for the fixed-size caches.
         b_list (iterable[int]): imaging-feature counts (HCP draws a subset).
+        sources (iterable[str]): 'wgn' and/or 'hcp'.
+        num_img_list (iterable[int]): subject counts (WGN only).
 
     Returns:
-        list[dict]: kwargs for data_factory (source='hcp'), one per cell.
+        list[dict]: kwargs for data_factory, one per cell.
     """
     seeds = range(seed_offset, seed_offset + RUNTIME_N_SEED)
     kwargs_data_list = []
     for crop_n_vox in crop_n_vox_list:
         kwargs_data_list += get_kwargs_data_list(
-            sources=['hcp'], seeds=seeds, b_list=b_list, crop_n_vox=crop_n_vox)
+            sources=list(sources), seeds=seeds, b_list=b_list,
+            num_img_list=num_img_list, crop_n_vox=crop_n_vox)
     return kwargs_data_list
 
 
@@ -485,12 +493,7 @@ RUN_INNER_EDGE_LIST = [
          n_perm_fwer=N_PERM_FWER)
     for label, mode in RUNTIME_GLOW_MODES]
 
-# segmentation timing: one run_segment_time per Ward mode (the segment cache's
-# modes), the mode riding as both cluster_mode and label.
-RUN_SEGMENT_TIME_LIST = [dict(cluster_mode=mode, label=str(mode))
-                         for mode in SEGMENT_MODES]
-
-# the two GLOW arms of RUN_ANA_LIST (runtime / runtime_b are GLOW only);
+# the two GLOW arms of RUN_ANA_LIST (the run_ana_time caches are GLOW only);
 # selected by the ana_kwargs_dict key (the method name is not on the cell)
 GLOW_ANA_LIST = [dict(ana=ana) for label, ana in ana_kwargs_dict.items()
                  if label.startswith('GLOW')]
@@ -506,13 +509,13 @@ CONFIG = {
         get_kwargs_data_list(seeds=range(N_SEED_NULL)),
         get_kwargs_effect_list(llr_list=None),
         RUN_ANA_LIST, run_ana),
-    # B. Detection vs effect strength over b = 1 / 2 / 3 imaging features (the
-    #    univariate power curve and its two low-b multivariate counterparts) in
-    #    one sweep over (b, effect_llr); HCP draws a random b-subset per seed.
-    #    b rides the data grid alongside the full effect_llr grid, so the plot
-    #    holds b fixed per figure (plot.plot_cache splits on it). The b=1 slice
-    #    matches the standalone anchor the other caches plant, and every b's
-    #    midpoint llr coincides with the moderate-effect anchor.
+    # B. Detection vs effect strength at b = 1 and b = 2 (the univariate power
+    #    curve and its low-b multivariate counterpart) in one sweep over
+    #    (b, effect_llr); HCP draws a random b-subset per seed. b rides the
+    #    data grid alongside the full effect_llr grid, so the plot holds b
+    #    fixed per figure (plot.plot_cache splits on it) -- one each. The b=1
+    #    slice matches the standalone anchor the other caches plant, and every
+    #    b's midpoint llr coincides with the moderate-effect anchor.
     'sweep_llr': (
         get_kwargs_data_list(b_list=B_LLR_SWEEP),
         get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
@@ -522,11 +525,6 @@ CONFIG = {
         get_kwargs_data_list(),
         get_kwargs_effect_list(n_vox_frac_list=EXTENT_FRAC_GRID),
         RUN_ANA_LIST, run_ana),
-    # E. Detection vs subject count (WGN only; HCP's N is its cohort).
-    'sweep_nimg': (
-        get_kwargs_data_list(sources=['wgn'], num_img_list=NIMG_GRID),
-        get_kwargs_effect_list(),
-        RUN_ANA_LIST, run_ana),
     # F. Segmentation quality: oracle best-Dice region per Ward mode (Naive /
     #    GLM Error / Focus), no significance test or pruning. Same grids as
     #    the b=1 llr sweep; the leaf is run_segment over the mode grid.
@@ -534,15 +532,6 @@ CONFIG = {
         get_kwargs_data_list(),
         get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
         RUN_SEGMENT_LIST, run_segment),
-    # J. Min-size sweep: per-perm (size -> max-z) staircases on HCP, mirroring
-    #    the b=1 llr sweep's effect grid, so min_vox sweeps post hoc from one
-    #    run. Seeds are offset clear of the other sweeps; HCP only.
-    'min_size': (
-        get_kwargs_data_list(
-            sources=['hcp'],
-            seeds=range(MIN_SIZE_SEED_OFFSET, MIN_SIZE_SEED_OFFSET + N_SEED)),
-        get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
-        RUN_MIN_SIZE_LIST, run_min_size),
     # G. MANCOVA stat comparison: VBA / VBA-TFCE / CET x 5 stats x {raw, z}
     #    (b=2 so the multivariate stats differ). The cell's variants share one
     #    voxel-stat walk (run_stat -> voxel_stat_walk). GLOW excluded.
@@ -559,14 +548,6 @@ CONFIG = {
         get_kwargs_data_list(),
         get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
         RUN_PRUNE_LIST, run_prune),
-    # I. Cleaving: two adjacent equal-LLR effects; sweep the angle between
-    #    their feature directions (0..90 deg). The leaf is run_ana unchanged --
-    #    score_effects already scores the prediction against each planted half
-    #    (target0 / target1); only the effect stage differs (kind='split').
-    'two-effect': (
-        get_kwargs_data_list(b_list=[B_TWO_EFFECT]),
-        get_kwargs_two_effect_list(),
-        RUN_ANA_LIST, run_ana),
     # Smoke: tiny null sweep over both sources to confirm the pipeline end to
     # end (not a paper figure). The null path with only a small crop and few
     # seeds overridden (see SMOKE_* above). WGN and HCP cells (3 each); on AWS
@@ -578,24 +559,17 @@ CONFIG = {
         get_kwargs_effect_list(llr_list=None),
         RUN_ANA_LIST, run_ana),
     # Runtime: wall time vs num_vox (1k -> full HCP), all methods, b=1, the
-    # moderate effect. run_ana_time fits at n_jobs=-1 (all cores) so the curve
-    # is the wall-clock a user waits on an N-core machine, every method
-    # parallelised alike. HCP-only / local-only: the AWS worker has no HCP data,
-    # and Spot instance-type variance would make time_sec meaningless anyway.
+    # moderate effect -- the paper's num_vox-linearity figure. run_ana_time
+    # fits at n_jobs=-1 (all cores) so the curve is the wall-clock a user waits
+    # on an N-core machine, every method parallelised alike. HCP-only and
+    # local-only: the AWS worker has no HCP data, and Spot instance-type
+    # variance would make time_sec meaningless anyway.
     'runtime': (
         get_kwargs_data_runtime(
             seed_offset=RUNTIME_SEED_OFFSET['runtime'],
             crop_n_vox_list=RUNTIME_NUM_VOX_GRID),
         get_kwargs_effect_list(),
         RUN_ANA_LIST, run_ana_time),
-    # Runtime (segmentation): Ward-clustering wall time vs num_vox per mode
-    # (Naive / GLM Error / Focus); run_segment_time times cluster only.
-    'runtime_segment': (
-        get_kwargs_data_runtime(
-            seed_offset=RUNTIME_SEED_OFFSET['runtime_segment'],
-            crop_n_vox_list=RUNTIME_NUM_VOX_GRID),
-        get_kwargs_effect_list(),
-        RUN_SEGMENT_TIME_LIST, run_segment_time),
     # Runtime (n_perm_fwer): outer-loop wall time vs n_perm_fwer at the shared
     # crop (CROP_N_VOX), GLOW only, n_perm_inner held at N_PERM_INNER.
     'runtime_n_perm_fwer': (
@@ -613,12 +587,25 @@ CONFIG = {
         get_kwargs_effect_list(),
         RUN_PERM_INNER_LIST, run_perm_inner),
     # Runtime (b): fit wall time vs feature count b (1..6) at the shared crop
-    # (CROP_N_VOX), GLOW only. b rides the data grid; the leaf is
-    # run_ana_time (n_jobs=-1).
+    # (CROP_N_VOX), GLOW only -- the paper's b-quadratic claim. b rides the
+    # data grid; the leaf is run_ana_time (n_jobs=-1).
     'runtime_b': (
         get_kwargs_data_runtime(
             seed_offset=RUNTIME_SEED_OFFSET['runtime_b'],
             crop_n_vox_list=[CROP_N_VOX], b_list=B_GRID),
+        get_kwargs_effect_list(),
+        GLOW_ANA_LIST, run_ana_time),
+    # Runtime (num_img): fit wall time vs subject count (NIMG_GRID, 10 -> 300)
+    # at a small crop, GLOW only -- the paper's N-linearity claim. WGN, alone
+    # in this family: HCP's N is its fixed cohort, and giving data_factory a
+    # subject-subset axis would rehash every HCP cell everywhere. Timing turns
+    # on the array shapes, not on what filled them, so WGN measures the slope
+    # faithfully (see get_kwargs_data_runtime).
+    'runtime_nimg': (
+        get_kwargs_data_runtime(
+            seed_offset=RUNTIME_SEED_OFFSET['runtime_nimg'],
+            crop_n_vox_list=[RUNTIME_NIMG_CROP_N_VOX], sources=['wgn'],
+            num_img_list=NIMG_GRID),
         get_kwargs_effect_list(),
         GLOW_ANA_LIST, run_ana_time),
     # n_perm_inner convergence: the detection-side counterpart to

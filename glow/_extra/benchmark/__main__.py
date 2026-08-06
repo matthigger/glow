@@ -25,6 +25,9 @@ data cells as a Batch array job and writes the same per-config CSVs from the
 shared records when they drain (see glow._extra.aws). This is the one CLI for a
 benchmark run, local or cloud; provisioning the AWS resources is a separate
 concern (python -m glow._extra.aws -- bootstrap / setup / status / ...).
+Selecting a timing cache (runtime*) for --aws warns and asks before submitting
+anything: a Batch array cannot measure wall time, since its Spot instance type
+varies. Declining is the default and aborts the sweep (see confirm_aws).
 
 Usage:
     python -m glow._extra.benchmark                    # everything (local)
@@ -37,6 +40,7 @@ Usage:
     python -m glow._extra.benchmark --list             # list cache names
 """
 import argparse
+import sys
 from fnmatch import fnmatch
 
 
@@ -77,6 +81,63 @@ def resolve_names(patterns) -> list:
                 seen.add(k)
                 out.append(k)
     return out
+
+
+# Cache names matching this measure wall time (the runtime family). A Batch
+# array lands on whatever Spot instance type is free, so the recorded time_sec
+# would be hardware variance rather than the algorithm's cost -- measurably so:
+# the one timing-bearing cache that did reach AWS spread 10x (100 s .. 2384 s)
+# at a fixed grid point. Matched on the name, so adding a cache needs no
+# bookkeeping here; --aws only warns, leaving the call to the user.
+AWS_WARN_PATTERN = 'runtime*'
+
+
+def confirm_aws(resolved, input_fnc=None) -> bool:
+    """Warn when an AWS sweep selects a timing cache; ask whether to go on.
+
+    The runtime family (AWS_WARN_PATTERN) measures wall time, which a Batch
+    array cannot: its Spot instance type varies. Rather than bar them, warn and
+    let the user decide -- answering no aborts the whole sweep, so nothing is
+    submitted and no name is silently dropped.
+
+    Declining is the default, including when there is no terminal to ask (a
+    piped or scripted run), so an unattended --aws cannot spend on timings that
+    would be meaningless anyway.
+
+    Args:
+        resolved (list): cache names from resolve_names.
+        input_fnc (Callable | None): prompt function taking the prompt string,
+            for tests; None reads a terminal, declining when stdin is not one.
+
+    Returns:
+        True when the sweep should go ahead (no timing cache selected, or the
+            user confirmed).
+    """
+    timing = [name for name in resolved if fnmatch(name, AWS_WARN_PATTERN)]
+    if not timing:
+        return True
+
+    print(f'WARNING: {len(timing)} selected cache(s) measure wall time: '
+          f'{timing}\n'
+          f'  A Batch array lands on whatever Spot instance type is free, so '
+          f'their\n'
+          f'  recorded time_sec would be hardware variance, not algorithm '
+          f'cost.\n'
+          f'  They are meant to run locally (drop --aws).')
+
+    if input_fnc is None:
+        if not sys.stdin.isatty():
+            print('  no terminal to ask; nothing submitted')
+            return False
+        input_fnc = input
+    try:
+        reply = input_fnc('  submit them to AWS anyway? [y/N] ')
+    except EOFError:
+        reply = ''
+    if reply.strip().lower() in ('y', 'yes'):
+        return True
+    print('  aborted; nothing submitted')
+    return False
 
 
 def _report_csvs(written: dict) -> None:
@@ -125,6 +186,8 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
     Batch array job and writes the same CSVs from the shared records when they
     drain. The local HCP dataset is not loaded in this mode (the workers own
     the data), and n_jobs does not apply (the Batch array is the parallelism).
+    A selected timing cache prompts first (confirm_aws) -- a Batch array's Spot
+    instance type varies, so it cannot measure wall time.
 
     The HCP reference dataset is ensured once up front (idempotent / cached)
     for the HCP-backed caches in a local run, except under csv_only / aws,
@@ -167,6 +230,8 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
         return written
 
     if aws:
+        if not confirm_aws(resolved):
+            return {}
         from glow._extra.aws import AWSConfig, drive_aws
         aws_config = (AWSConfig.from_file(aws_config_path) if aws_config_path
                       else AWSConfig.from_file())
