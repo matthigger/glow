@@ -17,10 +17,9 @@ import pytest
 
 from glow._extra.benchmark import data
 from glow._extra.benchmark.run import (glow_fit_for_prune, run_ana,
-                                       run_inner_edge, run_min_size,
-                                       run_perm_fwer, run_perm_inner, run_prune,
-                                       run_segment, run_segment_time, run_stat,
-                                       voxel_stat_walk)
+                                       run_inner_edge, run_perm_fwer,
+                                       run_perm_inner, run_prune, run_segment,
+                                       run_stat, voxel_stat_walk)
 from glow.analysis import AnalysisGLOW, AnalysisVBA
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr, get_wilks, stat_dict_inv
@@ -176,37 +175,6 @@ class TestRunSegment:
         # a different Ward mode is its own segmentation -> distinct cache entry
         assert not run_segment.check_call_in_cache(
             exp, [mask], ClusterMode.NAIVE)
-
-
-# ---------------------------------------------------------------------------
-# run_min_size: capture GLOW's per-perm (size -> max-z) staircases (no score)
-# ---------------------------------------------------------------------------
-
-class TestRunMinSize:
-    def _planted(self):
-        exp = data.data_factory_wgn(shape=(6, 6, 6), b=2, num_img=20, a=1,
-                                    seed=_fresh_seed())
-        exp_eff, (mask,) = data.effect_factory(
-            exp, effect_llr=0.1, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
-            seed=0)
-        return exp_eff, mask
-
-    def test_returns_one_curve_per_outer_perm(self):
-        exp, mask = self._planted()
-        curve = run_min_size(exp, [mask], n_perm_fwer=4, n_perm_inner=20)
-        parsed = json.loads(curve)
-        # n_perm_fwer + 1 staircases (k=0 observed); each lists [size, max_z]
-        assert len(parsed) == 5
-        for staircase in parsed:
-            assert all(len(corner) == 2 for corner in staircase)
-
-    def test_min_vox_floor_is_a_cache_axis(self):
-        # the lower bound changes which regions get a z -> distinct curves
-        exp, mask = self._planted()
-        run_min_size(exp, [mask], n_perm_fwer=4, n_perm_inner=20,
-                     min_vox_floor=1)
-        assert not run_min_size.check_call_in_cache(
-            exp, [mask], n_perm_fwer=4, n_perm_inner=20, min_vox_floor=3)
 
 
 # ---------------------------------------------------------------------------
@@ -390,18 +358,6 @@ class TestRuntimeLeaves:
         run_perm_inner(exp, [mask], n_perm_inner=8)
         assert not run_perm_inner.check_call_in_cache(
             exp, [mask], n_perm_inner=16)
-
-    def test_segment_time_returns_num_vox(self):
-        exp, mask = self._planted()
-        num_vox = run_segment_time(exp, [mask], ClusterMode.FOCUS)
-        assert num_vox == int((exp.mask_idx > -1).sum())
-
-    def test_segment_time_mode_is_a_cache_axis(self):
-        exp, mask = self._planted()
-        run_segment_time(exp, [mask], ClusterMode.FOCUS)
-        # a different Ward mode is its own segmentation -> distinct cache entry
-        assert not run_segment_time.check_call_in_cache(
-            exp, [mask], ClusterMode.NAIVE)
 
     def test_label_ignored_in_cache_key(self):
         exp, mask = self._planted()

@@ -24,15 +24,14 @@ from glow.effect import ExtenterMinVar
 
 # every paper-figure cache, and the subset whose leaf is run_ana (the rest
 # carry their own fnc + kwargs grid -- segment its Ward-mode oracle, etc.)
-LABELS = ['null', 'sweep_llr', 'sweep_extent', 'sweep_nimg', 'segment',
-          'min_size', 'stat', 'prune', 'two-effect']
-RUN_ANA_LABELS = ['null', 'sweep_llr', 'sweep_extent', 'sweep_nimg',
-                  'two-effect']
-# non-paper helper caches in the catalogue (the tiny end-to-end smoke cache, the
-# runtime family, and the n_perm_inner convergence sweep); excluded from the
-# paper-cardinality checks below
-NON_PAPER_LABELS = ['smoke', 'runtime', 'runtime_segment',
-                    'runtime_n_perm_fwer', 'runtime_n_perm_inner', 'runtime_b',
+LABELS = ['null', 'sweep_llr', 'sweep_extent', 'segment', 'stat', 'prune']
+RUN_ANA_LABELS = ['null', 'sweep_llr', 'sweep_extent']
+# the rest of the catalogue: the tiny end-to-end smoke cache, the runtime
+# family (wall time, not detection), the n_perm_inner convergence sweep and the
+# race-retention check. Excluded from the paper-cardinality checks below, which
+# pin the figure caches' published trial counts.
+NON_PAPER_LABELS = ['smoke', 'runtime', 'runtime_n_perm_fwer',
+                    'runtime_n_perm_inner', 'runtime_b', 'runtime_nimg',
                     'sweep_n_perm_inner', 'race_maxz']
 # every catalogue entry (paper + helper); the shape / bind checks cover all
 ALL_LABELS = LABELS + NON_PAPER_LABELS
@@ -214,16 +213,12 @@ class TestGridCardinality:
             'sweep_llr': 2 * len(config.B_LLR_SWEEP) * config.N_SEED
             * len(config.EFFECT_LLR_GRID) * 5,
             'sweep_extent': 2 * config.N_SEED * len(config.EXTENT_FRAC_GRID) * 5,
-            'sweep_nimg': config.N_SEED * len(config.NIMG_GRID) * 5,
             'segment': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
             * len(config.SEGMENT_MODES),
-            'min_size': config.N_SEED * len(config.EFFECT_LLR_GRID),
             'stat': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
             * len(config.RUN_STAT_LIST),
             'prune': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
             * len(config.RUN_PRUNE_LIST),
-            'two-effect': 2 * config.N_SEED * len(config.TWO_EFFECT_LLR_GRID)
-            * len(config.ANGLE_GRID) * 5,
         }
 
     def test_null_plants_nothing(self):

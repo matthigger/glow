@@ -64,11 +64,10 @@ seed-mean with a 95% CI error bar vs effect_llr, x-dodged and styled per method
 with both Ward modes, so plot_prune draws one such grid per clustering mode
 (prune_Focus / prune_GLM_Error), a line per rule within each.
 
-With no arguments the CLI plots every cache it knows how to draw: the detection
+With no arguments the CLI plots every cache in the catalogue: the detection
 sweeps, the runtime family, the inner-edge and race-retention checks, the stat
 bake-off tables, and the segment / prune metric grids; passing names restricts
-it. min_size is the one catalogue cache still unplotted (its per-perm staircase
-leaf carries a different shape; see config).
+it.
 """
 import colorsys
 import json
@@ -257,16 +256,16 @@ _X_PARAM_LABELS = {
 # runtime caches: name -> (leaf column prefix, swept x-axis column). The
 # runtime family plots wall time (leaf.time_sec) against one swept cost knob;
 # unlike the detection sweeps the x is not inferred (time is the signal, the
-# effect is held at the moderate default). run_ana_time (runtime / runtime_b)
-# carries the method in the recipe (in.ana); every timing leaf returns num_vox
-# bare, and run_segment_time / run_perm_* record the method as an explicit
-# label. See config's runtime section.
+# effect is held at the moderate default). run_ana_time (runtime / runtime_b /
+# runtime_nimg) carries the method in the recipe (in.ana); every timing leaf
+# returns num_vox bare, and run_perm_* record the method as an explicit label.
+# See config's runtime section.
 _RUNTIME_SPEC = {
-    'runtime':              ('run_ana_time',     'num_vox'),
-    'runtime_b':            ('run_ana_time',     'b'),
-    'runtime_segment':      ('run_segment_time', 'num_vox'),
-    'runtime_n_perm_fwer':  ('run_perm_fwer',    'n_perm_fwer'),
-    'runtime_n_perm_inner': ('run_perm_inner',   'n_perm_inner'),
+    'runtime':              ('run_ana_time',   'num_vox'),
+    'runtime_b':            ('run_ana_time',   'b'),
+    'runtime_nimg':         ('run_ana_time',   'num_img'),
+    'runtime_n_perm_fwer':  ('run_perm_fwer',  'n_perm_fwer'),
+    'runtime_n_perm_inner': ('run_perm_inner', 'n_perm_inner'),
 }
 
 
@@ -656,7 +655,7 @@ def _draw_diff(ax, df, x: str, metric: str, *, one_label: str = 'GLOW',
 
 
 # WGN / HCP stack top-to-bottom, so the fixed order puts HCP first; a source
-# absent from the cache (sweep_nimg is WGN-only) just drops out.
+# absent from the cache (an HCP-only one, say) just drops out.
 _SOURCE_ORDER = ('HCP', 'WGN')
 
 
@@ -1446,12 +1445,12 @@ def tidy_runtime(name: str, raw):
     frame to one tidy row per timed leaf, reading the method label, the swept
     x-axis value, and the wall time. The leaf prefix and swept axis come from
     _RUNTIME_SPEC (time is the signal, so unlike the detection path the x is
-    not inferred from what varies). A run_ana_time cache (runtime / runtime_b)
-    reads the method off the recipe (in.ana), as tidy_run_ana does; the
-    dedicated leaves (run_segment_time / run_perm_*) record it as an explicit
-    label. Every timing leaf returns num_vox bare, so only the run_ana
-    detection path reads it from the recursed score. All runtime caches are
-    HCP-only, so the seed is the HCP data seed.
+    not inferred from what varies). A run_ana_time cache (runtime / runtime_b /
+    runtime_nimg) reads the method off the recipe (in.ana), as tidy_run_ana
+    does; the dedicated run_perm_* leaves record it as an explicit label. Every
+    timing leaf returns num_vox bare, so only the run_ana detection path reads
+    it from the recursed score. The seed is the data seed of the single source
+    the cache spans (HCP, or WGN for the num_img sweep).
 
     Args:
         name (str): the runtime cache name (a key of _RUNTIME_SPEC).
@@ -1514,8 +1513,8 @@ def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0) -> None:
     median line per method with a min-max band, wall time on a log y-axis and
     the swept knob on a log x-axis when it spans at least log_x_ratio (so the
     num_vox / permutation scaling reads as a slope; the small b sweep stays
-    linear). Methods use the shared palette (COLOR_ANALYSIS); the Ward-mode
-    labels of runtime_segment take a seaborn fallback (get_cmap_dict).
+    linear). Methods use the shared palette (COLOR_ANALYSIS), with a seaborn
+    fallback for any label outside it (get_cmap_dict).
 
     Args:
         name (str): cache name; used in the output filename.
@@ -1950,8 +1949,7 @@ def main(argv=None) -> None:
     normalised with tidy_segment / tidy_prune and drawn as a source x metric
     grid vs effect_llr: segment by plot_metric_grid, prune by plot_prune (one
     grid per Ward clustering mode). Figures / tables land in results/_latest,
-    so a mid-benchmark run yields intermediate output. min_size carries a
-    different leaf shape and is skipped.
+    so a mid-benchmark run yields intermediate output.
 
     Args:
         argv (list | None): CLI args to parse; None reads sys.argv. Positional

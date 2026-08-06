@@ -2,10 +2,9 @@
 
 Each leaf is one fnc(exp, mask_target_list=..., **kwargs) the driver runs on a
 (data, effect) cell. run_ana is the canonical leaf; run_segment is a sibling
-measuring segmentation quality (no fit); run_min_size captures GLOW's per-perm
-(size -> max-z) staircases (recorded as a curve, swept over min_vox post hoc
-rather than scored); run_stat fits one VBA / CET MANCOVA-stat variant reading a
-shared voxel-stat walk; run_prune scores one pruning rule on a shared GLOW fit.
+measuring segmentation quality (no fit); run_stat fits one VBA / CET
+MANCOVA-stat variant reading a shared voxel-stat walk; run_prune scores one
+pruning rule on a shared GLOW fit.
 All are @MEMORY.cache'd (so a record's key equals its cache id) and, where they
 score, score inline. The method name (GLOW-Focus, VBA-TFCE-Wilks-z, ...) is not
 passed or recorded: it is recovered from the recipe at read time from config.py
@@ -156,89 +155,6 @@ _SEED_OFFSET_DISTINCT = 100_000
 # draws; _welford_finalize leaves std NaN below).
 _INNER_GRID_MIN = 25
 _INNER_GRID_N = 20
-
-
-def _min_size_curves(exp, *, n_perm_fwer, n_perm_inner, min_vox_floor,
-                     cluster_mode) -> str:
-    """Capture each outer perm's (size -> max-z) staircase as JSON.
-
-    The min_size sweep's compute step. Borrows AnalysisGLOW's scaling +
-    (q0, q1) decomposition (so the curves match a real fit), then runs the
-    outer-perm loop by hand with the exact cpu_perm inner kernel, recording per
-    perm the size_max_z_curve corners. cpu_perm gives every region >=
-    min_vox_floor an exact z, so GLOW's max-z FWER null re-thresholds at any
-    min_vox >= min_vox_floor post hoc without re-fitting (the curve at the
-    fit-time min_vox reproduces AnalysisGLOW.max_z_null exactly).
-
-    Args:
-        exp (Experiment): the experiment with the synthetic effect imposed.
-        n_perm_fwer (int): outer FL perms (n_perm_fwer + 1 curves, incl. k=0).
-        n_perm_inner (int): inner FL draws per outer perm.
-        min_vox_floor (int): smallest region size given a z; the sweep's lower
-            bound (1 keeps the whole range available).
-        cluster_mode (ClusterMode): Ward projection.
-
-    Returns:
-        a JSON string of the per-perm [size, max_z] corner staircases
-        (curve_json; parse with json.loads).
-    """
-    # scale + decompose as AnalysisGLOW.fit does, so the curves match a real
-    # fit; the loop below is by hand to swap the racing kernel for cpu_perm.
-    exp_s = ExperimentScaled.from_exp(exp)
-    q0, q1, _ = decompose(x=exp_s.x, contrast=exp_s.contrast)
-
-    curve_list = []
-    for k in range(n_perm_fwer + 1):
-        _exp = exp_s.permute(k) if k else exp_s
-        children = cluster(_exp, mode=ClusterMode(cluster_mode))
-        llr_k, size = glow.graph.compute_llr_batched(
-            _exp, children=children, q0=q0, q1=q1)
-        mu, std = cpu_perm(
-            exp=_exp, base_seed=(k + 1) * _SEED_OFFSET_DISTINCT,
-            n_perm=n_perm_inner, q0=q0, q1=q1, children=children,
-            min_vox=min_vox_floor)
-        std_safe = np.where(std < 1e-12, 1.0, std)
-        z = np.nan_to_num((llr_k - mu) / std_safe,
-                          nan=0.0, posinf=0.0, neginf=np.nan)
-        consider = (size >= min_vox_floor) & np.isfinite(z)
-        curve_list.append(size_max_z_curve(size, z, consider))
-
-    return curve_json(curve_list)
-
-
-@MEMORY.cache
-@RECORDER(output_name='curve')
-def run_min_size(exp: Experiment, mask_target_list, *, n_perm_fwer,
-                 n_perm_inner, min_vox_floor=1,
-                 cluster_mode=ClusterMode.FOCUS):
-    """Capture GLOW's per-perm (size -> max-z) staircases for a min_vox sweep.
-
-    Records, it does not score. Runs GLOW's outer-perm loop on exp by hand (the
-    exact cpu_perm inner kernel; _min_size_curves) and returns the per-perm
-    (size -> max-z) corner staircases as a JSON string. With those, GLOW's
-    max-z FWER null is swept over min_vox post hoc without re-fitting -- the
-    sweep is derived from the records, not here. mask_target_list rides the
-    uniform leaf contract but is unused (the curves are a pure function of
-    exp); it stays in the cache key (deterministic in exp, so no axis added)
-    for uniformity with run_ana.
-
-    Args:
-        exp (Experiment): the experiment with the synthetic effect imposed.
-        mask_target_list (list): planted supports; accepted for the uniform
-            contract but unused (this leaf records curves, not a score).
-        n_perm_fwer (int): outer FL perms (n_perm_fwer + 1 curves, incl. k=0).
-        n_perm_inner (int): inner FL draws per outer perm.
-        min_vox_floor (int): smallest region size given a z; the sweep's lower
-            bound (1 keeps the whole range available).
-        cluster_mode (ClusterMode): Ward projection (default FOCUS).
-
-    Returns:
-        curve (str): a JSON string of the per-perm [size, max_z] corner
-            staircases (parse with json.loads; see score.curve_json).
-    """
-    return _min_size_curves(
-        exp, n_perm_fwer=n_perm_fwer, n_perm_inner=n_perm_inner,
-        min_vox_floor=min_vox_floor, cluster_mode=cluster_mode)
 
 
 @MEMORY.cache
@@ -489,33 +405,6 @@ def run_perm_inner(exp: Experiment, mask_target_list, *, n_perm_inner: int,
     return int(exp_s.y.shape[2])
 
 
-@MEMORY.cache(ignore=['label'])
-@RECORDER(output_name='num_vox')
-def run_segment_time(exp: Experiment, mask_target_list, cluster_mode,
-                     label=None) -> int:
-    """Time Ward segmentation in one mode (runtime leaf, cluster only).
-
-    The segmentation runtime sweep's leaf: scale exp and build its Ward tree in
-    cluster_mode (cluster), timing that and nothing else -- no significance
-    test, pruning, or oracle scoring -- so the recorded time_sec isolates the
-    clustering cost across modes (Naive / GLM Error / Focus). exp is scaled
-    (ExperimentScaled.from_exp) before clustering so the tree matches the one
-    AnalysisGLOW fits (as run_segment does).
-
-    Args:
-        exp (Experiment): the experiment to segment (raw or scaled).
-        mask_target_list (list): planted supports; unused (uniform contract).
-        cluster_mode (ClusterMode | str): the Ward projection to segment with.
-        label (str): mode label recorded beside the timing; not a cache axis.
-
-    Returns:
-        num_vox (int): the analyzed voxel count (recorded beside time_sec).
-    """
-    exp_s = ExperimentScaled.from_exp(exp)
-    cluster(exp_s, mode=ClusterMode(cluster_mode))
-    return int(exp_s.y.shape[2])
-
-
 @MEMORY.cache
 @RECORDER(output_name='num_vox')
 def run_ana_time(exp: Experiment, mask_target_list, ana: Analysis) -> int:
@@ -555,8 +444,7 @@ def run_ana_time(exp: Experiment, mask_target_list, ana: Analysis) -> int:
 # of timing the inner null it captures how the max-z FWER threshold converges as
 # num_inner_perm grows. The inner draws are seeded base_seed + i, so a single
 # sampling to depth max_inner_perm contains every smaller run as a prefix -- one
-# capture yields the whole curve, no re-fitting per num_inner_perm (cf.
-# run_min_size, which sweeps min_vox from one capture).
+# capture yields the whole curve, no re-fitting per num_inner_perm.
 
 
 def _inner_grid(max_inner_perm: int) -> list:
@@ -616,8 +504,8 @@ def _inner_edge_curve(exp, *, cluster_mode, max_inner_perm: int,
                       n_perm_fwer: int, min_vox: int) -> str:
     """Capture each outer perm's max-z as a function of num_inner_perm.
 
-    Runs GLOW's outer-perm loop by hand (mirroring AnalysisGLOW._run_outer, as
-    _min_size_curves does), but samples the inner FL null once to depth
+    Runs GLOW's outer-perm loop by hand (mirroring AnalysisGLOW._run_outer),
+    but samples the inner FL null once to depth
     max_inner_perm per outer perm and snapshots the per-region max-z at each
     num_inner_perm on _inner_grid. Because draws[:m] is the exact draw set a real
     n_perm_inner=m fit uses (nested seeds base + i, matching AnalysisGLOW's
