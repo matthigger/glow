@@ -87,6 +87,17 @@ LEAF_IGNORE = ['exp', 'mask_target_list']
 # record stops naming its own cache entry.
 TIMING_IGNORE = [*LEAF_IGNORE, 'label']
 
+# fit_params (the kwargs a leaf forwards to Analysis.fit -- n_jobs, gpu) is an
+# execution knob, not a recipe knob, so it is filtered like exp: a cell fit on
+# 32 CPU workers and the same cell fit on the GPU are one artifact, cached and
+# recorded once. That is a claim about the backends, and it is the one
+# AnalysisGLOW.fit makes good on -- the device path draws the same permutations
+# from the same seeds in float64 and agrees to float round-off (test_fit_gpu.py)
+# -- so it holds only while fit_params carries no numerical knob. A
+# GpuConfig(acc_dtype=float32) does perturb max_z_null (~2e-3 relative), which
+# is why it is not what gpu=True selects and must not be swept from a config.
+FIT_IGNORE = [*LEAF_IGNORE, 'fit_params']
+
 # parent_uid is declared before every defaulted parameter below, not last where
 # a mandatory keyword would read more naturally: joblib's filter_args resolves
 # an omitted default by indexing its defaults list from the end of the
@@ -96,17 +107,18 @@ TIMING_IGNORE = [*LEAF_IGNORE, 'label']
 # arguments".
 
 
-@MEMORY.cache(ignore=LEAF_IGNORE)
+@MEMORY.cache(ignore=FIT_IGNORE)
 @RECORDER(output_name='score', recurse_out_list=['score'],
-          ignore=LEAF_IGNORE)
+          ignore=FIT_IGNORE)
 def run_ana(exp: Experiment, ana: Analysis, mask_target_list, *,
-            parent_uid: str):
+            parent_uid: str, fit_params=None):
     """Fit ana on exp and score it against the planted target(s).
 
-    Calls ana.fit(exp) (every Analysis scales exp on the way in and returns
-    self), then scores the discovered effects against the planted supports
-    with score_effects -- the uniform detection score a benchmark compares
-    across GLOW, VBA, CET, etc. without knowing the concrete type.
+    Calls ana.fit(exp, **fit_params) (every Analysis scales exp on the way
+    in and returns self), then scores the discovered effects against the
+    planted supports with score_effects -- the uniform detection score a
+    benchmark compares across GLOW, VBA, CET, etc. without knowing the
+    concrete type.
 
     Memoised on disk (MEMORY) with the recorder nested inside the cache,
     keyed by joblib's hash of (exp, ana, mask_target_list): a repeat is
@@ -133,6 +145,11 @@ def run_ana(exp: Experiment, ana: Analysis, mask_target_list, *,
             bool mask per EffectSynthetic (effect_factory's mask output);
             empty for the null / FWER-calibration path.
         parent_uid (str): the exp's declared uid (see the module docstring).
+        fit_params (dict | None): kwargs forwarded to ana.fit -- how the
+            fit runs (n_jobs, gpu), never what it computes. Filtered from
+            the cache key and the record (FIT_IGNORE), so the same cell run
+            on CPU or GPU is one artifact. None (default) takes fit's own
+            defaults: serial, CPU.
 
     Returns:
         score (dict): the detection score (see .score.score_effects):
@@ -140,7 +157,7 @@ def run_ana(exp: Experiment, ana: Analysis, mask_target_list, *,
             the target (+ per-effect target0..N) confusion blocks.
     """
     ana = copy.deepcopy(ana)
-    ana.fit(exp)
+    ana.fit(exp, **(fit_params or {}))
     return score_effects(ana, mask_target_list, mask_active=exp.mask_idx > -1)
 
 
@@ -452,10 +469,17 @@ def run_perm_inner(exp: Experiment, mask_target_list, *, parent_uid: str,
     return int(exp_s.y.shape[2])
 
 
-@MEMORY.cache(ignore=LEAF_IGNORE)
-@RECORDER(output_name='num_vox', ignore=LEAF_IGNORE)
+# run_ana_time's default fit_params: all cores, CPU. A dict literal rather
+# than a mutable module constant, so a caller cannot edit the default.
+def _default_time_fit_params() -> dict:
+    """Return the fit kwargs a timing leaf uses when a cell names none."""
+    return dict(n_jobs=-1)
+
+
+@MEMORY.cache(ignore=FIT_IGNORE)
+@RECORDER(output_name='num_vox', ignore=FIT_IGNORE)
 def run_ana_time(exp: Experiment, mask_target_list, ana: Analysis, *,
-                 parent_uid: str) -> int:
+                 parent_uid: str, fit_params=None) -> int:
     """Time one method's fit at full local parallelism (runtime leaf).
 
     The cross-method runtime sweep's leaf: fit ana on exp with n_jobs=-1 (all
@@ -466,6 +490,13 @@ def run_ana_time(exp: Experiment, mask_target_list, ana: Analysis, *,
     scores and times fit serially. The result is bit-identical to n_jobs=1 (the
     seed is derived from the permutation index, not the worker), so n_jobs is
     timing-only and never enters the recipe / cache identity.
+
+    fit_params overrides those kwargs and is filtered like run_ana's
+    (FIT_IGNORE), which for a timing leaf cuts both ways: a CPU timing and a
+    GPU timing of one cell collide on the same key, so the second is served
+    from the first's cache rather than measured. Timing a second backend means
+    clearing that entry, or giving the cache a recorded axis to face them apart
+    on -- there is none today.
 
     Kept distinct from run_ana so the detection caches (keyed on run_ana's code)
     are untouched, and so time_sec isolates fit alone (run_ana's spans fit plus
@@ -478,13 +509,16 @@ def run_ana_time(exp: Experiment, mask_target_list, ana: Analysis, *,
         mask_target_list (list): planted supports; unused (uniform contract).
         parent_uid (str): the exp's declared uid (see the module docstring).
         ana (Analysis): an unfitted analysis recipe (config knobs only).
+        fit_params (dict | None): kwargs forwarded to ana.fit; None
+            (default) times it at n_jobs=-1 on the CPU.
 
     Returns:
         num_vox (int): analyzed voxel count (mask_active.sum()), recorded beside
             time_sec as the sweep's x-axis.
     """
     ana = copy.deepcopy(ana)
-    ana.fit(exp, n_jobs=-1)
+    ana.fit(exp, **(fit_params if fit_params is not None
+                    else _default_time_fit_params()))
     return int((exp.mask_idx > -1).sum())
 
 

@@ -107,8 +107,8 @@ CROP_N_VOX = 25_000
 # tracks whatever num_vox each cell is cropped to (see get_kwargs_effect_list).
 EFFECT_N_VOX_FRAC = 0.1
 
-N_PERM_FWER = 250
-N_PERM_INNER = 1000
+N_PERM_FWER = 500
+N_PERM_INNER = 250
 ALPHA_FWER = 0.05
 
 # Structural grids. B caps at the HCP pool (6) so every HCP cell is feasible;
@@ -132,12 +132,9 @@ NIMG_GRID = [10, 18, 30, 55, 100, 180, 300]
 # voxel-wise arms z-score before the max-stat null.
 kwargs = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
 ana_kwargs_dict = {
-    'GLOW-Focus': AnalysisGLOW(n_perm_inner=N_PERM_INNER,
-                               cluster_mode=ClusterMode.FOCUS,
-                               **kwargs),
-    'GLOW-GLM':   AnalysisGLOW(n_perm_inner=N_PERM_INNER,
-                               cluster_mode=ClusterMode.GLM_ERROR,
-                               **kwargs),
+    'GLOW':   AnalysisGLOW(n_perm_inner=N_PERM_INNER,
+                           cluster_mode=ClusterMode.GLM_ERROR,
+                           **kwargs),
     'VBA':        AnalysisVBA(z_flag=True, tfce_flag=False,
                               get_stat=get_hotel_tr, **kwargs),
     'VBA-TFCE':   AnalysisVBA(z_flag=True, tfce_flag=True, get_stat=get_wilks,
@@ -146,11 +143,49 @@ ana_kwargs_dict = {
                               **kwargs),
 }
 
+# ---------- how a leaf's fit runs (never what it computes) -------------------
+# fit_params is forwarded to Analysis.fit by the leaf (run.run_ana) and is
+# filtered out of the cache key and the record (run.FIT_IGNORE), so it may vary
+# by machine without forking an artifact: a cell fit here on the GPU and the
+# same cell fit on an AWS Batch worker's cores are one recorded score.
+#
+# GLOW alone parallelises deeply enough to be worth configuring. The count is
+# an upper bound, clamped to the machine's cores at fit time
+# (glow.analysis.resolve_n_jobs), so this figure is the local workstation's and
+# a smaller box quietly uses what it has. What caps it is RAM, not cores: a
+# GLOW worker holds its own copy of y, ~1 GB at full-brain num_vox.
+#
+# gpu is 'auto', not True: the device backend is a pure speedup (same seeds,
+# float64, agreeing with the CPU fit to round-off -- see AnalysisGLOW.fit), so
+# taking it where a card exists and skipping it where none does is always
+# right, and a checked-in True would break every CPU-only runner. Both knobs
+# multiply against the sweep's own -j; driver.check_fit_params refuses the
+# products that would oversubscribe.
+GLOW_FIT_N_JOBS = 32
+GLOW_FIT_PARAMS = dict(n_jobs=GLOW_FIT_N_JOBS, gpu='auto')
+
+
+def fit_params_for(ana):
+    """Return the fit_params a recipe should run under, or None for defaults.
+
+    Args:
+        ana (Analysis): an analysis recipe.
+
+    Returns:
+        dict | None: GLOW_FIT_PARAMS for a GLOW recipe (the only one with a
+            device backend and deep parallelism), else None -- the voxel-wise
+            arms take fit's serial default and get their parallelism from the
+            sweep's own n_jobs.
+    """
+    return GLOW_FIT_PARAMS if isinstance(ana, AnalysisGLOW) else None
+
+
 # the leaf kwargs grid: one run_ana call per recipe, shared by every cache.
-# Only the ana rides into the cell; the method name (the ana_kwargs_dict key)
-# is recovered from the recipe at read time (see benchmark.plot), so it never
-# enters the call or the cache key.
-RUN_ANA_LIST = [dict(ana=ana) for ana in ana_kwargs_dict.values()]
+# Only the ana rides into the cell, plus how to run it; the method name (the
+# ana_kwargs_dict key) is recovered from the recipe at read time (see
+# benchmark.plot), so it never enters the call or the cache key.
+RUN_ANA_LIST = [dict(ana=ana, fit_params=fit_params_for(ana))
+                for ana in ana_kwargs_dict.values()]
 
 
 def filter_ana_list(kwargs_fnc_list, labels) -> list:
@@ -192,6 +227,37 @@ def filter_ana_list(kwargs_fnc_list, labels) -> list:
     keep = {repr(ana_kwargs_dict[label]) for label in labels}
     return [kwargs for kwargs in kwargs_fnc_list
             if 'ana' in kwargs and repr(kwargs['ana']) in keep]
+
+
+def strip_gpu(kwargs_fnc_list) -> list:
+    """Return the leaf grid with every fit_params gpu request removed.
+
+    The CPU-parallel path for a machine that has a card: a device leaf and a
+    parallel sweep cannot share it (driver.check_fit_params refuses the pair),
+    so this is how one sweep opts out of the device without editing the
+    catalogue. The fits it drops to the CPU compute the same thing (the two
+    backends agree to round-off, see AnalysisGLOW.fit), so the scores and the
+    records are unaffected.
+
+    Cells are rebuilt rather than mutated: the grids are module-level
+    singletons shared by every cache.
+
+    Args:
+        kwargs_fnc_list (iterable[dict]): a leaf-fnc kwargs grid.
+
+    Returns:
+        list[dict]: the same cells, each fit_params less its gpu key (dropped
+            entirely when gpu was all it held).
+    """
+    out = []
+    for kwargs in kwargs_fnc_list:
+        fit_params = kwargs.get('fit_params')
+        if not fit_params or 'gpu' not in fit_params:
+            out.append(kwargs)
+            continue
+        rest = {k: v for k, v in fit_params.items() if k != 'gpu'}
+        out.append({**kwargs, 'fit_params': rest or None})
+    return out
 
 
 # the segment cache's leaf grid: one run_segment call per Ward mode (Naive /
@@ -493,7 +559,15 @@ RUN_INNER_EDGE_LIST = [
          n_perm_fwer=N_PERM_FWER)
     for label, mode in RUNTIME_GLOW_MODES]
 
-# the two GLOW arms of RUN_ANA_LIST (the run_ana_time caches are GLOW only);
+# The runtime family's leaf grids carry no fit_params, so every method is
+# timed the way run_ana_time defaults: all cores, CPU. That is the honest
+# comparison the figure claims -- timing GLOW on a device against VBA on the
+# cores would compare hardware, not algorithms -- and it is also what the cache
+# requires, since fit_params does not key a leaf (run.FIT_IGNORE): a GPU timing
+# would be served from the CPU timing's entry rather than measured.
+RUN_ANA_TIME_LIST = [dict(ana=ana) for ana in ana_kwargs_dict.values()]
+
+# the two GLOW arms of it (the b / num_img runtime caches are GLOW only);
 # selected by the ana_kwargs_dict key (the method name is not on the cell)
 GLOW_ANA_LIST = [dict(ana=ana) for label, ana in ana_kwargs_dict.items()
                  if label.startswith('GLOW')]
@@ -569,7 +643,7 @@ CONFIG = {
             seed_offset=RUNTIME_SEED_OFFSET['runtime'],
             crop_n_vox_list=RUNTIME_NUM_VOX_GRID),
         get_kwargs_effect_list(),
-        RUN_ANA_LIST, run_ana_time),
+        RUN_ANA_TIME_LIST, run_ana_time),
     # Runtime (n_perm_fwer): outer-loop wall time vs n_perm_fwer at the shared
     # crop (CROP_N_VOX), GLOW only, n_perm_inner held at N_PERM_INNER.
     'runtime_n_perm_fwer': (

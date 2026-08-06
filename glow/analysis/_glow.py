@@ -7,7 +7,7 @@ from tqdm import tqdm
 import glow.effect
 import glow.graph
 from glow.experiment.exper import ExperimentScaled
-from ._base import Analysis
+from ._base import Analysis, resolve_n_jobs
 from . import inner_perm
 from .cluster import cluster, ClusterMode
 from .mancova import decompose
@@ -21,8 +21,8 @@ def reduce_outer(llr, mu, std, size, min_vox: int):
     """Reduce one outer perm's per-region stats to z and the max-z it feeds.
 
     The single source of truth for how an outer permutation becomes one
-    entry of the FWER null, shared by AnalysisGLOW.fit and the pipelined
-    GPU driver (glow.analysis.driver_gpu_local) so the two cannot drift.
+    entry of the FWER null, shared by AnalysisGLOW.fit's CPU and device
+    backends (glow.analysis._fit_gpu) so the two cannot drift.
 
     Args:
         llr (np.array): (num_reg,) observed region LLR for this outer perm
@@ -163,23 +163,51 @@ class AnalysisGLOW(Analysis):
             min_vox=min_vox, base_seed=(k + 1) * _INNER_SEED_BLOCK)
         return children, size, llr, mu, std
 
-    def fit(self, exp, *, n_jobs: int = 1, verbose: bool = False):
+    def fit(self, exp, *, n_jobs: int = 1, gpu=False,
+            verbose: bool = False):
         """Run the analysis on exp and return self.
 
         Populates the observed-tree attributes (children, size, llr,
         mu, std, z), the FWER null (max_z_null), and the synthesis
         output (pval, effect_list).
 
+        A truthy gpu hands the fit to the device backend (._fit_gpu),
+        which splits the phases differently -- Ward on the CPU pool, the
+        inner perms funnelled through one CUDA stream -- because a pool of
+        whole outer perms would build one CUDA context per worker and
+        serialise on the device anyway. The two agree to float round-off
+        (test_fit_gpu.py), so gpu is a hardware choice and never a recipe
+        field.
+
         Args:
             exp (Experiment): experiment to analyze. fit scales it
                 (ExperimentScaled.from_exp) and decomposes its design into
                 the q0/q1 subspaces.
-            n_jobs (int): outer-perm parallelism via joblib. 1 (default)
-                runs in-process; -1 uses all cores. Results are
-                identical regardless of n_jobs (seed is derived from
+            n_jobs (int): joblib parallelism, capped at the machine's core
+                count (resolve_n_jobs). On the CPU it splits the outer
+                perms; on the device it sizes the Ward pool. Results are
+                identical either way (the seed is derived from the
                 outer-perm index).
+            gpu: False (default) to stay on the CPU, True to require a
+                CUDA device, 'auto' to take one when visible and fall back
+                when not, or a _fit_gpu.GpuConfig to tune the backend.
             verbose (bool): print progress and show tqdm bar.
+
+        Returns:
+            self
         """
+        # imported here, not at module scope: _fit_gpu imports this module
+        # for the seed block and the outer reduction, and a CPU-only
+        # install should not pay for the device stack to call fit().
+        if gpu:
+            from ._fit_gpu import fit_gpu, resolve_gpu
+
+            gpu_config = resolve_gpu(gpu, name=type(self).__name__)
+            if gpu_config is not None:
+                return fit_gpu(self, exp, n_jobs=n_jobs,
+                               gpu_config=gpu_config, verbose=verbose)
+
+        n_jobs = resolve_n_jobs(n_jobs)
         exp = ExperimentScaled.from_exp(exp)
         q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
 

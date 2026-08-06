@@ -27,10 +27,17 @@ glow._extra.aws -- bootstrap / setup / status / ...). Selecting a timing cache
 cannot measure wall time, since its Spot instance type varies. Declining is
 the default and aborts the sweep (see confirm_aws).
 
+GLOW's leaves fit on the GPU where one is visible and on many cores where it
+is not (config.GLOW_FIT_PARAMS). That parallelism multiplies against -j rather
+than sharing it, so a parallel sweep on a machine with a card is refused
+(driver.check_fit_params); --no-gpu is the way to take -j instead, and the two
+score identically.
+
 Usage:
     python -m glow._extra.benchmark                    # everything (local)
     python -m glow._extra.benchmark 'sweep_*'          # glob
-    python -m glow._extra.benchmark -j 4 sweep_llr     # parallel local
+    python -m glow._extra.benchmark sweep_llr          # GPU where visible
+    python -m glow._extra.benchmark -j 4 --no-gpu sweep_llr  # parallel, CPU
     python -m glow._extra.benchmark --aws sweep_llr    # run on AWS Batch
     python -m glow._extra.benchmark --no-skip sweep_llr # recompute every cell
     python -m glow._extra.benchmark --method VBA --method CET   # one recipe
@@ -139,7 +146,8 @@ def confirm_aws(resolved, input_fnc=None) -> bool:
 
 def run(names=None, n_jobs: int = 1, verbose: bool = True,
         aws: bool = False, aws_config_path=None,
-        skip_recorded: bool = True, methods=None) -> list:
+        skip_recorded: bool = True, methods=None,
+        no_gpu: bool = False) -> list:
     """Drive the selected CONFIG caches into the shared records.
 
     For each resolved cache name, runs drive(*CONFIG[name], n_jobs=n_jobs). The
@@ -186,6 +194,9 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
         methods (list[str] | None): analysis-recipe labels
             (config.ana_kwargs_dict keys, e.g. ['VBA', 'CET']) to run; None
             (default) runs each cache's whole leaf grid.
+        no_gpu (bool): run every leaf on the CPU (config.strip_gpu), which is
+            what makes a parallel sweep legal on a machine with a card; see
+            driver.check_fit_params. The scores are identical either way.
 
     Returns:
         driven (list[str]): the cache names actually swept, in selection order
@@ -207,7 +218,7 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
                              methods=methods)
         return list(failures)
 
-    from .config import CONFIG, filter_ana_list
+    from .config import CONFIG, filter_ana_list, strip_gpu
     from .data import RECORDER
     from .driver import drive
     from .hcp import ensure_hcp_data
@@ -226,6 +237,8 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
                     print(f'\n=== {name}: no {methods} recipe in its leaf '
                           f'grid, skipped ===')
                 continue
+        if no_gpu:
+            kwargs_fnc_list = strip_gpu(kwargs_fnc_list)
         if verbose:
             print(f'\n=== {name} ({RECORDER.folder}) ===')
         drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc,
@@ -269,6 +282,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                         default=None, metavar='LABEL',
                         help='run only this analysis recipe (repeatable; a '
                              'config.ana_kwargs_dict key, e.g. VBA)')
+    parser.add_argument('--no-gpu', action='store_true',
+                        help='fit every leaf on the CPU, which is what lets '
+                             '-j run above 1 on a machine with a card')
     return parser.parse_args(argv)
 
 
@@ -288,7 +304,8 @@ def main(argv=None) -> None:
 
     run(names=args.names, n_jobs=args.n_jobs, verbose=not args.quiet,
         aws=args.aws, aws_config_path=args.aws_config,
-        skip_recorded=not args.no_skip, methods=args.methods)
+        skip_recorded=not args.no_skip, methods=args.methods,
+        no_gpu=args.no_gpu)
 
 
 if __name__ == '__main__':

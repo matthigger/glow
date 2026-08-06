@@ -14,15 +14,17 @@ Fresh seeds keep every cell a cache miss, so each really runs and records (a hit
 would neither recompute nor record); the grids are tiny WGN + cheap VBA so the
 sweep is fast.
 """
+import os
 import random
 
 import pytest
 from joblib import parallel_config
 
 from glow._extra.benchmark import data
-from glow._extra.benchmark.driver import drive
+from glow._extra.benchmark.config import strip_gpu
+from glow._extra.benchmark.driver import check_fit_params, drive
 from glow._extra.benchmark.run import run_ana
-from glow.analysis import AnalysisVBA
+from glow.analysis import AnalysisVBA, inner_perm_gpu
 from glow.effect import ExtenterSphere
 
 
@@ -261,3 +263,59 @@ class TestSkipRecorded:
         with parallel_config(backend='threading'):
             assert drive(grid, eff, ana, run_ana, n_jobs=2,
                          skip_recorded=True) == []
+
+
+# ---------------------------------------------------------------------------
+# preflight: drive's n_jobs multiplies against a leaf's own fit_params, so the
+# unrunnable products are refused before any cell is built
+# ---------------------------------------------------------------------------
+
+class TestCheckFitParams:
+    def test_serial_sweep_allows_anything(self):
+        # -j1 with a fat device leaf is the intended way to run GLOW
+        check_fit_params([dict(fit_params=dict(n_jobs=64, gpu=True))], 1)
+
+    def test_plain_leaves_allow_parallel(self):
+        # no fit_params: the sweep's n_jobs is the only parallelism
+        check_fit_params(_ana_grid(2), 4)
+
+    def test_parallel_plus_device_refused(self):
+        with pytest.raises(ValueError, match='asks for a GPU'):
+            check_fit_params([dict(fit_params=dict(gpu=True))], 2)
+
+    def test_parallel_plus_oversubscribed_cpu_refused(self):
+        n_cpu = os.cpu_count() or 1
+        with pytest.raises(ValueError, match='workers on'):
+            check_fit_params([dict(fit_params=dict(n_jobs=4 * n_cpu))], 2)
+
+    def test_worst_leaf_of_the_grid_decides(self):
+        # one cheap leaf does not excuse an expensive sibling
+        n_cpu = os.cpu_count() or 1
+        grid = [dict(fit_params=None),
+                dict(fit_params=dict(n_jobs=4 * n_cpu))]
+        with pytest.raises(ValueError, match='workers on'):
+            check_fit_params(grid, 2)
+
+    def test_auto_is_read_against_this_machine(self):
+        # gpu='auto' claims a device only where one is visible, so the same
+        # grid must stay runnable in parallel on a CPU-only box
+        grid = [dict(fit_params=dict(gpu='auto'))]
+        if inner_perm_gpu.is_available():
+            with pytest.raises(ValueError, match='asks for a GPU'):
+                check_fit_params(grid, 2)
+        else:
+            check_fit_params(grid, 2)
+
+    def test_strip_gpu_makes_a_parallel_sweep_legal(self):
+        # the documented escape hatch (--no-gpu): same cells, no device
+        grid = [dict(ana=None, fit_params=dict(n_jobs=1, gpu='auto'))]
+        check_fit_params(strip_gpu(grid), 2)
+
+    def test_drive_refuses_before_building_a_cell(self):
+        # the point of a preflight: it costs a message, not an hour. The data
+        # grid would raise on build, so reaching the ValueError below proves
+        # nothing was built.
+        leaf = [dict(fit_params=dict(gpu=True))]
+        with pytest.raises(ValueError, match='asks for a GPU'):
+            drive([dict(source='no-such-source')], [None], leaf, run_ana,
+                  n_jobs=2)

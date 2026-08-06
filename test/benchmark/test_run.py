@@ -78,6 +78,22 @@ def _planted_cell(kwargs_data, kwargs_effect):
 _SCORE_KEYS = {'num_vox', 'min_pval', 'n_pred', 'pred', 'target'}
 
 
+class _SpyVBA(AnalysisVBA):
+    """A VBA recipe that records the fit kwargs it was called with.
+
+    Module level, not a local class: run_ana's key hashes the recipe, and
+    joblib cannot pickle a class defined inside a test. The log is a class
+    attribute so it survives run_ana's deepcopy of the recipe.
+    """
+
+    seen = {}
+
+    def fit(self, exp, _stat=None, **kwargs):
+        """Log the fit kwargs, then fit as AnalysisVBA does."""
+        type(self).seen = dict(kwargs)
+        return super().fit(exp, _stat, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # return contract: a score dict, uniform across heterogeneous methods
 # ---------------------------------------------------------------------------
@@ -145,6 +161,71 @@ class TestCacheKeyedOnRecipe:
         s0 = run_ana(exp, ana, [], parent_uid=uid)   # computed
         s1 = run_ana(exp, ana, [], parent_uid=uid)   # served from cache
         assert s0 == s1
+
+
+# ---------------------------------------------------------------------------
+# fit_params: how the fit runs, so filtered out of the identity entirely
+# ---------------------------------------------------------------------------
+
+class TestFitParams:
+    """fit_params reaches Analysis.fit and nothing else.
+
+    It must not key a leaf: a cell fit on 32 workers or a GPU has to be the
+    same artifact as one fit serially on the CPU, or every machine forks the
+    benchmark's cache and records (see run.FIT_IGNORE).
+    """
+
+    def test_forwarded_to_fit(self):
+        exp, uid = _exp()
+        run_ana(exp, _SpyVBA(n_perm_fwer=15), [], parent_uid=uid,
+                fit_params=dict(n_jobs=2, gpu='auto'))
+        assert _SpyVBA.seen == dict(n_jobs=2, gpu='auto')
+
+    def test_does_not_key_the_cache(self):
+        exp, uid = _exp()
+        ana = AnalysisVBA(n_perm_fwer=15)
+        run_ana(exp, ana, [], parent_uid=uid, fit_params=dict(n_jobs=1))
+        # a different fit_params (and none at all) hits the same entry
+        assert run_ana.check_call_in_cache(exp, ana, [], parent_uid=uid)
+        assert run_ana.check_call_in_cache(exp, ana, [], parent_uid=uid,
+                                           fit_params=dict(n_jobs=2))
+
+    def test_recorded_but_outside_the_identity(self):
+        # the record keeps it as provenance (how this leaf ran) while the uid
+        # -- what says two leaves are the same artifact -- stays blind to it,
+        # so a cell run on the GPU here files under the uid a CPU run elsewhere
+        # would claim
+        from glow._extra.benchmark.recipe import recipe_for_call
+
+        exp, uid = _exp()
+        ana = AnalysisVBA(n_perm_fwer=15)
+        data.RECORDER.records.clear()
+        run_ana(exp, ana, [], parent_uid=uid,
+                fit_params=dict(n_jobs=1, gpu=False))
+
+        rec, = [r for r in data.RECORDER.records.values()
+                if r['function'] == 'run_ana']
+        assert rec['inputs']['fit_params'] == {'n_jobs': 1, 'gpu': False}
+        assert rec['uid'] == recipe_for_call(run_ana, dict(ana=ana),
+                                             parents=(uid,)).uid
+
+    def test_leaf_uid_is_unchanged_by_it(self):
+        # the uid names what a cell will produce; an execution knob must not
+        # rename it, or skip_recorded stops recognising finished cells
+        from glow._extra.benchmark.recipe import recipe_for_call
+
+        ana = AnalysisVBA(n_perm_fwer=15)
+        bare = recipe_for_call(run_ana, dict(ana=ana), parents=('u',))
+        with_fp = recipe_for_call(
+            run_ana, dict(ana=ana, fit_params=dict(n_jobs=32, gpu='auto')),
+            parents=('u',))
+        assert bare.uid == with_fp.uid
+
+    def test_none_means_fit_defaults(self):
+        exp, uid = _exp()
+        score = run_ana(exp, AnalysisVBA(n_perm_fwer=15), [], parent_uid=uid,
+                        fit_params=None)
+        assert _SCORE_KEYS <= set(score)
 
 
 # ---------------------------------------------------------------------------

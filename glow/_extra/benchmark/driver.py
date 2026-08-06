@@ -59,11 +59,14 @@ compute -- or race to write the cache / record of -- the same build, and the
 exp it builds is reused in-process across its subtree, never pickled between
 workers. This is the right split while the data grids satiate the pool (the
 sweeps run 15-1000 seeds); a narrower grid would leave workers idle and want
-a finer (two-phase) split, deferred until needed. The stage functions are
-shared module-level singletons re-imported in each worker, so workers
-transparently share the on-disk cache and records folder; the per-hash record
-files they write are folded back into this process with RECORDER.load once
-the pool drains. (The leaf fnc is pickled to the workers like any task
+a finer (two-phase) split, deferred until needed. This is also the only
+parallelism the driver owns: a leaf may parallelise its own fit (run_ana's
+fit_params), which multiplies against n_jobs rather than sharing it, so
+check_fit_params refuses the combinations that would oversubscribe. The stage
+functions are shared module-level singletons re-imported in each worker, so
+workers transparently share the on-disk cache and records folder; the per-hash
+record files they write are folded back into this process with RECORDER.load
+once the pool drains. (The leaf fnc is pickled to the workers like any task
 argument; the recorder snapshots its records as they are made, so the wrapped
 fnc carries no live Experiments and stays light to ship -- see
 glow._extra.benchmark.recorder.)
@@ -78,10 +81,90 @@ the parallel bar ticks per data cell as each task returns its scores, since a
 worker cannot reach the caller's bar.
 """
 
+import os
+
 from tqdm import tqdm
 
 from .data import (RECORDER, data_factory, data_recipe, effect_factory,
                    effect_recipe)
+
+# How far a sweep may oversubscribe the CPU before check_fit_params stops it:
+# drive's own n_jobs times the worst leaf's, against this many times the core
+# count. Some slack is deliberate (a fit is not compute-bound end to end), but
+# an order of magnitude is a typo, not a scheduling choice.
+_CPU_OVERSUBSCRIBE_FACTOR = 2
+
+
+def _leaf_n_jobs(kwargs) -> int:
+    """Return the worker count one leaf-kwargs cell asks Analysis.fit for."""
+    n_jobs = (kwargs.get('fit_params') or {}).get('n_jobs', 1)
+    n_cpu = os.cpu_count() or 1
+    return max(1, n_cpu + 1 + n_jobs) if n_jobs < 0 else max(1, n_jobs)
+
+
+def _leaf_wants_device(kwargs) -> bool:
+    """True if this leaf-kwargs cell would actually claim a CUDA device.
+
+    gpu='auto' claims one only where one is visible, so it is read against
+    this machine rather than treated as a request: an 'auto' grid must stay
+    runnable at any n_jobs on the CPU-only boxes (CI, an AWS Batch worker)
+    that are the reason to write 'auto' in the first place.
+    """
+    gpu = (kwargs.get('fit_params') or {}).get('gpu', False)
+    if not gpu:
+        return False
+    if gpu == 'auto':
+        from glow.analysis import inner_perm_gpu
+
+        return inner_perm_gpu.is_available()
+    return True
+
+
+def check_fit_params(kwargs_fnc_list, n_jobs: int) -> None:
+    """Raise before a sweep that would oversubscribe the GPU or the CPU.
+
+    drive's n_jobs and a leaf's fit_params multiply: -j8 over a grid whose
+    GLOW leaf asks for 32 workers and a device is 8 concurrent fits, 256
+    joblib workers and 8 CUDA contexts on one card. Nothing downstream
+    notices -- joblib takes both counts literally and the device OOMs an
+    hour in -- so the arithmetic is checked here, before a cell is built,
+    and the sweep refuses rather than thrashes.
+
+    Only the product is judged, not either factor: -j1 with a 32-worker
+    device leaf is the intended way to run GLOW, and -j8 over CPU-only
+    leaves is the intended way to run everything else.
+
+    Args:
+        kwargs_fnc_list (list[dict]): the leaf-fnc kwargs grid, whose cells
+            may carry a fit_params dict (see run.run_ana).
+        n_jobs (int): drive's own data-cell parallelism.
+
+    Raises:
+        ValueError: the sweep would run concurrent device fits, or would
+            ask for more than _CPU_OVERSUBSCRIBE_FACTOR times the machine's
+            cores.
+    """
+    n_cell = _leaf_n_jobs({'fit_params': {'n_jobs': n_jobs}})
+    if n_cell == 1:
+        return
+
+    if any(_leaf_wants_device(kwargs) for kwargs in kwargs_fnc_list):
+        raise ValueError(
+            f'n_jobs={n_jobs} would run {n_cell} fits at once, and a leaf '
+            f'recipe asks for a GPU: one CUDA context per concurrent fit on '
+            f'one card. Sweep device leaves with n_jobs=1 (the device fit '
+            f'already uses the whole machine), or drop the device for this '
+            f'sweep (config.strip_gpu, --no-gpu on the CLI).')
+
+    n_leaf = max((_leaf_n_jobs(kwargs) for kwargs in kwargs_fnc_list),
+                 default=1)
+    n_cpu = os.cpu_count() or 1
+    if n_cell * n_leaf > _CPU_OVERSUBSCRIBE_FACTOR * n_cpu:
+        raise ValueError(
+            f'n_jobs={n_jobs} ({n_cell} cells at once) times the leaf grid\'s '
+            f'fit_params n_jobs={n_leaf} is {n_cell * n_leaf} workers on '
+            f'{n_cpu} cores. Lower one of the two: a GLOW fit also holds a '
+            f'copy of y per worker (~1 GB at full-brain num_vox).')
 
 
 def _run_data_cell(kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
@@ -169,6 +252,11 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
     forwarded to joblib.Parallel (so -1 uses all cores); the default loky
     backend caps each worker's inner BLAS threads to avoid oversubscription.
 
+    A leaf that parallelises its own fit multiplies against that n_jobs, so
+    check_fit_params runs first and refuses a sweep whose product would
+    oversubscribe the CPU or put several fits on one GPU. It fires before any
+    cell is built, so a mismatch costs a message rather than an hour.
+
     With verbose a tqdm bar tracks the sweep over its total leaf count,
     advanced as each fnc call passes (it lurches over cached cells; see the
     module docstring); without it the sweep is silent. The total needs
@@ -213,6 +301,8 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
     # iterated once, so it stays lazy.
     kwargs_effect_list = list(kwargs_effect_list)
     kwargs_fnc_list = list(kwargs_fnc_list)
+
+    check_fit_params(kwargs_fnc_list, n_jobs)
 
     # the sweep as (kwargs_data, that cell's effect grid) pairs: the whole
     # effect grid per data cell, or -- under skip_recorded -- only the effect

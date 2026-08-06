@@ -1,5 +1,6 @@
 """Analysis ABC and shared FWER / effect-discovery machinery."""
 
+import os
 from abc import ABC, abstractmethod
 from bisect import bisect_left
 from typing import Callable
@@ -11,6 +12,48 @@ from tqdm import tqdm
 
 import glow.effect
 import glow.graph
+
+
+def resolve_n_jobs(n_jobs: int) -> int:
+    """Clamp a requested worker count to the cores this machine has.
+
+    A benchmark config names one worker count for every machine it may run
+    on (glow._extra.benchmark.config.GLOW_FIT_N_JOBS) and joblib takes
+    n_jobs literally, so 32 there is 32 processes on a 4-core Batch
+    container, each holding its own copy of y. Clamping makes the config's
+    figure an upper bound rather than a demand. Negative counts keep
+    joblib's reading (-1 all cores, -2 all but one).
+
+    Args:
+        n_jobs (int): requested workers.
+
+    Returns:
+        n_jobs (int): the request, capped at os.cpu_count(), floored at 1.
+    """
+    n_cpu = os.cpu_count() or 1
+    if n_jobs < 0:
+        return max(1, n_cpu + 1 + n_jobs)
+    return max(1, min(n_jobs, n_cpu))
+
+
+def reject_gpu(gpu, name: str) -> None:
+    """Raise if a device fit was demanded of an analysis with no backend.
+
+    Every fit takes gpu so one fit_params dict can be handed to any recipe
+    (glow._extra.benchmark.run.run_ana). gpu='auto' asks for a device only
+    where one helps, so it is a silent no-op here; an explicit gpu=True is
+    an error rather than a silent hour on the CPU.
+
+    Args:
+        gpu: the fit(gpu=...) argument.
+        name (str): the analysis class name, for the message.
+
+    Raises:
+        ValueError: gpu names a device explicitly.
+    """
+    if gpu and gpu != 'auto':
+        raise ValueError(f'{name} has no GPU backend (only AnalysisGLOW '
+                         f"has one); pass gpu=False or gpu='auto'")
 
 
 class Analysis(ABC):
@@ -53,12 +96,32 @@ class Analysis(ABC):
         return f'{type(self).__name__}({", ".join(parts)})'
 
     @abstractmethod
-    def fit(self, exp):
+    def fit(self, exp, *, n_jobs: int = 1, gpu=False):
         """Run the analysis computation on exp and return self.
 
         Implementations scale exp with ExperimentScaled.from_exp(exp)
         first (idempotent -- a raw exp is scaled, an already-scaled one
         passes through), then compute.
+
+        n_jobs and gpu are the execution contract every recipe honours, so
+        one fit_params dict reaches any of them (see
+        glow._extra.benchmark.run.run_ana). Neither changes the result: a
+        fit is identical at any n_jobs (permutations are seeded by index)
+        and on either device (AnalysisGLOW._fit_gpu draws the same
+        permutations in float64), which is why neither enters a recipe's
+        RECORD_FIELDS or a benchmark cache key.
+
+        Args:
+            exp (Experiment): experiment to analyze.
+            n_jobs (int): joblib workers for the permutation walk. 1
+                (default) runs in-process; -1 uses all cores.
+            gpu: False (default) to stay on the CPU, True to require a
+                device, 'auto' to take one when visible. Only AnalysisGLOW
+                has a backend; the rest reject an explicit True
+                (reject_gpu).
+
+        Returns:
+            self
         """
 
     @classmethod

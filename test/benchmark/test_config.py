@@ -18,7 +18,7 @@ import pytest
 
 from glow._extra.benchmark import config, data, hcp
 from glow._extra.benchmark.run import run_ana
-from glow.analysis import Analysis
+from glow.analysis import Analysis, AnalysisGLOW
 from glow.effect import ExtenterMinVar
 
 
@@ -68,10 +68,13 @@ class TestCatalogueShape:
         assert len(config.RUN_ANA_LIST) == 5
         assert all(isinstance(c['ana'], Analysis) for c in config.RUN_ANA_LIST)
 
-    def test_run_ana_cells_carry_only_the_recipe(self):
-        # each leaf cell carries just its ana; the method name is not passed
-        # (recovered from ana_kwargs_dict at read time -- see run / plot)
-        assert all(set(c) == {'ana'} for c in config.RUN_ANA_LIST)
+    def test_run_ana_cells_carry_the_recipe_and_how_to_run_it(self):
+        # each leaf cell carries its ana and its fit_params, nothing else: the
+        # method name is not passed (recovered from ana_kwargs_dict at read
+        # time -- see run / plot), and fit_params is filtered back out of the
+        # identity by the leaf (run.FIT_IGNORE)
+        assert all(set(c) == {'ana', 'fit_params'}
+                   for c in config.RUN_ANA_LIST)
         assert ([c['ana'] for c in config.RUN_ANA_LIST]
                 == list(config.ana_kwargs_dict.values()))
 
@@ -100,6 +103,43 @@ class TestFilterAnaList:
         # a non-run_ana leaf grid (segment / prune / ...) has no ana to select
         _, _, fnc_kwargs, _ = config.CONFIG['segment']
         assert config.filter_ana_list(fnc_kwargs, ['VBA']) == []
+
+    def test_kept_cells_keep_their_fit_params(self):
+        kept = config.filter_ana_list(config.RUN_ANA_LIST, ['GLOW'])
+        assert kept[0]['fit_params'] == config.GLOW_FIT_PARAMS
+
+
+class TestFitParams:
+    """Which leaves ask for what, and how a sweep opts out of the device."""
+
+    def test_only_glow_configures_its_fit(self):
+        for cell in config.RUN_ANA_LIST:
+            expected = (config.GLOW_FIT_PARAMS
+                        if isinstance(cell['ana'], AnalysisGLOW) else None)
+            assert cell['fit_params'] == expected
+
+    def test_timing_leaves_carry_none(self):
+        # the runtime family times every method the same way (run_ana_time's
+        # own default: all cores, CPU), or the figure compares hardware
+        for name in ('runtime', 'runtime_b', 'runtime_nimg'):
+            for cell in config.CONFIG[name][2]:
+                assert cell.get('fit_params') is None
+
+    def test_strip_gpu_drops_only_the_device(self):
+        stripped = config.strip_gpu(config.RUN_ANA_LIST)
+        glow_cell, = [c for c in stripped
+                      if isinstance(c['ana'], AnalysisGLOW)]
+        assert glow_cell['fit_params'] == {
+            'n_jobs': config.GLOW_FIT_N_JOBS}
+
+    def test_strip_gpu_leaves_the_shared_grid_alone(self):
+        # the grids are module singletons shared by every cache
+        config.strip_gpu(config.RUN_ANA_LIST)
+        assert config.GLOW_FIT_PARAMS['gpu'] == 'auto'
+
+    def test_strip_gpu_passes_plain_cells_through(self):
+        grid = [dict(ana=None), dict(ana=None, fit_params=dict(n_jobs=2))]
+        assert config.strip_gpu(grid) == grid
 
 
 class TestIterKwargsData:

@@ -40,7 +40,7 @@ from collections import defaultdict
 from . import config
 from .data import (DATA_FACTORY, EFFECT_FACTORY, RECORDER, data_recipe,
                    effect_recipe)
-from .recipe import recipe_for_call
+from .recipe import declared_ignore, recipe_for_call
 from .recorder import _cell
 
 # the builders a cell's 'source' / 'kind' key selects, shared with the runner
@@ -356,12 +356,17 @@ def get_cell_complete(kwargs_fnc_list, fnc):
         return kids
 
     fnc_name = _raw(fnc).__qualname__
-    # one input fingerprint per fnc-kwargs cell; exp / mask_target_list are
-    # driver-supplied, so dropped from the comparison (as exp is for effects)
-    fnc_expected = [
-        (_expected_inputs(fnc, kwargs, drop=('exp', 'mask_target_list')),
-         _optional_inputs(fnc, kwargs, drop=('exp', 'mask_target_list')))
-        for kwargs in kwargs_fnc_list]
+    # one input fingerprint per fnc-kwargs cell, over the names that identify a
+    # leaf. The ignore list is dropped: those are driver-supplied (exp, its
+    # mask companion) or execution knobs (fit_params, label), and a record does
+    # store them, but as provenance rather than identity -- so a cell that
+    # named none of them when its record was written, or ran under different
+    # ones, still has to match. Read off the decorator, as recipe_for_call
+    # does, so the two stay in step.
+    drop = ('exp', 'mask_target_list', *declared_ignore(fnc))
+    fnc_expected = [(_expected_inputs(fnc, kwargs, drop=drop),
+                     _optional_inputs(fnc, kwargs, drop=drop))
+                    for kwargs in kwargs_fnc_list]
 
     def cell_complete(kwargs_data, kwargs_effect) -> bool:
         """True if every fnc-kwargs leaf of this cell is recorded."""

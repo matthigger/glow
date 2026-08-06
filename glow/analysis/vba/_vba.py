@@ -7,7 +7,7 @@ from joblib import Parallel, delayed, effective_n_jobs
 from tqdm import tqdm
 
 from glow.experiment.exper import ExperimentScaled
-from .._base import AnalysisVoxel
+from .._base import AnalysisVoxel, reject_gpu
 
 
 class AnalysisVBA(AnalysisVoxel):
@@ -55,7 +55,7 @@ class AnalysisVBA(AnalysisVoxel):
         self.z_flag = z_flag
         self.verbose = verbose
 
-    def fit(self, exp, _stat=None, *, n_jobs: int = 1,
+    def fit(self, exp, _stat=None, *, n_jobs: int = 1, gpu=False,
             tfce_backend: str = None):
         """Run the permutation walk on exp and compute p-values.
 
@@ -69,12 +69,16 @@ class AnalysisVBA(AnalysisVoxel):
                 both the stat walk and TFCE. 1 (default) runs in-process;
                 -1 uses all cores. Results are identical regardless of
                 n_jobs (each permutation is seeded by its index).
+            gpu: accepted for the uniform fit contract (see Analysis.fit);
+                there is no device backend here, so 'auto' is a no-op and
+                an explicit True raises.
             tfce_backend (str or None): TFCE backend, see apply_tfce. None
                 takes the module default (prefer fslmaths when installed).
 
         Returns:
             self
         """
+        reject_gpu(gpu, type(self).__name__)
         exp = ExperimentScaled.from_exp(exp)
         self.stat = self.build_stat_matrix(exp, _stat, n_jobs=n_jobs,
                                            verbose=self.verbose)
