@@ -1,11 +1,12 @@
-"""Slice the shared provenance frame into one tidy CSV per CONFIG cache.
+"""Recover which recorded leaves and which finished cells are a cache's.
 
 The driver writes every leaf into one shared RECORDER (data.RECORDER):
 RECORDER.flatten_to_df yields one row per leaf carrying the data -> (plant ->)
-score chain that produced it (see recorder / driver). That frame is
+score chain that produced it (see recorder / driver). Those records are
 config-agnostic -- every cell ever run, across every figure -- so this module
-re-attaches the CONFIG catalogue: for one cache name it selects that cache's
-leaves and walks each up to its ancestors, then writes name.csv.
+re-attaches the CONFIG catalogue: for one cache name it names that cache's
+leaves (config_leaf_keys, the rows make_csv exports) and its planted cells not
+yet fully recorded (incomplete_cell_indices, the local and AWS rerun skip).
 
 Membership is recomputed from the current CONFIG at read time (not read off a
 stored tag) by walking the recorded provenance DAG forward from the cache's
@@ -35,13 +36,11 @@ missing intermediate (effect) record drops the leaves below it.
 """
 import inspect
 from collections import defaultdict
-from pathlib import Path
 
 from . import config
 from .data import (DATA_FACTORY, EFFECT_FACTORY, RECORDER, data_recipe,
                    effect_recipe)
 from .recipe import recipe_for_call
-from .file import get_path_result
 from .recorder import _cell
 
 # the builders a cell's 'source' / 'kind' key selects, shared with the runner
@@ -427,33 +426,13 @@ def incomplete_cell_indices(name: str, kwargs_fnc_list=None) -> list:
             if not cell_complete(kwargs_data, kwargs_effect)]
 
 
-def config_results_df(name: str):
-    """Walk the shared provenance frame up from one cache's leaves.
-
-    Selects the cache's leaves (config_leaf_keys) and flattens each into a row
-    carrying its data -> (plant ->) score chain (flatten_to_df seeded from those
-    leaves). A row a sweep shares with another sweep is selected by both, since
-    the walk reaches the shared record from either cache. Loads the recorder
-    first to fold in any records a parallel run / other workers left on disk.
-    Empty when no cell of this cache has run.
-
-    Args:
-        name (str): a CONFIG cache name.
-
-    Returns:
-        pandas.DataFrame: this cache's rows (empty when none have run).
-    """
-    RECORDER.load()
-    return RECORDER.flatten_to_df(leaf_keys=config_leaf_keys(name))
-
-
 def stat_cell_df():
     """Return the stat cache's run_stat leaves, keyed by planted cell.
 
     The stat bake-off is fit by AWS workers that ship the run_stat leaf back
     without its data_factory / effect_factory ancestors, so the forward DAG
     walk (config_leaf_keys) can attach neither source nor effect_llr and drops
-    those leaves -- config_results_df('stat') sees only the locally-run subset.
+    those leaves -- the stat cache's CSV holds only the locally-run subset.
     The stat comparison is within a planted cell (the five stats fit on one
     experiment), so this reads the run_stat records directly and tags each with
     its planted-exp link hash -- the cell id every variant of a cell shares --
@@ -484,37 +463,3 @@ def stat_cell_df():
             'tn': target.get('tn'), 'fn': target.get('fn'),
         })
     return pd.DataFrame(rows)
-
-
-def write_config_csvs(out_dir=None, names=None) -> dict:
-    """Write one name.csv per CONFIG cache with leaves on disk.
-
-    Loads the shared recorder once, then for each cache selects its leaves
-    (config_leaf_keys) and flattens them into the per-figure results frame the
-    plots consume, writing each non-empty slice to out_dir/<name>.csv. A cache
-    with no leaves yet is skipped (no empty file).
-
-    Args:
-        out_dir (str | Path | None): destination directory; defaults to
-            glow's per-user results dir (get_path_result).
-        names (iterable[str] | None): cache names to export; None exports
-            every CONFIG entry.
-
-    Returns:
-        dict[str, Path]: the {cache name: written csv path} for caches that
-            had rows (those skipped for being empty are omitted).
-    """
-    out_dir = Path(out_dir) if out_dir is not None else get_path_result()
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    RECORDER.load()
-
-    written = {}
-    for name in (names if names is not None else config.CONFIG):
-        sub = RECORDER.flatten_to_df(leaf_keys=config_leaf_keys(name))
-        if sub.empty:
-            continue
-        path = out_dir / f'{name}.csv'
-        sub.to_csv(path, index=False)
-        written[name] = path
-    return written

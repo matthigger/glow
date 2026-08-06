@@ -4,8 +4,9 @@ Run the paper benchmark on AWS Batch instead of your laptop. It's the same
 benchmark CLI with `--aws`: each CONFIG cache's data cells go out as one Batch
 array job (one child per cell), each worker rebuilds its cell from CONFIG and
 runs it, writing its records to a shared S3 prefix, and when the array drains
-the records are pulled down and the per-config CSVs written with the unchanged
-read path — so AWS and local runs produce the same artifacts.
+the records are pulled down into the local records tree — so AWS and local
+runs produce the same artifacts. Export them to CSV with `python -m
+glow._extra.benchmark.make_csv`, exactly as after a local sweep.
 
 ```bash
 python -m glow._extra.benchmark --aws sweep_llr     # one cache (WGN cells)

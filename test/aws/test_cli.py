@@ -2,9 +2,9 @@
 
 The unified run CLI is glow._extra.benchmark; --aws hands the resolved names to
 glow._extra.aws.drive_aws instead of running locally. These tests pin that
-routing (and the precedence of --csv-only) without touching AWS, plus the
-timing-cache prompt: the runtime family cannot measure wall time on a
-Spot-backed Batch array, so selecting one warns and asks before submitting.
+routing without touching AWS, plus the timing-cache prompt: the runtime family
+cannot measure wall time on a Spot-backed Batch array, so selecting one warns
+and asks before submitting.
 """
 
 from glow._extra.benchmark import __main__ as cli
@@ -20,20 +20,20 @@ class _FakeCfg:
 def test_aws_flag_routes_to_drive_aws(monkeypatch):
     captured = {}
 
-    def fake_drive(names, cfg, *, write_csv, verbose, out_dir, methods):
-        captured.update(names=names, cfg=cfg, write_csv=write_csv,
-                        out_dir=out_dir, methods=methods)
-        return {'sweep_llr': 'path'}
+    def fake_drive(names, cfg, *, verbose, methods):
+        captured.update(names=names, cfg=cfg, methods=methods)
+        return {'sweep_llr': []}
 
     monkeypatch.setattr('glow._extra.aws.AWSConfig', _FakeCfg)
     monkeypatch.setattr('glow._extra.aws.drive_aws', fake_drive)
 
-    out = cli.run(names=['sweep_llr'], aws=True, write_csv=False,
-                  verbose=False, methods=['VBA'])
-    assert out == {'sweep_llr': 'path'}
+    # run reports the caches driven; the driver's per-cache failures are its
+    # own return (and are printed there)
+    out = cli.run(names=['sweep_llr'], aws=True, verbose=False,
+                  methods=['VBA'])
+    assert out == ['sweep_llr']
     assert captured['names'] == ['sweep_llr']
     assert captured['cfg'] == 'CFG(None)'        # default per-user config
-    assert captured['write_csv'] is False
     # a per-method rerun rides through to the AWS driver, which narrows the
     # shipped fnc grid with it (see glow._extra.aws.driver)
     assert captured['methods'] == ['VBA']
@@ -42,23 +42,12 @@ def test_aws_flag_routes_to_drive_aws(monkeypatch):
 def test_aws_config_path_forwarded(monkeypatch):
     captured = {}
     monkeypatch.setattr('glow._extra.aws.AWSConfig', _FakeCfg)
-    monkeypatch.setattr('glow._extra.aws.drive_aws',
-                        lambda names, cfg, **kw: captured.update(cfg=cfg))
+    monkeypatch.setattr(
+        'glow._extra.aws.drive_aws',
+        lambda names, cfg, **kw: captured.update(cfg=cfg) or {})
     cli.run(names=['sweep_llr'], aws=True, aws_config_path='/tmp/c.json',
             verbose=False)
     assert captured['cfg'] == 'CFG(/tmp/c.json)'
-
-
-def test_csv_only_short_circuits_before_aws(monkeypatch):
-    # --csv-only rebuilds from local records; it must not reach drive_aws
-    monkeypatch.setattr('glow._extra.benchmark.results.write_config_csvs',
-                        lambda out_dir=None, names=None: {})
-
-    def _boom(*a, **k):
-        raise AssertionError('drive_aws must not be called under csv_only')
-    monkeypatch.setattr('glow._extra.aws.drive_aws', _boom)
-    assert cli.run(names=['sweep_llr'], aws=True, csv_only=True,
-                   verbose=False) == {}
 
 
 def test_parse_args_accepts_aws_flag():
@@ -130,7 +119,7 @@ class TestRunPromptsBeforeAws:
         monkeypatch.setattr('glow._extra.aws.AWSConfig', _FakeCfg)
         monkeypatch.setattr('glow._extra.aws.drive_aws', _boom)
         # no tty under pytest, so the prompt declines and the sweep aborts
-        assert cli.run(names=['runtime*'], aws=True) == {}
+        assert cli.run(names=['runtime*'], aws=True) == []
         assert 'nothing submitted' in capsys.readouterr().out
 
     def test_confirming_submits_the_whole_selection(self, monkeypatch):

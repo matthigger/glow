@@ -10,9 +10,9 @@ The records are keyed by a stable, machine-independent S3 prefix:
   - records -> {prefix}/records   (the per-hash <hash>.json files)
 
 They are the only tree mirrored both ways: a worker uploads the records its
-cell produces, and the driver pulls them to build the CSVs. Nothing else is
-synced -- a worker runs one whole cell and shares no cache with another, and
-the heavy exp caches (data_factory_wgn / data_factory_hcp / effect_factory)
+cell produces, and the driver pulls them home. Nothing else is synced -- a
+worker runs one whole cell and shares no cache with another, and the heavy
+exp caches (data_factory_wgn / data_factory_hcp / effect_factory)
 rebuild on the worker (a WGN seed draw, or an HCP nifti load from the staged
 data below), cheaper than shipping tens of MB.
 
@@ -52,7 +52,7 @@ def records_pair(prefix: str) -> Pair:
     """The (local records dir, S3 key prefix) pair for the per-hash records.
 
     The one tree mirrored both ways: a worker pushes the records its cell
-    produces, and the driver pulls them to build the CSVs.
+    produces, and the driver pulls them home.
 
     Args:
         prefix (str): the run's s3_prefix.

@@ -1,15 +1,15 @@
-"""Tests for glow._extra.benchmark.results: per-CONFIG CSV slicing.
+"""Tests for glow._extra.benchmark.results: per-CONFIG membership.
 
 results recomputes each cache's membership from the current CONFIG by walking
 the recorded provenance DAG forward from the cache's data cells -- no stored tag
 (see results). These cover: config_leaf_keys selecting exactly a cache's leaves
 down the null path and the planted (effect-matching) path; a cell shared by two
 caches landing in both; that editing the config (dropping a cell) is reflected
-at once (the staleness fix a tag could not give); the CSV writer; and
-incomplete_cell_indices (the AWS driver's local-records skip -- empty when a
-cache is fully recorded, flagging an unrun cell down both the null and planted
-paths, a cell missing one recipe's leaf, and judging completeness against a
-narrowed leaf grid when one is passed).
+at once (the staleness fix a tag could not give); and incomplete_cell_indices
+(the AWS driver's local-records skip -- empty when a cache is fully recorded,
+flagging an unrun cell down both the null and planted paths, a cell missing one
+recipe's leaf, and judging completeness against a narrowed leaf grid when one
+is passed). Exporting these leaves as CSVs is make_csv's (test_make_csv).
 
 Run against a small monkeypatched CONFIG (the real grids run 15-1000 seeds); the
 recorder folder is redirected to a tmp dir and fresh seeds keep every cell a
@@ -18,7 +18,6 @@ records to recover which leaves are its.
 """
 import random
 
-import pandas as pd
 import pytest
 
 from glow._extra.benchmark import config, data, results
@@ -81,24 +80,13 @@ def test_config_leaf_keys_selects_a_caches_leaves(small_config):
         assert data.RECORDER.records[key]['function'] == 'run_ana'
 
 
-def test_config_results_df_counts_and_recipes(small_config):
-    a = results.config_results_df('cacheA')
-    b = results.config_results_df('cacheB')
-    assert len(a) == 1 * 2           # 1 data cell x 2 recipes
-    assert len(b) == 2 * 2           # 2 data cells x 2 recipes
-    # the recipe rides through as the in.ana column (the label source), one per
-    # recipe -- no label is stored (see run / plot)
-    assert a['run_ana.in.ana'].nunique() == 2
-
-
 def test_shared_cell_appears_in_both_caches(small_config):
-    # the shared cell's leaves are reached by both caches' walks, so its rows
-    # land in both frames; cacheB is a strict superset (its own extra cell)
-    a = results.config_results_df('cacheA')
-    b = results.config_results_df('cacheB')
-    shared = set(a['run_ana.hash']) & set(b['run_ana.hash'])
-    assert len(shared) == 2                                 # shared cell x 2
-    assert set(a['run_ana.hash']) < set(b['run_ana.hash'])
+    # the shared cell's leaves are reached by both caches' walks, so they are
+    # selected by both; cacheB is a strict superset (its own extra cell)
+    a = set(results.config_leaf_keys('cacheA'))
+    b = set(results.config_leaf_keys('cacheB'))
+    assert len(a & b) == 2                                  # shared cell x 2
+    assert a < b
 
 
 def test_planted_cache_matches_via_effect_cell(small_config):
@@ -110,9 +98,9 @@ def test_planted_cache_matches_via_effect_cell(small_config):
     assert not set(keys) & set(results.config_leaf_keys('cacheA'))
     # the plant reached run_ana: every leaf's target is the planted support
     # (n_vox_frac=0.1 of the 5x5x5=125-voxel volume -> round(12.5)=12 voxels)
-    df = results.config_results_df('planted')
-    assert (df['run_ana.out.score.target.tp']
-            + df['run_ana.out.score.target.fn'] == 12).all()
+    for key in keys:
+        target = data.RECORDER.records[key]['outputs']['score']['target']
+        assert target['tp'] + target['fn'] == 12
 
 
 def test_membership_follows_config_edits(small_config, monkeypatch):
@@ -203,24 +191,6 @@ def test_incomplete_indexes_planted_cells(monkeypatch):
         {'c': ([_data_cell(seed_a), _data_cell(seed_b)], eff_two, one,
                run_ana)})
     assert results.incomplete_cell_indices('c') == [2, 3]
-
-
-def test_write_config_csvs(small_config, tmp_path):
-    out = tmp_path / 'out'
-    written = results.write_config_csvs(out_dir=out)
-    assert set(written) == {'cacheA', 'cacheB', 'planted'}
-    a = pd.read_csv(written['cacheA'])
-    assert len(a) == 2
-    assert a['run_ana.in.ana'].nunique() == 2
-
-
-def test_empty_cache_is_skipped(monkeypatch, tmp_path):
-    # a cache whose cells have not run has no leaves -> no csv
-    monkeypatch.setattr(config, 'CONFIG',
-                        {'unrun': ([_data_cell(random.randrange(2 ** 31))],
-                                   [None], _ana_grid(), run_ana)})
-    written = results.write_config_csvs(out_dir=tmp_path / 'out')
-    assert written == {}
 
 
 def test_cell_leaf_uids_named_without_building_or_hashing(no_array_hashing):

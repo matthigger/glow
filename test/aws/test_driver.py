@@ -1,5 +1,6 @@
 """drive_aws: helpers, submit shape, retry policy, happy path, OOM escalation,
-and the per-method rerun (a narrowed fnc grid shipped in the bundle).
+the per-method rerun (a narrowed fnc grid shipped in the bundle), and the
+drain-time record pull that brings a run's results home.
 
 An in-memory FakeS3 + FakeBatch drive the submit -> poll -> classify ->
 escalate loop without provisioning AWS.
@@ -13,7 +14,8 @@ from unittest.mock import patch
 import joblib
 import pytest
 
-from glow._extra.aws.config import AWSConfig
+from glow._extra.aws import sync
+from glow._extra.aws.config import AWSConfig, s3_key
 from glow._extra.aws.driver import (RETRY_EVALUATE_ON_EXIT, _Attempt,
                                      _classify, _inflight_postfix, _is_oom,
                                      _poll_attempts, _pull_finished,
@@ -26,11 +28,19 @@ from test.aws.fakes import FakeBatch, FakeS3, client_factory
 
 @pytest.fixture(autouse=True)
 def _empty_records(monkeypatch, tmp_path):
-    """Start from empty records so drive_aws's local-records skip finds
+    """Start from empty records, mirrored to a tmp dir on both sides.
+
+    The in-memory records start empty so drive_aws's local-records skip finds
     nothing complete -- every cell submits, keeping the array sizes below
-    deterministic regardless of what has actually been run locally."""
+    deterministic regardless of what has actually been run locally. The pull
+    target is redirected with them, so the driver's record pull lands in tmp
+    rather than in this machine's real records tree.
+    """
     monkeypatch.setattr(data.RECORDER, 'folder', tmp_path)
     data.RECORDER.records.clear()
+    monkeypatch.setattr(sync, 'records_pair',
+                        lambda prefix: (tmp_path, s3_key(prefix, 'records')))
+    return tmp_path
 
 OOM = {'status': 'FAILED',
        'container': {'exitCode': 137, 'reason': 'OutOfMemoryError'}}
@@ -217,8 +227,7 @@ N_CELLS = len(resolve_cells('sweep_llr')[0])
 def _run(fake_s3, fake_batch, **kw):
     with patch('glow._extra.aws.driver.boto3.client',
                client_factory(fake_s3, fake_batch)):
-        return drive_aws('sweep_llr', _cfg(), write_csv=False, verbose=False,
-                         **kw)
+        return drive_aws('sweep_llr', _cfg(), verbose=False, **kw)
 
 
 def test_happy_path_submits_one_array_and_finishes():
@@ -263,9 +272,11 @@ def test_methods_skips_a_cache_with_no_named_recipe():
     fake_s3, fake_batch = FakeS3(), FakeBatch(submit_then=[])
     with patch('glow._extra.aws.driver.boto3.client',
                client_factory(fake_s3, fake_batch)):
-        drive_aws('segment', _cfg(), write_csv=False, verbose=False,
-                  methods=['VBA'])
+        failures = drive_aws('segment', _cfg(), verbose=False,
+                             methods=['VBA'])
     assert fake_batch.submitted == []
+    # a skipped cache is absent from the report, not an empty entry in it
+    assert failures == {}
 
 
 def test_oom_escalates_to_next_tier():
@@ -296,21 +307,17 @@ def test_permanent_failure_not_retried():
     # a non-OOM crash is permanent: no escalation, reported as a failure
     fake_s3 = FakeS3()
     fake_batch = FakeBatch(submit_then=[[CRASH] + [OK] * (N_CELLS - 1)])
-    _run(fake_s3, fake_batch)
+    failures = _run(fake_s3, fake_batch)
     assert len(fake_batch.submitted) == 1  # no tier-1 resubmission
+    assert [cell for cell, _ in failures['sweep_llr']] == [0]
 
 
-def test_write_csv_pulls_records_and_writes(monkeypatch):
-    calls = {}
-
-    def _stub(out_dir=None, names=None):
-        calls['names'] = list(names)
-        return {}
-    monkeypatch.setattr('glow._extra.benchmark.results.write_config_csvs',
-                        _stub)
+def test_records_are_pulled_when_the_array_drains(_empty_records):
+    # how an AWS run's results come home: the worker's records exist only on S3
+    # until the driver pulls them, so the drain-time pull is unconditional
     fake_s3, fake_batch = FakeS3(), FakeBatch(submit_then=[[OK] * N_CELLS])
-    with patch('glow._extra.aws.driver.boto3.client',
-               client_factory(fake_s3, fake_batch)):
-        written = drive_aws('sweep_llr', _cfg(), write_csv=True, verbose=False)
-    assert written == {}
-    assert calls['names'] == ['sweep_llr']
+    fake_s3.store[('bkt', 'glow/records/abc.json')] = b'{}'
+    failures = _run(fake_s3, fake_batch)
+    assert (_empty_records / 'abc.json').read_bytes() == b'{}'
+    # every cell succeeded, and the report says so per cache
+    assert failures == {'sweep_llr': []}

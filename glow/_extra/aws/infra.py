@@ -1161,9 +1161,9 @@ def cmd_pull(args, cfg: AWSConfig) -> None:
 
     The pull side of the records the workers push while they compute (see
     glow._extra.aws.sync.records_pair): the per-hash records/ the CSVs are
-    built from. drive_aws pulls them at the end of a run to write the CSVs;
-    this exposes the same pull on its own, so an interrupted or cancelled run's
-    partial results are recoverable without waiting for a fresh run to drain.
+    built from. drive_aws pulls them at the end of a run; this exposes the same
+    pull on its own, so an interrupted or cancelled run's partial results are
+    recoverable without waiting for a fresh run to drain.
     Non-destructive: existing local files are skipped (s3.download_prefix), so
     nothing local is overwritten.
 

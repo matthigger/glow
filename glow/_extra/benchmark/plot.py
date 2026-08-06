@@ -1,11 +1,12 @@
 """Plot the run_ana benchmark caches from the shared provenance records.
 
 The plotting layer for the run_ana caches. It reads each cache's
-provenance frame (results.config_results_df: one wide row per run_ana leaf,
+provenance frame (make_csv.write_config_csv: one wide row per run_ana leaf,
 namespaced by the producing function -- run_ana.out.score, the swept
 data_factory / effect_factory inputs), normalises it to one tidy row per
 (trial, recipe) with tidy_run_ana, and writes one figure set per cache into
-results/_latest.
+results/_latest. Reading through make_csv refreshes each plotted cache's CSV
+in passing, so the exported table and the figures come from the same records.
 
 The tidy frame is what the plotters consume: a label (method), a source
 (WGN / HCP, which share each cache and face apart here), the swept axes
@@ -271,10 +272,11 @@ def tidy_run_ana(raw):
     """Normalise a run_ana provenance frame to a tidy per-trial results frame.
 
     Collapses the wide, function-namespaced frame from
-    results.config_results_df (run_ana leaf + its data_factory / effect_factory
-    ancestors) into the flat schema the plotters consume. The source is read
-    off which data_factory produced the row (wgn / hcp), the swept axes off the
-    relevant ancestor inputs, and the metrics off the recursed score columns
+    make_csv.write_config_csv (run_ana leaf + its data_factory /
+    effect_factory ancestors) into the flat schema the plotters consume. The
+    source is read off which data_factory produced the row (wgn / hcp), the
+    swept axes off the relevant ancestor inputs, and the metrics off the
+    recursed score columns
     (run_ana.out.score.target.{tp,fp,tn,fn}; glow.mask.stats_from_counts via
     add_metric_cols).
 
@@ -1734,16 +1736,17 @@ def main(argv=None) -> None:
 
     For each selected cache (every detection and runtime cache in CONFIG by
     default, or the names given on the command line), reads its provenance
-    frame (results.config_results_df) and plots it: a runtime cache is
-    normalised with tidy_runtime and drawn by plot_runtime (wall time vs its
-    cost knob); every other run_ana cache is normalised with tidy_run_ana and
-    drawn by plot_cache (detection sweep / calibration). The stat bake-off is
-    read straight from the run_stat leaves (results.stat_cell_df) and written as
-    two paper tables by write_stat_tables. The segment / prune caches are
-    normalised with tidy_segment / tidy_prune and drawn as a source x metric
-    grid vs effect_llr: segment by plot_metric_grid, prune by plot_prune (one
-    grid per Ward clustering mode). Figures / tables land in results/_latest,
-    so a mid-benchmark run yields intermediate output.
+    frame (make_csv.write_config_csv, which refreshes that cache's CSV on the
+    way past) and plots it: a runtime cache is normalised with tidy_runtime and
+    drawn by plot_runtime (wall time vs its cost knob); every other run_ana
+    cache is normalised with tidy_run_ana and drawn by plot_cache (detection
+    sweep / calibration). The stat bake-off is read straight from the run_stat
+    leaves (results.stat_cell_df) and written as two paper tables by
+    write_stat_tables. The segment / prune caches are normalised with
+    tidy_segment / tidy_prune and drawn as a source x metric grid vs
+    effect_llr: segment by plot_metric_grid, prune by plot_prune (one grid per
+    Ward clustering mode). Figures / tables land in results/_latest, so a
+    mid-benchmark run yields intermediate output.
 
     Args:
         argv (list | None): CLI args to parse; None reads sys.argv. Positional
@@ -1757,7 +1760,7 @@ def main(argv=None) -> None:
     from .config import CONFIG
     from .run import (run_ana, run_inner_edge, run_prune,
                       run_segment, run_stat)
-    from . import results
+    from . import make_csv, results
 
     parser = argparse.ArgumentParser(
         description='Plot detection and runtime benchmark figures from the '
@@ -1798,7 +1801,7 @@ def main(argv=None) -> None:
     n_plotted = 0
     for name in names:
         if name in _RUNTIME_SPEC:
-            df = tidy_runtime(name, results.config_results_df(name))
+            df = tidy_runtime(name, make_csv.write_config_csv(name))
             if df.empty:
                 print(f'  (no records for {name} — skipping)')
                 continue
@@ -1806,7 +1809,7 @@ def main(argv=None) -> None:
             plot_runtime(name, df, out)
             n_plotted += 1
         elif name in detect_names:
-            df = tidy_run_ana(results.config_results_df(name))
+            df = tidy_run_ana(make_csv.write_config_csv(name))
             if df.empty:
                 print(f'  (no records for {name} — skipping)')
                 continue
@@ -1814,7 +1817,7 @@ def main(argv=None) -> None:
             plot_cache(name, df, out)
             n_plotted += 1
         elif name in edge_names:
-            df = tidy_inner_edge(results.config_results_df(name))
+            df = tidy_inner_edge(make_csv.write_config_csv(name))
             if df.empty:
                 print(f'  (no records for {name} — skipping)')
                 continue
@@ -1831,7 +1834,7 @@ def main(argv=None) -> None:
             write_stat_tables(name, df, out)
             n_plotted += 1
         elif name in segment_names:
-            df = tidy_segment(results.config_results_df(name))
+            df = tidy_segment(make_csv.write_config_csv(name))
             if df.empty:
                 print(f'  (no records for {name} — skipping)')
                 continue
@@ -1839,7 +1842,7 @@ def main(argv=None) -> None:
             plot_metric_grid(name, df, out)
             n_plotted += 1
         elif name in prune_names:
-            df = tidy_prune(results.config_results_df(name))
+            df = tidy_prune(make_csv.write_config_csv(name))
             if df.empty:
                 print(f'  (no records for {name} — skipping)')
                 continue

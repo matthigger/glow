@@ -1,40 +1,37 @@
 """CLI entry point for the paper benchmarks.
 
 Running python -m glow._extra.benchmark resolves cache names from
-config.CONFIG and drives each selected one through driver.drive. After the
-sweep it writes one <name>.csv per cache from the shared provenance
-records (results.write_config_csvs), which recomputes each cache's leaves by
-walking the records forward from its data cells (see driver / results).
+config.CONFIG and drives each selected one through driver.drive. A sweep only
+fills the shared provenance records; turning them into the per-figure CSVs is
+a separate step (python -m glow._extra.benchmark.make_csv, which plot also
+runs on its way to the figures).
 
 A sweep runs only the cells the records do not already hold in full, so a
 rerun fills the gaps rather than recomputing finished work (--no-skip forces
-the whole grid). --csv-only skips the sweep entirely and rebuilds those CSVs
-from the records already on disk -- the path to take after editing config.py /
-results.py when the records are still good and no new experiments are needed.
+the whole grid).
 
 --method narrows the sweep to one analysis recipe (repeatable), the path to
 take after changing one method's recipe: a changed knob is a new hash, so that
 method's leaves go missing everywhere while its siblings' stay valid, and
 completeness is judged against the narrowed grid -- so only the named recipes
 run and no sibling fit is recomputed. It applies to the local and the AWS
-sweep alike; the CSVs are written from the full records either way.
+sweep alike.
 
 --aws runs the sweep on AWS Batch instead of locally: it hands the same
 resolved cache names to glow._extra.aws.drive_aws, which submits each cache's
-data cells as a Batch array job and writes the same per-config CSVs from the
-shared records when they drain (see glow._extra.aws). This is the one CLI for a
-benchmark run, local or cloud; provisioning the AWS resources is a separate
-concern (python -m glow._extra.aws -- bootstrap / setup / status / ...).
-Selecting a timing cache (runtime*) for --aws warns and asks before submitting
-anything: a Batch array cannot measure wall time, since its Spot instance type
-varies. Declining is the default and aborts the sweep (see confirm_aws).
+data cells as a Batch array job and pulls the records home when they drain
+(see glow._extra.aws). This is the one CLI for a benchmark run, local or
+cloud; provisioning the AWS resources is a separate concern (python -m
+glow._extra.aws -- bootstrap / setup / status / ...). Selecting a timing cache
+(runtime*) for --aws warns and asks before submitting anything: a Batch array
+cannot measure wall time, since its Spot instance type varies. Declining is
+the default and aborts the sweep (see confirm_aws).
 
 Usage:
     python -m glow._extra.benchmark                    # everything (local)
     python -m glow._extra.benchmark 'sweep_*'          # glob
     python -m glow._extra.benchmark -j 4 sweep_llr     # parallel local
     python -m glow._extra.benchmark --aws sweep_llr    # run on AWS Batch
-    python -m glow._extra.benchmark --csv-only         # rebuild CSVs only
     python -m glow._extra.benchmark --no-skip sweep_llr # recompute every cell
     python -m glow._extra.benchmark --method VBA --method CET   # one recipe
     python -m glow._extra.benchmark --list             # list cache names
@@ -140,33 +137,15 @@ def confirm_aws(resolved, input_fnc=None) -> bool:
     return False
 
 
-def _report_csvs(written: dict) -> None:
-    """Print the written per-config CSV paths, or a note that there were none.
-
-    Args:
-        written (dict): {cache name: csv path}, as write_config_csvs returns.
-    """
-    if not written:
-        print('\nno CSVs written (no selected cache has records on disk yet)')
-        return
-    print('\nwrote per-config CSVs:')
-    for name, path in written.items():
-        print(f'  {name}: {path}')
-
-
 def run(names=None, n_jobs: int = 1, verbose: bool = True,
-        write_csv: bool = True, csv_only: bool = False, out_dir=None,
         aws: bool = False, aws_config_path=None,
-        skip_recorded: bool = True, methods=None) -> dict:
-    """Drive the selected CONFIG caches, then write their per-config CSVs.
+        skip_recorded: bool = True, methods=None) -> list:
+    """Drive the selected CONFIG caches into the shared records.
 
-    For each resolved cache name, runs drive(*CONFIG[name], n_jobs=n_jobs),
-    then writes one <name>.csv per cache from the shared records
-    (results.write_config_csvs, which recomputes each cache's leaves by walking
-    the records forward from its data cells). csv_only skips the sweep and
-    just rebuilds those CSVs from the records already on disk -- the path to
-    take after editing config.py / results.py when no new experiments are
-    needed.
+    For each resolved cache name, runs drive(*CONFIG[name], n_jobs=n_jobs). The
+    sweep writes nothing but records; exporting them as the per-figure CSVs is
+    make_csv's job, so a run and its aggregation can happen (and fail)
+    independently.
 
     A local sweep skips the cells already complete in the records by default,
     matching the AWS path, so a rerun (or a grid widened by a config edit)
@@ -183,28 +162,21 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
 
     aws runs the sweep on AWS Batch instead of locally: the resolved names are
     handed to glow._extra.aws.drive_aws, which submits each cache's cells as a
-    Batch array job and writes the same CSVs from the shared records when they
-    drain. The local HCP dataset is not loaded in this mode (the workers own
-    the data), and n_jobs does not apply (the Batch array is the parallelism).
-    A selected timing cache prompts first (confirm_aws) -- a Batch array's Spot
-    instance type varies, so it cannot measure wall time.
+    Batch array job and pulls the shared records home when they drain. The
+    local HCP dataset is not loaded in this mode (the workers own the data),
+    and n_jobs does not apply (the Batch array is the parallelism). A selected
+    timing cache prompts first (confirm_aws) -- a Batch array's Spot instance
+    type varies, so it cannot measure wall time.
 
     The HCP reference dataset is ensured once up front (idempotent / cached)
-    for the HCP-backed caches in a local run, except under csv_only / aws,
-    which run no local experiments.
+    for the HCP-backed caches in a local run, but not under aws, which runs no
+    local experiments.
 
     Args:
         names (list | None): cache names or fnmatch patterns; None selects all.
         n_jobs (int): joblib worker count for a local sweep (1 = serial; -1 =
-            all cores). Ignored when csv_only or aws is set.
-        verbose (bool): print per-cache headers, the drive() progress bar,
-            and the CSV-written summary.
-        write_csv (bool): write the per-config CSVs after the sweep. Implied
-            (and forced) when csv_only is set.
-        csv_only (bool): skip the sweep; rebuild the CSVs from the records on
-            disk. The HCP data is not loaded in this mode.
-        out_dir (str | pathlib.Path | None): CSV destination; None is glow's
-            per-user results dir (file.get_path_result).
+            all cores). Ignored when aws is set.
+        verbose (bool): print per-cache headers and the drive() progress bar.
         aws (bool): run the sweep on AWS Batch (drive_aws) rather than locally.
         aws_config_path (str | None): AWSConfig JSON path for aws; None uses
             the per-user default (config.AWSConfig.from_file).
@@ -216,27 +188,24 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
             (default) runs each cache's whole leaf grid.
 
     Returns:
-        written (dict): {cache name: csv path} for the caches that had rows
-            (empty when write_csv is False, or when no selected cache has run).
+        driven (list[str]): the cache names actually swept, in selection order
+            -- the resolved names less those methods left with no recipe (and
+            empty when an AWS timing prompt was declined).
     """
-    from .results import write_config_csvs
-
     resolved = resolve_names(names or [])
-
-    if csv_only:
-        written = write_config_csvs(out_dir=out_dir, names=resolved)
-        if verbose:
-            _report_csvs(written)
-        return written
 
     if aws:
         if not confirm_aws(resolved):
-            return {}
+            return []
         from glow._extra.aws import AWSConfig, drive_aws
         aws_config = (AWSConfig.from_file(aws_config_path) if aws_config_path
                       else AWSConfig.from_file())
-        return drive_aws(resolved, aws_config, write_csv=write_csv,
-                         verbose=verbose, out_dir=out_dir, methods=methods)
+        # the driver reports its per-cache failures; the caches it drove are
+        # that report's keys (one skipped for holding no named recipe is
+        # absent from it)
+        failures = drive_aws(resolved, aws_config, verbose=verbose,
+                             methods=methods)
+        return list(failures)
 
     from .config import CONFIG, filter_ana_list
     from .data import RECORDER
@@ -246,6 +215,7 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
     # most caches build on the HCP reference dataset; ensure it once (cached)
     ensure_hcp_data()
 
+    driven = []
     for name in resolved:
         kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc = \
             CONFIG[name]
@@ -260,12 +230,12 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
             print(f'\n=== {name} ({RECORDER.folder}) ===')
         drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc,
               n_jobs=n_jobs, verbose=verbose, skip_recorded=skip_recorded)
+        driven.append(name)
 
-    written = (write_config_csvs(out_dir=out_dir, names=resolved)
-               if write_csv else {})
     if verbose:
-        _report_csvs(written)
-    return written
+        print(f'\nswept {len(driven)} cache(s) into the records; export them '
+              f'with python -m glow._extra.benchmark.make_csv')
+    return driven
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -285,10 +255,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument('-j', '--n-jobs', type=int, default=1,
                         help='joblib worker count (1=serial; -1=all cores)')
     parser.add_argument('-q', '--quiet', action='store_true',
-                        help='suppress per-cache headers and the CSV summary')
-    parser.add_argument('--out-dir', default=None,
-                        help='CSV destination (default: glow per-user results '
-                             'dir)')
+                        help='suppress per-cache headers and progress bars')
     parser.add_argument('--aws', action='store_true',
                         help='run the sweep on AWS Batch (glow._extra.aws)')
     parser.add_argument('--aws-config', default=None,
@@ -302,12 +269,6 @@ def parse_args(argv=None) -> argparse.Namespace:
                         default=None, metavar='LABEL',
                         help='run only this analysis recipe (repeatable; a '
                              'config.ana_kwargs_dict key, e.g. VBA)')
-    csv_group = parser.add_mutually_exclusive_group()
-    csv_group.add_argument('--no-csv', action='store_true',
-                           help='run the sweep but skip writing the CSVs')
-    csv_group.add_argument('--csv-only', action='store_true',
-                           help='skip the sweep; rebuild the CSVs from the '
-                                'records on disk')
     return parser.parse_args(argv)
 
 
@@ -326,10 +287,8 @@ def main(argv=None) -> None:
         return
 
     run(names=args.names, n_jobs=args.n_jobs, verbose=not args.quiet,
-        write_csv=not args.no_csv, csv_only=args.csv_only,
-        out_dir=args.out_dir, aws=args.aws,
-        aws_config_path=args.aws_config, skip_recorded=not args.no_skip,
-        methods=args.methods)
+        aws=args.aws, aws_config_path=args.aws_config,
+        skip_recorded=not args.no_skip, methods=args.methods)
 
 
 if __name__ == '__main__':

@@ -1,14 +1,14 @@
-"""Run a CONFIG cache's planted cells on AWS Batch, then build its CSVs.
+"""Run a CONFIG cache's planted cells on AWS Batch, into the shared records.
 
-drive_aws is the AWS counterpart of glow._extra.benchmark.run.run: instead of
-sweeping the cells in local joblib workers, it submits them as a Batch array
+drive_aws is the AWS counterpart of glow._extra.benchmark.__main__.run: instead
+of sweeping the cells in local joblib workers, it submits them as a Batch array
 job (one child per planted cell -- a data cell crossed with one effect) and
 lets each worker rebuild + run its cell from the shipped bundle, writing its
 records to a shared S3 prefix. The driver pulls finished records down as the
-workers ship them (so results land locally as they complete), and when the
-array drains does a final pull and writes the per-config CSVs with the
-unchanged results.write_config_csvs -- the AWS path produces the same records a
-local run would, so the read side is identical.
+workers ship them (so results land locally as they complete) and does a final
+pull when the array drains -- that pull is how a run's results come home. The
+AWS path produces the same records a local run would, so the read side is
+identical (glow._extra.benchmark.make_csv exports either).
 
 The driver is the single source of truth for what runs: it resolves a cache's
 cells locally (resolve_cells -- see glow._extra.aws.units), drops the cells
@@ -88,16 +88,18 @@ RETRY_EVALUATE_ON_EXIT = [
 ]
 
 
-def drive_aws(names, aws_config, *, write_csv: bool = True,
-              verbose: bool = True, out_dir=None, methods=None) -> dict:
-    """Run the selected CONFIG caches on AWS Batch, then write their CSVs.
+def drive_aws(names, aws_config, *, verbose: bool = True,
+              methods=None) -> dict:
+    """Run the selected CONFIG caches on AWS Batch and pull the records home.
 
     Each cache's data cells -- whatever sources its CONFIG grid declares, minus
     the cells already complete in the local records -- are submitted as a Batch
     array job and escalated through aws_config.memory_mb_tiers for any
-    OOM-killed cells. When every cache's array has drained, the shared records
-    are pulled from S3 and the per-config CSVs written. (HCP cells need their
-    reference data staged to S3 first; see glow._extra.aws stage_hcp.)
+    OOM-killed cells. When every cache's array has drained the shared records
+    are pulled from S3, which is how the run's results reach this machine;
+    exporting them as CSVs is a separate step
+    (glow._extra.benchmark.make_csv). (HCP cells need their reference data
+    staged to S3 first; see glow._extra.aws stage_hcp.)
 
     methods narrows each cache's shipped leaf grid to the named analysis
     recipes (config.filter_ana_list), the path for rerunning one method after
@@ -109,18 +111,15 @@ def drive_aws(names, aws_config, *, write_csv: bool = True,
     Args:
         names (str | list[str]): a CONFIG cache name or list of them.
         aws_config (AWSConfig): bucket, prefix, queue, definition, tiers.
-        write_csv (bool): pull records and write the per-config CSVs at the
-            end (results.write_config_csvs).
         verbose (bool): tqdm progress bars and status prints.
-        out_dir (str | Path | None): CSV destination forwarded to
-            write_config_csvs; None is glow's per-user results dir.
         methods (list[str] | None): analysis-recipe labels
             (config.ana_kwargs_dict keys, e.g. ['VBA', 'CET']) to run; None
             (default) ships each cache's whole leaf grid.
 
     Returns:
-        written (dict): {cache name: csv path} for caches that had rows
-            (empty when write_csv is False).
+        failures (dict): {cache name: [(cell index, reason), ...]} for the
+            caches submitted, the list empty where every cell succeeded. A
+            cache skipped for holding no named recipe is absent.
     """
     if isinstance(names, str):
         names = [names]
@@ -204,22 +203,19 @@ def drive_aws(names, aws_config, *, write_csv: bool = True,
             else:
                 remaining[name] = oom[name]
 
+    # the final catch-up pull: the workers' records exist only on S3 until they
+    # are fetched, so this is how the run's results come home (the mid-run
+    # pulls in _poll_attempts have brought most of them already)
+    local_dir, key_prefix = sync.records_pair(aws_config.s3_prefix)
+    n_pulled = s3.download_prefix(s3_client, aws_config.s3_bucket, key_prefix,
+                                  local_dir)
+
     if verbose:
+        print(f'[drive_aws] pulled {n_pulled} new record file(s) into '
+              f'{local_dir}')
         for name in failures:
             _print_summary(name, failures[name])
-
-    if not write_csv:
-        return {}
-
-    # pull the shared records and write the CSVs with the unchanged read path
-    local_dir, key_prefix = sync.records_pair(aws_config.s3_prefix)
-    s3.download_prefix(s3_client, aws_config.s3_bucket, key_prefix, local_dir)
-    from glow._extra.benchmark.results import write_config_csvs
-    written = write_config_csvs(out_dir=out_dir, names=list(remaining))
-    if verbose:
-        for name, path in written.items():
-            print(f'[drive_aws] wrote {name}: {path}')
-    return written
+    return failures
 
 
 # ---------- submit a run; poll many attempts; classify ----------------------

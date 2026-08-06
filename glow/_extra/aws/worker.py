@@ -32,7 +32,7 @@ worker:
 
 The worker pulls no shared cache: it runs one whole cell, so nothing another
 worker computed can help it, and it uploads only the records its cell produces
-(the driver builds the CSVs from those; see glow._extra.aws.sync). Its one
+(the driver pulls those home; see glow._extra.aws.sync). Its one
 resume path is the per-cell checkpoint (steps 3 and 5), which restores just
 this cell's partial progress, so a long cell reclaimed mid-run continues rather
 than recomputing from cold. Exits non-zero on any exception so AWS Batch marks
@@ -123,8 +123,8 @@ def main(manifest_uri: str) -> None:
     if s3.read_checkpoint(s3_client, bucket, ckpt_key, ckpt_dirs):
         print('[worker] resumed from Spot checkpoint', flush=True)
 
-    # ship only the records this cell produces (the driver builds the CSVs from
-    # them); the worker pulls no shared state, since one whole cell runs here
+    # ship only the records this cell produces (the driver pulls them home);
+    # the worker pulls no shared state, since one whole cell runs here
     # and no other worker's cache helps it. A background thread sweeps every
     # minute; the GIL is released inside numpy, so sweeps proceed even mid-fit.
     pairs = [sync.records_pair(prefix)]

@@ -1,13 +1,11 @@
 """Tests for glow._extra.benchmark.__main__: the paper-benchmark CLI.
 
 The catalogue (config.CONFIG), the sweep (driver.drive) and the records->CSV
-slice (results.write_config_csvs) are covered by test_config / test_driver /
-test_results, so these cover only what is novel to the CLI: name resolution
-(literal / glob / dedup, with typos surfacing as errors), argument parsing
-(including the --no-csv / --csv-only mutual exclusion), and that ``run`` wires
-those pieces together -- driving a sweep and writing its CSV, versus the
-csv-only path that rebuilds the CSV from the records on disk without running
-anything.
+export (make_csv) are covered by test_config / test_driver / test_make_csv, so
+these cover only what is novel to the CLI: name resolution (literal / glob /
+dedup, with typos surfacing as errors), argument parsing, and that run wires
+those pieces together -- driving a sweep into the records and nothing else
+(no CSV: aggregation is make_csv's separate step).
 
 CONFIG is monkeypatched to a tiny WGN + cheap-VBA sweep so a real ``run`` is
 fast; fresh seeds keep each cell a cache miss (so it really runs and records),
@@ -15,11 +13,10 @@ and ensure_hcp_data is stubbed (the WGN cells need no HCP data).
 """
 import random
 
-import pandas as pd
 import pytest
 
 from glow._extra.benchmark import __main__ as cli
-from glow._extra.benchmark import config, data, hcp
+from glow._extra.benchmark import config, data, hcp, make_csv
 from glow._extra.benchmark.run import run_ana
 from glow.analysis import AnalysisVBA
 from glow.effect import ExtenterSphere
@@ -95,18 +92,19 @@ class TestParseArgs:
     def test_defaults(self):
         ns = cli.parse_args([])
         assert ns.names == [] and ns.n_jobs == 1 and not ns.quiet
-        assert not ns.no_csv and not ns.csv_only and not ns.list_names
-        assert ns.out_dir is None
+        assert not ns.list_names and not ns.no_skip and not ns.aws
 
     def test_flags(self):
-        ns = cli.parse_args(
-            ['sweep_llr_b1', '-j', '4', '-q', '--csv-only', '--out-dir', '/x'])
+        ns = cli.parse_args(['sweep_llr_b1', '-j', '4', '-q', '--no-skip'])
         assert ns.names == ['sweep_llr_b1'] and ns.n_jobs == 4 and ns.quiet
-        assert ns.csv_only and ns.out_dir == '/x'
+        assert ns.no_skip
 
-    def test_no_csv_and_csv_only_mutually_exclusive(self):
-        with pytest.raises(SystemExit):
-            cli.parse_args(['--no-csv', '--csv-only'])
+    def test_csv_flags_are_gone(self):
+        # a sweep is records-only, so the CSV knobs it used to carry must not
+        # come back silently (aggregation is python -m ...benchmark.make_csv)
+        for argv in (['--no-csv'], ['--csv-only'], ['--out-dir', '/x']):
+            with pytest.raises(SystemExit):
+                cli.parse_args(argv)
 
     def test_method_repeats_into_a_list(self):
         assert cli.parse_args([]).methods is None
@@ -115,7 +113,7 @@ class TestParseArgs:
 
 
 # ---------------------------------------------------------------------------
-# run: drive a sweep then write its CSV, vs. csv-only rebuild
+# run: drive a sweep into the records, writing nothing else
 # ---------------------------------------------------------------------------
 
 class TestRun:
@@ -127,23 +125,23 @@ class TestRun:
         monkeypatch.setattr(hcp, 'ensure_hcp_data', lambda: calls.append(1))
         return calls
 
-    def test_run_writes_csv(self, _tiny, tmp_path):
-        written = cli.run(names=['tiny'], out_dir=tmp_path / 'csv',
-                          verbose=False)
-        assert set(written) == {'tiny'}
-        # one data x effect x fnc cell -> one leaf row
-        assert len(pd.read_csv(written['tiny'])) == 1
+    def test_run_records_the_swept_cache(self, _tiny):
+        assert cli.run(names=['tiny'], verbose=False) == ['tiny']
+        # one data x effect x fnc cell -> one recorded run_ana leaf
+        assert len([r for r in data.RECORDER.records.values()
+                    if r['function'] == 'run_ana']) == 1
         # the HCP dataset was ensured once up front
         assert _tiny == [1]
 
-    def test_no_csv_runs_but_writes_nothing(self, _tiny, tmp_path):
-        written = cli.run(names=['tiny'], out_dir=tmp_path / 'csv',
-                          write_csv=False, verbose=False)
-        assert written == {}
-        # the sweep still ran and recorded (only the CSV write was skipped)
-        assert _tiny == [1]
-        assert any(r['function'] == 'run_ana'
-                   for r in data.RECORDER.records.values())
+    def test_sweep_writes_no_csv(self, _tiny, tmp_path, monkeypatch):
+        # a sweep is records-only: nothing lands in the CSV destination until
+        # the separate export step is asked for it
+        results_dir = tmp_path / 'results'
+        monkeypatch.setattr(make_csv, 'get_path_result', lambda: results_dir)
+        cli.run(names=['tiny'], verbose=False)
+        assert not results_dir.exists()
+        assert make_csv.write_config_csv('tiny').shape[0] == 1
+        assert [p.name for p in results_dir.iterdir()] == ['tiny.csv']
 
     @pytest.fixture
     def _two_recipes(self, monkeypatch):
@@ -172,7 +170,7 @@ class TestRun:
         # the rerun-one-method path: the sibling recipe is never called, so its
         # fit is not recomputed (see run / config.filter_ana_list)
         _, ana_b = _two_recipes
-        cli.run(names=['tiny'], write_csv=False, verbose=False, methods=['B'])
+        cli.run(names=['tiny'], verbose=False, methods=['B'])
         assert self._ana_reprs() == [repr(ana_b)]
 
     def test_methods_skips_a_cache_with_no_named_recipe(self, _two_recipes,
@@ -183,24 +181,10 @@ class TestRun:
         monkeypatch.setattr(config, 'CONFIG', {'other': (
             data_list, effect_list, [dict(ana=AnalysisVBA(n_perm_fwer=8))],
             fnc)})
-        cli.run(names=['other'], write_csv=False, methods=['A'])
+        # the skipped cache is not reported as driven
+        assert cli.run(names=['other'], methods=['A']) == []
         assert 'skipped' in capsys.readouterr().out
         assert self._ana_reprs() == []
-
-    def test_csv_only_rebuilds_without_running(self, _tiny, tmp_path):
-        # a first sweep populates the records (no CSV written)
-        cli.run(names=['tiny'], out_dir=tmp_path / 'csv', write_csv=False,
-                verbose=False)
-        n_records = len(data.RECORDER.records)
-        _tiny.clear()
-
-        # csv-only rebuilds the CSV from those records: no HCP load, no new run
-        written = cli.run(names=['tiny'], out_dir=tmp_path / 'rebuild',
-                          csv_only=True, verbose=False)
-        assert set(written) == {'tiny'}
-        assert len(pd.read_csv(written['tiny'])) == 1
-        assert _tiny == []
-        assert len(data.RECORDER.records) == n_records
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +200,8 @@ class TestMain:
     def test_main_dispatches_to_run(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(cli, 'run', lambda **kw: captured.update(kw))
-        cli.main(['sweep_llr_b1', '-j', '3', '-q', '--no-csv'])
+        cli.main(['sweep_llr_b1', '-j', '3', '-q', '--no-skip'])
         assert captured['names'] == ['sweep_llr_b1'] and captured['n_jobs'] == 3
-        assert captured['verbose'] is False and captured['write_csv'] is False
-        assert captured['csv_only'] is False
+        assert captured['verbose'] is False
+        assert captured['skip_recorded'] is False
+        assert captured['methods'] is None
