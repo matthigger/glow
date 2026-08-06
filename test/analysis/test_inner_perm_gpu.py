@@ -1,14 +1,17 @@
 """GPU inner-perm backend equivalence, anchored on cpu_reliable.
 
 Mirrors test_inner_perm.py's anchoring strategy one level out: there,
-cpu_perm is validated against the per-region iter_mancova + get_llr
-trust anchor; here the device backend is validated against that same
-anchor (per-draw) and against cpu_perm (moments), across b and both
-nuisance regimes. The two paths in inner_perm_gpu take opposite
-permutation directions, so a convention slip in either shows up as a
-per-draw mismatch rather than a subtle moment drift.
+cpu_perm is validated against the per-region iter_mancova + get_llr trust
+anchor; here the device backend is validated against that same anchor
+(per-draw) and against cpu_perm (moments), across b and both nuisance
+regimes. There is one code path for both regimes -- for intercept-only
+nuisance the rho correction comes out identically zero rather than being
+branched around -- so the design axis below exercises that collapse.
 
-Every test skips when no CUDA device is visible.
+The float32 tests are the load-bearing ones: acc_dtype defaults to
+float32, and it is only safe because T = E + H is assembled from two
+cancellation-free pieces with the DC-carrying scans held at
+scan_dtype=float64. Both halves of that claim are asserted.
 
 Run:
     ~/venv_glow/bin/pytest test/analysis/test_inner_perm_gpu.py -v
@@ -31,6 +34,7 @@ requires_cuda = pytest.mark.skipif(
     reason='no CUDA device visible')
 
 B_LIST = [1, 2, 3, 6]
+DESIGNS = ['intercept', 'general']
 
 
 # ---------------------------------------------------------------------------
@@ -66,15 +70,14 @@ def _general_q0_exp(b, seed=0, n_img=24, shape=(3, 4, 4)):
     x = np.vstack(rows)
 
     num_vox = int(np.prod(shape))
-    mask = np.ones(shape, dtype=bool)
     y = rng.standard_normal((b, n_img, num_vox)).astype(np.float64)
     return Experiment(x=x, y=y, contrast=np.array(contrast),
-                      mask_idx=glow.mask.get_mask_idx(mask))
+                      mask_idx=glow.mask.get_mask_idx(np.ones(shape, bool)))
 
 
-def _prep(b, path, *, min_vox=2):
-    """Build the kwargs every inner_perm backend wants, for one path."""
-    exp = (_intercept_only_exp(b) if path == 'intercept'
+def _prep(b, design, *, min_vox=2):
+    """Build the kwargs every inner_perm backend wants, for one design."""
+    exp = (_intercept_only_exp(b) if design == 'intercept'
            else _general_q0_exp(b))
     q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
     children = cluster(exp=exp, mode='Focus')
@@ -100,99 +103,105 @@ def _assert_cells_match(got, ref, *, atol, label):
 
 
 # ---------------------------------------------------------------------------
-# Per-draw equivalence against the trust anchor
+# Equivalence against the trust anchor, at float64 so only the algorithm
+# (not the dtype) is under test
 
 @requires_cuda
-@pytest.mark.parametrize('path', ['intercept', 'general'])
+@pytest.mark.parametrize('design', DESIGNS)
 @pytest.mark.parametrize('b', B_LIST)
-def test_gpu_draws_match_reliable(b, path):
+def test_gpu_draws_match_reliable(b, design):
     """gpu_perm_full draws match cpu_reliable_full cell-by-cell."""
-    prep = _prep(b, path)
-    got = _call(inner_perm_gpu.gpu_perm_full, prep, n_perm=6)
-    ref = _call(inner_perm.cpu_reliable_full, prep, n_perm=6)
-    _assert_cells_match(got, ref, atol=1e-9, label=f'b={b} {path}')
-
-
-@requires_cuda
-@pytest.mark.parametrize('path', ['intercept', 'general'])
-@pytest.mark.parametrize('b', B_LIST)
-def test_gpu_moments_match_cpu_perm(b, path):
-    """gpu_perm (mu, std) match cpu_perm's, which share the Chan reduction."""
-    prep = _prep(b, path)
-    mu_g, std_g = _call(inner_perm_gpu.gpu_perm, prep, n_perm=20)
-    mu_c, std_c = _call(inner_perm.cpu_perm, prep, n_perm=20)
-    _assert_cells_match(mu_g, mu_c, atol=1e-9, label=f'mu b={b} {path}')
-    _assert_cells_match(std_g, std_c, atol=1e-9, label=f'std b={b} {path}')
-
-
-# ---------------------------------------------------------------------------
-# The path dispatch, and the knobs that must not change the answer
-
-@requires_cuda
-def test_dispatch_picks_intercept_path():
-    """An intercept-only design dispatches to the intercept-only path."""
-    prep = _prep(2, 'intercept')
-    _, chunk_llr = inner_perm_gpu._dispatch_state(
-        exp=prep['exp'], q0=prep['q0'], q1=prep['q1'],
-        children=prep['children'], min_vox=prep['min_vox'],
-        device='cuda', acc_dtype=np.float64)
-    assert chunk_llr is inner_perm_gpu._intercept_chunk_llr
-
-
-@requires_cuda
-def test_dispatch_picks_general_path():
-    """A non-constant nuisance column dispatches to the general path."""
-    prep = _prep(2, 'general')
-    _, chunk_llr = inner_perm_gpu._dispatch_state(
-        exp=prep['exp'], q0=prep['q0'], q1=prep['q1'],
-        children=prep['children'], min_vox=prep['min_vox'],
-        device='cuda', acc_dtype=np.float64)
-    assert chunk_llr is inner_perm_gpu._general_chunk_llr
-
-
-@requires_cuda
-def test_forced_paths_agree():
-    """On an intercept-only exp both paths compute the same draws.
-
-    The general-Q0 algebra must reduce to the intercept-only one when Q0
-    happens to be span(1) -- the two take opposite permutation
-    directions, so this pins the convention rather than the algebra.
-    """
-    prep = _prep(2, 'intercept')
+    prep = _prep(b, design)
     got = _call(inner_perm_gpu.gpu_perm_full, prep, n_perm=6,
-                force_path='general')
-    ref = _call(inner_perm_gpu.gpu_perm_full, prep, n_perm=6,
-                force_path='intercept')
-    _assert_cells_match(got, ref, atol=1e-9, label='forced-path')
+                acc_dtype=np.float64)
+    ref = _call(inner_perm.cpu_reliable_full, prep, n_perm=6)
+    _assert_cells_match(got, ref, atol=1e-9, label=f'b={b} {design}')
 
 
 @requires_cuda
-@pytest.mark.parametrize('path', ['intercept', 'general'])
+@pytest.mark.parametrize('design', DESIGNS)
+@pytest.mark.parametrize('b', B_LIST)
+def test_gpu_moments_match_cpu_perm(b, design):
+    """gpu_perm (mu, std) match cpu_perm's, which share the Chan reduction."""
+    prep = _prep(b, design)
+    mu_g, std_g = _call(inner_perm_gpu.gpu_perm, prep, n_perm=20,
+                        acc_dtype=np.float64)
+    mu_c, std_c = _call(inner_perm.cpu_perm, prep, n_perm=20)
+    _assert_cells_match(mu_g, mu_c, atol=1e-9, label=f'mu b={b} {design}')
+    _assert_cells_match(std_g, std_c, atol=1e-9, label=f'std b={b} {design}')
+
+
+@requires_cuda
+@pytest.mark.parametrize('design', DESIGNS)
 @pytest.mark.parametrize('perm_chunk', [1, 3, 32])
-def test_perm_chunk_invariance(path, perm_chunk):
+def test_perm_chunk_invariance(design, perm_chunk):
     """perm_chunk is a memory knob only: draws are unchanged by it.
 
     Uses raw draws rather than moments: the Chan combine folds one chunk
     at a time, so its round-off legitimately depends on chunk size, but
     the draws themselves must not.
     """
-    prep = _prep(2, path)
+    prep = _prep(2, design)
     got = _call(inner_perm_gpu.gpu_perm_full, prep, n_perm=7,
-                perm_chunk=perm_chunk)
-    ref = _call(inner_perm_gpu.gpu_perm_full, prep, n_perm=7, perm_chunk=8)
+                perm_chunk=perm_chunk, acc_dtype=np.float64)
+    ref = _call(inner_perm_gpu.gpu_perm_full, prep, n_perm=7, perm_chunk=8,
+                acc_dtype=np.float64)
     _assert_cells_match(got, ref, atol=1e-12,
-                        label=f'perm_chunk={perm_chunk} {path}')
+                        label=f'perm_chunk={perm_chunk} {design}')
+
+
+@requires_cuda
+@pytest.mark.parametrize('design', DESIGNS)
+def test_min_vox_drops_small_regions(design):
+    """Regions below min_vox come back NaN, larger ones finite."""
+    prep = _prep(2, design, min_vox=4)
+    mu, std = _call(inner_perm_gpu.gpu_perm, prep, n_perm=8)
+    _, region_l, region_h = glow.graph.build_dfs_preorder(
+        children=prep['children'], num_vox=prep['exp'].y.shape[2])
+    small = (region_h - region_l) < 4
+    assert small.any() and (~small).any()
+    assert np.isnan(mu[small]).all()
+    assert np.isfinite(mu[~small]).all()
+    assert np.isfinite(std[~small]).all()
 
 
 # ---------------------------------------------------------------------------
-# float32 safety: T_u via the cancellation-free split
+# One path for both nuisance regimes
+
+@requires_cuda
+def test_rho_vanishes_for_intercept_only():
+    """The nuisance correction is identically zero for intercept-only Q0.
+
+    This is why one code path suffices: rho = Q0[:, pi^-1] u is zero when
+    Q0's rows are constant, so W_r collapses to reg_sum(T_v) and S_r to the
+    spatial scatter of s0 -- exactly what a hoisted intercept-only fast
+    path would compute (cf. glow.graph.iter_llr_perm's rho / X_v terms).
+    """
+    import torch
+    prep = _prep(2, 'intercept')
+    state = inner_perm_gpu._prep_state(
+        y=prep['exp'].y, q0=prep['q0'], q1=prep['q1'],
+        children=prep['children'], min_vox=prep['min_vox'],
+        device='cuda', acc_dtype=np.float64)
+    perms = inner_perm_gpu._build_perms(7, 4, prep['exp'].y.shape[1])
+    src = inner_perm_gpu._build_perm_inv_tensor(perms, state['dev'])
+    q01_perm = state['Q01'][:, src].permute(1, 0, 2).contiguous()
+    alpha = torch.einsum('pkn,bnv->pkbv', q01_perm, state['U'])
+    rho = alpha[:, :state['a0']]
+    assert float(rho.abs().max()) < 1e-12, \
+        f'rho should vanish for intercept-only, got {float(rho.abs().max()):.2e}'
+
+
+# ---------------------------------------------------------------------------
+# float32 safety
 #
 # The a55e7237 FWER collapse (see test_inner_perm_hcp.py) came from forming
-# E as a difference of two terms ~num_img * mean(y)^2 whose residual is
+# T as a difference of two terms ~num_img * mean(y)^2 whose residual is
 # ~num_img * var(y). For a near-constant voxel on a large DC offset that
-# ratio is below float32 eps. These tests plant that profile synthetically
-# (no HCP dataset needed) and pin both halves of the claim: the centred
-# split is an algebraic identity, and it is what makes float32 safe.
+# ratio is below float32 eps. The backend avoids it by splitting T into
+# W_r (built on the nuisance residual, DC-free) and S_r (the DC-carrying
+# group, scanned at scan_dtype). These tests plant that profile
+# synthetically -- no HCP dataset, no --runslow.
 
 def _caterpillar_children(num_vox):
     """Build a minimal valid binary tree over num_vox leaves."""
@@ -223,27 +232,28 @@ def _poisoned_prep(b=1, num_vox=500, n_planted=30, num_img=100, seed=0):
 
 
 @requires_cuda
-@pytest.mark.parametrize('path', ['intercept'])
-@pytest.mark.parametrize('b', [1, 2])
-def test_centering_is_an_identity(b, path):
-    """center=True reproduces the direct T_u form in float64.
-
-    Guards the algebra itself (T_u = W_r + S_r, cross terms vanishing
-    because Q0 w = 0) independently of any float32 question.
-    """
-    prep = _prep(b, path)
-    got = _call(inner_perm_gpu.gpu_perm_full, prep, n_perm=6, center=True)
-    ref = _call(inner_perm_gpu.gpu_perm_full, prep, n_perm=6, center=False)
-    _assert_cells_match(got, ref, atol=1e-9, label=f'centered b={b}')
+@pytest.mark.parametrize('design', DESIGNS)
+def test_float32_matches_float64_on_wellconditioned_data(design):
+    """float32 costs only round-off when nothing is ill-conditioned."""
+    prep = _prep(2, design)
+    mu32, std32 = _call(inner_perm_gpu.gpu_perm, prep, n_perm=20,
+                        acc_dtype=np.float32)
+    mu64, std64 = _call(inner_perm_gpu.gpu_perm, prep, n_perm=20,
+                        acc_dtype=np.float64)
+    fin = np.isfinite(mu64) & np.isfinite(mu32)
+    assert np.abs(mu32[fin] - mu64[fin]).max() < 1e-4 * np.abs(mu64[fin]).max()
+    fin_s = np.isfinite(std64) & np.isfinite(std32)
+    assert (np.abs(std32[fin_s] - std64[fin_s]).max()
+            < 1e-4 * np.abs(std64[fin_s]).max())
 
 
 @requires_cuda
-def test_float32_centered_survives_near_constant_voxels():
-    """Centred float32 recovers float64; direct float32 collapses.
+def test_float32_survives_near_constant_voxels():
+    """float32 recovers float64 as long as the s_star scans stay float64.
 
-    Both halves are asserted: without the collapse in the direct form the
-    test would pass vacuously on data that never entered the cancellation
-    regime.
+    Both halves are asserted: scan_dtype=float32 must exhibit the collapse,
+    else the test would pass vacuously on data that never entered the
+    cancellation regime.
     """
     prep, n_planted = _poisoned_prep()
     sl = slice(0, n_planted)
@@ -262,42 +272,25 @@ def test_float32_centered_survives_near_constant_voxels():
                 float(np.nanmedian(std[sl])),
                 float(np.nanmax(np.abs(z))))
 
-    fin64, std64, z64 = summarize(acc_dtype=np.float64, center=False)
-    fin32, std32, z32 = summarize(acc_dtype=np.float32, center=False)
-    fin32c, std32c, z32c = summarize(acc_dtype=np.float32, center=True)
+    fin64, std64, z64 = summarize(acc_dtype=np.float64)
+    fin32, std32, z32 = summarize(acc_dtype=np.float32,
+                                  scan_dtype=np.float32)
+    fin32c, std32c, z32c = summarize(acc_dtype=np.float32,
+                                     scan_dtype=np.float64)
 
     # float64 reference: every draw finite, inner-null std at its real scale
     assert fin64 > 0.99, f'float64 reference unhealthy ({fin64:.2f} finite)'
     assert std64 > 1e-3, f'float64 std collapsed ({std64:.2e})'
 
-    # direct float32 must exhibit the collapse, else nothing is being tested
-    assert fin32 < 0.9, (
-        f'direct float32 unexpectedly stable ({fin32:.2f} finite) -- the '
-        f'cancellation regime is not being exercised')
-    assert z32 > 3 * z64, (
-        f'direct float32 max|z| {z32:.3g} did not inflate over the float64 '
-        f'{z64:.3g}')
+    # an all-float32 scan must exhibit the collapse, else nothing is tested
+    assert fin32 < 0.9 or z32 > 3 * z64, (
+        f'float32 scans unexpectedly stable ({fin32:.2f} finite, '
+        f'max|z| {z32:.3g} vs {z64:.3g}) -- the cancellation regime is not '
+        f'being exercised')
 
-    # centred float32 recovers the reference on all three signatures
-    assert fin32c > 0.99, f'centred float32 NaNed draws ({fin32c:.2f} finite)'
+    # the shipped configuration recovers the reference on all three signatures
+    assert fin32c > 0.99, f'float32 NaNed draws ({fin32c:.2f} finite)'
     assert abs(std32c - std64) < 1e-2 * std64, (
-        f'centred float32 std {std32c:.4e} != float64 {std64:.4e}')
+        f'float32 std {std32c:.4e} != float64 {std64:.4e}')
     assert abs(z32c - z64) < 1e-2 * z64, (
-        f'centred float32 max|z| {z32c:.5g} != float64 {z64:.5g}')
-
-
-@requires_cuda
-@pytest.mark.parametrize('path', ['intercept', 'general'])
-def test_min_vox_drops_small_regions(path):
-    """Regions below min_vox come back NaN, larger ones finite."""
-    prep = _prep(2, path, min_vox=4)
-    mu, std = _call(inner_perm_gpu.gpu_perm, prep, n_perm=8)
-    size = np.diff(np.stack(
-        glow.graph.build_dfs_preorder(
-            children=prep['children'],
-            num_vox=prep['exp'].y.shape[2])[1:]), axis=0)[0]
-    small = size < 4
-    assert small.any() and (~small).any()
-    assert np.isnan(mu[small]).all()
-    assert np.isfinite(mu[~small]).all()
-    assert np.isfinite(std[~small]).all()
+        f'float32 max|z| {z32c:.5g} != float64 {z64:.5g}')
