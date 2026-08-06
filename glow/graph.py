@@ -27,6 +27,7 @@ children representation.
 from collections import Counter
 
 import numpy as np
+from numba import njit
 
 from glow.analysis.mancova import decompose
 from glow.mask import counts_from_tp_fp
@@ -259,6 +260,69 @@ def _slogdet_batched(M):
     return np.linalg.slogdet(M)
 
 
+@njit(cache=True, boundscheck=False)
+def _dfs_preorder_kernel(children, num_vox):
+    """Compute (leaf_ord, region_l, region_h) in one JIT-ed pass.
+
+    Fuses what node_sum and get_parent would do with the top-down range
+    assignment, because at full-brain scale the Python-level version of
+    this is the single most expensive step of a per-tree prep: ~43ms at
+    num_vox=25k, and it runs at least once per outer permutation on both
+    the CPU and GPU inner-perm paths.
+
+    Args:
+        children (np.array): (num_internal, 2) int64 child index pairs in
+            topological order
+        num_vox (int): number of leaves
+
+    Returns:
+        leaf_ord, region_l, region_h -- see build_dfs_preorder
+    """
+    num_internal = children.shape[0]
+    num_reg = num_vox + num_internal
+
+    # bottom-up sizes, and which nodes have a parent (topological order
+    # means one forward pass suffices for both)
+    size = np.ones(num_reg, dtype=np.int64)
+    has_parent = np.zeros(num_reg, dtype=np.bool_)
+    for i in range(num_internal):
+        c0 = children[i, 0]
+        c1 = children[i, 1]
+        size[num_vox + i] = size[c0] + size[c1]
+        has_parent[c0] = True
+        has_parent[c1] = True
+
+    # roots laid end-to-end in ascending index order
+    region_l = np.empty(num_reg, dtype=np.int64)
+    region_h = np.empty(num_reg, dtype=np.int64)
+    offset = 0
+    for node in range(num_reg):
+        if not has_parent[node]:
+            region_l[node] = offset
+            region_h[node] = offset + size[node]
+            offset += size[node]
+
+    # top-down: left child takes the front slice, right child the back.
+    # Reverse topological order guarantees a parent's range is filled
+    # before its children's.
+    for i in range(num_internal - 1, -1, -1):
+        node = num_vox + i
+        c0 = children[i, 0]
+        c1 = children[i, 1]
+        lo = region_l[node]
+        region_l[c0] = lo
+        region_h[c0] = lo + size[c0]
+        region_l[c1] = lo + size[c0]
+        region_h[c1] = region_h[node]
+
+    # the leaf at original index v lives at DFS position region_l[v]
+    leaf_ord = np.empty(num_vox, dtype=np.int64)
+    for v in range(num_vox):
+        leaf_ord[region_l[v]] = v
+
+    return leaf_ord, region_l, region_h
+
+
 def build_dfs_preorder(children, num_vox: int):
     """Build a DFS pre-order leaf permutation and per-region leaf ranges.
 
@@ -272,6 +336,9 @@ def build_dfs_preorder(children, num_vox: int):
     Roots are laid out end-to-end -- the first root takes positions
     [0, size_root_0), the next takes [size_root_0, ...), etc.
 
+    Thin wrapper over the JIT-ed _dfs_preorder_kernel; this layer only
+    normalizes children's dtype and layout.
+
     Args:
         children (np.array): (num_internal, 2) child index pairs in
             topological order -- each row references indices
@@ -284,44 +351,8 @@ def build_dfs_preorder(children, num_vox: int):
         region_l (np.array): (num_reg,) leaf range start per region
         region_h (np.array): (num_reg,) leaf range end per region
     """
-    num_internal = int(children.shape[0])
-    num_reg = num_vox + num_internal
-
-    # bottom-up region sizes
-    size = node_sum(np.ones(num_vox, dtype=np.int64), children=children)
-
-    # find roots (no parent)
-    parent = get_parent(children, num_vox)
-    roots = np.where(parent == -1)[0]
-
-    # top-down range assignment.  Lay roots end-to-end, then propagate
-    # to each internal node's two children: left child gets the front
-    # slice, right child gets the back slice.  Processing internal
-    # nodes in reverse topological order guarantees the parent's range
-    # is filled before its children's.
-    region_l = np.empty(num_reg, dtype=np.int64)
-    region_h = np.empty(num_reg, dtype=np.int64)
-    offset = 0
-    for root in roots:
-        region_l[root] = offset
-        region_h[root] = offset + size[root]
-        offset += int(size[root])
-
-    for i in range(num_internal - 1, -1, -1):
-        node = num_vox + i
-        c0, c1 = children[i]
-        l = region_l[node]
-        sz0 = size[c0]
-        region_l[c0] = l
-        region_h[c0] = l + sz0
-        region_l[c1] = l + sz0
-        region_h[c1] = region_h[node]
-
-    # The leaf at original index v lives at DFS position region_l[v];
-    # inverting gives leaf_ord[position] = v.
-    leaf_ord = np.empty(num_vox, dtype=np.int64)
-    leaf_ord[region_l[:num_vox]] = np.arange(num_vox)
-    return leaf_ord, region_l, region_h
+    children = np.ascontiguousarray(children, dtype=np.int64)
+    return _dfs_preorder_kernel(children, int(num_vox))
 
 
 def _reg_sum_cumsum(x_dfs, axis: int, region_l, region_h):
