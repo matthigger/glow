@@ -44,8 +44,8 @@ kept at what is cited.
 
 Scope. Three caches share the run_ana leaf (fit + score one Analysis per cell):
 null, sweep_llr, sweep_extent. Three swap in their own leaf over those same
-grids: segment (run_segment, a Ward-mode oracle, no fit), stat (run_stat, a
-VBA / CET variant reading a shared voxel-stat walk), and prune (run_prune,
+grids: segment (run_segment, a Ward-mode oracle, no fit), vba_stat (run_stat,
+a VBA / CET variant reading a shared voxel-stat walk), and prune (run_prune,
 three pruning rules on a shared GLOW fit).
 
 Runtime. A separate family measures wall time, not detection, and runs locally
@@ -202,7 +202,7 @@ RUN_SEGMENT_LIST = [dict(cluster_mode=mode) for mode in SEGMENT_MODES]
 
 
 def get_run_stat_list():
-    """Build the stat cache's leaf grid (one run_stat call per stat variant).
+    """Build the vba_stat cache's leaf grid (one run_stat call per variant).
 
     The bake-off among the voxel-wise methods: VBA / VBA-TFCE / CET x 5 stats x
     {raw, z} = 30 variants. GLOW is excluded by design (it uses the LLR
@@ -535,7 +535,7 @@ CONFIG = {
     # G. MANCOVA stat comparison: VBA / VBA-TFCE / CET x 5 stats x {raw, z}
     #    (b=2 so the multivariate stats differ). The cell's variants share one
     #    voxel-stat walk (run_stat -> voxel_stat_walk). GLOW excluded.
-    'stat': (
+    'vba_stat': (
         get_kwargs_data_list(b_list=[2]),
         get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
         RUN_STAT_LIST, run_stat),

@@ -427,13 +427,13 @@ def incomplete_cell_indices(name: str, kwargs_fnc_list=None) -> list:
 
 
 def stat_cell_df():
-    """Return the stat cache's run_stat leaves, keyed by planted cell.
+    """Return the vba_stat cache's run_stat leaves, keyed by planted cell.
 
     The stat bake-off is fit by AWS workers that ship the run_stat leaf back
     without its data_factory / effect_factory ancestors, so the forward DAG
     walk (config_leaf_keys) can attach neither source nor effect_llr and drops
-    those leaves -- the stat cache's CSV holds only the locally-run subset.
-    The stat comparison is within a planted cell (the five stats fit on one
+    those leaves -- the vba_stat CSV holds only the locally-run subset. The
+    stat comparison is within a planted cell (the five stats fit on one
     experiment), so this reads the run_stat records directly and tags each with
     its planted-exp link hash -- the cell id every variant of a cell shares --
     sidestepping the missing ancestors. Source / effect_llr are not recovered

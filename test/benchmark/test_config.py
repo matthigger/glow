@@ -24,7 +24,7 @@ from glow.effect import ExtenterMinVar
 
 # every paper-figure cache, and the subset whose leaf is run_ana (the rest
 # carry their own fnc + kwargs grid -- segment its Ward-mode oracle, etc.)
-LABELS = ['null', 'sweep_llr', 'sweep_extent', 'segment', 'stat', 'prune']
+LABELS = ['null', 'sweep_llr', 'sweep_extent', 'segment', 'vba_stat', 'prune']
 RUN_ANA_LABELS = ['null', 'sweep_llr', 'sweep_extent']
 # the rest of the catalogue: the tiny end-to-end smoke cache, the runtime
 # family (wall time, not detection), the n_perm_inner convergence sweep and the
@@ -215,7 +215,7 @@ class TestGridCardinality:
             'sweep_extent': 2 * config.N_SEED * len(config.EXTENT_FRAC_GRID) * 5,
             'segment': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
             * len(config.SEGMENT_MODES),
-            'stat': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
+            'vba_stat': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
             * len(config.RUN_STAT_LIST),
             'prune': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
             * len(config.RUN_PRUNE_LIST),

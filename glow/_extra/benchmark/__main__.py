@@ -157,8 +157,8 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
     its recipe changed: completeness is judged against the narrowed grid, so a
     cell already holding those leaves is skipped and the recipes left out are
     never called -- the sibling methods' fits are not recomputed. A selected
-    cache with no matching recipe (a segment / prune / stat leaf grid, which has
-    no per-method axis) is skipped.
+    cache with no matching recipe (a segment / prune / vba_stat leaf grid,
+    which has no per-method axis) is skipped.
 
     aws runs the sweep on AWS Batch instead of locally: the resolved names are
     handed to glow._extra.aws.drive_aws, which submits each cache's cells as a
