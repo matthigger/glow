@@ -128,6 +128,20 @@ def resolve_backend(backend: str = None, *, ndim: int = 3,
     return 'python' if why else 'fsl'
 
 
+def get_thresholds(img_max: float, n_steps: int = 100):
+    """Build the TFCE height grid for an image maximum.
+
+    Args:
+        img_max (float): largest value in the image
+        n_steps (int): number of threshold steps (100 matches FSL)
+
+    Returns:
+        thresholds (np.array): (n_steps,) heights dh, 2dh, ... img_max,
+            where dh = img_max / n_steps
+    """
+    return np.linspace(img_max / n_steps, img_max, n_steps)
+
+
 def apply_tfce_img(x, H: float = 2.0, E: float = 0.5,
                    connectivity: int = None, n_steps: int = 100):
     """Apply TFCE to a 2d or 3d statistical image.
@@ -144,6 +158,38 @@ def apply_tfce_img(x, H: float = 2.0, E: float = 0.5,
             2d: 4 (edges, default) or 8 (edges+corners).
             None selects face/edge connectivity for the input ndim.
         n_steps (int): number of threshold steps (100 matches FSL)
+
+    Returns:
+        tfce (np.array): TFCE-enhanced image, same shape as x
+    """
+    x = np.asarray(x)
+
+    # nothing exceeds threshold 0, so TFCE is identically zero
+    img_max = x.max()
+    if img_max <= 0:
+        return np.zeros_like(x)
+
+    return apply_tfce_at(x, get_thresholds(img_max, n_steps), H=H, E=E,
+                         connectivity=connectivity)
+
+
+def apply_tfce_at(x, thresholds, H: float = 2.0, E: float = 0.5,
+                  connectivity: int = None):
+    """Apply TFCE to an image summing over an explicit height grid.
+
+    The grid is a parameter because fslmaths does not step the one
+    apply_tfce_img builds: it accumulates in float32 and admits voxels
+    strictly above the height, so it drops the topmost step on about
+    half of all images (see the module docstring). Passing thresholds
+    without their last entry reproduces that, which is how the two
+    backends are held to a tight tolerance in the tests.
+
+    Args:
+        x (np.array): 2d or 3d array of statistical values
+        thresholds (np.array): (n_steps,) heights to sum over
+        H (float): height exponent
+        E (float): extent exponent
+        connectivity (int or None): see apply_tfce_img
 
     Returns:
         tfce (np.array): TFCE-enhanced image, same shape as x
@@ -167,15 +213,6 @@ def apply_tfce_img(x, H: float = 2.0, E: float = 0.5,
             struct = generate_binary_structure(2, 1)
         else:
             struct = generate_binary_structure(2, 2)
-
-    # nothing exceeds threshold 0, so TFCE is identically zero
-    img_max = x.max()
-    if img_max <= 0:
-        return np.zeros_like(x)
-
-    # FSL uses fixed number of steps with dh = max / n_steps
-    dh = img_max / n_steps
-    thresholds = np.linspace(dh, img_max, n_steps)
 
     tfce = np.zeros_like(x)
 

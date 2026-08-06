@@ -17,19 +17,64 @@ from scipy.ndimage import gaussian_filter
 
 from glow.analysis.vba import AnalysisVBA
 from glow.analysis.vba import _tfce
-from glow.analysis.vba._tfce import (apply_tfce_img, apply_tfce_stack_fsl,
-                                     apply_tfce_stat, apply_tfce_x,
-                                     get_chunk_slices, get_mask_bb, has_fsl,
+from glow.analysis.vba._tfce import (apply_tfce_at, apply_tfce_img,
+                                     apply_tfce_stack_fsl, apply_tfce_stat,
+                                     apply_tfce_x, get_chunk_slices,
+                                     get_mask_bb, get_thresholds, has_fsl,
                                      resolve_backend)
 
 needs_fsl = pytest.mark.skipif(not has_fsl(), reason='fslmaths not installed')
 
-# The two backends use different height grids (see the _tfce module
-# docstring), so they disagree by 1-2% of the image maximum on real data.
-# This bound is a guard against gross breakage, not a precision claim --
-# it sits above the observed spread so the test cannot go flaky on an
-# unlucky image.
-BACKEND_RTOL = 5e-2
+N_STEPS = 100
+
+# Fraction of a peak voxel's TFCE carried by the top height step. This is
+# the whole of the backend disagreement (see TestTopStepEndpoint): 2.96%
+# at H=2, and the most the production 100-step grid can be off by.
+TOP_STEP_FRAC = (N_STEPS ** 2
+                 / sum(k ** 2 for k in range(1, N_STEPS + 1)))
+
+# fslmaths steps one of exactly two grids -- the one apply_tfce_img
+# builds, or that grid without its top threshold, which it drops on about
+# half of all images. Against whichever it used, agreement is near
+# machine precision: the matching grid measures below 2e-6 across image
+# sizes, so this bound keeps ~6x headroom while the non-matching grid
+# sits 400x above it. Tight enough that a real regression cannot hide.
+FSL_GRID_RTOL = 1e-5
+
+
+def get_grid_residual(stat, mask_idx):
+    """Residual against fslmaths for the better of the two height grids.
+
+    fslmaths picks its grid per image, so the choice is made per row
+    rather than once for the stack.
+
+    Args:
+        stat (np.array): (n_img, num_vox) statistical values
+        mask_idx (np.array): 3d index array, -1 for inactive voxels
+
+    Returns:
+        residual (np.array): (n_img,) max abs difference from fslmaths
+            over voxels, relative to that image's fsl maximum, taking
+            the smaller of the full and top-dropped grids
+    """
+    fsl = apply_tfce_stat(stat, mask_idx, backend='fsl')
+    mask_bb = get_mask_bb(mask_idx)
+    img = np.zeros((len(stat), *mask_bb.shape))
+    img[:, mask_bb] = stat
+
+    residual = np.zeros(len(stat))
+    for idx, one in enumerate(img):
+        scale = np.abs(fsl[idx]).max()
+        if one.max() <= 0 or scale == 0:
+            # TFCE is identically zero, so both grids agree exactly
+            residual[idx] = np.abs(fsl[idx]).max()
+            continue
+        thr = get_thresholds(one.max(), N_STEPS)
+        residual[idx] = min(
+            np.abs(apply_tfce_at(one, thr)[mask_bb] - fsl[idx]).max(),
+            np.abs(apply_tfce_at(one, thr[:-1])[mask_bb] - fsl[idx]).max(),
+        ) / scale
+    return residual
 
 
 @pytest.fixture
@@ -194,12 +239,44 @@ class TestFslBackend:
         out = apply_tfce_stat(-np.abs(stat), mask_idx, backend='fsl')
         assert not out.any()
 
-    def test_agrees_with_python(self, stat_mask):
+    def test_matches_one_of_the_two_grids(self, stat_mask):
+        """Against the grid fslmaths used, agreement is near machine eps.
+
+        This is the real regression guard: it holds the backend to 1e-5
+        rather than to the 1-2% the fixed 100-step grid alone allows.
+        """
+        stat, mask_idx = stat_mask
+        assert get_grid_residual(stat, mask_idx).max() < FSL_GRID_RTOL
+
+    def test_both_grids_are_needed(self, stat_mask):
+        """Guard the test above against passing for the wrong reason.
+
+        If fslmaths always used one grid, taking the better of two would
+        be vacuous. Over enough images it uses each, so neither grid
+        alone clears the tight bound.
+        """
+        stat, mask_idx = stat_mask
+        fsl = apply_tfce_stat(stat, mask_idx, backend='fsl')
+        mask_bb = get_mask_bb(mask_idx)
+        img = np.zeros((len(stat), *mask_bb.shape))
+        img[:, mask_bb] = stat
+
+        wins = set()
+        for idx, one in enumerate(img):
+            thr = get_thresholds(one.max(), N_STEPS)
+            full = np.abs(apply_tfce_at(one, thr)[mask_bb] - fsl[idx]).max()
+            drop = np.abs(
+                apply_tfce_at(one, thr[:-1])[mask_bb] - fsl[idx]).max()
+            wins.add('full' if full < drop else 'dropped')
+        assert wins == {'full', 'dropped'}, wins
+
+    def test_agrees_with_python_within_the_top_step(self, stat_mask):
+        """The production grid is off by at most that one step."""
         stat, mask_idx = stat_mask
         out_fsl = apply_tfce_stat(stat, mask_idx, backend='fsl')
         out_py = apply_tfce_stat(stat, mask_idx, backend='python')
         assert out_fsl.shape == out_py.shape
-        atol = BACKEND_RTOL * np.abs(out_py).max()
+        atol = 1.1 * TOP_STEP_FRAC * np.abs(out_py).max()
         assert np.abs(out_fsl - out_py).max() < atol
 
     def test_agrees_with_python_on_the_max_stat_null(self, stat_mask):
@@ -207,7 +284,7 @@ class TestFslBackend:
         stat, mask_idx = stat_mask
         max_fsl = apply_tfce_stat(stat, mask_idx, backend='fsl').max(axis=1)
         max_py = apply_tfce_stat(stat, mask_idx, backend='python').max(axis=1)
-        assert np.allclose(max_fsl, max_py, rtol=BACKEND_RTOL)
+        assert np.allclose(max_fsl, max_py, rtol=1.1 * TOP_STEP_FRAC)
 
     @pytest.mark.parametrize('n_jobs', [1, 2, 4])
     def test_chunking_is_invariant_to_n_jobs(self, stat_mask, n_jobs):
@@ -222,7 +299,7 @@ class TestFslBackend:
         stat, mask_idx = stat_mask
         out_fsl = AnalysisVBA.apply_tfce(stat, mask_idx, backend='fsl')
         out_py = AnalysisVBA.apply_tfce(stat, mask_idx, backend='python')
-        atol = BACKEND_RTOL * np.abs(out_py).max()
+        atol = 1.1 * TOP_STEP_FRAC * np.abs(out_py).max()
         assert np.abs(out_fsl - out_py).max() < atol
 
 
