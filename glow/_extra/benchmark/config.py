@@ -63,12 +63,6 @@ to MAX_INNER_PERM and records how the FWER max-z threshold converges as
 num_inner_perm grows (HCP only, moderate effect). The recommended n_perm_inner
 is read off where that threshold plateaus (benchmark.plot).
 
-Correctness. race_maxz confirms the survivor race (AnalysisGLOW's default inner
-null) keeps the whole-tree max-z the full cpu_perm produces -- the only
-inner-null value the outer FWER loop reads. run_race_maxz reduces each outer
-perm's inner null both ways off one shared seed and records the max-z pair; the
-retention read is derived post hoc. A correctness check on its own modest grid
-(both sources, moderate effect), so local like the runtime family.
 """
 import itertools
 import math
@@ -79,14 +73,13 @@ import numpy as np
 from glow.analysis import (AnalysisCET, AnalysisGLOW, AnalysisVBA,
                            DEFAULT_CET_CFT_PVAL)
 from glow.analysis.cluster import ClusterMode
-from glow.analysis.inner_perm import N_PERM_INNER_RACE, RACE_P_KEEP_THRESH
 from glow.analysis.mancova import (get_hotel_tr, get_wilks, stat_dict,
                                    stat_dict_inv)
 from glow.effect import ExtenterMinVar, ExtenterSphere
 
 from . import hcp
 from .run import (run_ana, run_ana_time, run_inner_edge, run_min_size,
-                  run_perm_fwer, run_perm_inner, run_prune, run_race_maxz,
+                  run_perm_fwer, run_perm_inner, run_prune,
                   run_segment, run_segment_time, run_stat)
 
 
@@ -492,21 +485,6 @@ RUN_INNER_EDGE_LIST = [
          n_perm_fwer=N_PERM_FWER)
     for label, mode in RUNTIME_GLOW_MODES]
 
-# GLOW-only leaf grid for the max-z race-retention check: one run_race_maxz per
-# GLOW arm, each recording the per-outer-perm max-z under the full inner null
-# (cpu_perm) and the survivor race (cpu_perm_race) off one shared seed. The race
-# knobs are glow's standard N_PERM_INNER_RACE / RACE_P_KEEP_THRESH (AnalysisGLOW's
-# recipe defaults), passed explicitly here so the check pins the shipped inner
-# null rather than relying on the leaf's own defaults; no label is passed (the
-# arm is recovered from cluster_mode). Its own seed offset (clear of the runtime
-# / min_size offsets) and a modest crop / few seeds -- a correctness check, not
-# a figure, so it need not run at paper scale.
-RACE_MAXZ_SEED_OFFSET = 300_000
-RUN_RACE_MAXZ_LIST = [
-    dict(cluster_mode=mode, n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER,
-         n_perm_inner_race=N_PERM_INNER_RACE, p_keep_thresh=RACE_P_KEEP_THRESH)
-    for label, mode in RUNTIME_GLOW_MODES]
-
 # segmentation timing: one run_segment_time per Ward mode (the segment cache's
 # modes), the mode riding as both cluster_mode and label.
 RUN_SEGMENT_TIME_LIST = [dict(cluster_mode=mode, label=str(mode))
@@ -654,20 +632,4 @@ CONFIG = {
         get_kwargs_data_list(sources=['hcp']),
         get_kwargs_effect_list(),
         RUN_INNER_EDGE_LIST, run_inner_edge),
-    # max-z race retention: confirm the survivor race (AnalysisGLOW's default
-    # inner null) retains the whole-tree max-z the full cpu_perm produces, the
-    # only inner-null value the outer FWER loop reads. Per outer perm
-    # run_race_maxz reduces the inner null both ways off one shared seed and
-    # records the max-z pair (+ arg-max region); the retention read
-    # (max_z_race == max_z_slow) is derived post hoc (benchmark.plot). A
-    # correctness check over both sources and a moderate effect on its own
-    # modest grid -- the unit tests pin the equivalence on small synthetic
-    # trees, this exercises it on real data across every outer perm and arm.
-    'race_maxz': (
-        get_kwargs_data_list(
-            seeds=range(RACE_MAXZ_SEED_OFFSET,
-                        RACE_MAXZ_SEED_OFFSET + N_SEED),
-            crop_n_vox=CROP_N_VOX),
-        get_kwargs_effect_list(),
-        RUN_RACE_MAXZ_LIST, run_race_maxz),
 }

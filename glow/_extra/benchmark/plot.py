@@ -47,12 +47,6 @@ each num_inner_perm, from which the FWER critical value is derived, giving one
 threshold-vs-num_inner_perm convergence curve per GLOW arm (and the companion
 threshold JSON the recommended n_perm_inner is read off).
 
-The race-retention cache (race_maxz) is plotted apart too (tidy_race_maxz /
-plot_race_maxz): its run_race_maxz leaf records each outer perm's max-z under
-the full cpu_perm and the survivor race, giving a race-vs-full scatter on y=x
-per source, both arms drawn. Its companion artifacts are the two retention
-counts (summarize_race_maxz / format_race_maxz_summary): how many pairs agree
-to numerical tolerance, and how many take the max in the same region.
 
 The segment and prune caches share a flatter path (tidy_segment / tidy_prune /
 plot_metric_grid): their leaves return a flat {tp, fp, tn, fn} score (the oracle
@@ -1695,206 +1689,6 @@ def plot_inner_edge(name: str, df, out, alpha_fwer: float = 0.05) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Max-z race retention (survivor race vs full cpu_perm)
-# ---------------------------------------------------------------------------
-
-# the relative max-z gap a race-retention pair may show and still count as
-# agreeing. Relative because max-z spans two orders of magnitude across the
-# grid, so one absolute bar would read as disagreement on the largest draws and
-# as agreement on the smallest. The scale is the two paths' arithmetic, not
-# retention: both reduce identical draws (see run.run_race_maxz), but the race
-# takes its tail draws through the low-rank kernel while cpu_perm streams every
-# draw through iter_llr_perm, and on float32 imaging data the two agree to
-# ~1e-11 relative on WGN but only ~1e-8 (median, 1e-3 tail) on the worse
-# conditioned HCP. Bypassing the kernel (burn-in = n_perm) makes them bit
-# identical, so a tighter bar would count float32 cancellation as a miss.
-_RACE_MAXZ_TOL = 1e-4
-
-
-def tidy_race_maxz(raw):
-    """Normalise the race-retention cache to one tidy row per (trial, arm, k).
-
-    Parses each run_race_maxz leaf's recorded curve JSON (the per-outer-perm
-    max_z_slow / max_z_race and their arg-max regions) into long form. The GLOW
-    arm is recovered from the recorded cluster_mode (_ARM_OF_MODE); the source
-    is read off which data_factory produced the row.
-
-    Args:
-        raw: the provenance DataFrame (one row per run_race_maxz leaf).
-
-    Returns:
-        a tidy DataFrame with columns source (WGN / HCP), seed, label (GLOW
-        arm), k (outer-perm index), max_z_slow, max_z_race, diff
-        (race - slow), same_reg (arg-max region agrees); empty in, empty out.
-    """
-    if raw.empty:
-        return raw
-
-    def col(c):
-        """Return raw[c], or an all-NaN column when absent."""
-        if c in raw.columns:
-            return raw[c]
-        return pd.Series(np.nan, index=raw.index)
-
-    wgn_seed = pd.to_numeric(col('data_factory_wgn.in.seed'), errors='coerce')
-    hcp_seed = pd.to_numeric(col('data_factory_hcp.in.seed'), errors='coerce')
-    arm = col('run_race_maxz.in.cluster_mode').map(_ARM_OF_MODE)
-    curve = col('run_race_maxz.out.curve')
-
-    rows = []
-    for idx in raw.index:
-        cell = curve.get(idx)
-        if not isinstance(cell, str):
-            continue
-        d = json.loads(cell)
-        slow = np.asarray(d['max_z_slow'], dtype=float)
-        race = np.asarray(d['max_z_race'], dtype=float)
-        reg_s = d.get('reg_slow', [-1] * len(slow))
-        reg_r = d.get('reg_race', [-1] * len(race))
-        src = 'HCP' if pd.notna(hcp_seed.get(idx)) else 'WGN'
-        seed = hcp_seed.get(idx) if src == 'HCP' else wgn_seed.get(idx)
-        for k in range(len(slow)):
-            rows.append({'source': src, 'seed': seed, 'label': arm.get(idx),
-                         'k': int(k), 'max_z_slow': float(slow[k]),
-                         'max_z_race': float(race[k]),
-                         'diff': float(race[k] - slow[k]),
-                         'same_reg': bool(reg_s[k] == reg_r[k])})
-    return pd.DataFrame(rows)
-
-
-def summarize_race_maxz(df) -> dict:
-    """Count the max-z pairs the survivor race reproduces.
-
-    Two counts over the per-outer-perm pairs, both against the full cpu_perm:
-    how many race max-z land within _RACE_MAXZ_TOL of it (numerical agreement,
-    the two paths sharing their inner draws) and how many take their max in the
-    same region -- the leader, which is what the outer FWER loop reads off the
-    inner null. The counts differ only by pairs that agree on the region while
-    the kernel path's float32 arithmetic moves max-z past the tolerance.
-
-    Args:
-        df: the tidy_race_maxz frame.
-
-    Returns:
-        summary (dict): {n_pair, n_fit, n_agree, n_same_reg, per_arm}, the
-            counts over every pair plus per_arm {source: {arm: {n_pair,
-            n_agree, n_same_reg}}}, the same counts per cell of the grid; empty
-            when no pair has two finite max-z.
-    """
-    if df.empty:
-        return {}
-    df = df.dropna(subset=['max_z_slow', 'max_z_race', 'label'])
-    df = df[np.isfinite(df['max_z_slow']) & np.isfinite(df['max_z_race'])]
-    if df.empty:
-        return {}
-    df = df.assign(agree=(df['diff'].abs()
-                          <= _RACE_MAXZ_TOL * df['max_z_slow'].abs()))
-
-    def count(frame) -> dict:
-        """The two retention counts and their denominator, for one frame."""
-        return {'n_pair': int(len(frame)),
-                'n_agree': int(frame['agree'].sum()),
-                'n_same_reg': int(frame['same_reg'].sum())}
-
-    per_arm = {}
-    for (src, lab), g in df.groupby(['source', 'label'], dropna=False):
-        per_arm.setdefault(str(src), {})[str(lab)] = count(g)
-    n_fit = df.groupby(['source', 'label', 'seed'], dropna=False).ngroups
-    return {**count(df), 'n_fit': int(n_fit), 'per_arm': per_arm}
-
-
-def format_race_maxz_summary(summary: dict) -> str:
-    """Render the retention counts as the line the paper quotes.
-
-    Args:
-        summary (dict): a summarize_race_maxz return.
-
-    Returns:
-        a one-line string: the pairs counted, how many agree to round-off, and
-        how many share the arg-max region; empty when the summary is empty.
-    """
-    if not summary:
-        return ''
-
-    n = summary['n_pair']
-    agree, same = summary['n_agree'], summary['n_same_reg']
-    return (f"{n:,} max-z pairs ({summary['n_fit']} fits): "
-            f"{agree:,} ({100 * agree / n:.3f}%) agree on max-z "
-            f"(|dz| <= {_RACE_MAXZ_TOL:g} relative), "
-            f"{same:,} ({100 * same / n:.3f}%) take the max in the same "
-            f"region")
-
-
-def plot_race_maxz(name: str, df, out) -> None:
-    """Plot race vs full-run max-z and write the retention summary.
-
-    The retention read for the survivor race: each outer perm's race max-z
-    against the full cpu_perm max-z, one axes per data source, arms coloured,
-    with the y=x line the points must lie on and the leader misses (arg-max
-    region disagreements) crossed out. Both GLOW arms are drawn and counted --
-    unlike the detection figures, the check is over the segmentation objectives
-    rather than under one of them. Alongside the figure it writes the two
-    retention counts (summarize_race_maxz): {name}_retention.json per arm as
-    well as overall, {name}_retention.txt as the line the paper quotes.
-
-    Args:
-        name (str): cache name; used in the output filenames.
-        df: the tidy_race_maxz frame.
-        out (pathlib.Path): directory the figure, JSON, and text land in.
-    """
-    if not df.empty:
-        df = df.dropna(subset=['max_z_slow', 'max_z_race', 'label'])
-        df = df[np.isfinite(df['max_z_slow']) & np.isfinite(df['max_z_race'])]
-    if df.empty:
-        print(f'  (no rows for {name} — skipping)')
-        return
-
-    sources = sorted(df['source'].dropna().unique().tolist())
-    labels = sorted(df['label'].dropna().unique().tolist())
-    palette = get_cmap_dict(labels)
-
-    fig, axes = plt.subplots(1, len(sources), figsize=(5.5 * len(sources), 5),
-                             squeeze=False)
-    for ax, src in zip(axes[0], sources):
-        sub = df[df['source'] == src]
-        for lab in labels:
-            g = sub[sub['label'] == lab]
-            if not len(g):
-                continue
-            ax.scatter(g['max_z_slow'], g['max_z_race'], s=18, alpha=0.6,
-                       color=palette[lab], label=lab)
-        bad = sub[~sub['same_reg']]
-        if len(bad):
-            ax.scatter(bad['max_z_slow'], bad['max_z_race'], s=60, lw=1.2,
-                       marker='x', color='0.2', label='leader miss')
-        lo = float(min(sub['max_z_slow'].min(), sub['max_z_race'].min()))
-        hi = float(max(sub['max_z_slow'].max(), sub['max_z_race'].max()))
-        ax.plot([lo, hi], [lo, hi], color='0.5', lw=1, ls='--', zorder=0)
-        ax.set_xlabel('full cpu_perm max-z')
-        ax.set_title(src)
-        ax.grid(True, alpha=0.3)
-        ax.legend(frameon=False)
-    axes[0][0].set_ylabel('survivor race max-z')
-    fig.tight_layout()
-    path = out / f'{name}_retention.pdf'
-    fig.savefig(path, bbox_inches='tight')
-    plt.close('all')
-    print(f'saved: {path}')
-
-    summary = summarize_race_maxz(df)
-    json_path = out / f'{name}_retention.json'
-    with open(json_path, 'w') as f:
-        json.dump({'tol': _RACE_MAXZ_TOL, 'retention': summary}, f, indent=2)
-    print(f'saved: {json_path}')
-
-    text = format_race_maxz_summary(summary)
-    txt_path = out / f'{name}_retention.txt'
-    txt_path.write_text(text + '\n')
-    print(f'saved: {txt_path}')
-    print(text)
-
-
-# ---------------------------------------------------------------------------
 # Per-cache dispatch + CLI
 # ---------------------------------------------------------------------------
 
@@ -1963,7 +1757,7 @@ def main(argv=None) -> None:
     import matplotlib
     matplotlib.use('Agg')
     from .config import CONFIG
-    from .run import (run_ana, run_inner_edge, run_prune, run_race_maxz,
+    from .run import (run_ana, run_inner_edge, run_prune,
                       run_segment, run_stat)
     from . import results
 
@@ -1983,7 +1777,6 @@ def main(argv=None) -> None:
     detect_names = [n for n, cfg in CONFIG.items()
                     if cfg[3] is run_ana and n not in _RUNTIME_SPEC]
     edge_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_inner_edge]
-    race_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_race_maxz]
     stat_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_stat]
     segment_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_segment]
     prune_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_prune]
@@ -2029,14 +1822,6 @@ def main(argv=None) -> None:
                 continue
             print(f'\n=== {name}: {len(df)} inner-edge rows ===')
             plot_inner_edge(name, df, out)
-            n_plotted += 1
-        elif name in race_names:
-            df = tidy_race_maxz(results.config_results_df(name))
-            if df.empty:
-                print(f'  (no records for {name} — skipping)')
-                continue
-            print(f'\n=== {name}: {len(df)} race-retention rows ===')
-            plot_race_maxz(name, df, out)
             n_plotted += 1
         elif name in stat_names:
             df = tidy_stat(results.stat_cell_df())
