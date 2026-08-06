@@ -66,13 +66,23 @@ null (see test_inner_perm_hcp.py). Instead T is assembled as
     S_r = reg_sum(sum_a s* s*^T) - gram(reg_sum s*) / size,  s* = rho + s0
 
 an identity, not an approximation: the cross terms vanish because Q0 u = 0.
-W_r is built entirely on the DC-free residual. S_r is the only group that
-still carries the offset, so its region scans run at scan_dtype (float64
-by default) -- they are a small fraction of the per-draw work, and float64
-costs 2x on bandwidth rather than the 64x it costs on FLOPs. T is summed
-at scan_dtype and narrowed once; E and the determinants ride acc_dtype.
-Setting scan_dtype=float32 reproduces the collapse, which is how the
-regression test pins it.
+Expanding S_r over s* = rho + s0 then splits it four ways, and two of
+those matter:
+
+  - Scat(s0, s0), the within-region spatial scatter of the nuisance
+    coefficients, is the ONLY term still carrying the DC offset -- and it
+    does not depend on the permutation at all. It is therefore folded,
+    with reg_sum(T_v), into a single hoisted T_inv computed once per tree
+    at scan_dtype (float64 by default).
+  - the rho-rho terms cancel between W_r and S_r, collapsing to a
+    region-space outer product with no per-voxel scan.
+
+What is left per draw is the rho / s0 cross term, whose two halves cancel
+only to the spatial spread of s0 relative to its DC level -- a benign
+ratio, and it rides a term that is itself a small fraction of T. So the
+per-draw loop needs no float64 at all: acc_dtype carries everything, and
+scan_dtype touches only prep. Setting scan_dtype=float32 reproduces the
+collapse, which is how the regression test pins it.
 """
 import numpy as np
 
@@ -130,6 +140,24 @@ def _gram_a(x):
     the module docstring).
     """
     return (x.unsqueeze(3) * x.unsqueeze(2)).sum(dim=1)
+
+
+def _gram_a_cross(x, y):
+    """Contract (Pc, a, b, M) against (a, c, M) over a, giving (Pc, b, c, M).
+
+    The asymmetric companion to _gram_a, for the one per-draw term that
+    pairs a permutation-dependent factor with a permutation-invariant one.
+    Same broadcast-reduce reason for avoiding einsum / matmul.
+
+    Args:
+        x (torch.Tensor): (Pc, a, b, M)
+        y (torch.Tensor): (a, c, M)
+
+    Returns:
+        g (torch.Tensor): (Pc, b, c, M) with
+            g[p, i, j, m] = sum_a x[p, a, i, m] y[a, j, m]
+    """
+    return (x.unsqueeze(3) * y[None, :, None, :, :]).sum(dim=1)
 
 
 def _slogdet_batched(m):
@@ -295,21 +323,38 @@ def _prep_state(*, y, q0, q1, children, min_vox, device, acc_dtype,
         np.ascontiguousarray(np.vstack([q0, q1])).astype(np_dtype, copy=False)
     ).to(dev)
 
-    t_v = torch.einsum('bnv,cnv->bcv', u_dfs, u_dfs)
-
     size_d = region_h_t - region_l_t
     inv_size_scan = torch.where(
         size_d > 0, 1.0 / size_d.to(scan_torch),
         torch.zeros(num_reg, dtype=scan_torch, device=dev))
+
+    # T_inv = reg_sum(T_v) + Scat(s0, s0): the whole permutation-invariant
+    # part of T = E + H, and the whole of its DC-carrying cancellation.
+    # Both region scans run once per tree at scan_dtype, so the per-draw
+    # loop never touches float64 (see the module docstring).
+    t_v = torch.einsum('bnv,cnv->bcv', u_dfs, u_dfs).to(scan_torch)
+    t_v_r = _reg_sum_cumsum(t_v, -1, region_l_t, region_h_t)
+    del t_v
+    s0_sq_r = _reg_sum_cumsum(
+        (s0.unsqueeze(2) * s0.unsqueeze(1)).sum(dim=0), -1,
+        region_l_t, region_h_t)
+    s0_r = _reg_sum_cumsum(s0, -1, region_l_t, region_h_t)
+    t_inv = (t_v_r + s0_sq_r
+             - (s0_r.unsqueeze(1) * s0_r.unsqueeze(2)).sum(dim=0)
+               * inv_size_scan[None, None, :])
+    del t_v_r, s0_sq_r
 
     return dict(
         dev=dev, torch_dtype=torch_dtype, scan_torch=scan_torch,
         b=b, num_img=num_img, num_vox=num_vox,
         a0=int(q0.shape[0]), a1=int(q1.shape[0]),
         ak=int(q0.shape[0]) + int(q1.shape[0]), num_reg=num_reg,
-        U=u_dfs, Q01=q01, s0=s0, T_v=t_v,
+        U=u_dfs, Q01=q01,
+        s0=s0.to(torch_dtype), s0_r=s0_r.to(torch_dtype),
+        T_inv=t_inv.to(torch_dtype),
         region_l_t=region_l_t, region_h_t=region_h_t,
-        size_f=size_d.to(torch_dtype), inv_size_scan=inv_size_scan,
+        size_f=size_d.to(torch_dtype),
+        inv_size=inv_size_scan.to(torch_dtype),
         active=size_d >= min_vox)
 
 
@@ -326,19 +371,25 @@ def _chunk_llr(chunk_inv_t, state):
     num_img) Freedman-Lane matrix, no per-draw gather of the data, and one
     permutation direction for both blocks.
 
-    The region statistic T = E + H is then assembled from two pieces that
-    each avoid the DC cancellation (see the module docstring):
+    T = E + H is then assembled so that the permutation-invariant part --
+    which is also the whole of the DC-carrying cancellation -- is hoisted
+    into T_inv at prep time (see the module docstring):
 
-        T = W_r + S_r
-        W_r = reg_sum(T_v - sum_a rho_a rho_a^T)
-        S_r = reg_sum(sum_a s* s*^T) - gram(reg_sum s*) / size,
-              s* = rho + s0
+        T = T_inv + (P_rs + P_rs^T) - (G(R,S) + G(R,S)^T) / size
+                  - G(R,R) / size
 
-    For intercept-only nuisance rho comes out identically zero, so W_r
-    collapses to reg_sum(T_v) and S_r to the spatial scatter of s0 -- the
-    same hoisted T_u a nuisance-specific fast path would compute, without
-    a second code path (mirroring glow.graph.iter_llr_perm's treatment of
-    its own rho / X_v terms).
+        P_rs = reg_sum(sum_a rho_a s0_a^T)      per draw, per voxel
+        R    = reg_sum(rho),  S = reg_sum(s0)   S hoisted
+        G(X,Y)[b,c] = sum_a X[a,b] Y[a,c]       region-space only
+
+    The rho-rho terms cancel between the two brackets of the underlying
+    W_r + S_r split, which is why only the rho / s0 cross term needs a
+    per-draw per-voxel scan. At rho = 0 (intercept-only nuisance) every
+    term but T_inv vanishes, so the result is the hoisted T_u a
+    nuisance-specific fast path would compute -- reached without a second
+    code path, as glow.graph.iter_llr_perm reaches it with its own rho /
+    X_v terms. Note the WORK does not vanish there, only its value: the
+    terms are still computed, which is the price of one path.
 
     Args:
         chunk_inv_t (torch.Tensor): (Pc, num_img) int64 inverse
@@ -357,6 +408,7 @@ def _chunk_llr(chunk_inv_t, state):
     region_l_t = state['region_l_t']
     region_h_t = state['region_h_t']
     size_f = state['size_f']
+    inv = state['inv_size'][None, None, None, :]
     active = state['active']
 
     # V stays the last axis throughout: cumsum / index_select on an inner
@@ -366,25 +418,21 @@ def _chunk_llr(chunk_inv_t, state):
     rho = alpha[:, :a0]
     beta = alpha[:, a0:]
 
-    w_v = state['T_v'][None] - _gram_a(rho)
-    w_r = _reg_sum_cumsum(w_v, -1, region_l_t, region_h_t)
-    del w_v
-
-    s_star = rho.to(state['scan_torch']) + state['s0'][None]
-    s_sq_r = _reg_sum_cumsum(_gram_a(s_star), -1, region_l_t, region_h_t)
-    s_sum_r = _reg_sum_cumsum(s_star, -1, region_l_t, region_h_t)
-    del s_star
-    s_r = s_sq_r - (_gram_a(s_sum_r)
-                    * state['inv_size_scan'][None, None, None, :])
-    del s_sq_r, s_sum_r
-
-    # T carries the DC-sensitive sum, so it is formed at scan_dtype and
-    # only then narrowed; E and the determinants ride the hot-loop dtype.
-    t = (w_r.to(state['scan_torch']) + s_r).to(state['torch_dtype'])
-    del w_r, s_r
+    # The only per-draw per-voxel scan that T needs: the rho / s0 cross
+    # term. Its rho-rho counterpart cancelled against W_r, and everything
+    # else is either hoisted (T_inv) or region-space.
+    p_rs = _reg_sum_cumsum(_gram_a_cross(rho, state['s0']), -1,
+                           region_l_t, region_h_t)
+    r_r = _reg_sum_cumsum(rho, -1, region_l_t, region_h_t)
+    g_rs = _gram_a_cross(r_r, state['s0_r'])
+    t = (state['T_inv'][None]
+         + (p_rs + p_rs.transpose(1, 2))
+         - (g_rs + g_rs.transpose(1, 2)) * inv
+         - _gram_a(r_r) * inv)
+    del p_rs, g_rs, r_r
 
     beta_r = _reg_sum_cumsum(beta, -1, region_l_t, region_h_t)
-    h = _gram_a(beta_r) / size_f[None, None, None, :]
+    h = _gram_a(beta_r) * inv
 
     t = t.permute(0, 3, 1, 2)
     e = t - h.permute(0, 3, 1, 2)
