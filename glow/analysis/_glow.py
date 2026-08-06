@@ -17,6 +17,33 @@ from .prune import prune_greedy
 _INNER_SEED_BLOCK = 100_000
 
 
+def reduce_outer(llr, mu, std, size, min_vox: int):
+    """Reduce one outer perm's per-region stats to z and the max-z it feeds.
+
+    The single source of truth for how an outer permutation becomes one
+    entry of the FWER null, shared by AnalysisGLOW.fit and the pipelined
+    GPU driver (glow.analysis.driver_gpu_local) so the two cannot drift.
+
+    Args:
+        llr (np.array): (num_reg,) observed region LLR for this outer perm
+        mu (np.array): (num_reg,) inner-null mean per region
+        std (np.array): (num_reg,) inner-null std per region
+        size (np.array): (num_reg,) region voxel count
+        min_vox (int): regions smaller than this are not eligible
+
+    Returns:
+        z (np.array): (num_reg,) standardized region score
+        max_z (float): max z over eligible regions, -inf if none qualify
+    """
+    std_safe = np.where(std < 1e-12, 1.0, std)
+    z = np.nan_to_num((llr - mu) / std_safe,
+                      nan=0.0, posinf=0.0, neginf=np.nan)
+    consider = size >= min_vox
+    if consider.any() and np.isfinite(z[consider]).any():
+        return z, float(np.nanmax(z[consider]))
+    return z, float('-inf')
+
+
 class AnalysisGLOW(Analysis):
     """Hierarchical-segmentation search for significant effects.
 
@@ -177,15 +204,8 @@ class AnalysisGLOW(Analysis):
                 tqdm(results, total=n_total, desc='outer perms',
                      disable=not verbose)):
 
-            std_safe = np.where(std < 1e-12, 1.0, std)
-            z = np.nan_to_num((llr - mu) / std_safe,
-                              nan=0.0, posinf=0.0, neginf=np.nan)
-
-            consider = size >= self.min_vox
-            if consider.any() and np.isfinite(z[consider]).any():
-                self.max_z_null[k] = float(np.nanmax(z[consider]))
-            else:
-                self.max_z_null[k] = float('-inf')
+            z, self.max_z_null[k] = reduce_outer(
+                llr, mu, std, size, self.min_vox)
 
             if k == 0:
                 self.children = children
