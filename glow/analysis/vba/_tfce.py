@@ -13,16 +13,26 @@ resolve_backend picks fsl when the binary is present and the request is
 one fslmaths can serve -- it hardcodes 100 height steps and reads 3d or
 4d images only -- and python otherwise.
 
-The two are close but not equal: enhanced images differ by 1-2% of the
-image maximum, because the height grids differ (linspace here, a drifting
-float32 thr += dh loop in fslmaths, landing on 99 or 100 steps). Neither
-is more correct. Little of it survives into a result, since FWER reads
-only the per-permutation maximum: on 25k-voxel null data the max-stat
-null moves by a median 6e-7 relative and 0.9% of voxels shift their
-p-value, each by one permutation rank. So the backend is a speed knob,
-kept out of RECORD_FIELDS so a cached fit does not re-key on whether its
-machine had FSL -- interchangeable for discovery, not for reproducing a
-stored p-value exactly.
+The two are close but not equal, and it comes down to one endpoint. FSL
+loops "for (float curThr = 0; curThr < maxT + deltaT; curThr += deltaT)"
+accumulating curThr in float32, and admits voxels strictly above curThr.
+So its last step lands either just below maxT, and the peak voxel still
+counts, or just above it and the peak drops out -- decided by the low
+bits of maxT, near enough a coin flip. apply_tfce_img steps an exact
+linspace(dh, max, n_steps) and admits h and above, so it always counts
+that step. When FSL drops it the peak comes out 100^H / sum_k k^H lower,
+3.0% at H=2. Replaying the loop in float32 reproduces fslmaths bit for
+bit, so that is the whole of the difference; neither is more correct,
+both being 100-step Riemann sums that disagree on one endpoint.
+
+Little of it survives into a result, since FWER reads only the
+per-permutation maximum, which usually sits in a cluster rather than on
+the peak voxel: on 25k-voxel null data the max-stat null moves by a
+median 6e-7 relative and 0.9% of voxels shift their p-value, each by one
+permutation rank. So the backend is a speed knob, kept out of
+RECORD_FIELDS so a cached fit does not re-key on whether its machine had
+FSL -- interchangeable for discovery, not for reproducing a stored
+p-value exactly.
 """
 
 import os
@@ -41,8 +51,9 @@ from glow.mask import bbox_crop
 # fsl when usable), 'fsl' (demand it, raise if unusable) or 'python'.
 BACKEND = 'auto'
 
-# fslmaths -tfce takes H, E and connectivity but no step count -- it
-# always uses 100 height steps, so other n_steps requests go to python.
+# fslmaths -tfce derives its step from the image, deltaT = max/100, so it
+# serves n_steps=100 only. Another count would mean passing the
+# undocumented -tfce_delta; nothing here needs one, so it goes to python.
 FSL_N_STEPS = 100
 
 # Cap on one fslmaths call's in-memory stack, which bounds both the
@@ -101,7 +112,7 @@ def resolve_backend(backend: str = None, *, ndim: int = 3,
     if ndim != 3:
         why = f'fslmaths reads 3d or 4d images only, got {ndim}d'
     elif n_steps != FSL_N_STEPS:
-        why = f'fslmaths -tfce fixes {FSL_N_STEPS} height steps, got {n_steps}'
+        why = f'fslmaths -tfce uses {FSL_N_STEPS} height steps, got {n_steps}'
     elif not has_fsl():
         why = ('fslmaths not found on $FSLDIR or $PATH '
                f'(install: {_INSTALL_URL})')

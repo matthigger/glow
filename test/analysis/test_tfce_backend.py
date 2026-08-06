@@ -224,3 +224,45 @@ class TestFslBackend:
         out_py = AnalysisVBA.apply_tfce(stat, mask_idx, backend='python')
         atol = BACKEND_RTOL * np.abs(out_py).max()
         assert np.abs(out_fsl - out_py).max() < atol
+
+
+@needs_fsl
+class TestTopStepEndpoint:
+    """Pin the one systematic difference between the backends.
+
+    fslmaths accumulates its height in float32 and admits voxels
+    strictly above it, so its last step lands either just below the
+    image maximum (the peak voxel counts) or just above it (the peak
+    drops out), depending on the low bits of the maximum.
+    apply_tfce_img steps an exact linspace ending on the maximum and
+    admits h and above, so it always counts that step. On a lone voxel
+    the extent is 1 at every height, so the whole gap is that one term.
+    """
+
+    H = 2.0
+
+    @staticmethod
+    def _single_voxel_ratio(value, H):
+        """Return python / fsl TFCE at a lone voxel of the given value."""
+        mask_idx = np.full((5, 5, 5), -1)
+        mask_idx[2, 2, 2] = 0
+        x = np.array([value])
+        out_py = apply_tfce_x(x, mask_idx, backend='python')[0]
+        out_fsl = apply_tfce_x(x, mask_idx, backend='fsl')[0]
+        return out_py / out_fsl
+
+    @pytest.mark.parametrize('value', [1.0, 2.0, 3.0, 0.2094, 13.562,
+                                       40.682, 0.92473, 27.227])
+    def test_gap_is_the_top_step_or_nothing(self, value):
+        """Either fsl counted the top step, or it is short by exactly it."""
+        n_steps = 100
+        step = n_steps ** self.H / sum(k ** self.H
+                                       for k in range(1, n_steps + 1))
+        ratio = self._single_voxel_ratio(value, self.H)
+        assert np.isclose(ratio, 1.0, atol=1e-4) or \
+            np.isclose(ratio, 1.0 + step, rtol=1e-3), ratio
+
+    def test_python_is_never_below_fsl(self):
+        """glow always counts the top step, so it cannot come out lower."""
+        for value in (0.2094, 1.0, 13.562, 40.682):
+            assert self._single_voxel_ratio(value, self.H) >= 1.0 - 1e-6
