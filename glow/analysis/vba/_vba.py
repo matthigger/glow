@@ -3,7 +3,7 @@
 from typing import Callable
 
 import numpy as np
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, effective_n_jobs
 from tqdm import tqdm
 
 from glow.experiment.exper import ExperimentScaled
@@ -55,7 +55,8 @@ class AnalysisVBA(AnalysisVoxel):
         self.z_flag = z_flag
         self.verbose = verbose
 
-    def fit(self, exp, _stat=None, *, n_jobs: int = 1):
+    def fit(self, exp, _stat=None, *, n_jobs: int = 1,
+            tfce_backend: str = None):
         """Run the permutation walk on exp and compute p-values.
 
         Args:
@@ -68,6 +69,8 @@ class AnalysisVBA(AnalysisVoxel):
                 both the stat walk and TFCE. 1 (default) runs in-process;
                 -1 uses all cores. Results are identical regardless of
                 n_jobs (each permutation is seeded by its index).
+            tfce_backend (str or None): TFCE backend, see apply_tfce. None
+                takes the module default (prefer fslmaths when installed).
 
         Returns:
             self
@@ -81,7 +84,8 @@ class AnalysisVBA(AnalysisVoxel):
             self.stat = self.apply_tfce(stat=self.stat,
                                         mask_idx=exp.mask_idx,
                                         n_jobs=n_jobs,
-                                        verbose=self.verbose)
+                                        verbose=self.verbose,
+                                        backend=tfce_backend)
         self.pval = self.get_pval(self.stat)
         mask = np.zeros(exp.mask_idx.shape, dtype=bool)
         mask[exp.mask_idx > -1] = self.pval <= self.alpha_fwer
@@ -90,11 +94,14 @@ class AnalysisVBA(AnalysisVoxel):
 
     @classmethod
     def apply_tfce(cls, stat, mask_idx, *, n_jobs: int = 1,
-                   verbose: bool = False):
+                   verbose: bool = False, backend: str = None):
         """Apply TFCE to every permutation image.
 
-        Each permutation image is enhanced independently, so the loop
-        parallelises over permutations with joblib (n_jobs).
+        Each permutation image is enhanced independently, so the work
+        parallelises over permutations with joblib (n_jobs). The python
+        backend dispatches one task per permutation; the fsl backend
+        enhances a whole chunk of permutations per fslmaths call, so it
+        splits the stack one chunk per worker instead.
 
         Args:
             stat (np.array): (n_perm+1, num_vox) statistics (row 0 observed)
@@ -102,17 +109,42 @@ class AnalysisVBA(AnalysisVoxel):
             n_jobs (int): permutation-level parallelism via joblib. 1
                 (default) runs in-process; -1 uses all cores.
             verbose (bool): print progress
+            backend (str or None): 'auto', 'fsl' or 'python' (see
+                _tfce.resolve_backend); None takes the module default.
+                A speed knob, deliberately outside RECORD_FIELDS so a
+                cached fit does not re-key on whether the machine had
+                FSL. The backends use different height grids and so
+                differ by ~5e-3 relative; see the _tfce module docstring.
 
         Returns:
             tfce (np.array): (n_perm+1, num_vox) TFCE-enhanced stats
         """
         # lazy import: TFCE validation against FSL is opt-in
         from . import _tfce as _tfce_mod
-        rows = Parallel(n_jobs=n_jobs, return_as='generator')(
-            delayed(_tfce_mod.apply_tfce_x)(_stat, mask_idx=mask_idx)
-            for _stat in stat)
+
         tfce = np.full(shape=stat.shape,
                        fill_value=np.nanmin(stat))
+        mask_bb = _tfce_mod.get_mask_bb(mask_idx)
+        name = _tfce_mod.resolve_backend(backend, ndim=mask_bb.ndim)
+
+        if name == 'fsl':
+            sl_list = _tfce_mod.get_chunk_slices(
+                stat.shape[0], mask_bb.size, effective_n_jobs(n_jobs))
+            chunks = Parallel(n_jobs=n_jobs, return_as='generator')(
+                delayed(_tfce_mod.apply_tfce_stat)(
+                    stat[sl], mask_idx=mask_idx, backend='fsl')
+                for sl in sl_list)
+            for sl, chunk in zip(sl_list,
+                                 tqdm(chunks, total=len(sl_list),
+                                      desc='tfce per fsl chunk',
+                                      disable=not verbose)):
+                tfce[sl, :] = chunk
+            return tfce
+
+        rows = Parallel(n_jobs=n_jobs, return_as='generator')(
+            delayed(_tfce_mod.apply_tfce_x)(_stat, mask_idx=mask_idx,
+                                            backend='python')
+            for _stat in stat)
         for perm_idx, row in enumerate(tqdm(rows, total=stat.shape[0],
                                             desc='tfce per permutation',
                                             disable=not verbose)):
