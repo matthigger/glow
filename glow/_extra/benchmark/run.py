@@ -18,14 +18,17 @@ is the same on any machine, where the exp's bytes would not be. Two leaves
 given one parent_uid claim to measure the same experiment, so a caller must
 never reuse one across distinct experiments.
 
-A leaf may lean on a separately-memoised heavy intermediate rather than a
-driver stage: run_stat reads voxel_stat_walk (every MANCOVA stat for one exp)
-and run_prune reads glow_fit_for_prune (one GLOW fit's children / per-region
-LLR / FWER-significant set), so the first of a cell's variants computes it and
-the rest are cache hits -- one shared fit that a cell's N variants (rules or
-stats) each score off. The intermediate is a plain memoised
-helper, not a recorded DAG node: its output is not an Experiment, so it never
-links as a leaf's ancestor, and the leaf already links to the build via exp.
+A leaf may lean on a shared heavy intermediate rather than a driver stage:
+run_stat reads voxel_stat_walk (every MANCOVA stat for one exp) and run_prune
+reads glow_fit_for_prune (one GLOW fit's children / per-region LLR /
+FWER-significant set), so the first of a cell's variants computes it and the
+rest reuse it -- one shared fit that a cell's N variants (rules or stats) each
+score off. Neither is a recorded DAG node: its output is not an Experiment, so
+it never links as a leaf's ancestor, and the leaf already links to the build
+via exp. They differ in where that sharing lives -- glow_fit_for_prune is
+memoised to disk (its triple is light), while a voxel_stat_walk matrix is
+~250 MB per cell, too big to keep for a whole grid, so it is shared in memory
+only (see its docstring).
 
 The low-level benchmark primitive: run_ana takes an already-built
 Experiment, an unfitted Analysis recipe, and the planted target(s), runs
@@ -208,7 +211,11 @@ _INNER_GRID_MIN = 25
 _INNER_GRID_N = 20
 
 
-@MEMORY.cache(ignore=['exp'])
+# The current cell's stat walk, {(parent_uid, n_perm_fwer): walk}, holding one
+# entry (see voxel_stat_walk for why it is memory-only and bounded to one).
+_WALK_MEMO = {}
+
+
 def voxel_stat_walk(exp, n_perm_fwer: int, *, parent_uid: str) -> dict:
     """Compute the (n_perm+1, num_vox) matrix of every stat for one exp.
 
@@ -216,9 +223,9 @@ def voxel_stat_walk(exp, n_perm_fwer: int, *, parent_uid: str) -> dict:
     walk over the voxels, computing all stats in stat_dict in a single pass
     (get_stat_perm_multi shares the per-region E / H decomposition across stat
     functions), keyed by stat name. The first run_stat variant of a cell
-    computes and caches it; the others are cache hits, so the bake-off of 5
-    stats x {raw, z} x {VBA, VBA-TFCE, CET} pays the walk once. A plain
-    memoised helper, not a recorded DAG node (see the module docstring).
+    computes it, the rest read it back, so the bake-off of 5 stats x {raw, z} x
+    {VBA, VBA-TFCE, CET} pays the walk once. Not a recorded DAG node (see the
+    module docstring).
 
     exp is scaled (ExperimentScaled.from_exp) before the walk, so the matrix is
     byte-identical to the one AnalysisVoxel.fit would build (fit scales, then
@@ -226,9 +233,13 @@ def voxel_stat_walk(exp, n_perm_fwer: int, *, parent_uid: str) -> dict:
     equivalence is what lets run_stat inject this as _stat and get exactly the
     standalone fit's result.
 
-    Note: the cached matrix is ~250 MB per cell at the paper scale (251 perms,
-    25k voxels, 5 stats) -- the cost of the per-variant-leaf model (the walk is
-    shared on disk across the cell's variants); tune via its scale.
+    The sharing is in memory, not on disk: a walk is ~250 MB at the paper scale
+    (251 perms, 25k voxels, 5 stats), which persisted over the stat grid's 1100
+    cells would dwarf every other cache. _WALK_MEMO instead holds the current
+    cell's walk and drops the previous one, so peak cost is one walk. A cell's
+    variants are consecutive (drive's leaf grid is its innermost loop, and its
+    n_jobs splits by data cell, never within one), so that single entry serves
+    them all; only a cell interrupted part-way pays a second walk on resume.
 
     Args:
         exp (Experiment): the experiment to walk (scaled here).
@@ -241,6 +252,9 @@ def voxel_stat_walk(exp, n_perm_fwer: int, *, parent_uid: str) -> dict:
         {stat_name: (n_perm_fwer+1, num_vox) array}: row 0 observed, rows 1:
             the Freedman-Lane nulls.
     """
+    key = (parent_uid, n_perm_fwer)
+    if key in _WALK_MEMO:
+        return _WALK_MEMO[key]
     exp = ExperimentScaled.from_exp(exp)
     num_vox = exp.y.shape[2]
     stat_fns = list(stat_dict.values())
@@ -251,6 +265,8 @@ def voxel_stat_walk(exp, n_perm_fwer: int, *, parent_uid: str) -> dict:
         row = AnalysisVoxel.get_stat_perm_multi(_exp, stat_fns, children=None)
         for fn in stat_fns:
             out[stat_dict_inv[fn]][k, :] = row[fn]
+    _WALK_MEMO.clear()
+    _WALK_MEMO[key] = out
     return out
 
 
@@ -300,8 +316,8 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
     z-score fragments under pruning), and the FWER-significant region set. All
     three rules prune this same set, so the comparison isolates the rule from
     the permutation test; the first run_prune variant of a cell fits, the rest
-    are cache hits. A plain memoised helper, not a DAG node (see
-    voxel_stat_walk).
+    are cache hits. A plain disk-memoised helper, not a DAG node (see the
+    module docstring).
 
     Args:
         exp (Experiment): the experiment to fit (raw or scaled).
