@@ -595,7 +595,7 @@ def _chan_finalize(n, mean, m2):
 
 
 def gpu_perm_full(*, exp, base_seed: int, n_perm: int, q0, q1, children,
-                  min_vox: int, perm_chunk: int = 8, device: str = 'cuda',
+                  min_vox: int, perm_chunk: int = 16, device: str = 'cuda',
                   acc_dtype=np.float32, scan_dtype=np.float64):
     """Compute the raw (n_perm, num_reg) inner-perm LLR draws on device.
 
@@ -629,7 +629,7 @@ def gpu_perm_full(*, exp, base_seed: int, n_perm: int, q0, q1, children,
 
 
 def gpu_perm(*, exp, base_seed: int, n_perm: int, q0, q1, children,
-             min_vox: int, perm_chunk: int = 8, device: str = 'cuda',
+             min_vox: int, perm_chunk: int = 16, device: str = 'cuda',
              acc_dtype=np.float32, scan_dtype=np.float64):
     """Compute inner-perm (mu, std) on device -- the production entry.
 
@@ -647,8 +647,12 @@ def gpu_perm(*, exp, base_seed: int, n_perm: int, q0, q1, children,
         q1 (np.array): (a1, num_img) interest subspace
         children (np.array): (num_reg - num_vox, 2) Ward tree
         min_vox (int): regions smaller than this are left NaN
-        perm_chunk (int): draws per device chunk. Sets the transient
-            footprint; see plan_perm_chunk.
+        perm_chunk (int): draws per device chunk. Not a memory knob in
+            practice -- 16 peaks at 120 MiB to 1.4 GiB of a ~7 GiB card
+            across b, and throughput is set by whether the per-chunk
+            working set stays L2-resident, not by capacity. Measured
+            optimum is 16 at float64 for every b tried (1.07-1.36x over 8,
+            falling off above); float32 at b=2 prefers 8 by ~10%.
         device (str): torch device string
         acc_dtype: hot-loop dtype, default float32 (module docstring)
         scan_dtype: dtype for the s_star region scans, default float64 --
@@ -681,7 +685,7 @@ def gpu_perm(*, exp, base_seed: int, n_perm: int, q0, q1, children,
 
 def gpu_perm_shared(shared, *, children, base_seed: int, n_perm: int,
                     min_vox: int, outer_perm: int = 0,
-                    perm_chunk: int = 8):
+                    perm_chunk: int = 16):
     """Compute one outer perm's (mu, std) reusing a shared per-fit state.
 
     The pipelined-driver entry point: prep_shared once per fit, then one

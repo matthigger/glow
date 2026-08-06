@@ -61,8 +61,8 @@ def _phase_a(exp, k: int, *, q0, q1, cluster_mode):
 def driver_gpu_local(exp, *, n_perm_fwer: int, n_perm_inner: int = 250,
                      alpha_fwer: float = 0.05, min_vox: int = 1,
                      cluster_mode: ClusterMode = ClusterMode.FOCUS,
-                     n_jobs_cpu: int = -1, perm_chunk: int = 8,
-                     device: str = 'cuda', acc_dtype=np.float32,
+                     n_jobs_cpu: int = -1, perm_chunk: int = 16,
+                     device: str = 'cuda', acc_dtype=np.float64,
                      verbose: bool = False) -> AnalysisGLOW:
     """Fit AnalysisGLOW with Ward on the CPU pool and inner perms on the GPU.
 
@@ -77,9 +77,14 @@ def driver_gpu_local(exp, *, n_perm_fwer: int, n_perm_inner: int = 250,
         n_jobs_cpu (int): joblib workers for Phase A. Each holds its own
             permuted copy of y, so cap this at full-brain scale (~1 GB per
             worker at num_vox=224619, b=6).
-        perm_chunk (int): inner draws per device chunk
+        perm_chunk (int): inner draws per device chunk; see
+            inner_perm_gpu.gpu_perm for why 16 rather than bigger
         device (str): torch device string
-        acc_dtype: device hot-loop dtype (see inner_perm_gpu)
+        acc_dtype: device hot-loop dtype. Defaults to float64,
+            which reproduces AnalysisGLOW.fit's p-values exactly at
+            every b measured; float32 is ~2.3x faster but perturbs
+            max_z_null by ~2e-3 relative, enough to flip a handful
+            of p-values on real data.
         verbose (bool): progress bar and finalize prints
 
     Returns:
