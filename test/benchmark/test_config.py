@@ -255,7 +255,8 @@ class TestGridCardinality:
             'sweep_extent': 2 * config.N_SEED * len(config.EXTENT_FRAC_GRID) * 5,
             'segment': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
             * len(config.SEGMENT_MODES),
-            'vba_stat': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
+            # vba_stat is HCP only -- no factor of 2 over the sources
+            'vba_stat': config.N_SEED * len(config.EFFECT_LLR_GRID)
             * len(config.RUN_STAT_LIST),
             'prune': 2 * config.N_SEED * len(config.EFFECT_LLR_GRID)
             * len(config.RUN_PRUNE_LIST),
@@ -263,6 +264,9 @@ class TestGridCardinality:
 
     def test_null_plants_nothing(self):
         assert config.CONFIG['null'][1] == [None]
+
+    def test_vba_stat_is_hcp_only(self):
+        assert {c['source'] for c in config.CONFIG['vba_stat'][0]} == {'hcp'}
 
     def test_hcp_cells_carry_no_num_img_axis(self):
         # HCP's N is its cohort, so an HCP cell never carries num_img (it would

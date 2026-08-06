@@ -43,10 +43,10 @@ smoke (an end-to-end pipeline check). Adding one is cheap; the catalogue is
 kept at what is cited.
 
 Scope. Three caches share the run_ana leaf (fit + score one Analysis per cell):
-null, sweep_llr, sweep_extent. Three swap in their own leaf over those same
+null, sweep_llr, sweep_extent. Three swap in their own leaf over much the same
 grids: segment (run_segment, a Ward-mode oracle, no fit), vba_stat (run_stat,
-a VBA / CET variant reading a shared voxel-stat walk), and prune (run_prune,
-three pruning rules on a shared GLOW fit).
+a VBA / CET variant reading a shared voxel-stat walk; HCP only, b=2), and
+prune (run_prune, three pruning rules on a shared GLOW fit).
 
 Runtime. A separate family measures wall time, not detection, and runs locally
 only: runtime (run_ana_time over a num_vox sweep, 1k -> full HCP, all methods),
@@ -608,9 +608,12 @@ CONFIG = {
         RUN_SEGMENT_LIST, run_segment),
     # G. MANCOVA stat comparison: VBA / VBA-TFCE / CET x 5 stats x {raw, z}
     #    (b=2 so the multivariate stats differ). The cell's variants share one
-    #    voxel-stat walk (run_stat -> voxel_stat_walk). GLOW excluded.
+    #    voxel-stat walk (run_stat -> voxel_stat_walk). GLOW excluded. HCP only
+    #    -- the comparison is within a planted cell, so the WGN half doubles
+    #    the grid without sharpening the ranking; the b=2 HCP cells are shared
+    #    with sweep_llr, so their data / effect builds are cache hits.
     'vba_stat': (
-        get_kwargs_data_list(b_list=[2]),
+        get_kwargs_data_list(sources=['hcp'], b_list=[2]),
         get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
         RUN_STAT_LIST, run_stat),
     # H. Pruning rule: greedy max-LLR vs DP max-likelihood cut vs the single
