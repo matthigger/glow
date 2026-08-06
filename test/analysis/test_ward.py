@@ -45,16 +45,16 @@ def _is_topologically_valid(children, n_samples):
 
 
 @pytest.mark.parametrize('seed', list(range(8)))
-@pytest.mark.parametrize('shape,a', [
+@pytest.mark.parametrize('shape,b', [
     ((6, 6, 6), 8),
     ((8, 8, 8), 8),
     ((10, 10, 10), 12),
 ])
-def test_constrained_children_match_sklearn(seed, shape, a):
+def test_constrained_children_match_sklearn(seed, shape, b):
     """Heap-greedy reproduces sklearn's children/distances exactly."""
     rng = np.random.default_rng(seed)
     n = int(np.prod(shape))
-    X = rng.standard_normal((n, a)).astype(np.float64)
+    X = rng.standard_normal((n, b)).astype(np.float64)
     conn = grid_to_graph(*shape)
 
     ours = our_ward_tree(X, conn, return_distance=True)
@@ -68,18 +68,18 @@ def test_constrained_children_match_sklearn(seed, shape, a):
 
 
 @pytest.mark.parametrize('seed', [0, 1, 2, 3, 4])
-@pytest.mark.parametrize('shape,a', [
+@pytest.mark.parametrize('shape,b', [
     ((4, 4, 4), 8),
     ((5, 5, 5), 8),
     ((6, 6, 6), 12),
     ((8, 8, 8), 8),
 ])
-def test_fisher_invariant(seed, shape, a):
+def test_fisher_invariant(seed, shape, b):
     """Sum of raw Ward distances equals the data invariant
     ``||X - mean||²``. Holds for any complete hierarchical merge."""
     rng = np.random.default_rng(seed)
     n = int(np.prod(shape))
-    X = rng.standard_normal((n, a)).astype(np.float64)
+    X = rng.standard_normal((n, b)).astype(np.float64)
     conn = grid_to_graph(*shape)
 
     ours = our_ward_tree(X, conn, return_distance=True)
@@ -92,8 +92,8 @@ def test_fisher_invariant(seed, shape, a):
 def test_tree_well_formed(seed, shape):
     rng = np.random.default_rng(seed)
     n = int(np.prod(shape))
-    a = 8
-    X = rng.standard_normal((n, a)).astype(np.float64)
+    b = 8
+    X = rng.standard_normal((n, b)).astype(np.float64)
     conn = grid_to_graph(*shape)
 
     children, n_comp, n_leaves, parents = our_ward_tree(X, conn)
@@ -123,8 +123,8 @@ def test_forest_multiple_components():
     """
     rng = np.random.default_rng(0)
     n_per = 30
-    a = 4
-    X = rng.standard_normal((2 * n_per, a)).astype(np.float64)
+    b = 4
+    X = rng.standard_normal((2 * n_per, b)).astype(np.float64)
     conn = sparse.lil_matrix((2 * n_per, 2 * n_per))
     for i in range(n_per - 1):
         conn[i, i + 1] = 1
