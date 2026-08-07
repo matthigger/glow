@@ -207,9 +207,13 @@ RUN_STAT_LIST = grid.get_run_stat_list(
 # rule fits and the rest hit). The rule names the method (GLOW-<rule>) and
 # cluster_mode is the second cache axis -- benchmark.plot splits it into one
 # metric grid per mode. Mode is the outer loop so a mode's three rules are
-# contiguous (the shared-fit hits land back to back).
+# contiguous (the shared-fit hits land back to back). fit_params is the same
+# GLOW_FIT_PARAMS the RUN_ANA_LIST GLOW recipe takes: the shared fit is GLOW's
+# alone, so it gets GLOW's device + worker-count knobs like every other GLOW
+# leaf (driver.check_fit_params refuses to run it in parallel with a device
+# visible, same as RUN_ANA_LIST's GLOW cell).
 _PRUNE_GLOW_KWARGS = dict(n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER,
-                          alpha_fwer=ALPHA_FWER)
+                          alpha_fwer=ALPHA_FWER, fit_params=GLOW_FIT_PARAMS)
 PRUNE_RULES = ['maxllr', 'greedy', 'dp']
 PRUNE_CLUSTER_MODES = [ClusterMode.FOCUS, ClusterMode.GLM_ERROR]
 RUN_PRUNE_LIST = [

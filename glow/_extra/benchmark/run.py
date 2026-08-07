@@ -304,10 +304,11 @@ def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name, *,
     return score_effects(ana, mask_target_list, mask_active=exp.mask_idx > -1)
 
 
-@MEMORY.cache(ignore=['exp'])
+@MEMORY.cache(ignore=['exp', 'fit_params'])
 def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
                        n_perm_inner: int, alpha_fwer: float,
-                       cluster_mode=ClusterMode.FOCUS) -> tuple:
+                       cluster_mode=ClusterMode.FOCUS,
+                       fit_params=None) -> tuple:
     """Fit GLOW once and return the pruning inputs (shared by the rules).
 
     The prune cache's shared intermediate: a full AnalysisGLOW fit reduced
@@ -327,6 +328,10 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
         n_perm_inner (int): inner FL draws per outer perm.
         alpha_fwer (float): FWER significance level (selects sig_reg_list).
         cluster_mode (ClusterMode): Ward projection (default FOCUS).
+        fit_params (dict | None): kwargs forwarded to ana.fit -- how the fit
+            runs (n_jobs, gpu), never what it computes. Ignored like exp, so a
+            cell fit on CPU or GPU is one artifact (see run_ana). None
+            (default) takes fit's own defaults: serial, CPU.
 
     Returns:
         children (np.array): (num_reg - num_vox, 2) Ward child-index pairs.
@@ -336,18 +341,18 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
     """
     ana = AnalysisGLOW(n_perm_fwer=n_perm_fwer, n_perm_inner=n_perm_inner,
                        alpha_fwer=alpha_fwer, cluster_mode=cluster_mode)
-    ana.fit(exp)
+    ana.fit(exp, **(fit_params or {}))
     sig_reg_list = np.where(ana.pval <= ana.alpha_fwer)[0].tolist()
     llr = np.nan_to_num(ana.llr.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
     return ana.children, llr, sig_reg_list
 
 
-@MEMORY.cache(ignore=LEAF_IGNORE)
+@MEMORY.cache(ignore=FIT_IGNORE)
 @RECORDER(output_name='score', recurse_out_list=['score'],
-          ignore=LEAF_IGNORE)
+          ignore=FIT_IGNORE)
 def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
               n_perm_fwer: int, n_perm_inner: int, alpha_fwer: float,
-              cluster_mode=ClusterMode.FOCUS):
+              cluster_mode=ClusterMode.FOCUS, fit_params=None):
     """Score one pruning rule's selection on a shared GLOW fit.
 
     Reads the shared GLOW fit (glow_fit_for_prune), applies one rule to its
@@ -370,6 +375,8 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
         n_perm_inner (int): inner FL draws per outer perm (the shared fit's).
         alpha_fwer (float): FWER significance level (the shared fit's).
         cluster_mode (ClusterMode): Ward projection (default FOCUS).
+        fit_params (dict | None): kwargs forwarded to the shared fit -- how it
+            runs (n_jobs, gpu), never what it computes (see run_ana).
 
     Returns:
         score (dict): the prune counts (see score.score_prune):
@@ -381,7 +388,7 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
     children, llr, sig_reg_list = glow_fit_for_prune(
         exp, parent_uid=parent_uid, n_perm_fwer=n_perm_fwer,
         n_perm_inner=n_perm_inner, alpha_fwer=alpha_fwer,
-        cluster_mode=cluster_mode)
+        cluster_mode=cluster_mode, fit_params=fit_params)
 
     if rule == 'greedy':
         reg_out_list, _ = prune_greedy(sig_reg_list=sig_reg_list,
