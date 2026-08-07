@@ -24,7 +24,7 @@ import inspect
 import pytest
 
 from glow._extra.benchmark import config, data
-from glow.analysis import Analysis, AnalysisGLOW
+from glow.analysis import Analysis, AnalysisCET, AnalysisGLOW, AnalysisVBA
 
 
 # every catalogue entry; the shape / bind checks cover all of them
@@ -64,6 +64,36 @@ class TestCatalogueShape:
         assert config.RUN_ANA_LIST
         assert all(isinstance(c['ana'], Analysis)
                    for c in config.RUN_ANA_LIST)
+
+    def test_voxelwise_arms_match_the_recipe_defaults(self):
+        """The catalogue's spelled-out stats equal the arm defaults.
+
+        config writes get_stat / z_flag out for VBA, VBA-TFCE and CET
+        rather than leaning on the recipe defaults, so the paper's arms
+        read off the catalogue -- and states in a comment that the two
+        agree. Nothing else checks that claim, so an edit to either side
+        alone would silently split them, changing published numbers or
+        invalidating records depending on which moved.
+
+        This is the one place the catalogue's VALUES are pinned (cf. the
+        module docstring): the stats are not a tuning knob but a finding,
+        and the agreement is an invariant rather than a chosen grid size.
+        """
+        for label, cls, tfce_flag in [('VBA', AnalysisVBA, False),
+                                      ('VBA-TFCE', AnalysisVBA, True),
+                                      ('CET', AnalysisCET, False)]:
+            ana = config.ana_kwargs_dict[label]
+            kwargs = dict(n_perm_fwer=ana.n_perm_fwer)
+            if cls is AnalysisVBA:
+                kwargs['tfce_flag'] = tfce_flag
+            default = cls(**kwargs)
+
+            assert ana.get_stat is default.get_stat, (
+                f'{label}: catalogue stat {ana.get_stat.__name__} != '
+                f'recipe default {default.get_stat.__name__}')
+            assert ana.z_flag == default.z_flag, (
+                f'{label}: catalogue z_flag {ana.z_flag} != '
+                f'recipe default {default.z_flag}')
 
     def test_run_ana_cells_carry_the_recipe_and_how_to_run_it(self):
         # each leaf cell carries its ana and its fit_params, nothing else: the

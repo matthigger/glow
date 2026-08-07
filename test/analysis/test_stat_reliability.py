@@ -1,137 +1,19 @@
-"""Statistical reliability tests for the core analysis pipeline.
+"""Property tests for the two reductions every arm shares.
 
 Verifies:
-- FWER control under the null for VBA and CET (with and without z-scoring)
-- z_score_stat standardization correctness
-- Permutation exchangeability: observed rank uniform under H0
+- z_score_stat standardizes per voxel, observed row included
+- get_pval is monotone in the observed stat and propagates NaN
 
-Small synthetic experiments keep runtime manageable.
+Both are pure array math, checked against closed forms on hand-built
+inputs -- no experiment is fit here. The rate-based claims that used to
+live alongside them (FWER calibration, exchangeability) moved to
+test/test_fwer_calibration.py, which needs enough null trials to mean
+anything and so runs only under --runslow.
 """
 
 import numpy as np
-import pytest
-from scipy import stats as sp_stats
 
-from glow.experiment import Experiment
-from glow.analysis import (
-    Analysis, AnalysisVBA, AnalysisCET,
-)
-
-
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
-
-def _null_rejection_rate(cls, K, n_perm, alpha, **kw):
-    """Fraction of K null experiments where H0 is rejected."""
-    hits = 0
-    for seed in range(K):
-        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
-                                    num_img=30, seed=seed)
-        ana = cls(n_perm_fwer=n_perm, alpha_fwer=alpha, **kw).fit(exp)
-        if len(ana.effect_list) > 0:
-            hits += 1
-    return hits / K
-
-
-# ---------------------------------------------------------------------------
-# FWER calibration under the null
-# ---------------------------------------------------------------------------
-
-class TestFWERCalibration:
-    """Under H0, rejection rate must be close to alpha.
-
-    K=40 null seeds, 49 permutations (50 total rows), alpha=0.05.
-    Exact FWER with discrete p-values ~ 0.04.  Threshold at 0.20 catches
-    any systematic inflation at <0.1% false-alarm probability.
-
-    P(rate > 0.20 | true_rate=0.04, K=40) < 0.001
-    P(rate > 0.20 | true_rate=0.30, K=40) > 0.90   (catches 30% inflation)
-    """
-
-    K = 40
-    N_PERM = 49
-    ALPHA = 0.05
-    MAX_RATE = 0.20
-
-    def _check(self, rate, label):
-        assert rate <= self.MAX_RATE, (
-            f'{label} FWER inflated: {rate:.0%} '
-            f'({int(rate * self.K)}/{self.K} rejected, '
-            f'expected ~ {self.ALPHA:.0%})')
-
-    def test_vba(self):
-        self._check(
-            _null_rejection_rate(AnalysisVBA, self.K, self.N_PERM,
-                                 self.ALPHA),
-            'VBA')
-
-    def test_cet(self):
-        self._check(
-            _null_rejection_rate(AnalysisCET, self.K, self.N_PERM,
-                                 self.ALPHA),
-            'CET')
-
-    def test_vba_z(self):
-        """VBA with z-scoring should also control FWER."""
-        self._check(
-            _null_rejection_rate(AnalysisVBA, self.K, self.N_PERM,
-                                 self.ALPHA, z_flag=True),
-            'VBA+z')
-
-    def test_cet_z(self):
-        """CET with z-scoring should also control FWER."""
-        self._check(
-            _null_rejection_rate(AnalysisCET, self.K, self.N_PERM,
-                                 self.ALPHA, z_flag=True),
-            'CET+z')
-
-
-# ---------------------------------------------------------------------------
-# VBA+z FWER at small n_perm — tighter regression than TestFWERCalibration
-# ---------------------------------------------------------------------------
-
-class TestVbaZFwerSmallNPerm:
-    """VBA+z must control FWER at small n_perm.
-
-    Historical context: when ``z_score_stat`` computed mu/sigma from the
-    null rows (1:) only, the observed row (0) was standardized by
-    parameters it did not contribute to — an asymmetry that broke
-    exchangeability at finite B and inflated rejection to ~11% at B=49
-    / ~6–8% at B=250 against a nominal 5%. Moving mu/sigma to all rows
-    (Phipson & Smyth 2010; Winkler et al. 2014) restored exchangeability.
-
-    This test uses a tighter budget than ``TestFWERCalibration.test_vba_z``
-    (which allows up to 20%) so that any regression reintroducing the
-    small-B drift would fail loudly here.
-
-    Gated by ``--runslow`` (K=200 trials × 49 perms).
-    """
-
-    K = 200
-    N_PERM = 49
-    ALPHA = 0.05
-
-    # K=200, true rate ≈ ALPHA: 99% binomial upper bound ≈ 0.09
-    MAX_RATE = 0.09
-
-    @pytest.mark.slow
-    def test_vba_z_controls_fwer(self):
-        """At n_perm=49, VBA+z rejection stays within binomial CI of nominal."""
-        rate = _null_rejection_rate(
-            AnalysisVBA, self.K, self.N_PERM, self.ALPHA, z_flag=True)
-        assert rate <= self.MAX_RATE, (
-            f'VBA+z rate {rate:.3f} exceeds {self.MAX_RATE} — exchangeability '
-            f'drift may have reappeared (check z_score_stat includes observed '
-            f'row in mu/sigma)')
-
-    @pytest.mark.slow
-    def test_vba_no_z_controls_fwer(self):
-        """Reference: same setup without z-scoring also controls FWER."""
-        rate = _null_rejection_rate(
-            AnalysisVBA, self.K, self.N_PERM, self.ALPHA, z_flag=False)
-        assert rate <= self.MAX_RATE, (
-            f'VBA (no z) rate {rate:.3f} exceeds {self.MAX_RATE}')
+from glow.analysis import Analysis
 
 
 # ---------------------------------------------------------------------------
@@ -147,20 +29,35 @@ class TestZScoreStatReliability:
     """
 
     def test_observed_contributes_to_standardization(self):
-        """Extreme observed row inflates sigma, deflating its own z."""
-        stat = np.ones((51, 10))
-        stat[0, :] = 100  # extreme observed row
+        """Extreme observed row inflates sigma, deflating its own z.
+
+        A column of n rows holding one outlier and n-1 equal values has a
+        closed-form z regardless of how extreme the outlier is. Writing the
+        gap as d, the mean sits at v + d/n, so deviations are d(n-1)/n at
+        the outlier and -d/n elsewhere; the sum of squares is d^2 (n-1)/n
+        and the ddof=1 std is therefore d/sqrt(n). Both z's lose d:
+
+            z0 = (n-1)/sqrt(n),   z_null = -1/sqrt(n)
+
+        That independence from d is the property under test -- the observed
+        row cannot outrun a sigma it contributes to, however extreme it is.
+        """
+        n = 51
+        stat = np.ones((n, 10))
+        stat[0, :] = 100
 
         z = Analysis.z_score_stat(stat)
 
-        # all-rows mean = (100 + 50*1) / 51 ≈ 2.94
-        # all-rows std dominated by the single outlier — observed z is
-        # bounded by sqrt(n-1) ≈ 7.07 for a single-outlier column
-        assert np.all(z[0, :] < 10), \
-            'Observed z too large — observed row not contributing to sigma'
-        # null rows contribute symmetrically, so their z is small (< 1)
-        assert np.all(np.abs(z[1:, :]) < 1), \
-            'Null z too large — unexpected scale'
+        z0_exp = (n - 1) / np.sqrt(n)
+        z_null_exp = -1 / np.sqrt(n)
+        np.testing.assert_allclose(z[0, :], z0_exp, rtol=1e-12)
+        np.testing.assert_allclose(z[1:, :], z_null_exp, rtol=1e-12)
+
+        # a 100x larger outlier lands on exactly the same z
+        stat_bigger = np.ones((n, 10))
+        stat_bigger[0, :] = 10_000
+        np.testing.assert_allclose(Analysis.z_score_stat(stat_bigger), z,
+                                   rtol=1e-12)
 
     def test_heterogeneous_voxels_equalized(self):
         """Voxels with 10x different std should all have std=1 after."""
@@ -195,44 +92,6 @@ class TestZScoreStatReliability:
         assert ratio > 3, (
             f'Wrong-axis z-score should leave heterogeneous stds '
             f'(ratio={ratio:.1f}, expected > 3)')
-
-
-# ---------------------------------------------------------------------------
-# Permutation exchangeability
-# ---------------------------------------------------------------------------
-
-class TestPermutationExchangeability:
-    """Under H0, observed max-stat rank should be approximately uniform."""
-
-    def test_observed_rank_uniform(self):
-        """Rank of observed max-stat among all permutations ~ Uniform."""
-        K = 50
-        n_perm = 49
-        ranks = []
-
-        for seed in range(K):
-            exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
-                                        num_img=30, seed=seed)
-            from glow.analysis.mancova import get_wilks
-            ana = AnalysisVBA(n_perm_fwer=n_perm, get_stat=get_wilks)
-            num_vox = exp.y.shape[2]
-            stat = np.full((n_perm + 1, num_vox), np.nan)
-            for k in range(n_perm + 1):
-                _exp = exp.permute(k) if k else exp
-                stat[k, :] = ana.get_stat_perm(_exp)
-
-            max_stats = np.nanmax(stat, axis=1)
-            # rank = number of permutations with max-stat >= observed
-            rank = int(np.sum(max_stats >= max_stats[0]))
-            ranks.append(rank)
-
-        # Normalize to [0,1] for KS test against Uniform
-        ranks_norm = (np.array(ranks) - 0.5) / (n_perm + 1)
-        _, ks_p = sp_stats.kstest(ranks_norm, 'uniform')
-
-        assert ks_p > 0.01, (
-            f'Observed max-stat rank not uniform (KS p={ks_p:.3f}), '
-            f'suggesting broken exchangeability')
 
 
 # ---------------------------------------------------------------------------
