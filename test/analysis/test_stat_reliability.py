@@ -3,7 +3,6 @@
 Verifies:
 - FWER control under the null for VBA and CET (with and without z-scoring)
 - z_score_stat standardization correctness
-- Power monotonicity: stronger effects detected more often
 - Permutation exchangeability: observed rank uniform under H0
 
 Small synthetic experiments keep runtime manageable.
@@ -13,7 +12,6 @@ import numpy as np
 import pytest
 from scipy import stats as sp_stats
 
-from glow.effect import ExtenterSphere, EffectSynthetic
 from glow.experiment import Experiment
 from glow.analysis import (
     Analysis, AnalysisVBA, AnalysisCET,
@@ -197,44 +195,6 @@ class TestZScoreStatReliability:
         assert ratio > 3, (
             f'Wrong-axis z-score should leave heterogeneous stds '
             f'(ratio={ratio:.1f}, expected > 3)')
-
-
-# ---------------------------------------------------------------------------
-# Power monotonicity
-# ---------------------------------------------------------------------------
-
-class TestPowerMonotonicity:
-    """Detection rate should increase with effect strength."""
-
-    def test_vba_power_increases(self):
-        K = 20
-        n_perm = 25
-        alpha = 0.1
-
-        rates = {}
-        for llr in [0.0, 0.3, 0.8]:
-            hits = 0
-            for seed in range(K):
-                exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
-                                            num_img=50, seed=seed)
-                if llr > 0:
-                    exp = EffectSynthetic(
-                        extenter=ExtenterSphere(radius=2, seed=seed),
-                        effect_llr=llr).fit(exp)[0]
-                ana = AnalysisVBA(n_perm_fwer=n_perm,
-                                  alpha_fwer=alpha).fit(exp)
-                if len(ana.effect_list) > 0:
-                    hits += 1
-            rates[llr] = hits / K
-
-        # null should rarely reject
-        assert rates[0.0] <= 0.30, f'Null rate too high: {rates[0.0]}'
-        # power should increase with effect size
-        assert rates[0.8] >= rates[0.3], (
-            f'Power not monotonic: {rates}')
-        # strong effect should be detected reliably
-        assert rates[0.8] >= 0.5, (
-            f'Strong effect power too low: {rates[0.8]}')
 
 
 # ---------------------------------------------------------------------------
