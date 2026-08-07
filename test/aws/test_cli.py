@@ -75,24 +75,29 @@ class TestConfirmAws:
         assert cli.confirm_aws(['sweep_llr', 'null'], input_fnc=_boom) is True
 
     def test_yes_goes_ahead(self, capsys):
-        assert cli.confirm_aws(['runtime'], input_fnc=lambda p: 'y') is True
+        assert cli.confirm_aws(['runtime_num_vox'],
+                               input_fnc=lambda p: 'y') is True
         out = capsys.readouterr().out
         assert 'WARNING' in out and 'runtime' in out
 
     def test_no_aborts(self, capsys):
-        assert cli.confirm_aws(['runtime'], input_fnc=lambda p: 'n') is False
+        assert cli.confirm_aws(['runtime_num_vox'],
+                               input_fnc=lambda p: 'n') is False
         assert 'aborted' in capsys.readouterr().out
 
     def test_empty_reply_declines(self):
         # declining is the default, so a bare Enter aborts
-        assert cli.confirm_aws(['runtime'], input_fnc=lambda p: '') is False
+        assert cli.confirm_aws(['runtime_num_vox'],
+                               input_fnc=lambda p: '') is False
 
     def test_yes_is_case_and_space_insensitive(self):
-        reply = cli.confirm_aws(['runtime'], input_fnc=lambda p: ' YES ')
+        reply = cli.confirm_aws(['runtime_num_vox'],
+                                input_fnc=lambda p: ' YES ')
         assert reply is True
 
     def test_warns_about_every_matching_cache(self, capsys):
-        names = ['sweep_llr', 'runtime', 'runtime_b', 'runtime_n_perm_inner']
+        names = ['sweep_llr', 'runtime_num_vox', 'runtime_1perm_b',
+                 'runtime_1perm_n_perm_inner']
         cli.confirm_aws(names, input_fnc=lambda p: 'n')
         out = capsys.readouterr().out
         assert '3 selected cache(s)' in out
@@ -103,13 +108,13 @@ class TestConfirmAws:
 
     def test_no_terminal_declines(self, capsys):
         # pytest's stdin is not a tty, so the default path cannot ask
-        assert cli.confirm_aws(['runtime']) is False
+        assert cli.confirm_aws(['runtime_num_vox']) is False
         assert 'no terminal to ask' in capsys.readouterr().out
 
     def test_eof_declines(self):
         def _eof(prompt):
             raise EOFError
-        assert cli.confirm_aws(['runtime'], input_fnc=_eof) is False
+        assert cli.confirm_aws(['runtime_num_vox'], input_fnc=_eof) is False
 
 
 class TestRunPromptsBeforeAws:
@@ -130,8 +135,9 @@ class TestRunPromptsBeforeAws:
                             lambda names, cfg, **kw: captured.update(
                                 names=names) or {})
         monkeypatch.setattr(cli, 'confirm_aws', lambda resolved: True)
-        cli.run(names=['runtime', 'sweep_llr'], aws=True, verbose=False)
-        assert captured['names'] == ['runtime', 'sweep_llr']
+        cli.run(names=['runtime_num_vox', 'sweep_llr'], aws=True,
+                verbose=False)
+        assert captured['names'] == ['runtime_num_vox', 'sweep_llr']
 
     def test_eligible_only_selection_is_unaffected(self, monkeypatch):
         captured = {}

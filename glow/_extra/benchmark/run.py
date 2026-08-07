@@ -62,6 +62,7 @@ import copy
 import json
 
 import numpy as np
+from threadpoolctl import threadpool_limits
 
 import glow.graph
 from glow.analysis import Analysis, AnalysisGLOW, AnalysisVoxel
@@ -88,8 +89,7 @@ LEAF_IGNORE = ['exp', 'mask_target_list']
 # The same list goes to @MEMORY.cache and @RECORDER: the recorder keys a record
 # by joblib's args hash, so it must filter exactly what joblib filters or the
 # record stops naming its own cache entry.
-TIMING_IGNORE = [*LEAF_IGNORE, 'label']
-
+#
 # fit_params (the kwargs a leaf forwards to Analysis.fit -- n_jobs, gpu) is an
 # execution knob, not a recipe knob, so it is filtered like exp: a cell fit on
 # 32 CPU workers and the same cell fit on the GPU are one artifact, cached and
@@ -401,88 +401,15 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
 
 
 # ---------- runtime leaves (timed, not scored) -------------------------------
-# The runtime caches measure wall time, not detection. Each leaf runs the one
-# piece of GLOW its cache sweeps and returns the analyzed voxel count; the
-# RECORDER's time_sec is the measurement, its swept knob rides as an explicit
-# in.<name> column, and num_vox rides as the out column -- so runtime plots
-# straight from the records. mask_target_list rides the uniform leaf contract
-# but is unused (the effect is planted only to keep the run realistic; timing
-# is effect-independent).
-
-
-@MEMORY.cache(ignore=TIMING_IGNORE)
-@RECORDER(output_name='num_vox', ignore=TIMING_IGNORE)
-def run_perm_fwer(exp: Experiment, mask_target_list, *, parent_uid: str,
-                  n_perm_fwer: int, n_perm_inner: int,
-                  cluster_mode=ClusterMode.FOCUS, min_vox: int = 1,
-                  label=None) -> int:
-    """Time GLOW's outer FWER loop for a fixed n_perm_inner (runtime leaf).
-
-    The n_perm_fwer runtime sweep's leaf: run GLOW's outer loop by hand
-    (AnalysisGLOW._run_outer for each of the n_perm_fwer + 1 outer perms -- the
-    cluster + observed-LLR + inner-perm work) and stop before finalize /
-    pruning / scoring. Holding n_perm_inner fixed, the recorded time_sec
-    isolates the FWER-permutation cost, which grows linearly in n_perm_fwer.
-
-    Args:
-        exp (Experiment): the experiment with the synthetic effect imposed.
-        mask_target_list (list): planted supports; unused (uniform contract).
-        parent_uid (str): the exp's declared uid (see the module docstring).
-        n_perm_fwer (int): outer FL perms (n_perm_fwer + 1 outer passes, incl.
-            the observed k=0); the swept axis.
-        n_perm_inner (int): inner FL draws per outer perm (held fixed).
-        cluster_mode (ClusterMode): Ward projection (Focus / GLM_ERROR).
-        min_vox (int): smallest region size admitted to the inner null.
-        label (str): GLOW arm label recorded beside the timing; not a cache
-            axis.
-
-    Returns:
-        num_vox (int): the analyzed voxel count (recorded beside time_sec as
-            the sweep's size context).
-    """
-    exp_s = ExperimentScaled.from_exp(exp)
-    q0, q1, _ = decompose(x=exp_s.x, contrast=exp_s.contrast)
-    for k in range(n_perm_fwer + 1):
-        AnalysisGLOW._run_outer(
-            exp_s, k, q0=q0, q1=q1, n_perm_inner=n_perm_inner,
-            min_vox=min_vox, cluster_mode=ClusterMode(cluster_mode))
-    return int(exp_s.y.shape[2])
-
-
-@MEMORY.cache(ignore=TIMING_IGNORE)
-@RECORDER(output_name='num_vox', ignore=TIMING_IGNORE)
-def run_perm_inner(exp: Experiment, mask_target_list, *, parent_uid: str,
-                   n_perm_inner: int, cluster_mode=ClusterMode.FOCUS,
-                   min_vox: int = 1, label=None) -> int:
-    """Time one observed tree's inner Freedman-Lane null (runtime leaf).
-
-    The n_perm_inner runtime sweep's leaf: cluster the observed (k=0) Ward tree
-    once, then run its inner FL null (AnalysisGLOW.run_inner_perm) with
-    n_perm_inner draws. Decoupled from the outer FWER loop, so the recorded
-    time_sec is the pure inner-permutation cost, linear in n_perm_inner (the
-    one-time clustering is a fixed intercept). Uses the full cpu_perm
-    reference: the cost is linear in n_perm_inner, every region drawn to
-    the full count.
-
-    Args:
-        exp (Experiment): the experiment with the synthetic effect imposed.
-        mask_target_list (list): planted supports; unused (uniform contract).
-        parent_uid (str): the exp's declared uid (see the module docstring).
-        n_perm_inner (int): inner FL draws over the observed tree; swept axis.
-        cluster_mode (ClusterMode): Ward projection (Focus / GLM_ERROR).
-        min_vox (int): regions smaller than this are left NaN.
-        label (str): GLOW arm label recorded beside the timing; not a cache
-            axis.
-
-    Returns:
-        num_vox (int): the analyzed voxel count (recorded beside time_sec).
-    """
-    exp_s = ExperimentScaled.from_exp(exp)
-    q0, q1, _ = decompose(x=exp_s.x, contrast=exp_s.contrast)
-    children = cluster(exp_s, mode=ClusterMode(cluster_mode))
-    AnalysisGLOW.run_inner_perm(exp_s, children, n_perm_inner, q0=q0, q1=q1,
-                                min_vox=min_vox)
-    return int(exp_s.y.shape[2])
+# The runtime caches measure wall time, not detection. Both leaves fit a real
+# recipe and return the analyzed voxel count; the RECORDER's time_sec is the
+# measurement and num_vox rides as the out column, so a runtime figure plots
+# straight from the records. They differ only in what they hold fixed:
+# run_ana_time takes every core and any device (wall clock as experienced),
+# run_ana_time_1perm pins one core and one permutation (work, near enough to
+# read a growth rate off). mask_target_list rides the uniform leaf contract but
+# is unused (the effect is planted only to keep the run realistic; timing is
+# effect-independent).
 
 
 # run_ana_time's default fit_params: all cores, CPU. A dict literal rather
@@ -538,12 +465,118 @@ def run_ana_time(exp: Experiment, mask_target_list, ana: Analysis, *,
     return int((exp.mask_idx > -1).sum())
 
 
+def _take_img(exp: Experiment, num_img: int) -> Experiment:
+    """Return exp cut to its leading num_img subjects (a timing helper).
+
+    Both y and the design x lose the same columns, so the result is shaped
+    exactly like an experiment of that many subjects. y is copied rather than
+    sliced into a view: the analysis path is written for the F-contiguous
+    layout the builders produce (see data._with_canonical_y), and timing a
+    strided view would measure the stride, not the size.
+
+    Args:
+        exp (Experiment): the experiment to cut.
+        num_img (int): subjects to keep.
+
+    Returns:
+        Experiment: y (b, num_img, num_vox), x (a, num_img), same mask.
+
+    Raises:
+        ValueError: num_img exceeds the cohort.
+    """
+    if num_img > exp.y.shape[1]:
+        raise ValueError(f'num_img={num_img} exceeds the {exp.y.shape[1]}'
+                         f'-subject cohort')
+    return Experiment(y=exp.y[:, :num_img].copy(order='F'),
+                      x=exp.x[:, :num_img], contrast=exp.contrast,
+                      mask_idx=exp.mask_idx)
+
+
+@MEMORY.cache(ignore=LEAF_IGNORE)
+@RECORDER(output_name='num_vox', ignore=LEAF_IGNORE)
+def run_ana_time_1perm(exp: Experiment, mask_target_list, ana: Analysis, *,
+                       parent_uid: str, n_perm_fwer: int = 1,
+                       n_perm_inner: int = None,
+                       num_img: int = None) -> int:
+    """Time one method's fit on a single core, one permutation deep.
+
+    The growth-rate leaf: fit ana with the permutation counts overridden and
+    the machine pinned to one core -- n_jobs=1, no device, BLAS held to a
+    single thread (threadpool_limits, which covers the OpenMP / MKL / OpenBLAS
+    pools numpy dispatches into). What it measures is therefore work, not
+    schedule: the parallel speedup is itself a function of the swept axis (a
+    bandwidth-bound fit plateaus at a handful of workers where a compute-bound
+    one keeps scaling), so a wall time taken on all cores conflates the
+    algorithm's growth with the machine's. Timed on one core, the ratio between
+    two points on an axis is the growth in that axis.
+
+    n_perm_fwer defaults to 1: the observed pass plus a single outer
+    permutation. The full run costs n_perm_fwer times the per-permutation term
+    (every method's outer walk is an independent loop over permutations), so a
+    grid can reach full-brain num_vox for the price of two passes -- and the
+    n_perm_fwer sweep, which does vary it over a small range, is what separates
+    that per-permutation slope from the fixed intercept (the observed pass,
+    finalize / pruning) rather than assuming the split.
+
+    Unlike run_ana_time this leaf takes no fit_params: the serial contract is
+    the measurement, so it is not a caller's knob. Every swept knob rides as an
+    explicit argument rather than in the recipe or the data cell, so that it
+    keys the cache (fit_params would not -- see FIT_IGNORE) and lands in the
+    record as its own in.<name> column for the plotter, leaving in.ana to name
+    the method exactly as it does everywhere else.
+
+    num_img is swept here, on the analysis side, rather than by building a
+    smaller experiment. The HCP cohort is the sample -- data_factory_hcp has no
+    subject-subset axis -- and giving it one would put num_img in every HCP
+    cell's declared recipe (recipe_for_call applies defaults), rehashing every
+    HCP artifact in the catalogue to sweep one runtime curve. Truncating to the
+    leading num_img subjects here costs nothing outside this leaf, and timing
+    is a function of the array shapes rather than of which subjects fill them.
+
+    Args:
+        exp (Experiment): the experiment to analyze (raw or scaled; fit scales
+            it idempotently).
+        mask_target_list (list): planted supports; unused (uniform contract).
+        parent_uid (str): the exp's declared uid (see the module docstring).
+        ana (Analysis): an unfitted analysis recipe; deep-copied before its
+            permutation counts are overridden, so the caller's is untouched.
+        n_perm_fwer (int): outer permutations to time, the observed pass on
+            top. 1 (default) is the per-permutation cost.
+        n_perm_inner (int | None): inner FL draws, for a recipe that has them
+            (GLOW). None (default) keeps the recipe's own count.
+        num_img (int | None): subjects to keep, the leading num_img of them.
+            None (default) is the whole cohort.
+
+    Returns:
+        num_vox (int): analyzed voxel count (mask_active.sum()), recorded
+            beside time_sec as the sweep's size context.
+
+    Raises:
+        ValueError: n_perm_inner given for a recipe with no inner null (the
+            sweep would record a flat curve against a knob the method never
+            reads), or num_img larger than the cohort (a silently short curve).
+    """
+    ana = copy.deepcopy(ana)
+    ana.n_perm_fwer = n_perm_fwer
+    if n_perm_inner is not None:
+        if not hasattr(ana, 'n_perm_inner'):
+            raise ValueError(f'{type(ana).__name__} has no n_perm_inner')
+        ana.n_perm_inner = n_perm_inner
+    if num_img is not None:
+        exp = _take_img(exp, num_img)
+
+    with threadpool_limits(limits=1):
+        ana.fit(exp, n_jobs=1, gpu=False)
+    return int((exp.mask_idx > -1).sum())
+
+
 # ---------- inner-perm edge sweep (num_inner_perm convergence) ---------------
-# The n_perm_inner counterpart to the runtime_n_perm_inner cost cache: instead
-# of timing the inner null it captures how the max-z FWER threshold converges as
-# num_inner_perm grows. The inner draws are seeded base_seed + i, so a single
-# sampling to depth max_inner_perm contains every smaller run as a prefix -- one
-# capture yields the whole curve, no re-fitting per num_inner_perm.
+# The n_perm_inner counterpart to the runtime_1perm_n_perm_inner cost cache:
+# instead of timing the inner null it captures how the max-z FWER threshold
+# converges as num_inner_perm grows. The inner draws are seeded base_seed + i,
+# so a single sampling to depth max_inner_perm contains every smaller run as a
+# prefix -- one capture yields the whole curve, no re-fitting per
+# num_inner_perm.
 
 
 def _inner_grid(max_inner_perm: int) -> list:

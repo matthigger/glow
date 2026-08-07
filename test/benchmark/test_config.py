@@ -124,15 +124,23 @@ class TestFitParams:
                         if isinstance(cell['ana'], AnalysisGLOW) else None)
             assert cell['fit_params'] == expected
 
+    def test_wall_clock_cache_gives_glow_the_device(self):
+        # runtime_num_vox asks what a user waits on this machine, so GLOW is
+        # given the card and the RAM-capped worker count; the voxel-wise arms
+        # have no backend and take the leaf's default (all cores, CPU)
+        for cell in config.CONFIG['runtime_num_vox'][2]:
+            expected = (config.GLOW_FIT_PARAMS
+                        if isinstance(cell['ana'], AnalysisGLOW) else None)
+            assert cell['fit_params'] == expected
+
     @pytest.mark.parametrize(
-        'label', [label for label in LABELS if label.startswith('runtime')])
-    def test_timing_leaves_carry_none(self, label):
-        # the runtime family times every method the same way (the leaf's own
-        # default: all cores, CPU), or the figure compares hardware. fit_params
-        # does not key a leaf either, so a device timing would be served from
-        # the CPU timing's entry rather than measured.
+        'label', [lbl for lbl in LABELS if lbl.startswith('runtime_1perm')])
+    def test_growth_rate_leaves_take_no_fit_params(self, label):
+        # run_ana_time_1perm pins its own core, device and BLAS thread -- the
+        # serial contract is the measurement, not a cell's knob, so the leaf
+        # has no fit_params parameter to bind
         for cell in config.CONFIG[label][2]:
-            assert cell.get('fit_params') is None
+            assert 'fit_params' not in cell
 
 
 class TestCellsBindToStages:

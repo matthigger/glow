@@ -37,10 +37,10 @@ reaches 0.5 -- rows the methods, a column per b.
 
 The runtime family is plotted apart (tidy_runtime / plot_runtime): those caches
 hold detection fixed and sweep one cost knob, so the signal is the leaf wall
-time (RECORDER time_sec), not a score. Each is one wall-time-vs-knob curve per
-method on log axes -- runtime (the paper figure) over the num_vox sweep to the
-full HCP support, and the diagnostic caches over the segmentation / permutation
-/ feature-count knobs (see _RUNTIME_SPEC).
+time (RECORDER time_sec), not a score. Each is one time-vs-knob curve per
+method on log axes -- runtime_num_vox for the wall clock on this machine, and
+the runtime_1perm_* caches for the growth rate in each of the five cost knobs
+(see _RUNTIME_SPEC, and config's runtime section for why the two are separate).
 
 The inner-edge cache (sweep_n_perm_inner) is plotted apart too (tidy_inner_edge
 / plot_inner_edge): its run_inner_edge leaf records the per-outer-perm max-z at
@@ -77,7 +77,7 @@ from scipy.stats import beta
 import glow._extra.benchmark
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import stat_dict
-from .config import ana_kwargs_dict, RUN_STAT_LIST, RUNTIME_GLOW_MODES
+from .config import ana_kwargs_dict, GLOW_ARM_MODES, RUN_STAT_LIST
 from .file import add_metric_cols
 
 
@@ -118,7 +118,7 @@ _LABEL_OF_ANA = {repr(ana): label for label, ana in ana_kwargs_dict.items()}
 # recover a run_inner_edge leaf's GLOW arm from its recorded cluster_mode.
 # ClusterMode is a StrEnum, so the recorded in.cluster_mode cell is its string
 # ('Focus' / 'GLM Error'); no label is stored (see run.run_inner_edge / config).
-_ARM_OF_MODE = {str(mode): label for label, mode in RUNTIME_GLOW_MODES}
+_ARM_OF_MODE = {str(mode): label for label, mode in GLOW_ARM_MODES}
 
 # One GLOW arm is reported, the GLM-Error clustering, and the figures call it
 # plainly GLOW: the Focus arm is dropped (_ARMS_SKIP) and the survivor
@@ -249,18 +249,20 @@ _X_PARAM_LABELS = {
 }
 
 # runtime caches: name -> (leaf column prefix, swept x-axis column). The
-# runtime family plots wall time (leaf.time_sec) against one swept cost knob;
+# runtime family plots time (leaf.time_sec) against one swept cost knob;
 # unlike the detection sweeps the x is not inferred (time is the signal, the
-# effect is held at the moderate default). run_ana_time (runtime / runtime_b /
-# runtime_nimg) carries the method in the recipe (in.ana); every timing leaf
-# returns num_vox bare, and run_perm_* record the method as an explicit label.
-# See config's runtime section.
+# effect is held at the moderate default). Both leaves carry the method in the
+# recipe (in.ana) and return num_vox bare. A knob is read wherever it was
+# declared: num_vox off the leaf's own output, b off the data factory that
+# shaped the array, num_img and the permutation counts off the 1perm leaf's
+# explicit inputs. See config's runtime section.
 _RUNTIME_SPEC = {
-    'runtime':              ('run_ana_time',   'num_vox'),
-    'runtime_b':            ('run_ana_time',   'b'),
-    'runtime_nimg':         ('run_ana_time',   'num_img'),
-    'runtime_n_perm_fwer':  ('run_perm_fwer',  'n_perm_fwer'),
-    'runtime_n_perm_inner': ('run_perm_inner', 'n_perm_inner'),
+    'runtime_num_vox':            ('run_ana_time',       'num_vox'),
+    'runtime_1perm_num_vox':      ('run_ana_time_1perm', 'num_vox'),
+    'runtime_1perm_n_perm_fwer':  ('run_ana_time_1perm', 'n_perm_fwer'),
+    'runtime_1perm_n_perm_inner': ('run_ana_time_1perm', 'n_perm_inner'),
+    'runtime_1perm_b':            ('run_ana_time_1perm', 'b'),
+    'runtime_1perm_nimg':         ('run_ana_time_1perm', 'num_img'),
 }
 
 
@@ -1441,12 +1443,13 @@ def tidy_runtime(name: str, raw):
     frame to one tidy row per timed leaf, reading the method label, the swept
     x-axis value, and the wall time. The leaf prefix and swept axis come from
     _RUNTIME_SPEC (time is the signal, so unlike the detection path the x is
-    not inferred from what varies). A run_ana_time cache (runtime / runtime_b /
-    runtime_nimg) reads the method off the recipe (in.ana), as tidy_run_ana
-    does; the dedicated run_perm_* leaves record it as an explicit label. Every
-    timing leaf returns num_vox bare, so only the run_ana detection path reads
-    it from the recursed score. The seed is the data seed of the single source
-    the cache spans (HCP, or WGN for the num_img sweep).
+    not inferred from what varies). Both timing leaves name the method in the
+    recipe (in.ana), as tidy_run_ana does, and return num_vox bare.
+
+    A knob is read wherever it was declared. b rides the data grid, so it comes
+    off the HCP feature subset the factory was given; the rest are explicit
+    1perm leaf inputs. Every runtime cache is HCP, so the seed is the HCP
+    factory's.
 
     Args:
         name (str): the runtime cache name (a key of _RUNTIME_SPEC).
@@ -1472,25 +1475,9 @@ def tidy_runtime(name: str, raw):
     out['time_sec'] = pd.to_numeric(col(f'{leaf}.time_sec'), errors='coerce')
     out['seed'] = pd.to_numeric(col('data_factory_hcp.in.seed'),
                                 errors='coerce')
+    out['label'] = col(f'{leaf}.in.ana').map(_LABEL_OF_ANA)
+    out['num_vox'] = pd.to_numeric(col(f'{leaf}.out.num_vox'), errors='coerce')
 
-    # method label: run_ana / run_ana_time carry the recipe (in.ana); the
-    # dedicated timing leaves record an explicit label
-    if leaf in ('run_ana', 'run_ana_time'):
-        out['label'] = col(f'{leaf}.in.ana').map(_LABEL_OF_ANA)
-    else:
-        out['label'] = col(f'{leaf}.in.label')
-
-    # num_vox: run_ana carries it inside the recursed score dict; every timing
-    # leaf (run_ana_time included) returns it bare
-    if leaf == 'run_ana':
-        out['num_vox'] = pd.to_numeric(col('run_ana.out.score.num_vox'),
-                                       errors='coerce')
-    else:
-        out['num_vox'] = pd.to_numeric(col(f'{leaf}.out.num_vox'),
-                                       errors='coerce')
-
-    # b is the HCP feature-subset length; every other knob is num_vox itself or
-    # an explicit leaf input
     if x_name == 'num_vox':
         out['x'] = out['num_vox']
     elif x_name == 'b':
@@ -1792,7 +1779,7 @@ def main(argv=None) -> None:
                 parser.error(f'no cache names match: {pattern}')
             names += [n for n in matches if n not in names]
     else:
-        names = (detect_names + runtime_names + edge_names + race_names
+        names = (detect_names + runtime_names + edge_names
                  + stat_names + segment_names + prune_names)
 
     out = glow._extra.benchmark.get_path_result() / '_latest'

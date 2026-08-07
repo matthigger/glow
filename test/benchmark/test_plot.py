@@ -324,27 +324,28 @@ def test_threshold_censored_status():
 # Runtime plotters
 # ---------------------------------------------------------------------------
 
-def _runtime_ana_row(label, seed, num_vox, time_sec, hcp_feats=('od',)):
-    """One run_ana_time runtime row (runtime / runtime_b): method in recipe."""
-    return {'run_ana_time.in.ana': repr(ana_kwargs_dict[label]),
-            'run_ana_time.time_sec': time_sec,
-            'run_ana_time.out.num_vox': num_vox,
+def _runtime_ana_row(label, seed, num_vox, time_sec, hcp_feats=('od',),
+                     leaf='run_ana_time'):
+    """One timed HCP row: the method rides in the recipe, num_vox is bare."""
+    return {f'{leaf}.in.ana': repr(ana_kwargs_dict[label]),
+            f'{leaf}.time_sec': time_sec,
+            f'{leaf}.out.num_vox': num_vox,
             'data_factory_hcp.in.hcp_feats': list(hcp_feats),
             'data_factory_hcp.in.seed': seed}
 
 
-def _runtime_perm_row(label, seed, n_perm_fwer, time_sec, num_vox=1000):
-    """One run_perm_fwer runtime row: method + knob are explicit inputs."""
-    return {'run_perm_fwer.in.label': label,
-            'run_perm_fwer.in.n_perm_fwer': n_perm_fwer,
-            'run_perm_fwer.time_sec': time_sec,
-            'run_perm_fwer.out.num_vox': num_vox,
-            'data_factory_hcp.in.seed': seed}
+def _runtime_1perm_row(label, seed, time_sec, num_vox=1000,
+                       hcp_feats=('od',), **knobs):
+    """One run_ana_time_1perm row: the swept count is an explicit input."""
+    row = _runtime_ana_row(label, seed, num_vox, time_sec,
+                           hcp_feats=hcp_feats, leaf='run_ana_time_1perm')
+    row.update({f'run_ana_time_1perm.in.{k}': v for k, v in knobs.items()})
+    return row
 
 
 def test_tidy_runtime_empty():
     """An empty frame in gives an empty frame out."""
-    assert plot.tidy_runtime('runtime', pd.DataFrame()).empty
+    assert plot.tidy_runtime('runtime_num_vox', pd.DataFrame()).empty
 
 
 def test_tidy_runtime_run_ana_leaf():
@@ -353,7 +354,7 @@ def test_tidy_runtime_run_ana_leaf():
         _runtime_ana_row(GLOW_LABEL, seed=0, num_vox=1000, time_sec=25.0),
         _runtime_ana_row(VBA_LABEL, seed=0, num_vox=224619, time_sec=480.0),
     ])
-    df = plot.tidy_runtime('runtime', raw)
+    df = plot.tidy_runtime('runtime_num_vox', raw)
     assert list(df['label']) == [GLOW_LABEL, VBA_LABEL]
     assert list(df['x']) == [1000, 224619]
     assert list(df['x_name'].unique()) == ['num_vox']
@@ -361,28 +362,39 @@ def test_tidy_runtime_run_ana_leaf():
 
 
 def test_tidy_runtime_b_from_feature_count():
-    """runtime_b's x is the HCP feature-subset length (b), not num_vox."""
+    """The b sweep's x is the HCP feature-subset length, not num_vox."""
     raw = pd.DataFrame([
-        _runtime_ana_row(GLOW_LABEL, 0, num_vox=1000, time_sec=2.0,
-                         hcp_feats=('od',)),
-        _runtime_ana_row(GLOW_LABEL, 0, num_vox=1000, time_sec=6.0,
-                         hcp_feats=('od', 'mk', 'fa')),
+        _runtime_1perm_row(GLOW_LABEL, 0, time_sec=2.0, hcp_feats=('od',)),
+        _runtime_1perm_row(GLOW_LABEL, 0, time_sec=6.0,
+                           hcp_feats=('od', 'mk', 'fa')),
     ])
-    df = plot.tidy_runtime('runtime_b', raw)
+    df = plot.tidy_runtime('runtime_1perm_b', raw)
     assert list(df['x_name'].unique()) == ['b']
     assert list(df['x']) == [1, 3]
 
 
-def test_tidy_runtime_timed_leaf():
-    """A timed leaf reads the method + swept knob off its explicit inputs."""
+def test_tidy_runtime_1perm_knob_from_leaf_input():
+    """A swept permutation count is read off the 1perm leaf's own inputs."""
     raw = pd.DataFrame([
-        _runtime_perm_row('GLOW-Focus', seed=0, n_perm_fwer=50, time_sec=5.0),
-        _runtime_perm_row('GLOW-GLM', seed=0, n_perm_fwer=800, time_sec=80.0),
+        _runtime_1perm_row(GLOW_LABEL, 0, time_sec=5.0, n_perm_fwer=1),
+        _runtime_1perm_row(GLOW_LABEL, 0, time_sec=80.0, n_perm_fwer=16),
     ])
-    df = plot.tidy_runtime('runtime_n_perm_fwer', raw)
-    assert list(df['label']) == ['GLOW-Focus', 'GLOW-GLM']
-    assert list(df['x']) == [50, 800]
+    df = plot.tidy_runtime('runtime_1perm_n_perm_fwer', raw)
+    assert list(df['label']) == [GLOW_LABEL, GLOW_LABEL]
+    assert list(df['x']) == [1, 16]
     assert list(df['x_name'].unique()) == ['n_perm_fwer']
+
+
+def test_tidy_runtime_num_img_from_leaf_input():
+    """num_img is cut by the leaf, so it is read from the leaf's inputs."""
+    raw = pd.DataFrame([
+        _runtime_1perm_row(GLOW_LABEL, seed=0, time_sec=1.0, num_img=10),
+        _runtime_1perm_row(GLOW_LABEL, seed=1, time_sec=30.0, num_img=100),
+    ])
+    df = plot.tidy_runtime('runtime_1perm_nimg', raw)
+    assert list(df['x_name'].unique()) == ['num_img']
+    assert list(df['x']) == [10, 100]
+    assert list(df['seed']) == [0, 1]
 
 
 def test_plot_runtime_writes_figure(tmp_path):
@@ -393,10 +405,10 @@ def test_plot_runtime_writes_figure(tmp_path):
             for seed in range(3):
                 rows.append(_runtime_ana_row(
                     label, seed, num_vox, time_sec=num_vox * 0.01 + seed))
-    df = plot.tidy_runtime('runtime', pd.DataFrame(rows))
+    df = plot.tidy_runtime('runtime_num_vox', pd.DataFrame(rows))
 
-    plot.plot_runtime('runtime', df, tmp_path)
-    assert (tmp_path / 'runtime_runtime.pdf').exists()
+    plot.plot_runtime('runtime_num_vox', df, tmp_path)
+    assert (tmp_path / 'runtime_num_vox_runtime.pdf').exists()
 
 
 # ---------------------------------------------------------------------------
@@ -795,8 +807,8 @@ def test_plot_cache_drops_focus_arm(tmp_path):
     """A detection cache reports one arm, labelled GLOW, in figure + CSVs.
 
     The plot layer's guarantee is about the labels handed to it, not about how
-    many arms the catalogue ships: whichever raw arm names reach it (the perm /
-    inner-edge families record both, see config.RUNTIME_GLOW_MODES), the
+    many arms the catalogue ships: whichever raw arm names reach it (the
+    inner-edge family records both, see config.GLOW_ARM_MODES), the
     unreported one is dropped and the survivor relabelled. So the arms are
     injected into the tidy frame rather than round-tripped through a recipe --
     the raw names here are plot's own vocabulary (_ARMS_SKIP / _ARM_LABEL).

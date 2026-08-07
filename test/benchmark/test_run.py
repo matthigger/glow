@@ -17,9 +17,9 @@ import pytest
 
 from glow._extra.benchmark import data, run
 from glow._extra.benchmark.run import (glow_fit_for_prune, run_ana,
-                                       run_inner_edge, run_perm_fwer,
-                                       run_perm_inner, run_prune, run_segment,
-                                       run_stat, voxel_stat_walk)
+                                       run_ana_time_1perm, run_inner_edge,
+                                       run_prune, run_segment, run_stat,
+                                       voxel_stat_walk)
 from glow.analysis import AnalysisGLOW, AnalysisVBA
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr, get_wilks, stat_dict_inv
@@ -477,6 +477,14 @@ class TestRunPrune:
 # ---------------------------------------------------------------------------
 
 class TestRuntimeLeaves:
+    """run_ana_time_1perm: the permutation counts it overrides, and its copy.
+
+    The wall time itself is not asserted on -- a timing is not reproducible.
+    What is testable is the contract around it: the counts reach the recipe,
+    they key the cache (so two points on a sweep are two measurements), and
+    the caller's recipe survives untouched.
+    """
+
     def _planted(self):
         return _planted_cell(
             dict(source='wgn', shape=(6, 6, 6), b=2, num_img=20, a=1,
@@ -484,36 +492,85 @@ class TestRuntimeLeaves:
             dict(effect_llr=0.1, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
                  seed=0))
 
-    def test_perm_fwer_returns_num_vox(self):
+    def _glow(self):
+        return AnalysisGLOW(n_perm_fwer=500, n_perm_inner=8)
+
+    def test_returns_num_vox(self):
         # the recorded measurement is time_sec; the return is the analyzed
         # voxel count, the sweep's size context
         exp, mask, uid = self._planted()
-        num_vox = run_perm_fwer(exp, [mask], n_perm_fwer=3, n_perm_inner=8,
-                                parent_uid=uid)
+        num_vox = run_ana_time_1perm(exp, [mask], self._glow(),
+                                     parent_uid=uid)
         assert num_vox == int((exp.mask_idx > -1).sum())
 
-    def test_perm_fwer_n_perm_is_a_cache_axis(self):
+    def test_n_perm_fwer_is_a_cache_axis(self):
         exp, mask, uid = self._planted()
-        run_perm_fwer(exp, [mask], n_perm_fwer=3, n_perm_inner=8,
-                      parent_uid=uid)
-        # a different n_perm_fwer is its own timing -> distinct cache entry
-        assert not run_perm_fwer.check_call_in_cache(
-            exp, [mask], n_perm_fwer=5, n_perm_inner=8, parent_uid=uid)
+        ana = self._glow()
+        run_ana_time_1perm(exp, [mask], ana, parent_uid=uid)
+        # a different count is its own timing -> its own cache entry
+        assert not run_ana_time_1perm.check_call_in_cache(
+            exp, [mask], ana, n_perm_fwer=2, parent_uid=uid)
 
-    def test_perm_inner_returns_num_vox(self):
+    def test_n_perm_inner_is_a_cache_axis(self):
         exp, mask, uid = self._planted()
-        num_vox = run_perm_inner(exp, [mask], n_perm_inner=8, parent_uid=uid)
-        assert num_vox == int((exp.mask_idx > -1).sum())
+        ana = self._glow()
+        run_ana_time_1perm(exp, [mask], ana, n_perm_inner=4, parent_uid=uid)
+        assert not run_ana_time_1perm.check_call_in_cache(
+            exp, [mask], ana, n_perm_inner=8, parent_uid=uid)
 
-    def test_perm_inner_n_perm_is_a_cache_axis(self):
+    def test_the_callers_recipe_is_untouched(self):
+        # the counts are overridden on a private copy: the caller's recipe is
+        # what identifies the method everywhere else, cache key included
         exp, mask, uid = self._planted()
-        run_perm_inner(exp, [mask], n_perm_inner=8, parent_uid=uid)
-        assert not run_perm_inner.check_call_in_cache(
-            exp, [mask], n_perm_inner=16, parent_uid=uid)
+        ana = self._glow()
+        run_ana_time_1perm(exp, [mask], ana, n_perm_inner=4, parent_uid=uid)
+        assert ana.n_perm_fwer == 500
+        assert ana.n_perm_inner == 8
+        assert ana.effect_list is None
 
-    def test_label_ignored_in_cache_key(self):
+    def test_one_perm_is_the_default(self):
         exp, mask, uid = self._planted()
-        run_perm_inner(exp, [mask], n_perm_inner=8, label='GLOW-Focus',
-                       parent_uid=uid)
-        assert run_perm_inner.check_call_in_cache(
-            exp, [mask], n_perm_inner=8, label='DIFFERENT', parent_uid=uid)
+        ana = self._glow()
+        # explicit 1 and the default are one measurement, not two
+        run_ana_time_1perm(exp, [mask], ana, parent_uid=uid)
+        assert run_ana_time_1perm.check_call_in_cache(
+            exp, [mask], ana, n_perm_fwer=1, parent_uid=uid)
+
+    def test_num_img_cuts_the_cohort(self):
+        exp, mask, uid = self._planted()
+        run_ana_time_1perm(exp, [mask], self._glow(), num_img=8,
+                           parent_uid=uid)
+        # the cut is the leaf's own, so the caller's exp keeps its subjects
+        assert exp.y.shape[1] == 20
+
+    def test_num_img_is_a_cache_axis(self):
+        exp, mask, uid = self._planted()
+        ana = self._glow()
+        run_ana_time_1perm(exp, [mask], ana, num_img=8, parent_uid=uid)
+        assert not run_ana_time_1perm.check_call_in_cache(
+            exp, [mask], ana, num_img=12, parent_uid=uid)
+
+    def test_num_img_past_the_cohort_raises(self):
+        # a silently short curve is worse than a failure: the sweep would
+        # plot a flat tail wherever it ran past the sample
+        exp, mask, uid = self._planted()
+        with pytest.raises(ValueError, match='cohort'):
+            run_ana_time_1perm(exp, [mask], self._glow(), num_img=21,
+                               parent_uid=uid)
+
+    def test_the_cut_keeps_the_analysed_layout(self):
+        # a strided view would make the timing measure the stride, not the
+        # size -- the analysis path is written for F-contiguous y
+        exp, _, _ = self._planted()
+        cut = run._take_img(exp, 8)
+        assert cut.y.shape == (exp.y.shape[0], 8, exp.y.shape[2])
+        assert cut.x.shape == (exp.x.shape[0], 8)
+        assert cut.y.flags['F_CONTIGUOUS'] and cut.y.flags['OWNDATA']
+
+    def test_inner_perms_rejected_for_a_voxelwise_recipe(self):
+        # no voxel-wise method has an inner null, so the sweep would otherwise
+        # record a flat curve against a knob nothing reads
+        exp, mask, uid = self._planted()
+        with pytest.raises(ValueError, match='n_perm_inner'):
+            run_ana_time_1perm(exp, [mask], AnalysisVBA(n_perm_fwer=4),
+                               n_perm_inner=8, parent_uid=uid)

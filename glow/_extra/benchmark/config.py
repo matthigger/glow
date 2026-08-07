@@ -37,8 +37,9 @@ per-voxel effect_llr -- so an extent sweep at fixed total would have to back
 it out here; we don't.)
 
 WGN and HCP share each cache (both sources in one data grid); they face apart
-on the recorded source column downstream. HCP has no num_img axis (its N is
-the cohort), so the num_img sweep is WGN-only.
+on the recorded source column downstream. HCP has no num_img axis -- its N is
+the cohort -- so a subject sweep cuts that cohort down at analysis time rather
+than building to a count (see run.run_ana_time_1perm).
 
 Every cache here backs a figure, table or quantitative claim in the paper, bar
 smoke (an end-to-end pipeline check). Adding one is cheap; the catalogue is
@@ -50,17 +51,16 @@ grids: segment (run_segment, a Ward-mode oracle, no fit), vba_stat (run_stat,
 a VBA / CET variant reading a shared voxel-stat walk; HCP only, b=2), and
 prune (run_prune, three pruning rules on a shared GLOW fit).
 
-Runtime. A separate family measures wall time, not detection, and runs locally
-only: runtime (run_ana_time over a num_vox sweep, 1k -> full HCP, all methods),
-and three that time GLOW alone -- runtime_n_perm_fwer / runtime_n_perm_inner
-(run_perm_fwer / run_perm_inner, GLOW's outer / inner perms at the shared crop)
-and runtime_b / runtime_nimg (run_ana_time over the b and num_img sweeps).
-run_ana_time fits every method at n_jobs=-1, so the curves are the wall-clock a
-user waits on an N-core machine. See the runtime section below.
+Runtime. Six caches measure time, not detection, and run locally only. They
+answer two different questions and must not be read as one: runtime_num_vox is
+the wall clock a user waits, every method given this machine's cores and card
+(run_ana_time); the five runtime_1perm_* are one-at-a-time growth rates on a
+single pinned core, one permutation deep (run_ana_time_1perm). See the runtime
+section below.
 
 Convergence. sweep_n_perm_inner is the detection-side counterpart to
-runtime_n_perm_inner: run_inner_edge samples each outer perm's inner null once
-to MAX_INNER_PERM and records how the FWER max-z threshold converges as
+runtime_1perm_n_perm_inner: run_inner_edge samples each outer perm's inner null
+once to MAX_INNER_PERM and records how the FWER max-z threshold converges as
 num_inner_perm grows (HCP only, moderate effect). The recommended n_perm_inner
 is read off where that threshold plateaus (benchmark.plot).
 
@@ -75,8 +75,8 @@ from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr, get_wilks
 
 from . import grid, hcp
-from .run import (run_ana, run_ana_time, run_inner_edge, run_perm_fwer,
-                  run_perm_inner, run_prune, run_segment, run_stat)
+from .run import (run_ana, run_ana_time, run_ana_time_1perm, run_inner_edge,
+                  run_prune, run_segment, run_stat)
 
 
 # ---------- shared knobs ------------------------------------------------------
@@ -111,16 +111,17 @@ N_PERM_INNER = 250
 ALPHA_FWER = 0.05
 
 # Structural grids. B caps at the HCP pool (6) so every HCP cell is feasible;
-# the extent grid spans 1%..100% of the volume; the subject grid is WGN-only
-# (HCP's N is its cohort), and times the fit rather than scoring it -- it is
-# the runtime_nimg axis (see the runtime section).
+# the extent grid spans 1%..100% of the volume; the subject grid tops out at
+# the cohort (HCP_NUM_IMG), which is the sample the runtime_1perm_nimg axis
+# cuts down from -- there is no extrapolating past it.
 B_GRID = list(range(1, len(hcp.HCP_FEATS) + 1))
 # the llr sweep's feature-count axis: b = 1 (the univariate power curve) plus
 # its low-b multivariate counterpart. A subset of B_GRID, swept alongside
 # effect_llr in one cache (see the sweep_llr entry).
 B_LLR_SWEEP = (1, 2)
 EXTENT_FRAC_GRID = list(np.geomspace(0.01, 1.0, 15))
-NIMG_GRID = [10, 18, 30, 55, 100, 180, 300]
+HCP_NUM_IMG = 100
+NIMG_GRID = [10, 18, 30, 55, HCP_NUM_IMG]
 
 
 # ---------- analysis recipes -------------------------------------------------
@@ -256,50 +257,63 @@ def effect_grid(**kwargs):
     return grid.get_kwargs_effect_list(**{**EFFECT_AXES, **kwargs})
 
 
-# ---------- runtime benchmarks (local-only) ---------------------------------
-# Wall-time scaling of the methods, not detection. The effect is the moderate
-# default (10% of each cell's volume, see effect_grid); only the
-# timed axis varies. Local-only: a Batch array lands on whatever Spot instance
-# type is free, so a time recorded there is hardware variance rather than cost
-# (the CLI warns -- see benchmark.__main__.confirm_aws), and the HCP caches
-# have no worker-side data anyway (see hcp / the aws package). Each cache gets
-# its own seed offset so its leaf timings are cold (never served from another
-# cache's cached fit) and independent. The timed leaves are run.run_perm_fwer /
-# run_perm_inner; runtime / runtime_b / runtime_nimg use run_ana_time (fit at
-# n_jobs=-1, time_sec the fit wall time, num_vox returned bare -- no scoring).
+# ---------- runtime benchmarks (HCP, local-only) -----------------------------
+# Wall time, not detection. Every cache here is HCP -- the paper's real data,
+# and the only cohort whose subject count means anything -- with the moderate
+# default effect (10% of each cell's volume, see effect_grid); only the timed
+# axis varies. Local-only: a Batch array lands on whatever Spot instance type
+# is free, so a time recorded there is hardware variance rather than cost (the
+# CLI warns -- see benchmark.__main__.confirm_aws), and an HCP cache has no
+# worker-side data anyway (see hcp / the aws package). Each cache gets its own
+# seed offset so its leaf timings are cold (never served from another cache's
+# cached fit) and independent.
 #
-# Between them these caches cover the cost model the paper claims: linear in
-# num_vox (runtime), linear in num_img (runtime_nimg) and quadratic in b
-# (runtime_b), plus the two permutation counts.
+# Two questions, deliberately not mixed:
+#
+# runtime_num_vox -- how long does a user wait? Every method fit with what the
+# machine has (run_ana_time; see RUN_ANA_TIME_LIST for the per-method knobs),
+# so the answer includes whatever these cores and this card contribute. A
+# number to quote, not to extrapolate from: the parallel speedup itself varies
+# along the axis, so the slope is the machine's as much as the algorithm's.
+# This is where the methods are compared, so it runs all four.
+#
+# runtime_1perm_* -- how does GLOW's cost grow? One core, no device, BLAS
+# pinned to one thread, one outer permutation (run_ana_time_1perm), everything
+# but the swept axis at the shared centre. Held that still, the ratio between
+# two points is the growth in that axis, which is what the paper's cost model
+# claims: linear in num_vox and num_img, quadratic in b, linear in each
+# permutation count. Not a formal complexity result -- a measured middle ground
+# short of one. GLOW only: it is GLOW's cost model being made good on, and the
+# voxel-wise arms are already compared where the comparison belongs, above.
 RUNTIME_N_SEED = 3
 
 # num_vox sweep: 1k -> the full HCP support (224,619 voxels, one connected
-# component), roughly doubling.
+# component), roughly doubling. Shared by both runtime families.
 RUNTIME_NUM_VOX_GRID = [1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000,
                         128_000, 224_619]
 
 # the two GLOW arms, as (label, cluster_mode)
-RUNTIME_GLOW_MODES = [('GLOW-Focus', ClusterMode.FOCUS),
-                      ('GLOW-GLM', ClusterMode.GLM_ERROR)]
+GLOW_ARM_MODES = [('GLOW-Focus', ClusterMode.FOCUS),
+                  ('GLOW-GLM', ClusterMode.GLM_ERROR)]
 
-# permutation-count sweeps (tiny num_vox, GLOW only): one axis varies, the
-# other holds at its paper value (N_PERM_INNER / N_PERM_FWER).
-RUNTIME_N_PERM_FWER_GRID = [50, 100, 200, 400, 800]
-RUNTIME_N_PERM_INNER_GRID = [250, 500, 1_000, 2_000, 4_000]
-
-# The num_img sweep's crop. Small (not CROP_N_VOX): the claim is a slope in
-# num_img, so the cheapest volume that still exercises the whole fit will do,
-# and NIMG_GRID's 30x span is where the signal is.
-RUNTIME_NIMG_CROP_N_VOX = 4_000
+# The 1perm permutation-count axes. n_perm_fwer starts at the family's own
+# baseline of 1 and doubles: the intercept (observed pass + finalize) does not
+# shrink with the count, so the slope is only readable against a point that is
+# almost all intercept. n_perm_inner spans the paper value up 16x, GLOW's alone
+# -- no voxel-wise method has an inner null.
+ONE_PERM_N_PERM_FWER_GRID = [1, 2, 4, 8, 16]
+ONE_PERM_N_PERM_INNER_GRID = [250, 500, 1_000, 2_000, 4_000]
 
 # per-cache seed offsets, clear of each other, so no two runtime caches share a
-# data cell (hence a cached leaf timing).
+# data cell (hence a cached leaf timing). runtime_num_vox keeps the offset the
+# retired 'runtime' cache used, so its records and cached fits carry over.
 RUNTIME_SEED_OFFSET = {
-    'runtime': 200_000,
-    'runtime_n_perm_fwer': 220_000,
-    'runtime_n_perm_inner': 230_000,
-    'runtime_b': 240_000,
-    'runtime_nimg': 250_000,
+    'runtime_num_vox': 200_000,
+    'runtime_1perm_num_vox': 210_000,
+    'runtime_1perm_n_perm_fwer': 220_000,
+    'runtime_1perm_n_perm_inner': 230_000,
+    'runtime_1perm_b': 240_000,
+    'runtime_1perm_nimg': 250_000,
 }
 
 
@@ -316,19 +330,6 @@ def runtime_data_grid(**kwargs):
     return grid.get_kwargs_data_runtime(n_seed=RUNTIME_N_SEED, **kwargs)
 
 
-# GLOW-only leaf grids for the perm sweeps: one run per (GLOW arm, count). The
-# swept count rides as an explicit run_perm_* arg (recorded as an in.<count>
-# column), the arm as the recorded label + cluster_mode.
-RUN_PERM_FWER_LIST = [
-    dict(n_perm_fwer=n, n_perm_inner=N_PERM_INNER, cluster_mode=mode,
-         label=label)
-    for label, mode in RUNTIME_GLOW_MODES
-    for n in RUNTIME_N_PERM_FWER_GRID]
-RUN_PERM_INNER_LIST = [
-    dict(n_perm_inner=n, cluster_mode=mode, label=label)
-    for label, mode in RUNTIME_GLOW_MODES
-    for n in RUNTIME_N_PERM_INNER_GRID]
-
 # GLOW-only leaf grid for the inner-perm edge (num_inner_perm convergence)
 # cache: one run_inner_edge per GLOW arm, each sampling the inner null to
 # MAX_INNER_PERM and reporting the max-z edge at every num_inner_perm <= it. No
@@ -337,20 +338,42 @@ MAX_INNER_PERM = 2_000
 RUN_INNER_EDGE_LIST = [
     dict(cluster_mode=mode, max_inner_perm=MAX_INNER_PERM,
          n_perm_fwer=N_PERM_FWER)
-    for label, mode in RUNTIME_GLOW_MODES]
+    for label, mode in GLOW_ARM_MODES]
 
-# The runtime family's leaf grids carry no fit_params, so every method is
-# timed the way run_ana_time defaults: all cores, CPU. That is the honest
-# comparison the figure claims -- timing GLOW on a device against VBA on the
-# cores would compare hardware, not algorithms -- and it is also what the cache
-# requires, since fit_params does not key a leaf (run.FIT_IGNORE): a GPU timing
-# would be served from the CPU timing's entry rather than measured.
-RUN_ANA_TIME_LIST = [dict(ana=ana) for ana in ana_kwargs_dict.values()]
+# runtime_num_vox's leaf grid: every method fit with what this machine has.
+# The voxel-wise arms take run_ana_time's default (all cores, no device --
+# none of them has a backend); GLOW takes GLOW_FIT_PARAMS, which adds the
+# device and caps the workers at GLOW_FIT_N_JOBS. The cap is RAM, not
+# preference: a GLOW worker holds its own copy of y, so n_jobs=-1 exhausts
+# memory at the grid's full-brain point.
+#
+# This makes the figure a wall-clock answer for one machine rather than a
+# like-for-like algorithm comparison -- which is the question it is asked, and
+# why the growth rates are runtime_1perm's job instead. GOTCHA fit_params does
+# not key a leaf (run.FIT_IGNORE), so a timing is cached as whatever hardware
+# reached it first: re-timing on another box, or with the card pulled, means
+# clearing the entry rather than just re-running.
+RUN_ANA_TIME_LIST = [dict(ana=ana, fit_params=grid.fit_params_for(
+                              ana, GLOW_FIT_PARAMS))
+                     for ana in ana_kwargs_dict.values()]
 
-# the two GLOW arms of it (the b / num_img runtime caches are GLOW only);
-# selected by the ana_kwargs_dict key (the method name is not on the cell)
-GLOW_ANA_LIST = [dict(ana=ana) for label, ana in ana_kwargs_dict.items()
-                 if label.startswith('GLOW')]
+# The runtime_1perm leaf grids. GLOW alone: the cost model these caches back
+# is GLOW's, and the voxel-wise arms are compared on the wall clock
+# (runtime_num_vox) where the comparison is the point. The recipe names the
+# method and only that -- every swept knob rides as an explicit
+# run_ana_time_1perm argument, so it keys the cache and reaches the record as
+# its own column, and the plotter recovers the method from in.ana exactly as it
+# does elsewhere. No fit_params: the leaf pins its own core, device and BLAS
+# thread (see run).
+ONE_PERM_ANA = ana_kwargs_dict['GLOW']
+RUN_1PERM_LIST = [dict(ana=ONE_PERM_ANA)]
+RUN_1PERM_FWER_LIST = [dict(ana=ONE_PERM_ANA, n_perm_fwer=n)
+                       for n in ONE_PERM_N_PERM_FWER_GRID]
+RUN_1PERM_INNER_LIST = [dict(ana=ONE_PERM_ANA, n_perm_inner=n)
+                        for n in ONE_PERM_N_PERM_INNER_GRID]
+# num_img rides the leaf, not the data grid: see run.run_ana_time_1perm for why
+# HCP is not given a subject-subset axis.
+RUN_1PERM_NIMG_LIST = [dict(ana=ONE_PERM_ANA, num_img=n) for n in NIMG_GRID]
 
 
 # ---------- catalogue: name -> (data, effect, fnc kwargs, fnc) ---------------
@@ -415,60 +438,68 @@ CONFIG = {
                              crop_n_vox=SMOKE_CROP_N_VOX),
         effect_grid(llr_list=None),
         RUN_ANA_LIST, run_ana),
-    # Runtime: wall time vs num_vox (1k -> full HCP), all methods, b=1, the
-    # moderate effect -- the paper's num_vox-linearity figure. run_ana_time
-    # fits at n_jobs=-1 (all cores) so the curve is the wall-clock a user waits
-    # on an N-core machine, every method parallelised alike. HCP-only and
-    # local-only: the AWS worker has no HCP data, and Spot instance-type
-    # variance would make time_sec meaningless anyway.
-    'runtime': (
+    # Runtime (wall clock): time vs num_vox (1k -> full HCP), all methods, b=1,
+    # the moderate effect. What a user waits for on this machine, so each
+    # method is given everything it can use (RUN_ANA_TIME_LIST: all cores, and
+    # the device for GLOW). HCP-only and local-only: the AWS worker has no HCP
+    # data, and Spot instance-type variance would make time_sec meaningless.
+    'runtime_num_vox': (
         runtime_data_grid(
-            seed_offset=RUNTIME_SEED_OFFSET['runtime'],
+            seed_offset=RUNTIME_SEED_OFFSET['runtime_num_vox'],
             crop_n_vox_list=RUNTIME_NUM_VOX_GRID),
         effect_grid(),
         RUN_ANA_TIME_LIST, run_ana_time),
-    # Runtime (n_perm_fwer): outer-loop wall time vs n_perm_fwer at the shared
-    # crop (CROP_N_VOX), GLOW only, n_perm_inner held at N_PERM_INNER.
-    'runtime_n_perm_fwer': (
+    # Runtime (cost): five one-at-a-time sweeps around the shared centre --
+    # b=1, the whole cohort, CROP_N_VOX voxels, the moderate effect, one outer
+    # permutation, N_PERM_INNER inner draws -- each on one core with no device
+    # and BLAS pinned (run_ana_time_1perm), GLOW only. One axis moves per
+    # cache, so the ratio between two of its points is the growth in that axis
+    # and nothing else. Full grids, since a cell costs two passes, not 501.
+    #
+    # num_vox on the wall-clock cache's own grid, so the two families are read
+    # against the same volumes.
+    'runtime_1perm_num_vox': (
         runtime_data_grid(
-            seed_offset=RUNTIME_SEED_OFFSET['runtime_n_perm_fwer'],
+            seed_offset=RUNTIME_SEED_OFFSET['runtime_1perm_num_vox'],
+            crop_n_vox_list=RUNTIME_NUM_VOX_GRID),
+        effect_grid(),
+        RUN_1PERM_LIST, run_ana_time_1perm),
+    # n_perm_fwer over ONE_PERM_N_PERM_FWER_GRID: the slope is the cost of an
+    # outer permutation, the intercept the observed pass plus finalize.
+    'runtime_1perm_n_perm_fwer': (
+        runtime_data_grid(
+            seed_offset=RUNTIME_SEED_OFFSET['runtime_1perm_n_perm_fwer'],
             crop_n_vox_list=[CROP_N_VOX]),
         effect_grid(),
-        RUN_PERM_FWER_LIST, run_perm_fwer),
-    # Runtime (n_perm_inner): inner-null wall time vs n_perm_inner at the
-    # shared crop (CROP_N_VOX), GLOW only (one observed tree; run_perm_inner).
-    'runtime_n_perm_inner': (
+        RUN_1PERM_FWER_LIST, run_ana_time_1perm),
+    # n_perm_inner over ONE_PERM_N_PERM_INNER_GRID: the inner null's own cost.
+    'runtime_1perm_n_perm_inner': (
         runtime_data_grid(
-            seed_offset=RUNTIME_SEED_OFFSET['runtime_n_perm_inner'],
+            seed_offset=RUNTIME_SEED_OFFSET['runtime_1perm_n_perm_inner'],
             crop_n_vox_list=[CROP_N_VOX]),
         effect_grid(),
-        RUN_PERM_INNER_LIST, run_perm_inner),
-    # Runtime (b): fit wall time vs feature count b (1..6) at the shared crop
-    # (CROP_N_VOX), GLOW only -- the paper's b-quadratic claim. b rides the
-    # data grid; the leaf is run_ana_time (n_jobs=-1).
-    'runtime_b': (
+        RUN_1PERM_INNER_LIST, run_ana_time_1perm),
+    # b = 1..6, the paper's b-quadratic claim; b rides the data grid.
+    'runtime_1perm_b': (
         runtime_data_grid(
-            seed_offset=RUNTIME_SEED_OFFSET['runtime_b'],
+            seed_offset=RUNTIME_SEED_OFFSET['runtime_1perm_b'],
             crop_n_vox_list=[CROP_N_VOX], b_list=B_GRID),
         effect_grid(),
-        GLOW_ANA_LIST, run_ana_time),
-    # Runtime (num_img): fit wall time vs subject count (NIMG_GRID, 10 -> 300)
-    # at a small crop, GLOW only -- the paper's N-linearity claim. WGN, alone
-    # in this family: HCP's N is its fixed cohort, and giving data_factory a
-    # subject-subset axis would rehash every HCP cell everywhere. Timing turns
-    # on the array shapes, not on what filled them, so WGN measures the slope
-    # faithfully (see grid.get_kwargs_data_runtime).
-    'runtime_nimg': (
+        RUN_1PERM_LIST, run_ana_time_1perm),
+    # num_img over NIMG_GRID (10 -> the full cohort), the N-linearity claim.
+    # The subjects are cut from the cohort by the leaf, so the sweep tops out
+    # at the cohort rather than extrapolating past it.
+    'runtime_1perm_nimg': (
         runtime_data_grid(
-            seed_offset=RUNTIME_SEED_OFFSET['runtime_nimg'],
-            crop_n_vox_list=[RUNTIME_NIMG_CROP_N_VOX], sources=['wgn'],
-            num_img_list=NIMG_GRID),
+            seed_offset=RUNTIME_SEED_OFFSET['runtime_1perm_nimg'],
+            crop_n_vox_list=[CROP_N_VOX]),
         effect_grid(),
-        GLOW_ANA_LIST, run_ana_time),
+        RUN_1PERM_NIMG_LIST, run_ana_time_1perm),
     # n_perm_inner convergence: the detection-side counterpart to
-    # runtime_n_perm_inner. Holds the data + moderate effect fixed and, per GLOW
-    # arm, samples the inner null once to MAX_INNER_PERM (run_inner_edge),
-    # recording how the FWER max-z threshold settles as num_inner_perm grows.
+    # runtime_1perm_n_perm_inner. Holds the data + moderate effect fixed and,
+    # per GLOW arm, samples the inner null once to MAX_INNER_PERM
+    # (run_inner_edge), recording how the FWER max-z threshold settles as
+    # num_inner_perm grows.
     # HCP only (the paper's real data; no point double-computing the WGN half),
     # so local-only like the runtime family; shares the HCP detection cells, so
     # their data / effect builds are cache hits off the other sweeps.

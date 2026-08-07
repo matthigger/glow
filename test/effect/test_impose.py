@@ -66,7 +66,7 @@ def _make_flat_interest_region(num_img=100, num_vox=2000, tiny=1e-2,
 def test_compute_offset_near_orthogonal_mean(effect_llr):
     """Offset solve converges when the region mean is near-orthogonal to q1.
 
-    Regression for the runtime_n_perm_inner crash: at the naive start alpha = 0
+    Regression for a planting crash: at the naive start alpha = 0
     the LLR constraint gradient is ~ h0/e0, which underflowed the solver
     tolerance for a near-orthogonal region mean and left the solve stuck at the
     origin (assert 'optimization failed'). The warm start seeds alpha1 on the
