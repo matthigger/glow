@@ -128,18 +128,22 @@ NIMG_GRID = [10, 18, 30, 55, 100, 180, 300]
 # label -> recipe. The label is the reader-facing method name; it is the source
 # of truth results / plot map a recorded recipe back to (a run function is not
 # passed the label -- see run.py / benchmark.plot). GLOW uses the LLR
-# throughout, so the two GLOW arms differ only in Ward projection; the
-# voxel-wise arms z-score before the max-stat null.
+# throughout, so the two GLOW arms differ only in Ward projection. Each
+# voxel-wise arm takes the stat / z-scoring it wins the vba_stat bake-off with:
+# the raw Hotelling-Lawley trace for VBA and CET, the z-scored 1 - Wilks for
+# TFCE (z-scoring is what TFCE's single height grid needs to mean the same
+# thing at every voxel). Written out rather than left to the recipe defaults,
+# which agree -- the paper's arms should be readable here.
 kwargs = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
 ana_kwargs_dict = {
     'GLOW':   AnalysisGLOW(n_perm_inner=N_PERM_INNER,
                            cluster_mode=ClusterMode.GLM_ERROR,
                            **kwargs),
-    'VBA':        AnalysisVBA(z_flag=True, tfce_flag=False,
+    'VBA':        AnalysisVBA(z_flag=False, tfce_flag=False,
                               get_stat=get_hotel_tr, **kwargs),
     'VBA-TFCE':   AnalysisVBA(z_flag=True, tfce_flag=True, get_stat=get_wilks,
                               **kwargs),
-    'CET':        AnalysisCET(z_flag=True, get_stat=get_hotel_tr,
+    'CET':        AnalysisCET(z_flag=False, get_stat=get_hotel_tr,
                               **kwargs),
 }
 

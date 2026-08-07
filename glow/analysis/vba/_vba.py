@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 from glow.experiment.exper import ExperimentScaled
 from .._base import AnalysisVoxel, reject_gpu
+from ..mancova import get_hotel_tr, get_wilks
 
 
 class AnalysisVBA(AnalysisVoxel):
@@ -15,6 +16,11 @@ class AnalysisVBA(AnalysisVoxel):
 
     Computes one stat per voxel, optionally z-scores and TFCE-enhances
     the permutation null, then derives FWER-controlled p-values.
+
+    The two arms take different defaults, each its most powerful setting
+    in the stat bake-off (glow._extra.benchmark's vba_stat cache):
+    plain VBA the raw Hotelling-Lawley trace, TFCE the z-scored
+    1 - Wilks. Either is overridable via get_stat / z_flag.
 
     The experiment is supplied to fit(), not stored (see Analysis).
 
@@ -33,7 +39,7 @@ class AnalysisVBA(AnalysisVoxel):
 
     def __init__(self, n_perm_fwer: int, alpha_fwer: float = .05,
                  verbose: bool = False, tfce_flag: bool = False,
-                 z_flag: bool = False, get_stat: Callable = None):
+                 z_flag: bool = None, get_stat: Callable = None):
         """Configure a voxel-based analysis.
 
         Args:
@@ -44,10 +50,16 @@ class AnalysisVBA(AnalysisVoxel):
             z_flag (bool): z-score voxel-wise using the permutation null
                 before TFCE. Makes the null distribution spatially
                 homogeneous (pivotal), improving power under max-stat
-                correction.
+                correction. None takes the arm's default: True under
+                TFCE, False otherwise.
             get_stat (Callable): per-region stat function (e, h, n);
-                defaults to Wilks lambda.
+                None takes the arm's default: 1 - Wilks lambda under
+                TFCE, the Hotelling-Lawley trace otherwise.
         """
+        if get_stat is None:
+            get_stat = get_wilks if tfce_flag else get_hotel_tr
+        if z_flag is None:
+            z_flag = bool(tfce_flag)
         super().__init__(get_stat=get_stat)
         self.n_perm_fwer = n_perm_fwer
         self.alpha_fwer = alpha_fwer

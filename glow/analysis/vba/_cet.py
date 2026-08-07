@@ -8,6 +8,7 @@ from scipy.ndimage import label
 
 from glow.experiment.exper import ExperimentScaled
 from .._base import AnalysisVoxel, reject_gpu
+from ..mancova import get_hotel_tr
 
 DEFAULT_CET_CFT_PVAL = 0.001
 
@@ -19,6 +20,10 @@ class AnalysisCET(AnalysisVoxel):
     derived from the permutation null at cft_pval, finds connected
     components, and compares cluster sizes to the permutation null
     of max cluster sizes.
+
+    Defaults to the raw (un-z-scored) Hotelling-Lawley trace, its most
+    powerful setting in the stat bake-off (glow._extra.benchmark's
+    vba_stat cache); get_stat / z_flag override.
 
     The experiment is supplied to fit(), not stored (see Analysis).
 
@@ -49,8 +54,10 @@ class AnalysisCET(AnalysisVoxel):
                 threshold from the permutation null
             z_flag (bool): z-score voxel-wise before thresholding
             get_stat (Callable): per-region stat function (e, h, n);
-                defaults to Wilks lambda.
+                defaults to the Hotelling-Lawley trace.
         """
+        if get_stat is None:
+            get_stat = get_hotel_tr
         super().__init__(get_stat=get_stat)
         self.n_perm_fwer = n_perm_fwer
         self.alpha_fwer = alpha_fwer
