@@ -44,11 +44,12 @@ Every cache here backs a figure, table or quantitative claim in the paper, bar
 smoke (an end-to-end pipeline check). Adding one is cheap; the catalogue is
 kept at what is cited.
 
-Scope. Three caches share the run_ana leaf (fit + score one Analysis per cell):
-null, sweep_llr, sweep_extent. Three swap in their own leaf over much the same
-grids: segment (run_segment, a Ward-mode oracle, no fit), vba_stat (run_stat,
-a VBA / CET variant reading a shared voxel-stat walk; HCP only, b=2), and
-prune (run_prune, three pruning rules on a shared GLOW fit).
+Scope. Five caches share the run_ana leaf (fit + score one Analysis per cell):
+null, sweep_llr, sweep_extent, sweep_b, sweep_nimg. Three swap in their own
+leaf over much the same grids: segment (run_segment, a Ward-mode oracle, no
+fit), vba_stat (run_stat, a VBA / CET variant reading a shared voxel-stat
+walk; HCP only, b=2), and prune (run_prune, three pruning rules on a shared
+GLOW fit).
 
 Runtime. A separate family measures wall time, not detection, and runs locally
 only: runtime (run_ana_time over a num_vox sweep, 1k -> full HCP, all methods),
@@ -119,8 +120,14 @@ B_GRID = list(range(1, len(hcp.HCP_FEATS) + 1))
 # its low-b multivariate counterpart. A subset of B_GRID, swept alongside
 # effect_llr in one cache (see the sweep_llr entry).
 B_LLR_SWEEP = (1, 2)
+# sweep_b's own axis: detection vs b at the fixed moderate effect, llr held
+# still so a wider b range costs no extra effect_llr cells.
+SWEEP_B_GRID = (1, 2, 3, 4)
 EXTENT_FRAC_GRID = list(np.geomspace(0.01, 1.0, 15))
 NIMG_GRID = [10, 18, 30, 55, 100, 180, 300]
+# sweep_nimg's own axis: detection vs subject count, 10 -> 100 linear (unlike
+# NIMG_GRID's wider log spacing for the runtime timing curve).
+SWEEP_NIMG_GRID = list(range(10, 101, 10))
 
 
 # ---------- analysis recipes -------------------------------------------------
@@ -378,6 +385,18 @@ CONFIG = {
     'sweep_extent': (
         data_grid(),
         effect_grid(n_vox_frac_list=EXTENT_FRAC_GRID),
+        RUN_ANA_LIST, run_ana),
+    # Detection vs feature count b (fixed moderate effect, both sources; HCP
+    # draws a random b-subset per seed -- see grid.get_kwargs_data_list).
+    'sweep_b': (
+        data_grid(b_list=SWEEP_B_GRID),
+        effect_grid(),
+        RUN_ANA_LIST, run_ana),
+    # Detection vs subject count (fixed moderate effect). WGN only -- HCP's N
+    # is its fixed cohort (see runtime_data_grid's num_img note).
+    'sweep_nimg': (
+        data_grid(sources=['wgn'], num_img_list=SWEEP_NIMG_GRID),
+        effect_grid(),
         RUN_ANA_LIST, run_ana),
     # F. Segmentation quality: oracle best-Dice region per Ward mode (Naive /
     #    GLM Error / Focus), no significance test or pruning. Same grids as
