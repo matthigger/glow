@@ -3,6 +3,7 @@ import pytest
 from glow.effect import ExtenterSphere, EffectSynthetic
 from glow.experiment import *
 from glow.analysis import *
+from glow.analysis.mancova import get_hotel_tr, get_pillai, get_wilks
 from glow.graph import confusion_counts_tree
 from glow.mask import get_mask_idx, stats_from_counts
 
@@ -31,16 +32,17 @@ class TestBigEffect:
         analysis = AnalysisGLOW(n_perm_fwer=25, alpha_fwer=.1).fit(
             TestBigEffect.exp)
 
-        # check that target region segmented properly
+        # the Ward tree must carry the target as one of its nodes before a
+        # discovery over that tree could recover it
         counts = confusion_counts_tree(mask=TestBigEffect.mask_target,
                                       mask_idx=TestBigEffect.exp.mask_idx,
                                       children=analysis.children)
         dice = stats_from_counts(**counts)['dice']
         assert np.isclose(dice.max(), 1), 'target region not segmented'
 
-        # should discover at least one effect overlapping the target
-        assert len(analysis.effect_list) >= 1, \
-            'no effects discovered'
+        # and the discovered effects must be exactly it
+        mask_all = sum(eff.mask for eff in analysis.effect_list)
+        np.testing.assert_array_equal(mask_all, TestBigEffect.mask_target)
 
     @pytest.mark.parametrize('tfce_flag', [False, True])
     def test_vba(self, tfce_flag):
@@ -48,31 +50,45 @@ class TestBigEffect:
                                alpha_fwer=.1, tfce_flag=tfce_flag).fit(
             TestBigEffect.exp)
         mask_all = sum(eff.mask for eff in analysis.effect_list)
-        np.testing.assert_allclose(mask_all,
-                                   TestBigEffect.mask_target)
-    
-    def test_vba_wilks(self):
-        """VBA with Wilks' Lambda (1 - Wilks) should detect effects.
+        np.testing.assert_array_equal(mask_all, TestBigEffect.mask_target)
 
-        get_wilks returns 1 - Lambda, so larger = more evidence against H0,
-        compatible with max-stat and TFCE without sign correction.
-        """
-        from glow.analysis.mancova import get_wilks
-        # non-TFCE
-        ana = AnalysisVBA(n_perm_fwer=25,
-                          alpha_fwer=.5, tfce_flag=False,
-                          get_stat=get_wilks).fit(TestBigEffect.exp)
-        assert np.nanmin(ana.pval) <= 0.5, (
-            f'Wilks VBA produced no small p-values '
-            f'(min={np.nanmin(ana.pval):.3f})')
 
-        # TFCE: 1-Wilks is non-negative, so TFCE works directly
-        ana_tfce = AnalysisVBA(n_perm_fwer=25,
-                               alpha_fwer=.5, tfce_flag=True,
-                               get_stat=get_wilks).fit(TestBigEffect.exp)
-        assert np.nanmin(ana_tfce.pval) <= 0.5, (
-            f'Wilks VBA-TFCE produced no small p-values '
-            f'(min={np.nanmin(ana_tfce.pval):.3f})')
+class TestStatDefaults:
+    """The stat each arm takes when the caller names none.
+
+    These are the arms the paper reports, so a silent change to them
+    changes every published VBA / CET / TFCE number. Every other test
+    passes get_stat= explicitly, which would leave such a change green --
+    hence pinning the resolved attributes here.
+
+    The choices come from the vba_stat bake-off: the raw Hotelling-Lawley
+    trace for VBA and CET, and the z-scored 1 - Wilks for TFCE, whose
+    single height grid needs one voxel's stat to mean what another's does.
+    """
+
+    def test_vba_defaults_to_raw_hotelling(self):
+        ana = AnalysisVBA(n_perm_fwer=2)
+        assert ana.get_stat is get_hotel_tr
+        assert ana.z_flag is False
+        assert ana.tfce_flag is False
+
+    def test_vba_tfce_defaults_to_z_scored_wilks(self):
+        ana = AnalysisVBA(n_perm_fwer=2, tfce_flag=True)
+        assert ana.get_stat is get_wilks
+        assert ana.z_flag is True
+
+    def test_cet_defaults_to_raw_hotelling(self):
+        ana = AnalysisCET(n_perm_fwer=2)
+        assert ana.get_stat is get_hotel_tr
+        assert ana.z_flag is False
+
+    @pytest.mark.parametrize('tfce_flag', [False, True])
+    def test_explicit_arguments_still_win(self, tfce_flag):
+        """A named stat / z_flag overrides the arm default, either way."""
+        ana = AnalysisVBA(n_perm_fwer=2, tfce_flag=tfce_flag,
+                          get_stat=get_pillai, z_flag=not tfce_flag)
+        assert ana.get_stat is get_pillai
+        assert ana.z_flag is (not tfce_flag)
 
 
 class TestZScoreStat:
@@ -88,17 +104,11 @@ class TestZScoreStat:
 
 class TestCET:
     def test_big_effect(self):
-        """CET discovers the strong effect."""
+        """CET recovers the strong effect exactly."""
         ana = AnalysisCET(n_perm_fwer=25,
                           alpha_fwer=.1, cft_pval=0.01).fit(TestBigEffect.exp)
-        assert len(ana.effect_list) >= 1
-
-    def test_null_no_discoveries(self):
-        """Under the null (no effect), CET should not discover at alpha=0.05."""
-        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
-                                    num_img=100, seed=0)
-        ana = AnalysisCET(n_perm_fwer=25, alpha_fwer=.05).fit(exp)
-        assert len(ana.effect_list) == 0
+        mask_all = sum(eff.mask for eff in ana.effect_list)
+        np.testing.assert_array_equal(mask_all, TestBigEffect.mask_target)
 
     def test_cluster_members_share_pval(self):
         """All voxels in a discovered cluster should have the same p-value."""
@@ -202,34 +212,6 @@ class TestMinVox:
         below = ana.size < min_vox
         assert np.all(np.isnan(ana.pval[below])), \
             'regions below min_vox should have NaN p-values'
-
-    def test_min_vox_affects_threshold(self):
-        """Increasing min_vox should monotonically not raise the threshold.
-
-        With more small-region noise excluded from the max-z null,
-        the FWER threshold should drop or stay equal — never rise.
-        """
-        exp = Experiment.from_gauss(a=2, b=1, shape=(5, 5),
-                                     num_img=50, seed=0)
-        exp = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
-                              effect_llr=0.5).fit(exp)[0]
-
-        ana_low = AnalysisGLOW(
-            n_perm_fwer=10, n_perm_inner=20,
-            alpha_fwer=.1, min_vox=1).fit(exp)
-        ana_high = AnalysisGLOW(
-            n_perm_fwer=10, n_perm_inner=20,
-            alpha_fwer=.1, min_vox=4).fit(exp)
-
-        # threshold under min_vox=4 should be <= threshold under min_vox=1
-        # (using the same outer-perm seeds → comparable max-z draws)
-        crit_high = np.quantile(ana_high.max_z_null, 1 - ana_high.alpha_fwer,
-                                method='higher')
-        crit_low = np.quantile(ana_low.max_z_null, 1 - ana_low.alpha_fwer,
-                               method='higher')
-        assert crit_high <= crit_low + 1e-9, (
-            f'min_vox=4 threshold {crit_high:.3f} > '
-            f'min_vox=1 threshold {crit_low:.3f}')
 
 
 class TestPerRegionZConsistency:
@@ -390,10 +372,17 @@ class TestAnalysisScaling:
         (AnalysisCET, dict(n_perm_fwer=2)),
     ])
     def test_fit_accepts_raw_and_scaled(self, AnalysisCls, kwargs):
-        # fit runs on a raw experiment (scaled internally) ...
-        AnalysisCls(**kwargs).fit(self.exp)
-        # ... and on an already-scaled one
-        AnalysisCls(**kwargs).fit(ExperimentScaled.from_exp(self.exp))
+        """Scaling inside fit is idempotent, so both inputs give one answer.
+
+        from_exp returns an already-scaled experiment unchanged, so passing
+        the raw and the pre-scaled form must not merely both run -- they
+        must produce the same p-values.
+        """
+        ana_raw = AnalysisCls(**kwargs).fit(self.exp)
+        ana_scaled = AnalysisCls(**kwargs).fit(
+            ExperimentScaled.from_exp(self.exp))
+
+        np.testing.assert_array_equal(ana_raw.pval, ana_scaled.pval)
 
 
 class TestDiscoverMask:

@@ -1,8 +1,10 @@
+import itertools
+
 import numpy as np
 import pytest
 
 from glow.analysis.prune import prune_greedy, prune_dp, dp_antichain
-from glow.graph import SCGraph
+from glow.graph import SCGraph, get_parent
 
 
 def _region_size(children, num_vox: int):
@@ -47,6 +49,103 @@ def _cover_frac(reg_idx_list, sig_reg_list, children, num_vox: int):
                                      subset=sig_reg_list)
     return [sum(size[k] for k in subgraph.children.get(reg, [])) / size[reg]
             for reg in reg_idx_list]
+
+
+def _random_tree(num_vox: int, rng):
+    """Sample a random binary merge tree over num_vox leaves.
+
+    Merges two uniformly-chosen active nodes at a time, so the topology
+    ranges over caterpillars and balanced trees alike -- Ward's own trees
+    are neither, and the antichain optimum is a claim about topology.
+
+    Args:
+        num_vox (int): leaf count
+        rng (np.random.Generator): source of the merge order
+
+    Returns:
+        children (np.array): (num_vox - 1, 2) child-index pairs, bottom-up
+    """
+    active = list(range(num_vox))
+    children = []
+    for i in range(num_vox - 1):
+        lo, hi = sorted(rng.choice(len(active), size=2, replace=False))
+        c1 = active.pop(int(hi))
+        c0 = active.pop(int(lo))
+        children.append((c0, c1))
+        active.append(num_vox + i)
+    return np.array(children, dtype=int)
+
+
+def _relatives(reg: int, children, num_vox: int, parent):
+    """Strict ancestors and descendants of reg (the regions it may not join).
+
+    Args:
+        reg (int): region index
+        children (np.array): (num_internal, 2) child-index pairs
+        num_vox (int): leaf count
+        parent (np.array): (num_reg,) parent index, -1 at a root
+
+    Returns:
+        set: int region indices sharing a voxel with reg, excluding reg
+    """
+    out = set()
+    p = parent[reg]
+    while p != -1:
+        out.add(int(p))
+        p = parent[p]
+    stack = [reg]
+    while stack:
+        node = stack.pop()
+        if node >= num_vox:
+            for kid in children[node - num_vox]:
+                out.add(int(kid))
+                stack.append(int(kid))
+    return out
+
+
+def _brute_force_best(sig_reg_list, children, stat, lam: float) -> float:
+    """Exhaustive max of sum(stat[r] - lam) over antichains of the sig set.
+
+    This is dp_antichain's objective computed the slow, unarguable way:
+    every subset of the significant regions is tested for the
+    ancestor-descendant conflicts that disqualify it, and the survivors are
+    scored. The empty selection scores 0, so the optimum is never negative.
+    Exponential in len(sig_reg_list) -- keep it small.
+
+    Args:
+        sig_reg_list (list): int regions declared significant
+        children (np.array): (num_internal, 2) child-index pairs
+        stat (np.array): (num_reg,) per-region stat (raw LLR)
+        lam (float): per-region penalty
+
+    Returns:
+        float: the attainable optimum
+    """
+    num_vox = len(stat) - children.shape[0]
+    parent = get_parent(children, num_leaf=num_vox)
+    sig = sorted(sig_reg_list)
+    conflict = {r: _relatives(r, children, num_vox, parent) for r in sig}
+
+    best = 0.0
+    for size in range(1, len(sig) + 1):
+        for subset in itertools.combinations(sig, size):
+            chosen = set(subset)
+            if any(conflict[r] & chosen for r in subset):
+                continue
+            best = max(best, sum(stat[r] - lam for r in subset))
+    return float(best)
+
+
+def _assert_antichain(reg_out, children, num_vox: int):
+    """Assert no selected region is an ancestor of another."""
+    parent = get_parent(children, num_leaf=num_vox)
+    selected = set(reg_out)
+    for node in selected:
+        p = parent[node]
+        while p != -1:
+            assert p not in selected, \
+                f'node {node} and its ancestor {p} both selected'
+            p = parent[p]
 
 
 def _make_tree_8():
@@ -207,14 +306,52 @@ class TestPruneDp:
                     f'node {node} and ancestor {p} both selected'
                 p = parent[p]
 
-    def test_dp_at_least_as_good_as_greedy(self):
-        """DP total stat >= greedy total stat (globally optimal)."""
-        children = _make_tree_8()
-        llr = _make_llr_8()
-        sig_all = [8, 9, 10, 11, 12, 13, 14]
-        greedy_out, _ = prune_greedy(sig_all, children, llr)
-        dp_out, _ = prune_dp(sig_all, children, llr, lam=0.0)
-        assert sum(llr[r] for r in dp_out) >= sum(llr[r] for r in greedy_out)
+    @pytest.mark.parametrize('lam', [0.0, 0.5])
+    def test_dp_attains_the_exhaustive_optimum(self, lam):
+        """prune_dp attains the brute-forced optimum on random trees.
+
+        The claim in prune_dp's docstring is global optimality of
+        sum(stat[r] - lam) over antichains, so the reference is exhaustive
+        enumeration, not greedy. Ties break toward blooming the parent, so
+        the selected SET may differ from a brute-force argmax while the
+        attained value may not -- hence the assert is on the value.
+
+        Also asserts the check is not vacuous: greedy must come out
+        strictly worse somewhere, or the test would equally pass on a
+        greedy implementation.
+        """
+        rng = np.random.default_rng(0)
+        n_beat_greedy = 0
+
+        for trial in range(12):
+            num_vox = int(rng.integers(6, 11))
+            children = _random_tree(num_vox, rng)
+            num_reg = num_vox + children.shape[0]
+            # centred so a fair share of regions carry a negative stat, the
+            # case where dropping a region beats blooming it
+            stat = rng.standard_normal(num_reg) + 0.5
+
+            # a random significant subset, small enough to enumerate
+            n_sig = int(rng.integers(3, min(11, num_reg) + 1))
+            sig = sorted(rng.choice(num_reg, size=n_sig, replace=False)
+                         .tolist())
+
+            dp_out, _ = prune_dp(sig, children, stat, lam=lam)
+            _assert_antichain(dp_out, children, num_vox)
+
+            got = sum(stat[r] - lam for r in dp_out)
+            want = _brute_force_best(sig, children, stat, lam)
+            assert np.isclose(got, want), (
+                f'trial {trial} (num_vox={num_vox}, lam={lam}): prune_dp '
+                f'scored {got:.6f}, exhaustive optimum is {want:.6f}')
+
+            greedy_out, _ = prune_greedy(sig, children, stat)
+            n_beat_greedy += sum(stat[r] - lam
+                                 for r in greedy_out) < got - 1e-9
+
+        assert n_beat_greedy, (
+            'prune_dp never beat prune_greedy over 12 random trees -- the '
+            'optimality check never saw a case greedy gets wrong')
 
     def test_penalty_reduces_selection(self):
         """Higher lam should select fewer or equal regions."""

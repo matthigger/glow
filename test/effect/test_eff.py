@@ -12,12 +12,13 @@ class TestEffect:
 
     def test_from_x_y_contrast(self):
         """from_x_y_contrast stores the direct MANCOVA decomposition."""
-        # create simple data
-        x = np.random.randn(2, 10)  # 2 features, 10 images
-        y = np.random.randn(3, 10, 5)  # 3 imaging features, 10 images, 5 voxels
+        # x is (a=2, num_img=10); y is (b=3, num_img=10, num_vox=5)
+        rng = np.random.default_rng(seed=0)
+        x = rng.standard_normal((2, 10))
+        y = rng.standard_normal((3, 10, 5))
         contrast = np.array([True, False])
         mask = np.ones((10, 10), dtype=bool)
-        mask[:5, :5] = False  # exclude some voxels
+        mask[:5, :5] = False
 
         eff = glow.effect.EffectEstimate.from_x_y_contrast(
             x=x,
