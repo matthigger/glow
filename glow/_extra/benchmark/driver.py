@@ -154,7 +154,7 @@ def check_fit_params(kwargs_fnc_list, n_jobs: int) -> None:
             f'recipe asks for a GPU: one CUDA context per concurrent fit on '
             f'one card. Sweep device leaves with n_jobs=1 (the device fit '
             f'already uses the whole machine), or drop the device for this '
-            f'sweep (config.strip_gpu, --no-gpu on the CLI).')
+            f'sweep (grid.strip_gpu, --no-gpu on the CLI).')
 
     n_leaf = max((_leaf_n_jobs(kwargs) for kwargs in kwargs_fnc_list),
                  default=1)

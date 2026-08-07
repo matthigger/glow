@@ -410,7 +410,7 @@ def incomplete_cell_indices(name: str, kwargs_fnc_list=None) -> list:
 
     kwargs_fnc_list narrows the leaf grid completeness is judged against -- the
     grid the caller will actually run (e.g. one method's recipes,
-    config.filter_ana_list), so a cell holding those leaves is skipped whatever
+    grid.filter_ana_list), so a cell holding those leaves is skipped whatever
     the cache's other recipes are missing.
 
     Args:

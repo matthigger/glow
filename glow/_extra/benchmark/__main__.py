@@ -161,7 +161,7 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
     cache happens not to hold; see drive.
 
     methods narrows each cache's leaf grid to the named analysis recipes
-    (config.filter_ana_list), which is how one method is rerun on its own after
+    (grid.filter_ana_list), which is how one method is rerun on its own after
     its recipe changed: completeness is judged against the narrowed grid, so a
     cell already holding those leaves is skipped and the recipes left out are
     never called -- the sibling methods' fits are not recomputed. A selected
@@ -194,7 +194,7 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
         methods (list[str] | None): analysis-recipe labels
             (config.ana_kwargs_dict keys, e.g. ['VBA', 'CET']) to run; None
             (default) runs each cache's whole leaf grid.
-        no_gpu (bool): run every leaf on the CPU (config.strip_gpu), which is
+        no_gpu (bool): run every leaf on the CPU (grid.strip_gpu), which is
             what makes a parallel sweep legal on a machine with a card; see
             driver.check_fit_params. The scores are identical either way.
 
@@ -218,7 +218,8 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
                              methods=methods)
         return list(failures)
 
-    from .config import CONFIG, filter_ana_list, strip_gpu
+    from .config import CONFIG, ana_kwargs_dict
+    from .grid import filter_ana_list, strip_gpu
     from .data import RECORDER
     from .driver import drive
     from .hcp import ensure_hcp_data
@@ -231,7 +232,8 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
         kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc = \
             CONFIG[name]
         if methods:
-            kwargs_fnc_list = filter_ana_list(kwargs_fnc_list, methods)
+            kwargs_fnc_list = filter_ana_list(kwargs_fnc_list, methods,
+                                              ana_kwargs_dict)
             if not kwargs_fnc_list:
                 if verbose:
                     print(f'\n=== {name}: no {methods} recipe in its leaf '

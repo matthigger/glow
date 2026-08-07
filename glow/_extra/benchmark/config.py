@@ -6,13 +6,15 @@ grid, the effect grid, the leaf-function kwargs grid, and the leaf function
 itself. So one benchmark figure is drive(*CONFIG[name]). Running the sweep is
 the driver's / a CLI's job, not this module's -- config only declares it.
 
-The two upstream grids come from builder functions whose keyword arguments
-are the swept axes: get_kwargs_data_list returns the list of data_factory
-kwargs over (source, b, num_img, seed); get_kwargs_effect_list returns the
-list of effect_factory kwargs over (effect_llr, n_vox) -- or [None] for the
-null path. Each cache calls them with the axes it sweeps, leaving the rest at
-their defaults. The leaf is run_ana over the shared analysis recipes
-(RUN_ANA_LIST).
+The two upstream grids come from the builders in benchmark.grid, whose keyword
+arguments are the swept axes: grid.get_kwargs_data_list returns the list of
+data_factory kwargs over (source, b, num_img, seed);
+grid.get_kwargs_effect_list returns the list of effect_factory kwargs over
+(effect_llr, n_vox) -- or [None]
+for the null path. This module holds no logic: it supplies the paper's values
+for those axes (data_grid / effect_grid apply them as defaults) and each cache
+overrides the axis it sweeps. The leaf is run_ana over the shared analysis
+recipes (RUN_ANA_LIST).
 
 A cell carries its heavy objects directly -- the Extenter (effect support,
 analysis crop) and the realized HCP feature subset -- so the catalogue is what
@@ -63,8 +65,6 @@ num_inner_perm grows (HCP only, moderate effect). The recommended n_perm_inner
 is read off where that threshold plateaus (benchmark.plot).
 
 """
-import itertools
-import math
 import warnings
 
 import numpy as np
@@ -72,11 +72,9 @@ import numpy as np
 from glow.analysis import (AnalysisCET, AnalysisGLOW, AnalysisVBA,
                            DEFAULT_CET_CFT_PVAL)
 from glow.analysis.cluster import ClusterMode
-from glow.analysis.mancova import (get_hotel_tr, get_wilks, stat_dict,
-                                   stat_dict_inv)
-from glow.effect import ExtenterMinVar, ExtenterSphere
+from glow.analysis.mancova import get_hotel_tr, get_wilks
 
-from . import hcp
+from . import grid, hcp
 from .run import (run_ana, run_ana_time, run_inner_edge, run_perm_fwer,
                   run_perm_inner, run_prune, run_segment, run_stat)
 
@@ -99,12 +97,13 @@ if len(EFFECT_LLR_GRID) % 2 == 0:
 MODERATE_EFFECT_LLR = float(EFFECT_LLR_GRID[len(EFFECT_LLR_GRID) // 2])
 
 # Every source is cropped to one connected sphere of this many voxels, so
-# num_vox matches across WGN and HCP (get_kwargs_data_list sizes the WGN box
-# from it).
+# num_vox matches across WGN and HCP (grid.get_kwargs_data_list sizes the
+# WGN box from it).
 CROP_N_VOX = 25_000
 
 # Effect support: 10% of the analysis volume. A per-cell fraction, so it
-# tracks whatever num_vox each cell is cropped to (see get_kwargs_effect_list).
+# tracks whatever num_vox each cell is cropped to (see
+# grid.get_kwargs_effect_list).
 EFFECT_N_VOX_FRAC = 0.1
 
 N_PERM_FWER = 500
@@ -169,99 +168,13 @@ GLOW_FIT_N_JOBS = 10
 GLOW_FIT_PARAMS = dict(n_jobs=GLOW_FIT_N_JOBS, gpu='auto')
 
 
-def fit_params_for(ana):
-    """Return the fit_params a recipe should run under, or None for defaults.
-
-    Args:
-        ana (Analysis): an analysis recipe.
-
-    Returns:
-        dict | None: GLOW_FIT_PARAMS for a GLOW recipe (the only one with a
-            device backend and deep parallelism), else None -- the voxel-wise
-            arms take fit's serial default and get their parallelism from the
-            sweep's own n_jobs.
-    """
-    return GLOW_FIT_PARAMS if isinstance(ana, AnalysisGLOW) else None
-
-
 # the leaf kwargs grid: one run_ana call per recipe, shared by every cache.
 # Only the ana rides into the cell, plus how to run it; the method name (the
 # ana_kwargs_dict key) is recovered from the recipe at read time (see
 # benchmark.plot), so it never enters the call or the cache key.
-RUN_ANA_LIST = [dict(ana=ana, fit_params=fit_params_for(ana))
+RUN_ANA_LIST = [dict(ana=ana, fit_params=grid.fit_params_for(ana,
+                                                             GLOW_FIT_PARAMS))
                 for ana in ana_kwargs_dict.values()]
-
-
-def filter_ana_list(kwargs_fnc_list, labels) -> list:
-    """Keep the fnc-kwargs cells whose recipe is one of the named methods.
-
-    Narrows a cache's leaf grid to a subset of the analysis recipes, so a rerun
-    touches only those methods. This is what makes a per-method rerun cheap:
-    completeness is judged against the grid handed to the driver (see
-    results.get_cell_complete), so a cell whose named-method leaves are all
-    recorded is skipped, and the recipes left out are never called -- no
-    already-computed fit is recomputed just because a sibling recipe changed
-    (as one does whenever a recipe knob moves: a new knob is a new hash, hence
-    a missing leaf).
-
-    Cells are matched on the recipe repr (the address-free recipe id the read
-    path identifies a leaf by), not identity, so a rebuilt equal recipe matches.
-    A cell carrying no ana (a non-run_ana leaf grid -- segment / prune / ...)
-    never matches, so filtering such a cache yields an empty grid: it has no
-    per-method axis to select on.
-
-    Args:
-        kwargs_fnc_list (iterable[dict]): a leaf-fnc kwargs grid, e.g.
-            RUN_ANA_LIST.
-        labels (iterable[str]): ana_kwargs_dict keys (method names) to keep.
-
-    Returns:
-        list[dict]: the kept cells, in the input grid's order (empty when none
-            match).
-
-    Raises:
-        ValueError: a label is not an ana_kwargs_dict key (a typo would
-            otherwise silently select nothing).
-    """
-    labels = list(labels)
-    unknown = [label for label in labels if label not in ana_kwargs_dict]
-    if unknown:
-        raise ValueError(f'unknown method label(s): {unknown}; '
-                         f'known: {list(ana_kwargs_dict)}')
-    keep = {repr(ana_kwargs_dict[label]) for label in labels}
-    return [kwargs for kwargs in kwargs_fnc_list
-            if 'ana' in kwargs and repr(kwargs['ana']) in keep]
-
-
-def strip_gpu(kwargs_fnc_list) -> list:
-    """Return the leaf grid with every fit_params gpu request removed.
-
-    The CPU-parallel path for a machine that has a card: a device leaf and a
-    parallel sweep cannot share it (driver.check_fit_params refuses the pair),
-    so this is how one sweep opts out of the device without editing the
-    catalogue. The fits it drops to the CPU compute the same thing (the two
-    backends agree to round-off, see AnalysisGLOW.fit), so the scores and the
-    records are unaffected.
-
-    Cells are rebuilt rather than mutated: the grids are module-level
-    singletons shared by every cache.
-
-    Args:
-        kwargs_fnc_list (iterable[dict]): a leaf-fnc kwargs grid.
-
-    Returns:
-        list[dict]: the same cells, each fit_params less its gpu key (dropped
-            entirely when gpu was all it held).
-    """
-    out = []
-    for kwargs in kwargs_fnc_list:
-        fit_params = kwargs.get('fit_params')
-        if not fit_params or 'gpu' not in fit_params:
-            out.append(kwargs)
-            continue
-        rest = {k: v for k, v in fit_params.items() if k != 'gpu'}
-        out.append({**kwargs, 'fit_params': rest or None})
-    return out
 
 
 # the segment cache's leaf grid: one run_segment call per Ward mode (Naive /
@@ -271,41 +184,11 @@ SEGMENT_MODES = [ClusterMode.NAIVE, ClusterMode.GLM_ERROR, ClusterMode.FOCUS]
 RUN_SEGMENT_LIST = [dict(cluster_mode=mode) for mode in SEGMENT_MODES]
 
 
-def get_run_stat_list():
-    """Build the vba_stat cache's leaf grid (one run_stat call per variant).
-
-    The bake-off among the voxel-wise methods: VBA / VBA-TFCE / CET x 5 stats x
-    {raw, z} = 30 variants. GLOW is excluded by design (it uses the LLR
-    throughout), so this is VBA / CET only. Each cell pairs a recipe (its class
-    / tfce_flag / z_flag identify the variant) with the stat_dict key naming the
-    shared-walk matrix run_stat injects as _stat; the method name (e.g.
-    VBA-TFCE-Wilks-z) is recovered from those at read time.
-
-    Returns:
-        list[dict]: kwargs for run_stat (exp / mask_target_list supplied by the
-            driver), one per variant.
-    """
-    kwargs = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
-    specs = []
-    for fn in stat_dict.values():
-        name = stat_dict_inv[fn]
-        for z_flag in (False, True):
-            specs.append(dict(
-                ana=AnalysisVBA(get_stat=fn, z_flag=z_flag, tfce_flag=False,
-                                **kwargs),
-                stat_name=name))
-            specs.append(dict(
-                ana=AnalysisVBA(get_stat=fn, z_flag=z_flag, tfce_flag=True,
-                                **kwargs),
-                stat_name=name))
-            specs.append(dict(
-                ana=AnalysisCET(get_stat=fn, z_flag=z_flag,
-                                cft_pval=DEFAULT_CET_CFT_PVAL, **kwargs),
-                stat_name=name))
-    return specs
-
-
-RUN_STAT_LIST = get_run_stat_list()
+# the vba_stat cache's leaf grid: the voxel-wise stat bake-off
+# (VBA / VBA-TFCE / CET x the stat pool x {raw, z}).
+RUN_STAT_LIST = grid.get_run_stat_list(
+    n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER,
+    cft_pval=DEFAULT_CET_CFT_PVAL)
 
 # the prune cache's leaf grid: three rules (greedy / DP / the single max-LLR
 # region) crossed with the two Ward clustering modes (Focus / GLM Error). All
@@ -337,129 +220,45 @@ SMOKE_CROP_N_VOX = 1_000
 SMOKE_N_SEED = 3
 
 
-# ---------- stage builders (swept axes are the keyword arguments) ------------
-def get_kwargs_data_list(*, sources=SOURCES, seeds=range(N_SEED), b_list=(1,),
-                         num_img_list=(100,), crop_n_vox=CROP_N_VOX):
-    """Return the list of data_factory kwargs dicts over the swept axes.
-
-    The cartesian product of (source, b, seed); WGN additionally sweeps num_img
-    (HCP's N is its cohort, so its cells omit it and never duplicate). The
-    analysis crop -- a connected crop_n_vox sphere seeded by the cell's seed --
-    is built once per (source, b, seed) and shared across a WGN cell's num_img
-    values; the HCP feature subset is a sorted random b-subset of the pool.
-
-    Args:
-        sources (list[str]): 'wgn' and/or 'hcp'.
-        seeds (iterable[int]): per-cell realization seeds.
-        b_list (iterable[int]): imaging-feature counts (HCP draws a subset).
-        num_img_list (iterable[int]): subject counts (WGN only).
-        crop_n_vox (int): voxels in the analysis-crop sphere (also sizes the
-            WGN box). Defaults to the paper CROP_N_VOX; the smoke cache passes
-            a small value for a fast end-to-end check.
-
-    Returns:
-        list[dict]: kwargs for data_factory, one per cell (source selects
-            wgn / hcp).
-    """
-    wgn_side = math.ceil(crop_n_vox ** (1 / 3))
-
-    def sample_hcp_feats(b, seed):
-        """Return a sorted random b-subset of HCP_FEATS, per seed."""
-        idx = np.random.default_rng(seed).choice(len(hcp.HCP_FEATS), size=b,
-                                                 replace=False)
-        return tuple(sorted(hcp.HCP_FEATS[i] for i in idx))
-
-    kwargs_data_list = []
-    for source, b, seed in itertools.product(sources, b_list, seeds):
-        extenter = ExtenterSphere(n_vox=crop_n_vox, connected=True,
-                                  contiguous=True, seed=seed)
-        if source == 'wgn':
-            for num_img in num_img_list:
-                kwargs_data_list.append(dict(
-                    source='wgn', shape=(wgn_side,) * 3, b=b, num_img=num_img,
-                    seed=seed, extenter=extenter))
-        else:
-            kwargs_data_list.append(dict(
-                source='hcp', hcp_feats=sample_hcp_feats(b, seed), seed=seed,
-                extenter=extenter))
-    return kwargs_data_list
+# ---------- the paper's axes (grid builds them; here are its values) ---------
+# Every cache starts from these axes and overrides the one it sweeps. The
+# defaults live here rather than in grid's signatures so that module stays free
+# of paper constants -- tuning a value here cannot change what grid's tests
+# cover.
+DATA_AXES = dict(sources=SOURCES, seeds=range(N_SEED), b_list=(1,),
+                 num_img_list=(100,), crop_n_vox=CROP_N_VOX)
+EFFECT_AXES = dict(llr_list=(MODERATE_EFFECT_LLR,),
+                   n_vox_frac_list=(EFFECT_N_VOX_FRAC,))
 
 
-def get_kwargs_effect_list(*, llr_list=(MODERATE_EFFECT_LLR,),
-                           n_vox_frac_list=(EFFECT_N_VOX_FRAC,)):
-    """Return the list of effect_factory kwargs dicts over the swept axes.
-
-    The cartesian product of (effect_llr, n_vox_frac): a per-voxel strength and
-    a support size as a fraction of each cell's analysis volume. Each cell
-    carries kind='single' and the ingredients effect_factory_single builds the
-    support from -- the ExtenterMinVar class, n_vox_frac, and
-    seed_from_exp=True so the placement is derived from the experiment (see the
-    module docstring).
-    llr_list=None is the null / FWER-calibration path -- the list [None] (plant
-    nothing).
+def data_grid(**kwargs):
+    """Build a data grid on the paper's axes, with per-cache overrides.
 
     Args:
-        llr_list (iterable[float] | None): per-voxel effect strengths; None is
-            the null path.
-        n_vox_frac_list (iterable[float]): effect support sizes, each a
-            fraction of the analysis volume.
+        **kwargs: any DATA_AXES key, overriding the paper's value for it.
 
     Returns:
-        list[dict | None]: kwargs for effect_factory (exp is supplied by the
-            driver), or [None] for the null path.
+        list[dict]: kwargs for data_factory, one per cell.
     """
-    if llr_list is None:
-        return [None]
-    kwargs_effect_list = []
-    for llr, frac in itertools.product(llr_list, n_vox_frac_list):
-        kwargs_effect_list.append(dict(
-            kind='single', effect_llr=float(llr), extenter_cls=ExtenterMinVar,
-            n_vox_frac=float(frac), seed_from_exp=True))
-    return kwargs_effect_list
+    return grid.get_kwargs_data_list(**{**DATA_AXES, **kwargs})
 
 
-def get_kwargs_two_effect_list(*, llr_list, angle_list,
-                               n_vox_frac=EFFECT_N_VOX_FRAC,
-                               extenter_cls=ExtenterMinVar):
-    """Build a cleaving grid: effect_factory_split kwargs over (llr, angle).
-
-    Two adjacent equal-LLR effects planted on the spectral halves of one n_vox
-    extent, their feature directions angle degrees apart. Each cell carries
-    kind='split' and seed_from_exp=True, so both the support placement and the
-    direction pair are derived from the experiment (see effect_factory_split).
-    The angle sweep at fixed llr is the cleaving / merge-cost curve.
-
-    No CONFIG cache declares this grid; it is the entry point for adding one
-    (the split effect stage it feeds stays wired up and tested). Hence llr_list
-    and angle_list are required -- the sweep's shape is the caller's to choose.
-    b=3 or more gives the direction rotation a plane to turn in.
-
-    extenter_cls is the split base: ExtenterMinVar (the default) grows the
-    lowest-variance region from its own seeded start -- the same data-driven
-    support the single-effect caches use -- then bisects it into roughly equal
-    halves. Pass ExtenterSphere for a geometric base.
+def effect_grid(**kwargs):
+    """Build an effect grid on the paper's axes, with per-cache overrides.
 
     Args:
-        llr_list (iterable[float]): per-voxel strengths (per effect).
-        angle_list (iterable[float]): direction angles between the two effects
-            (degrees).
-        n_vox_frac (float): combined two-effect support as a fraction of the
-            analysis volume (split into halves).
-        extenter_cls (type[Extenter]): the split base extenter.
+        **kwargs: any EFFECT_AXES key, overriding the paper's value for it.
+            llr_list=None is the null path (plant nothing).
 
     Returns:
-        list[dict]: kwargs for effect_factory (kind='split'), one per
-            (llr, angle) cell.
+        list[dict | None]: kwargs for effect_factory, or [None] for the null.
     """
-    return [dict(kind='split', effect_llr=float(llr),
-                 extenter_cls=extenter_cls, n_vox_frac=float(n_vox_frac),
-                 angle=float(angle), seed_from_exp=True)
-            for llr, angle in itertools.product(llr_list, angle_list)]
+    return grid.get_kwargs_effect_list(**{**EFFECT_AXES, **kwargs})
 
 
 # ---------- runtime benchmarks (local-only) ---------------------------------
 # Wall-time scaling of the methods, not detection. The effect is the moderate
-# default (10% of each cell's volume, see get_kwargs_effect_list); only the
+# default (10% of each cell's volume, see effect_grid); only the
 # timed axis varies. Local-only: a Batch array lands on whatever Spot instance
 # type is free, so a time recorded there is hardware variance rather than cost
 # (the CLI warns -- see benchmark.__main__.confirm_aws), and the HCP caches
@@ -504,40 +303,17 @@ RUNTIME_SEED_OFFSET = {
 }
 
 
-def get_kwargs_data_runtime(*, seed_offset, crop_n_vox_list, b_list=(1,),
-                            sources=('hcp',), num_img_list=(100,)):
-    """Build the data grid for a runtime cache (num_vox = the analysis crop).
-
-    Concatenates get_kwargs_data_list over crop_n_vox_list, so one grid spans
-    several analysis volumes (each an ExtenterSphere crop), with RUNTIME_N_SEED
-    seeds from seed_offset -- keeping each cache's cells (and their cached leaf
-    timings) distinct.
-
-    HCP by default, the paper's real data. The num_img sweep passes
-    sources=['wgn'] instead, because HCP's N is its fixed cohort: data_factory
-    has no subject-subset axis, and adding one would rehash every HCP cell of
-    every cache. Timing is a function of the (b, num_img, num_vox) shapes, not
-    of what filled the array, so WGN measures the num_img slope faithfully.
+def runtime_data_grid(**kwargs):
+    """Build a runtime cache's data grid (a crop sweep, RUNTIME_N_SEED seeds).
 
     Args:
-        seed_offset (int): first seed; the cache uses
-            range(seed_offset, seed_offset + RUNTIME_N_SEED).
-        crop_n_vox_list (iterable[int]): analysis-crop sizes to span (the
-            num_vox axis); a single-element list for the fixed-size caches.
-        b_list (iterable[int]): imaging-feature counts (HCP draws a subset).
-        sources (iterable[str]): 'wgn' and/or 'hcp'.
-        num_img_list (iterable[int]): subject counts (WGN only).
+        **kwargs: grid.get_kwargs_data_runtime arguments; seed_offset and
+            crop_n_vox_list are required.
 
     Returns:
         list[dict]: kwargs for data_factory, one per cell.
     """
-    seeds = range(seed_offset, seed_offset + RUNTIME_N_SEED)
-    kwargs_data_list = []
-    for crop_n_vox in crop_n_vox_list:
-        kwargs_data_list += get_kwargs_data_list(
-            sources=list(sources), seeds=seeds, b_list=b_list,
-            num_img_list=num_img_list, crop_n_vox=crop_n_vox)
-    return kwargs_data_list
+    return grid.get_kwargs_data_runtime(n_seed=RUNTIME_N_SEED, **kwargs)
 
 
 # GLOW-only leaf grids for the perm sweeps: one run per (GLOW arm, count). The
@@ -584,8 +360,8 @@ GLOW_ANA_LIST = [dict(ana=ana) for label, ana in ana_kwargs_dict.items()
 CONFIG = {
     # A. Type I error: no effect, many seeds, both sources (null path).
     'null': (
-        get_kwargs_data_list(seeds=range(N_SEED_NULL)),
-        get_kwargs_effect_list(llr_list=None),
+        data_grid(seeds=range(N_SEED_NULL)),
+        effect_grid(llr_list=None),
         RUN_ANA_LIST, run_ana),
     # B. Detection vs effect strength at b = 1 and b = 2 (the univariate power
     #    curve and its low-b multivariate counterpart) in one sweep over
@@ -595,20 +371,20 @@ CONFIG = {
     #    slice matches the standalone anchor the other caches plant, and every
     #    b's midpoint llr coincides with the moderate-effect anchor.
     'sweep_llr': (
-        get_kwargs_data_list(b_list=B_LLR_SWEEP),
-        get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
+        data_grid(b_list=B_LLR_SWEEP),
+        effect_grid(llr_list=EFFECT_LLR_GRID),
         RUN_ANA_LIST, run_ana),
     # D. Detection vs effect extent (fixed per-voxel effect_llr).
     'sweep_extent': (
-        get_kwargs_data_list(),
-        get_kwargs_effect_list(n_vox_frac_list=EXTENT_FRAC_GRID),
+        data_grid(),
+        effect_grid(n_vox_frac_list=EXTENT_FRAC_GRID),
         RUN_ANA_LIST, run_ana),
     # F. Segmentation quality: oracle best-Dice region per Ward mode (Naive /
     #    GLM Error / Focus), no significance test or pruning. Same grids as
     #    the b=1 llr sweep; the leaf is run_segment over the mode grid.
     'segment': (
-        get_kwargs_data_list(),
-        get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
+        data_grid(),
+        effect_grid(llr_list=EFFECT_LLR_GRID),
         RUN_SEGMENT_LIST, run_segment),
     # G. MANCOVA stat comparison: VBA / VBA-TFCE / CET x 5 stats x {raw, z}
     #    (b=2 so the multivariate stats differ). The cell's variants share one
@@ -617,8 +393,8 @@ CONFIG = {
     #    the grid without sharpening the ranking; the b=2 HCP cells are shared
     #    with sweep_llr, so their data / effect builds are cache hits.
     'vba_stat': (
-        get_kwargs_data_list(sources=['hcp'], b_list=[2]),
-        get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
+        data_grid(sources=['hcp'], b_list=[2]),
+        effect_grid(llr_list=EFFECT_LLR_GRID),
         RUN_STAT_LIST, run_stat),
     # H. Pruning rule: greedy max-LLR vs DP max-likelihood cut vs the single
     #    max-LLR region, scored on one shared GLOW fit per (cell, Ward mode) so
@@ -626,8 +402,8 @@ CONFIG = {
     #    with both clustering modes (Focus / GLM Error); benchmark.plot draws
     #    one metric grid per mode.
     'prune': (
-        get_kwargs_data_list(),
-        get_kwargs_effect_list(llr_list=EFFECT_LLR_GRID),
+        data_grid(),
+        effect_grid(llr_list=EFFECT_LLR_GRID),
         RUN_PRUNE_LIST, run_prune),
     # Smoke: tiny null sweep over both sources to confirm the pipeline end to
     # end (not a paper figure). The null path with only a small crop and few
@@ -635,9 +411,9 @@ CONFIG = {
     # the HCP cells need the reference data staged to S3 first
     # (python -m glow._extra.aws stage_hcp).
     'smoke': (
-        get_kwargs_data_list(seeds=range(SMOKE_N_SEED),
+        data_grid(seeds=range(SMOKE_N_SEED),
                              crop_n_vox=SMOKE_CROP_N_VOX),
-        get_kwargs_effect_list(llr_list=None),
+        effect_grid(llr_list=None),
         RUN_ANA_LIST, run_ana),
     # Runtime: wall time vs num_vox (1k -> full HCP), all methods, b=1, the
     # moderate effect -- the paper's num_vox-linearity figure. run_ana_time
@@ -646,48 +422,48 @@ CONFIG = {
     # local-only: the AWS worker has no HCP data, and Spot instance-type
     # variance would make time_sec meaningless anyway.
     'runtime': (
-        get_kwargs_data_runtime(
+        runtime_data_grid(
             seed_offset=RUNTIME_SEED_OFFSET['runtime'],
             crop_n_vox_list=RUNTIME_NUM_VOX_GRID),
-        get_kwargs_effect_list(),
+        effect_grid(),
         RUN_ANA_TIME_LIST, run_ana_time),
     # Runtime (n_perm_fwer): outer-loop wall time vs n_perm_fwer at the shared
     # crop (CROP_N_VOX), GLOW only, n_perm_inner held at N_PERM_INNER.
     'runtime_n_perm_fwer': (
-        get_kwargs_data_runtime(
+        runtime_data_grid(
             seed_offset=RUNTIME_SEED_OFFSET['runtime_n_perm_fwer'],
             crop_n_vox_list=[CROP_N_VOX]),
-        get_kwargs_effect_list(),
+        effect_grid(),
         RUN_PERM_FWER_LIST, run_perm_fwer),
     # Runtime (n_perm_inner): inner-null wall time vs n_perm_inner at the
     # shared crop (CROP_N_VOX), GLOW only (one observed tree; run_perm_inner).
     'runtime_n_perm_inner': (
-        get_kwargs_data_runtime(
+        runtime_data_grid(
             seed_offset=RUNTIME_SEED_OFFSET['runtime_n_perm_inner'],
             crop_n_vox_list=[CROP_N_VOX]),
-        get_kwargs_effect_list(),
+        effect_grid(),
         RUN_PERM_INNER_LIST, run_perm_inner),
     # Runtime (b): fit wall time vs feature count b (1..6) at the shared crop
     # (CROP_N_VOX), GLOW only -- the paper's b-quadratic claim. b rides the
     # data grid; the leaf is run_ana_time (n_jobs=-1).
     'runtime_b': (
-        get_kwargs_data_runtime(
+        runtime_data_grid(
             seed_offset=RUNTIME_SEED_OFFSET['runtime_b'],
             crop_n_vox_list=[CROP_N_VOX], b_list=B_GRID),
-        get_kwargs_effect_list(),
+        effect_grid(),
         GLOW_ANA_LIST, run_ana_time),
     # Runtime (num_img): fit wall time vs subject count (NIMG_GRID, 10 -> 300)
     # at a small crop, GLOW only -- the paper's N-linearity claim. WGN, alone
     # in this family: HCP's N is its fixed cohort, and giving data_factory a
     # subject-subset axis would rehash every HCP cell everywhere. Timing turns
     # on the array shapes, not on what filled them, so WGN measures the slope
-    # faithfully (see get_kwargs_data_runtime).
+    # faithfully (see grid.get_kwargs_data_runtime).
     'runtime_nimg': (
-        get_kwargs_data_runtime(
+        runtime_data_grid(
             seed_offset=RUNTIME_SEED_OFFSET['runtime_nimg'],
             crop_n_vox_list=[RUNTIME_NIMG_CROP_N_VOX], sources=['wgn'],
             num_img_list=NIMG_GRID),
-        get_kwargs_effect_list(),
+        effect_grid(),
         GLOW_ANA_LIST, run_ana_time),
     # n_perm_inner convergence: the detection-side counterpart to
     # runtime_n_perm_inner. Holds the data + moderate effect fixed and, per GLOW
@@ -697,7 +473,7 @@ CONFIG = {
     # so local-only like the runtime family; shares the HCP detection cells, so
     # their data / effect builds are cache hits off the other sweeps.
     'sweep_n_perm_inner': (
-        get_kwargs_data_list(sources=['hcp']),
-        get_kwargs_effect_list(),
+        data_grid(sources=['hcp']),
+        effect_grid(),
         RUN_INNER_EDGE_LIST, run_inner_edge),
 }

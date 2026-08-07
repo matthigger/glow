@@ -21,7 +21,7 @@ import pytest
 from joblib import parallel_config
 
 from glow._extra.benchmark import data
-from glow._extra.benchmark.config import strip_gpu
+from glow._extra.benchmark.grid import strip_gpu
 from glow._extra.benchmark.driver import check_fit_params, drive
 from glow._extra.benchmark.run import run_ana
 from glow.analysis import AnalysisVBA, inner_perm_gpu

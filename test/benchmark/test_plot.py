@@ -10,6 +10,20 @@ import pytest
 
 from glow._extra.benchmark import plot
 from glow._extra.benchmark.config import ana_kwargs_dict, RUN_STAT_LIST
+from glow.analysis import AnalysisGLOW, AnalysisVBA
+
+
+# The catalogue's method names, taken by role rather than spelled out: a
+# provenance row has to carry a recipe the read path can map back to a label
+# (plot._LABEL_OF_ANA), and these tests need one GLOW arm and one voxel-wise
+# arm -- not whichever names config carries this month, nor how many arms it
+# ships. What the figures then CALL the reported arm is plot's own contract
+# (_ARM_LABEL / _CALIB_METHODS), so output assertions use the literal below.
+GLOW_LABEL = next(label for label, ana in ana_kwargs_dict.items()
+                  if isinstance(ana, AnalysisGLOW))
+VBA_LABEL = next(label for label, ana in ana_kwargs_dict.items()
+                 if isinstance(ana, AnalysisVBA) and not ana.tfce_flag)
+GLOW_FIGURE = 'GLOW'
 
 
 def _score(tp, fp, tn, fn, min_pval=0.5, n_pred=1):
@@ -54,9 +68,9 @@ def test_tidy_run_ana_empty():
 def test_tidy_run_ana_columns_and_source():
     """tidy_run_ana derives the canonical schema and the per-row source."""
     raw = pd.DataFrame([
-        _wgn_row('GLOW-Focus', seed=0, effect_llr=0.03,
+        _wgn_row(GLOW_LABEL, seed=0, effect_llr=0.03,
                  score=_score(80, 10, 890, 20)),
-        _hcp_row('VBA', seed=1, effect_llr=0.03,
+        _hcp_row(VBA_LABEL, seed=1, effect_llr=0.03,
                  score=_score(40, 30, 870, 60), hcp_feats=('od', 'mk')),
     ])
     df = plot.tidy_run_ana(raw)
@@ -68,7 +82,7 @@ def test_tidy_run_ana_columns_and_source():
     assert df.loc[df['source'] == 'HCP', 'num_img'].isna().all()
 
     # metrics derive from the four counts (glow.mask.stats_from_counts)
-    glow = df[df['label'] == 'GLOW-Focus'].iloc[0]
+    glow = df[df['label'] == GLOW_LABEL].iloc[0]
     assert glow['vox_effect'] == 100  # tp + fn
     assert glow['vox_total'] == 1000
     assert glow['effect_perc'] == pytest.approx(0.1)
@@ -99,7 +113,7 @@ def test_plot_cache_null_writes_calibration(tmp_path):
     rows = []
     for src in ('wgn', 'hcp'):
         mk = _wgn_row if src == 'wgn' else _hcp_row
-        for label in ('GLOW-GLM', 'GLOW-Focus', 'VBA'):
+        for label in (GLOW_LABEL, VBA_LABEL):
             for seed in range(3):
                 rows.append(mk(label, seed=seed, effect_llr=np.nan,
                                score=_score(0, 0, 1000, 0, min_pval=0.3)))
@@ -118,12 +132,12 @@ def test_plot_cache_sweep_writes_grid_and_diff_csv(tmp_path):
         mk = _wgn_row if src == 'wgn' else _hcp_row
         for llr in (0.01, 0.1):
             for seed in range(4):
-                # GLOW-GLM beats VBA, more so at the stronger effect
+                # GLOW beats VBA, more so at the stronger effect
                 tp_glow = int(40 + 400 * llr + rng.integers(0, 5))
                 tp_vba = int(20 + 200 * llr + rng.integers(0, 5))
-                rows.append(mk('GLOW-GLM', seed, llr,
+                rows.append(mk(GLOW_LABEL, seed, llr,
                                _score(tp_glow, 10, 800, 100 - tp_glow)))
-                rows.append(mk('VBA', seed, llr,
+                rows.append(mk(VBA_LABEL, seed, llr,
                                _score(tp_vba, 30, 800, 100 - tp_vba)))
     df = plot.tidy_run_ana(pd.DataFrame(rows))
     assert plot._infer_x(df) == 'effect_llr'
@@ -135,7 +149,7 @@ def test_plot_cache_sweep_writes_grid_and_diff_csv(tmp_path):
 
     # the diff CSV carries one block per GLOW variant vs the best alternative
     diff = pd.read_csv(tmp_path / 'sweep_llr_diff.csv')
-    assert set(diff['method'].unique()) == {'GLOW'}
+    assert set(diff['method'].unique()) == {GLOW_FIGURE}
     assert {'source', 'effect_llr', 'dice_diff', 'dice_win'}.issubset(
         diff.columns)
 
@@ -150,11 +164,12 @@ def test_plot_cache_splits_on_secondary_axis(tmp_path):
         for llr in (0.01, 0.1):
             for seed in range(4):
                 score = _score(50, 10, 800, 50)
-                rows.append(_wgn_row('GLOW-GLM', seed, llr, score, b=b))
-                rows.append(_wgn_row('VBA', seed, llr, score, b=b))
-                rows.append(_hcp_row('GLOW-GLM', seed, llr, score,
+                rows.append(_wgn_row(GLOW_LABEL, seed, llr, score, b=b))
+                rows.append(_wgn_row(VBA_LABEL, seed, llr, score, b=b))
+                rows.append(_hcp_row(GLOW_LABEL, seed, llr, score,
                                      hcp_feats=feats))
-                rows.append(_hcp_row('VBA', seed, llr, score, hcp_feats=feats))
+                rows.append(_hcp_row(VBA_LABEL, seed, llr, score,
+                                     hcp_feats=feats))
     df = plot.tidy_run_ana(pd.DataFrame(rows))
     assert plot._infer_x(df) == 'effect_llr'
 
@@ -172,13 +187,13 @@ def test_plot_cache_sweep_writes_threshold_csv(tmp_path):
         feats = ('od', 'fa', 'md')[:b]
         for llr in (0.01, 0.03, 0.1):
             for seed in range(3):
-                # both climb with llr; GLOW-GLM reaches 0.5 Dice the earlier
+                # both climb with llr; GLOW reaches 0.5 Dice the earlier
                 tp_glow = {0.01: 20, 0.03: 80, 0.1: 95}[llr]
                 tp_vba = {0.01: 5, 0.03: 20, 0.1: 90}[llr]
-                rows.append(_hcp_row('GLOW-GLM', seed, llr,
+                rows.append(_hcp_row(GLOW_LABEL, seed, llr,
                                      _score(tp_glow, 10, 800, 100 - tp_glow),
                                      hcp_feats=feats))
-                rows.append(_hcp_row('VBA', seed, llr,
+                rows.append(_hcp_row(VBA_LABEL, seed, llr,
                                      _score(tp_vba, 10, 800, 100 - tp_vba),
                                      hcp_feats=feats))
     df = plot.tidy_run_ana(pd.DataFrame(rows))
@@ -190,12 +205,12 @@ def test_plot_cache_sweep_writes_threshold_csv(tmp_path):
     assert {'source', 'method'}.issubset(thr.columns)
     assert {'b=1', 'b=2', 'b=3'}.issubset(thr.columns)
     bcols = ['b=1', 'b=2', 'b=3']
-    glow = thr[thr['method'] == 'GLOW'][bcols].to_numpy()
-    vba = thr[thr['method'] == 'VBA'][bcols].to_numpy()
+    glow = thr[thr['method'] == GLOW_FIGURE][bcols].to_numpy()
+    vba = thr[thr['method'] == VBA_LABEL][bcols].to_numpy()
     # thresholds fall inside the swept 0.01..0.1 range
     assert glow.size and vba.size
     assert ((glow > 0.01) & (glow < 0.1)).all()
-    # GLOW-GLM reaches Dice 0.5 at a weaker effect than VBA
+    # GLOW reaches Dice 0.5 at a weaker effect than VBA
     assert (glow < vba).all()
 
 
@@ -335,11 +350,11 @@ def test_tidy_runtime_empty():
 def test_tidy_runtime_run_ana_leaf():
     """A run_ana_time runtime cache reads num_vox bare and label off ana."""
     raw = pd.DataFrame([
-        _runtime_ana_row('GLOW-Focus', seed=0, num_vox=1000, time_sec=25.0),
-        _runtime_ana_row('VBA', seed=0, num_vox=224619, time_sec=480.0),
+        _runtime_ana_row(GLOW_LABEL, seed=0, num_vox=1000, time_sec=25.0),
+        _runtime_ana_row(VBA_LABEL, seed=0, num_vox=224619, time_sec=480.0),
     ])
     df = plot.tidy_runtime('runtime', raw)
-    assert list(df['label']) == ['GLOW-Focus', 'VBA']
+    assert list(df['label']) == [GLOW_LABEL, VBA_LABEL]
     assert list(df['x']) == [1000, 224619]
     assert list(df['x_name'].unique()) == ['num_vox']
     assert list(df['time_sec']) == [25.0, 480.0]
@@ -348,9 +363,9 @@ def test_tidy_runtime_run_ana_leaf():
 def test_tidy_runtime_b_from_feature_count():
     """runtime_b's x is the HCP feature-subset length (b), not num_vox."""
     raw = pd.DataFrame([
-        _runtime_ana_row('GLOW-Focus', 0, num_vox=1000, time_sec=2.0,
+        _runtime_ana_row(GLOW_LABEL, 0, num_vox=1000, time_sec=2.0,
                          hcp_feats=('od',)),
-        _runtime_ana_row('GLOW-Focus', 0, num_vox=1000, time_sec=6.0,
+        _runtime_ana_row(GLOW_LABEL, 0, num_vox=1000, time_sec=6.0,
                          hcp_feats=('od', 'mk', 'fa')),
     ])
     df = plot.tidy_runtime('runtime_b', raw)
@@ -373,7 +388,7 @@ def test_tidy_runtime_timed_leaf():
 def test_plot_runtime_writes_figure(tmp_path):
     """plot_runtime writes one wall-time curve figure per runtime cache."""
     rows = []
-    for label in ('GLOW-Focus', 'VBA'):
+    for label in (GLOW_LABEL, VBA_LABEL):
         for num_vox in (1000, 8000, 64000):
             for seed in range(3):
                 rows.append(_runtime_ana_row(
@@ -777,22 +792,34 @@ def test_select_glow_arm_spares_mode_and_rule_labels():
 
 
 def test_plot_cache_drops_focus_arm(tmp_path):
-    """A detection cache reports one arm, labelled GLOW, in figure + CSVs."""
+    """A detection cache reports one arm, labelled GLOW, in figure + CSVs.
+
+    The plot layer's guarantee is about the labels handed to it, not about how
+    many arms the catalogue ships: whichever raw arm names reach it (the perm /
+    inner-edge families record both, see config.RUNTIME_GLOW_MODES), the
+    unreported one is dropped and the survivor relabelled. So the arms are
+    injected into the tidy frame rather than round-tripped through a recipe --
+    the raw names here are plot's own vocabulary (_ARMS_SKIP / _ARM_LABEL).
+    """
     rows = []
     for llr in (0.01, 0.03, 0.1):
         for seed in range(3):
             tp = {0.01: 20, 0.03: 80, 0.1: 95}[llr]
-            for label in ('GLOW-GLM', 'GLOW-Focus', 'VBA'):
+            for label in (GLOW_LABEL, VBA_LABEL):
                 rows.append(_hcp_row(label, seed, llr,
                                      _score(tp, 10, 800, 100 - tp)))
-    df = plot.tidy_run_ana(pd.DataFrame(rows))
-    # the arm is present in the tidy frame; only the plot layer drops it
-    assert 'GLOW-Focus' in set(df['label'])
+    tidy = plot.tidy_run_ana(pd.DataFrame(rows))
+    glow = tidy[tidy['label'] == GLOW_LABEL]
+    df = pd.concat([tidy[tidy['label'] != GLOW_LABEL],
+                    glow.assign(label='GLOW-Focus'),
+                    glow.assign(label='GLOW-GLM')], ignore_index=True)
+    # both arms are in the tidy frame; only the plot layer drops one
+    assert {'GLOW-Focus', 'GLOW-GLM'} <= set(df['label'])
 
     plot.plot_cache('sweep_llr', df, tmp_path)
     thr = pd.read_csv(tmp_path / 'sweep_llr_threshold.csv')
     # neither raw arm label reaches the output; the reported arm reads GLOW
     assert not {'GLOW-Focus', 'GLOW-GLM'} & set(thr['method'])
-    assert 'GLOW' in set(thr['method'])
+    assert GLOW_FIGURE in set(thr['method'])
     diff = pd.read_csv(tmp_path / 'sweep_llr_diff.csv')
-    assert set(diff['method'].unique()) == {'GLOW'}
+    assert set(diff['method'].unique()) == {GLOW_FIGURE}

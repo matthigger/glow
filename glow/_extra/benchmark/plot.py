@@ -152,7 +152,7 @@ def _select_glow_arm(df):
 # are recovered from the recorded recipe -- its class and tfce_flag / z_flag --
 # the same way _LABEL_OF_ANA recovers a run_ana method; the stat is the recorded
 # stat_name. stat_dict order (llr..roys_root) fixes the column order (= the
-# get_run_stat_list build order, so an interrupted cell drops the last stats).
+# grid.get_run_stat_list build order, so an interrupted cell drops the last stats).
 _STAT_METHOD_ORDER = ['VBA', 'VBA-TFCE', 'CET']
 _ZT_ORDER = ['raw', 'z']
 _ZT_PRETTY = {'raw': 'raw', 'z': 'z-scored'}
@@ -162,7 +162,7 @@ _STAT_PRETTY = {'llr': 'LLR', 'wilks': 'Wilks', 'pillai': 'Pillai',
 
 
 def _stat_method_zt(ana):
-    """Recover (method, zt) from a stat-cache recipe (see get_run_stat_list)."""
+    """Recover (method, zt) from a stat-cache recipe (see grid.get_run_stat_list)."""
     if type(ana).__name__ == 'AnalysisCET':
         method = 'CET'
     else:
@@ -1003,7 +1003,7 @@ def _stat_balanced(df):
     """Keep only cells recorded with the full variant grid (balanced N).
 
     A cell fit by an interrupted worker is missing its last-computed variants
-    (get_run_stat_list runs stat-major, llr..roys_root), which would give each
+    (grid.get_run_stat_list runs stat-major, llr..roys_root), which would give each
     method a different trial count. Restricting to cells with all
     len(RUN_STAT_LIST) variants makes every method's panel the same cells.
 

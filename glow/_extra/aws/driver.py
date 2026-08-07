@@ -102,7 +102,7 @@ def drive_aws(names, aws_config, *, verbose: bool = True,
     staged to S3 first; see glow._extra.aws stage_hcp.)
 
     methods narrows each cache's shipped leaf grid to the named analysis
-    recipes (config.filter_ana_list), the path for rerunning one method after
+    recipes (grid.filter_ana_list), the path for rerunning one method after
     its recipe changed: the cells to submit are the ones missing those leaves
     (not the cache's whole grid), and a worker fits only the shipped recipes, so
     the siblings already computed are neither resubmitted nor refit. A selected
@@ -134,7 +134,8 @@ def drive_aws(names, aws_config, *, verbose: bool = True,
     # remaining (its full leaf set is present), so a rerun submits only the
     # gaps. RECORDER is loaded once up front for the incomplete_cell_indices
     # walk (which reads the in-memory records).
-    from glow._extra.benchmark.config import filter_ana_list
+    from glow._extra.benchmark.config import ana_kwargs_dict
+    from glow._extra.benchmark.grid import filter_ana_list
     from glow._extra.benchmark.data import RECORDER
     from glow._extra.benchmark.results import incomplete_cell_indices
     RECORDER.load()
@@ -144,7 +145,8 @@ def drive_aws(names, aws_config, *, verbose: bool = True,
     for name in names:
         cells, kwargs_fnc_list, fnc = resolve_cells(name)
         if methods:
-            kwargs_fnc_list = filter_ana_list(kwargs_fnc_list, methods)
+            kwargs_fnc_list = filter_ana_list(kwargs_fnc_list, methods,
+                                              ana_kwargs_dict)
             if not kwargs_fnc_list:
                 if verbose:
                     print(f'[drive_aws] {name}: no {methods} recipe in its '
