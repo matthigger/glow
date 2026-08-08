@@ -231,3 +231,100 @@ class TestExperimentScaledZeroVariance:
 
         with pytest.raises(ValueError, match='zero-variance'):
             ExperimentScaled.from_exp(exp)
+
+
+class TestDropConstantVox:
+    """drop_constant_vox removes the voxels with nothing to test."""
+
+    DEAD_V = 7
+
+    @staticmethod
+    def build_exp(shape=(4, 4, 4), b=3, num_img=20, seed=0):
+        """A small experiment whose voxels all vary."""
+        return Experiment.from_gauss(a=2, b=b, shape=shape,
+                                     num_img=num_img, seed=seed)
+
+    @staticmethod
+    def quiet_drop(exp):
+        """drop_constant_vox with the expected warning suppressed."""
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', ConstantVoxelWarning)
+            return exp.drop_constant_vox()
+
+    def kill(self, exp, feat=slice(None), value=1.234):
+        """Flatten one voxel across images, on one feature or all."""
+        exp.y[feat, :, self.DEAD_V] = value
+        return exp
+
+    def test_healthy_keeps_everything(self):
+        """Data that varies passes through with nothing dropped."""
+        exp = self.build_exp()
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', ConstantVoxelWarning)
+            out = exp.drop_constant_vox()
+        assert out.num_vox_dropped == 0
+        assert out.y.shape == exp.y.shape
+        assert not out.mask_dead.any()
+
+    def test_constant_voxel_removed(self):
+        """The dead voxel leaves y, and mask_idx is renumbered over it."""
+        exp = self.kill(self.build_exp())
+        num_vox = exp.y.shape[2]
+        with pytest.warns(ConstantVoxelWarning, match='dropped 1 of'):
+            out = exp.drop_constant_vox()
+        assert out.num_vox_dropped == 1
+        assert out.y.shape[2] == num_vox - 1
+        # renumbered contiguously, so downstream indexing still works
+        kept = out.mask_idx[out.mask_idx > -1]
+        np.testing.assert_array_equal(np.sort(kept), np.arange(num_vox - 1))
+
+    def test_mask_dead_marks_the_right_voxel(self):
+        """mask_dead is in image space, and names the voxel that went."""
+        exp = self.kill(self.build_exp())
+        dead_pos = np.argwhere(exp.mask_idx == self.DEAD_V)[0]
+        out = self.quiet_drop(exp)
+        assert out.mask_dead.shape == exp.mask_idx.shape
+        assert out.mask_dead[tuple(dead_pos)]
+        assert out.mask_dead.sum() == 1
+        assert out.mask_idx[tuple(dead_pos)] == -1
+
+    def test_one_flat_feature_is_enough(self):
+        """A single flat feature makes E rank-deficient, so the voxel goes."""
+        exp = self.kill(self.build_exp(), feat=1)
+        assert self.quiet_drop(exp).num_vox_dropped == 1
+
+    def test_float32_cliff(self):
+        """A voxel below the float32 underflow cliff is caught."""
+        exp = self.build_exp()
+        exp.y = exp.y.astype(np.float32)
+        rng = np.random.default_rng(2)
+        exp.y[:, :, self.DEAD_V] = (
+            1.0 + rng.standard_normal((3, 20)) * 1e-9).astype(np.float32)
+        assert self.quiet_drop(exp).num_vox_dropped == 1
+
+    def test_all_constant_raises(self):
+        """A wholly flat experiment is an error, not an empty analysis."""
+        exp = self.build_exp()
+        exp.y[:] = 1.0
+        with pytest.raises(ValueError, match='every voxel is constant'):
+            exp.drop_constant_vox()
+
+    def test_source_experiment_untouched(self):
+        """Dropping returns a new experiment and leaves this one alone."""
+        exp = self.kill(self.build_exp())
+        num_vox = exp.y.shape[2]
+        self.quiet_drop(exp)
+        assert exp.y.shape[2] == num_vox
+        assert exp.mask_dead is None
+        assert exp.num_vox_dropped == 0
+
+    def test_mask_dead_survives_the_analysis_path(self):
+        """The record follows the experiment through permute and scaling.
+
+        mask_dead has to be a named __init__ parameter for this: both
+        rebuild through the constructor, and **kwargs would swallow it.
+        """
+        out = self.quiet_drop(self.kill(self.build_exp()))
+        assert out.permute(3).num_vox_dropped == 1
+        assert ExperimentScaled.from_exp(out).num_vox_dropped == 1
+        assert out.apply_mask(out.mask_idx > -1).num_vox_dropped == 1

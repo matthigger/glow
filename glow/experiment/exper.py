@@ -29,23 +29,36 @@ class NoBiasTermWarning(UserWarning):
     pass
 
 
+class ConstantVoxelWarning(UserWarning):
+    """Warn when voxels leave an experiment for not varying across images."""
+    pass
+
+
 class ExperimentImageOnly:
     """Imaging data for an experiment (no design matrix).
 
     Attributes:
         y (np.array): (b, num_img, num_vox) image intensities
         mask_idx (np.array): voxel index array (-1 outside analysis)
+        mask_dead (np.array): (X, Y, Z) boolean, True where
+            drop_constant_vox removed a voxel, or None where it never ran.
+            Image-space, like every other mask here (an effect's support,
+            an analysis's mask_active), so it stays readable after
+            mask_idx renumbers the voxels that remain.
         meta (dict): optional metadata (subjects, features, affine, etc.)
             not used by analysis — propagated for export / display
     """
 
-    def __init__(self, *, y, mask_idx, meta: dict = None, dtype=None,
-                 **kwargs):
+    def __init__(self, *, y, mask_idx, mask_dead=None, meta: dict = None,
+                 dtype=None, **kwargs):
         """Store imaging data, optionally casting y to a target dtype.
 
         Args:
             y (np.array): (b, num_img, num_vox) imaging features
             mask_idx (np.array): voxel index array (-1 outside analysis)
+            mask_dead (np.array): (X, Y, Z) boolean of dropped voxels, or
+                None. Named here rather than swept into kwargs so it
+                survives _copy_with, which rebuilds through __init__.
             meta (dict): optional metadata
             dtype: if not None and y.dtype differs, cast y to dtype (no
                 copy when already matching).  Default None preserves
@@ -56,6 +69,7 @@ class ExperimentImageOnly:
             y = y.astype(dtype, copy=False)
         self.y = y
         self.mask_idx = mask_idx
+        self.mask_dead = mask_dead
         self.meta = meta if meta is not None else {}
 
     @property
@@ -353,7 +367,7 @@ class ExperimentImageOnly:
             x = x.astype(self.y.dtype, copy=False)
 
         return Experiment(x=x, contrast=contrast, y=self.y,
-                          mask_idx=self.mask_idx,
+                          mask_idx=self.mask_idx, mask_dead=self.mask_dead,
                           meta=self.meta, **kwargs)
 
     def _copy_with(self, **overrides):
@@ -383,6 +397,73 @@ class ExperimentImageOnly:
         y = self.y[:, :, self.mask_idx[mask]]
 
         return self._copy_with(mask_idx=mask_idx, y=y)
+
+    @property
+    def num_vox_dropped(self) -> int:
+        """How many voxels drop_constant_vox removed (0 if it never ran)."""
+        return 0 if self.mask_dead is None else int(self.mask_dead.sum())
+
+    def drop_constant_vox(self, rtol: float = 1e-6):
+        """Return a new experiment with the constant voxels removed.
+
+        A voxel whose intensities barely move across images has no signal
+        to test: once the design is projected out almost nothing is left,
+        so its MANCOVA error matrix E is rank-deficient in all but name
+        and det(E), a product of b tiny eigenvalues, underflows. In
+        float32 the cliff is sharp -- below roughly 1e-8 relative
+        variation slogdet(E) returns (0, -inf) and every statistic on
+        that voxel comes back NaN, or +-inf where the cancellation also
+        leaves E with a negative eigenvalue.
+
+        This belongs to pre-processing, ahead of ExperimentScaled, for
+        two reasons. The test is per feature and ExperimentScaled mixes
+        the features (y_out = pre_scale @ y), so by the time an analysis
+        sees the data one flat feature has been smeared over all b and no
+        longer stands out. And dropping here hands every method the same
+        voxels, so GLOW and the voxel-wise arms control FWER over one
+        family rather than each pruning its own.
+
+        The dropped voxels leave y and mask_idx is renumbered over what
+        remains, so nothing downstream needs to know this happened;
+        mask_dead records which ones went.
+
+        Args:
+            rtol (float): variation floor, as a fraction of each feature's
+                median across-image standard deviation over voxels.
+                Median, so the dead voxels do not set the scale they are
+                then measured against.
+
+        Returns:
+            exp: a new experiment over the surviving voxels, carrying
+                mask_dead and leaving this one untouched
+
+        Raises:
+            ValueError: if every voxel is constant across images
+        """
+        # float64 accumulator: the sums that underflow in float32 are the
+        # ones this is here to catch
+        std = self.y.std(axis=1, dtype=np.float64)
+        vox_dead = np.any(std <= rtol * np.median(std, axis=1, keepdims=True),
+                          axis=0)
+        if vox_dead.all():
+            raise ValueError('every voxel is constant across images')
+
+        # scatter the per-voxel flags back into image space. Indexed
+        # through mask_idx rather than assigned positionally, so this
+        # holds whatever order the index array numbers its voxels in.
+        mask_active = self.mask_idx > -1
+        mask_dead = np.zeros(self.mask_idx.shape, dtype=bool)
+        mask_dead[mask_active] = vox_dead[self.mask_idx[mask_active]]
+
+        if not vox_dead.any():
+            return self._copy_with(mask_dead=mask_dead)
+
+        warnings.warn(f'dropped {int(vox_dead.sum())} of {vox_dead.size} '
+                      f'voxels constant across images (rtol={rtol:g})',
+                      ConstantVoxelWarning)
+        exp = self.apply_mask(~mask_dead)
+        exp.mask_dead = mask_dead
+        return exp
 
     def add_offset(self, offset, mask=None, vox_idx=None,
                    sigma_scale: float = None):
@@ -510,7 +591,8 @@ class Experiment(ExperimentImageOnly):
             y = np.einsum('abc,bd->adc', self.y, freed_lane, optimize=True)
 
         return Experiment(x=self.x, y=y, contrast=self.contrast,
-                          mask_idx=self.mask_idx, meta=deepcopy(self.meta))
+                          mask_idx=self.mask_idx, mask_dead=self.mask_dead,
+                          meta=deepcopy(self.meta))
 
 
 class ExperimentScaled(Experiment):
@@ -546,6 +628,7 @@ class ExperimentScaled(Experiment):
             return exp
         return cls(y=exp.y, mask_idx=exp.mask_idx, x=exp.x,
                    contrast=exp.contrast,
+                   mask_dead=getattr(exp, 'mask_dead', None),
                    meta=dict(exp.meta) if getattr(exp, 'meta', None) else None)
 
     def prep(self, y):
