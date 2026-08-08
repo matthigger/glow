@@ -91,7 +91,10 @@ class AnalysisCET(AnalysisVoxel):
         if self.z_flag:
             self.stat = self.z_score_stat(self.stat)
         null_pool = self.stat[1:, :].ravel()
-        self.cft = np.quantile(null_pool, 1 - self.cft_pval)
+        # nanquantile, not quantile: one dropped voxel is NaN in every row,
+        # and np.quantile propagates that to the threshold, after which no
+        # cluster forms anywhere and the whole fit returns p = 1
+        self.cft = np.nanquantile(null_pool, 1 - self.cft_pval)
         self.pval = self._get_pval_cet(self.stat, exp.mask_idx, self.cft)
         mask = np.zeros(exp.mask_idx.shape, dtype=bool)
         mask[exp.mask_idx > -1] = self.pval <= self.alpha_fwer
@@ -114,7 +117,8 @@ class AnalysisCET(AnalysisVoxel):
 
         Returns:
             pval (np.array): (num_vox,) p-value per voxel; voxels in the
-                same cluster share a p-value
+                same cluster share a p-value, and a voxel dropped from the
+                analysis (NaN in stat) gets NaN
         """
         n_rows, num_vox = stat.shape
         vox_mask = mask_idx > -1
@@ -149,5 +153,10 @@ class AnalysisCET(AnalysisVoxel):
                     1 - bisect_left(null_sorted, obs_sizes[cid - 1]) / n_perm,
                     1 / n_perm)
                 pval[obs_flat == cid] = p
+
+        # a dropped voxel is NaN in every row; left at the default 1.0 it
+        # would sit in the tested family as a voxel that merely failed to
+        # reach significance (get_pval marks the same case NaN)
+        pval[np.isnan(stat[0, :])] = np.nan
 
         return pval

@@ -460,3 +460,33 @@ class TestNanSafeReductions:
         stat = np.full((21, 1000), np.nan)
         assert np.isnan(Analysis.get_pval(stat)).all()
 
+
+class TestCetNanThreshold:
+    """CET's threshold and p-values ignore the voxels with no statistic."""
+
+    @staticmethod
+    def build():
+        """A stat matrix and its mask, one voxel carrying no statistic."""
+        rng = np.random.default_rng(0)
+        mask_idx = np.arange(1000).reshape((10, 10, 10))
+        stat = np.abs(rng.standard_normal((201, 1000))) * 3
+        stat[0, 400:460] += 8
+        stat[:, 3] = np.nan
+        return stat, mask_idx
+
+    def test_cft_finite_with_nan_present(self):
+        """np.quantile would return NaN here, and then detect nothing."""
+        stat, mask_idx = self.build()
+        cft = np.nanquantile(stat[1:, :].ravel(), 1 - 0.001)
+        assert np.isfinite(cft)
+        pval = AnalysisCET._get_pval_cet(stat, mask_idx, cft)
+        assert np.nanmin(pval) < 1.0
+
+    def test_dropped_voxel_gets_nan_not_one(self):
+        """A voxel with no statistic leaves the family, not fails in it."""
+        stat, mask_idx = self.build()
+        cft = np.nanquantile(stat[1:, :].ravel(), 1 - 0.001)
+        pval = AnalysisCET._get_pval_cet(stat, mask_idx, cft)
+        assert np.isnan(pval[3])
+        assert np.isfinite(np.delete(pval, 3)).all()
+
