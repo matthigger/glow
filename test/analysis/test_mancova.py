@@ -208,3 +208,55 @@ def test_get_llr_default_n():
 ])
 def test_is_intercept_only_nuisance(x, contrast, expected):
     assert is_intercept_only_nuisance(x, contrast) is expected
+
+
+class TestNonFiniteGuards:
+    """No MANCOVA statistic returns a non-finite value.
+
+    Two ways a voxel's E goes bad, each defeating a different stat:
+    E indefinite (float cancellation where there is almost no variance
+    across images), which sent get_wilks' exp past 709 to -inf; and E
+    near-singular but not exactly so, which np.linalg.solve accepts
+    without complaint and whose trace then overflows.
+    """
+
+    @staticmethod
+    def indefinite_pair():
+        """E with a negative eigenvalue, E + H near-singular."""
+        e = np.diag([-1e-8, 1.0, 1.0])
+        h = np.diag([1e-8 + 1e-320, 0.0, 0.0])
+        return e, h
+
+    @staticmethod
+    def near_singular_pair():
+        """E positive-definite but near-singular; solve overflows on it."""
+        return np.diag([5e-324, 1.0, 1.0]), np.eye(3)
+
+    @pytest.mark.parametrize('name,fn', sorted(stat_dict.items()))
+    @pytest.mark.parametrize('pair', ['indefinite', 'near_singular'])
+    def test_never_non_finite(self, name, fn, pair):
+        """Every stat returns a finite value or NaN, never +-inf."""
+        e, h = (self.indefinite_pair() if pair == 'indefinite'
+                else self.near_singular_pair())
+        try:
+            val = fn(e=e, h=h, n=1)
+        except np.linalg.LinAlgError:
+            return
+        assert not np.isinf(val), f'{name} returned {val} on {pair} E'
+
+    def test_wilks_nan_on_indefinite(self):
+        """get_wilks rejects an indefinite E rather than returning -inf."""
+        e, h = self.indefinite_pair()
+        assert np.isnan(get_wilks(e=e, h=h))
+        # the guard get_llr has always had, now shared
+        assert np.isnan(get_llr(e=e, h=h, n=1))
+
+    def test_wilks_matches_closed_form(self):
+        """expm1 leaves the statistic itself unchanged on healthy input."""
+        rng = np.random.default_rng(0)
+        z = rng.standard_normal((3, 30))
+        e = z @ z.T
+        w = rng.standard_normal((3, 4))
+        h = w @ w.T
+        expect = 1.0 - np.linalg.det(e) / np.linalg.det(e + h)
+        assert get_wilks(e=e, h=h) == pytest.approx(expect, rel=1e-9)

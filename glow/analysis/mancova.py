@@ -143,11 +143,35 @@ def get_wilks(e, h, n=None) -> float:
         n: unused (accepted for uniform stat-function interface)
 
     Returns:
-        float: 1 - Wilks' Lambda
+        float: 1 - Wilks' Lambda, or np.nan when det(E) or det(E + H) is
+            not positive
     """
     sign_e, logdet_e = np.linalg.slogdet(e)
     sign_t, logdet_t = np.linalg.slogdet(e + h)
-    return 1.0 - np.exp(logdet_e - logdet_t)
+    # Without this guard an indefinite E (float cancellation on a voxel
+    # with almost no variance across images) sends |det E| far above
+    # det(E + H), the difference of logs past 709, and the exp to +inf,
+    # returning -inf where the statistic is simply undefined.
+    if sign_e <= 0 or sign_t <= 0:
+        return np.nan
+    # expm1 rather than 1 - exp: E + H >= E for positive-semidefinite H,
+    # so the ratio sits at or just below 1 and the log-difference at or
+    # just below 0, exactly where 1 - exp(d) loses its leading digits.
+    return float(-np.expm1(logdet_e - logdet_t))
+
+
+def _finite_or_nan(value: float) -> float:
+    """Fold a non-finite statistic into np.nan, the not-analysed sentinel.
+
+    np.linalg.solve raises only on an exactly singular matrix. A merely
+    near-singular E returns without complaint, and the trace of the
+    solution can overflow to +-inf (or reach 1e200 on the way there). NaN
+    is what the walk already uses for a region carrying no usable
+    statistic (AnalysisVoxel._walk_stat), and what every reduction over
+    the stat matrix skips, so non-finite output joins it here rather than
+    travelling on to own a max-stat null.
+    """
+    return value if np.isfinite(value) else np.nan
 
 
 def _safe_solve(m, h, label: str):
@@ -175,12 +199,13 @@ def get_pillai(e, h, n=None) -> float:
         n: unused (accepted for uniform stat-function interface)
 
     Returns:
-        float
+        float, or np.nan when H + E is near-singular enough to overflow
 
     Raises:
         np.linalg.LinAlgError: if H + E is singular
     """
-    return float(np.trace(_safe_solve(h + e, h, '(H + E) matrix')))
+    return _finite_or_nan(
+        float(np.trace(_safe_solve(h + e, h, '(H + E) matrix'))))
 
 
 def get_hotel_tr(e, h, n=None) -> float:
@@ -192,12 +217,13 @@ def get_hotel_tr(e, h, n=None) -> float:
         n: unused (accepted for uniform stat-function interface)
 
     Returns:
-        float
+        float, or np.nan when E is near-singular enough to overflow
 
     Raises:
         np.linalg.LinAlgError: if E is singular
     """
-    return float(np.trace(_safe_solve(e, h, 'error matrix E')))
+    return _finite_or_nan(
+        float(np.trace(_safe_solve(e, h, 'error matrix E'))))
 
 
 def get_roys_root(e, h, n=None) -> float:
@@ -209,13 +235,13 @@ def get_roys_root(e, h, n=None) -> float:
         n: unused (accepted for uniform stat-function interface)
 
     Returns:
-        float
+        float, or np.nan when E is near-singular enough to overflow
 
     Raises:
         np.linalg.LinAlgError: if E is singular
     """
     eigvals = np.linalg.eigvals(_safe_solve(e, h, 'error matrix E'))
-    return float(np.max(np.real(eigvals)))
+    return _finite_or_nan(float(np.max(np.real(eigvals))))
 
 
 stat_dict = {
