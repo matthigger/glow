@@ -1,6 +1,7 @@
 """Analysis ABC and shared FWER / effect-discovery machinery."""
 
 import os
+import warnings
 from abc import ABC, abstractmethod
 from bisect import bisect_left
 from typing import Callable
@@ -170,10 +171,18 @@ class Analysis(ABC):
         # max stat per permutation, sorted low to high (bisect_left below
         # needs an ascending array)
         if stat_null is None:
-            null_sorted = np.sort(np.nanmax(stat[:, reg_active], axis=1))
+            # a permutation with no valid region anywhere contributes no
+            # max; nanmax would call that NaN (and warn), which sorts to
+            # the top and silently raises every p-value
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                max_stat = np.nanmax(stat[:, reg_active], axis=1)
+            null_sorted = np.sort(max_stat[np.isfinite(max_stat)])
         else:
             null_sorted = np.sort(stat_null)
         n_null = len(null_sorted)
+        if n_null == 0:
+            return np.full(num_reg, fill_value=np.nan)
 
         # p-value: fraction of permuted-or-observed max-stats >= the
         # region's observed value
@@ -215,9 +224,16 @@ class Analysis(ABC):
         Returns:
             z (np.array): same shape, voxel-wise z-scored
         """
-        mu = np.nanmean(stat, axis=0)
-        std = np.nanstd(stat, axis=0, ddof=1)
-        std[std < 1e-12] = 1.0
+        # a dropped voxel is NaN in every row, which nanmean / nanstd
+        # report on rather than skip; the column is meant to stay NaN
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            mu = np.nanmean(stat, axis=0)
+            std = np.nanstd(stat, axis=0, ddof=1)
+        # negated so the NaN std of an all-NaN column lands here too:
+        # NaN > x is False, where NaN < x would have been False as well
+        # and left the division to propagate it as a warning
+        std[~(std > 1e-12)] = 1.0
         return (stat - mu) / std
 
     @classmethod
@@ -371,11 +387,19 @@ class AnalysisVoxel(Analysis):
         If _stat is None, runs the Freedman-Lane permutation walk on exp
         (row 0 observed, rows 1: permuted), parallelised over
         permutations with joblib. If provided, validates its permutation
-        count against self.n_perm_fwer and returns it unchanged (the
-        caller owns the copy).
+        count against self.n_perm_fwer and takes it as the walk's output.
 
         Row k depends only on k (exp.permute(k) is seeded by k), so the
         matrix is identical regardless of n_jobs.
+
+        A region with no usable statistic is left NaN, which every reader
+        of this matrix skips: nanmean / nanstd in z_score_stat, the
+        sub-threshold blank in apply_tfce_stat, nanquantile for the CET
+        threshold, nanmax and the isnan guard in get_pval. Nothing here
+        repairs it, because there is nothing left to repair -- no stat
+        function can return +-inf (see mancova) and the voxels with no
+        variance to test are gone before an analysis sees the data
+        (Experiment.drop_constant_vox).
 
         Args:
             exp (Experiment): experiment to walk (already scaled).

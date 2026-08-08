@@ -403,3 +403,60 @@ class TestDiscoverMask:
         assert len(effects) == 1
         np.testing.assert_array_equal(effects[0].mask, mask)
 
+
+
+class TestNanSafeReductions:
+    """Every reduction over the stat matrix skips NaN rather than spreading it.
+
+    NaN is the matrix's sentinel for a region with no usable statistic.
+    Nothing repairs it -- no stat function can return +-inf, and the
+    voxels with no variance are gone before an analysis sees the data
+    (Experiment.drop_constant_vox) -- so each reader has to handle it.
+    """
+
+    @staticmethod
+    def build_stat(n_perm=20, num_vox=1000):
+        """(n_perm+1, num_vox) positive stats, a blob in the observed row."""
+        rng = np.random.default_rng(0)
+        stat = np.abs(rng.standard_normal((n_perm + 1, num_vox))) * 3
+        stat[0, 400:460] += 8
+        return stat
+
+    def test_all_nan_column_stays_nan_silently(self):
+        """An all-NaN column comes back NaN, with no RuntimeWarning."""
+        stat = self.build_stat()
+        stat[:, 3] = np.nan
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', RuntimeWarning)
+            z = Analysis.z_score_stat(stat)
+        assert np.isnan(z[:, 3]).all()
+        assert np.isfinite(np.delete(z, 3, axis=1)).all()
+
+    def test_nan_column_does_not_move_the_others(self):
+        """Blanking one voxel does not shift any other voxel's z."""
+        stat = self.build_stat()
+        clean = Analysis.z_score_stat(stat.copy())
+        stat[:, 3] = np.nan
+        z = Analysis.z_score_stat(stat)
+        np.testing.assert_allclose(np.delete(z, 3, axis=1),
+                                   np.delete(clean, 3, axis=1))
+
+    def test_all_nan_perm_excluded_from_null(self):
+        """A permutation with no valid voxel drops out of the max-stat null.
+
+        nanmax would call that row's max NaN, which sorts to the top of
+        the null and silently raises every p-value.
+        """
+        stat = self.build_stat()
+        stat[7, :] = np.nan
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', RuntimeWarning)
+            pval = Analysis.get_pval(stat)
+        assert np.isfinite(np.nanmin(pval))
+        assert np.nanmin(pval) < 1.0
+
+    def test_all_nan_matrix_gives_all_nan(self):
+        """Nothing valid anywhere is NaN p-values, not a ZeroDivisionError."""
+        stat = np.full((21, 1000), np.nan)
+        assert np.isnan(Analysis.get_pval(stat)).all()
+
