@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from glow._extra.benchmark import data, hcp
+from glow._extra.benchmark.results import _raw
 from glow.effect import ExtenterMinVar, ExtenterSphere
 from glow.experiment import ExperimentImageOnly
 from glow.experiment.exper import NoBiasTermWarning
@@ -338,3 +339,54 @@ class TestEffectFactorySplit:
         rec = data.RECORDER.records[args_id]
         assert rec['function'] == 'effect_factory_split'
         assert set(rec['outputs']) == {'exp', 'mask_target_list'}
+
+
+class TestDropsConstantVox:
+    """Every builder screens its experiment before handing it over.
+
+    The screen runs in _sample_x_and_crop, shared by both builders, so
+    one place decides which voxels exist and every recipe in the sweep
+    then tests the same ones -- GLOW and the voxel-wise arms control
+    FWER over one family rather than each pruning its own.
+    """
+
+    @staticmethod
+    def build(**kwargs):
+        """Build through the undecorated builder (no cache, no record)."""
+        return _raw(data.data_factory_wgn)(**kwargs)
+
+    def test_wgn_experiment_is_screened(self):
+        """The builder's output carries mask_dead, not None."""
+        exp = self.build(shape=(4, 4, 4), b=2, num_img=20, seed=0)
+        assert exp.mask_dead is not None
+        assert exp.mask_dead.shape == exp.mask_idx.shape
+
+    def test_gaussian_noise_loses_nothing(self):
+        """WGN varies everywhere, so the screen is a no-op on it."""
+        exp = self.build(shape=(4, 4, 4), b=2, num_img=20, seed=0)
+        assert exp.num_vox_dropped == 0
+        assert exp.y.shape[2] == 64
+
+    def test_crop_runs_first(self):
+        """The count is over the cropped volume, not the whole image."""
+        exp = self.build(shape=(6, 6, 6), b=2, num_img=20, seed=0,
+                         extenter=ExtenterSphere(radius=2, seed=0))
+        assert exp.mask_dead.sum() == exp.num_vox_dropped
+        assert exp.y.shape[2] == int((exp.mask_idx > -1).sum())
+
+    def test_count_reaches_the_record(self):
+        """The built experiment's record carries what the screen cost.
+
+        The recorder stores an opaque output as its repr, so the count
+        rides the exp repr into outputs.exp -- recorded once, on the
+        experiment the drop happened to, rather than copied onto every
+        leaf that later reads it.
+        """
+        kw = dict(shape=(4, 4, 4), b=2, num_img=10, a=1, seed=_fresh_seed())
+        args_id = data.data_factory_wgn._get_args_id(**kw)
+
+        data.RECORDER.records.clear()
+        data.data_factory_wgn(**kw)
+
+        exp_cell = data.RECORDER.records[args_id]['outputs']['exp']
+        assert 'num_vox_dropped=0' in exp_cell

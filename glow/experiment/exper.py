@@ -77,6 +77,20 @@ class ExperimentImageOnly:
         """Return the dtype of the underlying y array, or None when unset."""
         return self.y.dtype if self.y is not None else None
 
+    def _repr_dropped(self) -> str:
+        """Render the screened-voxel count, or '' if never screened.
+
+        The recorder stores an opaque output as its repr, so this string
+        is how many voxels drop_constant_vox took shows up in the built
+        experiment's record -- once, where the drop happened, rather than
+        copied onto every leaf that later reads the experiment. Shown
+        even at zero, since screened-and-clean is worth telling apart
+        from never-screened.
+        """
+        if self.mask_dead is None:
+            return ''
+        return f', num_vox_dropped={self.num_vox_dropped}'
+
     def __repr__(self):
         """A compact identity string: class name + the y dimensions.
 
@@ -88,7 +102,7 @@ class ExperimentImageOnly:
             return f'{type(self).__name__}(empty)'
         b, num_img, num_vox = self.y.shape
         return (f'{type(self).__name__}(b={b}, num_img={num_img}, '
-                f'num_vox={num_vox})')
+                f'num_vox={num_vox}{self._repr_dropped()})')
 
     @classmethod
     def from_gauss(cls, b: int = None, num_img: int = 10,
@@ -565,7 +579,7 @@ class Experiment(ExperimentImageOnly):
             return f'{type(self).__name__}(a={a})'
         b, num_img, num_vox = self.y.shape
         return (f'{type(self).__name__}(b={b}, num_img={num_img}, '
-                f'num_vox={num_vox}, a={a})')
+                f'num_vox={num_vox}, a={a}{self._repr_dropped()})')
 
     def permute(self, perm_idx: int):
         """Return a new experiment with Freedman-Lane permuted images.

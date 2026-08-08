@@ -86,7 +86,7 @@ def _sample_x_and_crop(exp_img, *, a: int, contrast, has_bias: bool,
 
     Returns:
         Experiment with x and contrast attached, cropped to the extenter
-        support when set.
+        support when set, and the voxels that carry no signal dropped.
     """
     # sample_x requires exactly one of a / contrast
     exp = exp_img.sample_x(a=None if contrast is not None else a,
@@ -95,6 +95,10 @@ def _sample_x_and_crop(exp_img, *, a: int, contrast, has_bias: bool,
         # data-driven extenters (ExtenterMinVar) need y; geometric ones
         # ignore it
         exp = exp.apply_mask(extenter(mask_idx=exp.mask_idx, y=exp.y))
+    # after the crop, so the dropped count is over the volume actually
+    # analysed, and here rather than in any one recipe's fit so every
+    # method in the sweep tests the same voxels
+    exp = exp.drop_constant_vox()
     # canonicalise y's layout so the cached/recorded exp hashes stably (see
     # helper)
     return _with_canonical_y(exp)

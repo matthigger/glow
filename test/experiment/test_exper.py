@@ -328,3 +328,21 @@ class TestDropConstantVox:
         assert out.permute(3).num_vox_dropped == 1
         assert ExperimentScaled.from_exp(out).num_vox_dropped == 1
         assert out.apply_mask(out.mask_idx > -1).num_vox_dropped == 1
+
+    def test_repr_carries_the_count(self):
+        """The count rides the repr, which is what the recorder stores."""
+        exp = self.build_exp()
+        assert 'num_vox_dropped' not in repr(exp), 'not screened yet'
+
+        clean = self.quiet_drop(exp)
+        assert 'num_vox_dropped=0' in repr(clean)
+
+        dropped = self.quiet_drop(self.kill(self.build_exp()))
+        assert 'num_vox_dropped=1' in repr(dropped)
+
+    def test_repr_distinguishes_unscreened_from_clean(self):
+        """None means never screened; all-False means screened and clean."""
+        exp = self.build_exp()
+        assert exp.mask_dead is None
+        assert 'num_vox_dropped' not in repr(exp)
+        assert repr(self.quiet_drop(exp)).endswith('num_vox_dropped=0)')

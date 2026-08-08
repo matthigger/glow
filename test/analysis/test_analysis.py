@@ -490,3 +490,53 @@ class TestCetNanThreshold:
         assert np.isnan(pval[3])
         assert np.isfinite(np.delete(pval, 3)).all()
 
+
+class TestScreenCutsAcrossArms:
+    """One screen upstream, so every method tests the same voxels.
+
+    The point of dropping in pre-processing rather than inside a fit:
+    GLOW and the voxel-wise arms control FWER over one family, instead
+    of each arriving at its own by whatever its statistic happened to
+    return on a voxel with nothing in it.
+    """
+
+    DEAD_V = 10
+
+    @pytest.fixture
+    def exp(self):
+        """A screened experiment, one voxel flat across images."""
+        exp = Experiment.from_gauss(a=2, b=2, shape=(6, 6, 6), num_img=40,
+                                    seed=0)
+        exp.y[:, :, self.DEAD_V] = 3.0
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            return exp.drop_constant_vox()
+
+    @pytest.fixture(params=['vba', 'tfce', 'cet', 'glow'])
+    def ana(self, request):
+        """One recipe per arm under test."""
+        if request.param == 'vba':
+            return AnalysisVBA(n_perm_fwer=30)
+        if request.param == 'tfce':
+            return AnalysisVBA(n_perm_fwer=30, tfce_flag=True)
+        if request.param == 'cet':
+            return AnalysisCET(n_perm_fwer=30)
+        return AnalysisGLOW(n_perm_fwer=25, n_perm_inner=25)
+
+    def test_same_family_every_arm(self, exp, ana):
+        """215 of 216 voxels, whichever method is fit."""
+        assert exp.y.shape[2] == 215
+        assert exp.num_vox_dropped == 1
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            ana.fit(exp)
+        assert ana.pval is not None
+
+    def test_fit_finds_nothing_to_repair(self, exp, ana):
+        """No statistic comes back non-finite once the screen has run."""
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            ana.fit(exp)
+        stat = getattr(ana, 'stat', None)
+        if stat is not None:
+            assert np.isfinite(stat).all()
