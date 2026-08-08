@@ -343,3 +343,93 @@ class TestTopStepEndpoint:
         """glow always counts the top step, so it cannot come out lower."""
         for value in (0.2094, 1.0, 13.562, 40.682):
             assert self._single_voxel_ratio(value, self.H) >= 1.0 - 1e-6
+
+
+class TestNanVoxelParity:
+    """A voxel with no statistic costs a voxel, not the image.
+
+    Handed NaN the two backends used to disagree completely: fslmaths
+    ignored it, while apply_tfce_img's x.max() went NaN, took every
+    height threshold with it and returned an all-zero image. So the same
+    cell scored normally on a machine with FSL and zero on one without.
+    """
+
+    @staticmethod
+    def build():
+        """(21, 1000) stats over a 10^3 block, with a blob to detect."""
+        rng = np.random.default_rng(0)
+        mask_idx = np.arange(1000).reshape((10, 10, 10))
+        stat = np.abs(rng.standard_normal((21, mask_idx.size))) * 3
+        stat[0, 400:460] += 8
+        return stat, mask_idx
+
+    @staticmethod
+    def gap(a, b, drop=3):
+        """Largest relative difference between two enhanced stacks."""
+        a, b = np.delete(a, drop, axis=1), np.delete(b, drop, axis=1)
+        return np.nanmax(np.abs(a - b) / np.maximum(np.abs(b), 1e-12))
+
+    @pytest.mark.parametrize('backend', ['python', 'fsl'])
+    def test_image_not_collapsed(self, backend):
+        """The voxel goes; the image keeps its peak.
+
+        Not bit-identical to the clean run, and it should not be: at the
+        lowest heights nearly every voxel joins one cluster, so removing
+        a member shifts that cluster's extent by one and every member's
+        value with it.
+        """
+        if backend == 'fsl' and not _tfce.has_fsl():
+            pytest.skip('fslmaths not installed')
+        stat, mask_idx = self.build()
+        clean = AnalysisVBA.apply_tfce(stat=stat.copy(), mask_idx=mask_idx,
+                                       backend=backend)
+        stat[:, 3] = np.nan
+        dirty = AnalysisVBA.apply_tfce(stat=stat, mask_idx=mask_idx,
+                                       backend=backend)
+        assert np.isnan(dirty[:, 3]).all()
+        assert np.nanmax(dirty) == pytest.approx(np.nanmax(clean), rel=1e-6)
+        assert np.count_nonzero(np.nan_to_num(dirty)) > 0
+
+    @pytest.mark.parametrize('backend', ['python', 'fsl'])
+    def test_detection_survives(self, backend):
+        """The planted blob is still found with a voxel dropped."""
+        if backend == 'fsl' and not _tfce.has_fsl():
+            pytest.skip('fslmaths not installed')
+        stat, mask_idx = self.build()
+        stat[:, 3] = np.nan
+        tfce = AnalysisVBA.apply_tfce(stat=stat, mask_idx=mask_idx,
+                                      backend=backend)
+        assert np.nanmin(AnalysisVBA.get_pval(tfce)) < 0.05
+
+    def test_backends_agree_on_a_dropped_voxel(self):
+        """A NaN voxel adds nothing to the standing backend difference.
+
+        The two disagree by a fixed amount whatever the input, summing
+        over height grids that differ at one endpoint (see the _tfce
+        module docstring), so the test is that the gap does not move.
+        """
+        if not _tfce.has_fsl():
+            pytest.skip('fslmaths not installed')
+        stat, mask_idx = self.build()
+
+        def both(s):
+            """Enhance one stack on each backend."""
+            return (AnalysisVBA.apply_tfce(stat=s.copy(), mask_idx=mask_idx,
+                                           backend='python'),
+                    AnalysisVBA.apply_tfce(stat=s.copy(), mask_idx=mask_idx,
+                                           backend='fsl'))
+
+        gap_clean = self.gap(*both(stat))
+        stat[:, 3] = np.nan
+        gap_nan = self.gap(*both(stat))
+        # 1e-3 leaves room for the extent shift the drop itself causes;
+        # the bug this guards moved the gap to 1.0 (python returning zeros)
+        assert gap_nan == pytest.approx(gap_clean, rel=1e-3)
+
+    def test_apply_tfce_img_survives_nan(self):
+        """The public single-image entry point bails safely, not silently."""
+        rng = np.random.default_rng(0)
+        img = np.abs(rng.standard_normal((8, 8, 8)))
+        clean = _tfce.apply_tfce_img(img)
+        img[0, 0, 0] = np.nan
+        assert _tfce.apply_tfce_img(img).max() == pytest.approx(clean.max())

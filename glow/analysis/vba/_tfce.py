@@ -164,8 +164,13 @@ def apply_tfce_img(x, H: float = 2.0, E: float = 0.5,
     """
     x = np.asarray(x)
 
-    # nothing exceeds threshold 0, so TFCE is identically zero
-    img_max = x.max()
+    # nothing exceeds threshold 0, so TFCE is identically zero. A
+    # non-finite maximum lands here too: NaN fails every comparison, so
+    # without this the height grid would come out all-NaN and silently
+    # zero an image that has real signal in it (callers inside glow
+    # blank NaN first -- see apply_tfce_stat -- but this is public).
+    finite = x[np.isfinite(x)]
+    img_max = finite.max() if finite.size else 0.0
     if img_max <= 0:
         return np.zeros_like(x)
 
@@ -343,6 +348,17 @@ def apply_tfce_stat(stat, mask_idx, H: float = 2.0, E: float = 0.5,
     img = np.zeros((len(stat), *mask_bb.shape))
     img[:, mask_bb] = stat
 
+    # A region with no usable statistic arrives NaN. Hand
+    # both backends 0 there instead: TFCE only ever tests x >= h for h > 0,
+    # so 0 is invisible to the enhancement, exactly like the out-of-mask
+    # voxels this image is already zero-filled with. Left as NaN the two
+    # disagree -- fslmaths ignores it, while apply_tfce_img's x.max() goes
+    # NaN, every threshold with it, and the whole image comes back zero.
+    # The mask is restored afterwards so the voxel stays out of the
+    # max-stat null rather than re-entering it as a real zero.
+    nan_mask = np.isnan(img)
+    img[nan_mask] = 0.0
+
     name = resolve_backend(backend, ndim=mask_bb.ndim, n_steps=n_steps)
     if name == 'fsl':
         tfce = apply_tfce_stack_fsl(img, H=H, E=E, connectivity=connectivity)
@@ -350,6 +366,7 @@ def apply_tfce_stat(stat, mask_idx, H: float = 2.0, E: float = 0.5,
         tfce = np.stack([
             apply_tfce_img(_img, H=H, E=E, connectivity=connectivity,
                            n_steps=n_steps) for _img in img])
+    tfce[nan_mask] = np.nan
     return tfce[:, mask_bb]
 
 
