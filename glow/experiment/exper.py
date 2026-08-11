@@ -351,6 +351,97 @@ class ExperimentImageOnly:
         exp.y = y
         return exp
 
+    def _take_img(self, img_idx, **overrides):
+        """Return a new experiment over the images img_idx selects.
+
+        Slices every per-image attribute; subclasses cooperate by adding
+        their own to overrides (Experiment adds the design matrix).
+
+        Args:
+            img_idx (np.array): image indices to keep, in output order
+            **overrides: further attributes for _copy_with
+
+        Returns:
+            exp: a new experiment over those images, same voxels
+        """
+        meta = deepcopy(self.meta)
+        subjects = meta.get('subjects')
+        if subjects is not None and len(subjects) == self.y.shape[1]:
+            meta['subjects'] = [subjects[i] for i in img_idx]
+
+        return self._copy_with(y=self.y[:, img_idx, :], meta=meta,
+                               **overrides)
+
+    def split_img(self, frac_segment: float = .5, *, seed: int = None,
+                  group=None):
+        """Partition the images into a segmentation fold and a test fold.
+
+        The two folds are disjoint in images and identical in voxels --
+        both keep this experiment's mask_idx and num_vox -- so a Ward tree
+        built on exp_segment indexes the leaves of exp_test unchanged.
+        That is what lets GLOW segment on one fold and compute LLR / inner
+        perms / FWER on the other, which removes the selection bias of
+        choosing the tree with the same images that then test it.
+
+        Run drop_constant_vox before splitting, not after: screening each
+        fold separately renumbers mask_idx differently in each, and the
+        tree stops transferring.
+
+        The partition is a uniform random draw, so each fold's share of
+        the design's information is right on average (the two folds'
+        second-moment matrices sum to the whole design's, whatever the
+        draw). It is not balanced against an unlucky draw; the split
+        depends on the images alone, never on y.
+
+        Args:
+            frac_segment (float): fraction of the images going to the
+                segmentation fold, in (0, 1)
+            seed (int): RNG seed for the partition
+            group (np.array): (num_img,) labels held together, so every
+                image sharing a label lands in the same fold. For related
+                subjects (siblings, repeat scans), whose images correlate
+                and would otherwise leave the folds dependent. The
+                realized fraction then only approximates frac_segment,
+                since whole groups move at a time.
+
+        Returns:
+            exp_segment: fold the Ward tree is built on
+            exp_test: fold the statistics are computed on
+
+        Raises:
+            ValueError: if either fold would come out empty
+        """
+        num_img = self.y.shape[1]
+        assert 0 < frac_segment < 1, 'frac_segment must lie in (0, 1)'
+
+        # with no group argument each image is its own group, which walks
+        # the same path below and lands on n_segment exactly
+        group = np.arange(num_img) if group is None else np.asarray(group)
+        assert group.shape == (num_img,), \
+            f'group needs one label per image (num_img={num_img})'
+        label, group_idx = np.unique(group, return_inverse=True)
+
+        rng = np.random.default_rng(seed=seed)
+        order = rng.permutation(label.size)
+
+        # cut the shuffled groups wherever the running image count comes
+        # closest to the target, so a group is never broken across folds
+        n_cum = np.concatenate([[0], np.cumsum(np.bincount(group_idx)[order])])
+        n_segment = int(round(frac_segment * num_img))
+        k = int(np.argmin(np.abs(n_cum - n_segment)))
+
+        if not 0 < n_cum[k] < num_img:
+            raise ValueError(
+                f'split leaves a fold empty ({n_cum[k]} of {num_img} images '
+                f'in the segmentation fold): frac_segment={frac_segment} is '
+                f'too extreme for num_img={num_img}, or one group is too '
+                f'large a share of the images')
+
+        in_segment = np.isin(group_idx, order[:k])
+        img_idx = np.arange(num_img)
+        return (self._take_img(img_idx[in_segment]),
+                self._take_img(img_idx[~in_segment]))
+
     def sample_x(self, a: int = None, contrast=None, seed: int = None,
                  **kwargs):
         """Return a new Experiment with random standard-normal design matrix.
@@ -581,6 +672,56 @@ class Experiment(ExperimentImageOnly):
         return (f'{type(self).__name__}(b={b}, num_img={num_img}, '
                 f'num_vox={num_vox}, a={a}{self._repr_dropped()})')
 
+    def _take_img(self, img_idx, **overrides):
+        """Extend the image subset to the design matrix's columns."""
+        overrides.setdefault('x', self.x[:, img_idx])
+        return super()._take_img(img_idx, **overrides)
+
+    def _assert_design(self, fold: str, seed: int):
+        """Raise unless this fold's design still supports a MANCOVA fit.
+
+        A fold whose x lost rank (every subject at one level of a rare
+        covariate went to the other fold) gives mancova.decompose a
+        degenerate q0 / q1 and fails silently rather than loudly, so
+        check it here where the seed that produced it is still in hand.
+
+        Args:
+            fold (str): fold name, for the message
+            seed (int): the split's seed, for the message
+
+        Raises:
+            ValueError: if x is rank-deficient or leaves no residual space
+        """
+        a, num_img = self.x.shape
+        detail = (f'{fold} fold of a split_img(seed={seed}); pass group= to '
+                  f'hold related images together, or try another seed')
+
+        if num_img <= a:
+            raise ValueError(f'design has no residual space: num_img='
+                             f'{num_img} <= a={a} in the {detail}')
+        if np.linalg.matrix_rank(self.x) < a:
+            raise ValueError(f'design lost rank: rank(x) < a={a} in the '
+                             f'{detail}')
+
+    def split_img(self, frac_segment: float = .5, *, seed: int = None,
+                  group=None):
+        """Split the images, checking both folds keep a usable design.
+
+        See ExperimentImageOnly.split_img; this adds the design matrix to
+        what each fold carries, and the check that each fold's x survived
+        the partition.
+
+        Raises:
+            ValueError: if either fold's design is rank-deficient or
+                leaves no residual space
+        """
+        exp_segment, exp_test = super().split_img(
+            frac_segment=frac_segment, seed=seed, group=group)
+
+        exp_segment._assert_design('segmentation', seed)
+        exp_test._assert_design('test', seed)
+        return exp_segment, exp_test
+
     def permute(self, perm_idx: int):
         """Return a new experiment with Freedman-Lane permuted images.
 
@@ -644,6 +785,23 @@ class ExperimentScaled(Experiment):
                    contrast=exp.contrast,
                    mask_dead=getattr(exp, 'mask_dead', None),
                    meta=dict(exp.meta) if getattr(exp, 'meta', None) else None)
+
+    def split_img(self, *args, **kwargs):
+        """Refuse the split: pre-scaling was fit on every image.
+
+        pre_scale and mean_orig come from all the images at once, so a
+        fold cut out afterwards carries a transform the other fold helped
+        choose -- a leak, small but free to avoid. Split the raw
+        Experiment instead; AnalysisGLOW.fit runs from_exp on whatever it
+        is handed, so each fold gets its own transform.
+
+        Raises:
+            TypeError: always.
+        """
+        raise TypeError('split before scaling: ExperimentScaled fits '
+                        'pre_scale on every image, so both folds of a later '
+                        'split share a transform the test fold helped '
+                        'choose. Split the Experiment, then scale each fold.')
 
     def prep(self, y):
         """Apply pre-processing: y_out = pre_scale @ (y - mean_orig).

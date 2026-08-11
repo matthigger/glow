@@ -346,3 +346,154 @@ class TestDropConstantVox:
         assert exp.mask_dead is None
         assert 'num_vox_dropped' not in repr(exp)
         assert repr(self.quiet_drop(exp)).endswith('num_vox_dropped=0)')
+
+
+class TestSplitImg:
+    """split_img cuts images into a segmentation fold and a test fold."""
+
+    NUM_IMG = 20
+
+    @staticmethod
+    def build_exp(num_img=NUM_IMG, a=1, shape=(4, 4), b=2, seed=0):
+        """A small experiment whose subject labels track image order."""
+        return Experiment.from_gauss(a=a, b=b, shape=shape,
+                                     num_img=num_img, seed=seed)
+
+    @staticmethod
+    def img_idx(exp):
+        """Recover original image indices from the subject labels.
+
+        from_gauss names image i 'subject_00i', so the labels are an
+        independent record of which images a fold took -- one that has to
+        agree with y and x for the split to be self-consistent.
+        """
+        return np.array([int(s.split('_')[1]) for s in exp.meta['subjects']])
+
+    def test_partition_is_exact(self):
+        """Ungrouped, the folds are disjoint, exhaustive and exactly sized"""
+        exp = self.build_exp()
+        seg, test = exp.split_img(frac_segment=.6, seed=0)
+
+        idx_seg, idx_test = self.img_idx(seg), self.img_idx(test)
+        assert not set(idx_seg) & set(idx_test)
+        assert set(idx_seg) | set(idx_test) == set(range(self.NUM_IMG))
+        assert seg.y.shape[1] == len(idx_seg) == 12
+        assert test.y.shape[1] == len(idx_test) == 8
+
+    def test_folds_carry_their_own_images(self):
+        """y and x follow the same images the subject labels name"""
+        exp = self.build_exp()
+        for fold in exp.split_img(seed=0):
+            idx = self.img_idx(fold)
+            assert np.array_equal(fold.y, exp.y[:, idx, :])
+            assert np.array_equal(fold.x, exp.x[:, idx])
+            assert np.array_equal(fold.contrast, exp.contrast)
+
+    def test_voxels_are_shared(self):
+        """Both folds keep every voxel, so one fold's tree fits the other"""
+        exp = self.build_exp()
+        seg, test = exp.split_img(seed=0)
+
+        for fold in (seg, test):
+            assert np.array_equal(fold.mask_idx, exp.mask_idx)
+            assert fold.y.shape[2] == exp.y.shape[2]
+            assert fold.y.shape[0] == exp.y.shape[0]
+
+    def test_seed_reproduces(self):
+        """Same seed gives the same partition, a different seed does not"""
+        exp = self.build_exp()
+        idx = self.img_idx(exp.split_img(seed=3)[0])
+
+        assert np.array_equal(idx, self.img_idx(exp.split_img(seed=3)[0]))
+        assert not np.array_equal(idx, self.img_idx(exp.split_img(seed=4)[0]))
+
+    def test_split_is_blind_to_y(self):
+        """The partition depends on the images' identity, never their values
+
+        Selecting on y would put back the selection bias the split exists
+        to remove, so a wholly different y must not move the cut.
+        """
+        exp = self.build_exp()
+        other = exp._copy_with(y=exp.y * -3 + 1)
+
+        assert np.array_equal(self.img_idx(exp.split_img(seed=0)[0]),
+                              self.img_idx(other.split_img(seed=0)[0]))
+
+    @pytest.mark.parametrize('seed', range(5))
+    def test_group_is_never_broken(self, seed):
+        """Every image sharing a label lands in the same fold"""
+        exp = self.build_exp()
+        group = np.repeat(np.arange(self.NUM_IMG // 2), 2)
+        seg, test = exp.split_img(seed=seed, group=group)
+
+        set_seg = set(group[self.img_idx(seg)])
+        set_test = set(group[self.img_idx(test)])
+        assert not set_seg & set_test
+        assert set_seg | set_test == set(group)
+
+    def test_group_approximates_the_fraction(self):
+        """Whole groups move, so the realized fraction only approximates"""
+        exp = self.build_exp()
+        group = np.repeat(np.arange(self.NUM_IMG // 4), 4)
+        seg, _test = exp.split_img(frac_segment=.5, seed=0, group=group)
+
+        assert abs(seg.y.shape[1] - self.NUM_IMG / 2) <= 4
+
+    def test_group_of_one_matches_ungrouped(self):
+        """A group per image is the ungrouped case, on the same code path"""
+        exp = self.build_exp()
+        alone = np.arange(self.NUM_IMG)
+
+        assert np.array_equal(self.img_idx(exp.split_img(seed=0)[0]),
+                              self.img_idx(exp.split_img(seed=0,
+                                                         group=alone)[0]))
+
+    def test_rank_deficient_fold_raises(self):
+        """A covariate stranded in one fold is caught, not left to decompose"""
+        exp = self.build_exp()
+        rare = np.zeros(self.NUM_IMG)
+        rare[7] = 1
+        exp.x = np.vstack([np.ones(self.NUM_IMG), rare]).astype(exp.y.dtype)
+        exp.contrast = np.array([False, True])
+
+        with pytest.raises(ValueError, match='lost rank'):
+            exp.split_img(seed=0)
+
+    def test_no_residual_space_raises(self):
+        """A fold with num_img <= a leaves nothing to estimate error from"""
+        exp = self.build_exp(num_img=8, a=5)
+
+        with pytest.raises(ValueError, match='no residual space'):
+            exp.split_img(frac_segment=.5, seed=0)
+
+    def test_empty_fold_raises(self):
+        """One group holding every image cannot be cut in two"""
+        exp = self.build_exp()
+
+        with pytest.raises(ValueError, match='leaves a fold empty'):
+            exp.split_img(seed=0, group=np.zeros(self.NUM_IMG))
+
+    @pytest.mark.parametrize('frac', [0, 1, -.5, 1.5])
+    def test_frac_out_of_range_rejected(self, frac):
+        with pytest.raises(AssertionError, match='frac_segment'):
+            self.build_exp().split_img(frac_segment=frac, seed=0)
+
+    def test_group_length_checked(self):
+        with pytest.raises(AssertionError, match='one label per image'):
+            self.build_exp().split_img(seed=0, group=np.arange(3))
+
+    def test_image_only_splits_without_a_design(self):
+        """ExperimentImageOnly splits too -- there is just no x to check"""
+        exp = ExperimentImageOnly.from_gauss(shape=(4, 4), b=2,
+                                             num_img=self.NUM_IMG, seed=0)
+        seg, test = exp.split_img(frac_segment=.5, seed=0)
+
+        assert seg.y.shape[1] == test.y.shape[1] == self.NUM_IMG // 2
+        assert not set(self.img_idx(seg)) & set(self.img_idx(test))
+
+    def test_scaled_refuses_to_split(self):
+        """Splitting after scaling would leak the test fold's whitening"""
+        exp = ExperimentScaled.from_exp(self.build_exp())
+
+        with pytest.raises(TypeError, match='split before scaling'):
+            exp.split_img(seed=0)
