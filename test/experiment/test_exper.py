@@ -153,6 +153,35 @@ class TestExperimentOnlyImage:
         exp = exp.bootstrap_img(n=10, seed=0)
         assert np.allclose(new_mean, exp.y.mean(axis=(1, 2)))
 
+    def test_bootstrap_img_takes_whole_images(self):
+        """A resampled image brings its design column and label with it
+
+        Resampling y alone would leave x describing the images the draw
+        replaced, silently, whenever n differs from the original count.
+        """
+        num_img = 12
+        exp = Experiment.from_gauss(a=1, b=2, shape=(4, 4),
+                                    num_img=num_img, seed=0)
+        boot = exp.bootstrap_img(n=30, seed=0)
+
+        assert boot.x.shape == (exp.x.shape[0], 30)
+        assert len(boot.meta['subjects']) == 30
+
+        # the subject labels name which draw each image came from, so
+        # they pin y and x to the same one
+        idx = np.array([int(s.split('_')[1]) for s in boot.meta['subjects']])
+        assert np.array_equal(boot.y, exp.y[:, idx, :])
+        assert np.array_equal(boot.x, exp.x[:, idx])
+
+    def test_bootstrap_img_noise_keeps_dtype(self):
+        """Noise is added without promoting y out of its dtype"""
+        exp = ExperimentImageOnly.from_gauss(b=2, shape=(4, 4), num_img=8,
+                                             seed=0)
+        boot = exp.bootstrap_img(n=20, seed=0, noise_scale=.5)
+
+        assert boot.y.dtype == exp.y.dtype
+        assert boot.y.shape[1] == 20
+
 
 class TestExperiment:
 

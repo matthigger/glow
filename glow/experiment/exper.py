@@ -328,27 +328,28 @@ class ExperimentImageOnly:
                 (drawn per-voxel from the sample covariance)
 
         Returns:
-            ExperimentImageOnly: new object with resampled y
+            exp: new experiment over n draws of this one's images. A
+                draw takes the image whole, so every per-image attribute
+                follows it -- the design matrix column on an Experiment,
+                the subject label in meta -- repeats and all.
         """
         rng = np.random.default_rng(seed=seed)
         b, num_img_init, num_vox = self.y.shape
         img_idx = rng.choice(num_img_init, n, replace=True)
-        y = self.y[:, img_idx, :].copy()
+        exp = self._take_img(img_idx)
 
         assert noise_scale >= 0, 'snr cannot be negative'
         if noise_scale > 0:
-            cov = np.atleast_2d(np.cov(y.reshape((b, -1))))
+            cov = np.atleast_2d(np.cov(exp.y.reshape((b, -1))))
             noise = rng.multivariate_normal(mean=np.zeros(b),
                                             cov=cov * (noise_scale ** 2),
                                             size=num_vox * n)
             # multivariate_normal returns float64 unconditionally; cast
             # back so the addition doesn't silently promote y.
-            noise = noise.T.reshape((b, n, num_vox)).astype(y.dtype,
+            noise = noise.T.reshape((b, n, num_vox)).astype(exp.y.dtype,
                                                             copy=False)
-            y = y + noise
+            exp.y = exp.y + noise
 
-        exp = deepcopy(self)
-        exp.y = y
         return exp
 
     def _take_img(self, img_idx, **overrides):
