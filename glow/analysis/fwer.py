@@ -30,6 +30,33 @@ from dataclasses import dataclass
 import numpy as np
 
 
+def max_over_active(stat, reg_active):
+    """Reduce a stat matrix to one max per draw over the comparison set.
+
+    The max-stat null itself, and the only place its convention lives: an
+    inactive region leaves the family, and a draw with no finite active
+    region contributes NaN rather than a number (from_max drops it, where
+    a -inf or a 0 would silently move every p-value). Streaming backends
+    that never hold the matrix reproduce this per chunk, so the convention
+    is stated once here rather than once per arm.
+
+    Args:
+        stat (np.array): (n_perm+1, num_reg) statistics per region
+        reg_active (np.array): (num_reg,) boolean comparison set
+
+    Returns:
+        max_stat (np.array): (n_perm+1,) max over reg_active per draw, in
+            draw order, NaN for a draw with no finite active region
+    """
+    # nanmax warns on an all-NaN slice and reports NaN, which is what the
+    # convention wants; an empty comparison set has no slice to take at all
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        if not reg_active.any():
+            return np.full(stat.shape[0], fill_value=np.nan)
+        return np.nanmax(stat[:, reg_active], axis=1)
+
+
 # eq=False: the generated __eq__ compares fields pairwise, which on array
 # fields raises on the ambiguous truth value rather than answering. Nothing
 # compares two results, so identity is the honest fallback.
@@ -99,17 +126,8 @@ class MaxStatPerm:
         if reg_active is None:
             reg_active = np.ones(stat_obs.shape[0], dtype=bool)
 
-        # a draw with no finite active region has no max to contribute;
-        # nanmax reports NaN (and warns), and NaN would sort to the top of
-        # the null and silently raise every p-value
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', RuntimeWarning)
-            max_stat = (np.nanmax(stat[:, reg_active], axis=1)
-                        if reg_active.any()
-                        else np.full(stat.shape[0], fill_value=np.nan))
-
-        return cls.from_max(stat_obs, max_stat, alpha=alpha,
-                            reg_active=reg_active)
+        return cls.from_max(stat_obs, max_over_active(stat, reg_active),
+                            alpha=alpha, reg_active=reg_active)
 
     @classmethod
     def from_max(cls, stat_obs, max_stat, *, alpha: float, reg_active=None):

@@ -151,14 +151,14 @@ def resolve_perm_chunk(config: GpuConfig, *, b: int, num_img: int,
     return int(min(_PERM_CHUNK_MAX, max(1, budget // max(per_draw, 1))))
 
 
-def gpu_draws(config: GpuConfig, *, exp, base_seed: int, n_perm: int,
-              q0, q1, children, min_vox: int):
-    """Draw the (n_perm, num_reg) Freedman-Lane LLR matrix on device.
+def gpu_summary(config: GpuConfig, *, exp, base_seed: int, n_perm: int,
+                q0, q1, children, min_vox: int, reg_active=None):
+    """Summarize the draws on device, never materializing the matrix.
 
-    The device counterpart of draws.cpu_reliable, and a drop-in for it at
-    AnalysisGLOW.fit's one call site: same draws, same NaN convention,
-    same seed-to-draw mapping. Sizes perm_chunk first (see
-    resolve_perm_chunk), then defers to draws_gpu.gpu_perm.
+    The device counterpart of the CPU path's cpu_reliable then
+    summarize_draws, and a drop-in for the pair at AnalysisGLOW.fit's one
+    call site. Sizes perm_chunk first (see resolve_perm_chunk), then defers
+    to draws_gpu.gpu_summarize.
 
     Args:
         config (GpuConfig): resolved device knobs
@@ -170,15 +170,16 @@ def gpu_draws(config: GpuConfig, *, exp, base_seed: int, n_perm: int,
         q1 (np.array): (a1, num_img) interest subspace
         children (np.array): (num_reg - num_vox, 2) Ward tree
         min_vox (int): regions smaller than this are left NaN
+        reg_active (np.array): (num_reg,) boolean comparison set
 
     Returns:
-        draws (np.array): (n_perm, num_reg) per-draw LLR, NaN where a
-            region is below min_vox or not positive definite
+        DrawSummary: see glow.analysis.draws.DrawSummary
     """
     b, num_img, num_vox = exp.y.shape
     perm_chunk = resolve_perm_chunk(
         config, b=b, num_img=num_img, num_vox=num_vox, a0=q0.shape[0])
-    return draws_gpu.gpu_perm(
+    return draws_gpu.gpu_summarize(
         exp=exp, base_seed=base_seed, n_perm=n_perm, q0=q0, q1=q1,
-        children=children, min_vox=min_vox, perm_chunk=perm_chunk,
-        device=config.device, acc_dtype=config.acc_dtype)
+        children=children, min_vox=min_vox, reg_active=reg_active,
+        perm_chunk=perm_chunk, device=config.device,
+        acc_dtype=config.acc_dtype)

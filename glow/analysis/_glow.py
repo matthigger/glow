@@ -7,7 +7,7 @@ import glow.graph
 from glow.experiment.exper import ExperimentScaled
 from ._base import Analysis
 from . import draws
-from ._fit_gpu import gpu_draws, resolve_gpu
+from ._fit_gpu import gpu_summary, resolve_gpu
 from .cluster import cluster, ClusterMode
 from .fwer import MaxStatPerm
 from .mancova import decompose
@@ -68,9 +68,12 @@ class AnalysisGLOW(Analysis):
         split_seed (int): seed for the image partition.
 
     The draw matrix itself is not kept: at full-brain num_vox it runs to
-    gigabytes, and only its first row, its column moments and its row
-    maxima outlive it. Each is copied out, since a row sliced from it is
-    a view and would hold the whole matrix alive.
+    gigabytes (~16.7 GiB at 5001 draws), and only its first row, its column
+    moments and its row maxima outlive it -- the five arrays of a
+    draws.DrawSummary. The CPU backend forms the matrix and reduces it; the
+    device backend streams it in two passes and never holds more than one
+    chunk, so at large n_perm_fwer the matrix is not merely dropped but
+    never allocated.
 
     Fit outputs (all on the test fold, against the fold-A tree):
         children (np.array): (num_reg - num_vox, 2) Ward tree.
@@ -176,38 +179,39 @@ class AnalysisGLOW(Analysis):
                   f'({exp_test.y.shape[1]} test images, '
                   f'{exp_test.y.shape[2]} voxels) ...')
 
+        # size >= min_vox is a function of the fold-A tree alone, hence a
+        # constant with respect to the fold-B permutations -- the condition
+        # MaxStatPerm needs of a comparison set. Both backends need it: it
+        # is what the per-draw maxima are taken over.
+        reg_active = self.size >= self.min_vox
+
         # base_seed=0 makes draw i exp_test.permute(i), and seed 0 is the
         # identity -- so row 0 is the observed draw and needs no separate
         # code path (permute._perm_indices reserves it).
         #
-        # The two backends differ only in speed: the CPU one is the trust
-        # anchor, an independent per-region implementation of the statistic
-        # (see draws), while the device one is ~3 orders faster at
-        # full-brain num_vox and holds float64 to reproduce it.
+        # Both backends return the same DrawSummary, so nothing below can
+        # tell them apart. They differ in speed and in peak memory: the CPU
+        # one materializes the matrix and is the trust anchor, an
+        # independent per-region implementation of the statistic (see
+        # draws); the device one streams it in two passes, never holding
+        # more than a chunk, and is ~3 orders faster at full-brain num_vox.
         draws_kwargs = dict(
             exp=exp_test, base_seed=0, n_perm=self.n_perm_fwer + 1,
             q0=q0, q1=q1, children=self.children, min_vox=self.min_vox)
-        llr_all = (draws.cpu_reliable(**draws_kwargs)
-                   if gpu_config is None
-                   else gpu_draws(gpu_config, **draws_kwargs))
+        if gpu_config is None:
+            summary = draws.summarize_draws(
+                draws.cpu_reliable(**draws_kwargs), reg_active=reg_active)
+        else:
+            summary = gpu_summary(gpu_config, reg_active=reg_active,
+                                  **draws_kwargs)
 
-        # One matrix, both jobs: column moments standardize the regions,
-        # row maxima are the null. The observed row is inside both.
-        z, self.mu, self.std = self.z_score_stat(llr_all)
+        self.llr = summary.llr
+        self.mu = summary.mu
+        self.std = summary.std
 
-        # Copy, never slice: llr_all[0] is a view, so keeping it would
-        # hold the whole (n_perm_fwer + 1, num_reg) matrix -- gigabytes at
-        # full-brain num_vox -- alive for one row of it. from_stat copies
-        # the row it keeps for the same reason.
-        self.llr = llr_all[0].copy()
-        del llr_all
-
-        # size >= min_vox is a function of the fold-A tree alone, hence a
-        # constant with respect to the fold-B permutations -- the
-        # condition MaxStatPerm needs of a comparison set.
-        self.fwer = MaxStatPerm.from_stat(
-            z, alpha=self.alpha_fwer, reg_active=self.size >= self.min_vox)
-        del z
+        self.fwer = MaxStatPerm.from_max(
+            summary.z_obs, summary.max_stat, alpha=self.alpha_fwer,
+            reg_active=reg_active)
 
         if verbose:
             print('  [2/2] FWER synthesis ...')

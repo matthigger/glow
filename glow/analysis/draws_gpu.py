@@ -88,6 +88,8 @@ import numpy as np
 
 import glow.graph
 from glow.experiment import permute
+from ._base import Z_STD_FLOOR
+from .draws import DrawSummary
 
 
 # b range where the closed-form (cofactor) determinant covers CUDA graph
@@ -501,6 +503,13 @@ def _build_perm_inv_tensor(perms, device):
         np.argsort(perms, axis=1).astype(np.int64)).to(device)
 
 
+def _nan_where_invalid(x, valid):
+    """Return x in float64 with the invalid cells replaced by NaN."""
+    import torch
+    x64 = x.to(torch.float64)
+    return torch.where(valid, x64, torch.full_like(x64, float('nan')))
+
+
 def gpu_perm(*, exp, base_seed: int, n_perm: int, q0, q1, children,
              min_vox: int, perm_chunk: int = 16, device: str = 'cuda',
              acc_dtype=np.float32, scan_dtype=np.float64):
@@ -542,8 +551,6 @@ def gpu_perm(*, exp, base_seed: int, n_perm: int, q0, q1, children,
         draws (np.array): (n_perm, num_reg) per-draw LLR, NaN where a
             region is below min_vox or not positive definite
     """
-    import torch
-
     state = prep_tree(
         prep_shared(exp, q0=q0, q1=q1, device=device, acc_dtype=acc_dtype,
                     scan_dtype=scan_dtype),
@@ -554,7 +561,189 @@ def gpu_perm(*, exp, base_seed: int, n_perm: int, q0, q1, children,
     out = np.full((n_perm, state['num_reg']), np.nan, dtype=np.float64)
     for s in range(0, n_perm, perm_chunk):
         llr, valid = _chunk_llr(src[s:s + perm_chunk], state)
-        nan = torch.full_like(llr, float('nan'))
-        out[s:s + perm_chunk] = torch.where(valid, llr, nan) \
-                                     .to(torch.float64).cpu().numpy()
+        out[s:s + perm_chunk] = _nan_where_invalid(llr, valid).cpu().numpy()
     return out
+
+
+# ---------------------------------------------------------------------------
+# Streaming reduction: two passes, never the matrix
+
+def _chan_combine(llr, valid, n, mean, m2):
+    """Fold one (Pc, num_reg) draw-chunk into running per-region moments.
+
+    One step of Chan's parallel-combine rule (Chan, Golub & LeVeque 1979),
+    with invalid cells excluded from the count, giving nanmean /
+    nanstd(ddof=1) semantics once finalized -- what Analysis.z_score_stat
+    takes over a whole matrix. Chan rather than a naive sum / sum-of-squares
+    pass because var << mean^2 here (LLR carries a 0.5 * size prefactor),
+    exactly where the textbook one-pass formula loses the variance to
+    cancellation.
+
+    Args:
+        llr (torch.Tensor): (Pc, num_reg) draws, arbitrary where invalid
+        valid (torch.Tensor): (Pc, num_reg) bool validity mask
+        n (torch.Tensor): (num_reg,) running valid-sample count
+        mean (torch.Tensor): (num_reg,) running mean
+        m2 (torch.Tensor): (num_reg,) running sum of squared deviations
+
+    Returns:
+        n, mean, m2 (torch.Tensor): the updated (num_reg,) accumulators
+    """
+    import torch
+    llr_safe = torch.where(valid, llr, torch.zeros_like(llr)).to(n.dtype)
+    n_b = valid.sum(dim=0).to(n.dtype)
+    sum_b = llr_safe.sum(dim=0)
+
+    ones = torch.ones_like(n_b)
+    safe_nb = torch.where(n_b > 0, n_b, ones)
+    mean_b = sum_b / safe_nb
+    dev = torch.where(valid, llr_safe - mean_b[None, :],
+                      torch.zeros_like(llr_safe))
+    m2_b = (dev * dev).sum(dim=0)
+
+    new_n = n + n_b
+    safe_new_n = torch.where(new_n > 0, new_n, torch.ones_like(new_n))
+    delta = mean_b - mean
+    mean = mean + delta * (n_b / safe_new_n)
+    m2 = m2 + m2_b + delta * delta * (n * n_b / safe_new_n)
+    return new_n, mean, m2
+
+
+def _chan_moments(n, mean, m2):
+    """Reduce running (n, mean, m2) to on-device (mu, std).
+
+    Matches np.nanmean / np.nanstd(ddof=1) as z_score_stat calls them: NaN
+    mu where no valid sample accumulated, NaN std where fewer than two did,
+    and ULP-level negative variance clamped to zero before the sqrt. Left on
+    the device because the second pass standardizes against it.
+
+    Args:
+        n (torch.Tensor): (num_reg,) valid-sample count
+        mean (torch.Tensor): (num_reg,) running mean
+        m2 (torch.Tensor): (num_reg,) running sum of squared deviations
+
+    Returns:
+        mu, std (torch.Tensor): (num_reg,) each, on n's device
+    """
+    import torch
+    nan = torch.full_like(mean, float('nan'))
+    ones = torch.ones_like(n)
+    mu = torch.where(n > 0, mean, nan)
+    var = torch.where(n > 1, m2 / torch.where(n > 1, n - 1, ones), nan)
+    return mu, torch.where(n > 1, torch.sqrt(torch.clamp(var, min=0.0)), nan)
+
+
+def _nanmax_rows(x):
+    """Reduce (Pc, M) to (Pc,) row maxima, ignoring NaN.
+
+    torch has no nanmax, so NaN is pushed to -inf for the reduction and the
+    all-NaN rows are put back afterwards -- np.nanmax's convention, which
+    fwer.max_over_active states and fwer.from_max depends on (a NaN draw
+    sits out of the comparison; a -inf would join it and move every
+    p-value).
+
+    Args:
+        x (torch.Tensor): (Pc, M) values over the comparison set
+
+    Returns:
+        row_max (torch.Tensor): (Pc,) max per row, NaN for an all-NaN row
+    """
+    import torch
+    bad = torch.isnan(x)
+    filled = torch.where(bad, torch.full_like(x, float('-inf')), x)
+    row_max = filled.max(dim=1).values
+    return torch.where(bad.all(dim=1),
+                       torch.full_like(row_max, float('nan')), row_max)
+
+
+def gpu_summarize(*, exp, base_seed: int, n_perm: int, q0, q1, children,
+                  min_vox: int, reg_active=None, perm_chunk: int = 16,
+                  device: str = 'cuda', acc_dtype=np.float32,
+                  scan_dtype=np.float64):
+    """Summarize the draw matrix on device without ever forming it.
+
+    Equivalent to draws.summarize_draws(gpu_perm(...)), at O(num_reg +
+    n_perm) host memory instead of O(n_perm * num_reg): 5001 draws at
+    full-brain num_vox is ~16.7 GiB as a float64 matrix, and a benchmark
+    sweep runs many fits at once.
+
+    Two passes, because standardizing needs moments the first pass has not
+    finished computing. Pass one folds each chunk into Chan accumulators for
+    (mu, std); pass two re-draws the same chunks, standardizes each against
+    those moments, and keeps only the row maxima over the comparison set,
+    plus row 0. Re-drawing is exact rather than approximate -- a chunk is a
+    deterministic function of its permutation indices and the prep state,
+    both unchanged between passes -- and cheap next to holding the matrix:
+    it doubles the LLR work, which at b = 2 and 5001 draws is 45 s against
+    16.7 GiB. Prep is paid once for both passes.
+
+    Args:
+        exp (Experiment): experiment to sample permutations from
+        base_seed (int): draw i uses RNG seed base_seed + i; 0 puts the
+            observed draw in row 0
+        n_perm (int): number of FL draws, counting the observed
+        q0 (np.array): (a0, num_img) nuisance subspace
+        q1 (np.array): (a1, num_img) interest subspace
+        children (np.array): (num_reg - num_vox, 2) Ward tree
+        min_vox (int): regions smaller than this are left NaN
+        reg_active (np.array): (num_reg,) boolean comparison set. None
+            takes size >= min_vox, the set prep_tree already derived.
+        perm_chunk (int): draws per device chunk; see gpu_perm
+        device (str): torch device string
+        acc_dtype: hot-loop dtype; the reduction itself is float64 either
+            way, matching the CPU path's numpy
+        scan_dtype: dtype for the DC-carrying prep scans
+
+    Returns:
+        DrawSummary: see glow.analysis.draws.DrawSummary
+    """
+    import torch
+
+    state = prep_tree(
+        prep_shared(exp, q0=q0, q1=q1, device=device, acc_dtype=acc_dtype,
+                    scan_dtype=scan_dtype),
+        children=children, min_vox=min_vox)
+    dev = state['dev']
+    num_reg = state['num_reg']
+    src = _build_perm_inv_tensor(
+        _build_perms(base_seed, n_perm, exp.y.shape[1]), dev)
+
+    active = (state['active'] if reg_active is None
+              else torch.from_numpy(
+                  np.ascontiguousarray(reg_active, dtype=bool)).to(dev))
+
+    # Pass 1: (mu, std). Row 0's raw LLR is read off here rather than in
+    # pass 2 -- it is the unstandardized statistic, so it owes nothing to
+    # the moments.
+    n = torch.zeros(num_reg, dtype=torch.float64, device=dev)
+    mean = torch.zeros_like(n)
+    m2 = torch.zeros_like(n)
+    llr_obs = None
+    for s in range(0, n_perm, perm_chunk):
+        llr, valid = _chunk_llr(src[s:s + perm_chunk], state)
+        if llr_obs is None:
+            llr_obs = _nan_where_invalid(llr[:1], valid[:1])[0]
+        n, mean, m2 = _chan_combine(llr, valid, n, mean, m2)
+    mu, std = _chan_moments(n, mean, m2)
+
+    # Pass 2: z against those moments, then the two reductions the fit
+    # actually keeps. Z_STD_FLOOR is shared with z_score_stat so a
+    # degenerate column is divided by the same 1.0 on both paths.
+    denom = torch.where(std > Z_STD_FLOOR, std, torch.ones_like(std))
+    max_stat = np.full(n_perm, np.nan, dtype=np.float64)
+    any_active = bool(active.any())
+    z_obs = None
+    for s in range(0, n_perm, perm_chunk):
+        llr, valid = _chunk_llr(src[s:s + perm_chunk], state)
+        z = _nan_where_invalid(
+            (llr.to(torch.float64) - mu[None]) / denom[None], valid)
+        if z_obs is None:
+            z_obs = z[0].clone()
+        if any_active:
+            max_stat[s:s + perm_chunk] = \
+                _nanmax_rows(z[:, active]).cpu().numpy()
+
+    return DrawSummary(llr=llr_obs.cpu().numpy(), mu=mu.cpu().numpy(),
+                       std=std.cpu().numpy(), z_obs=z_obs.cpu().numpy(),
+                       max_stat=max_stat)
+

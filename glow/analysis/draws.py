@@ -24,11 +24,22 @@ For the batched CPU alternative -- one GEMM plus cumsum-and-diff over the
 DFS pre-order voxel axis per perm-chunk, ~60x faster at full-brain
 num_vox -- see glow.graph.iter_llr_perm, which yields chunks a caller can
 stack or reduce as it likes.
+
+DrawSummary is the other half of this module: the five arrays a fit keeps
+of a draw matrix, and so the contract a streaming backend has to meet. The
+matrix runs to ~16.7 GiB at 5001 draws and full-brain num_vox, which is why
+the device path never forms one (draws_gpu.gpu_summarize). summarize_draws
+is that same reduction taken over a materialized matrix -- the reference
+the streaming one is held against.
 """
+from dataclasses import dataclass
+
 import numpy as np
 
 import glow.graph
 from glow.analysis import mancova
+from ._base import Analysis
+from .fwer import max_over_active
 
 
 def cpu_reliable(*, exp, base_seed: int, n_perm: int, q0, q1, children,
@@ -70,3 +81,58 @@ def cpu_reliable(*, exp, base_seed: int, n_perm: int, q0, q1, children,
                 continue
             draws[i, reg_idx] = mancova.get_llr(e, h, n=size)
     return draws
+
+
+# eq=False for the same reason MaxStatPerm gives: a generated __eq__ would
+# compare array fields pairwise and raise on the ambiguous truth value.
+@dataclass(frozen=True, eq=False)
+class DrawSummary:
+    """Everything a GLOW fit keeps of its (n_perm, num_reg) draw matrix.
+
+    Five arrays, all O(num_reg) or O(n_perm), against a matrix that is
+    their product. Whether a backend materializes the matrix and reduces it
+    (summarize_draws) or accumulates these while streaming it
+    (draws_gpu.gpu_summarize) is an implementation choice the fit cannot
+    see, which is what lets the two be swapped and compared.
+
+    Attributes:
+        llr (np.array): (num_reg,) observed per-region LLR -- row 0 of the
+            matrix, unstandardized, NaN off the comparison set
+        mu (np.array): (num_reg,) per-region mean over every draw, the
+            observed row included
+        std (np.array): (num_reg,) per-region std (ddof=1) over every
+            draw, as measured -- a degenerate column keeps its 0 or NaN
+        z_obs (np.array): (num_reg,) observed z, row 0 standardized by
+            (mu, std); MaxStatPerm.from_max's stat_obs
+        max_stat (np.array): (n_perm,) max z per draw over the comparison
+            set, in draw order, entry 0 the observed draw
+    """
+
+    llr: np.ndarray
+    mu: np.ndarray
+    std: np.ndarray
+    z_obs: np.ndarray
+    max_stat: np.ndarray
+
+
+def summarize_draws(draws, *, reg_active):
+    """Reduce a materialized draw matrix to a DrawSummary.
+
+    Routes the standardization through Analysis.z_score_stat and the row
+    maxima through fwer.max_over_active, so this holds no convention of its
+    own -- it is the composition a fit would otherwise write inline, named
+    once so a streaming backend has something to be equal to.
+
+    Args:
+        draws (np.array): (n_perm, num_reg) per-draw LLR, row 0 observed
+        reg_active (np.array): (num_reg,) boolean comparison set
+
+    Returns:
+        DrawSummary: see the class docstring
+    """
+    z, mu, std = Analysis.z_score_stat(draws)
+    # copies, not row-0 views: the summary outlives draws, and a view would
+    # hold the whole matrix alive for one row of it
+    return DrawSummary(llr=np.array(draws[0]), mu=mu, std=std,
+                       z_obs=np.array(z[0]),
+                       max_stat=max_over_active(z, reg_active))

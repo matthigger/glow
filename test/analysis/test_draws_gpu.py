@@ -94,6 +94,13 @@ def _call(fn, prep, *, n_perm, base_seed=12_345, **kwargs):
               min_vox=prep['min_vox'], **kwargs)
 
 
+def _reg_active(prep):
+    """The comparison set a fit would use: size >= min_vox."""
+    _, region_l, region_h = glow.graph.build_dfs_preorder(
+        children=prep['children'], num_vox=prep['exp'].y.shape[2])
+    return (region_h - region_l) >= prep['min_vox']
+
+
 def _assert_cells_match(got, ref, *, atol, label):
     """Assert identical NaN masks and per-cell agreement within atol."""
     assert got.shape == ref.shape
@@ -321,3 +328,98 @@ def test_float32_survives_near_constant_voxels():
         f'float32 std {std32c:.4e} != float64 {std64:.4e}')
     assert abs(z32c - z64) < 1e-2 * z64, (
         f'float32 max|z| {z32c:.5g} != float64 {z64:.5g}')
+
+
+# ---------------------------------------------------------------------------
+# Streaming reduction: two passes must equal reducing the whole matrix
+#
+# gpu_summarize never forms the (n_perm, num_reg) matrix, so its only
+# reference is the same backend's gpu_perm run through summarize_draws. That
+# pins the pieces a matrix-free path could get wrong on its own: the Chan
+# moments against nanmean / nanstd(ddof=1), the Z_STD_FLOOR guard, the
+# all-NaN row convention in the max, and that pass 2 re-draws bit-identically
+# to pass 1.
+
+def _assert_summaries_match(got, ref, *, atol, label):
+    """Assert two DrawSummary objects agree field by field."""
+    for name in ('llr', 'mu', 'std', 'z_obs', 'max_stat'):
+        _assert_cells_match(getattr(got, name), getattr(ref, name),
+                            atol=atol, label=f'{label} {name}')
+
+
+@requires_cuda
+@pytest.mark.parametrize('design', DESIGNS)
+@pytest.mark.parametrize('b', B_LIST)
+def test_gpu_summarize_matches_the_matrix_reduction(b, design):
+    """Streaming the reduction equals materializing then reducing."""
+    prep = _prep(b, design)
+    reg_active = _reg_active(prep)
+    got = _call(draws_gpu.gpu_summarize, prep, n_perm=12, base_seed=0,
+                acc_dtype=np.float64, reg_active=reg_active)
+    ref = draws.summarize_draws(
+        _call(draws_gpu.gpu_perm, prep, n_perm=12, base_seed=0,
+              acc_dtype=np.float64), reg_active=reg_active)
+    _assert_summaries_match(got, ref, atol=1e-9, label=f'b={b} {design}')
+
+
+@requires_cuda
+@pytest.mark.parametrize('design', DESIGNS)
+def test_gpu_summarize_matches_the_cpu_anchor(design):
+    """And equals the trust anchor's matrix, reduced the same way."""
+    prep = _prep(2, design)
+    reg_active = _reg_active(prep)
+    got = _call(draws_gpu.gpu_summarize, prep, n_perm=12, base_seed=0,
+                acc_dtype=np.float64, reg_active=reg_active)
+    ref = draws.summarize_draws(
+        _call(draws.cpu_reliable, prep, n_perm=12, base_seed=0),
+        reg_active=reg_active)
+    _assert_summaries_match(got, ref, atol=1e-9, label=design)
+
+
+@requires_cuda
+@pytest.mark.parametrize('perm_chunk', [1, 5, 32])
+def test_gpu_summarize_is_chunk_invariant(perm_chunk):
+    """Chunking splits both passes, so the moments must survive it.
+
+    The Chan combine folds a chunk at a time, so its round-off does depend
+    on chunk size -- but only at round-off, and the max-z null and the
+    observed row must not move at all beyond that.
+    """
+    prep = _prep(2, 'general')
+    reg_active = _reg_active(prep)
+    kw = dict(n_perm=9, base_seed=0, acc_dtype=np.float64,
+              reg_active=reg_active)
+    got = _call(draws_gpu.gpu_summarize, prep, perm_chunk=perm_chunk, **kw)
+    ref = _call(draws_gpu.gpu_summarize, prep, perm_chunk=4, **kw)
+    _assert_summaries_match(got, ref, atol=1e-10,
+                            label=f'perm_chunk={perm_chunk}')
+
+
+@requires_cuda
+def test_gpu_summarize_default_comparison_set_is_min_vox():
+    """reg_active=None takes size >= min_vox, the set prep_tree derived."""
+    prep = _prep(2, 'general', min_vox=4)
+    got = _call(draws_gpu.gpu_summarize, prep, n_perm=8, base_seed=0,
+                acc_dtype=np.float64)
+    ref = _call(draws_gpu.gpu_summarize, prep, n_perm=8, base_seed=0,
+                acc_dtype=np.float64, reg_active=_reg_active(prep))
+    # bit-identical, not merely close: it is the same set either way
+    for name in ('llr', 'mu', 'std', 'z_obs', 'max_stat'):
+        np.testing.assert_array_equal(getattr(got, name), getattr(ref, name),
+                                      err_msg=f'default reg_active {name}')
+
+
+@requires_cuda
+def test_gpu_summarize_empty_comparison_set_gives_nan_null():
+    """No active region means no max to take, so the null is all NaN.
+
+    fwer.max_over_active's convention on an empty set: NaN rather than a
+    number, so from_max finds nothing to test against.
+    """
+    prep = _prep(2, 'general')
+    num_reg = 2 * prep['exp'].y.shape[2] - 1
+    got = _call(draws_gpu.gpu_summarize, prep, n_perm=6, base_seed=0,
+                acc_dtype=np.float64,
+                reg_active=np.zeros(num_reg, dtype=bool))
+    assert np.isnan(got.max_stat).all()
+    assert got.max_stat.shape == (6,)

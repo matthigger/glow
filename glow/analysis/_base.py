@@ -18,6 +18,15 @@ import glow.effect
 import glow.graph
 
 
+# Smallest std that may divide a z-score. A degenerate column (every draw
+# identical, or a single valid draw) keeps its measured 0 or NaN in the
+# reported std; only the divisor is replaced, so z comes back 0 rather than
+# +-inf. Shared with the streaming device reduction, which standardizes a
+# chunk at a time and must not pick its own floor
+# (glow.analysis.draws_gpu.gpu_summarize).
+Z_STD_FLOOR = 1e-12
+
+
 def resolve_n_jobs(n_jobs: int) -> int:
     """Clamp a requested worker count to the cores this machine has.
 
@@ -167,7 +176,7 @@ class Analysis(ABC):
         # negated so the NaN std of an all-NaN column lands here too:
         # NaN > x is False, where NaN < x would have been False as well
         # and left the division to propagate it as a warning
-        denom = np.where(std > 1e-12, std, 1.0)
+        denom = np.where(std > Z_STD_FLOOR, std, 1.0)
         return (stat - mu) / denom, mu, std
 
     @classmethod
