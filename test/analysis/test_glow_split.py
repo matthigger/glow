@@ -157,7 +157,7 @@ def test_observed_row_contributes_to_the_moments():
 def test_z_is_the_shared_standardization():
     """GLOW z-scores through Analysis.z_score_stat, not a local copy."""
     ana = _ana().fit(_exp())
-    z = AnalysisGLOW.z_score_stat(ana.draws)
+    z, _, _ = AnalysisGLOW.z_score_stat(ana.draws)
     np.testing.assert_allclose(ana.z, z[0], rtol=0, atol=0, equal_nan=True)
 
     reg_active = ana.size >= ana.min_vox

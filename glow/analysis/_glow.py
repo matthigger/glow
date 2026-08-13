@@ -198,11 +198,7 @@ class AnalysisGLOW(Analysis):
 
         # One matrix, both jobs: column moments standardize the regions,
         # row maxima are the null. The observed row is inside both.
-        z = self.z_score_stat(self.draws)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', RuntimeWarning)
-            self.mu = np.nanmean(self.draws, axis=0)
-            self.std = np.nanstd(self.draws, axis=0, ddof=1)
+        z, self.mu, self.std = self.z_score_stat(self.draws)
 
         self.llr = self.draws[0]
         self.z = z[0]

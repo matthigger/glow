@@ -97,7 +97,7 @@ class TestZScoreStat:
     def test_constant_row_safe(self):
         """A constant row should not produce inf or nan."""
         stat = np.ones((5, 10))
-        z = Analysis.z_score_stat(stat)
+        z, _, _ = Analysis.z_score_stat(stat)
         assert not np.any(np.isinf(z))
         assert not np.any(np.isnan(z))
 
@@ -428,16 +428,16 @@ class TestNanSafeReductions:
         stat[:, 3] = np.nan
         with warnings.catch_warnings():
             warnings.simplefilter('error', RuntimeWarning)
-            z = Analysis.z_score_stat(stat)
+            z, _, _ = Analysis.z_score_stat(stat)
         assert np.isnan(z[:, 3]).all()
         assert np.isfinite(np.delete(z, 3, axis=1)).all()
 
     def test_nan_column_does_not_move_the_others(self):
         """Blanking one voxel does not shift any other voxel's z."""
         stat = self.build_stat()
-        clean = Analysis.z_score_stat(stat.copy())
+        clean, _, _ = Analysis.z_score_stat(stat.copy())
         stat[:, 3] = np.nan
-        z = Analysis.z_score_stat(stat)
+        z, _, _ = Analysis.z_score_stat(stat)
         np.testing.assert_allclose(np.delete(z, 3, axis=1),
                                    np.delete(clean, 3, axis=1))
 

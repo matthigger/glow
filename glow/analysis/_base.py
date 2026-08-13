@@ -223,6 +223,10 @@ class Analysis(ABC):
 
         Returns:
             z (np.array): same shape, voxel-wise z-scored
+            mu (np.array): (num_vox,) per-voxel mean over the rows
+            std (np.array): (num_vox,) per-voxel std over the rows, as
+                measured -- a degenerate column keeps its 0 or NaN here
+                and only the divisor is replaced
         """
         # a dropped voxel is NaN in every row, which nanmean / nanstd
         # report on rather than skip; the column is meant to stay NaN
@@ -233,8 +237,8 @@ class Analysis(ABC):
         # negated so the NaN std of an all-NaN column lands here too:
         # NaN > x is False, where NaN < x would have been False as well
         # and left the division to propagate it as a warning
-        std[~(std > 1e-12)] = 1.0
-        return (stat - mu) / std
+        denom = np.where(std > 1e-12, std, 1.0)
+        return (stat - mu) / denom, mu, std
 
     @classmethod
     def discover_mask(cls, mask, exp):

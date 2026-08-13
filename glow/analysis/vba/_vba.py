@@ -95,7 +95,7 @@ class AnalysisVBA(AnalysisVoxel):
         self.stat = self.build_stat_matrix(exp, _stat, n_jobs=n_jobs,
                                            verbose=self.verbose)
         if self.z_flag:
-            self.stat = self.z_score_stat(self.stat)
+            self.stat, _, _ = self.z_score_stat(self.stat)
         if self.tfce_flag:
             self.stat = self.apply_tfce(stat=self.stat,
                                         mask_idx=exp.mask_idx,

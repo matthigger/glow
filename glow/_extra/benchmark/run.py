@@ -657,7 +657,7 @@ def _inner_edge_curve(exp, *, cluster_mode, max_inner_perm: int,
     max_z = np.full((max_inner_perm + 1, len(grid)), -np.inf)
 
     for j, m in enumerate(grid):
-        z = AnalysisGLOW.z_score_stat(draws[:m + 1])
+        z, _, _ = AnalysisGLOW.z_score_stat(draws[:m + 1])
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)
             max_z[:m + 1, j] = np.nanmax(z[:, reg_active], axis=1)

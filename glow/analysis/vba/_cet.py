@@ -89,7 +89,7 @@ class AnalysisCET(AnalysisVoxel):
         exp = ExperimentScaled.from_exp(exp)
         self.stat = self.build_stat_matrix(exp, _stat, n_jobs=n_jobs)
         if self.z_flag:
-            self.stat = self.z_score_stat(self.stat)
+            self.stat, _, _ = self.z_score_stat(self.stat)
         null_pool = self.stat[1:, :].ravel()
         # nanquantile, not quantile: one dropped voxel is NaN in every row,
         # and np.quantile propagates that to the threshold, after which no

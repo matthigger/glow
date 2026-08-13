@@ -46,7 +46,7 @@ class TestZScoreStatReliability:
         stat = np.ones((n, 10))
         stat[0, :] = 100
 
-        z = Analysis.z_score_stat(stat)
+        z, _, _ = Analysis.z_score_stat(stat)
 
         z0_exp = (n - 1) / np.sqrt(n)
         z_null_exp = -1 / np.sqrt(n)
@@ -56,7 +56,7 @@ class TestZScoreStatReliability:
         # a 100x larger outlier lands on exactly the same z
         stat_bigger = np.ones((n, 10))
         stat_bigger[0, :] = 10_000
-        np.testing.assert_allclose(Analysis.z_score_stat(stat_bigger), z,
+        np.testing.assert_allclose(Analysis.z_score_stat(stat_bigger)[0], z,
                                    rtol=1e-12)
 
     def test_heterogeneous_voxels_equalized(self):
@@ -65,7 +65,7 @@ class TestZScoreStatReliability:
         stat = rng.standard_normal((201, 50))
         stat[:, :10] *= 10
 
-        z = Analysis.z_score_stat(stat)
+        z, _, _ = Analysis.z_score_stat(stat)
         stds = z.std(axis=0, ddof=1)
         np.testing.assert_allclose(stds, 1.0, atol=1e-10)
 
