@@ -6,7 +6,7 @@ import glow.effect
 import glow.graph
 from glow.experiment.exper import ExperimentScaled
 from ._base import Analysis
-from . import inner_perm
+from . import draws
 from ._fit_gpu import gpu_draws, resolve_gpu
 from .cluster import cluster, ClusterMode
 from .fwer import MaxStatPerm
@@ -180,14 +180,14 @@ class AnalysisGLOW(Analysis):
         # identity -- so row 0 is the observed draw and needs no separate
         # code path (permute._perm_indices reserves it).
         #
-        # The two backends differ only in speed: the CPU one is the
-        # trust anchor, an independent per-region implementation of the
-        # statistic (see inner_perm), while the device one is ~3 orders
-        # faster at full-brain num_vox and holds float64 to reproduce it.
+        # The two backends differ only in speed: the CPU one is the trust
+        # anchor, an independent per-region implementation of the statistic
+        # (see draws), while the device one is ~3 orders faster at
+        # full-brain num_vox and holds float64 to reproduce it.
         draws_kwargs = dict(
             exp=exp_test, base_seed=0, n_perm=self.n_perm_fwer + 1,
             q0=q0, q1=q1, children=self.children, min_vox=self.min_vox)
-        llr_all = (inner_perm.cpu_reliable_full(**draws_kwargs)
+        llr_all = (draws.cpu_reliable(**draws_kwargs)
                    if gpu_config is None
                    else gpu_draws(gpu_config, **draws_kwargs))
 

@@ -24,7 +24,7 @@ from glow._extra.benchmark import data
 from glow._extra.benchmark.grid import strip_gpu
 from glow._extra.benchmark.driver import check_fit_params, drive
 from glow._extra.benchmark.run import run_ana
-from glow.analysis import AnalysisVBA, inner_perm_gpu
+from glow.analysis import AnalysisVBA, draws_gpu
 from glow.effect import ExtenterSphere
 
 
@@ -300,7 +300,7 @@ class TestCheckFitParams:
         # gpu='auto' claims a device only where one is visible, so the same
         # grid must stay runnable in parallel on a CPU-only box
         grid = [dict(fit_params=dict(gpu='auto'))]
-        if inner_perm_gpu.is_available():
+        if draws_gpu.is_available():
             with pytest.raises(ValueError, match='asks for a GPU'):
                 check_fit_params(grid, 2)
         else:

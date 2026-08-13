@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 
 import glow.graph
-from glow.analysis import _glow, inner_perm
+from glow.analysis import _glow, draws
 from glow.analysis._glow import AnalysisGLOW
 from glow.analysis.cluster import cluster, ClusterMode
 from glow.analysis.mancova import decompose
@@ -37,9 +37,9 @@ def _exp(seed=0, num_img=NUM_IMG, shape=(6, 6, 6), b=2):
     """A float64 experiment.
 
     from_gauss samples float32. fp64 here because the checks below hold
-    cpu_reliable_full against compute_llr_batched -- two independent
+    cpu_reliable against compute_llr_batched -- two independent
     implementations of the statistic, which agree to fp64 round-off but
-    only to ~1e-3 in float32 (the same reason test_inner_perm.py anchors
+    only to ~1e-3 in float32 (the same reason test_draws.py anchors
     its equivalence tests on fp64 preps).
     """
     exp = Experiment.from_gauss(b=b, a=2, seed=seed, shape=shape,
@@ -74,7 +74,7 @@ def _draws(ana, exp):
     """
     children, exp_test = _test_fold(ana, exp)
     q0, q1, _ = decompose(x=exp_test.x, contrast=exp_test.contrast)
-    return inner_perm.cpu_reliable_full(
+    return draws.cpu_reliable(
         exp=exp_test, base_seed=0, n_perm=ana.n_perm_fwer + 1,
         q0=q0, q1=q1, children=children, min_vox=ana.min_vox)
 

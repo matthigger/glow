@@ -1,12 +1,12 @@
-"""GPU inner Freedman-Lane permutation backend (hoisted precompute).
+"""GPU Freedman-Lane draw matrix (hoisted precompute).
 
-A device-side counterpart to inner_perm.cpu_perm with the same
-keyword-only signature, so it drops into AnalysisGLOW.run_inner_perm.
-Where cpu_perm rides glow.graph.iter_llr_perm (per-perm GEMM plus
-cumsum-and-diff over the DFS pre-order voxel axis), this module hoists
-every permutation-invariant quantity into a one-time precompute and
-reduces each inner draw to a small row-permutation, one cumsum-and-diff,
-and a closed-form determinant.
+The device counterpart of glow.analysis.draws.cpu_reliable: same
+keyword-only signature, same seed-to-draw mapping, so the two can be
+compared cell by cell (test_draws_gpu.py). Where that anchor walks every
+region of every draw through iter_mancova, this module hoists every
+permutation-invariant quantity into a one-time precompute and reduces
+each draw to a small row-permutation, one cumsum-and-diff, and a
+closed-form determinant.
 
 ONE path serves any nuisance design. Everything is expressed in terms of
 the per-voxel nuisance split, taken once in float64:
@@ -58,8 +58,8 @@ terms of magnitude num_img * size * mean(y)^2 down to the residual
 scatter; for a near-constant voxel on a large DC offset (HCP background:
 mean -0.76, across-image std 5e-4) that ratio is ~7e-8, below float32 eps,
 and the result is the a55e7237 collapse -- E becomes rounding noise, the
-inner-null std collapses, and the standardized z explodes into the max-z
-null (see test_inner_perm_hcp.py). Instead T is assembled as
+per-region std collapses, and the standardized z explodes into the max-z
+null (see test_draws_hcp.py). Instead T is assembled as
 
     T = W_r + S_r
     W_r = reg_sum(T_v - sum_a rho_a rho_a^T)
@@ -88,7 +88,6 @@ import numpy as np
 
 import glow.graph
 from glow.experiment import permute
-from .mancova import is_intercept_only_nuisance
 
 
 # b range where the closed-form (cofactor) determinant covers CUDA graph
@@ -262,13 +261,12 @@ def prep_shared(exp, *, q0, q1, device: str = 'cuda',
         u  = y - Q0^T s0         (b, num_img, num_vox),   Q0 u = 0
         T_v = sum_n u u^T        (b, b, num_vox)
 
-    All three are computed on the UNPERMUTED experiment and reused for
-    every outer permutation (see prep_tree): the outer Freedman-Lane
-    permutation acts on u as a gather along the image axis, leaves the
-    nuisance-fitted part alone, and cannot change T_v at all because that
-    is a sum over the image axis. So the float64 split, the host-to-device
-    transfer, and the T_v contraction -- the bulk of a per-tree prep --
-    happen once per fit rather than once per outer perm.
+    All three are computed once per fit and reused by every draw: a
+    Freedman-Lane draw acts on u as a gather along the image axis, leaves
+    the nuisance-fitted part alone, and cannot change T_v at all because
+    that is a sum over the image axis. So the float64 split, the
+    host-to-device transfer, and the T_v contraction happen once, outside
+    the per-chunk loop.
 
     Args:
         exp (Experiment): the unpermuted experiment
@@ -320,32 +318,20 @@ def prep_shared(exp, *, q0, q1, device: str = 'cuda',
         ).to(dev))
 
 
-def prep_tree(shared, *, children, min_vox: int, outer_perm: int = 0):
-    """Derive one outer perm's state from the shared per-fit state.
+def prep_tree(shared, *, children, min_vox: int):
+    """Derive the per-tree state from the shared per-fit state.
 
-    Everything here is either a gather of shared arrays, a rank-a0
-    correction, or a region scan on the tree -- no host work and no
-    transfer. The outer permutation enters as an index array:
-
-        u_k   = u_0[:, perm_k]         (a gather along the image axis)
-        rho_k = Q0 u_k                 (zero iff Q0's rows are constant)
-        u_k'  = u_k - Q0^T rho_k       (re-project: a permutation does NOT
-                                        commute with Q0 Q0^T, so the
-                                        gathered residual is not yet the
-                                        permuted data's residual)
-        s0_k  = s0_0 + rho_k
-        T_v,k = T_v,0 - sum_a rho_k rho_k^T
-
-    which is why prep_shared's float64 split and transfer need not repeat.
-    The tree-dependent work that remains is the DFS gather, the two region
-    scans that build T_inv (see _chunk_llr), and s0_r.
+    Everything here is either a gather of shared arrays or a region scan
+    on the tree -- no host work and no transfer, which is why the split
+    from prep_shared is worth keeping: the float64 split and the
+    host-to-device copy do not repeat when the tree does. The
+    tree-dependent work is the DFS gather, the two region scans that build
+    T_inv (see _chunk_llr), and s0_r.
 
     Args:
         shared (dict): prep_shared output
         children (np.array): (num_reg - num_vox, 2) Ward tree
         min_vox (int): regions smaller than this are inactive
-        outer_perm (int): outer Freedman-Lane permutation index; 0 leaves
-            the data unpermuted, matching AnalysisGLOW's convention
 
     Returns:
         state (dict): consumed by _chunk_llr -- {dev, torch_dtype,
@@ -367,32 +353,9 @@ def prep_tree(shared, *, children, min_vox: int, outer_perm: int = 0):
     leaf_ord_t = torch.from_numpy(leaf_ord.astype(np.int64)).to(dev)
     num_reg = int(region_l.shape[0])
 
-    u_dfs = shared['U0']
-    if outer_perm:
-        perm_k = permute._perm_indices(outer_perm, shared['num_img'])
-        u_dfs = u_dfs.index_select(
-            1, torch.from_numpy(perm_k.astype(np.int64)).to(dev))
-    u_dfs = u_dfs.index_select(2, leaf_ord_t).contiguous()
-
+    u_dfs = shared['U0'].index_select(2, leaf_ord_t).contiguous()
     s0 = shared['s0_0'].index_select(2, leaf_ord_t).contiguous()
     t_v = shared['T_v'].index_select(2, leaf_ord_t).contiguous()
-
-    if outer_perm:
-        # The gathered residual is NOT the nuisance residual of the
-        # permuted data: a permutation does not commute with Q0 Q0^T, so
-        # Q0 u_k = rho_k is nonzero (identically zero only for constant Q0
-        # rows). Re-project, and carry the same correction into the two
-        # statistics derived from it:
-        #     u_k'  = u_k - Q0^T rho_k
-        #     s0_k  = s0_0 + rho_k
-        #     T_v,k = T_v,0 - sum_a rho_k rho_k^T
-        # all three exact, and all three cheap next to prep_shared's split.
-        rho_k = torch.einsum('an,bnv->abv', shared['Q0'], u_dfs)
-        u_dfs = u_dfs - torch.einsum('an,abv->bnv', shared['Q0'], rho_k)
-        s0 = s0 + rho_k.to(scan_torch)
-        t_v = t_v - (rho_k.unsqueeze(2) * rho_k.unsqueeze(1)
-                     ).sum(dim=0).to(scan_torch)
-        del rho_k
 
     size_d = region_h_t - region_l_t
     inv_size_scan = torch.where(
@@ -427,7 +390,7 @@ def prep_tree(shared, *, children, min_vox: int, outer_perm: int = 0):
 
 
 def _chunk_llr(chunk_inv_t, state):
-    """Compute one chunk of inner draws.
+    """Compute one chunk of draws.
 
     A Freedman-Lane draw acts on the residual as a plain column gather:
     with u already satisfying Q0 u = 0, y* = u[:, perm] + Q0^T s0, so both
@@ -518,8 +481,9 @@ def _chunk_llr(chunk_inv_t, state):
 def _build_perms(base_seed: int, n_perm: int, num_img: int):
     """Build the (n_perm, num_img) FL index array; draw i uses base_seed + i.
 
-    Matches inner_perm.cpu_perm's construction exactly, so a given
-    (base_seed, n_perm) yields the same draws on both backends.
+    Routes through permute._perm_indices, the sole source of truth for the
+    seed-to-perm mapping, so a given (base_seed, n_perm) yields the same
+    draws here as on the CPU anchor -- including the identity at seed 0.
     """
     perms = np.empty((n_perm, num_img), dtype=np.int64)
     for i in range(n_perm):
@@ -537,74 +501,42 @@ def _build_perm_inv_tensor(perms, device):
         np.argsort(perms, axis=1).astype(np.int64)).to(device)
 
 
-def _chan_combine(llr, valid, n, mean, m2):
-    """Fold one (Pc, num_reg) draw-chunk into running per-region moments.
+def gpu_perm(*, exp, base_seed: int, n_perm: int, q0, q1, children,
+             min_vox: int, perm_chunk: int = 16, device: str = 'cuda',
+             acc_dtype=np.float32, scan_dtype=np.float64):
+    """Compute the (n_perm, num_reg) Freedman-Lane LLR draws on device.
 
-    Device port of inner_perm._welford_combine: one step of Chan's
-    parallel-combine rule (Chan, Golub & LeVeque 1979), with invalid
-    cells excluded from the count. The CPU path uses this rather than a
-    naive sum / sum-of-squares pass because var << mean^2 here (LLR
-    carries a 0.5 * size prefactor), where the textbook one-pass formula
-    loses precision to cancellation.
+    A drop-in for glow.analysis.draws.cpu_reliable: same keyword-only
+    signature, same seed-to-draw mapping (draw i uses base_seed + i, and
+    seed 0 is the identity), same NaN convention, so the two agree cell by
+    cell to float round-off.
+
+    Peak host memory carries the whole draws matrix -- (n_perm, num_reg)
+    float64, ~16.7 GiB at 5001 draws and full-brain num_vox. Callers that
+    only need the column moments, the observed row and the row maxima can
+    stream instead: prep once and fold each _chunk_llr result as it lands.
 
     Args:
-        llr (torch.Tensor): (Pc, num_reg) draws, arbitrary where invalid
-        valid (torch.Tensor): (Pc, num_reg) bool validity mask
-        n (torch.Tensor): (num_reg,) running valid-sample count
-        mean (torch.Tensor): (num_reg,) running mean
-        m2 (torch.Tensor): (num_reg,) running sum of squared deviations
-
-    Returns:
-        n, mean, m2 (torch.Tensor): the updated (num_reg,) accumulators
-    """
-    import torch
-    llr_safe = torch.where(valid, llr, torch.zeros_like(llr)).to(n.dtype)
-    n_b = valid.sum(dim=0).to(n.dtype)
-    sum_b = llr_safe.sum(dim=0)
-
-    ones = torch.ones_like(n_b)
-    safe_nb = torch.where(n_b > 0, n_b, ones)
-    mean_b = sum_b / safe_nb
-    dev = torch.where(valid, llr_safe - mean_b[None, :],
-                      torch.zeros_like(llr_safe))
-    m2_b = (dev * dev).sum(dim=0)
-
-    new_n = n + n_b
-    safe_new_n = torch.where(new_n > 0, new_n, torch.ones_like(new_n))
-    delta = mean_b - mean
-    mean = mean + delta * (n_b / safe_new_n)
-    m2 = m2 + m2_b + delta * delta * (n * n_b / safe_new_n)
-    return new_n, mean, m2
-
-
-def _chan_finalize(n, mean, m2):
-    """Reduce running (n, mean, m2) to (mu, std) as numpy arrays.
-
-    Mirrors inner_perm._welford_finalize: NaN mu where no valid sample
-    accumulated, NaN std where fewer than two did, ddof=1, and ULP-level
-    negative variance clamped to zero before the sqrt.
-    """
-    import torch
-    nan = torch.full_like(mean, float('nan'))
-    ones = torch.ones_like(n)
-    mu = torch.where(n > 0, mean, nan)
-    var = torch.where(n > 1, m2 / torch.where(n > 1, n - 1, ones), nan)
-    var = torch.clamp(var, min=0.0)
-    std = torch.where(n > 1, torch.sqrt(var), nan)
-    return mu.cpu().numpy(), std.cpu().numpy()
-
-
-def gpu_perm_full(*, exp, base_seed: int, n_perm: int, q0, q1, children,
-                  min_vox: int, perm_chunk: int = 16, device: str = 'cuda',
-                  acc_dtype=np.float32, scan_dtype=np.float64):
-    """Compute the raw (n_perm, num_reg) inner-perm LLR draws on device.
-
-    The materializing counterpart of gpu_perm, for tests and for callers
-    that inspect individual draws. Peak memory carries the whole draws
-    matrix, so prefer gpu_perm at production n_perm.
-
-    Args match inner_perm.cpu_reliable_full plus perm_chunk, device,
-    acc_dtype and scan_dtype (see gpu_perm).
+        exp (Experiment): experiment to sample permutations from
+        base_seed (int): draw i uses RNG seed base_seed + i
+        n_perm (int): number of FL draws, counting the observed
+        q0 (np.array): (a0, num_img) nuisance subspace
+        q1 (np.array): (a1, num_img) interest subspace
+        children (np.array): (num_reg - num_vox, 2) Ward tree
+        min_vox (int): regions smaller than this are left NaN
+        perm_chunk (int): draws per device chunk. Both a throughput and a
+            memory knob: the per-chunk working set scales as
+            perm_chunk * a0 * b^2 * num_vox, and throughput is set by
+            whether it stays L2-resident. 16 is the measured optimum at
+            benchmark num_vox but overruns an 8 GiB card at full-brain
+            num_vox once b reaches 6 -- see _fit_gpu.resolve_perm_chunk,
+            which sizes it from free device memory.
+        device (str): torch device string
+        acc_dtype: hot-loop dtype, default float32 (module docstring).
+            AnalysisGLOW.fit overrides this to float64, which reproduces a
+            CPU fit's p-values exactly (see _fit_gpu).
+        scan_dtype: dtype for the DC-carrying prep scans, default float64 --
+            the one group still carrying the DC offset
 
     Returns:
         draws (np.array): (n_perm, num_reg) per-draw LLR, NaN where a
@@ -626,100 +558,3 @@ def gpu_perm_full(*, exp, base_seed: int, n_perm: int, q0, q1, children,
         out[s:s + perm_chunk] = torch.where(valid, llr, nan) \
                                      .to(torch.float64).cpu().numpy()
     return out
-
-
-def gpu_perm(*, exp, base_seed: int, n_perm: int, q0, q1, children,
-             min_vox: int, perm_chunk: int = 16, device: str = 'cuda',
-             acc_dtype=np.float32, scan_dtype=np.float64):
-    """Compute inner-perm (mu, std) on device -- the production entry.
-
-    A drop-in for inner_perm.cpu_perm: same keyword-only signature, same
-    seed-to-draw mapping (draw i uses base_seed + i), same Chan-parallel
-    moment reduction, so the two agree to float round-off. The
-    (n_perm, num_reg) draws matrix is never materialized -- each chunk
-    folds into device-side accumulators.
-
-    Args:
-        exp (Experiment): experiment to sample inner perms from
-        base_seed (int): draw i uses RNG seed base_seed + i
-        n_perm (int): number of inner FL draws
-        q0 (np.array): (a0, num_img) nuisance subspace
-        q1 (np.array): (a1, num_img) interest subspace
-        children (np.array): (num_reg - num_vox, 2) Ward tree
-        min_vox (int): regions smaller than this are left NaN
-        perm_chunk (int): draws per device chunk. Not a memory knob in
-            practice -- 16 peaks at 120 MiB to 1.4 GiB of a ~7 GiB card
-            across b, and throughput is set by whether the per-chunk
-            working set stays L2-resident, not by capacity. Measured
-            optimum is 16 at float64 for every b tried (1.07-1.36x over 8,
-            falling off above); float32 at b=2 prefers 8 by ~10%.
-        device (str): torch device string
-        acc_dtype: hot-loop dtype, default float32 (module docstring)
-        scan_dtype: dtype for the s_star region scans, default float64 --
-            the one group still carrying the DC offset
-
-    Returns:
-        mu (np.array): (num_reg,) inner-null mean per region
-        std (np.array): (num_reg,) inner-null std per region
-    """
-    import torch
-
-    state = prep_tree(
-        prep_shared(exp, q0=q0, q1=q1, device=device, acc_dtype=acc_dtype,
-                    scan_dtype=scan_dtype),
-        children=children, min_vox=min_vox)
-    perms = _build_perms(base_seed, n_perm, exp.y.shape[1])
-    src = _build_perm_inv_tensor(perms, state['dev'])
-
-    num_reg = state['num_reg']
-    dev = state['dev']
-    n = torch.zeros(num_reg, dtype=torch.float64, device=dev)
-    mean = torch.zeros(num_reg, dtype=torch.float64, device=dev)
-    m2 = torch.zeros(num_reg, dtype=torch.float64, device=dev)
-
-    for s in range(0, n_perm, perm_chunk):
-        llr, valid = _chunk_llr(src[s:s + perm_chunk], state)
-        n, mean, m2 = _chan_combine(llr, valid, n, mean, m2)
-    return _chan_finalize(n, mean, m2)
-
-
-def gpu_perm_shared(shared, *, children, base_seed: int, n_perm: int,
-                    min_vox: int, outer_perm: int = 0,
-                    perm_chunk: int = 16):
-    """Compute one outer perm's (mu, std) reusing a shared per-fit state.
-
-    The pipelined-driver entry point: prep_shared once per fit, then one
-    call per outer perm, each shipping only its tree. Equivalent to
-    gpu_perm on exp.permute(outer_perm) -- see
-    test_shared_prep_matches_per_tree_prep -- but without repeating the
-    float64 split, the transfer, or the T_v contraction.
-
-    Args:
-        shared (dict): prep_shared output, built from the UNPERMUTED exp
-        children (np.array): (num_reg - num_vox, 2) this outer perm's tree
-        base_seed (int): draw i uses seed base_seed + i
-        n_perm (int): number of inner FL draws
-        min_vox (int): regions smaller than this are left NaN
-        outer_perm (int): outer FL permutation index, 0 for the observed
-        perm_chunk (int): draws per device chunk
-
-    Returns:
-        mu (np.array): (num_reg,) inner-null mean per region
-        std (np.array): (num_reg,) inner-null std per region
-    """
-    import torch
-
-    state = prep_tree(shared, children=children, min_vox=min_vox,
-                      outer_perm=outer_perm)
-    perms = _build_perms(base_seed, n_perm, shared['num_img'])
-    src = _build_perm_inv_tensor(perms, state['dev'])
-
-    num_reg = state['num_reg']
-    dev = state['dev']
-    n = torch.zeros(num_reg, dtype=torch.float64, device=dev)
-    mean = torch.zeros(num_reg, dtype=torch.float64, device=dev)
-    m2 = torch.zeros(num_reg, dtype=torch.float64, device=dev)
-    for s_i in range(0, n_perm, perm_chunk):
-        llr, valid = _chunk_llr(src[s_i:s_i + perm_chunk], state)
-        n, mean, m2 = _chan_combine(llr, valid, n, mean, m2)
-    return _chan_finalize(n, mean, m2)

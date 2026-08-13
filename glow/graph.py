@@ -396,9 +396,8 @@ def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
     Phase 2 for the next Pc perms and yields one (Pc, num_reg) fp64
     chunk. Callers that need raw draws stack via
     np.vstack(list(iter_llr_perm(...))); callers that only need moments
-    (e.g. inner_perm.cpu_perm) fold each chunk into a Welford accumulator
-    and never materialize the full draws array. Closing the generator
-    releases all Phase-1 state.
+    fold each chunk into a running accumulator and never materialize the
+    full draws array. Closing the generator releases all Phase-1 state.
 
     Freedman-Lane permutation (Freedman & Lane 1983) permutes the
     nuisance residuals; here the permutation is carried on q0 / q1 rather
@@ -477,7 +476,7 @@ def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
     # keeps E accurate; float32 only ever bought bandwidth (the dominant GEMM
     # could be re-narrowed in isolation if large-num_vox memory matters).
     # acc_dtype=float32 is exposed only to reproduce that float32 collapse in
-    # tests (see test/analysis/test_inner_perm_hcp.py).
+    # tests (see test/analysis/test_draws_hcp.py).
     dtype = np.dtype(acc_dtype)
 
     # -------------------- Phase 1: per-voxel state --------------------

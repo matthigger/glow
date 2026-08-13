@@ -1,36 +1,40 @@
-"""GPU inner-perm backend equivalence, anchored on cpu_reliable.
+"""GPU draw-matrix equivalence, anchored on cpu_reliable.
 
-Mirrors test_inner_perm.py's anchoring strategy one level out: there,
-cpu_perm is validated against the per-region iter_mancova + get_llr trust
-anchor; here the device backend is validated against that same anchor
-(per-draw) and against cpu_perm (moments), across b and both nuisance
-regimes. There is one code path for both regimes -- for intercept-only
-nuisance the rho correction comes out identically zero rather than being
-branched around -- so the design axis below exercises that collapse.
+Mirrors test_draws.py's anchoring strategy one level out: there the
+batched CPU kernel is validated against the per-region iter_mancova +
+get_llr trust anchor; here the device backend is validated against that
+same anchor, cell by cell, across b and both nuisance regimes. There is
+one code path for both regimes -- for intercept-only nuisance the rho
+correction comes out identically zero rather than being branched around --
+so the design axis below exercises that collapse.
 
-The float32 tests are the load-bearing ones: acc_dtype defaults to
-float32, and it is only safe because T = E + H is assembled from two
-cancellation-free pieces with the DC-carrying scans held at
-scan_dtype=float64. Both halves of that claim are asserted.
+The float32 tests are the load-bearing ones: the backend's own acc_dtype
+default is float32, and it is only safe because T = E + H is assembled
+from two cancellation-free pieces with the DC-carrying scans held at
+scan_dtype=float64. Both halves of that claim are asserted. (A fit takes
+float64 regardless, to reproduce the CPU path's p-values -- see
+_fit_gpu.)
 
 Run:
-    ~/venv_glow/bin/pytest test/analysis/test_inner_perm_gpu.py -v
+    ~/venv_glow/bin/pytest test/analysis/test_draws_gpu.py -v
 """
 from __future__ import annotations
+
+import warnings
 
 import numpy as np
 import pytest
 
 import glow.graph
 import glow.mask
-from glow.analysis import inner_perm, inner_perm_gpu
+from glow.analysis import draws, draws_gpu
 from glow.analysis.cluster import cluster
 from glow.analysis.mancova import decompose
 from glow.experiment.exper import Experiment
 
 
 requires_cuda = pytest.mark.skipif(
-    not inner_perm_gpu.is_available(),
+    not draws_gpu.is_available(),
     reason='no CUDA device visible')
 
 B_LIST = [1, 2, 3, 6]
@@ -39,7 +43,7 @@ DESIGNS = ['intercept', 'general']
 
 # ---------------------------------------------------------------------------
 # Synthetic experiment builders (b-parametrised versions of
-# test_inner_perm.py's, which fix b = 2)
+# test_draws.py's, which fix b = 2)
 
 def _intercept_only_exp(b, seed=0, n_img=24, shape=(2, 3, 5)):
     """Build an exp with intercept-only nuisance (Q0 = span(1))."""
@@ -76,7 +80,7 @@ def _general_q0_exp(b, seed=0, n_img=24, shape=(3, 4, 4)):
 
 
 def _prep(b, design, *, min_vox=2):
-    """Build the kwargs every inner_perm backend wants, for one design."""
+    """Build the kwargs every draws backend wants, for one design."""
     exp = (_intercept_only_exp(b) if design == 'intercept'
            else _general_q0_exp(b))
     q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
@@ -110,25 +114,12 @@ def _assert_cells_match(got, ref, *, atol, label):
 @pytest.mark.parametrize('design', DESIGNS)
 @pytest.mark.parametrize('b', B_LIST)
 def test_gpu_draws_match_reliable(b, design):
-    """gpu_perm_full draws match cpu_reliable_full cell-by-cell."""
+    """gpu_perm draws match cpu_reliable cell by cell."""
     prep = _prep(b, design)
-    got = _call(inner_perm_gpu.gpu_perm_full, prep, n_perm=6,
+    got = _call(draws_gpu.gpu_perm, prep, n_perm=6,
                 acc_dtype=np.float64)
-    ref = _call(inner_perm.cpu_reliable_full, prep, n_perm=6)
+    ref = _call(draws.cpu_reliable, prep, n_perm=6)
     _assert_cells_match(got, ref, atol=1e-9, label=f'b={b} {design}')
-
-
-@requires_cuda
-@pytest.mark.parametrize('design', DESIGNS)
-@pytest.mark.parametrize('b', B_LIST)
-def test_gpu_moments_match_cpu_perm(b, design):
-    """gpu_perm (mu, std) match cpu_perm's, which share the Chan reduction."""
-    prep = _prep(b, design)
-    mu_g, std_g = _call(inner_perm_gpu.gpu_perm, prep, n_perm=20,
-                        acc_dtype=np.float64)
-    mu_c, std_c = _call(inner_perm.cpu_perm, prep, n_perm=20)
-    _assert_cells_match(mu_g, mu_c, atol=1e-9, label=f'mu b={b} {design}')
-    _assert_cells_match(std_g, std_c, atol=1e-9, label=f'std b={b} {design}')
 
 
 @requires_cuda
@@ -147,7 +138,7 @@ def test_gpu_row_0_is_the_observed_draw(b, design):
     llr_obs, _ = glow.graph.compute_llr_batched(
         prep['exp'], children=prep['children'], q0=prep['q0'],
         q1=prep['q1'], min_size=prep['min_vox'])
-    got = _call(inner_perm_gpu.gpu_perm_full, prep, n_perm=3, base_seed=0,
+    got = _call(draws_gpu.gpu_perm, prep, n_perm=3, base_seed=0,
                 acc_dtype=np.float64)
     _assert_cells_match(got[:1], llr_obs[None], atol=1e-9,
                         label=f'row 0 b={b} {design}')
@@ -159,9 +150,9 @@ def test_gpu_row_0_is_the_observed_draw(b, design):
 def test_gpu_draws_match_reliable_at_base_seed_0(b, design):
     """Every row agrees with the trust anchor at base_seed = 0."""
     prep = _prep(b, design)
-    got = _call(inner_perm_gpu.gpu_perm_full, prep, n_perm=4, base_seed=0,
+    got = _call(draws_gpu.gpu_perm, prep, n_perm=4, base_seed=0,
                 acc_dtype=np.float64)
-    ref = _call(inner_perm.cpu_reliable_full, prep, n_perm=4, base_seed=0)
+    ref = _call(draws.cpu_reliable, prep, n_perm=4, base_seed=0)
     _assert_cells_match(got, ref, atol=1e-9, label=f'b={b} {design}')
 
 
@@ -169,16 +160,16 @@ def test_gpu_draws_match_reliable_at_base_seed_0(b, design):
 @pytest.mark.parametrize('design', DESIGNS)
 @pytest.mark.parametrize('perm_chunk', [1, 3, 32])
 def test_perm_chunk_invariance(design, perm_chunk):
-    """perm_chunk is a memory knob only: draws are unchanged by it.
+    """perm_chunk is a throughput and memory knob only, never a result.
 
-    Uses raw draws rather than moments: the Chan combine folds one chunk
-    at a time, so its round-off legitimately depends on chunk size, but
-    the draws themselves must not.
+    _fit_gpu.resolve_perm_chunk picks it from free device memory, so it
+    varies with the card and the problem size. Nothing a fit reports may
+    move with it.
     """
     prep = _prep(2, design)
-    got = _call(inner_perm_gpu.gpu_perm_full, prep, n_perm=7,
+    got = _call(draws_gpu.gpu_perm, prep, n_perm=7,
                 perm_chunk=perm_chunk, acc_dtype=np.float64)
-    ref = _call(inner_perm_gpu.gpu_perm_full, prep, n_perm=7, perm_chunk=8,
+    ref = _call(draws_gpu.gpu_perm, prep, n_perm=7, perm_chunk=8,
                 acc_dtype=np.float64)
     _assert_cells_match(got, ref, atol=1e-12,
                         label=f'perm_chunk={perm_chunk} {design}')
@@ -189,14 +180,13 @@ def test_perm_chunk_invariance(design, perm_chunk):
 def test_min_vox_drops_small_regions(design):
     """Regions below min_vox come back NaN, larger ones finite."""
     prep = _prep(2, design, min_vox=4)
-    mu, std = _call(inner_perm_gpu.gpu_perm, prep, n_perm=8)
+    got = _call(draws_gpu.gpu_perm, prep, n_perm=8)
     _, region_l, region_h = glow.graph.build_dfs_preorder(
         children=prep['children'], num_vox=prep['exp'].y.shape[2])
     small = (region_h - region_l) < 4
     assert small.any() and (~small).any()
-    assert np.isnan(mu[small]).all()
-    assert np.isfinite(mu[~small]).all()
-    assert np.isfinite(std[~small]).all()
+    assert np.isnan(got[:, small]).all()
+    assert np.isfinite(got[:, ~small]).all()
 
 
 # ---------------------------------------------------------------------------
@@ -213,13 +203,13 @@ def test_rho_vanishes_for_intercept_only():
     """
     import torch
     prep = _prep(2, 'intercept')
-    state = inner_perm_gpu.prep_tree(
-        inner_perm_gpu.prep_shared(
+    state = draws_gpu.prep_tree(
+        draws_gpu.prep_shared(
             prep['exp'], q0=prep['q0'], q1=prep['q1'],
             acc_dtype=np.float64),
         children=prep['children'], min_vox=prep['min_vox'])
-    perms = inner_perm_gpu._build_perms(7, 4, prep['exp'].y.shape[1])
-    src = inner_perm_gpu._build_perm_inv_tensor(perms, state['dev'])
+    perms = draws_gpu._build_perms(7, 4, prep['exp'].y.shape[1])
+    src = draws_gpu._build_perm_inv_tensor(perms, state['dev'])
     q01_perm = state['Q01'][:, src].permute(1, 0, 2).contiguous()
     alpha = torch.einsum('pkn,bnv->pkbv', q01_perm, state['U'])
     rho = alpha[:, :state['a0']]
@@ -228,58 +218,9 @@ def test_rho_vanishes_for_intercept_only():
 
 
 # ---------------------------------------------------------------------------
-# Hoisting the prep out of the outer-perm loop
-
-@requires_cuda
-@pytest.mark.parametrize('design', DESIGNS)
-def test_shared_prep_matches_per_tree_prep(design):
-    """A reused per-fit state reproduces a from-scratch per-tree prep.
-
-    The hoist's correctness condition. For outer perm k the shared path
-    derives u_k = u_0[:, perm_k], s0_k = Q0 u_k + s0_0 and an unchanged
-    T_v from the UNPERMUTED state by index gathers alone; that must equal
-    building the state from exp.permute(k) directly. Run at float64 so the
-    comparison is of the algebra, not of dtype round-off.
-    """
-    prep = _prep(2, design)
-    exp = prep['exp']
-    k = 7
-    exp_k = exp.permute(k)
-    children = cluster(exp=exp_k, mode='Focus')
-
-    mu_ref, std_ref = inner_perm_gpu.gpu_perm(
-        exp=exp_k, base_seed=99, n_perm=12, q0=prep['q0'], q1=prep['q1'],
-        children=children, min_vox=2, acc_dtype=np.float64)
-
-    shared = inner_perm_gpu.prep_shared(
-        exp, q0=prep['q0'], q1=prep['q1'], acc_dtype=np.float64)
-    mu_got, std_got = inner_perm_gpu.gpu_perm_shared(
-        shared, children=children, base_seed=99, n_perm=12, min_vox=2,
-        outer_perm=k)
-
-    _assert_cells_match(mu_got, mu_ref, atol=1e-9, label=f'mu {design}')
-    _assert_cells_match(std_got, std_ref, atol=1e-9, label=f'std {design}')
-
-
-@requires_cuda
-def test_shared_prep_unpermuted_is_the_observed_draw():
-    """outer_perm=0 leaves the data unpermuted, as AnalysisGLOW expects."""
-    prep = _prep(2, 'general')
-    ref = _call(inner_perm_gpu.gpu_perm, prep, n_perm=10,
-                acc_dtype=np.float64)
-    shared = inner_perm_gpu.prep_shared(
-        prep['exp'], q0=prep['q0'], q1=prep['q1'], acc_dtype=np.float64)
-    got = inner_perm_gpu.gpu_perm_shared(
-        shared, children=prep['children'], base_seed=12_345, n_perm=10,
-        min_vox=prep['min_vox'], outer_perm=0)
-    _assert_cells_match(got[0], ref[0], atol=1e-12, label='mu k=0')
-    _assert_cells_match(got[1], ref[1], atol=1e-12, label='std k=0')
-
-
-# ---------------------------------------------------------------------------
 # float32 safety
 #
-# The a55e7237 FWER collapse (see test_inner_perm_hcp.py) came from forming
+# The a55e7237 FWER collapse (see test_draws_hcp.py) came from forming
 # T as a difference of two terms ~num_img * mean(y)^2 whose residual is
 # ~num_img * var(y). For a near-constant voxel on a large DC offset that
 # ratio is below float32 eps. The backend avoids it by splitting T into
@@ -320,15 +261,12 @@ def _poisoned_prep(b=1, num_vox=500, n_planted=30, num_img=100, seed=0):
 def test_float32_matches_float64_on_wellconditioned_data(design):
     """float32 costs only round-off when nothing is ill-conditioned."""
     prep = _prep(2, design)
-    mu32, std32 = _call(inner_perm_gpu.gpu_perm, prep, n_perm=20,
-                        acc_dtype=np.float32)
-    mu64, std64 = _call(inner_perm_gpu.gpu_perm, prep, n_perm=20,
-                        acc_dtype=np.float64)
-    fin = np.isfinite(mu64) & np.isfinite(mu32)
-    assert np.abs(mu32[fin] - mu64[fin]).max() < 1e-4 * np.abs(mu64[fin]).max()
-    fin_s = np.isfinite(std64) & np.isfinite(std32)
-    assert (np.abs(std32[fin_s] - std64[fin_s]).max()
-            < 1e-4 * np.abs(std64[fin_s]).max())
+    got32 = _call(draws_gpu.gpu_perm, prep, n_perm=20, acc_dtype=np.float32)
+    got64 = _call(draws_gpu.gpu_perm, prep, n_perm=20, acc_dtype=np.float64)
+    fin = np.isfinite(got64) & np.isfinite(got32)
+    assert fin.any()
+    assert (np.abs(got32[fin] - got64[fin]).max()
+            < 1e-4 * np.abs(got64[fin]).max())
 
 
 @requires_cuda
@@ -346,13 +284,18 @@ def test_float32_survives_near_constant_voxels():
         q0=prep['q0'], q1=prep['q1'])
 
     def summarize(**kw):
-        draws = _call(inner_perm_gpu.gpu_perm_full, prep, n_perm=128,
-                      base_seed=100_000, **kw)
-        mu, std = _call(inner_perm_gpu.gpu_perm, prep, n_perm=128,
-                        base_seed=100_000, **kw)
+        got = _call(draws_gpu.gpu_perm, prep, n_perm=128,
+                    base_seed=100_000, **kw)
+        # the moments the fit would take, off the same matrix: this is
+        # Analysis.z_score_stat's reduction, so the collapse is measured
+        # where it actually reaches a p-value
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            mu = np.nanmean(got, axis=0)
+            std = np.nanstd(got, axis=0, ddof=1)
         with np.errstate(invalid='ignore', divide='ignore'):
             z = (llr_obs - mu) / np.where(std < 1e-12, np.nan, std)
-        return (float(np.isfinite(draws[:, sl]).mean()),
+        return (float(np.isfinite(got[:, sl]).mean()),
                 float(np.nanmedian(std[sl])),
                 float(np.nanmax(np.abs(z))))
 

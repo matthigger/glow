@@ -114,9 +114,9 @@ def _leaf_wants_device(kwargs) -> bool:
     if not gpu:
         return False
     if gpu == 'auto':
-        from glow.analysis import inner_perm_gpu
+        from glow.analysis import draws_gpu
 
-        return inner_perm_gpu.is_available()
+        return draws_gpu.is_available()
     return True
 
 

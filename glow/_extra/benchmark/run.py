@@ -68,8 +68,7 @@ from threadpoolctl import threadpool_limits
 import glow.graph
 from glow.analysis import Analysis, AnalysisGLOW, AnalysisVoxel
 from glow.analysis.cluster import cluster, ClusterMode
-from glow.analysis import inner_perm
-from glow.analysis.inner_perm import cpu_perm, _welford_moments
+from glow.analysis.draws import cpu_reliable
 from glow.analysis.mancova import decompose, stat_dict, stat_dict_inv
 from glow.analysis.prune import prune_dp, prune_greedy
 from glow.experiment import permute
@@ -208,7 +207,7 @@ def run_segment(exp: Experiment, mask_target_list, cluster_mode, *,
 # num_inner_perm grid the edge sweep (run_inner_edge) snapshots at: _INNER_GRID_N
 # log-spaced points from _INNER_GRID_MIN up to max_inner_perm, dense at the low
 # end where the max-z threshold still moves. The floor is >= 2 (std needs two
-# draws; _welford_finalize leaves std NaN below).
+# draws; nanstd(ddof=1) leaves std NaN below).
 _INNER_GRID_MIN = 25
 _INNER_GRID_N = 20
 
@@ -650,7 +649,7 @@ def _inner_edge_curve(exp, *, cluster_mode, max_inner_perm: int,
     # the SAME backend AnalysisGLOW.fit draws with -- the curve claims to
     # reproduce a real fit's fwer.max_stat, which it only does if the draws
     # come from the same code path. Track fit when that backend changes.
-    draws = inner_perm.cpu_reliable_full(
+    draws = cpu_reliable(
         exp=exp_test, base_seed=0, n_perm=max_inner_perm + 1,
         q0=q0, q1=q1, children=children, min_vox=min_vox)
 

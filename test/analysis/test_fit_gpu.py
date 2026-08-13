@@ -1,7 +1,7 @@
 """End-to-end A/B: AnalysisGLOW.fit(gpu=True) against the CPU fit.
 
 This is the gate that justifies keeping device / acc_dtype out of the
-recipe hash. The unit tests in test_inner_perm_gpu.py pin the backend's
+recipe hash. The unit tests in test_draws_gpu.py pin the backend's
 draws; these pin the whole fit -- z, the FWER null, the p-values and the
 discovered effect list -- so a divergence anywhere downstream of the
 draws (the column moments, the max-z null, pruning) surfaces here rather
@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 
 import glow.mask
-from glow.analysis import AnalysisVBA, GpuConfig, inner_perm_gpu
+from glow.analysis import AnalysisVBA, GpuConfig, draws_gpu
 from glow.analysis._fit_gpu import resolve_gpu, resolve_perm_chunk
 from glow.analysis._glow import AnalysisGLOW
 from glow.analysis.cluster import ClusterMode
@@ -30,11 +30,11 @@ from glow.experiment.exper import Experiment
 
 
 requires_cuda = pytest.mark.skipif(
-    not inner_perm_gpu.is_available(),
+    not draws_gpu.is_available(),
     reason='no CUDA device visible')
 
 skip_if_cuda = pytest.mark.skipif(
-    inner_perm_gpu.is_available(),
+    draws_gpu.is_available(),
     reason='a CUDA device is visible')
 
 
