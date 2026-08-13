@@ -67,12 +67,16 @@ class AnalysisGLOW(Analysis):
             segmentation fold. Pre-specified, for the same reason.
         split_seed (int): seed for the image partition.
 
+    The draw matrix itself is not kept: at full-brain num_vox it runs to
+    gigabytes, and only its first row and its column moments are read
+    again. Both are copied out, since a row sliced from it is a view and
+    would hold the whole matrix alive.
+
     Fit outputs (all on the test fold, against the fold-A tree):
         children (np.array): (num_reg - num_vox, 2) Ward tree.
         size (np.array): (num_reg,) region sizes.
-        draws (np.array): (n_perm_fwer + 1, num_reg) LLR per draw; row 0
-            observed, rows 1: the FL null.
-        llr (np.array): (num_reg,) observed LLR per region -- draws[0].
+        llr (np.array): (num_reg,) observed LLR per region -- the
+            matrix's row 0.
         mu (np.array): (num_reg,) per-region mean over the draws.
         std (np.array): (num_reg,) per-region std over the draws.
         z (np.array): (num_reg,) observed per-region z-score.
@@ -113,7 +117,6 @@ class AnalysisGLOW(Analysis):
 
         self.children = None
         self.size = None
-        self.draws = None
         self.llr = None
         self.mu = None
         self.std = None
@@ -124,9 +127,9 @@ class AnalysisGLOW(Analysis):
             verbose: bool = False):
         """Run the analysis on exp and return self.
 
-        Populates the observed attributes (children, size, draws, llr,
-        mu, std, z), the FWER null (max_z_null), and the synthesis output
-        (pval, effect_list).
+        Populates the observed attributes (children, size, llr, mu, std,
+        z), the FWER null (max_z_null), and the synthesis output (pval,
+        effect_list).
 
         Args:
             exp (Experiment): experiment to analyze. Must be raw, not an
@@ -192,16 +195,21 @@ class AnalysisGLOW(Analysis):
         # backend: slow, but an independent implementation of the
         # statistic (see inner_perm). Swapping it for the batched backend
         # is the next optimisation, not a change of estimator.
-        self.draws = inner_perm.cpu_reliable_full(
+        llr_all = inner_perm.cpu_reliable_full(
             exp=exp_test, base_seed=0, n_perm=self.n_perm_fwer + 1,
             q0=q0, q1=q1, children=self.children, min_vox=self.min_vox)
 
         # One matrix, both jobs: column moments standardize the regions,
         # row maxima are the null. The observed row is inside both.
-        z, self.mu, self.std = self.z_score_stat(self.draws)
+        z, self.mu, self.std = self.z_score_stat(llr_all)
 
-        self.llr = self.draws[0]
-        self.z = z[0]
+        # Copy, never slice: llr_all[0] is a view, so keeping it would
+        # hold the whole (n_perm_fwer + 1, num_reg) matrix -- gigabytes at
+        # full-brain num_vox -- alive for one row of it. Same for z, which
+        # finalize needs whole but nothing needs after that.
+        self.llr = llr_all[0].copy()
+        self.z = z[0].copy()
+        del llr_all
 
         reg_active = self.size >= self.min_vox
         with warnings.catch_warnings():

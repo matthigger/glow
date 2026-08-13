@@ -64,6 +64,21 @@ def _test_fold(ana, exp):
     return children, ExperimentScaled.from_exp(exp_test)
 
 
+def _draws(ana, exp):
+    """Rebuild a fit's whole draw matrix from the recipe alone.
+
+    fit keeps only row 0 and the column moments -- the matrix is
+    (n_perm_fwer + 1, num_reg) and too heavy to hold -- so the checks
+    that need every row rebuild it here. That the rebuild reproduces the
+    fit is itself pinned, by test_draws_come_from_the_test_fold.
+    """
+    children, exp_test = _test_fold(ana, exp)
+    q0, q1, _ = decompose(x=exp_test.x, contrast=exp_test.contrast)
+    return inner_perm.cpu_reliable_full(
+        exp=exp_test, base_seed=0, n_perm=ana.n_perm_fwer + 1,
+        q0=q0, q1=q1, children=children, min_vox=ana.min_vox)
+
+
 # ---------- the tree is built once, on the segmentation fold -----------------
 def test_ward_runs_once(monkeypatch):
     """One tree per fit -- not one per outer perm, as before the split."""
@@ -92,7 +107,12 @@ def test_tree_is_built_on_the_segmentation_fold_only(monkeypatch):
 
 
 def test_draws_come_from_the_test_fold():
-    """The whole draw matrix reproduces on the test fold, from the recipe."""
+    """The whole draw matrix reproduces on the test fold, from the recipe.
+
+    The fit keeps no matrix to compare against, so this holds the rebuilt
+    one against everything the fit did keep of it: row 0 exactly, and the
+    column moments, which every row enters.
+    """
     exp = _exp()
     ana = _ana().fit(exp)
 
@@ -100,34 +120,45 @@ def test_draws_come_from_the_test_fold():
     np.testing.assert_array_equal(ana.children, children)
     assert exp_test.y.shape[1] == NUM_IMG - NUM_IMG // 2
 
-    q0, q1, _ = decompose(x=exp_test.x, contrast=exp_test.contrast)
-    draws = inner_perm.cpu_reliable_full(
-        exp=exp_test, base_seed=0, n_perm=ana.n_perm_fwer + 1,
-        q0=q0, q1=q1, children=children, min_vox=ana.min_vox)
-    np.testing.assert_allclose(ana.draws, draws, rtol=0, atol=0,
+    draws = _draws(ana, exp)
+    np.testing.assert_allclose(ana.llr, draws[0], rtol=0, atol=0,
                                equal_nan=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        np.testing.assert_allclose(ana.mu, np.nanmean(draws, axis=0),
+                                   rtol=0, atol=0, equal_nan=True)
 
 
 # ---------- the one draw matrix ---------------------------------------------
-def test_draws_shape_and_observed_row():
-    """(n_perm_fwer + 1, num_reg), row 0 the unpermuted draw."""
+def test_only_the_observed_row_is_kept():
+    """The fit keeps row 0 and the moments, never the matrix itself.
+
+    llr and z are copies, not rows sliced out of it: a view would hold
+    the whole (n_perm_fwer + 1, num_reg) matrix alive through .base --
+    gigabytes at full-brain num_vox, for one row of it.
+    """
     exp = _exp()
     ana = _ana(n_perm_fwer=8).fit(exp)
 
-    num_vox = exp.y.shape[2]
-    assert ana.draws.shape == (9, 2 * num_vox - 1)
-    np.testing.assert_allclose(ana.llr, ana.draws[0], rtol=0, atol=0,
-                               equal_nan=True)
+    num_reg = 2 * exp.y.shape[2] - 1
+    assert ana.llr.shape == (num_reg,)
+    assert ana.z.shape == (num_reg,)
+    assert ana.llr.base is None
+    assert ana.z.base is None
+    assert not hasattr(ana, 'draws')
 
-    # row 0 is permute(0), i.e. the unpermuted test fold -- so it matches
-    # the batched observed-LLR backend, an independent code path
+
+def test_observed_row_is_the_unpermuted_draw():
+    """llr is permute(0) -- so it matches an independent LLR backend."""
+    exp = _exp()
+    ana = _ana(n_perm_fwer=8).fit(exp)
+
     children, exp_test = _test_fold(ana, exp)
     q0, q1, _ = decompose(x=exp_test.x, contrast=exp_test.contrast)
     llr, size = glow.graph.compute_llr_batched(
         exp_test, children=children, q0=q0, q1=q1)
     ok = ana.size >= ana.min_vox
-    np.testing.assert_allclose(ana.draws[0][ok], llr[ok], rtol=1e-8,
-                               atol=1e-10)
+    np.testing.assert_allclose(ana.llr[ok], llr[ok], rtol=1e-8, atol=1e-10)
     np.testing.assert_array_equal(ana.size, size)
 
 
@@ -137,14 +168,16 @@ def test_observed_row_contributes_to_the_moments():
     Standardizing row 0 by moments it did not contribute to is what broke
     VBA+z (inflated to ~11% at B=49); see Analysis.z_score_stat.
     """
-    ana = _ana().fit(_exp())
+    exp = _exp()
+    ana = _ana().fit(exp)
+    draws = _draws(ana, exp)
     # a region below min_vox is NaN in every row, so nanmean/nanstd warn
     # on it -- the column is meant to stay NaN (as z_score_stat notes)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', RuntimeWarning)
-        mu_all = np.nanmean(ana.draws, axis=0)
-        std_all = np.nanstd(ana.draws, axis=0, ddof=1)
-        mu_null_only = np.nanmean(ana.draws[1:], axis=0)
+        mu_all = np.nanmean(draws, axis=0)
+        std_all = np.nanstd(draws, axis=0, ddof=1)
+        mu_null_only = np.nanmean(draws[1:], axis=0)
 
     np.testing.assert_allclose(ana.mu, mu_all, rtol=0, atol=0,
                                equal_nan=True)
@@ -156,8 +189,9 @@ def test_observed_row_contributes_to_the_moments():
 
 def test_z_is_the_shared_standardization():
     """GLOW z-scores through Analysis.z_score_stat, not a local copy."""
-    ana = _ana().fit(_exp())
-    z, _, _ = AnalysisGLOW.z_score_stat(ana.draws)
+    exp = _exp()
+    ana = _ana().fit(exp)
+    z, _, _ = AnalysisGLOW.z_score_stat(_draws(ana, exp))
     np.testing.assert_allclose(ana.z, z[0], rtol=0, atol=0, equal_nan=True)
 
     reg_active = ana.size >= ana.min_vox
