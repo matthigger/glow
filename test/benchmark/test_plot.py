@@ -617,11 +617,18 @@ def _flat_score(leaf, tp, fp, tn, fn, extra=None):
     return out
 
 
-def _segment_row(mode, seed, effect_llr, tp, fp, tn, fn, source='wgn'):
-    """Build one segment provenance row (run_segment leaf + its ancestors)."""
+def _segment_row(mode, seed, effect_llr, tp, fp, tn, fn, source='wgn',
+                 frac_segment=None):
+    """Build one segment provenance row (run_segment leaf + its ancestors).
+
+    frac_segment is the segment_perc half of the shared leaf: None is a
+    whole-cohort leaf, which records no such input at all.
+    """
     row = {'run_segment.in.cluster_mode': mode,
            'effect_factory_single.in.effect_llr': effect_llr,
            **_flat_score('run_segment', tp, fp, tn, fn)}
+    if frac_segment is not None:
+        row['run_segment.in.frac_segment'] = frac_segment
     if source == 'wgn':
         row.update({'data_factory_wgn.in.b': 1,
                     'data_factory_wgn.in.seed': seed})
@@ -665,6 +672,25 @@ def test_tidy_segment_label_source_and_metrics():
     assert {'dice', 'sens', 'ppv', 'spec'}.issubset(df.columns)
 
 
+def test_tidy_segment_splits_the_shared_leaf_on_frac_segment():
+    """segment keeps the whole-cohort leaves, segment_perc the fold ones.
+
+    Both caches record run_segment on the same moderate-effect cells, so the
+    record walk hands either cache a frame holding both.
+    """
+    raw = pd.DataFrame([
+        _segment_row('Focus', 0, 0.03, 80, 10, 890, 20),
+        _segment_row('Focus', 0, 0.03, 40, 30, 870, 60, frac_segment=0.3),
+    ])
+    whole = plot.tidy_segment(raw)
+    assert list(whole['tp']) == [80]
+    assert whole['frac_segment'].isna().all()
+
+    perc = plot.tidy_segment(raw, perc=True)
+    assert list(perc['tp']) == [40]
+    assert list(perc['frac_segment']) == [0.3]
+
+
 def test_tidy_prune_label_prefixes_rule():
     """tidy_prune maps the recorded rule to the GLOW-<rule> method label."""
     df = plot.tidy_prune(pd.DataFrame([
@@ -706,6 +732,21 @@ def test_plot_metric_grid_writes_figure(tmp_path):
     df = plot.tidy_segment(pd.DataFrame(rows))
     plot.plot_metric_grid('segment', df, tmp_path)
     assert (tmp_path / 'segment.pdf').exists()
+
+
+def test_plot_metric_grid_writes_fold_sweep_figure(tmp_path):
+    """segment_perc draws the same grid against frac_segment, on a linear x."""
+    rows = []
+    for mode in ('Focus', 'GLM Error', 'Naive'):
+        for source in ('wgn', 'hcp'):
+            for frac in (0.1, 0.5, 0.9):
+                for seed in range(3):
+                    rows.append(_segment_row(mode, seed, 0.03, 80, 10, 890, 20,
+                                             source=source, frac_segment=frac))
+    df = plot.tidy_segment(pd.DataFrame(rows), perc=True)
+    plot.plot_metric_grid('segment_perc', df, tmp_path, x='frac_segment',
+                          log_x=False)
+    assert (tmp_path / 'segment_perc.pdf').exists()
 
 
 def test_plot_prune_writes_one_figure_per_mode(tmp_path):

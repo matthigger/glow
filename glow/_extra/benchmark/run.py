@@ -164,7 +164,7 @@ def run_ana(exp: Experiment, ana: Analysis, mask_target_list, *,
 @RECORDER(output_name='score', recurse_out_list=['score'],
           ignore=LEAF_IGNORE)
 def run_segment(exp: Experiment, mask_target_list, cluster_mode, *,
-                parent_uid: str):
+                parent_uid: str, frac_segment: float = None):
     """Segment exp in one Ward mode and score the oracle best-Dice region.
 
     The segmentation-quality leaf: build the Ward tree in cluster_mode and
@@ -175,12 +175,26 @@ def run_segment(exp: Experiment, mask_target_list, cluster_mode, *,
     matches the one AnalysisGLOW fits (GLM_ERROR / FOCUS project y through the
     design). Memoised + recorded like run_ana.
 
+    frac_segment is the second axis (the segment_perc cache): the share of the
+    images the tree is built on. The whole cohort segments by default; a
+    fraction takes AnalysisGLOW's own segmentation fold (Experiment.split_img
+    at its split_seed of 0, so the tree is the one a fit at that frac_segment
+    would build) and drops the test fold, which an oracle region needs no more
+    than it needs a permutation test. The folds are voxel-identical, so the
+    tree still indexes exp's voxels and the target is scored unchanged.
+    split_img cuts a prefix of one seeded shuffle, so a larger frac_segment
+    holds a smaller one's images too -- the sweep is a nested learning curve,
+    not an independent draw per point.
+
     Args:
-        exp (Experiment): the experiment to segment (raw or scaled).
+        exp (Experiment): the experiment to segment (raw or scaled; raw when
+            frac_segment is set -- ExperimentScaled refuses to split).
         mask_target_list (list): planted (X, Y, Z) bool supports; their union
             is the target scored (empty -> all-background counts).
         parent_uid (str): the exp's declared uid (see the module docstring).
         cluster_mode (ClusterMode | str): the Ward projection to segment with.
+        frac_segment (float | None): share of the images to build the tree on,
+            in (0, 1); None (default) segments the whole cohort.
 
     Returns:
         {tp, fp, tn, fn}: the counts of the best-matching tree region.
@@ -188,6 +202,8 @@ def run_segment(exp: Experiment, mask_target_list, cluster_mode, *,
     mask_target = np.zeros(exp.mask_idx.shape, dtype=bool)
     for m in mask_target_list:
         mask_target |= m
+    if frac_segment is not None:
+        exp, _ = exp.split_img(frac_segment=frac_segment, seed=0)
     children = cluster(ExperimentScaled.from_exp(exp),
                        mode=ClusterMode(cluster_mode))
     return score_oracle_tree(children=children, mask_target=mask_target,

@@ -48,9 +48,10 @@ kept at what is cited.
 Scope. Five caches share the run_ana leaf (fit + score one Analysis per cell):
 null, sweep_llr, sweep_extent, sweep_b, sweep_nimg. Three swap in their own
 leaf over much the same grids: segment (run_segment, a Ward-mode oracle, no
-fit), vba_stat (run_stat, a VBA / CET variant reading a shared voxel-stat
-walk; HCP only, b=2), and prune (run_prune, three pruning rules on a shared
-GLOW fit).
+fit -- and segment_perc, the same leaf and modes over the share of the images
+the tree is built on), vba_stat (run_stat, a VBA / CET variant reading a
+shared voxel-stat walk; HCP only, b=2), and prune (run_prune, three pruning
+rules on a shared GLOW fit).
 
 Runtime. Five caches measure time, not detection, and run locally only. They
 answer two different questions and must not be read as one: runtime_num_vox is
@@ -184,6 +185,18 @@ RUN_ANA_LIST = [dict(ana=ana, fit_params=grid.fit_params_for(ana,
 # str(mode), recovered from the record at read time.
 SEGMENT_MODES = [ClusterMode.NAIVE, ClusterMode.GLM_ERROR, ClusterMode.FOCUS]
 RUN_SEGMENT_LIST = [dict(cluster_mode=mode) for mode in SEGMENT_MODES]
+
+
+# the segment_perc cache's leaf grid: the same Ward modes crossed with the
+# share of the images the tree is built on (run_segment's frac_segment). It
+# stops at 0.9 because a split always holds a test fold back; the whole-cohort
+# ceiling is the segment cache's own moderate-effect slice, which these cells
+# share. 0.5 is on the grid, so what GLOW's default split costs the
+# segmentation is read straight off the figure.
+SEGMENT_FRAC_GRID = [round(0.1 * i, 2) for i in range(1, 10)]
+RUN_SEGMENT_PERC_LIST = [dict(cluster_mode=mode, frac_segment=frac)
+                         for mode in SEGMENT_MODES
+                         for frac in SEGMENT_FRAC_GRID]
 
 
 # the vba_stat cache's leaf grid: the voxel-wise stat bake-off
@@ -414,6 +427,16 @@ CONFIG = {
         data_grid(),
         effect_grid(llr_list=EFFECT_LLR_GRID),
         RUN_SEGMENT_LIST, run_segment),
+    # Segmentation quality vs sample size: the same oracle per Ward mode at the
+    # moderate effect, sweeping the share of the images the tree is built on
+    # (SEGMENT_FRAC_GRID). It shares both grids and the leaf with segment's
+    # midpoint slice, so the record walk reaches either cache's leaves from the
+    # other's cells; frac_segment is what separates them (plot.tidy_segment
+    # selects on it).
+    'segment_perc': (
+        data_grid(),
+        effect_grid(),
+        RUN_SEGMENT_PERC_LIST, run_segment),
     # G. MANCOVA stat comparison: VBA / VBA-TFCE / CET x 5 stats x {raw, z}
     #    (b=2 so the multivariate stats differ). The cell's variants share one
     #    voxel-stat walk (run_stat -> voxel_stat_walk). GLOW excluded. HCP only

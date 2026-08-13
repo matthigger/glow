@@ -50,7 +50,10 @@ HCP over WGN, the Dice / sensitivity / PPV columns -- of the per-method
 seed-mean with a 95% CI error bar vs effect_llr, x-dodged and styled per method
 (the Ward mode / prune rule) in the Okabe-Ito palette. Prune crosses its rules
 with both Ward modes, so plot_prune draws one such grid per clustering mode
-(prune_Focus / prune_GLM_Error), a line per rule within each.
+(prune_Focus / prune_GLM_Error), a line per rule within each. segment_perc is
+the segment grid on a second axis: the same three Ward modes at the moderate
+effect against frac_segment, the share of the images the tree is built on, on a
+linear x.
 
 With no arguments the CLI plots every cache in the catalogue: the detection
 sweeps, the runtime family, the race-retention checks, the stat bake-off
@@ -228,6 +231,7 @@ _METRIC_TITLES = {
 _X_PARAM_LABELS = {
     'effect_llr': 'LLR / |r|',
     'effect_perc': 'Effect Size (% of Volume)',
+    'frac_segment': 'Segmentation Fold (share of images)',
     'num_img': 'Number of Subjects',
     'b': 'Number of Imaging Features',
     'num_vox': 'Number of Voxels',
@@ -1245,21 +1249,38 @@ def _tidy_flat_cache(raw, leaf: str, label_col: str, label_fn=None):
     return add_metric_cols(out)
 
 
-def tidy_segment(raw):
+def tidy_segment(raw, *, perc: bool = False):
     """Normalise the segment cache to a tidy per-(trial, Ward mode) frame.
 
     The method label is the recorded Ward mode (config records str(mode), so
     the cell is already the mode string Naive / GLM Error / Focus).
 
+    segment and segment_perc share the run_segment leaf and their
+    moderate-effect cells, so the forward record walk reaches both caches'
+    leaves from either one's cells (results.config_leaf_keys). frac_segment is
+    what tells them apart -- a whole-cohort leaf records none, a fold leaf
+    records the share it segmented on -- so perc selects the wanted half and
+    the column rides through as the fold sweep's x-axis.
+
     Args:
         raw: the segment cache's provenance frame (one row per run_segment leaf).
+        perc (bool): True keeps the fold leaves (frac_segment recorded), False
+            (default) the whole-cohort ones.
 
     Returns:
-        a tidy_flat_cache frame (label = Ward mode); empty in, empty out.
+        a tidy_flat_cache frame (label = Ward mode) plus a frac_segment column;
+        empty in, empty out.
     """
     if raw.empty:
         return raw
-    return _tidy_flat_cache(raw, 'run_segment', 'run_segment.in.cluster_mode')
+    out = _tidy_flat_cache(raw, 'run_segment', 'run_segment.in.cluster_mode')
+    col = 'run_segment.in.frac_segment'
+    frac = (raw[col] if col in raw.columns
+            else pd.Series(np.nan, index=raw.index))
+    out['frac_segment'] = pd.to_numeric(frac.reindex(out.index),
+                                        errors='coerce')
+    keep = out['frac_segment'].notna() if perc else out['frac_segment'].isna()
+    return out[keep]
 
 
 def tidy_prune(raw):
@@ -1326,7 +1347,8 @@ def _draw_metric_errbar(ax, df, x: str, metric: str, style: dict, *,
 
 
 def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
-                     metrics=('dice', 'sens', 'ppv')) -> None:
+                     metrics=('dice', 'sens', 'ppv'),
+                     log_x: bool = None) -> None:
     """Plot a source x metric grid of per-method mean +/- 95% CI vs the swept x.
 
     A 2 x len(metrics) grid: one row per data source (HCP over WGN), one column
@@ -1343,6 +1365,9 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
         out (pathlib.Path): directory the figure is written into.
         x (str): the swept x-axis column (effect_llr).
         metrics (iterable): the metric columns, one panel column each.
+        log_x (bool | None): log x-axis; None (default) takes one wherever
+            every x is positive, which suits the decade-wide llr sweeps and
+            not a linear axis like segment_perc's fold share.
     """
     metrics = list(metrics)
     df = df.copy()
@@ -1358,7 +1383,8 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
         return
 
     style = _qual_style(df['label'].dropna().unique().tolist())
-    log_x = pd.notnull(df[x].min()) and df[x].min() > 0
+    if log_x is None:
+        log_x = pd.notnull(df[x].min()) and df[x].min() > 0
     ncols = len(metrics)
 
     fig, axes = plt.subplots(len(sources), ncols, sharex=True,
@@ -1579,8 +1605,10 @@ def main(argv=None) -> None:
     write_stat_tables. The segment / prune caches are normalised with
     tidy_segment / tidy_prune and drawn as a source x metric grid vs
     effect_llr: segment by plot_metric_grid, prune by plot_prune (one grid per
-    Ward clustering mode). Figures / tables land in results/_latest, so a
-    mid-benchmark run yields intermediate output.
+    Ward clustering mode). segment_perc takes the same grid against
+    frac_segment instead, the share of the images its tree was built on.
+    Figures / tables land in results/_latest, so a mid-benchmark run yields
+    intermediate output.
 
     Args:
         argv (list | None): CLI args to parse; None reads sys.argv. Positional
@@ -1658,12 +1686,18 @@ def main(argv=None) -> None:
             write_stat_tables(name, df, out)
             n_plotted += 1
         elif name in segment_names:
-            df = tidy_segment(make_csv.write_config_csv(name))
+            # the fold sweep is the same leaf with frac_segment set, read off
+            # the cache's own leaf grid rather than its name; it also selects
+            # which half of the shared record walk is this cache's
+            perc = any('frac_segment' in kw for kw in CONFIG[name][2])
+            df = tidy_segment(make_csv.write_config_csv(name), perc=perc)
             if df.empty:
                 print(f'  (no records for {name} — skipping)')
                 continue
             print(f'\n=== {name}: {len(df)} segment rows ===')
-            plot_metric_grid(name, df, out)
+            x, log_x = (('frac_segment', False) if perc
+                        else ('effect_llr', None))
+            plot_metric_grid(name, df, out, x=x, log_x=log_x)
             n_plotted += 1
         elif name in prune_names:
             df = tidy_prune(make_csv.write_config_csv(name))

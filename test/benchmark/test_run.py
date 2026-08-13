@@ -319,6 +319,39 @@ class TestRunSegment:
         assert not run_segment.check_call_in_cache(
             exp, [mask], ClusterMode.NAIVE, parent_uid=uid)
 
+    def test_frac_segment_is_a_cache_axis(self):
+        exp, mask, uid = self._planted()
+        run_segment(exp, [mask], ClusterMode.FOCUS, parent_uid=uid,
+                    frac_segment=0.5)
+        # segmenting the whole cohort is a different measurement, so the
+        # segment and segment_perc caches never share an entry
+        assert not run_segment.check_call_in_cache(
+            exp, [mask], ClusterMode.FOCUS, parent_uid=uid)
+
+    def test_frac_segment_clusters_that_share_of_the_images(self, monkeypatch):
+        exp, mask, uid = self._planted()
+        num_img = []
+        cluster = run.cluster
+
+        def spy(exp, **kwargs):
+            """Log the image count the tree is built on, then cluster."""
+            num_img.append(exp.y.shape[1])
+            return cluster(exp, **kwargs)
+
+        monkeypatch.setattr(run, 'cluster', spy)
+        run_segment(exp, [mask], ClusterMode.FOCUS, parent_uid=uid,
+                    frac_segment=0.5)
+        # the tree saw half of the cell's 20 images, the segmentation fold
+        assert num_img == [10]
+
+    def test_frac_segment_scores_the_whole_target(self):
+        exp, mask, uid = self._planted()
+        score = run_segment(exp, [mask], ClusterMode.FOCUS, parent_uid=uid,
+                            frac_segment=0.5)
+        # the folds are voxel-identical, so a tree built on one of them is
+        # still scored against every planted voxel
+        assert score['tp'] + score['fn'] == int(mask.sum())
+
 
 # ---------------------------------------------------------------------------
 # run_stat: one VBA / CET MANCOVA-stat variant reading the shared voxel-walk
