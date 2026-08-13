@@ -59,13 +59,6 @@ the wall clock a user waits, every method given this machine's cores and card
 single pinned core, one permutation deep (run_ana_time_1perm). See the runtime
 section below.
 
-Convergence. sweep_n_perm_inner records how the FWER max-z threshold converges
-as the permutation count grows: run_inner_edge samples the draw matrix once to
-MAX_INNER_PERM and reports the threshold at every prefix (HCP only, moderate
-effect). The recommended permutation count is read off where that threshold
-plateaus (benchmark.plot). It swept GLOW's inner null before the split; that
-null is gone, so it now sweeps n_perm_fwer under the old axis name.
-
 """
 import warnings
 
@@ -77,8 +70,8 @@ from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr, get_wilks
 
 from . import grid, hcp
-from .run import (run_ana, run_ana_time, run_ana_time_1perm, run_inner_edge,
-                  run_prune, run_segment, run_stat)
+from .run import (run_ana, run_ana_time, run_ana_time_1perm, run_prune,
+                  run_segment, run_stat)
 
 
 # ---------- shared knobs ------------------------------------------------------
@@ -311,10 +304,8 @@ GLOW_ARM_MODES = [('GLOW-Focus', ClusterMode.FOCUS),
 # The 1perm permutation-count axes. n_perm_fwer starts at the family's own
 # baseline of 1 and doubles: the intercept (observed pass + synthesis) does not
 # shrink with the count, so the slope is only readable against a point that is
-# almost all intercept. There is no second permutation axis any more: GLOW's
-# nested inner null is gone (one tree means one draw matrix), so cost is linear
-# in n_perm_fwer alone and the retired runtime_1perm_n_perm_inner arm measured
-# a knob that no longer exists.
+# almost all intercept. n_perm_fwer is the only permutation axis: one tree
+# means one draw matrix, so cost is linear in it alone.
 ONE_PERM_N_PERM_FWER_GRID = [1, 2, 4, 8, 16]
 
 # per-cache seed offsets, clear of each other, so no two runtime caches share a
@@ -324,9 +315,6 @@ RUNTIME_SEED_OFFSET = {
     'runtime_num_vox': 200_000,
     'runtime_1perm_num_vox': 210_000,
     'runtime_1perm_n_perm_fwer': 220_000,
-    # retired with GLOW's inner null; kept so a re-used offset never
-    # collides with the cells that arm already cached
-    'runtime_1perm_n_perm_inner': 230_000,
     'runtime_1perm_b': 240_000,
     'runtime_1perm_nimg': 250_000,
 }
@@ -344,16 +332,6 @@ def runtime_data_grid(**kwargs):
     """
     return grid.get_kwargs_data_runtime(n_seed=RUNTIME_N_SEED, **kwargs)
 
-
-# GLOW-only leaf grid for the inner-perm edge (num_inner_perm convergence)
-# cache: one run_inner_edge per GLOW arm, each sampling the inner null to
-# MAX_INNER_PERM and reporting the max-z edge at every num_inner_perm <= it. No
-# label is passed -- the arm is recovered from the recorded cluster_mode.
-MAX_INNER_PERM = 2_000
-RUN_INNER_EDGE_LIST = [
-    dict(cluster_mode=mode, max_inner_perm=MAX_INNER_PERM,
-         n_perm_fwer=N_PERM_FWER)
-    for label, mode in GLOW_ARM_MODES]
 
 # runtime_num_vox's leaf grid: every method fit with what this machine has.
 # The voxel-wise arms take run_ana_time's default (all cores, no device --
@@ -515,18 +493,4 @@ CONFIG = {
             crop_n_vox_list=[CROP_N_VOX]),
         effect_grid(),
         RUN_1PERM_NIMG_LIST, run_ana_time_1perm),
-    # Permutation-count convergence. Holds the data + moderate effect fixed
-    # and, per GLOW arm, samples the draw matrix once to MAX_INNER_PERM
-    # (run_inner_edge), recording how the FWER max-z threshold settles as the
-    # draw count grows. It swept n_perm_inner before the split; with the inner
-    # null gone it sweeps n_perm_fwer, and the cache / axis names still say
-    # 'inner' only because renaming a recorded axis is a separate change (see
-    # run._inner_edge_curve).
-    # HCP only (the paper's real data; no point double-computing the WGN half),
-    # so local-only like the runtime family; shares the HCP detection cells, so
-    # their data / effect builds are cache hits off the other sweeps.
-    'sweep_n_perm_inner': (
-        data_grid(sources=['hcp']),
-        effect_grid(),
-        RUN_INNER_EDGE_LIST, run_inner_edge),
 }

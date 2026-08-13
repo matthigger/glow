@@ -9,7 +9,6 @@ methods, that it fits a private copy (the caller's recipe is left un-fitted,
 which is what keeps the cache key stable), and that it joins the shared
 provenance DAG (a run_ana leaf carries the build that produced its exp).
 """
-import json
 import random
 
 import numpy as np
@@ -17,7 +16,7 @@ import pytest
 
 from glow._extra.benchmark import data, run
 from glow._extra.benchmark.run import (glow_fit_for_prune, run_ana,
-                                       run_ana_time_1perm, run_inner_edge,
+                                       run_ana_time_1perm,
                                        run_prune, run_segment, run_stat,
                                        voxel_stat_walk)
 from glow.analysis import AnalysisGLOW, AnalysisVBA
@@ -319,63 +318,6 @@ class TestRunSegment:
         # a different Ward mode is its own segmentation -> distinct cache entry
         assert not run_segment.check_call_in_cache(
             exp, [mask], ClusterMode.NAIVE, parent_uid=uid)
-
-
-# ---------------------------------------------------------------------------
-# run_inner_edge: capture max-z vs num_inner_perm from one inner sampling
-# ---------------------------------------------------------------------------
-
-class TestRunInnerEdge:
-    def _planted(self):
-        return _planted_cell(
-            dict(source='wgn', shape=(6, 6, 6), b=2, num_img=20, a=1,
-                 seed=_fresh_seed()),
-            dict(effect_llr=0.1, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
-                 seed=0))
-
-    def test_grid_and_matrix_shape(self):
-        exp, mask, uid = self._planted()
-        curve = json.loads(run_inner_edge(
-            exp, [mask], cluster_mode=ClusterMode.FOCUS, max_inner_perm=30,
-            n_perm_fwer=4, parent_uid=uid))
-        grid = curve['num_inner_perm']
-        # ascending, ends at max_inner_perm; one max-z row per draw
-        assert grid == sorted(grid)
-        assert grid[-1] == 30
-        assert np.array(curve['max_z_null']).shape == (31, len(grid))
-
-    def test_prefix_snapshot_equals_real_fit(self):
-        # the whole point: the deepest snapshot reproduces a real
-        # AnalysisGLOW fit at that draw count, because draw i is
-        # exp_test.permute(i) from base_seed 0 and so a prefix of the edge
-        # sweep's matrix IS that fit's matrix.
-        exp, mask, uid = self._planted()
-        curve = json.loads(run_inner_edge(
-            exp, [mask], cluster_mode=ClusterMode.FOCUS, max_inner_perm=30,
-            n_perm_fwer=4, parent_uid=uid))
-        mz_max = np.array(curve['max_z_null'])[:, -1]
-        ana = AnalysisGLOW(n_perm_fwer=30,
-                           cluster_mode=ClusterMode.FOCUS).fit(exp)
-        np.testing.assert_allclose(mz_max, ana.fwer.max_stat, rtol=1e-6,
-                                   atol=1e-9)
-
-    def test_cluster_mode_is_a_cache_axis(self):
-        exp, mask, uid = self._planted()
-        run_inner_edge(exp, [mask], cluster_mode=ClusterMode.FOCUS,
-                       max_inner_perm=30, n_perm_fwer=4, parent_uid=uid)
-        # a different Ward projection is its own edge -> distinct cache entry
-        assert not run_inner_edge.check_call_in_cache(
-            exp, [mask], cluster_mode=ClusterMode.GLM_ERROR, max_inner_perm=30,
-            n_perm_fwer=4, parent_uid=uid)
-
-    def test_max_inner_perm_is_a_cache_axis(self):
-        exp, mask, uid = self._planted()
-        run_inner_edge(exp, [mask], cluster_mode=ClusterMode.FOCUS,
-                       max_inner_perm=30, n_perm_fwer=4, parent_uid=uid)
-        # a deeper sampling is a distinct capture (though its prefix agrees)
-        assert not run_inner_edge.check_call_in_cache(
-            exp, [mask], cluster_mode=ClusterMode.FOCUS, max_inner_perm=40,
-            n_perm_fwer=4, parent_uid=uid)
 
 
 # ---------------------------------------------------------------------------
