@@ -268,12 +268,11 @@ def test_fit_is_deterministic_and_returns_self():
                                equal_nan=True)
 
 
-# ---------- the device backend is offline -----------------------------------
-def test_explicit_device_request_raises():
-    with pytest.raises(NotImplementedError, match='split architecture'):
-        _ana().fit(_exp(), gpu=True)
-
-
-def test_auto_device_falls_back_to_the_cpu():
+# ---------- the device argument ----------------------------------------------
+# Which device 'auto' lands on depends on what is visible, so this only
+# pins that the fit completes and keeps fit's contract either way. The A/B
+# equivalence of the two backends lives in test_fit_gpu.py, which needs a
+# device to say anything.
+def test_auto_device_fits_and_returns_self():
     ana = _ana()
     assert ana.fit(_exp(), gpu='auto') is ana

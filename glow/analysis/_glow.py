@@ -7,6 +7,7 @@ import glow.graph
 from glow.experiment.exper import ExperimentScaled
 from ._base import Analysis
 from . import inner_perm
+from ._fit_gpu import gpu_draws, resolve_gpu
 from .cluster import cluster, ClusterMode
 from .fwer import MaxStatPerm
 from .mancova import decompose
@@ -135,9 +136,10 @@ class AnalysisGLOW(Analysis):
                 recipe honours (see Analysis.fit) but unused -- the draws
                 come from one serial call. Parallelising them is a
                 straight win and simply has not been done yet.
-            gpu: False (default) or 'auto' to run on the CPU. Any
-                explicit device request raises until ._fit_gpu is ported
-                to the split architecture.
+            gpu: False (default) to draw on the CPU, True or a GpuConfig
+                to require a device, 'auto' to take one when visible. The
+                draws are the only thing the device changes; see
+                ._fit_gpu on why float64 is its default dtype.
             split_group (np.array): (num_img,) labels held together by
                 the split -- family IDs, subject IDs for repeat scans.
                 Omitting it when the images are related leaves the two
@@ -147,18 +149,7 @@ class AnalysisGLOW(Analysis):
         Returns:
             self
         """
-        # The device backend has not been ported to the split architecture:
-        # it still builds one Ward tree per outer perm, which is the
-        # selection bias this rewrite exists to remove. Refuse an explicit
-        # device request rather than silently fit a different estimator.
-        # gpu='auto' asks for a device only where one helps, so it is a
-        # no-op here and takes the CPU.
-        if gpu and gpu != 'auto':
-            raise NotImplementedError(
-                'AnalysisGLOW.fit(gpu=...) is unavailable: the device '
-                'backend still implements the pre-split architecture (one '
-                'Ward tree per outer perm) and is being ported. Pass '
-                "gpu=False or gpu='auto' to run on the CPU.")
+        gpu_config = resolve_gpu(gpu, name='AnalysisGLOW.fit')
         del n_jobs
 
         exp_seg, exp_test = exp.split_img(frac_segment=self.frac_segment,
@@ -185,15 +176,20 @@ class AnalysisGLOW(Analysis):
                   f'({exp_test.y.shape[1]} test images, '
                   f'{exp_test.y.shape[2]} voxels) ...')
 
-        # base_seed=0 makes draw i exp_test.permute(i), and permute(0) is
-        # the unpermuted data -- so row 0 is the observed draw and needs no
-        # separate code path. cpu_reliable_full is the trust-anchor
-        # backend: slow, but an independent implementation of the
-        # statistic (see inner_perm). Swapping it for the batched backend
-        # is the next optimisation, not a change of estimator.
-        llr_all = inner_perm.cpu_reliable_full(
+        # base_seed=0 makes draw i exp_test.permute(i), and seed 0 is the
+        # identity -- so row 0 is the observed draw and needs no separate
+        # code path (permute._perm_indices reserves it).
+        #
+        # The two backends differ only in speed: the CPU one is the
+        # trust anchor, an independent per-region implementation of the
+        # statistic (see inner_perm), while the device one is ~3 orders
+        # faster at full-brain num_vox and holds float64 to reproduce it.
+        draws_kwargs = dict(
             exp=exp_test, base_seed=0, n_perm=self.n_perm_fwer + 1,
             q0=q0, q1=q1, children=self.children, min_vox=self.min_vox)
+        llr_all = (inner_perm.cpu_reliable_full(**draws_kwargs)
+                   if gpu_config is None
+                   else gpu_draws(gpu_config, **draws_kwargs))
 
         # One matrix, both jobs: column moments standardize the regions,
         # row maxima are the null. The observed row is inside both.

@@ -2,10 +2,10 @@
 
 This is the gate that justifies keeping device / acc_dtype out of the
 recipe hash. The unit tests in test_inner_perm_gpu.py pin the backend's
-draws and moments; these pin the whole fit -- z, the FWER null, the
-p-values and the discovered effect list -- so a divergence anywhere in
-the phase split (seeds, the outer-perm reduction, which tree pairs with
-which observed LLR) surfaces here rather than in a sweep.
+draws; these pin the whole fit -- z, the FWER null, the p-values and the
+discovered effect list -- so a divergence anywhere downstream of the
+draws (the column moments, the max-z null, pruning) surfaces here rather
+than in a sweep.
 
 Run at acc_dtype=float64 (what gpu=True selects) so what is under test is
 the pipeline, not the dtype; a separate case checks that float32 leaves
@@ -22,7 +22,7 @@ import pytest
 
 import glow.mask
 from glow.analysis import AnalysisVBA, GpuConfig, inner_perm_gpu
-from glow.analysis._fit_gpu import resolve_gpu
+from glow.analysis._fit_gpu import resolve_gpu, resolve_perm_chunk
 from glow.analysis._glow import AnalysisGLOW
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr
@@ -36,17 +36,6 @@ requires_cuda = pytest.mark.skipif(
 skip_if_cuda = pytest.mark.skipif(
     inner_perm_gpu.is_available(),
     reason='a CUDA device is visible')
-
-# The A/B cases below compare a device fit against a CPU fit. There is no
-# device fit to compare while _fit_gpu is being ported to the split
-# architecture, so they are held rather than deleted -- every assertion
-# here is still the right one to make once the port lands, and the whole
-# point of this file is that it is the gate for keeping device / acc_dtype
-# out of the recipe hash. The gpu-argument cases are unaffected and still
-# run: resolve_gpu did not change.
-pending_gpu_port = pytest.mark.skip(
-    reason='device backend offline pending its port to the split '
-           'architecture (see glow.analysis._fit_gpu)')
 
 
 def _exp_with_effect(b=2, n_img=30, shape=(6, 6, 6), beta=1.5, seed=1):
@@ -130,7 +119,6 @@ def test_voxel_analysis_rejects_an_explicit_device():
 
 
 # ---------- the device fit against the CPU fit -------------------------------
-@pending_gpu_port
 @requires_cuda
 def test_gpu_fit_matches_cpu_fit():
     """fit(gpu=True) reproduces fit() on every synthesis output."""
@@ -152,7 +140,6 @@ def test_gpu_fit_matches_cpu_fit():
            [e.reg_idx for e in ref.effect_list]
 
 
-@pending_gpu_port
 @requires_cuda
 def test_gpu_fit_returns_self():
     """fit(gpu=True) keeps fit's contract: the recipe it was called on."""
@@ -160,10 +147,13 @@ def test_gpu_fit_returns_self():
     assert ana.fit(_exp_with_effect(), n_jobs=1, gpu=True) is ana
 
 
-@pending_gpu_port
 @requires_cuda
-def test_gpu_observed_tree_is_the_unpermuted_one():
-    """k=0 stores the observed tree, not some permuted perm's."""
+def test_gpu_tree_is_the_cpu_tree():
+    """The device changes the draws only, never the hypothesis family.
+
+    The tree comes from the segmentation fold on the CPU either way, so a
+    device fit that differed here would be testing a different family.
+    """
     exp = _exp_with_effect()
     kw = _fit_kwargs()
     ref = AnalysisGLOW(**kw).fit(exp, n_jobs=1)
@@ -171,7 +161,6 @@ def test_gpu_observed_tree_is_the_unpermuted_one():
     np.testing.assert_array_equal(got.children, ref.children)
 
 
-@pending_gpu_port
 @requires_cuda
 def test_gpu_float32_preserves_discoveries():
     """float32 changes nothing that reaches a conclusion.
@@ -192,19 +181,56 @@ def test_gpu_float32_preserves_discoveries():
            [e.reg_idx for e in ref.effect_list]
 
 
-@pending_gpu_port
 @requires_cuda
-def test_gpu_parallel_phase_a_is_deterministic():
-    """A parallel Phase A gives the same answer as a serial one.
+def test_gpu_fit_ignores_n_jobs():
+    """n_jobs cannot move a device fit, which is why it is not in the hash.
 
-    The generator is unordered, so this pins that results are keyed by
-    their own k rather than by arrival order.
+    Analysis.fit promises a fit is identical at any n_jobs; the draws are
+    seeded by index and the device loop is serial, so this pins that the
+    promise still holds on the device path.
     """
     exp = _exp_with_effect()
     kw = _fit_kwargs()
     serial = AnalysisGLOW(**kw).fit(exp, n_jobs=1, gpu=True)
     par = AnalysisGLOW(**kw).fit(exp, n_jobs=4, gpu=True)
     np.testing.assert_allclose(par.fwer.max_stat, serial.fwer.max_stat,
-                               rtol=1e-12, atol=1e-12)
+                               rtol=0, atol=0)
     np.testing.assert_allclose(par.fwer.stat_obs, serial.fwer.stat_obs,
-                               rtol=1e-12, atol=1e-12)
+                               rtol=0, atol=0)
+
+
+# ---------- chunk sizing -----------------------------------------------------
+class TestResolvePermChunk:
+    """perm_chunk is sized from free device memory unless pinned."""
+
+    def test_an_explicit_int_passes_through(self):
+        """No device needed: an int short-circuits the memory query."""
+        cfg = GpuConfig(perm_chunk=3)
+        assert resolve_perm_chunk(
+            cfg, b=6, num_img=100, num_vox=224_619, a0=2) == 3
+
+    @requires_cuda
+    def test_small_b_takes_the_maximum(self):
+        """A cheap chunk is capped by throughput, not by memory."""
+        got = resolve_perm_chunk(GpuConfig(), b=1, num_img=30,
+                                 num_vox=1_000, a0=2)
+        assert got == 16
+
+    @requires_cuda
+    def test_full_brain_b6_is_clamped_below_the_maximum(self):
+        """The case that OOMed at a fixed 16 on an 8 GiB card.
+
+        b = 6 is the paper's full DKI + NODDI panel, and 224,619 is the HCP
+        support, so this is a configuration the benchmark actually fits --
+        not a synthetic corner.
+        """
+        got = resolve_perm_chunk(GpuConfig(), b=6, num_img=100,
+                                 num_vox=224_619, a0=2)
+        assert 1 <= got < 16
+
+    @requires_cuda
+    def test_never_returns_zero(self):
+        """An absurd problem still yields a runnable chunk of 1."""
+        got = resolve_perm_chunk(GpuConfig(), b=64, num_img=1_000,
+                                 num_vox=10_000_000, a0=8)
+        assert got == 1
