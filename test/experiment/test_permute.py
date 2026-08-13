@@ -1,7 +1,7 @@
 import numpy as np
 
 from glow.experiment import ExperimentImageOnly
-from glow.experiment.permute import get_freed_lane
+from glow.experiment.permute import _perm_indices, get_freed_lane
 from glow.analysis.mancova import decompose
 
 
@@ -21,6 +21,32 @@ def _get_freed_lane_dense(x, contrast, perm_idx):
     p = np.eye(num_img)[:, perm]
     q0 = q[0].T @ q[0]
     return (np.eye(num_img) - q0) @ p + q0
+
+
+def test_perm_indices_seed_0_is_the_identity():
+    """Seed 0 gives the identity, so draw 0 is the observed data.
+
+    The reserved-0 convention Experiment.permute and get_freed_lane both
+    state. Every batched backend walks base_seed + i through
+    _perm_indices, so row 0 of a base_seed = 0 draw matrix is the
+    observed statistic only if this holds -- and a backend that permuted
+    there instead would still agree with the trust anchor on rows 1:.
+    """
+    for num_img in [1, 5, 24]:
+        assert np.array_equal(_perm_indices(0, num_img),
+                              np.arange(num_img)), \
+            f'seed 0 is not the identity at num_img={num_img}'
+
+
+def test_perm_indices_nonzero_seed_permutes():
+    """A nonzero seed gives a non-identity permutation of the images."""
+    num_img = 24
+    for seed in [1, 2, 42]:
+        perm = _perm_indices(seed, num_img)
+        assert np.array_equal(np.sort(perm), np.arange(num_img)), \
+            f'seed {seed} is not a permutation'
+        assert not np.array_equal(perm, np.arange(num_img)), \
+            f'seed {seed} collapsed to the identity'
 
 
 def test_get_freed_lane_matches_dense_reference():

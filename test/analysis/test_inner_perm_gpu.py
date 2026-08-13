@@ -133,6 +133,40 @@ def test_gpu_moments_match_cpu_perm(b, design):
 
 @requires_cuda
 @pytest.mark.parametrize('design', DESIGNS)
+@pytest.mark.parametrize('b', B_LIST)
+def test_gpu_row_0_is_the_observed_draw(b, design):
+    """Row 0 at base_seed = 0 is the unpermuted LLR, not a null draw.
+
+    The equivalence test above runs at base_seed = 12_345, where every row
+    is permuted. AnalysisGLOW.fit reads row 0 of a base_seed = 0 matrix as
+    the observed LLR, so a device backend that permuted at seed 0 would
+    pass every other test here and still swap the observed statistic for a
+    null one -- see permute._perm_indices on the reserved-0 convention.
+    """
+    prep = _prep(b, design)
+    llr_obs, _ = glow.graph.compute_llr_batched(
+        prep['exp'], children=prep['children'], q0=prep['q0'],
+        q1=prep['q1'], min_size=prep['min_vox'])
+    got = _call(inner_perm_gpu.gpu_perm_full, prep, n_perm=3, base_seed=0,
+                acc_dtype=np.float64)
+    _assert_cells_match(got[:1], llr_obs[None], atol=1e-9,
+                        label=f'row 0 b={b} {design}')
+
+
+@requires_cuda
+@pytest.mark.parametrize('design', DESIGNS)
+@pytest.mark.parametrize('b', B_LIST)
+def test_gpu_draws_match_reliable_at_base_seed_0(b, design):
+    """Every row agrees with the trust anchor at base_seed = 0."""
+    prep = _prep(b, design)
+    got = _call(inner_perm_gpu.gpu_perm_full, prep, n_perm=4, base_seed=0,
+                acc_dtype=np.float64)
+    ref = _call(inner_perm.cpu_reliable_full, prep, n_perm=4, base_seed=0)
+    _assert_cells_match(got, ref, atol=1e-9, label=f'b={b} {design}')
+
+
+@requires_cuda
+@pytest.mark.parametrize('design', DESIGNS)
 @pytest.mark.parametrize('perm_chunk', [1, 3, 32])
 def test_perm_chunk_invariance(design, perm_chunk):
     """perm_chunk is a memory knob only: draws are unchanged by it.

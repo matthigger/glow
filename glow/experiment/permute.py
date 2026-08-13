@@ -16,13 +16,21 @@ def _perm_indices(seed: int, num_img: int):
     perm[k] gives the original-image index that the FL-permuted data
     puts at position k.
 
+    Seed 0 returns the identity, holding the reserved-0 convention
+    Experiment.permute and get_freed_lane already state: draw 0 is the
+    observed, unpermuted data. A caller walking base_seed + i from 0 thus
+    gets the observed draw in row 0 and the null in rows 1: -- what
+    AnalysisGLOW.fit and Analysis.z_score_stat assume of a draw matrix.
+
     Args:
-        seed (int): permutation seed
+        seed (int): permutation seed; 0 gives the identity
         num_img (int): number of images
 
     Returns:
         perm (np.array): (num_img,) int permutation index array
     """
+    if not seed:
+        return np.arange(num_img)
     rng = np.random.default_rng(seed)
     return np.argsort(rng.permutation(num_img))
 

@@ -197,6 +197,55 @@ def test_iter_llr_perm_matches_reliable_general(prep_general_fp64):
 
 
 # ---------------------------------------------------------------------------
+# The reserved-0 convention: base_seed = 0 puts the OBSERVED draw in row 0.
+#
+# The equivalence tests above run at base_seed = 12_345, where every row is a
+# permuted draw. That leaves row 0 of a base_seed = 0 matrix -- the one row
+# AnalysisGLOW.fit reads as the observed LLR, and the one row
+# Analysis.z_score_stat standardizes -- unchecked. A backend that permuted at
+# seed 0 would pass every test above and silently replace the observed
+# statistic with a null one.
+
+def _observed_llr(prep):
+    """Compute the unpermuted per-region LLR, no permutation machinery."""
+    llr, _ = glow.graph.compute_llr_batched(
+        prep['exp'], children=prep['children'], q0=prep['q0'],
+        q1=prep['q1'], min_size=prep['min_vox'])
+    return llr
+
+
+def test_row_0_is_the_observed_draw_intercept(prep_intercept_fp64):
+    """Row 0 at base_seed = 0 is the unpermuted LLR, on both CPU paths."""
+    prep = prep_intercept_fp64
+    ref = _observed_llr(prep)
+    draws_perm = _materialize_iter_llr_perm(prep, n_perm=3, base_seed=0)
+    draws_rel = _draws(inner_perm.cpu_reliable_full, prep, n_perm=3,
+                       base_seed=0)
+    _assert_draws_match(draws_perm[:1], ref[None], atol=1e-10)
+    _assert_draws_match(draws_rel[:1], ref[None], atol=1e-10)
+
+
+def test_row_0_is_the_observed_draw_general(prep_general_fp64):
+    """Same on general Q0, where the seed-0 gather is not a no-op."""
+    prep = prep_general_fp64
+    ref = _observed_llr(prep)
+    draws_perm = _materialize_iter_llr_perm(prep, n_perm=3, base_seed=0)
+    draws_rel = _draws(inner_perm.cpu_reliable_full, prep, n_perm=3,
+                       base_seed=0)
+    _assert_draws_match(draws_perm[:1], ref[None], atol=1e-10)
+    _assert_draws_match(draws_rel[:1], ref[None], atol=1e-10)
+
+
+def test_backends_agree_at_base_seed_0(prep_general_fp64):
+    """Every row agrees at base_seed = 0, not just the null rows."""
+    prep = prep_general_fp64
+    draws_perm = _materialize_iter_llr_perm(prep, n_perm=4, base_seed=0)
+    draws_ref = _draws(inner_perm.cpu_reliable_full, prep, n_perm=4,
+                       base_seed=0)
+    _assert_draws_match(draws_perm, draws_ref, atol=1e-10)
+
+
+# ---------------------------------------------------------------------------
 # min_vox NaN handling -- small regions must drop out of every backend.
 
 def test_min_vox_drops_small_regions_cpu_perm(prep_intercept_fp64):
