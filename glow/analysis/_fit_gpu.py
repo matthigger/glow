@@ -12,7 +12,7 @@ Porting it is a small job rather than a rewrite -- inner_perm_gpu already
 has the pieces (prep_shared once for the fit, prep_tree once for the one
 tree, _chunk_llr per chunk). What it needs is to assemble those chunks
 into the one (n_perm_fwer + 1, num_reg) matrix the CPU path builds, and
-hand it to the same Analysis.z_score_stat / get_pval reduction, so the
+hand it to the same Analysis.z_score_stat / get_fwer reduction, so the
 two backends cannot drift.
 
 It is not urgent. Flattening the nesting took a fit from
@@ -48,7 +48,7 @@ class GpuConfig:
             inner_perm_gpu.gpu_perm for why 16 rather than bigger
         acc_dtype (type): device hot-loop dtype. float64 reproduced a CPU
             fit's p-values exactly at every b measured; float32 was ~2.3x
-            faster but perturbed max_z_null by ~2e-3 relative, enough to
+            faster but perturbed fwer.max_stat by ~2e-3 relative, enough to
             flip a handful of p-values on real data.
     """
 

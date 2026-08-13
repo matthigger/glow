@@ -120,7 +120,7 @@ class TestContract:
         exp, uid = _exp()
         ana = AnalysisVBA(n_perm_fwer=15)
         run_ana(exp, ana, [], parent_uid=uid)
-        assert ana.pval is None
+        assert ana.fwer is None
         assert ana.effect_list is None
 
 
@@ -356,7 +356,8 @@ class TestRunInnerEdge:
         mz_max = np.array(curve['max_z_null'])[:, -1]
         ana = AnalysisGLOW(n_perm_fwer=30,
                            cluster_mode=ClusterMode.FOCUS).fit(exp)
-        np.testing.assert_allclose(mz_max, ana.max_z_null, rtol=1e-6, atol=1e-9)
+        np.testing.assert_allclose(mz_max, ana.fwer.max_stat, rtol=1e-6,
+                                   atol=1e-9)
 
     def test_cluster_mode_is_a_cache_axis(self):
         exp, mask, uid = self._planted()

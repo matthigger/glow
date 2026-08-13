@@ -31,7 +31,8 @@ class AnalysisVBA(AnalysisVoxel):
         z_flag (bool): whether stats are z-scored before TFCE
         verbose (bool): whether progress is printed
         stat (np.array): (n_perm_fwer+1, num_vox) stats (populated by fit)
-        pval (np.array): (num_vox,) FWER p-values (populated by fit)
+        fwer (MaxStatPermResult): the max-stat test over the voxels, every
+            voxel in the comparison set (populated by fit; see Analysis)
     """
 
     RECORD_FIELDS = ('get_stat', 'n_perm_fwer', 'alpha_fwer', 'tfce_flag',
@@ -102,9 +103,9 @@ class AnalysisVBA(AnalysisVoxel):
                                         n_jobs=n_jobs,
                                         verbose=self.verbose,
                                         backend=tfce_backend)
-        self.pval = self.get_pval(self.stat)
+        self.fwer = self.get_fwer(self.stat, alpha=self.alpha_fwer)
         mask = np.zeros(exp.mask_idx.shape, dtype=bool)
-        mask[exp.mask_idx > -1] = self.pval <= self.alpha_fwer
+        mask[exp.mask_idx > -1] = self.fwer.reg_sig
         self.effect_list = self.discover_mask(mask=mask, exp=exp)
         return self
 

@@ -3,8 +3,7 @@
 import os
 import warnings
 from abc import ABC, abstractmethod
-from bisect import bisect_left
-from typing import Callable
+from typing import Callable, NamedTuple
 
 import numpy as np
 from joblib import Parallel, delayed
@@ -57,6 +56,40 @@ def reject_gpu(gpu, name: str) -> None:
                          f"has one); pass gpu=False or gpu='auto'")
 
 
+class MaxStatPermResult(NamedTuple):
+    """One Westfall-Young max-stat permutation test over a comparison set.
+
+    Self-contained: pval follows from stat_obs, max_stat and reg_active
+    alone, so a stored result stays inspectable once the
+    (n_perm+1, num_reg) matrix behind it is gone -- which AnalysisGLOW
+    drops as soon as this is built, that matrix running to gigabytes at
+    full-brain num_vox.
+
+    max_stat is kept in draw order, not sorted. Sorting is what the
+    comparison needs and get_fwer_from_max does it internally; the
+    per-draw correspondence is the one thing a discarded matrix leaves
+    behind.
+
+    Attributes:
+        stat_obs (np.array): (num_reg,) statistic tested per region --
+            the source matrix's row 0, copied rather than sliced so the
+            result does not pin the matrix alive
+        max_stat (np.array): (n_perm+1,) max statistic per draw over
+            reg_active, in draw order. max_stat[0] is the observed draw.
+            A draw with no finite active region is NaN here and sits out
+            of the comparison set.
+        reg_active (np.array): (num_reg,) boolean comparison set
+        pval (np.array): (num_reg,) FWER p-values, NaN off reg_active
+        reg_sig (np.array): (num_reg,) boolean, True where pval <= alpha
+    """
+
+    stat_obs: np.ndarray
+    max_stat: np.ndarray
+    reg_active: np.ndarray
+    pval: np.ndarray
+    reg_sig: np.ndarray
+
+
 class Analysis(ABC):
     """Perform effect discovery (GLOW or TFCE) and compute FWER p-values.
 
@@ -67,17 +100,19 @@ class Analysis(ABC):
 
     Attributes:
         effect_list (list): discovered Effect objects (populated by fit)
-        pval (np.array): (num_reg,) FWER-controlled p-values (set by fit)
+        fwer (MaxStatPermResult): the max-stat test the discoveries came
+            out of -- p-values, the selected regions, the comparison set
+            and the per-draw null (set by fit)
     """
 
     # the __init__ config knobs that identify the recipe -- the fields __repr__
     # renders. Subclasses declare their own. Never includes exp, the fitted
-    # arrays, or pval -- only the immutable recipe.
+    # arrays, or fwer -- only the immutable recipe.
     RECORD_FIELDS = ()
 
     def __init__(self):
         self.effect_list = None
-        self.pval = None
+        self.fwer = None
 
     def __repr__(self):
         """A compact recipe string: class name + the RECORD_FIELDS knobs.
@@ -126,79 +161,116 @@ class Analysis(ABC):
         """
 
     @classmethod
-    def get_pval(cls, stat, reg_active=None, *, stat_null=None):
-        """Compute FWER-adjusted p-values via Westfall-Young permutation.
+    def get_fwer(cls, stat, *, alpha: float, reg_active=None):
+        """Run the Westfall-Young max-stat test over the active regions.
 
-        Westfall & Young 1993: the max-statistic null over the active
-        comparison set controls the family-wise error rate.
+        Westfall & Young 1993: the max-statistic null over a comparison
+        set fixed in advance controls the family-wise error rate. Each
+        region's p-value is the share of per-draw maxima at least as
+        large as its observed statistic.
 
-        Two modes, sharing the same max-stat bisect:
+        The observed draw is one of its own null draws: row 0 enters the
+        per-draw maxima on equal footing with rows 1:, so the denominator
+        is n_perm+1 and the smallest attainable p-value is 1/(n_perm+1)
+        rather than 0 (Phipson & Smyth 2010). That is not a guard against
+        zero but the randomization argument itself -- the identity
+        permutation belongs to the permutation group, so under H0 the
+        observed statistic is exchangeable with the permuted ones and its
+        rank among all n_perm+1 of them is uniform, which is what makes
+        the test exact (Lehmann & Romano Thm 15.2.1; Hemerik & Goeman
+        2018). It is the same exchangeability z_score_stat relies on to
+        put row 0 inside the standardizing moments.
 
-        - Single tree (VBA / CET): pass stat as the full
-          (n_perm+1, num_reg) matrix (row 0 observed). The max-stat null
-          is built column-wise as sort(nanmax(stat[:, reg_active])) and
-          the observed per-region statistic is stat[0].
-
-        - Per-permutation trees (GLOW): the null cannot be read off a
-          single matrix because each permutation has its own tree, so
-          pass the precomputed max-stat null as stat_null (one entry per
-          permutation incl. observed) and the observed per-region
-          statistic as stat (a (num_reg,) 1-D array).
+        reg_active is the comparison set and must be fixed with respect
+        to the permutation group -- known a priori, or read off data the
+        permutations never touch (GLOW's size >= min_vox comes from the
+        segmentation fold). An inactive region leaves both the per-draw
+        maxima and the tested family, so a set chosen from the observed
+        statistics voids FWER control silently: discarding whatever looks
+        null lowers the maxima the survivors are compared against.
 
         Args:
-            stat (np.array): (n_perm+1, num_reg) statistics per region
-                (row 0 observed), or (num_reg,) observed statistics when
-                stat_null is given.
-            reg_active (np.array): (num_reg,) boolean mask. Only active
-                regions have a p-value computed; inactive get np.nan.
-                Discarding a-priori small regions from the comparison
-                set preserves power for larger regions. Defaults to all
-                regions active.
-            stat_null (np.array): optional (n_perm+1,) precomputed
-                max-stat null (one entry per permutation incl. observed).
+            stat (np.array): (n_perm+1, num_reg) statistics per region.
+                Row 0 is the observed draw, rows 1: the permutation null.
+            alpha (float): family-wise error rate, the reg_sig cutoff.
+            reg_active (np.array): (num_reg,) boolean comparison set.
+                Defaults to every region.
 
         Returns:
-            pval (np.array): (num_reg,) FWER-controlled p-values
+            MaxStatPermResult: see the class docstring.
         """
-        stat_obs = stat[0] if stat_null is None else stat
+        # a copy, not the row-0 view: the result outlives stat, and a view
+        # would hold the whole (n_perm+1, num_reg) matrix alive for one row
+        stat_obs = np.array(stat[0])
         num_reg = stat_obs.shape[0]
 
         if reg_active is None:
             reg_active = np.ones(num_reg, dtype=bool)
-        elif not reg_active.any():
-            return np.full(num_reg, fill_value=np.nan)
 
-        # max stat per permutation, sorted low to high (bisect_left below
-        # needs an ascending array)
-        if stat_null is None:
-            # a permutation with no valid region anywhere contributes no
-            # max; nanmax would call that NaN (and warn), which sorts to
-            # the top and silently raises every p-value
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore', RuntimeWarning)
-                max_stat = np.nanmax(stat[:, reg_active], axis=1)
-            null_sorted = np.sort(max_stat[np.isfinite(max_stat)])
-        else:
-            null_sorted = np.sort(stat_null)
+        # a draw with no finite active region has no max to contribute;
+        # nanmax reports NaN (and warns), and NaN would sort to the top of
+        # the null and silently raise every p-value
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            max_stat = (np.nanmax(stat[:, reg_active], axis=1)
+                        if reg_active.any()
+                        else np.full(stat.shape[0], fill_value=np.nan))
+
+        return cls.get_fwer_from_max(stat_obs, max_stat, alpha=alpha,
+                                     reg_active=reg_active)
+
+    @classmethod
+    def get_fwer_from_max(cls, stat_obs, max_stat, *, alpha: float,
+                          reg_active=None):
+        """Assemble a max-stat test from an observed row and its null.
+
+        The primitive get_fwer reduces to, and the way in for a null that
+        cannot be read off an (n_perm+1, num_reg) matrix: CET tests
+        cluster sizes, and its clusters reform in every draw, so it
+        accumulates max_stat a draw at a time rather than ever holding
+        the matrix (AnalysisCET._get_fwer_cet). Both arms share this
+        bisect so they cannot drift onto different p-value conventions --
+        see get_fwer for which convention, and why.
+
+        Args:
+            stat_obs (np.array): (num_reg,) observed statistic per region.
+            max_stat (np.array): (n_perm+1,) max statistic per draw over
+                reg_active, draw order, entry 0 the observed draw.
+            alpha (float): family-wise error rate, the reg_sig cutoff.
+            reg_active (np.array): (num_reg,) boolean comparison set.
+                Defaults to every region.
+
+        Returns:
+            MaxStatPermResult: see the class docstring.
+        """
+        num_reg = stat_obs.shape[0]
+        if reg_active is None:
+            reg_active = np.ones(num_reg, dtype=bool)
+
+        null_sorted = np.sort(max_stat[np.isfinite(max_stat)])
         n_null = len(null_sorted)
-        if n_null == 0:
-            return np.full(num_reg, fill_value=np.nan)
 
-        # p-value: fraction of permuted-or-observed max-stats >= the
-        # region's observed value
-        pval = np.full(num_reg, fill_value=-1.0)
-        for reg_idx, z in enumerate(stat_obs):
-            if np.isnan(z):
-                pval[reg_idx] = np.nan
-                continue
-            pval[reg_idx] = max(1 - bisect_left(null_sorted, z) / n_null,
-                                1 / n_null)
+        # only a finite observed statistic is tested, matching what may
+        # enter the null. n_null is then nonzero whenever anything is
+        # tested at all, the observed draw's own max being one of those
+        # entries, so the guard below only skips empty work.
+        pval = np.full(num_reg, fill_value=np.nan)
+        reg_test = reg_active & np.isfinite(stat_obs)
+        if n_null:
+            # side='left' counts the strictly smaller maxima, so
+            # n_null - k is the count at least as large as the observed.
+            # Spelled (n_null - k) / n_null, never 1 - k / n_null: the
+            # latter cancels, and a p-value that should land exactly on
+            # alpha comes back an ulp above it and fails the reg_sig
+            # cutoff.
+            k = np.searchsorted(null_sorted, stat_obs[reg_test], side='left')
+            pval[reg_test] = np.maximum((n_null - k) / n_null, 1 / n_null)
 
-        # inactive regions must stay NaN: assigning them a p-value would
-        # expand the comparison set and break FWER control
-        pval[~reg_active] = np.nan
-
-        return pval
+        # NaN <= alpha is False, so a region off the comparison set is
+        # never selected
+        return MaxStatPermResult(stat_obs=stat_obs, max_stat=max_stat,
+                                 reg_active=reg_active, pval=pval,
+                                 reg_sig=pval <= alpha)
 
     @classmethod
     def z_score_stat(cls, stat):
@@ -399,7 +471,7 @@ class AnalysisVoxel(Analysis):
         A region with no usable statistic is left NaN, which every reader
         of this matrix skips: nanmean / nanstd in z_score_stat, the
         sub-threshold blank in apply_tfce_stat, nanquantile for the CET
-        threshold, nanmax and the isnan guard in get_pval. Nothing here
+        threshold, nanmax and the isfinite guard in get_fwer. Nothing here
         repairs it, because there is nothing left to repair -- no stat
         function can return +-inf (see mancova) and the voxels with no
         variance to test are gone before an analysis sees the data

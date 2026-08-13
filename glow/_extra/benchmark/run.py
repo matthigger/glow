@@ -99,8 +99,9 @@ LEAF_IGNORE = ['exp', 'mask_target_list']
 # AnalysisGLOW.fit makes good on -- the device path draws the same permutations
 # from the same seeds in float64 and agrees to float round-off (test_fit_gpu.py)
 # -- so it holds only while fit_params carries no numerical knob. A
-# GpuConfig(acc_dtype=float32) does perturb max_z_null (~2e-3 relative), which
-# is why it is not what gpu=True selects and must not be swept from a config.
+# GpuConfig(acc_dtype=float32) does perturb fwer.max_stat (~2e-3 relative),
+# which is why it is not what gpu=True selects and must not be swept from a
+# config.
 FIT_IGNORE = [*LEAF_IGNORE, 'fit_params']
 
 # parent_uid is declared before every defaulted parameter below, not last where
@@ -342,7 +343,7 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
     ana = AnalysisGLOW(n_perm_fwer=n_perm_fwer, alpha_fwer=alpha_fwer,
                        cluster_mode=cluster_mode)
     ana.fit(exp, **(fit_params or {}))
-    sig_reg_list = np.where(ana.pval <= ana.alpha_fwer)[0].tolist()
+    sig_reg_list = np.flatnonzero(ana.fwer.reg_sig).tolist()
     llr = np.nan_to_num(ana.llr.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
     return ana.children, llr, sig_reg_list
 
@@ -647,7 +648,7 @@ def _inner_edge_curve(exp, *, cluster_mode, max_inner_perm: int,
     reg_active = size >= min_vox
 
     # the SAME backend AnalysisGLOW.fit draws with -- the curve claims to
-    # reproduce a real fit's max_z_null, which it only does if the draws
+    # reproduce a real fit's fwer.max_stat, which it only does if the draws
     # come from the same code path. Track fit when that backend changes.
     draws = inner_perm.cpu_reliable_full(
         exp=exp_test, base_seed=0, n_perm=max_inner_perm + 1,

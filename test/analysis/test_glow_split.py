@@ -133,18 +133,18 @@ def test_draws_come_from_the_test_fold():
 def test_only_the_observed_row_is_kept():
     """The fit keeps row 0 and the moments, never the matrix itself.
 
-    llr and z are copies, not rows sliced out of it: a view would hold
-    the whole (n_perm_fwer + 1, num_reg) matrix alive through .base --
-    gigabytes at full-brain num_vox, for one row of it.
+    llr and fwer.stat_obs are copies, not rows sliced out of it: a view
+    would hold the whole (n_perm_fwer + 1, num_reg) matrix alive through
+    .base -- gigabytes at full-brain num_vox, for one row of it.
     """
     exp = _exp()
     ana = _ana(n_perm_fwer=8).fit(exp)
 
     num_reg = 2 * exp.y.shape[2] - 1
     assert ana.llr.shape == (num_reg,)
-    assert ana.z.shape == (num_reg,)
+    assert ana.fwer.stat_obs.shape == (num_reg,)
     assert ana.llr.base is None
-    assert ana.z.base is None
+    assert ana.fwer.stat_obs.base is None
     assert not hasattr(ana, 'draws')
 
 
@@ -192,25 +192,26 @@ def test_z_is_the_shared_standardization():
     exp = _exp()
     ana = _ana().fit(exp)
     z, _, _ = AnalysisGLOW.z_score_stat(_draws(ana, exp))
-    np.testing.assert_allclose(ana.z, z[0], rtol=0, atol=0, equal_nan=True)
+    np.testing.assert_allclose(ana.fwer.stat_obs, z[0], rtol=0, atol=0,
+                               equal_nan=True)
 
     reg_active = ana.size >= ana.min_vox
-    np.testing.assert_allclose(ana.max_z_null,
+    np.testing.assert_allclose(ana.fwer.max_stat,
                                np.nanmax(z[:, reg_active], axis=1),
                                rtol=0, atol=0)
 
 
-def test_max_z_null_has_one_entry_per_draw():
+def test_max_stat_has_one_entry_per_draw():
     ana = _ana(n_perm_fwer=8).fit(_exp())
-    assert ana.max_z_null.shape == (9,)
+    assert ana.fwer.max_stat.shape == (9,)
 
 
 def test_inactive_regions_have_no_pval():
     """min_vox keeps small regions out of the comparison set entirely."""
     ana = _ana(min_vox=4).fit(_exp())
     small = ana.size < 4
-    assert np.isnan(ana.pval[small]).all()
-    assert np.isfinite(ana.pval[~small]).any()
+    assert np.isnan(ana.fwer.pval[small]).all()
+    assert np.isfinite(ana.fwer.pval[~small]).any()
 
 
 # ---------- the split is part of the recipe ---------------------------------
@@ -261,8 +262,9 @@ def test_fit_is_deterministic_and_returns_self():
     a = _ana()
     assert a.fit(exp) is a
     b = _ana().fit(exp)
-    np.testing.assert_allclose(a.max_z_null, b.max_z_null, rtol=0, atol=0)
-    np.testing.assert_allclose(a.pval, b.pval, rtol=0, atol=0,
+    np.testing.assert_allclose(a.fwer.max_stat, b.fwer.max_stat, rtol=0,
+                               atol=0)
+    np.testing.assert_allclose(a.fwer.pval, b.fwer.pval, rtol=0, atol=0,
                                equal_nan=True)
 
 

@@ -9,14 +9,14 @@ from glow.mask import get_mask_idx, stats_from_counts
 
 
 class TestAnalysis:
-    def test_get_pval(self):
+    def test_get_fwer(self):
         z_stat = np.array([[7, 3, 1, 0],
                            [0, 0, 0, 0],
                            [3, 3, 3, 3],
                            [2, 2, 2, 5]])
         pval_exp = np.array([1, 3, 3, 4]) / 4
 
-        pval = Analysis.get_pval(stat=z_stat)
+        pval = Analysis.get_fwer(stat=z_stat, alpha=.05).pval
         assert np.allclose(pval, pval_exp)
 
 
@@ -116,7 +116,7 @@ class TestCET:
                           alpha_fwer=.5, cft_pval=0.01).fit(TestBigEffect.exp)
         for eff in ana.effect_list:
             vox_idx = TestBigEffect.exp.mask_idx[eff.mask]
-            pvals = ana.pval[vox_idx]
+            pvals = ana.fwer.pval[vox_idx]
             assert np.all(pvals == pvals[0])
 
 
@@ -137,11 +137,11 @@ class TestAnalysisEdgeCases:
         ).fit(exp)
         
         # should run without error
-        assert hasattr(analysis, 'pval')
+        assert hasattr(analysis, 'fwer')
         assert hasattr(analysis, 'effect_list')
         
         # all pvals should be nan
-        assert np.all(np.isnan(analysis.pval))
+        assert np.all(np.isnan(analysis.fwer.pval))
         
         # no effects should be found
         assert len(analysis.effect_list) == 0
@@ -159,7 +159,7 @@ class TestPvalFloor:
                            [2.0, 0.0],
                            [3.0, 0.0],
                            [4.0, 0.0]])
-        pval = Analysis.get_pval(stat=z_stat)
+        pval = Analysis.get_fwer(stat=z_stat, alpha=.05).pval
 
         # p-value for region 0 must be >= 1/num_perm, never zero
         num_perm = z_stat.shape[0]
@@ -180,9 +180,9 @@ class TestZeroStdGuard:
         analysis = AnalysisGLOW(n_perm_fwer=5, alpha_fwer=0.05,
                                 min_vox=1).fit(exp)
 
-        assert not np.any(np.isinf(analysis.z)), \
+        assert not np.any(np.isinf(analysis.fwer.stat_obs)), \
             'z contains inf (likely zero-std division)'
-        assert not np.any(np.isnan(analysis.z)), \
+        assert not np.any(np.isnan(analysis.fwer.stat_obs)), \
             'z contains nan (likely zero-std division)'
 
 
@@ -202,7 +202,7 @@ class TestMinVox:
             alpha_fwer=.5, min_vox=min_vox).fit(exp)
 
         # every significant region must have size >= min_vox
-        sig = np.where(ana.pval <= ana.alpha_fwer)[0]
+        sig = np.where(ana.fwer.pval <= ana.alpha_fwer)[0]
         for reg_idx in sig:
             assert ana.size[reg_idx] >= min_vox, (
                 f'reg {reg_idx} has size {ana.size[reg_idx]} '
@@ -210,7 +210,7 @@ class TestMinVox:
 
         # regions with size < min_vox must have nan p-values
         below = ana.size < min_vox
-        assert np.all(np.isnan(ana.pval[below])), \
+        assert np.all(np.isnan(ana.fwer.pval[below])), \
             'regions below min_vox should have NaN p-values'
 
 
@@ -228,7 +228,7 @@ class TestPerRegionZConsistency:
         mu = ana.mu
         std = ana.std
         llr = ana.llr
-        z_stored = ana.z
+        z_stored = ana.fwer.stat_obs
 
         # only check entries where std is well above the floor and
         # neither input is NaN (matches the worker's sanitisation).
@@ -241,14 +241,14 @@ class TestPerRegionZConsistency:
 class TestNaNHandling:
     """test handling of NaN statistics"""
     
-    def test_get_pval_with_nan_stats(self):
-        """test get_pval handles NaN stats correctly"""
+    def test_get_fwer_with_nan_stats(self):
+        """test get_fwer handles NaN stats correctly"""
         # create stat array with some NaN values
         z_stat = np.array([[7.0, np.nan, 3.0, 1.0],
                            [5.0, np.nan, 2.0, 0.0],
                            [6.0, np.nan, 4.0, 2.0]])
         
-        pval = Analysis.get_pval(stat=z_stat)
+        pval = Analysis.get_fwer(stat=z_stat, alpha=.05).pval
         
         # second region should have NaN pval
         assert np.isnan(pval[1])
@@ -304,8 +304,8 @@ class TestStreamingFidelity:
         ana_b = AnalysisGLOW(n_perm_fwer=n_perm_fwer,
                              alpha_fwer=alpha_fwer).fit(self.exp)
 
-        np.testing.assert_array_equal(ana_a.pval, ana_b.pval)
-        np.testing.assert_array_equal(ana_a.max_z_null, ana_b.max_z_null)
+        np.testing.assert_array_equal(ana_a.fwer.pval, ana_b.fwer.pval)
+        np.testing.assert_array_equal(ana_a.fwer.max_stat, ana_b.fwer.max_stat)
 
         masks_a = sorted([e.mask.tobytes() for e in ana_a.effect_list])
         masks_b = sorted([e.mask.tobytes() for e in ana_b.effect_list])
@@ -338,7 +338,7 @@ class TestNJobsDeterminism:
 
         # bit-identical stat matrix and p-values
         np.testing.assert_array_equal(ana_serial.stat, ana_par.stat)
-        np.testing.assert_array_equal(ana_serial.pval, ana_par.pval)
+        np.testing.assert_array_equal(ana_serial.fwer.pval, ana_par.fwer.pval)
 
         # identical discovered effects
         masks_serial = sorted(e.mask.tobytes() for e in ana_serial.effect_list)
@@ -382,7 +382,7 @@ class TestAnalysisScaling:
         ana_scaled = AnalysisCls(**kwargs).fit(
             ExperimentScaled.from_exp(self.exp))
 
-        np.testing.assert_array_equal(ana_raw.pval, ana_scaled.pval)
+        np.testing.assert_array_equal(ana_raw.fwer.pval, ana_scaled.fwer.pval)
 
 
 class TestDiscoverMask:
@@ -451,14 +451,14 @@ class TestNanSafeReductions:
         stat[7, :] = np.nan
         with warnings.catch_warnings():
             warnings.simplefilter('error', RuntimeWarning)
-            pval = Analysis.get_pval(stat)
+            pval = Analysis.get_fwer(stat, alpha=.05).pval
         assert np.isfinite(np.nanmin(pval))
         assert np.nanmin(pval) < 1.0
 
     def test_all_nan_matrix_gives_all_nan(self):
         """Nothing valid anywhere is NaN p-values, not a ZeroDivisionError."""
         stat = np.full((21, 1000), np.nan)
-        assert np.isnan(Analysis.get_pval(stat)).all()
+        assert np.isnan(Analysis.get_fwer(stat, alpha=.05).pval).all()
 
 
 class TestCetNanThreshold:
@@ -479,14 +479,14 @@ class TestCetNanThreshold:
         stat, mask_idx = self.build()
         cft = np.nanquantile(stat[1:, :].ravel(), 1 - 0.001)
         assert np.isfinite(cft)
-        pval = AnalysisCET._get_pval_cet(stat, mask_idx, cft)
+        pval = AnalysisCET._get_fwer_cet(stat, mask_idx, cft, alpha=.05).pval
         assert np.nanmin(pval) < 1.0
 
     def test_dropped_voxel_gets_nan_not_one(self):
         """A voxel with no statistic leaves the family, not fails in it."""
         stat, mask_idx = self.build()
         cft = np.nanquantile(stat[1:, :].ravel(), 1 - 0.001)
-        pval = AnalysisCET._get_pval_cet(stat, mask_idx, cft)
+        pval = AnalysisCET._get_fwer_cet(stat, mask_idx, cft, alpha=.05).pval
         assert np.isnan(pval[3])
         assert np.isfinite(np.delete(pval, 3)).all()
 
@@ -530,7 +530,7 @@ class TestScreenCutsAcrossArms:
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             ana.fit(exp)
-        assert ana.pval is not None
+        assert ana.fwer.pval is not None
 
     def test_fit_finds_nothing_to_repair(self, exp, ana):
         """No statistic comes back non-finite once the screen has run."""

@@ -11,12 +11,6 @@ import glow.mask
 from glow.analysis.mancova import decompose, get_llr, get_mancova
 
 
-def _get_adjusted_stat(ana_glow):
-    """Return the per-region z-scored LLR, always 1-D."""
-    adj = ana_glow.z
-    return adj if adj.ndim == 1 else adj[0]
-
-
 def _ensure_1d(arr):
     """Return a 1-D view: if 2-D (b, num_reg), take first row."""
     return arr if arr.ndim == 1 else arr[0]
@@ -26,17 +20,17 @@ def fwer_crit_llr_z(ana_glow):
     """Return the FWER critical llr_z at alpha_fwer, or None if unavailable.
 
     The (1 - alpha_fwer) point of the Westfall-Young max-z null
-    (ana_glow.max_z_null): the llr_z a region must exceed to be called
+    (ana_glow.fwer.max_stat): the llr_z a region must exceed to be called
     significant. Derived from the null here (not stored on the analysis), so a
     caller can draw the significance boundary when no region cleared it -- the
     empirical boundary, the min llr_z among significant regions, is preferred
     when one exists.
     """
     alpha = getattr(ana_glow, 'alpha_fwer', None)
-    null = getattr(ana_glow, 'max_z_null', None)
-    if alpha is None or null is None:
+    fwer = getattr(ana_glow, 'fwer', None)
+    if alpha is None or fwer is None:
         return None
-    null = np.asarray(null, dtype=float)
+    null = np.asarray(fwer.max_stat, dtype=float)
     null = null[~np.isnan(null)]
     if null.size == 0:
         return None
@@ -66,8 +60,8 @@ def prep_df(ana_glow, exp, mask_target=None, extra_df=None):
         'region_idx': np.arange(num_reg),
         'n_voxel': ana_glow.size.astype(int),
         'llr': _ensure_1d(ana_glow.llr),
-        'llr_z': _get_adjusted_stat(ana_glow),
-        'pval_fwer': ana_glow.pval,
+        'llr_z': ana_glow.fwer.stat_obs,
+        'pval_fwer': ana_glow.fwer.pval,
     }
 
     # per-region inner-null LLR mean/std (set by AnalysisGLOW.fit); z is
@@ -75,9 +69,7 @@ def prep_df(ana_glow, exp, mask_target=None, extra_df=None):
     d['llr_mu_h0'] = _ensure_1d(ana_glow.mu)
     d['llr_std_h0'] = _ensure_1d(ana_glow.std)
 
-    # significant flag (pval <= alpha_fwer)
-    alpha_fwer = getattr(ana_glow, 'alpha_fwer', 0.05)
-    d['significant'] = ~np.isnan(ana_glow.pval) & (ana_glow.pval <= alpha_fwer)
+    d['significant'] = ana_glow.fwer.reg_sig
 
     # discovered flag (significant AND survived pruning)
     discovered = np.zeros(num_reg, dtype=bool)
@@ -100,7 +92,7 @@ def prep_df(ana_glow, exp, mask_target=None, extra_df=None):
                   for key, label in _COUNT_LABELS.items()})
 
         dice = d['dice']
-        sig_mask = ~np.isnan(ana_glow.pval) & (ana_glow.pval <= alpha_fwer)
+        sig_mask = ana_glow.fwer.reg_sig
         max_dice_sig = float(dice[sig_mask].max()) if sig_mask.any() else 0.0
         if max_dice_sig > 0:
             d['pct_max_dice'] = dice / max_dice_sig

@@ -140,10 +140,11 @@ def test_gpu_fit_matches_cpu_fit():
     ref = AnalysisGLOW(**kw).fit(exp, n_jobs=1)
     got = AnalysisGLOW(**kw).fit(exp, n_jobs=1, gpu=True)
 
-    np.testing.assert_allclose(got.max_z_null, ref.max_z_null,
+    np.testing.assert_allclose(got.fwer.max_stat, ref.fwer.max_stat,
                                rtol=1e-7, atol=1e-9)
-    np.testing.assert_allclose(got.z, ref.z, rtol=1e-7, atol=1e-9)
-    np.testing.assert_allclose(got.pval, ref.pval, rtol=0, atol=0)
+    np.testing.assert_allclose(got.fwer.stat_obs, ref.fwer.stat_obs,
+                               rtol=1e-7, atol=1e-9)
+    np.testing.assert_allclose(got.fwer.pval, ref.fwer.pval, rtol=0, atol=0)
     np.testing.assert_array_equal(got.size, ref.size)
     np.testing.assert_allclose(got.llr, ref.llr, rtol=1e-10, atol=1e-12)
 
@@ -184,9 +185,9 @@ def test_gpu_float32_preserves_discoveries():
     got = AnalysisGLOW(**kw).fit(
         exp, n_jobs=1, gpu=GpuConfig(acc_dtype=np.float32))
 
-    np.testing.assert_allclose(got.max_z_null, ref.max_z_null,
+    np.testing.assert_allclose(got.fwer.max_stat, ref.fwer.max_stat,
                                rtol=1e-3, atol=1e-5)
-    np.testing.assert_allclose(got.pval, ref.pval, rtol=0, atol=0)
+    np.testing.assert_allclose(got.fwer.pval, ref.fwer.pval, rtol=0, atol=0)
     assert [e.reg_idx for e in got.effect_list] == \
            [e.reg_idx for e in ref.effect_list]
 
@@ -203,6 +204,7 @@ def test_gpu_parallel_phase_a_is_deterministic():
     kw = _fit_kwargs()
     serial = AnalysisGLOW(**kw).fit(exp, n_jobs=1, gpu=True)
     par = AnalysisGLOW(**kw).fit(exp, n_jobs=4, gpu=True)
-    np.testing.assert_allclose(par.max_z_null, serial.max_z_null,
+    np.testing.assert_allclose(par.fwer.max_stat, serial.fwer.max_stat,
                                rtol=1e-12, atol=1e-12)
-    np.testing.assert_allclose(par.z, serial.z, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(par.fwer.stat_obs, serial.fwer.stat_obs,
+                               rtol=1e-12, atol=1e-12)

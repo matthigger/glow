@@ -8,6 +8,7 @@ without paying for a real fit, by feeding a stand-in Analysis. score_oracle_tree
 and the min-size curve helpers get a small hand-built tree / staircase.
 """
 import json
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -29,11 +30,15 @@ class _FakeEffect:
 
 
 class _FakeAna:
-    """Stand-in for a fitted Analysis: just an effect_list and a pval array."""
+    """Stand-in for a fitted Analysis: an effect_list and a max-stat result.
+
+    score_effects reads only fwer.pval off the result (min_pval comes off
+    it), so a namespace stands in for the full MaxStatPermResult.
+    """
 
     def __init__(self, effect_list, pval):
         self.effect_list = effect_list
-        self.pval = pval
+        self.fwer = SimpleNamespace(pval=pval)
 
 
 def _vec(*idx, n):

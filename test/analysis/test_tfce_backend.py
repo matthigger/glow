@@ -399,7 +399,7 @@ class TestNanVoxelParity:
         stat[:, 3] = np.nan
         tfce = AnalysisVBA.apply_tfce(stat=stat, mask_idx=mask_idx,
                                       backend=backend)
-        assert np.nanmin(AnalysisVBA.get_pval(tfce)) < 0.05
+        assert np.nanmin(AnalysisVBA.get_fwer(tfce, alpha=.05).pval) < 0.05
 
     def test_backends_agree_on_a_dropped_voxel(self):
         """A NaN voxel adds nothing to the standing backend difference.

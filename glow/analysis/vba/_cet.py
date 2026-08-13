@@ -1,6 +1,5 @@
 """Cluster-extent thresholding with permutation FWER."""
 
-from bisect import bisect_left
 from typing import Callable
 
 import numpy as np
@@ -36,7 +35,9 @@ class AnalysisCET(AnalysisVoxel):
         cft (float): cluster-forming threshold in stat units
             (populated by fit)
         stat (np.array): (n_perm_fwer+1, num_vox) stats (populated by fit)
-        pval (np.array): (num_vox,) FWER p-values (populated by fit)
+        fwer (MaxStatPermResult): the max-cluster-size test, stat_obs
+            carrying each voxel's observed cluster size (populated by fit;
+            see Analysis and _get_fwer_cet)
     """
 
     RECORD_FIELDS = ('get_stat', 'n_perm_fwer', 'alpha_fwer', 'cft_pval',
@@ -95,35 +96,46 @@ class AnalysisCET(AnalysisVoxel):
         # and np.quantile propagates that to the threshold, after which no
         # cluster forms anywhere and the whole fit returns p = 1
         self.cft = np.nanquantile(null_pool, 1 - self.cft_pval)
-        self.pval = self._get_pval_cet(self.stat, exp.mask_idx, self.cft)
+        self.fwer = self._get_fwer_cet(self.stat, exp.mask_idx, self.cft,
+                                       alpha=self.alpha_fwer)
         mask = np.zeros(exp.mask_idx.shape, dtype=bool)
-        mask[exp.mask_idx > -1] = self.pval <= self.alpha_fwer
+        mask[exp.mask_idx > -1] = self.fwer.reg_sig
         self.effect_list = self.discover_mask(mask=mask, exp=exp)
         return self
 
-    @staticmethod
-    def _get_pval_cet(stat, mask_idx, cft):
-        """Compute FWER p-values via permutation null of max cluster sizes.
+    @classmethod
+    def _get_fwer_cet(cls, stat, mask_idx, cft, *, alpha: float):
+        """Test observed clusters against the null of max cluster sizes.
 
-        For each permutation (and the observed data), thresholds the stat
-        map at cft, labels connected components, and records the max
-        cluster size. The observed clusters are then compared to the
-        sorted null of max cluster sizes (Nichols & Holmes 2002).
+        For each draw, the observed included, thresholds the stat map at
+        cft, labels the connected components and records the largest
+        cluster size. Every voxel of an observed cluster then carries that
+        cluster's size as its statistic and is tested against the per-draw
+        maxima (Nichols & Holmes 2002).
+
+        The clusters reform in every draw, so there is no fixed region
+        family to index a (n_perm+1, num_reg) matrix of sizes into and the
+        null is accumulated a draw at a time. That is the whole reason
+        this does not go through Analysis.get_fwer; the comparison itself
+        is the shared one (Analysis.get_fwer_from_max), which is what
+        keeps this arm on the same p-value convention as VBA and GLOW.
 
         Args:
             stat (np.array): (n_perm+1, num_vox) stats (row 0 = observed)
             mask_idx (np.array): 2d or 3d voxel index array (-1 outside)
             cft (float): cluster-forming threshold in stat units
+            alpha (float): family-wise error rate
 
         Returns:
-            pval (np.array): (num_vox,) p-value per voxel; voxels in the
-                same cluster share a p-value, and a voxel dropped from the
-                analysis (NaN in stat) gets NaN
+            MaxStatPermResult: stat_obs is each voxel's observed cluster
+                size, max_stat the largest cluster size per draw in draw
+                order. Voxels of one cluster share a p-value; a
+                sub-threshold voxel has size 0, hence p = 1.
         """
         n_rows, num_vox = stat.shape
         vox_mask = mask_idx > -1
 
-        max_sizes = np.zeros(n_rows)
+        max_stat = np.zeros(n_rows)
         obs_labels = np.zeros(mask_idx.shape, dtype=int)
         obs_sizes = np.array([])
 
@@ -138,25 +150,24 @@ class AnalysisCET(AnalysisVoxel):
                 continue
             # skip background (label 0)
             sizes = np.bincount(labeled.ravel())[1:]
-            max_sizes[i] = sizes.max()
+            max_stat[i] = sizes.max()
             if i == 0:
                 obs_labels, obs_sizes = labeled, sizes
 
-        null_sorted = np.sort(max_sizes[1:])
-        n_perm = len(null_sorted)
-
-        pval = np.ones(num_vox)
+        # a sub-threshold voxel keeps size 0, which needs no special case:
+        # every draw's largest cluster is at least 0, so the shared
+        # comparison hands it p = 1 on its own
+        stat_obs = np.zeros(num_vox)
         if len(obs_sizes) > 0:
             obs_flat = obs_labels[vox_mask]
-            for cid in range(1, len(obs_sizes) + 1):
-                p = max(
-                    1 - bisect_left(null_sorted, obs_sizes[cid - 1]) / n_perm,
-                    1 / n_perm)
-                pval[obs_flat == cid] = p
+            in_cluster = obs_flat > 0
+            stat_obs[in_cluster] = obs_sizes[obs_flat[in_cluster] - 1]
 
-        # a dropped voxel is NaN in every row; left at the default 1.0 it
-        # would sit in the tested family as a voxel that merely failed to
-        # reach significance (get_pval marks the same case NaN)
-        pval[np.isnan(stat[0, :])] = np.nan
+        # a voxel dropped from the analysis is NaN in every row; left at 0
+        # it would sit in the tested family as one that merely failed to
+        # reach significance
+        reg_active = ~np.isnan(stat[0, :])
+        stat_obs[~reg_active] = np.nan
 
-        return pval
+        return cls.get_fwer_from_max(stat_obs, max_stat, alpha=alpha,
+                                     reg_active=reg_active)

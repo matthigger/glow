@@ -7,12 +7,12 @@ the Analysis ABC; subpackage modules supply the per-region statistics
 and the search strategy.
 """
 
-from ._base import Analysis, AnalysisVoxel
+from ._base import Analysis, AnalysisVoxel, MaxStatPermResult
 from .vba import AnalysisVBA, AnalysisCET, DEFAULT_CET_CFT_PVAL
 from ._glow import AnalysisGLOW
 # imported after AnalysisGLOW: _fit_gpu reads _glow for the inner-seed
 # block and the outer-perm reduction
 from ._fit_gpu import GpuConfig
 
-__all__ = ['Analysis', 'AnalysisVoxel', 'AnalysisVBA', 'AnalysisCET',
-           'AnalysisGLOW', 'DEFAULT_CET_CFT_PVAL', 'GpuConfig']
+__all__ = ['Analysis', 'AnalysisVoxel', 'MaxStatPermResult', 'AnalysisVBA',
+           'AnalysisCET', 'AnalysisGLOW', 'DEFAULT_CET_CFT_PVAL', 'GpuConfig']

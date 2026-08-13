@@ -22,8 +22,9 @@ score_effects output (one dict per fitted Analysis), keys:
      target0: {tp, fp, tn, fn}, ...}
 
 num_vox is the analyzed voxel count (mask_active.sum()), min_pval the smallest
-region p-value (nanmin(ana.pval)), n_pred the count of discovered regions. The
-target0/target1/... blocks are present only with more than one target.
+region p-value (nanmin(ana.fwer.pval)), n_pred the count of discovered
+regions. The target0/target1/... blocks are present only with more than one
+target.
 
 The single target block is always the prediction (the union of all discovered
 regions) scored against the union of all planted effects -- so for one planted
@@ -78,7 +79,7 @@ def score_effects(ana, mask_target_list, mask_active) -> dict:
     Args:
         ana: a fitted Analysis. Its effect_list supplies the discovered
             regions (each EffectEstimate's mask, reg_idx, pval_fwer) and its
-            pval ((num_reg,) array) the min_pval. reg_idx / pval_fwer are
+            fwer.pval ((num_reg,) array) the min_pval. reg_idx / pval_fwer are
             None for the voxel-wise methods (VBA / CET), recorded as such.
         mask_target_list (list): the planted effect supports, one (X, Y, Z)
             bool mask per EffectSynthetic; empty for the null calibration.
@@ -95,7 +96,8 @@ def score_effects(ana, mask_target_list, mask_active) -> dict:
     target_union = _union(mask_target_list, shape)
     n_target = len(mask_target_list)
 
-    pval = getattr(ana, 'pval', None)
+    fwer = getattr(ana, 'fwer', None)
+    pval = None if fwer is None else fwer.pval
     min_pval = (float(np.nanmin(pval))
                 if pval is not None and np.isfinite(pval).any()
                 else float('nan'))

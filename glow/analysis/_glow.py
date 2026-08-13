@@ -1,7 +1,5 @@
 """GLOW analysis: split-fold Ward-tree effect discovery with FWER control."""
 
-import warnings
-
 import numpy as np
 
 import glow.effect
@@ -68,9 +66,9 @@ class AnalysisGLOW(Analysis):
         split_seed (int): seed for the image partition.
 
     The draw matrix itself is not kept: at full-brain num_vox it runs to
-    gigabytes, and only its first row and its column moments are read
-    again. Both are copied out, since a row sliced from it is a view and
-    would hold the whole matrix alive.
+    gigabytes, and only its first row, its column moments and its row
+    maxima outlive it. Each is copied out, since a row sliced from it is
+    a view and would hold the whole matrix alive.
 
     Fit outputs (all on the test fold, against the fold-A tree):
         children (np.array): (num_reg - num_vox, 2) Ward tree.
@@ -79,10 +77,9 @@ class AnalysisGLOW(Analysis):
             matrix's row 0.
         mu (np.array): (num_reg,) per-region mean over the draws.
         std (np.array): (num_reg,) per-region std over the draws.
-        z (np.array): (num_reg,) observed per-region z-score.
-        max_z_null (np.array): (n_perm_fwer + 1,) max-z per draw;
-            max_z_null[0] is the observed.
-        pval (np.array): (num_reg,) FWER-controlled p-values.
+        fwer (MaxStatPermResult): the max-z test -- observed z per region
+            in stat_obs, max-z per draw in max_stat, the size >= min_vox
+            comparison set, the p-values and the selected regions.
         effect_list (list): discovered EffectEstimate objects.
     """
 
@@ -120,16 +117,14 @@ class AnalysisGLOW(Analysis):
         self.llr = None
         self.mu = None
         self.std = None
-        self.z = None
-        self.max_z_null = None
 
     def fit(self, exp, *, n_jobs: int = 1, gpu=False, split_group=None,
             verbose: bool = False):
         """Run the analysis on exp and return self.
 
-        Populates the observed attributes (children, size, llr, mu, std,
-        z), the FWER null (max_z_null), and the synthesis output (pval,
-        effect_list).
+        Populates the observed attributes (children, size, llr, mu, std),
+        the max-stat test they feed (fwer), and the synthesis output
+        (effect_list).
 
         Args:
             exp (Experiment): experiment to analyze. Must be raw, not an
@@ -205,40 +200,36 @@ class AnalysisGLOW(Analysis):
 
         # Copy, never slice: llr_all[0] is a view, so keeping it would
         # hold the whole (n_perm_fwer + 1, num_reg) matrix -- gigabytes at
-        # full-brain num_vox -- alive for one row of it. Same for z, which
-        # finalize needs whole but nothing needs after that.
+        # full-brain num_vox -- alive for one row of it. get_fwer copies
+        # the row it keeps for the same reason.
         self.llr = llr_all[0].copy()
-        self.z = z[0].copy()
         del llr_all
 
-        reg_active = self.size >= self.min_vox
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', RuntimeWarning)
-            self.max_z_null = np.nanmax(z[:, reg_active], axis=1)
+        # size >= min_vox is a function of the fold-A tree alone, hence a
+        # constant with respect to the fold-B permutations -- the
+        # condition Analysis.get_fwer needs of a comparison set.
+        self.fwer = self.get_fwer(z, alpha=self.alpha_fwer,
+                                  reg_active=self.size >= self.min_vox)
+        del z
 
         if verbose:
             print('  [2/2] FWER synthesis ...')
-        self.finalize(z, exp_test, verbose=verbose)
+        self.finalize(exp_test, verbose=verbose)
         return self
 
-    def finalize(self, z, exp, *, verbose: bool = False):
-        """Compute FWER p-values, prune the tree, discover effects.
+    def finalize(self, exp, *, verbose: bool = False):
+        """Prune the significant regions and discover effects.
+
+        Reads self.fwer, which fit populates before calling.
 
         Args:
-            z (np.array): (n_perm_fwer + 1, num_reg) z-scored draws, row 0
-                observed. Passed whole rather than as the observed row plus
-                a precomputed null so get_pval builds the max-z null itself
-                -- the same path the voxel-wise arms take.
             exp (Experiment): the scaled TEST fold. Effects are estimated
                 on it, not on the whole cohort: the segmentation fold
                 chose the regions, so only fold B gives an estimate that
                 the region's selection did not shape.
             verbose (bool): print significant-region and discovery counts.
         """
-        reg_active = self.size >= self.min_vox
-        self.pval = self.get_pval(z, reg_active=reg_active)
-
-        sig_reg_list = list(np.where(self.pval <= self.alpha_fwer)[0])
+        sig_reg_list = list(np.flatnonzero(self.fwer.reg_sig))
         if verbose:
             print(f'  {len(sig_reg_list)} significant regions '
                   f'(alpha_fwer={self.alpha_fwer})')
@@ -267,7 +258,7 @@ class AnalysisGLOW(Analysis):
                 children=self.children)
             eff = glow.effect.EffectEstimate.from_exp_mask(
                 mask=label_map > -1, exp=exp,
-                reg_idx=reg_idx, pval_fwer=self.pval[reg_idx])
+                reg_idx=reg_idx, pval_fwer=self.fwer.pval[reg_idx])
             self.effect_list.append(eff)
 
         if verbose:
