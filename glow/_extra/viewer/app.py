@@ -741,6 +741,13 @@ def _suggest_min_vox(size, max_regions):
     (size >= T).sum() <= max_regions: one more than the (max_regions+1)-th
     largest region size.  Assumes len(size) > max_regions.
 
+    The cutoff is a size, never a rank, so one region size is never split
+    across the boundary: every region of a given voxel count is shown, or
+    none of it is.  A tree whose sizes tie heavily at the boundary
+    therefore keeps well under max_regions rather than breaking the tie
+    arbitrarily -- the Ward trees this viewer draws tie hardest at the
+    smallest sizes, where the leaves are, so that is the safe direction.
+
     Args:
         size (np.array): (num_reg,) int voxel count per region.
         max_regions (int): target ceiling on the number of displayed regions.
@@ -754,52 +761,19 @@ def _suggest_min_vox(size, max_regions):
     return int(kth) + 1
 
 
-def _prompt_min_vox(num_reg, suggested, kept):
-    """Ask (interactively) whether to cap the scatter at the larger regions.
-
-    Enter / 'y'    -> apply the suggested cutoff (keeps ~max_regions regions)
-    'n'            -> scatter every region (returns 0)
-    a bare integer -> use it as the cutoff
-
-    Returns:
-        min_vox (int): the chosen cutoff (0 = scatter everything).
-    """
-    print(f'\n  glow:viewer: this analysis has {num_reg:,} regions; '
-          f'scattering them all can make the dashboard sluggish.')
-    prompt = (f'  Show only the {kept:,} regions with >= {suggested} voxels?  '
-              f'[Y]es / [n]o (show all) / integer cutoff: ')
-    try:
-        raw = input(prompt).strip().lower()
-    except EOFError:
-        raw = ''
-    if raw in ('', 'y', 'yes'):
-        return suggested
-    if raw in ('n', 'no'):
-        return 0
-    try:
-        v = int(raw)
-        if v >= 0:
-            return v
-    except ValueError:
-        pass
-    print('  (unrecognised response; showing all regions)')
-    return 0
-
-
 def _resolve_min_vox(ana_glow, min_vox, max_regions):
-    """Resolve the effective scatter size cutoff, gently.
+    """Resolve the effective scatter size cutoff.
 
     The viewer draws one point per Ward-tree region (num_vox leaves plus
-    internal nodes), so a large experiment is hundreds of thousands of
-    points and the dashboard becomes sluggish.  This picks a cutoff without
-    surprising non-interactive callers:
+    internal nodes), so a full-brain experiment is hundreds of thousands
+    of points: enough to exhaust memory and to make every callback lag.
+    A tree over max_regions is therefore capped by default, at the size
+    cutoff _suggest_min_vox picks -- the caller opts out, rather than
+    opting in, because the sluggish case is the common one.
 
       - min_vox is an int  -> use it verbatim (0 disables the cut).
       - min_vox is None and num_reg <= max_regions -> no cut (return 0).
-      - min_vox is None and num_reg  > max_regions:
-          * interactive stdin -> ask, defaulting to the suggested cutoff.
-          * otherwise         -> warn (suggesting a value) and return 0, so
-            Python callers keep every region unless they opt in.
+      - min_vox is None and num_reg  > max_regions -> the suggested cut.
 
     Args:
         ana_glow (AnalysisGLOW): completed analysis (for size + tree shape).
@@ -821,19 +795,11 @@ def _resolve_min_vox(ana_glow, min_vox, max_regions):
 
     suggested = _suggest_min_vox(size, max_regions)
     kept = int((size >= suggested).sum())
-
-    import sys
-    if getattr(sys.stdin, 'isatty', lambda: False)():
-        return _prompt_min_vox(num_reg, suggested, kept)
-
-    import warnings
-    warnings.warn(
-        f'glow:viewer is scattering all {num_reg:,} regions, which can make '
-        f'the dashboard sluggish.  Pass min_vox=<int> to launch() to show '
-        f'only larger regions (min_vox={suggested} keeps {kept:,}, about '
-        f'{max_regions:,}); pass min_vox=0 to silence this warning.',
-        stacklevel=3)
-    return 0
+    print(f'  glow:viewer: {num_reg:,} regions is more than the '
+          f'{max_regions:,} this dashboard draws smoothly; showing the '
+          f'{kept:,} regions of >= {suggested} voxels.  Pass min_vox=0 '
+          f'(--min-vox 0) to show them all.')
+    return suggested
 
 
 def launch(ana_glow, exp, mask_target=None, port=8050, debug=False,

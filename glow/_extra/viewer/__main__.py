@@ -428,11 +428,12 @@ def main():
     parser.add_argument(
         '--min-vox', type=int, default=None,
         help='Scatter only regions with at least this many voxels (0 shows '
-             'all).  Default: prompt when the tree exceeds --max-regions.')
+             'all).  Default: cut automatically when the tree exceeds '
+             '--max-regions.')
     parser.add_argument(
         '--max-regions', type=int, default=10_000,
-        help='Region ceiling used to pick a default --min-vox cutoff '
-             '(default: 10000).')
+        help='Region ceiling; a larger tree is cut to the biggest regions '
+             'that fit under it (default: 10000).')
 
     args = parser.parse_args()
 

@@ -3,11 +3,15 @@
 import sys
 
 import numpy as np
-import pytest
 
 from glow._extra.viewer.app import (_create_app, _display_region_ids,
                              _resolve_min_vox, _suggest_min_vox)
 from glow._extra.viewer.scatter import build_scatter
+
+
+def _no_input(*args, **kwargs):
+    """Stand in for input(), failing the test if the viewer ever prompts."""
+    raise AssertionError('the viewer must not prompt for min_vox')
 
 
 def _main_marker_trace(fig):
@@ -87,6 +91,17 @@ class TestSuggestMinVox:
         cut = _suggest_min_vox(size, 10)
         assert (size >= cut - 1).sum() > 10
 
+    def test_one_size_is_never_split(self):
+        """Every region of a given size is shown, or none of it is."""
+        # sizes tie 40-deep, so no cutoff can land mid-tie
+        size = np.repeat(np.arange(1, 11), 40)
+        for max_regions in (5, 39, 41, 100, 399):
+            cut = _suggest_min_vox(size, max_regions)
+            kept = size[size >= cut]
+            dropped = size[size < cut]
+            assert not set(kept.tolist()) & set(dropped.tolist())
+            assert kept.size <= max_regions
+
 
 class TestResolveMinVox:
     """_resolve_min_vox: int passthrough, gentle None handling."""
@@ -102,29 +117,21 @@ class TestResolveMinVox:
         # tree is well under a generous ceiling -> no cut, no warning
         assert _resolve_min_vox(ana, None, max_regions=10_000) == 0
 
-    def test_large_tree_noninteractive_warns(self, ana, monkeypatch):
-        monkeypatch.setattr(sys.stdin, 'isatty', lambda: False, raising=False)
-        with pytest.warns(UserWarning, match='min_vox'):
-            out = _resolve_min_vox(ana, None, max_regions=5)
-        # Python callers keep every region unless they opt in
-        assert out == 0
-
-    def test_large_tree_interactive_prompts(self, ana, monkeypatch):
-        monkeypatch.setattr(sys.stdin, 'isatty', lambda: True, raising=False)
-        # Enter (empty) accepts the suggested cut
-        monkeypatch.setattr('builtins.input', lambda *a: '')
+    def test_large_tree_cuts_by_default(self, ana):
         suggested = _suggest_min_vox(ana.size, 5)
         assert _resolve_min_vox(ana, None, max_regions=5) == suggested
+        assert (ana.size >= suggested).sum() <= 5
 
-    def test_interactive_decline_shows_all(self, ana, monkeypatch):
-        monkeypatch.setattr(sys.stdin, 'isatty', lambda: True, raising=False)
-        monkeypatch.setattr('builtins.input', lambda *a: 'n')
-        assert _resolve_min_vox(ana, None, max_regions=5) == 0
+    def test_large_tree_cuts_without_a_tty(self, ana, monkeypatch):
+        """The cut is the default for a Python caller too -- never a prompt."""
+        monkeypatch.setattr(sys.stdin, 'isatty', lambda: False, raising=False)
+        monkeypatch.setattr('builtins.input', _no_input)
+        assert _resolve_min_vox(ana, None, max_regions=5) != 0
 
-    def test_interactive_custom_integer(self, ana, monkeypatch):
+    def test_large_tree_never_prompts(self, ana, monkeypatch):
         monkeypatch.setattr(sys.stdin, 'isatty', lambda: True, raising=False)
-        monkeypatch.setattr('builtins.input', lambda *a: '42')
-        assert _resolve_min_vox(ana, None, max_regions=5) == 42
+        monkeypatch.setattr('builtins.input', _no_input)
+        assert _resolve_min_vox(ana, None, max_regions=5) != 0
 
 
 class TestDisplayRegionIds:
