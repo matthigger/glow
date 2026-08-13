@@ -249,7 +249,7 @@ def score_prune(reg_out_list, children, mask_idx, mask_target_list,
 
     The prune leaf keeps only region indices (masks are heavy), so the score
     is derived here: each selected region's (X, Y, Z) bool mask is rebuilt from
-    its Ward index (glow.graph.get_label_map, as AnalysisGLOW.finalize does),
+    its Ward index (glow.graph.get_label_map, as AnalysisGLOW.fit does),
     then _score_regions unions them and counts tp/fp/tn/fn vs the planted
     support, so dice / sens / ppv derive downstream like every arm. Used for
     the greedy / DP selections and the single max-LLR region.

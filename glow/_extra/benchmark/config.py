@@ -309,7 +309,7 @@ GLOW_ARM_MODES = [('GLOW-Focus', ClusterMode.FOCUS),
                   ('GLOW-GLM', ClusterMode.GLM_ERROR)]
 
 # The 1perm permutation-count axes. n_perm_fwer starts at the family's own
-# baseline of 1 and doubles: the intercept (observed pass + finalize) does not
+# baseline of 1 and doubles: the intercept (observed pass + synthesis) does not
 # shrink with the count, so the slope is only readable against a point that is
 # almost all intercept. There is no second permutation axis any more: GLOW's
 # nested inner null is gone (one tree means one draw matrix), so cost is linear
@@ -492,7 +492,7 @@ CONFIG = {
         effect_grid(),
         RUN_1PERM_LIST, run_ana_time_1perm),
     # n_perm_fwer over ONE_PERM_N_PERM_FWER_GRID: the slope is the cost of an
-    # outer permutation, the intercept the observed pass plus finalize.
+    # outer permutation, the intercept the observed pass plus synthesis.
     'runtime_1perm_n_perm_fwer': (
         runtime_data_grid(
             seed_offset=RUNTIME_SEED_OFFSET['runtime_1perm_n_perm_fwer'],

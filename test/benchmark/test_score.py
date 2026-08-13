@@ -33,7 +33,7 @@ class _FakeAna:
     """Stand-in for a fitted Analysis: an effect_list and a max-stat result.
 
     score_effects reads only fwer.pval off the result (min_pval comes off
-    it), so a namespace stands in for the full MaxStatPermResult.
+    it), so a namespace stands in for the full MaxStatPerm.
     """
 
     def __init__(self, effect_list, pval):

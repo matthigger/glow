@@ -7,6 +7,7 @@ from scipy.ndimage import label
 
 from glow.experiment.exper import ExperimentScaled
 from .._base import AnalysisVoxel, reject_gpu
+from ..fwer import MaxStatPerm
 from ..mancova import get_hotel_tr
 
 DEFAULT_CET_CFT_PVAL = 0.001
@@ -35,7 +36,7 @@ class AnalysisCET(AnalysisVoxel):
         cft (float): cluster-forming threshold in stat units
             (populated by fit)
         stat (np.array): (n_perm_fwer+1, num_vox) stats (populated by fit)
-        fwer (MaxStatPermResult): the max-cluster-size test, stat_obs
+        fwer (MaxStatPerm): the max-cluster-size test, stat_obs
             carrying each voxel's observed cluster size (populated by fit;
             see Analysis and _get_fwer_cet)
     """
@@ -103,8 +104,8 @@ class AnalysisCET(AnalysisVoxel):
         self.effect_list = self.discover_mask(mask=mask, exp=exp)
         return self
 
-    @classmethod
-    def _get_fwer_cet(cls, stat, mask_idx, cft, *, alpha: float):
+    @staticmethod
+    def _get_fwer_cet(stat, mask_idx, cft, *, alpha: float):
         """Test observed clusters against the null of max cluster sizes.
 
         For each draw, the observed included, thresholds the stat map at
@@ -116,9 +117,10 @@ class AnalysisCET(AnalysisVoxel):
         The clusters reform in every draw, so there is no fixed region
         family to index a (n_perm+1, num_reg) matrix of sizes into and the
         null is accumulated a draw at a time. That is the whole reason
-        this does not go through Analysis.get_fwer; the comparison itself
-        is the shared one (Analysis.get_fwer_from_max), which is what
-        keeps this arm on the same p-value convention as VBA and GLOW.
+        this builds the null itself instead of handing a matrix to
+        MaxStatPerm.from_stat; the comparison is still the shared
+        MaxStatPerm.from_max, which is what keeps this arm on the same
+        p-value convention as VBA and GLOW.
 
         Args:
             stat (np.array): (n_perm+1, num_vox) stats (row 0 = observed)
@@ -127,7 +129,7 @@ class AnalysisCET(AnalysisVoxel):
             alpha (float): family-wise error rate
 
         Returns:
-            MaxStatPermResult: stat_obs is each voxel's observed cluster
+            MaxStatPerm: stat_obs is each voxel's observed cluster
                 size, max_stat the largest cluster size per draw in draw
                 order. Voxels of one cluster share a p-value; a
                 sub-threshold voxel has size 0, hence p = 1.
@@ -169,5 +171,5 @@ class AnalysisCET(AnalysisVoxel):
         reg_active = ~np.isnan(stat[0, :])
         stat_obs[~reg_active] = np.nan
 
-        return cls.get_fwer_from_max(stat_obs, max_stat, alpha=alpha,
-                                     reg_active=reg_active)
+        return MaxStatPerm.from_max(stat_obs, max_stat, alpha=alpha,
+                                    reg_active=reg_active)

@@ -12,7 +12,7 @@ Porting it is a small job rather than a rewrite -- inner_perm_gpu already
 has the pieces (prep_shared once for the fit, prep_tree once for the one
 tree, _chunk_llr per chunk). What it needs is to assemble those chunks
 into the one (n_perm_fwer + 1, num_reg) matrix the CPU path builds, and
-hand it to the same Analysis.z_score_stat / get_fwer reduction, so the
+hand it to the same Analysis.z_score_stat / MaxStatPerm reduction, so the
 two backends cannot drift.
 
 It is not urgent. Flattening the nesting took a fit from

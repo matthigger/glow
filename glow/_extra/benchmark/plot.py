@@ -1545,9 +1545,8 @@ def _fwer_threshold(max_z_col, alpha_fwer: float) -> float:
     """Return the FWER critical value from one column of per-perm max-z.
 
     The max-z a region must exceed for its Westfall-Young p-value to fall at or
-    below alpha_fwer, in Analysis.get_fwer's convention: with n =
-    len(max_z_col) permuted-or-observed maxima, reject iff at least
-    ceil((1 - alpha) * n) of
+    below alpha_fwer, in MaxStatPerm's convention: with n = len(max_z_col)
+    permuted-or-observed maxima, reject iff at least ceil((1 - alpha) * n) of
     them are below the region's z, so the critical value is the
     ceil((1 - alpha) * n) th smallest max-z.
 

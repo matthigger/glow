@@ -315,7 +315,7 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
 
     The prune cache's shared intermediate: a full AnalysisGLOW fit reduced
     to the light triple every rule needs -- the Ward tree, the raw per-region
-    LLR (candidates are ranked by raw LLR, as AnalysisGLOW.finalize does; the
+    LLR (candidates are ranked by raw LLR, as AnalysisGLOW.fit does; the
     z-score fragments under pruning), and the FWER-significant region set. All
     three rules prune this same set, so the comparison isolates the rule from
     the permutation test; the first run_prune variant of a cell fits, the rest
@@ -522,7 +522,7 @@ def run_ana_time_1perm(exp: Experiment, mask_target_list, ana: Analysis, *,
     grid can reach full-brain num_vox for the price of two passes -- and the
     n_perm_fwer sweep, which does vary it over a small range, is what separates
     that per-permutation slope from the fixed intercept (the observed pass,
-    finalize / pruning) rather than assuming the split.
+    synthesis / pruning) rather than assuming the split.
 
     Unlike run_ana_time this leaf takes no fit_params: the serial contract is
     the measurement, so it is not a caller's knob. Every swept knob rides as an

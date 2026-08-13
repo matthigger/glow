@@ -19,22 +19,21 @@ def _ensure_1d(arr):
 def fwer_crit_llr_z(ana_glow):
     """Return the FWER critical llr_z at alpha_fwer, or None if unavailable.
 
-    The (1 - alpha_fwer) point of the Westfall-Young max-z null
+    The (1 - alpha) point of the Westfall-Young max-z null
     (ana_glow.fwer.max_stat): the llr_z a region must exceed to be called
-    significant. Derived from the null here (not stored on the analysis), so a
-    caller can draw the significance boundary when no region cleared it -- the
-    empirical boundary, the min llr_z among significant regions, is preferred
-    when one exists.
+    significant, at the alpha the test itself ran at. Derived from the null
+    here (not stored on the analysis), so a caller can draw the significance
+    boundary when no region cleared it -- the empirical boundary, the min
+    llr_z among significant regions, is preferred when one exists.
     """
-    alpha = getattr(ana_glow, 'alpha_fwer', None)
     fwer = getattr(ana_glow, 'fwer', None)
-    if alpha is None or fwer is None:
+    if fwer is None:
         return None
     null = np.asarray(fwer.max_stat, dtype=float)
     null = null[~np.isnan(null)]
     if null.size == 0:
         return None
-    return float(np.quantile(null, 1.0 - alpha))
+    return float(np.quantile(null, 1.0 - fwer.alpha))
 
 
 def prep_df(ana_glow, exp, mask_target=None, extra_df=None):

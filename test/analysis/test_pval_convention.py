@@ -11,7 +11,7 @@ green throughout.
 
 These take the rate exactly rather than estimating it. Under H0 the
 observed draw is exchangeable with the n_perm permuted ones, so its rank
-among all n_perm+1 per-draw maxima is uniform (Analysis.get_fwer);
+among all n_perm+1 per-draw maxima is uniform (see glow.analysis.fwer);
 sweeping that rank over every value it can take enumerates the test's
 null distribution instead of sampling it. The true FWER is then a closed
 form, floor(alpha * n) / n, and a one-rank error is a hard failure.
@@ -19,7 +19,7 @@ form, floor(alpha * n) / n, and a one-rank error is a hard failure.
 import numpy as np
 import pytest
 
-from glow.analysis import Analysis, AnalysisCET
+from glow.analysis import AnalysisCET, MaxStatPerm
 
 
 def _fwer_at_rank(rank: int, n: int, alpha: float):
@@ -36,13 +36,13 @@ def _fwer_at_rank(rank: int, n: int, alpha: float):
         alpha (float): family-wise error rate.
 
     Returns:
-        MaxStatPermResult: the one-region test at that rank.
+        MaxStatPerm: the one-region test at that rank.
     """
     value = np.arange(n, dtype=float)[::-1]
     obs = value[rank - 1]
     # draw 0 is the observed one, so its max leads max_stat
     max_stat = np.concatenate([[obs], np.delete(value, rank - 1)])
-    return Analysis.get_fwer_from_max(np.array([obs]), max_stat, alpha=alpha)
+    return MaxStatPerm.from_max(np.array([obs]), max_stat, alpha=alpha)
 
 
 @pytest.mark.parametrize('n_perm', [49, 99, 500, 999, 1000])
@@ -85,7 +85,7 @@ def test_the_observed_draw_is_one_of_its_own_null_draws():
     """
     # three permuted draws plus the observed, whose region beats them all
     stat = np.array([[10.0], [1.0], [2.0], [3.0]])
-    res = Analysis.get_fwer(stat, alpha=0.05)
+    res = MaxStatPerm.from_stat(stat, alpha=0.05)
 
     assert res.max_stat.shape == (4,)
     assert res.pval[0] == 1 / 4
@@ -100,7 +100,7 @@ def test_an_inactive_region_leaves_the_maxima_too():
     """
     # region 1 is the largest thing in every draw, and discarded
     stat = np.array([[1.0, 9.0], [0.5, 8.0], [0.6, 7.0], [0.7, 6.0]])
-    res = Analysis.get_fwer(stat, alpha=0.05,
+    res = MaxStatPerm.from_stat(stat, alpha=0.05,
                             reg_active=np.array([True, False]))
 
     np.testing.assert_allclose(res.max_stat, [1.0, 0.5, 0.6, 0.7])
@@ -111,7 +111,7 @@ def test_an_inactive_region_leaves_the_maxima_too():
 def test_cet_shares_the_convention():
     """CET's null keeps the observed draw, like every other arm.
 
-    Its comparison runs through Analysis.get_fwer_from_max, so what is
+    Its comparison runs through MaxStatPerm.from_max, so what is
     pinned here is the wiring rather than a second implementation: one
     null entry per draw, the observed leading them in draw order, and
     the same 1/(n_perm+1) floor.

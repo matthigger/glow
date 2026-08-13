@@ -9,14 +9,14 @@ from glow.mask import get_mask_idx, stats_from_counts
 
 
 class TestAnalysis:
-    def test_get_fwer(self):
+    def test_from_stat(self):
         z_stat = np.array([[7, 3, 1, 0],
                            [0, 0, 0, 0],
                            [3, 3, 3, 3],
                            [2, 2, 2, 5]])
         pval_exp = np.array([1, 3, 3, 4]) / 4
 
-        pval = Analysis.get_fwer(stat=z_stat, alpha=.05).pval
+        pval = MaxStatPerm.from_stat(stat=z_stat, alpha=.05).pval
         assert np.allclose(pval, pval_exp)
 
 
@@ -159,7 +159,7 @@ class TestPvalFloor:
                            [2.0, 0.0],
                            [3.0, 0.0],
                            [4.0, 0.0]])
-        pval = Analysis.get_fwer(stat=z_stat, alpha=.05).pval
+        pval = MaxStatPerm.from_stat(stat=z_stat, alpha=.05).pval
 
         # p-value for region 0 must be >= 1/num_perm, never zero
         num_perm = z_stat.shape[0]
@@ -242,13 +242,13 @@ class TestNaNHandling:
     """test handling of NaN statistics"""
     
     def test_get_fwer_with_nan_stats(self):
-        """test get_fwer handles NaN stats correctly"""
+        """test from_stat handles NaN stats correctly"""
         # create stat array with some NaN values
         z_stat = np.array([[7.0, np.nan, 3.0, 1.0],
                            [5.0, np.nan, 2.0, 0.0],
                            [6.0, np.nan, 4.0, 2.0]])
         
-        pval = Analysis.get_fwer(stat=z_stat, alpha=.05).pval
+        pval = MaxStatPerm.from_stat(stat=z_stat, alpha=.05).pval
         
         # second region should have NaN pval
         assert np.isnan(pval[1])
@@ -451,14 +451,14 @@ class TestNanSafeReductions:
         stat[7, :] = np.nan
         with warnings.catch_warnings():
             warnings.simplefilter('error', RuntimeWarning)
-            pval = Analysis.get_fwer(stat, alpha=.05).pval
+            pval = MaxStatPerm.from_stat(stat, alpha=.05).pval
         assert np.isfinite(np.nanmin(pval))
         assert np.nanmin(pval) < 1.0
 
     def test_all_nan_matrix_gives_all_nan(self):
         """Nothing valid anywhere is NaN p-values, not a ZeroDivisionError."""
         stat = np.full((21, 1000), np.nan)
-        assert np.isnan(Analysis.get_fwer(stat, alpha=.05).pval).all()
+        assert np.isnan(MaxStatPerm.from_stat(stat, alpha=.05).pval).all()
 
 
 class TestCetNanThreshold:

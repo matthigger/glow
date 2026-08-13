@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 from scipy.ndimage import gaussian_filter
 
+from glow.analysis import MaxStatPerm
 from glow.analysis.vba import AnalysisVBA
 from glow.analysis.vba import _tfce
 from glow.analysis.vba._tfce import (apply_tfce_at, apply_tfce_img,
@@ -399,7 +400,7 @@ class TestNanVoxelParity:
         stat[:, 3] = np.nan
         tfce = AnalysisVBA.apply_tfce(stat=stat, mask_idx=mask_idx,
                                       backend=backend)
-        assert np.nanmin(AnalysisVBA.get_fwer(tfce, alpha=.05).pval) < 0.05
+        assert np.nanmin(MaxStatPerm.from_stat(tfce, alpha=.05).pval) < 0.05
 
     def test_backends_agree_on_a_dropped_voxel(self):
         """A NaN voxel adds nothing to the standing backend difference.

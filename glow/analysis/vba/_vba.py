@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 from glow.experiment.exper import ExperimentScaled
 from .._base import AnalysisVoxel, reject_gpu
+from ..fwer import MaxStatPerm
 from ..mancova import get_hotel_tr, get_wilks
 
 
@@ -31,7 +32,7 @@ class AnalysisVBA(AnalysisVoxel):
         z_flag (bool): whether stats are z-scored before TFCE
         verbose (bool): whether progress is printed
         stat (np.array): (n_perm_fwer+1, num_vox) stats (populated by fit)
-        fwer (MaxStatPermResult): the max-stat test over the voxels, every
+        fwer (MaxStatPerm): the max-stat test over the voxels, every
             voxel in the comparison set (populated by fit; see Analysis)
     """
 
@@ -103,7 +104,7 @@ class AnalysisVBA(AnalysisVoxel):
                                         n_jobs=n_jobs,
                                         verbose=self.verbose,
                                         backend=tfce_backend)
-        self.fwer = self.get_fwer(self.stat, alpha=self.alpha_fwer)
+        self.fwer = MaxStatPerm.from_stat(self.stat, alpha=self.alpha_fwer)
         mask = np.zeros(exp.mask_idx.shape, dtype=bool)
         mask[exp.mask_idx > -1] = self.fwer.reg_sig
         self.effect_list = self.discover_mask(mask=mask, exp=exp)

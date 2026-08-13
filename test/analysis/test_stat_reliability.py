@@ -2,7 +2,7 @@
 
 Verifies:
 - z_score_stat standardizes per voxel, observed row included
-- get_fwer is monotone in the observed stat and propagates NaN
+- MaxStatPerm.from_stat is monotone in the observed stat, propagates NaN
 
 Both are pure array math, checked against closed forms on hand-built
 inputs -- no experiment is fit here. The rate-based claims that used to
@@ -13,7 +13,7 @@ anything and so runs only under --runslow.
 
 import numpy as np
 
-from glow.analysis import Analysis
+from glow.analysis import Analysis, MaxStatPerm
 
 
 # ---------------------------------------------------------------------------
@@ -95,11 +95,11 @@ class TestZScoreStatReliability:
 
 
 # ---------------------------------------------------------------------------
-# get_fwer monotonicity
+# MaxStatPerm.from_stat monotonicity
 # ---------------------------------------------------------------------------
 
-class TestGetFwerProperties:
-    """Properties that get_fwer must satisfy for any valid null."""
+class TestMaxStatPermProperties:
+    """Properties from_stat must satisfy for any valid null."""
 
     def test_monotone_in_observed_stat(self):
         """Higher observed stat -> lower (or equal) p-value."""
@@ -107,7 +107,7 @@ class TestGetFwerProperties:
         stat = rng.standard_normal((51, 20))
         stat[0, :] = np.linspace(0, 5, 20)
 
-        pval = Analysis.get_fwer(stat, alpha=.05).pval
+        pval = MaxStatPerm.from_stat(stat, alpha=.05).pval
 
         for i in range(len(pval) - 1):
             assert pval[i] >= pval[i + 1] - 1e-10, (
@@ -119,7 +119,7 @@ class TestGetFwerProperties:
         stat = np.random.default_rng(0).standard_normal((10, 5))
         stat[:, 2] = np.nan
 
-        pval = Analysis.get_fwer(stat, alpha=.05).pval
+        pval = MaxStatPerm.from_stat(stat, alpha=.05).pval
         assert np.isnan(pval[2])
         assert not np.isnan(pval[0])
 
@@ -128,6 +128,7 @@ class TestGetFwerProperties:
         stat = np.random.default_rng(0).standard_normal((10, 5))
         reg_active = np.array([True, True, False, True, False])
 
-        pval = Analysis.get_fwer(stat, reg_active=reg_active, alpha=.05).pval
+        pval = MaxStatPerm.from_stat(stat, reg_active=reg_active,
+                                     alpha=.05).pval
         assert np.isnan(pval[2]) and np.isnan(pval[4])
         assert not np.isnan(pval[0]) and not np.isnan(pval[1])

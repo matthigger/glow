@@ -8,6 +8,7 @@ from glow.experiment.exper import ExperimentScaled
 from ._base import Analysis
 from . import inner_perm
 from .cluster import cluster, ClusterMode
+from .fwer import MaxStatPerm
 from .mancova import decompose
 from .prune import prune_greedy
 
@@ -77,7 +78,7 @@ class AnalysisGLOW(Analysis):
             matrix's row 0.
         mu (np.array): (num_reg,) per-region mean over the draws.
         std (np.array): (num_reg,) per-region std over the draws.
-        fwer (MaxStatPermResult): the max-z test -- observed z per region
+        fwer (MaxStatPerm): the max-z test -- observed z per region
             in stat_obs, max-z per draw in max_stat, the size >= min_vox
             comparison set, the p-values and the selected regions.
         effect_list (list): discovered EffectEstimate objects.
@@ -200,35 +201,21 @@ class AnalysisGLOW(Analysis):
 
         # Copy, never slice: llr_all[0] is a view, so keeping it would
         # hold the whole (n_perm_fwer + 1, num_reg) matrix -- gigabytes at
-        # full-brain num_vox -- alive for one row of it. get_fwer copies
+        # full-brain num_vox -- alive for one row of it. from_stat copies
         # the row it keeps for the same reason.
         self.llr = llr_all[0].copy()
         del llr_all
 
         # size >= min_vox is a function of the fold-A tree alone, hence a
         # constant with respect to the fold-B permutations -- the
-        # condition Analysis.get_fwer needs of a comparison set.
-        self.fwer = self.get_fwer(z, alpha=self.alpha_fwer,
-                                  reg_active=self.size >= self.min_vox)
+        # condition MaxStatPerm needs of a comparison set.
+        self.fwer = MaxStatPerm.from_stat(
+            z, alpha=self.alpha_fwer, reg_active=self.size >= self.min_vox)
         del z
 
         if verbose:
             print('  [2/2] FWER synthesis ...')
-        self.finalize(exp_test, verbose=verbose)
-        return self
 
-    def finalize(self, exp, *, verbose: bool = False):
-        """Prune the significant regions and discover effects.
-
-        Reads self.fwer, which fit populates before calling.
-
-        Args:
-            exp (Experiment): the scaled TEST fold. Effects are estimated
-                on it, not on the whole cohort: the segmentation fold
-                chose the regions, so only fold B gives an estimate that
-                the region's selection did not shape.
-            verbose (bool): print significant-region and discovery counts.
-        """
         sig_reg_list = list(np.flatnonzero(self.fwer.reg_sig))
         if verbose:
             print(f'  {len(sig_reg_list)} significant regions '
@@ -250,14 +237,17 @@ class AnalysisGLOW(Analysis):
             children=self.children,
             stat=llr_gain)
 
+        # Effects are estimated on the test fold, not on the whole cohort:
+        # the segmentation fold chose the regions, so only fold B gives an
+        # estimate that the region's own selection did not shape.
         self.effect_list = []
         for reg_idx in reg_out_list:
             label_map = glow.graph.get_label_map(
                 reg_idx_list=[reg_idx],
-                mask_idx=exp.mask_idx,
+                mask_idx=exp_test.mask_idx,
                 children=self.children)
             eff = glow.effect.EffectEstimate.from_exp_mask(
-                mask=label_map > -1, exp=exp,
+                mask=label_map > -1, exp=exp_test,
                 reg_idx=reg_idx, pval_fwer=self.fwer.pval[reg_idx])
             self.effect_list.append(eff)
 
@@ -265,3 +255,5 @@ class AnalysisGLOW(Analysis):
             n_disc = len(self.effect_list)
             n_pruned = len(sig_reg_list) - n_disc
             print(f'  done: {n_disc} discovered, {n_pruned} pruned')
+
+        return self
