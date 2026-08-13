@@ -198,7 +198,7 @@ class TestMinVox:
 
         min_vox = 4
         ana = AnalysisGLOW(
-            n_perm_fwer=10, n_perm_inner=20,
+            n_perm_fwer=10,
             alpha_fwer=.5, min_vox=min_vox).fit(exp)
 
         # every significant region must have size >= min_vox
@@ -222,7 +222,7 @@ class TestPerRegionZConsistency:
                                     num_img=50, seed=0)
         exp = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
                               effect_llr=0.5).fit(exp)[0]
-        ana = AnalysisGLOW(n_perm_fwer=5, n_perm_inner=20,
+        ana = AnalysisGLOW(n_perm_fwer=5,
                            alpha_fwer=.5, min_vox=1).fit(exp)
 
         mu = ana.mu
@@ -521,7 +521,7 @@ class TestScreenCutsAcrossArms:
             return AnalysisVBA(n_perm_fwer=30, tfce_flag=True)
         if request.param == 'cet':
             return AnalysisCET(n_perm_fwer=30)
-        return AnalysisGLOW(n_perm_fwer=25, n_perm_inner=25)
+        return AnalysisGLOW(n_perm_fwer=25)
 
     def test_same_family_every_arm(self, exp, ana):
         """215 of 216 voxels, whichever method is fit."""

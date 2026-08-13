@@ -97,7 +97,7 @@ class TestConfirmAws:
 
     def test_warns_about_every_matching_cache(self, capsys):
         names = ['sweep_llr', 'runtime_num_vox', 'runtime_1perm_b',
-                 'runtime_1perm_n_perm_inner']
+                 'runtime_1perm_nimg']
         cli.confirm_aws(names, input_fnc=lambda p: 'n')
         out = capsys.readouterr().out
         assert '3 selected cache(s)' in out

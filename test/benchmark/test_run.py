@@ -109,7 +109,7 @@ class TestContract:
 
     def test_glow_returns_score_dict(self):
         exp, uid = _exp(shape=(4, 4, 4), num_img=16)
-        score = run_ana(exp, AnalysisGLOW(n_perm_fwer=8, n_perm_inner=8), [],
+        score = run_ana(exp, AnalysisGLOW(n_perm_fwer=8), [],
                         parent_uid=uid)
         assert _SCORE_KEYS <= set(score)
         assert score['num_vox'] == exp.y.shape[2]
@@ -339,23 +339,22 @@ class TestRunInnerEdge:
             exp, [mask], cluster_mode=ClusterMode.FOCUS, max_inner_perm=30,
             n_perm_fwer=4, parent_uid=uid))
         grid = curve['num_inner_perm']
-        # ascending, ends at max_inner_perm; one max-z row per outer perm
+        # ascending, ends at max_inner_perm; one max-z row per draw
         assert grid == sorted(grid)
         assert grid[-1] == 30
-        assert np.array(curve['max_z_null']).shape == (5, len(grid))
+        assert np.array(curve['max_z_null']).shape == (31, len(grid))
 
     def test_prefix_snapshot_equals_real_fit(self):
-        # the whole point: the num_inner_perm=max snapshot reproduces a real
-        # AnalysisGLOW fit at n_perm_inner=max (nested seeds -> shared draws), so
-        # one sampling stands in for a fit at every num_inner_perm <= it. The
-        # edge curve is built on the exact cpu_perm draw prefixes, which is
-        # the same exact inner null AnalysisGLOW draws.
+        # the whole point: the deepest snapshot reproduces a real
+        # AnalysisGLOW fit at that draw count, because draw i is
+        # exp_test.permute(i) from base_seed 0 and so a prefix of the edge
+        # sweep's matrix IS that fit's matrix.
         exp, mask, uid = self._planted()
         curve = json.loads(run_inner_edge(
             exp, [mask], cluster_mode=ClusterMode.FOCUS, max_inner_perm=30,
             n_perm_fwer=4, parent_uid=uid))
         mz_max = np.array(curve['max_z_null'])[:, -1]
-        ana = AnalysisGLOW(n_perm_fwer=4, n_perm_inner=30,
+        ana = AnalysisGLOW(n_perm_fwer=30,
                            cluster_mode=ClusterMode.FOCUS).fit(exp)
         np.testing.assert_allclose(mz_max, ana.max_z_null, rtol=1e-6, atol=1e-9)
 
@@ -435,7 +434,7 @@ class TestRunStat:
 # ---------------------------------------------------------------------------
 
 class TestRunPrune:
-    _GLOW = dict(n_perm_fwer=4, n_perm_inner=8, alpha_fwer=0.05)
+    _GLOW = dict(n_perm_fwer=4, alpha_fwer=0.05)
 
     def _planted(self):
         return _planted_cell(
@@ -493,7 +492,7 @@ class TestRuntimeLeaves:
                  seed=0))
 
     def _glow(self):
-        return AnalysisGLOW(n_perm_fwer=500, n_perm_inner=8)
+        return AnalysisGLOW(n_perm_fwer=500)
 
     def test_returns_num_vox(self):
         # the recorded measurement is time_sec; the return is the analyzed
@@ -511,21 +510,13 @@ class TestRuntimeLeaves:
         assert not run_ana_time_1perm.check_call_in_cache(
             exp, [mask], ana, n_perm_fwer=2, parent_uid=uid)
 
-    def test_n_perm_inner_is_a_cache_axis(self):
-        exp, mask, uid = self._planted()
-        ana = self._glow()
-        run_ana_time_1perm(exp, [mask], ana, n_perm_inner=4, parent_uid=uid)
-        assert not run_ana_time_1perm.check_call_in_cache(
-            exp, [mask], ana, n_perm_inner=8, parent_uid=uid)
-
     def test_the_callers_recipe_is_untouched(self):
         # the counts are overridden on a private copy: the caller's recipe is
         # what identifies the method everywhere else, cache key included
         exp, mask, uid = self._planted()
         ana = self._glow()
-        run_ana_time_1perm(exp, [mask], ana, n_perm_inner=4, parent_uid=uid)
+        run_ana_time_1perm(exp, [mask], ana, n_perm_fwer=4, parent_uid=uid)
         assert ana.n_perm_fwer == 500
-        assert ana.n_perm_inner == 8
         assert ana.effect_list is None
 
     def test_one_perm_is_the_default(self):
@@ -567,10 +558,3 @@ class TestRuntimeLeaves:
         assert cut.x.shape == (exp.x.shape[0], 8)
         assert cut.y.flags['F_CONTIGUOUS'] and cut.y.flags['OWNDATA']
 
-    def test_inner_perms_rejected_for_a_voxelwise_recipe(self):
-        # no voxel-wise method has an inner null, so the sweep would otherwise
-        # record a flat curve against a knob nothing reads
-        exp, mask, uid = self._planted()
-        with pytest.raises(ValueError, match='n_perm_inner'):
-            run_ana_time_1perm(exp, [mask], AnalysisVBA(n_perm_fwer=4),
-                               n_perm_inner=8, parent_uid=uid)

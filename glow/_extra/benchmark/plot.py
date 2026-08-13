@@ -245,7 +245,7 @@ _X_PARAM_LABELS = {
     'b': 'Number of Imaging Features',
     'num_vox': 'Number of Voxels',
     'n_perm_fwer': 'FWER Permutations',
-    'n_perm_inner': 'Inner (Freedman-Lane) Permutations',
+    'n_perm_inner': 'Freedman-Lane Permutations',
 }
 
 # runtime caches: name -> (leaf column prefix, swept x-axis column). The
@@ -260,7 +260,6 @@ _RUNTIME_SPEC = {
     'runtime_num_vox':            ('run_ana_time',       'num_vox'),
     'runtime_1perm_num_vox':      ('run_ana_time_1perm', 'num_vox'),
     'runtime_1perm_n_perm_fwer':  ('run_ana_time_1perm', 'n_perm_fwer'),
-    'runtime_1perm_n_perm_inner': ('run_ana_time_1perm', 'n_perm_inner'),
     'runtime_1perm_b':            ('run_ana_time_1perm', 'b'),
     'runtime_1perm_nimg':         ('run_ana_time_1perm', 'num_img'),
 }

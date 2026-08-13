@@ -22,7 +22,7 @@ from glow.effect import ExtenterMinVar, ExtenterSphere
 
 def _recipes():
     """Return a small label -> recipe catalogue, standing in for config's."""
-    return {'A-glow': AnalysisGLOW(n_perm_fwer=4, n_perm_inner=2),
+    return {'A-glow': AnalysisGLOW(n_perm_fwer=4),
             'B-vba': AnalysisVBA(n_perm_fwer=4),
             'C-cet': AnalysisCET(n_perm_fwer=4)}
 

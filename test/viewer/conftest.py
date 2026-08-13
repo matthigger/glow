@@ -26,9 +26,10 @@ def demo_analysis():
     dist = np.sqrt(((coords - center) ** 2).sum(axis=1))
     mask_sphere = (dist <= 2.0).reshape(shape)
 
-    exp = Experiment.from_gauss(b=1, num_img=10, shape=shape, seed=0, a=2)
+    # 20 images so each fold of GLOW's split still clears the design
+    exp = Experiment.from_gauss(b=1, num_img=20, shape=shape, seed=0, a=2)
     exp_eff = EffectSynthetic(mask=mask_sphere, effect_llr=2.0, seed=0).fit(exp)[0]
-    ana = AnalysisGLOW(n_perm_fwer=5, n_perm_inner=10).fit(exp_eff)
+    ana = AnalysisGLOW(n_perm_fwer=5).fit(exp_eff)
     return ana, exp_eff, mask_sphere
 
 
@@ -44,9 +45,10 @@ def demo_analysis_2d():
     dist = np.sqrt(((coords - center) ** 2).sum(axis=1))
     mask_circle = (dist <= 2.5).reshape(shape)
 
-    exp = Experiment.from_gauss(b=1, num_img=6, shape=shape, seed=42, a=2)
+    # 20 images so each fold of GLOW's split still clears the design
+    exp = Experiment.from_gauss(b=1, num_img=20, shape=shape, seed=42, a=2)
     exp_eff = EffectSynthetic(mask=mask_circle, effect_llr=2.0, seed=42).fit(exp)[0]
-    ana = AnalysisGLOW(n_perm_fwer=5, n_perm_inner=10).fit(exp_eff)
+    ana = AnalysisGLOW(n_perm_fwer=5).fit(exp_eff)
     return ana, exp_eff, mask_circle
 
 

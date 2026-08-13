@@ -60,6 +60,7 @@ have bought, at none of the linking cost.
 
 import copy
 import json
+import warnings
 
 import numpy as np
 from threadpoolctl import threadpool_limits
@@ -67,6 +68,7 @@ from threadpoolctl import threadpool_limits
 import glow.graph
 from glow.analysis import Analysis, AnalysisGLOW, AnalysisVoxel
 from glow.analysis.cluster import cluster, ClusterMode
+from glow.analysis import inner_perm
 from glow.analysis.inner_perm import cpu_perm, _welford_moments
 from glow.analysis.mancova import decompose, stat_dict, stat_dict_inv
 from glow.analysis.prune import prune_dp, prune_greedy
@@ -198,10 +200,9 @@ def run_segment(exp: Experiment, mask_target_list, cluster_mode, *,
                              mask_idx=exp.mask_idx)
 
 
-# A large seed offset keeping inner-perm seed regimes apart: outer-perm k draws
-# its inner FL perms from the block at (k + 1) * _SEED_OFFSET_DISTINCT,
-# matching AnalysisGLOW's per-outer-perm spacing, so inner nulls never collide.
-_SEED_OFFSET_DISTINCT = 100_000
+# The edge sweep draws at AnalysisGLOW's own base_seed of 0, so draw i is
+# exp_test.permute(i) and a prefix of the matrix is exactly the draw set a
+# real fit at that n_perm_fwer produces.
 
 # num_inner_perm grid the edge sweep (run_inner_edge) snapshots at: _INNER_GRID_N
 # log-spaced points from _INNER_GRID_MIN up to max_inner_perm, dense at the low
@@ -306,7 +307,7 @@ def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name, *,
 
 @MEMORY.cache(ignore=['exp', 'fit_params'])
 def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
-                       n_perm_inner: int, alpha_fwer: float,
+                       alpha_fwer: float,
                        cluster_mode=ClusterMode.FOCUS,
                        fit_params=None) -> tuple:
     """Fit GLOW once and return the pruning inputs (shared by the rules).
@@ -324,8 +325,7 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
         exp (Experiment): the experiment to fit (raw or scaled).
         parent_uid (str): the exp's declared uid (see the module docstring);
             what identifies the fit, since exp is out of the key.
-        n_perm_fwer (int): outer FWER permutations.
-        n_perm_inner (int): inner FL draws per outer perm.
+        n_perm_fwer (int): FL draws in the FWER null.
         alpha_fwer (float): FWER significance level (selects sig_reg_list).
         cluster_mode (ClusterMode): Ward projection (default FOCUS).
         fit_params (dict | None): kwargs forwarded to ana.fit -- how the fit
@@ -339,8 +339,8 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
             key the rules prune by).
         sig_reg_list (list): int indices of the FWER-significant regions.
     """
-    ana = AnalysisGLOW(n_perm_fwer=n_perm_fwer, n_perm_inner=n_perm_inner,
-                       alpha_fwer=alpha_fwer, cluster_mode=cluster_mode)
+    ana = AnalysisGLOW(n_perm_fwer=n_perm_fwer, alpha_fwer=alpha_fwer,
+                       cluster_mode=cluster_mode)
     ana.fit(exp, **(fit_params or {}))
     sig_reg_list = np.where(ana.pval <= ana.alpha_fwer)[0].tolist()
     llr = np.nan_to_num(ana.llr.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
@@ -351,7 +351,7 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
 @RECORDER(output_name='score', recurse_out_list=['score'],
           ignore=FIT_IGNORE)
 def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
-              n_perm_fwer: int, n_perm_inner: int, alpha_fwer: float,
+              n_perm_fwer: int, alpha_fwer: float,
               cluster_mode=ClusterMode.FOCUS, fit_params=None):
     """Score one pruning rule's selection on a shared GLOW fit.
 
@@ -371,8 +371,7 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
         mask_target_list (list): the planted effect supports (score target).
         parent_uid (str): the exp's declared uid (see the module docstring).
         rule (str): 'greedy', 'dp', or 'maxllr'.
-        n_perm_fwer (int): outer FWER permutations (the shared fit's).
-        n_perm_inner (int): inner FL draws per outer perm (the shared fit's).
+        n_perm_fwer (int): FL draws in the FWER null (the shared fit's).
         alpha_fwer (float): FWER significance level (the shared fit's).
         cluster_mode (ClusterMode): Ward projection (default FOCUS).
         fit_params (dict | None): kwargs forwarded to the shared fit -- how it
@@ -387,8 +386,8 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
     """
     children, llr, sig_reg_list = glow_fit_for_prune(
         exp, parent_uid=parent_uid, n_perm_fwer=n_perm_fwer,
-        n_perm_inner=n_perm_inner, alpha_fwer=alpha_fwer,
-        cluster_mode=cluster_mode, fit_params=fit_params)
+        alpha_fwer=alpha_fwer, cluster_mode=cluster_mode,
+        fit_params=fit_params)
 
     if rule == 'greedy':
         reg_out_list, _ = prune_greedy(sig_reg_list=sig_reg_list,
@@ -503,7 +502,6 @@ def _take_img(exp: Experiment, num_img: int) -> Experiment:
 @RECORDER(output_name='num_vox', ignore=LEAF_IGNORE)
 def run_ana_time_1perm(exp: Experiment, mask_target_list, ana: Analysis, *,
                        parent_uid: str, n_perm_fwer: int = 1,
-                       n_perm_inner: int = None,
                        num_img: int = None) -> int:
     """Time one method's fit on a single core, one permutation deep.
 
@@ -547,10 +545,8 @@ def run_ana_time_1perm(exp: Experiment, mask_target_list, ana: Analysis, *,
         parent_uid (str): the exp's declared uid (see the module docstring).
         ana (Analysis): an unfitted analysis recipe; deep-copied before its
             permutation counts are overridden, so the caller's is untouched.
-        n_perm_fwer (int): outer permutations to time, the observed pass on
+        n_perm_fwer (int): permutations to time, the observed pass on
             top. 1 (default) is the per-permutation cost.
-        n_perm_inner (int | None): inner FL draws, for a recipe that has them
-            (GLOW). None (default) keeps the recipe's own count.
         num_img (int | None): subjects to keep, the leading num_img of them.
             None (default) is the whole cohort.
 
@@ -559,16 +555,10 @@ def run_ana_time_1perm(exp: Experiment, mask_target_list, ana: Analysis, *,
             beside time_sec as the sweep's size context.
 
     Raises:
-        ValueError: n_perm_inner given for a recipe with no inner null (the
-            sweep would record a flat curve against a knob the method never
-            reads), or num_img larger than the cohort (a silently short curve).
+        ValueError: num_img larger than the cohort (a silently short curve).
     """
     ana = copy.deepcopy(ana)
     ana.n_perm_fwer = n_perm_fwer
-    if n_perm_inner is not None:
-        if not hasattr(ana, 'n_perm_inner'):
-            raise ValueError(f'{type(ana).__name__} has no n_perm_inner')
-        ana.n_perm_inner = n_perm_inner
     if num_img is not None:
         exp = _take_img(exp, num_img)
 
@@ -577,9 +567,9 @@ def run_ana_time_1perm(exp: Experiment, mask_target_list, ana: Analysis, *,
     return int((exp.mask_idx > -1).sum())
 
 
-# ---------- inner-perm edge sweep (num_inner_perm convergence) ---------------
-# The n_perm_inner counterpart to the runtime_1perm_n_perm_inner cost cache:
-# instead of timing the inner null it captures how the max-z FWER threshold
+# ---------- permutation-count edge sweep -----------------------------------
+# The detection-side counterpart to the runtime_1perm_* cost caches:
+# instead of timing the permutations it captures how the max-z FWER threshold
 # converges as num_inner_perm grows. The inner draws are seeded base_seed + i,
 # so a single sampling to depth max_inner_perm contains every smaller run as a
 # prefix -- one capture yields the whole curve, no re-fitting per
@@ -603,95 +593,74 @@ def _inner_grid(max_inner_perm: int) -> list:
     return sorted({int(round(m)) for m in grid} | {int(max_inner_perm)})
 
 
-def _inner_draws(exp, *, base_seed: int, n_perm: int, q0, q1, children,
-                 min_vox: int):
-    """Materialize (n_perm, num_reg) inner FL LLR draws for one Ward tree.
-
-    cpu_perm's construction (Freedman & Lane 1983), but the full draws matrix
-    (np.vstack of the iter_llr_perm chunks) rather than the streamed (mu, std)
-    reduction: draw i uses seed base_seed + i, so any prefix draws[:m] is the
-    exact draw set a standalone n_perm=m cpu_perm produces. run_inner_edge slices
-    these prefixes so one sampling covers every num_inner_perm <= n_perm.
-
-    Args:
-        exp (Experiment): experiment to sample inner perms from.
-        base_seed (int): draw i uses RNG seed base_seed + i.
-        n_perm (int): number of inner FL draws (the sweep's max depth).
-        q0 (np.array): (a0, num_img) nuisance subspace.
-        q1 (np.array): (a1, num_img) interest subspace.
-        children (np.array): (num_reg - num_vox, 2) Ward tree.
-        min_vox (int): regions smaller than this are left NaN.
-
-    Returns:
-        draws (np.array): (n_perm, num_reg) per-draw LLR, NaN where a region is
-            smaller than min_vox.
-    """
-    num_vox = exp.y.shape[2]
-    num_img = exp.y.shape[1]
-    leaf_ord, region_l, region_h = glow.graph.build_dfs_preorder(
-        children=children, num_vox=num_vox)
-    perms = np.empty((n_perm, num_img), dtype=np.int64)
-    for i in range(n_perm):
-        perms[i] = permute._perm_indices(base_seed + i, num_img)
-    chunks = glow.graph.iter_llr_perm(
-        y=exp.y, q0=q0, q1=q1, perms=perms, leaf_ord=leaf_ord,
-        region_l=region_l, region_h=region_h, min_size=min_vox)
-    return np.vstack(list(chunks))
-
-
 def _inner_edge_curve(exp, *, cluster_mode, max_inner_perm: int,
-                      n_perm_fwer: int, min_vox: int) -> str:
-    """Capture each outer perm's max-z as a function of num_inner_perm.
+                      n_perm_fwer: int, min_vox: int,
+                      frac_segment: float, split_seed: int) -> str:
+    """Capture the max-z null as a function of how many draws it is built on.
 
-    Runs GLOW's outer-perm loop by hand (mirroring AnalysisGLOW._run_outer),
-    but samples the inner FL null once to depth
-    max_inner_perm per outer perm and snapshots the per-region max-z at each
-    num_inner_perm on _inner_grid. Because draws[:m] is the exact draw set a real
-    n_perm_inner=m fit uses (nested seeds base + i, matching AnalysisGLOW's
-    per-outer-perm spacing), each snapshot reproduces that fit's max_z_null[k] --
-    one sampling gives the whole edge curve.
+    NOTE the question this answers changed with the split. GLOW no longer
+    has an inner null to sweep: one tree means one draw matrix, whose
+    column moments standardize the regions and whose row maxima are the
+    null (see AnalysisGLOW). What is left to converge is simply the number
+    of permutations, so this now sweeps that. The recorded key is still
+    num_inner_perm and the arm is still called sweep_n_perm_inner --
+    renaming a cache axis is a separate change -- but read it as
+    n_perm_fwer.
 
-    The per-region z and the size >= min_vox max match AnalysisGLOW.fit (the
-    1e-12 std floor, the nan/posinf/neginf handling), so the reduced threshold
-    equals a real fit's FWER critical value.
+    Runs GLOW by hand so one sampling covers the whole grid: draw the full
+    matrix once to depth max_inner_perm, then for each m on _inner_grid
+    take the prefix draws[:m + 1]. Because draw i is exp_test.permute(i)
+    from base_seed 0, that prefix is exactly the matrix a real fit at
+    n_perm_fwer = m produces, so each snapshot reproduces that fit's
+    max_z_null.
 
     Args:
         exp (Experiment): the experiment with the synthetic effect imposed.
         cluster_mode (ClusterMode): Ward projection (Focus / GLM Error).
-        max_inner_perm (int): inner FL draws sampled per outer perm; the deepest
-            num_inner_perm the edge is reported at.
-        n_perm_fwer (int): outer FL perms (n_perm_fwer + 1 rows, incl. k=0).
+        max_inner_perm (int): draws sampled; the deepest point reported.
+        n_perm_fwer (int): accepted for the leaf's signature and ignored --
+            the sweep IS over the draw count now, and max_inner_perm sets
+            its depth.
         min_vox (int): regions smaller than this are left out of the max.
+        frac_segment (float): share of images building the tree.
+        split_seed (int): seed for the image partition.
 
     Returns:
         a JSON string {num_inner_perm, max_z_null, min_vox}: the grid, the
-        (n_perm_fwer+1, len(grid)) per-outer-perm max-z (row 0 observed), and the
-        size floor. The FWER critical-value curve is derived from max_z_null post
-        hoc (see benchmark.plot); parse with json.loads.
+        (max_inner_perm + 1, len(grid)) per-draw max-z (row 0 observed,
+        -inf where a prefix does not reach that draw), and the size floor.
+        The FWER critical-value curve is derived from max_z_null post hoc
+        (see benchmark.plot); parse with json.loads.
     """
-    exp_s = ExperimentScaled.from_exp(exp)
-    q0, q1, _ = decompose(x=exp_s.x, contrast=exp_s.contrast)
-    grid = _inner_grid(max_inner_perm)
-    max_z = np.full((n_perm_fwer + 1, len(grid)), -np.inf)
+    del n_perm_fwer
 
-    for k in range(n_perm_fwer + 1):
-        _exp = exp_s.permute(k) if k else exp_s
-        children = cluster(_exp, mode=ClusterMode(cluster_mode))
-        llr_k, size = glow.graph.compute_llr_batched(
-            _exp, children=children, q0=q0, q1=q1)
-        draws = _inner_draws(
-            _exp, base_seed=(k + 1) * _SEED_OFFSET_DISTINCT,
-            n_perm=max_inner_perm, q0=q0, q1=q1, children=children,
-            min_vox=min_vox)
-        num_reg = draws.shape[1]
-        for j, m in enumerate(grid):
-            mu, std = _welford_moments([draws[:m]], num_reg)
-            std_safe = np.where(std < 1e-12, 1.0, std)
-            z = np.nan_to_num((llr_k - mu) / std_safe,
-                              nan=0.0, posinf=0.0, neginf=np.nan)
-            consider = (size >= min_vox) & np.isfinite(z)
-            if consider.any():
-                max_z[k, j] = float(np.nanmax(z[consider]))
+    exp_seg, exp_test = exp.split_img(frac_segment=frac_segment,
+                                      seed=split_seed)
+    children = cluster(ExperimentScaled.from_exp(exp_seg),
+                       mode=ClusterMode(cluster_mode))
+    exp_test = ExperimentScaled.from_exp(exp_test)
+    q0, q1, _ = decompose(x=exp_test.x, contrast=exp_test.contrast)
+
+    _, region_l, region_h = glow.graph.build_dfs_preorder(
+        children=children, num_vox=exp_test.y.shape[2])
+    size = region_h - region_l
+    reg_active = size >= min_vox
+
+    # the SAME backend AnalysisGLOW.fit draws with -- the curve claims to
+    # reproduce a real fit's max_z_null, which it only does if the draws
+    # come from the same code path. Track fit when that backend changes.
+    draws = inner_perm.cpu_reliable_full(
+        exp=exp_test, base_seed=0, n_perm=max_inner_perm + 1,
+        q0=q0, q1=q1, children=children, min_vox=min_vox)
+
+    grid = _inner_grid(max_inner_perm)
+    max_z = np.full((max_inner_perm + 1, len(grid)), -np.inf)
+
+    for j, m in enumerate(grid):
+        z = AnalysisGLOW.z_score_stat(draws[:m + 1])
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            max_z[:m + 1, j] = np.nanmax(z[:, reg_active], axis=1)
 
     return json.dumps({'num_inner_perm': [int(m) for m in grid],
                        'max_z_null': [[float(v) for v in row] for row in max_z],
@@ -702,12 +671,13 @@ def _inner_edge_curve(exp, *, cluster_mode, max_inner_perm: int,
 @RECORDER(output_name='curve', ignore=LEAF_IGNORE)
 def run_inner_edge(exp: Experiment, mask_target_list, *, parent_uid: str,
                    cluster_mode, max_inner_perm: int, n_perm_fwer: int,
-                   min_vox: int = 1):
+                   min_vox: int = 1, frac_segment: float = .5,
+                   split_seed: int = 0):
     """Capture GLOW's max-z edge as a function of num_inner_perm (one sampling).
 
-    Records, it does not score. Samples each outer perm's inner FL null once to
-    depth max_inner_perm and snapshots the per-region max-z at every
-    num_inner_perm on the grid (_inner_edge_curve), exploiting the nested inner
+    Records, it does not score. Samples the adjust stream once to depth
+    max_inner_perm and snapshots every draw's max-z at each num_inner_perm on
+    the grid (_inner_edge_curve), exploiting the prefix property of the inner
     seeds so one sampling covers every num_inner_perm <= max_inner_perm without
     re-fitting. The convergence read -- how the FWER critical value settles with
     num_inner_perm -- is derived from the recorded max_z_null post hoc, not here.
@@ -723,10 +693,12 @@ def run_inner_edge(exp: Experiment, mask_target_list, *, parent_uid: str,
             contract but unused (this leaf records a curve, not a score).
         parent_uid (str): the exp's declared uid (see the module docstring).
         cluster_mode (ClusterMode): Ward projection (Focus / GLM Error).
-        max_inner_perm (int): inner FL draws sampled per outer perm; the deepest
+        max_inner_perm (int): adjust FL draws sampled; the deepest
             num_inner_perm the edge is reported at.
-        n_perm_fwer (int): outer FL perms feeding the max-z null.
+        n_perm_fwer (int): FWER FL draws feeding the max-z null.
         min_vox (int): regions smaller than this are left out of the max.
+        frac_segment (float): share of images building the Ward tree.
+        split_seed (int): seed for the image partition.
 
     Returns:
         curve (str): a JSON string {num_inner_perm, max_z_null, min_vox}; parse
@@ -734,4 +706,5 @@ def run_inner_edge(exp: Experiment, mask_target_list, *, parent_uid: str,
     """
     return _inner_edge_curve(
         exp, cluster_mode=cluster_mode, max_inner_perm=max_inner_perm,
-        n_perm_fwer=n_perm_fwer, min_vox=min_vox)
+        n_perm_fwer=n_perm_fwer, min_vox=min_vox,
+        frac_segment=frac_segment, split_seed=split_seed)

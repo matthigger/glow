@@ -82,7 +82,7 @@ def _null_rejection_rate(make_ana, k: int = K) -> float:
 
 ARMS = {
     'GLOW': lambda: AnalysisGLOW(n_perm_fwer=N_PERM, alpha_fwer=ALPHA,
-                                 n_perm_inner=20, min_vox=1),
+                                 min_vox=1),
     'VBA': lambda: AnalysisVBA(n_perm_fwer=N_PERM, alpha_fwer=ALPHA),
     'VBA+z': lambda: AnalysisVBA(n_perm_fwer=N_PERM, alpha_fwer=ALPHA,
                                  z_flag=True),

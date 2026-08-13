@@ -52,18 +52,19 @@ fit), vba_stat (run_stat, a VBA / CET variant reading a shared voxel-stat
 walk; HCP only, b=2), and prune (run_prune, three pruning rules on a shared
 GLOW fit).
 
-Runtime. Six caches measure time, not detection, and run locally only. They
+Runtime. Five caches measure time, not detection, and run locally only. They
 answer two different questions and must not be read as one: runtime_num_vox is
 the wall clock a user waits, every method given this machine's cores and card
-(run_ana_time); the five runtime_1perm_* are one-at-a-time growth rates on a
+(run_ana_time); the four runtime_1perm_* are one-at-a-time growth rates on a
 single pinned core, one permutation deep (run_ana_time_1perm). See the runtime
 section below.
 
-Convergence. sweep_n_perm_inner is the detection-side counterpart to
-runtime_1perm_n_perm_inner: run_inner_edge samples each outer perm's inner null
-once to MAX_INNER_PERM and records how the FWER max-z threshold converges as
-num_inner_perm grows (HCP only, moderate effect). The recommended n_perm_inner
-is read off where that threshold plateaus (benchmark.plot).
+Convergence. sweep_n_perm_inner records how the FWER max-z threshold converges
+as the permutation count grows: run_inner_edge samples the draw matrix once to
+MAX_INNER_PERM and reports the threshold at every prefix (HCP only, moderate
+effect). The recommended permutation count is read off where that threshold
+plateaus (benchmark.plot). It swept GLOW's inner null before the split; that
+null is gone, so it now sweeps n_perm_fwer under the old axis name.
 
 """
 import warnings
@@ -108,7 +109,6 @@ CROP_N_VOX = 25_000
 EFFECT_N_VOX_FRAC = 0.1
 
 N_PERM_FWER = 500
-N_PERM_INNER = 250
 ALPHA_FWER = 0.05
 
 # Structural grids. B caps at the HCP pool (6) so every HCP cell is feasible;
@@ -145,8 +145,7 @@ SWEEP_NIMG_GRID = list(range(10, HCP_NUM_IMG + 1, 10))
 # which agree -- the paper's arms should be readable here.
 kwargs = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
 ana_kwargs_dict = {
-    'GLOW':   AnalysisGLOW(n_perm_inner=N_PERM_INNER,
-                           cluster_mode=ClusterMode.GLM_ERROR,
+    'GLOW':   AnalysisGLOW(cluster_mode=ClusterMode.GLM_ERROR,
                            **kwargs),
     'VBA':        AnalysisVBA(z_flag=False, tfce_flag=False,
                               get_stat=get_hotel_tr, **kwargs),
@@ -212,7 +211,7 @@ RUN_STAT_LIST = grid.get_run_stat_list(
 # alone, so it gets GLOW's device + worker-count knobs like every other GLOW
 # leaf (driver.check_fit_params refuses to run it in parallel with a device
 # visible, same as RUN_ANA_LIST's GLOW cell).
-_PRUNE_GLOW_KWARGS = dict(n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER,
+_PRUNE_GLOW_KWARGS = dict(n_perm_fwer=N_PERM_FWER,
                           alpha_fwer=ALPHA_FWER, fit_params=GLOW_FIT_PARAMS)
 PRUNE_RULES = ['maxllr', 'greedy', 'dp']
 PRUNE_CLUSTER_MODES = [ClusterMode.FOCUS, ClusterMode.GLM_ERROR]
@@ -312,10 +311,11 @@ GLOW_ARM_MODES = [('GLOW-Focus', ClusterMode.FOCUS),
 # The 1perm permutation-count axes. n_perm_fwer starts at the family's own
 # baseline of 1 and doubles: the intercept (observed pass + finalize) does not
 # shrink with the count, so the slope is only readable against a point that is
-# almost all intercept. n_perm_inner spans the paper value up 16x, GLOW's alone
-# -- no voxel-wise method has an inner null.
+# almost all intercept. There is no second permutation axis any more: GLOW's
+# nested inner null is gone (one tree means one draw matrix), so cost is linear
+# in n_perm_fwer alone and the retired runtime_1perm_n_perm_inner arm measured
+# a knob that no longer exists.
 ONE_PERM_N_PERM_FWER_GRID = [1, 2, 4, 8, 16]
-ONE_PERM_N_PERM_INNER_GRID = [250, 500, 1_000, 2_000, 4_000]
 
 # per-cache seed offsets, clear of each other, so no two runtime caches share a
 # data cell (hence a cached leaf timing). runtime_num_vox keeps the offset the
@@ -324,6 +324,8 @@ RUNTIME_SEED_OFFSET = {
     'runtime_num_vox': 200_000,
     'runtime_1perm_num_vox': 210_000,
     'runtime_1perm_n_perm_fwer': 220_000,
+    # retired with GLOW's inner null; kept so a re-used offset never
+    # collides with the cells that arm already cached
     'runtime_1perm_n_perm_inner': 230_000,
     'runtime_1perm_b': 240_000,
     'runtime_1perm_nimg': 250_000,
@@ -382,8 +384,6 @@ ONE_PERM_ANA = ana_kwargs_dict['GLOW']
 RUN_1PERM_LIST = [dict(ana=ONE_PERM_ANA)]
 RUN_1PERM_FWER_LIST = [dict(ana=ONE_PERM_ANA, n_perm_fwer=n)
                        for n in ONE_PERM_N_PERM_FWER_GRID]
-RUN_1PERM_INNER_LIST = [dict(ana=ONE_PERM_ANA, n_perm_inner=n)
-                        for n in ONE_PERM_N_PERM_INNER_GRID]
 # num_img rides the leaf, not the data grid: see run.run_ana_time_1perm for why
 # HCP is not given a subject-subset axis.
 RUN_1PERM_NIMG_LIST = [dict(ana=ONE_PERM_ANA, num_img=n) for n in NIMG_GRID]
@@ -476,9 +476,9 @@ CONFIG = {
             crop_n_vox_list=RUNTIME_NUM_VOX_GRID),
         effect_grid(),
         RUN_ANA_TIME_LIST, run_ana_time),
-    # Runtime (cost): five one-at-a-time sweeps around the shared centre --
-    # b=1, the whole cohort, CROP_N_VOX voxels, the moderate effect, one outer
-    # permutation, N_PERM_INNER inner draws -- each on one core with no device
+    # Runtime (cost): four one-at-a-time sweeps around the shared centre --
+    # b=1, the whole cohort, CROP_N_VOX voxels, the moderate effect, one
+    # permutation -- each on one core with no device
     # and BLAS pinned (run_ana_time_1perm), GLOW only. One axis moves per
     # cache, so the ratio between two of its points is the growth in that axis
     # and nothing else. Full grids, since a cell costs two passes, not 501.
@@ -499,13 +499,6 @@ CONFIG = {
             crop_n_vox_list=[CROP_N_VOX]),
         effect_grid(),
         RUN_1PERM_FWER_LIST, run_ana_time_1perm),
-    # n_perm_inner over ONE_PERM_N_PERM_INNER_GRID: the inner null's own cost.
-    'runtime_1perm_n_perm_inner': (
-        runtime_data_grid(
-            seed_offset=RUNTIME_SEED_OFFSET['runtime_1perm_n_perm_inner'],
-            crop_n_vox_list=[CROP_N_VOX]),
-        effect_grid(),
-        RUN_1PERM_INNER_LIST, run_ana_time_1perm),
     # b = 1..6, the paper's b-quadratic claim; b rides the data grid.
     'runtime_1perm_b': (
         runtime_data_grid(
@@ -522,11 +515,13 @@ CONFIG = {
             crop_n_vox_list=[CROP_N_VOX]),
         effect_grid(),
         RUN_1PERM_NIMG_LIST, run_ana_time_1perm),
-    # n_perm_inner convergence: the detection-side counterpart to
-    # runtime_1perm_n_perm_inner. Holds the data + moderate effect fixed and,
-    # per GLOW arm, samples the inner null once to MAX_INNER_PERM
-    # (run_inner_edge), recording how the FWER max-z threshold settles as
-    # num_inner_perm grows.
+    # Permutation-count convergence. Holds the data + moderate effect fixed
+    # and, per GLOW arm, samples the draw matrix once to MAX_INNER_PERM
+    # (run_inner_edge), recording how the FWER max-z threshold settles as the
+    # draw count grows. It swept n_perm_inner before the split; with the inner
+    # null gone it sweeps n_perm_fwer, and the cache / axis names still say
+    # 'inner' only because renaming a recorded axis is a separate change (see
+    # run._inner_edge_curve).
     # HCP only (the paper's real data; no point double-computing the WGN half),
     # so local-only like the runtime family; shares the HCP detection cells, so
     # their data / effect builds are cache hits off the other sweeps.

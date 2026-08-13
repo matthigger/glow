@@ -460,7 +460,7 @@ def _dp_cover(exp, cluster_mode):
     """Fit GLOW, prune by DP, and return (n_sig, selected, cover fractions)."""
     from glow.analysis import AnalysisGLOW
 
-    ana = AnalysisGLOW(n_perm_fwer=_N_PERM_FWER, n_perm_inner=_N_PERM_INNER,
+    ana = AnalysisGLOW(n_perm_fwer=_N_PERM_FWER,
                        alpha_fwer=0.05, cluster_mode=cluster_mode).fit(exp)
     sig = np.where(ana.pval <= ana.alpha_fwer)[0].tolist()
     if not sig:

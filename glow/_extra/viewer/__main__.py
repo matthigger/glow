@@ -207,9 +207,8 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
         exp_eff = exp
         print('  no effect imposed')
 
-    print('  running AnalysisGLOW (n_perm_fwer=200, n_perm_inner=200) ...')
-    ana = AnalysisGLOW(n_perm_fwer=200,
-                       n_perm_inner=200).fit(exp_eff, verbose=True)
+    print('  running AnalysisGLOW (n_perm_fwer=200) ...')
+    ana = AnalysisGLOW(n_perm_fwer=200).fit(exp_eff, verbose=True)
     n_eff = len(ana.effect_list)
     print(f'  found {n_eff} effect{"s" if n_eff != 1 else ""}')
     return ana, exp_eff, mask_target
