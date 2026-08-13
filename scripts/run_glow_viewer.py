@@ -8,8 +8,11 @@ Every knob is a constant below -- edit and run.
 
 The fit is the slow part (minutes at NUM_VOX 25k), so the fitted bundle is
 written to BUNDLE_PATH and reused on the next run; set REFIT to force a
-fresh one. The bundle is the {ana, exp, mask_target} pickle the viewer
-takes directly, so it can also be opened on its own:
+fresh one. That bundle is a pickle of live objects, so it is a local
+artifact of this machine and not an exchange format -- never point
+BUNDLE_PATH at one you did not fit yourself. The bundle is the
+{ana, exp, mask_target} pickle the viewer takes directly, so it can also
+be opened on its own:
 
     python -m glow._extra.viewer <BUNDLE_PATH>
 
