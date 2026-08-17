@@ -3,7 +3,8 @@ import itertools
 import numpy as np
 import pytest
 
-from glow.analysis.prune import prune_greedy, prune_dp, dp_antichain
+from glow.analysis.prune import (prune_greedy, prune_dp, prune_oracle,
+                                 dp_antichain)
 from glow.graph import SCGraph, get_parent
 
 
@@ -133,6 +134,84 @@ def _brute_force_best(sig_reg_list, children, stat, lam: float) -> float:
             if any(conflict[r] & chosen for r in subset):
                 continue
             best = max(best, sum(stat[r] - lam for r in subset))
+    return float(best)
+
+
+def _mask_from_leaves(mask_idx, leaf_list):
+    """Boolean target mask covering exactly the given leaf (voxel) indices.
+
+    Args:
+        mask_idx (np.array): (X, Y, Z) int voxel-index array
+        leaf_list (iterable): leaf indices the target covers
+
+    Returns:
+        mask (np.array): (X, Y, Z) bool, True at those voxels
+    """
+    return np.isin(mask_idx, list(leaf_list))
+
+
+def _dice_of(reg_out, children, mask_target, mask_idx) -> float:
+    """Dice of a disjoint region set, counted straight off the masks.
+
+    The independent reference for prune_oracle's own arithmetic: rebuild
+    each region's voxel set by walking the tree and count the overlap,
+    rather than summing the per-region counts prune_oracle sums.
+
+    Args:
+        reg_out (list): selected region indices
+        children (np.array): (num_internal, 2) child-index pairs
+        mask_target (np.array): (X, Y, Z) bool target support
+        mask_idx (np.array): (X, Y, Z) int voxel-index array
+
+    Returns:
+        float: 2 tp / (2 tp + fp + fn), 0.0 for an empty selection
+    """
+    num_vox = int((mask_idx > -1).sum())
+    leaf_set = set()
+    for reg in reg_out:
+        stack = [int(reg)]
+        while stack:
+            node = stack.pop()
+            if node < num_vox:
+                leaf_set.add(node)
+            else:
+                stack.extend(int(k) for k in children[node - num_vox])
+    mask_pred = _mask_from_leaves(mask_idx, leaf_set)
+    tp = int((mask_pred & mask_target).sum())
+    denom = int(mask_pred.sum()) + int(mask_target.sum())
+    return 0.0 if denom == 0 else 2.0 * tp / denom
+
+
+def _brute_force_best_dice(sig_reg_list, children, mask_target,
+                           mask_idx) -> float:
+    """Exhaustive max Dice over antichains of the significant set.
+
+    prune_oracle's objective computed the slow, unarguable way: every
+    subset of the significant regions is tested for the
+    ancestor-descendant conflicts that disqualify it, and the survivors are
+    scored off the masks. Exponential in len(sig_reg_list) -- keep it small.
+
+    Args:
+        sig_reg_list (list): int regions declared significant
+        children (np.array): (num_internal, 2) child-index pairs
+        mask_target (np.array): (X, Y, Z) bool target support
+        mask_idx (np.array): (X, Y, Z) int voxel-index array
+
+    Returns:
+        float: the attainable maximum Dice (0 when nothing scores)
+    """
+    num_vox = int((mask_idx > -1).sum())
+    parent = get_parent(children, num_leaf=num_vox)
+    sig = sorted(sig_reg_list)
+    conflict = {r: _relatives(r, children, num_vox, parent) for r in sig}
+
+    best = 0.0
+    for size in range(1, len(sig) + 1):
+        for subset in itertools.combinations(sig, size):
+            chosen = set(subset)
+            if any(conflict[r] & chosen for r in subset):
+                continue
+            best = max(best, _dice_of(subset, children, mask_target, mask_idx))
     return float(best)
 
 
@@ -381,6 +460,140 @@ class TestPruneDp:
         reg_out, _ = prune_dp([8, 9, 12], children, llr, lam=0.0)
         assert 8 in reg_out and 9 in reg_out
         assert 12 not in reg_out
+
+
+class TestPruneOracle:
+    """Test the max-Dice oracle rule (the headroom line, not a method)."""
+
+    @staticmethod
+    def _mask_idx_8():
+        """Voxel-index array for the 8-leaf tree, one voxel per leaf."""
+        return np.arange(8).reshape(2, 2, 2)
+
+    def test_exact_region_scores_one(self):
+        """A target that is exactly a significant region is recovered."""
+        children = _make_tree_8()
+        mask_idx = self._mask_idx_8()
+        # region 8 is the pair of leaves 0, 1
+        mask_target = _mask_from_leaves(mask_idx, [0, 1])
+        reg_out, info = prune_oracle([8, 9, 12], children, mask_target,
+                                     mask_idx)
+        assert reg_out == [8]
+        assert info['dice'] == pytest.approx(1.0)
+
+    def test_unions_disjoint_regions(self):
+        """A target spanning two regions is matched by their union."""
+        children = _make_tree_8()
+        mask_idx = self._mask_idx_8()
+        # regions 8 (leaves 0, 1) and 10 (leaves 4, 5); their parents 12 / 14
+        # each drag in leaves the target does not have
+        mask_target = _mask_from_leaves(mask_idx, [0, 1, 4, 5])
+        reg_out, info = prune_oracle([8, 9, 10, 12, 14], children,
+                                     mask_target, mask_idx)
+        assert reg_out == [8, 10]
+        assert info['dice'] == pytest.approx(1.0)
+
+    def test_beats_the_llr_ranking_when_it_over_covers(self):
+        """The oracle drops the big region raw LLR blooms over the target."""
+        children = _make_tree_8()
+        mask_idx = self._mask_idx_8()
+        llr = _make_llr_8()
+        sig = [8, 9, 12]
+        # the LLR peaks on the parent 12, so greedy blooms all four of its
+        # leaves for a target of two
+        mask_target = _mask_from_leaves(mask_idx, [0, 1])
+        greedy_out, _ = prune_greedy(sig, children, llr)
+        assert greedy_out == [12]
+
+        reg_out, info = prune_oracle(sig, children, mask_target, mask_idx)
+        assert reg_out == [8]
+        assert info['dice'] > _dice_of(greedy_out, children, mask_target,
+                                       mask_idx)
+
+    def test_output_is_an_antichain(self):
+        """No selected region is an ancestor of another."""
+        children = _make_tree_8()
+        mask_idx = self._mask_idx_8()
+        mask_target = _mask_from_leaves(mask_idx, [0, 1, 2, 5])
+        reg_out, _ = prune_oracle(list(range(8, 15)), children, mask_target,
+                                  mask_idx)
+        _assert_antichain(reg_out, children, num_vox=8)
+
+    def test_empty_significant_set(self):
+        """Nothing significant selects nothing, at Dice 0."""
+        children = _make_tree_8()
+        mask_idx = self._mask_idx_8()
+        mask_target = _mask_from_leaves(mask_idx, [0, 1])
+        reg_out, info = prune_oracle([], children, mask_target, mask_idx)
+        assert reg_out == [] and info['dice'] == 0.0
+
+    def test_empty_target(self):
+        """An empty target selects nothing (every Dice is 0)."""
+        children = _make_tree_8()
+        mask_idx = self._mask_idx_8()
+        mask_target = np.zeros_like(mask_idx, dtype=bool)
+        reg_out, info = prune_oracle([8, 9, 12], children, mask_target,
+                                     mask_idx)
+        assert reg_out == [] and info['dice'] == 0.0
+
+    def test_target_outside_the_analysis_is_ignored(self):
+        """Voxels outside mask_idx do not count against the Dice."""
+        children = _make_tree_8()
+        # one extra voxel excluded from the analysis (-1)
+        mask_idx = np.array([0, 1, 2, 3, 4, 5, 6, 7, -1])
+        mask_target = _mask_from_leaves(mask_idx, [0, 1])
+        mask_target[-1] = True
+        reg_out, info = prune_oracle([8, 9, 12], children, mask_target,
+                                     mask_idx)
+        assert reg_out == [8]
+        assert info['dice'] == pytest.approx(1.0)
+
+    def test_attains_the_exhaustive_optimum(self):
+        """prune_oracle attains the brute-forced max Dice on random trees.
+
+        The docstring claims a global maximum over antichains, so the
+        reference is exhaustive enumeration. Ties may pick a different set
+        at the same Dice, so the assert is on the attained value -- as for
+        prune_dp. Also asserts the check is not vacuous: greedy LLR pruning
+        must come out strictly worse somewhere.
+        """
+        rng = np.random.default_rng(0)
+        n_beat_greedy = 0
+
+        for trial in range(12):
+            num_vox = int(rng.integers(6, 11))
+            children = _random_tree(num_vox, rng)
+            num_reg = num_vox + children.shape[0]
+            mask_idx = np.arange(num_vox)
+            n_eff = int(rng.integers(1, num_vox))
+            mask_target = _mask_from_leaves(
+                mask_idx, rng.choice(num_vox, size=n_eff, replace=False))
+
+            # a random significant subset, small enough to enumerate
+            n_sig = int(rng.integers(3, min(11, num_reg) + 1))
+            sig = sorted(rng.choice(num_reg, size=n_sig, replace=False)
+                         .tolist())
+
+            reg_out, info = prune_oracle(sig, children, mask_target, mask_idx)
+            _assert_antichain(reg_out, children, num_vox)
+
+            got = _dice_of(reg_out, children, mask_target, mask_idx)
+            want = _brute_force_best_dice(sig, children, mask_target, mask_idx)
+            assert np.isclose(got, want), (
+                f'trial {trial} (num_vox={num_vox}): prune_oracle scored '
+                f'{got:.6f}, exhaustive optimum is {want:.6f}')
+            assert np.isclose(got, info['dice']), (
+                f"trial {trial}: reported dice {info['dice']:.6f} is not the "
+                f'selection\'s own {got:.6f}')
+
+            stat = rng.standard_normal(num_reg) + 0.5
+            greedy_out, _ = prune_greedy(sig, children, stat)
+            n_beat_greedy += _dice_of(greedy_out, children, mask_target,
+                                      mask_idx) < got - 1e-9
+
+        assert n_beat_greedy, (
+            'prune_oracle never beat prune_greedy over 12 random trees -- '
+            'the optimality check never saw a case the LLR ranking misses')
 
 
 class TestDpAntichain:
