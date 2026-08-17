@@ -54,7 +54,15 @@ with both Ward modes, so plot_prune draws one such grid per clustering mode
 (prune_Focus / prune_GLM_Error), a line per rule within each. segment_perc is
 the segment grid on a second axis: the same three Ward modes at the moderate
 effect against frac_segment, the share of the images the tree is built on, on a
-linear x.
+linear x. segment_perc_llr crosses the two, so the split's cost is read at
+every effect strength rather than at one: plot_segment_llr holds the Ward mode
+fixed (one figure each) and draws the llr sweep once per fold share -- the nine
+folds plus the whole-cohort ceiling, ten curves in a sequential ramp. The same
+frame also goes out as a multipage comparison (plot_segment_compare), a page
+per fold share from 100% of the images down, holding the fold fixed and drawing
+the three Ward modes instead -- those pages put the cohorts side by side (WGN
+left, HCP right) rather than stacked, so the two curve sets are read against
+each other.
 
 With no arguments the CLI plots every cache in the catalogue: the detection
 sweeps, the runtime family, the race-retention checks, the stat bake-off
@@ -251,6 +259,34 @@ def _qual_style(label_list) -> dict:
     return out
 
 
+def _seq_style(value_list) -> dict:
+    """Map ordered values to a sequential colour ramp, one line style.
+
+    The counterpart to _qual_style for a hue that is a quantity rather than a
+    method (the segmentation fold share): the values are ordered, so they take
+    a perceptually uniform ramp in that order -- dark for the smallest, light
+    for the largest -- and one line style throughout, since the ordering is
+    what the reader follows and a dash pattern would cut across it. The ramp
+    stops short of viridis's brightest yellow, which washes out on white.
+
+    Args:
+        value_list: the hue values to style; ordered by sort order.
+
+    Returns:
+        dict: value -> {'color': rgba tuple, 'ls': str}.
+    """
+    values = sorted(value_list)
+    ramp = plt.get_cmap('viridis')(np.linspace(0, 0.88, max(len(values), 1)))
+    return {v: {'color': c, 'ls': '-'} for v, c in zip(values, ramp)}
+
+
+def _hue_text(value) -> str:
+    """Legend text for one hue value (a numeric hue as a short decimal)."""
+    if isinstance(value, (float, np.floating)):
+        return f'{value:g}'
+    return str(value)
+
+
 _METRIC_TITLES = {
     'dice': 'Dice',
     'sens': 'Sensitivity',
@@ -270,6 +306,15 @@ _X_PARAM_LABELS = {
     'b': 'Number of Imaging Features',
     'num_vox': 'Number of Voxels',
     'n_perm_fwer': 'FWER Permutations',
+}
+
+# the metric grid's non-method hues: a column here draws one series per value
+# of a quantity rather than per method, so it is styled with the sequential
+# ramp (_seq_style) and titles its legend with this text -- short, since it
+# sits inside a panel, unlike the same column's axis label above. Membership is
+# the switch: a hue outside it is a method (_qual_style, no legend title).
+_HUE_TITLES = {
+    'frac_segment': 'Fold share',
 }
 
 # runtime caches: name -> (leaf column prefix, swept x-axis column). The
@@ -1289,23 +1334,34 @@ def _tidy_flat_cache(raw, leaf: str, label_col: str, label_fn=None):
     return add_metric_cols(out)
 
 
+# the fold share a whole-cohort leaf stands at: it segments every image, so it
+# is the frac_segment sweep's ceiling rather than a point beside it (the leaf
+# grid stops at 0.9, since a split always holds a test fold back -- see
+# config.SEGMENT_FRAC_GRID). Only the frames that draw both halves at once
+# (tidy_segment(perc=None)) put it on the axis.
+WHOLE_COHORT_FRAC = 1.0
+
+
 def tidy_segment(raw, *, perc: bool = False):
     """Normalise the segment cache to a tidy per-(trial, Ward mode) frame.
 
     The method label is the recorded Ward mode (config records str(mode), so
     the cell is already the mode string Naive / GLM Error / Focus).
 
-    segment and segment_perc share the run_segment leaf and their
-    moderate-effect cells, so the forward record walk reaches both caches'
-    leaves from either one's cells (results.config_leaf_keys). frac_segment is
-    what tells them apart -- a whole-cohort leaf records none, a fold leaf
-    records the share it segmented on -- so perc selects the wanted half and
-    the column rides through as the fold sweep's x-axis.
+    The segment caches share the run_segment leaf and their moderate-effect
+    cells, so the forward record walk reaches every one of their leaves from
+    any one's cells (results.config_leaf_keys). frac_segment is what tells them
+    apart -- a whole-cohort leaf records none, a fold leaf records the share it
+    segmented on -- so perc selects the wanted half and the column rides
+    through as the fold sweep's x-axis (or, where both halves are drawn, its
+    hue).
 
     Args:
         raw: the segment cache's provenance frame (one row per run_segment leaf).
-        perc (bool): True keeps the fold leaves (frac_segment recorded), False
-            (default) the whole-cohort ones.
+        perc (bool | None): True keeps the fold leaves (frac_segment recorded),
+            False (default) the whole-cohort ones, None both -- the latter with
+            the whole-cohort leaves reading WHOLE_COHORT_FRAC, so the ceiling
+            sits on the fold axis as its last value.
 
     Returns:
         a tidy_flat_cache frame (label = Ward mode) plus a frac_segment column;
@@ -1319,6 +1375,8 @@ def tidy_segment(raw, *, perc: bool = False):
             else pd.Series(np.nan, index=raw.index))
     out['frac_segment'] = pd.to_numeric(frac.reindex(out.index),
                                         errors='coerce')
+    if perc is None:
+        return out.fillna({'frac_segment': WHOLE_COHORT_FRAC})
     keep = out['frac_segment'].notna() if perc else out['frac_segment'].isna()
     return out[keep]
 
@@ -1368,8 +1426,10 @@ def _draw_metric_errbar(ax, df, x: str, metric: str, style: dict, *,
         df: one source's tidy rows (numeric x / metric).
         x (str): the swept x-axis column.
         metric (str): the metric column plotted on the y-axis.
-        style (dict): label -> {'color', 'ls'} (from _qual_style).
-        hue (str): the method-label column.
+        style (dict): hue value -> {'color', 'ls'} (from _qual_style /
+            _seq_style).
+        hue (str): the column the series are drawn per (the method label, or a
+            quantity like the fold share).
         z_mult (float): SEM multiplier for the error bar (1.96 ~ 95% CI).
         dodge (float): fractional multiplicative x-dodge between methods.
     """
@@ -1383,31 +1443,40 @@ def _draw_metric_errbar(ax, df, x: str, metric: str, style: dict, *,
         st = style[lab]
         ax.errorbar(mean.index.values * factor, mean.values,
                     yerr=z_mult * sem.values, marker='o', ms=4, lw=1.5,
-                    ls=st['ls'], color=st['color'], capsize=2, label=lab)
+                    ls=st['ls'], color=st['color'], capsize=2,
+                    label=_hue_text(lab))
 
 
 def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
                      metrics=('dice', 'sens', 'ppv'),
-                     log_x: bool = None) -> None:
-    """Plot a source x metric grid of per-method mean +/- 95% CI vs the swept x.
+                     log_x: bool = None, hue: str = 'label',
+                     dodge: float = 0.03) -> None:
+    """Plot a source x metric grid of per-series mean +/- 95% CI vs the x.
 
     A 2 x len(metrics) grid: one row per data source (HCP over WGN), one column
-    per metric (Dice / Sensitivity / PPV). Each panel draws the per-method
-    seed-mean with a 95% CI-of-the-mean error bar, x-dodged so the methods stay
-    legible (_draw_metric_errbar), against effect_llr on a log x-axis, one series
-    per method (the Ward mode for segment, the prune rule for prune). Methods
-    take the Okabe-Ito qualitative style (_qual_style: colour + line style).
+    per metric (Dice / Sensitivity / PPV). Each panel draws the per-series
+    seed-mean with a 95% CI-of-the-mean error bar, x-dodged so the series stay
+    legible (_draw_metric_errbar), against effect_llr on a log x-axis. A series
+    is a method by default (the Ward mode for segment, the prune rule for
+    prune), styled in the Okabe-Ito qualitative palette; a hue that is a
+    quantity instead (segment_perc_llr's fold share) takes the sequential ramp
+    _seq_style, and names itself in the legend title (_HUE_TITLES).
     Writes {label}.pdf.
 
     Args:
         label (str): cache name; the output filename stem.
-        df: a tidy frame (needs source / label / seed / x / the metric columns).
+        df: a tidy frame (needs source / hue / seed / x / the metric columns).
         out (pathlib.Path): directory the figure is written into.
         x (str): the swept x-axis column (effect_llr).
         metrics (iterable): the metric columns, one panel column each.
         log_x (bool | None): log x-axis; None (default) takes one wherever
             every x is positive, which suits the decade-wide llr sweeps and
             not a linear axis like segment_perc's fold share.
+        hue (str): the column one series is drawn per; 'label' (default) is the
+            method.
+        dodge (float): fractional multiplicative x-dodge between series; the
+            default suits the few-series figures, and many series want less
+            (the spread grows with the count).
     """
     metrics = list(metrics)
     df = df.copy()
@@ -1422,7 +1491,8 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
         print(f'  (no rows for {label} — skipping)')
         return
 
-    style = _qual_style(df['label'].dropna().unique().tolist())
+    values = df[hue].dropna().unique().tolist()
+    style = _seq_style(values) if hue in _HUE_TITLES else _qual_style(values)
     if log_x is None:
         log_x = pd.notnull(df[x].min()) and df[x].min() > 0
     ncols = len(metrics)
@@ -1434,7 +1504,8 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
         dsrc = df[df['source'] == src]
         for j, metric in enumerate(metrics):
             ax = axes[i, j]
-            _draw_metric_errbar(ax, dsrc, x, metric, style)
+            _draw_metric_errbar(ax, dsrc, x, metric, style, hue=hue,
+                                dodge=dodge)
             ax.set_ylim(0, 1)
             ax.grid(True, alpha=0.3)
             if log_x:
@@ -1444,7 +1515,15 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
             if i == len(sources) - 1:
                 ax.set_xlabel(_X_PARAM_LABELS.get(x, x))
         axes[i, 0].set_ylabel(f'{src}\nmean (95% CI)')
-    axes[0, 0].legend(frameon=False, fontsize=8)
+    # a few methods leave room inside the first panel; a quantity's ramp is one
+    # entry per swept value (ten fold shares), which no panel has room for --
+    # that legend goes beside the grid, where it cannot cover a curve
+    if hue in _HUE_TITLES:
+        axes[0, -1].legend(frameon=False, fontsize=8, loc='upper left',
+                           bbox_to_anchor=(1.02, 1.0),
+                           title=_HUE_TITLES[hue], title_fontsize=8)
+    else:
+        axes[0, 0].legend(frameon=False, fontsize=8)
     fig.tight_layout()
     path = out / f'{label}.pdf'
     fig.savefig(path, bbox_inches='tight')
@@ -1455,6 +1534,184 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
 def _mode_slug(mode: str) -> str:
     """Filename-safe token for a Ward mode ('GLM Error' -> 'GLM_Error')."""
     return str(mode).replace(' ', '_')
+
+
+def _segment_perc(kwargs_effect_list, kwargs_fnc_list):
+    """Read which half of the shared run_segment leaf a segment cache plots.
+
+    The segment family's caches share one leaf and one label vocabulary, so the
+    figure each asks for is read off its own grids rather than its name:
+    frac_segment in the leaf grid makes it a fold sweep, and a fold sweep whose
+    effect grid also varies the strength wants both halves -- the fold shares
+    and the whole-cohort ceiling they are read against (plot_segment_llr).
+
+    Args:
+        kwargs_effect_list (list): the cache's effect cells (CONFIG[name][1]).
+        kwargs_fnc_list (list): the cache's leaf-kwargs cells
+            (CONFIG[name][2]).
+
+    Returns:
+        bool | None: the perc argument tidy_segment takes -- False the
+            whole-cohort leaves, True the fold ones, None both.
+    """
+    fold = any('frac_segment' in kwargs for kwargs in kwargs_fnc_list)
+    llrs = {kwargs['effect_llr'] for kwargs in kwargs_effect_list if kwargs}
+    return None if fold and len(llrs) > 1 else fold
+
+
+# the fold sweep's x-dodge: ten curves at the segment_perc_llr default of 0.03
+# would spread +/- 13% about each x, comparable to the llr grid's own 26% step,
+# so the series drift into each other's columns. A third of it keeps the error
+# bars apart without moving a point off its grid value.
+_FOLD_DODGE = 0.01
+
+
+def plot_segment_llr(label: str, df, out) -> None:
+    """Plot one llr metric grid per Ward mode, a curve per segmentation fold.
+
+    The fold sweep read along the effect axis instead of across it:
+    segment_perc draws one panel set at the moderate effect with a curve per
+    Ward mode, so the split's cost is known at one strength; this holds the
+    mode fixed (one source x metric grid each, {label}_{mode}.pdf) and draws
+    the whole llr sweep once per fold share. Reading down a panel's curves at
+    some x is then what a smaller segmentation fold costs at that effect
+    strength, and the spacing between them how fast it is bought back.
+
+    Takes a both-halves frame (tidy_segment(perc=None)): the fold shares plus
+    the whole-cohort ceiling at WHOLE_COHORT_FRAC, which is the same
+    segmentation every other GLOW figure clusters on and so the line the folds
+    are read against.
+
+    Args:
+        label (str): cache name; each figure's stem is {label}_{mode}.
+        df: a tidy_segment frame (label = Ward mode, plus frac_segment).
+        out (pathlib.Path): directory the figures are written into.
+    """
+    for mode, df_mode in df.groupby('label'):
+        plot_metric_grid(f'{label}_{_mode_slug(mode)}', df_mode, out,
+                         hue='frac_segment', dodge=_FOLD_DODGE)
+
+
+# the comparison pages' source order, left to right. Not _SOURCE_ORDER: the
+# stacked grids put HCP in the top row, where a reader meets the real cohort
+# first, but a page whose two panels sit side by side reads the other way --
+# WGN on the left as the clean case, HCP on the right as the anatomy it has to
+# survive.
+_COMPARE_SOURCE_ORDER = ('WGN', 'HCP')
+
+
+def _compare_page_fig(df, metrics, *, x: str = 'effect_llr',
+                      dodge: float = 0.03, suptitle: str = None):
+    """Build one comparison page: a metric x source grid, WGN left, HCP right.
+
+    The transpose of plot_metric_grid's layout, for a page that holds one thing
+    fixed and compares the methods under it: a source is a column here rather
+    than a row (_COMPARE_SOURCE_ORDER), so the two cohorts sit side by side and
+    the metric names move from the panel titles to the y-labels. Rows are the
+    metrics, so the default single metric is one row of two panels. The panels
+    share both axes -- the point is reading one curve set against the other, so
+    they must not be on different scales.
+
+    Args:
+        df: one page's tidy rows (source / label / seed / x / the metrics).
+        metrics (iterable): the metric columns, one panel row each.
+        x (str): the swept x-axis column.
+        dodge (float): fractional multiplicative x-dodge between methods.
+        suptitle (str | None): the figure title naming what the page holds
+            fixed; None (default) leaves it off.
+
+    Returns:
+        fig | None: the page, or None when no row carries a source.
+    """
+    metrics = list(metrics)
+    df = df.copy()
+    for c in [x, *metrics]:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+    df = df.dropna(subset=[x])
+
+    have = set(df['source'].dropna().unique())
+    sources = [s for s in _COMPARE_SOURCE_ORDER if s in have]
+    sources += [s for s in sorted(have) if s not in sources]
+    if not sources:
+        return None
+
+    style = _qual_style(df['label'].dropna().unique().tolist())
+    log_x = pd.notnull(df[x].min()) and df[x].min() > 0
+
+    fig, axes = plt.subplots(len(metrics), len(sources), sharex=True,
+                             sharey=True, squeeze=False,
+                             figsize=(4.2 * len(sources), 3.8 * len(metrics)))
+    for i, metric in enumerate(metrics):
+        for j, src in enumerate(sources):
+            ax = axes[i, j]
+            _draw_metric_errbar(ax, df[df['source'] == src], x, metric, style,
+                                dodge=dodge)
+            ax.set_ylim(0, 1)
+            ax.grid(True, alpha=0.3)
+            if log_x:
+                ax.set_xscale('log')
+            if i == 0:
+                ax.set_title(src)
+            if i == len(metrics) - 1:
+                ax.set_xlabel(_X_PARAM_LABELS.get(x, x))
+        axes[i, 0].set_ylabel(f'{_METRIC_TITLES.get(metric, metric)}\n'
+                              'mean (95% CI)')
+    axes[0, 0].legend(frameon=False, fontsize=8)
+    if suptitle is not None:
+        fig.suptitle(suptitle)
+    fig.tight_layout()
+    return fig
+
+
+def plot_segment_compare(label: str, df, out,
+                         metrics=('dice',)) -> list:
+    """Write a page per fold share comparing the Ward modes, largest first.
+
+    The third cut of the same frame, and the one that answers "which clustering
+    should this fold buy?": a page holds the fold share fixed and draws the
+    three Ward modes against the llr sweep, one panel per source side by side
+    (WGN left, HCP right -- _compare_page_fig), so the modes are compared like
+    for like at each sample size and each cohort. Flipping the pages -- 100%
+    of the images, then 90%, down to 10% -- is then the same comparison losing
+    data, which the per-mode figures (plot_segment_llr) show one mode at a
+    time.
+
+    Pages descend so the whole-cohort segmentation, the one every other GLOW
+    figure clusters on, is the page a reader opens on and the rest are read as
+    departures from it.
+
+    Args:
+        label (str): cache name; the multipage file is {label}_compare.pdf.
+        df: a tidy_segment frame (label = Ward mode, plus frac_segment).
+        out (pathlib.Path): directory the file is written into.
+        metrics (iterable): the metric columns to draw per page, one panel row
+            each (_compare_page_fig); Dice alone by default, which is what the
+            comparison is about (the per-mode figures carry sens / ppv beside
+            it).
+
+    Returns:
+        list[float]: the fold shares drawn, in page order (empty if none).
+    """
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    fracs = sorted(df['frac_segment'].dropna().unique(), reverse=True)
+    if not fracs:
+        print(f'  (no fold shares for {label} — skipping the comparison)')
+        return []
+    path = out / f'{label}_compare.pdf'
+    drawn = []
+    with PdfPages(path) as pdf:
+        for frac in fracs:
+            fig = _compare_page_fig(
+                df[df['frac_segment'] == frac], metrics,
+                suptitle=f'Segmentation fold: {frac:.0%} of the images')
+            if fig is None:
+                continue
+            pdf.savefig(fig, bbox_inches='tight')
+            plt.close(fig)
+            drawn.append(float(frac))
+    print(f'saved: {path} ({len(drawn)} page(s))')
+    return drawn
 
 
 # prune rules kept in the cache and records but dropped from the paper figures:
@@ -1647,7 +1904,12 @@ def main(argv=None) -> None:
     tidy_segment / tidy_prune and drawn as a source x metric grid vs
     effect_llr: segment by plot_metric_grid, prune by plot_prune (one grid per
     Ward clustering mode). segment_perc takes the same grid against
-    frac_segment instead, the share of the images its tree was built on.
+    frac_segment instead, the share of the images its tree was built on, and
+    segment_perc_llr crosses the two -- one grid per Ward mode, a curve per
+    fold share (plot_segment_llr), plus a multipage {cache}_compare.pdf turning
+    that around -- a page per fold share, the Ward modes as its lines
+    (plot_segment_compare). Which of the three a segment cache is comes off its
+    own grids (_segment_perc).
     Figures / tables land in results/_latest, so a mid-benchmark run yields
     intermediate output.
 
@@ -1727,18 +1989,23 @@ def main(argv=None) -> None:
             write_stat_tables(name, df, out)
             n_plotted += 1
         elif name in segment_names:
-            # the fold sweep is the same leaf with frac_segment set, read off
-            # the cache's own leaf grid rather than its name; it also selects
-            # which half of the shared record walk is this cache's
-            perc = any('frac_segment' in kw for kw in CONFIG[name][2])
+            # which figure this cache asks for -- and so which half of the
+            # shared record walk is its own -- is read off its grids, not its
+            # name (_segment_perc)
+            _, effect_list, fnc_list, _ = CONFIG[name]
+            perc = _segment_perc(effect_list, fnc_list)
             df = tidy_segment(make_csv.write_config_csv(name), perc=perc)
             if df.empty:
                 print(f'  (no records for {name} — skipping)')
                 continue
             print(f'\n=== {name}: {len(df)} segment rows ===')
-            x, log_x = (('frac_segment', False) if perc
-                        else ('effect_llr', None))
-            plot_metric_grid(name, df, out, x=x, log_x=log_x)
+            if perc is None:
+                plot_segment_llr(name, df, out)
+                plot_segment_compare(name, df, out)
+            else:
+                x, log_x = (('frac_segment', False) if perc
+                            else ('effect_llr', None))
+                plot_metric_grid(name, df, out, x=x, log_x=log_x)
             n_plotted += 1
         elif name in prune_names:
             df = tidy_prune(make_csv.write_config_csv(name))

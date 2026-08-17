@@ -48,10 +48,11 @@ kept at what is cited.
 Scope. Five caches share the run_ana leaf (fit + score one Analysis per cell):
 null, sweep_llr, sweep_extent, sweep_b, sweep_nimg. Three swap in their own
 leaf over much the same grids: segment (run_segment, a Ward-mode oracle, no
-fit -- and segment_perc, the same leaf and modes over the share of the images
-the tree is built on), vba_stat (run_stat, a VBA / CET variant reading a
-shared voxel-stat walk; HCP only, b=2), and prune (run_prune, three pruning
-rules on a shared GLOW fit).
+fit -- and segment_perc / segment_perc_llr, the same leaf and modes over the
+share of the images the tree is built on, at the moderate effect and across the
+llr sweep), vba_stat (run_stat, a VBA / CET variant reading a shared voxel-stat
+walk; HCP only, b=2), and prune (run_prune, three pruning rules on a shared
+GLOW fit).
 
 Runtime. Five caches measure time, not detection, and run locally only. They
 answer two different questions and must not be read as one: runtime_num_vox is
@@ -450,6 +451,19 @@ CONFIG = {
     'segment_perc': (
         data_grid(),
         effect_grid(),
+        RUN_SEGMENT_PERC_LIST, run_segment),
+    # The same fold sweep across the whole llr axis: segment's effect grid on
+    # segment_perc's leaf grid, so what a smaller segmentation fold costs is
+    # read at every effect strength rather than at the moderate one alone
+    # (benchmark.plot draws it as one grid per Ward mode, a curve per fold
+    # share). Both grids are the ones those two caches already declare, so its
+    # cells are segment's cells and its moderate-llr column is segment_perc's
+    # own leaves -- only the off-midpoint fold leaves are new work. The
+    # whole-cohort ceiling each curve is read against is segment's llr sweep,
+    # which the record walk reaches from these same cells.
+    'segment_perc_llr': (
+        data_grid(),
+        effect_grid(llr_list=EFFECT_LLR_GRID),
         RUN_SEGMENT_PERC_LIST, run_segment),
     # G. MANCOVA stat comparison: VBA / VBA-TFCE / CET x 5 stats x {raw, z}
     #    (b=2 so the multivariate stats differ). The cell's variants share one

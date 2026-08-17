@@ -3,12 +3,13 @@
 import matplotlib
 matplotlib.use('Agg')
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
 
 from glow._extra.benchmark import plot
-from glow._extra.benchmark.config import (ana_kwargs_dict,
+from glow._extra.benchmark.config import (ana_kwargs_dict, CONFIG,
                                           REPORTED_GLOW_LABEL, RUN_STAT_LIST)
 from glow.analysis import AnalysisVBA
 
@@ -751,6 +752,119 @@ def test_plot_metric_grid_writes_fold_sweep_figure(tmp_path):
     plot.plot_metric_grid('segment_perc', df, tmp_path, x='frac_segment',
                           log_x=False)
     assert (tmp_path / 'segment_perc.pdf').exists()
+
+
+def test_tidy_segment_keeps_both_halves_at_the_whole_cohort_ceiling():
+    """perc=None keeps every leaf, the whole-cohort one at frac_segment 1.0.
+
+    The llr figure reads the fold curves against the whole-cohort
+    segmentation, so that leaf has to sit on the same axis: it segments every
+    image, which is where the fold grid (stopping at 0.9) is heading.
+    """
+    raw = pd.DataFrame([
+        _segment_row('Focus', 0, 0.03, 80, 10, 890, 20),
+        _segment_row('Focus', 0, 0.03, 40, 30, 870, 60, frac_segment=0.3),
+    ])
+    both = plot.tidy_segment(raw, perc=None)
+    assert list(both['tp']) == [80, 40]
+    assert list(both['frac_segment']) == [plot.WHOLE_COHORT_FRAC, 0.3]
+
+
+@pytest.mark.parametrize('name, perc', [('segment', False),
+                                        ('segment_perc', True),
+                                        ('segment_perc_llr', None)])
+def test_segment_perc_reads_the_figure_off_the_catalogue_grids(name, perc):
+    """Each segment cache's figure is derived from its own CONFIG grids.
+
+    The three share the run_segment leaf and the Ward-mode labels, so nothing
+    but the grids tells them apart: the fold caches are the ones whose leaf
+    grid sets frac_segment, and the one that also sweeps the strength is the
+    both-halves llr figure. Read off CONFIG rather than a name list here, so a
+    fourth cache is classified rather than skipped.
+    """
+    _, effect_list, fnc_list, _ = CONFIG[name]
+    assert plot._segment_perc(effect_list, fnc_list) is perc
+
+
+def test_plot_segment_llr_writes_one_figure_per_mode(tmp_path):
+    """The fold x llr figure is one {label}_{mode}.pdf per Ward mode.
+
+    A curve per fold share within each, the whole-cohort leaves among them
+    (frac_segment 1.0), so a mode's panels compare fold shares rather than
+    modes -- the transpose of the segment_perc figure.
+    """
+    rows = []
+    for mode in ('Focus', 'GLM Error', 'Naive'):
+        for source in ('wgn', 'hcp'):
+            for effect_llr in (0.003, 0.03, 0.3):
+                for frac in (0.1, 0.5, 0.9, None):
+                    for seed in range(3):
+                        rows.append(_segment_row(
+                            mode, seed, effect_llr, 80, 10, 890, 20,
+                            source=source, frac_segment=frac))
+    df = plot.tidy_segment(pd.DataFrame(rows), perc=None)
+    plot.plot_segment_llr('segment_perc_llr', df, tmp_path)
+    for mode in ('Focus', 'GLM_Error', 'Naive'):
+        assert (tmp_path / f'segment_perc_llr_{mode}.pdf').exists()
+
+
+def test_plot_segment_compare_writes_a_page_per_fold_largest_first(tmp_path):
+    """The comparison is one multipage PDF, whole cohort first.
+
+    The transpose of plot_segment_llr: the fold share is what a page holds
+    fixed, the Ward modes are its lines. Pages descend so the whole-cohort
+    segmentation opens the file, and the returned order is what a reader flips
+    through (nothing here reads the PDF back).
+    """
+    rows = []
+    for mode in ('Focus', 'GLM Error', 'Naive'):
+        for source in ('wgn', 'hcp'):
+            for effect_llr in (0.003, 0.03, 0.3):
+                for frac in (0.1, 0.5, None):
+                    for seed in range(3):
+                        rows.append(_segment_row(
+                            mode, seed, effect_llr, 80, 10, 890, 20,
+                            source=source, frac_segment=frac))
+    df = plot.tidy_segment(pd.DataFrame(rows), perc=None)
+
+    pages = plot.plot_segment_compare('segment_perc_llr', df, tmp_path)
+    assert pages == [plot.WHOLE_COHORT_FRAC, 0.5, 0.1]
+    assert (tmp_path / 'segment_perc_llr_compare.pdf').exists()
+
+
+def test_compare_page_puts_the_cohorts_side_by_side():
+    """A page's panels are the sources, WGN left and HCP right.
+
+    The transpose of the stacked grids, so it is the panel titles (not the row
+    y-labels) that name the cohorts, and the metric moves to the y-label. Read
+    off the figure rather than the PDF, which nothing here can parse back.
+    """
+    rows = []
+    for mode in ('Focus', 'Naive'):
+        for source in ('hcp', 'wgn'):  # built HCP-first, so order is the fig's
+            for effect_llr in (0.003, 0.3):
+                for seed in range(3):
+                    rows.append(_segment_row(mode, seed, effect_llr,
+                                             80, 10, 890, 20, source=source,
+                                             frac_segment=0.5))
+    df = plot.tidy_segment(pd.DataFrame(rows), perc=True)
+
+    fig = plot._compare_page_fig(df, ('dice',), suptitle='half the images')
+    axes = fig.get_axes()
+    assert [ax.get_title() for ax in axes] == ['WGN', 'HCP']
+    assert axes[0].get_ylabel().startswith('Dice')
+    assert fig._suptitle.get_text() == 'half the images'
+    plt.close(fig)
+
+
+def test_plot_segment_compare_without_fold_rows_writes_nothing(tmp_path):
+    """A frame of whole-cohort leaves alone has no fold axis to page over."""
+    rows = [_segment_row('Focus', seed, 0.03, 80, 10, 890, 20)
+            for seed in range(3)]
+    df = plot.tidy_segment(pd.DataFrame(rows))
+
+    assert plot.plot_segment_compare('segment', df, tmp_path) == []
+    assert not (tmp_path / 'segment_compare.pdf').exists()
 
 
 def test_plot_prune_writes_one_figure_per_mode(tmp_path):
