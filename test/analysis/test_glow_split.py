@@ -17,6 +17,7 @@ covers the plumbing that makes it true.
 Run:
     ~/venv_glow/bin/pytest test/analysis/test_glow_split.py -v
 """
+import pickle
 import warnings
 
 import numpy as np
@@ -136,6 +137,8 @@ def test_only_the_observed_row_is_kept():
     llr and fwer.stat_obs are copies, not rows sliced out of it: a view
     would hold the whole (n_perm_fwer + 1, num_reg) matrix alive through
     .base -- gigabytes at full-brain num_vox, for one row of it.
+
+    keep_stat is the one way to hold it, and it is off here.
     """
     exp = _exp()
     ana = _ana(n_perm_fwer=8).fit(exp)
@@ -145,7 +148,7 @@ def test_only_the_observed_row_is_kept():
     assert ana.fwer.stat_obs.shape == (num_reg,)
     assert ana.llr.base is None
     assert ana.fwer.stat_obs.base is None
-    assert not hasattr(ana, 'draws')
+    assert ana.stat is None
 
 
 def test_observed_row_is_the_unpermuted_draw():
@@ -212,6 +215,130 @@ def test_inactive_regions_have_no_pval():
     small = ana.size < 4
     assert np.isnan(ana.fwer.pval[small]).all()
     assert np.isfinite(ana.fwer.pval[~small]).any()
+
+
+# ---------- keep_stat: the same matrix, held rather than dropped -----------
+def test_keep_stat_holds_the_whole_matrix():
+    """.stat is the (n_perm_fwer + 1, num_reg) matrix, not a summary."""
+    exp = _exp()
+    ana = _ana(n_perm_fwer=8, keep_stat=True).fit(exp)
+    assert ana.stat.shape == (9, 2 * exp.y.shape[2] - 1)
+
+
+def test_keep_stat_is_the_matrix_the_summary_came_from():
+    """Row 0 is llr and the columns are mu / std -- to the last bit.
+
+    The point of keeping the matrix is that the summary can be read back
+    off it, so a viewer showing a region's draws is showing the null that
+    region's own z was measured against, not a second sample of it.
+    """
+    exp = _exp()
+    ana = _ana(keep_stat=True).fit(exp)
+
+    # a below-min_vox region is NaN in every row, so nanmean/nanstd warn
+    # on it -- the column is meant to stay NaN (as z_score_stat notes)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        mu = np.nanmean(ana.stat, axis=0)
+        std = np.nanstd(ana.stat, axis=0, ddof=1)
+
+    for got, want in ((ana.llr, ana.stat[0]), (ana.mu, mu),
+                      (ana.std, std)):
+        np.testing.assert_allclose(got, want, rtol=0, atol=0,
+                                   equal_nan=True)
+
+
+def test_keep_stat_matches_the_independent_rebuild():
+    """The kept matrix is the recipe's, cell for cell."""
+    exp = _exp()
+    ana = _ana(keep_stat=True).fit(exp)
+    np.testing.assert_allclose(ana.stat, _draws(ana, exp), rtol=0, atol=0,
+                               equal_nan=True)
+
+
+def test_keep_stat_changes_no_result():
+    """A diagnostic, not a knob: every statistic is untouched by it."""
+    exp = _exp()
+    off = _ana().fit(exp)
+    on = _ana(keep_stat=True).fit(exp)
+
+    for name in ('llr', 'mu', 'std', 'size'):
+        np.testing.assert_allclose(getattr(off, name), getattr(on, name),
+                                   rtol=0, atol=0, equal_nan=True)
+    for name in ('pval', 'stat_obs', 'max_stat'):
+        np.testing.assert_allclose(getattr(off.fwer, name),
+                                   getattr(on.fwer, name),
+                                   rtol=0, atol=0, equal_nan=True)
+    np.testing.assert_array_equal(off.fwer.reg_sig, on.fwer.reg_sig)
+
+
+def test_keep_stat_is_not_a_recipe_field():
+    """It keys no cache: same recipe, same repr, whether on or off.
+
+    Storage is not a result. In RECORD_FIELDS it would invalidate every
+    cached benchmark record the first time anyone wanted to look at a
+    null (see AnalysisGLOW's docstring, and Analysis.fit on n_jobs/gpu).
+    """
+    assert 'keep_stat' not in AnalysisGLOW.RECORD_FIELDS
+    assert repr(_ana()) == repr(_ana(keep_stat=True))
+
+
+# ---------- saving a kept matrix is loud, not silent ------------------------
+def test_pickling_a_kept_stat_warns():
+    """The size of the thing being written is announced before it is."""
+    exp = _exp()
+    ana = _ana(keep_stat=True).fit(exp)
+
+    with pytest.warns(UserWarning, match='keep_stat'):
+        pickle.dumps(ana)
+
+
+def test_the_warning_names_the_matrix():
+    """It reports the shape, dtype and footprint, not just that it is big."""
+    exp = _exp()
+    ana = _ana(keep_stat=True).fit(exp)
+
+    with pytest.warns(UserWarning) as record:
+        pickle.dumps(ana)
+
+    msg = str(record[0].message)
+    assert str(ana.stat.shape) in msg and str(ana.stat.dtype) in msg
+    assert 'GiB' in msg
+
+
+def test_an_ordinary_fit_pickles_quietly():
+    """Nothing kept, nothing to warn about -- the default path is silent."""
+    exp = _exp()
+    ana = _ana().fit(exp)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        pickle.dumps(ana)
+
+
+def test_an_unfit_recipe_pickles_quietly():
+    """joblib hashes the recipe to key a cache; that must not warn."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        pickle.dumps(_ana(keep_stat=True))
+
+
+def test_the_matrix_survives_the_round_trip():
+    """The warning is a notice, not a drop: the viewer bundle needs it.
+
+    The viewer reads .stat off a pickled bundle, so silently omitting it
+    here would produce a bundle whose PERMUTATION panel cannot open.
+    """
+    exp = _exp()
+    ana = _ana(keep_stat=True).fit(exp)
+
+    with pytest.warns(UserWarning):
+        blob = pickle.dumps(ana)
+    back = pickle.loads(blob)
+
+    np.testing.assert_allclose(back.stat, ana.stat, rtol=0, atol=0,
+                               equal_nan=True)
+    assert back.keep_stat is True
 
 
 # ---------- the split is part of the recipe ---------------------------------

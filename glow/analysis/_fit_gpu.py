@@ -151,6 +151,42 @@ def resolve_perm_chunk(config: GpuConfig, *, b: int, num_img: int,
     return int(min(_PERM_CHUNK_MAX, max(1, budget // max(per_draw, 1))))
 
 
+def gpu_draws(config: GpuConfig, *, exp, base_seed: int, n_perm: int,
+              q0, q1, children, min_vox: int):
+    """Draw the matrix on device and return it whole.
+
+    The device counterpart of draws.cpu_reliable, sized and dtyped from the
+    same GpuConfig gpu_summary uses, so the two differ only in what they
+    hand back. AnalysisGLOW.fit takes this route under keep_stat, where the
+    streaming reduction is no use because the caller wants every cell.
+
+    Peak host memory is the matrix: (n_perm, num_reg) float64, ~16.7 GiB at
+    5001 draws and full-brain num_vox. Prefer gpu_summary wherever the
+    column moments, the observed row and the row maxima are enough.
+
+    Args:
+        config (GpuConfig): resolved device knobs
+        exp (Experiment): experiment to draw permutations from
+        base_seed (int): draw i uses seed base_seed + i; 0 puts the
+            observed draw in row 0
+        n_perm (int): number of FL draws, counting the observed
+        q0 (np.array): (a0, num_img) nuisance subspace
+        q1 (np.array): (a1, num_img) interest subspace
+        children (np.array): (num_reg - num_vox, 2) Ward tree
+        min_vox (int): regions smaller than this are left NaN
+
+    Returns:
+        draws (np.array): (n_perm, num_reg) per-draw LLR, row 0 observed
+    """
+    b, num_img, num_vox = exp.y.shape
+    perm_chunk = resolve_perm_chunk(
+        config, b=b, num_img=num_img, num_vox=num_vox, a0=q0.shape[0])
+    return draws_gpu.gpu_perm(
+        exp=exp, base_seed=base_seed, n_perm=n_perm, q0=q0, q1=q1,
+        children=children, min_vox=min_vox, perm_chunk=perm_chunk,
+        device=config.device, acc_dtype=config.acc_dtype)
+
+
 def gpu_summary(config: GpuConfig, *, exp, base_seed: int, n_perm: int,
                 q0, q1, children, min_vox: int, reg_active=None):
     """Summarize the draws on device, never materializing the matrix.

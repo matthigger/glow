@@ -182,6 +182,33 @@ def test_gpu_float32_preserves_discoveries():
 
 
 @requires_cuda
+def test_gpu_keep_stat_matches_the_cpu_matrix():
+    """keep_stat gives up the streaming reduction, not the numbers.
+
+    The device path has no matrix to keep -- gpu_summarize folds each
+    chunk away -- so keep_stat routes it through gpu_perm instead. That
+    is a different code path from the streamed one, hence this: the
+    matrix it hands back is the CPU's, and the summary read off it is
+    still the summary the streaming fit would have produced.
+    """
+    exp = _exp_with_effect()
+    kw = _fit_kwargs()
+
+    cpu = AnalysisGLOW(**kw, keep_stat=True).fit(exp, n_jobs=1)
+    got = AnalysisGLOW(**kw, keep_stat=True).fit(exp, n_jobs=1, gpu=True)
+    streamed = AnalysisGLOW(**kw).fit(exp, n_jobs=1, gpu=True)
+
+    np.testing.assert_allclose(got.stat, cpu.stat, rtol=1e-7, atol=1e-9)
+    np.testing.assert_allclose(got.llr, got.stat[0], rtol=0, atol=0,
+                               equal_nan=True)
+    # the kept matrix does not perturb what the fit concludes
+    np.testing.assert_allclose(got.fwer.pval, streamed.fwer.pval,
+                               rtol=0, atol=0)
+    np.testing.assert_allclose(got.fwer.max_stat, streamed.fwer.max_stat,
+                               rtol=1e-7, atol=1e-9)
+
+
+@requires_cuda
 def test_gpu_fit_ignores_n_jobs():
     """n_jobs cannot move a device fit, which is why it is not in the hash.
 

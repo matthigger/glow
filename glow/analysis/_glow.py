@@ -1,5 +1,7 @@
 """GLOW analysis: split-fold Ward-tree effect discovery with FWER control."""
 
+import warnings
+
 import numpy as np
 
 import glow.effect
@@ -7,7 +9,7 @@ import glow.graph
 from glow.experiment.exper import ExperimentScaled
 from ._base import Analysis
 from . import draws
-from ._fit_gpu import gpu_summary, resolve_gpu
+from ._fit_gpu import gpu_draws, gpu_summary, resolve_gpu
 from .cluster import cluster, ClusterMode
 from .fwer import MaxStatPerm
 from .mancova import decompose
@@ -66,14 +68,26 @@ class AnalysisGLOW(Analysis):
         frac_segment (float): share of the images going to the
             segmentation fold. Pre-specified, for the same reason.
         split_seed (int): seed for the image partition.
+        keep_stat (bool): keep the whole draw matrix in .stat.
 
-    The draw matrix itself is not kept: at full-brain num_vox it runs to
-    gigabytes (~16.7 GiB at 5001 draws), and only its first row, its column
-    moments and its row maxima outlive it -- the five arrays of a
+    The draw matrix itself is not kept by default: at full-brain num_vox it
+    runs to gigabytes (~16.7 GiB at 5001 draws), and only its first row, its
+    column moments and its row maxima outlive it -- the five arrays of a
     draws.DrawSummary. The CPU backend forms the matrix and reduces it; the
     device backend streams it in two passes and never holds more than one
     chunk, so at large n_perm_fwer the matrix is not merely dropped but
     never allocated.
+
+    keep_stat=True overrides that, for the diagnostic question the summary
+    cannot answer: what a region's null actually looks like, rather than the
+    two moments it was standardized by. It costs the full matrix in memory
+    and again in any pickle of the fit -- __getstate__ warns rather than
+    let that happen quietly -- and on the device it gives up the
+    streaming reduction for draws_gpu.gpu_perm's materialized matrix -- the
+    same cells, held all at once. It is a storage choice and nothing else:
+    every statistic, p-value and discovery is bit-identical either way,
+    which is why it stays out of RECORD_FIELDS and so out of the benchmark
+    cache key (see Analysis.fit, which says the same of n_jobs and gpu).
 
     Fit outputs (all on the test fold, against the fold-A tree):
         children (np.array): (num_reg - num_vox, 2) Ward tree.
@@ -86,6 +100,12 @@ class AnalysisGLOW(Analysis):
             in stat_obs, max-z per draw in max_stat, the size >= min_vox
             comparison set, the p-values and the selected regions.
         effect_list (list): discovered EffectEstimate objects.
+        stat (np.array): (n_perm_fwer + 1, num_reg) every per-region LLR
+            draw, row 0 the observed one -- only under keep_stat, None
+            otherwise. llr, mu and std are this matrix's row 0 and column
+            moments, so a column is the null a region's z was measured
+            against. Same name, shape and role as AnalysisVoxel.stat,
+            which the voxel arms always keep.
     """
 
     RECORD_FIELDS = ('n_perm_fwer', 'alpha_fwer', 'min_vox', 'cluster_mode',
@@ -94,7 +114,8 @@ class AnalysisGLOW(Analysis):
     def __init__(self, n_perm_fwer: int, alpha_fwer: float = .05,
                  min_vox: int = 1,
                  cluster_mode: ClusterMode = ClusterMode.FOCUS,
-                 frac_segment: float = .5, split_seed: int = 0):
+                 frac_segment: float = .5, split_seed: int = 0,
+                 keep_stat: bool = False):
         """Configure a GLOW analysis.
 
         Args:
@@ -108,6 +129,10 @@ class AnalysisGLOW(Analysis):
             frac_segment (float): share of the images used to build the
                 Ward tree; the rest carry every statistic.
             split_seed (int): seed for the image partition.
+            keep_stat (bool): keep the whole (n_perm_fwer + 1, num_reg)
+                draw matrix in .stat instead of discarding it. A
+                diagnostic that changes no result and costs the matrix in
+                memory -- see the class docstring.
         """
         super().__init__()
         self.n_perm_fwer = n_perm_fwer
@@ -116,12 +141,36 @@ class AnalysisGLOW(Analysis):
         self.cluster_mode = cluster_mode
         self.frac_segment = frac_segment
         self.split_seed = split_seed
+        self.keep_stat = keep_stat
 
         self.children = None
         self.size = None
         self.llr = None
         self.mu = None
         self.std = None
+        self.stat = None
+
+    def __getstate__(self) -> dict:
+        """Warn when a kept stat matrix is about to be written out.
+
+        Every save route -- pickle, joblib's hash and cache, the viewer
+        bundle, deepcopy -- reaches the object through here, so this is
+        the one place the cost can be announced. A fit that kept its stat
+        looks like a recipe and weighs like the matrix: ~16.7 GiB at 5001
+        draws and full-brain num_vox, against a few MB without it.
+
+        The matrix is still written. Dropping it here would silently
+        produce a bundle the viewer's PERMUTATION panel cannot open, and
+        a diagnostic that vanishes on save is worse than a loud one.
+        """
+        if self.stat is not None:
+            warnings.warn(
+                f'pickling AnalysisGLOW with keep_stat=True: the '
+                f'{self.stat.shape} {self.stat.dtype} stat matrix '
+                f'({self.stat.nbytes / 2 ** 30:.2f} GiB) is written with '
+                f'the fit. Refit with keep_stat=False to save the fit '
+                f'alone.')
+        return self.__dict__
 
     def fit(self, exp, *, n_jobs: int = 1, gpu=False, split_group=None,
             verbose: bool = False):
@@ -198,12 +247,27 @@ class AnalysisGLOW(Analysis):
         draws_kwargs = dict(
             exp=exp_test, base_seed=0, n_perm=self.n_perm_fwer + 1,
             q0=q0, q1=q1, children=self.children, min_vox=self.min_vox)
+
+        # The matrix is formed when something needs it whole: the CPU
+        # backend always does (it has no streaming form), the device one
+        # only under keep_stat, which trades its two-pass reduction for
+        # gpu_perm's materialized matrix. Summarizing what was kept, rather
+        # than keeping a second copy alongside a streamed summary, is what
+        # makes .stat the very matrix llr/mu/std came out of.
         if gpu_config is None:
-            summary = draws.summarize_draws(
-                draws.cpu_reliable(**draws_kwargs), reg_active=reg_active)
+            matrix = draws.cpu_reliable(**draws_kwargs)
+        elif self.keep_stat:
+            matrix = gpu_draws(gpu_config, **draws_kwargs)
         else:
+            matrix = None
+
+        if matrix is None:
             summary = gpu_summary(gpu_config, reg_active=reg_active,
                                   **draws_kwargs)
+        else:
+            summary = draws.summarize_draws(matrix, reg_active=reg_active)
+
+        self.stat = matrix if self.keep_stat else None
 
         self.llr = summary.llr
         self.mu = summary.mu
