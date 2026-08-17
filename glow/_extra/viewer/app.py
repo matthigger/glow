@@ -20,6 +20,7 @@ from dash.dependencies import Input, Output, State
 
 from .data import (prep_df, get_feature_columns, compute_backgrounds,
                     compute_bg_ranges, compute_target_stats)
+from .hist import build_hist, build_empty_hist
 from .scatter import build_scatter
 from .image import (build_label_map, compute_bg_volume, get_region_color,
                     compute_region_center)
@@ -119,6 +120,17 @@ def _create_app(ana_glow, exp, mask_target=None, y_features=None,
     return app
 
 
+def _has_stat(ana_glow):
+    """Return True when the analysis kept its draw matrix.
+
+    AnalysisGLOW(keep_stat=True) is the only thing that sets .stat, and
+    it is off by default, so the histogram panel is absent from an ordinary
+    fit rather than empty in it. getattr, not the attribute, because a
+    bundle pickled before keep_stat existed has no such attribute at all.
+    """
+    return getattr(ana_glow, 'stat', None) is not None
+
+
 def _display_region_ids(ana_glow, exp, min_vox):
     """Return the region indices to display (scatter + lookup dropdown).
 
@@ -186,7 +198,8 @@ def _setup_3d(app, ana_glow, exp, df,
                                  region_ids=region_ids,
                                  default_reg_x=default_reg_x,
                                  num_img=num_img, feat_names=feat_names,
-                                 subject_names=subject_names)
+                                 subject_names=subject_names,
+                                 has_stat=_has_stat(ana_glow))
     app.layout.children.append(_detail_panels(ana_glow, exp))
 
     # pre-compute target mask in image space for overlays
@@ -200,6 +213,7 @@ def _setup_3d(app, ana_glow, exp, df,
     # --- shared callbacks ---
     _register_scatter_callback(app, df, ana_glow, exp,
                                target_stats=target_stats, min_vox=min_vox)
+    _register_hist_callbacks(app, ana_glow, exp, df)
     _register_selection_callback(app, ana_glow, exp,
                                  mask_target_img=mask_target_img)
     _register_checklist_sync_callback(app, df,
@@ -368,7 +382,8 @@ def _setup_2d(app, ana_glow, exp, df,
                                  region_ids=region_ids,
                                  default_reg_x=default_reg_x,
                                  num_img=num_img,
-                                 subject_names=subject_names)
+                                 subject_names=subject_names,
+                                 has_stat=_has_stat(ana_glow))
     app.layout.children.append(_detail_panels(ana_glow, exp))
 
     # pre-compute target mask in image space for overlays
@@ -381,6 +396,7 @@ def _setup_2d(app, ana_glow, exp, df,
     # --- shared callbacks ---
     _register_scatter_callback(app, df, ana_glow, exp,
                                target_stats=target_stats, min_vox=min_vox)
+    _register_hist_callbacks(app, ana_glow, exp, df)
     _register_selection_callback(app, ana_glow, exp,
                                  mask_target_img=mask_target_img)
     _register_checklist_sync_callback(app, df,
@@ -487,6 +503,59 @@ def _register_scatter_callback(app, df, ana_glow, exp, target_stats=None,
                              log_y=log_y,
                              target_stats=target_stats,
                              min_vox=min_vox)
+
+
+def _register_hist_callbacks(app, ana_glow, exp, df):
+    """Wire the PERMUTATION panel's draw histogram.
+
+    A no-op unless the analysis kept its draws (keep_stat=True): without
+    them the layout carries no such panel, and a callback naming a
+    component that is not there is a Dash error rather than a quiet skip.
+
+    The histogram takes its regions from the same place the image overlay
+    and the regression panel do -- the checklist, plus whatever is hovered
+    -- so a region selected once is shown, and coloured, the same way in
+    all four panels.
+    """
+    if not _has_stat(ana_glow):
+        return
+
+    @app.callback(
+        Output('hist-plot', 'figure'),
+        [Input('region-checklist', 'value'),
+         Input('store-hover', 'data'),
+         Input('hist-unit', 'value'),
+         Input('hist-bins', 'value'),
+         Input('hist-log-y', 'value')],
+        [State('store-selected', 'data')],
+    )
+    def update_hist(visible, hover_json, unit, n_bins, log_y_val,
+                    selected_json):
+        """Rebuild the overlay on selection, hover or control change."""
+        selected = json.loads(selected_json)
+        visible = visible or []
+
+        hover_reg = (json.loads(hover_json)
+                     if hover_json and hover_json != 'null' else None)
+        show_list = list(visible)
+        if hover_reg is not None and hover_reg not in show_list:
+            show_list.append(hover_reg)
+
+        # guard against stale indices from a previous browser session
+        show_list = [r for r in show_list if _valid_reg(r, ana_glow, exp)]
+
+        if not show_list:
+            return build_empty_hist()
+
+        return build_hist(
+            ana_glow, show_list,
+            unit=unit,
+            n_bins=n_bins,
+            log_y='on' in (log_y_val or []),
+            color_map={r: i for i, r in enumerate(selected)},
+            hover_reg=hover_reg,
+            n_selected=len(selected),
+            df=df)
 
 
 def _register_selection_callback(app, ana_glow, exp, mask_target_img=None):
@@ -839,6 +908,12 @@ def launch(ana_glow, exp, mask_target=None, port=8050, debug=False,
         Regions below min_vox are dropped everywhere in the dashboard (the
         scatter, its tree edges, and the 'Add by index' lookup), so set
         min_vox=0 if you need to inspect a small region by hand.
+
+        An analysis fit with AnalysisGLOW(keep_stat=True) gains a
+        PERMUTATION panel beside the scatter, which histograms the FWER
+        draws of every selected region (glow._extra.viewer.hist). An
+        ordinary fit keeps no draws, so the panel is absent rather than
+        empty and the scatter takes its width.
     """
     import logging
     import signal

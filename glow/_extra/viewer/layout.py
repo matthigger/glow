@@ -11,6 +11,7 @@ import numpy as np
 from dash import html, dcc
 
 from .data import fwer_crit_llr_z
+from .hist import BIN_CHOICES, DEFAULT_BINS
 from .scatter import LOG_COLS
 
 
@@ -61,6 +62,64 @@ def _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
         _dd('dd-color', default_color, 'Color', none_option=True),
     ], style={'width': '180px', 'padding': '10px',
               'borderRight': '1px solid #ddd', 'flexShrink': '0'})
+
+
+def _permutation_panel():
+    """Build the right-hand permutation-draw histogram panel.
+
+    Sits beside the segmentation scatter and directly above the regression
+    panel, whose width and shape it borrows: the two are the same kind of
+    thing, a per-region detail view of whatever the scatter has selected.
+    Where the scatter puts a region's observed LLR at a point, this puts
+    the whole column of draws that point was scored against.
+
+    Built only for an analysis fit with keep_stat=True -- there are no
+    draws to show otherwise, and the scatter takes the width back.
+
+    Three knobs, one per way the overlay stops being readable: the unit
+    (raw LLR separates regions by size, since LLR carries a 0.5 * size
+    prefactor; z puts every region on the scale the FWER comparison
+    actually happens on), the bin count, and a log count axis for the tail
+    that sets the threshold.
+    """
+    _dd_label = {'fontSize': '11px', 'fontWeight': 'bold',
+                 'marginBottom': '2px'}
+    return html.Div([
+        html.H4('PERMUTATION', style={
+            'margin': '0', 'fontSize': '14px',
+            'letterSpacing': '1px', 'color': '#555',
+            'marginBottom': '4px'}),
+        html.Div([
+            html.Div([
+                html.Label('Unit', style=_dd_label),
+                dcc.Dropdown(
+                    id='hist-unit',
+                    options=[{'label': 'LLR', 'value': 'llr'},
+                             {'label': 'z', 'value': 'z'}],
+                    value='llr', clearable=False,
+                    style={'width': '100%', 'fontSize': '12px'}),
+            ], style={'flex': '1', 'marginRight': '6px'}),
+            html.Div([
+                html.Label('Bins', style=_dd_label),
+                dcc.Dropdown(
+                    id='hist-bins',
+                    options=[{'label': str(n), 'value': n}
+                             for n in BIN_CHOICES],
+                    value=DEFAULT_BINS, clearable=False,
+                    style={'width': '100%', 'fontSize': '12px'}),
+            ], style={'flex': '1'}),
+        ], style={'display': 'flex', 'marginBottom': '4px'}),
+        dcc.Checklist(
+            id='hist-log-y',
+            options=[{'label': ' Log count', 'value': 'on'}],
+            value=[],
+            style={'fontSize': '11px', 'marginBottom': '4px'},
+        ),
+        dcc.Graph(id='hist-plot',
+                  config={'scrollZoom': True},
+                  style={'width': '100%'}),
+    ], style={'width': '380px', 'flexShrink': '0', 'padding': '10px',
+              'borderLeft': '1px solid #ddd'})
 
 
 def _region_panel(region_ids):
@@ -291,6 +350,13 @@ def _detail_panels(ana_glow, exp):
         _kv_row('min p-value', pval_min),
     ]
 
+    # only under keep_stat -- an ordinary fit has no matrix to report on,
+    # and a row reading 'None' would suggest one had gone missing
+    stat = getattr(ana_glow, 'stat', None)
+    if stat is not None:
+        ana_rows.append(_kv_row('stat kept', f'{stat.shape} '
+                                             f'{stat.dtype}'))
+
     panel_style = {'padding': '10px 20px', 'borderTop': '1px solid #ddd'}
     summary_style = {'fontSize': '13px', 'fontWeight': 'bold',
                      'cursor': 'pointer', 'color': '#555',
@@ -356,7 +422,7 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                     slicer0, slicer1, slicer2,
                     x_names=None, y_names=None, region_ids=None,
                     default_reg_x=0, num_img=0, feat_names=None,
-                    subject_names=None):
+                    subject_names=None, has_stat=False):
     """Build layout for 3D data (with dash-slicer ortho views)."""
     all_cols, default_x, default_y, log_val, default_color = _defaults(
         generic_cols, sig_cols, prune_cols, mask_cols)
@@ -410,7 +476,7 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
 
         # --- HIERARCHICAL SEGMENTATION ---
         _section_header('Hierarchical Segmentation'),
-        html.Div([
+        html.Div(id='segmentation-panel', children=[
             _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
                              default_x, default_y, log_val, default_color),
             html.Div([
@@ -419,6 +485,9 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                           clear_on_unhover=True,
                           style={'width': '100%'}),
             ], style={'flex': '1', 'padding': '0'}),
+            # right: the draw histogram, above REGRESSION and the same
+            # width -- present only when the fit kept its draws
+            *([_permutation_panel()] if has_stat else []),
         ], style={'display': 'flex', 'padding': '0 20px'}),
 
         # --- IMAGE + REGRESSION (side by side) ---
@@ -476,7 +545,8 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
 
 def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
                     x_names=None, y_names=None, region_ids=None,
-                    default_reg_x=0, num_img=0, subject_names=None):
+                    default_reg_x=0, num_img=0, subject_names=None,
+                    has_stat=False):
     """Build layout for 2D data (single go.Image view)."""
     all_cols, default_x, default_y, log_val, default_color = _defaults(
         generic_cols, sig_cols, prune_cols, mask_cols)
@@ -504,7 +574,7 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
 
         # --- HIERARCHICAL SEGMENTATION ---
         _section_header('Hierarchical Segmentation'),
-        html.Div([
+        html.Div(id='segmentation-panel', children=[
             _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
                              default_x, default_y, log_val, default_color),
             html.Div([
@@ -513,6 +583,9 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
                           clear_on_unhover=True,
                           style={'width': '100%'}),
             ], style={'flex': '1', 'padding': '0'}),
+            # right: the draw histogram, above REGRESSION and the same
+            # width -- present only when the fit kept its draws
+            *([_permutation_panel()] if has_stat else []),
         ], style={'display': 'flex', 'padding': '0 20px'}),
 
         # --- IMAGE + REGRESSION (side by side) ---

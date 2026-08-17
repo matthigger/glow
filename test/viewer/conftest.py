@@ -83,6 +83,23 @@ def mask_target(demo_analysis):
 
 
 @pytest.fixture(scope='session')
+def ana_stat(exp):
+    """The 3D demo experiment refit with keep_stat=True.
+
+    A separate fixture rather than a flag on demo_analysis: the viewer
+    builds a different layout for an analysis that kept its draws, so both
+    it and the default (which has none) have to stay under test.
+    """
+    return AnalysisGLOW(n_perm_fwer=5, keep_stat=True).fit(exp)
+
+
+@pytest.fixture(scope='session')
+def ana_stat_2d(exp_2d):
+    """The 2D demo experiment refit with keep_stat=True; see ana_stat."""
+    return AnalysisGLOW(n_perm_fwer=5, keep_stat=True).fit(exp_2d)
+
+
+@pytest.fixture(scope='session')
 def df_no_target(ana, exp):
     return prep_df(ana, exp)
 
