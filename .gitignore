@@ -18,7 +18,6 @@
 profile*
 /glow/_extra/benchmark/move_plot.py
 /test/scratch/
-.glow_aws_config
 .docker_version
 /docs/notes/
 /docs/paper

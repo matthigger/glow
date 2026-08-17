@@ -6,10 +6,10 @@ the recorded provenance DAG forward from the cache's data cells -- no stored tag
 down the null path and the planted (effect-matching) path; a cell shared by two
 caches landing in both; that editing the config (dropping a cell) is reflected
 at once (the staleness fix a tag could not give); and incomplete_cell_indices
-(the AWS driver's local-records skip -- empty when a cache is fully recorded,
-flagging an unrun cell down both the null and planted paths, a cell missing one
-recipe's leaf, and judging completeness against a narrowed leaf grid when one
-is passed). Exporting these leaves as CSVs is make_csv's (test_make_csv).
+(the records-side rerun skip -- empty when a cache is fully recorded, flagging
+an unrun cell down both the null and planted paths, a cell missing one recipe's
+leaf, and judging completeness against a narrowed leaf grid when one is
+passed). Exporting these leaves as CSVs is make_csv's (test_make_csv).
 
 Run against a small monkeypatched CONFIG (the real grids run 15-1000 seeds); the
 recorder folder is redirected to a tmp dir and fresh seeds keep every cell a
@@ -212,8 +212,8 @@ def test_cell_leaf_uids_named_without_building_or_hashing(no_array_hashing):
 def test_divergent_experiment_leaf_still_completes_its_cell(monkeypatch):
     """The regression the declared uids exist for.
 
-    Two CPUs plant the same effect to different last bits, so the leaves an AWS
-    worker ships reference an Experiment whose content hash nothing local
+    Two CPUs plant the same effect to different last bits, so the leaves one
+    machine records reference an Experiment whose content hash the other never
     produces. Simulated here by rewriting the recorded content hashes after the
     fact: the legacy walk cannot link those leaves to the local ancestor, and
     the cell must still read complete on its declared uids -- otherwise the

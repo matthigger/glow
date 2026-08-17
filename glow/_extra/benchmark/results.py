@@ -6,7 +6,7 @@ score chain that produced it (see recorder / driver). Those records are
 config-agnostic -- every cell ever run, across every figure -- so this module
 re-attaches the CONFIG catalogue: for one cache name it names that cache's
 leaves (config_leaf_keys, the rows make_csv exports) and its planted cells not
-yet fully recorded (incomplete_cell_indices, the local and AWS rerun skip).
+yet fully recorded (incomplete_cell_indices, the rerun skip).
 
 Membership is recomputed from the current CONFIG at read time (not read off a
 stored tag) by walking the recorded provenance DAG forward from the cache's
@@ -237,12 +237,11 @@ def config_leaf_keys(name: str) -> list:
 def planted_cells(name: str) -> list:
     """Return cache name's (kwargs_data, kwargs_effect) cells in grid order.
 
-    One cell is a data cell crossed with a single effect cell -- the unit the
-    AWS driver submits and skips (an instance builds the data once, plants that
-    one effect, and runs the whole fnc grid on it; see glow._extra.aws). The
-    cross is data-major, effect-minor, both grids in CONFIG order, so the flat
-    list is reproducible across runs. A None effect cell (the null path) rides
-    through unchanged.
+    One cell is a data cell crossed with a single effect cell -- the unit a
+    rerun skips: the data is built once, that one effect is planted, and the
+    whole fnc grid is measured on it. The cross is data-major, effect-minor,
+    both grids in CONFIG order, so the flat list is reproducible across runs. A
+    None effect cell (the null path) rides through unchanged.
 
     Args:
         name (str): a CONFIG cache name.
@@ -301,17 +300,17 @@ def cell_leaf_uids(kwargs_data, kwargs_effect, kwargs_fnc_list, fnc) -> list:
 def get_cell_complete(kwargs_fnc_list, fnc):
     """Build the predicate deciding whether one planted cell is finished.
 
-    The records-side source of truth behind every rerun skip, local (driver)
-    and AWS alike: a cell is a data cell crossed with one effect
-    (planted_cells), and it is complete when every leaf that effect builds --
-    one per fnc-kwargs cell -- is in the local records.
+    The records-side source of truth behind the rerun skip (driver): a cell is
+    a data cell crossed with one effect (planted_cells), and it is complete
+    when every leaf that effect builds -- one per fnc-kwargs cell -- is in the
+    records.
 
     A cell's leaf uids are named straight from the CONFIG (cell_leaf_uids), so
     completeness is a set-membership test against the recorded uids: nothing is
     rebuilt, no ancestor record has to be found, and the answer does not depend
-    on any array's bytes. That is what lets a leaf computed elsewhere -- an AWS
-    worker whose Experiment differs in its last bits, as two CPUs' will --
-    count for the cell it belongs to.
+    on any array's bytes. That is what lets a leaf computed on another machine,
+    whose Experiment differs in its last bits as two CPUs' will, count for the
+    cell it belongs to.
 
     A cell whose uids are not all present falls back to the legacy walk (anchor
     at the data record, match the effect record off it by its stored inputs,
@@ -402,9 +401,10 @@ def get_cell_complete(kwargs_fnc_list, fnc):
 def incomplete_cell_indices(name: str, kwargs_fnc_list=None) -> list:
     """Return the planted cells of cache name not fully recorded on disk.
 
-    The AWS driver's rerun skip: it submits only these indices, so a rerun
-    fills the gaps without recomputing finished work. Indices are positions in
-    planted_cells, in grid order. See get_cell_complete for what counts as
+    The cache-level view of the rerun skip: what a sweep of this cache has
+    left to do, so progress can be read off without running it. Indices are
+    positions in planted_cells, in grid order. See get_cell_complete for what
+    counts as
     complete (and why it errs safe), and call RECORDER.load() first to fold in
     what other writers left on disk.
 
@@ -434,15 +434,15 @@ def incomplete_cell_indices(name: str, kwargs_fnc_list=None) -> list:
 def stat_cell_df():
     """Return the vba_stat cache's run_stat leaves, keyed by planted cell.
 
-    The stat bake-off is fit by AWS workers that ship the run_stat leaf back
-    without its data_factory / effect_factory ancestors, so the forward DAG
-    walk (config_leaf_keys) can attach neither source nor effect_llr and drops
-    those leaves -- the vba_stat CSV holds only the locally-run subset. The
-    stat comparison is within a planted cell (the five stats fit on one
-    experiment), so this reads the run_stat records directly and tags each with
-    its planted-exp link hash -- the cell id every variant of a cell shares --
-    sidestepping the missing ancestors. Source / effect_llr are not recovered
-    (they live in the absent ancestors); the comparison does not need them.
+    Part of the stat bake-off is recorded as run_stat leaves without their
+    data_factory / effect_factory ancestors, so the forward DAG walk
+    (config_leaf_keys) can attach neither source nor effect_llr and drops those
+    leaves. The stat comparison is within a planted cell (the five stats fit on
+    one experiment), so this reads the run_stat records directly and tags each
+    with its planted-exp link hash -- the cell id every variant of a cell
+    shares -- sidestepping the missing ancestors. Source / effect_llr are not
+    recovered (they live in the absent ancestors); the comparison does not
+    need them.
 
     Returns:
         pandas.DataFrame: one row per run_stat leaf, columns cell (the planted

@@ -1,8 +1,8 @@
-"""Archive the local joblib cache + records and clear the shared AWS S3 state.
+"""Archive the local joblib cache and records to a dated old/ folder.
 
 Run it as:
 
-    python -m glow._extra.benchmark.mv_cache [--no-aws] [--config PATH]
+    python -m glow._extra.benchmark.mv_cache
 
 Cache-invalidation housekeeping: when a recorded spec changes, old joblib
 entries key under dead hashes and just accrue on disk (see the benchmark
@@ -11,9 +11,7 @@ recorder / driver). This moves the current cache and its sibling records
 folder and leaves fresh empty dirs in their place, so the next run starts cold
 while the archived state stays recoverable. Cache and records move together
 under one shared stamp so they stay in lock step (a record is keyed by the same
-args hash joblib files its result under). It then deletes the shared S3 cache/
-and records/ prefixes (glow._extra.aws.infra) so AWS workers stop warm-resuming
-from a stale cache and stop building results off stale records too.
+args hash joblib files its result under).
 
 The dirs are commonly symlinks into Dropbox (see the storage layout); the move
 follows them, archiving and recreating the real directory so each symlink stays
@@ -24,7 +22,6 @@ import argparse
 import shutil
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Optional, Tuple
 
 from .file import get_path_cache, get_path_records
@@ -101,54 +98,15 @@ def archive_caches(
     return cache_dest, records_dest
 
 
-def clear_aws_state(config_path: Optional[str] = None) -> None:
-    """Delete the shared S3 cache/ and records/ prefixes, best effort.
-
-    Routes through the infra clear_storage path (cache + records prefixes, in
-    lock step with the local archive) so AWS workers stop warm-resuming from a
-    stale synced cache and stop rebuilding results off stale records. runs/ (the
-    per-run manifests) is left alone. A missing AWS config or any boto3 error is
-    reported and swallowed: the local archive is the primary action, and AWS may
-    not be configured on every machine.
-
-    Args:
-        config_path (str | None): AWSConfig JSON path; defaults to the per-user
-            config location (aws.config.DEFAULT_CONFIG_PATH).
-    """
-    from glow._extra.aws import infra
-    from glow._extra.aws.config import DEFAULT_CONFIG_PATH, AWSConfig
-
-    path = config_path or DEFAULT_CONFIG_PATH
-    try:
-        cfg = AWSConfig.from_file(path)
-    except FileNotFoundError:
-        print(f'[mv_cache] no AWS config at {path}; skipping S3 clear')
-        return
-
-    args = SimpleNamespace(runs=False, records=True, cache=True, yes=True)
-    # Swallow any boto3 failure (absent credentials, network) so a machine
-    # without AWS still completes the local archive.
-    try:
-        infra.cmd_clear_storage(args, cfg)
-    except Exception as exc:
-        print(f'[mv_cache] S3 clear failed ({exc!r}); skipping')
-
-
 def main(argv=None) -> None:
-    """Archive the local cache + records and (unless --no-aws) clear S3."""
+    """Archive the local cache and records to a dated old/ folder."""
     parser = argparse.ArgumentParser(
         prog='python -m glow._extra.benchmark.mv_cache',
         description='Archive the local joblib cache and records to a dated '
-                    'old/ folder and clear the shared AWS S3 cache + records.')
-    parser.add_argument('--no-aws', action='store_true',
-                        help='archive the local state only; leave S3 alone')
-    parser.add_argument('--config', default=None,
-                        help='AWSConfig JSON path (default: per-user config)')
-    args = parser.parse_args(argv)
+                    'old/ folder.')
+    parser.parse_args(argv)
 
     archive_caches()
-    if not args.no_aws:
-        clear_aws_state(args.config)
 
 
 if __name__ == '__main__':

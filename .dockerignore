@@ -1,6 +1,6 @@
-# Build context for glow/_extra/aws/Dockerfile (context is the repo root).
-# The image only needs pyproject.toml / poetry.lock / README.md and glow/, so
-# keep the context tiny -- above all exclude the ~1 GB .git history.
+# Build context for glow/_extra/viewer/web/Dockerfile (context is the repo
+# root). The image only needs pyproject.toml / poetry.lock / README.md and
+# glow/, so keep the context tiny -- above all exclude the ~1 GB .git history.
 .git
 .gitignore
 .dockerignore
@@ -15,7 +15,7 @@
 build
 dist
 
-# Repo content the worker never imports
+# Repo content the image never imports
 test
 docs
 .claude

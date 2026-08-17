@@ -17,15 +17,15 @@ run), so a repeated cell is a cache hit and the driver never worries about
 issuing the same call twice: a re-run, an overlapping grid, or a resumed
 sweep all reuse the stored artifacts.
 
-That memoisation reaches only the local joblib cache, which is why drive takes
-skip_recorded: the records travel where the cache does not. An AWS run ships
-its records home but not its cache entries (see glow._extra.aws), so its
-finished cells are provably done yet miss locally and would recompute from
-cold. skip_recorded drops any (data, effect) cell whose whole leaf set is
-already recorded before the sweep starts -- the same records-as-source-of-truth
-skip the AWS driver applies to its cells (results.get_cell_complete) -- so a
-local rerun fills only the gaps, and a cell with nothing left to run never
-builds its exp.
+That memoisation reaches only the joblib cache, which is why drive takes
+skip_recorded: the records are the source of truth for what is finished, and
+they outlive the cache. The records are a few MB of JSON against a cache that
+runs to hundreds of GiB, so the cache is the half that gets archived or pruned
+for space (mv_cache) -- leaving cells provably done that would miss locally and
+recompute from cold. skip_recorded drops any (data, effect) cell whose whole
+leaf set is already recorded before the sweep starts
+(results.get_cell_complete), so a rerun fills only the gaps and a cell with
+nothing left to run never builds its exp.
 
 fnc is the leaf measurement, swept over its own kwargs grid so one (data,
 effect) cell can be measured several ways at once (e.g. run_ana under several
@@ -107,8 +107,8 @@ def _leaf_wants_device(kwargs) -> bool:
 
     gpu='auto' claims one only where one is visible, so it is read against
     this machine rather than treated as a request: an 'auto' grid must stay
-    runnable at any n_jobs on the CPU-only boxes (CI, an AWS Batch worker)
-    that are the reason to write 'auto' in the first place.
+    runnable at any n_jobs on the CPU-only boxes (CI, a machine without a
+    card) that are the reason to write 'auto' in the first place.
     """
     gpu = (kwargs.get('fit_params') or {}).get('gpu', False)
     if not gpu:
@@ -238,12 +238,11 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
 
     skip_recorded drops the (data, effect) cells the records already hold in
     full before anything runs (results.get_cell_complete). The memoised stages
-    already dedupe a repeat, but only against the local joblib cache, which
-    holds nothing a run elsewhere computed -- the AWS path ships records, not
-    cache entries, so its finished cells would otherwise recompute from cold
-    here. Skipping a cell whose whole effect subtree is done also skips
-    building its exp, the expensive part. The records are the source of truth
-    either way (the same skip the AWS driver applies), and a cell reads as
+    already dedupe a repeat, but only against the joblib cache, which is the
+    half that gets archived or pruned for space -- so a cell finished before
+    the last mv_cache would otherwise recompute from cold here. Skipping a cell
+    whose whole effect subtree is done also skips building its exp, the
+    expensive part. The records are the source of truth, and a cell reads as
     incomplete unless every leaf is present, so a partial cell reruns whole.
 
     With n_jobs != 1 the sweep runs in parallel over joblib, one task per data
@@ -312,7 +311,7 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
     if skip_recorded:
         # imported here: results pulls in the CONFIG catalogue, which a plain
         # drive never needs. RECORDER.load first, so the walk sees what other
-        # writers (an AWS run, a parallel sweep) left on disk.
+        # writers (a parallel sweep, a run on another machine) left on disk.
         from .results import get_cell_complete
 
         RECORDER.load()

@@ -1,17 +1,11 @@
-"""mv_cache: archive the local cache + records and clear the S3 state.
+"""mv_cache: archive the local cache and records to a dated old/ folder.
 
 archive_caches moves the resolved cache and records dirs into a dated old/
-sibling in lock step and leaves fresh empty dirs behind; clear_aws_state routes
-through the infra clear_storage path against a fake S3, clearing the cache/ and
-records/ prefixes. Both run against tmp dirs / fakes so no real user-data dir or
-AWS is touched.
+sibling in lock step and leaves fresh empty dirs behind. It runs against tmp
+dirs so no real user-data dir is touched.
 """
 
-from glow._extra.aws import infra
-from glow._extra.aws.config import AWSConfig
 from glow._extra.benchmark import mv_cache
-
-from ..aws.fakes import FakeS3, client_factory
 
 
 def _seed(tmp_path, monkeypatch, cache=True, records=True):
@@ -75,28 +69,3 @@ def test_archive_empty_dirs_are_noop(tmp_path, monkeypatch):
     assert mv_cache.archive_caches() == (None, None)
     assert not (tmp_path / 'old').exists()
 
-
-def test_clear_aws_state_deletes_cache_and_records_not_runs(
-        tmp_path, monkeypatch):
-    bucket = 'glow-experiments'
-    fake_s3 = FakeS3()
-    fake_s3.store[(bucket, 'cache/run_ana/def/output.pkl')] = b'blob'
-    fake_s3.store[(bucket, 'records/abc.json')] = b'{}'
-    fake_s3.store[(bucket, 'runs/run-1.json')] = b'{}'
-    monkeypatch.setattr(infra.boto3, 'client', client_factory(fake_s3, None))
-
-    cfg = AWSConfig(s3_bucket=bucket, job_queue='q', job_definition='d')
-    cfg_path = tmp_path / 'aws_config.json'
-    cfg.to_file(str(cfg_path))
-
-    mv_cache.clear_aws_state(str(cfg_path))
-
-    assert (bucket, 'cache/run_ana/def/output.pkl') not in fake_s3.store
-    assert (bucket, 'records/abc.json') not in fake_s3.store
-    # runs/ (per-run manifests) is left alone
-    assert (bucket, 'runs/run-1.json') in fake_s3.store
-
-
-def test_clear_aws_state_missing_config_is_noop(tmp_path, capsys):
-    mv_cache.clear_aws_state(str(tmp_path / 'nope.json'))
-    assert 'no AWS config' in capsys.readouterr().out

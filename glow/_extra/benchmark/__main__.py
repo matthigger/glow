@@ -14,18 +14,7 @@ the whole grid).
 take after changing one method's recipe: a changed knob is a new hash, so that
 method's leaves go missing everywhere while its siblings' stay valid, and
 completeness is judged against the narrowed grid -- so only the named recipes
-run and no sibling fit is recomputed. It applies to the local and the AWS
-sweep alike.
-
---aws runs the sweep on AWS Batch instead of locally: it hands the same
-resolved cache names to glow._extra.aws.drive_aws, which submits each cache's
-data cells as a Batch array job and pulls the records home when they drain
-(see glow._extra.aws). This is the one CLI for a benchmark run, local or
-cloud; provisioning the AWS resources is a separate concern (python -m
-glow._extra.aws -- bootstrap / setup / status / ...). Selecting a timing cache
-(runtime*) for --aws warns and asks before submitting anything: a Batch array
-cannot measure wall time, since its Spot instance type varies. Declining is
-the default and aborts the sweep (see confirm_aws).
+run and no sibling fit is recomputed.
 
 GLOW's leaves fit on the GPU where one is visible and on many cores where it
 is not (config.GLOW_FIT_PARAMS). That parallelism multiplies against -j rather
@@ -34,17 +23,15 @@ than sharing it, so a parallel sweep on a machine with a card is refused
 score identically.
 
 Usage:
-    python -m glow._extra.benchmark                    # everything (local)
+    python -m glow._extra.benchmark                    # everything
     python -m glow._extra.benchmark 'sweep_*'          # glob
     python -m glow._extra.benchmark sweep_llr          # GPU where visible
     python -m glow._extra.benchmark -j 4 --no-gpu sweep_llr  # parallel, CPU
-    python -m glow._extra.benchmark --aws sweep_llr    # run on AWS Batch
     python -m glow._extra.benchmark --no-skip sweep_llr # recompute every cell
     python -m glow._extra.benchmark --method VBA --method CET   # one recipe
     python -m glow._extra.benchmark --list             # list cache names
 """
 import argparse
-import sys
 from fnmatch import fnmatch
 
 
@@ -87,65 +74,7 @@ def resolve_names(patterns) -> list:
     return out
 
 
-# Cache names matching this measure wall time (the runtime family). A Batch
-# array lands on whatever Spot instance type is free, so the recorded time_sec
-# would be hardware variance rather than the algorithm's cost -- measurably so:
-# the one timing-bearing cache that did reach AWS spread 10x (100 s .. 2384 s)
-# at a fixed grid point. Matched on the name, so adding a cache needs no
-# bookkeeping here; --aws only warns, leaving the call to the user.
-AWS_WARN_PATTERN = 'runtime*'
-
-
-def confirm_aws(resolved, input_fnc=None) -> bool:
-    """Warn when an AWS sweep selects a timing cache; ask whether to go on.
-
-    The runtime family (AWS_WARN_PATTERN) measures wall time, which a Batch
-    array cannot: its Spot instance type varies. Rather than bar them, warn and
-    let the user decide -- answering no aborts the whole sweep, so nothing is
-    submitted and no name is silently dropped.
-
-    Declining is the default, including when there is no terminal to ask (a
-    piped or scripted run), so an unattended --aws cannot spend on timings that
-    would be meaningless anyway.
-
-    Args:
-        resolved (list): cache names from resolve_names.
-        input_fnc (Callable | None): prompt function taking the prompt string,
-            for tests; None reads a terminal, declining when stdin is not one.
-
-    Returns:
-        True when the sweep should go ahead (no timing cache selected, or the
-            user confirmed).
-    """
-    timing = [name for name in resolved if fnmatch(name, AWS_WARN_PATTERN)]
-    if not timing:
-        return True
-
-    print(f'WARNING: {len(timing)} selected cache(s) measure wall time: '
-          f'{timing}\n'
-          f'  A Batch array lands on whatever Spot instance type is free, so '
-          f'their\n'
-          f'  recorded time_sec would be hardware variance, not algorithm '
-          f'cost.\n'
-          f'  They are meant to run locally (drop --aws).')
-
-    if input_fnc is None:
-        if not sys.stdin.isatty():
-            print('  no terminal to ask; nothing submitted')
-            return False
-        input_fnc = input
-    try:
-        reply = input_fnc('  submit them to AWS anyway? [y/N] ')
-    except EOFError:
-        reply = ''
-    if reply.strip().lower() in ('y', 'yes'):
-        return True
-    print('  aborted; nothing submitted')
-    return False
-
-
 def run(names=None, n_jobs: int = 1, verbose: bool = True,
-        aws: bool = False, aws_config_path=None,
         skip_recorded: bool = True, methods=None,
         no_gpu: bool = False) -> list:
     """Drive the selected CONFIG caches into the shared records.
@@ -155,10 +84,10 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
     make_csv's job, so a run and its aggregation can happen (and fail)
     independently.
 
-    A local sweep skips the cells already complete in the records by default,
-    matching the AWS path, so a rerun (or a grid widened by a config edit)
-    computes only what is missing rather than everything the local joblib
-    cache happens not to hold; see drive.
+    A sweep skips the cells already complete in the records by default, so a
+    rerun (or a grid widened by a config edit) computes only what is missing
+    rather than everything the local joblib cache happens not to hold; see
+    drive.
 
     methods narrows each cache's leaf grid to the named analysis recipes
     (grid.filter_ana_list), which is how one method is rerun on its own after
@@ -168,29 +97,15 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
     cache with no matching recipe (a segment / prune / vba_stat leaf grid,
     which has no per-method axis) is skipped.
 
-    aws runs the sweep on AWS Batch instead of locally: the resolved names are
-    handed to glow._extra.aws.drive_aws, which submits each cache's cells as a
-    Batch array job and pulls the shared records home when they drain. The
-    local HCP dataset is not loaded in this mode (the workers own the data),
-    and n_jobs does not apply (the Batch array is the parallelism). A selected
-    timing cache prompts first (confirm_aws) -- a Batch array's Spot instance
-    type varies, so it cannot measure wall time.
-
     The HCP reference dataset is ensured once up front (idempotent / cached)
-    for the HCP-backed caches in a local run, but not under aws, which runs no
-    local experiments.
+    for the HCP-backed caches.
 
     Args:
         names (list | None): cache names or fnmatch patterns; None selects all.
-        n_jobs (int): joblib worker count for a local sweep (1 = serial; -1 =
-            all cores). Ignored when aws is set.
+        n_jobs (int): joblib worker count (1 = serial; -1 = all cores).
         verbose (bool): print per-cache headers and the drive() progress bar.
-        aws (bool): run the sweep on AWS Batch (drive_aws) rather than locally.
-        aws_config_path (str | None): AWSConfig JSON path for aws; None uses
-            the per-user default (config.AWSConfig.from_file).
         skip_recorded (bool): skip the cells already complete in the records
-            (default); False recomputes every cell of the grid. Applies to a
-            local sweep -- the AWS driver always skips its finished cells.
+            (default); False recomputes every cell of the grid.
         methods (list[str] | None): analysis-recipe labels
             (config.ana_kwargs_dict keys, e.g. ['VBA', 'CET']) to run; None
             (default) runs each cache's whole leaf grid.
@@ -200,23 +115,9 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
 
     Returns:
         driven (list[str]): the cache names actually swept, in selection order
-            -- the resolved names less those methods left with no recipe (and
-            empty when an AWS timing prompt was declined).
+            -- the resolved names less those methods left with no recipe.
     """
     resolved = resolve_names(names or [])
-
-    if aws:
-        if not confirm_aws(resolved):
-            return []
-        from glow._extra.aws import AWSConfig, drive_aws
-        aws_config = (AWSConfig.from_file(aws_config_path) if aws_config_path
-                      else AWSConfig.from_file())
-        # the driver reports its per-cache failures; the caches it drove are
-        # that report's keys (one skipped for holding no named recipe is
-        # absent from it)
-        failures = drive_aws(resolved, aws_config, verbose=verbose,
-                             methods=methods)
-        return list(failures)
 
     from .config import CONFIG, ana_kwargs_dict
     from .grid import filter_ana_list, strip_gpu
@@ -263,7 +164,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         the parsed argparse.Namespace.
     """
     parser = argparse.ArgumentParser(
-        description='Run the paper benchmarks (local or AWS Batch).',
+        description='Run the paper benchmarks.',
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('names', nargs='*',
                         help='cache names or fnmatch patterns (default: all)')
@@ -271,10 +172,6 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help='joblib worker count (1=serial; -1=all cores)')
     parser.add_argument('-q', '--quiet', action='store_true',
                         help='suppress per-cache headers and progress bars')
-    parser.add_argument('--aws', action='store_true',
-                        help='run the sweep on AWS Batch (glow._extra.aws)')
-    parser.add_argument('--aws-config', default=None,
-                        help='AWSConfig JSON for --aws (default: per-user)')
     parser.add_argument('--list', action='store_true', dest='list_names',
                         help='print the catalogue cache names and exit')
     parser.add_argument('--no-skip', action='store_true',
@@ -305,7 +202,6 @@ def main(argv=None) -> None:
         return
 
     run(names=args.names, n_jobs=args.n_jobs, verbose=not args.quiet,
-        aws=args.aws, aws_config_path=args.aws_config,
         skip_recorded=not args.no_skip, methods=args.methods,
         no_gpu=args.no_gpu)
 

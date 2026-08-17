@@ -163,8 +163,7 @@ class TestDataFactoryHCP:
             seen['feats'] = tuple(hcp_feats)
             return img
 
-        # mock the single HCP loader (the bundle glue); feature selection /
-        # hash-equivalence are covered in test/aws/test_hcp_bundle.py
+        # mock the single HCP loader (the bundle glue)
         monkeypatch.setattr(hcp, 'build_exp_img_from_bundle', fake_build)
 
         data.RECORDER.records.clear()

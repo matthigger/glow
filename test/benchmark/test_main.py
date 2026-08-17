@@ -92,7 +92,7 @@ class TestParseArgs:
     def test_defaults(self):
         ns = cli.parse_args([])
         assert ns.names == [] and ns.n_jobs == 1 and not ns.quiet
-        assert not ns.list_names and not ns.no_skip and not ns.aws
+        assert not ns.list_names and not ns.no_skip
 
     def test_flags(self):
         ns = cli.parse_args(['sweep_llr_b1', '-j', '4', '-q', '--no-skip'])

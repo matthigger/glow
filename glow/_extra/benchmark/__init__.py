@@ -9,8 +9,7 @@ results recovers which of its leaves each figure's cache owns, make_csv
 exports them as one tidy CSV per figure, and plot draws them. file holds the
 on-disk paths, hcp the reference dataset.
 
-Run it with python -m glow._extra.benchmark (see __main__); --aws hands the
-same sweep to the AWS Batch driver (the glow._extra.aws sibling).
+Run it with python -m glow._extra.benchmark (see __main__).
 """
 from .file import *
 from .recorder import Recorder

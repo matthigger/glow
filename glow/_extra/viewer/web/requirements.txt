@@ -1,5 +1,5 @@
 # runtime-only deps for the multi-demo viewer
-# (subset of glow/pyproject.toml -- excludes aws/test/dev tools)
+# (subset of glow/pyproject.toml -- excludes test/dev tools)
 
 numpy>=1.26
 scipy>=1.11

@@ -2,8 +2,8 @@
 
 The portability tests are the regression guard for the failure this module
 replaces: an identity derived from array bytes differs between two CPUs that
-compute the same experiment, so AWS-computed leaves could never link to a
-locally-built ancestor.
+compute the same experiment, so a leaf computed on one machine could never link
+to an ancestor built on another.
 """
 
 import json

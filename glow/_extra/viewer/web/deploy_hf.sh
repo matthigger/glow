@@ -142,7 +142,6 @@ rsync -a --delete \
     --exclude '.pytest_cache/' \
     --exclude '.ipynb_checkpoints/' \
     --exclude '*tmp*' \
-    --exclude 'aws/' \
     --exclude 'benchmark/' \
     --exclude 'viewer/web/pickles/' \
     "$PROJECT_ROOT/glow/" "$SPACE_DIR/glow/"

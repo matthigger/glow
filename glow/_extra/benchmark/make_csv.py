@@ -1,8 +1,8 @@
 """Aggregate the shared provenance records into one tidy CSV per CONFIG cache.
 
-Aggregation is its own step, separate from running: a sweep (local or AWS)
-only fills the shared records, and this module turns them into the per-figure
-CSVs. Run it whenever the records or the catalogue change:
+Aggregation is its own step, separate from running: a sweep only fills the
+shared records, and this module turns them into the per-figure CSVs. Run it
+whenever the records or the catalogue change:
 
     python -m glow._extra.benchmark.make_csv                 # every cache
     python -m glow._extra.benchmark.make_csv 'sweep_*'       # glob

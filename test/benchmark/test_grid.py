@@ -229,9 +229,9 @@ class TestFilterAnaList:
                                             recipes['C-cet']]
 
     def test_matches_a_rebuilt_equal_recipe(self):
-        # matched on the recipe repr, not identity, so an equal recipe rebuilt
-        # elsewhere still selects -- the round trip the AWS run bundle does to
-        # a recipe (a pickle this test wrote itself; glow._extra.aws.bundle)
+        # matched on the recipe repr, not identity, so an equal recipe
+        # rebuilt elsewhere still selects -- the round trip a pickled recipe
+        # makes (a pickle this test wrote itself)
         recipes = _recipes()
         rebuilt = [dict(ana=pickle.loads(pickle.dumps(ana)))
                    for ana in recipes.values()]

@@ -167,7 +167,7 @@ REPORTED_GLOW_LABEL = 'GLOW-GLM'
 # fit_params is forwarded to Analysis.fit by the leaf (run.run_ana) and is
 # filtered out of the cache key and the record (run.FIT_IGNORE), so it may vary
 # by machine without forking an artifact: a cell fit here on the GPU and the
-# same cell fit on an AWS Batch worker's cores are one recorded score.
+# same cell fit on another machine's cores are one recorded score.
 #
 # GLOW alone parallelises deeply enough to be worth configuring. The count is
 # an upper bound, clamped to the machine's cores at fit time
@@ -244,8 +244,8 @@ RUN_PRUNE_LIST = [
 
 # ---------- smoke test (a tiny non-paper cache for end-to-end checks) --------
 # Not a paper figure: a tiny null sweep over both sources, to check the whole
-# pipeline runs end to end (in particular the AWS Batch path -- driver submits,
-# a worker rebuilds its cell from this CONFIG, fits, and ships records back).
+# pipeline runs end to end -- the driver builds each cell from this CONFIG,
+# fits it, and the records come back.
 # It is the null path with two overrides only -- a small crop and few seeds --
 # so a cell finishes fast; sources, num_img, the RUN_ANA_LIST recipes, and the
 # paper permutation counts stay standard, so it exercises the real recipes.
@@ -289,16 +289,14 @@ def effect_grid(**kwargs):
     return grid.get_kwargs_effect_list(**{**EFFECT_AXES, **kwargs})
 
 
-# ---------- runtime benchmarks (HCP, local-only) -----------------------------
+# ---------- runtime benchmarks (HCP) -----------------------------------------
 # Wall time, not detection. Every cache here is HCP -- the paper's real data,
 # and the only cohort whose subject count means anything -- with the moderate
 # default effect (10% of each cell's volume, see effect_grid); only the timed
-# axis varies. Local-only: a Batch array lands on whatever Spot instance type
-# is free, so a time recorded there is hardware variance rather than cost (the
-# CLI warns -- see benchmark.__main__.confirm_aws), and an HCP cache has no
-# worker-side data anyway (see hcp / the aws package). Each cache gets its own
-# seed offset so its leaf timings are cold (never served from another cache's
-# cached fit) and independent.
+# axis varies. A recorded time_sec means the machine that recorded it, so these
+# are only comparable within one run on one box. Each cache gets its own seed
+# offset so its leaf timings are cold (never served from another cache's cached
+# fit) and independent.
 #
 # Two questions, deliberately not mixed:
 #
@@ -504,9 +502,7 @@ CONFIG = {
         RUN_PRUNE_LIST, run_prune),
     # Smoke: tiny null sweep over both sources to confirm the pipeline end to
     # end (not a paper figure). The null path with only a small crop and few
-    # seeds overridden (see SMOKE_* above). WGN and HCP cells (3 each); on AWS
-    # the HCP cells need the reference data staged to S3 first
-    # (python -m glow._extra.aws stage_hcp).
+    # seeds overridden (see SMOKE_* above). WGN and HCP cells (3 each).
     'smoke': (
         data_grid(seeds=range(SMOKE_N_SEED),
                              crop_n_vox=SMOKE_CROP_N_VOX),
@@ -515,8 +511,7 @@ CONFIG = {
     # Runtime (wall clock): time vs num_vox (1k -> full HCP), all methods, b=1,
     # the moderate effect. What a user waits for on this machine, so each
     # method is given everything it can use (RUN_ANA_TIME_LIST: all cores, and
-    # the device for GLOW). HCP-only and local-only: the AWS worker has no HCP
-    # data, and Spot instance-type variance would make time_sec meaningless.
+    # the device for GLOW). HCP-only.
     'runtime_num_vox': (
         runtime_data_grid(
             seed_offset=RUNTIME_SEED_OFFSET['runtime_num_vox'],

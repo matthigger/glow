@@ -209,10 +209,10 @@ class TestParallel:
 
 
 # ---------------------------------------------------------------------------
-# skip_recorded: the records -- not the local joblib cache -- decide what
-# reruns, so work done elsewhere (an AWS run ships records, not cache entries)
-# is not recomputed here. Each test sweeps once to lay down the records, then
-# re-drives to see what the skip leaves to run.
+# skip_recorded: the records -- not the joblib cache -- decide what reruns, so
+# work already finished is not recomputed when the cache no longer holds it.
+# Each test sweeps once to lay down the records, then re-drives to see what the
+# skip leaves to run.
 # ---------------------------------------------------------------------------
 
 class TestSkipRecorded:

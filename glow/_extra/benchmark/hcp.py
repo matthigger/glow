@@ -108,7 +108,7 @@ def ensure_hcp_data() -> pathlib.Path:
     return folder
 
 
-# ---------- npy bundle (the per-feature, AWS-shippable representation) -------
+# ---------- npy bundle (the per-feature, portable representation) ------------
 # A compact stand-in for the niftis: a brain mask plus one float32
 # (num_img, num_vox) array per feature plus a small meta (subject ids +
 # affine). It holds exactly the arrays from_search builds -- y[feat] is
@@ -118,11 +118,10 @@ def ensure_hcp_data() -> pathlib.Path:
 # _with_canonical_y normalises layout), and the experiment hashes identically
 # whether built from the niftis or the bundle.
 #
-# It is the single HCP build path: data_factory_hcp builds from the bundle
-# both locally (converting from the niftis on first use) and on an AWS worker
-# (where the bundle is pre-staged from S3, so no niftis and no DUA prompt are
-# needed -- see glow._extra.aws). Per-feature files let a worker pull only the
-# features its cell uses.
+# It is the single HCP build path: data_factory_hcp builds from the bundle,
+# converting it from the niftis on first use. Once it exists a run needs
+# neither the niftis nor the DUA gate, and the per-feature split means only the
+# features a cell uses are read.
 
 BUNDLE_DIRNAME = 'hcp100_dki_noddi_npy'
 
@@ -167,10 +166,9 @@ def ensure_hcp_bundle(feats=HCP_FEATS) -> pathlib.Path:
     """Return the bundle dir, converting it from the niftis on first use.
 
     Idempotent: if the requested feats (and the shared mask / affine / meta)
-    are present the dir is returned untouched -- so on an AWS worker, where the
-    bundle is pre-staged from S3, this never reaches the niftis or the DUA
-    gate. Otherwise the niftis are loaded once (ensure_hcp_data -> from_search
-    over the full panel) and dumped as the bundle.
+    are present the dir is returned untouched, never reaching the niftis or the
+    DUA gate. Otherwise the niftis are loaded once (ensure_hcp_data ->
+    from_search over the full panel) and dumped as the bundle.
 
     Raises:
         RuntimeError: the conversion did not yield the requested feats.
