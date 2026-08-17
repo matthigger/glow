@@ -298,21 +298,23 @@ class TestLayoutWithDraws:
         assert _find(layout, 'scatter-plot') is not None
         assert _find(layout_plain, 'scatter-plot') is not None
 
-    def test_panel_is_right_of_the_scatter(self, layout):
-        """Last column of the segmentation row -- above REGRESSION."""
-        row = _find(layout, 'segmentation-panel').children
+    def test_panel_ends_the_detail_row(self, layout):
+        """Last column of the detail row -- right of REGRESSION."""
+        row = _find(layout, 'detail-panel').children
         assert len(row) == 3
+        assert TestLayout2D._find_component(row[1],
+                                            'regression-plot') is not None
         assert TestLayout2D._find_component(row[-1], 'hist-plot') is not None
 
-    def test_row_is_unchanged_without_draws(self, layout_plain):
-        assert len(_find(layout_plain, 'segmentation-panel').children) == 2
+    def test_detail_row_loses_the_column_without_draws(self, layout_plain):
+        """REGRESSION takes the width back when there are no draws."""
+        assert len(_find(layout_plain, 'detail-panel').children) == 2
 
-    def test_panel_matches_the_regression_width(self, layout):
-        """The two stack in one column, so they share a width."""
-        row = _find(layout, 'segmentation-panel').children
-        reg = _find(layout, 'regression-plot')
-        assert row[-1].style['width'] == '380px'
-        assert reg is not None
+    def test_panel_shares_the_row_with_regression(self, layout):
+        """Side by side in one row, so the two split its width evenly."""
+        row = _find(layout, 'detail-panel').children
+        assert row[-1].style['flex'] == '1'
+        assert row[1].style['flex'] == '1'
 
     def test_unit_defaults_to_llr(self, layout):
         assert _find(layout, 'hist-unit').value == 'llr'

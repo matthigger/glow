@@ -9,6 +9,19 @@ from glow._extra.viewer.app import _create_app
 from glow._extra.viewer.data import compute_backgrounds, get_feature_columns
 from glow._extra.viewer.image import compute_bg_volume
 
+# the page's three rows, in the order they are laid out
+ROW_IDS = ('segmentation-panel', 'detail-panel', 'image-panel')
+
+
+def _page_rows(layout):
+    """Return the (id, div) of each page row, in layout order.
+
+    Reads the top level of the page only, so a row that ended up nested
+    inside another would not be counted as one.
+    """
+    return [(c.id, c) for c in layout.children
+            if getattr(c, 'id', None) in ROW_IDS]
+
 
 class TestLayout2D:
     """Verify the 2D layout contains expected components."""
@@ -80,6 +93,21 @@ class TestLayout2D:
         panel = self._find_component(layout, 'region-checklist')
         assert panel is not None
 
+    def test_rows_are_in_page_order(self, layout):
+        assert [rid for rid, _ in _page_rows(layout)] == list(ROW_IDS)
+
+    def test_image_has_its_own_row(self, layout):
+        row = dict(_page_rows(layout))['image-panel']
+        assert len(row.children) == 1
+        assert self._find_component(row, 'image-viewer') is not None
+        assert self._find_component(row, 'regression-plot') is None
+
+    def test_detail_row_holds_the_region_plots(self, layout):
+        row = dict(_page_rows(layout))['detail-panel']
+        assert self._find_component(row, 'region-checklist') is not None
+        assert self._find_component(row, 'regression-plot') is not None
+        assert self._find_component(row, 'image-viewer') is None
+
 
 class TestComputeBackgroundsImageIdx:
     """Verify compute_backgrounds with image_idx produces sensible results."""
@@ -149,6 +177,24 @@ class TestLayout3D:
 
     def test_has_region_panel(self, layout):
         assert TestLayout2D._find_component(layout, 'region-checklist') is not None
+
+    def test_rows_are_in_page_order(self, layout):
+        assert [rid for rid, _ in _page_rows(layout)] == list(ROW_IDS)
+
+    def test_image_has_its_own_row(self, layout):
+        """The three ortho slicers get the row to themselves."""
+        row = dict(_page_rows(layout))['image-panel']
+        assert len(row.children) == 1
+        assert TestLayout2D._find_component(row, 'dd-image-3d') is not None
+        assert TestLayout2D._find_component(row, 'regression-plot') is None
+
+    def test_detail_row_holds_the_region_plots(self, layout):
+        row = dict(_page_rows(layout))['detail-panel']
+        assert TestLayout2D._find_component(row,
+                                            'region-checklist') is not None
+        assert TestLayout2D._find_component(row,
+                                            'regression-plot') is not None
+        assert TestLayout2D._find_component(row, 'dd-image-3d') is None
 
 
 class TestLayout3DMultiFeature:

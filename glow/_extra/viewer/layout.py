@@ -5,6 +5,11 @@ page layouts (_make_layout_2d, _make_layout_3d), the collapsible
 experiment/analysis detail panels (_detail_panels), and the smaller
 panel and key/value helpers they compose. app.py imports the page
 builders and registers callbacks separately.
+
+Both page layouts stack the same three rows: the segmentation scatter
+under its axis controls, then a per-region detail row (the region
+checklist, REGRESSION, and PERMUTATION when the fit kept its draws),
+then IMAGE on a row of its own.
 """
 
 import numpy as np
@@ -65,16 +70,16 @@ def _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
 
 
 def _permutation_panel():
-    """Build the right-hand permutation-draw histogram panel.
+    """Build the permutation-draw histogram panel.
 
-    Sits beside the segmentation scatter and directly above the regression
-    panel, whose width and shape it borrows: the two are the same kind of
-    thing, a per-region detail view of whatever the scatter has selected.
-    Where the scatter puts a region's observed LLR at a point, this puts
-    the whole column of draws that point was scored against.
+    Shares the detail row with the regression panel, and its shape: the
+    two are the same kind of thing, a per-region detail view of whatever
+    the scatter has selected. Where the scatter puts a region's observed
+    LLR at a point, this puts the whole column of draws that point was
+    scored against.
 
     Built only for an analysis fit with keep_stat=True -- there are no
-    draws to show otherwise, and the scatter takes the width back.
+    draws to show otherwise, and REGRESSION takes the width back.
 
     Three knobs, one per way the overlay stops being readable: the unit
     (raw LLR separates regions by size, since LLR carries a 0.5 * size
@@ -118,7 +123,7 @@ def _permutation_panel():
         dcc.Graph(id='hist-plot',
                   config={'scrollZoom': True},
                   style={'width': '100%'}),
-    ], style={'width': '380px', 'flexShrink': '0', 'padding': '10px',
+    ], style={'flex': '1', 'minWidth': '0', 'padding': '10px',
               'borderLeft': '1px solid #ddd'})
 
 
@@ -374,7 +379,7 @@ def _detail_panels(ana_glow, exp):
 
 
 def _regression_panel(x_names, y_names, default_x=0):
-    """Build the right-hand regression scatter panel."""
+    """Build the per-image regression panel, first plot of the detail row."""
     x_opts = [{'label': n, 'value': i} for i, n in enumerate(x_names)]
     y_opts = [{'label': n, 'value': i} for i, n in enumerate(y_names)]
     return html.Div([
@@ -403,8 +408,7 @@ def _regression_panel(x_names, y_names, default_x=0):
         dcc.Graph(id='regression-plot',
                   config={'scrollZoom': True},
                   style={'width': '100%'}),
-    ], style={'width': '380px', 'flexShrink': '0', 'padding': '10px',
-              'borderLeft': '1px solid #ddd'})
+    ], style={'flex': '1', 'minWidth': '0', 'padding': '10px'})
 
 
 def _defaults(generic_cols, sig_cols, prune_cols, mask_cols):
@@ -485,16 +489,21 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                           clear_on_unhover=True,
                           style={'width': '100%'}),
             ], style={'flex': '1', 'padding': '0'}),
-            # right: the draw histogram, above REGRESSION and the same
-            # width -- present only when the fit kept its draws
-            *([_permutation_panel()] if has_stat else []),
         ], style={'display': 'flex', 'padding': '0 20px'}),
 
-        # --- IMAGE + REGRESSION (side by side) ---
-        html.Div(id='lower-panel', children=[
+        # --- REGRESSION + PERMUTATION (the per-region detail row) ---
+        html.Div(id='detail-panel', children=[
             _region_panel(region_ids),
+            _regression_panel(x_names or [], y_names or [],
+                              default_x=default_reg_x),
+            # present only when the fit kept its draws
+            *([_permutation_panel()] if has_stat else []),
+        ], style={'display': 'flex', 'padding': '0 20px',
+                  'borderTop': '2px solid #ccc', 'marginTop': '6px'}),
 
-            # center: three linked ortho slicers
+        # --- IMAGE (a row of its own) ---
+        html.Div(id='image-panel', children=[
+            # three linked ortho slicers
             html.Div([
                 html.H4('IMAGE', style={
                     'margin': '0', 'fontSize': '14px',
@@ -528,10 +537,6 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                     ]),
                 ]),
             ], style={'flex': '1', 'padding': '10px'}),
-
-            # right: regression scatter
-            _regression_panel(x_names or [], y_names or [],
-                              default_x=default_reg_x),
         ], style={'display': 'flex', 'padding': '0 20px 20px 20px',
                   'borderTop': '2px solid #ccc', 'marginTop': '6px'}),
 
@@ -583,17 +588,22 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
                           clear_on_unhover=True,
                           style={'width': '100%'}),
             ], style={'flex': '1', 'padding': '0'}),
-            # right: the draw histogram, above REGRESSION and the same
-            # width -- present only when the fit kept its draws
-            *([_permutation_panel()] if has_stat else []),
         ], style={'display': 'flex', 'padding': '0 20px'}),
 
-        # --- IMAGE + REGRESSION (side by side) ---
-        html.Div(id='lower-panel', children=[
-            # left panel: region selection (aligned with controls column)
+        # --- REGRESSION + PERMUTATION (the per-region detail row) ---
+        html.Div(id='detail-panel', children=[
+            # region selection, aligned with the controls column above
             _region_panel(region_ids),
+            _regression_panel(x_names or [], y_names or [],
+                              default_x=default_reg_x),
+            # present only when the fit kept its draws
+            *([_permutation_panel()] if has_stat else []),
+        ], style={'display': 'flex', 'padding': '0 20px',
+                  'borderTop': '2px solid #ccc', 'marginTop': '6px'}),
 
-            # center: IMAGE with dropdowns below title
+        # --- IMAGE (a row of its own) ---
+        html.Div(id='image-panel', children=[
+            # IMAGE with dropdowns below title
             html.Div([
                 html.H4('IMAGE', style={
                     'margin': '0', 'fontSize': '14px',
@@ -624,10 +634,6 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
                           config={'scrollZoom': True},
                           style={'width': '100%', 'height': '340px'}),
             ], style={'flex': '1', 'padding': '10px'}),
-
-            # right: regression scatter
-            _regression_panel(x_names or [], y_names or [],
-                              default_x=default_reg_x),
         ], style={'display': 'flex', 'padding': '0 20px 20px 20px',
                   'borderTop': '2px solid #ccc', 'marginTop': '6px'}),
 
