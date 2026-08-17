@@ -96,6 +96,9 @@ class AnalysisGLOW(Analysis):
     Fit outputs (all on the test fold, against the fold-A tree):
         children (np.array): (num_reg - num_vox, 2) Ward tree.
         size (np.array): (num_reg,) region sizes.
+        img_segment (np.array): (num_img,) boolean, True for the images the
+            tree was built on. The realized partition, not recoverable from
+            frac_segment and split_seed once split_group is passed.
         llr (np.array): (num_reg,) observed LLR per region -- the
             matrix's row 0.
         mu (np.array): (num_reg,) per-region mean over the draws.
@@ -149,6 +152,7 @@ class AnalysisGLOW(Analysis):
 
         self.children = None
         self.size = None
+        self.img_segment = None
         self.llr = None
         self.mu = None
         self.std = None
@@ -223,9 +227,12 @@ class AnalysisGLOW(Analysis):
             gpu, name='AnalysisGLOW.fit')
         del n_jobs
 
-        exp_seg, exp_test = exp.split_img(frac_segment=self.frac_segment,
-                                          seed=self.split_seed,
-                                          group=split_group)
+        split_kwargs = dict(frac_segment=self.frac_segment,
+                            seed=self.split_seed, group=split_group)
+        # kept because a reader of the fit cannot redraw it: with a
+        # split_group the partition depends on labels the fit does not store
+        self.img_segment = exp.get_img_segment(**split_kwargs)
+        exp_seg, exp_test = exp.split_img(**split_kwargs)
 
         # Each fold is scaled on its own images. Fold A's scaling is the
         # one that matters: Ward distances are not invariant to a map on

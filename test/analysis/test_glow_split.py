@@ -422,6 +422,26 @@ def test_split_group_is_plumbed_through():
     assert not np.array_equal(ana.children, _ana().fit(exp).children)
 
 
+def test_fit_records_the_realized_partition():
+    """img_segment names the images the tree was built on, group or not.
+
+    A grouped split cannot be redrawn from frac_segment and split_seed --
+    the labels are a fit argument the analysis does not keep -- so the mask
+    is the only record of which images chose the tree.
+    """
+    exp = _exp()
+    group = np.repeat(np.arange(NUM_IMG // 4), 4)
+
+    for split_group in (None, group):
+        ana = _ana().fit(exp, split_group=split_group)
+        exp_seg, exp_test = exp.split_img(frac_segment=ana.frac_segment,
+                                          seed=ana.split_seed,
+                                          group=split_group)
+
+        np.testing.assert_array_equal(exp_seg.x, exp.x[:, ana.img_segment])
+        np.testing.assert_array_equal(exp_test.x, exp.x[:, ~ana.img_segment])
+
+
 def test_refuses_an_already_scaled_experiment():
     """Scaling before the split would let fold B pick fold A's transform."""
     with pytest.raises(TypeError, match='[Ss]plit before scaling'):
