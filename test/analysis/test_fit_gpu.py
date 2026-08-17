@@ -22,7 +22,8 @@ import pytest
 
 import glow.mask
 from glow.analysis import AnalysisVBA, GpuConfig, draws_gpu
-from glow.analysis._fit_gpu import resolve_gpu, resolve_perm_chunk
+from glow.analysis._fit_gpu import (describe_backend, resolve_gpu,
+                                    resolve_perm_chunk)
 from glow.analysis._glow import AnalysisGLOW
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr
@@ -102,6 +103,73 @@ class TestResolveGpu:
     def test_true_raises_without_a_device(self):
         with pytest.raises(RuntimeError, match='CUDA device'):
             resolve_gpu(True, name='AnalysisGLOW.fit')
+
+
+class TestDescribeBackend:
+    """describe_backend names the resolved backend and the reason.
+
+    The line exists for one failure mode: gpu='auto' on a machine with a
+    card but a CPU-only torch, which runs the 35x-slower CPU anchor and
+    says nothing. So what is asserted is that the fallback is visibly a
+    fallback and carries the cause -- not the exact wording.
+    """
+
+    def test_cpu_unasked_names_the_backend_and_the_flag(self):
+        text = describe_backend(False, None)
+        assert 'cpu_reliable' in text
+        assert "gpu='auto'" in text
+
+    def test_cpu_fallback_reports_the_cause(self):
+        """An 'auto' fallback quotes unavailable_reason, not just 'CPU'."""
+        text = describe_backend('auto', None)
+        assert 'cpu_reliable' in text
+        assert 'fell back' in text
+        assert draws_gpu.unavailable_reason() in text
+
+    def test_device_names_dtype_and_that_it_was_asked_for(self):
+        text = describe_backend(True, GpuConfig())
+        assert 'cuda' in text and 'float64' in text
+        assert 'requested' in text
+
+    def test_device_distinguishes_auto_from_explicit(self):
+        """'auto' that found a device reads differently from gpu=True."""
+        assert "gpu='auto'" in describe_backend('auto', GpuConfig())
+
+    def test_float32_config_is_reported_as_float32(self):
+        """The dtype shown is the config's, since it can flip p-values."""
+        cfg = GpuConfig(acc_dtype=np.float32)
+        assert 'float32' in describe_backend(cfg, cfg)
+
+
+class TestUnavailableReason:
+    """unavailable_reason separates the ways a device goes missing."""
+
+    @requires_cuda
+    def test_says_so_when_a_device_is_visible(self):
+        assert draws_gpu.unavailable_reason() == 'a device is visible'
+
+    @skip_if_cuda
+    def test_blames_the_wheel_or_the_driver_but_not_both(self):
+        """Whichever cause holds here, the clause names it concretely."""
+        reason = draws_gpu.unavailable_reason()
+        assert ('not installed' in reason
+                or 'CPU-only build' in reason
+                or 'is_available() is False' in reason
+                or 'raised' in reason)
+
+    @skip_if_cuda
+    def test_a_cpu_only_wheel_is_called_out_as_the_wheel(self):
+        """The quiet case: a card is present, torch just cannot use it.
+
+        Skipped unless that is in fact this machine's situation --
+        asserting it would otherwise pin the environment, not the code.
+        """
+        torch = pytest.importorskip('torch')
+        if getattr(torch.version, 'cuda', None) is not None:
+            pytest.skip('torch is a CUDA build')
+        reason = draws_gpu.unavailable_reason()
+        assert 'CPU-only build' in reason
+        assert torch.__version__ in reason
 
 
 def test_voxel_analysis_rejects_an_explicit_device():

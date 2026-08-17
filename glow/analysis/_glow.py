@@ -7,7 +7,7 @@ import glow.graph
 from glow.experiment.exper import ExperimentScaled
 from ._base import Analysis
 from . import draws
-from ._fit_gpu import gpu_summary, resolve_gpu
+from ._fit_gpu import describe_backend, gpu_summary, resolve_gpu
 from .cluster import cluster, ClusterMode
 from .fwer import MaxStatPerm
 from .mancova import decompose
@@ -178,6 +178,9 @@ class AnalysisGLOW(Analysis):
             print(f'  [1/2] {self.n_perm_fwer + 1} draws '
                   f'({exp_test.y.shape[1]} test images, '
                   f'{exp_test.y.shape[2]} voxels) ...')
+            # Which backend, and why -- the two differ by ~35x and
+            # gpu='auto' picks the slow one silently (describe_backend).
+            print(f'        backend: {describe_backend(gpu, gpu_config)}')
 
         # size >= min_vox is a function of the fold-A tree alone, hence a
         # constant with respect to the fold-B permutations -- the condition

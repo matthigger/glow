@@ -102,6 +102,36 @@ def resolve_gpu(gpu, *, name: str = 'fit'):
     return gpu
 
 
+def describe_backend(gpu, config) -> str:
+    """Name the draw backend a fit resolved, and why it got that one.
+
+    The CPU backend is draws.cpu_reliable, the deliberately slow trust
+    anchor -- measured 35x off the batched kernel it could ride
+    (glow.graph.iter_llr_perm), flat in num_vox. gpu='auto' drops onto it
+    without a word when no device is visible, so the expensive case is
+    also the silent one: a CPU-only torch wheel leaves nvidia-smi still
+    listing the card, and nothing but a stopwatch says which path ran.
+    Hence this line, which fit(verbose=True) prints.
+
+    Args:
+        gpu: the fit(gpu=...) argument, as the caller passed it.
+        config (GpuConfig | None): what resolve_gpu made of it.
+
+    Returns:
+        text (str): the backend, then the reason in parentheses.
+    """
+    if config is not None:
+        why = "gpu='auto' found one" if gpu == 'auto' else 'requested'
+        return (f'device {config.device} ({why}, '
+                f'{np.dtype(config.acc_dtype).name} accumulation)')
+    slow = 'CPU draws.cpu_reliable, the slow trust anchor'
+    if gpu == 'auto':
+        return (f"{slow} (gpu='auto' fell back: "
+                f'{draws_gpu.unavailable_reason()})')
+    return (f'{slow} (no device asked for; pass gpu=True, or '
+            f"gpu='auto' to take one only when visible)")
+
+
 def resolve_perm_chunk(config: GpuConfig, *, b: int, num_img: int,
                        num_vox: int, a0: int) -> int:
     """Pick the largest chunk of draws whose working set fits on device.
