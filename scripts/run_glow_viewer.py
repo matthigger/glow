@@ -20,6 +20,10 @@ EFFECT_LLR is per-voxel (size-normalized): the whole-region LLR the plant
 targets is ~ EFFECT_LLR * (the support's voxel count), so a weak per-voxel
 value over a wide support is still a detectable effect. The paper's grid
 runs 0.003 (weakest) to 0.3 (strongest); see glow._extra.benchmark.config.
+
+DEBUG fits with keep_stat=True, which adds the viewer's PERMUTATION panel
+(the per-region histogram of the FWER draws). It keys BUNDLE_PATH, so the
+two modes cache separately and flipping it refits.
 """
 
 import gzip
@@ -64,6 +68,16 @@ CLUSTER_MODE = ClusterMode.GLM_ERROR
 FRAC_SEGMENT = 0.5
 SPLIT_SEED = 0
 
+# ---- debug mode -------------------------------------------------------
+# True fits with keep_stat=True, which adds the viewer's PERMUTATION
+# panel: the scatter's one point per region, opened up into a histogram of
+# every draw behind it. Changes no result -- it only keeps the matrix the
+# summary was already read off -- but costs (N_PERM_FWER + 1) x num_reg
+# float64, ~200 MB at the constants above, in memory and again in the
+# bundle. It keys BUNDLE_PATH, so flipping it refits rather than silently
+# reopening a bundle that kept no draws.
+DEBUG = True
+
 # ---- running it -------------------------------------------------------
 # False for CPU, True to require a device, 'auto' to take one if visible.
 GPU = 'auto'
@@ -77,7 +91,8 @@ MAX_REGIONS = 10_000
 
 BUNDLE_PATH = (pathlib.Path.home() / '.local' / 'share' / 'glow' /
                'viewer_bundles' /
-               f'{SOURCE}_vox{NUM_VOX}_b{B}_llr{EFFECT_LLR}_seed{SEED}.p.gz')
+               f'{SOURCE}_vox{NUM_VOX}_b{B}_llr{EFFECT_LLR}_seed{SEED}'
+               f'{"_debug" if DEBUG else ""}.p.gz')
 REFIT = False
 
 
@@ -123,7 +138,8 @@ def fit_glow(exp):
     """Fit AnalysisGLOW on exp with the parameters above."""
     ana = AnalysisGLOW(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER,
                        min_vox=MIN_VOX, cluster_mode=CLUSTER_MODE,
-                       frac_segment=FRAC_SEGMENT, split_seed=SPLIT_SEED)
+                       frac_segment=FRAC_SEGMENT, split_seed=SPLIT_SEED,
+                       keep_stat=DEBUG)
     print(f'fitting {ana!r} ...')
     t0 = time.time()
     ana.fit(exp, gpu=GPU, verbose=VERBOSE)
@@ -147,6 +163,12 @@ def main():
         with gzip.open(BUNDLE_PATH, 'wb') as f:
             pickle.dump(bundle, f)
         print(f'wrote {BUNDLE_PATH}')
+
+    # the panel follows the bundle's draws, not DEBUG: a bundle written
+    # before DEBUG keyed the path can disagree with the constant above
+    if getattr(bundle['ana'], 'stat', None) is not None:
+        print('  debug mode: PERMUTATION panel on '
+              f'(draws {bundle["ana"].stat.shape})')
 
     from glow._extra.viewer import launch
     launch(bundle['ana'], bundle['exp'], mask_target=bundle['mask_target'],
