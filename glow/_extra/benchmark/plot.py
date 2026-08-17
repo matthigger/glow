@@ -1385,10 +1385,11 @@ def tidy_prune(raw):
     """Normalise the prune cache to a tidy per-(trial, rule) frame.
 
     The method label is GLOW-<rule> off the recorded rule (maxllr / greedy /
-    dp); the recorded Ward mode (run_prune.in.cluster_mode) rides along as the
-    cluster_mode column, so plot_prune can split it into one figure per mode. A
-    legacy record predating the mode axis carried the Focus default, so a
-    missing mode reads back as Focus.
+    dp / oracle, the last a headroom line rather than a method -- see
+    prune.prune_oracle); the recorded Ward mode (run_prune.in.cluster_mode)
+    rides along as the cluster_mode column, so plot_prune can split it into
+    one figure per mode. A legacy record predating the mode axis carried the
+    Focus default, so a missing mode reads back as Focus.
 
     Args:
         raw: the prune cache's provenance frame (one row per run_prune leaf).

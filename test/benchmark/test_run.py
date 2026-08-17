@@ -19,6 +19,7 @@ from glow._extra.benchmark.run import (glow_fit_for_prune, run_ana,
                                        run_ana_time_1perm,
                                        run_prune, run_segment, run_stat,
                                        voxel_stat_walk)
+import glow.mask
 from glow.analysis import AnalysisGLOW, AnalysisVBA
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr, get_wilks, stat_dict_inv
@@ -445,6 +446,26 @@ class TestRunPrune:
         exp, mask, uid = self._planted()
         with pytest.raises(ValueError):
             run_prune(exp, [mask], 'nope', parent_uid=uid, **self._GLOW)
+
+    def test_oracle_is_the_ceiling_of_the_llr_rules(self):
+        """The oracle rule scores at least as well as every LLR ranking.
+
+        It maximizes Dice over the same significant set the others rank, so
+        a rule beating it would mean the maximization is wrong. Dice is
+        derived here the way the results layer derives it, from the counts.
+        """
+        exp, mask, uid = self._planted()
+        dice = {}
+        for rule in ('maxllr', 'greedy', 'dp', 'oracle'):
+            score = run_prune(exp, [mask], rule, parent_uid=uid, **self._GLOW)
+            dice[rule] = glow.mask.stats_from_counts(
+                **{k: np.array([score[k]])
+                   for k in ('tp', 'fp', 'tn', 'fn')})['dice'][0]
+
+        for rule in ('maxllr', 'greedy', 'dp'):
+            assert dice['oracle'] >= dice[rule] - 1e-9, (
+                f'the {rule} rule beat the max-Dice oracle '
+                f'({dice[rule]:.4f} > {dice["oracle"]:.4f})')
 
 
 # ---------------------------------------------------------------------------

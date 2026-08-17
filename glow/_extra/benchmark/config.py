@@ -51,9 +51,9 @@ leaf over much the same grids: segment (run_segment, a Ward-mode oracle, no
 fit -- and segment_perc / segment_perc_llr, the same leaf and modes over the
 share of the images the tree is built on, at the moderate effect and across the
 llr sweep), vba_stat (run_stat, a VBA / CET variant reading a shared voxel-stat
-walk; HCP only, b=2), and prune (run_prune, three pruning rules on a shared
-GLOW fit -- and sweep_llr_prune, the same leaf and rules over sweep_llr's own
-(b, effect_llr) grid).
+walk; HCP only, b=2), and prune (run_prune, three pruning rules plus the
+max-Dice oracle on a shared GLOW fit -- and sweep_llr_prune, the same leaf and
+rules over sweep_llr's own (b, effect_llr) grid).
 
 Runtime. Five caches measure time, not detection, and run locally only. They
 answer two different questions and must not be read as one: runtime_num_vox is
@@ -219,13 +219,17 @@ RUN_STAT_LIST = grid.get_run_stat_list(
     n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER,
     cft_pval=DEFAULT_CET_CFT_PVAL)
 
-# the prune cache's leaf grid: three rules (greedy / DP / the single max-LLR
-# region) crossed with the two Ward clustering modes (Focus / GLM Error). All
-# carry the same GLOW fit knobs, so run_prune's glow_fit_for_prune is shared
-# across the three rules at a given mode (one fit per (cell, mode), the first
-# rule fits and the rest hit). The rule names the method (GLOW-<rule>) and
+# the prune cache's leaf grid: four rules (greedy / DP / the single max-LLR
+# region / the max-Dice oracle) crossed with the two Ward clustering modes
+# (Focus / GLM Error). The oracle is the headroom line, not a method: it is
+# handed the planted support the others are scored against, so the gap to it
+# is what the ranking leaves on the table at a fixed fit (see
+# prune.prune_oracle). All carry the same GLOW fit knobs, so run_prune's
+# glow_fit_for_prune is shared across the rules at a given mode (one fit per
+# (cell, mode), the first rule fits and the rest hit). The rule names the
+# method (GLOW-<rule>) and
 # cluster_mode is the second cache axis -- benchmark.plot splits it into one
-# metric grid per mode. Mode is the outer loop so a mode's three rules are
+# metric grid per mode. Mode is the outer loop so a mode's rules are
 # contiguous (the shared-fit hits land back to back). fit_params is the same
 # GLOW_FIT_PARAMS the RUN_ANA_LIST GLOW recipe takes: the shared fit is GLOW's
 # alone, so it gets GLOW's device + worker-count knobs like every other GLOW
@@ -233,7 +237,7 @@ RUN_STAT_LIST = grid.get_run_stat_list(
 # visible, same as RUN_ANA_LIST's GLOW cell).
 _PRUNE_GLOW_KWARGS = dict(n_perm_fwer=N_PERM_FWER,
                           alpha_fwer=ALPHA_FWER, fit_params=GLOW_FIT_PARAMS)
-PRUNE_RULES = ['maxllr', 'greedy', 'dp']
+PRUNE_RULES = ['maxllr', 'greedy', 'dp', 'oracle']
 PRUNE_CLUSTER_MODES = [ClusterMode.FOCUS, ClusterMode.GLM_ERROR]
 RUN_PRUNE_LIST = [
     dict(rule=rule, cluster_mode=mode, **_PRUNE_GLOW_KWARGS)
@@ -490,8 +494,8 @@ CONFIG = {
     # shared -- only the b=2 half is new work.
     #
     # A rule is a re-selection off a fitted tree, so this is not the same as
-    # running sweep_llr twice with two GLOW recipes: run_prune scores all
-    # three rules off one glow_fit_for_prune per (cell, Ward mode), which both
+    # running sweep_llr twice with two GLOW recipes: run_prune scores every
+    # rule off one glow_fit_for_prune per (cell, Ward mode), which both
     # halves the fits and isolates the rule from the permutation test that
     # chose the significant set. Pooling the two b's in one panel would
     # average two power curves, so benchmark.plot facets the prune figures by
