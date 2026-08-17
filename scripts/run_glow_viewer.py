@@ -6,15 +6,12 @@ Every knob is a constant below -- edit and run.
 
     python scripts/run_glow_viewer.py
 
-The fit is the slow part (minutes at NUM_VOX 25k), so the fitted bundle is
-written to BUNDLE_PATH and reused on the next run; set REFIT to force a
-fresh one. That bundle is a pickle of live objects, so it is a local
-artifact of this machine and not an exchange format -- never point
-BUNDLE_PATH at one you did not fit yourself. The bundle is the
-{ana, exp, mask_target} pickle the viewer takes directly, so it can also
-be opened on its own:
-
-    python -m glow._extra.viewer <BUNDLE_PATH>
+The run leaves no trace on disk. Every build goes through the undecorated
+builder (see call_uncached), so the shared benchmark cache is neither read
+nor written and no provenance record is filed, and the fit is handed
+straight to the viewer rather than pickled anywhere. The whole cell is
+therefore rebuilt and refit each time -- minutes at NUM_VOX 25k -- and
+lives only as long as the viewer process.
 
 EFFECT_LLR is per-voxel (size-normalized): the whole-region LLR the plant
 targets is ~ EFFECT_LLR * (the support's voxel count), so a weak per-voxel
@@ -22,23 +19,22 @@ value over a wide support is still a detectable effect. The paper's grid
 runs 0.003 (weakest) to 0.3 (strongest); see glow._extra.benchmark.config.
 
 DEBUG fits with keep_stat=True, which adds the viewer's PERMUTATION panel
-(the per-region histogram of the FWER draws). It keys BUNDLE_PATH, so the
-two modes cache separately and flipping it refits.
+(the per-region histogram of the FWER draws).
 """
 
-import gzip
-import pathlib
-import pickle
+import inspect
 import time
 
-from glow._extra.benchmark.data import (data_factory, data_recipe,
-                                        effect_factory)
+from glow._extra.benchmark.data import (DATA_FACTORY, EFFECT_FACTORY,
+                                        data_recipe)
 from glow.analysis import AnalysisGLOW
 from glow.analysis.cluster import ClusterMode
 from glow.effect.extent import ExtenterMinVar, ExtenterSphere
 
 # ---- the images -------------------------------------------------------
 # 'wgn' (white gaussian noise) or 'hcp' (real diffusion maps, DUA-gated).
+# 'hcp' is the one path that does write: it stages its npy bundle from the
+# niftis if that is missing (the dataset, not the cache; see hcp.py).
 SOURCE = 'wgn'
 # voxels analysed: one connected sphere cropped out of the volume.
 NUM_VOX = 25_000
@@ -56,7 +52,7 @@ EFFECT_LLR = 0.003
 EFFECT_N_VOX_FRAC = 0.1
 
 # ---- the analysis -----------------------------------------------------
-N_PERM_FWER = 500
+N_PERM_FWER = 5000
 ALPHA_FWER = 0.05
 # smallest region admitted to the FWER family. Pre-specify it; tuning it
 # against results reintroduces the selection the split is there to remove.
@@ -73,9 +69,7 @@ SPLIT_SEED = 0
 # panel: the scatter's one point per region, opened up into a histogram of
 # every draw behind it. Changes no result -- it only keeps the matrix the
 # summary was already read off -- but costs (N_PERM_FWER + 1) x num_reg
-# float64, ~200 MB at the constants above, in memory and again in the
-# bundle. It keys BUNDLE_PATH, so flipping it refits rather than silently
-# reopening a bundle that kept no draws.
+# float64, ~200 MB in memory at the constants above.
 DEBUG = True
 
 # ---- running it -------------------------------------------------------
@@ -89,15 +83,30 @@ PORT = 8050
 # it (a size cutoff, so one region size is never split). 0 shows them all.
 MAX_REGIONS = 10_000
 
-BUNDLE_PATH = (pathlib.Path.home() / '.local' / 'share' / 'glow' /
-               'viewer_bundles' /
-               f'{SOURCE}_vox{NUM_VOX}_b{B}_llr{EFFECT_LLR}_seed{SEED}'
-               f'{"_debug" if DEBUG else ""}.p.gz')
-REFIT = False
+
+def call_uncached(fnc, *args, **kwargs):
+    """Call a benchmark builder with its cache and recorder peeled off.
+
+    The builders in glow._extra.benchmark.data are wrapped @MEMORY.cache
+    over @RECORDER, so calling one looks the cell up in the shared joblib
+    cache and, on a miss, writes both a cache entry and a provenance
+    record. inspect.unwrap walks past both to the raw function, which does
+    the same build in memory alone. Worth the detour rather than a plain
+    call: an ad-hoc build landing on a benchmark cell's key rewrites that
+    record with a fresh exp hash, dropping every finished leaf that
+    consumed the old one out of config_results_df.
+
+    Args:
+        fnc: a decorated builder (DATA_FACTORY / EFFECT_FACTORY value).
+
+    Returns:
+        whatever the raw builder returns.
+    """
+    return inspect.unwrap(fnc)(*args, **kwargs)
 
 
 def build_exp():
-    """Build the experiment and plant the effect.
+    """Build the experiment and plant the effect, touching no cache.
 
     Returns:
         exp: the Experiment to fit, effect included.
@@ -117,15 +126,18 @@ def build_exp():
                            seed=SEED, extenter=extenter)
 
     print(f'building {SOURCE} experiment ...')
-    exp = data_factory(**kwargs_data)
+    # source picks the builder, so it is not one of the builder's own kwargs
+    kwargs_build = {k: v for k, v in kwargs_data.items() if k != 'source'}
+    exp = call_uncached(DATA_FACTORY[SOURCE], **kwargs_build)
     print(f'  y={exp.y.shape}  x={exp.x.shape}')
 
     if EFFECT_LLR is None:
         print('  nothing planted (null case)')
         return exp, None
 
-    exp, mask_target_list = effect_factory(
-        exp, kind='single', parent_uid=data_recipe(kwargs_data).uid,
+    exp, mask_target_list = call_uncached(
+        EFFECT_FACTORY['single'], exp,
+        parent_uid=data_recipe(kwargs_data).uid,
         effect_llr=float(EFFECT_LLR), extenter_cls=ExtenterMinVar,
         n_vox_frac=EFFECT_N_VOX_FRAC, seed_from_exp=True)
     mask_target = mask_target_list[0]
@@ -149,30 +161,16 @@ def fit_glow(exp):
 
 
 def main():
-    """Build or load the bundle, then launch the viewer on it."""
-    if BUNDLE_PATH.exists() and not REFIT:
-        print(f'loading cached fit from {BUNDLE_PATH}')
-        # our own bundle, written by this script -- see the module docstring
-        with gzip.open(BUNDLE_PATH, 'rb') as f:
-            bundle = pickle.load(f)
-    else:
-        exp, mask_target = build_exp()
-        ana = fit_glow(exp)
-        bundle = dict(ana=ana, exp=exp, mask_target=mask_target)
-        BUNDLE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with gzip.open(BUNDLE_PATH, 'wb') as f:
-            pickle.dump(bundle, f)
-        print(f'wrote {BUNDLE_PATH}')
+    """Build, fit, and launch the viewer, all in memory."""
+    exp, mask_target = build_exp()
+    ana = fit_glow(exp)
 
-    # the panel follows the bundle's draws, not DEBUG: a bundle written
-    # before DEBUG keyed the path can disagree with the constant above
-    if getattr(bundle['ana'], 'stat', None) is not None:
-        print('  debug mode: PERMUTATION panel on '
-              f'(draws {bundle["ana"].stat.shape})')
+    if ana.stat is not None:
+        print(f'  debug mode: PERMUTATION panel on (draws {ana.stat.shape})')
 
     from glow._extra.viewer import launch
-    launch(bundle['ana'], bundle['exp'], mask_target=bundle['mask_target'],
-           port=PORT, max_regions=MAX_REGIONS)
+    launch(ana, exp, mask_target=mask_target, port=PORT,
+           max_regions=MAX_REGIONS)
 
 
 if __name__ == '__main__':
