@@ -131,7 +131,9 @@ SWEEP_NIMG_GRID = list(range(10, HCP_NUM_IMG + 1, 10))
 # label -> recipe. The label is the reader-facing method name; it is the source
 # of truth results / plot map a recorded recipe back to (a run function is not
 # passed the label -- see run.py / benchmark.plot). GLOW uses the LLR
-# throughout, so the two GLOW arms differ only in Ward projection. Each
+# throughout, so the two GLOW arms differ only in Ward projection: Focus
+# clusters on the contrast subspace, GLM Error on the whole design space (the
+# segment / prune families compare the same pair on their own leaves). Each
 # voxel-wise arm takes the stat / z-scoring it wins the vba_stat bake-off with:
 # the raw Hotelling-Lawley trace for VBA and CET, the z-scored 1 - Wilks for
 # TFCE (z-scoring is what TFCE's single height grid needs to mean the same
@@ -139,8 +141,10 @@ SWEEP_NIMG_GRID = list(range(10, HCP_NUM_IMG + 1, 10))
 # which agree -- the paper's arms should be readable here.
 kwargs = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
 ana_kwargs_dict = {
-    'GLOW':   AnalysisGLOW(cluster_mode=ClusterMode.GLM_ERROR,
-                           **kwargs),
+    'GLOW-Focus': AnalysisGLOW(cluster_mode=ClusterMode.FOCUS,
+                               **kwargs),
+    'GLOW-GLM':   AnalysisGLOW(cluster_mode=ClusterMode.GLM_ERROR,
+                               **kwargs),
     'VBA':        AnalysisVBA(z_flag=False, tfce_flag=False,
                               get_stat=get_hotel_tr, **kwargs),
     'VBA-TFCE':   AnalysisVBA(z_flag=True, tfce_flag=True, get_stat=get_wilks,
@@ -148,6 +152,14 @@ ana_kwargs_dict = {
     'CET':        AnalysisCET(z_flag=False, get_stat=get_hotel_tr,
                               **kwargs),
 }
+
+# The GLOW arm the figures report (benchmark.plot drops Focus and calls this
+# one plainly GLOW) and, with it, the only arm the runtime caches time: the
+# two arms run the same permutation walk over the same shapes and differ only
+# in what Ward is handed, so a second set of timings would be a second copy of
+# one curve at the cost of the grid's full-brain points. Detection is another
+# matter -- there the arms can disagree, so every run_ana cache runs both.
+REPORTED_GLOW_LABEL = 'GLOW-GLM'
 
 # ---------- how a leaf's fit runs (never what it computes) -------------------
 # fit_params is forwarded to Analysis.fit by the leaf (run.run_ana) and is
@@ -293,7 +305,9 @@ def effect_grid(**kwargs):
 # so the answer includes whatever these cores and this card contribute. A
 # number to quote, not to extrapolate from: the parallel speedup itself varies
 # along the axis, so the slope is the machine's as much as the algorithm's.
-# This is where the methods are compared, so it runs all four.
+# This is where the methods are compared, so it runs the three voxel-wise arms
+# against GLOW -- the reported arm alone (REPORTED_GLOW_LABEL); the other's
+# wall clock is the same curve.
 #
 # runtime_1perm_* -- how does GLOW's cost grow? One core, no device, BLAS
 # pinned to one thread, one outer permutation (run_ana_time_1perm), everything
@@ -309,10 +323,6 @@ RUNTIME_N_SEED = 3
 # component), roughly doubling. Shared by both runtime families.
 RUNTIME_NUM_VOX_GRID = [1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000,
                         128_000, 224_619]
-
-# the two GLOW arms, as (label, cluster_mode)
-GLOW_ARM_MODES = [('GLOW-Focus', ClusterMode.FOCUS),
-                  ('GLOW-GLM', ClusterMode.GLM_ERROR)]
 
 # The 1perm permutation-count axes. n_perm_fwer starts at the family's own
 # baseline of 1 and doubles: the intercept (observed pass + synthesis) does not
@@ -346,7 +356,9 @@ def runtime_data_grid(**kwargs):
     return grid.get_kwargs_data_runtime(n_seed=RUNTIME_N_SEED, **kwargs)
 
 
-# runtime_num_vox's leaf grid: every method fit with what this machine has.
+# runtime_num_vox's leaf grid: every method fit with what this machine has --
+# the three voxel-wise arms and the reported GLOW arm (REPORTED_GLOW_LABEL;
+# the unreported one measures the same walk).
 # The voxel-wise arms take run_ana_time's default (all cores, no device --
 # none of them has a backend); GLOW takes GLOW_FIT_PARAMS, which adds the
 # device and caps the workers at GLOW_FIT_N_JOBS. The cap is RAM, not
@@ -361,7 +373,9 @@ def runtime_data_grid(**kwargs):
 # clearing the entry rather than just re-running.
 RUN_ANA_TIME_LIST = [dict(ana=ana, fit_params=grid.fit_params_for(
                               ana, GLOW_FIT_PARAMS))
-                     for ana in ana_kwargs_dict.values()]
+                     for label, ana in ana_kwargs_dict.items()
+                     if not isinstance(ana, AnalysisGLOW)
+                     or label == REPORTED_GLOW_LABEL]
 
 # The runtime_1perm leaf grids. GLOW alone: the cost model these caches back
 # is GLOW's, and the voxel-wise arms are compared on the wall clock
@@ -371,7 +385,7 @@ RUN_ANA_TIME_LIST = [dict(ana=ana, fit_params=grid.fit_params_for(
 # its own column, and the plotter recovers the method from in.ana exactly as it
 # does elsewhere. No fit_params: the leaf pins its own core, device and BLAS
 # thread (see run).
-ONE_PERM_ANA = ana_kwargs_dict['GLOW']
+ONE_PERM_ANA = ana_kwargs_dict[REPORTED_GLOW_LABEL]
 RUN_1PERM_LIST = [dict(ana=ONE_PERM_ANA)]
 RUN_1PERM_FWER_LIST = [dict(ana=ONE_PERM_ANA, n_perm_fwer=n)
                        for n in ONE_PERM_N_PERM_FWER_GRID]

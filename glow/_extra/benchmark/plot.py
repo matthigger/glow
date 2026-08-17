@@ -21,7 +21,8 @@ Every figure outside the segment / prune / race-retention families reports one
 GLOW arm, the GLM-Error clustering, labelled plainly GLOW: the Focus arm is
 dropped and the survivor relabelled at the plot layer (_select_glow_arm), not
 in the caches or records. The three exceptions compare the arms, so they keep
-both.
+both -- as does any cache named in _BOTH_ARM_CACHES (the llr sweep), which
+draws the arms side by side under their own names.
 
 Each cache then gets either a GLOW-only FWER calibration row (null) -- a single
 row of source x GLOW arm cells (HCP / WGN x GLOW),
@@ -69,9 +70,10 @@ import seaborn as sns
 from scipy.stats import beta
 
 import glow._extra.benchmark
+from glow.analysis import AnalysisGLOW
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import stat_dict
-from .config import ana_kwargs_dict, RUN_STAT_LIST
+from .config import ana_kwargs_dict, REPORTED_GLOW_LABEL, RUN_STAT_LIST
 from .file import add_metric_cols
 
 
@@ -90,7 +92,8 @@ def _hls_hex(h: float, l: float = _L, s: float = _S) -> str:
 
 
 COLOR_ANALYSIS = {
-    # teal (180 deg) -- the Focus arm, which no figure reports (_ARMS_SKIP)
+    # teal (180 deg) -- the Focus arm, drawn only where a cache reports every
+    # arm (_BOTH_ARM_CACHES); elsewhere it is dropped (_ARMS_SKIP)
     'GLOW-Focus': _hls_hex(0/4 + _H),
     # darker teal, the reported arm under both its recipe and figure label
     'GLOW-GLM':   _hls_hex(0/4 + _H, l=_L * 0.6),
@@ -110,33 +113,64 @@ COLOR_ANALYSIS = {
 _LABEL_OF_ANA = {repr(ana): label for label, ana in ana_kwargs_dict.items()}
 
 
-# One GLOW arm is reported, the GLM-Error clustering, and the figures call it
-# plainly GLOW: the Focus arm is dropped (_ARMS_SKIP) and the survivor
+# One GLOW arm is reported, config.REPORTED_GLOW_LABEL, and the figures call
+# it plainly GLOW: the other arms are dropped (_ARMS_SKIP) and the survivor
 # relabelled (_ARM_LABEL), so the arm choice does not have to be re-argued on
-# each panel. Both arms stay in the caches and the records -- Focus is a real
-# recipe, and the segment / prune families exist to compare the two
-# clusterings. Those families label by Ward mode (Focus / GLM Error) and prune
-# rule (GLOW-greedy / GLOW-dp) rather than by analysis arm, so neither the drop
-# nor the relabel reaches them.
-_ARMS_SKIP = ('GLOW-Focus',)
-_ARM_LABEL = {'GLOW-GLM': 'GLOW'}
+# each panel. Both taken off the catalogue, so adding or renaming an arm in
+# config needs no edit here. Every arm stays in the caches and the records --
+# Focus is a real recipe, and the segment / prune families exist to compare the
+# two clusterings. Those families label by Ward mode (Focus / GLM Error) and
+# prune rule (GLOW-greedy / GLOW-dp) rather than by analysis arm, so neither
+# the drop nor the relabel reaches them.
+_ARMS_SKIP = tuple(label for label, ana in ana_kwargs_dict.items()
+                   if isinstance(ana, AnalysisGLOW)
+                   and label != REPORTED_GLOW_LABEL)
+_ARM_LABEL = {REPORTED_GLOW_LABEL: 'GLOW'}
+
+# Caches that report every GLOW arm instead: the arms are the comparison the
+# figure is asked for, so they keep their own names through the panels, the
+# legend and the CSVs (a figure showing two curves both called GLOW would say
+# nothing). The head-to-head diff row still draws one line, the reported arm's
+# (_diff_label), while its CSV covers every arm -- see _draw_diff.
+_BOTH_ARM_CACHES = ('sweep_llr',)
 
 
-def _select_glow_arm(df):
-    """Drop the unreported GLOW arm and label the reported one GLOW.
+def _select_glow_arm(df, cache: str = None):
+    """Drop the unreported GLOW arms and label the reported one GLOW.
 
     Args:
         df: a tidy frame from any family; needs a label column to filter on
+        cache (str | None): the cache being plotted; one named in
+            _BOTH_ARM_CACHES keeps every arm under its own label.
 
     Returns:
-        the frame without its _ARMS_SKIP rows, its GLOW-GLM rows relabelled
-        GLOW (_ARM_LABEL); unchanged when empty or unlabelled (the segment /
-        prune frames label by mode / rule).
+        the frame without its _ARMS_SKIP rows, the reported arm's rows
+        relabelled GLOW (_ARM_LABEL); unchanged for a _BOTH_ARM_CACHES cache,
+        and when empty or unlabelled (the segment / prune frames label by
+        mode / rule).
     """
-    if df.empty or 'label' not in df.columns:
+    if df.empty or 'label' not in df.columns or cache in _BOTH_ARM_CACHES:
         return df
     df = df[~df['label'].isin(_ARMS_SKIP)]
     return df.assign(label=df['label'].replace(_ARM_LABEL))
+
+
+def _diff_label(cache: str) -> str:
+    """Return the GLOW label the cache's head-to-head diff row draws.
+
+    The diff panel draws one line, so it names the reported arm under whatever
+    labelling that cache's frame carries: the raw recipe label where every arm
+    survives, the relabelled GLOW everywhere else.
+
+    Args:
+        cache (str): the cache being plotted.
+
+    Returns:
+        str: the label to pass plot_source_grid as one_label.
+    """
+    return (REPORTED_GLOW_LABEL if cache in _BOTH_ARM_CACHES
+            else _ARM_LABEL[REPORTED_GLOW_LABEL])
+
 
 # stat bake-off vocabulary. The method (VBA / VBA-TFCE / CET) and the raw/z arm
 # are recovered from the recorded recipe -- its class and tfce_flag / z_flag --
@@ -482,9 +516,12 @@ def plot_calibration(pvals, color, *, alpha_max: float = 1.0, n_pts: int = 200,
 
 
 # The null calibration figure shows only GLOW (the paper's FWER claim is about
-# GLOW); the voxel-wise methods are dropped, and the Focus arm before that
-# (_ARMS_SKIP / _select_glow_arm). Left-to-right column order.
-_CALIB_METHODS = ('GLOW',)
+# GLOW); the voxel-wise methods are dropped, and the unreported arms before
+# that (_ARMS_SKIP / _select_glow_arm). Left-to-right column order. Both
+# spellings of the reported arm are listed so the figure survives a null cache
+# added to _BOTH_ARM_CACHES, where the labels arrive unrelabelled; only one of
+# the two can be present in a given frame.
+_CALIB_METHODS = (_ARM_LABEL[REPORTED_GLOW_LABEL], REPORTED_GLOW_LABEL)
 
 
 def _plot_calibration_faceted(label: str, df, out,
@@ -812,13 +849,16 @@ def _crossing(x_vals, y_vals, level: float):
 def _order_threshold_rows(wide):
     """Sort a threshold table by source order, then canonical method order.
 
-    Methods follow the config catalogue order under their figure labels (GLOW
-    first, then the voxel-wise methods; see config.ana_kwargs_dict and
-    _ARM_LABEL); a label outside the catalogue sorts last. Sources follow
-    _SOURCE_ORDER (HCP over WGN).
+    Methods follow the config catalogue order (GLOW first, then the voxel-wise
+    methods; see config.ana_kwargs_dict), under both their recipe label and
+    their figure label, since a _BOTH_ARM_CACHES table carries the raw arm
+    names and every other one the relabelled GLOW (_ARM_LABEL). A label outside
+    the catalogue sorts last. Sources follow _SOURCE_ORDER (HCP over WGN).
     """
-    m_rank = {_ARM_LABEL.get(m, m): i
-              for i, m in enumerate(ana_kwargs_dict)}
+    m_rank = {}
+    for i, m in enumerate(ana_kwargs_dict):
+        m_rank[m] = i
+        m_rank[_ARM_LABEL.get(m, m)] = i
     s_rank = {s: i for i, s in enumerate(_SOURCE_ORDER)}
     keyed = wide.assign(
         _s=wide['source'].map(lambda s: s_rank.get(s, len(s_rank))),
@@ -1517,7 +1557,7 @@ def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0) -> None:
         log_x_ratio (float): x max/min ratio at or above which the x-axis is
             log-scaled.
     """
-    df = _select_glow_arm(df.dropna(subset=['x', 'time_sec', 'label']))
+    df = _select_glow_arm(df.dropna(subset=['x', 'time_sec', 'label']), name)
     if df.empty:
         print(f'  (no timed rows for {name} — skipping)')
         return
@@ -1573,7 +1613,7 @@ def plot_cache(label: str, df, out,
         out (pathlib.Path): directory the figures are written into
         metrics (list): metric columns plotted as the panel columns
     """
-    df = _select_glow_arm(df)
+    df = _select_glow_arm(df, label)
     if df.empty:
         print(f'  (no rows for {label} — skipping)')
         return
@@ -1584,7 +1624,8 @@ def plot_cache(label: str, df, out,
         return
 
     for sub_label, sub in _split_by_secondary(label, df, x):
-        plot_source_grid(sub_label, sub, x=x, metrics=metrics, out=out)
+        plot_source_grid(sub_label, sub, x=x, metrics=metrics, out=out,
+                         one_label=_diff_label(label))
 
     # one discovery-threshold table for the whole cache, a column per secondary
     # (b in the llr sweep); absolute effect_llr per method (threshold_table)

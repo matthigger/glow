@@ -8,18 +8,20 @@ import pandas as pd
 import pytest
 
 from glow._extra.benchmark import plot
-from glow._extra.benchmark.config import ana_kwargs_dict, RUN_STAT_LIST
-from glow.analysis import AnalysisGLOW, AnalysisVBA
+from glow._extra.benchmark.config import (ana_kwargs_dict,
+                                          REPORTED_GLOW_LABEL, RUN_STAT_LIST)
+from glow.analysis import AnalysisVBA
 
 
 # The catalogue's method names, taken by role rather than spelled out: a
 # provenance row has to carry a recipe the read path can map back to a label
-# (plot._LABEL_OF_ANA), and these tests need one GLOW arm and one voxel-wise
-# arm -- not whichever names config carries this month, nor how many arms it
-# ships. What the figures then CALL the reported arm is plot's own contract
-# (_ARM_LABEL / _CALIB_METHODS), so output assertions use the literal below.
-GLOW_LABEL = next(label for label, ana in ana_kwargs_dict.items()
-                  if isinstance(ana, AnalysisGLOW))
+# (plot._LABEL_OF_ANA), and these tests need the reported GLOW arm and one
+# voxel-wise arm -- not whichever names config carries this month, nor how many
+# arms it ships. The reported arm rather than any GLOW arm because the
+# unreported ones never reach a figure (_ARMS_SKIP). What the figures then CALL
+# it is plot's own contract (_ARM_LABEL / _CALIB_METHODS), so output assertions
+# use the literal below.
+GLOW_LABEL = REPORTED_GLOW_LABEL
 VBA_LABEL = next(label for label, ana in ana_kwargs_dict.items()
                  if isinstance(ana, AnalysisVBA) and not ana.tfce_flag)
 GLOW_FIGURE = 'GLOW'
@@ -146,9 +148,10 @@ def test_plot_cache_sweep_writes_grid_and_diff_csv(tmp_path):
     assert (tmp_path / 'sweep_llr.pdf').exists()
     assert (tmp_path / 'sweep_llr_diff.csv').exists()
 
-    # the diff CSV carries one block per GLOW variant vs the best alternative
+    # the diff CSV carries one block per GLOW variant vs the best alternative;
+    # the llr sweep keeps the arms' own names (_BOTH_ARM_CACHES)
     diff = pd.read_csv(tmp_path / 'sweep_llr_diff.csv')
-    assert set(diff['method'].unique()) == {GLOW_FIGURE}
+    assert set(diff['method'].unique()) == {GLOW_LABEL}
     assert {'source', 'effect_llr', 'dice_diff', 'dice_win'}.issubset(
         diff.columns)
 
@@ -204,7 +207,8 @@ def test_plot_cache_sweep_writes_threshold_csv(tmp_path):
     assert {'source', 'method'}.issubset(thr.columns)
     assert {'b=1', 'b=2', 'b=3'}.issubset(thr.columns)
     bcols = ['b=1', 'b=2', 'b=3']
-    glow = thr[thr['method'] == GLOW_FIGURE][bcols].to_numpy()
+    # the llr sweep reports the arms under their own names (_BOTH_ARM_CACHES)
+    glow = thr[thr['method'] == GLOW_LABEL][bcols].to_numpy()
     vba = thr[thr['method'] == VBA_LABEL][bcols].to_numpy()
     # thresholds fall inside the swept 0.01..0.1 range
     assert glow.size and vba.size
@@ -783,15 +787,13 @@ def test_select_glow_arm_spares_mode_and_rule_labels():
         'GLOW', 'Focus', 'GLOW-greedy', 'VBA']
 
 
-def test_plot_cache_drops_focus_arm(tmp_path):
-    """A detection cache reports one arm, labelled GLOW, in figure + CSVs.
+def _both_arm_frame():
+    """Build a one-source tidy frame carrying both GLOW arms plus VBA.
 
-    The plot layer's guarantee is about the labels handed to it, not about how
-    many arms the catalogue ships: whichever raw arm names reach it (the
-    inner-edge family records both, see config.GLOW_ARM_MODES), the
-    unreported one is dropped and the survivor relabelled. So the arms are
-    injected into the tidy frame rather than round-tripped through a recipe --
-    the raw names here are plot's own vocabulary (_ARMS_SKIP / _ARM_LABEL).
+    The arms are injected into the tidy frame rather than round-tripped
+    through a recipe: what the plot layer promises is about the labels handed
+    to it, not about how many arms the catalogue ships, so the raw names here
+    are plot's own vocabulary (_ARMS_SKIP / _ARM_LABEL).
     """
     rows = []
     for llr in (0.01, 0.03, 0.1):
@@ -805,13 +807,38 @@ def test_plot_cache_drops_focus_arm(tmp_path):
     df = pd.concat([tidy[tidy['label'] != GLOW_LABEL],
                     glow.assign(label='GLOW-Focus'),
                     glow.assign(label='GLOW-GLM')], ignore_index=True)
-    # both arms are in the tidy frame; only the plot layer drops one
     assert {'GLOW-Focus', 'GLOW-GLM'} <= set(df['label'])
+    return df
 
-    plot.plot_cache('sweep_llr', df, tmp_path)
-    thr = pd.read_csv(tmp_path / 'sweep_llr_threshold.csv')
+
+def test_plot_cache_drops_focus_arm(tmp_path):
+    """An ordinary detection cache reports one arm, labelled GLOW."""
+    df = _both_arm_frame()
+
+    plot.plot_cache('sweep_extent', df, tmp_path)
+    thr = pd.read_csv(tmp_path / 'sweep_extent_threshold.csv')
     # neither raw arm label reaches the output; the reported arm reads GLOW
     assert not {'GLOW-Focus', 'GLOW-GLM'} & set(thr['method'])
     assert GLOW_FIGURE in set(thr['method'])
-    diff = pd.read_csv(tmp_path / 'sweep_llr_diff.csv')
+    diff = pd.read_csv(tmp_path / 'sweep_extent_diff.csv')
     assert set(diff['method'].unique()) == {GLOW_FIGURE}
+
+
+def test_plot_cache_keeps_both_arms_where_the_cache_compares_them(tmp_path):
+    """The llr sweep draws both arms under their own names.
+
+    _BOTH_ARM_CACHES is the exception to the one-reported-arm rule: the arms
+    are what that figure compares, so no row is dropped and none is relabelled
+    GLOW (two curves of that name would say nothing). The diff CSV still
+    covers every arm -- one block each, against the same best alternative.
+    """
+    df = _both_arm_frame()
+
+    plot.plot_cache('sweep_llr', df, tmp_path)
+    thr = pd.read_csv(tmp_path / 'sweep_llr_threshold.csv')
+    assert {'GLOW-Focus', 'GLOW-GLM'} <= set(thr['method'])
+    assert GLOW_FIGURE not in set(thr['method'])
+    # catalogue order survives: the arms lead, the voxel-wise method follows
+    assert list(thr['method']) == ['GLOW-Focus', 'GLOW-GLM', VBA_LABEL]
+    diff = pd.read_csv(tmp_path / 'sweep_llr_diff.csv')
+    assert set(diff['method'].unique()) == {'GLOW-Focus', 'GLOW-GLM'}
