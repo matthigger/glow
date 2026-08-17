@@ -33,6 +33,25 @@ from glow.experiment.exper import Experiment, ExperimentScaled
 
 NUM_IMG = 40
 
+# Tolerance for a fit held against a rebuild through draws.cpu_reliable.
+# The fit draws through the batched kernel (draws.cpu_summary), so these are
+# two independent implementations of the same statistic and agree to fp64
+# round-off, not bitwise -- they were bitwise while the fit took the anchor
+# itself. Nothing the cases below claim is a 13th-digit effect: getting the
+# fold, the moments or the standardization wrong moves them structurally,
+# which is why the checks survive the looser bound. Cell-by-cell agreement
+# of the two backends is pinned in test_draws.py, not inferred here.
+RTOL_ANCHOR = 1e-7
+ATOL_ANCHOR = 1e-9
+
+# Tolerance between the two reductions of one backend's own chunks:
+# cpu_summary's streaming Chan accumulators against summarize_draws over the
+# materialized matrix. Same cells in a different summation order, so this is
+# pure fp64 round-off and far tighter than RTOL_ANCHOR -- kept separate so a
+# real drift between the streaming and materializing paths still fails.
+RTOL_REDUCE = 1e-12
+ATOL_REDUCE = 1e-14
+
 
 def _exp(seed=0, num_img=NUM_IMG, shape=(6, 6, 6), b=2):
     """A float64 experiment.
@@ -72,6 +91,11 @@ def _draws(ana, exp):
     (n_perm_fwer + 1, num_reg) and too heavy to hold -- so the checks
     that need every row rebuild it here. That the rebuild reproduces the
     fit is itself pinned, by test_draws_come_from_the_test_fold.
+
+    Deliberately through cpu_reliable, which is not the backend the fit
+    takes: that makes every comparison against this matrix a second
+    implementation's opinion rather than a re-run of the same code, at the
+    cost of holding it to round-off (RTOL_ANCHOR / ATOL_ANCHOR).
     """
     children, exp_test = _test_fold(ana, exp)
     q0, q1, _ = decompose(x=exp_test.x, contrast=exp_test.contrast)
@@ -122,12 +146,13 @@ def test_draws_come_from_the_test_fold():
     assert exp_test.y.shape[1] == NUM_IMG - NUM_IMG // 2
 
     draws = _draws(ana, exp)
-    np.testing.assert_allclose(ana.llr, draws[0], rtol=0, atol=0,
-                               equal_nan=True)
+    np.testing.assert_allclose(ana.llr, draws[0], rtol=RTOL_ANCHOR,
+                               atol=ATOL_ANCHOR, equal_nan=True)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', RuntimeWarning)
         np.testing.assert_allclose(ana.mu, np.nanmean(draws, axis=0),
-                                   rtol=0, atol=0, equal_nan=True)
+                                   rtol=RTOL_ANCHOR, atol=ATOL_ANCHOR,
+                                   equal_nan=True)
 
 
 # ---------- the one draw matrix ---------------------------------------------
@@ -182,10 +207,10 @@ def test_observed_row_contributes_to_the_moments():
         std_all = np.nanstd(draws, axis=0, ddof=1)
         mu_null_only = np.nanmean(draws[1:], axis=0)
 
-    np.testing.assert_allclose(ana.mu, mu_all, rtol=0, atol=0,
-                               equal_nan=True)
-    np.testing.assert_allclose(ana.std, std_all, rtol=0, atol=0,
-                               equal_nan=True)
+    np.testing.assert_allclose(ana.mu, mu_all, rtol=RTOL_ANCHOR,
+                               atol=ATOL_ANCHOR, equal_nan=True)
+    np.testing.assert_allclose(ana.std, std_all, rtol=RTOL_ANCHOR,
+                               atol=ATOL_ANCHOR, equal_nan=True)
     # excluding row 0 would move them, so this is a real constraint
     assert not np.allclose(ana.mu, mu_null_only, equal_nan=True)
 
@@ -195,13 +220,13 @@ def test_z_is_the_shared_standardization():
     exp = _exp()
     ana = _ana().fit(exp)
     z, _, _ = AnalysisGLOW.z_score_stat(_draws(ana, exp))
-    np.testing.assert_allclose(ana.fwer.stat_obs, z[0], rtol=0, atol=0,
-                               equal_nan=True)
+    np.testing.assert_allclose(ana.fwer.stat_obs, z[0], rtol=RTOL_ANCHOR,
+                               atol=ATOL_ANCHOR, equal_nan=True)
 
     reg_active = ana.size >= ana.min_vox
     np.testing.assert_allclose(ana.fwer.max_stat,
                                np.nanmax(z[:, reg_active], axis=1),
-                               rtol=0, atol=0)
+                               rtol=RTOL_ANCHOR, atol=ATOL_ANCHOR)
 
 
 def test_max_stat_has_one_entry_per_draw():
@@ -249,26 +274,45 @@ def test_keep_stat_is_the_matrix_the_summary_came_from():
 
 
 def test_keep_stat_matches_the_independent_rebuild():
-    """The kept matrix is the recipe's, cell for cell."""
+    """The kept matrix is the recipe's, cell for cell.
+
+    Held to RTOL_ANCHOR because keep_stat forms the matrix through
+    draws.cpu_batched while the rebuild goes through draws.cpu_reliable --
+    the same cross-implementation comparison the constant is named for.
+    """
     exp = _exp()
     ana = _ana(keep_stat=True).fit(exp)
-    np.testing.assert_allclose(ana.stat, _draws(ana, exp), rtol=0, atol=0,
+    np.testing.assert_allclose(ana.stat, _draws(ana, exp),
+                               rtol=RTOL_ANCHOR, atol=ATOL_ANCHOR,
                                equal_nan=True)
 
 
 def test_keep_stat_changes_no_result():
-    """A diagnostic, not a knob: every statistic is untouched by it."""
+    """A diagnostic, not a knob: no statistic moves beyond round-off.
+
+    llr and mu are bitwise: row 0 and the chunk means are the same
+    reduction either way. std is not, because keep_stat swaps
+    cpu_summary's streaming Chan accumulators for summarize_draws over the
+    kept matrix, and the two sum in different orders -- so std and the
+    z-scores dividing by it are held to RTOL_REDUCE. What the fit reports
+    -- the p-values and the discoveries -- stays exact.
+    """
     exp = _exp()
     off = _ana().fit(exp)
     on = _ana(keep_stat=True).fit(exp)
 
-    for name in ('llr', 'mu', 'std', 'size'):
+    for name in ('llr', 'mu', 'size'):
         np.testing.assert_allclose(getattr(off, name), getattr(on, name),
                                    rtol=0, atol=0, equal_nan=True)
-    for name in ('pval', 'stat_obs', 'max_stat'):
+    np.testing.assert_allclose(off.std, on.std, rtol=RTOL_REDUCE,
+                               atol=ATOL_REDUCE, equal_nan=True)
+    for name in ('stat_obs', 'max_stat'):
         np.testing.assert_allclose(getattr(off.fwer, name),
                                    getattr(on.fwer, name),
-                                   rtol=0, atol=0, equal_nan=True)
+                                   rtol=RTOL_REDUCE, atol=ATOL_REDUCE,
+                                   equal_nan=True)
+    np.testing.assert_allclose(off.fwer.pval, on.fwer.pval, rtol=0, atol=0,
+                               equal_nan=True)
     np.testing.assert_array_equal(off.fwer.reg_sig, on.fwer.reg_sig)
 
 
@@ -393,6 +437,50 @@ def test_fit_is_deterministic_and_returns_self():
                                atol=0)
     np.testing.assert_allclose(a.fwer.pval, b.fwer.pval, rtol=0, atol=0,
                                equal_nan=True)
+
+
+# ---------- the CPU backends against each other ------------------------------
+# fit takes the batched kernel; cpu_anchor=True takes the slow per-region
+# walk. Nothing downstream of the draws differs, so a whole fit must land on
+# the same conclusions either way -- and that is what makes the anchor worth
+# keeping in the tree at 35x the cost.
+def test_the_anchor_fits_to_the_same_conclusions():
+    """fit() and fit(cpu_anchor=True) agree on every reported output.
+
+    p-values are compared exactly, not to a tolerance: they are counts of
+    null draws at or above the observed, so round-off may not move one
+    without something being wrong about the ordering.
+    """
+    exp = _exp()
+    fast = _ana().fit(exp)
+    anchor = _ana().fit(exp, cpu_anchor=True)
+
+    np.testing.assert_array_equal(anchor.children, fast.children)
+    np.testing.assert_allclose(anchor.llr, fast.llr, rtol=RTOL_ANCHOR,
+                               atol=ATOL_ANCHOR, equal_nan=True)
+    np.testing.assert_allclose(anchor.fwer.max_stat, fast.fwer.max_stat,
+                               rtol=RTOL_ANCHOR, atol=ATOL_ANCHOR)
+    np.testing.assert_allclose(anchor.fwer.pval, fast.fwer.pval, rtol=0,
+                               atol=0, equal_nan=True)
+    assert [e.reg_idx for e in anchor.effect_list] == \
+           [e.reg_idx for e in fast.effect_list]
+
+
+def test_the_anchor_returns_self():
+    ana = _ana()
+    assert ana.fit(_exp(), cpu_anchor=True) is ana
+
+
+def test_the_anchor_refuses_an_explicit_device():
+    """Two backends were named at once, so the fit says so rather than pick."""
+    with pytest.raises(ValueError, match='cannot also honour'):
+        _ana().fit(_exp(), cpu_anchor=True, gpu=True)
+
+
+def test_the_anchor_outranks_an_auto_device():
+    """'auto' is a default, cpu_anchor is an instruction; no raise."""
+    ana = _ana()
+    assert ana.fit(_exp(), cpu_anchor=True, gpu='auto') is ana
 
 
 # ---------- the device argument ----------------------------------------------

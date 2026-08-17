@@ -6,6 +6,13 @@ code path from the batched compute_llr_batched that iter_llr_perm rides.
 Both intercept-only and general-Q0 designs are exercised, and the two
 agree cell by cell to fp64 round-off (~1e-10).
 
+Nothing here fits with the anchor -- AnalysisGLOW.fit takes cpu_summary,
+the streamed batched kernel -- which is exactly why these comparisons
+carry the weight: they are what says the fast path computes the anchor's
+statistic. Three layers of it, each against the anchor or against a
+materialized reference: cpu_batched's matrix, cpu_summary's reduction of
+it, and (in test_fit_gpu.py) the device's.
+
 The reserved-0 convention gets its own section: base_seed = 0 must put
 the observed draw in row 0, which the equivalence cases above cannot see
 because they run at base_seed = 12_345 where every row is permuted.
@@ -20,7 +27,8 @@ import pytest
 
 import glow.graph
 import glow.mask
-from glow.analysis import draws
+from glow.analysis import draws, fwer
+from glow.analysis._base import Analysis
 from glow.analysis.cluster import cluster
 from glow.analysis.mancova import decompose
 from glow.experiment import permute
@@ -215,5 +223,157 @@ def test_min_vox_drops_small_regions_cpu_reliable(prep_intercept_fp64):
     assert small.any(), 'fixture has no size<4 regions; raise min_vox'
     assert np.isnan(got[:, small]).all(), \
         'cpu_reliable: size<min_vox cells leaked finite values'
+
+
+def test_min_vox_drops_small_regions_cpu_batched(prep_intercept_fp64):
+    """Same of the batched path, which derives NaN a different way.
+
+    cpu_reliable skips a small region; the kernel masks it after a scan
+    that ran over it anyway, so this is not the same code answering twice.
+    """
+    prep = {**prep_intercept_fp64, 'min_vox': 4}
+    got = _draws(draws.cpu_batched, prep)
+    _, size = glow.graph.compute_llr_batched(
+        prep['exp'], children=prep['children'],
+        q0=prep['q0'], q1=prep['q1'], min_size=1)
+    small = size < 4
+    assert small.any(), 'fixture has no size<4 regions; raise min_vox'
+    assert np.isnan(got[:, small]).all(), \
+        'cpu_batched: size<min_vox cells leaked finite values'
+
+
+# ---------------------------------------------------------------------------
+# The two fast CPU entry points against the anchor. A fit's draws come from
+# cpu_summary, which streams cpu_batched's chunks, so the anchor holds both:
+# cpu_batched cell by cell, cpu_summary against the same reduction taken over
+# a materialized matrix (summarize_draws). This is the comparison that keeps
+# cpu_reliable in the tree -- it is never fitted with, only compared to.
+
+def _reg_active(prep):
+    """The comparison set a fit would derive: size >= min_vox."""
+    _, size = glow.graph.compute_llr_batched(
+        prep['exp'], children=prep['children'], q0=prep['q0'],
+        q1=prep['q1'], min_size=1)
+    return size >= prep['min_vox']
+
+
+def _summary(prep, *, n_perm=6, base_seed=0, **over):
+    return draws.cpu_summary(
+        exp=prep['exp'], base_seed=base_seed, n_perm=n_perm,
+        q0=prep['q0'], q1=prep['q1'], children=prep['children'],
+        min_vox=prep['min_vox'], reg_active=_reg_active(prep), **over)
+
+
+def _assert_summaries_match(got, ref, *, atol):
+    """Every DrawSummary field agrees, NaN masks included."""
+    for field in ('llr', 'mu', 'std', 'z_obs', 'max_stat'):
+        g, r = getattr(got, field), getattr(ref, field)
+        assert g.shape == r.shape, f'{field}: {g.shape} != {r.shape}'
+        nan_g, nan_r = np.isnan(g), np.isnan(r)
+        assert (nan_g == nan_r).all(), f'{field}: NaN masks differ'
+        finite = ~nan_g
+        if finite.any():
+            diff = np.abs(g[finite] - r[finite]).max()
+            assert diff < atol, f'{field}: max abs diff {diff:.3e}'
+
+
+def test_cpu_batched_matches_reliable_intercept(prep_intercept_fp64):
+    """cpu_batched matches the anchor cell by cell, intercept-only."""
+    prep = prep_intercept_fp64
+    got = _draws(draws.cpu_batched, prep, n_perm=6)
+    ref = _draws(draws.cpu_reliable, prep, n_perm=6)
+    _assert_draws_match(got, ref, atol=1e-10)
+
+
+def test_cpu_batched_matches_reliable_general(prep_general_fp64):
+    """Same on general Q0, where the FL re-projection is not a no-op."""
+    prep = prep_general_fp64
+    got = _draws(draws.cpu_batched, prep, n_perm=6)
+    ref = _draws(draws.cpu_reliable, prep, n_perm=6)
+    _assert_draws_match(got, ref, atol=1e-10)
+
+
+def test_cpu_batched_row_0_is_the_observed_draw(prep_general_fp64):
+    """base_seed = 0 leaves row 0 unpermuted on the batched path too."""
+    prep = prep_general_fp64
+    got = _draws(draws.cpu_batched, prep, n_perm=3, base_seed=0)
+    _assert_draws_match(got[:1], _observed_llr(prep)[None], atol=1e-10)
+
+
+def test_cpu_summary_matches_the_materialized_reduction(prep_general_fp64):
+    """Streaming the reduction changes nothing about it.
+
+    Held against summarize_draws over cpu_batched's own matrix, so the
+    only difference under test is streaming -- same draws, same
+    conventions, two ways of folding them.
+    """
+    prep = prep_general_fp64
+    ref = draws.summarize_draws(
+        _draws(draws.cpu_batched, prep, n_perm=6, base_seed=0),
+        reg_active=_reg_active(prep))
+    _assert_summaries_match(_summary(prep, n_perm=6), ref, atol=1e-12)
+
+
+def test_cpu_summary_matches_the_anchors_summary(prep_general_fp64):
+    """The whole CPU fast path against the whole anchor path.
+
+    What AnalysisGLOW.fit(cpu_anchor=True) and fit() respectively compute,
+    compared at the one object a fit actually keeps.
+    """
+    prep = prep_general_fp64
+    ref = draws.summarize_draws(
+        _draws(draws.cpu_reliable, prep, n_perm=6, base_seed=0),
+        reg_active=_reg_active(prep))
+    _assert_summaries_match(_summary(prep, n_perm=6), ref, atol=1e-9)
+
+
+@pytest.mark.parametrize('perm_chunk', [1, 2, 3, 5, 16])
+def test_cpu_summary_is_chunk_invariant(prep_general_fp64, perm_chunk):
+    """perm_chunk is a throughput knob and moves no number.
+
+    Chunking sets how the Chan accumulators are combined, so agreement is
+    to round-off rather than bitwise -- and a chunk size that does not
+    divide n_perm is the case that catches an off-by-one in the tail.
+    """
+    prep = prep_general_fp64
+    ref = _summary(prep, n_perm=6, perm_chunk=8)
+    _assert_summaries_match(_summary(prep, n_perm=6, perm_chunk=perm_chunk),
+                            ref, atol=1e-11)
+
+
+def test_cpu_summary_max_stat_is_in_draw_order(prep_general_fp64):
+    """max_stat[i] is draw i's max, not a sorted or reordered null.
+
+    Entry 0 must be the observed draw's: MaxStatPerm.from_max reads the
+    p-value off the null's rank against it, so a permuted order would
+    still look plausible while being wrong.
+    """
+    prep = prep_general_fp64
+    summary = _summary(prep, n_perm=5)
+    active = _reg_active(prep)
+    matrix = _draws(draws.cpu_batched, prep, n_perm=5, base_seed=0)
+    z, _, _ = Analysis.z_score_stat(matrix)
+    np.testing.assert_allclose(summary.max_stat,
+                               fwer.max_over_active(z, active),
+                               rtol=0, atol=1e-11)
+    np.testing.assert_allclose(summary.max_stat[0],
+                               np.nanmax(summary.z_obs[active]),
+                               rtol=0, atol=1e-11)
+
+
+def test_cpu_summary_with_an_empty_comparison_set(prep_general_fp64):
+    """No active region leaves max_stat all-NaN, not empty or zero.
+
+    fwer.max_over_active's convention, reached per chunk here, so this
+    pins that streaming did not turn a NaN draw into a number.
+    """
+    prep = prep_general_fp64
+    summary = draws.cpu_summary(
+        exp=prep['exp'], base_seed=0, n_perm=4, q0=prep['q0'],
+        q1=prep['q1'], children=prep['children'], min_vox=prep['min_vox'],
+        reg_active=np.zeros(prep['children'].shape[0]
+                            + prep['exp'].y.shape[2], dtype=bool))
+    assert summary.max_stat.shape == (4,)
+    assert np.isnan(summary.max_stat).all()
 
 

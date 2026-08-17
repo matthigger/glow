@@ -113,6 +113,39 @@ def is_available() -> bool:
         return False
 
 
+def unavailable_reason() -> str:
+    """Say why is_available() is False, in one clause.
+
+    The three ways a device goes missing are not equivalent and neither
+    are their fixes: no torch at all, a CPU-only torch build (pip's
+    default wheel -- torch.version.cuda is None however many cards are in
+    the machine), or a CUDA build that cannot see one (driver, container,
+    CUDA_VISIBLE_DEVICES). The middle case is the quiet one, since
+    nvidia-smi still lists the card, so it names the wheel.
+
+    AnalysisGLOW.fit(verbose=True) prints this through
+    _fit_gpu.describe_backend, because gpu='auto' falls back without a
+    word and the CPU backend it falls back to costs ~35x (see draws).
+
+    Returns:
+        reason (str): the clause, or 'a device is visible' when one is.
+    """
+    try:
+        import torch
+    except ImportError:
+        return 'torch is not installed'
+    if getattr(torch.version, 'cuda', None) is None:
+        return (f'torch {torch.__version__} is a CPU-only build '
+                f'(torch.version.cuda is None)')
+    try:
+        if torch.cuda.is_available():
+            return 'a device is visible'
+    except Exception as err:
+        return f'torch.cuda.is_available() raised {err!r}'
+    return (f'torch {torch.__version__} is a CUDA build, but '
+            f'torch.cuda.is_available() is False')
+
+
 def _torch_dtype(acc_dtype):
     """Map a numpy accumulation dtype to (np.dtype, torch dtype)."""
     import torch
