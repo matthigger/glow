@@ -4,6 +4,7 @@ These test the callback functions directly (without running a Dash server)
 by calling them with mock clickData / hoverData dicts.
 """
 
+import copy
 import json
 
 import numpy as np
@@ -156,14 +157,16 @@ class TestRegressionClickToImage:
         assert len(marker_traces) >= 1
         for t in marker_traces:
             assert t.customdata is not None, 'regression markers need customdata'
-            assert len(t.customdata) == exp.y.shape[1]
+            assert len(t.customdata) == len(t.x)
 
     def test_customdata_are_image_indices(self, ana, exp, df_with_target):
+        """One region's traces partition the images, fold by fold."""
         fig = self._build_reg_fig(ana, exp, df_with_target)
         marker_traces = [t for t in fig.data if t.mode == 'markers']
         num_img = exp.y.shape[1]
-        for t in marker_traces:
-            assert list(t.customdata) == list(range(num_img))
+
+        img_idx = [int(i) for t in marker_traces for i in t.customdata]
+        assert sorted(img_idx) == list(range(num_img))
 
     @staticmethod
     def _simulate_click(img_idx):
@@ -186,13 +189,67 @@ class TestRegressionClickToImage:
             assert t.customdata is None
 
     def test_multiple_regions(self, ana, exp, df_with_target):
-        """Each region's marker trace should carry image-index customdata."""
+        """Every region's markers carry image-index customdata, per fold."""
         num_vox = exp.y.shape[2]
         regs = [num_vox, num_vox + 1]
         fig = build_regression_figure(
             ana_glow=ana, exp=exp, region_list=regs,
             x_feat_idx=0, y_feat_idx=0, df=df_with_target)
         marker_traces = [t for t in fig.data if t.mode == 'markers']
-        assert len(marker_traces) == 2
-        for t in marker_traces:
-            assert list(t.customdata) == list(range(exp.y.shape[1]))
+        assert len(marker_traces) == 2 * len(regs)
+
+        for reg_idx in regs:
+            img_idx = [int(i) for t in marker_traces
+                       if t.legendgroup == f'reg-{reg_idx}'
+                       for i in t.customdata]
+            assert sorted(img_idx) == list(range(exp.y.shape[1]))
+
+
+class TestRegressionFoldMarkers:
+    """Marker shape names the fold: square segmentation, circle test."""
+
+    @staticmethod
+    def _marker_traces(ana, exp, df, x_feat_idx=0):
+        """Build the panel on one region and return its marker traces."""
+        fig = build_regression_figure(
+            ana_glow=ana, exp=exp, region_list=[exp.y.shape[2]],
+            x_feat_idx=x_feat_idx, y_feat_idx=0, df=df)
+        return [t for t in fig.data if t.mode == 'markers']
+
+    def test_one_trace_per_fold(self, ana, exp, df_with_target):
+        traces = self._marker_traces(ana, exp, df_with_target)
+        assert [t.marker.symbol for t in traces] == ['square', 'circle']
+
+    def test_square_holds_the_tree_fold(self, ana, exp, df_with_target):
+        """The square trace draws exactly the images the tree was built on."""
+        square, circle = self._marker_traces(ana, exp, df_with_target)
+
+        in_segment = np.asarray(ana.img_segment, dtype=bool)
+        assert list(square.customdata) == list(np.flatnonzero(in_segment))
+        assert list(circle.customdata) == list(np.flatnonzero(~in_segment))
+
+    def test_fold_named_in_legend_and_hover(self, ana, exp, df_with_target):
+        square, circle = self._marker_traces(ana, exp, df_with_target)
+
+        assert square.name.endswith('segmentation fold')
+        assert circle.name.endswith('test fold')
+        assert all('segmentation fold' in t for t in square.text)
+        assert all('test fold' in t for t in circle.text)
+
+    def test_markers_follow_their_own_images(self, ana, exp, df_with_target):
+        """Each point keeps the x of the image its customdata names."""
+        for trace in self._marker_traces(ana, exp, df_with_target,
+                                         x_feat_idx=1):
+            img_idx = [int(i) for i in trace.customdata]
+            assert np.array_equal(np.asarray(trace.x), exp.x[1][img_idx])
+
+    def test_a_fit_without_the_fold_still_plots(self, ana, exp,
+                                               df_with_target):
+        """An older fit (no img_segment) falls back to one circle trace."""
+        ana_old = copy.copy(ana)
+        ana_old.img_segment = None
+
+        traces = self._marker_traces(ana_old, exp, df_with_target)
+        assert len(traces) == 1
+        assert traces[0].marker.symbol == 'circle'
+        assert list(traces[0].customdata) == list(range(exp.y.shape[1]))

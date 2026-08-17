@@ -6,6 +6,13 @@ For each selected region, plots individual images as markers:
 
 Includes an OLS best-fit line per region and relevant statistics.
 Colours are coordinated with the image slicer overlay.
+
+Marker shape names the image's fold in GLOW's split: squares for the
+segmentation fold that built the Ward tree, circles for the held-out test
+fold every statistic comes from. The distinction is the whole point of the
+panel on a Ward-chosen region, whose mean is selected to track the design
+in the segmentation fold and so slopes far steeper there than in the fold
+that tested it -- two clouds, one per fold, around a single pooled fit.
 """
 
 import numpy as np
@@ -20,6 +27,31 @@ def _get_voxel_indices(reg_idx, children, num_vox):
     return list(glow.graph.iter_postorder(
         children=children, num_leaf=num_vox,
         node_start=reg_idx, only_leaf=True))
+
+
+def _iter_folds(ana_glow, num_img: int):
+    """Yield one marker trace's worth of images per fold.
+
+    Args:
+        ana_glow: AnalysisGLOW; its img_segment names the fold per image
+        num_img (int): images in the experiment
+
+    Yields:
+        img_idx (np.array): the images this trace draws
+        symbol (str): plotly marker symbol
+        fold (str | None): fold name for the legend and hover, None when
+            the images are drawn undivided
+    """
+    in_segment = getattr(ana_glow, 'img_segment', None)
+    # a fit that predates img_segment (an older pickled bundle) still plots,
+    # undivided, rather than losing the panel to a missing attribute
+    if in_segment is None or len(in_segment) != num_img:
+        yield np.arange(num_img), 'circle', None
+        return
+
+    in_segment = np.asarray(in_segment, dtype=bool)
+    yield np.flatnonzero(in_segment), 'square', 'segmentation fold'
+    yield np.flatnonzero(~in_segment), 'circle', 'test fold'
 
 
 def get_x_labels(exp):
@@ -158,8 +190,8 @@ def build_regression_figure(ana_glow, exp, region_list, x_feat_idx, y_feat_idx,
         y_features (list[str]|None): human-readable imaging feature names
         subject_names (list[str]|None): per-image subject names for hover
         target_vox (np.array|None): voxel indices for the full target mask.
-            When provided, an additional trace with star markers shows
-            the target mask's per-image regression.
+            When provided, an additional trace shows the target mask's
+            per-image regression.
 
     Returns:
         fig (go.Figure)
@@ -249,32 +281,41 @@ def build_regression_figure(ana_glow, exp, region_list, x_feat_idx, y_feat_idx,
         legend_label = (f'Target mask ({n_vox} vox)' if is_target
                         else f'Region {reg_idx} ({n_vox} vox)')
 
-        # scatter points with +/-1 SD error bars
+        # scatter points with +/-1 SD error bars, one trace per fold so the
+        # marker shape reads (see the module docstring). customdata carries
+        # each trace's own image indices, which is what a click resolves to.
         err_opacity = max(opacity * 0.5, 0.15)
-        fig.add_trace(go.Scatter(
-            x=x_design, y=y_vals,
-            mode='markers',
-            marker=dict(
-                size=8,
-                color=f'rgba({r},{g},{b},{opacity})',
-                line=dict(width=1,
-                          color=f'rgba({r},{g},{b},{min(opacity+0.2, 1.0)})'),
-            ),
-            error_y=dict(
-                type='data',
-                array=y_std,
-                visible=True,
-                color=f'rgba({r},{g},{b},{err_opacity})',
-                thickness=1,
-                width=3,
-            ),
-            customdata=list(range(num_img)),
-            text=hover_texts,
-            hoverinfo='text',
-            name=legend_label,
-            legendgroup=f'reg-{reg_idx}',
-            showlegend=True,
-        ))
+        for img_idx, symbol, fold in _iter_folds(ana_glow, num_img):
+            text = [hover_texts[i] for i in img_idx]
+            if fold is not None:
+                text = [f'{t}<br>{fold}' for t in text]
+            fig.add_trace(go.Scatter(
+                x=x_design[img_idx], y=y_vals[img_idx],
+                mode='markers',
+                marker=dict(
+                    size=8,
+                    symbol=symbol,
+                    color=f'rgba({r},{g},{b},{opacity})',
+                    line=dict(
+                        width=1,
+                        color=f'rgba({r},{g},{b},{min(opacity+0.2, 1.0)})'),
+                ),
+                error_y=dict(
+                    type='data',
+                    array=y_std[img_idx],
+                    visible=True,
+                    color=f'rgba({r},{g},{b},{err_opacity})',
+                    thickness=1,
+                    width=3,
+                ),
+                customdata=[int(i) for i in img_idx],
+                text=text,
+                hoverinfo='text',
+                name=(legend_label if fold is None
+                      else f'{legend_label}, {fold}'),
+                legendgroup=f'reg-{reg_idx}',
+                showlegend=True,
+            ))
 
         # OLS fit line
         x_sorted = np.sort(x_design)
