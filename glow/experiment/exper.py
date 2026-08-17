@@ -373,20 +373,14 @@ class ExperimentImageOnly:
         return self._copy_with(y=self.y[:, img_idx, :], meta=meta,
                                **overrides)
 
-    def split_img(self, frac_segment: float = .5, *, seed: int = None,
-                  group=None):
-        """Partition the images into a segmentation fold and a test fold.
+    def get_img_segment(self, frac_segment: float = .5, *, seed: int = None,
+                        group=None):
+        """Return which images the segmentation fold takes.
 
-        The two folds are disjoint in images and identical in voxels --
-        both keep this experiment's mask_idx and num_vox -- so a Ward tree
-        built on exp_segment indexes the leaves of exp_test unchanged.
-        That is what lets GLOW segment on one fold and compute LLR / inner
-        perms / FWER on the other, which removes the selection bias of
-        choosing the tree with the same images that then test it.
-
-        Run drop_constant_vox before splitting, not after: screening each
-        fold separately renumbers mask_idx differently in each, and the
-        tree stops transferring.
+        The partition split_img cuts, as a mask instead of a pair of
+        experiments, for a caller that needs to know which images built
+        something rather than the fold itself (the viewer's regression
+        panel, labelling each image by fold).
 
         The partition is a uniform random draw, so each fold's share of
         the design's information is right on average (the two folds'
@@ -406,8 +400,8 @@ class ExperimentImageOnly:
                 since whole groups move at a time.
 
         Returns:
-            exp_segment: fold the Ward tree is built on
-            exp_test: fold the statistics are computed on
+            in_segment (np.array): (num_img,) boolean, True for the images
+                in the segmentation fold
 
         Raises:
             ValueError: if either fold would come out empty
@@ -438,8 +432,40 @@ class ExperimentImageOnly:
                 f'too extreme for num_img={num_img}, or one group is too '
                 f'large a share of the images')
 
-        in_segment = np.isin(group_idx, order[:k])
-        img_idx = np.arange(num_img)
+        return np.isin(group_idx, order[:k])
+
+    def split_img(self, frac_segment: float = .5, *, seed: int = None,
+                  group=None):
+        """Partition the images into a segmentation fold and a test fold.
+
+        The two folds are disjoint in images and identical in voxels --
+        both keep this experiment's mask_idx and num_vox -- so a Ward tree
+        built on exp_segment indexes the leaves of exp_test unchanged.
+        That is what lets GLOW segment on one fold and compute LLR / inner
+        perms / FWER on the other, which removes the selection bias of
+        choosing the tree with the same images that then test it.
+
+        Run drop_constant_vox before splitting, not after: screening each
+        fold separately renumbers mask_idx differently in each, and the
+        tree stops transferring.
+
+        Args:
+            frac_segment (float): fraction of the images going to the
+                segmentation fold, in (0, 1)
+            seed (int): RNG seed for the partition
+            group (np.array): (num_img,) labels held together; see
+                get_img_segment, which draws the partition
+
+        Returns:
+            exp_segment: fold the Ward tree is built on
+            exp_test: fold the statistics are computed on
+
+        Raises:
+            ValueError: if either fold would come out empty
+        """
+        in_segment = self.get_img_segment(frac_segment=frac_segment, seed=seed,
+                                          group=group)
+        img_idx = np.arange(self.y.shape[1])
         return (self._take_img(img_idx[in_segment]),
                 self._take_img(img_idx[~in_segment]))
 

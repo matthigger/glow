@@ -418,6 +418,18 @@ class TestSplitImg:
             assert np.array_equal(fold.x, exp.x[:, idx])
             assert np.array_equal(fold.contrast, exp.contrast)
 
+    @pytest.mark.parametrize('group', [None, np.arange(NUM_IMG) // 2])
+    def test_mask_names_the_same_partition(self, group):
+        """get_img_segment names exactly the images split_img hands over"""
+        exp = self.build_exp()
+        kwargs = dict(frac_segment=.6, seed=0, group=group)
+
+        in_segment = exp.get_img_segment(**kwargs)
+        seg, test = exp.split_img(**kwargs)
+
+        assert np.array_equal(np.flatnonzero(in_segment), self.img_idx(seg))
+        assert np.array_equal(np.flatnonzero(~in_segment), self.img_idx(test))
+
     def test_voxels_are_shared(self):
         """Both folds keep every voxel, so one fold's tree fits the other"""
         exp = self.build_exp()
