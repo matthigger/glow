@@ -175,3 +175,59 @@ class TestEnsureHcpData:
 
         assert hcp.ensure_hcp_data() == dest
         assert hcp.is_present(dest)
+
+
+# ---------------------------------------------------------------------------
+# atomic bundle writes
+# ---------------------------------------------------------------------------
+
+class TestWriteAtomic:
+    """A reader sees a bundle file whole or absent, never partly written.
+
+    is_bundle_present tests existence alone, so a parallel sweep converting a
+    cold bundle would otherwise have its other workers load a truncated array
+    (a 90 MB feature takes a visible while to write).
+    """
+
+    def test_destination_holds_the_whole_write(self, tmp_path):
+        dest = tmp_path / 'feat.npy'
+        hcp._write_atomic(dest, lambda h: h.write(b'0123456789'))
+        assert dest.read_bytes() == b'0123456789'
+        # nothing staged is left behind
+        assert list(tmp_path.iterdir()) == [dest]
+
+    def test_a_failed_write_publishes_nothing(self, tmp_path):
+        dest = tmp_path / 'feat.npy'
+
+        def _boom(handle):
+            """Write half the file, then fail as a full disk would."""
+            handle.write(b'01234')
+            raise OSError('no space left on device')
+
+        with pytest.raises(OSError, match='no space'):
+            hcp._write_atomic(dest, _boom)
+        # the presence check is existence, so a partial file must not exist
+        assert not dest.exists()
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_second_writer_stages_separately(self, tmp_path, monkeypatch):
+        """Two processes converting at once stage under their own pid.
+
+        Both publish the same bytes (one source, one array), so the duplicated
+        work is all the collision costs -- but only if neither writes into the
+        other's staging file.
+        """
+        dest = tmp_path / 'feat.npy'
+        staged = []
+
+        def _record(handle):
+            """Note the staging path this writer opened."""
+            staged.append(handle.name)
+            handle.write(b'x')
+
+        monkeypatch.setattr(hcp.os, 'getpid', lambda: 111)
+        hcp._write_atomic(dest, _record)
+        monkeypatch.setattr(hcp.os, 'getpid', lambda: 222)
+        hcp._write_atomic(dest, _record)
+        assert staged[0] != staged[1]
+        assert dest.read_bytes() == b'x'

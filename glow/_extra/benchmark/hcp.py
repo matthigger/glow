@@ -190,20 +190,52 @@ def ensure_hcp_bundle(feats=HCP_FEATS) -> pathlib.Path:
     return bundle_dir()
 
 
+def _write_atomic(path: pathlib.Path, write_fnc) -> None:
+    """Write path via a private .partial sibling, renamed in once whole.
+
+    The bundle's counterpart to _download_and_extract's staging, and for the
+    same reason: a write in place leaves a truncated file visible for as long
+    as it takes (90 MB per feature here), and is_bundle_present tests
+    existence, so a parallel sweep landing on a cold bundle has its other
+    workers np.load a half-written array ('could only read N elements'). A
+    rename is atomic, so a reader sees the file absent or whole. The staging
+    name carries the pid, so two workers converting at once stage separately
+    rather than into one file; both then publish the same bytes, which costs
+    the duplicated work and nothing else.
+
+    Args:
+        path (pathlib.Path): the destination file.
+        write_fnc (callable): called with the open binary handle to write.
+    """
+    tmp = path.with_name(f'{path.name}.{os.getpid()}.partial')
+    try:
+        with open(tmp, 'wb') as handle:
+            write_fnc(handle)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def _dump_bundle(exp_img) -> None:
     """Write an ExperimentImageOnly out as the per-feature npy bundle.
 
     Dumps the boolean mask (mask_idx > -1), the affine, the subject ids, and
     one float32 (num_img, num_vox) array per feature -- exactly the arrays the
-    glue reloads (see build_exp_img_from_bundle).
+    glue reloads (see build_exp_img_from_bundle). Each file is published
+    atomically (_write_atomic), so a concurrent reader never sees a partial
+    one.
     """
     (bundle_dir() / 'feat').mkdir(parents=True, exist_ok=True)
-    np.save(bundle_mask_path(), exp_img.mask_idx > -1)
-    np.save(bundle_affine_path(), np.asarray(exp_img.meta['affine']))
-    bundle_meta_path().write_text(
-        json.dumps({'subjects': exp_img.meta['subjects']}))
+    _write_atomic(bundle_mask_path(),
+                  lambda h: np.save(h, exp_img.mask_idx > -1))
+    _write_atomic(bundle_affine_path(),
+                  lambda h: np.save(h, np.asarray(exp_img.meta['affine'])))
+    _write_atomic(bundle_meta_path(), lambda h: h.write(json.dumps(
+        {'subjects': exp_img.meta['subjects']}).encode()))
     for feat_idx, feat in enumerate(exp_img.meta['features']):
-        np.save(bundle_feat_path(feat), exp_img.y[feat_idx])
+        _write_atomic(bundle_feat_path(feat),
+                      lambda h, y=exp_img.y[feat_idx]: np.save(h, y))
 
 
 def build_exp_img_from_bundle(feats):
