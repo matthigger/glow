@@ -52,7 +52,8 @@ fit -- and segment_perc / segment_perc_llr, the same leaf and modes over the
 share of the images the tree is built on, at the moderate effect and across the
 llr sweep), vba_stat (run_stat, a VBA / CET variant reading a shared voxel-stat
 walk; HCP only, b=2), and prune (run_prune, three pruning rules on a shared
-GLOW fit).
+GLOW fit -- and sweep_llr_prune, the same leaf and rules over sweep_llr's own
+(b, effect_llr) grid).
 
 Runtime. Five caches measure time, not detection, and run locally only. They
 answer two different questions and must not be read as one: runtime_num_vox is
@@ -482,6 +483,23 @@ CONFIG = {
     #    one metric grid per mode.
     'prune': (
         data_grid(),
+        effect_grid(llr_list=EFFECT_LLR_GRID),
+        RUN_PRUNE_LIST, run_prune),
+    # The same rules read on the llr sweep's own axes: sweep_llr's data grid
+    # (both b) and effect grid on prune's leaf, so what the selection rule
+    # costs is read at every effect strength the power curve reports rather
+    # than at b=1 alone. Its b=1 half is prune's own grid, so those cells are
+    # shared -- only the b=2 half is new work.
+    #
+    # A rule is a re-selection off a fitted tree, so this is not the same as
+    # running sweep_llr twice with two GLOW recipes: run_prune scores all
+    # three rules off one glow_fit_for_prune per (cell, Ward mode), which both
+    # halves the fits and isolates the rule from the permutation test that
+    # chose the significant set. Pooling the two b's in one panel would
+    # average two power curves, so benchmark.plot facets the prune figures by
+    # b (plot_prune).
+    'sweep_llr_prune': (
+        data_grid(b_list=B_LLR_SWEEP),
         effect_grid(llr_list=EFFECT_LLR_GRID),
         RUN_PRUNE_LIST, run_prune),
     # Smoke: tiny null sweep over both sources to confirm the pipeline end to

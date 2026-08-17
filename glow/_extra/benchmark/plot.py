@@ -468,7 +468,7 @@ def _split_by_secondary(label: str, df, x: str):
             sweep_llr_b1) and the matching sub-frame.
     """
     extra = [a for a in _SECONDARY_AXES
-             if a != x and df[a].dropna().nunique() > 1]
+             if a != x and a in df.columns and df[a].dropna().nunique() > 1]
     if not extra:
         yield label, df
         return
@@ -1721,22 +1721,31 @@ _PRUNE_LABELS_SKIP = ('GLOW-maxllr',)
 
 
 def plot_prune(label: str, df, out) -> None:
-    """Plot one metric grid per Ward clustering mode for the prune cache.
+    """Plot one metric grid per Ward clustering mode for a prune cache.
 
-    The prune cache crosses the pruning rules with both Ward modes (Focus / GLM
+    A prune cache crosses the pruning rules with both Ward modes (Focus / GLM
     Error), so a single grid would overlay two clusterings. This draws one
     source x metric grid per mode (plot_metric_grid), writing {label}_{mode}.pdf
     so the clusterings are compared side by side rather than on one axis. The
     diagnostic maxllr rule is dropped (_PRUNE_LABELS_SKIP).
 
+    A cache that also varies b (sweep_llr_prune) splits again on it
+    (_split_by_secondary), one figure per (mode, b): the grid's facets are
+    already spent on source x metric, and pooling the b's would average two
+    power curves into one line. The b=1-only prune cache yields the one figure
+    per mode it always did.
+
     Args:
-        label (str): cache name; each figure's stem is {label}_{mode}.
+        label (str): cache name; each figure's stem is {label}_{mode}, plus
+            _b{b} where the cache sweeps b.
         df: a tidy_prune frame (needs the cluster_mode column).
         out (pathlib.Path): directory the figures are written into.
     """
     df = df[~df['label'].isin(_PRUNE_LABELS_SKIP)]
     for mode, df_mode in df.groupby('cluster_mode'):
-        plot_metric_grid(f'{label}_{_mode_slug(mode)}', df_mode, out)
+        stem = f'{label}_{_mode_slug(mode)}'
+        for sub_label, sub in _split_by_secondary(stem, df_mode, 'effect_llr'):
+            plot_metric_grid(sub_label, sub, out)
 
 
 
@@ -1903,7 +1912,8 @@ def main(argv=None) -> None:
     write_stat_tables. The segment / prune caches are normalised with
     tidy_segment / tidy_prune and drawn as a source x metric grid vs
     effect_llr: segment by plot_metric_grid, prune by plot_prune (one grid per
-    Ward clustering mode). segment_perc takes the same grid against
+    Ward clustering mode, and per b where the cache sweeps it --
+    sweep_llr_prune). segment_perc takes the same grid against
     frac_segment instead, the share of the images its tree was built on, and
     segment_perc_llr crosses the two -- one grid per Ward mode, a curve per
     fold share (plot_segment_llr), plus a multipage {cache}_compare.pdf turning
