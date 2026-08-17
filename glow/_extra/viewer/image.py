@@ -41,7 +41,7 @@ def compute_region_center(reg_idx, exp, ana_glow):
     Args:
         reg_idx (int): region index
         exp (Experiment): the experiment the analysis was fit on (mask_idx)
-        ana_glow (AnalysisGLOW): completed analysis (tree)
+        ana_glow (AnalysisGLOWBase): completed analysis (tree)
 
     Returns:
         list[float] or None: [i, j, k] voxel coordinates, or None if the
@@ -60,7 +60,7 @@ def build_label_map(reg_idx_list, exp, ana_glow):
     Args:
         reg_idx_list (list[int]): region indices to show
         exp (Experiment): the experiment the analysis was fit on (mask_idx)
-        ana_glow (AnalysisGLOW): provides the Ward tree (children)
+        ana_glow (AnalysisGLOWBase): provides the Ward tree (children)
 
     Returns:
         label_map (np.array): same shape as mask_idx, -1 outside regions

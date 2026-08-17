@@ -67,8 +67,8 @@ import warnings
 
 import numpy as np
 
-from glow.analysis import (AnalysisCET, AnalysisGLOW, AnalysisVBA,
-                           DEFAULT_CET_CFT_PVAL)
+from glow.analysis import (AnalysisCET, AnalysisGLOWBase, AnalysisGLOWSplit,
+                           AnalysisVBA, DEFAULT_CET_CFT_PVAL)
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr, get_wilks
 
@@ -143,10 +143,10 @@ SWEEP_NIMG_GRID = list(range(10, HCP_NUM_IMG + 1, 10))
 # which agree -- the paper's arms should be readable here.
 kwargs = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
 ana_kwargs_dict = {
-    'GLOW-Focus': AnalysisGLOW(cluster_mode=ClusterMode.FOCUS,
-                               **kwargs),
-    'GLOW-GLM':   AnalysisGLOW(cluster_mode=ClusterMode.GLM_ERROR,
-                               **kwargs),
+    'GLOW-Focus': AnalysisGLOWSplit(cluster_mode=ClusterMode.FOCUS,
+                                    **kwargs),
+    'GLOW-GLM':   AnalysisGLOWSplit(cluster_mode=ClusterMode.GLM_ERROR,
+                                    **kwargs),
     'VBA':        AnalysisVBA(z_flag=False, tfce_flag=False,
                               get_stat=get_hotel_tr, **kwargs),
     'VBA-TFCE':   AnalysisVBA(z_flag=True, tfce_flag=True, get_stat=get_wilks,
@@ -154,6 +154,12 @@ ana_kwargs_dict = {
     'CET':        AnalysisCET(z_flag=False, get_stat=get_hotel_tr,
                               **kwargs),
 }
+
+# Both GLOW entries are AnalysisGLOWSplit, the arm with strong FWER control.
+# AnalysisGLOW (per-perm segmentation) is a recipe like any other and can be
+# added here as a further arm -- one entry, plus a plot.COLOR_ANALYSIS
+# colour -- but it costs n_perm_inner + 1 draws per outer perm, ~250x these
+# arms at the paper's 500 x 250, so it is not carried in the paper's grid.
 
 # The GLOW arm the figures report (benchmark.plot drops Focus and calls this
 # one plainly GLOW) and, with it, the only arm the runtime caches time: the
@@ -374,7 +380,7 @@ def runtime_data_grid(**kwargs):
 RUN_ANA_TIME_LIST = [dict(ana=ana, fit_params=grid.fit_params_for(
                               ana, GLOW_FIT_PARAMS))
                      for label, ana in ana_kwargs_dict.items()
-                     if not isinstance(ana, AnalysisGLOW)
+                     if not isinstance(ana, AnalysisGLOWBase)
                      or label == REPORTED_GLOW_LABEL]
 
 # The runtime_1perm leaf grids. GLOW alone: the cost model these caches back

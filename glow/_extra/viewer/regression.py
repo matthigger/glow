@@ -7,12 +7,14 @@ For each selected region, plots individual images as markers:
 Includes an OLS best-fit line per region and relevant statistics.
 Colours are coordinated with the image slicer overlay.
 
-Marker shape names the image's fold in GLOW's split: squares for the
-segmentation fold that built the Ward tree, circles for the held-out test
-fold every statistic comes from. The distinction is the whole point of the
-panel on a Ward-chosen region, whose mean is selected to track the design
-in the segmentation fold and so slopes far steeper there than in the fold
-that tested it -- two clouds, one per fold, around a single pooled fit.
+Marker shape names the image's fold in a split-fold fit
+(AnalysisGLOWSplit): squares for the segmentation fold that built the Ward
+tree, circles for the held-out test fold every statistic comes from. The
+distinction is the whole point of the panel on a Ward-chosen region, whose
+mean is selected to track the design in the segmentation fold and so slopes
+far steeper there than in the fold that tested it -- two clouds, one per
+fold, around a single pooled fit. A per-perm fit (AnalysisGLOW) segments on
+every image and has no fold to name, so its images draw as one cloud.
 """
 
 import numpy as np
@@ -33,7 +35,8 @@ def _iter_folds(ana_glow, num_img: int):
     """Yield one marker trace's worth of images per fold.
 
     Args:
-        ana_glow: AnalysisGLOW; its img_segment names the fold per image
+        ana_glow: a GLOW fit; a split-fold one's img_segment names the
+            fold per image
         num_img (int): images in the experiment
 
     Yields:
@@ -43,8 +46,9 @@ def _iter_folds(ana_glow, num_img: int):
             the images are drawn undivided
     """
     in_segment = getattr(ana_glow, 'img_segment', None)
-    # a fit that predates img_segment (an older pickled bundle) still plots,
-    # undivided, rather than losing the panel to a missing attribute
+    # a fit with no fold -- a per-perm AnalysisGLOW, or an older pickled
+    # bundle -- still plots, undivided, rather than losing the panel to a
+    # missing attribute
     if in_segment is None or len(in_segment) != num_img:
         yield np.arange(num_img), 'circle', None
         return
@@ -178,7 +182,7 @@ def build_regression_figure(ana_glow, exp, region_list, x_feat_idx, y_feat_idx,
     """Build a regression scatter for one or more regions.
 
     Args:
-        ana_glow: AnalysisGLOW (provides the Ward tree)
+        ana_glow: AnalysisGLOWBase (provides the Ward tree)
         exp (Experiment): the experiment the analysis was fit on
         region_list (list[int]): region indices to show (visible + hover)
         x_feat_idx (int): which design-matrix row (original index)

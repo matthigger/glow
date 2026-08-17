@@ -71,7 +71,7 @@ def build_scatter(df, ana_glow, exp, x_feat, y_feat, color_feat,
 
     Args:
         df (pd.DataFrame): region DataFrame (from viewer.data.prep_df)
-        ana_glow (AnalysisGLOW): completed analysis (for tree + thresholds)
+        ana_glow (AnalysisGLOWBase): completed analysis (for tree + thresholds)
         exp (Experiment): the experiment the analysis was fit on (num_vox)
         x_feat (str): column name for x axis
         y_feat (str): column name for y axis

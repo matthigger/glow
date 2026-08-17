@@ -1,16 +1,16 @@
-"""Device backend for AnalysisGLOW.fit(gpu=...).
+"""Device backend for the GLOW arms' fit(gpu=...).
 
 Two jobs: normalise the fit(gpu=...) argument into GpuConfig knobs, and
-draw GLOW's one (n_perm_fwer + 1, num_reg) Freedman-Lane matrix on device.
-The reduction that follows is the CPU path's own -- Analysis.z_score_stat
-then MaxStatPerm -- so the backends cannot drift in anything but the draws
-they hand it.
+draw a (n_perm, num_reg) Freedman-Lane matrix on device. The reduction that
+follows is the CPU path's own -- Analysis.z_score_stat then MaxStatPerm --
+so the backends cannot drift in anything but the draws they hand it.
 
-The draws come from draws_gpu.gpu_perm, which takes the tree and the
-experiment the split architecture already fixes: one tree from the
-segmentation fold, every statistic on the test fold, base_seed = 0 so row
-0 is the observed draw (permute._perm_indices reserves seed 0 for it). So
-the backend needs no structure of its own beyond chunk sizing.
+The draws come from draws_gpu.gpu_perm, against whichever tree and
+experiment the caller fixed: AnalysisGLOWSplit's one fold-A tree over
+n_perm_fwer + 1 draws, or one of AnalysisGLOW's per-perm trees over its
+n_perm_inner + 1. Either way base_seed = 0, so row 0 is the observed draw
+(permute._perm_indices reserves seed 0 for it), and the backend needs no
+structure of its own beyond chunk sizing.
 
 acc_dtype defaults to float64 because Analysis.fit documents a fit as
 identical on either device, and that is what keeps gpu out of a recipe's
@@ -50,7 +50,7 @@ _DEVICE_MEM_FRACTION = 0.8
 
 @dataclass(frozen=True)
 class GpuConfig:
-    """Device-backend knobs for AnalysisGLOW.fit(gpu=...).
+    """Device-backend knobs for a GLOW fit(gpu=...).
 
     Attributes:
         device (str): torch device string
@@ -192,7 +192,7 @@ def gpu_draws(config: GpuConfig, *, exp, base_seed: int, n_perm: int,
 
     The device counterpart of draws.cpu_reliable, sized and dtyped from the
     same GpuConfig gpu_summary uses, so the two differ only in what they
-    hand back. AnalysisGLOW.fit takes this route under keep_stat, where the
+    hand back. A GLOW fit takes this route under keep_stat, where the
     streaming reduction is no use because the caller wants every cell.
 
     Peak host memory is the matrix: (n_perm, num_reg) float64, ~16.7 GiB at
@@ -227,8 +227,8 @@ def gpu_summary(config: GpuConfig, *, exp, base_seed: int, n_perm: int,
     """Summarize the draws on device, never materializing the matrix.
 
     The device counterpart of draws.cpu_summary -- same two-pass shape, same
-    DrawSummary -- and a drop-in for it at AnalysisGLOW.fit's one call site.
-    Sizes perm_chunk first (see resolve_perm_chunk), then defers to
+    DrawSummary -- and a drop-in for it wherever a GLOW arm draws. Sizes
+    perm_chunk first (see resolve_perm_chunk), then defers to
     draws_gpu.gpu_summarize.
 
     Args:

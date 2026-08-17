@@ -230,8 +230,8 @@ class TestMinVoxRegions:
 
     @pytest.fixture(scope='class')
     def ana_gated(self, exp):
-        from glow.analysis import AnalysisGLOW
-        return AnalysisGLOW(n_perm_fwer=5, min_vox=4,
+        from glow.analysis import AnalysisGLOWSplit
+        return AnalysisGLOWSplit(n_perm_fwer=5, min_vox=4,
                             keep_stat=True).fit(exp)
 
     def test_gated_region_has_no_draws(self, ana_gated):

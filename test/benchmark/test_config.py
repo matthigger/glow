@@ -24,7 +24,8 @@ import inspect
 import pytest
 
 from glow._extra.benchmark import config, data
-from glow.analysis import Analysis, AnalysisCET, AnalysisGLOW, AnalysisVBA
+from glow.analysis import (Analysis, AnalysisCET, AnalysisGLOWBase,
+                           AnalysisVBA)
 
 
 # every catalogue entry; the shape / bind checks cover all of them
@@ -151,7 +152,7 @@ class TestFitParams:
     def test_only_glow_configures_its_fit(self):
         for cell in config.RUN_ANA_LIST:
             expected = (config.GLOW_FIT_PARAMS
-                        if isinstance(cell['ana'], AnalysisGLOW) else None)
+                        if isinstance(cell['ana'], AnalysisGLOWBase) else None)
             assert cell['fit_params'] == expected
 
     def test_wall_clock_cache_gives_glow_the_device(self):
@@ -160,7 +161,7 @@ class TestFitParams:
         # have no backend and take the leaf's default (all cores, CPU)
         for cell in config.CONFIG['runtime_num_vox'][2]:
             expected = (config.GLOW_FIT_PARAMS
-                        if isinstance(cell['ana'], AnalysisGLOW) else None)
+                        if isinstance(cell['ana'], AnalysisGLOWBase) else None)
             assert cell['fit_params'] == expected
 
     @pytest.mark.parametrize(

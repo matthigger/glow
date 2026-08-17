@@ -203,7 +203,7 @@ class TestLayout3DMultiFeature:
     @pytest.fixture(scope='class')
     def app_3d_multi(self):
         from glow.experiment.exper import Experiment, ExperimentImageOnly
-        from glow.analysis import AnalysisGLOW
+        from glow.analysis import AnalysisGLOWSplit
         shape = (5, 5, 5)
         exp_img = ExperimentImageOnly.from_gauss(
             b=2, num_img=8, shape=shape, seed=99)
@@ -211,7 +211,7 @@ class TestLayout3DMultiFeature:
         exp = Experiment(x=x, contrast=np.array([True]),
                          y=exp_img.y, mask_idx=exp_img.mask_idx,
                          add_bias=True)
-        ana = AnalysisGLOW(n_perm_fwer=3).fit(exp)
+        ana = AnalysisGLOWSplit(n_perm_fwer=3).fit(exp)
         return _create_app(ana, exp, y_features=['feat_A', 'feat_B'])
 
     @pytest.fixture(scope='class')

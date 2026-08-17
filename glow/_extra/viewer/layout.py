@@ -335,6 +335,13 @@ def _detail_panels(ana_glow, exp):
     else:
         pval_min = None
 
+    # the arm-specific knob: a split-fold fit has a fold, a per-perm one an
+    # inner null. Only the knob the fit actually carries is shown -- a row
+    # reading '<not stored>' for the other arm's would suggest a lost field.
+    arm_rows = [_kv_row(name, getattr(ana_glow, name))
+                for name in ('frac_segment', 'n_perm_inner')
+                if getattr(ana_glow, name, None) is not None]
+
     ana_rows = [
         _kv_row('class', type(ana_glow).__name__),
         _kv_row('cluster_mode',
@@ -342,8 +349,7 @@ def _detail_panels(ana_glow, exp):
         _kv_row('alpha_fwer', getattr(ana_glow, 'alpha_fwer', None)),
         _kv_row('n_perm_fwer',
                 getattr(ana_glow, 'n_perm_fwer', '<not stored>')),
-        _kv_row('frac_segment',
-                getattr(ana_glow, 'frac_segment', '<not stored>')),
+        *arm_rows,
         _kv_row('min_vox', getattr(ana_glow, 'min_vox', None)),
         _kv_row('adj_crit (llr_z)', fwer_crit_llr_z(ana_glow)),
         _kv_row('# significant regions',

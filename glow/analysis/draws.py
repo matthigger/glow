@@ -2,9 +2,10 @@
 
 Given a Ward tree and an experiment, draw n_perm Freedman-Lane samples
 (Freedman & Lane 1983) and return the per-region LLR for each, as one
-(n_perm, num_reg) matrix. That matrix is GLOW's whole hypothesis family:
-its column moments standardize the regions, its row maxima are the max-z
-null, and row 0 is the observed draw (see AnalysisGLOW).
+(n_perm, num_reg) matrix. Row 0 is the observed draw. For
+AnalysisGLOWSplit that matrix is the whole hypothesis family -- its column
+moments standardize the regions and its row maxima are the max-z null; for
+AnalysisGLOW it is one outer perm's inner null, drawn once per tree.
 
 Three CPU entry points, all over that one matrix, all agreeing on it:
 
@@ -17,8 +18,8 @@ Three CPU entry points, all over that one matrix, all agreeing on it:
     perm-chunk. Measured 35x cpu_reliable, and the pair's agreement is
     what test_draws.py pins.
   - cpu_summary -- cpu_batched's draws reduced to a DrawSummary while
-    streaming, never holding the matrix. What AnalysisGLOW.fit takes on
-    the CPU.
+    streaming, never holding the matrix. What both GLOW arms take on the
+    CPU.
 
 All three share a keyword-only signature and a seed-to-draw mapping:
 

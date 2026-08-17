@@ -6,7 +6,7 @@ code path from the batched compute_llr_batched that iter_llr_perm rides.
 Both intercept-only and general-Q0 designs are exercised, and the two
 agree cell by cell to fp64 round-off (~1e-10).
 
-Nothing here fits with the anchor -- AnalysisGLOW.fit takes cpu_summary,
+Nothing here fits with the anchor -- AnalysisGLOWSplit.fit takes cpu_summary,
 the streamed batched kernel -- which is exactly why these comparisons
 carry the weight: they are what says the fast path computes the anchor's
 statistic. Three layers of it, each against the anchor or against a
@@ -165,7 +165,7 @@ def test_iter_llr_perm_matches_reliable_general(prep_general_fp64):
 #
 # The equivalence tests above run at base_seed = 12_345, where every row is a
 # permuted draw. That leaves row 0 of a base_seed = 0 matrix -- the one row
-# AnalysisGLOW.fit reads as the observed LLR, and the one row
+# AnalysisGLOWSplit.fit reads as the observed LLR, and the one row
 # Analysis.z_score_stat standardizes -- unchecked. A backend that permuted at
 # seed 0 would pass every test above and silently replace the observed
 # statistic with a null one.
@@ -317,7 +317,7 @@ def test_cpu_summary_matches_the_materialized_reduction(prep_general_fp64):
 def test_cpu_summary_matches_the_anchors_summary(prep_general_fp64):
     """The whole CPU fast path against the whole anchor path.
 
-    What AnalysisGLOW.fit(cpu_anchor=True) and fit() respectively compute,
+    What AnalysisGLOWSplit.fit(cpu_anchor=True) and fit() respectively compute,
     compared at the one object a fit actually keeps.
     """
     prep = prep_general_fp64

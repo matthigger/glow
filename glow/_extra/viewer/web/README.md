@@ -14,7 +14,7 @@ Interactive demos of the GLOW hierarchical-segmentation viewer.
 
 ## Architecture
 
-- `bake_demos.py` builds a curated set of `AnalysisGLOW` pickles from the
+- `bake_demos.py` builds a curated set of `AnalysisGLOWSplit` pickles from the
   builders in `glow._extra.viewer.__main__`, written to `pickles/`.
 - `server.py` boots a single Flask server (wrapped in a
   `DispatcherMiddleware`), mounts one `glow._extra.viewer` Dash app per baked pickle

@@ -29,7 +29,7 @@ class TestBigEffect:
     exp, mask_target = effect.fit(exp)
 
     def test_glow(self):
-        analysis = AnalysisGLOW(n_perm_fwer=25, alpha_fwer=.1).fit(
+        analysis = AnalysisGLOWSplit(n_perm_fwer=25, alpha_fwer=.1).fit(
             TestBigEffect.exp)
 
         # the Ward tree must carry the target as one of its nodes before a
@@ -130,7 +130,7 @@ class TestAnalysisEdgeCases:
                               effect_llr=0.5).fit(exp)[0]
 
         # set min_vox so large that all regions are filtered
-        analysis = AnalysisGLOW(
+        analysis = AnalysisGLOWSplit(
             n_perm_fwer=5,
             alpha_fwer=.1,
             min_vox=1000000  # impossibly large
@@ -177,7 +177,7 @@ class TestZeroStdGuard:
         exp = EffectSynthetic(extenter=ExtenterSphere(radius=1, seed=0),
                               effect_llr=0.5).fit(exp)[0]
 
-        analysis = AnalysisGLOW(n_perm_fwer=5, alpha_fwer=0.05,
+        analysis = AnalysisGLOWSplit(n_perm_fwer=5, alpha_fwer=0.05,
                                 min_vox=1).fit(exp)
 
         assert not np.any(np.isinf(analysis.fwer.stat_obs)), \
@@ -197,7 +197,7 @@ class TestMinVox:
                               effect_llr=0.5).fit(exp)[0]
 
         min_vox = 4
-        ana = AnalysisGLOW(
+        ana = AnalysisGLOWSplit(
             n_perm_fwer=10,
             alpha_fwer=.5, min_vox=min_vox).fit(exp)
 
@@ -222,7 +222,7 @@ class TestPerRegionZConsistency:
                                     num_img=50, seed=0)
         exp = EffectSynthetic(extenter=ExtenterSphere(radius=2, seed=0),
                               effect_llr=0.5).fit(exp)[0]
-        ana = AnalysisGLOW(n_perm_fwer=5,
+        ana = AnalysisGLOWSplit(n_perm_fwer=5,
                            alpha_fwer=.5, min_vox=1).fit(exp)
 
         mu = ana.mu
@@ -260,7 +260,7 @@ class TestNaNHandling:
 
 
 class TestForest:
-    """AnalysisGLOW on a non-contiguous mask (forest of 2 trees)."""
+    """AnalysisGLOWSplit on a non-contiguous mask (forest of 2 trees)."""
 
     def test_forest_completes(self):
         # 2D mask: two disconnected 5x3 blobs with a gap
@@ -278,7 +278,7 @@ class TestForest:
 
         exp = Experiment(x=x, contrast=contrast, y=y,
                          mask_idx=mask_idx, add_bias=True)
-        ana = AnalysisGLOW(n_perm_fwer=10, alpha_fwer=.5).fit(exp)
+        ana = AnalysisGLOWSplit(n_perm_fwer=10, alpha_fwer=.5).fit(exp)
 
         # GLOW completes on a forest: 2 components → num_vox - 2 internal nodes
         children = ana.children
@@ -299,9 +299,9 @@ class TestStreamingFidelity:
         n_perm_fwer = 25
         alpha_fwer = 0.1
 
-        ana_a = AnalysisGLOW(n_perm_fwer=n_perm_fwer,
+        ana_a = AnalysisGLOWSplit(n_perm_fwer=n_perm_fwer,
                              alpha_fwer=alpha_fwer).fit(self.exp)
-        ana_b = AnalysisGLOW(n_perm_fwer=n_perm_fwer,
+        ana_b = AnalysisGLOWSplit(n_perm_fwer=n_perm_fwer,
                              alpha_fwer=alpha_fwer).fit(self.exp)
 
         np.testing.assert_array_equal(ana_a.fwer.pval, ana_b.fwer.pval)
@@ -367,7 +367,7 @@ class TestAnalysisScaling:
         assert ExperimentScaled.from_exp(exp_scaled) is exp_scaled
 
     @pytest.mark.parametrize('AnalysisCls, kwargs', [
-        (AnalysisGLOW, dict(n_perm_fwer=2)),
+        (AnalysisGLOW, dict(n_perm_fwer=2, n_perm_inner=2)),
         (AnalysisVBA, dict(n_perm_fwer=2)),
         (AnalysisCET, dict(n_perm_fwer=2)),
     ])
@@ -377,6 +377,11 @@ class TestAnalysisScaling:
         from_exp returns an already-scaled experiment unchanged, so passing
         the raw and the pre-scaled form must not merely both run -- they
         must produce the same p-values.
+
+        AnalysisGLOWSplit is the one arm this cannot cover: it splits before
+        scaling, so it refuses an already-scaled experiment outright rather
+        than let both folds share a transform. That refusal is pinned in
+        test_glow_split.py.
         """
         ana_raw = AnalysisCls(**kwargs).fit(self.exp)
         ana_scaled = AnalysisCls(**kwargs).fit(
@@ -521,7 +526,7 @@ class TestScreenCutsAcrossArms:
             return AnalysisVBA(n_perm_fwer=30, tfce_flag=True)
         if request.param == 'cet':
             return AnalysisCET(n_perm_fwer=30)
-        return AnalysisGLOW(n_perm_fwer=25)
+        return AnalysisGLOWSplit(n_perm_fwer=25)
 
     def test_same_family_every_arm(self, exp, ana):
         """215 of 216 voxels, whichever method is fit."""

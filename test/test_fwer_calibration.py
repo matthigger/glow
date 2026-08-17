@@ -26,7 +26,7 @@ import pytest
 from joblib import Parallel, delayed
 from scipy import stats as sp_stats
 
-from glow.analysis import AnalysisCET, AnalysisGLOW, AnalysisVBA
+from glow.analysis import AnalysisCET, AnalysisGLOWSplit, AnalysisVBA
 from glow.analysis.mancova import get_wilks
 from glow.experiment import Experiment
 
@@ -81,7 +81,7 @@ def _null_rejection_rate(make_ana, k: int = K) -> float:
 # ---------------------------------------------------------------------------
 
 ARMS = {
-    'GLOW': lambda: AnalysisGLOW(n_perm_fwer=N_PERM, alpha_fwer=ALPHA,
+    'GLOW': lambda: AnalysisGLOWSplit(n_perm_fwer=N_PERM, alpha_fwer=ALPHA,
                                  min_vox=1),
     'VBA': lambda: AnalysisVBA(n_perm_fwer=N_PERM, alpha_fwer=ALPHA),
     'VBA+z': lambda: AnalysisVBA(n_perm_fwer=N_PERM, alpha_fwer=ALPHA,

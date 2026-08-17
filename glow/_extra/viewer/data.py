@@ -1,6 +1,6 @@
 """Data preparation for the glow viewer.
 
-Builds the per-region DataFrame and background images from an AnalysisGLOW.
+Builds the per-region DataFrame and background images from a GLOW fit.
 """
 
 import numpy as np
@@ -40,7 +40,7 @@ def prep_df(ana_glow, exp, mask_target=None, extra_df=None):
     """Build a DataFrame with one row per region (unpermuted only).
 
     Args:
-        ana_glow (AnalysisGLOW): completed analysis
+        ana_glow (AnalysisGLOWBase): completed analysis
         exp (Experiment): the experiment the analysis was fit on
         mask_target (np.array): optional boolean target mask (same shape
             as exp.mask_idx)
@@ -63,7 +63,7 @@ def prep_df(ana_glow, exp, mask_target=None, extra_df=None):
         'pval_fwer': ana_glow.fwer.pval,
     }
 
-    # per-region inner-null LLR mean/std (set by AnalysisGLOW.fit); z is
+    # per-region null LLR mean/std (set by either GLOW arm); z is
     # (llr - mu) / std
     d['llr_mu_h0'] = _ensure_1d(ana_glow.mu)
     d['llr_std_h0'] = _ensure_1d(ana_glow.std)

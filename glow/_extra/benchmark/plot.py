@@ -78,7 +78,7 @@ import seaborn as sns
 from scipy.stats import beta
 
 import glow._extra.benchmark
-from glow.analysis import AnalysisGLOW
+from glow.analysis import AnalysisGLOWBase
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import stat_dict
 from .config import ana_kwargs_dict, REPORTED_GLOW_LABEL, RUN_STAT_LIST
@@ -131,7 +131,7 @@ _LABEL_OF_ANA = {repr(ana): label for label, ana in ana_kwargs_dict.items()}
 # prune rule (GLOW-greedy / GLOW-dp) rather than by analysis arm, so neither
 # the drop nor the relabel reaches them.
 _ARMS_SKIP = tuple(label for label, ana in ana_kwargs_dict.items()
-                   if isinstance(ana, AnalysisGLOW)
+                   if isinstance(ana, AnalysisGLOWBase)
                    and label != REPORTED_GLOW_LABEL)
 _ARM_LABEL = {REPORTED_GLOW_LABEL: 'GLOW'}
 

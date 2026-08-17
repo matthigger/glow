@@ -458,9 +458,9 @@ def _plant(exp_img, seed: int):
 
 def _dp_cover(exp, cluster_mode):
     """Fit GLOW, prune by DP, and return (n_sig, selected, cover fractions)."""
-    from glow.analysis import AnalysisGLOW
+    from glow.analysis import AnalysisGLOWSplit
 
-    ana = AnalysisGLOW(n_perm_fwer=_N_PERM_FWER,
+    ana = AnalysisGLOWSplit(n_perm_fwer=_N_PERM_FWER,
                        alpha_fwer=0.05, cluster_mode=cluster_mode).fit(exp)
     sig = np.where(ana.fwer.pval <= ana.alpha_fwer)[0].tolist()
     if not sig:

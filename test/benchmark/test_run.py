@@ -19,7 +19,7 @@ from glow._extra.benchmark.run import (glow_fit_for_prune, run_ana,
                                        run_ana_time_1perm,
                                        run_prune, run_segment, run_stat,
                                        voxel_stat_walk)
-from glow.analysis import AnalysisGLOW, AnalysisVBA
+from glow.analysis import AnalysisGLOWSplit, AnalysisVBA
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr, get_wilks, stat_dict_inv
 from glow.effect import ExtenterMinVar
@@ -108,7 +108,7 @@ class TestContract:
 
     def test_glow_returns_score_dict(self):
         exp, uid = _exp(shape=(4, 4, 4), num_img=16)
-        score = run_ana(exp, AnalysisGLOW(n_perm_fwer=8), [],
+        score = run_ana(exp, AnalysisGLOWSplit(n_perm_fwer=8), [],
                         parent_uid=uid)
         assert _SCORE_KEYS <= set(score)
         assert score['num_vox'] == exp.y.shape[2]
@@ -468,7 +468,7 @@ class TestRuntimeLeaves:
                  seed=0))
 
     def _glow(self):
-        return AnalysisGLOW(n_perm_fwer=500)
+        return AnalysisGLOWSplit(n_perm_fwer=500)
 
     def test_returns_num_vox(self):
         # the recorded measurement is time_sec; the return is the analyzed

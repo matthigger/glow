@@ -1,7 +1,7 @@
 """Fit GLOW on one synthetic experiment and open it in the viewer.
 
 A single cell of the benchmark grid, start to finish: build the images,
-plant an effect, fit AnalysisGLOW, launch the dashboard on the result.
+plant an effect, fit AnalysisGLOWSplit, launch the dashboard on the result.
 Every knob is a constant below -- edit and run.
 
     python scripts/run_glow_viewer.py
@@ -27,7 +27,7 @@ import time
 
 from glow._extra.benchmark.data import (DATA_FACTORY, EFFECT_FACTORY,
                                         data_recipe)
-from glow.analysis import AnalysisGLOW
+from glow.analysis import AnalysisGLOWSplit
 from glow.analysis.cluster import ClusterMode
 from glow.effect.extent import ExtenterMinVar, ExtenterSphere
 
@@ -147,11 +147,11 @@ def build_exp():
 
 
 def fit_glow(exp):
-    """Fit AnalysisGLOW on exp with the parameters above."""
-    ana = AnalysisGLOW(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER,
-                       min_vox=MIN_VOX, cluster_mode=CLUSTER_MODE,
-                       frac_segment=FRAC_SEGMENT, split_seed=SPLIT_SEED,
-                       keep_stat=DEBUG)
+    """Fit AnalysisGLOWSplit on exp with the parameters above."""
+    ana = AnalysisGLOWSplit(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER,
+                            min_vox=MIN_VOX, cluster_mode=CLUSTER_MODE,
+                            frac_segment=FRAC_SEGMENT,
+                            split_seed=SPLIT_SEED, keep_stat=DEBUG)
     print(f'fitting {ana!r} ...')
     t0 = time.time()
     ana.fit(exp, gpu=GPU, verbose=VERBOSE)

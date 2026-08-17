@@ -15,14 +15,15 @@ import numpy as np
 import pytest
 
 from glow._extra.benchmark import grid, hcp
-from glow.analysis import AnalysisCET, AnalysisGLOW, AnalysisVBA
+from glow.analysis import (AnalysisCET, AnalysisGLOW, AnalysisGLOWBase,
+                           AnalysisGLOWSplit, AnalysisVBA)
 from glow.analysis.mancova import stat_dict
 from glow.effect import ExtenterMinVar, ExtenterSphere
 
 
 def _recipes():
     """Return a small label -> recipe catalogue, standing in for config's."""
-    return {'A-glow': AnalysisGLOW(n_perm_fwer=4),
+    return {'A-glow': AnalysisGLOWSplit(n_perm_fwer=4),
             'B-vba': AnalysisVBA(n_perm_fwer=4),
             'C-cet': AnalysisCET(n_perm_fwer=4)}
 
@@ -198,6 +199,17 @@ class TestFitParamsFor:
         assert grid.fit_params_for(recipes['B-vba'], params) is None
         assert grid.fit_params_for(recipes['C-cet'], params) is None
 
+    def test_either_glow_arm_gets_the_params(self):
+        """The gate is the shared base, so a per-perm arm qualifies too.
+
+        Both arms take n_jobs and a device; keying on one arm's class would
+        quietly hand the other fit's serial CPU default.
+        """
+        params = dict(n_jobs=3, gpu='auto')
+        for ana in (AnalysisGLOWSplit(n_perm_fwer=4),
+                    AnalysisGLOW(n_perm_fwer=4, n_perm_inner=2)):
+            assert grid.fit_params_for(ana, params) is params
+
 
 class TestStripGpu:
     def test_drops_only_the_device(self):
@@ -280,7 +292,7 @@ class TestRunStatList:
         # the bake-off is over the voxel-wise methods; GLOW uses the LLR
         cells = grid.get_run_stat_list(n_perm_fwer=4, alpha_fwer=0.05,
                                        cft_pval=0.001)
-        assert not any(isinstance(c['ana'], AnalysisGLOW) for c in cells)
+        assert not any(isinstance(c['ana'], AnalysisGLOWBase) for c in cells)
 
     def test_knobs_reach_every_recipe(self):
         cells = grid.get_run_stat_list(n_perm_fwer=7, alpha_fwer=0.02,

@@ -1,158 +1,109 @@
-"""GLOW analysis: split-fold Ward-tree effect discovery with FWER control."""
+"""GLOW analysis: per-permutation Ward segmentation with FWER control.
+
+Two arms, kept side by side because they trade the same two things against
+each other and which trade wins is measured rather than argued:
+
+  - AnalysisGLOW (here) rebuilds the Ward tree inside every outer
+    permutation and standardizes that tree's regions against inner
+    Freedman-Lane draws of the same permuted data.
+  - AnalysisGLOWSplit (glow.analysis._glow_split) builds one tree, on a
+    held-out fold of the images, and needs no inner null.
+
+Segmentation is what the per-perm arm buys: every image reaches the tree
+and every image reaches the statistics, where the split arm spends
+frac_segment of them on the tree and the rest on the statistics. The tree
+is the whole family of hypotheses, so halving the sample that builds it is
+not a small cost.
+
+Validity is what it pays. Only the split arm has strong FWER control; see
+AnalysisGLOW for what the per-perm arm does and does not control, and
+AnalysisGLOWSplit for the argument the split turns on.
+
+AnalysisGLOWBase holds what the two share: the recipe knobs, the kept-matrix
+contract, and the prune-then-estimate synthesis that turns a max-stat test
+into effects.
+"""
 
 import warnings
 
 import numpy as np
+from joblib import Parallel, delayed
+from tqdm import tqdm
 
 import glow.effect
 import glow.graph
 from glow.experiment.exper import ExperimentScaled
-from ._base import Analysis
+from ._base import Analysis, resolve_n_jobs
 from . import draws
-from ._fit_gpu import (describe_backend, gpu_draws, gpu_summary,
-                       resolve_gpu)
+from ._fit_gpu import gpu_draws, gpu_summary, resolve_gpu
 from .cluster import cluster, ClusterMode
 from .fwer import MaxStatPerm
 from .mancova import decompose
 from .prune import prune_greedy
 
 
-class AnalysisGLOW(Analysis):
-    """Hierarchical-segmentation search for significant effects.
+class AnalysisGLOWBase(Analysis):
+    """Ward-tree effect discovery: the parts both GLOW arms share.
 
-    One Ward tree, built on a held-out segmentation fold, is the whole
-    hypothesis family: split_img partitions the images, the tree comes
-    from fold A, and every statistic is computed on fold B.
-
-    That split is what makes the procedure valid, and fixing the tree is
-    not. A tree chosen with the same images that then test it gives the
-    observed draw an advantage no permuted draw can have (per-region z
-    reaches 70+ on white noise, ~1700x the fixed-region value), and
-    holding such a tree across the permutations does not repair that --
-    it is a function of the observed data, so the observed draw is
-    privileged. Here the tree is a function of fold A alone, hence a
-    constant with respect to the fold-B permutation group: the observed
-    draw is exchangeable with the permuted draws, subset pivotality holds
-    (each region's E and H are built from its own voxels, so an effect
-    elsewhere cannot shift a signal-free region's null), and the
-    family-wise bound is exact (Westfall & Young 1993; Lehmann & Romano
-    Thm 15.2.1; Hemerik & Goeman 2018).
-
-    With the family fixed there is no outer loop that re-clusters and no
-    nested inner null. The whole fit is one (n_perm_fwer + 1, num_reg)
-    matrix of Freedman-Lane draws (Freedman & Lane 1983) against that one
-    tree, row i being exp_test.permute(i). Row 0 is the identity, so it
-    is the observed draw and rows 1: are the null. That single matrix
-    serves both jobs: its column moments standardize the regions onto a
-    common scale, and its row maxima are the max-z null.
-
-    The observed row contributes to those moments on equal footing with
-    the permuted rows, which is required rather than merely tidy -- see
-    Analysis.z_score_stat, whose docstring records what happens when it
-    does not (Phipson & Smyth 2010; Winkler et al. 2014).
-
-    The experiment is supplied to fit(), not stored (see Analysis). It
-    must be a raw Experiment: fit() splits it first and scales each fold
-    separately, because ExperimentScaled fits pre_scale on every image at
-    once and a fold cut out afterwards would carry a transform the other
-    fold helped choose (ExperimentScaled.split_img refuses for the same
-    reason).
+    Not fit directly -- fit() belongs to the arms, which differ in where
+    the tree comes from and what the regions are standardized against. What
+    is common is everything either side of that: the four recipe knobs, the
+    per-region arrays a fit reports, the max-stat test they feed, and the
+    synthesis that turns significant regions into effects (_discover).
 
     Operation parameters (set at __init__):
-        n_perm_fwer (int): FL draws in the null; the fit runs
-            n_perm_fwer + 1 rows counting the observed.
-        alpha_fwer (float): family-wise error rate
+        n_perm_fwer (int): draws in the FWER null.
+        alpha_fwer (float): family-wise error rate.
         min_vox (int): smallest region size admitted to the FWER set.
             Must be pre-specified, never tuned against results, or it
             reintroduces selection one level up.
-        cluster_mode (ClusterMode): Ward projection mode
-        frac_segment (float): share of the images going to the
-            segmentation fold. Pre-specified, for the same reason.
-        split_seed (int): seed for the image partition.
-        keep_stat (bool): keep the whole draw matrix in .stat.
+        cluster_mode (ClusterMode): Ward projection mode.
+        keep_stat (bool): keep a draw matrix in .stat. Which matrix that is
+            differs by arm; both cost it in memory and in any pickle of the
+            fit, and neither changes a reported result -- see the arms.
 
-    The draw matrix itself is not kept by default: at full-brain num_vox it
-    runs to gigabytes (~16.7 GiB at 5001 draws), and only its first row, its
-    column moments and its row maxima outlive it -- the five arrays of a
-    draws.DrawSummary. Both default backends stream it in two passes and
-    never hold more than one chunk, so at large n_perm_fwer the matrix is
-    not merely dropped but never allocated.
-
-    keep_stat=True overrides that, for the diagnostic question the summary
-    cannot answer: what a region's null actually looks like, rather than the
-    two moments it was standardized by. It costs the full matrix in memory
-    and again in any pickle of the fit -- __getstate__ warns rather than
-    let that happen quietly -- and it gives up the streaming reduction for
-    the materializing twin of whichever backend is running (cpu_batched,
-    draws_gpu.gpu_perm) -- the same cells, held all at once. cpu_anchor
-    forms the matrix regardless, having no streaming form; keep_stat is
-    what decides whether it survives the fit. It is a storage choice only:
-    llr and mu are bitwise identical either way and the p-values and
-    discoveries with them, while std moves at fp64 round-off (~1e-16
-    relative) because the two reductions sum in different orders. That is
-    why it stays out of RECORD_FIELDS and so out of the benchmark cache
-    key (see Analysis.fit, which says the same of n_jobs and gpu).
-
-    Fit outputs (all on the test fold, against the fold-A tree):
+    Fit outputs (on the observed data, against the observed tree):
         children (np.array): (num_reg - num_vox, 2) Ward tree.
         size (np.array): (num_reg,) region sizes.
-        img_segment (np.array): (num_img,) boolean, True for the images the
-            tree was built on. The realized partition, not recoverable from
-            frac_segment and split_seed once split_group is passed.
-        llr (np.array): (num_reg,) observed LLR per region -- the
-            matrix's row 0.
+        llr (np.array): (num_reg,) observed LLR per region.
         mu (np.array): (num_reg,) per-region mean over the draws.
         std (np.array): (num_reg,) per-region std over the draws.
-        fwer (MaxStatPerm): the max-z test -- observed z per region
-            in stat_obs, max-z per draw in max_stat, the size >= min_vox
+        fwer (MaxStatPerm): the max-z test -- observed z per region in
+            stat_obs, the max-z null in max_stat, the size >= min_vox
             comparison set, the p-values and the selected regions.
         effect_list (list): discovered EffectEstimate objects.
-        stat (np.array): (n_perm_fwer + 1, num_reg) every per-region LLR
-            draw, row 0 the observed one -- only under keep_stat, None
-            otherwise. llr, mu and std are this matrix's row 0 and column
-            moments, so a column is the null a region's z was measured
-            against. Same name, shape and role as AnalysisVoxel.stat,
-            which the voxel arms always keep.
+        stat (np.array): (n_perm + 1, num_reg) per-region LLR draws, row 0
+            the observed one -- only under keep_stat, None otherwise. Same
+            name, shape and role as AnalysisVoxel.stat, which the voxel
+            arms always keep.
     """
-
-    RECORD_FIELDS = ('n_perm_fwer', 'alpha_fwer', 'min_vox', 'cluster_mode',
-                     'frac_segment', 'split_seed')
 
     def __init__(self, n_perm_fwer: int, alpha_fwer: float = .05,
                  min_vox: int = 1,
                  cluster_mode: ClusterMode = ClusterMode.FOCUS,
-                 frac_segment: float = .5, split_seed: int = 0,
                  keep_stat: bool = False):
-        """Configure a GLOW analysis.
+        """Configure the knobs both arms take.
 
         Args:
-            n_perm_fwer (int): FL draws in the null.
+            n_perm_fwer (int): draws in the FWER null.
             alpha_fwer (float): family-wise error rate.
             min_vox (int): smallest region size admitted to the FWER set.
             cluster_mode (ClusterMode): Ward projection. Default
                 ClusterMode.FOCUS projects onto the contrast subspace;
                 ClusterMode.GLM_ERROR keeps bias + contrast;
                 ClusterMode.NAIVE clusters raw y.
-            frac_segment (float): share of the images used to build the
-                Ward tree; the rest carry every statistic.
-            split_seed (int): seed for the image partition.
-            keep_stat (bool): keep the whole (n_perm_fwer + 1, num_reg)
-                draw matrix in .stat instead of discarding it. A
-                diagnostic that changes no result and costs the matrix in
-                memory -- see the class docstring.
+            keep_stat (bool): keep a draw matrix in .stat instead of
+                discarding it.
         """
         super().__init__()
         self.n_perm_fwer = n_perm_fwer
         self.alpha_fwer = alpha_fwer
         self.min_vox = min_vox
         self.cluster_mode = cluster_mode
-        self.frac_segment = frac_segment
-        self.split_seed = split_seed
         self.keep_stat = keep_stat
 
         self.children = None
         self.size = None
-        self.img_segment = None
         self.llr = None
         self.mu = None
         self.std = None
@@ -162,163 +113,38 @@ class AnalysisGLOW(Analysis):
         """Warn when a kept stat matrix is about to be written out.
 
         Every save route -- pickle, joblib's hash and cache, the viewer
-        bundle, deepcopy -- reaches the object through here, so this is
-        the one place the cost can be announced. A fit that kept its stat
-        looks like a recipe and weighs like the matrix: ~16.7 GiB at 5001
-        draws and full-brain num_vox, against a few MB without it.
+        bundle, deepcopy -- reaches the object through here, so this is the
+        one place the cost can be announced. A fit that kept its stat looks
+        like a recipe and weighs like the matrix: ~16.7 GiB at 5001 draws
+        and full-brain num_vox, against a few MB without it.
 
         The matrix is still written. Dropping it here would silently
-        produce a bundle the viewer's PERMUTATION panel cannot open, and
-        a diagnostic that vanishes on save is worse than a loud one.
+        produce a bundle the viewer's PERMUTATION panel cannot open, and a
+        diagnostic that vanishes on save is worse than a loud one.
         """
         if self.stat is not None:
             warnings.warn(
-                f'pickling AnalysisGLOW with keep_stat=True: the '
+                f'pickling {type(self).__name__} with keep_stat=True: the '
                 f'{self.stat.shape} {self.stat.dtype} stat matrix '
                 f'({self.stat.nbytes / 2 ** 30:.2f} GiB) is written with '
                 f'the fit. Refit with keep_stat=False to save the fit '
                 f'alone.')
         return self.__dict__
 
-    def fit(self, exp, *, n_jobs: int = 1, gpu=False,
-            cpu_anchor: bool = False, split_group=None,
-            verbose: bool = False):
-        """Run the analysis on exp and return self.
+    def _discover(self, exp, *, verbose: bool = False) -> None:
+        """Prune the significant regions and estimate the effects they carry.
 
-        Populates the observed attributes (children, size, llr, mu, std),
-        the max-stat test they feed (fwer), and the synthesis output
-        (effect_list).
+        Requires fwer, children and llr; sets effect_list. Shared by both
+        arms so the pruning rule and the p-value each effect carries cannot
+        drift between them.
 
         Args:
-            exp (Experiment): experiment to analyze. Must be raw, not an
-                ExperimentScaled: fit splits it into folds and scales
-                each fold separately.
-            n_jobs (int): accepted for the execution contract every
-                recipe honours (see Analysis.fit) but unused -- the draws
-                come from one serial call. Parallelising them is a
-                straight win and simply has not been done yet.
-            gpu: False (default) to draw on the CPU, True or a GpuConfig
-                to require a device, 'auto' to take one when visible. The
-                draws are the only thing the device changes; see
-                ._fit_gpu on why float64 is its default dtype.
-            cpu_anchor (bool): draw through draws.cpu_reliable, the slow
-                trust anchor, instead of the batched draws.cpu_summary.
-                Same answer to fp64 round-off at ~35x the cost, so this is
-                for holding the fast path honest, not for fitting. Forces
-                the CPU, and contradicts an explicit gpu=True / GpuConfig.
-            split_group (np.array): (num_img,) labels held together by
-                the split -- family IDs, subject IDs for repeat scans.
-                Omitting it when the images are related leaves the two
-                folds dependent, which voids the FWER argument.
-            verbose (bool): print progress.
-
-        Returns:
-            self
+            exp (Experiment): the (scaled) experiment the statistics came
+                from -- supplies mask_idx, and is carried into each
+                EffectEstimate. The arm passes whichever images tested the
+                regions, which for the split arm is the test fold alone.
+            verbose (bool): print significant-region and discovery counts.
         """
-        # cpu_anchor names a CPU backend, so a device request alongside it
-        # is a contradiction rather than a preference. 'auto' is not one:
-        # it asks for a device only where that is the better default, and
-        # the anchor is the more specific instruction.
-        if cpu_anchor and gpu and gpu != 'auto':
-            raise ValueError(
-                'AnalysisGLOW.fit(cpu_anchor=True) draws on the CPU and '
-                f'cannot also honour gpu={gpu!r}')
-        gpu_config = None if cpu_anchor else resolve_gpu(
-            gpu, name='AnalysisGLOW.fit')
-        del n_jobs
-
-        split_kwargs = dict(frac_segment=self.frac_segment,
-                            seed=self.split_seed, group=split_group)
-        # kept because a reader of the fit cannot redraw it: with a
-        # split_group the partition depends on labels the fit does not store
-        self.img_segment = exp.get_img_segment(**split_kwargs)
-        exp_seg, exp_test = exp.split_img(**split_kwargs)
-
-        # Each fold is scaled on its own images. Fold A's scaling is the
-        # one that matters: Ward distances are not invariant to a map on
-        # the b axis, so pre_scale reaches the tree. Fold B's does not --
-        # every MANCOVA statistic is exactly invariant to an invertible
-        # b x b map on y -- and is here only for the conditioning of the
-        # slogdet in get_llr.
-        self.children = cluster(ExperimentScaled.from_exp(exp_seg),
-                                mode=self.cluster_mode)
-        exp_test = ExperimentScaled.from_exp(exp_test)
-        q0, q1, _ = decompose(x=exp_test.x, contrast=exp_test.contrast)
-
-        _, region_l, region_h = glow.graph.build_dfs_preorder(
-            children=self.children, num_vox=exp_test.y.shape[2])
-        self.size = region_h - region_l
-
-        if verbose:
-            print(f'  [1/2] {self.n_perm_fwer + 1} draws '
-                  f'({exp_test.y.shape[1]} test images, '
-                  f'{exp_test.y.shape[2]} voxels) ...')
-            # Which backend, and why -- they differ by orders of magnitude
-            # and gpu='auto' falls back silently (describe_backend).
-            backend = describe_backend(gpu, gpu_config,
-                                       cpu_anchor=cpu_anchor)
-            print(f'        backend: {backend}')
-
-        # size >= min_vox is a function of the fold-A tree alone, hence a
-        # constant with respect to the fold-B permutations -- the condition
-        # MaxStatPerm needs of a comparison set. Every backend needs it: it
-        # is what the per-draw maxima are taken over.
-        reg_active = self.size >= self.min_vox
-
-        # base_seed=0 makes draw i exp_test.permute(i), and seed 0 is the
-        # identity -- so row 0 is the observed draw and needs no separate
-        # code path (permute._perm_indices reserves it).
-        #
-        # All three backends return the same DrawSummary, so nothing below
-        # can tell them apart -- they differ in speed and in peak memory
-        # only. cpu_summary streams the batched kernel's chunks in two
-        # passes; the device one does the same on device and is ~3 orders
-        # faster at full-brain num_vox; cpu_reliable materializes the
-        # matrix through an independent per-region implementation of the
-        # statistic, which is what makes it the anchor and why it is ~35x
-        # the batched path (see draws).
-        draws_kwargs = dict(
-            exp=exp_test, base_seed=0, n_perm=self.n_perm_fwer + 1,
-            q0=q0, q1=q1, children=self.children, min_vox=self.min_vox)
-
-        # The matrix is formed only when something needs it whole: the
-        # anchor has no streaming form, and keep_stat asks for it outright,
-        # trading each streaming reduction for its materializing twin
-        # (cpu_summary -> cpu_batched, gpu_summary -> gpu_draws). Then
-        # summarizing what was kept, rather than keeping a second copy
-        # alongside a streamed summary, is what makes .stat the very matrix
-        # llr/mu/std came out of.
-        if cpu_anchor:
-            matrix = draws.cpu_reliable(**draws_kwargs)
-        elif not self.keep_stat:
-            matrix = None
-        elif gpu_config is None:
-            matrix = draws.cpu_batched(**draws_kwargs)
-        else:
-            matrix = gpu_draws(gpu_config, **draws_kwargs)
-
-        if matrix is not None:
-            summary = draws.summarize_draws(matrix, reg_active=reg_active)
-        elif gpu_config is None:
-            summary = draws.cpu_summary(reg_active=reg_active,
-                                        **draws_kwargs)
-        else:
-            summary = gpu_summary(gpu_config, reg_active=reg_active,
-                                  **draws_kwargs)
-
-        self.stat = matrix if self.keep_stat else None
-
-        self.llr = summary.llr
-        self.mu = summary.mu
-        self.std = summary.std
-
-        self.fwer = MaxStatPerm.from_max(
-            summary.z_obs, summary.max_stat, alpha=self.alpha_fwer,
-            reg_active=reg_active)
-
-        if verbose:
-            print('  [2/2] FWER synthesis ...')
-
         sig_reg_list = list(np.flatnonzero(self.fwer.reg_sig))
         if verbose:
             print(f'  {len(sig_reg_list)} significant regions '
@@ -340,17 +166,14 @@ class AnalysisGLOW(Analysis):
             children=self.children,
             stat=llr_gain)
 
-        # Effects are estimated on the test fold, not on the whole cohort:
-        # the segmentation fold chose the regions, so only fold B gives an
-        # estimate that the region's own selection did not shape.
         self.effect_list = []
         for reg_idx in reg_out_list:
             label_map = glow.graph.get_label_map(
                 reg_idx_list=[reg_idx],
-                mask_idx=exp_test.mask_idx,
+                mask_idx=exp.mask_idx,
                 children=self.children)
             eff = glow.effect.EffectEstimate.from_exp_mask(
-                mask=label_map > -1, exp=exp_test,
+                mask=label_map > -1, exp=exp,
                 reg_idx=reg_idx, pval_fwer=self.fwer.pval[reg_idx])
             self.effect_list.append(eff)
 
@@ -358,5 +181,244 @@ class AnalysisGLOW(Analysis):
             n_disc = len(self.effect_list)
             n_pruned = len(sig_reg_list) - n_disc
             print(f'  done: {n_disc} discovered, {n_pruned} pruned')
+
+
+def _run_outer(exp, k: int, *, q0, q1, n_perm_inner: int, min_vox: int,
+               cluster_mode: ClusterMode, gpu_config=None,
+               keep_stat: bool = False):
+    """Run one outer permutation: cluster it, then z-score it against itself.
+
+    The unit of AnalysisGLOW.fit's outer loop, and everything a joblib
+    worker needs of it -- pure, carrying no instance state, a deterministic
+    function of k alone (exp.permute(k) is seeded by k).
+
+    The inner draws are one call to the shared draw backends against this
+    outer perm's own tree, base_seed=0, so their row 0 is the identity draw
+    of the permuted data -- this perm's observed LLR -- and the moments over
+    the whole matrix are what standardizes it. The same procedure runs for
+    every k, the observed k=0 included, which is what keeps the per-perm
+    max-z statistics exchangeable.
+
+    Args:
+        exp (Experiment): the scaled experiment, unpermuted.
+        k (int): outer-perm index; 0 is the observed data.
+        q0 (np.array): (a0, num_img) nuisance subspace.
+        q1 (np.array): (a1, num_img) interest subspace.
+        n_perm_inner (int): inner FL draws standardizing this tree; the
+            call runs n_perm_inner + 1 rows counting the observed.
+        min_vox (int): regions smaller than this are left NaN and sit out
+            of the max.
+        cluster_mode (ClusterMode): Ward projection mode.
+        gpu_config (GpuConfig | None): device knobs, None for the CPU.
+        keep_stat (bool): materialize the k=0 inner matrix and return it.
+
+    Returns:
+        max_z (float): max z over this tree's regions of size >= min_vox,
+            NaN where none qualify -- outer perm k's entry in the FWER null.
+        obs (tuple | None): (children, size, summary, stat) for k == 0,
+            None otherwise. Only the observed tree's arrays are reported, so
+            a worker returning them for every k would ship one
+            (num_reg - num_vox, 2) tree per perm back for nothing.
+    """
+    exp_k = exp.permute(k) if k else exp
+    children = cluster(exp_k, mode=cluster_mode)
+
+    _, region_l, region_h = glow.graph.build_dfs_preorder(
+        children=children, num_vox=exp_k.y.shape[2])
+    size = region_h - region_l
+
+    # size >= min_vox is a function of this outer perm's own tree, so the
+    # comparison set is drawn afresh per perm -- unlike the split arm, where
+    # one tree fixes it for the whole fit.
+    reg_active = size >= min_vox
+
+    draws_kwargs = dict(exp=exp_k, base_seed=0, n_perm=n_perm_inner + 1,
+                        q0=q0, q1=q1, children=children, min_vox=min_vox)
+
+    # The matrix is formed only for the observed tree under keep_stat, which
+    # is the only one a reader can ask about afterwards; every other perm
+    # streams and holds no more than one chunk. Summarizing what was kept,
+    # rather than keeping a second copy alongside a streamed summary, is what
+    # makes .stat the very matrix llr/mu/std came out of.
+    stat = None
+    if keep_stat and not k:
+        stat = (draws.cpu_batched(**draws_kwargs) if gpu_config is None
+                else gpu_draws(gpu_config, **draws_kwargs))
+        summary = draws.summarize_draws(stat, reg_active=reg_active)
+    elif gpu_config is None:
+        summary = draws.cpu_summary(reg_active=reg_active, **draws_kwargs)
+    else:
+        summary = gpu_summary(gpu_config, reg_active=reg_active,
+                              **draws_kwargs)
+
+    # entry 0 of a DrawSummary's max_stat is the observed draw's max z over
+    # the comparison set -- here the identity draw of exp_k, so this outer
+    # perm's own max-z, which is its entry in the FWER null.
+    max_z = float(summary.max_stat[0])
+    if k:
+        return max_z, None
+    return max_z, (children, size, summary, stat)
+
+
+class AnalysisGLOW(AnalysisGLOWBase):
+    """Segment every permutation, standardize each tree against itself.
+
+    Each outer permutation gets its own Ward tree, built on that
+    permutation's images, and its regions are z-scored against inner
+    Freedman-Lane draws (Freedman & Lane 1983) of the same permuted data.
+    The max z over each outer perm's regions is one entry of the FWER null;
+    the observed data is outer perm 0, so it enters that null on the same
+    footing as the rest (Westfall & Young 1993; Phipson & Smyth 2010).
+
+    Every image reaches both jobs, and that is the whole reason to run this
+    arm: the tree is built from the full sample rather than a fold of it,
+    and Ward's tree is the family of hypotheses the fit can discover at all.
+    AnalysisGLOWSplit gives up half the sample on each side of that trade.
+
+    What it controls. The map data -> (tree, statistic) is applied
+    identically to every outer perm, so the per-perm max-z values are
+    exchangeable and the complete-null rejection rate is nominal (0.040-0.053
+    measured; Lehmann & Romano Thm 15.2.1; Hemerik & Goeman 2018) -- weak
+    FWER control.
+
+    What it does not. Strong control fails, and the reason is structural
+    rather than a matter of tuning: under a planted effect the observed tree
+    is effect-bearing while every null tree is a pure-noise tree, so the
+    observed draw is compared against a null drawn from easier data. In
+    trials with a planted effect, 30-45% emitted a region that carried none
+    of it. The inflation is real on both sides -- on white noise per-region z
+    reaches 70-81 at regions of 1154-8353 voxels, ~1700x what the same
+    statistic gives on a region fixed in advance -- and the asymmetry is that
+    the inner null conditions on a tree the outer perms rebuild. A fit here
+    is a segmentation to inspect and to compare, not a p-value to report; for
+    that, run AnalysisGLOWSplit.
+
+    Cost. n_perm_fwer * (n_perm_inner + 1) draws and n_perm_fwer + 1 Ward
+    builds against the split arm's n_perm_fwer + 1 draws and one build --
+    ~250x the draws at the benchmark's 500 x 250. n_jobs splits the outer
+    perms; gpu draws each perm's inner null on device.
+
+    n_perm_inner is not merely a precision knob. The moments come from
+    n_perm_inner + 1 samples, and a z over N samples cannot exceed
+    (N - 1) / sqrt(N), so it caps every region's z at
+    n_perm_inner / sqrt(n_perm_inner + 1): 3.0 at 10, 7.0 at 50, 14.1 at
+    200. Once the observed tree and the null trees all sit on that ceiling
+    the max-z test has nothing left to separate them -- measured p = 0.31
+    at n_perm_inner = 10 against 0.0099 at 50 on the same planted data --
+    so the count has to leave headroom above the z the effect reaches.
+
+    The experiment is supplied to fit(), not stored (see Analysis). fit()
+    scales it (ExperimentScaled.from_exp, idempotent) and decomposes its
+    design; there is no fold, so an already-scaled experiment is accepted.
+
+    Operation parameters (set at __init__), beyond AnalysisGLOWBase's:
+        n_perm_inner (int): inner FL draws standardizing each outer perm's
+            tree.
+
+    Fit outputs: AnalysisGLOWBase's, all for the observed tree. mu and std
+    are that tree's inner-null moments, and fwer.max_stat is
+    (n_perm_fwer + 1,) -- one max-z per outer perm, entry 0 the observed.
+    Under keep_stat, .stat is the observed tree's (n_perm_inner + 1,
+    num_reg) inner matrix, the one its mu and std came out of; the other
+    perms' matrices are never formed.
+    """
+
+    RECORD_FIELDS = ('n_perm_fwer', 'n_perm_inner', 'alpha_fwer', 'min_vox',
+                     'cluster_mode')
+
+    def __init__(self, n_perm_fwer: int, n_perm_inner: int = 500,
+                 alpha_fwer: float = .05, min_vox: int = 1,
+                 cluster_mode: ClusterMode = ClusterMode.FOCUS,
+                 keep_stat: bool = False):
+        """Configure a per-perm-segmentation GLOW analysis.
+
+        Args:
+            n_perm_fwer (int): outer FL perms feeding the max-z null; the
+                fit runs n_perm_fwer + 1 counting the observed.
+            n_perm_inner (int): inner FL draws per outer perm. Caps every
+                z at n_perm_inner / sqrt(n_perm_inner + 1); see the class
+                docstring before lowering it.
+            alpha_fwer (float): family-wise error rate.
+            min_vox (int): smallest region size admitted to the FWER set.
+            cluster_mode (ClusterMode): Ward projection (see
+                AnalysisGLOWBase).
+            keep_stat (bool): keep the observed tree's inner draw matrix in
+                .stat. A diagnostic that changes no result -- see the class
+                docstring.
+        """
+        super().__init__(n_perm_fwer=n_perm_fwer, alpha_fwer=alpha_fwer,
+                         min_vox=min_vox, cluster_mode=cluster_mode,
+                         keep_stat=keep_stat)
+        self.n_perm_inner = n_perm_inner
+
+    def fit(self, exp, *, n_jobs: int = 1, gpu=False,
+            verbose: bool = False):
+        """Run the analysis on exp and return self.
+
+        Populates the observed tree's attributes (children, size, llr, mu,
+        std), the max-stat test they feed (fwer), and the synthesis output
+        (effect_list).
+
+        Args:
+            exp (Experiment): experiment to analyze. Scaled on the way in;
+                an already-scaled one passes through.
+            n_jobs (int): joblib workers over the outer perms, capped at the
+                machine's core count (resolve_n_jobs). The result is
+                identical at any n_jobs -- outer perm k is seeded by k --
+                and it is ignored on device, where one worker per perm would
+                build a CUDA context each and then queue on the one device
+                anyway.
+            gpu: False (default) to draw on the CPU, True or a GpuConfig to
+                require a device, 'auto' to take one when visible. The inner
+                draws are the only thing the device changes; see ._fit_gpu
+                on why float64 is its default dtype.
+            verbose (bool): print progress and show a tqdm bar.
+
+        Returns:
+            self
+        """
+        gpu_config = resolve_gpu(gpu, name='AnalysisGLOW.fit')
+        n_jobs = resolve_n_jobs(n_jobs)
+
+        exp = ExperimentScaled.from_exp(exp)
+        q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
+
+        n_total = self.n_perm_fwer + 1
+        max_z_null = np.empty(n_total)
+
+        if verbose:
+            print(f'  [1/2] {n_total} outer perms x '
+                  f'{self.n_perm_inner + 1} inner draws '
+                  f'({exp.y.shape[1]} images, {exp.y.shape[2]} voxels, '
+                  f'n_jobs={n_jobs}) ...')
+
+        outer_kwargs = dict(q0=q0, q1=q1, n_perm_inner=self.n_perm_inner,
+                            min_vox=self.min_vox,
+                            cluster_mode=self.cluster_mode,
+                            gpu_config=gpu_config, keep_stat=self.keep_stat)
+        results = Parallel(n_jobs=1 if gpu_config else n_jobs,
+                           return_as='generator')(
+            delayed(_run_outer)(exp, k, **outer_kwargs)
+            for k in range(n_total))
+
+        summary = None
+        for k, (max_z, obs) in enumerate(
+                tqdm(results, total=n_total, desc='outer perms',
+                     disable=not verbose)):
+            max_z_null[k] = max_z
+            if obs is not None:
+                self.children, self.size, summary, self.stat = obs
+
+        self.llr = summary.llr
+        self.mu = summary.mu
+        self.std = summary.std
+
+        self.fwer = MaxStatPerm.from_max(
+            summary.z_obs, max_z_null, alpha=self.alpha_fwer,
+            reg_active=self.size >= self.min_vox)
+
+        if verbose:
+            print('  [2/2] FWER synthesis ...')
+        self._discover(exp, verbose=verbose)
 
         return self

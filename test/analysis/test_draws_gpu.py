@@ -136,7 +136,7 @@ def test_gpu_row_0_is_the_observed_draw(b, design):
     """Row 0 at base_seed = 0 is the unpermuted LLR, not a null draw.
 
     The equivalence test above runs at base_seed = 12_345, where every row
-    is permuted. AnalysisGLOW.fit reads row 0 of a base_seed = 0 matrix as
+    is permuted. AnalysisGLOWSplit.fit reads row 0 of a base_seed = 0 matrix as
     the observed LLR, so a device backend that permuted at seed 0 would
     pass every other test here and still swap the observed statistic for a
     null one -- see permute._perm_indices on the reserved-0 convention.

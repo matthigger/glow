@@ -63,7 +63,7 @@ import copy
 import numpy as np
 from threadpoolctl import threadpool_limits
 
-from glow.analysis import Analysis, AnalysisGLOW, AnalysisVoxel
+from glow.analysis import Analysis, AnalysisGLOWSplit, AnalysisVoxel
 from glow.analysis.cluster import cluster, ClusterMode
 from glow.analysis.mancova import stat_dict, stat_dict_inv
 from glow.analysis.prune import prune_dp, prune_greedy
@@ -89,7 +89,7 @@ LEAF_IGNORE = ['exp', 'mask_target_list']
 # execution knob, not a recipe knob, so it is filtered like exp: a cell fit on
 # 32 CPU workers and the same cell fit on the GPU are one artifact, cached and
 # recorded once. That is a claim about the backends, and it is the one
-# AnalysisGLOW.fit makes good on -- the device path draws the same permutations
+# GLOW's fit makes good on -- the device path draws the same permutations
 # from the same seeds in float64 and agrees to float round-off (test_fit_gpu.py)
 # -- so it holds only while fit_params carries no numerical knob. A
 # GpuConfig(acc_dtype=float32) does perturb fwer.max_stat (~2e-3 relative),
@@ -172,12 +172,12 @@ def run_segment(exp: Experiment, mask_target_list, cluster_mode, *,
     support is largest (score_oracle_tree) -- no significance test or pruning,
     swept across modes (Naive / GLM Error / Focus) by the config's fnc grid.
     exp is scaled (ExperimentScaled.from_exp) before clustering so the tree
-    matches the one AnalysisGLOW fits (GLM_ERROR / FOCUS project y through the
+    matches the one a GLOW fit builds (GLM_ERROR / FOCUS project y through the
     design). Memoised + recorded like run_ana.
 
     frac_segment is the second axis (the segment_perc cache): the share of the
     images the tree is built on. The whole cohort segments by default; a
-    fraction takes AnalysisGLOW's own segmentation fold (Experiment.split_img
+    fraction takes AnalysisGLOWSplit's own segmentation fold (split_img
     at its split_seed of 0, so the tree is the one a fit at that frac_segment
     would build) and drops the test fold, which an oracle region needs no more
     than it needs a permutation test. The folds are voxel-identical, so the
@@ -210,7 +210,7 @@ def run_segment(exp: Experiment, mask_target_list, cluster_mode, *,
                              mask_idx=exp.mask_idx)
 
 
-# The edge sweep draws at AnalysisGLOW's own base_seed of 0, so draw i is
+# The edge sweep draws at AnalysisGLOWSplit's own base_seed of 0, so draw i is
 # exp_test.permute(i) and a prefix of the matrix is exactly the draw set a
 # real fit at that n_perm_fwer produces.
 
@@ -316,9 +316,10 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
                        fit_params=None) -> tuple:
     """Fit GLOW once and return the pruning inputs (shared by the rules).
 
-    The prune cache's shared intermediate: a full AnalysisGLOW fit reduced
-    to the light triple every rule needs -- the Ward tree, the raw per-region
-    LLR (candidates are ranked by raw LLR, as AnalysisGLOW.fit does; the
+    The prune cache's shared intermediate: a full AnalysisGLOWSplit fit
+    reduced to the light triple every rule needs -- the Ward tree, the raw
+    per-region LLR (candidates are ranked by raw LLR, as the GLOW arms'
+    own synthesis does (AnalysisGLOWBase._discover); the
     z-score fragments under pruning), and the FWER-significant region set. All
     three rules prune this same set, so the comparison isolates the rule from
     the permutation test; the first run_prune variant of a cell fits, the rest
@@ -343,8 +344,8 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
             key the rules prune by).
         sig_reg_list (list): int indices of the FWER-significant regions.
     """
-    ana = AnalysisGLOW(n_perm_fwer=n_perm_fwer, alpha_fwer=alpha_fwer,
-                       cluster_mode=cluster_mode)
+    ana = AnalysisGLOWSplit(n_perm_fwer=n_perm_fwer, alpha_fwer=alpha_fwer,
+                            cluster_mode=cluster_mode)
     ana.fit(exp, **(fit_params or {}))
     sig_reg_list = np.flatnonzero(ana.fwer.reg_sig).tolist()
     llr = np.nan_to_num(ana.llr.astype(float), nan=0.0, posinf=0.0, neginf=0.0)

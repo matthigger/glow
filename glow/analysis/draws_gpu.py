@@ -123,7 +123,7 @@ def unavailable_reason() -> str:
     CUDA_VISIBLE_DEVICES). The middle case is the quiet one, since
     nvidia-smi still lists the card, so it names the wheel.
 
-    AnalysisGLOW.fit(verbose=True) prints this through
+    AnalysisGLOWSplit.fit(verbose=True) prints this through
     _fit_gpu.describe_backend, because gpu='auto' falls back without a
     word and the CPU backend it falls back to costs ~35x (see draws).
 
@@ -575,7 +575,7 @@ def gpu_perm(*, exp, base_seed: int, n_perm: int, q0, q1, children,
             which sizes it from free device memory.
         device (str): torch device string
         acc_dtype: hot-loop dtype, default float32 (module docstring).
-            AnalysisGLOW.fit overrides this to float64, which reproduces a
+            a GLOW fit overrides this to float64, which reproduces a
             CPU fit's p-values exactly (see _fit_gpu).
         scan_dtype: dtype for the DC-carrying prep scans, default float64 --
             the one group still carrying the DC offset

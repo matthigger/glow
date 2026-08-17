@@ -65,8 +65,8 @@ def reject_gpu(gpu, name: str) -> None:
         ValueError: gpu names a device explicitly.
     """
     if gpu and gpu != 'auto':
-        raise ValueError(f'{name} has no GPU backend (only AnalysisGLOW '
-                         f"has one); pass gpu=False or gpu='auto'")
+        raise ValueError(f'{name} has no GPU backend (only the GLOW arms '
+                         f"have one); pass gpu=False or gpu='auto'")
 
 
 class Analysis(ABC):
@@ -122,7 +122,7 @@ class Analysis(ABC):
         one fit_params dict reaches any of them (see
         glow._extra.benchmark.run.run_ana). Neither changes the result: a
         fit is identical at any n_jobs (permutations are seeded by index)
-        and on either device (AnalysisGLOW._fit_gpu draws the same
+        and on either device (the GLOW arms' _fit_gpu draws the same
         permutations in float64), which is why neither enters a recipe's
         RECORD_FIELDS or a benchmark cache key.
 
@@ -131,8 +131,8 @@ class Analysis(ABC):
             n_jobs (int): joblib workers for the permutation walk. 1
                 (default) runs in-process; -1 uses all cores.
             gpu: False (default) to stay on the CPU, True to require a
-                device, 'auto' to take one when visible. Only AnalysisGLOW
-                has a backend; the rest reject an explicit True
+                device, 'auto' to take one when visible. Only the GLOW
+                arms have a backend; the rest reject an explicit True
                 (reject_gpu).
 
         Returns:
@@ -207,8 +207,8 @@ class AnalysisVoxel(Analysis):
     """Analysis with a pluggable per-region stat function.
 
     VBA and CET compute one stat per voxel via get_stat (Wilks,
-    Hotelling-Lawley-trace, etc.). AnalysisGLOW does not subclass
-    this -- its inner kernel hard-codes LLR.
+    Hotelling-Lawley-trace, etc.). The GLOW arms do not subclass
+    this -- their inner kernel hard-codes LLR.
 
     Attributes:
         get_stat (Callable): per-region stat function f(e, h, n) -> float

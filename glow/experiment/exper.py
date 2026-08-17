@@ -441,8 +441,8 @@ class ExperimentImageOnly:
         The two folds are disjoint in images and identical in voxels --
         both keep this experiment's mask_idx and num_vox -- so a Ward tree
         built on exp_segment indexes the leaves of exp_test unchanged.
-        That is what lets GLOW segment on one fold and compute LLR / inner
-        perms / FWER on the other, which removes the selection bias of
+        That is what lets AnalysisGLOWSplit segment on one fold and compute
+        LLR / FWER on the other, which removes the selection bias of
         choosing the tree with the same images that then test it.
 
         Run drop_constant_vox before splitting, not after: screening each
@@ -819,8 +819,8 @@ class ExperimentScaled(Experiment):
         pre_scale and mean_orig come from all the images at once, so a
         fold cut out afterwards carries a transform the other fold helped
         choose -- a leak, small but free to avoid. Split the raw
-        Experiment instead; AnalysisGLOW.fit runs from_exp on whatever it
-        is handed, so each fold gets its own transform.
+        Experiment instead; AnalysisGLOWSplit.fit runs from_exp on each fold
+        it cuts, so each gets its own transform.
 
         Raises:
             TypeError: always.

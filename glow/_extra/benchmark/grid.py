@@ -23,7 +23,7 @@ import math
 
 import numpy as np
 
-from glow.analysis import AnalysisCET, AnalysisGLOW, AnalysisVBA
+from glow.analysis import AnalysisCET, AnalysisGLOWBase, AnalysisVBA
 from glow.analysis.mancova import stat_dict, stat_dict_inv
 from glow.effect import ExtenterMinVar, ExtenterSphere
 
@@ -198,7 +198,7 @@ def fit_params_for(ana, glow_fit_params):
             arms take fit's serial default and get their parallelism from the
             sweep's own n_jobs.
     """
-    return glow_fit_params if isinstance(ana, AnalysisGLOW) else None
+    return glow_fit_params if isinstance(ana, AnalysisGLOWBase) else None
 
 
 def get_run_stat_list(*, n_perm_fwer: int, alpha_fwer: float,

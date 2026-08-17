@@ -1,6 +1,6 @@
 """Shared fixtures for viewer tests.
 
-Builds a small AnalysisGLOW once per session (expensive) and exposes the
+Builds a small AnalysisGLOWSplit once per session (expensive) and exposes the
 derived objects (DataFrame, target stats, etc.) that the viewer uses.
 """
 
@@ -9,7 +9,7 @@ import pytest
 
 from glow.experiment.exper import Experiment
 from glow.effect import EffectSynthetic
-from glow.analysis import AnalysisGLOW
+from glow.analysis import AnalysisGLOWSplit
 from glow._extra.viewer.data import prep_df, get_feature_columns, compute_target_stats
 
 
@@ -29,7 +29,7 @@ def demo_analysis():
     # 20 images so each fold of GLOW's split still clears the design
     exp = Experiment.from_gauss(b=1, num_img=20, shape=shape, seed=0, a=2)
     exp_eff = EffectSynthetic(mask=mask_sphere, effect_llr=2.0, seed=0).fit(exp)[0]
-    ana = AnalysisGLOW(n_perm_fwer=5).fit(exp_eff)
+    ana = AnalysisGLOWSplit(n_perm_fwer=5).fit(exp_eff)
     return ana, exp_eff, mask_sphere
 
 
@@ -48,7 +48,7 @@ def demo_analysis_2d():
     # 20 images so each fold of GLOW's split still clears the design
     exp = Experiment.from_gauss(b=1, num_img=20, shape=shape, seed=42, a=2)
     exp_eff = EffectSynthetic(mask=mask_circle, effect_llr=2.0, seed=42).fit(exp)[0]
-    ana = AnalysisGLOW(n_perm_fwer=5).fit(exp_eff)
+    ana = AnalysisGLOWSplit(n_perm_fwer=5).fit(exp_eff)
     return ana, exp_eff, mask_circle
 
 
@@ -90,13 +90,13 @@ def ana_stat(exp):
     builds a different layout for an analysis that kept its draws, so both
     it and the default (which has none) have to stay under test.
     """
-    return AnalysisGLOW(n_perm_fwer=5, keep_stat=True).fit(exp)
+    return AnalysisGLOWSplit(n_perm_fwer=5, keep_stat=True).fit(exp)
 
 
 @pytest.fixture(scope='session')
 def ana_stat_2d(exp_2d):
     """The 2D demo experiment refit with keep_stat=True; see ana_stat."""
-    return AnalysisGLOW(n_perm_fwer=5, keep_stat=True).fit(exp_2d)
+    return AnalysisGLOWSplit(n_perm_fwer=5, keep_stat=True).fit(exp_2d)
 
 
 @pytest.fixture(scope='session')

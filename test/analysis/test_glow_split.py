@@ -24,8 +24,8 @@ import numpy as np
 import pytest
 
 import glow.graph
-from glow.analysis import _glow, draws
-from glow.analysis._glow import AnalysisGLOW
+from glow.analysis import _glow_split, draws
+from glow.analysis._glow_split import AnalysisGLOWSplit
 from glow.analysis.cluster import cluster, ClusterMode
 from glow.analysis.mancova import decompose
 from glow.experiment.exper import Experiment, ExperimentScaled
@@ -72,7 +72,7 @@ def _ana(**over):
     kw = dict(n_perm_fwer=8, min_vox=2, cluster_mode=ClusterMode.FOCUS,
               frac_segment=.5, split_seed=0)
     kw.update(over)
-    return AnalysisGLOW(**kw)
+    return AnalysisGLOWSplit(**kw)
 
 
 def _test_fold(ana, exp):
@@ -108,9 +108,9 @@ def _draws(ana, exp):
 def test_ward_runs_once(monkeypatch):
     """One tree per fit -- not one per outer perm, as before the split."""
     calls = []
-    real = _glow.cluster
+    real = _glow_split.cluster
     monkeypatch.setattr(
-        _glow, 'cluster',
+        _glow_split, 'cluster',
         lambda exp, **kw: (calls.append(exp), real(exp, **kw))[1])
 
     _ana().fit(_exp())
@@ -120,9 +120,9 @@ def test_ward_runs_once(monkeypatch):
 def test_tree_is_built_on_the_segmentation_fold_only(monkeypatch):
     """Ward sees fold A, and fold A alone -- never the whole cohort."""
     seen = []
-    real = _glow.cluster
+    real = _glow_split.cluster
     monkeypatch.setattr(
-        _glow, 'cluster',
+        _glow_split, 'cluster',
         lambda exp, **kw: (seen.append(exp), real(exp, **kw))[1])
 
     _ana(frac_segment=.5).fit(_exp())
@@ -219,7 +219,7 @@ def test_z_is_the_shared_standardization():
     """GLOW z-scores through Analysis.z_score_stat, not a local copy."""
     exp = _exp()
     ana = _ana().fit(exp)
-    z, _, _ = AnalysisGLOW.z_score_stat(_draws(ana, exp))
+    z, _, _ = AnalysisGLOWSplit.z_score_stat(_draws(ana, exp))
     np.testing.assert_allclose(ana.fwer.stat_obs, z[0], rtol=RTOL_ANCHOR,
                                atol=ATOL_ANCHOR, equal_nan=True)
 
@@ -321,9 +321,9 @@ def test_keep_stat_is_not_a_recipe_field():
 
     Storage is not a result. In RECORD_FIELDS it would invalidate every
     cached benchmark record the first time anyone wanted to look at a
-    null (see AnalysisGLOW's docstring, and Analysis.fit on n_jobs/gpu).
+    null (see AnalysisGLOWSplit's docstring, and Analysis.fit on n_jobs/gpu).
     """
-    assert 'keep_stat' not in AnalysisGLOW.RECORD_FIELDS
+    assert 'keep_stat' not in AnalysisGLOWSplit.RECORD_FIELDS
     assert repr(_ana()) == repr(_ana(keep_stat=True))
 
 
@@ -388,16 +388,20 @@ def test_the_matrix_survives_the_round_trip():
 # ---------- the split is part of the recipe ---------------------------------
 def test_split_knobs_are_recipe_fields():
     """frac_segment / split_seed reach RECORD_FIELDS, so they key the cache."""
-    assert 'frac_segment' in AnalysisGLOW.RECORD_FIELDS
-    assert 'split_seed' in AnalysisGLOW.RECORD_FIELDS
+    assert 'frac_segment' in AnalysisGLOWSplit.RECORD_FIELDS
+    assert 'split_seed' in AnalysisGLOWSplit.RECORD_FIELDS
     assert 'frac_segment=0.5' in repr(_ana())
 
 
-def test_no_inner_perm_knob_survives():
-    """The inner null is gone; a stale caller should fail loudly."""
-    assert 'n_perm_inner' not in AnalysisGLOW.RECORD_FIELDS
+def test_no_inner_perm_knob():
+    """One tree needs no inner null, so n_perm_inner is not a knob here.
+
+    It belongs to AnalysisGLOW, whose tree changes per outer perm; asking
+    this arm for it names the wrong arm and fails loudly.
+    """
+    assert 'n_perm_inner' not in AnalysisGLOWSplit.RECORD_FIELDS
     with pytest.raises(TypeError):
-        AnalysisGLOW(n_perm_fwer=4, n_perm_inner=8)
+        AnalysisGLOWSplit(n_perm_fwer=4, n_perm_inner=8)
 
 
 def test_split_seed_changes_the_partition_and_so_the_tree():

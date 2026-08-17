@@ -2,12 +2,12 @@
 
 The scatter shows each region as one point: its observed LLR, and the two
 moments that turned it into a z. This shows the column those moments came
-out of -- every draw AnalysisGLOW took for that region -- which is the one
+out of -- every draw the fit took for that region -- which is the one
 question the summary cannot answer: whether a region's null is the smooth
 bell its mean and std stand in for, or something the pair misrepresents.
 
 Only available when the analysis kept its draw matrix
-(AnalysisGLOW(keep_stat=True)); the viewer hides this whole panel
+(a GLOW fit with keep_stat=True); the viewer hides this whole panel
 otherwise, so nothing here handles a missing .stat.
 
 Regions overlay, coloured by the same palette index the image overlay and
@@ -48,7 +48,7 @@ def region_stat(ana_glow, reg_idx, unit='llr'):
     """Return one region's draws, NaNs dropped, in the requested unit.
 
     Args:
-        ana_glow (AnalysisGLOW): analysis fit with keep_stat=True
+        ana_glow (AnalysisGLOWBase): analysis fit with keep_stat=True
         reg_idx (int): region index (a column of ana_glow.stat)
         unit (str): 'llr' for the raw draws, 'z' to standardize them by
             the region's own mu and std -- the same pair, and the same
@@ -114,7 +114,7 @@ def build_hist(ana_glow, region_list, unit='llr', n_bins=DEFAULT_BINS,
     """Build the overlaid per-region draw histogram.
 
     Args:
-        ana_glow (AnalysisGLOW): analysis fit with keep_stat=True
+        ana_glow (AnalysisGLOWBase): analysis fit with keep_stat=True
         region_list (list[int]): region indices to overlay (visible +
             hover). 'target' entries are skipped: the target mask is not a
             tree region, so it has no column in the draw matrix -- the

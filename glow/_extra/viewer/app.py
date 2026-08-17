@@ -42,7 +42,7 @@ def _create_app(ana_glow, exp, mask_target=None, y_features=None,
     """Create and wire up the Dash app.
 
     Args:
-        ana_glow (AnalysisGLOW): completed analysis
+        ana_glow (AnalysisGLOWBase): completed analysis
         exp (Experiment): the experiment the analysis was fit on
         mask_target: optional target mask
         y_features (list[str] | None): imaging feature names (auto-extracted
@@ -123,7 +123,7 @@ def _create_app(ana_glow, exp, mask_target=None, y_features=None,
 def _has_stat(ana_glow):
     """Return True when the analysis kept its draw matrix.
 
-    AnalysisGLOW(keep_stat=True) is the only thing that sets .stat, and
+    keep_stat=True is the only thing that sets .stat, and
     it is off by default, so the histogram panel is absent from an ordinary
     fit rather than empty in it. getattr, not the attribute, because a
     bundle pickled before keep_stat existed has no such attribute at all.
@@ -138,7 +138,7 @@ def _display_region_ids(ana_glow, exp, min_vox):
     region is returned, so the lookup dropdown matches the scattered set.
 
     Args:
-        ana_glow (AnalysisGLOW): completed analysis (for size + tree shape).
+        ana_glow (AnalysisGLOWBase): completed analysis (size + tree shape).
         exp (Experiment): the experiment the analysis was fit on (num_vox).
         min_vox (int): minimum region size in voxels; 0/1 means no cut.
 
@@ -845,7 +845,7 @@ def _resolve_min_vox(ana_glow, min_vox, max_regions):
       - min_vox is None and num_reg  > max_regions -> the suggested cut.
 
     Args:
-        ana_glow (AnalysisGLOW): completed analysis (for size + tree shape).
+        ana_glow (AnalysisGLOWBase): completed analysis (size + tree shape).
         min_vox (int | None): caller-supplied cutoff, or None to auto-resolve.
         max_regions (int): target ceiling on the number of displayed regions.
 
@@ -877,7 +877,7 @@ def launch(ana_glow, exp, mask_target=None, port=8050, debug=False,
     """Launch the glow viewer dashboard.
 
     Args:
-        ana_glow (AnalysisGLOW): completed analysis
+        ana_glow (AnalysisGLOWBase): completed analysis
         exp (Experiment): the experiment the analysis was fit on (the
             analysis does not store it; pass the one given to fit)
         mask_target (np.array): optional target mask (boolean, same shape
@@ -909,7 +909,7 @@ def launch(ana_glow, exp, mask_target=None, port=8050, debug=False,
         scatter, its tree edges, and the 'Add by index' lookup), so set
         min_vox=0 if you need to inspect a small region by hand.
 
-        An analysis fit with AnalysisGLOW(keep_stat=True) gains a
+        An analysis fit with keep_stat=True gains a
         PERMUTATION panel beside the scatter, which histograms the FWER
         draws of every selected region (glow._extra.viewer.hist). An
         ordinary fit keeps no draws, so the panel is absent rather than

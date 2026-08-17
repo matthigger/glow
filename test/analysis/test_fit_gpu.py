@@ -1,4 +1,4 @@
-"""End-to-end A/B: AnalysisGLOW.fit(gpu=True) against the CPU fit.
+"""End-to-end A/B: AnalysisGLOWSplit.fit(gpu=True) against the CPU fit.
 
 This is the gate that justifies keeping device / acc_dtype out of the
 recipe hash. The unit tests in test_draws_gpu.py pin the backend's
@@ -24,7 +24,7 @@ import glow.mask
 from glow.analysis import AnalysisVBA, GpuConfig, draws_gpu
 from glow.analysis._fit_gpu import (describe_backend, resolve_gpu,
                                     resolve_perm_chunk)
-from glow.analysis._glow import AnalysisGLOW
+from glow.analysis._glow_split import AnalysisGLOWSplit
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr
 from glow.experiment.exper import Experiment
@@ -102,7 +102,7 @@ class TestResolveGpu:
     @skip_if_cuda
     def test_true_raises_without_a_device(self):
         with pytest.raises(RuntimeError, match='CUDA device'):
-            resolve_gpu(True, name='AnalysisGLOW.fit')
+            resolve_gpu(True, name='AnalysisGLOWSplit.fit')
 
 
 class TestDescribeBackend:
@@ -200,8 +200,8 @@ def test_gpu_fit_matches_cpu_fit():
     exp = _exp_with_effect()
     kw = _fit_kwargs()
 
-    ref = AnalysisGLOW(**kw).fit(exp, n_jobs=1)
-    got = AnalysisGLOW(**kw).fit(exp, n_jobs=1, gpu=True)
+    ref = AnalysisGLOWSplit(**kw).fit(exp, n_jobs=1)
+    got = AnalysisGLOWSplit(**kw).fit(exp, n_jobs=1, gpu=True)
 
     np.testing.assert_allclose(got.fwer.max_stat, ref.fwer.max_stat,
                                rtol=1e-7, atol=1e-9)
@@ -218,7 +218,7 @@ def test_gpu_fit_matches_cpu_fit():
 @requires_cuda
 def test_gpu_fit_returns_self():
     """fit(gpu=True) keeps fit's contract: the recipe it was called on."""
-    ana = AnalysisGLOW(**_fit_kwargs())
+    ana = AnalysisGLOWSplit(**_fit_kwargs())
     assert ana.fit(_exp_with_effect(), n_jobs=1, gpu=True) is ana
 
 
@@ -231,8 +231,8 @@ def test_gpu_tree_is_the_cpu_tree():
     """
     exp = _exp_with_effect()
     kw = _fit_kwargs()
-    ref = AnalysisGLOW(**kw).fit(exp, n_jobs=1)
-    got = AnalysisGLOW(**kw).fit(exp, n_jobs=1, gpu=True)
+    ref = AnalysisGLOWSplit(**kw).fit(exp, n_jobs=1)
+    got = AnalysisGLOWSplit(**kw).fit(exp, n_jobs=1, gpu=True)
     np.testing.assert_array_equal(got.children, ref.children)
 
 
@@ -245,8 +245,8 @@ def test_gpu_float32_preserves_discoveries():
     """
     exp = _exp_with_effect()
     kw = _fit_kwargs()
-    ref = AnalysisGLOW(**kw).fit(exp, n_jobs=1, gpu=True)
-    got = AnalysisGLOW(**kw).fit(
+    ref = AnalysisGLOWSplit(**kw).fit(exp, n_jobs=1, gpu=True)
+    got = AnalysisGLOWSplit(**kw).fit(
         exp, n_jobs=1, gpu=GpuConfig(acc_dtype=np.float32))
 
     np.testing.assert_allclose(got.fwer.max_stat, ref.fwer.max_stat,
@@ -269,9 +269,9 @@ def test_gpu_keep_stat_matches_the_cpu_matrix():
     exp = _exp_with_effect()
     kw = _fit_kwargs()
 
-    cpu = AnalysisGLOW(**kw, keep_stat=True).fit(exp, n_jobs=1)
-    got = AnalysisGLOW(**kw, keep_stat=True).fit(exp, n_jobs=1, gpu=True)
-    streamed = AnalysisGLOW(**kw).fit(exp, n_jobs=1, gpu=True)
+    cpu = AnalysisGLOWSplit(**kw, keep_stat=True).fit(exp, n_jobs=1)
+    got = AnalysisGLOWSplit(**kw, keep_stat=True).fit(exp, n_jobs=1, gpu=True)
+    streamed = AnalysisGLOWSplit(**kw).fit(exp, n_jobs=1, gpu=True)
 
     np.testing.assert_allclose(got.stat, cpu.stat, rtol=1e-7, atol=1e-9)
     np.testing.assert_allclose(got.llr, got.stat[0], rtol=0, atol=0,
@@ -293,8 +293,8 @@ def test_gpu_fit_ignores_n_jobs():
     """
     exp = _exp_with_effect()
     kw = _fit_kwargs()
-    serial = AnalysisGLOW(**kw).fit(exp, n_jobs=1, gpu=True)
-    par = AnalysisGLOW(**kw).fit(exp, n_jobs=4, gpu=True)
+    serial = AnalysisGLOWSplit(**kw).fit(exp, n_jobs=1, gpu=True)
+    par = AnalysisGLOWSplit(**kw).fit(exp, n_jobs=4, gpu=True)
     np.testing.assert_allclose(par.fwer.max_stat, serial.fwer.max_stat,
                                rtol=0, atol=0)
     np.testing.assert_allclose(par.fwer.stat_obs, serial.fwer.stat_obs,

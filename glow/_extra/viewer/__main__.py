@@ -4,8 +4,8 @@ Usage:
     # interactive demo
     python -m glow._extra.viewer --demo
 
-    # load a bundle pickle {'ana': AnalysisGLOW, 'exp': Experiment, ...}
-    # (as written by glow._extra.viewer.web.bake_demos); a bare AnalysisGLOW
+    # load a bundle pickle {'ana': GLOW fit, 'exp': Experiment, ...}
+    # (as written by glow._extra.viewer.web.bake_demos); a bare GLOW analysis
     # does not carry the experiment the viewer needs
     python -m glow._extra.viewer bundle.p.gz
 
@@ -44,7 +44,7 @@ def _data_path(filename):
 # ---------------------------------------------------------------------------
 
 def _load_analysis(path):
-    """Load a pickled AnalysisGLOW from a file."""
+    """Load a pickled GLOW analysis from a file."""
     path = pathlib.Path(path)
     suffixes = ''.join(path.suffixes)
 
@@ -166,17 +166,17 @@ _EFFECT_MAP = {
 
 
 def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
-    """Optionally impose an effect and run AnalysisGLOW.
+    """Optionally impose an effect and run AnalysisGLOWSplit.
 
     Returns:
-        ana (AnalysisGLOW): the fitted analysis.
+        ana (AnalysisGLOWSplit): the fitted analysis.
         exp_eff (Experiment): the experiment it was fit on (the analysis no
             longer stores it; the viewer needs it).
         mask_target (np.array | None): planted target mask, same shape as
             exp.mask_idx; None when no effect imposed.
     """
     from glow.effect.extent import ExtenterMinVar
-    from glow.analysis import AnalysisGLOW
+    from glow.analysis import AnalysisGLOWSplit
 
     if effect_llr > 0:
         from glow.effect import EffectSynthetic
@@ -207,8 +207,8 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
         exp_eff = exp
         print('  no effect imposed')
 
-    print('  running AnalysisGLOW (n_perm_fwer=200) ...')
-    ana = AnalysisGLOW(n_perm_fwer=200).fit(exp_eff, verbose=True)
+    print('  running AnalysisGLOWSplit (n_perm_fwer=200) ...')
+    ana = AnalysisGLOWSplit(n_perm_fwer=200).fit(exp_eff, verbose=True)
     n_eff = len(ana.effect_list)
     print(f'  found {n_eff} effect{"s" if n_eff != 1 else ""}')
     return ana, exp_eff, mask_target
@@ -404,7 +404,7 @@ def main():
 
     parser.add_argument(
         'analysis', nargs='?', default=None,
-        help='Path to a pickled AnalysisGLOW object (.pkl, .p, .p.gz)')
+        help='Path to a pickled GLOW analysis (.pkl, .p, .p.gz)')
     parser.add_argument(
         '--mask', default=None,
         help='Path to a target mask (.nii, .nii.gz, .npy, or pickled '
@@ -448,12 +448,12 @@ def main():
     obj = _load_analysis(args.analysis)
     # the analysis does not carry exp, so the viewer needs a bundle
     # pickle {'ana', 'exp', ...} (as written by bake_demos), not a bare
-    # AnalysisGLOW.
+    # GLOW analysis.
     if not (isinstance(obj, dict) and 'ana' in obj and 'exp' in obj):
         parser.error(
             'the viewer needs the experiment the analysis was fit on; pass a '
             "bundle pickle containing {'ana', 'exp'} (e.g. one written by "
-            'glow._extra.viewer.web.bake_demos), not a bare AnalysisGLOW.')
+            'glow._extra.viewer.web.bake_demos), not a bare GLOW analysis.')
     ana, exp = obj['ana'], obj['exp']
 
     mask_target = obj.get('mask_target')

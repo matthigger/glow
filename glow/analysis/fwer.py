@@ -17,8 +17,10 @@ Analysis.z_score_stat leans on to put row 0 inside the standardizing
 moments.
 
 The comparison set must be fixed with respect to the permutation group --
-known a priori, or read off data the permutations never touch (GLOW's
-size >= min_vox comes from the segmentation fold). An inactive region
+known a priori, or read off data the permutations never touch
+(AnalysisGLOWSplit's size >= min_vox comes from the segmentation fold; a
+per-perm AnalysisGLOW draws it from each perm's own tree, which is one of
+the reasons that arm has weak control only). An inactive region
 leaves both the per-draw maxima and the tested family, so a set chosen
 from the observed statistics voids FWER control silently: discarding
 whatever looks null lowers the maxima the survivors are compared against.
@@ -66,8 +68,8 @@ class MaxStatPerm:
 
     Self-contained: pval and reg_sig both follow from stat_obs, max_stat,
     reg_active and alpha, so a stored result stays checkable once the
-    (n_perm+1, num_reg) matrix behind it is gone -- which AnalysisGLOW
-    drops as soon as this is built, that matrix running to gigabytes at
+    (n_perm+1, num_reg) matrix behind it is gone -- which the GLOW arms
+    drop as soon as this is built, that matrix running to gigabytes at
     full-brain num_vox.
 
     max_stat is kept in draw order, not sorted. Sorting is what the
