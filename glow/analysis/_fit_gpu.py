@@ -102,20 +102,21 @@ def resolve_gpu(gpu, *, name: str = 'fit'):
     return gpu
 
 
-def describe_backend(gpu, config) -> str:
+def describe_backend(gpu, config, *, cpu_anchor: bool = False) -> str:
     """Name the draw backend a fit resolved, and why it got that one.
 
-    The CPU backend is draws.cpu_reliable, the deliberately slow trust
-    anchor -- measured 35x off the batched kernel it could ride
-    (glow.graph.iter_llr_perm), flat in num_vox. gpu='auto' drops onto it
-    without a word when no device is visible, so the expensive case is
-    also the silent one: a CPU-only torch wheel leaves nvidia-smi still
-    listing the card, and nothing but a stopwatch says which path ran.
-    Hence this line, which fit(verbose=True) prints.
+    Three backends span orders of magnitude, and the choice between them
+    is made from arguments and from what happens to be installed, so a fit
+    that does not say which one it took cannot be read for cost at all.
+    Two failure modes in particular are silent: gpu='auto' drops to the
+    CPU without a word when no device is visible (a CPU-only torch wheel
+    leaves nvidia-smi still listing the card), and cpu_anchor=True asks
+    for the ~35x trust anchor on purpose, which is easy to leave set.
 
     Args:
         gpu: the fit(gpu=...) argument, as the caller passed it.
         config (GpuConfig | None): what resolve_gpu made of it.
+        cpu_anchor (bool): the fit(cpu_anchor=...) argument.
 
     Returns:
         text (str): the backend, then the reason in parentheses.
@@ -124,11 +125,15 @@ def describe_backend(gpu, config) -> str:
         why = "gpu='auto' found one" if gpu == 'auto' else 'requested'
         return (f'device {config.device} ({why}, '
                 f'{np.dtype(config.acc_dtype).name} accumulation)')
-    slow = 'CPU draws.cpu_reliable, the slow trust anchor'
+    if cpu_anchor:
+        return ('CPU draws.cpu_reliable, the slow trust anchor '
+                '(cpu_anchor=True; ~35x the batched path, and meant for '
+                'holding it honest rather than for fitting)')
+    fast = 'CPU draws.cpu_summary, the batched kernel streamed'
     if gpu == 'auto':
-        return (f"{slow} (gpu='auto' fell back: "
+        return (f"{fast} (gpu='auto' found no device: "
                 f'{draws_gpu.unavailable_reason()})')
-    return (f'{slow} (no device asked for; pass gpu=True, or '
+    return (f'{fast} (no device asked for; pass gpu=True, or '
             f"gpu='auto' to take one only when visible)")
 
 
@@ -185,10 +190,10 @@ def gpu_summary(config: GpuConfig, *, exp, base_seed: int, n_perm: int,
                 q0, q1, children, min_vox: int, reg_active=None):
     """Summarize the draws on device, never materializing the matrix.
 
-    The device counterpart of the CPU path's cpu_reliable then
-    summarize_draws, and a drop-in for the pair at AnalysisGLOW.fit's one
-    call site. Sizes perm_chunk first (see resolve_perm_chunk), then defers
-    to draws_gpu.gpu_summarize.
+    The device counterpart of draws.cpu_summary -- same two-pass shape, same
+    DrawSummary -- and a drop-in for it at AnalysisGLOW.fit's one call site.
+    Sizes perm_chunk first (see resolve_perm_chunk), then defers to
+    draws_gpu.gpu_summarize.
 
     Args:
         config (GpuConfig): resolved device knobs

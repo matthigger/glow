@@ -116,15 +116,22 @@ class TestDescribeBackend:
 
     def test_cpu_unasked_names_the_backend_and_the_flag(self):
         text = describe_backend(False, None)
-        assert 'cpu_reliable' in text
+        assert 'cpu_summary' in text
         assert "gpu='auto'" in text
 
     def test_cpu_fallback_reports_the_cause(self):
         """An 'auto' fallback quotes unavailable_reason, not just 'CPU'."""
         text = describe_backend('auto', None)
-        assert 'cpu_reliable' in text
-        assert 'fell back' in text
+        assert 'cpu_summary' in text
+        assert 'found no device' in text
         assert draws_gpu.unavailable_reason() in text
+
+    def test_the_anchor_is_named_as_the_anchor(self):
+        """cpu_anchor=True is easy to leave set, so it says so loudly."""
+        text = describe_backend(False, None, cpu_anchor=True)
+        assert 'cpu_reliable' in text
+        assert 'cpu_anchor=True' in text
+        assert '35x' in text
 
     def test_device_names_dtype_and_that_it_was_asked_for(self):
         text = describe_backend(True, GpuConfig())

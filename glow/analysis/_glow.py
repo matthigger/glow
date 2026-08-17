@@ -123,8 +123,8 @@ class AnalysisGLOW(Analysis):
         self.mu = None
         self.std = None
 
-    def fit(self, exp, *, n_jobs: int = 1, gpu=False, split_group=None,
-            verbose: bool = False):
+    def fit(self, exp, *, n_jobs: int = 1, gpu=False, cpu_anchor=False,
+            split_group=None, verbose: bool = False):
         """Run the analysis on exp and return self.
 
         Populates the observed attributes (children, size, llr, mu, std),
@@ -143,6 +143,11 @@ class AnalysisGLOW(Analysis):
                 to require a device, 'auto' to take one when visible. The
                 draws are the only thing the device changes; see
                 ._fit_gpu on why float64 is its default dtype.
+            cpu_anchor (bool): draw through draws.cpu_reliable, the slow
+                trust anchor, instead of the batched draws.cpu_summary.
+                Same answer to fp64 round-off at ~35x the cost, so this is
+                for holding the fast path honest, not for fitting. Forces
+                the CPU, and contradicts an explicit gpu=True / GpuConfig.
             split_group (np.array): (num_img,) labels held together by
                 the split -- family IDs, subject IDs for repeat scans.
                 Omitting it when the images are related leaves the two
@@ -152,7 +157,16 @@ class AnalysisGLOW(Analysis):
         Returns:
             self
         """
-        gpu_config = resolve_gpu(gpu, name='AnalysisGLOW.fit')
+        # cpu_anchor names a CPU backend, so a device request alongside it
+        # is a contradiction rather than a preference. 'auto' is not one:
+        # it asks for a device only where that is the better default, and
+        # the anchor is the more specific instruction.
+        if cpu_anchor and gpu and gpu != 'auto':
+            raise ValueError(
+                'AnalysisGLOW.fit(cpu_anchor=True) draws on the CPU and '
+                f'cannot also honour gpu={gpu!r}')
+        gpu_config = None if cpu_anchor else resolve_gpu(
+            gpu, name='AnalysisGLOW.fit')
         del n_jobs
 
         exp_seg, exp_test = exp.split_img(frac_segment=self.frac_segment,
@@ -178,9 +192,11 @@ class AnalysisGLOW(Analysis):
             print(f'  [1/2] {self.n_perm_fwer + 1} draws '
                   f'({exp_test.y.shape[1]} test images, '
                   f'{exp_test.y.shape[2]} voxels) ...')
-            # Which backend, and why -- the two differ by ~35x and
-            # gpu='auto' picks the slow one silently (describe_backend).
-            print(f'        backend: {describe_backend(gpu, gpu_config)}')
+            # Which backend, and why -- they differ by orders of magnitude
+            # and gpu='auto' falls back silently (describe_backend).
+            backend = describe_backend(gpu, gpu_config,
+                                       cpu_anchor=cpu_anchor)
+            print(f'        backend: {backend}')
 
         # size >= min_vox is a function of the fold-A tree alone, hence a
         # constant with respect to the fold-B permutations -- the condition
@@ -192,21 +208,26 @@ class AnalysisGLOW(Analysis):
         # identity -- so row 0 is the observed draw and needs no separate
         # code path (permute._perm_indices reserves it).
         #
-        # Both backends return the same DrawSummary, so nothing below can
-        # tell them apart. They differ in speed and in peak memory: the CPU
-        # one materializes the matrix and is the trust anchor, an
-        # independent per-region implementation of the statistic (see
-        # draws); the device one streams it in two passes, never holding
-        # more than a chunk, and is ~3 orders faster at full-brain num_vox.
+        # All three backends return the same DrawSummary, so nothing below
+        # can tell them apart -- they differ in speed and in peak memory
+        # only. cpu_summary streams the batched kernel's chunks in two
+        # passes; the device one does the same on device and is ~3 orders
+        # faster at full-brain num_vox; cpu_reliable materializes the
+        # matrix through an independent per-region implementation of the
+        # statistic, which is what makes it the anchor and why it is ~35x
+        # the batched path (see draws).
         draws_kwargs = dict(
             exp=exp_test, base_seed=0, n_perm=self.n_perm_fwer + 1,
             q0=q0, q1=q1, children=self.children, min_vox=self.min_vox)
-        if gpu_config is None:
+        if gpu_config is not None:
+            summary = gpu_summary(gpu_config, reg_active=reg_active,
+                                  **draws_kwargs)
+        elif cpu_anchor:
             summary = draws.summarize_draws(
                 draws.cpu_reliable(**draws_kwargs), reg_active=reg_active)
         else:
-            summary = gpu_summary(gpu_config, reg_active=reg_active,
-                                  **draws_kwargs)
+            summary = draws.cpu_summary(reg_active=reg_active,
+                                        **draws_kwargs)
 
         self.llr = summary.llr
         self.mu = summary.mu
