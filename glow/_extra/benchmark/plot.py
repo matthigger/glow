@@ -144,7 +144,7 @@ _ARM_LABEL = {REPORTED_GLOW_LABEL: 'GLOW'}
 # legend and the CSVs (a figure showing two curves both called GLOW would say
 # nothing). The head-to-head diff row still draws one line, the reported arm's
 # (_diff_label), while its CSV covers every arm -- see _draw_diff.
-_BOTH_ARM_CACHES = ('sweep_llr_glow',)
+_BOTH_ARM_CACHES = ('sweep_llr_glow_tune',)
 
 
 def _select_glow_arm(df, cache: str = None):
@@ -1734,8 +1734,8 @@ def plot_prune(label: str, df, out) -> None:
     so the clusterings are compared side by side rather than on one axis. The
     diagnostic single_max rule is dropped (_PRUNE_LABELS_SKIP).
 
-    A cache that also varies b (sweep_llr_prune) splits again on it
-    (_split_by_secondary), one figure per (mode, b): the grid's facets are
+    A cache that also varies b splits again on it (_split_by_secondary), one
+    figure per (mode, b): the grid's facets are
     already spent on source x metric, and pooling the b's would average two
     power curves into one line. The b=1-only prune cache yields the one figure
     per mode it always did.
@@ -1917,13 +1917,13 @@ def main(argv=None) -> None:
     write_stat_tables. The segment / prune caches are normalised with
     tidy_segment / tidy_prune and drawn as a source x metric grid vs
     effect_llr: segment by plot_metric_grid, prune by plot_prune (one grid per
-    Ward clustering mode, and per b where the cache sweeps it --
-    sweep_llr_prune). segment_perc takes the same grid against
-    frac_segment instead, the share of the images its tree was built on, and
-    segment_perc_llr crosses the two -- one grid per Ward mode, a curve per
-    fold share (plot_segment_llr), plus a multipage {cache}_compare.pdf turning
-    that around -- a page per fold share, the Ward modes as its lines
-    (plot_segment_compare). Which of the three a segment cache is comes off its
+    Ward clustering mode, and per b where a cache sweeps it). A segment cache
+    that sweeps frac_segment -- the share of the images its tree was built on
+    -- is drawn against that instead, and segment_perc_llr crosses it with
+    effect_llr: one grid per Ward mode, a curve per fold share
+    (plot_segment_llr), plus a multipage {cache}_compare.pdf turning that
+    around -- a page per fold share, the Ward modes as its lines
+    (plot_segment_compare). Which of the two a segment cache is comes off its
     own grids (_segment_perc).
     Figures / tables land in results/_latest, so a mid-benchmark run yields
     intermediate output.

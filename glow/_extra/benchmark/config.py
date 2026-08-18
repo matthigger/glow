@@ -45,15 +45,16 @@ Every cache here backs a figure, table or quantitative claim in the paper, bar
 smoke (an end-to-end pipeline check). Adding one is cheap; the catalogue is
 kept at what is cited.
 
-Scope. Five caches share the run_ana leaf (fit + score one Analysis per cell):
-null, sweep_llr, sweep_extent, sweep_b, sweep_nimg. Three swap in their own
-leaf over much the same grids: segment (run_segment, a Ward-mode oracle, no
-fit -- and segment_perc / segment_perc_llr, the same leaf and modes over the
-share of the images the tree is built on, at the moderate effect and across the
-llr sweep), vba_stat (run_stat, a VBA / CET variant reading a shared voxel-stat
-walk; HCP only, b=2), and prune (run_prune, three pruning rules plus the
-max-Dice oracle on a shared GLOW fit -- and sweep_llr_prune, the same leaf and
-rules over sweep_llr's own (b, effect_llr) grid).
+Scope. Five caches share the run_ana leaf over the one recipe grid (fit +
+score one Analysis per cell): null, sweep_llr, sweep_extent, sweep_b,
+sweep_nimg. sweep_llr_glow_tune takes that leaf over a grid of its own, the
+four GLOW variants, which is what picks the one the others report. Three swap
+in their own leaf over much the same grids: segment (run_segment, a Ward-mode
+oracle, no fit -- and segment_perc_llr, the same leaf and modes over the share
+of the images the tree is built on), vba_stat (run_stat, a VBA / CET variant
+reading a shared voxel-stat walk; HCP only, b=2), and prune (run_prune, three
+pruning rules plus the max-Dice oracle, all re-selected off one shared GLOW
+fit).
 
 Runtime. Five caches measure time, not detection, and run locally only. They
 answer two different questions and must not be read as one: runtime_num_vox is
@@ -150,8 +151,8 @@ SWEEP_NIMG_GRID = list(range(10, HCP_NUM_IMG + 1, 10))
 # projection (Focus on the contrast subspace, GLM Error on the whole design
 # space) crossed with the selection rule (greedy, or the exact max-total-LLR
 # antichain). Only REPORTED_GLOW_LABEL rides the shared leaf grid; the other
-# three are compared on one cache of their own (sweep_llr_glow), which is what
-# settles the choice.
+# three are compared on one cache of their own (sweep_llr_glow_tune), which
+# is what settles the choice.
 kwargs_voxel = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
 kwargs = dict(n_perm_inner=N_PERM_INNER, **kwargs_voxel)
 GLOW_LABEL_LIST = ('GLOW-Focus-greedy', 'GLOW-Focus-dp',
@@ -223,7 +224,7 @@ RUN_ANA_LIST = [_run_ana(label) for label in ana_kwargs_dict
                 if label == REPORTED_GLOW_LABEL
                 or label not in GLOW_LABEL_LIST]
 
-# the sweep_llr_glow cache's leaf grid: the four GLOW variants and nothing
+# the sweep_llr_glow_tune cache's leaf grid: the four GLOW variants and nothing
 # else. Ward projection x selection rule, on the llr sweep's own axes at b=1,
 # which is what the choice of REPORTED_GLOW_LABEL rests on. The voxel-wise
 # arms are absent -- sweep_llr already carries them over the same cells, so
@@ -238,7 +239,7 @@ SEGMENT_MODES = [ClusterMode.NAIVE, ClusterMode.GLM_ERROR, ClusterMode.FOCUS]
 RUN_SEGMENT_LIST = [dict(cluster_mode=mode) for mode in SEGMENT_MODES]
 
 
-# the segment_perc cache's leaf grid: the same Ward modes crossed with the
+# the segment_perc_llr cache's leaf grid: the same Ward modes crossed with the
 # share of the images the tree is built on (run_segment's frac_segment). It
 # stops at 0.9 because a split always holds a test fold back; the whole-cohort
 # ceiling is the segment cache's own moderate-effect slice, which these cells
@@ -464,7 +465,7 @@ CONFIG = {
     #    only the fits are new. REPORTED_GLOW_LABEL is the variant this cache
     #    picks out; benchmark.plot keeps all four under their own labels here
     #    (_BOTH_ARM_CACHES) and drops the unreported three everywhere else.
-    'sweep_llr_glow': (
+    'sweep_llr_glow_tune': (
         data_grid(b_list=(1,)),
         effect_grid(llr_list=EFFECT_LLR_GRID),
         GLOW_ARM_LIST, run_ana),
@@ -495,24 +496,15 @@ CONFIG = {
         effect_grid(llr_list=EFFECT_LLR_GRID),
         RUN_SEGMENT_LIST, run_segment),
     # Segmentation quality vs sample size: the same oracle per Ward mode at the
-    # moderate effect, sweeping the share of the images the tree is built on
-    # (SEGMENT_FRAC_GRID). It shares both grids and the leaf with segment's
-    # midpoint slice, so the record walk reaches either cache's leaves from the
-    # other's cells; frac_segment is what separates them (plot.tidy_segment
-    # selects on it).
-    'segment_perc': (
-        data_grid(),
-        effect_grid(),
-        RUN_SEGMENT_PERC_LIST, run_segment),
-    # The same fold sweep across the whole llr axis: segment's effect grid on
-    # segment_perc's leaf grid, so what a smaller segmentation fold costs is
-    # read at every effect strength rather than at the moderate one alone
-    # (benchmark.plot draws it as one grid per Ward mode, a curve per fold
-    # share). Both grids are the ones those two caches already declare, so its
-    # cells are segment's cells and its moderate-llr column is segment_perc's
-    # own leaves -- only the off-midpoint fold leaves are new work. The
-    # whole-cohort ceiling each curve is read against is segment's llr sweep,
-    # which the record walk reaches from these same cells.
+    # Segmentation quality vs the share of the images the tree is built on
+    # (SEGMENT_FRAC_GRID), across the whole llr axis: what a smaller
+    # segmentation fold costs, read at every effect strength (benchmark.plot
+    # draws it as one grid per Ward mode, a curve per fold share). Both grids
+    # are segment's own, so its cells are segment's cells and only the fold
+    # leaves are new work; the whole-cohort ceiling each curve is read against
+    # is segment's llr sweep, which the record walk reaches from these same
+    # cells. frac_segment is a knob of the split arm, which the catalogue no
+    # longer reports -- this cache is the measurement of why.
     'segment_perc_llr': (
         data_grid(),
         effect_grid(llr_list=EFFECT_LLR_GRID),
@@ -534,23 +526,6 @@ CONFIG = {
     #    one metric grid per mode.
     'prune': (
         data_grid(),
-        effect_grid(llr_list=EFFECT_LLR_GRID),
-        RUN_PRUNE_LIST, run_prune),
-    # The same rules read on the llr sweep's own axes: sweep_llr's data grid
-    # (both b) and effect grid on prune's leaf, so what the selection rule
-    # costs is read at every effect strength the power curve reports rather
-    # than at b=1 alone. Its b=1 half is prune's own grid, so those cells are
-    # shared -- only the b=2 half is new work.
-    #
-    # A rule is a re-selection off a fitted tree, so this is not the same as
-    # running sweep_llr twice with two GLOW recipes: run_prune scores every
-    # rule off one glow_fit_for_prune per (cell, Ward mode), which both
-    # halves the fits and isolates the rule from the permutation test that
-    # chose the significant set. Pooling the two b's in one panel would
-    # average two power curves, so benchmark.plot facets the prune figures by
-    # b (plot_prune).
-    'sweep_llr_prune': (
-        data_grid(b_list=B_LLR_SWEEP),
         effect_grid(llr_list=EFFECT_LLR_GRID),
         RUN_PRUNE_LIST, run_prune),
     # Smoke: tiny null sweep over both sources to confirm the pipeline end to

@@ -775,16 +775,16 @@ def test_tidy_segment_keeps_both_halves_at_the_whole_cohort_ceiling():
 
 
 @pytest.mark.parametrize('name, perc', [('segment', False),
-                                        ('segment_perc', True),
                                         ('segment_perc_llr', None)])
 def test_segment_perc_reads_the_figure_off_the_catalogue_grids(name, perc):
     """Each segment cache's figure is derived from its own CONFIG grids.
 
-    The three share the run_segment leaf and the Ward-mode labels, so nothing
-    but the grids tells them apart: the fold caches are the ones whose leaf
-    grid sets frac_segment, and the one that also sweeps the strength is the
-    both-halves llr figure. Read off CONFIG rather than a name list here, so a
-    fourth cache is classified rather than skipped.
+    Both share the run_segment leaf and the Ward-mode labels, so nothing but
+    the grids tells them apart: a fold cache is one whose leaf grid sets
+    frac_segment, and one that also sweeps the strength is the both-halves llr
+    figure. Read off CONFIG rather than a name list here, so a cache added
+    later is classified rather than skipped -- including a fold sweep at one
+    effect strength, which _segment_perc still returns True for.
     """
     _, effect_list, fnc_list, _ = CONFIG[name]
     assert plot._segment_perc(effect_list, fnc_list) is perc

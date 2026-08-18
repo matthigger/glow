@@ -31,13 +31,12 @@ from glow.analysis import (Analysis, AnalysisCET, AnalysisGLOWBase,
 # every catalogue entry; the shape / bind checks cover all of them
 LABELS = sorted(config.CONFIG)
 
-# the caches whose leaf is run_ana, read off the catalogue rather than named
-# the run_ana caches that share the one recipe grid. sweep_llr_glow is the
-# deliberate exception: its leaves are the four GLOW variants (GLOW_ARM_LIST),
-# since it exists to choose among them rather than to compare methods.
+# the run_ana caches that share the one recipe grid. sweep_llr_glow_tune is
+# the deliberate exception: its leaves are the four GLOW variants
+# (GLOW_ARM_LIST), since it chooses among them rather than comparing methods.
 RUN_ANA_LABELS = [label for label in LABELS
                   if config.CONFIG[label][3].__name__ == 'run_ana'
-                  and label != 'sweep_llr_glow']
+                  and label != 'sweep_llr_glow_tune']
 
 
 class TestCatalogueShape:
