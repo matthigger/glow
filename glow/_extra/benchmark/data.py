@@ -12,11 +12,10 @@ support list into the leaf whatever the effect count. (Raw, effect-free runs
 skip the effect stage and feed a clean Experiment straight to an Analysis.)
 
 Every build is memoised on disk (MEMORY) with the recorder nested inside the
-cache, so a cache hit returns the stored result and only a real (cache-miss)
-build is recorded. The recorder keys each build by joblib's own args hash (see
-Recorder), so a record lines up one-to-one with the cached artifact on disk.
-All builders share MEMORY / RECORDER, so a clean build and the plant that
-consumes it link into one provenance DAG.
+cache, so only a real (cache-miss) build is recorded, keyed by joblib's own
+args hash -- a record lines up one-to-one with its cached artifact. All
+builders share MEMORY / RECORDER, so a clean build and the plant that consumes
+it link into one provenance DAG.
 """
 import joblib
 import numpy as np
@@ -45,26 +44,18 @@ RECORDER = Recorder(folder=get_path_records(), link_types=(Experiment,))
 def _with_canonical_y(exp):
     """Return exp with an owning, canonically-strided (F-contiguous) y.
 
-    Both the joblib.Memory cache key and the provenance link (the
-    RECORDER's input / output content hashes) are joblib.hash of the whole
-    Experiment, which folds in y's memory layout -- not just its bytes.
-    apply_mask crops y to a non-owning view, and at b=1 the length-1 feature
-    axis carries an ambiguous stride that pickling does not preserve, so a
-    freshly built exp and the same exp reloaded from the disk cache hash
-    differently (their strides differ though their bytes do not). That
-    silently breaks the cache (a warm-cache / resumed run misses and
-    recomputes) and orphans the leaf in flatten_to_df (its exp-input hash no
-    longer matches the recorded build's output hash) the moment a build is
-    served from cache.
+    Both the joblib.Memory cache key and the provenance link are joblib.hash
+    of the whole Experiment, which folds in y's memory layout, not just its
+    bytes. apply_mask crops y to a non-owning view, and at b=1 the length-1
+    feature axis carries an ambiguous stride that pickling does not preserve,
+    so a fresh exp and the same exp reloaded from cache hash differently. That
+    silently breaks the cache and orphans the leaf in flatten_to_df.
 
     A fresh copy gives y owning storage with canonical strides whose hash
-    survives the pickle round-trip. We copy in Fortran order (not the usual
-    C): that is the layout from_gauss / the HCP loader produce and that the
-    scaling path is written for (ExperimentScaled.prep's einsum, the
-    order='F' cov reshape), so the hash is fixed without flipping the layout
-    the analysis hot loop expects. asfortranarray would not do: the
-    degenerate view is already flagged F-contiguous, so it would return it
-    unchanged and fix nothing.
+    survives the pickle round-trip. Fortran order, not C: that is the layout
+    the builders produce and the scaling path is written for. asfortranarray
+    would not do -- the degenerate view is already flagged F-contiguous, so it
+    would come back unchanged.
     """
     exp.y = exp.y.copy(order='F')
     return exp
@@ -354,13 +345,10 @@ def effect_factory_split(exp, *, parent_uid: str, effect_llr, extenter_cls,
     effects differ only in orientation. score_effects then scores the union and
     each half in turn (target0 / target1; the merge-cost signal).
 
-    The base extent is placed by the extenter from the resolved seed (as
-    effect_factory_single seeds its extenter), so it picks its own start --
-    ExtenterMinVar (the cleaving cache's base) grows the lowest-variance region
-    and bisects it into roughly equal halves, the same data-driven support the
-    single-effect caches use. The one resolved seed (seed XOR seed_from_exp)
-    drives both the placement and the direction pair. A data-driven Fiedler cut
-    is not perfectly even, so the halves may differ in size (visible in
+    The base extent is placed by the extenter from the resolved seed, as
+    effect_factory_single seeds its own, and that one seed drives both the
+    placement and the direction pair. A data-driven Fiedler cut is not
+    perfectly even, so the halves may differ in size (visible in
     target0 / target1's voxel counts).
 
     Args:

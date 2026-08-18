@@ -10,17 +10,17 @@ A sweep runs only the cells the records do not already hold in full, so a
 rerun fills the gaps rather than recomputing finished work (--no-skip forces
 the whole grid).
 
---method narrows the sweep to one analysis recipe (repeatable), the path to
-take after changing one method's recipe: a changed knob is a new hash, so that
-method's leaves go missing everywhere while its siblings' stay valid, and
-completeness is judged against the narrowed grid -- so only the named recipes
-run and no sibling fit is recomputed.
+--method narrows the sweep to one analysis recipe (repeatable), which is the
+path to take after changing a method's recipe: a changed knob is a new hash, so
+that method's leaves go missing everywhere while its siblings' stay valid.
+Completeness is judged against the narrowed grid, so no sibling fit is
+recomputed.
 
-GLOW's leaves fit on the GPU where one is visible and on many cores where it
-is not (config.GLOW_FIT_PARAMS). That parallelism multiplies against -j rather
+GLOW's leaves fit on the GPU where one is visible and on many cores where it is
+not (config.GLOW_FIT_PARAMS). That parallelism multiplies against -j rather
 than sharing it, so a parallel sweep on a machine with a card is refused
-(driver.check_fit_params); --no-gpu is the way to take -j instead, and the two
-score identically.
+(driver.check_fit_params); --no-gpu takes -j instead, and the two score
+identically.
 
 Usage:
     python -m glow._extra.benchmark                    # everything

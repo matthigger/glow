@@ -1,18 +1,14 @@
 """Detection scoring for the benchmark run functions.
 
-score_effects turns one fitted Analysis into the trial's score: it compares
-the Analysis's discovered EffectEstimates against the planted EffectSynthetic
-target(s) and emits one JSON-friendly dict. run_ana fits a recipe and calls
-this on the result, returning (and so recording / caching) the dict as the
-run's output -- the heavy fitted Analysis stays an in-memory local and is
-discarded, so only the small score dict reaches disk. That dict is the leaf of
-RECORDER.flatten_to_df: its exp ancestor chains back through the plant to the
-data build, giving one score-bearing row per (trial, recipe). See
-glow._extra.benchmark.run / recorder.
+score_effects compares a fitted Analysis's discovered EffectEstimates against
+the planted EffectSynthetic target(s) and emits one JSON-friendly dict. run_ana
+returns that dict as the run's output, so only it reaches disk while the heavy
+fitted Analysis stays a local; it is the leaf of RECORDER.flatten_to_df, whose
+exp ancestor chains back through the plant to the data build.
 
-Beside score_effects this module also holds score_oracle_tree (segment), the
-min-size staircase scorers (size_max_z_curve / curve_json), and score_prune
-(the prune cache's region-index scorer).
+Also here: score_oracle_tree (segment), the min-size staircase scorers
+(size_max_z_curve / curve_json) and score_prune (the prune cache's
+region-index scorer).
 
 score_effects output (one dict per fitted Analysis), keys:
 
@@ -21,24 +17,18 @@ score_effects output (one dict per fitted Analysis), keys:
      target: {tp, fp, tn, fn},
      target0: {tp, fp, tn, fn}, ...}
 
-num_vox is the analyzed voxel count (mask_active.sum()), min_pval the smallest
-region p-value (nanmin(ana.fwer.pval)), n_pred the count of discovered
-regions. The target0/target1/... blocks are present only with more than one
-target.
+num_vox is the analyzed voxel count, min_pval the smallest region p-value,
+n_pred the count of discovered regions.
 
-The single target block is always the prediction (the union of all discovered
-regions) scored against the union of all planted effects -- so for one planted
-effect it is that effect, and the bare tp/fp/tn/fn a reader flattens from it
-stay backward compatible. The target0/target1/... blocks appear only with
-several planted effects: they score the same prediction against each effect in
-turn, the others' support treated as background (the cleaving / merge-cost
-signal). Each pred region additionally reports how many of its voxels land in
-each target, so the per-region geometry is visible without the masks (which
-never reach disk; see recorder).
+The target block scores the prediction (the union of the discovered regions)
+against the union of the planted effects. target0/target1/... appear only with
+several planted effects, scoring that same prediction against each in turn with
+the others' support as background -- the cleaving / merge-cost signal. Each
+pred region also reports how many of its voxels land in each target, so the
+per-region geometry survives without the masks, which never reach disk.
 
-Every metric (Dice, sensitivity, PPV, specificity) is a function of the four
-confusion counts and is derived downstream (glow.mask.stats_from_counts), so
-only the counts are stored.
+Every metric (Dice, sensitivity, PPV, specificity) follows from the four
+confusion counts (glow.mask.stats_from_counts), so only the counts are stored.
 """
 import json
 

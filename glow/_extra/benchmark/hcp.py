@@ -109,14 +109,12 @@ def ensure_hcp_data() -> pathlib.Path:
 
 
 # ---------- npy bundle (the per-feature, portable representation) ------------
-# A compact stand-in for the niftis: a brain mask plus one float32
-# (num_img, num_vox) array per feature plus a small meta (subject ids +
-# affine). It holds exactly the arrays from_search builds -- y[feat] is
-# arr.get_fdata(float32)[mask] in the mask's C-order, the same for every
-# feature -- so build_exp_img_from_bundle reconstructs a byte-identical
-# ExperimentImageOnly (np.save round-trips dtype + values; data_factory's
-# _with_canonical_y normalises layout), and the experiment hashes identically
-# whether built from the niftis or the bundle.
+# A compact stand-in for the niftis: a brain mask, one float32
+# (num_img, num_vox) array per feature, and a small meta (subject ids +
+# affine). It holds exactly the arrays from_search builds, so
+# build_exp_img_from_bundle reconstructs a byte-identical ExperimentImageOnly
+# and the experiment hashes the same whether built from the niftis or the
+# bundle.
 #
 # It is the single HCP build path: data_factory_hcp builds from the bundle,
 # converting it from the niftis on first use. Once it exists a run needs

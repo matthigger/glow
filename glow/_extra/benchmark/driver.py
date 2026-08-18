@@ -8,76 +8,47 @@ per kwargs dict in kwargs_fnc_list, as nested loops:
       for kw_eff in kwargs_effect_list:  exp, mask  = effect_factory(exp, ...)
         for kw   in kwargs_fnc_list:     score      = fnc(exp, ...)
 
-The nesting (rather than one flat product) is deliberate: each upstream
-stage's output feeds the stage below, so a clean exp is built once per data
-cell and a planted exp once per (data, effect) cell, then shared across every
-fnc run below it -- no redundant rebuild even on a cold cache. The stage
-functions are each disk-memoised + recorded (see glow._extra.benchmark.data /
-run), so a repeated cell is a cache hit and the driver never worries about
-issuing the same call twice: a re-run, an overlapping grid, or a resumed
-sweep all reuse the stored artifacts.
+Nested rather than one flat product so each upstream stage's output feeds the
+stage below: a clean exp is built once per data cell and a planted exp once
+per (data, effect) cell, then shared by every fnc run under it. Every stage is
+disk-memoised and recorded (see .data / .run), so a repeated cell is a cache
+hit and a resumed sweep reuses the stored artifacts.
 
-That memoisation reaches only the joblib cache, which is why drive takes
-skip_recorded: the records are the source of truth for what is finished, and
-they outlive the cache. The records are a few MB of JSON against a cache that
-runs to hundreds of GiB, so the cache is the half that gets archived or pruned
-for space (mv_cache) -- leaving cells provably done that would miss locally and
-recompute from cold. skip_recorded drops any (data, effect) cell whose whole
-leaf set is already recorded before the sweep starts
-(results.get_cell_complete), so a rerun fills only the gaps and a cell with
-nothing left to run never builds its exp.
+skip_recorded exists because that memoisation reaches only the joblib cache,
+which is the half that gets archived or pruned for space (mv_cache) while the
+records stay. It drops any (data, effect) cell whose whole leaf set is already
+recorded (results.get_cell_complete), so a rerun fills only the gaps and never
+builds an exp it has no work for.
 
 fnc is the leaf measurement, swept over its own kwargs grid so one (data,
-effect) cell can be measured several ways at once (e.g. run_ana under several
-Analysis recipes). It is called fnc(exp, mask_target_list=..., **kwargs) and,
-to join the provenance DAG, must be memoised + recorded with exp as a linked
-input -- exactly the shape of run_ana (see glow._extra.benchmark.run). The
+effect) cell can be measured several ways at once. It is called
+fnc(exp, mask_target_list=..., **kwargs) and, to join the provenance DAG, must
+be memoised + recorded with exp as a linked input -- the shape of run_ana. The
 driver knows nothing fnc-specific; the config layer supplies it.
 
 A None effect cell is the null / FWER-calibration path: it plants nothing and
-runs fnc on the clean exp against an empty target. effect_factory is skipped
-entirely (EffectSynthetic has no no-op -- it imposes a real effect_llr), so a
-null run is data_factory -> fnc directly, and its provenance row chains
-straight to the build with no plant node (see glow._extra.benchmark.config's
-'null' cache, whose effect grid is [None]).
+runs fnc on the clean exp against an empty target, skipping effect_factory
+(EffectSynthetic has no no-op), so its provenance chains straight to the build.
 
-The driver returns the innermost scores, but the richer output is the shared
-provenance DAG every call writes to: RECORDER.flatten_to_df yields one row
-per fnc leaf, each carrying the swept data / effect inputs that produced it
-(the data -> plant -> score chain), so a sweep is analysed from the records
-without the driver tracking anything itself (see
-glow._extra.benchmark.recorder).
-
-Which CONFIG cache a leaf belongs to is recomputed at read time by walking the
-records forward from the cache's data cells (see glow._extra.benchmark.results),
-so the driver records provenance and nothing else -- no per-sweep bookkeeping.
+drive returns the innermost scores, but the richer output is the provenance DAG
+every call writes to: RECORDER.flatten_to_df yields one row per fnc leaf
+carrying the data / effect inputs that produced it. Which CONFIG cache a leaf
+belongs to is recomputed at read time by walking the records forward (see
+.results), so the driver keeps no per-sweep bookkeeping.
 
 Parallelism (n_jobs != 1) splits the sweep by data cell: each whole
-data_factory -> effect_factory* -> fnc* subtree is one joblib task, so the
-clean exp (and each planted exp) has exactly one owner. No two workers ever
-compute -- or race to write the cache / record of -- the same build, and the
-exp it builds is reused in-process across its subtree, never pickled between
-workers. This is the right split while the data grids satiate the pool (the
-sweeps run 15-1000 seeds); a narrower grid would leave workers idle and want
-a finer (two-phase) split, deferred until needed. This is also the only
-parallelism the driver owns: a leaf may parallelise its own fit (run_ana's
-fit_params), which multiplies against n_jobs rather than sharing it, so
-check_fit_params refuses the combinations that would oversubscribe. The stage
-functions are shared module-level singletons re-imported in each worker, so
-workers transparently share the on-disk cache and records folder; the per-hash
-record files they write are folded back into this process with RECORDER.load
-once the pool drains. (The leaf fnc is pickled to the workers like any task
-argument; the recorder snapshots its records as they are made, so the wrapped
-fnc carries no live Experiments and stays light to ship -- see
-glow._extra.benchmark.recorder.)
+data_factory -> effect_factory* -> fnc* subtree is one joblib task, so a build
+has exactly one owner and no two workers race to write its cache or record.
+That is the right split while the data grids satiate the pool. A leaf may also
+parallelise its own fit (run_ana's fit_params), which multiplies against
+n_jobs rather than sharing it, so check_fit_params refuses the combinations
+that would oversubscribe. The per-hash record files the workers write are
+folded back in with RECORDER.load once the pool drains.
 
 A verbose drive shows a tqdm bar over the total leaf count, known up front
-from the grid sizes (n_data * n_effect * n_fnc, less whatever skip_recorded
-dropped) and advanced one leaf per fnc call. It makes no attempt to tell a
-real compute from a cache hit, so the bar lurches -- racing through cached
-cells, crawling through the ones that actually run -- but it stays bounded and
-honest about how far the sweep has left to go. The serial bar ticks per leaf;
-the parallel bar ticks per data cell as each task returns its scores, since a
+from the grid sizes less whatever skip_recorded dropped. It cannot tell a
+cache hit from a real compute, so the bar lurches, but it stays bounded. The
+serial bar ticks per leaf; the parallel bar ticks per data cell, since a
 worker cannot reach the caller's bar.
 """
 
@@ -223,44 +194,28 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
 
     The two upstream lists are kwargs grids for the data and effect stages;
     the driver runs their cartesian product, threading each stage's output
-    into the next (the clean exp into effect_factory, the planted exp and the
-    effect factory's realized supports into fnc as mask_target_list -- one
-    entry for a single effect, two for a split).
-    Each planted cell is then measured by fnc once per kwargs dict in
-    kwargs_fnc_list. All stages and fnc are memoised + recorded, so this only
-    forwards kwargs -- caching dedupes repeated cells and the recorder
-    captures provenance (see module docstring).
+    into the next -- the clean exp into effect_factory, then the planted exp
+    and the realized supports into fnc as mask_target_list (one entry for a
+    single effect, two for a split). Every stage is memoised + recorded, so
+    this only forwards kwargs.
 
-    kwargs_effect_list and kwargs_fnc_list are pulled into lists up front
-    (they are re-iterated once per data / per data x effect cell), so one-shot
-    generators are fine -- as the config layer passes; kwargs_data_list is
-    iterated once and stays lazy.
+    kwargs_effect_list and kwargs_fnc_list are pulled into lists up front,
+    being re-iterated per cell, so one-shot generators are fine;
+    kwargs_data_list is iterated once and stays lazy.
 
     skip_recorded drops the (data, effect) cells the records already hold in
-    full before anything runs (results.get_cell_complete). The memoised stages
-    already dedupe a repeat, but only against the joblib cache, which is the
-    half that gets archived or pruned for space -- so a cell finished before
-    the last mv_cache would otherwise recompute from cold here. Skipping a cell
-    whose whole effect subtree is done also skips building its exp, the
-    expensive part. The records are the source of truth, and a cell reads as
-    incomplete unless every leaf is present, so a partial cell reruns whole.
+    full, which also skips building their exp -- the expensive part. A cell
+    reads as incomplete unless every leaf is present, so a partial cell reruns
+    whole (see the module docstring for why the records, not the cache, are
+    the source of truth).
 
-    With n_jobs != 1 the sweep runs in parallel over joblib, one task per data
-    cell (the whole effect x fnc subtree); see the module docstring for why
-    this split is race-free and how worker records are merged back. n_jobs is
-    forwarded to joblib.Parallel (so -1 uses all cores); the default loky
-    backend caps each worker's inner BLAS threads to avoid oversubscription.
+    With n_jobs != 1 the sweep runs over joblib, one task per data cell. A
+    leaf that parallelises its own fit multiplies against that n_jobs, so
+    check_fit_params runs before any cell is built and refuses a sweep whose
+    product would oversubscribe the CPU or put several fits on one GPU.
 
-    A leaf that parallelises its own fit multiplies against that n_jobs, so
-    check_fit_params runs first and refuses a sweep whose product would
-    oversubscribe the CPU or put several fits on one GPU. It fires before any
-    cell is built, so a mismatch costs a message rather than an hour.
-
-    With verbose a tqdm bar tracks the sweep over its total leaf count,
-    advanced as each fnc call passes (it lurches over cached cells; see the
-    module docstring); without it the sweep is silent. The total needs
-    len(data), so a verbose sweep pulls kwargs_data_list into a list up front
-    -- otherwise it stays lazy.
+    A verbose sweep needs len(data) for its bar, so it pulls
+    kwargs_data_list into a list up front; otherwise that stays lazy.
 
     Args:
         kwargs_data_list (iterable[dict]): one kwargs dict per data_factory

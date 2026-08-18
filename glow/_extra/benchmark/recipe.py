@@ -4,9 +4,8 @@ An artifact's identity is the recipe that built it -- an operation name, its
 declarative kwargs, and its parents' ids -- not the bytes it happens to hold.
 recipe_id hashes that recipe's canonical JSON, so one cell resolves to the same
 id on any machine: no pickle, no array bytes, no float payload. That is what
-makes a cache key and a provenance edge portable across a heterogeneous compute
-fleet, where the same computation lands last-bit-different results (a different
-BLAS microkernel reorders the same sum).
+makes a cache key and a provenance edge portable across a heterogeneous fleet,
+where the same computation lands last-bit-different results.
 
     uid_data = recipe_id('data_factory_wgn', kwargs_data)
     uid_eff = recipe_id('effect_factory_single', kwargs_effect,
@@ -20,10 +19,9 @@ convention, where a parameter-only repr IS the declaration. A computed array can
 never be an identity, so an ndarray above MAX_CANON_SIZE raises rather than
 quietly hashing; a small declarative one (a contrast) renders as nested lists.
 
-IMPL_VERSION is the deliberate counterpart to the byte-identity this replaces:
-byte keys invalidated themselves when numerics changed, declared keys do not, so
-bumping an op's entry is how a numerics change that leaves the recipe untouched
-still invalidates everything built from it.
+A declared key does not invalidate itself when the numerics change, so
+IMPL_VERSION is how a numerics change that leaves the recipe untouched still
+invalidates everything built from it: bump the op's entry.
 """
 
 import hashlib

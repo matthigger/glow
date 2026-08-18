@@ -5,11 +5,10 @@ pipeline stage. These builders make those lists; config declares which
 axes each cache sweeps and holds the paper's values for them (see
 config.CONFIG).
 
-Nothing here knows a paper constant. Every axis arrives as an argument, so a
-builder can be driven with whatever grid a caller wants -- which is also what
-makes them testable without pinning the catalogue's current numbers. The
-symmetric rule is that config holds no logic: tuning a knob there cannot change
-behaviour tested here.
+Nothing here knows a paper constant: every axis arrives as an argument, so a
+builder is testable without pinning the catalogue's current numbers. The
+symmetric rule is that config holds no logic, so tuning a knob there cannot
+change behaviour tested here.
 
 Three kinds of builder:
 
