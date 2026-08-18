@@ -256,11 +256,10 @@ updated **{stamp}** | seeds finished **{len(seed_done)}** \
 ({', '.join(str(s) for s in seed_done) if seed_done else 'none'}) \
 | cells {n_cell} | this process {elapsed_sec / 60:.1f} min
 
-Cell: HCP, crop {CROP_N_VOX} voxels, b={B}, {NUM_IMG} subjects, planted
-support {EFFECT_N_VOX_FRAC:.0%} of the crop. Test: n_perm_fwer=
-{N_PERM_FWER}, alpha={ALPHA_FWER}; the per-perm arm draws
-n_perm_inner={N_PERM_INNER}. Every arm sees the identical cell, so the
-columns are paired seed by seed.
+Cell: HCP, crop {CROP_N_VOX} voxels, b={B}, {NUM_IMG} subjects, planted \
+support {EFFECT_N_VOX_FRAC:.0%} of the crop. Test: n_perm_fwer={N_PERM_FWER}, \
+alpha={ALPHA_FWER}; the per-perm arm draws n_perm_inner={N_PERM_INNER}. \
+Every arm sees the identical cell, so the columns are paired seed by seed.
 
 ## Dice (mean over seeds)
 
