@@ -5,7 +5,7 @@ import pytest
 
 from glow.analysis.prune import (PRUNE_RULE_LIST, check_prune_rule,
                                  dp_antichain, prune_by_rule, prune_dp,
-                                 prune_greedy, prune_maxllr, prune_oracle)
+                                 prune_greedy, prune_oracle, prune_single_max)
 from glow.graph import SCGraph, get_parent
 
 
@@ -748,28 +748,28 @@ def test_dp_never_outputs_a_tiled_region_hcp():
     _assert_no_tiled_selection(hcp.build_exp_img_from_bundle(('fa',)), 'HCP')
 
 
-# ---------- prune_maxllr: the single best region -----------------------------
-class TestPruneMaxLLR:
+# ---------- prune_single_max: the single best region ------------------------
+class TestPruneSingleMax:
     """Test the one-region rule."""
 
     def test_picks_the_highest(self):
         """The selection is the top-LLR region, whatever the tree."""
-        reg_out, _ = prune_maxllr([8, 9, 12, 14], _make_llr_8())
+        reg_out, _ = prune_single_max([8, 9, 12, 14], _make_llr_8())
         assert reg_out == [12]
 
     def test_selects_one_region(self):
         """However many are significant, exactly one comes back."""
-        reg_out, _ = prune_maxllr(list(range(15)), _make_llr_8())
+        reg_out, _ = prune_single_max(list(range(15)), _make_llr_8())
         assert len(reg_out) == 1
 
     def test_empty_sig_list(self):
-        reg_out, info = prune_maxllr([], _make_llr_8())
+        reg_out, info = prune_single_max([], _make_llr_8())
         assert reg_out == []
         assert info['sig_reg_list'] == []
 
     def test_returns_a_python_int(self):
         """A numpy index in makes a python int out (it keys a record)."""
-        reg_out, _ = prune_maxllr(list(np.array([8, 12])), _make_llr_8())
+        reg_out, _ = prune_single_max(list(np.array([8, 12])), _make_llr_8())
         assert type(reg_out[0]) is int
 
 
@@ -786,7 +786,7 @@ class TestPruneByRule:
         direct = {
             'greedy': prune_greedy(self._SIG, children, llr)[0],
             'dp': prune_dp(self._SIG, children, llr)[0],
-            'maxllr': prune_maxllr(self._SIG, llr)[0],
+            'single_max': prune_single_max(self._SIG, llr)[0],
         }
         for rule, expect in direct.items():
             got, _ = prune_by_rule(rule, self._SIG, children, llr)
@@ -825,7 +825,7 @@ class TestPruneByRule:
         expect, _ = prune_dp(self._SIG, children, llr, exp_n_eff=1.5)
         assert got == expect
 
-    @pytest.mark.parametrize('rule', ['greedy', 'maxllr'])
+    @pytest.mark.parametrize('rule', ['greedy', 'single_max'])
     @pytest.mark.parametrize('kwargs', [dict(lam=1.0),
                                         dict(exp_n_eff=2.0)])
     def test_penalty_on_a_non_dp_rule_raises(self, rule, kwargs):
@@ -850,4 +850,4 @@ class TestPruneByRule:
     def test_lam_zero_is_not_a_penalty(self):
         """dp's own default has to stay reachable from any rule's default."""
         check_prune_rule('greedy', lam=0.0, exp_n_eff=None)
-        check_prune_rule('maxllr', lam=0.0, exp_n_eff=None)
+        check_prune_rule('single_max', lam=0.0, exp_n_eff=None)

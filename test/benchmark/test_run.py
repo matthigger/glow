@@ -422,7 +422,8 @@ class TestRunPrune:
 
     def test_returns_prune_score(self):
         exp, mask, uid = self._planted()
-        score = run_prune(exp, [mask], 'maxllr', parent_uid=uid, **self._GLOW)
+        score = run_prune(exp, [mask], 'single_max', parent_uid=uid,
+                          **self._GLOW)
         # per-effect confusion counts plus the output-region count
         assert {'n_selected', 'tp', 'fp', 'tn', 'fn'} <= set(score)
 
@@ -456,13 +457,13 @@ class TestRunPrune:
         """
         exp, mask, uid = self._planted()
         dice = {}
-        for rule in ('maxllr', 'greedy', 'dp', 'oracle'):
+        for rule in ('single_max', 'greedy', 'dp', 'oracle'):
             score = run_prune(exp, [mask], rule, parent_uid=uid, **self._GLOW)
             dice[rule] = glow.mask.stats_from_counts(
                 **{k: np.array([score[k]])
                    for k in ('tp', 'fp', 'tn', 'fn')})['dice'][0]
 
-        for rule in ('maxllr', 'greedy', 'dp'):
+        for rule in ('single_max', 'greedy', 'dp'):
             assert dice['oracle'] >= dice[rule] - 1e-9, (
                 f'the {rule} rule beat the max-Dice oracle '
                 f'({dice[rule]:.4f} > {dice["oracle"]:.4f})')

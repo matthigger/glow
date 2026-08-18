@@ -366,8 +366,8 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
       - greedy: bloom the max-LLR region and drop its tree relatives (GLOW's
         default; undersegments).
       - dp: the exact max-total-LLR antichain (prune_dp; oversegments).
-      - maxllr: the single highest-LLR significant region (the headline best
-        region, n_selected = 1).
+      - single_max: the single highest-LLR significant region (the headline
+        best region, n_selected = 1).
       - oracle: the max-Dice antichain against the planted support
         (prune_oracle). Not a method -- it is handed the target the others
         are scored against, so it draws the headroom the rules leave: the
@@ -380,7 +380,7 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
         mask_target_list (list): the planted effect supports (score target,
             and the oracle rule's input).
         parent_uid (str): the exp's declared uid (see the module docstring).
-        rule (str): 'greedy', 'dp', 'maxllr', or 'oracle'.
+        rule (str): 'greedy', 'dp', 'single_max', or 'oracle'.
         n_perm_fwer (int): FL draws in the FWER null (the shared fit's).
         alpha_fwer (float): FWER significance level (the shared fit's).
         cluster_mode (ClusterMode): Ward projection (default FOCUS).
@@ -392,7 +392,7 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
             {n_selected, tp, fp, tn, fn}.
 
     Raises:
-        ValueError: if rule is not 'greedy' / 'dp' / 'maxllr' / 'oracle'.
+        ValueError: if rule is not 'greedy' / 'dp' / 'single_max' / 'oracle'.
     """
     children, llr, sig_reg_list = glow_fit_for_prune(
         exp, parent_uid=parent_uid, n_perm_fwer=n_perm_fwer,

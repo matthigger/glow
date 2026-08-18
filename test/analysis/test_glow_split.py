@@ -411,9 +411,9 @@ def test_the_rule_reaches_the_selection(monkeypatch):
     assert seen == dict(rule='dp', lam=0.0, exp_n_eff=3.0)
 
 
-def test_maxllr_finds_at_most_one_effect():
+def test_single_max_finds_at_most_one_effect():
     """The one-region rule cannot emit two, whatever the fit declared."""
-    ana = _ana(prune_rule='maxllr').fit(_exp())
+    ana = _ana(prune_rule='single_max').fit(_exp())
     assert len(ana.effect_list) <= 1
 
 
@@ -421,17 +421,17 @@ def test_the_rule_changes_what_is_found():
     """A fit with real detections separates the rules, or nothing is tested."""
     exp = _exp()
     greedy = _ana().fit(exp)
-    maxllr = _ana(prune_rule='maxllr').fit(exp)
+    single_max = _ana(prune_rule='single_max').fit(exp)
     if not greedy.effect_list:
         pytest.skip('no detections at this SNR, so no rule to separate')
-    assert len(maxllr.effect_list) <= len(greedy.effect_list)
+    assert len(single_max.effect_list) <= len(greedy.effect_list)
 
 
 @pytest.mark.parametrize('kwargs', [
     dict(prune_rule='nope'),
     dict(prune_rule='oracle'),
     dict(prune_rule='greedy', prune_lam=1.0),
-    dict(prune_rule='maxllr', prune_exp_n_eff=2.0),
+    dict(prune_rule='single_max', prune_exp_n_eff=2.0),
     dict(prune_rule='dp', prune_lam=1.0, prune_exp_n_eff=2.0),
     dict(prune_rule='dp', prune_exp_n_eff=0.0),
 ])

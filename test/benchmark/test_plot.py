@@ -699,10 +699,10 @@ def test_tidy_segment_splits_the_shared_leaf_on_frac_segment():
 def test_tidy_prune_label_prefixes_rule():
     """tidy_prune maps the recorded rule to the GLOW-<rule> method label."""
     df = plot.tidy_prune(pd.DataFrame([
-        _prune_row('maxllr', 0, 0.03, 90, 5, 900, 5, source='wgn'),
+        _prune_row('single_max', 0, 0.03, 90, 5, 900, 5, source='wgn'),
         _prune_row('dp', 0, 0.03, 60, 40, 880, 20, source='hcp'),
     ]))
-    assert set(df['label']) == {'GLOW-maxllr', 'GLOW-dp'}
+    assert set(df['label']) == {'GLOW-single_max', 'GLOW-dp'}
     assert list(df['source']) == ['WGN', 'HCP']
 
 
@@ -871,7 +871,7 @@ def test_plot_prune_writes_one_figure_per_mode(tmp_path):
     """plot_prune writes one {label}_{mode}.pdf per Ward clustering mode."""
     rows = []
     for mode in ('Focus', 'GLM Error'):
-        for rule in ('maxllr', 'greedy', 'dp'):
+        for rule in ('single_max', 'greedy', 'dp'):
             for source in ('wgn', 'hcp'):
                 for effect_llr in (0.003, 0.03, 0.3):
                     for seed in range(3):

@@ -243,7 +243,7 @@ RUN_STAT_LIST = grid.get_run_stat_list(
 # visible, same as RUN_ANA_LIST's GLOW cell).
 _PRUNE_GLOW_KWARGS = dict(n_perm_fwer=N_PERM_FWER,
                           alpha_fwer=ALPHA_FWER, fit_params=GLOW_FIT_PARAMS)
-PRUNE_RULES = ['maxllr', 'greedy', 'dp', 'oracle']
+PRUNE_RULES = ['single_max', 'greedy', 'dp', 'oracle']
 PRUNE_CLUSTER_MODES = [ClusterMode.FOCUS, ClusterMode.GLM_ERROR]
 RUN_PRUNE_LIST = [
     dict(rule=rule, cluster_mode=mode, **_PRUNE_GLOW_KWARGS)

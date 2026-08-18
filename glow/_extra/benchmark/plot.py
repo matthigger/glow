@@ -1384,9 +1384,9 @@ def tidy_segment(raw, *, perc: bool = False):
 def tidy_prune(raw):
     """Normalise the prune cache to a tidy per-(trial, rule) frame.
 
-    The method label is GLOW-<rule> off the recorded rule (maxllr / greedy /
-    dp / oracle, the last a headroom line rather than a method -- see
-    prune.prune_oracle); the recorded Ward mode (run_prune.in.cluster_mode)
+    The method label is GLOW-<rule> off the recorded rule (single_max /
+    greedy / dp / oracle, the last a headroom line rather than a method --
+    see prune.prune_oracle); the recorded Ward mode (run_prune.in.cluster_mode)
     rides along as the cluster_mode column, so plot_prune can split it into
     one figure per mode. A legacy record predating the mode axis carried the
     Focus default, so a missing mode reads back as Focus.
@@ -1716,9 +1716,9 @@ def plot_segment_compare(label: str, df, out,
 
 
 # prune rules kept in the cache and records but dropped from the paper figures:
-# maxllr (the single max-LLR region) is a diagnostic baseline, not a paper
+# single_max (the single max-LLR region) is a diagnostic baseline, not a paper
 # method, so plot_prune skips it (see PRUNE_RULES in config).
-_PRUNE_LABELS_SKIP = ('GLOW-maxllr',)
+_PRUNE_LABELS_SKIP = ('GLOW-single_max',)
 
 
 def plot_prune(label: str, df, out) -> None:
@@ -1728,7 +1728,7 @@ def plot_prune(label: str, df, out) -> None:
     Error), so a single grid would overlay two clusterings. This draws one
     source x metric grid per mode (plot_metric_grid), writing {label}_{mode}.pdf
     so the clusterings are compared side by side rather than on one axis. The
-    diagnostic maxllr rule is dropped (_PRUNE_LABELS_SKIP).
+    diagnostic single_max rule is dropped (_PRUNE_LABELS_SKIP).
 
     A cache that also varies b (sweep_llr_prune) splits again on it
     (_split_by_secondary), one figure per (mode, b): the grid's facets are
