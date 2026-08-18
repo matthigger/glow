@@ -13,16 +13,13 @@ n_perm_inner + 1. Either way base_seed = 0, so row 0 is the observed draw
 structure of its own beyond chunk sizing.
 
 acc_dtype defaults to float64 because Analysis.fit documents a fit as
-identical on either device, and that is what keeps gpu out of a recipe's
-RECORD_FIELDS and out of the benchmark cache key. float32 is 2.4-5.4x
-faster and reachable by passing a GpuConfig, at the cost of perturbing
-fwer.max_stat by ~2e-3 relative -- enough to flip a handful of p-values on
-real data, hence not the default.
+identical on either device, which is what keeps gpu out of RECORD_FIELDS
+and out of the benchmark cache key. A GpuConfig can ask for float32, which
+is faster but perturbs fwer.max_stat enough to flip a handful of p-values.
 
-perm_chunk is sized from free device memory rather than fixed, because
-_chunk_llr's peak allocation grows as perm_chunk * a0 * b^2 * num_vox: the
-16 that is optimal at benchmark num_vox overruns an 8 GiB card at
-full-brain num_vox once b reaches 6 (see resolve_perm_chunk).
+perm_chunk is sized from free device memory rather than fixed, since
+_chunk_llr's peak allocation grows as perm_chunk * a0 * b^2 * num_vox (see
+resolve_perm_chunk).
 """
 from dataclasses import dataclass
 
@@ -31,20 +28,18 @@ import numpy as np
 from . import draws_gpu
 
 
-# Largest chunk worth taking. Measured optimum is 16 at float64 for every b
-# tried (1.07-1.36x over 8, falling off above); throughput is set by whether
-# the per-chunk working set stays L2-resident, not by capacity.
+# Largest chunk worth taking: throughput is set by whether the per-chunk
+# working set stays L2-resident, not by capacity.
 _PERM_CHUNK_MAX = 16
 
 # Per-draw device bytes, as a multiple of the dominant
 # (perm_chunk, a0, b, b, num_vox) broadcast inside _chunk_llr's
-# _gram_a_cross. Measured at ~7x that term on an 8 GiB card: the broadcast,
-# its cumsum copy, alpha and the region readouts are live together.
+# _gram_a_cross: that broadcast, its cumsum copy, alpha and the region
+# readouts are live together.
 _CHUNK_BYTES_PER_TERM = 7
 
-# Share of free device memory the chunk loop may plan to occupy. The rest
-# absorbs allocator fragmentation and the region-space temporaries, which
-# the per-draw model above does not carry.
+# Share of free device memory the chunk loop may plan to occupy; the rest
+# absorbs fragmentation and the region-space temporaries.
 _DEVICE_MEM_FRACTION = 0.8
 
 
@@ -58,9 +53,8 @@ class GpuConfig:
             free device memory (resolve_perm_chunk); an int pins it, which
             is what the chunk-invariance tests use.
         acc_dtype (type): device hot-loop dtype. float64 reproduces a CPU
-            fit's p-values exactly at every b measured; float32 is 2.4-5.4x
-            faster but perturbs fwer.max_stat by ~2e-3 relative, enough to
-            flip a handful of p-values on real data.
+            fit's p-values exactly; float32 is faster but perturbs
+            fwer.max_stat enough to flip a handful of them.
     """
 
     device: str = 'cuda'
@@ -105,13 +99,10 @@ def resolve_gpu(gpu, *, name: str = 'fit'):
 def describe_backend(gpu, config, *, cpu_anchor: bool = False) -> str:
     """Name the draw backend a fit resolved, and why it got that one.
 
-    Three backends span orders of magnitude, and the choice between them
-    is made from arguments and from what happens to be installed, so a fit
-    that does not say which one it took cannot be read for cost at all.
-    Two failure modes in particular are silent: gpu='auto' drops to the
-    CPU without a word when no device is visible (a CPU-only torch wheel
-    leaves nvidia-smi still listing the card), and cpu_anchor=True asks
-    for the ~35x trust anchor on purpose, which is easy to leave set.
+    The three backends span orders of magnitude, and two ways of landing
+    on a slow one are silent: gpu='auto' drops to the CPU without a word
+    when no device is visible (a CPU-only torch wheel leaves nvidia-smi
+    still listing the card), and cpu_anchor=True is easy to leave set.
 
     Args:
         gpu: the fit(gpu=...) argument, as the caller passed it.
@@ -143,17 +134,14 @@ def resolve_perm_chunk(config: GpuConfig, *, b: int, num_img: int,
 
     _chunk_llr's peak allocation is dominated by the
     (perm_chunk, a0, b, b, num_vox) broadcast inside _gram_a_cross, so the
-    per-draw cost grows as a0 * b^2 * num_vox. One fixed figure cannot
-    serve both ends of that range: 16 is the measured optimum at benchmark
-    num_vox, and overruns an 8 GiB card at full-brain num_vox (224,619)
-    once b reaches 6. Clamping down costs nothing where memory is tight --
-    throughput at b = 6 measured within 3% across chunks of 2, 4 and 8,
-    because the device is already saturated by the voxel axis alone.
+    per-draw cost grows as a0 * b^2 * num_vox and one fixed figure cannot
+    serve both benchmark and full-brain num_vox. Clamping down costs little
+    where memory is tight, the voxel axis already saturating the device.
 
-    The estimate is deliberately crude: a factor on the dominant term
+    The estimate is deliberately crude -- a factor on the dominant term
     (_CHUNK_BYTES_PER_TERM), the prep state that outlives every chunk, and
-    a fraction of free memory held back for fragmentation. It only has to
-    land in the right power of two.
+    a fraction of free memory held back for fragmentation -- since it only
+    has to land in the right power of two.
 
     Args:
         config (GpuConfig): the resolved knobs
@@ -174,9 +162,8 @@ def resolve_perm_chunk(config: GpuConfig, *, b: int, num_img: int,
     itemsize = np.dtype(config.acc_dtype).itemsize
     num_reg = 2 * num_vox - 1
 
-    # prep_shared / prep_tree state, live for the whole loop: the residual
-    # stack U dominates, the region-space scans at scan_dtype=float64 trail
-    # it.
+    # prep state, live for the whole loop: the residual stack U dominates,
+    # the region-space float64 scans trail it
     prep_bytes = (b * num_img * num_vox * itemsize
                   + 2 * b * b * num_reg * np.dtype(np.float64).itemsize)
     per_draw = _CHUNK_BYTES_PER_TERM * a0 * b * b * num_vox * itemsize
@@ -190,14 +177,11 @@ def gpu_draws(config: GpuConfig, *, exp, base_seed: int, n_perm: int,
               q0, q1, children, min_vox: int):
     """Draw the matrix on device and return it whole.
 
-    The device counterpart of draws.cpu_reliable, sized and dtyped from the
-    same GpuConfig gpu_summary uses, so the two differ only in what they
-    hand back. A GLOW fit takes this route under keep_stat, where the
-    streaming reduction is no use because the caller wants every cell.
-
-    Peak host memory is the matrix: (n_perm, num_reg) float64, ~16.7 GiB at
-    5001 draws and full-brain num_vox. Prefer gpu_summary wherever the
-    column moments, the observed row and the row maxima are enough.
+    The device counterpart of draws.cpu_batched, sized and dtyped from the
+    same GpuConfig gpu_summary uses. A GLOW fit takes this route under
+    keep_stat, where the caller wants every cell; peak host memory is the
+    whole (n_perm, num_reg) float64 matrix, so prefer gpu_summary wherever
+    the moments, the observed row and the row maxima are enough.
 
     Args:
         config (GpuConfig): resolved device knobs

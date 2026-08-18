@@ -1,12 +1,10 @@
 """Recover which recorded leaves and which finished cells are a cache's.
 
-The driver writes every leaf into one shared RECORDER (data.RECORDER):
-RECORDER.flatten_to_df yields one row per leaf carrying the data -> (plant ->)
-score chain that produced it (see recorder / driver). Those records are
-config-agnostic -- every cell ever run, across every figure -- so this module
-re-attaches the CONFIG catalogue: for one cache name it names that cache's
-leaves (config_leaf_keys, the rows make_csv exports) and its planted cells not
-yet fully recorded (incomplete_cell_indices, the rerun skip).
+The records the driver writes are config-agnostic -- every cell ever run,
+across every figure -- so this module re-attaches the CONFIG catalogue: for one
+cache name it names that cache's leaves (config_leaf_keys, the rows make_csv
+exports) and its planted cells not yet fully recorded
+(incomplete_cell_indices, the rerun skip).
 
 Membership is recomputed from the current CONFIG at read time (not read off a
 stored tag) by walking the recorded provenance DAG forward from the cache's
@@ -26,13 +24,11 @@ declared cells:
     carry the cache's leaf function (a cache runs its whole fnc grid, and a
     shared cell's other caches use a different leaf function).
 
-Deriving membership from the current CONFIG means editing a cache (adding,
-changing or dropping swept cells) is reflected at once: a dropped cell stops
-matching, with nothing stale to prune. A cell shared by several caches (the
-sweeps' common baseline) is one record reached by each cache's walk, so it
-lands in each. The walk reads only the records (never the experiment cache), so
-it is cheap; its one fragility is that it traverses the recorded edges, so a
-missing intermediate (effect) record drops the leaves below it.
+Deriving membership from the current CONFIG means an edited cache is reflected
+at once, with nothing stale to prune, and a cell shared by several caches lands
+in each. The walk reads only the records, never the experiment cache, so it is
+cheap; its one fragility is that a missing intermediate (effect) record drops
+the leaves below it.
 """
 import inspect
 from collections import defaultdict
@@ -301,27 +297,22 @@ def get_cell_complete(kwargs_fnc_list, fnc):
     """Build the predicate deciding whether one planted cell is finished.
 
     The records-side source of truth behind the rerun skip (driver): a cell is
-    a data cell crossed with one effect (planted_cells), and it is complete
-    when every leaf that effect builds -- one per fnc-kwargs cell -- is in the
-    records.
+    a data cell crossed with one effect, complete when every leaf that effect
+    builds -- one per fnc-kwargs cell -- is in the records.
 
-    A cell's leaf uids are named straight from the CONFIG (cell_leaf_uids), so
-    completeness is a set-membership test against the recorded uids: nothing is
-    rebuilt, no ancestor record has to be found, and the answer does not depend
-    on any array's bytes. That is what lets a leaf computed on another machine,
-    whose Experiment differs in its last bits as two CPUs' will, count for the
-    cell it belongs to.
+    A cell's leaf uids come straight from the CONFIG (cell_leaf_uids), so
+    completeness is set membership against the recorded uids: nothing is
+    rebuilt and the answer does not depend on any array's bytes, which is what
+    lets a leaf computed on another machine count for its cell.
 
-    A cell whose uids are not all present falls back to the legacy walk (anchor
+    A cell whose uids are not all present falls back to the hash walk -- anchor
     at the data record, match the effect record off it by its stored inputs,
-    then require one recorded leaf per fnc-kwargs cell), so cells recorded
-    before the recipe fields still read complete and are not rerun. Both
-    indexes are built once here and closed over, so the predicate is cheap per
-    cell. Call RECORDER.load() first to fold in what other writers left on
-    disk.
+    then require one recorded leaf per fnc-kwargs cell -- so cells recorded
+    before the recipe fields still read complete. Both indexes are built once
+    and closed over. Call RECORDER.load() first to fold in what other writers
+    left on disk.
 
-    Either way it errs safe: a cell that cannot be shown complete is rerun,
-    never wrongly skipped.
+    Either way it errs safe: a cell that cannot be shown complete is rerun.
 
     Args:
         kwargs_fnc_list (list[dict]): the fnc-kwargs grid; a cell counts as
@@ -355,13 +346,11 @@ def get_cell_complete(kwargs_fnc_list, fnc):
         return kids
 
     fnc_name = _raw(fnc).__qualname__
-    # one input fingerprint per fnc-kwargs cell, over the names that identify a
-    # leaf. The ignore list is dropped: those are driver-supplied (exp, its
-    # mask companion) or execution knobs (fit_params, label), and a record does
-    # store them, but as provenance rather than identity -- so a cell that
-    # named none of them when its record was written, or ran under different
-    # ones, still has to match. Read off the decorator, as recipe_for_call
-    # does, so the two stay in step.
+    # one input fingerprint per fnc-kwargs cell, over the names that identify
+    # a leaf. The ignore list drops the driver-supplied inputs and execution
+    # knobs: a record stores them as provenance, not identity, so a cell that
+    # ran under different ones still has to match. Read off the decorator, as
+    # recipe_for_call does, so the two stay in step.
     drop = ('exp', 'mask_target_list', *declared_ignore(fnc))
     fnc_expected = [(_expected_inputs(fnc, kwargs, drop=drop),
                      _optional_inputs(fnc, kwargs, drop=drop))

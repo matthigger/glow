@@ -10,17 +10,17 @@ A sweep runs only the cells the records do not already hold in full, so a
 rerun fills the gaps rather than recomputing finished work (--no-skip forces
 the whole grid).
 
---method narrows the sweep to one analysis recipe (repeatable), the path to
-take after changing one method's recipe: a changed knob is a new hash, so that
-method's leaves go missing everywhere while its siblings' stay valid, and
-completeness is judged against the narrowed grid -- so only the named recipes
-run and no sibling fit is recomputed.
+--method narrows the sweep to one analysis recipe (repeatable), which is the
+path to take after changing a method's recipe: a changed knob is a new hash, so
+that method's leaves go missing everywhere while its siblings' stay valid.
+Completeness is judged against the narrowed grid, so no sibling fit is
+recomputed.
 
-GLOW's leaves fit on the GPU where one is visible and on many cores where it
-is not (config.GLOW_FIT_PARAMS). That parallelism multiplies against -j rather
+GLOW's leaves fit on the GPU where one is visible and on many cores where it is
+not (config.GLOW_FIT_PARAMS). That parallelism multiplies against -j rather
 than sharing it, so a parallel sweep on a machine with a card is refused
-(driver.check_fit_params); --no-gpu is the way to take -j instead, and the two
-score identically.
+(driver.check_fit_params); --no-gpu takes -j instead, and the two score
+identically.
 
 Usage:
     python -m glow._extra.benchmark                    # everything
@@ -90,12 +90,10 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
     drive.
 
     methods narrows each cache's leaf grid to the named analysis recipes
-    (grid.filter_ana_list), which is how one method is rerun on its own after
-    its recipe changed: completeness is judged against the narrowed grid, so a
-    cell already holding those leaves is skipped and the recipes left out are
-    never called -- the sibling methods' fits are not recomputed. A selected
-    cache with no matching recipe (a segment / prune / vba_stat leaf grid,
-    which has no per-method axis) is skipped.
+    (grid.filter_ana_list), which is how one method is rerun after its recipe
+    changed: completeness is judged against the narrowed grid, so the recipes
+    left out are never called and no sibling fit is recomputed. A cache with no
+    per-method axis (segment / prune / vba_stat) is skipped.
 
     The HCP reference dataset is ensured once up front (idempotent / cached)
     for the HCP-backed caches.

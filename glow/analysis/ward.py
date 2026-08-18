@@ -1,27 +1,23 @@
 """Connectivity-constrained Ward clustering via Mullner's NN-array algorithm.
 
 Faster drop-in for sklearn.cluster.ward_tree(X, connectivity=...) (Mullner
-2011). Produces the same dendrogram as sklearn: the children array matches
-exactly, and distances match to float64 accumulation order (relative
-difference up to ~5e-14 over the 224618 merges of a full-brain mask, from
-sklearn updating centroids by a different formula).
+2011), giving the same dendrogram: the children array matches exactly and
+the distances to float64 accumulation order, sklearn updating centroids by
+a different formula.
 
 Algorithm: each cluster c tracks its current nearest neighbour nn[c] and
 that distance nn_d[c]. A global min-heap is keyed by (nn_d[c], c). The next
 merge is always the global min over alive clusters' NN distances, which is
 the same edge sklearn's heap-greedy picks.
 
-Compared to sklearn's single-global-edge-heap approach, this dramatically
-cuts heap pressure: instead of pushing every edge (and accumulating ~95%
-stale entries when endpoints merge away), we push at most one entry per
-cluster per NN change. On the full-brain HCP mask (224619 voxels) this runs
-~24x (b=6) to ~29x (b=1) faster than sklearn.
+Where sklearn pushes every edge onto one global heap and accumulates
+stale entries as endpoints merge away, this pushes at most one entry per
+cluster per NN change.
 
-Cost is dominated by nearest-neighbour churn, not by the distance
-arithmetic: b=1 rescans a cluster's adjacency 8.2 times per merge against
-2.6 for b >= 3, because 1d centroids sit on a line and a merge easily
-reorders which neighbour is nearest. So b=1 is the slow case (sklearn
-shows the same split), and widening b is nearly free until b ~ 12.
+Cost is dominated by nearest-neighbour churn rather than the distance
+arithmetic, so b=1 is the slow case: 1d centroids sit on a line, where a
+merge easily reorders which neighbour is nearest. Widening b is nearly
+free.
 
 Per-merge work:
 - Pop outer heap; skip stale entries (cluster dead or distance changed).
@@ -142,15 +138,13 @@ def _heap_pop(heap_d, heap_c, heap_size):
 #   adj[2 * node + 1]: next node id (-1 if end)
 #
 # The two fields are interleaved in one int32 array so walking a list touches
-# one cache line per node rather than two; int32 then fits 8 nodes per line.
-# The merge loop is a pointer chase over this pool, so its cost tracks lines
-# touched (~1.35x at full-brain num_vox over int64 field-parallel arrays).
+# one cache line per node rather than two; the merge loop is a pointer chase
+# over this pool, so its cost tracks lines touched.
 #
 # Nodes are recycled through a free list threaded on the next field and
 # rooted at free_head[0]. Every merge retires both children's whole lists and
-# every scan unlinks the dead nodes it walks past, so without recycling the
-# pool grows to ~90 * n_samples and overflows, forcing a full restart of the
-# merge loop. Recycling holds it at O(nnz).
+# every scan unlinks the dead nodes it walks past; without recycling the pool
+# overflows and forces a full restart of the merge loop.
 
 
 @njit(cache=True, inline='always', boundscheck=False)

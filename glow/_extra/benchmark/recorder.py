@@ -30,11 +30,10 @@ parents -- so it holds on any machine. flatten_to_df walks it to one row per
 leaf carrying its ancestors' fields, so a trial's setup, fit and score land in
 one row.
 
-input_hashes/output_hashes are the legacy edge: joblib.hash of the inputs and
-outputs whose type is in link_types (e.g. (Experiment,)), matched by equality.
-They are still written, and read for any record lacking a recipe, so records
-written before the recipe fields stay linkable; being a hash of computed arrays
-they are not portable across machines, and they retire with those records.
+input_hashes/output_hashes are the fallback edge: joblib.hash of the inputs
+and outputs whose type is in link_types (e.g. (Experiment,)), matched by
+equality. They are read for any record lacking a recipe; being hashes of
+computed arrays they are not portable across machines.
 """
 
 import functools
@@ -527,26 +526,23 @@ class Recorder:
         """Flatten the records into a leaf-per-row provenance DataFrame.
 
         Reads records as a DAG: B depends on A when B declares A's uid among
-        its parents. A record written before the recipe fields is walked by the
-        legacy edge instead (its input_hash equals an output_hash), so old and
-        new records flatten together. Each leaf -- one no other feeds -- is
-        one row carrying its own fields plus every ancestor's. A benchmark leaf
-        is usually a score step over the fit it scored and the setup that built
-        the data, so one row holds a whole trial: swept axes (setup), recipe
-        and timing (fit), result (score).
+        its parents, or (lacking a recipe) when B's input_hash equals A's
+        output_hash. Each leaf -- one no other record feeds -- becomes one row
+        carrying its own fields plus every ancestor's, so a benchmark row holds
+        a whole trial: swept axes (setup), recipe and timing (fit), result
+        (score).
 
         Each record contributes hash/function/time_sec and one
         in.<name> / out.<name> per input/output (via _cell), namespaced by its
-        short function name (fit.time_sec). A name repeated in a row is
-        suffixed #2/#3; the leaf goes first then ancestors shallowest-first, so
-        prefixes are deterministic. A record with no link_types hashes is its
-        own leaf. An output in the recurse list is expanded by _recurse_cell
-        into per-key-path columns instead (see __call__).
+        short function name (fit.time_sec). A repeated name is suffixed #2/#3;
+        the leaf goes first, then ancestors shallowest-first, so prefixes are
+        deterministic. An output in the recurse list is expanded by
+        _recurse_cell into per-key-path columns instead.
 
-        Operates on the in-memory records; call load() first to fold in other
-        writers' files. leaf_keys restricts rows to chosen leaves (still walked
-        to their ancestors), e.g. one CONFIG cache's leaves; missing
-        keys are skipped. None uses every DAG leaf.
+        Operates on the in-memory records, so call load() first to fold in
+        other writers' files. leaf_keys restricts rows to chosen leaves (still
+        walked to their ancestors), skipping missing keys; None uses every
+        leaf.
 
         Args:
             prefix_sep (str): separator between a prefix and its column name

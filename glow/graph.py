@@ -140,11 +140,10 @@ def compute_llr_batched(exp, children, q0, q1, min_size: int = 1,
        children's ysum / yout. This is the cheap part (a few numpy adds
        per region).
 
-    2. Per-region E / H / LLR via einsum + batched np.linalg.slogdet.
-       This is where the bulk of the FLOPs live. When min_size > 1 we
-       skip Phase 2 for regions with size < min_size and leave their LLR
-       as NaN. At min_size=4 on typical neuroimaging trees, ~70% of
-       regions drop out, cutting Phase 2's cost roughly proportionally.
+    2. Per-region E / H / LLR via einsum + batched np.linalg.slogdet,
+       where the bulk of the FLOPs live. Regions below min_size skip this
+       phase and keep a NaN LLR, which on a neuroimaging tree drops most
+       of them.
 
     Args:
         exp (Experiment): experiment data (already FL-permuted)
@@ -156,11 +155,10 @@ def compute_llr_batched(exp, children, q0, q1, min_size: int = 1,
             their E / H matrices are never computed). Default 1 keeps
             every region.
         acc_dtype: accumulation dtype for the sufficient statistics and the
-            E / H assembly. Default np.float64 keeps E accurate for
-            low-variance regions on a large DC offset, whose E cancels two
-            terms of magnitude trace(yout) down to a far smaller residual;
-            float32 there collapses E to rounding noise (see the Note).
-            Exposed as float32 only to reproduce that collapse in tests.
+            E / H assembly. Default np.float64: E cancels two terms of
+            magnitude trace(yout) down to a far smaller residual, which
+            float32 collapses to rounding noise (see the Note). Exposed only
+            to reproduce that collapse in tests.
 
     Returns:
         llr (np.array): (num_reg,) LLR per region. NaN where size <
@@ -213,12 +211,10 @@ def compute_llr_batched(exp, children, q0, q1, min_size: int = 1,
 
     e = t - h
 
-    # LLR = (size/2) * (ln|E+H| - ln|E|).  NaN where E or E + H is not
-    # positive definite.  With float64 accumulation (acc_dtype) E is exact
-    # enough that its slogdet sign is a reliable positive-definite test (see
-    # the Note), so no scale floor is needed: a genuinely degenerate region
-    # is dropped while a healthy large region -- better conditioned, not
-    # worse -- keeps its LLR.  Matches iter_llr_perm's inner-null check.
+    # LLR = (size/2) * (ln|E+H| - ln|E|), NaN where E or E + H is not
+    # positive definite. Under float64 accumulation E is accurate enough for
+    # its slogdet sign to be a reliable positive-definite test, so no scale
+    # floor is needed. Matches iter_llr_perm's inner-null check.
     sign_t, logdet_t = np.linalg.slogdet(e + h)
     sign_e, logdet_e = np.linalg.slogdet(e)
 
@@ -333,11 +329,8 @@ def build_dfs_preorder(children, num_vox: int):
     axis. That is the prerequisite for cumsum-and-diff region aggregation
     (see _reg_sum_cumsum).
 
-    Roots are laid out end-to-end -- the first root takes positions
-    [0, size_root_0), the next takes [size_root_0, ...), etc.
-
-    Thin wrapper over the JIT-ed _dfs_preorder_kernel; this layer only
-    normalizes children's dtype and layout.
+    Roots are laid out end-to-end. Thin wrapper over the JIT-ed
+    _dfs_preorder_kernel, normalizing children's dtype and layout.
 
     Args:
         children (np.array): (num_internal, 2) child index pairs in
@@ -393,15 +386,13 @@ def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
 
     Generator over chunks of size perm_chunk. Phase 1 (per-voxel
     sufficient statistics) is built once on entry; each iteration runs
-    Phase 2 for the next Pc perms and yields one (Pc, num_reg) fp64
-    chunk. Callers that need raw draws stack via
-    np.vstack(list(iter_llr_perm(...))); callers that only need moments
-    fold each chunk into a running accumulator and never materialize the
-    full draws array. Closing the generator releases all Phase-1 state.
+    Phase 2 for the next Pc perms and yields one (Pc, num_reg) fp64 chunk,
+    so a caller can fold chunks into an accumulator and never materialize
+    the draws. Closing the generator releases the Phase-1 state.
 
-    Freedman-Lane permutation (Freedman & Lane 1983) permutes the
-    nuisance residuals; here the permutation is carried on q0 / q1 rather
-    than re-permuting y.
+    Freedman-Lane permutation (Freedman & Lane 1983) permutes the nuisance
+    residuals; here the permutation is carried on q0 / q1 rather than
+    re-permuting y.
 
       1. Phase 1 (once) -- per-voxel sufficient statistics:
 
@@ -417,11 +408,10 @@ def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
          From gamma we read the FL-shifted rho (Q0 part) and beta (Q1
          part) needed to assemble E*, H* and finally the per-region LLR.
 
-    Both intercept-only and general-Q0 nuisance ride this same code path:
-    under intercept-only Q0 commutes with P, so rho is numerically zero
-    (and the X_v cross-correction below vanishes up to roundoff). The
-    waste is O(num_vox a0 b^2) FLOPs, dwarfed by the dominant
-    O(num_vox num_img a b) gamma GEMM.
+    Both intercept-only and general-Q0 nuisance ride this one code path:
+    under intercept-only Q0 commutes with P, so rho is numerically zero and
+    the X_v cross-correction vanishes. The wasted O(num_vox a0 b^2) FLOPs
+    are dwarfed by the O(num_vox num_img a b) gamma GEMM.
 
     Args:
         y (np.array): (b, num_img, num_vox) imaging features. The
@@ -463,20 +453,14 @@ def iter_llr_perm(*, y, q0, q1, perms, leaf_ord, region_l, region_h,
     a1 = int(q1.shape[0])
     a = a0 + a1
 
-    # Accumulate in float64 (acc_dtype default) even for float32 y.  Each
-    # region's error matrix E is formed by cancelling two terms of magnitude
-    # ~num_img * size * mean(y)^2 -- the raw second moment T_r and the nuisance
-    # projection S0*^T S0* / size -- down to the residual
-    # ~num_img * size * var(y).  For low-variance voxels on a large DC offset
-    # (e.g. HCP background at mean -0.76, std 5e-4) that subtraction loses
-    # every significant digit in float32: E collapses to rounding noise or
-    # goes negative, so the per-region inner-null std degenerates (~1e-6
-    # instead of ~5e-3) and the standardized z explodes, poisoning the
-    # Westfall-Young max-z null.  float64
-    # keeps E accurate; float32 only ever bought bandwidth (the dominant GEMM
-    # could be re-narrowed in isolation if large-num_vox memory matters).
-    # acc_dtype=float32 is exposed only to reproduce that float32 collapse in
-    # tests (see test/analysis/test_draws_hcp.py).
+    # Accumulate in float64 even for float32 y. Each region's E cancels two
+    # terms of magnitude ~num_img * size * mean(y)^2 -- the raw second moment
+    # T_r and the nuisance projection S0*^T S0* / size -- down to a residual
+    # ~num_img * size * var(y). For low-variance voxels on a large DC offset
+    # float32 loses every significant digit of that: E collapses to rounding
+    # noise or goes negative, the inner-null std degenerates and the
+    # standardized z explodes into the max-z null. acc_dtype=float32 is
+    # exposed only to reproduce that collapse (test_draws_hcp.py).
     dtype = np.dtype(acc_dtype)
 
     # -------------------- Phase 1: per-voxel state --------------------

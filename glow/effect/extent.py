@@ -469,13 +469,11 @@ def _fiedler_endpoints(mask):
     else:
         degree = np.asarray(A.sum(axis=1)).ravel()
         L = sparse.diags(degree) - A
-        # eigsh needs k < n_vox; k=2 returns the constant vector + Fiedler
-        # eigsh's Lanczos start is random by default, so the Fiedler vector --
-        # and thus the split -- is non-deterministic run to run; for a
-        # (near-)degenerate second eigenvalue (symmetric regions) it returns an
-        # arbitrary vector in the eigenspace, not just a sign flip. Pin a fixed
-        # start vector so the split is reproducible (ExtenterSplit's half 0/1
-        # must agree across its two independent calls).
+        # k=2 returns the constant vector + Fiedler. eigsh's Lanczos start
+        # is random by default, and at a near-degenerate second eigenvalue
+        # (symmetric regions) that returns an arbitrary vector of the
+        # eigenspace, so pin a fixed start: ExtenterSplit's halves 0/1 must
+        # agree across two independent calls.
         v0 = np.random.default_rng(0).standard_normal(n_vox)
         evals, evecs = eigsh(L, k=2, which='SM', v0=v0)
         fiedler = evecs[:, np.argsort(evals)[1]]
@@ -491,16 +489,10 @@ def split_mask_spectral(mask):
     """Split a mask into two contiguous pieces of (near) equal size.
 
     BFS fronts grow from two seeds chosen by spectral bisection -- the
-    extremes of the mask's Fiedler vector (_fiedler_endpoints) -- alternately
-    claiming one voxel from each front until the mask is exhausted. Each
-    front blocks on the other piece, so it only expands through its own
-    territory and every voxel it claims has a neighbour already in the piece;
-    both pieces are guaranteed contiguous.
-
-    The Fiedler seeds place the cut across the graph's minimum bisection,
-    giving balanced, geometrically natural pieces. The seed choice is what
-    shapes the split; the front growth is a plain simultaneous BFS from the
-    two seeds.
+    extremes of the mask's Fiedler vector (_fiedler_endpoints), which puts
+    the cut across the graph's minimum bisection -- alternately claiming one
+    voxel each until the mask is exhausted. Each front blocks on the other
+    piece, so both pieces come out contiguous.
 
     Note:
         Sizes differ by at most one voxel unless one front gets walled in by

@@ -2,8 +2,7 @@
 
 The arm with strong FWER control, and the one to report. Its counterpart,
 AnalysisGLOW in glow.analysis._glow, segments inside every permutation
-instead and buys a tree built from every image at the cost of that control;
-that module's docstring sets out the trade the two exist to measure.
+instead.
 """
 
 import glow.graph
@@ -20,70 +19,22 @@ from .mancova import decompose
 class AnalysisGLOWSplit(AnalysisGLOWBase):
     """Build one Ward tree on a held-out fold, test on the other.
 
-    One Ward tree, built on a held-out segmentation fold, is the whole
-    hypothesis family: split_img partitions the images, the tree comes
-    from fold A, and every statistic is computed on fold B.
+    split_img partitions the images, the tree comes from fold A, and every
+    statistic is computed on fold B. The whole fit is one
+    (n_perm_fwer + 1, num_reg) matrix of Freedman-Lane draws (Freedman &
+    Lane 1983) against that tree, row i being exp_test.permute(i) and row 0
+    the identity, hence the observed draw: its column moments standardize
+    the regions onto a common scale, its row maxima are the max-z null.
 
-    That split is what makes the procedure valid, and fixing the tree is
-    not. A tree chosen with the same images that then test it gives the
-    observed draw an advantage no permuted draw can have (per-region z
-    reaches 70+ on white noise, ~1700x the fixed-region value), and
-    holding such a tree across the permutations does not repair that --
-    it is a function of the observed data, so the observed draw is
-    privileged. Here the tree is a function of fold A alone, hence a
-    constant with respect to the fold-B permutation group: the observed
-    draw is exchangeable with the permuted draws, subset pivotality holds
-    (each region's E and H are built from its own voxels, so an effect
-    elsewhere cannot shift a signal-free region's null), and the
-    family-wise bound is exact (Westfall & Young 1993; Lehmann & Romano
-    Thm 15.2.1; Hemerik & Goeman 2018).
-
-    With the family fixed there is no outer loop that re-clusters and no
-    nested inner null. The whole fit is one (n_perm_fwer + 1, num_reg)
-    matrix of Freedman-Lane draws (Freedman & Lane 1983) against that one
-    tree, row i being exp_test.permute(i). Row 0 is the identity, so it
-    is the observed draw and rows 1: are the null. That single matrix
-    serves both jobs: its column moments standardize the regions onto a
-    common scale, and its row maxima are the max-z null.
-
-    The observed row contributes to those moments on equal footing with
-    the permuted rows, which is required rather than merely tidy -- see
-    Analysis.z_score_stat, whose docstring records what happens when it
-    does not (Phipson & Smyth 2010; Winkler et al. 2014).
-
-    The experiment is supplied to fit(), not stored (see Analysis). It
-    must be a raw Experiment: fit() splits it first and scales each fold
-    separately, because ExperimentScaled fits pre_scale on every image at
-    once and a fold cut out afterwards would carry a transform the other
-    fold helped choose (ExperimentScaled.split_img refuses for the same
-    reason).
+    The fold-A tree is constant with respect to the fold-B permutations, so
+    the observed draw is exchangeable with the permuted ones and the
+    family-wise bound is exact (Westfall & Young 1993; Hemerik & Goeman
+    2018).
 
     Operation parameters (set at __init__), beyond AnalysisGLOWBase's:
         frac_segment (float): share of the images going to the
-            segmentation fold. Pre-specified, never tuned against results.
+            segmentation fold. Pre-specify it, as with min_vox.
         split_seed (int): seed for the image partition.
-
-    The draw matrix itself is not kept by default: at full-brain num_vox it
-    runs to gigabytes (~16.7 GiB at 5001 draws), and only its first row, its
-    column moments and its row maxima outlive it -- the five arrays of a
-    draws.DrawSummary. Both default backends stream it in two passes and
-    never hold more than one chunk, so at large n_perm_fwer the matrix is
-    not merely dropped but never allocated.
-
-    keep_stat=True overrides that, for the diagnostic question the summary
-    cannot answer: what a region's null actually looks like, rather than the
-    two moments it was standardized by. It costs the full matrix in memory
-    and again in any pickle of the fit -- __getstate__ warns rather than
-    let that happen quietly -- and it gives up the streaming reduction for
-    the materializing twin of whichever backend is running (cpu_batched,
-    draws_gpu.gpu_perm) -- the same cells, held all at once. cpu_anchor
-    forms the matrix regardless, having no streaming form; keep_stat is
-    what decides whether it survives the fit. It is a storage choice only:
-    llr and mu are bitwise identical either way and the p-values and
-    discoveries with them, while std moves at fp64 round-off (~1e-16
-    relative) because the two reductions sum in different orders. That is
-    why it stays out of RECORD_FIELDS and so out of the benchmark cache
-    key (see Analysis.fit, which says the same of n_jobs and gpu).
 
     Fit outputs: AnalysisGLOWBase's, all on the test fold and against the
     fold-A tree, plus:
@@ -91,10 +42,11 @@ class AnalysisGLOWSplit(AnalysisGLOWBase):
             tree was built on. The realized partition, not recoverable from
             frac_segment and split_seed once split_group is passed.
 
-    llr, mu and std are the one matrix's row 0 and column moments, and
-    fwer.max_stat is its (n_perm_fwer + 1,) row maxima. Under keep_stat
-    .stat is that matrix, so a column is the null a region's z was
-    measured against.
+    llr, mu and std are that matrix's row 0 and column moments,
+    fwer.max_stat its (n_perm_fwer + 1,) row maxima. keep_stat keeps the
+    matrix itself, so a column is the null a region's z was measured
+    against; it changes no result (std moves at fp64 round-off), hence its
+    absence from RECORD_FIELDS.
     """
 
     RECORD_FIELDS = ('n_perm_fwer', 'alpha_fwer', 'min_vox', 'cluster_mode',
@@ -125,9 +77,7 @@ class AnalysisGLOWSplit(AnalysisGLOWBase):
             prune_exp_n_eff (float | None): dp-only region count (see
                 AnalysisGLOWBase).
             keep_stat (bool): keep the whole (n_perm_fwer + 1, num_reg)
-                draw matrix in .stat instead of discarding it. A
-                diagnostic that changes no result and costs the matrix in
-                memory -- see the class docstring.
+                draw matrix in .stat instead of discarding it.
         """
         super().__init__(n_perm_fwer=n_perm_fwer, alpha_fwer=alpha_fwer,
                          min_vox=min_vox, cluster_mode=cluster_mode,
@@ -145,17 +95,15 @@ class AnalysisGLOWSplit(AnalysisGLOWBase):
         """Run the analysis on exp and return self.
 
         Populates the observed attributes (children, size, llr, mu, std),
-        the max-stat test they feed (fwer), and the synthesis output
-        (effect_list).
+        the max-stat test they feed (fwer), and effect_list.
 
         Args:
             exp (Experiment): experiment to analyze. Must be raw, not an
                 ExperimentScaled: fit splits it into folds and scales
                 each fold separately.
-            n_jobs (int): accepted for the execution contract every
-                recipe honours (see Analysis.fit) but unused -- the draws
-                come from one serial call. Parallelising them is a
-                straight win and simply has not been done yet.
+            n_jobs (int): accepted for the execution contract every recipe
+                honours (see Analysis.fit) but unused -- the draws come
+                from one serial call.
             gpu: False (default) to draw on the CPU, True or a GpuConfig
                 to require a device, 'auto' to take one when visible. The
                 draws are the only thing the device changes; see
@@ -175,9 +123,8 @@ class AnalysisGLOWSplit(AnalysisGLOWBase):
             self
         """
         # cpu_anchor names a CPU backend, so a device request alongside it
-        # is a contradiction rather than a preference. 'auto' is not one:
-        # it asks for a device only where that is the better default, and
-        # the anchor is the more specific instruction.
+        # is a contradiction rather than a preference; 'auto' is only a
+        # preference, and the anchor is the more specific instruction
         if cpu_anchor and gpu and gpu != 'auto':
             raise ValueError(
                 'AnalysisGLOWSplit.fit(cpu_anchor=True) draws on the CPU '
@@ -193,12 +140,11 @@ class AnalysisGLOWSplit(AnalysisGLOWBase):
         self.img_segment = exp.get_img_segment(**split_kwargs)
         exp_seg, exp_test = exp.split_img(**split_kwargs)
 
-        # Each fold is scaled on its own images. Fold A's scaling is the
-        # one that matters: Ward distances are not invariant to a map on
-        # the b axis, so pre_scale reaches the tree. Fold B's does not --
-        # every MANCOVA statistic is exactly invariant to an invertible
-        # b x b map on y -- and is here only for the conditioning of the
-        # slogdet in get_llr.
+        # Each fold is scaled on its own images. Fold A's scaling reaches
+        # the tree, Ward distances not being invariant to a map on the b
+        # axis. Fold B's does not -- every MANCOVA statistic is exactly
+        # invariant to an invertible b x b map on y -- and is here only for
+        # the conditioning of the slogdet in get_llr.
         self.children = cluster(ExperimentScaled.from_exp(exp_seg),
                                 mode=self.cluster_mode)
         exp_test = ExperimentScaled.from_exp(exp_test)
@@ -212,41 +158,30 @@ class AnalysisGLOWSplit(AnalysisGLOWBase):
             print(f'  [1/2] {self.n_perm_fwer + 1} draws '
                   f'({exp_test.y.shape[1]} test images, '
                   f'{exp_test.y.shape[2]} voxels) ...')
-            # Which backend, and why -- they differ by orders of magnitude
-            # and gpu='auto' falls back silently (describe_backend).
+            # the backends differ by orders of magnitude and gpu='auto'
+            # falls back silently, so say which one ran
             backend = describe_backend(gpu, gpu_config,
                                        cpu_anchor=cpu_anchor)
             print(f'        backend: {backend}')
 
         # size >= min_vox is a function of the fold-A tree alone, hence a
         # constant with respect to the fold-B permutations -- the condition
-        # MaxStatPerm needs of a comparison set. Every backend needs it: it
-        # is what the per-draw maxima are taken over.
+        # MaxStatPerm needs of a comparison set
         reg_active = self.size >= self.min_vox
 
         # base_seed=0 makes draw i exp_test.permute(i), and seed 0 is the
         # identity -- so row 0 is the observed draw and needs no separate
-        # code path (permute._perm_indices reserves it).
-        #
-        # All three backends return the same DrawSummary, so nothing below
-        # can tell them apart -- they differ in speed and in peak memory
-        # only. cpu_summary streams the batched kernel's chunks in two
-        # passes; the device one does the same on device and is ~3 orders
-        # faster at full-brain num_vox; cpu_reliable materializes the
-        # matrix through an independent per-region implementation of the
-        # statistic, which is what makes it the anchor and why it is ~35x
-        # the batched path (see draws).
+        # code path (permute._perm_indices reserves it). All three backends
+        # return the same DrawSummary, differing in speed and peak memory
+        # only.
         draws_kwargs = dict(
             exp=exp_test, base_seed=0, n_perm=self.n_perm_fwer + 1,
             q0=q0, q1=q1, children=self.children, min_vox=self.min_vox)
 
         # The matrix is formed only when something needs it whole: the
-        # anchor has no streaming form, and keep_stat asks for it outright,
-        # trading each streaming reduction for its materializing twin
-        # (cpu_summary -> cpu_batched, gpu_summary -> gpu_draws). Then
-        # summarizing what was kept, rather than keeping a second copy
-        # alongside a streamed summary, is what makes .stat the very matrix
-        # llr/mu/std came out of.
+        # anchor has no streaming form, and keep_stat asks for it outright.
+        # Summarizing what was kept, rather than streaming a second copy,
+        # is what makes .stat the very matrix llr/mu/std came out of.
         if cpu_anchor:
             matrix = draws.cpu_reliable(**draws_kwargs)
         elif not self.keep_stat:
@@ -278,9 +213,9 @@ class AnalysisGLOWSplit(AnalysisGLOWBase):
         if verbose:
             print('  [2/2] FWER synthesis ...')
 
-        # Effects are estimated on the test fold, not on the whole cohort:
-        # the segmentation fold chose the regions, so only fold B gives an
-        # estimate that the region's own selection did not shape.
+        # effects are estimated on the test fold: the segmentation fold
+        # chose the regions, so only fold B gives an estimate the region's
+        # own selection did not shape
         self._discover(exp_test, verbose=verbose)
 
         return self

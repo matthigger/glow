@@ -7,43 +7,30 @@ itself. So one benchmark figure is drive(*CONFIG[name]). Running the sweep is
 the driver's / a CLI's job, not this module's -- config only declares it.
 
 The two upstream grids come from the builders in benchmark.grid, whose keyword
-arguments are the swept axes: grid.get_kwargs_data_list returns the list of
-data_factory kwargs over (source, b, num_img, seed);
-grid.get_kwargs_effect_list returns the list of effect_factory kwargs over
-(effect_llr, n_vox) -- or [None]
-for the null path. This module holds no logic: it supplies the paper's values
-for those axes (data_grid / effect_grid apply them as defaults) and each cache
-overrides the axis it sweeps. The leaf is run_ana over the shared analysis
-recipes (RUN_ANA_LIST).
+arguments are the swept axes: get_kwargs_data_list over (source, b, num_img,
+seed), get_kwargs_effect_list over (effect_llr, n_vox) -- or [None] for the
+null path. This module holds no logic: it supplies the paper's values for those
+axes (data_grid / effect_grid apply them as defaults) and each cache overrides
+the axis it sweeps. A cell carries its heavy objects directly (the Extenter,
+the realized HCP feature subset), so the catalogue is what runs.
 
-A cell carries its heavy objects directly -- the Extenter (effect support,
-analysis crop) and the realized HCP feature subset -- so the catalogue is what
-runs, with no factory indirection.
+Seeding. A data cell's seed drives its whole realization -- the WGN draw / HCP
+feature subset, the x design, the analysis crop. The effect grid is shared
+across data cells and carries no per-data seed, so the support is placed with
+seed_from_exp: effect_factory derives its placement seed from a hash of the
+experiment, giving each realization its own reproducible location.
 
-Seeding. A data cell's seed drives its whole realization (the WGN draw / HCP
-feature subset, the x design, and the analysis crop location). The driver
-decouples the data and effect loops (one effect grid is shared across all data
-cells), so the effect support is placed with seed_from_exp -- effect_factory
-derives its placement seed from a hash of the experiment, so each realization
-gets its own (reproducible) effect location even though the effect grid is
-shared and carries no per-data seed (see effect_factory).
+Effect strength. effect_llr is the per-voxel (size-normalized) target, so the
+whole-region LLR is ~ effect_llr * n_vox (see glow.effect.impose). Sweeps hold
+effect_llr fixed, which across a structural axis (b, num_img) is a clean power
+curve and across the extent sweep grows the whole-region LLR with the region.
 
-Effect strength. effect_llr is the per-voxel (size-normalized) target; the
-observed whole-region LLR is ~ effect_llr * n_vox (see glow.effect.impose).
-Sweeps hold effect_llr fixed: across a structural axis (b, num_img) that is a
-clean power curve, and across the extent (n_vox) sweep the whole-region LLR
-grows with the region. (The factory has no whole-region-LLR knob -- only the
-per-voxel effect_llr -- so an extent sweep at fixed total would have to back
-it out here; we don't.)
-
-WGN and HCP share each cache (both sources in one data grid); they face apart
-on the recorded source column downstream. HCP has no num_img axis -- its N is
-the cohort -- so a subject sweep cuts that cohort down at analysis time rather
-than building to a count (see run.run_ana_time_1perm).
+WGN and HCP share each cache and face apart on the recorded source column
+downstream. HCP has no num_img axis -- its N is the cohort -- so a subject
+sweep cuts that cohort down at analysis time (run.run_ana_time_1perm).
 
 Every cache here backs a figure, table or quantitative claim in the paper, bar
-smoke (an end-to-end pipeline check). Adding one is cheap; the catalogue is
-kept at what is cited.
+smoke (an end-to-end pipeline check).
 
 Scope. Five caches share the run_ana leaf over the one recipe grid (fit +
 score one Analysis per cell): null, sweep_llr, sweep_extent, sweep_b,
@@ -183,23 +170,20 @@ ana_kwargs_dict = {
 REPORTED_GLOW_LABEL = 'GLOW-Focus-greedy'
 
 # ---------- how a leaf's fit runs (never what it computes) -------------------
-# fit_params is forwarded to Analysis.fit by the leaf (run.run_ana) and is
-# filtered out of the cache key and the record (run.FIT_IGNORE), so it may vary
-# by machine without forking an artifact: a cell fit here on the GPU and the
-# same cell fit on another machine's cores are one recorded score.
+# fit_params is forwarded to Analysis.fit by the leaf and filtered out of the
+# cache key and the record (run.FIT_IGNORE), so it may vary by machine without
+# forking an artifact.
 #
 # GLOW alone parallelises deeply enough to be worth configuring. The count is
 # an upper bound, clamped to the machine's cores at fit time
-# (glow.analysis.resolve_n_jobs), so this figure is the local workstation's and
-# a smaller box quietly uses what it has. What caps it is RAM, not cores: a
-# GLOW worker holds its own copy of y, ~1 GB at full-brain num_vox.
+# (resolve_n_jobs), so a smaller box quietly uses what it has. What caps it is
+# RAM, not cores: a GLOW worker holds its own copy of y, ~1 GB at full-brain
+# num_vox.
 #
 # gpu is 'auto', not True: the device backend is a pure speedup (same seeds,
-# float64, agreeing with the CPU fit to round-off -- see AnalysisGLOW.fit), so
-# taking it where a card exists and skipping it where none does is always
-# right, and a checked-in True would break every CPU-only runner. Both knobs
-# multiply against the sweep's own -j; driver.check_fit_params refuses the
-# products that would oversubscribe.
+# float64, agreeing with the CPU fit to round-off), so a checked-in True would
+# only break CPU-only runners. Both knobs multiply against the sweep's own -j;
+# driver.check_fit_params refuses the products that would oversubscribe.
 GLOW_FIT_N_JOBS = 10
 GLOW_FIT_PARAMS = dict(n_jobs=GLOW_FIT_N_JOBS, gpu='auto')
 
@@ -332,33 +316,26 @@ def effect_grid(**kwargs):
 
 
 # ---------- runtime benchmarks (HCP) -----------------------------------------
-# Wall time, not detection. Every cache here is HCP -- the paper's real data,
-# and the only cohort whose subject count means anything -- with the moderate
-# default effect (10% of each cell's volume, see effect_grid); only the timed
-# axis varies. A recorded time_sec means the machine that recorded it, so these
-# are only comparable within one run on one box. Each cache gets its own seed
-# offset so its leaf timings are cold (never served from another cache's cached
-# fit) and independent.
+# Wall time, not detection. Every cache here is HCP, with the moderate default
+# effect; only the timed axis varies. A recorded time_sec means the machine
+# that recorded it, so these compare only within one run on one box. Each cache
+# gets its own seed offset so its leaf timings are cold and independent.
 #
 # Two questions, deliberately not mixed:
 #
 # runtime_num_vox -- how long does a user wait? Every method fit with what the
-# machine has (run_ana_time; see RUN_ANA_TIME_LIST for the per-method knobs),
-# so the answer includes whatever these cores and this card contribute. A
-# number to quote, not to extrapolate from: the parallel speedup itself varies
-# along the axis, so the slope is the machine's as much as the algorithm's.
-# This is where the methods are compared, so it runs the three voxel-wise arms
-# against GLOW -- the reported arm alone (REPORTED_GLOW_LABEL); the other's
-# wall clock is the same curve.
+# machine has (run_ana_time), so the answer includes this box's cores and card.
+# A number to quote, not to extrapolate from: the parallel speedup itself
+# varies along the axis. This is where the methods are compared, so it runs the
+# three voxel-wise arms against the reported GLOW arm alone.
 #
 # runtime_1perm_* -- how does GLOW's cost grow? One core, no device, BLAS
 # pinned to one thread, one outer permutation (run_ana_time_1perm), everything
 # but the swept axis at the shared centre. Held that still, the ratio between
 # two points is the growth in that axis, which is what the paper's cost model
 # claims: linear in num_vox and num_img, quadratic in b, linear in each
-# permutation count. Not a formal complexity result -- a measured middle ground
-# short of one. GLOW only: it is GLOW's cost model being made good on, and the
-# voxel-wise arms are already compared where the comparison belongs, above.
+# permutation count. Measured, not a formal complexity result. GLOW only -- it
+# is GLOW's cost model being checked, and the arms are compared above.
 RUNTIME_N_SEED = 3
 
 # num_vox sweep: 1k -> the full HCP support (224,619 voxels, one connected

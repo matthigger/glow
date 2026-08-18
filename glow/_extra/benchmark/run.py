@@ -1,61 +1,40 @@
 """Benchmark leaf functions: measure one Experiment and score it.
 
 Each leaf is one fnc(exp, mask_target_list=..., **kwargs) the driver runs on a
-(data, effect) cell. run_ana is the canonical leaf; run_segment is a sibling
-measuring segmentation quality (no fit); run_stat fits one VBA / CET
-MANCOVA-stat variant reading a shared voxel-stat walk; run_prune scores one
-pruning rule on a shared GLOW fit.
-All are @MEMORY.cache'd (so a record's key equals its cache id) and, where they
-score, score inline. The method name (GLOW-Focus, VBA-TFCE-Wilks-z, ...) is not
-passed or recorded: it is recovered from the recipe at read time from config.py
-(see config.ana_kwargs_dict / benchmark.plot).
+(data, effect) cell. run_ana is the canonical one -- fit an unfitted Analysis
+recipe on an already-built Experiment and score the discovered effects against
+the planted target(s), no data building and no planting. run_segment is a
+sibling measuring segmentation quality (no fit); run_stat fits one VBA / CET
+MANCOVA-stat variant off a shared voxel-stat walk; run_prune scores one pruning
+rule on a shared GLOW fit.
+
+All are @MEMORY.cache'd (so a record's key equals its cache id) and share
+data.py's MEMORY / RECORDER, so a leaf joins the same provenance DAG: its exp
+input links to the build that produced it and RECORDER.flatten_to_df chains
+data -> (plant ->) score into one row. The method name (GLOW-Focus-greedy,
+VBA-TFCE-Wilks-z, ...) is not passed or recorded but recovered from the recipe
+at read time (config.ana_kwargs_dict).
 
 Every leaf requires parent_uid, the declared uid of the Experiment it measures
-(glow._extra.benchmark.recipe): the driver names it from the cell's kwargs on
-the way down, and each leaf's own uid is built from it. It is what identifies
-the experiment, since exp itself is kept out of the key -- so a leaf's identity
-is the same on any machine, where the exp's bytes would not be. Two leaves
-given one parent_uid claim to measure the same experiment, so a caller must
-never reuse one across distinct experiments.
+(.recipe): exp itself is kept out of the key, so a leaf's identity is the same
+on any machine where the exp's bytes would not be. Two leaves given one
+parent_uid claim to measure the same experiment, so a caller must never reuse
+one across distinct experiments.
 
 A leaf may lean on a shared heavy intermediate rather than a driver stage:
-run_stat reads voxel_stat_walk (every MANCOVA stat for one exp) and run_prune
+run_stat reads voxel_stat_walk (every MANCOVA stat for one exp), run_prune
 reads glow_fit_for_prune (one GLOW fit's children / per-region LLR /
 FWER-significant set), so the first of a cell's variants computes it and the
-rest reuse it -- one shared fit that a cell's N variants (rules or stats) each
-score off. Neither is a recorded DAG node: its output is not an Experiment, so
-it never links as a leaf's ancestor, and the leaf already links to the build
-via exp. They differ in where that sharing lives -- glow_fit_for_prune is
-memoised to disk (its triple is light), while a voxel_stat_walk matrix is
-~250 MB per cell, too big to keep for a whole grid, so it is shared in memory
-only (see its docstring).
+rest reuse it. Neither is a recorded DAG node -- its output is not an
+Experiment, and the leaf already links to the build via exp. glow_fit_for_prune
+is memoised to disk, its triple being light; a voxel_stat_walk matrix is too
+big to keep for a whole grid and is shared in memory only.
 
-The low-level benchmark primitive: run_ana takes an already-built
-Experiment, an unfitted Analysis recipe, and the planted target(s), runs
-ana.fit(exp), and returns the detection score of the discovered effects
-against the target -- no data building, no effect planting (the config
-layer wraps this with those). It is memoised + recorded exactly like the
-data.py builders: it shares their MEMORY / RECORDER, so a run is cached on
-disk and joins the same provenance DAG -- a run_ana record's exp input
-links to the build (data_factory, or effect_factory's plant) that produced
-it, so RECORDER.flatten_to_df chains data -> (plant ->) score into one row.
-
-Scoring is inlined rather than a separate recorded step on purpose. The
-fitted Analysis is the heavy object (per-region llr / z / children /
-max_z_null arrays, ~tens of MB at scale); used as an in-memory local and
-discarded, only the small score dict reaches the cache and the records.
-Keeping it a downstream node would force either a bespoke link-typed
-result carrier or recording that whole object -- and the planted target is
-already baked into exp, so folding the score in adds no redundant refits.
-The one method-uniform surface every Analysis exposes (effect_list + pval)
-is read inside score_effects; the score dict it returns is what every
-method is compared on (see .score).
-
-score_effects records only the four confusion counts (+ per-region
-geometry, min_pval); Dice / sensitivity / PPV / specificity derive
-downstream, so a later metric change re-derives from the records without
-re-fitting -- the bulk of the re-score flexibility a separate step would
-have bought, at none of the linking cost.
+Scoring is inlined rather than a separate recorded step: the fitted Analysis is
+the heavy object, used as a local and discarded, so only the small score dict
+reaches the cache and the records. score_effects stores just the four confusion
+counts (plus per-region geometry and min_pval), so a later metric change
+re-derives from the records without refitting.
 """
 
 import copy
@@ -86,24 +65,18 @@ LEAF_IGNORE = ['exp', 'mask_target_list']
 # record stops naming its own cache entry.
 #
 # fit_params (the kwargs a leaf forwards to Analysis.fit -- n_jobs, gpu) is an
-# execution knob, not a recipe knob, so it is filtered like exp: a cell fit on
-# 32 CPU workers and the same cell fit on the GPU are one artifact, cached and
-# recorded once. That is a claim about the backends, and it is the one
-# GLOW's fit makes good on -- the device path draws the same permutations
-# from the same seeds in float64 and agrees to float round-off (test_fit_gpu.py)
-# -- so it holds only while fit_params carries no numerical knob. A
-# GpuConfig(acc_dtype=float32) does perturb fwer.max_stat (~2e-3 relative),
-# which is why it is not what gpu=True selects and must not be swept from a
-# config.
+# execution knob, not a recipe knob, so it is filtered like exp: the same cell
+# fit on 32 CPU workers or on the GPU is one artifact. That holds only while
+# fit_params carries no numerical knob -- a GpuConfig(acc_dtype=float32) does
+# perturb fwer.max_stat, which is why gpu=True does not select it and a config
+# must not sweep it.
 FIT_IGNORE = [*LEAF_IGNORE, 'fit_params']
 
-# parent_uid is declared before every defaulted parameter below, not last where
-# a mandatory keyword would read more naturally: joblib's filter_args resolves
-# an omitted default by indexing its defaults list from the end of the
-# signature (arg_defaults[position - len(arg_names)]), which assumes the
-# defaulted parameters are a suffix. A required parameter after a defaulted one
-# makes that index run off the front and every call raise "Wrong number of
-# arguments".
+# parent_uid is declared before every defaulted parameter below, not last:
+# joblib's filter_args resolves an omitted default by indexing from the end of
+# the signature, which assumes the defaulted parameters are a suffix. A
+# required parameter after a defaulted one makes that index run off the front
+# and every call raise "Wrong number of arguments".
 
 
 @MEMORY.cache(ignore=FIT_IGNORE)
@@ -113,20 +86,15 @@ def run_ana(exp: Experiment, ana: Analysis, mask_target_list, *,
             parent_uid: str, fit_params=None):
     """Fit ana on exp and score it against the planted target(s).
 
-    Calls ana.fit(exp, **fit_params) (every Analysis scales exp on the way
-    in and returns self), then scores the discovered effects against the
-    planted supports with score_effects -- the uniform detection score a
-    benchmark compares across GLOW, VBA, CET, etc. without knowing the
-    concrete type.
+    Calls ana.fit(exp, **fit_params), then scores the discovered effects
+    against the planted supports with score_effects -- the uniform detection
+    score every method is compared on, whatever its concrete type.
 
-    Memoised on disk (MEMORY) with the recorder nested inside the cache,
-    keyed by joblib's hash of (exp, ana, mask_target_list): a repeat is
-    served from the cache and only a real (cache-miss) run is recorded.
-    Two distinct recipes hash distinctly, so each variant caches and
-    records on its own. mask_target_list is a deterministic function of exp
-    (the effect was planted into it), so it adds no independent cache key
-    axis -- it is there because score_effects needs the realized supports,
-    which exp does not itself carry.
+    Memoised on disk with the recorder nested inside the cache, so a repeat
+    is served from the cache and only a real run is recorded. Two distinct
+    recipes hash distinctly. mask_target_list is a deterministic function of
+    exp, so it adds no cache-key axis; it is there because score_effects
+    needs the realized supports, which exp does not carry.
 
     ana is never mutated -- fit runs on a private copy, leaving the caller's
     recipe (and so its hash) untouched. That is what makes the cache key
@@ -238,13 +206,12 @@ def voxel_stat_walk(exp, n_perm_fwer: int, *, parent_uid: str) -> dict:
     equivalence is what lets run_stat inject this as _stat and get exactly the
     standalone fit's result.
 
-    The sharing is in memory, not on disk: a walk is ~250 MB at the paper scale
-    (251 perms, 25k voxels, 5 stats), which persisted over the stat grid's 1100
-    cells would dwarf every other cache. _WALK_MEMO instead holds the current
-    cell's walk and drops the previous one, so peak cost is one walk. A cell's
-    variants are consecutive (drive's leaf grid is its innermost loop, and its
-    n_jobs splits by data cell, never within one), so that single entry serves
-    them all; only a cell interrupted part-way pays a second walk on resume.
+    The sharing is in memory, not on disk: one walk runs to hundreds of MB,
+    which persisted over a whole stat grid would dwarf every other cache.
+    _WALK_MEMO holds the current cell's walk and drops the previous one, so
+    peak cost is one walk. A cell's variants are consecutive -- drive's leaf
+    grid is its innermost loop and its n_jobs splits by data cell -- so that
+    one entry serves them all.
 
     Args:
         exp (Experiment): the experiment to walk (scaled here).
@@ -316,15 +283,13 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
                        fit_params=None) -> tuple:
     """Fit GLOW once and return the pruning inputs (shared by the rules).
 
-    The prune cache's shared intermediate: a full AnalysisGLOW fit (the arm
-    the catalogue reports) reduced to the light triple every rule needs --
-    the Ward tree, the raw per-region LLR (candidates are ranked by raw LLR,
-    as the GLOW arms' own synthesis does (AnalysisGLOWBase._discover); the
-    z-score fragments under pruning), and the FWER-significant region set. All
-    the rules prune this same set, so the comparison isolates the rule from
-    the permutation test; the first run_prune variant of a cell fits, the rest
-    are cache hits. A plain disk-memoised helper, not a DAG node (see the
-    module docstring).
+    The prune cache's shared intermediate: one AnalysisGLOW fit (the arm the
+    catalogue reports) reduced to the light triple every rule needs -- the
+    Ward tree, the raw per-region LLR (the rank key AnalysisGLOWBase._discover
+    also prunes by, the z-score fragmenting under pruning), and the
+    FWER-significant region set. All the rules prune this same set, so the
+    comparison isolates the rule from the permutation test. A plain
+    disk-memoised helper, not a DAG node.
 
     Args:
         exp (Experiment): the experiment to fit (raw or scaled).
@@ -446,26 +411,20 @@ def run_ana_time(exp: Experiment, mask_target_list, ana: Analysis, *,
                  parent_uid: str, fit_params=None) -> int:
     """Time one method's fit at full local parallelism (runtime leaf).
 
-    The cross-method runtime sweep's leaf: fit ana on exp with n_jobs=-1 (all
-    cores) and record wall time only, no detection scoring. Every method's fit
-    (GLOW / VBA / CET / TFCE) parallelises its permutation walk over
-    joblib.Parallel(n_jobs), so -1 is the wall time a user on an N-core machine
-    actually waits -- the wall-clock-in-practice counterpart to run_ana, which
-    scores and times fit serially. The result is bit-identical to n_jobs=1 (the
-    seed is derived from the permutation index, not the worker), so n_jobs is
-    timing-only and never enters the recipe / cache identity.
+    The cross-method runtime sweep's leaf: fit ana on exp with n_jobs=-1 and
+    record wall time only, no scoring. Every method parallelises its
+    permutation walk, so -1 is the wall time a user on an N-core machine
+    waits;
+    the result is bit-identical to n_jobs=1 (seeds come from the permutation
+    index, not the worker), so n_jobs stays out of the cache identity.
 
-    fit_params overrides those kwargs and is filtered like run_ana's
-    (FIT_IGNORE), which for a timing leaf cuts both ways: a CPU timing and a
-    GPU timing of one cell collide on the same key, so the second is served
-    from the first's cache rather than measured. Timing a second backend means
-    clearing that entry, or giving the cache a recorded axis to face them apart
-    on -- there is none today.
+    GOTCHA fit_params is filtered like run_ana's (FIT_IGNORE), so a CPU timing
+    and a GPU timing of one cell collide on the same key and the second is
+    served from the first rather than measured. Timing a second backend means
+    clearing that entry.
 
-    Kept distinct from run_ana so the detection caches (keyed on run_ana's code)
-    are untouched, and so time_sec isolates fit alone (run_ana's spans fit plus
-    score_effects). The method label is recovered from the ana recipe at read
-    time (config.ana_kwargs_dict), as for run_ana.
+    Kept distinct from run_ana so the detection caches are untouched and
+    time_sec isolates fit alone.
 
     Args:
         exp (Experiment): the experiment to analyze (raw or scaled; fit scales
@@ -477,8 +436,8 @@ def run_ana_time(exp: Experiment, mask_target_list, ana: Analysis, *,
             (default) times it at n_jobs=-1 on the CPU.
 
     Returns:
-        num_vox (int): analyzed voxel count (mask_active.sum()), recorded beside
-            time_sec as the sweep's x-axis.
+        num_vox (int): analyzed voxel count, recorded beside time_sec as
+            the sweep's x-axis.
     """
     ana = copy.deepcopy(ana)
     ana.fit(exp, **(fit_params if fit_params is not None
@@ -490,10 +449,10 @@ def _take_img(exp: Experiment, num_img: int) -> Experiment:
     """Return exp cut to its leading num_img subjects (a timing helper).
 
     Both y and the design x lose the same columns, so the result is shaped
-    exactly like an experiment of that many subjects. y is copied rather than
-    sliced into a view: the analysis path is written for the F-contiguous
-    layout the builders produce (see data._with_canonical_y), and timing a
-    strided view would measure the stride, not the size.
+    like an experiment of that many subjects. y is copied, not sliced into a
+    view: the analysis path expects the F-contiguous layout the builders
+    produce (data._with_canonical_y), and timing a strided view would measure
+    the stride rather than the size.
 
     Args:
         exp (Experiment): the experiment to cut.
@@ -521,37 +480,28 @@ def run_ana_time_1perm(exp: Experiment, mask_target_list, ana: Analysis, *,
     """Time one method's fit on a single core, one permutation deep.
 
     The growth-rate leaf: fit ana with the permutation counts overridden and
-    the machine pinned to one core -- n_jobs=1, no device, BLAS held to a
-    single thread (threadpool_limits, which covers the OpenMP / MKL / OpenBLAS
-    pools numpy dispatches into). What it measures is therefore work, not
-    schedule: the parallel speedup is itself a function of the swept axis (a
-    bandwidth-bound fit plateaus at a handful of workers where a compute-bound
-    one keeps scaling), so a wall time taken on all cores conflates the
-    algorithm's growth with the machine's. Timed on one core, the ratio between
-    two points on an axis is the growth in that axis.
+    the machine pinned to one core -- n_jobs=1, no device, BLAS held to one
+    thread (threadpool_limits). It therefore measures work rather than
+    schedule, which matters because the parallel speedup is itself a function
+    of the swept axis: a bandwidth-bound fit plateaus at a few workers
+    where a compute-bound one keeps scaling, so an all-cores wall time
+    conflates the algorithm's growth with the machine's.
 
-    n_perm_fwer defaults to 1: the observed pass plus a single outer
-    permutation. The full run costs n_perm_fwer times the per-permutation term
-    (every method's outer walk is an independent loop over permutations), so a
-    grid can reach full-brain num_vox for the price of two passes -- and the
-    n_perm_fwer sweep, which does vary it over a small range, is what separates
-    that per-permutation slope from the fixed intercept (the observed pass,
-    synthesis / pruning) rather than assuming the split.
+    n_perm_fwer defaults to 1, the observed pass plus one outer permutation, a
+    full run costing n_perm_fwer times that per-permutation term. The separate
+    n_perm_fwer sweep is what splits that slope from the fixed intercept (the
+    observed pass, synthesis and pruning) rather than assuming the split.
 
     Unlike run_ana_time this leaf takes no fit_params: the serial contract is
-    the measurement, so it is not a caller's knob. Every swept knob rides as an
-    explicit argument rather than in the recipe or the data cell, so that it
-    keys the cache (fit_params would not -- see FIT_IGNORE) and lands in the
-    record as its own in.<name> column for the plotter, leaving in.ana to name
-    the method exactly as it does everywhere else.
+    the measurement. Every swept knob rides as an explicit argument so that it
+    keys the cache (fit_params would not) and lands in the record as its own
+    in.<name> column, leaving in.ana to name the method.
 
-    num_img is swept here, on the analysis side, rather than by building a
-    smaller experiment. The HCP cohort is the sample -- data_factory_hcp has no
-    subject-subset axis -- and giving it one would put num_img in every HCP
-    cell's declared recipe (recipe_for_call applies defaults), rehashing every
-    HCP artifact in the catalogue to sweep one runtime curve. Truncating to the
-    leading num_img subjects here costs nothing outside this leaf, and timing
-    is a function of the array shapes rather than of which subjects fill them.
+    num_img is swept here rather than by building a smaller experiment: the HCP
+    cohort is the sample, and giving data_factory_hcp a subject-subset axis
+    would put num_img in every HCP cell's declared recipe and rehash the whole
+    catalogue. Timing is a function of the array shapes, not of which subjects
+    fill them.
 
     Args:
         exp (Experiment): the experiment to analyze (raw or scaled; fit scales

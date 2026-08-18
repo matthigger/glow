@@ -1,72 +1,52 @@
 """Plot the run_ana benchmark caches from the shared provenance records.
 
-The plotting layer for the run_ana caches. It reads each cache's
-provenance frame (make_csv.write_config_csv: one wide row per run_ana leaf,
-namespaced by the producing function -- run_ana.out.score, the swept
-data_factory / effect_factory inputs), normalises it to one tidy row per
-(trial, recipe) with tidy_run_ana, and writes one figure set per cache into
-results/_latest. Reading through make_csv refreshes each plotted cache's CSV
-in passing, so the exported table and the figures come from the same records.
+Reads each cache's provenance frame (make_csv.write_config_csv: one wide row
+per run_ana leaf, namespaced by the producing function), normalises it to one
+tidy row per (trial, recipe) with tidy_run_ana, and writes one figure set per
+cache into results/_latest. Reading through make_csv refreshes each plotted
+cache's CSV in passing, so table and figures come from the same records.
 
 The tidy frame is what the plotters consume: a label (method), a source
 (WGN / HCP, which share each cache and face apart here), the swept axes
-(effect_llr, b, num_img, the realized effect fraction), and the metrics
-(dice / sens / ppv / spec) derived from the score's confusion counts (see
-score_effects / glow.mask.stats_from_counts). The x-axis is inferred from
-what actually varies in the cache (no config spec): an all-null effect grid
-is the FWER calibration path, else the first of effect_llr / b / num_img /
-effect_perc that varies is swept.
+(effect_llr, b, num_img, the realized effect fraction) and the metrics
+(dice / sens / ppv / spec) derived from the score's confusion counts. The
+x-axis is inferred from what varies in the cache rather than declared: an
+all-null effect grid is the FWER calibration path, else the first of
+effect_llr / b / num_img / effect_perc that varies is swept.
 
 Every figure outside the segment / prune / race-retention families reports one
 GLOW arm, the GLM-Error clustering, labelled plainly GLOW: the Focus arm is
-dropped and the survivor relabelled at the plot layer (_select_glow_arm), not
-in the caches or records. The three exceptions compare the arms, so they keep
-both -- as does any cache named in _BOTH_ARM_CACHES (the llr sweep), which
-draws the arms side by side under their own names.
+dropped and the survivor relabelled at the plot layer (_select_glow_arm), never
+in the caches. The exceptions compare the arms, so they keep both, as does any
+cache in _BOTH_ARM_CACHES.
 
-Each cache then gets either a GLOW-only FWER calibration row (null) -- a single
-row of source x GLOW arm cells (HCP / WGN x GLOW),
-each the nominal-alpha vs empirical-rejection-rate curve with a
-Clopper-Pearson 95% band on 0..1 -- or one stacked detection figure: an HCP
-block over a WGN block,
-each a 2 x 3 grid
-whose top row is the per-method mean score + central 95% percentile band and
-whose bottom row is the GLOW head-to-head diff, over the dice / sens /
-ppv columns. Alongside it a discovery-threshold table (write_threshold_table)
-records, per method, the absolute effect strength at which its mean Dice first
-reaches 0.5 -- rows the methods, a column per b.
+Each cache then gets either a GLOW-only FWER calibration row (null) -- source x
+GLOW arm cells of nominal alpha vs empirical rejection rate, with a
+Clopper-Pearson 95% band -- or one stacked detection figure, an HCP block over
+a WGN block, each a 2 x 3 grid whose top row is the per-method mean score with
+a central 95% band and whose bottom row is the GLOW head-to-head diff, over the
+dice / sens / ppv columns. Alongside it a discovery-threshold table
+(write_threshold_table) records the absolute effect strength at which each
+method's mean Dice first reaches 0.5.
 
 The runtime family is plotted apart (tidy_runtime / plot_runtime): those caches
 hold detection fixed and sweep one cost knob, so the signal is the leaf wall
 time (RECORDER time_sec), not a score. Each is one time-vs-knob curve per
-method on log axes -- runtime_num_vox for the wall clock on this machine, and
-the runtime_1perm_* caches for the growth rate in each of the five cost knobs
-(see _RUNTIME_SPEC, and config's runtime section for why the two are separate).
+method on log axes.
 
 The segment and prune caches share a flatter path (tidy_segment / tidy_prune /
-plot_metric_grid): their leaves return a flat {tp, fp, tn, fn} score (the oracle
-best-Dice Ward region per mode; one pruning rule's selection) rather than
-run_ana's nested score.target block. Each is drawn as a source x metric grid --
-HCP over WGN, the Dice / sensitivity / PPV columns -- of the per-method
-seed-mean with a 95% CI error bar vs effect_llr, x-dodged and styled per method
-(the Ward mode / prune rule) in the Okabe-Ito palette. Prune crosses its rules
-with both Ward modes, so plot_prune draws one such grid per clustering mode
-(prune_Focus / prune_GLM_Error), a line per rule within each. segment_perc is
-the segment grid on a second axis: the same three Ward modes at the moderate
-effect against frac_segment, the share of the images the tree is built on, on a
-linear x. segment_perc_llr crosses the two, so the split's cost is read at
-every effect strength rather than at one: plot_segment_llr holds the Ward mode
-fixed (one figure each) and draws the llr sweep once per fold share -- the nine
-folds plus the whole-cohort ceiling, ten curves in a sequential ramp. The same
-frame also goes out as a multipage comparison (plot_segment_compare), a page
-per fold share from 100% of the images down, holding the fold fixed and drawing
-the three Ward modes instead -- those pages put the cohorts side by side (WGN
-left, HCP right) rather than stacked, so the two curve sets are read against
-each other.
+plot_metric_grid): their leaves return a flat {tp, fp, tn, fn} score, not
+run_ana's nested target block. Each is drawn as a source x metric grid of the
+per-method seed-mean with a 95% CI error bar vs effect_llr, styled per method
+(Ward mode / prune rule). Prune crosses its rules with both Ward modes, so
+plot_prune draws one grid per mode. segment_perc_llr crosses the Ward modes
+with frac_segment, the share of the images the tree is built on, so
+plot_segment_llr holds the Ward mode fixed and draws the llr sweep once per
+fold share, and plot_segment_compare pages the same frame by fold share, with
+the Ward modes and the cohorts side by side.
 
-With no arguments the CLI plots every cache in the catalogue: the detection
-sweeps, the runtime family, the race-retention checks, the stat bake-off
-tables, and the segment / prune metric grids; passing names restricts it.
+With no arguments the CLI plots every cache in the catalogue; passing names
+restricts it.
 """
 import colorsys
 import warnings
@@ -955,10 +935,9 @@ def threshold_table(df, *, x: str, metric: str = 'dice', level: float = 0.5):
     df = df.copy()
     df[x] = pd.to_numeric(df[x], errors='coerce')
     # keyed by method label, so rows whose ana repr did not resolve to a
-    # catalogue label (stale records from a since-changed knob) carry no
-    # method and are dropped; an all-unlabelled cache
-    # then yields an empty table rather than a groupby that silently drops
-    # every NaN-label row and leaves wide without a method column.
+    # catalogue label (stale records from a since-changed knob) drop out; an
+    # all-unlabelled cache then yields an empty table rather than a groupby
+    # that leaves wide without a method column
     df = df.dropna(subset=[x, 'label'])
     if df.empty:
         return df.iloc[0:0], {}
@@ -1199,19 +1178,16 @@ def _latex_table(path, colspec: str, header: list, rows: list,
 def write_stat_tables(label: str, df, out) -> None:
     """Write (and print) the stat bake-off's two paper tables as .tex.
 
-    Both split the raw and z-scored arms -- z-scoring interacts with the stat,
-    so they never pool (see stat_tables) -- and both read the same balanced
-    panel (cells recorded with the full variant grid), so every stat is scored
-    on the same trials (stat_tables warns otherwise).
+    Both split the raw and z-scored arms, which never pool because z-scoring
+    interacts with the stat, and both read the same balanced panel, so every
+    stat is scored on the same trials (stat_tables warns otherwise).
 
     stat_dice.tex is one row per method, its five stat means banded under raw
-    and again under z-scored, with one bold on the method's best (scaling,
-    stat) cell of the ten. stat_matters.tex is one row per arm: whether the
-    choice matters at all -- the all-tie / decisive fractions and the mean /
-    median per-trial Dice range, which is where a reader sizes up a win. Two
-    narrow tables rather than one wide one, to fit a single paper column. Each
-    file is a bare booktabs tabular (no caption / label); the paper owns the
-    table environment and prose (see _latex_table).
+    and again under z-scored, bolding the method's best of the ten.
+    stat_matters.tex is one row per arm: the all-tie / decisive fractions and
+    the mean / median per-trial Dice range. Two narrow tables rather than one
+    wide, to fit a paper column. Each file is a bare booktabs tabular; the
+    paper owns the table environment and prose.
 
     Args:
         label (str): cache name; unused in the output but kept for the dispatch
@@ -1574,18 +1550,14 @@ _FOLD_DODGE = 0.01
 def plot_segment_llr(label: str, df, out) -> None:
     """Plot one llr metric grid per Ward mode, a curve per segmentation fold.
 
-    The fold sweep read along the effect axis instead of across it:
-    segment_perc draws one panel set at the moderate effect with a curve per
-    Ward mode, so the split's cost is known at one strength; this holds the
-    mode fixed (one source x metric grid each, {label}_{mode}.pdf) and draws
-    the whole llr sweep once per fold share. Reading down a panel's curves at
-    some x is then what a smaller segmentation fold costs at that effect
-    strength, and the spacing between them how fast it is bought back.
+    The fold sweep read along the effect axis rather than across it: this
+    fixes the Ward mode (one source x metric grid each) and draws the whole
+    llr sweep once per fold share, so reading down a panel's curves gives
+    what a smaller segmentation fold costs at that effect strength.
 
     Takes a both-halves frame (tidy_segment(perc=None)): the fold shares plus
-    the whole-cohort ceiling at WHOLE_COHORT_FRAC, which is the same
-    segmentation every other GLOW figure clusters on and so the line the folds
-    are read against.
+    the whole-cohort ceiling at WHOLE_COHORT_FRAC, the segmentation every other
+    GLOW figure clusters on and so the line the folds are read against.
 
     Args:
         label (str): cache name; each figure's stem is {label}_{mode}.
@@ -1672,18 +1644,14 @@ def plot_segment_compare(label: str, df, out,
                          metrics=('dice',)) -> list:
     """Write a page per fold share comparing the Ward modes, largest first.
 
-    The third cut of the same frame, and the one that answers "which clustering
-    should this fold buy?": a page holds the fold share fixed and draws the
-    three Ward modes against the llr sweep, one panel per source side by side
-    (WGN left, HCP right -- _compare_page_fig), so the modes are compared like
-    for like at each sample size and each cohort. Flipping the pages -- 100%
-    of the images, then 90%, down to 10% -- is then the same comparison losing
-    data, which the per-mode figures (plot_segment_llr) show one mode at a
-    time.
+    The third cut of the same frame, answering which clustering a given fold
+    should buy: a page holds the fold share fixed and draws the three Ward
+    modes against the llr sweep, one panel per source side by side
+    (_compare_page_fig). Flipping the pages from 100% of the images down is
+    then the same comparison losing data.
 
     Pages descend so the whole-cohort segmentation, the one every other GLOW
-    figure clusters on, is the page a reader opens on and the rest are read as
-    departures from it.
+    figure clusters on, is the page a reader opens on.
 
     Args:
         label (str): cache name; the multipage file is {label}_compare.pdf.
@@ -1908,24 +1876,19 @@ def main(argv=None) -> None:
 
     For each selected cache (every detection and runtime cache in CONFIG by
     default, or the names given on the command line), reads its provenance
-    frame (make_csv.write_config_csv, which refreshes that cache's CSV on the
-    way past) and plots it: a runtime cache is normalised with tidy_runtime and
-    drawn by plot_runtime (wall time vs its cost knob); every other run_ana
-    cache is normalised with tidy_run_ana and drawn by plot_cache (detection
-    sweep / calibration). The stat bake-off is read straight from the run_stat
-    leaves (results.stat_cell_df) and written as two paper tables by
-    write_stat_tables. The segment / prune caches are normalised with
-    tidy_segment / tidy_prune and drawn as a source x metric grid vs
-    effect_llr: segment by plot_metric_grid, prune by plot_prune (one grid per
-    Ward clustering mode, and per b where a cache sweeps it). A segment cache
-    that sweeps frac_segment -- the share of the images its tree was built on
-    -- is drawn against that instead, and segment_perc_llr crosses it with
-    effect_llr: one grid per Ward mode, a curve per fold share
-    (plot_segment_llr), plus a multipage {cache}_compare.pdf turning that
-    around -- a page per fold share, the Ward modes as its lines
-    (plot_segment_compare). Which of the two a segment cache is comes off its
-    own grids (_segment_perc).
-    Figures / tables land in results/_latest, so a mid-benchmark run yields
+    frame -- make_csv.write_config_csv, which refreshes that cache's CSV on the
+    way past -- and dispatches by family:
+
+      - runtime: tidy_runtime + plot_runtime (wall time vs its cost knob)
+      - other run_ana: tidy_run_ana + plot_cache (detection sweep /
+        calibration)
+      - stat bake-off: read straight from the run_stat leaves
+        (results.stat_cell_df), written as two paper tables
+      - segment / prune: tidy_segment / tidy_prune as a source x metric grid,
+        prune one grid per Ward mode. Which segment cut a cache gets comes
+        off its own grids (_segment_perc).
+
+    Figures and tables land in results/_latest, so a mid-benchmark run yields
     intermediate output.
 
     Args:

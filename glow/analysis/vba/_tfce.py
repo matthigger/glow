@@ -13,26 +13,20 @@ resolve_backend picks fsl when the binary is present and the request is
 one fslmaths can serve -- it hardcodes 100 height steps and reads 3d or
 4d images only -- and python otherwise.
 
-The two are close but not equal, and it comes down to one endpoint. FSL
-loops "for (float curThr = 0; curThr < maxT + deltaT; curThr += deltaT)"
-accumulating curThr in float32, and admits voxels strictly above curThr.
-So its last step lands either just below maxT, and the peak voxel still
-counts, or just above it and the peak drops out -- decided by the low
-bits of maxT, near enough a coin flip. apply_tfce_img steps an exact
-linspace(dh, max, n_steps) and admits h and above, so it always counts
-that step. When FSL drops it the peak comes out 100^H / sum_k k^H lower,
-3.0% at H=2. Replaying the loop in float32 reproduces fslmaths bit for
-bit, so that is the whole of the difference; neither is more correct,
-both being 100-step Riemann sums that disagree on one endpoint.
+The two differ at one endpoint. FSL accumulates its threshold in float32
+and admits voxels strictly above it, so its last step lands either just
+below the image max, keeping the peak voxel, or just above it and drops
+the peak -- decided by the low bits of the max. apply_tfce_img steps an
+exact linspace(dh, max, n_steps) and admits h and above, so it always
+counts that step. Neither is more correct; both are 100-step Riemann sums
+disagreeing on one endpoint, and replaying FSL's loop in float32
+reproduces fslmaths bit for bit.
 
-Little of it survives into a result, since FWER reads only the
-per-permutation maximum, which usually sits in a cluster rather than on
-the peak voxel: on 25k-voxel null data the max-stat null moves by a
-median 6e-7 relative and 0.9% of voxels shift their p-value, each by one
-permutation rank. So the backend is a speed knob, kept out of
-RECORD_FIELDS so a cached fit does not re-key on whether its machine had
-FSL -- interchangeable for discovery, not for reproducing a stored
-p-value exactly.
+Little of that reaches a result, FWER reading only the per-permutation
+maximum, which usually sits in a cluster rather than on the peak voxel. So
+the backend is a speed knob, kept out of RECORD_FIELDS so a cached fit
+does not re-key on whether its machine had FSL -- interchangeable for
+discovery, not for reproducing a stored p-value exactly.
 """
 
 import os
