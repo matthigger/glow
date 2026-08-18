@@ -231,10 +231,19 @@ GLOW_ARM_LIST = [_run_ana(label) for label in GLOW_LABEL_LIST]
 # is the same draws whatever depth was sampled around it. The Ward projection
 # and selection rule are read off the reported recipe rather than retyped, so
 # this cache tunes the shipped variant by construction.
-N_PERM_INNER_GRID = (25, 50, 100, N_PERM_INNER, 500, 1000, 2000)
+N_PERM_INNER_GRID = (25, 50, 100, N_PERM_INNER, 500, 1000)
+
+# Its own outer-perm count, below the catalogue's N_PERM_FWER. A cell's cost is
+# n_perm_fwer x (the deepest count + 1) draws, several times a shipped fit's,
+# and the curve is read within a cell -- every count is tested against a null
+# drawn from the same outer permutations, so what MC noise the threshold has is
+# common to the points being compared rather than scattered between them. A
+# detection level read off this cache is therefore compared along its own x,
+# not against sweep_llr's.
+INNER_N_PERM_FWER = 250
 _INNER_ANA = ana_kwargs_dict[REPORTED_GLOW_LABEL]
 RUN_INNER_PERM_LIST = [
-    dict(n_perm_inner=n_perm_inner, n_perm_fwer=N_PERM_FWER,
+    dict(n_perm_inner=n_perm_inner, n_perm_fwer=INNER_N_PERM_FWER,
          alpha_fwer=ALPHA_FWER, n_perm_inner_grid=N_PERM_INNER_GRID,
          cluster_mode=_INNER_ANA.cluster_mode,
          prune_rule=_INNER_ANA.prune_rule, fit_params=GLOW_FIT_PARAMS)
