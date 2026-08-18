@@ -66,7 +66,7 @@ from threadpoolctl import threadpool_limits
 from glow.analysis import Analysis, AnalysisGLOWSplit, AnalysisVoxel
 from glow.analysis.cluster import cluster, ClusterMode
 from glow.analysis.mancova import stat_dict, stat_dict_inv
-from glow.analysis.prune import prune_dp, prune_greedy, prune_oracle
+from glow.analysis.prune import prune_by_rule, prune_oracle
 from glow.experiment.exper import Experiment, ExperimentScaled
 
 # share the data.py builders' disk cache + recorder, so a fit is memoised
@@ -399,16 +399,7 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
         alpha_fwer=alpha_fwer, cluster_mode=cluster_mode,
         fit_params=fit_params)
 
-    if rule == 'greedy':
-        reg_out_list, _ = prune_greedy(sig_reg_list=sig_reg_list,
-                                       children=children, stat=llr)
-    elif rule == 'dp':
-        reg_out_list, _ = prune_dp(sig_reg_list=sig_reg_list,
-                                   children=children, stat=llr)
-    elif rule == 'maxllr':
-        reg_out_list = ([max(sig_reg_list, key=lambda r: llr[r])]
-                        if sig_reg_list else [])
-    elif rule == 'oracle':
+    if rule == 'oracle':
         # scored against the union of the planted supports, as
         # score_prune scores every rule's output
         mask_target = np.zeros(exp.mask_idx.shape, dtype=bool)
@@ -419,8 +410,8 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
                                        mask_target=mask_target,
                                        mask_idx=exp.mask_idx)
     else:
-        raise ValueError(
-            f"rule must be greedy / dp / maxllr / oracle, got {rule!r}")
+        reg_out_list, _ = prune_by_rule(rule, sig_reg_list=sig_reg_list,
+                                        children=children, stat=llr)
 
     return score_prune(reg_out_list, children=children, mask_idx=exp.mask_idx,
                        mask_target_list=mask_target_list,

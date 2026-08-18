@@ -24,7 +24,7 @@ import numpy as np
 import pytest
 
 import glow.graph
-from glow.analysis import _glow_split, draws
+from glow.analysis import _glow, _glow_split, draws
 from glow.analysis._glow_split import AnalysisGLOWSplit
 from glow.analysis.cluster import cluster, ClusterMode
 from glow.analysis.mancova import decompose
@@ -383,6 +383,62 @@ def test_the_matrix_survives_the_round_trip():
     np.testing.assert_allclose(back.stat, ana.stat, rtol=0, atol=0,
                                equal_nan=True)
     assert back.keep_stat is True
+
+
+# ---------- the pruning rule is part of the recipe --------------------------
+def test_prune_knobs_are_recipe_fields():
+    """The rule and its penalties key the cache: they change what is found."""
+    for knob in ('prune_rule', 'prune_lam', 'prune_exp_n_eff'):
+        assert knob in AnalysisGLOWSplit.RECORD_FIELDS
+    assert "prune_rule=greedy" in repr(_ana())
+
+
+def test_greedy_is_the_default_rule():
+    """The shipped default, so a recipe that names nothing keeps behaving."""
+    assert _ana().prune_rule == 'greedy'
+
+
+def test_the_rule_reaches_the_selection(monkeypatch):
+    """What the recipe names is what _discover prunes with, penalties too."""
+    seen = {}
+
+    def spy(rule, *, sig_reg_list, children, stat, lam, exp_n_eff):
+        seen.update(rule=rule, lam=lam, exp_n_eff=exp_n_eff)
+        return [], {}
+
+    monkeypatch.setattr(_glow, 'prune_by_rule', spy)
+    _ana(prune_rule='dp', prune_exp_n_eff=3.0).fit(_exp())
+    assert seen == dict(rule='dp', lam=0.0, exp_n_eff=3.0)
+
+
+def test_maxllr_finds_at_most_one_effect():
+    """The one-region rule cannot emit two, whatever the fit declared."""
+    ana = _ana(prune_rule='maxllr').fit(_exp())
+    assert len(ana.effect_list) <= 1
+
+
+def test_the_rule_changes_what_is_found():
+    """A fit with real detections separates the rules, or nothing is tested."""
+    exp = _exp()
+    greedy = _ana().fit(exp)
+    maxllr = _ana(prune_rule='maxllr').fit(exp)
+    if not greedy.effect_list:
+        pytest.skip('no detections at this SNR, so no rule to separate')
+    assert len(maxllr.effect_list) <= len(greedy.effect_list)
+
+
+@pytest.mark.parametrize('kwargs', [
+    dict(prune_rule='nope'),
+    dict(prune_rule='oracle'),
+    dict(prune_rule='greedy', prune_lam=1.0),
+    dict(prune_rule='maxllr', prune_exp_n_eff=2.0),
+    dict(prune_rule='dp', prune_lam=1.0, prune_exp_n_eff=2.0),
+    dict(prune_rule='dp', prune_exp_n_eff=0.0),
+])
+def test_bad_prune_arguments_raise_at_construction(kwargs):
+    """A recipe that could not prune fails now, not after a paid-for fit."""
+    with pytest.raises(ValueError):
+        _ana(**kwargs)
 
 
 # ---------- the split is part of the recipe ---------------------------------

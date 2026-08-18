@@ -3,8 +3,9 @@ import itertools
 import numpy as np
 import pytest
 
-from glow.analysis.prune import (prune_greedy, prune_dp, prune_oracle,
-                                 dp_antichain)
+from glow.analysis.prune import (PRUNE_RULE_LIST, check_prune_rule,
+                                 dp_antichain, prune_by_rule, prune_dp,
+                                 prune_greedy, prune_maxllr, prune_oracle)
 from glow.graph import SCGraph, get_parent
 
 
@@ -745,3 +746,108 @@ def test_dp_never_outputs_a_tiled_region_hcp():
         pytest.skip('HCP reference dataset not present '
                     '(see glow._extra.benchmark.hcp)')
     _assert_no_tiled_selection(hcp.build_exp_img_from_bundle(('fa',)), 'HCP')
+
+
+# ---------- prune_maxllr: the single best region -----------------------------
+class TestPruneMaxLLR:
+    """Test the one-region rule."""
+
+    def test_picks_the_highest(self):
+        """The selection is the top-LLR region, whatever the tree."""
+        reg_out, _ = prune_maxllr([8, 9, 12, 14], _make_llr_8())
+        assert reg_out == [12]
+
+    def test_selects_one_region(self):
+        """However many are significant, exactly one comes back."""
+        reg_out, _ = prune_maxllr(list(range(15)), _make_llr_8())
+        assert len(reg_out) == 1
+
+    def test_empty_sig_list(self):
+        reg_out, info = prune_maxllr([], _make_llr_8())
+        assert reg_out == []
+        assert info['sig_reg_list'] == []
+
+    def test_returns_a_python_int(self):
+        """A numpy index in makes a python int out (it keys a record)."""
+        reg_out, _ = prune_maxllr(list(np.array([8, 12])), _make_llr_8())
+        assert type(reg_out[0]) is int
+
+
+# ---------- prune_by_rule: one name -> one rule ------------------------------
+class TestPruneByRule:
+    """Test the rule dispatcher a GLOW recipe and a benchmark leaf share."""
+
+    _SIG = [8, 9, 10, 11, 12, 13, 14]
+
+    def test_dispatch_matches_each_rule_called_directly(self):
+        """The dispatcher is a lookup, not a second implementation."""
+        children = _make_tree_8()
+        llr = _make_llr_8()
+        direct = {
+            'greedy': prune_greedy(self._SIG, children, llr)[0],
+            'dp': prune_dp(self._SIG, children, llr)[0],
+            'maxllr': prune_maxllr(self._SIG, llr)[0],
+        }
+        for rule, expect in direct.items():
+            got, _ = prune_by_rule(rule, self._SIG, children, llr)
+            assert got == expect, rule
+
+    def test_every_listed_rule_dispatches(self):
+        """PRUNE_RULE_LIST is the contract, so every entry has to resolve."""
+        for rule in PRUNE_RULE_LIST:
+            prune_by_rule(rule, self._SIG, _make_tree_8(), _make_llr_8())
+
+    def test_oracle_is_not_a_dispatchable_rule(self):
+        """The oracle needs the target, so a recipe cannot name it."""
+        assert 'oracle' not in PRUNE_RULE_LIST
+        with pytest.raises(ValueError, match='prune rule must be'):
+            prune_by_rule('oracle', self._SIG, _make_tree_8(),
+                          _make_llr_8())
+
+    def test_unknown_rule_raises(self):
+        with pytest.raises(ValueError, match='prune rule must be'):
+            prune_by_rule('nope', self._SIG, _make_tree_8(), _make_llr_8())
+
+    def test_penalty_reaches_dp(self):
+        """lam passed through the dispatcher still shrinks the selection."""
+        children = _make_tree_8()
+        llr = _make_llr_8()
+        few, _ = prune_by_rule('dp', self._SIG, children, llr, lam=100.0)
+        many, _ = prune_by_rule('dp', self._SIG, children, llr)
+        assert len(few) <= len(many)
+
+    def test_exp_n_eff_reaches_dp(self):
+        """exp_n_eff is dp's own penalty, so it must agree with prune_dp."""
+        children = _make_tree_8()
+        llr = _make_llr_8()
+        got, _ = prune_by_rule('dp', self._SIG, children, llr,
+                               exp_n_eff=1.5)
+        expect, _ = prune_dp(self._SIG, children, llr, exp_n_eff=1.5)
+        assert got == expect
+
+    @pytest.mark.parametrize('rule', ['greedy', 'maxllr'])
+    @pytest.mark.parametrize('kwargs', [dict(lam=1.0),
+                                        dict(exp_n_eff=2.0)])
+    def test_penalty_on_a_non_dp_rule_raises(self, rule, kwargs):
+        """A penalty no rule would read is an error, not a no-op."""
+        with pytest.raises(ValueError, match='dp rule only'):
+            prune_by_rule(rule, self._SIG, _make_tree_8(), _make_llr_8(),
+                          **kwargs)
+
+    def test_both_penalties_at_once_raises(self):
+        """exp_n_eff sets lam, so naming both leaves one of them unread."""
+        with pytest.raises(ValueError, match='alternatives'):
+            prune_by_rule('dp', self._SIG, _make_tree_8(), _make_llr_8(),
+                          lam=1.0, exp_n_eff=2.0)
+
+    @pytest.mark.parametrize('exp_n_eff', [0.0, -1.0])
+    def test_non_positive_exp_n_eff_raises(self, exp_n_eff):
+        """It counts regions; log(1 + 1/n) is undefined at or below 0."""
+        with pytest.raises(ValueError, match='must be'):
+            prune_by_rule('dp', self._SIG, _make_tree_8(), _make_llr_8(),
+                          exp_n_eff=exp_n_eff)
+
+    def test_lam_zero_is_not_a_penalty(self):
+        """dp's own default has to stay reachable from any rule's default."""
+        check_prune_rule('greedy', lam=0.0, exp_n_eff=None)
+        check_prune_rule('maxllr', lam=0.0, exp_n_eff=None)

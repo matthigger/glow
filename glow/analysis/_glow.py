@@ -39,7 +39,7 @@ from ._fit_gpu import gpu_draws, gpu_summary, resolve_gpu
 from .cluster import cluster, ClusterMode
 from .fwer import MaxStatPerm
 from .mancova import decompose
-from .prune import prune_greedy
+from .prune import check_prune_rule, prune_by_rule
 
 
 class AnalysisGLOWBase(Analysis):
@@ -47,7 +47,7 @@ class AnalysisGLOWBase(Analysis):
 
     Not fit directly -- fit() belongs to the arms, which differ in where
     the tree comes from and what the regions are standardized against. What
-    is common is everything either side of that: the four recipe knobs, the
+    is common is everything either side of that: the recipe knobs, the
     per-region arrays a fit reports, the max-stat test they feed, and the
     synthesis that turns significant regions into effects (_discover).
 
@@ -58,6 +58,12 @@ class AnalysisGLOWBase(Analysis):
             Must be pre-specified, never tuned against results, or it
             reintroduces selection one level up.
         cluster_mode (ClusterMode): Ward projection mode.
+        prune_rule (str): the rule that turns the significant regions into
+            disjoint effects, one of prune.PRUNE_RULE_LIST.
+        prune_lam (float): prune_dp's per-region penalty; the dp rule only.
+        prune_exp_n_eff (float | None): prune_dp's expected region count
+            under a geometric prior; the dp rule only, and it sets the
+            penalty in place of prune_lam.
         keep_stat (bool): keep a draw matrix in .stat. Which matrix that is
             differs by arm; both cost it in memory and in any pickle of the
             fit, and neither changes a reported result -- see the arms.
@@ -81,6 +87,8 @@ class AnalysisGLOWBase(Analysis):
     def __init__(self, n_perm_fwer: int, alpha_fwer: float = .05,
                  min_vox: int = 1,
                  cluster_mode: ClusterMode = ClusterMode.FOCUS,
+                 prune_rule: str = 'greedy', prune_lam: float = 0.0,
+                 prune_exp_n_eff: float = None,
                  keep_stat: bool = False):
         """Configure the knobs both arms take.
 
@@ -92,14 +100,30 @@ class AnalysisGLOWBase(Analysis):
                 ClusterMode.FOCUS projects onto the contrast subspace;
                 ClusterMode.GLM_ERROR keeps bias + contrast;
                 ClusterMode.NAIVE clusters raw y.
+            prune_rule (str): selection rule, one of
+                prune.PRUNE_RULE_LIST. Default 'greedy'.
+            prune_lam (float): per-region penalty handed to prune_dp;
+                valid only with prune_rule='dp'.
+            prune_exp_n_eff (float | None): expected region count handed to
+                prune_dp, which turns it into the penalty; valid only with
+                prune_rule='dp', and an alternative to prune_lam.
             keep_stat (bool): keep a draw matrix in .stat instead of
                 discarding it.
+
+        Raises:
+            ValueError: the pruning arguments do not go together (see
+                prune.check_prune_rule).
         """
         super().__init__()
+        check_prune_rule(prune_rule, lam=prune_lam,
+                         exp_n_eff=prune_exp_n_eff)
         self.n_perm_fwer = n_perm_fwer
         self.alpha_fwer = alpha_fwer
         self.min_vox = min_vox
         self.cluster_mode = cluster_mode
+        self.prune_rule = prune_rule
+        self.prune_lam = prune_lam
+        self.prune_exp_n_eff = prune_exp_n_eff
         self.keep_stat = keep_stat
 
         self.children = None
@@ -161,10 +185,13 @@ class AnalysisGLOWBase(Analysis):
         # over-inclusion via the z-FWER filter.
         llr_gain = np.nan_to_num(self.llr.astype(float), nan=0.0,
                                  posinf=0.0, neginf=0.0)
-        reg_out_list, _ = prune_greedy(
+        reg_out_list, _ = prune_by_rule(
+            self.prune_rule,
             sig_reg_list=sig_reg_list,
             children=self.children,
-            stat=llr_gain)
+            stat=llr_gain,
+            lam=self.prune_lam,
+            exp_n_eff=self.prune_exp_n_eff)
 
         self.effect_list = []
         for reg_idx in reg_out_list:
@@ -324,11 +351,14 @@ class AnalysisGLOW(AnalysisGLOWBase):
     """
 
     RECORD_FIELDS = ('n_perm_fwer', 'n_perm_inner', 'alpha_fwer', 'min_vox',
-                     'cluster_mode')
+                     'cluster_mode', 'prune_rule', 'prune_lam',
+                     'prune_exp_n_eff')
 
     def __init__(self, n_perm_fwer: int, n_perm_inner: int = 500,
                  alpha_fwer: float = .05, min_vox: int = 1,
                  cluster_mode: ClusterMode = ClusterMode.FOCUS,
+                 prune_rule: str = 'greedy', prune_lam: float = 0.0,
+                 prune_exp_n_eff: float = None,
                  keep_stat: bool = False):
         """Configure a per-perm-segmentation GLOW analysis.
 
@@ -342,12 +372,19 @@ class AnalysisGLOW(AnalysisGLOWBase):
             min_vox (int): smallest region size admitted to the FWER set.
             cluster_mode (ClusterMode): Ward projection (see
                 AnalysisGLOWBase).
+            prune_rule (str): selection rule (see AnalysisGLOWBase).
+            prune_lam (float): dp-only per-region penalty (see
+                AnalysisGLOWBase).
+            prune_exp_n_eff (float | None): dp-only region count (see
+                AnalysisGLOWBase).
             keep_stat (bool): keep the observed tree's inner draw matrix in
                 .stat. A diagnostic that changes no result -- see the class
                 docstring.
         """
         super().__init__(n_perm_fwer=n_perm_fwer, alpha_fwer=alpha_fwer,
                          min_vox=min_vox, cluster_mode=cluster_mode,
+                         prune_rule=prune_rule, prune_lam=prune_lam,
+                         prune_exp_n_eff=prune_exp_n_eff,
                          keep_stat=keep_stat)
         self.n_perm_inner = n_perm_inner
 

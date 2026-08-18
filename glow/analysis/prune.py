@@ -7,15 +7,25 @@ Each rule turns the FWER-significant region set into a disjoint antichain
     relatives, repeating; fast, GLOW's default, but only locally optimal.
   - prune_dp takes the globally optimal max-total-LLR cut via dp_antichain,
     a bottom-up dynamic program over the significant-region subgraph.
+  - prune_maxllr keeps the single highest-LLR region and nothing else.
   - prune_oracle takes the antichain of largest Dice against a known target
     support. It is handed the answer, so it is a ceiling rather than a
     method: the Dice this fit's significant set still has in it, whatever
     the ranking. Benchmark use only.
+
+prune_by_rule resolves a rule name to one of the first three, so a GLOW
+recipe's prune_rule and a benchmark leaf's rule cannot drift apart.
 """
 
 import numpy as np
 
 from ..graph import get_fp_tp, get_parent, SCGraph
+
+
+# The rules a name may resolve to (AnalysisGLOWBase's prune_rule, and the
+# benchmark prune leaf's). prune_oracle is deliberately absent: it takes the
+# target support, so it is a headroom line rather than a rule a fit can run.
+PRUNE_RULE_LIST = ('greedy', 'dp', 'maxllr')
 
 # prune_oracle's Dinkelbach loop: a Dice gain this small is a fixed point.
 # The iteration converges superlinearly, so the cap only guards against a
@@ -125,6 +135,95 @@ def prune_dp(sig_reg_list: list, children, stat, lam: float = 0.0,
     )
 
     return selected, dict(sig_reg_list=list(sig_reg_list), **raw)
+
+
+def prune_maxllr(sig_reg_list: list, stat) -> tuple:
+    """Prune to the single highest-LLR significant region.
+
+    The headline region alone, so the selection is one region or none --
+    an antichain by construction, and the rule against which the others
+    have to justify emitting more than one.
+
+    Args:
+        sig_reg_list (list): int regions declared significant (via FWER)
+        stat (np.array): (num_reg,) raw LLR per region
+
+    Returns:
+        selected (list): the highest-LLR region, or empty on empty input
+        info (dict): diagnostic, with key sig_reg_list
+    """
+    info = dict(sig_reg_list=list(sig_reg_list))
+    if not sig_reg_list:
+        return [], info
+    return [int(max(sig_reg_list, key=lambda reg: stat[reg]))], info
+
+
+def check_prune_rule(rule: str, lam: float = 0.0,
+                     exp_n_eff: float = None) -> None:
+    """Raise unless rule is known and its penalty arguments belong to it.
+
+    The penalties are prune_dp's alone. Naming one beside another rule is an
+    error rather than an ignored knob: a recipe that swallowed it would
+    report a sweep over a parameter that never reached the selection.
+
+    Args:
+        rule (str): rule name, one of PRUNE_RULE_LIST.
+        lam (float): prune_dp's per-region penalty; 0.0 is unset.
+        exp_n_eff (float | None): prune_dp's expected region count under a
+            geometric prior; None is unset.
+
+    Raises:
+        ValueError: rule is unknown, a penalty is set for a rule other than
+            dp, both penalties are set at once, or exp_n_eff is not
+            positive.
+    """
+    if rule not in PRUNE_RULE_LIST:
+        raise ValueError(f'prune rule must be one of {PRUNE_RULE_LIST}, '
+                         f'got {rule!r}')
+    if rule != 'dp' and (lam or exp_n_eff is not None):
+        raise ValueError(f'lam / exp_n_eff penalize the dp rule only; '
+                         f'rule={rule!r} takes neither')
+    if lam and exp_n_eff is not None:
+        raise ValueError('lam and exp_n_eff are alternatives (exp_n_eff '
+                         'sets lam); pass one of them')
+    if exp_n_eff is not None and exp_n_eff <= 0:
+        raise ValueError('exp_n_eff counts regions, so it must be '
+                         f'positive; got {exp_n_eff}')
+
+
+def prune_by_rule(rule: str, sig_reg_list: list, children, stat, *,
+                  lam: float = 0.0, exp_n_eff: float = None) -> tuple:
+    """Prune the significant regions by the named rule.
+
+    The one place a rule name resolves to a rule (see the module docstring).
+    Every rule ranks on the same raw LLR; they differ in what they do with
+    the ranking.
+
+    Args:
+        rule (str): 'greedy', 'dp' or 'maxllr'.
+        sig_reg_list (list): int regions declared significant (via FWER)
+        children (np.array): (num_internal, 2) Ward child-index pairs
+        stat (np.array): (num_reg,) raw LLR per region
+        lam (float): prune_dp's per-region penalty; dp only
+        exp_n_eff (float | None): prune_dp's expected region count under a
+            geometric prior; dp only, and it overrides lam
+
+    Returns:
+        selected (list): sorted int region indices (disjoint antichain)
+        info (dict): the chosen rule's diagnostic
+
+    Raises:
+        ValueError: see check_prune_rule.
+    """
+    check_prune_rule(rule, lam=lam, exp_n_eff=exp_n_eff)
+
+    if rule == 'greedy':
+        return prune_greedy(sig_reg_list=sig_reg_list, children=children,
+                            stat=stat)
+    if rule == 'dp':
+        return prune_dp(sig_reg_list=sig_reg_list, children=children,
+                        stat=stat, lam=lam, exp_n_eff=exp_n_eff)
+    return prune_maxllr(sig_reg_list=sig_reg_list, stat=stat)
 
 
 def _dice(reg_list, tp, size, n_target: float) -> float:

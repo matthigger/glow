@@ -259,6 +259,26 @@ def test_no_split_knobs():
         with pytest.raises(TypeError):
             AnalysisGLOW(n_perm_fwer=4, **{knob: .5})
 
+
+def test_prune_knobs_are_recipe_fields():
+    """The rule is shared with the split arm, so both arms must key on it."""
+    for knob in ('prune_rule', 'prune_lam', 'prune_exp_n_eff'):
+        assert knob in AnalysisGLOW.RECORD_FIELDS
+    assert 'prune_rule=greedy' in repr(_ana())
+
+
+def test_the_rule_reaches_the_selection(monkeypatch):
+    """_discover is shared, so the per-perm arm honours the rule as well."""
+    seen = {}
+
+    def spy(rule, *, sig_reg_list, children, stat, lam, exp_n_eff):
+        seen.update(rule=rule, lam=lam, exp_n_eff=exp_n_eff)
+        return [], {}
+
+    monkeypatch.setattr(_glow, 'prune_by_rule', spy)
+    _ana(prune_rule='dp', prune_lam=2.5).fit(_exp())
+    assert seen == dict(rule='dp', lam=2.5, exp_n_eff=None)
+
     ana = _ana().fit(_exp())
     assert not hasattr(ana, 'img_segment')
 

@@ -98,12 +98,15 @@ class AnalysisGLOWSplit(AnalysisGLOWBase):
     """
 
     RECORD_FIELDS = ('n_perm_fwer', 'alpha_fwer', 'min_vox', 'cluster_mode',
-                     'frac_segment', 'split_seed')
+                     'frac_segment', 'split_seed', 'prune_rule', 'prune_lam',
+                     'prune_exp_n_eff')
 
     def __init__(self, n_perm_fwer: int, alpha_fwer: float = .05,
                  min_vox: int = 1,
                  cluster_mode: ClusterMode = ClusterMode.FOCUS,
                  frac_segment: float = .5, split_seed: int = 0,
+                 prune_rule: str = 'greedy', prune_lam: float = 0.0,
+                 prune_exp_n_eff: float = None,
                  keep_stat: bool = False):
         """Configure a split-fold GLOW analysis.
 
@@ -116,6 +119,11 @@ class AnalysisGLOWSplit(AnalysisGLOWBase):
             frac_segment (float): share of the images used to build the
                 Ward tree; the rest carry every statistic.
             split_seed (int): seed for the image partition.
+            prune_rule (str): selection rule (see AnalysisGLOWBase).
+            prune_lam (float): dp-only per-region penalty (see
+                AnalysisGLOWBase).
+            prune_exp_n_eff (float | None): dp-only region count (see
+                AnalysisGLOWBase).
             keep_stat (bool): keep the whole (n_perm_fwer + 1, num_reg)
                 draw matrix in .stat instead of discarding it. A
                 diagnostic that changes no result and costs the matrix in
@@ -123,6 +131,8 @@ class AnalysisGLOWSplit(AnalysisGLOWBase):
         """
         super().__init__(n_perm_fwer=n_perm_fwer, alpha_fwer=alpha_fwer,
                          min_vox=min_vox, cluster_mode=cluster_mode,
+                         prune_rule=prune_rule, prune_lam=prune_lam,
+                         prune_exp_n_eff=prune_exp_n_eff,
                          keep_stat=keep_stat)
         self.frac_segment = frac_segment
         self.split_seed = split_seed
