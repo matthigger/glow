@@ -71,6 +71,11 @@ FIT = dict(n_jobs=8, gpu='auto')
 # perfect selector could still win off this fit. dp-n1 / dp-n4 penalize dp
 # through its geometric prior (one planted effect, so n=1 is the matched
 # prior and n=4 a milder one).
+# the arm every other arm is differenced against in the paired report: the
+# strongest voxel-wise competitor, so a positive difference is GLOW earning
+# its complexity rather than beating a straw man.
+REF_ARM = 'VBA-TFCE'
+
 RULE_LIST = (
     ('greedy', dict(rule='greedy')),
     ('dp', dict(rule='dp')),
@@ -331,6 +336,102 @@ def _table(rows, field, name_list, fmt='{:.3f}') -> str:
     return '\n'.join(out)
 
 
+def _cell_dice(rows) -> dict:
+    """Map each complete cell to its variant Dice.
+
+    Restricted to cells holding every variant, so a difference read off one
+    is paired: both arms saw the identical experiment and planted support.
+
+    Args:
+        rows (list[dict]): raw rows.
+
+    Returns:
+        dict: (seed, llr) -> {variant: dice}, complete cells only.
+    """
+    want = set()
+    for name, ana in variant_dict().items():
+        want |= set(wanted(name, ana))
+    have = defaultdict(dict)
+    for row in rows:
+        have[(row['seed'], row['llr'])][row['variant']] = row['dice']
+    return {key: got for key, got in have.items() if want <= set(got)}
+
+
+def _diff_table(cell_dice, name_list, ref: str) -> str:
+    """Render the mean paired Dice difference against ref, per llr.
+
+    A group-mean table hides how consistent a lead is; this pairs within
+    cell and carries the win count, so a big mean over few wins reads as
+    the variance it is.
+
+    Args:
+        cell_dice (dict): _cell_dice output.
+        name_list (list[str]): the variants to difference.
+        ref (str): the variant to difference against.
+
+    Returns:
+        str: the markdown table, one row per variant.
+    """
+    llr_list = sorted({llr for _, llr in cell_dice})
+    head = ('| variant | ' + ' | '.join(f'{llr:.4f}' for llr in llr_list)
+            + ' | pooled | wins |')
+    out = [head, '|---' * (len(llr_list) + 3) + '|']
+    for name in name_list:
+        if name == ref:
+            continue
+        cell_list = []
+        for llr in llr_list:
+            diff = [got[name] - got[ref] for (_, l), got in cell_dice.items()
+                    if l == llr]
+            cell_list.append(f'{np.mean(diff):+.3f}' if diff else '-')
+        all_diff = np.array([got[name] - got[ref]
+                             for got in cell_dice.values()])
+        if not len(all_diff):
+            continue
+        out.append(f'| {name} | ' + ' | '.join(cell_list)
+                   + f' | {all_diff.mean():+.3f} '
+                     f'| {int((all_diff > 0).sum())}/{len(all_diff)} |')
+    return '\n'.join(out)
+
+
+def _paired_section(rows) -> str:
+    """Render the two paired comparisons the bake-off exists to settle.
+
+    Which arm to pick (every arm against the strongest voxel-wise one) and
+    whether pruning has anything left to give (each GLOW arm's oracle
+    against its greedy default, off the same fit).
+
+    Args:
+        rows (list[dict]): raw rows.
+
+    Returns:
+        str: the markdown, empty until a cell is complete.
+    """
+    cell_dice = _cell_dice(rows)
+    if not cell_dice:
+        return ''
+
+    arm_list = list(variant_dict())
+    glow_list = [name for name, ana in variant_dict().items()
+                 if isinstance(ana, AnalysisGLOWBase)]
+    rule_ref = [f'{arm}+greedy' for arm in glow_list]
+    rule_name = [f'{arm}+{label}' for arm in glow_list
+                 for label, _ in RULE_LIST if label != 'greedy']
+
+    out = [f'\n## paired Dice difference vs {REF_ARM} '
+           f'({len(cell_dice)} complete cells)\n',
+           _diff_table(cell_dice, arm_list, REF_ARM)]
+
+    out.append('\n## what pruning has left to give, per arm\n')
+    out.append('Each rule against that arm\'s own greedy default, off the '
+               'same fit. oracle is the ceiling, not a method.\n')
+    for arm, ref in zip(glow_list, rule_ref):
+        name_list = [n for n in rule_name if n.startswith(f'{arm}+')]
+        out.append(f'\n{arm}\n')
+        out.append(_diff_table(cell_dice, name_list + [ref], ref))
+    return '\n'.join(out)
+
+
 def _rule_section(rows) -> str:
     """Render Dice and region count per pruning rule, one pair per GLOW arm.
 
@@ -436,6 +537,7 @@ Every arm sees the identical cell, so the columns are paired seed by seed.
 ## seconds per fit (mean over seeds)
 
 {_table(rows, 'sec', name_list, fmt='{:.1f}')}
+{_paired_section(rows)}
 {_rule_section(rows)}"""
     OUT_MD.write_text(text)
 
