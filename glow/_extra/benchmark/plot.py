@@ -58,6 +58,7 @@ import seaborn as sns
 from scipy.stats import beta
 
 import glow._extra.benchmark
+import glow.mask
 from glow.analysis import AnalysisGLOWBase
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import stat_dict
@@ -290,6 +291,7 @@ _X_PARAM_LABELS = {
     'b': 'Number of Imaging Features',
     'num_vox': 'Number of Voxels',
     'n_perm_fwer': 'FWER Permutations',
+    'n_perm_inner': 'Inner Draws per Tree',
 }
 
 # the metric grid's non-method hues: a column here draws one series per value
@@ -299,6 +301,7 @@ _X_PARAM_LABELS = {
 # the switch: a hue outside it is a method (_qual_style, no legend title).
 _HUE_TITLES = {
     'frac_segment': 'Fold share',
+    'effect_llr': 'LLR / |r|',
 }
 
 # runtime caches: name -> (leaf column prefix, swept x-axis column). The
@@ -1721,6 +1724,145 @@ def plot_prune(label: str, df, out) -> None:
             plot_metric_grid(sub_label, sub, out)
 
 
+# ---------------------------------------------------------------------------
+# Inner-draw sweep (what n_perm_inner buys)
+# ---------------------------------------------------------------------------
+
+def tidy_inner_perm(raw):
+    """Normalise the inner-draw sweep to a tidy per-(trial, count) frame.
+
+    The cache holds one GLOW variant at several inner-draw counts, so the
+    count is the x-axis and the effect strength the hue -- unlike the
+    method-comparison caches, whose hue is the recipe. Beyond the selection's
+    counts it carries the max-z block (run.run_inner_perm): which region the
+    statistic came from, its size, its z, and its own Dice against the plant.
+
+    Args:
+        raw: the cache's provenance frame (one row per run_inner_perm leaf).
+
+    Returns:
+        a _tidy_flat_cache frame plus n_perm_inner, n_sig, min_pval,
+        max_z_reg_idx, max_z_num_vox, max_z_z and max_z_dice; empty in,
+        empty out.
+    """
+    if raw.empty:
+        return raw
+    leaf = 'run_inner_perm'
+    out = _tidy_flat_cache(raw, leaf, f'{leaf}.in.cluster_mode',
+                           label_fn=lambda mode: f'GLOW-{mode}')
+
+    def col(name):
+        """raw[name] reindexed onto out, or all-NaN when absent."""
+        if name not in raw.columns:
+            return pd.Series(np.nan, index=out.index)
+        return pd.to_numeric(raw[name].reindex(out.index), errors='coerce')
+
+    out['n_perm_inner'] = col(f'{leaf}.in.n_perm_inner')
+    out['n_sig'] = col(f'{leaf}.out.score.n_sig')
+    out['min_pval'] = col(f'{leaf}.out.score.min_pval')
+    for name in ('reg_idx', 'num_vox', 'z'):
+        out[f'max_z_{name}'] = col(f'{leaf}.out.score.max_z.{name}')
+    counts = {c: col(f'{leaf}.out.score.max_z.{c}')
+              for c in ('tp', 'fp', 'tn', 'fn')}
+    out['max_z_dice'] = glow.mask.stats_from_counts(**counts)['dice']
+    return out
+
+
+def _max_z_agreement(df):
+    """Flag each row whose max-z region is the deepest count's.
+
+    The stability read: the observed tree is the same at every count (the
+    inner draws standardize it, they do not build it), so a region index is
+    comparable across a trial's counts and the deepest count is the reference
+    every shallower one is scored against. Two counts that both found no
+    region agree.
+
+    Args:
+        df: a tidy_inner_perm frame.
+
+    Returns:
+        df with an agree column (bool).
+    """
+    key = ['source', 'seed', 'effect_llr']
+    deep = df.loc[df.groupby(key, dropna=False)['n_perm_inner'].idxmax(),
+                  key + ['max_z_reg_idx']]
+    out = df.merge(deep.rename(columns={'max_z_reg_idx': '_reg_deep'}),
+                   on=key, how='left')
+    same = out['max_z_reg_idx'] == out['_reg_deep']
+    both_none = out['max_z_reg_idx'].isna() & out['_reg_deep'].isna()
+    return out.assign(agree=same | both_none).drop(columns='_reg_deep')
+
+
+# the inner-draw figure's panels: (metric column, panel title). Two are the
+# stability read -- whether the argmax has settled, and how well the region it
+# settles on matches the plant -- and the third is why: z is capped at
+# n_perm_inner / sqrt(n_perm_inner + 1) by the observed draw's own presence in
+# its null, so a mean sitting on that ceiling says the count, not the effect,
+# is what set the statistic.
+_INNER_PANELS = (('agree', "Max-z region is the deepest count's"),
+                 ('max_z_dice', 'Max-z region Dice'),
+                 ('max_z_z', 'Observed max z'))
+
+
+def plot_inner_perm(label: str, df, out) -> None:
+    """Plot what n_perm_inner buys: detection, then the max-z region.
+
+    Two figures, since the count acts on the test in two places.
+    {label}.pdf is the usual metric grid with the count on the x-axis and the
+    effect strength as its hue -- what the count costs detection.
+    {label}_max_z.pdf is the stability read (_INNER_PANELS), and
+    {label}_max_z.csv the same numbers per (effect strength, count), which is
+    what a value of N_PERM_INNER is read off.
+
+    Args:
+        label (str): cache name; the figures' filename stems.
+        df: a tidy_inner_perm frame.
+        out (pathlib.Path): directory the figures are written into.
+    """
+    plot_metric_grid(label, df, out, x='n_perm_inner', hue='effect_llr')
+
+    df = _max_z_agreement(df)
+    llr_list = sorted(df['effect_llr'].dropna().unique().tolist())
+    style = _seq_style(llr_list)
+    fig, axes = plt.subplots(1, len(_INNER_PANELS), sharex=True,
+                             figsize=(4.2 * len(_INNER_PANELS), 3.8),
+                             squeeze=False)
+    for ax, (metric, title) in zip(axes[0], _INNER_PANELS):
+        _draw_metric_errbar(ax, df, 'n_perm_inner', metric, style,
+                            hue='effect_llr')
+        ax.set_xscale('log')
+        ax.grid(True, alpha=0.3)
+        ax.set_title(title)
+        ax.set_xlabel(_X_PARAM_LABELS['n_perm_inner'])
+    for ax in axes[0][:2]:
+        ax.set_ylim(0, 1)
+    axes[0][0].set_ylabel('mean (95% CI)')
+
+    n_perm_inner = np.sort(df['n_perm_inner'].dropna().unique())
+    axes[0][-1].plot(n_perm_inner, n_perm_inner / np.sqrt(n_perm_inner + 1),
+                     color='0.4', ls=':', label='self-inclusion ceiling')
+    axes[0][-1].legend(frameon=False, fontsize=8, loc='upper left')
+    axes[0][0].legend(frameon=False, fontsize=8,
+                      title=_HUE_TITLES['effect_llr'], title_fontsize=8)
+    fig.tight_layout()
+    path = out / f'{label}_max_z.pdf'
+    fig.savefig(path, bbox_inches='tight')
+    plt.close('all')
+    print(f'saved: {path}')
+
+    metrics = ['agree', 'max_z_dice', 'max_z_z', 'max_z_num_vox', 'dice',
+               'n_sig', 'min_pval']
+    table = (df.groupby(['effect_llr', 'n_perm_inner'])[metrics]
+             .mean().reset_index())
+    table['n_seed'] = (df.groupby(['effect_llr', 'n_perm_inner'])['seed']
+                       .nunique().values)
+    table['z_ceiling'] = (table['n_perm_inner']
+                          / np.sqrt(table['n_perm_inner'] + 1))
+    path = out / f'{label}_max_z.csv'
+    table.to_csv(path, index=False)
+    print(f'saved: {path}')
+
+
 
 # ---------------------------------------------------------------------------
 # Runtime sweeps (wall time vs one cost knob)
@@ -1887,6 +2029,8 @@ def main(argv=None) -> None:
       - segment / prune: tidy_segment / tidy_prune as a source x metric grid,
         prune one grid per Ward mode. Which segment cut a cache gets comes
         off its own grids (_segment_perc).
+      - inner-draw sweep: tidy_inner_perm + plot_inner_perm (detection and the
+        max-z region against the count)
 
     Figures and tables land in results/_latest, so a mid-benchmark run yields
     intermediate output.
@@ -1901,7 +2045,8 @@ def main(argv=None) -> None:
     import matplotlib
     matplotlib.use('Agg')
     from .config import CONFIG
-    from .run import run_ana, run_prune, run_segment, run_stat
+    from .run import (run_ana, run_inner_perm, run_prune, run_segment,
+                      run_stat)
     from . import make_csv, results
 
     parser = argparse.ArgumentParser(
@@ -1922,6 +2067,7 @@ def main(argv=None) -> None:
     stat_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_stat]
     segment_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_segment]
     prune_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_prune]
+    inner_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_inner_perm]
     if args.names:
         # literal name, else fnmatch pattern; a pattern matching nothing is an
         # error (a typo surfaces rather than silently plotting nothing)
@@ -1934,7 +2080,7 @@ def main(argv=None) -> None:
             names += [n for n in matches if n not in names]
     else:
         names = (detect_names + runtime_names + stat_names
-                 + segment_names + prune_names)
+                 + segment_names + prune_names + inner_names)
 
     out = glow._extra.benchmark.get_path_result() / '_latest'
     out.mkdir(exist_ok=True)
@@ -1992,6 +2138,14 @@ def main(argv=None) -> None:
                 continue
             print(f'\n=== {name}: {len(df)} prune rows ===')
             plot_prune(name, df, out)
+            n_plotted += 1
+        elif name in inner_names:
+            df = tidy_inner_perm(make_csv.write_config_csv(name))
+            if df.empty:
+                print(f'  (no records for {name} — skipping)')
+                continue
+            print(f'\n=== {name}: {len(df)} inner-draw rows ===')
+            plot_inner_perm(name, df, out)
             n_plotted += 1
         else:
             print(f'  ({name} is not a detection or runtime cache — skipping)')

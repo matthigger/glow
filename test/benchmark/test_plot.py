@@ -758,6 +758,78 @@ def test_plot_metric_grid_writes_fold_sweep_figure(tmp_path):
     assert (tmp_path / 'segment_perc.pdf').exists()
 
 
+def _inner_row(n_perm_inner, seed, effect_llr, tp, fp, tn, fn, *,
+               max_z_reg_idx=7, max_z_z=5.0, source='hcp'):
+    """Build one inner-draw provenance row (run_inner_perm + its ancestors)."""
+    leaf = 'run_inner_perm'
+    row = {f'{leaf}.in.n_perm_inner': n_perm_inner,
+           f'{leaf}.in.cluster_mode': 'Focus',
+           'effect_factory_single.in.effect_llr': effect_llr,
+           **_flat_score(leaf, tp, fp, tn, fn,
+                         extra={'n_selected': 1, 'n_sig': 3,
+                                'min_pval': 0.002,
+                                'max_z.reg_idx': max_z_reg_idx,
+                                'max_z.num_vox': 90,
+                                'max_z.z': max_z_z,
+                                'max_z.tp': tp, 'max_z.fp': fp,
+                                'max_z.tn': tn, 'max_z.fn': fn})}
+    if source == 'wgn':
+        row.update({'data_factory_wgn.in.b': 1,
+                    'data_factory_wgn.in.seed': seed})
+    else:
+        row.update({'data_factory_hcp.in.hcp_feats': ['od'],
+                    'data_factory_hcp.in.seed': seed})
+    return row
+
+
+def test_tidy_inner_perm_empty():
+    """An empty frame in gives an empty frame out."""
+    assert plot.tidy_inner_perm(pd.DataFrame()).empty
+
+
+def test_tidy_inner_perm_reads_the_count_and_the_max_z_block():
+    df = plot.tidy_inner_perm(pd.DataFrame([
+        _inner_row(25, 0, 0.03, 80, 10, 890, 20, max_z_z=4.9),
+        _inner_row(1000, 0, 0.03, 80, 10, 890, 20, max_z_z=27.5),
+    ]))
+    assert list(df['n_perm_inner']) == [25, 1000]
+    assert list(df['max_z_z']) == [4.9, 27.5]
+    assert list(df['label']) == ['GLOW-Focus'] * 2
+    # the max-z region's Dice comes off its own counts, like every metric
+    assert df['max_z_dice'].iloc[0] == pytest.approx(
+        2 * 80 / (2 * 80 + 10 + 20))
+
+
+def test_max_z_agreement_scores_against_the_deepest_count():
+    """The deepest count is the reference; a shared 'no region' agrees."""
+    raw = pd.DataFrame([
+        _inner_row(25, 0, 0.03, 80, 10, 890, 20, max_z_reg_idx=3),
+        _inner_row(1000, 0, 0.03, 80, 10, 890, 20, max_z_reg_idx=7),
+        _inner_row(25, 1, 0.03, 0, 0, 970, 30, max_z_reg_idx=None),
+        _inner_row(1000, 1, 0.03, 0, 0, 970, 30, max_z_reg_idx=None),
+    ])
+    out = plot._max_z_agreement(plot.tidy_inner_perm(raw))
+    assert list(out['agree']) == [False, True, True, True]
+
+
+def test_plot_inner_perm_writes_both_figures_and_the_table(tmp_path):
+    rows = []
+    for effect_llr in (0.012, 0.03, 0.075):
+        for n_perm_inner in (25, 250, 1000):
+            for seed in range(3):
+                rows.append(_inner_row(n_perm_inner, seed, effect_llr,
+                                       80, 10, 890, 20,
+                                       max_z_reg_idx=n_perm_inner))
+    df = plot.tidy_inner_perm(pd.DataFrame(rows))
+    plot.plot_inner_perm('sweep_n_perm_inner', df, tmp_path)
+    assert (tmp_path / 'sweep_n_perm_inner.pdf').exists()
+    assert (tmp_path / 'sweep_n_perm_inner_max_z.pdf').exists()
+    table = pd.read_csv(tmp_path / 'sweep_n_perm_inner_max_z.csv')
+    assert len(table) == 9
+    assert set(table['n_seed']) == {3}
+    assert (table['z_ceiling'] > 0).all()
+
+
 def test_tidy_segment_keeps_both_halves_at_the_whole_cohort_ceiling():
     """perc=None keeps every leaf, the whole-cohort one at frac_segment 1.0.
 
