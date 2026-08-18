@@ -363,6 +363,37 @@ def _rule_section(rows) -> str:
     return '\n'.join(out)
 
 
+def _complete(rows) -> tuple:
+    """Count the cells and seeds holding every expected variant.
+
+    Completeness is judged against the variants a full cell writes, not
+    against whether a row exists: a seed part-way through a backfill has its
+    arm rows and only some of its rule rows, and reporting that as finished
+    would overstate what the tables rest on.
+
+    Args:
+        rows (list[dict]): raw rows.
+
+    Returns:
+        n_cell (int): cells holding every variant.
+        seed_list (list[int]): seeds whose every llr cell is complete.
+    """
+    want = set()
+    for name, ana in variant_dict().items():
+        want |= set(wanted(name, ana))
+
+    have = defaultdict(set)
+    for row in rows:
+        have[(row['seed'], row['llr'])].add(row['variant'])
+    full = [key for key, got in have.items() if want <= got]
+
+    per_seed = defaultdict(int)
+    for seed, _ in full:
+        per_seed[seed] += 1
+    return len(full), sorted(s for s, n in per_seed.items()
+                             if n == len(LLR_LIST))
+
+
 def write_md(rows, elapsed_sec: float) -> None:
     """Rewrite the markdown summary over every row so far.
 
@@ -371,15 +402,19 @@ def write_md(rows, elapsed_sec: float) -> None:
         elapsed_sec (float): wall time of this process so far.
     """
     name_list = list(variant_dict())
-    seed_done = sorted({row['seed'] for row in rows})
-    n_cell = len({(row['seed'], row['llr']) for row in rows})
+    n_cell, seed_done = _complete(rows)
+    n_started = len({(row['seed'], row['llr']) for row in rows})
     stamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     text = f"""# GLOW arm bake-off -- HCP, {CROP_N_VOX} voxels
 
-updated **{stamp}** | seeds finished **{len(seed_done)}** \
-({', '.join(str(s) for s in seed_done) if seed_done else 'none'}) \
-| cells {n_cell} | this process {elapsed_sec / 60:.1f} min
+updated **{stamp}** | seeds complete **{len(seed_done)}** of \
+{len(SEED_LIST)} ({', '.join(str(s) for s in seed_done) if seed_done
+                  else 'none'}) | cells {n_cell} complete of {n_started} \
+started | this process {elapsed_sec / 60:.1f} min
+
+Each table's own n column is what that row rests on; a cell part-way \
+through contributes to some columns and not others.
 
 Cell: HCP, crop {CROP_N_VOX} voxels, b={B}, {NUM_IMG} subjects, planted \
 support {EFFECT_N_VOX_FRAC:.0%} of the crop. Test: n_perm_fwer={N_PERM_FWER}, \
