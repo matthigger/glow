@@ -66,7 +66,7 @@ from threadpoolctl import threadpool_limits
 from glow.analysis import Analysis, AnalysisGLOWSplit, AnalysisVoxel
 from glow.analysis.cluster import cluster, ClusterMode
 from glow.analysis.mancova import stat_dict, stat_dict_inv
-from glow.analysis.prune import prune_dp, prune_greedy
+from glow.analysis.prune import prune_dp, prune_greedy, prune_oracle
 from glow.experiment.exper import Experiment, ExperimentScaled
 
 # share the data.py builders' disk cache + recorder, so a fit is memoised
@@ -321,7 +321,7 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
     per-region LLR (candidates are ranked by raw LLR, as the GLOW arms'
     own synthesis does (AnalysisGLOWBase._discover); the
     z-score fragments under pruning), and the FWER-significant region set. All
-    three rules prune this same set, so the comparison isolates the rule from
+    the rules prune this same set, so the comparison isolates the rule from
     the permutation test; the first run_prune variant of a cell fits, the rest
     are cache hits. A plain disk-memoised helper, not a DAG node (see the
     module docstring).
@@ -368,14 +368,19 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
       - dp: the exact max-total-LLR antichain (prune_dp; oversegments).
       - maxllr: the single highest-LLR significant region (the headline best
         region, n_selected = 1).
-    All three prune the same fit, isolating the rule from the permutation test.
+      - oracle: the max-Dice antichain against the planted support
+        (prune_oracle). Not a method -- it is handed the target the others
+        are scored against, so it draws the headroom the rules leave: the
+        Dice this fit's significant set still has in it.
+    All four prune the same fit, isolating the rule from the permutation test.
     Memoised + recorded, keyed by (exp, rule, the GLOW fit knobs).
 
     Args:
         exp (Experiment): the experiment to analyze (raw or scaled).
-        mask_target_list (list): the planted effect supports (score target).
+        mask_target_list (list): the planted effect supports (score target,
+            and the oracle rule's input).
         parent_uid (str): the exp's declared uid (see the module docstring).
-        rule (str): 'greedy', 'dp', or 'maxllr'.
+        rule (str): 'greedy', 'dp', 'maxllr', or 'oracle'.
         n_perm_fwer (int): FL draws in the FWER null (the shared fit's).
         alpha_fwer (float): FWER significance level (the shared fit's).
         cluster_mode (ClusterMode): Ward projection (default FOCUS).
@@ -387,7 +392,7 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
             {n_selected, tp, fp, tn, fn}.
 
     Raises:
-        ValueError: if rule is not 'greedy' / 'dp' / 'maxllr'.
+        ValueError: if rule is not 'greedy' / 'dp' / 'maxllr' / 'oracle'.
     """
     children, llr, sig_reg_list = glow_fit_for_prune(
         exp, parent_uid=parent_uid, n_perm_fwer=n_perm_fwer,
@@ -403,8 +408,19 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
     elif rule == 'maxllr':
         reg_out_list = ([max(sig_reg_list, key=lambda r: llr[r])]
                         if sig_reg_list else [])
+    elif rule == 'oracle':
+        # scored against the union of the planted supports, as
+        # score_prune scores every rule's output
+        mask_target = np.zeros(exp.mask_idx.shape, dtype=bool)
+        for mask in mask_target_list:
+            mask_target |= mask
+        reg_out_list, _ = prune_oracle(sig_reg_list=sig_reg_list,
+                                       children=children,
+                                       mask_target=mask_target,
+                                       mask_idx=exp.mask_idx)
     else:
-        raise ValueError(f"rule must be greedy / dp / maxllr, got {rule!r}")
+        raise ValueError(
+            f"rule must be greedy / dp / maxllr / oracle, got {rule!r}")
 
     return score_prune(reg_out_list, children=children, mask_idx=exp.mask_idx,
                        mask_target_list=mask_target_list,
