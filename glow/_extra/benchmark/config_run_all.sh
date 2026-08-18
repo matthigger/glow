@@ -20,9 +20,9 @@
 # THE LANES.
 #   1  the voxel-wise arms over the six shared-grid caches, parallel across
 #      data cells.
-#   2  GLOW over those same six, then prune, then sweep_llr_glow_tune -- each
-#      an independent step, so a later one still runs if an earlier fails.
-#      Serial in the driver, feeding the device.
+#   2  GLOW over those same six, then prune, then sweep_llr_glow_tune, then
+#      sweep_n_perm_inner -- each an independent step, so a later one still
+#      runs if an earlier fails. Serial in the driver, feeding the device.
 #   3  the caches with no per-method axis and no device, at full parallelism.
 #   4  every timing cache, last and alone. The 1perm leaves pin themselves to
 #      one core, but sharing the box with lane 3 would contend for cache and
@@ -95,6 +95,10 @@ lane1=$!
         "${SHARED_GRID_CACHES[@]}"
     run_step lane2b "${BENCH[@]}" -j 1 prune
     run_step lane2c "${BENCH[@]}" -j 1 sweep_llr_glow_tune
+    # the inner-draw sweep parallelises its own walk like every other GLOW
+    # leaf, but its capture is what carries the cost, so --no-gpu -j2 finishes
+    # it sooner on a box with cores to spare (the device fit is serial here).
+    run_step lane2d "${BENCH[@]}" -j 1 sweep_n_perm_inner
 ) &
 lane2=$!
 
