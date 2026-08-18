@@ -14,11 +14,10 @@ from glow.mask import get_mask_idx
 def load_image_nii(df: pd.DataFrame, dtype=np.float32, mask=None):
     """Load NIfTI images from a subject x feature dataframe.
 
-    Streams images in two passes so peak memory is one image (~30 MB for
-    HCP) rather than the full (b, num_sbj) stack.  Pass 1 walks every
-    file to validate the shared affine (and, with no explicit mask, to
-    accumulate a nonzero-voxel count); Pass 2 walks them again, masks
-    each image into the output y array, and discards.
+    Streams images in two passes so peak memory is one image rather than
+    the full (b, num_sbj) stack.  Pass 1 walks every file to validate the
+    shared affine (and, with no explicit mask, to accumulate a
+    nonzero-voxel count); pass 2 masks each image into y and discards it.
 
     The analysis support is either supplied (a brain-mask NIfTI) or
     inferred.  When inferred, a voxel is kept only where every image is
@@ -29,10 +28,9 @@ def load_image_nii(df: pd.DataFrame, dtype=np.float32, mask=None):
     Args:
         df (pd.DataFrame): index=subject, columns=feature, values=file paths
         dtype: numpy dtype for the output y array.  Default np.float32
-            halves memory versus float64 and lets compute_llr_batched keep
-            its hot loop in float32 throughout.
-            nibabel.get_fdata(dtype=...) preserves precision when the
-            on-disk type is itself float32 (no upcast/downcast round-trip).
+            halves memory versus float64 and keeps the LLR hot loop in
+            float32; nibabel preserves precision when the on-disk type is
+            itself float32.
         mask (path): optional path to a brain-mask NIfTI on the images'
             grid.  When given, its nonzero voxels are the analysis support
             (its affine must match the images'); when None the

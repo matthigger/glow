@@ -90,12 +90,10 @@ def _solve_offset_only(y_mean, q, yq1_norm2, yq2_norm2, yq1q1y, yq2q2y,
         a1, a2 = alpha
         return a1 ** 2 * yq1_norm2 + a2 ** 2 * yq2_norm2
 
-    # Warm-start onto the constraint manifold. At alpha = 0 the constraint
-    # gradient is ~ yq1q1y / e0 (the baseline interest-to-error ratio); when
-    # the region mean is near-orthogonal to the interest contrast this
-    # underflows trust-constr's gtol and the solve stalls on a flat start.
-    # Seed (1 + alpha1) at the feasible interest scaling (nuisance held at
-    # alpha2 = 0), where the LLR is no longer flat.
+    # Warm-start onto the constraint manifold: at alpha = 0 the constraint
+    # gradient is the baseline interest-to-error ratio, which underflows
+    # trust-constr's gtol when the region mean is near-orthogonal to the
+    # interest contrast, stalling the solve on a flat start.
     e0 = yq2q2y * num_vox + sigma_orig
     alpha1_ws = _warm_start_alpha1(y_mean @ q[1].T, e0, num_vox, effect_llr)
     x0 = np.array([alpha1_ws, 0.0])
@@ -118,16 +116,13 @@ def _solve_offset_only(y_mean, q, yq1_norm2, yq2_norm2, yq1q1y, yq2q2y,
 def _warm_start_alpha1(m, e0, num_vox: int, effect_llr: float) -> float:
     """Interest scaling that hits effect_llr with the nuisance held fixed.
 
-    Warm-starts _solve_offset_only. Holding alpha2 = 0 (nuisance component
-    left at its observed magnitude, so the error matrix stays e0), the LLR
-    reduces to a monotone equation in t = (1 + alpha1)**2,
+    Warm-starts _solve_offset_only. Holding alpha2 = 0 (the error matrix
+    then staying e0), the LLR reduces to a monotone equation in
+    t = (1 + alpha1)**2,
         (1/2) sum_i ln(1 + t mu_i) = effect_llr,
-    with mu_i the eigenvalues of num_vox m.T E0^-1 m. Its root is the feasible
-    interest scaling on the alpha2 = 0 slice, which seeds the full solve onto
-    the constraint manifold -- away from the alpha = 0 origin, where the
-    constraint gradient (~ mu) underflows the solver tolerance for a
-    near-orthogonal region mean and the solve stalls. Same LLR-in-t inversion
-    as _solve_alpha, with the region mean's own (un-normalised) interest
+    with mu_i the eigenvalues of num_vox m.T E0^-1 m. Its root is the
+    feasible interest scaling on that slice. Same LLR-in-t inversion as
+    _solve_alpha, with the region mean's own un-normalised interest
     projection m as the direction, so the returned scale is 1 + alpha1.
 
     Args:

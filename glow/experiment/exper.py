@@ -80,12 +80,9 @@ class ExperimentImageOnly:
     def _repr_dropped(self) -> str:
         """Render the screened-voxel count, or '' if never screened.
 
-        The recorder stores an opaque output as its repr, so this string
-        is how many voxels drop_constant_vox took shows up in the built
-        experiment's record -- once, where the drop happened, rather than
-        copied onto every leaf that later reads the experiment. Shown
-        even at zero, since screened-and-clean is worth telling apart
-        from never-screened.
+        The recorder stores an opaque output as its repr, so this is how
+        the dropped-voxel count reaches a record. Shown even at zero, since
+        screened-and-clean is worth telling apart from never-screened.
         """
         if self.mask_dead is None:
             return ''
@@ -94,9 +91,8 @@ class ExperimentImageOnly:
     def __repr__(self):
         """A compact identity string: class name + the y dimensions.
 
-        Cheap and human-readable (no array hashing): the (b, num_img,
-        num_vox) shape names what the object is in a log line, traceback, or
-        recorded DataFrame cell. y is None only for a half-built instance.
+        The (b, num_img, num_vox) shape, with no array hashing, so it is
+        cheap enough for a log line or a recorded DataFrame cell.
         """
         if self.y is None:
             return f'{type(self).__name__}(empty)'
@@ -155,8 +151,6 @@ class ExperimentImageOnly:
         meta.setdefault('features', [f'feat_{i}' for i in range(b)])
         meta.setdefault('subjects',
                         [f'subject_{i:03d}' for i in range(num_img)])
-        # single cast at the public factory; the constructor would also
-        # handle this but doing it explicitly documents the contract.
         y = y.reshape((b, num_img, num_vox)).astype(dtype, copy=False)
         return cls(y=y,
                    mask_idx=get_mask_idx(np.ones(shape)),
@@ -180,12 +174,10 @@ class ExperimentImageOnly:
         df = pd.DataFrame()
         for y_feat, y_glob in img_glob_dict.items():
             for file in folder.glob(y_glob):
-                # dedupe before asserting: BIDS-derivatives paths repeat the
-                # subject id in both the directory and the filename (e.g.
-                # sub-100307/dwi/sub-100307_..._param-fa_dwimap.nii.gz), so a
-                # natural regex like sub-\d+ matches more than once. Collapse
-                # identical matches to one; still reject a path that yields two
-                # genuinely different ids.
+                # dedupe before asserting: BIDS-derivatives paths repeat
+                # the subject id in the directory and the filename, so a
+                # natural regex matches twice. Two genuinely different ids
+                # are still rejected.
                 sbj_set = set(re.findall(sbj_regex, str(file)))
                 assert len(sbj_set) == 1, \
                     f'unique sbj not found in file: {file}'
@@ -275,9 +267,7 @@ class ExperimentImageOnly:
         affine = None
         subjects = sorted(df.index)
         if all(nii_in_file):
-            # NIfTI path streams to y directly (no per-image dict held in
-            # memory).  The loader controls dtype; we pass the public
-            # factory's choice (float32 by default).
+            # NIfTI path streams to y directly, holding no per-image dict
             y, y_names, mask_idx, affine = load_image_nii(
                 df, dtype=dtype, mask=mask)
         elif not any(nii_in_file):
@@ -295,10 +285,8 @@ class ExperimentImageOnly:
                     else:
                         assert src_dtype == img.dtype, 'dtype mismatch'
 
-            # mask into each image, store as y.  Preserve feature insertion
-            # order so channel_names (e.g. RGB → red, green, blue) keep the
-            # caller's intended order rather than alphabetical.  Allocate
-            # at the requested dtype so the per-image copy casts in place.
+            # feature insertion order, not alphabetical, so channel_names
+            # (RGB -> red, green, blue) keeps the caller's order
             mask = mask_idx >= 0
             y_names = list(feat_sbj_img.keys())
             y = np.empty((len(feat_sbj_img), df.shape[0], mask.sum()),
@@ -382,11 +370,9 @@ class ExperimentImageOnly:
         something rather than the fold itself (the viewer's regression
         panel, labelling each image by fold).
 
-        The partition is a uniform random draw, so each fold's share of
-        the design's information is right on average (the two folds'
-        second-moment matrices sum to the whole design's, whatever the
-        draw). It is not balanced against an unlucky draw; the split
-        depends on the images alone, never on y.
+        A uniform random draw, so each fold's share of the design's
+        information is right on average but not balanced against an unlucky
+        draw. The split depends on the images alone, never on y.
 
         Args:
             frac_segment (float): fraction of the images going to the
@@ -438,12 +424,10 @@ class ExperimentImageOnly:
                   group=None):
         """Partition the images into a segmentation fold and a test fold.
 
-        The two folds are disjoint in images and identical in voxels --
-        both keep this experiment's mask_idx and num_vox -- so a Ward tree
-        built on exp_segment indexes the leaves of exp_test unchanged.
-        That is what lets AnalysisGLOWSplit segment on one fold and compute
-        LLR / FWER on the other, which removes the selection bias of
-        choosing the tree with the same images that then test it.
+        The two folds are disjoint in images and identical in voxels, so a
+        Ward tree built on exp_segment indexes the leaves of exp_test
+        unchanged -- which is what lets AnalysisGLOWSplit segment on one
+        fold and test on the other.
 
         Run drop_constant_vox before splitting, not after: screening each
         fold separately renumbers mask_idx differently in each, and the
@@ -489,9 +473,8 @@ class ExperimentImageOnly:
             # default contrast: all x of interest but bias term
             contrast = np.ones(a, dtype=bool)
 
-        # match y's dtype so downstream decompose() / einsums don't
-        # silently upcast (numpy promotes float32 @ float64 to float64,
-        # eliminating the bandwidth win in compute_llr_batched).
+        # match y's dtype: numpy promotes float32 @ float64, which would
+        # cost the bandwidth win of a float32 y
         num_img = self.y.shape[1]
         rng = np.random.default_rng(seed=seed)
         x = rng.standard_normal(size=(a, num_img))
@@ -506,8 +489,7 @@ class ExperimentImageOnly:
         """Return a deep copy of this experiment with attributes overridden.
 
         Clones every instance attribute and feeds them back to
-        type(self)(**d), so callers that derive a new experiment by
-        swapping one or two fields (y, mask_idx) don't repeat the
+        type(self)(**d), so a caller swapping one field need not repeat the
         deepcopy-and-reconstruct dance.
         """
         d = deepcopy(self.__dict__)
@@ -539,25 +521,18 @@ class ExperimentImageOnly:
         """Return a new experiment with the constant voxels removed.
 
         A voxel whose intensities barely move across images has no signal
-        to test: once the design is projected out almost nothing is left,
-        so its MANCOVA error matrix E is rank-deficient in all but name
-        and det(E), a product of b tiny eigenvalues, underflows. In
-        float32 the cliff is sharp -- below roughly 1e-8 relative
-        variation slogdet(E) returns (0, -inf) and every statistic on
-        that voxel comes back NaN, or +-inf where the cancellation also
-        leaves E with a negative eigenvalue.
+        to test: with the design projected out, its MANCOVA error matrix E
+        is rank-deficient in all but name and det(E) underflows, after which
+        every statistic on that voxel is NaN or +-inf.
 
-        This belongs to pre-processing, ahead of ExperimentScaled, for
-        two reasons. The test is per feature and ExperimentScaled mixes
-        the features (y_out = pre_scale @ y), so by the time an analysis
-        sees the data one flat feature has been smeared over all b and no
-        longer stands out. And dropping here hands every method the same
-        voxels, so GLOW and the voxel-wise arms control FWER over one
-        family rather than each pruning its own.
+        It runs ahead of ExperimentScaled for two reasons. The test is per
+        feature, and ExperimentScaled mixes the features
+        (y_out = pre_scale @ y), so one flat feature would be smeared over
+        all b. And dropping here hands every method the same voxels, so
+        GLOW and the voxel-wise arms control FWER over one family.
 
         The dropped voxels leave y and mask_idx is renumbered over what
-        remains, so nothing downstream needs to know this happened;
-        mask_dead records which ones went.
+        remains; mask_dead records which ones went.
 
         Args:
             rtol (float): variation floor, as a fraction of each feature's
@@ -580,9 +555,8 @@ class ExperimentImageOnly:
         if vox_dead.all():
             raise ValueError('every voxel is constant across images')
 
-        # scatter the per-voxel flags back into image space. Indexed
-        # through mask_idx rather than assigned positionally, so this
-        # holds whatever order the index array numbers its voxels in.
+        # scatter the flags back into image space through mask_idx, not
+        # positionally, so any voxel numbering holds
         mask_active = self.mask_idx > -1
         mask_dead = np.zeros(self.mask_idx.shape, dtype=bool)
         mask_dead[mask_active] = vox_dead[self.mask_idx[mask_active]]
@@ -674,11 +648,8 @@ class Experiment(ExperimentImageOnly):
         self.contrast = contrast
 
         if add_bias:
-            # append row of ones (bias term) to x.  np.ones defaults to
-            # float64, which would silently promote x if it's float32 —
-            # match x's dtype to keep the design matrix in the same
-            # precision as y (decompose() propagates x.dtype through to
-            # the q matrices used in compute_llr_batched's einsums).
+            # match x's dtype: np.ones is float64, which would promote a
+            # float32 x and, through decompose, the q matrices with it
             num_img = x.shape[1]
             self.x = np.vstack([np.ones(num_img, dtype=x.dtype), x])
 
@@ -707,10 +678,10 @@ class Experiment(ExperimentImageOnly):
     def _assert_design(self, fold: str, seed: int):
         """Raise unless this fold's design still supports a MANCOVA fit.
 
-        A fold whose x lost rank (every subject at one level of a rare
-        covariate went to the other fold) gives mancova.decompose a
-        degenerate q0 / q1 and fails silently rather than loudly, so
-        check it here where the seed that produced it is still in hand.
+        A fold whose x lost rank -- every subject at one level of a rare
+        covariate landing in the other fold -- gives mancova.decompose a
+        degenerate q0 / q1 and fails silently, so it is checked here, where
+        the seed that produced it is still in hand.
 
         Args:
             fold (str): fold name, for the message
@@ -763,11 +734,9 @@ class Experiment(ExperimentImageOnly):
             y = deepcopy(self.y)
         else:
             freed_lane = get_freed_lane(self.x, self.contrast, perm_idx)
-            # get_freed_lane uses np.eye / rng.permutation which return
-            # float64 — cast to y.dtype so the einsum preserves dtype.
-            # This is the inner loop of AnalysisGLOW: every permutation
-            # goes through here, and a silent f32 -> f64 promotion would
-            # erase the memory + speed gains of float32 y.
+            # get_freed_lane returns float64; cast so the einsum preserves
+            # y.dtype. Every permutation of a fit comes through here, so a
+            # silent f32 -> f64 promotion would cost the whole float32 win.
             if freed_lane.dtype != self.y.dtype:
                 freed_lane = freed_lane.astype(self.y.dtype, copy=False)
             y = np.einsum('abc,bd->adc', self.y, freed_lane, optimize=True)
@@ -816,11 +785,10 @@ class ExperimentScaled(Experiment):
     def split_img(self, *args, **kwargs):
         """Refuse the split: pre-scaling was fit on every image.
 
-        pre_scale and mean_orig come from all the images at once, so a
-        fold cut out afterwards carries a transform the other fold helped
-        choose -- a leak, small but free to avoid. Split the raw
-        Experiment instead; AnalysisGLOWSplit.fit runs from_exp on each fold
-        it cuts, so each gets its own transform.
+        pre_scale and mean_orig come from all the images at once, so a fold
+        cut out afterwards carries a transform the other fold helped choose.
+        Split the raw Experiment instead; AnalysisGLOWSplit.fit scales each
+        fold it cuts.
 
         Raises:
             TypeError: always.
@@ -865,15 +833,11 @@ class ExperimentScaled(Experiment):
         Raises:
             ValueError: if any feature has zero variance
         """
-        # Preserve y.dtype through the prep transform.  np.cov / eigh /
-        # mean(axis=...) all use float64 accumulators internally and
-        # return float64 regardless of input dtype, so cast back at the
-        # end — otherwise self.prep(y) silently promotes y to float64.
+        # np.cov / eigh / mean return float64 whatever they are given, so
+        # cast back at the end or prep(y) promotes y
         y_dtype = y.dtype
 
-        # zero mean (and make new copy).  Use dtype=float64 accumulator
-        # for numerical stability (b is small, no memory cost), then
-        # cast the (b,) result back to match y.
+        # zero mean, accumulated in float64 then cast back to y.dtype
         self.mean_orig = y.mean(axis=(1, 2))[:, np.newaxis, np.newaxis]
         self.mean_orig = self.mean_orig.astype(y_dtype, copy=False)
 

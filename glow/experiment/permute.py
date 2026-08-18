@@ -8,19 +8,13 @@ from glow.analysis.mancova import decompose
 def _perm_indices(seed: int, num_img: int):
     """Build the index array for one Freedman-Lane permutation under seed.
 
-    Sole source of truth for the seed-to-perm mapping: every consumer
-    that needs FL permutations under a given seed (the full FL matrix
-    in get_freed_lane, the per-row build loops in batched perm-LLR
-    backends) routes through here so the mapping stays consistent.
+    Sole source of truth for the seed-to-perm mapping, so every consumer
+    of FL permutations agrees on it. perm[k] is the original-image index
+    the permuted data puts at position k.
 
-    perm[k] gives the original-image index that the FL-permuted data
-    puts at position k.
-
-    Seed 0 returns the identity, holding the reserved-0 convention
-    Experiment.permute and get_freed_lane already state: draw 0 is the
-    observed, unpermuted data. A caller walking base_seed + i from 0 thus
-    gets the observed draw in row 0 and the null in rows 1: -- what the
-    GLOW arms' fits and Analysis.z_score_stat assume of a draw matrix.
+    Seed 0 returns the identity, so a caller walking base_seed + i from 0
+    gets the observed draw in row 0 and the null in rows 1: -- what every
+    draw matrix in glow assumes.
 
     Args:
         seed (int): permutation seed; 0 gives the identity
