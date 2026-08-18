@@ -100,12 +100,16 @@ def _hls_hex(h: float, l: float = _L, s: float = _S) -> str:
 
 
 COLOR_ANALYSIS = {
-    # teal (180 deg) -- the Focus arm, drawn only where a cache reports every
-    # arm (_BOTH_ARM_CACHES); elsewhere it is dropped (_ARMS_SKIP)
-    'GLOW-Focus': _hls_hex(0/4 + _H),
-    # darker teal, the reported arm under both its recipe and figure label
-    'GLOW-GLM':   _hls_hex(0/4 + _H, l=_L * 0.6),
-    'GLOW':       _hls_hex(0/4 + _H, l=_L * 0.6),
+    # teal (180 deg) -- the reported GLOW variant, under both its recipe and
+    # its figure label
+    'GLOW-Focus-greedy': _hls_hex(0/4 + _H, l=_L * 0.6),
+    'GLOW':              _hls_hex(0/4 + _H, l=_L * 0.6),
+    # the three unreported variants, drawn only where a cache reports every
+    # one (_BOTH_ARM_CACHES); elsewhere they are dropped (_ARMS_SKIP). One
+    # hue over four lightnesses, so the family reads as one method.
+    'GLOW-Focus-dp':     _hls_hex(0/4 + _H, l=_L * 0.8),
+    'GLOW-GLM-greedy':   _hls_hex(0/4 + _H),
+    'GLOW-GLM-dp':       _hls_hex(0/4 + _H, l=_L * 1.2),
     # purple (270 deg)
     'VBA-TFCE':   _hls_hex(1/4 + _H),
     # coral (0 deg)
@@ -121,15 +125,15 @@ COLOR_ANALYSIS = {
 _LABEL_OF_ANA = {repr(ana): label for label, ana in ana_kwargs_dict.items()}
 
 
-# One GLOW arm is reported, config.REPORTED_GLOW_LABEL, and the figures call
-# it plainly GLOW: the other arms are dropped (_ARMS_SKIP) and the survivor
-# relabelled (_ARM_LABEL), so the arm choice does not have to be re-argued on
-# each panel. Both taken off the catalogue, so adding or renaming an arm in
-# config needs no edit here. Every arm stays in the caches and the records --
-# Focus is a real recipe, and the segment / prune families exist to compare the
-# two clusterings. Those families label by Ward mode (Focus / GLM Error) and
-# prune rule (GLOW-greedy / GLOW-dp) rather than by analysis arm, so neither
-# the drop nor the relabel reaches them.
+# One GLOW variant is reported, config.REPORTED_GLOW_LABEL, and the figures
+# call it plainly GLOW: the others are dropped (_ARMS_SKIP) and the survivor
+# relabelled (_ARM_LABEL), so the choice does not have to be re-argued on each
+# panel. Both taken off the catalogue, so adding or renaming a variant in
+# config needs no edit here. Every variant stays in the caches and the records
+# -- each is a real recipe, and the segment / prune families exist to compare
+# the two clusterings. Those families label by Ward mode (Focus / GLM Error)
+# and prune rule (GLOW-greedy / GLOW-dp) rather than by analysis arm, so
+# neither the drop nor the relabel reaches them.
 _ARMS_SKIP = tuple(label for label, ana in ana_kwargs_dict.items()
                    if isinstance(ana, AnalysisGLOWBase)
                    and label != REPORTED_GLOW_LABEL)
@@ -140,7 +144,7 @@ _ARM_LABEL = {REPORTED_GLOW_LABEL: 'GLOW'}
 # legend and the CSVs (a figure showing two curves both called GLOW would say
 # nothing). The head-to-head diff row still draws one line, the reported arm's
 # (_diff_label), while its CSV covers every arm -- see _draw_diff.
-_BOTH_ARM_CACHES = ('sweep_llr',)
+_BOTH_ARM_CACHES = ('sweep_llr_glow',)
 
 
 def _select_glow_arm(df, cache: str = None):

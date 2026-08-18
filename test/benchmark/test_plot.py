@@ -26,6 +26,10 @@ GLOW_LABEL = REPORTED_GLOW_LABEL
 VBA_LABEL = next(label for label, ana in ana_kwargs_dict.items()
                  if isinstance(ana, AnalysisVBA) and not ana.tfce_flag)
 GLOW_FIGURE = 'GLOW'
+# an unreported GLOW variant (dropped by _ARMS_SKIP) and the one cache that
+# keeps every variant's own name, both taken off plot's own vocabulary
+ARM_OTHER = plot._ARMS_SKIP[0]
+BOTH_ARM_CACHE = plot._BOTH_ARM_CACHES[0]
 
 
 def _score(tp, fp, tn, fn, min_pval=0.5, n_pred=1):
@@ -149,10 +153,10 @@ def test_plot_cache_sweep_writes_grid_and_diff_csv(tmp_path):
     assert (tmp_path / 'sweep_llr.pdf').exists()
     assert (tmp_path / 'sweep_llr_diff.csv').exists()
 
-    # the diff CSV carries one block per GLOW variant vs the best alternative;
-    # the llr sweep keeps the arms' own names (_BOTH_ARM_CACHES)
+    # the diff CSV carries one block per GLOW variant vs the best
+    # alternative; the llr sweep reports one variant, relabelled GLOW
     diff = pd.read_csv(tmp_path / 'sweep_llr_diff.csv')
-    assert set(diff['method'].unique()) == {GLOW_LABEL}
+    assert set(diff['method'].unique()) == {GLOW_FIGURE}
     assert {'source', 'effect_llr', 'dice_diff', 'dice_win'}.issubset(
         diff.columns)
 
@@ -208,8 +212,8 @@ def test_plot_cache_sweep_writes_threshold_csv(tmp_path):
     assert {'source', 'method'}.issubset(thr.columns)
     assert {'b=1', 'b=2', 'b=3'}.issubset(thr.columns)
     bcols = ['b=1', 'b=2', 'b=3']
-    # the llr sweep reports the arms under their own names (_BOTH_ARM_CACHES)
-    glow = thr[thr['method'] == GLOW_LABEL][bcols].to_numpy()
+    # the llr sweep reports one variant, relabelled GLOW
+    glow = thr[thr['method'] == GLOW_FIGURE][bcols].to_numpy()
     vba = thr[thr['method'] == VBA_LABEL][bcols].to_numpy()
     # thresholds fall inside the swept 0.01..0.1 range
     assert glow.size and vba.size
@@ -889,13 +893,13 @@ def test_plot_prune_writes_one_figure_per_mode(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_select_glow_arm_spares_mode_and_rule_labels():
-    """The filter drops the GLOW-Focus arm, not the Ward mode of that name.
+    """The filter drops an unreported GLOW variant, not a mode or rule label.
 
-    The surviving arm is relabelled GLOW. segment labels by Ward mode
+    The surviving variant is relabelled GLOW. segment labels by Ward mode
     ('Focus') and prune by rule ('GLOW-greedy'), so neither family can be
     caught by a filter keyed on the analysis arm.
     """
-    df = pd.DataFrame({'label': ['GLOW-GLM', 'GLOW-Focus', 'Focus',
+    df = pd.DataFrame({'label': [GLOW_LABEL, ARM_OTHER, 'Focus',
                                  'GLOW-greedy', 'VBA']})
     assert list(plot._select_glow_arm(df)['label']) == [
         'GLOW', 'Focus', 'GLOW-greedy', 'VBA']
@@ -919,9 +923,9 @@ def _both_arm_frame():
     tidy = plot.tidy_run_ana(pd.DataFrame(rows))
     glow = tidy[tidy['label'] == GLOW_LABEL]
     df = pd.concat([tidy[tidy['label'] != GLOW_LABEL],
-                    glow.assign(label='GLOW-Focus'),
-                    glow.assign(label='GLOW-GLM')], ignore_index=True)
-    assert {'GLOW-Focus', 'GLOW-GLM'} <= set(df['label'])
+                    glow.assign(label=GLOW_LABEL),
+                    glow.assign(label=ARM_OTHER)], ignore_index=True)
+    assert {GLOW_LABEL, ARM_OTHER} <= set(df['label'])
     return df
 
 
@@ -931,8 +935,8 @@ def test_plot_cache_drops_focus_arm(tmp_path):
 
     plot.plot_cache('sweep_extent', df, tmp_path)
     thr = pd.read_csv(tmp_path / 'sweep_extent_threshold.csv')
-    # neither raw arm label reaches the output; the reported arm reads GLOW
-    assert not {'GLOW-Focus', 'GLOW-GLM'} & set(thr['method'])
+    # no raw variant label reaches the output; the reported one reads GLOW
+    assert not {GLOW_LABEL, ARM_OTHER} & set(thr['method'])
     assert GLOW_FIGURE in set(thr['method'])
     diff = pd.read_csv(tmp_path / 'sweep_extent_diff.csv')
     assert set(diff['method'].unique()) == {GLOW_FIGURE}
@@ -948,11 +952,11 @@ def test_plot_cache_keeps_both_arms_where_the_cache_compares_them(tmp_path):
     """
     df = _both_arm_frame()
 
-    plot.plot_cache('sweep_llr', df, tmp_path)
-    thr = pd.read_csv(tmp_path / 'sweep_llr_threshold.csv')
-    assert {'GLOW-Focus', 'GLOW-GLM'} <= set(thr['method'])
+    plot.plot_cache(BOTH_ARM_CACHE, df, tmp_path)
+    thr = pd.read_csv(tmp_path / f'{BOTH_ARM_CACHE}_threshold.csv')
+    assert {GLOW_LABEL, ARM_OTHER} <= set(thr['method'])
     assert GLOW_FIGURE not in set(thr['method'])
-    # catalogue order survives: the arms lead, the voxel-wise method follows
-    assert list(thr['method']) == ['GLOW-Focus', 'GLOW-GLM', VBA_LABEL]
-    diff = pd.read_csv(tmp_path / 'sweep_llr_diff.csv')
-    assert set(diff['method'].unique()) == {'GLOW-Focus', 'GLOW-GLM'}
+    # catalogue order survives: the variants lead, the voxel-wise arm follows
+    assert list(thr['method']) == [GLOW_LABEL, ARM_OTHER, VBA_LABEL]
+    diff = pd.read_csv(tmp_path / f'{BOTH_ARM_CACHE}_diff.csv')
+    assert set(diff['method'].unique()) == {GLOW_LABEL, ARM_OTHER}

@@ -63,7 +63,7 @@ import copy
 import numpy as np
 from threadpoolctl import threadpool_limits
 
-from glow.analysis import Analysis, AnalysisGLOWSplit, AnalysisVoxel
+from glow.analysis import Analysis, AnalysisGLOW, AnalysisVoxel
 from glow.analysis.cluster import cluster, ClusterMode
 from glow.analysis.mancova import stat_dict, stat_dict_inv
 from glow.analysis.prune import prune_by_rule, prune_oracle
@@ -311,15 +311,15 @@ def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name, *,
 
 @MEMORY.cache(ignore=['exp', 'fit_params'])
 def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
-                       alpha_fwer: float,
+                       n_perm_inner: int, alpha_fwer: float,
                        cluster_mode=ClusterMode.FOCUS,
                        fit_params=None) -> tuple:
     """Fit GLOW once and return the pruning inputs (shared by the rules).
 
-    The prune cache's shared intermediate: a full AnalysisGLOWSplit fit
-    reduced to the light triple every rule needs -- the Ward tree, the raw
-    per-region LLR (candidates are ranked by raw LLR, as the GLOW arms'
-    own synthesis does (AnalysisGLOWBase._discover); the
+    The prune cache's shared intermediate: a full AnalysisGLOW fit (the arm
+    the catalogue reports) reduced to the light triple every rule needs --
+    the Ward tree, the raw per-region LLR (candidates are ranked by raw LLR,
+    as the GLOW arms' own synthesis does (AnalysisGLOWBase._discover); the
     z-score fragments under pruning), and the FWER-significant region set. All
     the rules prune this same set, so the comparison isolates the rule from
     the permutation test; the first run_prune variant of a cell fits, the rest
@@ -330,7 +330,9 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
         exp (Experiment): the experiment to fit (raw or scaled).
         parent_uid (str): the exp's declared uid (see the module docstring);
             what identifies the fit, since exp is out of the key.
-        n_perm_fwer (int): FL draws in the FWER null.
+        n_perm_fwer (int): outer FL perms feeding the max-z null.
+        n_perm_inner (int): inner FL draws standardizing each outer perm's
+            own tree.
         alpha_fwer (float): FWER significance level (selects sig_reg_list).
         cluster_mode (ClusterMode): Ward projection (default FOCUS).
         fit_params (dict | None): kwargs forwarded to ana.fit -- how the fit
@@ -344,8 +346,8 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
             key the rules prune by).
         sig_reg_list (list): int indices of the FWER-significant regions.
     """
-    ana = AnalysisGLOWSplit(n_perm_fwer=n_perm_fwer, alpha_fwer=alpha_fwer,
-                            cluster_mode=cluster_mode)
+    ana = AnalysisGLOW(n_perm_fwer=n_perm_fwer, n_perm_inner=n_perm_inner,
+                       alpha_fwer=alpha_fwer, cluster_mode=cluster_mode)
     ana.fit(exp, **(fit_params or {}))
     sig_reg_list = np.flatnonzero(ana.fwer.reg_sig).tolist()
     llr = np.nan_to_num(ana.llr.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
@@ -356,7 +358,7 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
 @RECORDER(output_name='score', recurse_out_list=['score'],
           ignore=FIT_IGNORE)
 def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
-              n_perm_fwer: int, alpha_fwer: float,
+              n_perm_fwer: int, n_perm_inner: int, alpha_fwer: float,
               cluster_mode=ClusterMode.FOCUS, fit_params=None):
     """Score one pruning rule's selection on a shared GLOW fit.
 
@@ -381,7 +383,8 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
             and the oracle rule's input).
         parent_uid (str): the exp's declared uid (see the module docstring).
         rule (str): 'greedy', 'dp', 'single_max', or 'oracle'.
-        n_perm_fwer (int): FL draws in the FWER null (the shared fit's).
+        n_perm_fwer (int): outer FL perms (the shared fit's).
+        n_perm_inner (int): inner FL draws per outer perm (the shared fit's).
         alpha_fwer (float): FWER significance level (the shared fit's).
         cluster_mode (ClusterMode): Ward projection (default FOCUS).
         fit_params (dict | None): kwargs forwarded to the shared fit -- how it
@@ -396,8 +399,8 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
     """
     children, llr, sig_reg_list = glow_fit_for_prune(
         exp, parent_uid=parent_uid, n_perm_fwer=n_perm_fwer,
-        alpha_fwer=alpha_fwer, cluster_mode=cluster_mode,
-        fit_params=fit_params)
+        n_perm_inner=n_perm_inner, alpha_fwer=alpha_fwer,
+        cluster_mode=cluster_mode, fit_params=fit_params)
 
     if rule == 'oracle':
         # scored against the union of the planted supports, as

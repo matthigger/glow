@@ -67,7 +67,7 @@ import warnings
 
 import numpy as np
 
-from glow.analysis import (AnalysisCET, AnalysisGLOWBase, AnalysisGLOWSplit,
+from glow.analysis import (AnalysisCET, AnalysisGLOW, AnalysisGLOWBase,
                            AnalysisVBA, DEFAULT_CET_CFT_PVAL)
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr, get_wilks
@@ -105,6 +105,11 @@ CROP_N_VOX = 25_000
 EFFECT_N_VOX_FRAC = 0.1
 
 N_PERM_FWER = 500
+# inner Freedman-Lane draws standardizing each outer perm's own tree. It caps
+# every z at n_perm_inner / sqrt(n_perm_inner + 1), so it is a resolution
+# floor as much as a cost knob (see AnalysisGLOW), and it multiplies the draw
+# count: a fit is n_perm_fwer x (n_perm_inner + 1) draws.
+N_PERM_INNER = 250
 ALPHA_FWER = 0.05
 
 # Structural grids. B caps at the HCP pool (6) so every HCP cell is feasible;
@@ -132,42 +137,49 @@ SWEEP_NIMG_GRID = list(range(10, HCP_NUM_IMG + 1, 10))
 # ---------- analysis recipes -------------------------------------------------
 # label -> recipe. The label is the reader-facing method name; it is the source
 # of truth results / plot map a recorded recipe back to (a run function is not
-# passed the label -- see run.py / benchmark.plot). GLOW uses the LLR
-# throughout, so the two GLOW arms differ only in Ward projection: Focus
-# clusters on the contrast subspace, GLM Error on the whole design space (the
-# segment / prune families compare the same pair on their own leaves). Each
+# passed the label -- see run.py / benchmark.plot). GLOW is the per-perm arm
+# (AnalysisGLOW) throughout: it rebuilds the Ward tree inside every outer
+# permutation, so every image reaches both the tree and the statistics. Each
 # voxel-wise arm takes the stat / z-scoring it wins the vba_stat bake-off with:
 # the raw Hotelling-Lawley trace for VBA and CET, the z-scored 1 - Wilks for
 # TFCE (z-scoring is what TFCE's single height grid needs to mean the same
 # thing at every voxel). Written out rather than left to the recipe defaults,
 # which agree -- the paper's arms should be readable here.
-kwargs = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
+#
+# The four GLOW entries are one arm under its two free choices: the Ward
+# projection (Focus on the contrast subspace, GLM Error on the whole design
+# space) crossed with the selection rule (greedy, or the exact max-total-LLR
+# antichain). Only REPORTED_GLOW_LABEL rides the shared leaf grid; the other
+# three are compared on one cache of their own (sweep_llr_glow), which is what
+# settles the choice.
+kwargs_voxel = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
+kwargs = dict(n_perm_inner=N_PERM_INNER, **kwargs_voxel)
+GLOW_LABEL_LIST = ('GLOW-Focus-greedy', 'GLOW-Focus-dp',
+                   'GLOW-GLM-greedy', 'GLOW-GLM-dp')
 ana_kwargs_dict = {
-    'GLOW-Focus': AnalysisGLOWSplit(cluster_mode=ClusterMode.FOCUS,
-                                    **kwargs),
-    'GLOW-GLM':   AnalysisGLOWSplit(cluster_mode=ClusterMode.GLM_ERROR,
-                                    **kwargs),
+    'GLOW-Focus-greedy': AnalysisGLOW(cluster_mode=ClusterMode.FOCUS,
+                                      prune_rule='greedy', **kwargs),
+    'GLOW-Focus-dp':     AnalysisGLOW(cluster_mode=ClusterMode.FOCUS,
+                                      prune_rule='dp', **kwargs),
+    'GLOW-GLM-greedy':   AnalysisGLOW(cluster_mode=ClusterMode.GLM_ERROR,
+                                      prune_rule='greedy', **kwargs),
+    'GLOW-GLM-dp':       AnalysisGLOW(cluster_mode=ClusterMode.GLM_ERROR,
+                                      prune_rule='dp', **kwargs),
     'VBA':        AnalysisVBA(z_flag=False, tfce_flag=False,
-                              get_stat=get_hotel_tr, **kwargs),
-    'VBA-TFCE':   AnalysisVBA(z_flag=True, tfce_flag=True, get_stat=get_wilks,
-                              **kwargs),
+                              get_stat=get_hotel_tr, **kwargs_voxel),
+    'VBA-TFCE':   AnalysisVBA(z_flag=True, tfce_flag=True,
+                              get_stat=get_wilks, **kwargs_voxel),
     'CET':        AnalysisCET(z_flag=False, get_stat=get_hotel_tr,
-                              **kwargs),
+                              **kwargs_voxel),
 }
 
-# Both GLOW entries are AnalysisGLOWSplit, the arm with strong FWER control.
-# AnalysisGLOW (per-perm segmentation) is a recipe like any other and can be
-# added here as a further arm -- one entry, plus a plot.COLOR_ANALYSIS
-# colour -- but it costs n_perm_inner + 1 draws per outer perm, ~250x these
-# arms at the paper's 500 x 250, so it is not carried in the paper's grid.
-
-# The GLOW arm the figures report (benchmark.plot drops Focus and calls this
-# one plainly GLOW) and, with it, the only arm the runtime caches time: the
-# two arms run the same permutation walk over the same shapes and differ only
-# in what Ward is handed, so a second set of timings would be a second copy of
-# one curve at the cost of the grid's full-brain points. Detection is another
-# matter -- there the arms can disagree, so every run_ana cache runs both.
-REPORTED_GLOW_LABEL = 'GLOW-GLM'
+# The GLOW variant the figures report, and the only one on the shared leaf
+# grid: benchmark.plot drops the other three (_ARMS_SKIP) and calls this one
+# plainly GLOW. It is also the only variant the runtime caches time -- all
+# four run the same permutation walk over the same shapes and differ in what
+# Ward is handed and how the significant set is cut, neither of which moves a
+# timing, so a second set would be a second copy of one curve.
+REPORTED_GLOW_LABEL = 'GLOW-Focus-greedy'
 
 # ---------- how a leaf's fit runs (never what it computes) -------------------
 # fit_params is forwarded to Analysis.fit by the leaf (run.run_ana) and is
@@ -195,9 +207,28 @@ GLOW_FIT_PARAMS = dict(n_jobs=GLOW_FIT_N_JOBS, gpu='auto')
 # Only the ana rides into the cell, plus how to run it; the method name (the
 # ana_kwargs_dict key) is recovered from the recipe at read time (see
 # benchmark.plot), so it never enters the call or the cache key.
-RUN_ANA_LIST = [dict(ana=ana, fit_params=grid.fit_params_for(ana,
-                                                             GLOW_FIT_PARAMS))
-                for ana in ana_kwargs_dict.values()]
+#
+# The reported GLOW variant plus the voxel-wise arms, NOT all four GLOW
+# variants: this grid is shared by six caches, so an extra GLOW entry here
+# costs a per-perm fit in each of them. The other three are compared on
+# GLOW_ARM_LIST's cache alone.
+def _run_ana(label: str) -> dict:
+    """The run_ana leaf kwargs for one catalogue label."""
+    ana = ana_kwargs_dict[label]
+    return dict(ana=ana, fit_params=grid.fit_params_for(ana,
+                                                        GLOW_FIT_PARAMS))
+
+
+RUN_ANA_LIST = [_run_ana(label) for label in ana_kwargs_dict
+                if label == REPORTED_GLOW_LABEL
+                or label not in GLOW_LABEL_LIST]
+
+# the sweep_llr_glow cache's leaf grid: the four GLOW variants and nothing
+# else. Ward projection x selection rule, on the llr sweep's own axes at b=1,
+# which is what the choice of REPORTED_GLOW_LABEL rests on. The voxel-wise
+# arms are absent -- sweep_llr already carries them over the same cells, so
+# repeating them here would pay twice for one curve.
+GLOW_ARM_LIST = [_run_ana(label) for label in GLOW_LABEL_LIST]
 
 
 # the segment cache's leaf grid: one run_segment call per Ward mode (Naive /
@@ -241,7 +272,7 @@ RUN_STAT_LIST = grid.get_run_stat_list(
 # alone, so it gets GLOW's device + worker-count knobs like every other GLOW
 # leaf (driver.check_fit_params refuses to run it in parallel with a device
 # visible, same as RUN_ANA_LIST's GLOW cell).
-_PRUNE_GLOW_KWARGS = dict(n_perm_fwer=N_PERM_FWER,
+_PRUNE_GLOW_KWARGS = dict(n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER,
                           alpha_fwer=ALPHA_FWER, fit_params=GLOW_FIT_PARAMS)
 PRUNE_RULES = ['single_max', 'greedy', 'dp', 'oracle']
 PRUNE_CLUSTER_MODES = [ClusterMode.FOCUS, ClusterMode.GLM_ERROR]
@@ -425,6 +456,18 @@ CONFIG = {
         data_grid(b_list=B_LLR_SWEEP),
         effect_grid(llr_list=EFFECT_LLR_GRID),
         RUN_ANA_LIST, run_ana),
+    # C. Which GLOW variant to report: Ward projection x selection rule, on
+    #    sweep_llr's own axes at b=1. b=1 alone because the choice is between
+    #    four variants of one arm rather than a power curve -- a second b
+    #    would double the fits to re-read the same ranking -- and its cells
+    #    are sweep_llr's b=1 cells, so every data / effect build is a hit and
+    #    only the fits are new. REPORTED_GLOW_LABEL is the variant this cache
+    #    picks out; benchmark.plot keeps all four under their own labels here
+    #    (_BOTH_ARM_CACHES) and drops the unreported three everywhere else.
+    'sweep_llr_glow': (
+        data_grid(b_list=(1,)),
+        effect_grid(llr_list=EFFECT_LLR_GRID),
+        GLOW_ARM_LIST, run_ana),
     # D. Detection vs effect extent (fixed per-voxel effect_llr).
     'sweep_extent': (
         data_grid(),

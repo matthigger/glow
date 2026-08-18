@@ -411,7 +411,7 @@ class TestRunStat:
 # ---------------------------------------------------------------------------
 
 class TestRunPrune:
-    _GLOW = dict(n_perm_fwer=4, alpha_fwer=0.05)
+    _GLOW = dict(n_perm_fwer=4, n_perm_inner=4, alpha_fwer=0.05)
 
     def _planted(self):
         return _planted_cell(
