@@ -9,12 +9,11 @@ Colours are coordinated with the image slicer overlay.
 
 Marker shape names the image's fold in a split-fold fit
 (AnalysisGLOWSplit): squares for the segmentation fold that built the Ward
-tree, circles for the held-out test fold every statistic comes from. The
-distinction is the whole point of the panel on a Ward-chosen region, whose
-mean is selected to track the design in the segmentation fold and so slopes
-far steeper there than in the fold that tested it -- two clouds, one per
-fold, around a single pooled fit. A per-perm fit (AnalysisGLOW) segments on
-every image and has no fold to name, so its images draw as one cloud.
+tree, circles for the held-out test fold every statistic comes from. On a
+Ward-chosen region the two separate visibly -- its mean was selected to
+track the design in the segmentation fold, so it slopes far steeper there
+than in the fold that tested it. A per-perm fit (AnalysisGLOW) has no fold
+to name, so its images draw as one cloud.
 """
 
 import numpy as np

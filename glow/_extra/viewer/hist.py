@@ -1,28 +1,23 @@
 """Per-region histogram of the FWER draws, for the glow viewer.
 
-The scatter shows each region as one point: its observed LLR, and the two
-moments that turned it into a z. This shows the column those moments came
-out of -- every draw the fit took for that region -- which is the one
-question the summary cannot answer: whether a region's null is the smooth
-bell its mean and std stand in for, or something the pair misrepresents.
+Where the scatter shows each region as one point -- its observed LLR and the
+two moments that turned it into a z -- this shows the column those moments
+came out of: whether a region's null is the bell the pair stands in for.
 
-Only available when the analysis kept its draw matrix
-(a GLOW fit with keep_stat=True); the viewer hides this whole panel
-otherwise, so nothing here handles a missing .stat.
+Only available when the analysis kept its draw matrix (a GLOW fit with
+keep_stat=True); the viewer hides the panel otherwise, so nothing here
+handles a missing .stat.
 
-Regions overlay, coloured by the same palette index the image overlay and
-the regression panel use, so one region is the same colour everywhere in
-the dashboard. Overlaying raw LLR is only legible for regions of a similar
-size -- LLR carries a 0.5 * size prefactor, so a big region's null sits
-entirely to the right of a small one's -- which is what the z unit is for:
-it maps every region's draws onto the scale the FWER comparison actually
-happens on, where the nulls land on top of each other and the tails are
-comparable.
+Regions overlay in the shared palette, so one region is the same colour
+everywhere in the dashboard. Raw LLR is legible only across regions of a
+similar size, LLR carrying a 0.5 * size prefactor, which is what the z unit
+is for: it puts every region's draws on the scale the FWER comparison
+happens on, where the nulls land on top of each other.
 
-The observed draw (row 0) is in the histogram like any other, because it is
-one: it is exchangeable with the permuted rows and contributes to mu and
-std on equal footing (Analysis.z_score_stat). It also gets its own dashed
-line, since where it falls in its own null is the point of looking.
+The observed draw (row 0) is in the histogram like any other, being
+exchangeable with the permuted rows and contributing to mu and std with them
+(Analysis.z_score_stat). It also gets its own dashed line, since where it
+falls in its own null is the point of looking.
 """
 
 import numpy as np

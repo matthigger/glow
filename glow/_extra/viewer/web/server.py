@@ -15,13 +15,12 @@ there. Only files of the configured record are ever fetched and unpickled
 uploaded (untrusted) pickle (that would be arbitrary-code-execution; see
 README.md).
 
-Why a dispatcher, and why one worker: Flask forbids registering routes
-after the first request, so a per-file viewer cannot be mounted onto the
-shared server at request time. Instead each viewer is its own Dash app on
-its own server, added to the dispatcher's mount table at runtime; a bound
-LRU evicts the oldest when MAX_MOUNTS is exceeded. The mount table lives
-in the worker process, so the deployment runs a single gunicorn worker
-(threads, not processes) -- see the Dockerfile.
+Flask forbids registering routes after the first request, so a per-file
+viewer cannot be mounted onto the shared server at request time. Hence the
+dispatcher: each viewer is its own Dash app, added to the mount table at
+runtime, with a bound LRU evicting the oldest past MAX_MOUNTS. That table
+lives in the worker process, so the deployment runs a single gunicorn
+worker (threads, not processes) -- see the Dockerfile.
 
 Run locally:
     python -m glow._extra.viewer.web.server            # dev, port 7860

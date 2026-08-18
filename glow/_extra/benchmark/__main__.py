@@ -90,12 +90,10 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
     drive.
 
     methods narrows each cache's leaf grid to the named analysis recipes
-    (grid.filter_ana_list), which is how one method is rerun on its own after
-    its recipe changed: completeness is judged against the narrowed grid, so a
-    cell already holding those leaves is skipped and the recipes left out are
-    never called -- the sibling methods' fits are not recomputed. A selected
-    cache with no matching recipe (a segment / prune / vba_stat leaf grid,
-    which has no per-method axis) is skipped.
+    (grid.filter_ana_list), which is how one method is rerun after its recipe
+    changed: completeness is judged against the narrowed grid, so the recipes
+    left out are never called and no sibling fit is recomputed. A cache with no
+    per-method axis (segment / prune / vba_stat) is skipped.
 
     The HCP reference dataset is ensured once up front (idempotent / cached)
     for the HCP-backed caches.

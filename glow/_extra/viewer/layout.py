@@ -72,20 +72,17 @@ def _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
 def _permutation_panel():
     """Build the permutation-draw histogram panel.
 
-    Shares the detail row with the regression panel, and its shape: the
-    two are the same kind of thing, a per-region detail view of whatever
-    the scatter has selected. Where the scatter puts a region's observed
-    LLR at a point, this puts the whole column of draws that point was
-    scored against.
+    Shares the detail row, and its shape, with the regression panel: both
+    are per-region views of whatever the scatter has selected. Where the
+    scatter puts a region's observed LLR at a point, this puts the whole
+    column of draws that point was scored against.
 
-    Built only for an analysis fit with keep_stat=True -- there are no
-    draws to show otherwise, and REGRESSION takes the width back.
+    Built only for a fit with keep_stat=True; otherwise REGRESSION takes the
+    width back.
 
-    Three knobs, one per way the overlay stops being readable: the unit
-    (raw LLR separates regions by size, since LLR carries a 0.5 * size
-    prefactor; z puts every region on the scale the FWER comparison
-    actually happens on), the bin count, and a log count axis for the tail
-    that sets the threshold.
+    Three knobs, one per way the overlay stops being readable: the unit (raw
+    LLR separates regions by size, z puts them on the FWER comparison's own
+    scale), the bin count, and a log count axis for the tail.
     """
     _dd_label = {'fontSize': '11px', 'fontWeight': 'bold',
                  'marginBottom': '2px'}

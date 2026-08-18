@@ -1,12 +1,12 @@
 """Fetch individual pickled experiments from one published Zenodo record.
 
 The web viewer lets a user browse the files of a single, pre-configured
-Zenodo record and load one pickle into an interactive Dash view. The
-record id is an allowlist: only files belonging to that record are ever
-downloaded and unpickled, so the viewer never deserialises bytes from an
-untrusted source. This is the whole point of fetching by record id rather
-than accepting an upload -- pickle.load on attacker-supplied bytes is
-arbitrary code execution (see glow/_extra/viewer/web/README.md).
+Zenodo record and load one pickle into an interactive Dash view. The record
+id is an allowlist: only files belonging to that record are ever downloaded
+and unpickled, so the viewer never deserialises untrusted bytes -- which is
+why it fetches by record id rather than accepting an upload, pickle.load on
+attacker-supplied bytes being arbitrary code execution (see the web
+README.md).
 
 Zenodo's public read API needs no authentication. A GET of
 {api_base}/records/{record_id} returns a JSON record whose files live

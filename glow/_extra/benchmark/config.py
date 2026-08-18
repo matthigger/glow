@@ -301,9 +301,8 @@ def effect_grid(**kwargs):
 # but the swept axis at the shared centre. Held that still, the ratio between
 # two points is the growth in that axis, which is what the paper's cost model
 # claims: linear in num_vox and num_img, quadratic in b, linear in each
-# permutation count. Not a formal complexity result -- a measured middle ground
-# short of one. GLOW only: it is GLOW's cost model being made good on, and the
-# voxel-wise arms are already compared where the comparison belongs, above.
+# permutation count. Measured, not a formal complexity result. GLOW only -- it
+# is GLOW's cost model being checked, and the arms are compared above.
 RUNTIME_N_SEED = 3
 
 # num_vox sweep: 1k -> the full HCP support (224,619 voxels, one connected
