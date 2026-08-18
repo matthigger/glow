@@ -8,14 +8,15 @@ Every knob is a constant below -- edit and run:
 
     PYTHONPATH=<this worktree> ~/venv_glow/bin/python scripts/bakeoff_hcp.py
 
-Feedback while it runs. A seed's cells are fit in one pass, then two files
-are rewritten before the next seed starts:
+Feedback while it runs, at two grains:
 
-  - OUT_JSONL, one row per (seed, effect_llr, variant): the raw scores, so
-    nothing is lost if the run is interrupted and a rerun resumes rather
-    than repeats (rows already present are skipped).
-  - OUT_MD, a timestamped markdown summary over every row so far --
-    Dice, regions declared, the false-region rate and seconds per fit.
+  - OUT_JSONL takes one row per (seed, effect_llr, variant) as each fit
+    lands, so nothing is lost if the run is interrupted and a rerun resumes
+    rather than repeats (rows already present are skipped).
+  - OUT_MD is a timestamped markdown summary over every row so far --
+    Dice, regions declared, the false-region rate and seconds per fit --
+    rewritten after every cell, so it moves every few minutes rather than
+    once a seed.
 
 Touches no cache and writes no record: the cells are built through the
 benchmark's builders with their cache and recorder peeled off (see
@@ -310,7 +311,7 @@ def main():
                     f.flush()
                     print(f'seed {seed} llr {llr:.6f} {name:14s} '
                           f'{sec:7.1f}s dice {row["dice"]:.3f}', flush=True)
-        write_md(read_rows(OUT_JSONL), time.perf_counter() - tic)
+            write_md(read_rows(OUT_JSONL), time.perf_counter() - tic)
         print(f'--- seed {seed} done, {OUT_MD} updated', flush=True)
 
 
