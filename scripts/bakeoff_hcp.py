@@ -1,8 +1,12 @@
-"""Bake the GLOW arms off against the voxel arms on HCP, one seed at a time.
+"""Bake GLOW variants off against the voxel arms on HCP, one seed at a time.
 
-The head-to-head behind the arm choice: both GLOW arms (per-perm and split)
-in both Ward modes, beside the voxel-wise arms they have to beat, on planted
-HCP cells at a crop small enough that a whole seed finishes in minutes.
+SWEEP picks what varies. 'arms' is the head-to-head behind the arm choice:
+both GLOW arms (per-perm and split) in both Ward modes, beside the
+voxel-wise arms they have to beat. 'min_vox' holds the winning arm and
+sweeps the FWER family's size floor instead. Either way the cells are
+planted HCP experiments at a crop small enough that a seed finishes in
+minutes, and the strongest voxel-wise arm (REF_ARM) rides along as the
+reference every paired difference is taken against.
 
 Every knob is a constant below -- edit and run:
 
@@ -45,6 +49,20 @@ from glow.analysis.mancova import get_hotel_tr, get_wilks
 from glow.analysis.prune import prune_by_rule, prune_oracle
 from glow.effect import ExtenterMinVar, ExtenterSphere
 
+# ---- which sweep to run -----------------------------------------------
+# 'arms' compares every arm at the default size floor. 'min_vox' sweeps that
+# floor on the per-perm arms alone -- raising it shrinks the FWER family, so
+# the max-stat threshold falls, at the cost of excluding a true effect
+# smaller than the floor. The two sweeps write separate files, so switching
+# never disturbs the other's rows.
+SWEEP = 'min_vox'
+# the planted support is EFFECT_N_VOX_FRAC of the crop (500 voxels at the
+# constants below), so a floor at or above that excludes the effect itself
+# and declares nothing. These bracket from no floor up to 30% of the
+# support, which is where a floor can cut the family without cutting the
+# truth.
+MIN_VOX_LIST = (1, 20, 50, 150)
+
 # ---- the cell ---------------------------------------------------------
 CROP_N_VOX = 5_000
 B = 1
@@ -54,7 +72,12 @@ EFFECT_N_VOX_FRAC = 0.1
 # these are the same cells a real sweep would plant), cut to the band where
 # the arms separate: below it every arm is at the floor, above it every arm
 # saturates, and neither end tells us which arm to pick.
-LLR_LIST = tuple(float(v) for v in EFFECT_LLR_GRID[4:9])
+# the min_vox sweep takes the low three: the floor can only matter where the
+# arms are not already saturated, and the arm sweep found the top two points
+# at Dice ~0.99 for everything.
+LLR_LIST = tuple(float(v) for v in
+                 (EFFECT_LLR_GRID[4:7] if SWEEP == 'min_vox'
+                  else EFFECT_LLR_GRID[4:9]))
 SEED_LIST = tuple(range(50))
 
 # ---- the analyses -----------------------------------------------------
@@ -87,18 +110,32 @@ RULE_LIST = (
 
 # ---- output -----------------------------------------------------------
 OUT_DIR = pathlib.Path.home() / 'Dropbox' / 'glow' / 'results'
-OUT_MD = OUT_DIR / 'bakeoff_hcp_5k.md'
-OUT_JSONL = OUT_DIR / 'bakeoff_hcp_5k.jsonl'
+_STEM = 'bakeoff_hcp_5k' if SWEEP == 'arms' else f'bakeoff_{SWEEP}_5k'
+OUT_MD = OUT_DIR / f'{_STEM}.md'
+OUT_JSONL = OUT_DIR / f'{_STEM}.jsonl'
 
 
 def variant_dict() -> dict:
-    """Build the arms to compare, all at one outer permutation count.
+    """Build the variants to compare, all at one outer permutation count.
 
     Returns:
         dict: variant name -> an unfitted Analysis. Insertion order is the
-            column order of the report.
+            column order of the report. REF_ARM is always present, so a
+            paired difference against it is available in either sweep.
     """
     base = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
+    ref = {'VBA-TFCE': AnalysisVBA(get_stat=get_wilks, z_flag=True,
+                                   tfce_flag=True, **base)}
+    if SWEEP == 'min_vox':
+        out = {}
+        for label, mode in (('Focus', ClusterMode.FOCUS),
+                            ('GLM', ClusterMode.GLM_ERROR)):
+            for min_vox in MIN_VOX_LIST:
+                out[f'perperm-{label}-mv{min_vox}'] = AnalysisGLOW(
+                    n_perm_inner=N_PERM_INNER, cluster_mode=mode,
+                    min_vox=min_vox, **base)
+        return {**out, **ref}
+
     return {
         'split-Focus': AnalysisGLOWSplit(cluster_mode=ClusterMode.FOCUS,
                                          **base),
@@ -111,9 +148,8 @@ def variant_dict() -> dict:
                                     **base),
         'VBA': AnalysisVBA(get_stat=get_hotel_tr, z_flag=False,
                            tfce_flag=False, **base),
-        'VBA-TFCE': AnalysisVBA(get_stat=get_wilks, z_flag=True,
-                                tfce_flag=True, **base),
         'CET': AnalysisCET(get_stat=get_hotel_tr, z_flag=False, **base),
+        **ref,
     }
 
 
@@ -507,7 +543,7 @@ def write_md(rows, elapsed_sec: float) -> None:
     n_started = len({(row['seed'], row['llr']) for row in rows})
     stamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-    text = f"""# GLOW arm bake-off -- HCP, {CROP_N_VOX} voxels
+    text = f"""# GLOW {SWEEP} bake-off -- HCP, {CROP_N_VOX} voxels
 
 updated **{stamp}** | seeds complete **{len(seed_done)}** of \
 {len(SEED_LIST)} ({', '.join(str(s) for s in seed_done) if seed_done
