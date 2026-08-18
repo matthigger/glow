@@ -18,23 +18,18 @@ import glow.effect
 import glow.graph
 
 
-# Smallest std that may divide a z-score. A degenerate column (every draw
-# identical, or a single valid draw) keeps its measured 0 or NaN in the
-# reported std; only the divisor is replaced, so z comes back 0 rather than
+# Smallest std that may divide a z-score. Only the divisor is floored, so a
+# degenerate column keeps its measured 0 or NaN and z comes back 0 rather than
 # +-inf. Shared with the streaming device reduction, which standardizes a
-# chunk at a time and must not pick its own floor
-# (glow.analysis.draws_gpu.gpu_summarize).
+# chunk at a time and must not pick its own floor (draws_gpu.gpu_summarize).
 Z_STD_FLOOR = 1e-12
 
 
 def resolve_n_jobs(n_jobs: int) -> int:
     """Clamp a requested worker count to the cores this machine has.
 
-    A benchmark config names one worker count for every machine it may run
-    on (glow._extra.benchmark.config.GLOW_FIT_N_JOBS) and joblib takes
-    n_jobs literally, so 32 there is 32 processes on a 4-core Batch
-    container, each holding its own copy of y. Clamping makes the config's
-    figure an upper bound rather than a demand. Negative counts keep
+    joblib takes n_jobs literally, so a config's 32 is 32 processes on a
+    4-core machine, each holding its own copy of y. Negative counts keep
     joblib's reading (-1 all cores, -2 all but one).
 
     Args:
@@ -52,10 +47,9 @@ def resolve_n_jobs(n_jobs: int) -> int:
 def reject_gpu(gpu, name: str) -> None:
     """Raise if a device fit was demanded of an analysis with no backend.
 
-    Every fit takes gpu so one fit_params dict can be handed to any recipe
-    (glow._extra.benchmark.run.run_ana). gpu='auto' asks for a device only
-    where one helps, so it is a silent no-op here; an explicit gpu=True is
-    an error rather than a silent hour on the CPU.
+    Every fit takes gpu so one fit_params dict reaches any recipe.
+    gpu='auto' is a silent no-op here; an explicit gpu=True is an error
+    rather than a silent hour on the CPU.
 
     Args:
         gpu: the fit(gpu=...) argument.
@@ -84,9 +78,8 @@ class Analysis(ABC):
             and the per-draw null (set by fit)
     """
 
-    # the __init__ config knobs that identify the recipe -- the fields __repr__
-    # renders. Subclasses declare their own. Never includes exp, the fitted
-    # arrays, or fwer -- only the immutable recipe.
+    # the __init__ knobs that identify the recipe, and the fields __repr__
+    # renders; never exp, the fitted arrays or fwer
     RECORD_FIELDS = ()
 
     def __init__(self):
@@ -96,11 +89,8 @@ class Analysis(ABC):
     def __repr__(self):
         """A compact recipe string: class name + the RECORD_FIELDS knobs.
 
-        Reuses RECORD_FIELDS (the config subset that identifies the recipe) as
-        the single source of truth, so the repr tracks the recipe automatically
-        and never shows fitted arrays or the experiment. A stat-function knob
-        renders as its __name__, so it stays an address-free name rather than
-        '<function ... at 0x...>'.
+        A stat-function knob renders as its __name__, so the repr carries no
+        memory address.
         """
         parts = []
         for name in self.RECORD_FIELDS:
@@ -119,11 +109,8 @@ class Analysis(ABC):
         passes through), then compute.
 
         n_jobs and gpu are the execution contract every recipe honours, so
-        one fit_params dict reaches any of them (see
-        glow._extra.benchmark.run.run_ana). Neither changes the result: a
-        fit is identical at any n_jobs (permutations are seeded by index)
-        and on either device (the GLOW arms' _fit_gpu draws the same
-        permutations in float64), which is why neither enters a recipe's
+        one fit_params dict reaches any of them. Neither changes the result
+        -- permutations are seeded by index -- which is why neither enters
         RECORD_FIELDS or a benchmark cache key.
 
         Args:
@@ -143,18 +130,11 @@ class Analysis(ABC):
     def z_score_stat(cls, stat):
         """Z-score each voxel across permutations (observed row included).
 
-        For each voxel, the mean and std are computed from all rows
-        — the observed row (0) together with the permutation null (1:) —
-        then every row is standardized by that voxel's empirical mean and
-        std.  This equalizes per-voxel scale so max-stat FWER is not
-        biased by regional heterogeneity.
-
-        Under H0 the observed row is exchangeable with the permuted rows
-        (Phipson & Smyth 2010; Winkler et al. 2014), so it must contribute
-        to the standardization on equal footing — otherwise row 0 is
-        divided by a std it did not contribute to while rows 1: are
-        divided by a std they did, and max-stat FWER drifts above
-        nominal at finite B (see test_stat_reliability.py).
+        Standardizing per voxel equalizes scale, so max-stat FWER is not
+        biased by regional heterogeneity. Row 0 enters the moments with the
+        permuted rows because under H0 it is exchangeable with them
+        (Phipson & Smyth 2010; Winkler et al. 2014); excluding it drifts
+        FWER above nominal at finite B.
 
         Args:
             stat (np.array): (n_perm+1, num_vox) statistics.
@@ -335,14 +315,8 @@ class AnalysisVoxel(Analysis):
         Row k depends only on k (exp.permute(k) is seeded by k), so the
         matrix is identical regardless of n_jobs.
 
-        A region with no usable statistic is left NaN, which every reader
-        of this matrix skips: nanmean / nanstd in z_score_stat, the
-        sub-threshold blank in apply_tfce_stat, nanquantile for the CET
-        threshold, nanmax and the isfinite guard in MaxStatPerm. Nothing here
-        repairs it, because there is nothing left to repair -- no stat
-        function can return +-inf (see mancova) and the voxels with no
-        variance to test are gone before an analysis sees the data
-        (Experiment.drop_constant_vox).
+        A region with no usable statistic is left NaN, and every reader of
+        this matrix skips NaN rather than repairing it.
 
         Args:
             exp (Experiment): experiment to walk (already scaled).

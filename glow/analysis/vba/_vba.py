@@ -130,9 +130,9 @@ class AnalysisVBA(AnalysisVoxel):
             backend (str or None): 'auto', 'fsl' or 'python' (see
                 _tfce.resolve_backend); None takes the module default.
                 A speed knob, deliberately outside RECORD_FIELDS so a
-                cached fit does not re-key on whether the machine had
-                FSL. The backends use different height grids and so
-                differ by ~5e-3 relative; see the _tfce module docstring.
+                cached fit does not re-key on whether the machine had FSL.
+                The backends use different height grids, so they differ
+                slightly; see the _tfce module docstring.
 
         Returns:
             tfce (np.array): (n_perm+1, num_vox) TFCE-enhanced stats

@@ -115,12 +115,10 @@ class AnalysisCET(AnalysisVoxel):
         maxima (Nichols & Holmes 2002).
 
         The clusters reform in every draw, so there is no fixed region
-        family to index a (n_perm+1, num_reg) matrix of sizes into and the
-        null is accumulated a draw at a time. That is the whole reason
-        this builds the null itself instead of handing a matrix to
-        MaxStatPerm.from_stat; the comparison is still the shared
-        MaxStatPerm.from_max, which is what keeps this arm on the same
-        p-value convention as VBA and GLOW.
+        family to index a matrix of sizes into and the null is accumulated
+        a draw at a time -- which is why this builds the null itself rather
+        than handing a matrix to MaxStatPerm.from_stat. The comparison is
+        still the shared MaxStatPerm.from_max.
 
         Args:
             stat (np.array): (n_perm+1, num_vox) stats (row 0 = observed)

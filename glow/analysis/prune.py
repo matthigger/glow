@@ -18,8 +18,7 @@ import numpy as np
 from ..graph import get_fp_tp, get_parent, SCGraph
 
 # prune_oracle's Dinkelbach loop: a Dice gain this small is a fixed point.
-# The iteration converges superlinearly, so the cap only guards against a
-# pathological cycle -- a few rounds is the norm.
+# The iteration converges superlinearly, so the cap only guards a cycle.
 _DICE_TOL = 1e-9
 _DICE_MAX_ITER = 32
 
@@ -153,21 +152,19 @@ def _dice(reg_list, tp, size, n_target: float) -> float:
 def prune_oracle(sig_reg_list: list, children, mask_target, mask_idx) -> tuple:
     """Prune significant regions to the antichain of largest Dice.
 
-    The oracle rule: of every disjoint antichain of the significant set, the
-    one whose union best matches a known target support. It is handed the
-    ground truth, so it measures headroom -- what a perfect selector could
-    still win off this fit -- rather than being a method one could run on
-    real data (see the module docstring).
+    Of every disjoint antichain of the significant set, the one whose union
+    best matches a known target support. Handed the ground truth, so it
+    measures headroom rather than being a method (see the module docstring).
 
     Exact, not a search. Dice over a disjoint selection is 2T/(P + G), a
     ratio of two sums over the selected regions, so maximizing it is a
     linear-fractional program over the tree's antichains. Dinkelbach's
     iteration (Dinkelbach 1967) reduces it to a handful of max-total-gain
     antichains: at the current Dice d, the antichain maximizing
-    sum(2*tp - d*size) either beats d -- and becomes the next d -- or proves
-    d optimal. Each round is one exact dp_antichain over the same
-    short-circuited significant subgraph prune_dp runs on, started from the
-    best single region so every round climbs from a feasible point.
+    sum(2*tp - d*size) either beats d -- becoming the next d -- or proves d
+    optimal. Each round is one dp_antichain over the same subgraph prune_dp
+    runs on, started from the best single region so every round is
+    feasible.
 
     Args:
         sig_reg_list (list): int regions declared significant (via FWER)

@@ -7,16 +7,14 @@ AnalysisGLOWSplit that matrix is the whole hypothesis family -- its column
 moments standardize the regions and its row maxima are the max-z null; for
 AnalysisGLOW it is one outer perm's inner null, drawn once per tree.
 
-Three CPU entry points, all over that one matrix, all agreeing on it:
+Three CPU entry points over that one matrix, all agreeing on it:
 
-  - cpu_reliable -- deliberately the slow implementation, per draw and per
-    region through iter_mancova + get_llr with no batching and no
-    hoisting. It exists to be obviously correct, so the optimised backends
-    can be validated against it cell by cell. Never what a fit takes.
+  - cpu_reliable -- per draw and per region through iter_mancova + get_llr,
+    unbatched. Slow (~35x cpu_batched) and obviously correct, so the
+    optimised backends can be validated against it cell by cell.
   - cpu_batched -- the same matrix through glow.graph.iter_llr_perm: one
     GEMM plus cumsum-and-diff over the DFS pre-order voxel axis per
-    perm-chunk. Measured 35x cpu_reliable, and the pair's agreement is
-    what test_draws.py pins.
+    perm-chunk.
   - cpu_summary -- cpu_batched's draws reduced to a DrawSummary while
     streaming, never holding the matrix. What both GLOW arms take on the
     CPU.
@@ -27,16 +25,12 @@ All three share a keyword-only signature and a seed-to-draw mapping:
         exp=exp, base_seed=0, n_perm=n_perm_fwer + 1,
         q0=q0, q1=q1, children=children, min_vox=min_vox)
 
-base_seed is the starting RNG seed: draw i uses base_seed + i. Seed 0 is
-the identity (permute._perm_indices), so base_seed=0 puts the observed
-draw in row 0 and the null in rows 1:.
+Draw i uses seed base_seed + i, and seed 0 is the identity
+(permute._perm_indices), so base_seed=0 puts the observed draw in row 0.
 
-DrawSummary is the other half of this module: the five arrays a fit keeps
-of a draw matrix, and so the contract a streaming backend has to meet. The
-matrix runs to ~16.7 GiB at 5001 draws and full-brain num_vox, which is why
-neither streaming path forms one (cpu_summary, draws_gpu.gpu_summarize).
-summarize_draws is that same reduction taken over a materialized matrix --
-the reference the streaming ones are held against.
+DrawSummary is the other half of the module: the five arrays a fit keeps of
+a draw matrix, hence the contract a streaming backend must meet.
+summarize_draws is that reduction over a materialized matrix.
 """
 from dataclasses import dataclass
 
@@ -53,16 +47,13 @@ def cpu_reliable(*, exp, base_seed: int, n_perm: int, q0, q1, children,
                  min_vox: int):
     """Compute the trust-anchor (n_perm, num_reg) LLR draws.
 
-    Thin wrapper over the per-region iter_mancova + get_llr path: for
-    each draw, FL-permute via exp.permute(base_seed + i), then iterate
-    (reg_idx, size, e, h) per region and finish with
-    get_llr(e, h, n=size). No batching, no closed-form 2x2 slogdet, no
-    Phase-1 hoisting -- an independent code path from
-    compute_llr_batched for cross-validating the optimised backends.
+    For each draw, FL-permute via exp.permute(base_seed + i), then iterate
+    (reg_idx, size, e, h) per region and finish with get_llr(e, h, n=size):
+    an independent code path from the batched kernel, which is what makes
+    it the anchor.
 
-    q0 / q1 are accepted for interface parity but unused: iter_mancova
-    recomputes them internally via decompose(exp.x, exp.contrast), which
-    is exactly the same (q0, q1) the caller would have passed in.
+    q0 / q1 are accepted for interface parity but unused -- iter_mancova
+    recomputes the same pair internally.
 
     Args:
         exp (Experiment): experiment to sample permutations from
@@ -94,11 +85,8 @@ def _iter_batched(*, exp, base_seed: int, n_perm: int, q0, q1, children,
                   min_vox: int, perm_chunk: int):
     """Open a batched-kernel chunk generator over the same draws.
 
-    The seed-to-draw mapping cpu_reliable states, handed to
-    glow.graph.iter_llr_perm: draw i is permute._perm_indices(base_seed +
-    i), so base_seed=0 puts the observed draw in row 0. Kept in one place
-    because cpu_batched and cpu_summary both open one and must agree draw
-    for draw.
+    The seed-to-draw mapping handed to glow.graph.iter_llr_perm, in one
+    place because cpu_batched and cpu_summary must agree draw for draw.
 
     Args:
         exp (Experiment): experiment to sample permutations from
@@ -129,19 +117,13 @@ def cpu_batched(*, exp, base_seed: int, n_perm: int, q0, q1, children,
                 min_vox: int, perm_chunk: int = 8):
     """Compute the (n_perm, num_reg) LLR draws via the batched kernel.
 
-    A drop-in for cpu_reliable -- same keyword-only signature, same
-    seed-to-draw mapping, same NaN convention -- riding
-    glow.graph.iter_llr_perm instead of the per-region walk: one GEMM plus
-    cumsum-and-diff over the DFS pre-order voxel axis per chunk. Measured
-    35x faster than cpu_reliable, flat across num_vox from 500 to 4,000
-    (both are linear in it), and the two agree cell by cell to fp64
-    round-off -- which is the whole point of keeping cpu_reliable.
+    A drop-in for cpu_reliable -- same signature, seed-to-draw mapping and
+    NaN convention -- riding glow.graph.iter_llr_perm instead of the
+    per-region walk, and agreeing with it to fp64 round-off.
 
-    Materializes the matrix, so peak memory is (n_perm, num_reg) float64:
-    1.8 GiB at 501 draws and full-brain num_vox, 16.7 GiB at 5001. A fit
-    wants cpu_summary instead, which streams. This exists for the callers
-    that want the raw draws -- the fidelity comparisons against
-    cpu_reliable, and anything folding or slicing rows itself.
+    Materializes the matrix, so peak memory is (n_perm, num_reg) float64. A
+    fit wants the streaming cpu_summary; this is for callers that need the
+    raw draws.
 
     Args:
         exp (Experiment): experiment to sample permutations from
@@ -168,10 +150,9 @@ class DrawSummary:
     """Everything a GLOW fit keeps of its (n_perm, num_reg) draw matrix.
 
     Five arrays, all O(num_reg) or O(n_perm), against a matrix that is
-    their product. Whether a backend materializes the matrix and reduces it
+    their product. Whether a backend reduces a materialized matrix
     (summarize_draws) or accumulates these while streaming it
-    (draws_gpu.gpu_summarize) is an implementation choice the fit cannot
-    see, which is what lets the two be swapped and compared.
+    (draws_gpu.gpu_summarize) is invisible to the fit.
 
     Attributes:
         llr (np.array): (num_reg,) observed per-region LLR -- row 0 of the
@@ -197,9 +178,8 @@ def summarize_draws(draws, *, reg_active):
     """Reduce a materialized draw matrix to a DrawSummary.
 
     Routes the standardization through Analysis.z_score_stat and the row
-    maxima through fwer.max_over_active, so this holds no convention of its
-    own -- it is the composition a fit would otherwise write inline, named
-    once so a streaming backend has something to be equal to.
+    maxima through fwer.max_over_active, so it holds no convention of its
+    own -- named once so a streaming backend has something to equal.
 
     Args:
         draws (np.array): (n_perm, num_reg) per-draw LLR, row 0 observed
@@ -219,13 +199,11 @@ def summarize_draws(draws, *, reg_active):
 def _chan_combine(chunk, n, mean, m2):
     """Fold one (Pc, num_reg) draw-chunk into running per-region moments.
 
-    The numpy twin of draws_gpu._chan_combine, and Chan's parallel-combine
-    rule (Chan, Golub & LeVeque 1979) for the same reason: var << mean^2
-    here (LLR carries a 0.5 * size prefactor), exactly where a naive
-    sum / sum-of-squares pass loses the variance to cancellation. NaN cells
-    are excluded from the count, which is what makes the finalized moments
-    nanmean / nanstd(ddof=1) -- Analysis.z_score_stat's convention over a
-    whole matrix.
+    The numpy twin of draws_gpu._chan_combine. Chan's parallel-combine rule
+    (Chan, Golub & LeVeque 1979) because var << mean^2 here (LLR carries a
+    0.5 * size prefactor), where a naive sum-of-squares pass loses the
+    variance to cancellation. NaN cells leave the count, which makes the
+    finalized moments nanmean / nanstd(ddof=1).
 
     Args:
         chunk (np.array): (Pc, num_reg) draws, NaN where invalid
@@ -275,20 +253,16 @@ def cpu_summary(*, exp, base_seed: int, n_perm: int, q0, q1, children,
                 min_vox: int, reg_active, perm_chunk: int = 8):
     """Summarize the CPU draw matrix without ever forming it.
 
-    Equivalent to summarize_draws(cpu_batched(...)), at O(num_reg +
-    n_perm) memory instead of O(n_perm * num_reg) -- and the CPU
-    counterpart of draws_gpu.gpu_summarize, structured the same way so the
-    two can be read against each other.
+    Equivalent to summarize_draws(cpu_batched(...)) at O(num_reg + n_perm)
+    memory instead of O(n_perm * num_reg); the CPU counterpart of
+    draws_gpu.gpu_summarize.
 
     Two passes, because standardizing needs moments the first pass has not
-    finished computing. Pass one folds each chunk into Chan accumulators
-    for (mu, std) and reads the observed row off as it goes; pass two
-    re-draws the same chunks and keeps only the row maxima over the
-    comparison set. Re-drawing is exact -- a chunk is a deterministic
-    function of its permutation indices -- and buys the memory back at
-    2x the LLR work, which against cpu_reliable's 35x still leaves ~17x.
-    Unlike the device path it also repeats the kernel's Phase 1, since
-    iter_llr_perm builds that per generator rather than exposing it.
+    finished. Pass one folds each chunk into Chan accumulators for
+    (mu, std) and reads the observed row off; pass two re-draws the same
+    chunks for the row maxima. Re-drawing is exact -- a chunk is a
+    deterministic function of its permutation indices -- and costs 2x the
+    LLR work for the memory.
 
     Args:
         exp (Experiment): experiment to sample permutations from
@@ -310,9 +284,8 @@ def cpu_summary(*, exp, base_seed: int, n_perm: int, q0, q1, children,
                   perm_chunk=perm_chunk)
     num_reg = exp.y.shape[2] + children.shape[0]
 
-    # Pass 1: (mu, std). Row 0's raw LLR is read off here rather than in
-    # pass 2 -- it is the unstandardized statistic, so it owes nothing to
-    # the moments.
+    # Pass 1: (mu, std). Row 0's raw LLR is unstandardized, so it owes
+    # nothing to the moments and is read off here.
     n = np.zeros(num_reg, dtype=np.float64)
     mean = np.zeros(num_reg, dtype=np.float64)
     m2 = np.zeros(num_reg, dtype=np.float64)
@@ -324,9 +297,8 @@ def cpu_summary(*, exp, base_seed: int, n_perm: int, q0, q1, children,
     mu, std = _chan_moments(n, mean, m2)
 
     # Pass 2: z against those moments, then the two reductions a fit keeps.
-    # Z_STD_FLOOR is shared with z_score_stat so a degenerate column is
-    # divided by the same 1.0 on every path, and max_over_active is called
-    # per chunk so the max-z convention still lives in exactly one place.
+    # Z_STD_FLOOR and max_over_active are shared with z_score_stat, so the
+    # floor and the max-z convention each live in one place.
     denom = np.where(std > Z_STD_FLOOR, std, 1.0)
     max_stat = np.empty(0, dtype=np.float64)
     z_obs = None

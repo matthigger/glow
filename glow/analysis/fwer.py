@@ -4,26 +4,19 @@ Westfall & Young 1993: the max-statistic null over a comparison set fixed
 in advance controls the family-wise error rate. Each region's p-value is
 the share of per-draw maxima at least as large as its observed statistic.
 
-The observed draw is one of its own null draws -- row 0 enters the
-per-draw maxima on equal footing with rows 1:, so the denominator is
-n_perm+1 and the smallest attainable p-value is 1/(n_perm+1) rather than
-0 (Phipson & Smyth 2010). That is not a guard against zero but the
-randomization argument itself: the identity permutation belongs to the
-permutation group, so under H0 the observed statistic is exchangeable
-with the permuted ones and its rank among all n_perm+1 of them is
-uniform, which is what makes the test exact (Lehmann & Romano
-Thm 15.2.1; Hemerik & Goeman 2018). It is the same exchangeability
-Analysis.z_score_stat leans on to put row 0 inside the standardizing
-moments.
+The observed draw is one of its own null draws: row 0 enters the per-draw
+maxima with rows 1:, so the denominator is n_perm+1 and the smallest
+attainable p-value is 1/(n_perm+1) (Phipson & Smyth 2010). That is the
+randomization argument, not a guard against zero -- the identity
+permutation belongs to the group, so under H0 the observed statistic's rank
+among all n_perm+1 draws is uniform and the test is exact (Lehmann &
+Romano Thm 15.2.1; Hemerik & Goeman 2018).
 
 The comparison set must be fixed with respect to the permutation group --
-known a priori, or read off data the permutations never touch
-(AnalysisGLOWSplit's size >= min_vox comes from the segmentation fold; a
-per-perm AnalysisGLOW draws it from each perm's own tree, which is one of
-the reasons that arm has weak control only). An inactive region
-leaves both the per-draw maxima and the tested family, so a set chosen
-from the observed statistics voids FWER control silently: discarding
-whatever looks null lowers the maxima the survivors are compared against.
+known a priori, or read off data the permutations never touch. An inactive
+region leaves both the per-draw maxima and the tested family, so choosing
+the set from the observed statistics voids FWER control silently: dropping
+whatever looks null lowers the maxima the survivors face.
 """
 
 import warnings
@@ -35,12 +28,10 @@ import numpy as np
 def max_over_active(stat, reg_active):
     """Reduce a stat matrix to one max per draw over the comparison set.
 
-    The max-stat null itself, and the only place its convention lives: an
-    inactive region leaves the family, and a draw with no finite active
-    region contributes NaN rather than a number (from_max drops it, where
-    a -inf or a 0 would silently move every p-value). Streaming backends
-    that never hold the matrix reproduce this per chunk, so the convention
-    is stated once here rather than once per arm.
+    The only place the max-stat convention lives: an inactive region leaves
+    the family, and a draw with no finite active region contributes NaN
+    rather than a number (from_max drops it, where a -inf or a 0 would move
+    every p-value). Streaming backends reproduce this per chunk.
 
     Args:
         stat (np.array): (n_perm+1, num_reg) statistics per region
@@ -59,25 +50,20 @@ def max_over_active(stat, reg_active):
         return np.nanmax(stat[:, reg_active], axis=1)
 
 
-# eq=False: the generated __eq__ compares fields pairwise, which on array
-# fields raises on the ambiguous truth value rather than answering. Nothing
-# compares two results, so identity is the honest fallback.
+# eq=False: a generated __eq__ compares array fields pairwise and raises on
+# the ambiguous truth value; nothing compares two results anyway
 @dataclass(frozen=True, eq=False)
 class MaxStatPerm:
     """One max-stat permutation test: what went in, and what it decided.
 
-    Self-contained: pval and reg_sig both follow from stat_obs, max_stat,
+    Self-contained: pval and reg_sig follow from stat_obs, max_stat,
     reg_active and alpha, so a stored result stays checkable once the
-    (n_perm+1, num_reg) matrix behind it is gone -- which the GLOW arms
-    drop as soon as this is built, that matrix running to gigabytes at
-    full-brain num_vox.
+    (n_perm+1, num_reg) matrix behind it is gone.
 
-    max_stat is kept in draw order, not sorted. Sorting is what the
-    comparison needs and from_max does it internally; the per-draw
-    correspondence is the one thing a discarded matrix leaves behind.
-
-    frozen stops the fields being rebound, not the arrays being written
-    into -- this is a record, not a deep-immutable value.
+    max_stat is kept in draw order, not sorted (from_max sorts internally):
+    the per-draw correspondence is the one thing a discarded matrix leaves
+    behind. frozen stops the fields being rebound, not the arrays being
+    written into.
 
     The test (as passed to from_stat / from_max):
         stat_obs (np.array): (num_reg,) statistic tested per region --
@@ -106,10 +92,9 @@ class MaxStatPerm:
     def from_stat(cls, stat, *, alpha: float, reg_active=None):
         """Test every region of a permutation stat matrix.
 
-        The way in for an arm whose whole family sits in one matrix: VBA
-        and GLOW both build (n_perm+1, num_reg) and hand it here. See the
-        module docstring for the convention, and for what reg_active has
-        to satisfy for the result to mean anything.
+        The way in for an arm whose whole family sits in one matrix. See
+        the module docstring for the convention, and for what reg_active
+        must satisfy.
 
         Args:
             stat (np.array): (n_perm+1, num_reg) statistics per region.
@@ -136,11 +121,9 @@ class MaxStatPerm:
         """Test an observed row against a null accumulated per draw.
 
         The primitive from_stat reduces to, and the way in for a null that
-        cannot be read off one matrix: CET tests cluster sizes, and its
-        clusters reform in every draw, so it accumulates max_stat a draw
-        at a time rather than ever holding the matrix
-        (AnalysisCET._get_fwer_cet). Every arm arrives here, so none can
-        drift onto a p-value convention of its own.
+        cannot be read off one matrix -- CET's clusters reform in every
+        draw, so it accumulates max_stat a draw at a time. Every arm
+        arrives here, so none can drift onto its own p-value convention.
 
         Args:
             stat_obs (np.array): (num_reg,) observed statistic per region.
@@ -161,18 +144,14 @@ class MaxStatPerm:
         n_null = len(null_sorted)
 
         # only a finite observed statistic is tested, matching what may
-        # enter the null. n_null is then nonzero whenever anything is
-        # tested at all, the observed draw's own max being one of those
-        # entries, so the guard below only skips empty work.
+        # enter the null; the guard below therefore only skips empty work
         pval = np.full(num_reg, fill_value=np.nan)
         reg_test = reg_active & np.isfinite(stat_obs)
         if n_null:
-            # side='left' counts the strictly smaller maxima, so
-            # n_null - k is the count at least as large as the observed.
-            # Spelled (n_null - k) / n_null, never 1 - k / n_null: the
-            # latter cancels, and a p-value that should land exactly on
-            # alpha comes back an ulp above it and fails the reg_sig
-            # cutoff.
+            # side='left' counts the strictly smaller maxima, so n_null -
+            # k is the count at least as large as the observed. Spelled
+            # (n_null - k) / n_null, never 1 - k / n_null, which cancels
+            # and lands an exactly-alpha p-value an ulp above the cutoff.
             k = np.searchsorted(null_sorted, stat_obs[reg_test], side='left')
             pval[reg_test] = np.maximum((n_null - k) / n_null, 1 / n_null)
 

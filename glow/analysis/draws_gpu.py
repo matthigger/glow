@@ -35,54 +35,37 @@ permute.get_freed_lane returns the column-layout transpose
 (I - Q0 Q0^T)[:, perm] + Q0 Q0^T; glow's perm IS the textbook pi, not its
 inverse. The hot loop gathers Q01 at pi^-1.
 
-Three device-specific choices that carry most of the speed. All three
-were measured, not guessed; changing any of them costs an order of
-magnitude:
+Three device-specific choices, each worth an order of magnitude:
 
-  - the voxel axis stays LAST through the whole per-chunk loop. cumsum
-    and index_select on a non-final axis are non-coalesced and run ~16x
-    slower (14ms vs 0.9ms at num_vox=100k).
+  - the voxel axis stays LAST through the per-chunk loop; cumsum and
+    index_select on a non-final axis are non-coalesced.
   - the (b, b) Gram products go through _gram's elementwise broadcast,
-    never matmul or einsum. cuBLAS's batched-GEMM per-matrix overhead is
-    catastrophic on the tiny (b, b) outputs here -- ~33ms vs 0.06ms at
-    400k matrices of shape (2, 2). The crossover sits near b = 8.
-  - region aggregation is cumsum-and-diff on the DFS pre-order axis
-    (3 kernel launches), not a layer-by-layer tree sweep (O(log num_vox)
-    launches per channel).
+    never matmul or einsum -- cuBLAS's per-matrix overhead dominates on
+    outputs this small. The crossover sits near b = 8.
+  - region aggregation is cumsum-and-diff on the DFS pre-order axis (3
+    kernel launches), not a layer-by-layer tree sweep.
 
-Dtype policy. acc_dtype defaults to float32, which on consumer Ada parts
-is worth 2.4-5.4x over float64 (fp64 runs at 1/64 the FLOP rate). That is
-only safe because T = E + H is never formed as the difference of two
-DC-scale terms. Written directly, T = yout - a_0 a_0^T / size cancels two
-terms of magnitude num_img * size * mean(y)^2 down to the residual
-scatter; for a near-constant voxel on a large DC offset (HCP background:
-mean -0.76, across-image std 5e-4) that ratio is ~7e-8, below float32 eps,
-and the result is the a55e7237 collapse -- E becomes rounding noise, the
-per-region std collapses, and the standardized z explodes into the max-z
-null (see test_draws_hcp.py). Instead T is assembled as
+Dtype policy. acc_dtype defaults to float32, which is safe only because
+T = E + H is never formed as the difference of two DC-scale terms. Written
+directly, T = yout - a_0 a_0^T / size cancels two terms of magnitude
+num_img * size * mean(y)^2 down to the residual scatter, which for a
+near-constant voxel on a DC offset falls below float32 eps: E becomes
+rounding noise, the per-region std collapses, and z explodes into the
+max-z null (test_draws_hcp.py). Instead T is assembled as
 
     T = W_r + S_r
     W_r = reg_sum(T_v - sum_a rho_a rho_a^T)
     S_r = reg_sum(sum_a s* s*^T) - gram(reg_sum s*) / size,  s* = rho + s0
 
-an identity, not an approximation: the cross terms vanish because Q0 u = 0.
-Expanding S_r over s* = rho + s0 then splits it four ways, and two of
-those matter:
-
-  - Scat(s0, s0), the within-region spatial scatter of the nuisance
-    coefficients, is the ONLY term still carrying the DC offset -- and it
-    does not depend on the permutation at all. It is therefore folded,
-    with reg_sum(T_v), into a single hoisted T_inv computed once per tree
-    at scan_dtype (float64 by default).
-  - the rho-rho terms cancel between W_r and S_r, collapsing to a
-    region-space outer product with no per-voxel scan.
-
-What is left per draw is the rho / s0 cross term, whose two halves cancel
-only to the spatial spread of s0 relative to its DC level -- a benign
-ratio, and it rides a term that is itself a small fraction of T. So the
-per-draw loop needs no float64 at all: acc_dtype carries everything, and
-scan_dtype touches only prep. Setting scan_dtype=float32 reproduces the
-collapse, which is how the regression test pins it.
+an identity, not an approximation -- the cross terms vanish because
+Q0 u = 0. Of the four terms S_r expands into over s* = rho + s0, the
+nuisance-coefficient scatter Scat(s0, s0) is the only one still carrying
+the DC offset and does not depend on the permutation, so it is hoisted
+with reg_sum(T_v) into a per-tree T_inv at scan_dtype; the rho-rho terms
+cancel against W_r. What is left per draw is the rho / s0 cross term,
+which cancels only to the spatial spread of s0. So acc_dtype carries the
+whole per-draw loop and scan_dtype touches only prep; scan_dtype=float32
+reproduces the collapse, which is how the regression test pins it.
 """
 import numpy as np
 
@@ -116,16 +99,14 @@ def is_available() -> bool:
 def unavailable_reason() -> str:
     """Say why is_available() is False, in one clause.
 
-    The three ways a device goes missing are not equivalent and neither
-    are their fixes: no torch at all, a CPU-only torch build (pip's
-    default wheel -- torch.version.cuda is None however many cards are in
-    the machine), or a CUDA build that cannot see one (driver, container,
-    CUDA_VISIBLE_DEVICES). The middle case is the quiet one, since
-    nvidia-smi still lists the card, so it names the wheel.
+    The three ways a device goes missing want different fixes: no torch,
+    a CPU-only torch build (pip's default wheel -- torch.version.cuda is
+    None however many cards are in the machine), or a CUDA build that
+    cannot see one. The middle case is the quiet one, since nvidia-smi
+    still lists the card, so the message names the wheel.
 
-    AnalysisGLOWSplit.fit(verbose=True) prints this through
-    _fit_gpu.describe_backend, because gpu='auto' falls back without a
-    word and the CPU backend it falls back to costs ~35x (see draws).
+    Printed by fit(verbose=True) through _fit_gpu.describe_backend,
+    because gpu='auto' falls back to the CPU without a word.
 
     Returns:
         reason (str): the clause, or 'a device is visible' when one is.
@@ -169,9 +150,8 @@ def _gram_a(x):
             g[p, i, j, m] = sum_a x[p, a, i, m] x[p, a, j, m]
 
     Implemented as unsqueeze-multiply-sum, never einsum or matmul: those
-    dispatch to batched cuBLAS GEMM, which is ~500x slower than the
-    elementwise reduce at these batch counts and tiny (b, b) outputs (see
-    the module docstring).
+    dispatch to batched cuBLAS GEMM, whose per-matrix overhead dominates at
+    these tiny (b, b) outputs (see the module docstring).
     """
     return (x.unsqueeze(3) * x.unsqueeze(2)).sum(dim=1)
 
@@ -296,12 +276,10 @@ def prep_shared(exp, *, q0, q1, device: str = 'cuda',
         u  = y - Q0^T s0         (b, num_img, num_vox),   Q0 u = 0
         T_v = sum_n u u^T        (b, b, num_vox)
 
-    All three are computed once per fit and reused by every draw: a
-    Freedman-Lane draw acts on u as a gather along the image axis, leaves
-    the nuisance-fitted part alone, and cannot change T_v at all because
-    that is a sum over the image axis. So the float64 split, the
-    host-to-device transfer, and the T_v contraction happen once, outside
-    the per-chunk loop.
+    A Freedman-Lane draw gathers u along the image axis, leaves the
+    nuisance-fitted part alone, and cannot change T_v at all (a sum over
+    that same axis), so all three are computed once per fit -- the float64
+    split, the transfer and the T_v contraction stay outside the loop.
 
     Args:
         exp (Experiment): the unpermuted experiment
@@ -356,12 +334,9 @@ def prep_shared(exp, *, q0, q1, device: str = 'cuda',
 def prep_tree(shared, *, children, min_vox: int):
     """Derive the per-tree state from the shared per-fit state.
 
-    Everything here is either a gather of shared arrays or a region scan
-    on the tree -- no host work and no transfer, which is why the split
-    from prep_shared is worth keeping: the float64 split and the
-    host-to-device copy do not repeat when the tree does. The
-    tree-dependent work is the DFS gather, the two region scans that build
-    T_inv (see _chunk_llr), and s0_r.
+    Everything here is a gather of shared arrays or a region scan on the
+    tree -- no host work and no transfer, so a new tree does not repeat
+    prep_shared's float64 split or its device copy.
 
     Args:
         shared (dict): prep_shared output
@@ -451,11 +426,8 @@ def _chunk_llr(chunk_inv_t, state):
     The rho-rho terms cancel between the two brackets of the underlying
     W_r + S_r split, which is why only the rho / s0 cross term needs a
     per-draw per-voxel scan. At rho = 0 (intercept-only nuisance) every
-    term but T_inv vanishes, so the result is the hoisted T_u a
-    nuisance-specific fast path would compute -- reached without a second
-    code path, as glow.graph.iter_llr_perm reaches it with its own rho /
-    X_v terms. Note the WORK does not vanish there, only its value: the
-    terms are still computed, which is the price of one path.
+    term but T_inv vanishes in value, giving the fast path's answer without
+    a second code path -- though the terms are still computed.
 
     Args:
         chunk_inv_t (torch.Tensor): (Pc, num_img) int64 inverse
@@ -478,7 +450,7 @@ def _chunk_llr(chunk_inv_t, state):
     active = state['active']
 
     # V stays the last axis throughout: cumsum / index_select on an inner
-    # axis is ~16x slower (module docstring).
+    # axis is non-coalesced (module docstring).
     q01_perm = state['Q01'][:, chunk_inv_t].permute(1, 0, 2).contiguous()
     alpha = torch.einsum('pkn,bnv->pkbv', q01_perm, u_dfs)
     rho = alpha[:, :a0]
@@ -517,8 +489,8 @@ def _build_perms(base_seed: int, n_perm: int, num_img: int):
     """Build the (n_perm, num_img) FL index array; draw i uses base_seed + i.
 
     Routes through permute._perm_indices, the sole source of truth for the
-    seed-to-perm mapping, so a given (base_seed, n_perm) yields the same
-    draws here as on the CPU anchor -- including the identity at seed 0.
+    mapping, so a given (base_seed, n_perm) yields the same draws as the
+    CPU anchor -- including the identity at seed 0.
     """
     perms = np.empty((n_perm, num_img), dtype=np.int64)
     for i in range(n_perm):
@@ -553,10 +525,9 @@ def gpu_perm(*, exp, base_seed: int, n_perm: int, q0, q1, children,
     seed 0 is the identity), same NaN convention, so the two agree cell by
     cell to float round-off.
 
-    Peak host memory carries the whole draws matrix -- (n_perm, num_reg)
-    float64, ~16.7 GiB at 5001 draws and full-brain num_vox. Callers that
-    only need the column moments, the observed row and the row maxima can
-    stream instead: prep once and fold each _chunk_llr result as it lands.
+    Peak host memory carries the whole matrix, (n_perm, num_reg) float64.
+    Callers needing only the column moments, the observed row and the row
+    maxima should stream instead (gpu_summarize).
 
     Args:
         exp (Experiment): experiment to sample permutations from
@@ -567,16 +538,15 @@ def gpu_perm(*, exp, base_seed: int, n_perm: int, q0, q1, children,
         children (np.array): (num_reg - num_vox, 2) Ward tree
         min_vox (int): regions smaller than this are left NaN
         perm_chunk (int): draws per device chunk. Both a throughput and a
-            memory knob: the per-chunk working set scales as
-            perm_chunk * a0 * b^2 * num_vox, and throughput is set by
-            whether it stays L2-resident. 16 is the measured optimum at
-            benchmark num_vox but overruns an 8 GiB card at full-brain
-            num_vox once b reaches 6 -- see _fit_gpu.resolve_perm_chunk,
-            which sizes it from free device memory.
+            memory knob: the working set scales as
+            perm_chunk * a0 * b^2 * num_vox and is fastest while it stays
+            L2-resident. _fit_gpu.resolve_perm_chunk sizes it from free
+            device memory, since the default overruns a small card at
+            full-brain num_vox.
         device (str): torch device string
-        acc_dtype: hot-loop dtype, default float32 (module docstring).
-            a GLOW fit overrides this to float64, which reproduces a
-            CPU fit's p-values exactly (see _fit_gpu).
+        acc_dtype: hot-loop dtype, default float32 (module docstring). A
+            GLOW fit overrides it to float64, reproducing a CPU fit's
+            p-values exactly (see _fit_gpu).
         scan_dtype: dtype for the DC-carrying prep scans, default float64 --
             the one group still carrying the DC offset
 
@@ -606,10 +576,9 @@ def _chan_combine(llr, valid, n, mean, m2):
 
     One step of Chan's parallel-combine rule (Chan, Golub & LeVeque 1979),
     with invalid cells excluded from the count, giving nanmean /
-    nanstd(ddof=1) semantics once finalized -- what Analysis.z_score_stat
-    takes over a whole matrix. Chan rather than a naive sum / sum-of-squares
-    pass because var << mean^2 here (LLR carries a 0.5 * size prefactor),
-    exactly where the textbook one-pass formula loses the variance to
+    nanstd(ddof=1) semantics once finalized. Chan rather than a naive
+    sum-of-squares pass because var << mean^2 here (LLR carries a
+    0.5 * size prefactor), where the one-pass formula loses the variance to
     cancellation.
 
     Args:
@@ -647,8 +616,8 @@ def _chan_moments(n, mean, m2):
 
     Matches np.nanmean / np.nanstd(ddof=1) as z_score_stat calls them: NaN
     mu where no valid sample accumulated, NaN std where fewer than two did,
-    and ULP-level negative variance clamped to zero before the sqrt. Left on
-    the device because the second pass standardizes against it.
+    negative variance clamped to zero before the sqrt. Left on the device
+    for the second pass.
 
     Args:
         n (torch.Tensor): (num_reg,) valid-sample count
@@ -670,10 +639,9 @@ def _nanmax_rows(x):
     """Reduce (Pc, M) to (Pc,) row maxima, ignoring NaN.
 
     torch has no nanmax, so NaN is pushed to -inf for the reduction and the
-    all-NaN rows are put back afterwards -- np.nanmax's convention, which
-    fwer.max_over_active states and fwer.from_max depends on (a NaN draw
-    sits out of the comparison; a -inf would join it and move every
-    p-value).
+    all-NaN rows are restored afterwards -- np.nanmax's convention, which
+    fwer.from_max depends on: a NaN draw sits out of the comparison, where a
+    -inf would join it and move every p-value.
 
     Args:
         x (torch.Tensor): (Pc, M) values over the comparison set
@@ -695,20 +663,15 @@ def gpu_summarize(*, exp, base_seed: int, n_perm: int, q0, q1, children,
                   scan_dtype=np.float64):
     """Summarize the draw matrix on device without ever forming it.
 
-    Equivalent to draws.summarize_draws(gpu_perm(...)), at O(num_reg +
-    n_perm) host memory instead of O(n_perm * num_reg): 5001 draws at
-    full-brain num_vox is ~16.7 GiB as a float64 matrix, and a benchmark
-    sweep runs many fits at once.
+    Equivalent to draws.summarize_draws(gpu_perm(...)) at O(num_reg +
+    n_perm) host memory instead of O(n_perm * num_reg).
 
     Two passes, because standardizing needs moments the first pass has not
-    finished computing. Pass one folds each chunk into Chan accumulators for
-    (mu, std); pass two re-draws the same chunks, standardizes each against
-    those moments, and keeps only the row maxima over the comparison set,
-    plus row 0. Re-drawing is exact rather than approximate -- a chunk is a
-    deterministic function of its permutation indices and the prep state,
-    both unchanged between passes -- and cheap next to holding the matrix:
-    it doubles the LLR work, which at b = 2 and 5001 draws is 45 s against
-    16.7 GiB. Prep is paid once for both passes.
+    finished. Pass one folds each chunk into Chan accumulators for
+    (mu, std); pass two re-draws the same chunks, standardizes them and
+    keeps the row maxima plus row 0. Re-drawing is exact -- a chunk is a
+    deterministic function of its permutation indices and the prep state --
+    and doubles the LLR work to buy the memory back. Prep is paid once.
 
     Args:
         exp (Experiment): experiment to sample permutations from
@@ -745,9 +708,8 @@ def gpu_summarize(*, exp, base_seed: int, n_perm: int, q0, q1, children,
               else torch.from_numpy(
                   np.ascontiguousarray(reg_active, dtype=bool)).to(dev))
 
-    # Pass 1: (mu, std). Row 0's raw LLR is read off here rather than in
-    # pass 2 -- it is the unstandardized statistic, so it owes nothing to
-    # the moments.
+    # Pass 1: (mu, std). Row 0's raw LLR is unstandardized, so it owes
+    # nothing to the moments and is read off here.
     n = torch.zeros(num_reg, dtype=torch.float64, device=dev)
     mean = torch.zeros_like(n)
     m2 = torch.zeros_like(n)
@@ -760,8 +722,8 @@ def gpu_summarize(*, exp, base_seed: int, n_perm: int, q0, q1, children,
     mu, std = _chan_moments(n, mean, m2)
 
     # Pass 2: z against those moments, then the two reductions the fit
-    # actually keeps. Z_STD_FLOOR is shared with z_score_stat so a
-    # degenerate column is divided by the same 1.0 on both paths.
+    # keeps. Z_STD_FLOOR is shared with z_score_stat, so a degenerate
+    # column is divided by the same 1.0 on both paths.
     denom = torch.where(std > Z_STD_FLOOR, std, torch.ones_like(std))
     max_stat = np.full(n_perm, np.nan, dtype=np.float64)
     any_active = bool(active.any())
