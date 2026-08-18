@@ -37,10 +37,12 @@ from glow._extra.benchmark.config import EFFECT_LLR_GRID
 from glow._extra.benchmark.data import (data_factory_hcp, data_recipe,
                                         effect_factory_single)
 from glow._extra.benchmark.score import score_effects
-from glow.analysis import (AnalysisCET, AnalysisGLOW, AnalysisGLOWSplit,
-                           AnalysisVBA)
+from glow._extra.benchmark.score import score_prune
+from glow.analysis import (AnalysisCET, AnalysisGLOW, AnalysisGLOWBase,
+                           AnalysisGLOWSplit, AnalysisVBA)
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr, get_wilks
+from glow.analysis.prune import prune_by_rule, prune_oracle
 from glow.effect import ExtenterMinVar, ExtenterSphere
 
 # ---- the cell ---------------------------------------------------------
@@ -60,6 +62,23 @@ N_PERM_FWER = 500
 N_PERM_INNER = 250
 ALPHA_FWER = 0.05
 FIT = dict(n_jobs=8, gpu='auto')
+
+# ---- the pruning rules re-selected off each GLOW fit ------------------
+# label -> prune_by_rule kwargs. Every one of these is a re-selection off a
+# fit already paid for (milliseconds against ~20 s), so the whole rule axis
+# is free once the arm has been fit. 'oracle' is handled apart: it takes the
+# planted support, so it is the headroom line rather than a rule -- what a
+# perfect selector could still win off this fit. dp-n1 / dp-n4 penalize dp
+# through its geometric prior (one planted effect, so n=1 is the matched
+# prior and n=4 a milder one).
+RULE_LIST = (
+    ('greedy', dict(rule='greedy')),
+    ('dp', dict(rule='dp')),
+    ('dp-n1', dict(rule='dp', exp_n_eff=1.0)),
+    ('dp-n4', dict(rule='dp', exp_n_eff=4.0)),
+    ('single_max', dict(rule='single_max')),
+    ('oracle', None),
+)
 
 # ---- output -----------------------------------------------------------
 OUT_DIR = pathlib.Path.home() / 'Dropbox' / 'glow' / 'results'
@@ -91,6 +110,25 @@ def variant_dict() -> dict:
                                 tfce_flag=True, **base),
         'CET': AnalysisCET(get_stat=get_hotel_tr, z_flag=False, **base),
     }
+
+
+def wanted(name: str, ana) -> list:
+    """The row variants one fit of this arm produces.
+
+    A GLOW arm yields its own row plus one per pruning rule, all off the one
+    fit, so the fit is owed whenever any of them is missing -- which is what
+    backfills the rule rows for seeds scored before they existed.
+
+    Args:
+        name (str): the variant name.
+        ana: the (unfitted) Analysis.
+
+    Returns:
+        list[str]: variant names this fit writes.
+    """
+    if not isinstance(ana, AnalysisGLOWBase):
+        return [name]
+    return [name] + [f'{name}+{label}' for label, _ in RULE_LIST]
 
 
 def call_uncached(fnc, *args, **kwargs):
@@ -172,6 +210,60 @@ def score_fit(ana, exp, mask_list) -> dict:
                                                 for p in pred))
 
 
+def rule_rows(ana, exp, mask_list) -> dict:
+    """Re-select this fit's significant regions under every pruning rule.
+
+    The rule axis costs one fit, not one fit per rule: a rule reads the
+    fitted tree, the raw per-region LLR and the FWER-significant set, so
+    every rule in RULE_LIST is scored off the same fit -- the same isolation
+    the benchmark's prune cache buys with glow_fit_for_prune, here on
+    whichever arm was fit rather than the split arm alone.
+
+    The greedy row is a check as much as a result: the arms fit at
+    prune_rule='greedy', so it must reproduce the arm's own Dice.
+
+    Args:
+        ana: a fitted GLOW arm (needs children, llr, fwer).
+        exp (Experiment): the cell it was fit on.
+        mask_list (list): the planted (X, Y, Z) bool supports.
+
+    A rule row carries no false_region flag: score_prune returns the
+    confusion counts of the union, not each region's overlap, so the flag
+    would have to be invented. The report's table skips what a row lacks.
+
+    Returns:
+        dict: rule label -> {dice, n_pred, sec}.
+    """
+    llr = np.nan_to_num(ana.llr.astype(float), nan=0.0, posinf=0.0,
+                        neginf=0.0)
+    sig_reg_list = np.flatnonzero(ana.fwer.reg_sig).tolist()
+    mask_active = exp.mask_idx > -1
+    mask_target = np.zeros(exp.mask_idx.shape, dtype=bool)
+    for mask in mask_list:
+        mask_target |= mask
+
+    out = {}
+    for label, kwargs in RULE_LIST:
+        tic = time.perf_counter()
+        if kwargs is None:
+            reg_out_list, _ = prune_oracle(sig_reg_list=sig_reg_list,
+                                           children=ana.children,
+                                           mask_target=mask_target,
+                                           mask_idx=exp.mask_idx)
+        else:
+            reg_out_list, _ = prune_by_rule(
+                sig_reg_list=sig_reg_list, children=ana.children, stat=llr,
+                **kwargs)
+        sec = time.perf_counter() - tic
+        c = score_prune(reg_out_list, children=ana.children,
+                        mask_idx=exp.mask_idx, mask_target_list=mask_list,
+                        mask_active=mask_active)
+        denom = 2 * c['tp'] + c['fp'] + c['fn']
+        out[label] = dict(dice=0.0 if denom == 0 else 2 * c['tp'] / denom,
+                          n_pred=c['n_selected'], sec=sec)
+    return out
+
+
 def done_keys(path: pathlib.Path) -> set:
     """Read the (seed, llr, variant) triples a previous run already scored.
 
@@ -220,7 +312,8 @@ def _table(rows, field, name_list, fmt='{:.3f}') -> str:
     """
     acc = defaultdict(list)
     for row in rows:
-        acc[(row['llr'], row['variant'])].append(row[field])
+        if field in row:
+            acc[(row['llr'], row['variant'])].append(row[field])
     llr_list = sorted({row['llr'] for row in rows})
 
     head = '| effect_llr | n | ' + ' | '.join(name_list) + ' |'
@@ -235,6 +328,38 @@ def _table(rows, field, name_list, fmt='{:.3f}') -> str:
             cell_list.append(fmt.format(float(np.mean(val))) if val else '-')
         out.append(f'| {llr:.6f} | {n_seed} | ' + ' | '.join(cell_list)
                    + ' |')
+    return '\n'.join(out)
+
+
+def _rule_section(rows) -> str:
+    """Render Dice and region count per pruning rule, one pair per GLOW arm.
+
+    Every rule here read the same fit as its arm's own row, so a column
+    difference is the selection rule and nothing else. oracle is the
+    headroom line, not a method (see RULE_LIST).
+
+    Args:
+        rows (list[dict]): raw rows.
+
+    Returns:
+        str: the markdown, empty while no rule row exists yet.
+    """
+    label_list = [label for label, _ in RULE_LIST]
+    arm_list = [name for name, ana in variant_dict().items()
+                if isinstance(ana, AnalysisGLOWBase)]
+    have = {row['variant'] for row in rows}
+    out = []
+    for arm in arm_list:
+        col_list = [f'{arm}+{label}' for label in label_list]
+        if not any(col in have for col in col_list):
+            continue
+        sub = [row for row in rows if row['variant'] in col_list]
+        renamed = [dict(row, variant=row['variant'].split('+', 1)[1])
+                   for row in sub]
+        out.append(f'\n## pruning rules on {arm} (one shared fit per cell)'
+                   f'\n\nDice\n\n{_table(renamed, "dice", label_list)}'
+                   f'\n\nregions declared\n\n'
+                   f'{_table(renamed, "n_pred", label_list, fmt="{:.1f}")}')
     return '\n'.join(out)
 
 
@@ -276,7 +401,7 @@ Every arm sees the identical cell, so the columns are paired seed by seed.
 ## seconds per fit (mean over seeds)
 
 {_table(rows, 'sec', name_list, fmt='{:.1f}')}
-"""
+{_rule_section(rows)}"""
     OUT_MD.write_text(text)
 
 
@@ -295,7 +420,8 @@ def main():
     for seed in SEED_LIST:
         for llr in LLR_LIST:
             todo = {name: ana for name, ana in variant_dict().items()
-                    if (seed, llr, name) not in skip}
+                    if any((seed, llr, want) not in skip
+                           for want in wanted(name, ana))}
             if not todo:
                 continue
             exp, mask_list = build(seed, llr)
@@ -304,12 +430,22 @@ def main():
                     fit_tic = time.perf_counter()
                     ana.fit(exp, **FIT)
                     sec = time.perf_counter() - fit_tic
-                    row = dict(seed=seed, llr=llr, variant=name, sec=sec,
-                               **score_fit(ana, exp, mask_list))
-                    f.write(json.dumps(row) + '\n')
-                    f.flush()
+                    out = {name: dict(sec=sec,
+                                      **score_fit(ana, exp, mask_list))}
+                    if isinstance(ana, AnalysisGLOWBase):
+                        for label, val in rule_rows(ana, exp,
+                                                    mask_list).items():
+                            out[f'{name}+{label}'] = val
+                    for variant, val in out.items():
+                        if (seed, llr, variant) in skip:
+                            continue
+                        f.write(json.dumps(dict(seed=seed, llr=llr,
+                                                variant=variant,
+                                                **val)) + '\n')
+                        f.flush()
                     print(f'seed {seed} llr {llr:.6f} {name:14s} '
-                          f'{sec:7.1f}s dice {row["dice"]:.3f}', flush=True)
+                          f'{sec:7.1f}s dice {out[name]["dice"]:.3f}',
+                          flush=True)
             write_md(read_rows(OUT_JSONL), time.perf_counter() - tic)
         print(f'--- seed {seed} done, {OUT_MD} updated', flush=True)
 
