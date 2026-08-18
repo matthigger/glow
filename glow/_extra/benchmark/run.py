@@ -6,7 +6,8 @@ recipe on an already-built Experiment and score the discovered effects against
 the planted target(s), no data building and no planting. run_segment is a
 sibling measuring segmentation quality (no fit); run_stat fits one VBA / CET
 MANCOVA-stat variant off a shared voxel-stat walk; run_prune scores one pruning
-rule on a shared GLOW fit.
+rule on a shared GLOW fit; run_inner_perm scores GLOW at one inner-draw count
+off a shared per-cell capture.
 
 All are @MEMORY.cache'd (so a record's key equals its cache id) and share
 data.py's MEMORY / RECORDER, so a leaf joins the same provenance DAG: its exp
@@ -24,11 +25,13 @@ one across distinct experiments.
 A leaf may lean on a shared heavy intermediate rather than a driver stage:
 run_stat reads voxel_stat_walk (every MANCOVA stat for one exp), run_prune
 reads glow_fit_for_prune (one GLOW fit's children / per-region LLR /
-FWER-significant set), so the first of a cell's variants computes it and the
-rest reuse it. Neither is a recorded DAG node -- its output is not an
-Experiment, and the leaf already links to the build via exp. glow_fit_for_prune
-is memoised to disk, its triple being light; a voxel_stat_walk matrix is too
-big to keep for a whole grid and is shared in memory only.
+FWER-significant set) and run_inner_perm reads glow_inner_capture (one GLOW
+walk's test inputs at every inner-draw count), so the first of a cell's
+variants computes it and the rest reuse it. None is a recorded DAG node -- its
+output is not an Experiment, and the leaf already links to the build via exp.
+glow_fit_for_prune is memoised to disk, its triple being light; a
+voxel_stat_walk matrix and a capture are too big to keep for a whole grid and
+are shared in memory only.
 
 Scoring is inlined rather than a separate recorded step: the fitted Analysis is
 the heavy object, used as a local and discarded, so only the small score dict
@@ -40,18 +43,24 @@ re-derives from the records without refitting.
 import copy
 
 import numpy as np
+from joblib import Parallel, delayed
 from threadpoolctl import threadpool_limits
 
-from glow.analysis import Analysis, AnalysisGLOW, AnalysisVoxel
+import glow.graph
+from glow.analysis import Analysis, AnalysisGLOW, AnalysisVoxel, draws
+from glow.analysis._base import resolve_n_jobs, Z_STD_FLOOR
+from glow.analysis._fit_gpu import gpu_draws, resolve_gpu
 from glow.analysis.cluster import cluster, ClusterMode
-from glow.analysis.mancova import stat_dict, stat_dict_inv
+from glow.analysis.fwer import max_over_active, MaxStatPerm
+from glow.analysis.mancova import decompose, stat_dict, stat_dict_inv
 from glow.analysis.prune import prune_by_rule, prune_oracle
 from glow.experiment.exper import Experiment, ExperimentScaled
 
 # share the data.py builders' disk cache + recorder, so a fit is memoised
 # beside the builds and run_ana joins their provenance DAG (see module docs).
 from .data import MEMORY, RECORDER
-from .score import score_effects, score_oracle_tree, score_prune
+from .score import (score_effects, score_max_z_region, score_oracle_tree,
+                    score_prune)
 
 # Neither exp nor its mask_target_list companion is an identity: exp is named
 # by the parent_uid every leaf requires, and the masks are determined by that
@@ -384,6 +393,263 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
     return score_prune(reg_out_list, children=children, mask_idx=exp.mask_idx,
                        mask_target_list=mask_target_list,
                        mask_active=exp.mask_idx > -1)
+
+
+# ---------- inner-draw sweep (one capture, every n_perm_inner) ---------------
+# GLOW standardizes each outer permutation's tree against n_perm_inner inner
+# Freedman-Lane draws, and draw i of that null is seeded base_seed + i
+# (glow.analysis.draws), so the first m + 1 rows of a deeper matrix are exactly
+# the draws a fit at n_perm_inner = m takes. One sampling to the deepest count
+# on the grid therefore carries every shallower count as a prefix:
+# glow_inner_capture summarizes each prefix per outer perm, and run_inner_perm
+# reads one prefix per leaf. So the whole curve costs the deepest fit rather
+# than a fit per point, and its points share their trees -- the comparison is
+# paired within a cell.
+
+# The current cell's capture, {key: capture}, holding one entry (see
+# voxel_stat_walk for why the sharing is memory-only and bounded to one).
+_INNER_MEMO = {}
+
+
+def _capture_outer(exp, k: int, *, q0, q1, n_perm_inner_grid, min_vox: int,
+                   cluster_mode, gpu_config=None):
+    """Summarize one outer permutation at every inner count on the grid.
+
+    glow.analysis._glow._run_outer, snapshotted: cluster this permutation,
+    draw its inner null to the deepest count on the grid, and standardize
+    its observed row against each prefix of that matrix. Every snapshot is
+    the (mu, std) a real AnalysisGLOW fit at that n_perm_inner reduces this
+    tree to, so the fit is not approximated -- it is re-read.
+
+    The prefixes are folded one after another through the draw module's own
+    Chan accumulators rather than re-reduced from scratch, which is both
+    what makes the moments equal a fit's and what keeps the whole grid to
+    one pass over the matrix. Only the observed row's z is formed: a
+    prefix's other rows go into its moments and are then max'd over in the
+    fits this stands in for, but only row 0 of an outer perm's own matrix
+    reaches its FWER null.
+
+    Args:
+        exp (Experiment): the scaled experiment, unpermuted.
+        k (int): outer-perm index; 0 is the observed data.
+        q0 (np.array): (a0, num_img) nuisance subspace.
+        q1 (np.array): (a1, num_img) interest subspace.
+        n_perm_inner_grid (tuple): ascending inner counts to snapshot at.
+        min_vox (int): regions smaller than this sit out of the max.
+        cluster_mode (ClusterMode): Ward projection mode.
+        gpu_config (GpuConfig | None): device knobs, None for the CPU.
+
+    Returns:
+        max_z (np.array): (len(n_perm_inner_grid),) this perm's max z per
+            inner count -- its entry in the FWER null at each one.
+        obs (tuple | None): (children, size, llr, z_obs) for k == 0, None
+            otherwise; z_obs is (len(n_perm_inner_grid), num_reg).
+    """
+    exp_k = exp.permute(k) if k else exp
+    children = cluster(exp_k, mode=cluster_mode)
+
+    _, region_l, region_h = glow.graph.build_dfs_preorder(
+        children=children, num_vox=exp_k.y.shape[2])
+    size = region_h - region_l
+    reg_active = size >= min_vox
+
+    mat = dict(exp=exp_k, base_seed=0, n_perm=max(n_perm_inner_grid) + 1,
+               q0=q0, q1=q1, children=children, min_vox=min_vox)
+    mat = (draws.cpu_batched(**mat) if gpu_config is None
+           else gpu_draws(gpu_config, **mat))
+
+    llr = mat[0]
+    num_reg = mat.shape[1]
+    n = np.zeros(num_reg)
+    mean = np.zeros(num_reg)
+    m2 = np.zeros(num_reg)
+    row = 0
+    max_z = np.empty(len(n_perm_inner_grid))
+    z_list = []
+    for j, n_perm_inner in enumerate(n_perm_inner_grid):
+        n, mean, m2 = draws._chan_combine(mat[row:n_perm_inner + 1],
+                                          n, mean, m2)
+        row = n_perm_inner + 1
+        mu, std = draws._chan_moments(n, mean, m2)
+        z = (llr - mu) / np.where(std > Z_STD_FLOOR, std, 1.0)
+        max_z[j] = max_over_active(z[None, :], reg_active)[0]
+        if not k:
+            z_list.append(z)
+
+    if k:
+        return max_z, None
+    return max_z, (children, size, llr, np.stack(z_list))
+
+
+def glow_inner_capture(exp, *, parent_uid: str, n_perm_fwer: int,
+                       n_perm_inner_grid, cluster_mode=ClusterMode.FOCUS,
+                       min_vox: int = 1, fit_params=None) -> dict:
+    """Run GLOW's outer loop once, keeping every inner count's test inputs.
+
+    The inner-draw sweep's shared heavy intermediate: one per-perm GLOW walk
+    (AnalysisGLOW.fit's loop) at the deepest count on the grid, reduced to
+    what a max-z test needs at each count -- the observed tree, its raw LLR,
+    its observed z, and the per-outer-perm max-z null. run_inner_perm turns
+    one column of that into the fit's significant set, so a cell's whole
+    n_perm_inner grid costs one walk. Not a recorded DAG node (see the
+    module docstring).
+
+    The sharing is in memory, not on disk: a capture is
+    (len(n_perm_inner_grid), num_reg), small beside a stat walk but not
+    something a whole grid of cells should keep, and a cell's leaves are
+    consecutive (drive's leaf grid is its innermost loop), so one entry
+    serves them.
+
+    Args:
+        exp (Experiment): the experiment to fit (scaled here).
+        parent_uid (str): the exp's declared uid (see the module
+            docstring); what identifies the capture, since exp is out of
+            the key.
+        n_perm_fwer (int): outer FL perms feeding the max-z null.
+        n_perm_inner_grid (tuple): ascending inner counts to capture.
+        cluster_mode (ClusterMode): Ward projection (default FOCUS).
+        min_vox (int): smallest region admitted to the comparison set.
+        fit_params (dict | None): how the walk runs (n_jobs, gpu), resolved
+            as AnalysisGLOW.fit resolves them; never what it computes.
+
+    Returns:
+        the capture dict:
+            {n_perm_inner_grid: tuple,
+             children: (num_reg - num_vox, 2),
+             size: (num_reg,), llr: (num_reg,) observed raw LLR,
+             z_obs: (len(grid), num_reg) observed z per inner count,
+             max_z_null: (n_perm_fwer + 1, len(grid)) max z per outer perm
+                 per inner count, row 0 the observed perm}
+    """
+    n_perm_inner_grid = tuple(int(m) for m in n_perm_inner_grid)
+    key = (parent_uid, n_perm_fwer, n_perm_inner_grid,
+           str(ClusterMode(cluster_mode)), min_vox)
+    if key in _INNER_MEMO:
+        return _INNER_MEMO[key]
+
+    fit_params = fit_params or {}
+    gpu_config = resolve_gpu(fit_params.get('gpu', False),
+                             name='glow_inner_capture')
+    n_jobs = resolve_n_jobs(fit_params.get('n_jobs', 1))
+
+    exp = ExperimentScaled.from_exp(exp)
+    q0, q1, _ = decompose(x=exp.x, contrast=exp.contrast)
+    outer_kwargs = dict(q0=q0, q1=q1, n_perm_inner_grid=n_perm_inner_grid,
+                        min_vox=min_vox,
+                        cluster_mode=ClusterMode(cluster_mode),
+                        gpu_config=gpu_config)
+    results = Parallel(n_jobs=1 if gpu_config else n_jobs,
+                       return_as='generator')(
+        delayed(_capture_outer)(exp, k, **outer_kwargs)
+        for k in range(n_perm_fwer + 1))
+
+    max_z_null = np.empty((n_perm_fwer + 1, len(n_perm_inner_grid)))
+    obs = None
+    for k, (max_z, obs_k) in enumerate(results):
+        max_z_null[k] = max_z
+        if obs_k is not None:
+            obs = obs_k
+    children, size, llr, z_obs = obs
+
+    capture = dict(n_perm_inner_grid=n_perm_inner_grid, children=children,
+                   size=size, llr=llr, z_obs=z_obs, max_z_null=max_z_null)
+    _INNER_MEMO.clear()
+    _INNER_MEMO[key] = capture
+    return capture
+
+
+# n_perm_inner_grid is ignored like exp: it says which prefixes the shared
+# capture snapshots, not what this leaf computes. A prefix is the same draws
+# whatever depth was sampled around it, so one n_perm_inner is one artifact
+# however the grid it was captured with is widened or narrowed.
+INNER_IGNORE = [*FIT_IGNORE, 'n_perm_inner_grid']
+
+
+@MEMORY.cache(ignore=INNER_IGNORE)
+@RECORDER(output_name='score', recurse_out_list=['score'],
+          ignore=INNER_IGNORE)
+def run_inner_perm(exp: Experiment, mask_target_list, *, parent_uid: str,
+                   n_perm_inner: int, n_perm_fwer: int, alpha_fwer: float,
+                   n_perm_inner_grid, cluster_mode=ClusterMode.FOCUS,
+                   prune_rule: str = 'greedy', min_vox: int = 1,
+                   fit_params=None):
+    """Score GLOW at one inner-draw count, off the cell's shared capture.
+
+    The inner-draw sweep's leaf: read one n_perm_inner out of
+    glow_inner_capture, threshold that column's max-z null, prune the
+    significant regions by prune_rule, and score the selection against the
+    planted support. Equivalent to fitting AnalysisGLOW at this
+    n_perm_inner and scoring it, but every count on the grid shares one
+    walk (see the section comment).
+
+    Two things are recorded, because n_perm_inner acts on the test in two
+    places. The selection counts are detection as usual. The max_z block is
+    which region the max-z statistic came from: the inner draws set every
+    region's (mu, std), so the argmax can move with the count, and a count
+    is high enough only once it has stopped moving.
+
+    Args:
+        exp (Experiment): the experiment to analyze (raw or scaled).
+        mask_target_list (list): the planted (X, Y, Z) bool supports.
+        parent_uid (str): the exp's declared uid (see the module docstring).
+        n_perm_inner (int): the inner count to report; must be on
+            n_perm_inner_grid.
+        n_perm_fwer (int): outer FL perms feeding the max-z null.
+        alpha_fwer (float): FWER significance level.
+        n_perm_inner_grid (tuple): the counts the shared capture snapshots,
+            this one among them. Filtered from the key (INNER_IGNORE).
+        cluster_mode (ClusterMode): Ward projection (default FOCUS).
+        prune_rule (str): selection rule (glow.analysis.prune), its own
+            knobs left at their defaults -- this cache sweeps the inner
+            count, not the rule.
+        min_vox (int): smallest region admitted to the comparison set.
+        fit_params (dict | None): how the shared walk runs (n_jobs, gpu),
+            never what it computes (see run_ana).
+
+    Returns:
+        score (dict): {n_selected, tp, fp, tn, fn} for the selection (see
+            score.score_prune), plus n_sig (significant regions), min_pval,
+            and a max_z block (see score.score_max_z_region).
+
+    Raises:
+        ValueError: n_perm_inner is not on n_perm_inner_grid.
+    """
+    capture = glow_inner_capture(
+        exp, parent_uid=parent_uid, n_perm_fwer=n_perm_fwer,
+        n_perm_inner_grid=n_perm_inner_grid, cluster_mode=cluster_mode,
+        min_vox=min_vox, fit_params=fit_params)
+
+    inner_grid = capture['n_perm_inner_grid']
+    if int(n_perm_inner) not in inner_grid:
+        raise ValueError(f'n_perm_inner={n_perm_inner} is not on the '
+                         f'captured grid {inner_grid}')
+    j = inner_grid.index(int(n_perm_inner))
+
+    children, size = capture['children'], capture['size']
+    reg_active = size >= min_vox
+    z_obs = capture['z_obs'][j]
+    fwer = MaxStatPerm.from_max(z_obs, capture['max_z_null'][:, j],
+                                alpha=alpha_fwer, reg_active=reg_active)
+
+    # ranked by raw LLR, as AnalysisGLOWBase._discover ranks them
+    llr = np.nan_to_num(capture['llr'].astype(float), nan=0.0, posinf=0.0,
+                        neginf=0.0)
+    sig_reg_list = np.flatnonzero(fwer.reg_sig).tolist()
+    reg_out_list, _ = prune_by_rule(prune_rule, sig_reg_list=sig_reg_list,
+                                    children=children, stat=llr)
+
+    score = score_prune(reg_out_list, children=children,
+                        mask_idx=exp.mask_idx,
+                        mask_target_list=mask_target_list,
+                        mask_active=exp.mask_idx > -1)
+    score['n_sig'] = len(sig_reg_list)
+    score['min_pval'] = (float(np.nanmin(fwer.pval))
+                         if np.isfinite(fwer.pval).any() else float('nan'))
+    score['max_z'] = score_max_z_region(
+        z_obs, reg_active=reg_active, size=size, children=children,
+        mask_idx=exp.mask_idx, mask_target_list=mask_target_list,
+        mask_active=exp.mask_idx > -1)
+    return score
 
 
 # ---------- runtime leaves (timed, not scored) -------------------------------

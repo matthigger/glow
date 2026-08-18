@@ -15,12 +15,12 @@ import numpy as np
 import pytest
 
 from glow._extra.benchmark import data, run
-from glow._extra.benchmark.run import (glow_fit_for_prune, run_ana,
-                                       run_ana_time_1perm,
-                                       run_prune, run_segment, run_stat,
-                                       voxel_stat_walk)
+from glow._extra.benchmark.run import (glow_fit_for_prune, glow_inner_capture,
+                                       run_ana, run_ana_time_1perm,
+                                       run_inner_perm, run_prune, run_segment,
+                                       run_stat, voxel_stat_walk)
 import glow.mask
-from glow.analysis import AnalysisGLOWSplit, AnalysisVBA
+from glow.analysis import AnalysisGLOW, AnalysisGLOWSplit, AnalysisVBA
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr, get_wilks, stat_dict_inv
 from glow.effect import ExtenterMinVar
@@ -467,6 +467,103 @@ class TestRunPrune:
             assert dice['oracle'] >= dice[rule] - 1e-9, (
                 f'the {rule} rule beat the max-Dice oracle '
                 f'({dice[rule]:.4f} > {dice["oracle"]:.4f})')
+
+
+# ---------------------------------------------------------------------------
+# inner-draw sweep: one capture read at every n_perm_inner
+# ---------------------------------------------------------------------------
+
+class TestRunInnerPerm:
+    """run_inner_perm / glow_inner_capture: prefix reuse of one GLOW walk.
+
+    What is novel here is the claim the cache rests on: a prefix of a deeper
+    inner null IS the shallower fit, so a captured count must reproduce a
+    standalone AnalysisGLOW fit at that count rather than approximate it.
+    """
+
+    _GRID = (2, 5)
+    # the capture's knobs, then the leaf's -- alpha is applied post hoc, so
+    # the walk knows nothing of it
+    _CAPTURE = dict(n_perm_fwer=3, n_perm_inner_grid=_GRID,
+                    cluster_mode=ClusterMode.FOCUS)
+    _KNOBS = dict(alpha_fwer=0.05, **_CAPTURE)
+
+    def _planted(self):
+        return _planted_cell(
+            dict(source='wgn', shape=(6, 6, 6), b=2, num_img=24, a=1,
+                 seed=_fresh_seed()),
+            dict(effect_llr=0.2, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
+                 seed=0))
+
+    def test_returns_the_selection_and_the_max_z_region(self):
+        exp, mask, uid = self._planted()
+        score = run_inner_perm(exp, [mask], parent_uid=uid, n_perm_inner=5,
+                               **self._KNOBS)
+        assert {'n_selected', 'tp', 'fp', 'tn', 'fn', 'n_sig',
+                'min_pval', 'max_z'} <= set(score)
+        assert {'reg_idx', 'num_vox', 'z', 'tp', 'fp', 'tn',
+                'fn'} == set(score['max_z'])
+
+    def test_prefix_reproduces_a_real_fit(self):
+        """Each captured count equals a standalone fit at that count."""
+        exp, mask, uid = self._planted()
+        capture = glow_inner_capture(exp, parent_uid=uid, **self._CAPTURE)
+        for j, n_perm_inner in enumerate(self._GRID):
+            ana = AnalysisGLOW(n_perm_inner=n_perm_inner,
+                               n_perm_fwer=self._KNOBS['n_perm_fwer'],
+                               alpha_fwer=self._KNOBS['alpha_fwer'],
+                               cluster_mode=self._KNOBS['cluster_mode'])
+            ana.fit(exp)
+            close = dict(rtol=1e-8, atol=1e-8, equal_nan=True)
+            assert np.array_equal(capture['children'], ana.children)
+            assert np.allclose(capture['llr'], ana.llr, **close)
+            assert np.allclose(capture['z_obs'][j], ana.fwer.stat_obs, **close)
+            assert np.allclose(capture['max_z_null'][:, j], ana.fwer.max_stat,
+                               **close)
+
+    def test_max_z_region_carries_the_observed_max(self):
+        """The argmax region's z is the observed perm's entry in the null."""
+        exp, mask, uid = self._planted()
+        capture = glow_inner_capture(exp, parent_uid=uid, **self._CAPTURE)
+        score = run_inner_perm(exp, [mask], parent_uid=uid, n_perm_inner=5,
+                               **self._KNOBS)
+        j = self._GRID.index(5)
+        assert score['max_z']['z'] == pytest.approx(
+            capture['max_z_null'][0, j])
+
+    def test_counts_share_one_capture(self):
+        """A cell's second count reads the first's capture, not a new walk."""
+        exp, mask, uid = self._planted()
+        run._INNER_MEMO.clear()
+        run_inner_perm(exp, [mask], parent_uid=uid, n_perm_inner=2,
+                       **self._KNOBS)
+        assert len(run._INNER_MEMO) == 1
+        key_list = list(run._INNER_MEMO)
+        run_inner_perm(exp, [mask], parent_uid=uid, n_perm_inner=5,
+                       **self._KNOBS)
+        assert list(run._INNER_MEMO) == key_list
+
+    def test_n_perm_inner_is_a_cache_axis(self):
+        exp, mask, uid = self._planted()
+        run_inner_perm(exp, [mask], parent_uid=uid, n_perm_inner=2,
+                       **self._KNOBS)
+        assert not run_inner_perm.check_call_in_cache(
+            exp, [mask], parent_uid=uid, n_perm_inner=5, **self._KNOBS)
+
+    def test_the_captured_grid_is_not_a_cache_axis(self):
+        """A count is one artifact however deep the capture around it went."""
+        exp, mask, uid = self._planted()
+        run_inner_perm(exp, [mask], parent_uid=uid, n_perm_inner=2,
+                       **self._KNOBS)
+        knobs = dict(self._KNOBS, n_perm_inner_grid=(2, 3, 5))
+        assert run_inner_perm.check_call_in_cache(
+            exp, [mask], parent_uid=uid, n_perm_inner=2, **knobs)
+
+    def test_a_count_off_the_grid_raises(self):
+        exp, mask, uid = self._planted()
+        with pytest.raises(ValueError):
+            run_inner_perm(exp, [mask], parent_uid=uid, n_perm_inner=4,
+                           **self._KNOBS)
 
 
 # ---------------------------------------------------------------------------

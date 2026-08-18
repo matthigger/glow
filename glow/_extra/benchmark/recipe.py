@@ -55,6 +55,7 @@ IMPL_VERSION = {
     'run_stat': 1,
     'run_prune': 1,
     'run_segment': 1,
+    'run_inner_perm': 1,
     'run_ana_time': 1,
     'run_ana_time_1perm': 1,
 }

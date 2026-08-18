@@ -7,8 +7,8 @@ fitted Analysis stays a local; it is the leaf of RECORDER.flatten_to_df, whose
 exp ancestor chains back through the plant to the data build.
 
 Also here: score_oracle_tree (segment), the min-size staircase scorers
-(size_max_z_curve / curve_json) and score_prune (the prune cache's
-region-index scorer).
+(size_max_z_curve / curve_json), score_prune (the prune cache's region-index
+scorer) and score_max_z_region (which region the max-z statistic came from).
 
 score_effects output (one dict per fitted Analysis), keys:
 
@@ -261,3 +261,47 @@ def score_prune(reg_out_list, children, mask_idx, mask_target_list,
             reg_idx_list=[reg_idx], mask_idx=mask_idx, children=children)
         reg_mask_list.append((reg_idx, label_map > -1))
     return _score_regions(reg_mask_list, mask_target_list, mask_active)
+
+
+def score_max_z_region(z_obs, reg_active, size, children, mask_idx,
+                       mask_target_list, mask_active) -> dict:
+    """Score the region the observed max-z statistic comes from.
+
+    A max-stat test reports one number per fit; this says which region
+    carried it and how well that region matches the plant, so a knob's
+    effect on the argmax is readable at all (see run.run_inner_perm). The
+    argmax runs over the same comparison set the max does
+    (glow.analysis.fwer.max_over_active), so z is the fit's observed max-z.
+
+    Args:
+        z_obs (np.array): (num_reg,) observed z per region.
+        reg_active (np.array): (num_reg,) boolean comparison set.
+        size (np.array): (num_reg,) region sizes.
+        children (np.array): (num_reg - num_vox, 2) Ward child-index pairs.
+        mask_idx (np.array): (X, Y, Z) int voxel-index array (-1 outside).
+        mask_target_list (list): the planted (X, Y, Z) bool supports.
+        mask_active (np.array): (X, Y, Z) bool, the analyzed voxels.
+
+    Returns:
+        {reg_idx, num_vox, z, tp, fp, tn, fn}: the argmax region's index,
+            voxel count, z, and confusion counts against the union of the
+            planted supports. reg_idx None, num_vox 0, z NaN and
+            all-background counts where no active region has a finite z.
+    """
+    z = np.where(reg_active & np.isfinite(z_obs), z_obs, np.nan)
+    found = bool(np.isfinite(z).any())
+    reg_idx = int(np.nanargmax(z)) if found else None
+    if found:
+        label_map = glow.graph.get_label_map(
+            reg_idx_list=[reg_idx], mask_idx=mask_idx, children=children)
+        mask_pred = label_map > -1
+    else:
+        mask_pred = np.zeros(mask_active.shape, dtype=bool)
+    counts = glow.mask.confusion_counts(
+        mask_pred=mask_pred,
+        mask_target=_union(mask_target_list, mask_active.shape),
+        mask_active=mask_active)
+    return {'reg_idx': reg_idx,
+            'num_vox': int(size[reg_idx]) if found else 0,
+            'z': float(z[reg_idx]) if found else float('nan'),
+            **counts}

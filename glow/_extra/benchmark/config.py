@@ -35,13 +35,15 @@ smoke (an end-to-end pipeline check).
 Scope. Five caches share the run_ana leaf over the one recipe grid (fit +
 score one Analysis per cell): null, sweep_llr, sweep_extent, sweep_b,
 sweep_nimg. sweep_llr_glow_tune takes that leaf over a grid of its own, the
-four GLOW variants, which is what picks the one the others report. Three swap
+four GLOW variants, which is what picks the one the others report. Four swap
 in their own leaf over much the same grids: segment (run_segment, a Ward-mode
 oracle, no fit -- and segment_perc_llr, the same leaf and modes over the share
 of the images the tree is built on), vba_stat (run_stat, a VBA / CET variant
-reading a shared voxel-stat walk; HCP only, b=2), and prune (run_prune, three
+reading a shared voxel-stat walk; HCP only, b=2), prune (run_prune, three
 pruning rules plus the max-Dice oracle, all re-selected off one shared GLOW
-fit).
+fit), and sweep_n_perm_inner (run_inner_perm, the reported variant at every
+inner-draw count off one shared capture; HCP only), which is what settles
+N_PERM_INNER.
 
 Runtime. Five caches measure time, not detection, and run locally only. They
 answer two different questions and must not be read as one: runtime_num_vox is
@@ -61,8 +63,8 @@ from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr, get_wilks
 
 from . import grid, hcp
-from .run import (run_ana, run_ana_time, run_ana_time_1perm, run_prune,
-                  run_segment, run_stat)
+from .run import (run_ana, run_ana_time, run_ana_time_1perm, run_inner_perm,
+                  run_prune, run_segment, run_stat)
 
 
 # ---------- shared knobs ------------------------------------------------------
@@ -214,6 +216,40 @@ RUN_ANA_LIST = [_run_ana(label) for label in ana_kwargs_dict
 # arms are absent -- sweep_llr already carries them over the same cells, so
 # repeating them here would pay twice for one curve.
 GLOW_ARM_LIST = [_run_ana(label) for label in GLOW_LABEL_LIST]
+
+
+# the sweep_n_perm_inner cache's leaf grid: the reported GLOW variant at every
+# inner-draw count on the grid, which is what settles N_PERM_INNER (on the grid
+# itself, so the shipped setting is one of the points read). It spans a count
+# too small to resolve the effect's z (the ceiling of AnalysisGLOW) and counts
+# above the shipped one, since a knee is only visible from both sides.
+#
+# n_perm_inner rides as an explicit run_inner_perm argument rather than inside
+# a recipe, so it keys the leaf and reaches the record as its own column. The
+# grid rides along as well: a cell's counts share one capture
+# (run.glow_inner_capture), and it is filtered out of the key because a prefix
+# is the same draws whatever depth was sampled around it. The Ward projection
+# and selection rule are read off the reported recipe rather than retyped, so
+# this cache tunes the shipped variant by construction.
+N_PERM_INNER_GRID = (25, 50, 100, N_PERM_INNER, 500, 1000, 2000)
+_INNER_ANA = ana_kwargs_dict[REPORTED_GLOW_LABEL]
+RUN_INNER_PERM_LIST = [
+    dict(n_perm_inner=n_perm_inner, n_perm_fwer=N_PERM_FWER,
+         alpha_fwer=ALPHA_FWER, n_perm_inner_grid=N_PERM_INNER_GRID,
+         cluster_mode=_INNER_ANA.cluster_mode,
+         prune_rule=_INNER_ANA.prune_rule, fit_params=GLOW_FIT_PARAMS)
+    for n_perm_inner in N_PERM_INNER_GRID]
+
+# its effect axis: the moderate anchor and one step of EFFECT_LLR_GRID either
+# side of it (two grid points out, so the three are visibly apart). The count a
+# tree needs is not one number -- z scales with the effect, and the inner count
+# caps z -- so the knee is read at three strengths rather than at the anchor
+# alone. Every value is on EFFECT_LLR_GRID, so each plant is a cell sweep_llr
+# has already built. float() for the clean python-float hash effect_factory
+# casts to (see MODERATE_EFFECT_LLR).
+_LLR_MID = len(EFFECT_LLR_GRID) // 2
+INNER_EFFECT_LLR = tuple(float(EFFECT_LLR_GRID[i])
+                         for i in (_LLR_MID - 2, _LLR_MID, _LLR_MID + 2))
 
 
 # the segment cache's leaf grid: one run_segment call per Ward mode (Naive /
@@ -446,6 +482,20 @@ CONFIG = {
         data_grid(b_list=(1,)),
         effect_grid(llr_list=EFFECT_LLR_GRID),
         GLOW_ARM_LIST, run_ana),
+    # How many inner draws GLOW needs: the reported variant read at every
+    # count on N_PERM_INNER_GRID, at three effect strengths, which is what
+    # settles N_PERM_INNER. Two curves come out of one leaf grid -- which
+    # region the max-z statistic comes from (a count is high enough only once
+    # the argmax has stopped moving) and what the count costs detection.
+    # HCP only, like the runtime family: the count is a property of the tree
+    # and the data it is standardized against, and one source answers it at
+    # half the fits. A cell's counts share one capture, so the whole grid
+    # costs its deepest count (run.run_inner_perm), and its cells are
+    # sweep_llr's own b=1 HCP cells, so every build is a hit.
+    'sweep_n_perm_inner': (
+        data_grid(sources=['hcp']),
+        effect_grid(llr_list=INNER_EFFECT_LLR),
+        RUN_INNER_PERM_LIST, run_inner_perm),
     # D. Detection vs effect extent (fixed per-voxel effect_llr).
     'sweep_extent': (
         data_grid(),

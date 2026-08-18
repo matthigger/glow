@@ -12,8 +12,9 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from glow._extra.benchmark.score import (score_effects, score_oracle_tree,
-                                         size_max_z_curve, curve_json)
+from glow._extra.benchmark.score import (score_effects, score_max_z_region,
+                                         score_oracle_tree, size_max_z_curve,
+                                         curve_json)
 
 
 class _FakeEffect:
@@ -143,6 +144,42 @@ def test_score_oracle_tree_picks_best_matching_region():
                             mask_idx=mask_idx)
 
     assert out == {'tp': 2, 'fp': 0, 'tn': 2, 'fn': 0}
+
+
+def test_score_max_z_region_takes_the_argmax_over_the_active_set():
+    # the same 4-leaf tree; node 6 (all four) has the largest z but is off the
+    # comparison set, so the max-z region is node 4 ({0,1}), the target itself
+    children = np.array([[0, 1], [2, 3], [4, 5]])
+    mask_idx = np.array([0, 1, 2, 3])
+    size = np.array([1, 1, 1, 1, 2, 2, 4])
+    z_obs = np.array([0.1, 0.2, 0.3, 0.4, 2.0, 1.0, 9.0])
+    reg_active = np.array([False] * 4 + [True, True, False])
+
+    out = score_max_z_region(z_obs, reg_active=reg_active, size=size,
+                             children=children, mask_idx=mask_idx,
+                             mask_target_list=[_vec(0, 1, n=4)],
+                             mask_active=_vec(0, 1, 2, 3, n=4))
+
+    assert out == {'reg_idx': 4, 'num_vox': 2, 'z': 2.0,
+                   'tp': 2, 'fp': 0, 'tn': 2, 'fn': 0}
+
+
+def test_score_max_z_region_reports_no_region_when_none_qualifies():
+    children = np.array([[0, 1], [2, 3], [4, 5]])
+    out = score_max_z_region(np.full(7, np.nan),
+                             reg_active=np.ones(7, dtype=bool),
+                             size=np.array([1, 1, 1, 1, 2, 2, 4]),
+                             children=children,
+                             mask_idx=np.array([0, 1, 2, 3]),
+                             mask_target_list=[_vec(0, 1, n=4)],
+                             mask_active=_vec(0, 1, 2, 3, n=4))
+
+    assert out['reg_idx'] is None
+    assert out['num_vox'] == 0
+    assert np.isnan(out['z'])
+    # nothing predicted, so the target's voxels are all missed
+    assert {k: out[k] for k in ('tp', 'fp', 'tn', 'fn')} == {
+        'tp': 0, 'fp': 0, 'tn': 2, 'fn': 2}
 
 
 def test_size_max_z_curve_keeps_step_corners_and_serializes():
