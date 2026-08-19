@@ -53,6 +53,7 @@ single pinned core, one permutation deep (run_ana_time_1perm). See the runtime
 section below.
 
 """
+import os
 import warnings
 
 import numpy as np
@@ -72,6 +73,18 @@ SOURCES = ['wgn', 'hcp']
 
 N_SEED = 50
 N_SEED_NULL = 1000
+
+# Seed ceiling for a staged run. GLOW_BENCH_N_SEED caps every seed grid below,
+# so the catalogue can be run in stages that each widen the seed axis and, being
+# skip_recorded, only pay for the seeds the records do not already hold. Each
+# stage is a complete grid in every other axis, so its results read like the
+# whole catalogue at fewer seeds rather than like a partial run. Unset, the
+# paper's own counts stand -- a stage cap belongs to how a run is executed, not
+# to what the paper reports, so it never enters a cell's identity.
+_N_SEED_CAP = int(os.environ.get('GLOW_BENCH_N_SEED', 0))
+if _N_SEED_CAP:
+    N_SEED = min(N_SEED, _N_SEED_CAP)
+    N_SEED_NULL = min(N_SEED_NULL, _N_SEED_CAP)
 
 EFFECT_LLR_GRID = np.logspace(np.log10(0.003), np.log10(0.3), 11)
 # the sweeps' shared centre: the grid's middle element. Taking it off the grid
@@ -99,7 +112,12 @@ N_PERM_FWER = 500
 # every z at n_perm_inner / sqrt(n_perm_inner + 1), so it is a resolution
 # floor as much as a cost knob (see AnalysisGLOW), and it multiplies the draw
 # count: a fit is n_perm_fwer x (n_perm_inner + 1) draws.
-N_PERM_INNER = 250
+#
+# 500 is where sweep_n_perm_inner's curves flatten: detection at 500 is
+# indistinguishable from 1000 at every effect strength, and most cells select
+# the same regions at both, while 250 gives up sensitivity at the weakest
+# effect. Read that cache's max_z table before moving it again.
+N_PERM_INNER = 500
 ALPHA_FWER = 0.05
 
 # Structural grids. B caps at the HCP pool (6) so every HCP cell is feasible;
@@ -231,7 +249,10 @@ GLOW_ARM_LIST = [_run_ana(label) for label in GLOW_LABEL_LIST]
 # is the same draws whatever depth was sampled around it. The Ward projection
 # and selection rule are read off the reported recipe rather than retyped, so
 # this cache tunes the shipped variant by construction.
-N_PERM_INNER_GRID = (25, 50, 100, N_PERM_INNER, 500, 1000)
+# A literal grid rather than one built around N_PERM_INNER: it has to bracket
+# the shipped value on both sides whatever that value becomes, and a grid
+# derived from it would collide with its own neighbours when it moves.
+N_PERM_INNER_GRID = (25, 50, 100, 250, 500, 1000)
 
 # Its own outer-perm count, below the catalogue's N_PERM_FWER. A cell's cost is
 # n_perm_fwer x (the deepest count + 1) draws, several times a shipped fit's,
