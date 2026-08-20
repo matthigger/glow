@@ -66,6 +66,21 @@ cancel against W_r. What is left per draw is the rho / s0 cross term,
 which cancels only to the spatial spread of s0. So acc_dtype carries the
 whole per-draw loop and scan_dtype touches only prep; scan_dtype=float32
 reproduces the collapse, which is how the regression test pins it.
+
+The second cancellation sits at the other end, in the LLR itself. Written
+as 0.5 size (log|T| - log|E|) it subtracts two logs that agree to nearly
+every digit they have whenever H is small beside T -- which is the null
+case, i.e. most of the draws -- and then multiplies what survives by size.
+H has rank a1, so the matrix determinant lemma replaces the subtraction
+with
+
+    LLR = -0.5 size logdet(I_a1 - A T^-1 A^T / size),   H = A^T A / size
+
+a log1p of a small quantity for the single-contrast case. A relative error
+in T or A now passes through instead of being amplified, E is never
+formed, and det T is wanted only for its sign. That small region-space
+algebra runs in float64 whatever acc_dtype is, which costs little: it is
+O(num_reg) against the O(num_reg num_img Pc) scans that precede it.
 """
 import numpy as np
 
@@ -172,6 +187,29 @@ def _gram_a_cross(x, y):
             g[p, i, j, m] = sum_a x[p, a, i, m] y[a, j, m]
     """
     return (x.unsqueeze(3) * y[None, :, None, :, :]).sum(dim=1)
+
+
+def _quad_form_inv(t, a):
+    """Return a T^-1 a^T for a stack of small symmetric systems.
+
+    Args:
+        t (torch.Tensor): (..., b, b) symmetric positive-definite stack.
+        a (torch.Tensor): (..., a1, b) right-hand rows.
+
+    Returns:
+        g (torch.Tensor): (..., a1, a1) quadratic form a T^-1 a^T.
+
+    b = 1 is closed form rather than a solve: it is the paper's own panel,
+    and a batched cuBLAS dispatch over hundreds of thousands of 1x1
+    systems costs more than the division it replaces (see the module
+    docstring on why this file avoids matmul at these sizes).
+    """
+    import torch
+
+    if t.shape[-1] == 1:
+        av = a[..., 0]
+        return (av.unsqueeze(-1) * av.unsqueeze(-2)) / t[..., :1, :1]
+    return a @ torch.linalg.solve(t, a.transpose(-1, -2))
 
 
 def _slogdet_batched(m):
@@ -470,15 +508,35 @@ def _chunk_llr(chunk_inv_t, state):
     del p_rs, g_rs, r_r
 
     beta_r = _reg_sum_cumsum(beta, -1, region_l_t, region_h_t)
-    h = _gram_a(beta_r) * inv
 
     t = t.permute(0, 3, 1, 2)
-    e = t - h.permute(0, 3, 1, 2)
+    a_r = beta_r.permute(0, 3, 1, 2)
 
-    sign_t, log_t = _slogdet_batched(t)
-    sign_e, log_e = _slogdet_batched(e)
-    valid = active[None] & (sign_t > 0) & (sign_e > 0)
-    llr = 0.5 * size_f[None] * (log_t - log_e)
+    # H = A^T A / size has rank a1, so the matrix determinant lemma gives
+    # det E = det T * det(I_a1 - A T^-1 A^T / size) and the LLR is a log1p
+    # of a small quantity rather than a difference of two large logs. That
+    # difference is what a narrow hot loop cannot survive: under the null H
+    # is tiny beside T, so the two logs agree to nearly every digit they
+    # have and the surviving error is then multiplied by size. Here a
+    # relative error passes straight through instead of being amplified,
+    # E is never formed, and det T is needed only for its sign.
+    g = _quad_form_inv(t, a_r) * state['inv_size'][None, :, None, None]
+    sign_t, _ = _slogdet_batched(t)
+
+    # float64 only from here: this is O(Pc * num_reg) against the
+    # O(Pc * num_reg * num_img) scans above, so the accuracy is nearly free
+    if g.shape[-1] == 1:
+        g1 = g[..., 0, 0].to(torch.float64)
+        log_ratio = torch.log1p(-g1)
+        pd_e = g1 < 1
+    else:
+        g = g.to(torch.float64)
+        eye = torch.eye(g.shape[-1], dtype=g.dtype, device=g.device)
+        sign_g, log_ratio = torch.linalg.slogdet(eye - g)
+        pd_e = sign_g > 0
+
+    valid = active[None] & (sign_t > 0) & pd_e
+    llr = -0.5 * size_f[None].to(torch.float64) * log_ratio
     return llr, valid
 
 
