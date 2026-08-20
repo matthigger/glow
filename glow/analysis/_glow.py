@@ -186,29 +186,69 @@ class AnalysisGLOWBase(Analysis):
             print(f'  done: {n_disc} discovered, {n_pruned} pruned')
 
 
-def _run_outer(exp, k: int, *, q0, q1, n_perm_inner: int, min_vox: int,
-               cluster_mode: ClusterMode, gpu_config=None,
-               keep_stat: bool = False):
-    """Run one outer permutation: cluster it, then z-score it against itself.
+def _cluster_tree(exp_k, cluster_mode: ClusterMode):
+    """Ward-cluster one permuted experiment and size its regions.
 
-    The unit of AnalysisGLOW.fit's outer loop, carrying no instance state
-    and a deterministic function of k alone (exp.permute(k) is seeded by
-    k). The inner draws run against this perm's own tree with base_seed=0,
-    so their row 0 is the identity draw -- this perm's observed LLR -- and
-    the moments over the whole matrix standardize it. Every k is treated
-    the same way, k=0 included, which keeps the per-perm max-z values
-    exchangeable.
+    Args:
+        exp_k (Experiment): the permuted (or observed) experiment.
+        cluster_mode (ClusterMode): Ward projection mode.
+
+    Returns:
+        children (np.array): (num_reg - num_vox, 2) Ward tree.
+        size (np.array): (num_reg,) region voxel counts.
+    """
+    children = cluster(exp_k, mode=cluster_mode)
+    _, region_l, region_h = glow.graph.build_dfs_preorder(
+        children=children, num_vox=exp_k.y.shape[2])
+    return children, region_h - region_l
+
+
+def _cluster_outer(exp, k: int, *, cluster_mode: ClusterMode):
+    """Build outer permutation k's Ward tree: the CPU half of a perm.
+
+    The device pipeline's producer (see AnalysisGLOW.fit). Only the tree
+    and its region sizes come back, hundreds of KB where the permuted y
+    behind them is tens of MB, so a worker pool feeding one device stream
+    does not pay to ship experiments; the consumer re-derives
+    exp.permute(k), which is far cheaper than that transfer.
 
     Args:
         exp (Experiment): the scaled experiment, unpermuted.
         k (int): outer-perm index; 0 is the observed data.
+        cluster_mode (ClusterMode): Ward projection mode.
+
+    Returns:
+        k (int): the index, so an unordered generator still keys results.
+        children (np.array): (num_reg - num_vox, 2) this perm's Ward tree.
+        size (np.array): (num_reg,) region voxel counts.
+    """
+    exp_k = exp.permute(k) if k else exp
+    children, size = _cluster_tree(exp_k, cluster_mode)
+    return k, children, size
+
+
+def _draw_outer(exp_k, k: int, children, size, *, q0, q1,
+                n_perm_inner: int, min_vox: int, gpu_config=None,
+                keep_stat: bool = False):
+    """Standardize one outer perm's tree against its own inner draws.
+
+    The device pipeline's consumer, and the second half of _run_outer.
+    The inner draws run against this perm's own tree with base_seed=0, so
+    their row 0 is the identity draw -- this perm's observed LLR -- and the
+    moments over the whole matrix standardize it.
+
+    Args:
+        exp_k (Experiment): the permuted (or observed) experiment whose
+            tree this is.
+        k (int): outer-perm index; 0 is the observed data.
+        children (np.array): (num_reg - num_vox, 2) this perm's Ward tree.
+        size (np.array): (num_reg,) region voxel counts.
         q0 (np.array): (a0, num_img) nuisance subspace.
         q1 (np.array): (a1, num_img) interest subspace.
         n_perm_inner (int): inner FL draws standardizing this tree; the
             call runs n_perm_inner + 1 rows counting the observed.
         min_vox (int): regions smaller than this are left NaN and sit out
             of the max.
-        cluster_mode (ClusterMode): Ward projection mode.
         gpu_config (GpuConfig | None): device knobs, None for the CPU.
         keep_stat (bool): materialize the k=0 inner matrix and return it.
 
@@ -218,13 +258,6 @@ def _run_outer(exp, k: int, *, q0, q1, n_perm_inner: int, min_vox: int,
         obs (tuple | None): (children, size, summary, stat) for k == 0,
             None otherwise -- only the observed tree's arrays are reported.
     """
-    exp_k = exp.permute(k) if k else exp
-    children = cluster(exp_k, mode=cluster_mode)
-
-    _, region_l, region_h = glow.graph.build_dfs_preorder(
-        children=children, num_vox=exp_k.y.shape[2])
-    size = region_h - region_l
-
     # the comparison set is drawn afresh per perm: size >= min_vox is a
     # function of this perm's own tree, not of one tree fixed for the fit
     reg_active = size >= min_vox
@@ -254,6 +287,42 @@ def _run_outer(exp, k: int, *, q0, q1, n_perm_inner: int, min_vox: int,
     if k:
         return max_z, None
     return max_z, (children, size, summary, stat)
+
+
+def _run_outer(exp, k: int, *, q0, q1, n_perm_inner: int, min_vox: int,
+               cluster_mode: ClusterMode, gpu_config=None,
+               keep_stat: bool = False):
+    """Run one outer permutation: cluster it, then z-score it against itself.
+
+    The unit of AnalysisGLOW.fit's CPU outer loop, carrying no instance
+    state and a deterministic function of k alone (exp.permute(k) is seeded
+    by k). Every k is treated the same way, k=0 included, which keeps the
+    per-perm max-z values exchangeable. The device path runs the same two
+    halves split across a pool and a stream (_cluster_outer, _draw_outer),
+    and both orderings give the same numbers.
+
+    Args:
+        exp (Experiment): the scaled experiment, unpermuted.
+        k (int): outer-perm index; 0 is the observed data.
+        q0 (np.array): (a0, num_img) nuisance subspace.
+        q1 (np.array): (a1, num_img) interest subspace.
+        n_perm_inner (int): inner FL draws standardizing this tree; the
+            call runs n_perm_inner + 1 rows counting the observed.
+        min_vox (int): regions smaller than this are left NaN and sit out
+            of the max.
+        cluster_mode (ClusterMode): Ward projection mode.
+        gpu_config (GpuConfig | None): device knobs, None for the CPU.
+        keep_stat (bool): materialize the k=0 inner matrix and return it.
+
+    Returns:
+        max_z (float): see _draw_outer.
+        obs (tuple | None): see _draw_outer.
+    """
+    exp_k = exp.permute(k) if k else exp
+    children, size = _cluster_tree(exp_k, cluster_mode)
+    return _draw_outer(exp_k, k, children, size, q0=q0, q1=q1,
+                       n_perm_inner=n_perm_inner, min_vox=min_vox,
+                       gpu_config=gpu_config, keep_stat=keep_stat)
 
 
 class AnalysisGLOW(AnalysisGLOWBase):
@@ -319,6 +388,43 @@ class AnalysisGLOW(AnalysisGLOWBase):
                          keep_stat=keep_stat)
         self.n_perm_inner = n_perm_inner
 
+    def _pipeline_device(self, exp, n_total: int, *, n_jobs: int,
+                         draw_kwargs: dict):
+        """Yield (k, _draw_outer result), pool on Ward, one stream on device.
+
+        The device pipeline. A fit alternates a single-threaded CPU stage
+        (permute + Ward) with a device stage, so running the outer perms
+        one at a time leaves whichever device is not busy idle for the
+        whole of the other's turn. Here n_jobs workers build trees ahead
+        of the device while this process draws against the trees already
+        built, making the per-perm cost the larger of the two stages
+        rather than their sum.
+
+        One stream, not n_jobs of them: a worker touching the device would
+        build its own CUDA context (hundreds of MB) and the calls would
+        serialise on the one card regardless. Workers therefore return
+        trees only, and the device work stays here.
+
+        Args:
+            exp (Experiment): the scaled experiment, unpermuted.
+            n_total (int): outer perms to run, counting the observed.
+            n_jobs (int): tree-building workers.
+            draw_kwargs (dict): forwarded to _draw_outer.
+
+        Yields:
+            k (int): outer-perm index, since trees arrive out of order.
+            result (tuple): that perm's (max_z, obs).
+        """
+        # dispatched before the first device call so the pool's processes
+        # exist before this one holds a CUDA context
+        trees = Parallel(n_jobs=n_jobs, return_as='generator_unordered')(
+            delayed(_cluster_outer)(exp, k, cluster_mode=self.cluster_mode)
+            for k in range(n_total))
+
+        for k, children, size in trees:
+            exp_k = exp.permute(k) if k else exp
+            yield k, _draw_outer(exp_k, k, children, size, **draw_kwargs)
+
     def fit(self, exp, *, n_jobs: int = 1, gpu=False,
             verbose: bool = False):
         """Run the analysis on exp and return self.
@@ -329,11 +435,11 @@ class AnalysisGLOW(AnalysisGLOWBase):
         Args:
             exp (Experiment): experiment to analyze. Scaled on the way in;
                 an already-scaled one passes through.
-            n_jobs (int): joblib workers over the outer perms, capped at
-                the machine's core count (resolve_n_jobs). The result is
-                identical at any n_jobs -- outer perm k is seeded by k --
-                and it is ignored on device, where the workers would queue
-                on the one device anyway.
+            n_jobs (int): joblib workers, capped at the machine's core
+                count (resolve_n_jobs). On the CPU each runs whole outer
+                perms; on device they build Ward trees to feed the one
+                stream (_pipeline_device). The result is identical at any
+                n_jobs -- outer perm k is seeded by k.
             gpu: False (default) to draw on the CPU, True or a GpuConfig to
                 require a device, 'auto' to take one when visible. The
                 inner draws are the only thing the device changes; see
@@ -358,19 +464,22 @@ class AnalysisGLOW(AnalysisGLOWBase):
                   f'({exp.y.shape[1]} images, {exp.y.shape[2]} voxels, '
                   f'n_jobs={n_jobs}) ...')
 
-        outer_kwargs = dict(q0=q0, q1=q1, n_perm_inner=self.n_perm_inner,
-                            min_vox=self.min_vox,
-                            cluster_mode=self.cluster_mode,
-                            gpu_config=gpu_config, keep_stat=self.keep_stat)
-        results = Parallel(n_jobs=1 if gpu_config else n_jobs,
-                           return_as='generator')(
-            delayed(_run_outer)(exp, k, **outer_kwargs)
-            for k in range(n_total))
+        draw_kwargs = dict(q0=q0, q1=q1, n_perm_inner=self.n_perm_inner,
+                           min_vox=self.min_vox, gpu_config=gpu_config,
+                           keep_stat=self.keep_stat)
+        if gpu_config is None:
+            results = Parallel(n_jobs=n_jobs, return_as='generator')(
+                delayed(_run_outer)(exp, k, cluster_mode=self.cluster_mode,
+                                    **draw_kwargs)
+                for k in range(n_total))
+            keyed = enumerate(results)
+        else:
+            keyed = self._pipeline_device(exp, n_total, n_jobs=n_jobs,
+                                          draw_kwargs=draw_kwargs)
 
         summary = None
-        for k, (max_z, obs) in enumerate(
-                tqdm(results, total=n_total, desc='outer perms',
-                     disable=not verbose)):
+        for k, (max_z, obs) in tqdm(keyed, total=n_total,
+                                    desc='outer perms', disable=not verbose):
             max_z_null[k] = max_z
             if obs is not None:
                 self.children, self.size, summary, self.stat = obs
