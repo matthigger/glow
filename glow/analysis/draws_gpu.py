@@ -96,6 +96,7 @@ from .draws import DrawSummary
 _CAPTURE_B_MAX_CLOSED_FORM = 4
 
 
+
 def is_available() -> bool:
     """Return True iff torch is importable and a CUDA device is visible.
 
@@ -269,7 +270,7 @@ def _slogdet_batched(m):
     return torch.linalg.slogdet(m)
 
 
-def _reg_sum_cumsum(x_dfs, dim, region_l, region_h):
+def _reg_sum_cumsum(x_dfs, dim, region_l, region_h, acc=None):
     """Compute per-region sums via cumsum-and-diff along dim.
 
     Device port of glow.graph._reg_sum_cumsum. x_dfs is laid out in DFS
@@ -281,23 +282,37 @@ def _reg_sum_cumsum(x_dfs, dim, region_l, region_h):
     op sequence CUDA-graph friendly. region_l / region_h must already be
     on x_dfs's device.
 
+    acc widens the prefixes without widening anything around them. A
+    prefix grows along the whole DFS axis while the sum it feeds does not,
+    so a small region reads two large nearly-equal partials and keeps only
+    the low digits of their gap; in float32 that leaves the sums with far
+    worse than float32 relative error, and it survives into the max-z
+    null. The per-draw caller therefore scans in float64 while its tensors
+    stay narrow, and the region sums come back in x_dfs's dtype either
+    way.
+
     Args:
         x_dfs (torch.Tensor): per-voxel values, DFS pre-order along dim
         dim (int): the axis carrying the num_vox DFS-ordered voxels
         region_l (torch.Tensor): (num_reg,) leaf range start per region
         region_h (torch.Tensor): (num_reg,) leaf range end per region
+        acc (torch.dtype | None): accumulate the prefixes in this dtype;
+            None keeps x_dfs's, which is what the prep scans want so that
+            scan_dtype stays the single knob over their precision.
 
     Returns:
-        out (torch.Tensor): x_dfs with its dim replaced by a num_reg axis
+        out (torch.Tensor): x_dfs with its dim replaced by a num_reg axis,
+            in x_dfs's own dtype
     """
     import torch
-    cs = torch.cumsum(x_dfs, dim=dim)
+    cs = torch.cumsum(x_dfs, dim=dim, dtype=acc)
     pad_shape = list(x_dfs.shape)
     pad_shape[dim] = 1
-    pad = torch.zeros(pad_shape, dtype=x_dfs.dtype, device=x_dfs.device)
+    pad = torch.zeros(pad_shape, dtype=cs.dtype, device=x_dfs.device)
     c = torch.cat([pad, cs], dim=dim)
-    return (torch.index_select(c, dim, region_h)
-            - torch.index_select(c, dim, region_l))
+    out = (torch.index_select(c, dim, region_h)
+           - torch.index_select(c, dim, region_l))
+    return out.to(x_dfs.dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -498,8 +513,9 @@ def _chunk_llr(chunk_inv_t, state):
     # term. Its rho-rho counterpart cancelled against W_r, and everything
     # else is either hoisted (T_inv) or region-space.
     p_rs = _reg_sum_cumsum(_gram_a_cross(rho, state['s0']), -1,
-                           region_l_t, region_h_t)
-    r_r = _reg_sum_cumsum(rho, -1, region_l_t, region_h_t)
+                           region_l_t, region_h_t, acc=torch.float64)
+    r_r = _reg_sum_cumsum(rho, -1, region_l_t, region_h_t,
+                          acc=torch.float64)
     g_rs = _gram_a_cross(r_r, state['s0_r'])
     t = (state['T_inv'][None]
          + (p_rs + p_rs.transpose(1, 2))
@@ -507,7 +523,8 @@ def _chunk_llr(chunk_inv_t, state):
          - _gram_a(r_r) * inv)
     del p_rs, g_rs, r_r
 
-    beta_r = _reg_sum_cumsum(beta, -1, region_l_t, region_h_t)
+    beta_r = _reg_sum_cumsum(beta, -1, region_l_t, region_h_t,
+                             acc=torch.float64)
 
     t = t.permute(0, 3, 1, 2)
     a_r = beta_r.permute(0, 3, 1, 2)
