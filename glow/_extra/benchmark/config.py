@@ -252,7 +252,7 @@ GLOW_ARM_LIST = [_run_ana(label) for label in GLOW_LABEL_LIST]
 # A literal grid rather than one built around N_PERM_INNER: it has to bracket
 # the shipped value on both sides whatever that value becomes, and a grid
 # derived from it would collide with its own neighbours when it moves.
-N_PERM_INNER_GRID = (25, 50, 100, 250, 500, 1000)
+N_PERM_INNER_GRID = (10, 25, 50, 100, 250, 500, 1000)
 
 # Its own outer-perm count, below the catalogue's N_PERM_FWER. A cell's cost is
 # n_perm_fwer x (the deepest count + 1) draws, several times a shipped fit's,
