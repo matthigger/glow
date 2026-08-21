@@ -106,13 +106,20 @@ class TestCatalogueShape:
         # identity by the leaf (run.FIT_IGNORE)
         assert all(set(c) == {'ana', 'fit_params'}
                    for c in config.RUN_ANA_LIST + config.GLOW_ARM_LIST)
-        # the shared grid is the reported GLOW variant plus every non-GLOW
+        # the shared grid is the reported GLOW variants plus every non-GLOW
         # arm: an extra GLOW entry here would cost a per-perm fit in each of
         # the six caches that share it
         assert ([c['ana'] for c in config.RUN_ANA_LIST]
                 == [ana for label, ana in config.ana_kwargs_dict.items()
-                    if label == config.REPORTED_GLOW_LABEL
+                    if label in config.REPORTED_GLOW_LABEL_LIST
                     or label not in config.GLOW_LABEL_LIST])
+        # one arm per Ward projection, both pruning greedily, headline first
+        assert config.REPORTED_GLOW_LABEL_LIST[0] == \
+            config.REPORTED_GLOW_LABEL
+        arms = [config.ana_kwargs_dict[label]
+                for label in config.REPORTED_GLOW_LABEL_LIST]
+        assert {a.prune_rule for a in arms} == {'greedy'}
+        assert len({str(a.cluster_mode) for a in arms}) == len(arms)
         # and GLOW_ARM_LIST is exactly the four variants, reported one first
         assert ([c['ana'] for c in config.GLOW_ARM_LIST]
                 == [config.ana_kwargs_dict[label]

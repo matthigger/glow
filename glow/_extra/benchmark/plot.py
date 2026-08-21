@@ -15,15 +15,16 @@ x-axis is inferred from what varies in the cache rather than declared: an
 all-null effect grid is the FWER calibration path, else the first of
 effect_llr / b / num_img / effect_perc that varies is swept.
 
-Every figure outside the segment / prune / race-retention families reports one
-GLOW arm, the GLM-Error clustering, labelled plainly GLOW: the Focus arm is
-dropped and the survivor relabelled at the plot layer (_select_glow_arm), never
-in the caches. The exceptions compare the arms, so they keep both, as does any
-cache in _BOTH_ARM_CACHES, which styles the four arms apart (_ARM_STYLE)
-rather than as one method.
+Every figure outside the segment / prune / race-retention families reports the
+two greedy GLOW arms, one per Ward projection, named GLOW-Focus and GLOW-GLM:
+the dp arms are dropped and the survivors renamed at the plot layer
+(_select_glow_arm), never in the caches. The cache that ranks the variants
+keeps all four under their recipe labels (_BOTH_ARM_CACHES). Throughout, an
+arm's colour is its projection and its dash the selection rule (_ARM_STYLE).
 
-Each cache then gets either a GLOW-only FWER calibration row (null) -- source x
-GLOW arm cells of nominal alpha vs empirical rejection rate, with a
+Each cache then gets either a GLOW-only FWER calibration row (null) -- one
+cell per source x reported arm, nominal alpha vs empirical rejection rate, with
+a
 Clopper-Pearson 95% band -- or one stacked detection figure, an HCP block over
 a WGN block, each a 2 x 3 grid whose top row is the per-method mean score with
 a central 95% band and whose bottom row is the GLOW head-to-head diff, over the
@@ -74,7 +75,8 @@ import glow.mask
 from glow.analysis import AnalysisGLOWBase
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import stat_dict
-from .config import ana_kwargs_dict, REPORTED_GLOW_LABEL, RUN_STAT_LIST
+from .config import (ana_kwargs_dict, REPORTED_GLOW_LABEL,
+                     REPORTED_GLOW_LABEL_LIST, RUN_STAT_LIST)
 from .file import add_metric_cols
 
 
@@ -93,13 +95,8 @@ def _hls_hex(h: float, l: float = _L, s: float = _S) -> str:
 
 
 COLOR_ANALYSIS = {
-    # teal (180 deg) -- the reported GLOW variant, under both its recipe and
-    # its figure label
-    'GLOW-Focus-greedy': _hls_hex(0/4 + _H, l=_L * 0.6),
-    'GLOW':              _hls_hex(0/4 + _H, l=_L * 0.6),
-    # the three unreported variants are drawn only where a cache reports
-    # every one (_BOTH_ARM_CACHES) and are styled apart there (_ARM_STYLE);
-    # elsewhere they are dropped (_ARMS_SKIP), so they take no method colour.
+    # the GLOW arms are added below, off _ARM_STYLE, which is where their
+    # projection / rule encoding lives
     # purple (270 deg)
     'VBA-TFCE':   _hls_hex(1/4 + _H),
     # coral (0 deg)
@@ -115,19 +112,30 @@ COLOR_ANALYSIS = {
 _LABEL_OF_ANA = {repr(ana): label for label, ana in ana_kwargs_dict.items()}
 
 
-# One GLOW variant is reported, config.REPORTED_GLOW_LABEL, and the figures
-# call it plainly GLOW: the others are dropped (_ARMS_SKIP) and the survivor
-# relabelled (_ARM_LABEL), so the choice does not have to be re-argued on each
-# panel. Both taken off the catalogue, so adding or renaming a variant in
-# config needs no edit here. Every variant stays in the caches and the records
-# -- each is a real recipe, and the segment / prune families exist to compare
-# the two clusterings. Those families label by Ward mode (Focus / GLM Error)
-# and prune rule (GLOW-greedy / GLOW-dp) rather than by analysis arm, so
-# neither the drop nor the relabel reaches them.
+# config.REPORTED_GLOW_LABEL_LIST is what the figures report -- the greedy arm
+# of each Ward projection -- and the rest are dropped (_ARMS_SKIP) so a panel
+# does not re-argue the selection rule. The survivors are renamed by the knob
+# that separates them, GLOW-Focus / GLOW-GLM (_ARM_LABEL): the rule they share
+# is not what the reader is choosing between. Both taken off the catalogue, so
+# adding or renaming a variant in config needs no edit here. Every variant
+# stays in the caches and the records -- each is a real recipe, and the
+# segment / prune families exist to compare the two clusterings. Those
+# families label by Ward mode (Focus / GLM Error) and prune rule (GLOW-greedy
+# / GLOW-dp) rather than by analysis arm, so neither the drop nor the rename
+# reaches them.
 _ARMS_SKIP = tuple(label for label, ana in ana_kwargs_dict.items()
                    if isinstance(ana, AnalysisGLOWBase)
-                   and label != REPORTED_GLOW_LABEL)
-_ARM_LABEL = {REPORTED_GLOW_LABEL: 'GLOW'}
+                   and label not in REPORTED_GLOW_LABEL_LIST)
+_ARM_LABEL = {lab: lab.rsplit('-', 1)[0]
+              for lab in REPORTED_GLOW_LABEL_LIST}
+# two reported arms differing only in the rule would collide under a name that
+# drops it; there the recipe labels are what the figures use
+if len(set(_ARM_LABEL.values())) < len(_ARM_LABEL):
+    _ARM_LABEL = {}
+
+# the arm the head-to-head row draws when a caller names none, under the label
+# the figures give it
+_DIFF_DEFAULT = _ARM_LABEL.get(REPORTED_GLOW_LABEL, REPORTED_GLOW_LABEL)
 
 # Caches that report every GLOW arm instead: the arms are the comparison the
 # figure is asked for, so they keep their own names through the panels, the
@@ -149,7 +157,8 @@ def _select_glow_arm(df, cache: str = None):
 
     Returns:
         the frame without its _ARMS_SKIP rows, the reported arm's rows
-        relabelled GLOW (_ARM_LABEL); unchanged for a _BOTH_ARM_CACHES cache,
+        renamed by projection (_ARM_LABEL); unchanged for a _BOTH_ARM_CACHES
+        cache,
         and when empty or unlabelled (the segment / prune frames label by
         mode / rule).
     """
@@ -162,9 +171,9 @@ def _select_glow_arm(df, cache: str = None):
 def _diff_label(cache: str) -> str:
     """Return the GLOW label the cache's head-to-head diff row draws.
 
-    The diff panel draws one line, so it names the reported arm under whatever
+    The diff panel draws one line, so it names the headline arm under whatever
     labelling that cache's frame carries: the raw recipe label where every arm
-    survives, the relabelled GLOW everywhere else.
+    survives, the projection name everywhere else.
 
     Args:
         cache (str): the cache being plotted.
@@ -173,7 +182,7 @@ def _diff_label(cache: str) -> str:
         str: the label to pass plot_source_grid as one_label.
     """
     return (REPORTED_GLOW_LABEL if cache in _BOTH_ARM_CACHES
-            else _ARM_LABEL[REPORTED_GLOW_LABEL])
+            else _DIFF_DEFAULT)
 
 
 # stat bake-off vocabulary. The method (VBA / VBA-TFCE / CET) and the raw/z arm
@@ -255,37 +264,44 @@ def _qual_style(label_list) -> dict:
     return out
 
 
-# The four GLOW arms, drawn together only where a cache reports every one
-# (_BOTH_ARM_CACHES). Four curves and their bands never separate by lightness
-# alone, so each arm takes its own Okabe-Ito hue and the selection rule rides
-# the dash pattern on top: cool hues the Focus projection, warm the GLM-Error
-# one, dashed the dp rule. The reported arm keeps the palette's teal, so the
-# method a reader has followed through every other figure keeps its colour.
+# The GLOW arms' own styling. Four curves and their bands never separate by
+# lightness alone, so each arm takes its own Okabe-Ito hue and the selection
+# rule rides the dash pattern on top: cool hues the Focus projection, warm the
+# GLM-Error one, dashed the dp rule. The reported Focus arm keeps the palette's
+# teal, so the method a reader has followed through every figure keeps its
+# colour. The two reported arms appear under their figure labels as well
+# (_ARM_LABEL), since that is what a relabelled frame carries.
+_TEAL = _hls_hex(0/4 + _H, l=_L * 0.6)
 _ARM_STYLE = {
-    'GLOW-Focus-greedy': {'color': COLOR_ANALYSIS['GLOW'], 'ls': '-'},
+    'GLOW-Focus-greedy': {'color': _TEAL, 'ls': '-'},
     'GLOW-Focus-dp':     {'color': '#0072B2', 'ls': '--'},
     'GLOW-GLM-greedy':   {'color': '#E69F00', 'ls': '-'},
     'GLOW-GLM-dp':       {'color': '#CC79A7', 'ls': '--'},
 }
+_ARM_STYLE.update({fig: _ARM_STYLE[raw] for raw, fig in _ARM_LABEL.items()})
+
+# an arm is a method like any other where a figure colours by palette alone
+# (the runtime curves, the calibration cells), so the same colour reaches
+# get_cmap_dict
+COLOR_ANALYSIS.update({lab: st['color'] for lab, st in _ARM_STYLE.items()})
 
 
-def _method_style(label_list, cache: str = None) -> dict:
+def _method_style(label_list) -> dict:
     """Map method labels to a (colour, line style) pair for one figure.
 
-    A method takes its fixed palette colour (get_cmap_dict), solid. A cache
-    that reports every GLOW arm (_BOTH_ARM_CACHES) styles the arms by
-    _ARM_STYLE instead, since there the arms are the comparison.
+    A GLOW arm takes _ARM_STYLE -- the projection in the colour, the selection
+    rule in the dash -- under either its recipe or its figure label; every
+    other method takes its palette colour (get_cmap_dict), solid.
 
     Args:
         label_list: the method labels to style.
-        cache (str | None): the cache being plotted.
 
     Returns:
         dict: label -> {'color': str, 'ls': str}.
     """
-    arms = _ARM_STYLE if cache in _BOTH_ARM_CACHES else {}
-    color = get_cmap_dict([lab for lab in label_list if lab not in arms])
-    return {lab: (arms[lab] if lab in arms
+    color = get_cmap_dict([lab for lab in label_list
+                           if lab not in _ARM_STYLE])
+    return {lab: (_ARM_STYLE[lab] if lab in _ARM_STYLE
                   else {'color': color[lab], 'ls': '-'})
             for lab in label_list}
 
@@ -615,7 +631,11 @@ def plot_calibration(pvals, color, *, alpha_max: float = 1.0, n_pts: int = 200,
 # spellings of the reported arm are listed so the figure survives a null cache
 # added to _BOTH_ARM_CACHES, where the labels arrive unrelabelled; only one of
 # the two can be present in a given frame.
-_CALIB_METHODS = (_ARM_LABEL[REPORTED_GLOW_LABEL], REPORTED_GLOW_LABEL)
+# the arms the null cache calibrates, under their figure labels and their
+# recipe labels both, so a frame reaches its cell either way
+_CALIB_METHODS = (tuple(_ARM_LABEL.get(lab, lab)
+                        for lab in REPORTED_GLOW_LABEL_LIST)
+                  + tuple(REPORTED_GLOW_LABEL_LIST))
 
 
 def _plot_calibration_faceted(label: str, df, out,
@@ -623,7 +643,7 @@ def _plot_calibration_faceted(label: str, df, out,
     """Lay out the GLOW-only FWER calibration as a single source x arm row.
 
     One full row of source x GLOW-arm cells, source-major; every method
-    outside _CALIB_METHODS is dropped (the voxel-wise arms; the Focus arm goes
+    outside _CALIB_METHODS is dropped (the voxel-wise arms; the dp arms go
     earlier, in _select_glow_arm). Each cell is one (source, arm) calibration
     curve with its Clopper-Pearson 95% band (plot_calibration), both axes on
     0..1, titled 'arm (source)'.
@@ -718,13 +738,15 @@ def _draw_metric_band(ax, df, x: str, metric: str, style: dict, *,
                         color=style[label]['color'], alpha=0.15)
 
 
-def _draw_diff(ax, df, x: str, metric: str, *, one_label: str = 'GLOW',
+def _draw_diff(ax, df, x: str, metric: str, *,
+               one_label: str = _DIFF_DEFAULT,
                hue: str = 'label', alpha: float = .5) -> list:
     """Draw one_label minus the best non-GLOW method into ax; return CSV rows.
 
-    The head-to-head panel: the per-trial advantage of one_label (default
-    GLOW) over the best competing method -- the largest metric among the
-    non-GLOW labels (VBA / VBA-TFCE / CET) at the same (seed, x). A thin line
+    The head-to-head panel: the per-trial advantage of one_label (the headline
+    arm by default) over the best competing method -- the largest metric among
+    the non-GLOW labels (VBA / VBA-TFCE / CET) at the same (seed, x). A thin
+    line
     per seed plus a bold mean make the win / loss against the field legible;
     the zero line is break-even. Only one_label's line is drawn, but the
     returned rows cover every GLOW variant (each vs the same best alternative)
@@ -804,15 +826,15 @@ def _has_diff(df, hue: str = 'label') -> bool:
 
 
 def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
-                     one_label: str = 'GLOW', ci: int = 95,
-                     thresh_metric: str = 'dice', level: float = 0.5,
-                     cache: str = None) -> None:
+                     one_label: str = _DIFF_DEFAULT, ci: int = 95,
+                     thresh_metric: str = 'dice', level: float = 0.5) -> None:
     """Plot the stacked per-source detection figure: a block per source.
 
     One SubFigure per source (its banner the source name), stacked HCP over
     WGN; within each a len(metrics)-wide grid whose top row is the mean score +
     central ci% percentile band per method (_draw_metric_band) and whose second
-    row is one_label (GLOW) minus the best non-GLOW alternative (_draw_diff),
+    row is one_label (the headline GLOW arm) minus the best non-GLOW
+    alternative (_draw_diff),
     with the metrics (dice / sens / ppv) across the columns. That second row is
     drawn only for a source that has a non-GLOW method to diff against
     (_has_diff): a cache of GLOW arms alone is one row per source. A dashed
@@ -834,9 +856,6 @@ def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
         ci (int): central percentile-interval width for the top-row band
         thresh_metric (str): the metric whose level line is drawn (Dice)
         level (float): the threshold level line (0.5 = half-maximal Dice)
-        cache (str | None): the cache the frame came from, which may differ
-            from label once a secondary axis has been split out; it selects the
-            method styling (_method_style). None reads it off label.
     """
     df = df.copy()
     for c in [x, *metrics]:
@@ -850,8 +869,7 @@ def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
         print(f'  (no rows for {label} — skipping)')
         return
 
-    style = _method_style(df['label'].dropna().unique().tolist(),
-                          cache if cache is not None else label)
+    style = _method_style(df['label'].dropna().unique().tolist())
     log_x = pd.notnull(df[x].min()) and df[x].min() > 0
     ncols = len(metrics)
 
@@ -989,7 +1007,7 @@ def _method_rank() -> dict:
     Methods follow the config catalogue order (GLOW first, then the voxel-wise
     methods; see config.ana_kwargs_dict), under both their recipe label and
     their figure label, since a _BOTH_ARM_CACHES frame carries the raw arm
-    names and every other one the relabelled GLOW (_ARM_LABEL).
+    names and every other one the projection names (_ARM_LABEL).
     """
     rank = {}
     for i, m in enumerate(ana_kwargs_dict):
@@ -2458,7 +2476,7 @@ def plot_cache(label: str, df, out,
     counts = ['n_pred'] if label in _BOTH_ARM_CACHES else []
     for sub_label, sub in _split_by_secondary(label, df, x):
         plot_source_grid(sub_label, sub, x=x, metrics=metrics, out=out,
-                         one_label=_diff_label(label), cache=label)
+                         one_label=_diff_label(label))
         write_table_txt(sub_label, sub, x=x, out=out,
                         metrics=metrics + counts,
                         one_label=_diff_label(label))
@@ -2466,8 +2484,7 @@ def plot_cache(label: str, df, out,
             plot_metric_grid(
                 f'{sub_label}_regions', sub, out, x=x, metrics=(count,),
                 ylim=None, log_y=True, hline=_ONE_REGION,
-                style=_method_style(sub['label'].dropna().unique().tolist(),
-                                    label))
+                style=_method_style(sub['label'].dropna().unique().tolist()))
 
     # one discovery-threshold table for the whole cache, a column per secondary
     # (b in the llr sweep); absolute effect_llr per method (threshold_table)

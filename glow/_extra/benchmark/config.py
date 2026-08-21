@@ -157,9 +157,11 @@ SWEEP_NIMG_GRID = list(range(10, HCP_NUM_IMG + 1, 10))
 # The four GLOW entries are one arm under its two free choices: the Ward
 # projection (Focus on the contrast subspace, GLM Error on the whole design
 # space) crossed with the selection rule (greedy, or the exact max-total-LLR
-# antichain). Only REPORTED_GLOW_LABEL rides the shared leaf grid; the other
-# three are compared on one cache of their own (sweep_llr_glow_tune), which
-# is what settles the choice.
+# antichain). Both greedy arms ride the shared leaf grid
+# (REPORTED_GLOW_LABEL_LIST) -- the projection is the choice a reader of any
+# figure has to make, and it is not settled by one cache's ranking, so every
+# cache carries both. The dp arms are compared on one cache of their own
+# (sweep_llr_glow_tune), which is where the rule is settled.
 kwargs_voxel = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
 kwargs = dict(n_perm_inner=N_PERM_INNER, **kwargs_voxel)
 GLOW_LABEL_LIST = ('GLOW-Focus-greedy', 'GLOW-Focus-dp',
@@ -181,13 +183,19 @@ ana_kwargs_dict = {
                               **kwargs_voxel),
 }
 
-# The GLOW variant the figures report, and the only one on the shared leaf
-# grid: benchmark.plot drops the other three (_ARMS_SKIP) and calls this one
-# plainly GLOW. It is also the only variant the runtime caches time -- all
-# four run the same permutation walk over the same shapes and differ in what
-# Ward is handed and how the significant set is cut, neither of which moves a
+# The headline GLOW variant: the arm the prose reports, the one the
+# inner-draw sweep tunes, and the only one the runtime caches time -- all four
+# run the same permutation walk over the same shapes and differ in what Ward
+# is handed and how the significant set is cut, neither of which moves a
 # timing, so a second set would be a second copy of one curve.
 REPORTED_GLOW_LABEL = 'GLOW-Focus-greedy'
+
+# The GLOW variants every detection cache reports: one per Ward projection,
+# both pruning greedily, the headline arm first. benchmark.plot drops the rest
+# (_ARMS_SKIP) and names these two by the knob that separates them
+# (GLOW-Focus / GLOW-GLM), so a figure shows what the projection costs on its
+# own axes rather than deferring to the one cache that ranks the variants.
+REPORTED_GLOW_LABEL_LIST = (REPORTED_GLOW_LABEL, 'GLOW-GLM-greedy')
 
 # ---------- how a leaf's fit runs (never what it computes) -------------------
 # fit_params is forwarded to Analysis.fit by the leaf and filtered out of the
@@ -213,9 +221,9 @@ GLOW_FIT_PARAMS = dict(n_jobs=GLOW_FIT_N_JOBS, gpu='auto')
 # ana_kwargs_dict key) is recovered from the recipe at read time (see
 # benchmark.plot), so it never enters the call or the cache key.
 #
-# The reported GLOW variant plus the voxel-wise arms, NOT all four GLOW
-# variants: this grid is shared by six caches, so an extra GLOW entry here
-# costs a per-perm fit in each of them. The other three are compared on
+# The reported GLOW variants plus the voxel-wise arms, NOT all four GLOW
+# variants: this grid is shared by six caches, so an entry here costs a
+# per-perm fit in each of them, and the two dp arms are compared on
 # GLOW_ARM_LIST's cache alone.
 def _run_ana(label: str) -> dict:
     """The run_ana leaf kwargs for one catalogue label."""
@@ -225,14 +233,15 @@ def _run_ana(label: str) -> dict:
 
 
 RUN_ANA_LIST = [_run_ana(label) for label in ana_kwargs_dict
-                if label == REPORTED_GLOW_LABEL
+                if label in REPORTED_GLOW_LABEL_LIST
                 or label not in GLOW_LABEL_LIST]
 
 # the sweep_llr_glow_tune cache's leaf grid: the four GLOW variants and nothing
 # else. Ward projection x selection rule, on the llr sweep's own axes at b=1,
-# which is what the choice of REPORTED_GLOW_LABEL rests on. The voxel-wise
-# arms are absent -- sweep_llr already carries them over the same cells, so
-# repeating them here would pay twice for one curve.
+# which is what the choice of selection rule rests on. The voxel-wise arms are
+# absent -- sweep_llr already carries them over the same cells, so repeating
+# them here would pay twice for one curve. Its two greedy arms are the shared
+# grid's, so those cells are hits and only the dp fits are new.
 GLOW_ARM_LIST = [_run_ana(label) for label in GLOW_LABEL_LIST]
 
 
@@ -505,9 +514,9 @@ CONFIG = {
     #    four variants of one arm rather than a power curve -- a second b
     #    would double the fits to re-read the same ranking -- and its cells
     #    are sweep_llr's b=1 cells, so every data / effect build is a hit and
-    #    only the fits are new. REPORTED_GLOW_LABEL is the variant this cache
-    #    picks out; benchmark.plot keeps all four under their own labels here
-    #    (_BOTH_ARM_CACHES) and drops the unreported three everywhere else.
+    #    only the dp fits are new. The selection rule is what this cache picks
+    #    out; benchmark.plot keeps all four under their own labels here
+    #    (_BOTH_ARM_CACHES) and drops the dp arms everywhere else.
     'sweep_llr_glow_tune': (
         data_grid(b_list=(1,)),
         effect_grid(llr_list=EFFECT_LLR_GRID),

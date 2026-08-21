@@ -18,14 +18,14 @@ from glow.analysis import AnalysisVBA
 # provenance row has to carry a recipe the read path can map back to a label
 # (plot._LABEL_OF_ANA), and these tests need the reported GLOW arm and one
 # voxel-wise arm -- not whichever names config carries this month, nor how many
-# arms it ships. The reported arm rather than any GLOW arm because the
+# arms it ships. The headline arm rather than any GLOW arm because the
 # unreported ones never reach a figure (_ARMS_SKIP). What the figures then CALL
-# it is plot's own contract (_ARM_LABEL / _CALIB_METHODS), so output assertions
-# use the literal below.
+# it is plot's own contract, so output assertions read the name off the same
+# mapping the figures do (_ARM_LABEL) rather than spelling it out.
 GLOW_LABEL = REPORTED_GLOW_LABEL
 VBA_LABEL = next(label for label, ana in ana_kwargs_dict.items()
                  if isinstance(ana, AnalysisVBA) and not ana.tfce_flag)
-GLOW_FIGURE = 'GLOW'
+GLOW_FIGURE = plot._ARM_LABEL[REPORTED_GLOW_LABEL]
 # an unreported GLOW variant (dropped by _ARMS_SKIP) and the one cache that
 # keeps every variant's own name, both taken off plot's own vocabulary
 ARM_OTHER = plot._ARMS_SKIP[0]
@@ -968,14 +968,15 @@ def test_plot_prune_writes_one_figure_per_mode(tmp_path):
 def test_select_glow_arm_spares_mode_and_rule_labels():
     """The filter drops an unreported GLOW variant, not a mode or rule label.
 
-    The surviving variant is relabelled GLOW. segment labels by Ward mode
+    A surviving variant is renamed by its projection. segment labels by Ward
+    mode
     ('Focus') and prune by rule ('GLOW-greedy'), so neither family can be
     caught by a filter keyed on the analysis arm.
     """
     df = pd.DataFrame({'label': [GLOW_LABEL, ARM_OTHER, 'Focus',
                                  'GLOW-greedy', 'VBA']})
     assert list(plot._select_glow_arm(df)['label']) == [
-        'GLOW', 'Focus', 'GLOW-greedy', 'VBA']
+        GLOW_FIGURE, 'Focus', 'GLOW-greedy', 'VBA']
 
 
 def _both_arm_frame():
@@ -1002,13 +1003,14 @@ def _both_arm_frame():
     return df
 
 
-def test_plot_cache_drops_focus_arm(tmp_path):
-    """An ordinary detection cache reports one arm, labelled GLOW."""
+def test_plot_cache_drops_the_unreported_arms(tmp_path):
+    """An ordinary detection cache reports its arms by projection name."""
     df = _both_arm_frame()
 
     plot.plot_cache('sweep_extent', df, tmp_path)
     thr = pd.read_csv(tmp_path / 'sweep_extent_threshold.csv')
-    # no raw variant label reaches the output; the reported one reads GLOW
+    # no recipe label reaches the output; a reported arm reads as its
+    # projection, and an unreported one is gone
     assert not {GLOW_LABEL, ARM_OTHER} & set(thr['method'])
     assert GLOW_FIGURE in set(thr['method'])
     diff = pd.read_csv(tmp_path / 'sweep_extent_diff.csv')
@@ -1055,14 +1057,19 @@ def test_plot_cache_arms_only_loses_the_diff_row(tmp_path):
 
 
 def test_method_style_separates_the_arms():
-    """A both-arm cache colours the arms apart; any other keeps the palette."""
-    arms = list(plot._ARM_STYLE)
-    style = plot._method_style(arms, BOTH_ARM_CACHE)
-    assert len({style[a]['color'] for a in arms}) == len(arms)
-    # the reported arm keeps the colour it carries in every other figure
-    assert style[GLOW_LABEL]['color'] == plot.COLOR_ANALYSIS[GLOW_FIGURE]
+    """Every recipe arm draws apart, and its figure label matches it.
 
-    plain = plot._method_style([GLOW_LABEL, VBA_LABEL], 'sweep_extent')
+    The four recipes take four colours -- two projections crossed with the
+    dash that carries the rule -- and a renamed arm keeps the colour its
+    recipe has, so a cache that reports two arms and one that reports four
+    agree on what a curve looks like.
+    """
+    arms = [lab for lab in plot._ARM_STYLE if lab in ana_kwargs_dict]
+    style = plot._method_style(arms)
+    assert len({(s['color'], s['ls']) for s in style.values()}) == len(arms)
+    assert style[GLOW_LABEL] == plot._method_style([GLOW_FIGURE])[GLOW_FIGURE]
+
+    plain = plot._method_style([GLOW_LABEL, VBA_LABEL])
     assert plain[VBA_LABEL] == {'color': plot.COLOR_ANALYSIS[VBA_LABEL],
                                 'ls': '-'}
 
