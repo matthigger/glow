@@ -648,12 +648,13 @@ def _segment_row(mode, seed, effect_llr, tp, fp, tn, fn, source='wgn',
 
 
 def _prune_row(rule, seed, effect_llr, tp, fp, tn, fn, source='wgn',
-               cluster_mode='Focus'):
+               cluster_mode='Focus', n_selected=1):
     """Build one prune provenance row (run_prune leaf + its ancestors)."""
     row = {'run_prune.in.rule': rule,
            'run_prune.in.cluster_mode': cluster_mode,
            'effect_factory_single.in.effect_llr': effect_llr,
-           **_flat_score('run_prune', tp, fp, tn, fn, extra={'n_selected': 1})}
+           **_flat_score('run_prune', tp, fp, tn, fn,
+                         extra={'n_selected': n_selected})}
     if source == 'wgn':
         row.update({'data_factory_wgn.in.b': 1,
                     'data_factory_wgn.in.seed': seed})
@@ -1032,3 +1033,120 @@ def test_plot_cache_keeps_both_arms_where_the_cache_compares_them(tmp_path):
     assert list(thr['method']) == [GLOW_LABEL, ARM_OTHER, VBA_LABEL]
     diff = pd.read_csv(tmp_path / f'{BOTH_ARM_CACHE}_diff.csv')
     assert set(diff['method'].unique()) == {GLOW_LABEL, ARM_OTHER}
+
+
+def test_plot_cache_arms_only_loses_the_diff_row(tmp_path):
+    """With no non-GLOW method, the head-to-head row is not drawn at all.
+
+    The arm cache's own leaf grid is the GLOW variants alone, so nothing
+    diffs against them (_has_diff): the figure is one band row per source and
+    no diff CSV is written.
+    """
+    df = _both_arm_frame()
+    df = df[df['label'] != VBA_LABEL]
+
+    assert not plot._has_diff(df)
+    plot.plot_cache(BOTH_ARM_CACHE, df, tmp_path)
+    assert (tmp_path / f'{BOTH_ARM_CACHE}.pdf').exists()
+    assert not (tmp_path / f'{BOTH_ARM_CACHE}_diff.csv').exists()
+    # the arms still reach the tables
+    thr = pd.read_csv(tmp_path / f'{BOTH_ARM_CACHE}_threshold.csv')
+    assert {GLOW_LABEL, ARM_OTHER} <= set(thr['method'])
+
+
+def test_method_style_separates_the_arms():
+    """A both-arm cache colours the arms apart; any other keeps the palette."""
+    arms = list(plot._ARM_STYLE)
+    style = plot._method_style(arms, BOTH_ARM_CACHE)
+    assert len({style[a]['color'] for a in arms}) == len(arms)
+    # the reported arm keeps the colour it carries in every other figure
+    assert style[GLOW_LABEL]['color'] == plot.COLOR_ANALYSIS[GLOW_FIGURE]
+
+    plain = plot._method_style([GLOW_LABEL, VBA_LABEL], 'sweep_extent')
+    assert plain[VBA_LABEL] == {'color': plot.COLOR_ANALYSIS[VBA_LABEL],
+                                'ls': '-'}
+
+
+def test_write_table_txt_holds_the_figures_numbers(tmp_path):
+    """The txt companion carries a matrix per metric, thresholds and wins."""
+    df = _both_arm_frame()
+
+    plot.write_table_txt('sweep_extent', df, x='effect_llr', out=tmp_path,
+                         metrics=['dice', 'sens', 'ppv'],
+                         one_label=GLOW_LABEL)
+    text = (tmp_path / 'sweep_extent_tables.txt').read_text()
+    assert 'x axis: LLR / |r| (effect_llr)' in text
+    for title in ('Dice', 'Sensitivity', 'PPV (Precision)'):
+        assert f'{title} (mean over seeds)' in text
+    assert 'at Dice >= 0.5' in text
+    assert f'win rate vs {GLOW_LABEL}' in text
+    # a row per method, in catalogue order, under one shared swept-value header
+    body = text[text.index('Dice (mean over seeds)'):]
+    rows = body.splitlines()[1:5]
+    assert rows[0].split()[0] == 'method'
+    assert [r.split()[0] for r in rows[1:]] == [GLOW_LABEL, ARM_OTHER,
+                                                VBA_LABEL]
+
+
+def test_tidy_prune_carries_the_selection_size():
+    """The rule's own region count rides through as n_selected.
+
+    What a rule selects is the count the region figures read
+    (plot_prune_regions); it is a leaf output like the confusion counts, not
+    something derived from them.
+    """
+    df = plot.tidy_prune(pd.DataFrame([
+        _prune_row('greedy', 0, 0.03, 90, 5, 900, 5, n_selected=1),
+        _prune_row('dp', 0, 0.03, 60, 40, 880, 20, n_selected=347),
+    ]))
+    assert dict(zip(df['label'], df['n_selected'])) == {
+        'GLOW-greedy': 1, 'GLOW-dp': 347}
+
+
+def test_plot_prune_writes_the_region_count_figure(tmp_path):
+    """plot_prune adds one region-count figure holding both Ward modes."""
+    rows = []
+    for mode in ('Focus', 'GLM Error'):
+        for rule, n_sel in (('greedy', 2), ('dp', 400)):
+            for source in ('wgn', 'hcp'):
+                for effect_llr in (0.003, 0.03, 0.3):
+                    for seed in range(3):
+                        rows.append(_prune_row(rule, seed, effect_llr,
+                                               80, 10, 890, 20, source=source,
+                                               cluster_mode=mode,
+                                               n_selected=n_sel))
+    df = plot.tidy_prune(pd.DataFrame(rows))
+    plot.plot_prune('prune', df, tmp_path)
+    # one page for the counts, next to the per-mode metric grids
+    assert (tmp_path / 'prune_regions.pdf').exists()
+    assert (tmp_path / 'prune_Focus.pdf').exists()
+
+
+def test_plot_cache_draws_region_counts_for_the_arm_cache(tmp_path):
+    """The prune-rule cache reports what its rules select; others do not.
+
+    The arm cache's methods are the prune rules crossed with the Ward
+    projections, so it gets the run_ana counterpart of plot_prune_regions off
+    n_pred, plus the count block in its table file.
+    """
+    df = _both_arm_frame()
+
+    plot.plot_cache(BOTH_ARM_CACHE, df, tmp_path)
+    assert (tmp_path / f'{BOTH_ARM_CACHE}_regions.pdf').exists()
+    text = (tmp_path / f'{BOTH_ARM_CACHE}_tables.txt').read_text()
+    assert 'Regions detected (mean over seeds)' in text
+
+    plot.plot_cache('sweep_extent', df, tmp_path)
+    assert not (tmp_path / 'sweep_extent_regions.pdf').exists()
+    plain = (tmp_path / 'sweep_extent_tables.txt').read_text()
+    assert 'Regions detected' not in plain
+
+
+def test_cache_dir_is_one_directory_per_cache(tmp_path):
+    """Each cache's output goes under its own directory, created on demand."""
+    assert not (tmp_path / 'prune').exists()
+    got = plot._cache_dir(tmp_path, 'prune')
+    assert got == tmp_path / 'prune' and got.is_dir()
+    # idempotent: a second cache leaves the first alone
+    plot._cache_dir(tmp_path, 'sweep_llr')
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['prune', 'sweep_llr']

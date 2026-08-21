@@ -3,8 +3,9 @@
 Reads each cache's provenance frame (make_csv.write_config_csv: one wide row
 per run_ana leaf, namespaced by the producing function), normalises it to one
 tidy row per (trial, recipe) with tidy_run_ana, and writes one figure set per
-cache into results/_latest. Reading through make_csv refreshes each plotted
-cache's CSV in passing, so table and figures come from the same records.
+cache into its own results/_latest/<cache> directory. Reading through
+make_csv refreshes each plotted cache's CSV in passing, so table and figures
+come from the same records.
 
 The tidy frame is what the plotters consume: a label (method), a source
 (WGN / HCP, which share each cache and face apart here), the swept axes
@@ -18,16 +19,21 @@ Every figure outside the segment / prune / race-retention families reports one
 GLOW arm, the GLM-Error clustering, labelled plainly GLOW: the Focus arm is
 dropped and the survivor relabelled at the plot layer (_select_glow_arm), never
 in the caches. The exceptions compare the arms, so they keep both, as does any
-cache in _BOTH_ARM_CACHES.
+cache in _BOTH_ARM_CACHES, which styles the four arms apart (_ARM_STYLE)
+rather than as one method.
 
 Each cache then gets either a GLOW-only FWER calibration row (null) -- source x
 GLOW arm cells of nominal alpha vs empirical rejection rate, with a
 Clopper-Pearson 95% band -- or one stacked detection figure, an HCP block over
 a WGN block, each a 2 x 3 grid whose top row is the per-method mean score with
 a central 95% band and whose bottom row is the GLOW head-to-head diff, over the
-dice / sens / ppv columns. Alongside it a discovery-threshold table
+dice / sens / ppv columns -- the diff row only where the source has a non-GLOW
+method to diff against. Alongside it a discovery-threshold table
 (write_threshold_table) records the absolute effect strength at which each
-method's mean Dice first reaches 0.5.
+method's mean Dice first reaches 0.5, and {label}_tables.txt (write_table_txt)
+carries the drawn figure's own numbers as plain text: the per-method score
+matrices (its region counts among them, where its methods select regions),
+those thresholds and the head-to-head against the reported arm.
 
 The runtime family is plotted apart (tidy_runtime / plot_runtime): those caches
 hold detection fixed and sweep one cost knob, so the signal is the leaf wall
@@ -44,6 +50,12 @@ with frac_segment, the share of the images the tree is built on, so
 plot_segment_llr holds the Ward mode fixed and draws the llr sweep once per
 fold share, and plot_segment_compare pages the same frame by fold share, with
 the Ward modes and the cohorts side by side.
+
+Prune also reports what its rules select, not just how well: plot_prune_regions
+draws each rule's region count against the effect strength, both Ward modes on
+one page, against the one-region reference the caches plant. The GLOW arm cache
+gets the same read off run_ana's own count (plot_cache), since its methods are
+those rules crossed with the Ward projections.
 
 With no arguments the CLI plots every cache in the catalogue; passing names
 restricts it.
@@ -85,12 +97,9 @@ COLOR_ANALYSIS = {
     # its figure label
     'GLOW-Focus-greedy': _hls_hex(0/4 + _H, l=_L * 0.6),
     'GLOW':              _hls_hex(0/4 + _H, l=_L * 0.6),
-    # the three unreported variants, drawn only where a cache reports every
-    # one (_BOTH_ARM_CACHES); elsewhere they are dropped (_ARMS_SKIP). One
-    # hue over four lightnesses, so the family reads as one method.
-    'GLOW-Focus-dp':     _hls_hex(0/4 + _H, l=_L * 0.8),
-    'GLOW-GLM-greedy':   _hls_hex(0/4 + _H),
-    'GLOW-GLM-dp':       _hls_hex(0/4 + _H, l=_L * 1.2),
+    # the three unreported variants are drawn only where a cache reports
+    # every one (_BOTH_ARM_CACHES) and are styled apart there (_ARM_STYLE);
+    # elsewhere they are dropped (_ARMS_SKIP), so they take no method colour.
     # purple (270 deg)
     'VBA-TFCE':   _hls_hex(1/4 + _H),
     # coral (0 deg)
@@ -123,8 +132,10 @@ _ARM_LABEL = {REPORTED_GLOW_LABEL: 'GLOW'}
 # Caches that report every GLOW arm instead: the arms are the comparison the
 # figure is asked for, so they keep their own names through the panels, the
 # legend and the CSVs (a figure showing two curves both called GLOW would say
-# nothing). The head-to-head diff row still draws one line, the reported arm's
-# (_diff_label), while its CSV covers every arm -- see _draw_diff.
+# nothing). With no non-GLOW method left to diff against, such a cache also
+# loses the head-to-head row (plot_source_grid); where one is present the row
+# draws the reported arm's line (_diff_label) and its CSV covers every arm --
+# see _draw_diff.
 _BOTH_ARM_CACHES = ('sweep_llr_glow_tune',)
 
 
@@ -244,6 +255,41 @@ def _qual_style(label_list) -> dict:
     return out
 
 
+# The four GLOW arms, drawn together only where a cache reports every one
+# (_BOTH_ARM_CACHES). Four curves and their bands never separate by lightness
+# alone, so each arm takes its own Okabe-Ito hue and the selection rule rides
+# the dash pattern on top: cool hues the Focus projection, warm the GLM-Error
+# one, dashed the dp rule. The reported arm keeps the palette's teal, so the
+# method a reader has followed through every other figure keeps its colour.
+_ARM_STYLE = {
+    'GLOW-Focus-greedy': {'color': COLOR_ANALYSIS['GLOW'], 'ls': '-'},
+    'GLOW-Focus-dp':     {'color': '#0072B2', 'ls': '--'},
+    'GLOW-GLM-greedy':   {'color': '#E69F00', 'ls': '-'},
+    'GLOW-GLM-dp':       {'color': '#CC79A7', 'ls': '--'},
+}
+
+
+def _method_style(label_list, cache: str = None) -> dict:
+    """Map method labels to a (colour, line style) pair for one figure.
+
+    A method takes its fixed palette colour (get_cmap_dict), solid. A cache
+    that reports every GLOW arm (_BOTH_ARM_CACHES) styles the arms by
+    _ARM_STYLE instead, since there the arms are the comparison.
+
+    Args:
+        label_list: the method labels to style.
+        cache (str | None): the cache being plotted.
+
+    Returns:
+        dict: label -> {'color': str, 'ls': str}.
+    """
+    arms = _ARM_STYLE if cache in _BOTH_ARM_CACHES else {}
+    color = get_cmap_dict([lab for lab in label_list if lab not in arms])
+    return {lab: (arms[lab] if lab in arms
+                  else {'color': color[lab], 'ls': '-'})
+            for lab in label_list}
+
+
 def _seq_style(value_list) -> dict:
     """Map ordered values to a sequential colour ramp, one line style.
 
@@ -277,7 +323,23 @@ _METRIC_TITLES = {
     'sens': 'Sensitivity',
     'ppv': 'PPV (Precision)',
     'spec': 'Specificity',
+    # region counts, not scores: how many regions a method hands back, the
+    # selection's own size rather than how well it overlaps the plant. The
+    # prune leaf calls it n_selected, run_ana n_pred (score.score_prune /
+    # score.score_ana), and both are drawn against a one-region reference
+    # (_ONE_REGION) since the caches plant a single effect.
+    'n_selected': 'Regions selected',
+    'n_pred': 'Regions detected',
 }
+
+# the count figures' reference line: the caches plant one effect, so a rule
+# that returns one region is size-matched to the plant and anything above it
+# is fragmentation (prune's dp oversegments by construction).
+_ONE_REGION = 1.0
+
+# the columns above that count regions rather than score them; they are
+# tabulated to one decimal, a score to three.
+_COUNT_COLS = ('n_selected', 'n_pred')
 
 # effect_llr is the size-normalized effect strength the factory plants -- the
 # per-voxel LLR contribution, so a planted region's observed LLR is
@@ -598,6 +660,7 @@ def _plot_calibration_faceted(label: str, df, out,
         if k == 0:
             ax.set_ylabel('empirical rejection rate')
     axes[0, 0].legend(frameon=False, fontsize=8, loc='lower right')
+    _stamp(fig, f'{label} — FWER calibration')
     fig.tight_layout()
     path = out / f'{label}_calibration.pdf'
     fig.savefig(path, bbox_inches='tight')
@@ -609,32 +672,50 @@ def _plot_calibration_faceted(label: str, df, out,
 # Metric sweeps (one stacked figure: an HCP block over a WGN block)
 # ---------------------------------------------------------------------------
 
-def _draw_metric_band(ax, df, x: str, metric: str, palette: dict, *,
+def _stamp(fig, text: str, fontsize: int = 13) -> None:
+    """Title a figure with the cache and cut it was drawn from.
+
+    Every family draws the same panels for a different cache, so a page read
+    on its own -- or beside five others in a draft -- has to say which one it
+    is: the filename does not travel with the figure.
+
+    Args:
+        fig: the matplotlib Figure to title.
+        text (str): the cache label, plus whatever cut the page holds.
+        fontsize (int): point size; a figure with its own section banners
+            wants this above theirs.
+    """
+    fig.suptitle(text, fontsize=fontsize, fontweight='bold')
+
+
+def _draw_metric_band(ax, df, x: str, metric: str, style: dict, *,
                       ci: int = 95, hue: str = 'label') -> None:
     """Draw a mean line plus a central ci% percentile band per method into ax.
 
-    One curve per method (hue), the band spanning the (100-ci)/2 .. (100+ci)/2
-    percentiles of the seed replicates at each x (so the default ci=95 shades
-    the 2.5th-97.5th percentile). PPV is undefined for trials with no
-    detections (nan; glow.mask.stats_from_counts) and drops out of both.
+    One curve per method (hue) in catalogue order (_ordered_methods, so the
+    legend reads in the tables' order), the band spanning the (100-ci)/2 ..
+    (100+ci)/2 percentiles of the seed replicates at each x (so the default
+    ci=95 shades the 2.5th-97.5th percentile). PPV is undefined for trials
+    with no detections (nan; glow.mask.stats_from_counts) and drops out of
+    both.
 
     Args:
         ax: matplotlib Axes to draw into
         df: one source's tidy rows (numeric x / metric, dropna'd on x)
         x (str): the swept x-axis column
         metric (str): the metric column plotted on the y-axis
-        palette (dict): label -> colour
+        style (dict): label -> {'color', 'ls'} (_method_style)
         ci (int): central percentile-interval width for the band
         hue (str): the method-label column
     """
     lo_q, hi_q = (1 - ci / 100) / 2, (1 + ci / 100) / 2
-    for label in sorted(df[hue].dropna().unique().tolist()):
+    for label in _ordered_methods(df[hue].dropna().unique().tolist()):
         g = df[df[hue] == label].groupby(x)[metric]
         mean, lo, hi = g.mean(), g.quantile(lo_q), g.quantile(hi_q)
-        ax.plot(mean.index, mean.values, lw=2, color=palette[label],
-                label=label)
+        ax.plot(mean.index, mean.values, lw=2, color=style[label]['color'],
+                ls=style[label]['ls'], label=label)
         ax.fill_between(mean.index, lo.values, hi.values,
-                        color=palette[label], alpha=0.15)
+                        color=style[label]['color'], alpha=0.15)
 
 
 def _draw_diff(ax, df, x: str, metric: str, *, one_label: str = 'GLOW',
@@ -715,19 +796,29 @@ def _draw_diff(ax, df, x: str, metric: str, *, one_label: str = 'GLOW',
 _SOURCE_ORDER = ('HCP', 'WGN')
 
 
+def _has_diff(df, hue: str = 'label') -> bool:
+    """Whether a frame holds both a GLOW and a non-GLOW method to diff."""
+    labels = {str(v) for v in df[hue].dropna().unique()}
+    return (any(v.startswith('GLOW') for v in labels)
+            and any(not v.startswith('GLOW') for v in labels))
+
+
 def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
                      one_label: str = 'GLOW', ci: int = 95,
-                     thresh_metric: str = 'dice', level: float = 0.5) -> None:
-    """Plot the stacked per-source detection figure: two rows per source.
+                     thresh_metric: str = 'dice', level: float = 0.5,
+                     cache: str = None) -> None:
+    """Plot the stacked per-source detection figure: a block per source.
 
     One SubFigure per source (its banner the source name), stacked HCP over
-    WGN; within each a 2 x len(metrics) grid whose top row is the mean score +
-    central ci% percentile band per method (_draw_metric_band) and whose bottom
-    row is one_label (GLOW) minus the best non-GLOW alternative
-    (_draw_diff), with the metrics (dice / sens / ppv) across the columns. A
-    dashed line marks the threshold level on the thresh_metric (Dice) panel,
-    where the discovery thresholds (write_threshold_table, plotted once per
-    cache) are read.
+    WGN; within each a len(metrics)-wide grid whose top row is the mean score +
+    central ci% percentile band per method (_draw_metric_band) and whose second
+    row is one_label (GLOW) minus the best non-GLOW alternative (_draw_diff),
+    with the metrics (dice / sens / ppv) across the columns. That second row is
+    drawn only for a source that has a non-GLOW method to diff against
+    (_has_diff): a cache of GLOW arms alone is one row per source. A dashed
+    line marks the threshold level on the thresh_metric (Dice) panel, where the
+    discovery thresholds (write_threshold_table, plotted once per cache) are
+    read.
 
     Writes {label}.pdf and the companion {label}_diff.csv (one block per GLOW
     variant; see _write_diff_csv).
@@ -743,6 +834,9 @@ def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
         ci (int): central percentile-interval width for the top-row band
         thresh_metric (str): the metric whose level line is drawn (Dice)
         level (float): the threshold level line (0.5 = half-maximal Dice)
+        cache (str | None): the cache the frame came from, which may differ
+            from label once a secondary axis has been split out; it selects the
+            method styling (_method_style). None reads it off label.
     """
     df = df.copy()
     for c in [x, *metrics]:
@@ -756,21 +850,29 @@ def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
         print(f'  (no rows for {label} — skipping)')
         return
 
-    palette = get_cmap_dict(sorted(df['label'].dropna().unique().tolist()))
+    style = _method_style(df['label'].dropna().unique().tolist(),
+                          cache if cache is not None else label)
     log_x = pd.notnull(df[x].min()) and df[x].min() > 0
     ncols = len(metrics)
 
-    fig = plt.figure(figsize=(4.2 * ncols, 4.6 * len(sources)),
+    # a source's block is the band row plus a diff row, or the band row alone
+    nrow_src = [1 + _has_diff(df[df['source'] == src]) for src in sources]
+    fig = plt.figure(figsize=(4.2 * ncols, 2.3 * sum(nrow_src)),
                      layout='constrained')
-    subfigs = np.atleast_1d(fig.subfigures(len(sources), 1))
+    subfigs = np.atleast_1d(fig.subfigures(len(sources), 1,
+                                           height_ratios=nrow_src))
+
+    # above the per-source banners, so the page names the cache first
+    _stamp(fig, label, fontsize=15)
 
     diff_rows = []
-    for si, (subfig, src) in enumerate(zip(subfigs, sources)):
+    for si, (subfig, src, nrows) in enumerate(zip(subfigs, sources,
+                                                 nrow_src)):
         subfig.suptitle(src, fontsize=14, fontweight='bold')
-        axes = subfig.subplots(2, ncols, sharex=True, squeeze=False)
+        axes = subfig.subplots(nrows, ncols, sharex=True, squeeze=False)
         dsrc = df[df['source'] == src]
         for j, metric in enumerate(metrics):
-            _draw_metric_band(axes[0, j], dsrc, x, metric, palette, ci=ci)
+            _draw_metric_band(axes[0, j], dsrc, x, metric, style, ci=ci)
             axes[0, j].set_title(_METRIC_TITLES.get(metric, metric))
             axes[0, j].set_ylim(0, 1)
             axes[0, j].grid(True, alpha=0.3)
@@ -779,20 +881,23 @@ def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
                 axes[0, j].axhline(level, ls='--', lw=0.8, color='grey',
                                    alpha=0.7)
 
-            rows = _draw_diff(axes[1, j], dsrc, x, metric, one_label=one_label)
-            for r in rows:
-                r['source'] = src
-            diff_rows += rows
-            axes[1, j].set_xlabel(_X_PARAM_LABELS.get(x, x))
+            if nrows == 2:
+                rows = _draw_diff(axes[1, j], dsrc, x, metric,
+                                  one_label=one_label)
+                for r in rows:
+                    r['source'] = src
+                diff_rows += rows
+            axes[-1, j].set_xlabel(_X_PARAM_LABELS.get(x, x))
             if log_x:
-                axes[0, j].set_xscale('log')
-                axes[1, j].set_xscale('log')
+                for ax in axes[:, j]:
+                    ax.set_xscale('log')
 
         axes[0, 0].set_ylabel(f'score (mean, {ci}% band)')
-        axes[1, 0].set_ylabel(f'{one_label} − best')
+        if nrows == 2:
+            axes[1, 0].set_ylabel(f'{one_label} − best')
         # one legend for the figure, on the first block's top-left panel
         if si == 0:
-            axes[0, 0].legend(frameon=False, fontsize=8)
+            axes[0, 0].legend(frameon=False, fontsize=8, loc='upper left')
 
     path = out / f'{label}.pdf'
     fig.savefig(path, bbox_inches='tight')
@@ -878,19 +983,33 @@ def _crossing(x_vals, y_vals, level: float):
     return np.nan, 'above'
 
 
-def _order_threshold_rows(wide):
-    """Sort a threshold table by source order, then canonical method order.
+def _method_rank() -> dict:
+    """Map every method label to its position in the config catalogue.
 
     Methods follow the config catalogue order (GLOW first, then the voxel-wise
     methods; see config.ana_kwargs_dict), under both their recipe label and
-    their figure label, since a _BOTH_ARM_CACHES table carries the raw arm
-    names and every other one the relabelled GLOW (_ARM_LABEL). A label outside
-    the catalogue sorts last. Sources follow _SOURCE_ORDER (HCP over WGN).
+    their figure label, since a _BOTH_ARM_CACHES frame carries the raw arm
+    names and every other one the relabelled GLOW (_ARM_LABEL).
     """
-    m_rank = {}
+    rank = {}
     for i, m in enumerate(ana_kwargs_dict):
-        m_rank[m] = i
-        m_rank[_ARM_LABEL.get(m, m)] = i
+        rank[m] = i
+        rank[_ARM_LABEL.get(m, m)] = i
+    return rank
+
+
+def _ordered_methods(label_list) -> list:
+    """Sort method labels into catalogue order, a label outside it last."""
+    rank = _method_rank()
+    return sorted(label_list, key=lambda m: (rank.get(m, len(rank)), str(m)))
+
+
+def _order_threshold_rows(wide):
+    """Sort a threshold table by source order, then catalogue method order.
+
+    Sources follow _SOURCE_ORDER (HCP over WGN), methods _method_rank.
+    """
+    m_rank = _method_rank()
     s_rank = {s: i for i, s in enumerate(_SOURCE_ORDER)}
     keyed = wide.assign(
         _s=wide['source'].map(lambda s: s_rank.get(s, len(s_rank))),
@@ -973,6 +1092,58 @@ def threshold_table(df, *, x: str, metric: str = 'dice', level: float = 0.5):
     return _order_threshold_rows(wide), status
 
 
+def _threshold_lines(df, wide, status, *, x: str, metric: str,
+                     level: float) -> list:
+    """Render a threshold table as aligned plain-text lines.
+
+    One caption line, then a block per source: a header of the table's value
+    columns and a row per method. A censored cell reads as < the weakest
+    tested x (already above level there) or > the strongest (never reaches
+    it), off the status map.
+
+    Args:
+        df: the frame the table was built from; its x range names the
+            censored ends
+        wide: the threshold table (threshold_table)
+        status (dict): (source, method, column) -> crossing status
+        x (str): the swept-axis column
+        metric (str): the metric whose level crossing the table holds
+        level (float): the crossing level
+
+    Returns:
+        list[str]: the lines, indented two spaces below their block header.
+    """
+    val_cols = [c for c in wide.columns if c not in ('source', 'method')]
+    xlo, xhi = float(df[x].min()), float(df[x].max())
+    width = max([len(str(c)) for c in val_cols] + [10])
+    name_w = max([len(str(m)) for m in wide['method']] + [11])
+
+    def render(src, method, col, value):
+        """Format one threshold cell, censored ends read off the status map."""
+        if pd.notnull(value):
+            return f'{value:>{width}.4f}'
+        st = status.get((src, method, col))
+        if st == 'below':
+            return f'{f"<{xlo:g}":>{width}}'
+        if st == 'above':
+            return f'{f">{xhi:g}":>{width}}'
+        return f'{"—":>{width}}'
+
+    metric_title = _METRIC_TITLES.get(metric, metric)
+    lines = [f'{_X_PARAM_LABELS.get(x, x)} at {metric_title} >= {level:g} '
+             f'(mean across trials):']
+    for src in wide['source'].drop_duplicates():
+        sub = wide[wide['source'] == src]
+        header = ' '.join(f'{c:>{width}}' for c in val_cols)
+        lines += [f'  source={src}',
+                  f'    {"method":<{name_w}} {header}']
+        for _, r in sub.iterrows():
+            cells = ' '.join(render(src, r['method'], c, r[c])
+                             for c in val_cols)
+            lines.append(f'    {r["method"]:<{name_w}} {cells}')
+    return lines
+
+
 def write_threshold_table(label: str, df, *, x: str, out, metric: str = 'dice',
                           level: float = 0.5) -> None:
     """Write and print the absolute discovery-threshold table.
@@ -998,33 +1169,155 @@ def write_threshold_table(label: str, df, *, x: str, out, metric: str = 'dice',
     path = out / f'{label}_threshold.csv'
     wide.to_csv(path, index=False, float_format='%.4f')
     print(f'saved: {path}')
+    for line in _threshold_lines(df, wide, status, x=x, metric=metric,
+                                 level=level):
+        print(f'  {line}')
 
-    val_cols = [c for c in wide.columns if c not in ('source', 'method')]
-    xlo, xhi = float(df[x].min()), float(df[x].max())
 
-    def render(src, method, col, value):
-        """Format one threshold cell, censored ends read off the status map."""
-        if pd.notnull(value):
-            return f'{value:>10.4f}'
-        st = status.get((src, method, col))
-        if st == 'below':
-            return f'{f"<{xlo:g}":>10}'
-        if st == 'above':
-            return f'{f">{xhi:g}":>10}'
-        return f'{"—":>10}'
+# ---------------------------------------------------------------------------
+# The figure's numbers as plain text ({label}_tables.txt)
+# ---------------------------------------------------------------------------
 
-    metric_title = _METRIC_TITLES.get(metric, metric)
-    print(f'  {_X_PARAM_LABELS.get(x, x)} at {metric_title} >= {level:g} '
-          f'(mean across trials):')
-    for src in wide['source'].drop_duplicates():
-        sub = wide[wide['source'] == src]
-        print(f'    source={src}')
-        header = ' '.join(f'{c:>10}' for c in val_cols)
-        print(f'      {"method":<11} {header}')
-        for _, r in sub.iterrows():
-            cells = ' '.join(render(src, r['method'], c, r[c])
-                             for c in val_cols)
-            print(f'      {r["method"]:<11} {cells}')
+def _matrix_lines(piv, *, prec: int = 3) -> list:
+    """Render a method x swept-value matrix as aligned plain-text lines.
+
+    Args:
+        piv: DataFrame indexed by method label, one column per swept value
+        prec (int): decimals per cell
+
+    Returns:
+        list[str]: a header of the swept values, then a row per method. An
+            absent cell is blank (PPV is undefined for a trial that detected
+            nothing; glow.mask.stats_from_counts).
+    """
+    text = piv.map(lambda v: '' if pd.isnull(v) else f'{v:.{prec}f}')
+    # wide enough for the widest cell, so a region count in the thousands
+    # keeps the columns aligned with a 0..1 score's
+    width = max([len(c) for c in text.to_numpy().ravel()]
+                + [len(f'{v:.3g}') for v in piv.columns] + [prec + 5])
+    name_w = max([len(str(m)) for m in piv.index] + [6])
+    header = ' '.join(f'{v:>{width}.3g}' for v in piv.columns)
+    lines = [f'{"method":<{name_w}} {header}']
+    for name, row in text.iterrows():
+        lines.append(f'{name:<{name_w}} '
+                     + ' '.join(f'{c:>{width}}' for c in row))
+    return lines
+
+
+def _head_to_head_lines(df, *, x: str, metric: str, one_label: str,
+                        hue: str = 'label') -> list:
+    """Render each method's mean metric and its win rate against one_label.
+
+    A cell is one (seed, x) trial pair, so the win rate is read on paired
+    trials: the share of the cells a method scores strictly above one_label
+    on, over the cells where both ran. The mean is over the same cells the
+    method has, so it weights every swept value equally. one_label absent
+    yields no lines.
+
+    Args:
+        df: one source's tidy rows (numeric x / metric)
+        x (str): the swept-axis column
+        metric (str): the metric compared
+        one_label (str): the method every row is compared against
+        hue (str): the method-label column
+
+    Returns:
+        list[str]: a caption line, a header, then a row per method.
+    """
+    agg = df.groupby([hue, 'seed', x], as_index=False)[metric].mean()
+    piv = agg.pivot_table(index=['seed', x], columns=hue, values=metric)
+    if one_label not in piv.columns:
+        return []
+    methods = _ordered_methods(piv.columns.tolist())
+    name_w = max([len(str(m)) for m in methods] + [6])
+    lines = [f'mean {_METRIC_TITLES.get(metric, metric)} and win rate vs '
+             f'{one_label} (paired on seed x {x}):',
+             f'  {"method":<{name_w}} {"mean":>8} {"win":>8} {"n_cell":>8}']
+    for lab in methods:
+        # keyed rather than sliced by label, so the reference row's own pair
+        # is two columns and not one name twice
+        pair = pd.concat([piv[lab], piv[one_label]], axis=1,
+                         keys=['a', 'b']).dropna()
+        beat = (pair['a'] > pair['b']).mean() if len(pair) else np.nan
+        win = (f'{"—":>8}' if lab == one_label else f'{beat:>8.3f}')
+        lines.append(f'  {lab:<{name_w}} {piv[lab].mean():>8.3f} '
+                     f'{win} {len(pair):>8d}')
+    return lines
+
+
+def write_table_txt(label: str, df, *, x: str, out, metrics: list,
+                    one_label: str = 'GLOW', level: float = 0.5) -> None:
+    """Write one figure's numbers as a plain-text table file.
+
+    {label}_tables.txt, the readable companion to {label}.pdf: a header naming
+    the swept axis and the panel, the discovery thresholds
+    (_threshold_lines), then a block per source holding a method x
+    swept-value matrix of the seed-mean metric (_matrix_lines, one per metric)
+    and the head-to-head against one_label (_head_to_head_lines). Written per
+    drawn figure, so a cache split on a secondary axis gets one file per value
+    of it and every table has exactly one axis moving.
+
+    Args:
+        label (str): the drawn figure's label; the output filename stem
+        df: the tidy rows behind that figure
+        x (str): the swept-axis column
+        out (pathlib.Path): directory the file is written into
+        metrics (list): the metric columns tabulated, one block each
+        one_label (str): the method the head-to-head compares against
+        level (float): the discovery-threshold level
+    """
+    df = df.copy()
+    for c in [x, *metrics]:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+    df = df.dropna(subset=[x, 'label'])
+    if df.empty:
+        return
+
+    have = set(df['source'].dropna().unique())
+    sources = [s for s in _SOURCE_ORDER if s in have]
+    sources += [s for s in sorted(have) if s not in sources]
+    x_vals = sorted(df[x].unique())
+
+    lines = [label, '=' * len(label), '',
+             f'x axis: {_X_PARAM_LABELS.get(x, x)} ({x})',
+             f'panel: {len(df)} leaves, {df["label"].nunique()} methods, '
+             f'{df["seed"].nunique()} seeds']
+    # the axes this figure holds fixed, so a file read on its own says which
+    # slice of the cache it is
+    for c in _SECONDARY_AXES:
+        if (c in df.columns and df[c].notna().all()
+                and df[c].nunique() == 1):
+            lines.append(f'held: {c} = {df[c].iloc[0]:g}')
+
+    wide, status = threshold_table(df, x=x, metric=metrics[0], level=level)
+    if not wide.empty:
+        lines += ['', *_threshold_lines(df, wide, status, x=x,
+                                        metric=metrics[0], level=level)]
+
+    for src in sources:
+        dsrc = df[df['source'] == src]
+        n_cell = dsrc.pivot_table(index='label', columns=x,
+                                  values=metrics[0], aggfunc='size')
+        lines += ['', f'--- {src} ---',
+                  f'seeds per cell: {int(n_cell.min().min())} to '
+                  f'{int(n_cell.max().max())}']
+        for metric in metrics:
+            piv = dsrc.pivot_table(index='label', columns=x, values=metric,
+                                   aggfunc='mean')
+            piv = piv.reindex(index=_ordered_methods(piv.index.tolist()),
+                              columns=x_vals)
+            prec = 1 if metric in _COUNT_COLS else 3
+            lines += ['', f'{_METRIC_TITLES.get(metric, metric)} '
+                          f'(mean over seeds)',
+                      *_matrix_lines(piv, prec=prec)]
+        h2h = _head_to_head_lines(dsrc, x=x, metric=metrics[0],
+                                  one_label=one_label)
+        if h2h:
+            lines += ['', *h2h]
+
+    path = out / f'{label}_tables.txt'
+    path.write_text('\n'.join(lines) + '\n')
+    print(f'saved: {path}')
 
 
 # ---------------------------------------------------------------------------
@@ -1285,8 +1578,9 @@ def _tidy_flat_cache(raw, leaf: str, label_col: str, label_fn=None):
 
     Returns:
         a tidy DataFrame, one row per (trial, method), with columns label,
-        source (WGN / HCP), seed, b, effect_llr, the four confusion counts, and
-        the derived dice/sens/ppv/spec (empty in, empty out).
+        source (WGN / HCP), seed, b, effect_llr, the four confusion counts,
+        n_selected (the leaf's own region count, nan for a leaf that returns
+        none) and the derived dice/sens/ppv/spec (empty in, empty out).
     """
     def col(name):
         """Return raw[name], or an all-NaN column when absent."""
@@ -1314,6 +1608,10 @@ def _tidy_flat_cache(raw, leaf: str, label_col: str, label_fn=None):
     for cnt in ('tp', 'fp', 'tn', 'fn'):
         out[cnt] = pd.to_numeric(col(f'{leaf}.out.score.{cnt}'),
                                  errors='coerce')
+    # the selection's size, which only the leaves that select one report
+    # (run_prune / run_inner_perm; run_segment scores a whole Ward mode)
+    out['n_selected'] = pd.to_numeric(col(f'{leaf}.out.score.n_selected'),
+                                      errors='coerce')
     return add_metric_cols(out)
 
 
@@ -1394,7 +1692,7 @@ def tidy_prune(raw):
 
 def _draw_metric_errbar(ax, df, x: str, metric: str, style: dict, *,
                         hue: str = 'label', z_mult: float = 1.96,
-                        dodge: float = 0.03) -> None:
+                        dodge: float = 0.03, y_floor: float = None) -> None:
     """Draw each method's mean +/- 95% CI as x-dodged error bars into ax.
 
     Per x, the seed-mean of the metric with a 95% CI-of-the-mean bar
@@ -1416,25 +1714,56 @@ def _draw_metric_errbar(ax, df, x: str, metric: str, style: dict, *,
             quantity like the fold share).
         z_mult (float): SEM multiplier for the error bar (1.96 ~ 95% CI).
         dodge (float): fractional multiplicative x-dodge between methods.
+        y_floor (float | None): clip the lower bar here (_log_y_floor). A
+            count's symmetric CI reaches below zero, which a log axis cannot
+            draw -- and left unclipped it stretches the panel over decades
+            holding nothing.
     """
     labels = sorted(df[hue].dropna().unique().tolist())
     n = len(labels)
     for i, lab in enumerate(labels):
         g = df[df[hue] == lab].groupby(x)[metric]
         mean, sem = g.mean(), g.std() / np.sqrt(g.count())
+        err = z_mult * sem.values
+        if y_floor is None:
+            yerr = err
+        else:
+            # a mean of zero sits below the floor and cannot be drawn on a log
+            # axis at all, so its clipped bar is zero rather than negative
+            lo = np.maximum(mean.values - np.maximum(mean.values - err,
+                                                     y_floor), 0)
+            yerr = np.vstack([lo, err])
         # centre the per-method dodge on the group so it sits over the true x
         factor = 1 + dodge * (i - (n - 1) / 2)
         st = style[lab]
         ax.errorbar(mean.index.values * factor, mean.values,
-                    yerr=z_mult * sem.values, marker='o', ms=4, lw=1.5,
+                    yerr=yerr, marker='o', ms=4, lw=1.5,
                     ls=st['ls'], color=st['color'], capsize=2,
                     label=_hue_text(lab))
+
+
+def _log_y_floor(df, x: str, col: str, hue: str = 'label') -> float:
+    """Pick a log-y floor for a count panel: half its smallest positive mean.
+
+    Args:
+        df: the frame the panel draws (numeric x / col).
+        x (str): the swept x-axis column.
+        col (str): the counted column.
+        hue (str): the column one series is drawn per.
+
+    Returns:
+        float: the floor, or a default when no positive mean is present.
+    """
+    mean = df.groupby([hue, x])[col].mean()
+    pos = mean[mean > 0]
+    return float(pos.min()) / 2 if len(pos) else 0.1
 
 
 def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
                      metrics=('dice', 'sens', 'ppv'),
                      log_x: bool = None, hue: str = 'label',
-                     dodge: float = 0.03) -> None:
+                     dodge: float = 0.03, ylim=(0, 1), log_y: bool = False,
+                     hline: float = None, style: dict = None) -> None:
     """Plot a source x metric grid of per-series mean +/- 95% CI vs the x.
 
     A 2 x len(metrics) grid: one row per data source (HCP over WGN), one column
@@ -1446,6 +1775,9 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
     quantity instead (segment_perc_llr's fold share) takes the sequential ramp
     _seq_style, and names itself in the legend title (_HUE_TITLES).
     Writes {label}.pdf.
+
+    The y defaults suit a score; a region count is the same grid read on a log
+    y with no clamp (ylim=None, log_y=True) -- see plot_prune.
 
     Args:
         label (str): cache name; the output filename stem.
@@ -1461,6 +1793,13 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
         dodge (float): fractional multiplicative x-dodge between series; the
             default suits the few-series figures, and many series want less
             (the spread grows with the count).
+        ylim (tuple | None): y limits; the default is a score's 0..1, None
+            leaves the axis to the data (a count).
+        log_y (bool): log y-axis, for a quantity spanning decades.
+        hline (float | None): a horizontal reference line, drawn dashed.
+        style (dict | None): hue value -> {'color', 'ls'}; None styles the
+            values here, so a caller passes one only to hold a figure's
+            colours to another's (_method_style).
     """
     metrics = list(metrics)
     df = df.copy()
@@ -1476,10 +1815,14 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
         return
 
     values = df[hue].dropna().unique().tolist()
-    style = _seq_style(values) if hue in _HUE_TITLES else _qual_style(values)
+    if style is None:
+        style = (_seq_style(values) if hue in _HUE_TITLES
+                 else _qual_style(values))
     if log_x is None:
         log_x = pd.notnull(df[x].min()) and df[x].min() > 0
     ncols = len(metrics)
+    floors = ({m: _log_y_floor(df, x, m, hue=hue) for m in metrics}
+              if log_y else {})
 
     fig, axes = plt.subplots(len(sources), ncols, sharex=True,
                              figsize=(4.2 * ncols, 3.8 * len(sources)),
@@ -1488,12 +1831,19 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
         dsrc = df[df['source'] == src]
         for j, metric in enumerate(metrics):
             ax = axes[i, j]
+
             _draw_metric_errbar(ax, dsrc, x, metric, style, hue=hue,
-                                dodge=dodge)
-            ax.set_ylim(0, 1)
+                                dodge=dodge, y_floor=floors.get(metric))
+            if ylim is not None:
+                ax.set_ylim(*ylim)
             ax.grid(True, alpha=0.3)
             if log_x:
                 ax.set_xscale('log')
+            if log_y:
+                ax.set_yscale('log')
+                ax.set_ylim(bottom=floors[metric])
+            if hline is not None:
+                ax.axhline(hline, ls='--', lw=0.8, color='grey', alpha=0.7)
             if i == 0:
                 ax.set_title(_METRIC_TITLES.get(metric, metric))
             if i == len(sources) - 1:
@@ -1508,6 +1858,7 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
                            title=_HUE_TITLES[hue], title_fontsize=8)
     else:
         axes[0, 0].legend(frameon=False, fontsize=8)
+    _stamp(fig, label)
     fig.tight_layout()
     path = out / f'{label}.pdf'
     fig.savefig(path, bbox_inches='tight')
@@ -1638,7 +1989,7 @@ def _compare_page_fig(df, metrics, *, x: str = 'effect_llr',
                               'mean (95% CI)')
     axes[0, 0].legend(frameon=False, fontsize=8)
     if suptitle is not None:
-        fig.suptitle(suptitle)
+        _stamp(fig, suptitle)
     fig.tight_layout()
     return fig
 
@@ -1680,7 +2031,8 @@ def plot_segment_compare(label: str, df, out,
         for frac in fracs:
             fig = _compare_page_fig(
                 df[df['frac_segment'] == frac], metrics,
-                suptitle=f'Segmentation fold: {frac:.0%} of the images')
+                suptitle=f'{label} — segmentation fold: '
+                         f'{frac:.0%} of the images')
             if fig is None:
                 continue
             pdf.savefig(fig, bbox_inches='tight')
@@ -1695,6 +2047,87 @@ def plot_segment_compare(label: str, df, out,
 # method, so plot_prune skips it (see PRUNE_RULES in config).
 _PRUNE_LABELS_SKIP = ('GLOW-single_max',)
 
+# the rule the shipped recipe prunes with, under the prune cache's own
+# labelling: read off the reported arm rather than spelled out, so the tables
+# compare against whatever config ships.
+_REPORTED_PRUNE_LABEL = (
+    f'GLOW-{ana_kwargs_dict[REPORTED_GLOW_LABEL].prune_rule}')
+
+
+def plot_prune_regions(label: str, df, out, *, x: str = 'effect_llr',
+                       count: str = 'n_selected') -> None:
+    """Plot how many regions each pruning rule hands back, per Ward mode.
+
+    A source x Ward-mode grid (HCP over WGN, Focus beside GLM Error): the
+    per-rule seed-mean count with a 95% CI bar against effect_llr, on a log y
+    since the rules span one region to thousands. Both modes sit on one page
+    here rather than one figure each -- the count is the comparison, and the
+    two clusterings are two columns of it.
+
+    The single planted effect is the dashed reference (_ONE_REGION): a rule
+    above it returns the support in pieces, which is how a rule can gain Dice
+    without gaining anything a reader would report. The oracle line is the
+    count a max-Dice antichain needs on the same fit. single_max is dropped,
+    its count being one by construction (_PRUNE_LABELS_SKIP).
+
+    Writes {label}_regions.pdf.
+
+    Args:
+        label (str): cache name; the figure's stem is {label}_regions.
+        df: a tidy_prune frame (needs cluster_mode and the count column).
+        out (pathlib.Path): directory the figure is written into.
+        x (str): the swept x-axis column.
+        count (str): the region-count column (run_prune's n_selected).
+    """
+    df = df[~df['label'].isin(_PRUNE_LABELS_SKIP)].copy()
+    for c in (x, count):
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+    df = df.dropna(subset=[x, count])
+
+    have = set(df['source'].dropna().unique())
+    sources = [s for s in _SOURCE_ORDER if s in have]
+    sources += [s for s in sorted(have) if s not in sources]
+    modes = sorted(df['cluster_mode'].dropna().unique().tolist())
+    if not sources or not modes:
+        print(f'  (no region counts for {label} — skipping)')
+        return
+
+    # styled over every rule in the cache, so a rule keeps the colour it has
+    # in that mode's metric grid (plot_metric_grid styles the same label set)
+    style = _qual_style(df['label'].dropna().unique().tolist())
+    log_x = pd.notnull(df[x].min()) and df[x].min() > 0
+    floor = _log_y_floor(df, x, count)
+
+    fig, axes = plt.subplots(len(sources), len(modes), sharex=True,
+                             sharey=True, squeeze=False,
+                             figsize=(4.4 * len(modes), 3.8 * len(sources)))
+    for i, src in enumerate(sources):
+        for j, mode in enumerate(modes):
+            ax = axes[i, j]
+            _draw_metric_errbar(
+                ax, df[(df['source'] == src) & (df['cluster_mode'] == mode)],
+                x, count, style, y_floor=floor)
+            ax.set_yscale('log')
+            ax.set_ylim(bottom=floor)
+            ax.axhline(_ONE_REGION, ls='--', lw=0.8, color='grey', alpha=0.7)
+            ax.grid(True, alpha=0.3, which='both')
+            if log_x:
+                ax.set_xscale('log')
+            if i == 0:
+                ax.set_title(str(mode))
+            if i == len(sources) - 1:
+                ax.set_xlabel(_X_PARAM_LABELS.get(x, x))
+        axes[i, 0].set_ylabel(f'{src}\n'
+                              f'{_METRIC_TITLES.get(count, count)} '
+                              '(mean, 95% CI)')
+    axes[0, 0].legend(frameon=False, fontsize=8)
+    _stamp(fig, f'{label} — {_METRIC_TITLES.get(count, count)}')
+    fig.tight_layout()
+    path = out / f'{label}_regions.pdf'
+    fig.savefig(path, bbox_inches='tight')
+    plt.close('all')
+    print(f'saved: {path}')
+
 
 def plot_prune(label: str, df, out) -> None:
     """Plot one metric grid per Ward clustering mode for a prune cache.
@@ -1704,6 +2137,11 @@ def plot_prune(label: str, df, out) -> None:
     source x metric grid per mode (plot_metric_grid), writing {label}_{mode}.pdf
     so the clusterings are compared side by side rather than on one axis. The
     diagnostic single_max rule is dropped (_PRUNE_LABELS_SKIP).
+
+    Alongside them one region-count figure (plot_prune_regions) holding both
+    modes: what each rule selects, which is what separates two rules that
+    score the same Dice. Each mode's numbers, counts included, go out as text
+    beside its grid (write_table_txt).
 
     A cache that also varies b splits again on it (_split_by_secondary), one
     figure per (mode, b): the grid's facets are
@@ -1722,6 +2160,11 @@ def plot_prune(label: str, df, out) -> None:
         stem = f'{label}_{_mode_slug(mode)}'
         for sub_label, sub in _split_by_secondary(stem, df_mode, 'effect_llr'):
             plot_metric_grid(sub_label, sub, out)
+            write_table_txt(sub_label, sub, x='effect_llr', out=out,
+                            metrics=['dice', 'sens', 'ppv', 'n_selected'],
+                            one_label=_REPORTED_PRUNE_LABEL)
+    for sub_label, sub in _split_by_secondary(label, df, 'effect_llr'):
+        plot_prune_regions(sub_label, sub, out)
 
 
 # ---------------------------------------------------------------------------
@@ -1844,6 +2287,7 @@ def plot_inner_perm(label: str, df, out) -> None:
     axes[0][-1].legend(frameon=False, fontsize=8, loc='upper left')
     axes[0][0].legend(frameon=False, fontsize=8,
                       title=_HUE_TITLES['effect_llr'], title_fontsize=8)
+    _stamp(fig, f'{label} — max-z region')
     fig.tight_layout()
     path = out / f'{label}_max_z.pdf'
     fig.savefig(path, bbox_inches='tight')
@@ -1963,6 +2407,7 @@ def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0) -> None:
     ax.set_ylabel('wall time (s)')
     ax.legend(frameon=False)
     ax.grid(True, which='both', alpha=0.3)
+    _stamp(fig, f'{name} — wall time')
     fig.tight_layout()
     path = out / f'{name}_runtime.pdf'
     fig.savefig(path, bbox_inches='tight')
@@ -1981,8 +2426,11 @@ def plot_cache(label: str, df, out,
     The null path (no effect planted) gets a faceted FWER calibration curve;
     every other cache gets the stacked per-source detection figure
     (plot_source_grid: an HCP block over a WGN block, each a mean-band row and
-    a GLOW diff row across the metric columns) plus one cache-level
-    discovery-threshold table (write_threshold_table). The x-axis is inferred
+    a GLOW diff row across the metric columns), that figure's numbers as text
+    (write_table_txt) plus one cache-level discovery-threshold table
+    (write_threshold_table). A cache whose methods are the prune rules
+    (_BOTH_ARM_CACHES) also gets a region-count figure, the run_ana
+    counterpart of plot_prune_regions. The x-axis is inferred
     from the data (_infer_x), so no config plot spec is needed. A cache that
     also varies a structural axis besides x (the llr sweep varies b) is drawn
     one figure per value of it (_split_by_secondary), each suffixed into the
@@ -2004,13 +2452,46 @@ def plot_cache(label: str, df, out,
         _plot_calibration_faceted(label, df, out)
         return
 
+    # the arm cache's methods are the prune rules crossed with the Ward
+    # projections, so it gets the same region-count read the prune cache does
+    # (plot_prune_regions), off run_ana's own count of discovered regions
+    counts = ['n_pred'] if label in _BOTH_ARM_CACHES else []
     for sub_label, sub in _split_by_secondary(label, df, x):
         plot_source_grid(sub_label, sub, x=x, metrics=metrics, out=out,
-                         one_label=_diff_label(label))
+                         one_label=_diff_label(label), cache=label)
+        write_table_txt(sub_label, sub, x=x, out=out,
+                        metrics=metrics + counts,
+                        one_label=_diff_label(label))
+        for count in counts:
+            plot_metric_grid(
+                f'{sub_label}_regions', sub, out, x=x, metrics=(count,),
+                ylim=None, log_y=True, hline=_ONE_REGION,
+                style=_method_style(sub['label'].dropna().unique().tolist(),
+                                    label))
 
     # one discovery-threshold table for the whole cache, a column per secondary
     # (b in the llr sweep); absolute effect_llr per method (threshold_table)
     write_threshold_table(label, df, x=x, out=out)
+
+
+def _cache_dir(out, name: str):
+    """Return the cache's own output directory under out, creating it.
+
+    One directory per catalogue cache, so a run's figures group by the
+    question they answer instead of sharing one flat folder where a filename
+    prefix is all that tells them apart. Created on demand, so a cache with no
+    records leaves no empty directory behind.
+
+    Args:
+        out (pathlib.Path): the run's output root (results/_latest).
+        name (str): the cache name (a CONFIG key).
+
+    Returns:
+        pathlib.Path: out / name.
+    """
+    path = out / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def main(argv=None) -> None:
@@ -2032,8 +2513,9 @@ def main(argv=None) -> None:
       - inner-draw sweep: tidy_inner_perm + plot_inner_perm (detection and the
         max-z region against the count)
 
-    Figures and tables land in results/_latest, so a mid-benchmark run yields
-    intermediate output.
+    Figures and tables land in results/_latest/<cache>, one directory per
+    cache (_cache_dir), so a mid-benchmark run yields intermediate output
+    grouped by the question it answers.
 
     Args:
         argv (list | None): CLI args to parse; None reads sys.argv. Positional
@@ -2093,7 +2575,7 @@ def main(argv=None) -> None:
                 print(f'  (no records for {name} — skipping)')
                 continue
             print(f'\n=== {name}: {len(df)} runtime rows ===')
-            plot_runtime(name, df, out)
+            plot_runtime(name, df, _cache_dir(out, name))
             n_plotted += 1
         elif name in detect_names:
             df = tidy_run_ana(make_csv.write_config_csv(name))
@@ -2101,7 +2583,7 @@ def main(argv=None) -> None:
                 print(f'  (no records for {name} — skipping)')
                 continue
             print(f'\n=== {name}: {len(df)} run_ana rows ===')
-            plot_cache(name, df, out)
+            plot_cache(name, df, _cache_dir(out, name))
             n_plotted += 1
         elif name in stat_names:
             df = tidy_stat(results.stat_cell_df())
@@ -2110,7 +2592,7 @@ def main(argv=None) -> None:
                 continue
             print(f'\n=== {name}: {df["cell"].nunique()} cells, '
                   f'{len(df)} variant rows ===')
-            write_stat_tables(name, df, out)
+            write_stat_tables(name, df, _cache_dir(out, name))
             n_plotted += 1
         elif name in segment_names:
             # which figure this cache asks for -- and so which half of the
@@ -2123,13 +2605,14 @@ def main(argv=None) -> None:
                 print(f'  (no records for {name} — skipping)')
                 continue
             print(f'\n=== {name}: {len(df)} segment rows ===')
+            out_cache = _cache_dir(out, name)
             if perc is None:
-                plot_segment_llr(name, df, out)
-                plot_segment_compare(name, df, out)
+                plot_segment_llr(name, df, out_cache)
+                plot_segment_compare(name, df, out_cache)
             else:
                 x, log_x = (('frac_segment', False) if perc
                             else ('effect_llr', None))
-                plot_metric_grid(name, df, out, x=x, log_x=log_x)
+                plot_metric_grid(name, df, out_cache, x=x, log_x=log_x)
             n_plotted += 1
         elif name in prune_names:
             df = tidy_prune(make_csv.write_config_csv(name))
@@ -2137,7 +2620,7 @@ def main(argv=None) -> None:
                 print(f'  (no records for {name} — skipping)')
                 continue
             print(f'\n=== {name}: {len(df)} prune rows ===')
-            plot_prune(name, df, out)
+            plot_prune(name, df, _cache_dir(out, name))
             n_plotted += 1
         elif name in inner_names:
             df = tidy_inner_perm(make_csv.write_config_csv(name))
@@ -2145,7 +2628,7 @@ def main(argv=None) -> None:
                 print(f'  (no records for {name} — skipping)')
                 continue
             print(f'\n=== {name}: {len(df)} inner-draw rows ===')
-            plot_inner_perm(name, df, out)
+            plot_inner_perm(name, df, _cache_dir(out, name))
             n_plotted += 1
         else:
             print(f'  ({name} is not a detection or runtime cache — skipping)')
