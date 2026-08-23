@@ -9,7 +9,9 @@ at once (the staleness fix a tag could not give); and incomplete_cell_indices
 (the records-side rerun skip -- empty when a cache is fully recorded, flagging
 an unrun cell down both the null and planted paths, a cell missing one recipe's
 leaf, and judging completeness against a narrowed leaf grid when one is
-passed). Exporting these leaves as CSVs is make_csv's (test_make_csv).
+passed), and get_leaf_todo (the finer grain under it -- which of an incomplete
+cell's leaves are still owed). Exporting these leaves as CSVs is make_csv's
+(test_make_csv).
 
 Run against a small monkeypatched CONFIG (the real grids run 15-1000 seeds); the
 recorder folder is redirected to a tmp dir and fresh seeds keep every cell a
@@ -254,3 +256,34 @@ def test_divergent_experiment_leaf_still_completes_its_cell(monkeypatch):
         {'c': ([_data_cell(seed), _data_cell(random.randrange(2 ** 31))],
                [_effect_cell()], one, run_ana)})
     assert results.incomplete_cell_indices('c') == [1]
+
+
+def test_leaf_todo_empty_when_every_leaf_is_recorded(small_config):
+    # the cell is complete, so it owes nothing -- the driver drops it whole
+    kwargs_data_list, _, ana_grid, fnc = small_config['cacheA']
+    leaf_todo = results.get_leaf_todo(ana_grid, fnc)
+    assert leaf_todo(kwargs_data_list[0], None) == []
+
+
+def test_leaf_todo_names_only_the_unrecorded_leaf():
+    # one recipe of a two-recipe grid ran, so only the other is still owed;
+    # this is what stops a partial cell rerunning its recorded siblings
+    cell, ana_grid = _data_cell(random.randrange(2 ** 31)), _ana_grid()
+    drive([cell], [None], ana_grid[:1], run_ana)
+    assert results.get_leaf_todo(ana_grid, run_ana)(cell, None) == ana_grid[1:]
+
+
+def test_leaf_todo_names_every_leaf_of_an_unrun_cell():
+    # nothing recorded, so nothing is skipped: the whole grid is owed
+    cell, ana_grid = _data_cell(random.randrange(2 ** 31)), _ana_grid()
+    assert results.get_leaf_todo(ana_grid, run_ana)(cell, None) == ana_grid
+
+
+def test_leaf_todo_owes_a_leaf_whose_uid_is_absent(monkeypatch):
+    # a record carrying no declared uid cannot be matched, so its leaf reads as
+    # still owed -- the skip errs safe rather than trusting a legacy record
+    cell, ana_grid = _data_cell(random.randrange(2 ** 31)), _ana_grid()
+    drive([cell], [None], ana_grid, run_ana)
+    for rec in data.RECORDER.records.values():
+        rec.pop('uid', None)
+    assert results.get_leaf_todo(ana_grid, run_ana)(cell, None) == ana_grid

@@ -6,7 +6,8 @@ fills the shared provenance records; turning them into the per-figure CSVs is
 a separate step (python -m glow._extra.benchmark.make_csv, which plot also
 runs on its way to the figures).
 
-A sweep runs only the cells the records do not already hold in full, so a
+A sweep runs only what the records do not already hold -- skipping a finished
+cell outright, and within an unfinished one the leaves already recorded -- so a
 rerun fills the gaps rather than recomputing finished work (--no-skip forces
 the whole grid).
 

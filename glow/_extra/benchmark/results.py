@@ -387,6 +387,42 @@ def get_cell_complete(kwargs_fnc_list, fnc):
     return cell_complete
 
 
+def get_leaf_todo(kwargs_fnc_list, fnc):
+    """Build the predicate naming which of one cell's leaves are unrecorded.
+
+    The finer grain of the rerun skip: get_cell_complete answers whether a
+    whole cell is done, this answers which of its leaves are not. A cell short
+    one leaf need only run that leaf -- its siblings are already measured, and
+    where only their records were merged (a fan-out ships records, not the
+    joblib cache) rerunning them is a cold recompute rather than a cache hit.
+
+    Membership is declared uids alone (cell_leaf_uids), so it errs safe: a leaf
+    whose uid is not in the records -- including one recorded before the recipe
+    fields existed -- reads as still to run. Call RECORDER.load() first to fold
+    in what other writers left on disk.
+
+    Args:
+        kwargs_fnc_list (list[dict]): the fnc-kwargs grid.
+        fnc (Callable): the leaf measurement (memoised + recorded).
+
+    Returns:
+        leaf_todo (Callable): leaf_todo(kwargs_data, kwargs_effect) ->
+            list[dict], that cell's fnc-kwargs cells still to run, in grid
+            order.
+    """
+    recorded_uids = {rec['uid'] for rec in RECORDER.records.values()
+                     if rec.get('uid')}
+
+    def leaf_todo(kwargs_data, kwargs_effect) -> list:
+        """This cell's fnc-kwargs cells that are not already recorded."""
+        uid_list = cell_leaf_uids(kwargs_data, kwargs_effect, kwargs_fnc_list,
+                                  fnc)
+        return [kwargs for kwargs, uid in zip(kwargs_fnc_list, uid_list)
+                if not uid or uid not in recorded_uids]
+
+    return leaf_todo
+
+
 def incomplete_cell_indices(name: str, kwargs_fnc_list=None) -> list:
     """Return the planted cells of cache name not fully recorded on disk.
 

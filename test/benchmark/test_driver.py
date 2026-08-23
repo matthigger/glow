@@ -204,15 +204,16 @@ class TestParallel:
                               seed=_fresh_seed())
         payload = cloudpickle.dumps(delayed(_run_data_cell)(
             dict(source='wgn', shape=(5, 5, 5), b=2, num_img=16, a=2, seed=0),
-            [None], _ana_grid(1), run_ana))
+            [(None, _ana_grid(1))], run_ana))
         assert len(payload) < 100_000
 
 
 # ---------------------------------------------------------------------------
 # skip_recorded: the records -- not the joblib cache -- decide what reruns, so
 # work already finished is not recomputed when the cache no longer holds it.
-# Each test sweeps once to lay down the records, then re-drives to see what the
-# skip leaves to run.
+# A complete cell is dropped before its exp is built; an incomplete one is
+# built but runs only the leaves it lacks. Each test sweeps once to lay down
+# the records, then re-drives to see what the skip leaves to run.
 # ---------------------------------------------------------------------------
 
 class TestSkipRecorded:
@@ -248,14 +249,25 @@ class TestSkipRecorded:
                        skip_recorded=True)
         assert len(scores) == 1
 
-    def test_partial_cell_reruns_whole(self):
-        # completeness is per (data, effect) cell, not per leaf: a cell short
-        # one fnc-kwargs leaf reruns its whole fnc grid (the done leaf is a
-        # joblib cache hit, so only the missing one really computes)
+    def test_partial_cell_runs_only_the_leaf_it_lacks(self):
+        # the cell is incomplete, so it is built -- but its recorded leaf is
+        # not rerun. Only the widened grid's new recipe computes, which is what
+        # keeps a records-only merge (a fan-out ships no joblib cache) from
+        # recomputing the siblings it already paid for.
         grid, eff = _data_grid(1), _effect_grid(1)
         drive(grid, eff, _ana_grid(1), run_ana)
-        scores = drive(grid, eff, _ana_grid(2), run_ana, skip_recorded=True)
+        scores = drive(grid, eff, _ana_grid(3), run_ana, skip_recorded=True)
         assert len(scores) == 2
+
+    def test_partial_cell_leaf_skip_holds_in_parallel(self):
+        # the plan is cut before the tasks are handed out, so a worker gets
+        # its cell's outstanding leaves and nothing else
+        grid, eff = _data_grid(2), _effect_grid(1)
+        drive(grid, eff, _ana_grid(1), run_ana)
+        with parallel_config(backend='threading'):
+            scores = drive(grid, eff, _ana_grid(2), run_ana, n_jobs=2,
+                           skip_recorded=True)
+        assert len(scores) == 2 * 1
 
     def test_parallel_skips_too(self):
         grid, eff, ana = _data_grid(2), _effect_grid(2), _ana_grid(1)

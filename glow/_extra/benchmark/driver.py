@@ -17,8 +17,10 @@ hit and a resumed sweep reuses the stored artifacts.
 skip_recorded exists because that memoisation reaches only the joblib cache,
 which is the half that gets archived or pruned for space (mv_cache) while the
 records stay. It drops any (data, effect) cell whose whole leaf set is already
-recorded (results.get_cell_complete), so a rerun fills only the gaps and never
-builds an exp it has no work for.
+recorded (results.get_cell_complete), so a rerun never builds an exp it has no
+work for, and within a cell it keeps only the leaves still missing
+(results.get_leaf_todo) -- a cell short one leaf owes that leaf, not its whole
+grid.
 
 fnc is the leaf measurement, swept over its own kwargs grid so one (data,
 effect) cell can be measured several ways at once. It is called
@@ -138,19 +140,22 @@ def check_fit_params(kwargs_fnc_list, n_jobs: int) -> None:
             f'copy of y per worker (~1 GB at full-brain num_vox).')
 
 
-def _run_data_cell(kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
-                   bar=None):
+def _run_data_cell(kwargs_data, effect_plan, fnc, bar=None):
     """Build one data cell, run its effect x fnc subtree, return its scores.
 
     The per-data-cell unit of work, shared by the serial loop and the parallel
     tasks: build the clean exp once (then reuse it across the effect / fnc
     loops below), plant each effect (or skip it for a None cell), and run fnc
-    over its kwargs grid on each planted cell.
+    over that effect's kwargs grid.
+
+    Each effect carries its own fnc grid rather than sharing one, which is what
+    lets the caller hand a cell only the leaves it still owes (see drive).
 
     Args:
         kwargs_data (dict): kwargs for one data_factory call.
-        kwargs_effect_list (list[dict | None]): the effect grid (a list).
-        kwargs_fnc_list (list[dict]): the fnc kwargs grid (a list).
+        effect_plan (list[tuple]): (kwargs_effect, kwargs_fnc_list) pairs --
+            the effect cells to plant, each with the fnc kwargs grid to run on
+            it. A None kwargs_effect plants nothing (the null path).
         fnc (Callable): the leaf measurement,
             fnc(exp, mask_target_list=..., **kwargs).
         bar (tqdm | None): progress bar to advance one step per fnc leaf, or
@@ -167,7 +172,7 @@ def _run_data_cell(kwargs_data, kwargs_effect_list, kwargs_fnc_list, fnc,
     uid_data = data_recipe(kwargs_data).uid
     exp = data_factory(**kwargs_data)
     score_list = []
-    for kwargs_effect in kwargs_effect_list:
+    for kwargs_effect, kwargs_fnc_list in effect_plan:
         if kwargs_effect is None:
             # null / FWER-calibration cell: no effect, empty target, so the
             # leaf hangs off the clean exp itself
@@ -205,9 +210,11 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
 
     skip_recorded drops the (data, effect) cells the records already hold in
     full, which also skips building their exp -- the expensive part. A cell
-    reads as incomplete unless every leaf is present, so a partial cell reruns
-    whole (see the module docstring for why the records, not the cache, are
-    the source of truth).
+    holding only some of its leaves is built, but runs just the leaves it
+    lacks: its recorded siblings are not recomputed, which matters wherever
+    only their records were merged and the joblib cache cannot answer for them
+    (see the module docstring for why the records, not the cache, are the
+    source of truth).
 
     With n_jobs != 1 the sweep runs over joblib, one task per data cell. A
     leaf that parallelises its own fit multiplies against that n_jobs, so
@@ -239,13 +246,14 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
             over the total leaf count, advanced per fnc call (see module
             docstring), and reports how many cells the records skipped.
         skip_recorded (bool): False (default) runs every cell of the grid;
-            True drops the cells already complete in the records, which
+            True drops the cells already complete in the records and, within
+            the rest, the individual leaves already recorded -- which
             materialises kwargs_data_list (the walk needs it up front).
 
     Returns:
         list[dict]: the fnc score dicts, one per (data, effect, fnc-kwargs)
             cell in data-cell order (effect then fnc-kwargs within a cell),
-            covering only the cells that ran under skip_recorded. See
+            covering only the leaves that ran under skip_recorded. See
             glow._extra.benchmark.score.score_effects for the schema; the
             per-cell provenance is on the shared recorder, not here.
     """
@@ -258,33 +266,47 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
 
     check_fit_params(kwargs_fnc_list, n_jobs)
 
-    # the sweep as (kwargs_data, that cell's effect grid) pairs: the whole
-    # effect grid per data cell, or -- under skip_recorded -- only the effect
-    # cells the records lack, dropping a data cell left with none so its exp is
-    # never built.
+    # the sweep as (kwargs_data, [(kwargs_effect, its fnc grid), ...]) pairs:
+    # the whole grid per data cell, or -- under skip_recorded -- only the
+    # effect cells the records lack, each cut down to the leaves it lacks,
+    # dropping a data cell left with none so its exp is never built.
     total = None
     if skip_recorded:
         # imported here: results pulls in the CONFIG catalogue, which a plain
         # drive never needs. RECORDER.load first, so the walk sees what other
         # writers (a parallel sweep, a run on another machine) left on disk.
-        from .results import get_cell_complete
+        from .results import get_cell_complete, get_leaf_todo
 
         RECORDER.load()
         cell_complete = get_cell_complete(kwargs_fnc_list, fnc)
+        leaf_todo = get_leaf_todo(kwargs_fnc_list, fnc)
 
-        plan, n_skip = [], 0
+        plan, n_skip, n_leaf_skip = [], 0, 0
         for kwargs_data in kwargs_data_list:
-            todo = [kwargs_effect for kwargs_effect in kwargs_effect_list
-                    if not cell_complete(kwargs_data, kwargs_effect)]
-            n_skip += len(kwargs_effect_list) - len(todo)
+            todo = []
+            for kwargs_effect in kwargs_effect_list:
+                # the cell-level walk first: it also reaches cells recorded
+                # before the recipe fields, which the uid check cannot
+                if cell_complete(kwargs_data, kwargs_effect):
+                    n_skip += 1
+                    continue
+                fnc_todo = leaf_todo(kwargs_data, kwargs_effect)
+                if not fnc_todo:
+                    n_skip += 1
+                    continue
+                n_leaf_skip += len(kwargs_fnc_list) - len(fnc_todo)
+                todo.append((kwargs_effect, fnc_todo))
             if todo:
                 plan.append((kwargs_data, todo))
 
         n_run = sum(len(todo) for _, todo in plan)
-        total = n_run * len(kwargs_fnc_list)
-        if verbose and n_skip:
-            print(f'[drive] {n_skip} cell(s) already complete in records, '
-                  f'skipped; {n_run} to run')
+        total = sum(len(fnc_todo) for _, todo in plan for _, fnc_todo in todo)
+        if verbose and (n_skip or n_leaf_skip):
+            note = (f'[drive] {n_skip} cell(s) already complete in records, '
+                    f'skipped; {n_run} to run')
+            if n_leaf_skip:
+                note += f' ({n_leaf_skip} recorded leaf/leaves within them)'
+            print(note)
     else:
         # the bar spans the total leaf count, known once data is a list;
         # materialise data when verbose (else keep it lazy, iterated once, as
@@ -293,16 +315,16 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
             kwargs_data_list = list(kwargs_data_list)
             total = (len(kwargs_data_list) * len(kwargs_effect_list)
                      * len(kwargs_fnc_list))
-        plan = ((kwargs_data, kwargs_effect_list)
+        plan = ((kwargs_data, [(kwargs_effect, kwargs_fnc_list)
+                               for kwargs_effect in kwargs_effect_list])
                 for kwargs_data in kwargs_data_list)
 
     if n_jobs == 1:
         score_list = []
         with tqdm(total=total, desc='drive', disable=not verbose) as bar:
-            for kwargs_data, effect_list in plan:
+            for kwargs_data, effect_plan in plan:
                 score_list.extend(_run_data_cell(
-                    kwargs_data, effect_list, kwargs_fnc_list, fnc,
-                    bar=bar))
+                    kwargs_data, effect_plan, fnc, bar=bar))
         return score_list
 
     # parallel: one task per data cell, so each build has a single owner -- no
@@ -313,9 +335,8 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
     # returned scores keep their order) as tasks drain, letting the bar advance
     # per cell.
     results = Parallel(n_jobs=n_jobs, return_as='generator')(
-        delayed(_run_data_cell)(
-            kwargs_data, effect_list, kwargs_fnc_list, fnc)
-        for kwargs_data, effect_list in plan)
+        delayed(_run_data_cell)(kwargs_data, effect_plan, fnc)
+        for kwargs_data, effect_plan in plan)
 
     cell_scores = []
     with tqdm(total=total, desc='drive', disable=not verbose) as bar:
