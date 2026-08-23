@@ -59,7 +59,8 @@ import warnings
 import numpy as np
 
 from glow.analysis import (AnalysisCET, AnalysisGLOW, AnalysisGLOWBase,
-                           AnalysisVBA, DEFAULT_CET_CFT_PVAL)
+                           AnalysisVBA, DEFAULT_CET_CFT_PVAL, draws_gpu)
+from glow.analysis._fit_gpu import GpuConfig
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr, get_wilks
 
@@ -113,11 +114,13 @@ N_PERM_FWER = 500
 # floor as much as a cost knob (see AnalysisGLOW), and it multiplies the draw
 # count: a fit is n_perm_fwer x (n_perm_inner + 1) draws.
 #
-# 500 is where sweep_n_perm_inner's curves flatten: detection at 500 is
-# indistinguishable from 1000 at every effect strength, and most cells select
-# the same regions at both, while 250 gives up sensitivity at the weakest
-# effect. Read that cache's max_z table before moving it again.
-N_PERM_INNER = 500
+# 250 buys the catalogue back: the count is the whole marginal cost of a fit
+# (the m-independent floor is ~13% of one), so halving it halves the wall
+# clock of every GLOW cache. What it costs is resolution at the bottom of the
+# effect-strength axis -- sweep_n_perm_inner's curves flatten by 500, and 250
+# gives up sensitivity at the weakest effect. Read that cache's max_z table
+# before trusting a weak-effect result at this setting.
+N_PERM_INNER = 250
 ALPHA_FWER = 0.05
 
 # Structural grids. B caps at the HCP pool (6) so every HCP cell is feasible;
@@ -208,12 +211,24 @@ REPORTED_GLOW_LABEL_LIST = (REPORTED_GLOW_LABEL, 'GLOW-GLM-greedy')
 # RAM, not cores: a GLOW worker holds its own copy of y, ~1 GB at full-brain
 # num_vox.
 #
-# gpu is 'auto', not True: the device backend is a pure speedup (same seeds,
-# float64, agreeing with the CPU fit to round-off), so a checked-in True would
-# only break CPU-only runners. Both knobs multiply against the sweep's own -j;
-# driver.check_fit_params refuses the products that would oversubscribe.
+# The device is taken only where one is visible, never required: a GpuConfig
+# raises without a card (resolve_gpu), so the choice is made against this
+# machine rather than checked in, and a CPU-only runner still works. That is
+# sound only because fit_params never keys an artifact -- which is also the
+# GOTCHA, since a leaf carries no trace of the dtype that produced it, so a
+# dtype change wants a cold cache rather than a resumed one.
+#
+# float32 for the hot loop: the two amplifiers that used to poison it are
+# fixed (the LLR is formed by the determinant lemma and the per-draw region
+# sums scan in float64), leaving a drift that moves no decision at the shapes
+# this catalogue runs -- 0 p-value flips of ~50k regions at b=1..4 and at both
+# inner counts, supports identical. scripts/fp32_drift.py is the check.
+# Both knobs multiply against the sweep's own -j; driver.check_fit_params
+# refuses the products that would oversubscribe.
 GLOW_FIT_N_JOBS = 10
-GLOW_FIT_PARAMS = dict(n_jobs=GLOW_FIT_N_JOBS, gpu='auto')
+GLOW_FIT_GPU = (GpuConfig(acc_dtype=np.float32)
+                if draws_gpu.is_available() else 'auto')
+GLOW_FIT_PARAMS = dict(n_jobs=GLOW_FIT_N_JOBS, gpu=GLOW_FIT_GPU)
 
 
 # the leaf kwargs grid: one run_ana call per recipe, shared by every cache.

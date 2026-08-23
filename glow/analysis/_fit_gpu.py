@@ -53,8 +53,10 @@ class GpuConfig:
             free device memory (resolve_perm_chunk); an int pins it, which
             is what the chunk-invariance tests use.
         acc_dtype (type): device hot-loop dtype. float64 reproduces a CPU
-            fit's p-values exactly; float32 is faster but perturbs
-            fwer.max_stat enough to flip a handful of them.
+            fit's p-values exactly; float32 is ~1.6x faster and perturbs
+            fwer.max_stat without moving a decision at benchmark shapes
+            (scripts/fp32_drift.py is the check, and the module docstring
+            says which cancellations make that true).
     """
 
     device: str = 'cuda'

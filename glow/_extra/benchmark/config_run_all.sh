@@ -20,12 +20,12 @@
 # THE LANES.
 #   1  the voxel-wise arms over the six shared-grid caches, parallel across
 #      data cells.
-#   2  GLOW over those same six, then prune, then sweep_llr_glow_tune -- each
-#      an independent step, so a later one still runs if an earlier fails.
-#      Serial in the driver, feeding the device.
-#
-# sweep_n_perm_inner is deliberately absent: it is the tuning cache that
-# settled N_PERM_INNER, run on demand rather than on every catalogue sweep.
+#   2  GLOW over those same six, then prune, then sweep_llr_glow_tune, then
+#      sweep_n_perm_inner -- each an independent step, so a later one still
+#      runs if an earlier fails. Serial in the driver, feeding the device.
+#      sweep_n_perm_inner rides here rather than being run on demand: it is
+#      the cache that settles N_PERM_INNER, so a catalogue is only self-
+#      justifying if the sweep backing its inner count came from the same run.
 #   3  the caches with no per-method axis and no device, at full parallelism.
 #   4  every timing cache, last and alone. The 1perm leaves pin themselves to
 #      one core, but sharing the box with lane 3 would contend for cache and
@@ -63,15 +63,24 @@ GLOW_CORES=10
 LANE1_JOBS=$(( $(nproc) - GLOW_CORES ))
 [ "$LANE1_JOBS" -lt 1 ] && LANE1_JOBS=1
 
-# the caches sharing config.RUN_ANA_LIST: one GLOW variant plus the
+# the caches sharing config.RUN_ANA_LIST: the reported GLOW variants plus the
 # voxel-wise arms, so they are the caches with a per-method axis to split on.
 SHARED_GRID_CACHES=(null sweep_llr sweep_extent sweep_b sweep_nimg smoke)
 
-# the reported GLOW variant (config.REPORTED_GLOW_LABEL) -- the only GLOW
-# entry on that shared grid.
-GLOW_METHOD=GLOW-Focus-greedy
+# the GLOW variants on that shared grid -- config.REPORTED_GLOW_LABEL_LIST,
+# BOTH greedy arms. Naming only the headline one here is what silently leaves
+# the other arm's leaves unrun, so a cache never reaches complete and every
+# rerun re-checks it.
+GLOW_METHODS=(--method GLOW-Focus-greedy --method GLOW-GLM-greedy)
 
 VOXEL_METHODS=(--method VBA --method VBA-TFCE --method CET)
+
+# One BLAS thread per worker for the CPU lanes. A voxel-wise fit is
+# single-threaded work that OpenBLAS spreads over every core as spin-wait: it
+# is marginally FASTER pinned, on a fraction of the CPU, so pinning is what
+# lets lanes 1 and 3 convert their -j into throughput instead of thrash.
+PIN_BLAS=(env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+          NUMEXPR_NUM_THREADS=1)
 
 LOG_DIR=$(mktemp -d)
 trap 'rm -rf "$LOG_DIR"' EXIT
@@ -88,23 +97,29 @@ run_step() {
 }
 
 # Lane 1: the voxel-wise arms, parallel across data cells.
-run_step lane1 "${BENCH[@]}" "${VOXEL_METHODS[@]}" -j "$LANE1_JOBS" \
-    "${SHARED_GRID_CACHES[@]}" &
+run_step lane1 "${PIN_BLAS[@]}" "${BENCH[@]}" "${VOXEL_METHODS[@]}" \
+    -j "$LANE1_JOBS" "${SHARED_GRID_CACHES[@]}" &
 lane1=$!
 
 # Lane 2: GLOW, serial in the driver, its workers and the device underneath.
+# 2a first: it is the widest GLOW grid, and the arms it records are the same
+# leaves 2c would otherwise pay for (sweep_llr_glow_tune's greedy arms are
+# sweep_llr's b=1 leaves), so this order is what makes 2c cost only its dp
+# arms.
 (
-    run_step lane2a "${BENCH[@]}" --method "$GLOW_METHOD" -j 1 \
+    run_step lane2a "${BENCH[@]}" "${GLOW_METHODS[@]}" -j 1 \
         "${SHARED_GRID_CACHES[@]}"
     run_step lane2b "${BENCH[@]}" -j 1 prune
     run_step lane2c "${BENCH[@]}" -j 1 sweep_llr_glow_tune
+    run_step lane2d "${BENCH[@]}" -j 1 sweep_n_perm_inner
 ) &
 lane2=$!
 
 wait "$lane1" "$lane2"
 
 # Lane 3: no per-method axis, no device -- full parallelism.
-run_step lane3 "${BENCH[@]}" -j -1 segment segment_perc_llr vba_stat
+run_step lane3 "${PIN_BLAS[@]}" "${BENCH[@]}" -j -1 \
+    segment segment_perc_llr vba_stat
 
 # Lane 4: every timing cache, on an undisturbed machine.
 run_step lane4 "${BENCH[@]}" runtime_num_vox 'runtime_1perm_*'
