@@ -31,12 +31,9 @@ from glow.analysis import (Analysis, AnalysisCET, AnalysisGLOWBase,
 # every catalogue entry; the shape / bind checks cover all of them
 LABELS = sorted(config.CONFIG)
 
-# the run_ana caches that share the one recipe grid. sweep_llr_glow_tune is
-# the deliberate exception: its leaves are the four GLOW variants
-# (GLOW_ARM_LIST), since it chooses among them rather than comparing methods.
+# the run_ana caches, which all share the one recipe grid
 RUN_ANA_LABELS = [label for label in LABELS
-                  if config.CONFIG[label][3].__name__ == 'run_ana'
-                  and label != 'sweep_llr_glow_tune']
+                  if config.CONFIG[label][3].__name__ == 'run_ana']
 
 
 class TestCatalogueShape:
@@ -105,10 +102,10 @@ class TestCatalogueShape:
         # time -- see run / plot), and fit_params is filtered back out of the
         # identity by the leaf (run.FIT_IGNORE)
         assert all(set(c) == {'ana', 'fit_params'}
-                   for c in config.RUN_ANA_LIST + config.GLOW_ARM_LIST)
+                   for c in config.RUN_ANA_LIST)
         # the shared grid is the reported GLOW variants plus every non-GLOW
         # arm: an extra GLOW entry here would cost a per-perm fit in each of
-        # the six caches that share it
+        # the five caches that share it
         assert ([c['ana'] for c in config.RUN_ANA_LIST]
                 == [ana for label, ana in config.ana_kwargs_dict.items()
                     if label in config.REPORTED_GLOW_LABEL_LIST
@@ -120,11 +117,14 @@ class TestCatalogueShape:
                 for label in config.REPORTED_GLOW_LABEL_LIST]
         assert {a.prune_rule for a in arms} == {'greedy'}
         assert len({str(a.cluster_mode) for a in arms}) == len(arms)
-        # and GLOW_ARM_LIST is exactly the four variants, reported one first
-        assert ([c['ana'] for c in config.GLOW_ARM_LIST]
-                == [config.ana_kwargs_dict[label]
-                    for label in config.GLOW_LABEL_LIST])
         assert config.REPORTED_GLOW_LABEL in config.GLOW_LABEL_LIST
+        # the selection rule is not a recipe axis: prune_rule applies
+        # downstream of the permutation test, so the prune cache settles it by
+        # re-selecting one shared fit (config.PRUNE_RULES), and a dp recipe
+        # here would buy a second full fit for a selection already recorded
+        assert {a.prune_rule for a in config.ana_kwargs_dict.values()
+                if isinstance(a, AnalysisGLOWBase)} == {'greedy'}
+        assert 'dp' in config.PRUNE_RULES
 
 
 class TestPaperAxes:

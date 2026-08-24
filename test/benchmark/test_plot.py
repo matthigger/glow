@@ -10,26 +10,28 @@ import pytest
 
 from glow._extra.benchmark import plot
 from glow._extra.benchmark.config import (ana_kwargs_dict, CONFIG,
-                                          REPORTED_GLOW_LABEL, RUN_STAT_LIST)
+                                          REPORTED_GLOW_LABEL,
+                                          REPORTED_GLOW_LABEL_LIST,
+                                          RUN_STAT_LIST)
 from glow.analysis import AnalysisVBA
 
 
 # The catalogue's method names, taken by role rather than spelled out: a
 # provenance row has to carry a recipe the read path can map back to a label
-# (plot._LABEL_OF_ANA), and these tests need the reported GLOW arm and one
+# (plot._LABEL_OF_ANA), and these tests need the reported GLOW arms and one
 # voxel-wise arm -- not whichever names config carries this month, nor how many
-# arms it ships. The headline arm rather than any GLOW arm because the
-# unreported ones never reach a figure (_ARMS_SKIP). What the figures then CALL
-# it is plot's own contract, so output assertions read the name off the same
-# mapping the figures do (_ARM_LABEL) rather than spelling it out.
+# arms it ships. What the figures then CALL an arm is plot's own contract, so
+# output assertions read the name off the same mapping the figures do
+# (_ARM_LABEL) rather than spelling it out.
 GLOW_LABEL = REPORTED_GLOW_LABEL
 VBA_LABEL = next(label for label, ana in ana_kwargs_dict.items()
                  if isinstance(ana, AnalysisVBA) and not ana.tfce_flag)
 GLOW_FIGURE = plot._ARM_LABEL[REPORTED_GLOW_LABEL]
-# an unreported GLOW variant (dropped by _ARMS_SKIP) and the one cache that
-# keeps every variant's own name, both taken off plot's own vocabulary
-ARM_OTHER = plot._ARMS_SKIP[0]
-BOTH_ARM_CACHE = plot._BOTH_ARM_CACHES[0]
+# the other reported arm: the same recipe under the other Ward projection,
+# which every detection figure carries beside the headline one
+ARM_OTHER = next(lab for lab in REPORTED_GLOW_LABEL_LIST
+                 if lab != REPORTED_GLOW_LABEL)
+ARM_OTHER_FIGURE = plot._ARM_LABEL[ARM_OTHER]
 
 
 def _score(tp, fp, tn, fn, min_pval=0.5, n_pred=1):
@@ -966,17 +968,16 @@ def test_plot_prune_writes_one_figure_per_mode(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_select_glow_arm_spares_mode_and_rule_labels():
-    """The filter drops an unreported GLOW variant, not a mode or rule label.
+    """The rename reaches the analysis arms, not a mode or rule label.
 
-    A surviving variant is renamed by its projection. segment labels by Ward
-    mode
-    ('Focus') and prune by rule ('GLOW-greedy'), so neither family can be
+    Each reported arm is renamed by its projection. segment labels by Ward
+    mode ('Focus') and prune by rule ('GLOW-greedy'), so neither family can be
     caught by a filter keyed on the analysis arm.
     """
     df = pd.DataFrame({'label': [GLOW_LABEL, ARM_OTHER, 'Focus',
                                  'GLOW-greedy', 'VBA']})
     assert list(plot._select_glow_arm(df)['label']) == [
-        GLOW_FIGURE, 'Focus', 'GLOW-greedy', 'VBA']
+        GLOW_FIGURE, ARM_OTHER_FIGURE, 'Focus', 'GLOW-greedy', 'VBA']
 
 
 def _both_arm_frame():
@@ -985,7 +986,7 @@ def _both_arm_frame():
     The arms are injected into the tidy frame rather than round-tripped
     through a recipe: what the plot layer promises is about the labels handed
     to it, not about how many arms the catalogue ships, so the raw names here
-    are plot's own vocabulary (_ARMS_SKIP / _ARM_LABEL).
+    are plot's own vocabulary (_ARM_LABEL).
     """
     rows = []
     for llr in (0.01, 0.03, 0.1):
@@ -1003,66 +1004,47 @@ def _both_arm_frame():
     return df
 
 
-def test_plot_cache_drops_the_unreported_arms(tmp_path):
-    """An ordinary detection cache reports its arms by projection name."""
+def test_plot_cache_names_the_arms_by_projection(tmp_path):
+    """A detection cache reports both arms under their projection names."""
     df = _both_arm_frame()
 
     plot.plot_cache('sweep_extent', df, tmp_path)
     thr = pd.read_csv(tmp_path / 'sweep_extent_threshold.csv')
-    # no recipe label reaches the output; a reported arm reads as its
-    # projection, and an unreported one is gone
+    # no recipe label reaches the output; each arm reads as its projection
     assert not {GLOW_LABEL, ARM_OTHER} & set(thr['method'])
-    assert GLOW_FIGURE in set(thr['method'])
+    assert {GLOW_FIGURE, ARM_OTHER_FIGURE} <= set(thr['method'])
+    # catalogue order survives: the arms lead, the voxel-wise method follows
+    assert list(thr['method']) == [GLOW_FIGURE, ARM_OTHER_FIGURE, VBA_LABEL]
+    # the head-to-head covers both arms, one block each against the same
+    # best alternative
     diff = pd.read_csv(tmp_path / 'sweep_extent_diff.csv')
-    assert set(diff['method'].unique()) == {GLOW_FIGURE}
+    assert set(diff['method'].unique()) == {GLOW_FIGURE, ARM_OTHER_FIGURE}
 
 
-def test_plot_cache_keeps_both_arms_where_the_cache_compares_them(tmp_path):
-    """The llr sweep draws both arms under their own names.
-
-    _BOTH_ARM_CACHES is the exception to the one-reported-arm rule: the arms
-    are what that figure compares, so no row is dropped and none is relabelled
-    GLOW (two curves of that name would say nothing). The diff CSV still
-    covers every arm -- one block each, against the same best alternative.
-    """
-    df = _both_arm_frame()
-
-    plot.plot_cache(BOTH_ARM_CACHE, df, tmp_path)
-    thr = pd.read_csv(tmp_path / f'{BOTH_ARM_CACHE}_threshold.csv')
-    assert {GLOW_LABEL, ARM_OTHER} <= set(thr['method'])
-    assert GLOW_FIGURE not in set(thr['method'])
-    # catalogue order survives: the variants lead, the voxel-wise arm follows
-    assert list(thr['method']) == [GLOW_LABEL, ARM_OTHER, VBA_LABEL]
-    diff = pd.read_csv(tmp_path / f'{BOTH_ARM_CACHE}_diff.csv')
-    assert set(diff['method'].unique()) == {GLOW_LABEL, ARM_OTHER}
-
-
-def test_plot_cache_arms_only_loses_the_diff_row(tmp_path):
+def test_plot_cache_glow_only_loses_the_diff_row(tmp_path):
     """With no non-GLOW method, the head-to-head row is not drawn at all.
 
-    The arm cache's own leaf grid is the GLOW variants alone, so nothing
-    diffs against them (_has_diff): the figure is one band row per source and
-    no diff CSV is written.
+    Nothing is left to diff the arms against (_has_diff): the figure is one
+    band row per source and no diff CSV is written.
     """
     df = _both_arm_frame()
     df = df[df['label'] != VBA_LABEL]
 
     assert not plot._has_diff(df)
-    plot.plot_cache(BOTH_ARM_CACHE, df, tmp_path)
-    assert (tmp_path / f'{BOTH_ARM_CACHE}.pdf').exists()
-    assert not (tmp_path / f'{BOTH_ARM_CACHE}_diff.csv').exists()
+    plot.plot_cache('sweep_extent', df, tmp_path)
+    assert (tmp_path / 'sweep_extent.pdf').exists()
+    assert not (tmp_path / 'sweep_extent_diff.csv').exists()
     # the arms still reach the tables
-    thr = pd.read_csv(tmp_path / f'{BOTH_ARM_CACHE}_threshold.csv')
-    assert {GLOW_LABEL, ARM_OTHER} <= set(thr['method'])
+    thr = pd.read_csv(tmp_path / 'sweep_extent_threshold.csv')
+    assert {GLOW_FIGURE, ARM_OTHER_FIGURE} <= set(thr['method'])
 
 
 def test_method_style_separates_the_arms():
     """Every recipe arm draws apart, and its figure label matches it.
 
-    The four recipes take four colours -- two projections crossed with the
-    dash that carries the rule -- and a renamed arm keeps the colour its
-    recipe has, so a cache that reports two arms and one that reports four
-    agree on what a curve looks like.
+    The recipes take one colour per Ward projection, and a renamed arm keeps
+    the colour its recipe has, so a frame drawn before the rename and one
+    drawn after agree on what a curve looks like.
     """
     arms = [lab for lab in plot._ARM_STYLE if lab in ana_kwargs_dict]
     style = plot._method_style(arms)
@@ -1129,19 +1111,14 @@ def test_plot_prune_writes_the_region_count_figure(tmp_path):
     assert (tmp_path / 'prune_Focus.pdf').exists()
 
 
-def test_plot_cache_draws_region_counts_for_the_arm_cache(tmp_path):
-    """The prune-rule cache reports what its rules select; others do not.
+def test_plot_cache_draws_no_region_counts(tmp_path):
+    """A run_ana cache reports scores; region counts belong to plot_prune.
 
-    The arm cache's methods are the prune rules crossed with the Ward
-    projections, so it gets the run_ana counterpart of plot_prune_regions off
-    n_pred, plus the count block in its table file.
+    What a selection rule hands back is the prune cache's question, read off
+    its own n_selected (plot_prune_regions), so no detection figure carries a
+    count column.
     """
     df = _both_arm_frame()
-
-    plot.plot_cache(BOTH_ARM_CACHE, df, tmp_path)
-    assert (tmp_path / f'{BOTH_ARM_CACHE}_regions.pdf').exists()
-    text = (tmp_path / f'{BOTH_ARM_CACHE}_tables.txt').read_text()
-    assert 'Regions detected (mean over seeds)' in text
 
     plot.plot_cache('sweep_extent', df, tmp_path)
     assert not (tmp_path / 'sweep_extent_regions.pdf').exists()

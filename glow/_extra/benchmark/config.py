@@ -34,14 +34,13 @@ smoke (an end-to-end pipeline check).
 
 Scope. Five caches share the run_ana leaf over the one recipe grid (fit +
 score one Analysis per cell): null, sweep_llr, sweep_extent, sweep_b,
-sweep_nimg. sweep_llr_glow_tune takes that leaf over a grid of its own, the
-four GLOW variants, which is what picks the one the others report. Four swap
-in their own leaf over much the same grids: segment (run_segment, a Ward-mode
-oracle, no fit -- and segment_perc_llr, the same leaf and modes over the share
-of the images the tree is built on), vba_stat (run_stat, a VBA / CET variant
-reading a shared voxel-stat walk; HCP only, b=2), prune (run_prune, three
-pruning rules plus the max-Dice oracle, all re-selected off one shared GLOW
-fit), and sweep_n_perm_inner (run_inner_perm, the reported variant at every
+sweep_nimg. Four swap in their own leaf over much the same grids: segment
+(run_segment, a Ward-mode oracle, no fit -- and segment_perc_llr, the same
+leaf and modes over the share of the images the tree is built on), vba_stat
+(run_stat, a VBA / CET variant reading a shared voxel-stat walk; HCP only,
+b=2), prune (run_prune, three pruning rules plus the max-Dice oracle, all
+re-selected off one shared GLOW fit, which is what settles the selection
+rule), and sweep_n_perm_inner (run_inner_perm, the reported variant at every
 inner-draw count off one shared capture; HCP only), which is what settles
 N_PERM_INNER.
 
@@ -157,27 +156,23 @@ SWEEP_NIMG_GRID = list(range(10, HCP_NUM_IMG + 1, 10))
 # thing at every voxel). Written out rather than left to the recipe defaults,
 # which agree -- the paper's arms should be readable here.
 #
-# The four GLOW entries are one arm under its two free choices: the Ward
-# projection (Focus on the contrast subspace, GLM Error on the whole design
-# space) crossed with the selection rule (greedy, or the exact max-total-LLR
-# antichain). Both greedy arms ride the shared leaf grid
-# (REPORTED_GLOW_LABEL_LIST) -- the projection is the choice a reader of any
-# figure has to make, and it is not settled by one cache's ranking, so every
-# cache carries both. The dp arms are compared on one cache of their own
-# (sweep_llr_glow_tune), which is where the rule is settled.
+# The two GLOW entries are one arm under each Ward projection (Focus on the
+# contrast subspace, GLM Error on the whole design space), both pruning
+# greedily. Both ride the shared leaf grid (REPORTED_GLOW_LABEL_LIST): the
+# projection is the choice a reader of any figure has to make, and it is not
+# settled by one cache's ranking, so every cache carries both. The selection
+# rule is not a recipe axis here -- prune_rule applies downstream of the
+# permutation test (AnalysisGLOWBase._discover), so the prune cache settles it
+# by re-selecting one shared fit per (cell, projection) rather than by fitting
+# a recipe per rule.
 kwargs_voxel = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
 kwargs = dict(n_perm_inner=N_PERM_INNER, **kwargs_voxel)
-GLOW_LABEL_LIST = ('GLOW-Focus-greedy', 'GLOW-Focus-dp',
-                   'GLOW-GLM-greedy', 'GLOW-GLM-dp')
+GLOW_LABEL_LIST = ('GLOW-Focus-greedy', 'GLOW-GLM-greedy')
 ana_kwargs_dict = {
     'GLOW-Focus-greedy': AnalysisGLOW(cluster_mode=ClusterMode.FOCUS,
                                       prune_rule='greedy', **kwargs),
-    'GLOW-Focus-dp':     AnalysisGLOW(cluster_mode=ClusterMode.FOCUS,
-                                      prune_rule='dp', **kwargs),
     'GLOW-GLM-greedy':   AnalysisGLOW(cluster_mode=ClusterMode.GLM_ERROR,
                                       prune_rule='greedy', **kwargs),
-    'GLOW-GLM-dp':       AnalysisGLOW(cluster_mode=ClusterMode.GLM_ERROR,
-                                      prune_rule='dp', **kwargs),
     'VBA':        AnalysisVBA(z_flag=False, tfce_flag=False,
                               get_stat=get_hotel_tr, **kwargs_voxel),
     'VBA-TFCE':   AnalysisVBA(z_flag=True, tfce_flag=True,
@@ -187,17 +182,16 @@ ana_kwargs_dict = {
 }
 
 # The headline GLOW variant: the arm the prose reports, the one the
-# inner-draw sweep tunes, and the only one the runtime caches time -- all four
-# run the same permutation walk over the same shapes and differ in what Ward
-# is handed and how the significant set is cut, neither of which moves a
-# timing, so a second set would be a second copy of one curve.
+# inner-draw sweep tunes, and the only one the runtime caches time -- both
+# run the same permutation walk over the same shapes and differ only in what
+# Ward is handed, which does not move a timing, so a second set would be a
+# second copy of one curve.
 REPORTED_GLOW_LABEL = 'GLOW-Focus-greedy'
 
 # The GLOW variants every detection cache reports: one per Ward projection,
-# both pruning greedily, the headline arm first. benchmark.plot drops the rest
-# (_ARMS_SKIP) and names these two by the knob that separates them
-# (GLOW-Focus / GLOW-GLM), so a figure shows what the projection costs on its
-# own axes rather than deferring to the one cache that ranks the variants.
+# both pruning greedily, the headline arm first. benchmark.plot names these
+# two by the knob that separates them (GLOW-Focus / GLOW-GLM), so a figure
+# shows what the projection costs on its own axes.
 REPORTED_GLOW_LABEL_LIST = (REPORTED_GLOW_LABEL, 'GLOW-GLM-greedy')
 
 # ---------- how a leaf's fit runs (never what it computes) -------------------
@@ -236,10 +230,8 @@ GLOW_FIT_PARAMS = dict(n_jobs=GLOW_FIT_N_JOBS, gpu=GLOW_FIT_GPU)
 # ana_kwargs_dict key) is recovered from the recipe at read time (see
 # benchmark.plot), so it never enters the call or the cache key.
 #
-# The reported GLOW variants plus the voxel-wise arms, NOT all four GLOW
-# variants: this grid is shared by six caches, so an entry here costs a
-# per-perm fit in each of them, and the two dp arms are compared on
-# GLOW_ARM_LIST's cache alone.
+# This grid is shared by five caches, so an entry here costs a per-perm fit in
+# each of them.
 def _run_ana(label: str) -> dict:
     """The run_ana leaf kwargs for one catalogue label."""
     ana = ana_kwargs_dict[label]
@@ -250,14 +242,6 @@ def _run_ana(label: str) -> dict:
 RUN_ANA_LIST = [_run_ana(label) for label in ana_kwargs_dict
                 if label in REPORTED_GLOW_LABEL_LIST
                 or label not in GLOW_LABEL_LIST]
-
-# the sweep_llr_glow_tune cache's leaf grid: the four GLOW variants and nothing
-# else. Ward projection x selection rule, on the llr sweep's own axes at b=1,
-# which is what the choice of selection rule rests on. The voxel-wise arms are
-# absent -- sweep_llr already carries them over the same cells, so repeating
-# them here would pay twice for one curve. Its two greedy arms are the shared
-# grid's, so those cells are hits and only the dp fits are new.
-GLOW_ARM_LIST = [_run_ana(label) for label in GLOW_LABEL_LIST]
 
 
 # the sweep_n_perm_inner cache's leaf grid: the reported GLOW variant at every
@@ -524,18 +508,6 @@ CONFIG = {
         data_grid(b_list=B_LLR_SWEEP),
         effect_grid(llr_list=EFFECT_LLR_GRID),
         RUN_ANA_LIST, run_ana),
-    # C. Which GLOW variant to report: Ward projection x selection rule, on
-    #    sweep_llr's own axes at b=1. b=1 alone because the choice is between
-    #    four variants of one arm rather than a power curve -- a second b
-    #    would double the fits to re-read the same ranking -- and its cells
-    #    are sweep_llr's b=1 cells, so every data / effect build is a hit and
-    #    only the dp fits are new. The selection rule is what this cache picks
-    #    out; benchmark.plot keeps all four under their own labels here
-    #    (_BOTH_ARM_CACHES) and drops the dp arms everywhere else.
-    'sweep_llr_glow_tune': (
-        data_grid(b_list=(1,)),
-        effect_grid(llr_list=EFFECT_LLR_GRID),
-        GLOW_ARM_LIST, run_ana),
     # How many inner draws GLOW needs: the reported variant read at every
     # count on N_PERM_INNER_GRID, at three effect strengths, which is what
     # settles N_PERM_INNER. Two curves come out of one leaf grid -- which
