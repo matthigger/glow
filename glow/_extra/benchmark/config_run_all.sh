@@ -18,14 +18,14 @@
 # two lanes takes the voxel-wise arms off the critical path entirely.
 #
 # THE LANES.
-#   1  the voxel-wise arms over the six shared-grid caches, parallel across
+#   1  the voxel-wise arms over the five shared-grid caches, parallel across
 #      data cells.
-#   2  GLOW over those same six, then prune, then sweep_llr_glow_tune, then
-#      sweep_n_perm_inner -- each an independent step, so a later one still
-#      runs if an earlier fails. Serial in the driver, feeding the device.
-#      sweep_n_perm_inner rides here rather than being run on demand: it is
-#      the cache that settles N_PERM_INNER, so a catalogue is only self-
-#      justifying if the sweep backing its inner count came from the same run.
+#   2  GLOW over those same five, then prune, then sweep_n_perm_inner -- each
+#      an independent step, so a later one still runs if an earlier fails.
+#      Serial in the driver, feeding the device. sweep_n_perm_inner rides here
+#      rather than being run on demand: it is the cache that settles
+#      N_PERM_INNER, so a catalogue is only self-justifying if the sweep
+#      backing its inner count came from the same run.
 #   3  the caches with no per-method axis and no device, at full parallelism.
 #   4  every timing cache, last and alone. The 1perm leaves pin themselves to
 #      one core, but sharing the box with lane 3 would contend for cache and
@@ -102,16 +102,13 @@ run_step lane1 "${PIN_BLAS[@]}" "${BENCH[@]}" "${VOXEL_METHODS[@]}" \
 lane1=$!
 
 # Lane 2: GLOW, serial in the driver, its workers and the device underneath.
-# 2a first: it is the widest GLOW grid, and the arms it records are the same
-# leaves 2c would otherwise pay for (sweep_llr_glow_tune's greedy arms are
-# sweep_llr's b=1 leaves), so this order is what makes 2c cost only its dp
-# arms.
+# 2a first: it is the widest GLOW grid, so every later step reaches the device
+# with the leaves it shares with 2a already fit.
 (
     run_step lane2a "${BENCH[@]}" "${GLOW_METHODS[@]}" -j 1 \
         "${SHARED_GRID_CACHES[@]}"
     run_step lane2b "${BENCH[@]}" -j 1 prune
-    run_step lane2c "${BENCH[@]}" -j 1 sweep_llr_glow_tune
-    run_step lane2d "${BENCH[@]}" -j 1 sweep_n_perm_inner
+    run_step lane2c "${BENCH[@]}" -j 1 sweep_n_perm_inner
 ) &
 lane2=$!
 
