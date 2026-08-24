@@ -884,8 +884,9 @@ def test_tidy_segment_keeps_both_halves_at_the_whole_cohort_ceiling():
     assert list(both['frac_segment']) == [plot.WHOLE_COHORT_FRAC, 0.3]
 
 
-@pytest.mark.parametrize('name, perc', [('segment', False),
-                                        ('segment_perc_llr', None)])
+# the segment_perc_llr case is commented out with its catalogue entry
+# (config.CONFIG); restore both together
+@pytest.mark.parametrize('name, perc', [('segment', False)])
 def test_segment_perc_reads_the_figure_off_the_catalogue_grids(name, perc):
     """Each segment cache's figure is derived from its own CONFIG grids.
 

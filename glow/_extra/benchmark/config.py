@@ -32,17 +32,15 @@ sweep cuts that cohort down at analysis time (run.run_ana_time_1perm).
 Every cache here backs a figure, table or quantitative claim in the paper, bar
 smoke (an end-to-end pipeline check).
 
-Scope. Five caches share the run_ana leaf over the one recipe grid (fit +
-score one Analysis per cell): null, sweep_llr, sweep_extent, sweep_b,
-sweep_nimg. Four swap in their own leaf over much the same grids: segment
-(run_segment, a Ward-mode oracle, no fit -- and segment_perc_llr, the same
-leaf and modes over the share of the images the tree is built on), vba_stat
-(run_stat, a VBA / CET variant reading a shared voxel-stat walk; HCP only,
-b=2), prune (run_prune, three pruning rules plus the max-Dice oracle, all
-re-selected off one shared GLOW fit, which is what settles the selection
-rule), and sweep_n_perm_inner (run_inner_perm, the reported variant at every
-inner-draw count off one shared capture; HCP only), which is what settles
-N_PERM_INNER.
+Scope. Four caches share the run_ana leaf over the one recipe grid (fit + score
+one Analysis per cell): null, sweep_llr, sweep_extent, sweep_b. Four swap in
+their own leaf over much the same grids: segment (run_segment, a Ward-mode
+oracle, no fit), vba_stat (run_stat, a VBA / CET variant reading a shared
+voxel-stat walk; HCP only, b=2), prune (run_prune, three pruning rules plus the
+max-Dice oracle, all re-selected off one shared GLOW fit, which is what settles
+the selection rule), and sweep_n_perm_inner (run_inner_perm, the reported
+variant at every inner-draw count off one shared capture; HCP only), which is
+what settles N_PERM_INNER.
 
 Runtime. Five caches measure time, not detection, and run locally only. They
 answer two different questions and must not be read as one: runtime_num_vox is
@@ -533,14 +531,17 @@ CONFIG = {
         data_grid(b_list=SWEEP_B_GRID),
         effect_grid(),
         RUN_ANA_LIST, run_ana),
-    # Detection vs subject count (fixed moderate effect). WGN only: HCP's N is
-    # its fixed cohort, and data_factory_hcp has no subject-subset axis to
-    # build a smaller one with (see run.run_ana_time_1perm, which cuts the
-    # cohort at analysis time for the timing curve instead).
-    'sweep_nimg': (
-        data_grid(sources=['wgn'], num_img_list=SWEEP_NIMG_GRID),
-        effect_grid(),
-        RUN_ANA_LIST, run_ana),
+    # Detection vs subject count, shelved: the paper reports three
+    # detection sweeps (llr, b, extent) and none of them is this one, so the
+    # cache costs a full WGN grid that nothing reads. Uncomment to restore.
+    # WGN only: HCP's N is its fixed cohort, and data_factory_hcp has no
+    # subject-subset axis to build a smaller one with (see
+    # run.run_ana_time_1perm, which cuts the cohort at analysis time for the
+    # timing curve instead).
+    # 'sweep_nimg': (
+    #     data_grid(sources=['wgn'], num_img_list=SWEEP_NIMG_GRID),
+    #     effect_grid(),
+    #     RUN_ANA_LIST, run_ana),
     # F. Segmentation quality: oracle best-Dice region per Ward mode (Naive /
     #    GLM Error / Focus), no significance test or pruning. Same grids as
     #    the b=1 llr sweep; the leaf is run_segment over the mode grid.
@@ -548,20 +549,21 @@ CONFIG = {
         data_grid(),
         effect_grid(llr_list=EFFECT_LLR_GRID),
         RUN_SEGMENT_LIST, run_segment),
-    # Segmentation quality vs sample size: the same oracle per Ward mode at the
-    # Segmentation quality vs the share of the images the tree is built on
-    # (SEGMENT_FRAC_GRID), across the whole llr axis: what a smaller
-    # segmentation fold costs, read at every effect strength (benchmark.plot
-    # draws it as one grid per Ward mode, a curve per fold share). Both grids
-    # are segment's own, so its cells are segment's cells and only the fold
-    # leaves are new work; the whole-cohort ceiling each curve is read against
-    # is segment's llr sweep, which the record walk reaches from these same
-    # cells. frac_segment is a knob of the split arm, which the catalogue no
-    # longer reports -- this cache is the measurement of why.
-    'segment_perc_llr': (
-        data_grid(),
-        effect_grid(llr_list=EFFECT_LLR_GRID),
-        RUN_SEGMENT_PERC_LIST, run_segment),
+    # Segmentation quality vs the share of the images the tree is built on,
+    # shelved: it measures why the split arm is not reported, a decision the
+    # paper never puts in front of a reader, so nothing cites it. Uncomment
+    # to restore.
+    # The fold shares are SEGMENT_FRAC_GRID, swept across the whole llr axis:
+    # what a smaller segmentation fold costs, read at every effect strength
+    # (benchmark.plot draws it as one grid per Ward mode, a curve per fold
+    # share). Both grids are segment's own, so its cells are segment's cells
+    # and only the fold leaves are new work; the whole-cohort ceiling each
+    # curve is read against is segment's llr sweep, which the record walk
+    # reaches from these same cells.
+    # 'segment_perc_llr': (
+    #     data_grid(),
+    #     effect_grid(llr_list=EFFECT_LLR_GRID),
+    #     RUN_SEGMENT_PERC_LIST, run_segment),
     # G. MANCOVA stat comparison: VBA / VBA-TFCE / CET x 5 stats x {raw, z}
     #    (b=2 so the multivariate stats differ). The cell's variants share one
     #    voxel-stat walk (run_stat -> voxel_stat_walk). GLOW excluded. HCP only
