@@ -11,14 +11,13 @@ import pytest
 from glow._extra.benchmark import plot
 from glow._extra.benchmark.config import (ana_kwargs_dict, CONFIG,
                                           REPORTED_GLOW_LABEL,
-                                          REPORTED_GLOW_LABEL_LIST,
                                           RUN_STAT_LIST)
 from glow.analysis import AnalysisVBA
 
 
 # The catalogue's method names, taken by role rather than spelled out: a
 # provenance row has to carry a recipe the read path can map back to a label
-# (plot._LABEL_OF_ANA), and these tests need the reported GLOW arms and one
+# (plot._LABEL_OF_ANA), and these tests need the reported GLOW arm and one
 # voxel-wise arm -- not whichever names config carries this month, nor how many
 # arms it ships. What the figures then CALL an arm is plot's own contract, so
 # output assertions read the name off the same mapping the figures do
@@ -27,11 +26,6 @@ GLOW_LABEL = REPORTED_GLOW_LABEL
 VBA_LABEL = next(label for label, ana in ana_kwargs_dict.items()
                  if isinstance(ana, AnalysisVBA) and not ana.tfce_flag)
 GLOW_FIGURE = plot._ARM_LABEL[REPORTED_GLOW_LABEL]
-# the other reported arm: the same recipe under the other Ward projection,
-# which every detection figure carries beside the headline one
-ARM_OTHER = next(lab for lab in REPORTED_GLOW_LABEL_LIST
-                 if lab != REPORTED_GLOW_LABEL)
-ARM_OTHER_FIGURE = plot._ARM_LABEL[ARM_OTHER]
 
 
 def _score(tp, fp, tn, fn, min_pval=0.5, n_pred=1):
@@ -1003,27 +997,34 @@ def test_plot_prune_writes_one_figure_per_mode(tmp_path):
 # Reported GLOW arm
 # ---------------------------------------------------------------------------
 
-def test_select_glow_arm_spares_mode_and_rule_labels():
-    """The rename reaches the analysis arms, not a mode or rule label.
+def test_arm_labels_name_one_arm_glow_and_several_by_projection():
+    """The figure name drops what the reported arms share, not what differs.
 
-    Each reported arm is renamed by its projection. segment labels by Ward
-    mode ('Focus') and prune by rule ('GLOW-greedy'), so neither family can be
+    One arm has nothing to distinguish, so it is plainly GLOW; several are
+    told apart by the Ward projection. A pair separated by the selection rule
+    alone would collide under that name, so there the recipe labels stand.
+    """
+    assert plot._arm_labels(('GLOW-Focus-greedy',)) == {
+        'GLOW-Focus-greedy': 'GLOW'}
+    assert plot._arm_labels(('GLOW-Focus-greedy', 'GLOW-GLM-greedy')) == {
+        'GLOW-Focus-greedy': 'GLOW-Focus', 'GLOW-GLM-greedy': 'GLOW-GLM'}
+    assert plot._arm_labels(('GLOW-Focus-greedy', 'GLOW-Focus-dp')) == {}
+
+
+def test_select_glow_arm_spares_mode_and_rule_labels():
+    """The rename reaches the analysis arm, not a mode or rule label.
+
+    The reported arm is renamed (_ARM_LABEL). segment labels by Ward mode
+    ('Focus') and prune by rule ('GLOW-greedy'), so neither family can be
     caught by a filter keyed on the analysis arm.
     """
-    df = pd.DataFrame({'label': [GLOW_LABEL, ARM_OTHER, 'Focus',
-                                 'GLOW-greedy', 'VBA']})
+    df = pd.DataFrame({'label': [GLOW_LABEL, 'Focus', 'GLOW-greedy', 'VBA']})
     assert list(plot._select_glow_arm(df)['label']) == [
-        GLOW_FIGURE, ARM_OTHER_FIGURE, 'Focus', 'GLOW-greedy', 'VBA']
+        GLOW_FIGURE, 'Focus', 'GLOW-greedy', 'VBA']
 
 
-def _both_arm_frame():
-    """Build a one-source tidy frame carrying both GLOW arms plus VBA.
-
-    The arms are injected into the tidy frame rather than round-tripped
-    through a recipe: what the plot layer promises is about the labels handed
-    to it, not about how many arms the catalogue ships, so the raw names here
-    are plot's own vocabulary (_ARM_LABEL).
-    """
+def _arm_frame():
+    """Build a one-source tidy frame carrying the GLOW arm plus VBA."""
     rows = []
     for llr in (0.01, 0.03, 0.1):
         for seed in range(3):
@@ -1031,48 +1032,40 @@ def _both_arm_frame():
             for label in (GLOW_LABEL, VBA_LABEL):
                 rows.append(_hcp_row(label, seed, llr,
                                      _score(tp, 10, 800, 100 - tp)))
-    tidy = plot.tidy_run_ana(pd.DataFrame(rows))
-    glow = tidy[tidy['label'] == GLOW_LABEL]
-    df = pd.concat([tidy[tidy['label'] != GLOW_LABEL],
-                    glow.assign(label=GLOW_LABEL),
-                    glow.assign(label=ARM_OTHER)], ignore_index=True)
-    assert {GLOW_LABEL, ARM_OTHER} <= set(df['label'])
-    return df
+    return plot.tidy_run_ana(pd.DataFrame(rows))
 
 
-def test_plot_cache_names_the_arms_by_projection(tmp_path):
-    """A detection cache reports both arms under their projection names."""
-    df = _both_arm_frame()
+def test_plot_cache_names_the_arm_off_the_catalogue(tmp_path):
+    """A detection cache names the arm as the figures do, not as config does."""
+    df = _arm_frame()
 
     plot.plot_cache('sweep_extent', df, tmp_path)
     thr = pd.read_csv(tmp_path / 'sweep_extent_threshold.csv')
-    # no recipe label reaches the output; each arm reads as its projection
-    assert not {GLOW_LABEL, ARM_OTHER} & set(thr['method'])
-    assert {GLOW_FIGURE, ARM_OTHER_FIGURE} <= set(thr['method'])
-    # catalogue order survives: the arms lead, the voxel-wise method follows
-    assert list(thr['method']) == [GLOW_FIGURE, ARM_OTHER_FIGURE, VBA_LABEL]
-    # the head-to-head covers both arms, one block each against the same
-    # best alternative
+    # no recipe label reaches the output
+    assert GLOW_LABEL not in set(thr['method'])
+    # catalogue order survives: the arm leads, the voxel-wise method follows
+    assert list(thr['method']) == [GLOW_FIGURE, VBA_LABEL]
+    # the head-to-head is the arm against the best alternative
     diff = pd.read_csv(tmp_path / 'sweep_extent_diff.csv')
-    assert set(diff['method'].unique()) == {GLOW_FIGURE, ARM_OTHER_FIGURE}
+    assert set(diff['method'].unique()) == {GLOW_FIGURE}
 
 
 def test_plot_cache_glow_only_loses_the_diff_row(tmp_path):
     """With no non-GLOW method, the head-to-head row is not drawn at all.
 
-    Nothing is left to diff the arms against (_has_diff): the figure is one
+    Nothing is left to diff the arm against (_has_diff): the figure is one
     band row per source and no diff CSV is written.
     """
-    df = _both_arm_frame()
+    df = _arm_frame()
     df = df[df['label'] != VBA_LABEL]
 
     assert not plot._has_diff(df)
     plot.plot_cache('sweep_extent', df, tmp_path)
     assert (tmp_path / 'sweep_extent.pdf').exists()
     assert not (tmp_path / 'sweep_extent_diff.csv').exists()
-    # the arms still reach the tables
+    # the arm still reaches the tables
     thr = pd.read_csv(tmp_path / 'sweep_extent_threshold.csv')
-    assert {GLOW_FIGURE, ARM_OTHER_FIGURE} <= set(thr['method'])
+    assert GLOW_FIGURE in set(thr['method'])
 
 
 def test_method_style_separates_the_arms():
@@ -1094,7 +1087,7 @@ def test_method_style_separates_the_arms():
 
 def test_write_table_txt_holds_the_figures_numbers(tmp_path):
     """The txt companion carries a matrix per metric, thresholds and wins."""
-    df = _both_arm_frame()
+    df = _arm_frame()
 
     plot.write_table_txt('sweep_extent', df, x='effect_llr', out=tmp_path,
                          metrics=['dice', 'sens', 'ppv'],
@@ -1107,10 +1100,9 @@ def test_write_table_txt_holds_the_figures_numbers(tmp_path):
     assert f'win rate vs {GLOW_LABEL}' in text
     # a row per method, in catalogue order, under one shared swept-value header
     body = text[text.index('Dice (mean over seeds)'):]
-    rows = body.splitlines()[1:5]
+    rows = body.splitlines()[1:4]
     assert rows[0].split()[0] == 'method'
-    assert [r.split()[0] for r in rows[1:]] == [GLOW_LABEL, ARM_OTHER,
-                                                VBA_LABEL]
+    assert [r.split()[0] for r in rows[1:]] == [GLOW_LABEL, VBA_LABEL]
 
 
 def test_tidy_prune_carries_the_selection_size():
@@ -1154,7 +1146,7 @@ def test_plot_cache_draws_no_region_counts(tmp_path):
     its own n_selected (plot_prune_regions), so no detection figure carries a
     count column.
     """
-    df = _both_arm_frame()
+    df = _arm_frame()
 
     plot.plot_cache('sweep_extent', df, tmp_path)
     assert not (tmp_path / 'sweep_extent_regions.pdf').exists()

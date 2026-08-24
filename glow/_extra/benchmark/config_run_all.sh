@@ -67,11 +67,11 @@ LANE1_JOBS=$(( $(nproc) - GLOW_CORES ))
 # voxel-wise arms, so they are the caches with a per-method axis to split on.
 SHARED_GRID_CACHES=(null sweep_llr sweep_extent sweep_b smoke)
 
-# the GLOW variants on that shared grid -- config.REPORTED_GLOW_LABEL_LIST,
-# BOTH greedy arms. Naming only the headline one here is what silently leaves
-# the other arm's leaves unrun, so a cache never reaches complete and every
-# rerun re-checks it.
-GLOW_METHODS=(--method GLOW-Focus-greedy --method GLOW-GLM-greedy)
+# the GLOW variants on that shared grid -- every name in
+# config.REPORTED_GLOW_LABEL_LIST. Leaving one out is what silently leaves
+# that arm's leaves unrun, so a cache never reaches complete and every rerun
+# re-checks it.
+GLOW_METHODS=(--method GLOW-Focus-greedy)
 
 VOXEL_METHODS=(--method VBA --method VBA-TFCE --method CET)
 

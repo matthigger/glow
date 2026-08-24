@@ -110,7 +110,8 @@ class TestCatalogueShape:
                 == [ana for label, ana in config.ana_kwargs_dict.items()
                     if label in config.REPORTED_GLOW_LABEL_LIST
                     or label not in config.GLOW_LABEL_LIST])
-        # one arm per Ward projection, both pruning greedily, headline first
+        # the reported arms prune greedily, one per Ward projection,
+        # headline first
         assert config.REPORTED_GLOW_LABEL_LIST[0] == \
             config.REPORTED_GLOW_LABEL
         arms = [config.ana_kwargs_dict[label]

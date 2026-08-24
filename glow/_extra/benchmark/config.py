@@ -154,22 +154,20 @@ SWEEP_NIMG_GRID = list(range(10, HCP_NUM_IMG + 1, 10))
 # thing at every voxel). Written out rather than left to the recipe defaults,
 # which agree -- the paper's arms should be readable here.
 #
-# The two GLOW entries are one arm under each Ward projection (Focus on the
-# contrast subspace, GLM Error on the whole design space), both pruning
-# greedily. Both ride the shared leaf grid (REPORTED_GLOW_LABEL_LIST): the
-# projection is the choice a reader of any figure has to make, and it is not
-# settled by one cache's ranking, so every cache carries both. The selection
-# rule is not a recipe axis here -- prune_rule applies downstream of the
+# The one GLOW entry is the greedy arm on the Focus projection (Ward on the
+# contrast subspace). Neither of its two knobs is a recipe axis here. The
+# other projection, GLM Error (Ward on the whole design space), rides the
+# segment and prune caches as a cluster_mode, which is where the projection
+# is argued, so a detection cache pays one GLOW fit per cell rather than two.
+# The selection rule likewise: prune_rule applies downstream of the
 # permutation test (AnalysisGLOWBase._discover), so the prune cache settles it
 # by re-selecting one shared fit per (cell, projection) rather than by fitting
 # a recipe per rule.
 kwargs_voxel = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
 kwargs = dict(n_perm_inner=N_PERM_INNER, **kwargs_voxel)
-GLOW_LABEL_LIST = ('GLOW-Focus-greedy', 'GLOW-GLM-greedy')
+GLOW_LABEL_LIST = ('GLOW-Focus-greedy',)
 ana_kwargs_dict = {
     'GLOW-Focus-greedy': AnalysisGLOW(cluster_mode=ClusterMode.FOCUS,
-                                      prune_rule='greedy', **kwargs),
-    'GLOW-GLM-greedy':   AnalysisGLOW(cluster_mode=ClusterMode.GLM_ERROR,
                                       prune_rule='greedy', **kwargs),
     'VBA':        AnalysisVBA(z_flag=False, tfce_flag=False,
                               get_stat=get_hotel_tr, **kwargs_voxel),
@@ -180,17 +178,14 @@ ana_kwargs_dict = {
 }
 
 # The headline GLOW variant: the arm the prose reports, the one the
-# inner-draw sweep tunes, and the only one the runtime caches time -- both
-# run the same permutation walk over the same shapes and differ only in what
-# Ward is handed, which does not move a timing, so a second set would be a
-# second copy of one curve.
+# inner-draw sweep tunes, and the one the runtime caches time.
 REPORTED_GLOW_LABEL = 'GLOW-Focus-greedy'
 
-# The GLOW variants every detection cache reports: one per Ward projection,
-# both pruning greedily, the headline arm first. benchmark.plot names these
-# two by the knob that separates them (GLOW-Focus / GLOW-GLM), so a figure
-# shows what the projection costs on its own axes.
-REPORTED_GLOW_LABEL_LIST = (REPORTED_GLOW_LABEL, 'GLOW-GLM-greedy')
+# The GLOW variants every detection cache reports, headline arm first: the
+# Focus greedy arm alone. A tuple, since the plot layer and RUN_ANA_LIST read
+# the reported set rather than one name; benchmark.plot draws a lone reported
+# arm plainly as GLOW (_ARM_LABEL).
+REPORTED_GLOW_LABEL_LIST = (REPORTED_GLOW_LABEL,)
 
 # ---------- how a leaf's fit runs (never what it computes) -------------------
 # fit_params is forwarded to Analysis.fit by the leaf and filtered out of the

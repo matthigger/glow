@@ -15,25 +15,25 @@ x-axis is inferred from what varies in the cache rather than declared: an
 all-null effect grid is the FWER calibration path, else the first of
 effect_llr / b / num_img / effect_perc that varies is swept.
 
-Every figure outside the segment / prune / race-retention families reports the
-two greedy GLOW arms, one per Ward projection, named GLOW-Focus and GLOW-GLM:
-the dp arms are dropped and the survivors renamed at the plot layer
-(_select_glow_arm), never in the caches. Throughout, an arm's colour is its
-projection and its dash the selection rule (_ARM_STYLE).
+Every figure outside the segment / prune / race-retention families reports
+the arms config names (REPORTED_GLOW_LABEL_LIST), a lone one drawn plainly as
+GLOW: any other GLOW recipe is dropped and the survivors renamed at the plot
+layer (_select_glow_arm), never in the caches. Throughout, an arm's colour is
+its Ward projection and its dash the selection rule (_ARM_STYLE).
 
 Each cache then gets either a GLOW-only FWER calibration row (null) -- one
-cell per source x reported arm, nominal alpha vs empirical rejection rate, with
-a
-Clopper-Pearson 95% band -- or one stacked detection figure, an HCP block over
-a WGN block, each a 2 x 3 grid whose top row is the per-method mean score with
-a central 95% band and whose bottom row is the GLOW head-to-head diff, over the
-dice / sens / ppv columns -- the diff row only where the source has a non-GLOW
-method to diff against. Alongside it a discovery-threshold table
-(write_threshold_table) records the absolute effect strength at which each
-method's mean Dice first reaches 0.5, and {label}_tables.txt (write_table_txt)
-carries the drawn figure's own numbers as plain text: the per-method score
-matrices (its region counts among them, where its methods select regions),
-those thresholds and the head-to-head against the reported arm.
+cell per source x reported arm, nominal alpha vs empirical rejection rate,
+with a Clopper-Pearson 95% band -- or one stacked detection figure, an HCP
+block over a WGN block, each a 2 x 3 grid whose top row is the per-method
+mean score with a central 95% band and whose bottom row is the GLOW
+head-to-head diff, over the dice / sens / ppv columns -- the diff row only
+where the source has a non-GLOW method to diff against. Alongside it a
+discovery-threshold table (write_threshold_table) records the absolute effect
+strength at which each method's mean Dice first reaches 0.5, and
+{label}_tables.txt (write_table_txt) carries the drawn figure's own numbers
+as plain text: the per-method score matrices (its region counts among them,
+where its methods select regions), those thresholds and the head-to-head
+against the reported arm.
 
 The runtime family is plotted apart (tidy_runtime / plot_runtime): those caches
 hold detection fixed and sweep one cost knob, so the signal is the leaf wall
@@ -111,26 +111,40 @@ COLOR_ANALYSIS = {
 _LABEL_OF_ANA = {repr(ana): label for label, ana in ana_kwargs_dict.items()}
 
 
-# config.REPORTED_GLOW_LABEL_LIST is what the figures report -- the greedy arm
-# of each Ward projection -- and the rest are dropped (_ARMS_SKIP) so a panel
-# does not re-argue the selection rule. The survivors are renamed by the knob
-# that separates them, GLOW-Focus / GLOW-GLM (_ARM_LABEL): the rule they share
-# is not what the reader is choosing between. Both taken off the catalogue, so
-# adding or renaming a variant in config needs no edit here. Every variant
-# stays in the caches and the records -- each is a real recipe, and the
-# segment / prune families exist to compare the two clusterings. Those
-# families label by Ward mode (Focus / GLM Error) and prune rule (GLOW-greedy
-# / GLOW-dp) rather than by analysis arm, so neither the drop nor the rename
-# reaches them.
+# config.REPORTED_GLOW_LABEL_LIST is what the figures report, and every other
+# GLOW recipe is dropped (_ARMS_SKIP) so a panel does not re-argue a knob a
+# tuning cache settles; the survivors are renamed (_arm_labels). Both taken
+# off the catalogue, so adding or renaming a variant in config needs no edit
+# here. Every variant stays in the caches and the records -- each is a
+# real recipe, and the segment / prune families exist to compare the two
+# clusterings. Those families label by Ward mode (Focus / GLM Error) and prune
+# rule (GLOW-greedy / GLOW-dp) rather than by analysis arm, so neither the
+# drop nor the rename reaches them.
 _ARMS_SKIP = tuple(label for label, ana in ana_kwargs_dict.items()
                    if isinstance(ana, AnalysisGLOWBase)
                    and label not in REPORTED_GLOW_LABEL_LIST)
-_ARM_LABEL = {lab: lab.rsplit('-', 1)[0]
-              for lab in REPORTED_GLOW_LABEL_LIST}
-# two reported arms differing only in the rule would collide under a name that
-# drops it; there the recipe labels are what the figures use
-if len(set(_ARM_LABEL.values())) < len(_ARM_LABEL):
-    _ARM_LABEL = {}
+
+
+def _arm_labels(label_list) -> dict:
+    """Map each reported GLOW recipe label to the name a figure gives it.
+
+    Args:
+        label_list: config's reported arms, GLOW-<projection>-<rule> labels.
+
+    Returns:
+        dict: recipe label -> figure label. One arm is plainly GLOW; several
+            drop the rule they share and read as GLOW-<projection>. Empty
+            when dropping the rule would collide two arms (a pair separated
+            by the rule alone), where the recipe labels are the figures'.
+    """
+    label_list = tuple(label_list)
+    if len(label_list) == 1:
+        return {label_list[0]: 'GLOW'}
+    out = {lab: lab.rsplit('-', 1)[0] for lab in label_list}
+    return {} if len(set(out.values())) < len(out) else out
+
+
+_ARM_LABEL = _arm_labels(REPORTED_GLOW_LABEL_LIST)
 
 # the arm the head-to-head row draws when a caller names none, under the label
 # the figures give it
@@ -232,16 +246,15 @@ def _qual_style(label_list) -> dict:
     return out
 
 
-# The GLOW arms' own styling. Two curves and their bands never separate by
-# lightness alone, so each Ward projection takes its own Okabe-Ito hue. The
-# reported Focus arm keeps the palette's teal, so the method a reader has
-# followed through every figure keeps its colour. Both arms appear under their
-# figure labels as well (_ARM_LABEL), since that is what a relabelled frame
-# carries.
+# The GLOW arms' own styling: a Ward projection in the colour, a selection
+# rule in the dash, since two curves and their bands never separate by
+# lightness alone. The Focus arm keeps the palette's teal, so the method a
+# reader has followed through every figure keeps its colour. An arm appears
+# under its figure label as well (_ARM_LABEL), since that is what a relabelled
+# frame carries.
 _TEAL = _hls_hex(0/4 + _H, l=_L * 0.6)
 _ARM_STYLE = {
     'GLOW-Focus-greedy': {'color': _TEAL, 'ls': '-'},
-    'GLOW-GLM-greedy':   {'color': '#E69F00', 'ls': '-'},
 }
 _ARM_STYLE.update({fig: _ARM_STYLE[raw] for raw, fig in _ARM_LABEL.items()})
 

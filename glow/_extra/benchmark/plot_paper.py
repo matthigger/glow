@@ -543,10 +543,10 @@ def fig_detection(df, out, stem: str, *, x: str,
     the seed median and an interquartile band rather than one thin line per
     seed, which at print size reads as noise.
 
-    Exactly one GLOW curve is drawn, config's reported arm. The unreported
-    arms stay in the caches and in the tuning figure, which is where the
-    choice between them is argued; a second teal line here would re-open it
-    in the figure that is meant to settle GLOW against the field.
+    Exactly one GLOW curve is drawn, config's reported arm. Its two knobs --
+    the Ward projection and the selection rule -- are argued in the tuning
+    figure, off the segment and prune caches; a second teal line here would
+    re-open that choice in the figure meant to settle GLOW against the field.
 
     Args:
         df: a tidy_run_ana frame (source / label / seed / x / the metrics).
