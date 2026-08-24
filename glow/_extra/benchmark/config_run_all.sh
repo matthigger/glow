@@ -65,7 +65,7 @@ LANE1_JOBS=$(( $(nproc) - GLOW_CORES ))
 
 # the caches sharing config.RUN_ANA_LIST: the reported GLOW variants plus the
 # voxel-wise arms, so they are the caches with a per-method axis to split on.
-SHARED_GRID_CACHES=(null sweep_llr sweep_extent sweep_b sweep_nimg smoke)
+SHARED_GRID_CACHES=(null sweep_llr sweep_extent sweep_b smoke)
 
 # the GLOW variants on that shared grid -- config.REPORTED_GLOW_LABEL_LIST,
 # BOTH greedy arms. Naming only the headline one here is what silently leaves
@@ -119,7 +119,7 @@ wait "$lane1" "$lane2"
 
 # Lane 3: no per-method axis, no device -- full parallelism.
 run_step lane3 "${PIN_BLAS[@]}" "${BENCH[@]}" -j -1 \
-    segment segment_perc_llr vba_stat
+    segment vba_stat
 
 # Lane 4: every timing cache, on an undisturbed machine.
 run_step lane4 "${BENCH[@]}" runtime_num_vox 'runtime_1perm_*'
