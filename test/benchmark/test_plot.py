@@ -746,6 +746,41 @@ def test_plot_metric_grid_writes_figure(tmp_path):
     assert (tmp_path / 'segment.pdf').exists()
 
 
+def test_plot_metric_grid_gives_a_count_column_its_own_axis(tmp_path,
+                                                            monkeypatch):
+    """A count panel beside the scores takes a log y, unclamped, with a ref.
+
+    plot_prune's grid mixes n_selected in with the three scores, so the panel
+    has to escape the 0..1 clamp the scores share and pick up the one-region
+    reference the count figures draw.
+    """
+    rows = []
+    for rule, n_selected in (('greedy', 2), ('dp', 400)):
+        for source in ('wgn', 'hcp'):
+            for effect_llr in (0.003, 0.03, 0.3):
+                for seed in range(3):
+                    rows.append(_prune_row(rule, seed, effect_llr,
+                                           80, 10, 890, 20, source=source,
+                                           n_selected=n_selected))
+    df = plot.tidy_prune(pd.DataFrame(rows))
+
+    # the plotter closes what it saves, so hold the figure open to read it
+    monkeypatch.setattr(plot.plt, 'close', lambda *args, **kwargs: None)
+    plot.plot_metric_grid('prune_Focus', df, tmp_path,
+                          metrics=plot._PRUNE_METRICS)
+    axes = np.array(plt.gcf().axes).reshape(2, 4)
+
+    assert axes[0, -1].get_title() == 'Regions selected'
+    assert axes[0, -1].get_yscale() == 'log'
+    assert axes[0, -1].get_ylim()[1] > 1
+    assert axes[0, 0].get_yscale() == 'linear'
+    assert axes[0, 0].get_ylim() == (0, 1)
+    # the planted effect's one region, dashed under the count curves
+    refs = [ln.get_ydata()[0] for ln in axes[0, -1].get_lines()
+            if ln.get_linestyle() == '--' and ln.get_color() == 'grey']
+    assert refs == [plot._ONE_REGION]
+
+
 def test_plot_metric_grid_writes_fold_sweep_figure(tmp_path):
     """segment_perc draws the same grid against frac_segment, on a linear x."""
     rows = []

@@ -1758,7 +1758,10 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
     Writes {label}.pdf.
 
     The y defaults suit a score; a region count is the same grid read on a log
-    y with no clamp (ylim=None, log_y=True) -- see plot_prune.
+    y with no clamp (ylim=None, log_y=True). A count column mixed in beside
+    the scores (_COUNT_COLS) takes that axis for its own panel alone, plus the
+    one-region reference the count figures draw (_ONE_REGION) -- see
+    plot_prune.
 
     Args:
         label (str): cache name; the output filename stem.
@@ -1775,9 +1778,11 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
             default suits the few-series figures, and many series want less
             (the spread grows with the count).
         ylim (tuple | None): y limits; the default is a score's 0..1, None
-            leaves the axis to the data (a count).
-        log_y (bool): log y-axis, for a quantity spanning decades.
-        hline (float | None): a horizontal reference line, drawn dashed.
+            leaves the axis to the data (a count). A count panel ignores it.
+        log_y (bool): log y-axis, for a quantity spanning decades; a count
+            panel takes one either way.
+        hline (float | None): a horizontal reference line, drawn dashed; a
+            count panel draws _ONE_REGION instead.
         style (dict | None): hue value -> {'color', 'ls'}; None styles the
             values here, so a caller passes one only to hold a figure's
             colours to another's (_method_style).
@@ -1802,8 +1807,8 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
     if log_x is None:
         log_x = pd.notnull(df[x].min()) and df[x].min() > 0
     ncols = len(metrics)
-    floors = ({m: _log_y_floor(df, x, m, hue=hue) for m in metrics}
-              if log_y else {})
+    floors = {m: _log_y_floor(df, x, m, hue=hue) for m in metrics
+              if log_y or m in _COUNT_COLS}
 
     fig, axes = plt.subplots(len(sources), ncols, sharex=True,
                              figsize=(4.2 * ncols, 3.8 * len(sources)),
@@ -1813,18 +1818,20 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
         for j, metric in enumerate(metrics):
             ax = axes[i, j]
 
+            count = metric in _COUNT_COLS
             _draw_metric_errbar(ax, dsrc, x, metric, style, hue=hue,
                                 dodge=dodge, y_floor=floors.get(metric))
-            if ylim is not None:
+            if ylim is not None and not count:
                 ax.set_ylim(*ylim)
             ax.grid(True, alpha=0.3)
             if log_x:
                 ax.set_xscale('log')
-            if log_y:
+            if log_y or count:
                 ax.set_yscale('log')
                 ax.set_ylim(bottom=floors[metric])
-            if hline is not None:
-                ax.axhline(hline, ls='--', lw=0.8, color='grey', alpha=0.7)
+            ref = _ONE_REGION if count else hline
+            if ref is not None:
+                ax.axhline(ref, ls='--', lw=0.8, color='grey', alpha=0.7)
             if i == 0:
                 ax.set_title(_METRIC_TITLES.get(metric, metric))
             if i == len(sources) - 1:
@@ -2034,6 +2041,11 @@ _PRUNE_LABELS_SKIP = ('GLOW-single_max',)
 _REPORTED_PRUNE_LABEL = (
     f'GLOW-{ana_kwargs_dict[REPORTED_GLOW_LABEL].prune_rule}')
 
+# the prune grid's columns: the three scores plus what the rule selected, the
+# count being half of what a rule is judged on (a Dice bought by handing back
+# the support in pieces is not the same result as one region)
+_PRUNE_METRICS = ('dice', 'sens', 'ppv', 'n_selected')
+
 
 def plot_prune_regions(label: str, df, out, *, x: str = 'effect_llr',
                        count: str = 'n_selected') -> None:
@@ -2119,10 +2131,12 @@ def plot_prune(label: str, df, out) -> None:
     so the clusterings are compared side by side rather than on one axis. The
     diagnostic single_max rule is dropped (_PRUNE_LABELS_SKIP).
 
-    Alongside them one region-count figure (plot_prune_regions) holding both
-    modes: what each rule selects, which is what separates two rules that
-    score the same Dice. Each mode's numbers, counts included, go out as text
-    beside its grid (write_table_txt).
+    The grid's fourth column is how many regions the rule hands back
+    (_PRUNE_METRICS): what separates two rules that score the same Dice, read
+    beside the score it bought. Both modes' counts also go out on one page of
+    their own (plot_prune_regions), where the two clusterings share a y-axis.
+    Each mode's numbers, counts included, go out as text beside its grid
+    (write_table_txt).
 
     A cache that also varies b splits again on it (_split_by_secondary), one
     figure per (mode, b): the grid's facets are
@@ -2140,9 +2154,9 @@ def plot_prune(label: str, df, out) -> None:
     for mode, df_mode in df.groupby('cluster_mode'):
         stem = f'{label}_{_mode_slug(mode)}'
         for sub_label, sub in _split_by_secondary(stem, df_mode, 'effect_llr'):
-            plot_metric_grid(sub_label, sub, out)
+            plot_metric_grid(sub_label, sub, out, metrics=_PRUNE_METRICS)
             write_table_txt(sub_label, sub, x='effect_llr', out=out,
-                            metrics=['dice', 'sens', 'ppv', 'n_selected'],
+                            metrics=list(_PRUNE_METRICS),
                             one_label=_REPORTED_PRUNE_LABEL)
     for sub_label, sub in _split_by_secondary(label, df, 'effect_llr'):
         plot_prune_regions(sub_label, sub, out)
