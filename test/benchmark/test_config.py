@@ -31,9 +31,13 @@ from glow.analysis import (Analysis, AnalysisCET, AnalysisGLOWBase,
 # every catalogue entry; the shape / bind checks cover all of them
 LABELS = sorted(config.CONFIG)
 
-# the run_ana caches, which all share the one recipe grid
+# the run_ana caches, each sharing one of the two recipe-grid singletons
 RUN_ANA_LABELS = [label for label in LABELS
                   if config.CONFIG[label][3].__name__ == 'run_ana']
+
+# the run_ana caches taking the GLOW-only grid: the null path, whose
+# calibration figure reads no voxel-wise arm
+GLOW_ONLY_LABELS = ['null']
 
 
 class TestCatalogueShape:
@@ -58,13 +62,23 @@ class TestCatalogueShape:
     def test_run_ana_caches_share_the_recipe_grid(self, label):
         # the detection sweeps all fit/score over the one shared recipe grid,
         # by identity: strip_gpu / filter_ana_list rebuild cells rather than
-        # mutating them precisely because it is a singleton
-        assert config.CONFIG[label][2] is config.RUN_ANA_LIST
+        # mutating them precisely because it is a singleton. The null path
+        # shares the GLOW-only grid on the same terms.
+        expect = (config.RUN_ANA_GLOW_LIST if label in GLOW_ONLY_LABELS
+                  else config.RUN_ANA_LIST)
+        assert config.CONFIG[label][2] is expect
 
     def test_recipes_are_analyses(self):
         assert config.RUN_ANA_LIST
         assert all(isinstance(c['ana'], Analysis)
                    for c in config.RUN_ANA_LIST)
+
+    def test_glow_only_grid_holds_glow_alone(self):
+        # a voxel-wise arm reaching this grid is a fit whose only reader
+        # (plot._plot_calibration_faceted) drops it
+        assert config.RUN_ANA_GLOW_LIST
+        assert all(isinstance(c['ana'], AnalysisGLOWBase)
+                   for c in config.RUN_ANA_GLOW_LIST)
 
     def test_voxelwise_arms_match_the_recipe_defaults(self):
         """The catalogue's spelled-out stats equal the arm defaults.

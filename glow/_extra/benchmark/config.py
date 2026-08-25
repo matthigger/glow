@@ -236,6 +236,12 @@ RUN_ANA_LIST = [_run_ana(label) for label in ana_kwargs_dict
                 if label in REPORTED_GLOW_LABEL_LIST
                 or label not in GLOW_LABEL_LIST]
 
+# the null cache's leaf grid: the reported GLOW variant alone. The FWER claim
+# the null path supports is GLOW's, so the calibration figure reading this
+# cache drops every voxel-wise arm (plot._CALIB_METHODS) -- planting them here
+# buys a fit whose only reader discards it.
+RUN_ANA_GLOW_LIST = [_run_ana(label) for label in REPORTED_GLOW_LABEL_LIST]
+
 
 # the sweep_n_perm_inner cache's leaf grid: the reported GLOW variant at every
 # inner-draw count on the grid, which is what settles N_PERM_INNER (on the grid
@@ -486,10 +492,13 @@ RUN_1PERM_NIMG_LIST = [dict(ana=ONE_PERM_ANA, num_img=n) for n in NIMG_GRID]
 # data_factory).
 CONFIG = {
     # A. Type I error: no effect, many seeds, both sources (null path).
+    #    GLOW alone (RUN_ANA_GLOW_LIST), which is what the calibration figure
+    #    reads; the seed count is its own, since a rejection rate needs far
+    #    more null trials than a detection curve needs cells.
     'null': (
         data_grid(seeds=range(N_SEED_NULL)),
         effect_grid(llr_list=None),
-        RUN_ANA_LIST, run_ana),
+        RUN_ANA_GLOW_LIST, run_ana),
     # B. Detection vs effect strength at b = 1 and b = 2 (the univariate power
     #    curve and its low-b multivariate counterpart) in one sweep over
     #    (b, effect_llr); HCP draws a random b-subset per seed. b rides the
