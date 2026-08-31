@@ -310,8 +310,12 @@ def _band(ax, df, x: str, metric: str, st: dict, *, ci: int = 95,
                         alpha=0.13, lw=0, zorder=1)
     if errbar:
         xv = mean.index.values * (1 + dodge)
-        ax.errorbar(xv, mean.values,
-                    yerr=[mean.values - lo.values, hi.values - mean.values],
+        # the bar is the percentile interval, so it is centred on that
+        # interval rather than on the mean: a mean can sit outside [lo, hi]
+        # (a skewed series, or a float sliver where the two coincide), which
+        # errorbar rejects outright as a negative yerr
+        ax.errorbar(xv, (lo.values + hi.values) / 2,
+                    yerr=(hi.values - lo.values) / 2,
                     fmt='none', ecolor=st['color'], elinewidth=0.9,
                     capsize=2, alpha=0.7, zorder=2)
     ax.plot(mean.index, mean.values, color=st['color'], ls=st['ls'],
