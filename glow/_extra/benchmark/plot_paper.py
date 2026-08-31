@@ -31,6 +31,7 @@ figures implement.
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap, LogNorm
 from matplotlib.lines import Line2D
 
 from .config import REPORTED_GLOW_LABEL
@@ -92,6 +93,7 @@ _X_LABEL = {
     'num_img': 'subjects $N$',
     'num_vox': 'voxels analyzed',
     'seed_rank': 'seed, ranked by false volume',
+    'sens_pct': 'effect recovered (% of effect volume)',
 }
 
 
@@ -967,6 +969,80 @@ def fig_seed_pareto(df, out, *, arm: str = REPORTED_GLOW_LABEL,
     _save(fig, out, stem)
 
 
+# Effect strength is the one quantitative variable the paper maps to colour,
+# and it does so in a figure that draws GLOW alone, where no method needs
+# telling from another and the hue channel is therefore free. The ramp is the
+# summary.tex teal ladder with a dark end added, so darker still reads as
+# "more GLOW" rather than as a second method.
+_LLR_CMAP = LinearSegmentedColormap.from_list(
+    'glow_llr', ['#B8DEDE', '#7FBBBB', '#4DA6A6', '#2B7A78', '#123C3B'])
+
+
+def fig_recovery_scatter(df, out, *, arm: str = REPORTED_GLOW_LABEL,
+                         stem: str = 'recovery_scatter') -> None:
+    """Plot one trial as a point: effect recovered against false volume.
+
+    The per-trial operating point, with both axes in units of the planted
+    effect's volume: how much of the effect ended up inside some declared
+    region, against how much non-effect volume came with it. The ideal trial
+    sits at the bottom right and the dotted rule marks where a trial's false
+    volume equals the whole effect it was looking for.
+
+    What the sweep curves cannot show is the shape of the cloud. A mean
+    sensitivity and a mean PPV at one effect strength are consistent with a
+    tight cluster, with a smooth arc, or with two clumps at opposite corners,
+    and the three call for different fixes. Colour carries effect strength, so
+    the same panel also shows which way the cloud travels as the effect grows.
+
+    Args:
+        df: a tidy_pred_decomp frame.
+        out (pathlib.Path): directory to write into.
+        arm (str): the GLOW recipe label whose trials are drawn.
+        stem (str): output filename stem.
+    """
+    d = _decomp_cols(df, arm=arm)
+    d = _numeric(d, ['sens', 'vol_fp', 'effect_llr'])
+    if d.empty:
+        print(f'  (no {arm} rows to scatter - skipping {stem})')
+        return
+    sources = _sources(d)
+    norm = LogNorm(vmin=d['effect_llr'].min(), vmax=d['effect_llr'].max())
+
+    fig, axes = _grid(1, sources, height=3.4)
+    sc = None
+    for j, src in enumerate(sources):
+        ax = axes[0, j]
+        # weakest effects last: they are the fewest points and the palest, so
+        # drawing them on top is what keeps them findable
+        g = d[d['source'] == src].sort_values('effect_llr', ascending=False)
+        sc = ax.scatter(100 * g['sens'], 100 * g['vol_fp'],
+                        c=g['effect_llr'], cmap=_LLR_CMAP, norm=norm,
+                        s=15, alpha=0.8, linewidths=0.3,
+                        edgecolors='#3a3a3a', zorder=3)
+        ax.axhline(100, ls=':', lw=0.8, color='#999999', zorder=1)
+        ax.set_xlim(-3, 103)
+        ax.set_yscale('symlog', linthresh=1, linscale=0.4)
+        ax.set_ylim(0, 1500)
+        ax.set_yticks([0, 1, 10, 100, 1000])
+        ax.yaxis.set_minor_locator(plt.NullLocator())
+        # the panel is a subset (a trial that discovered nothing has no
+        # operating point), so it says how much of the sweep it is showing
+        n_all = len(df[(df['source'] == src) & (df['label'] == arm)])
+        ax.text(0.03, 0.05, f'{len(g)} of {n_all} trials detected',
+                transform=ax.transAxes, fontsize=8, color='#555555',
+                zorder=4, bbox=dict(facecolor=_TINT.get(src, 'white'),
+                                    edgecolor='none', alpha=0.85, pad=1.5))
+
+    _dress(axes, sources, x='sens_pct', log_x=False,
+           row_labels=['false volume (% of effect volume)'])
+    cbar = fig.colorbar(sc, ax=axes.ravel().tolist(), pad=0.015, aspect=26,
+                        ticks=[0.003, 0.01, 0.03, 0.1, 0.3])
+    cbar.set_label(_X_LABEL['effect_llr'])
+    cbar.ax.set_yticklabels(['0.003', '0.01', '0.03', '0.1', '0.3'])
+    cbar.ax.minorticks_off()
+    _save(fig, out, stem)
+
+
 def fig_runtime(df, out, *, fit_decades: float = 1.0) -> None:
     """Draw wall time against voxel count, annotating each method's slope.
 
@@ -1150,6 +1226,7 @@ def main(argv=None) -> None:
             fig_ppv_decomp(dec, out)
             fig_ppv_seed(dec, out)
             fig_seed_pareto(dec, out)
+            fig_recovery_scatter(dec, out)
 
         print('\n=== runtime ===')
         rt = tidy_runtime('runtime_num_vox',
