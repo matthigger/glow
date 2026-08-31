@@ -31,6 +31,7 @@ figures implement.
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.cm import ScalarMappable
 from matplotlib.colors import LinearSegmentedColormap, LogNorm
 from matplotlib.lines import Line2D
 
@@ -978,21 +979,58 @@ _LLR_CMAP = LinearSegmentedColormap.from_list(
     'glow_llr', ['#B8DEDE', '#7FBBBB', '#4DA6A6', '#2B7A78', '#123C3B'])
 
 
+# Which of the two mechanisms a trial's false volume came from, as a marker
+# shape: fp = spurious + leaked exactly, so a trial shows up with either, with
+# both, or with neither. Colour is spent on effect strength in this figure, so
+# shape is the free channel and carries a meaning rather than repeating one.
+# (label, marker, filled)
+_MECH_STYLE = (
+    ('no false volume', 'o', False),
+    ('over-inclusion only', 'o', True),
+    ('spurious only', '^', True),
+    ('both', 's', True),
+)
+
+
+def _mech(d):
+    """Label each trial by which error mechanisms its false volume contains.
+
+    Args:
+        d: a _decomp_cols frame (needs fp, leaked, spurious).
+
+    Returns:
+        a Series of _MECH_STYLE labels, one per row.
+    """
+    leak, spur = d['leaked'] > 0, d['spurious'] > 0
+    return pd.Series(
+        np.select([~leak & ~spur, leak & ~spur, ~leak & spur],
+                  [_MECH_STYLE[0][0], _MECH_STYLE[1][0], _MECH_STYLE[2][0]],
+                  default=_MECH_STYLE[3][0]), index=d.index)
+
+
 def fig_recovery_scatter(df, out, *, arm: str = REPORTED_GLOW_LABEL,
                          stem: str = 'recovery_scatter') -> None:
-    """Plot one trial as a point: effect recovered against false volume.
+    """Plot one trial as a point: effect recovered against false volume share.
 
-    The per-trial operating point, with both axes in units of the planted
-    effect's volume: how much of the effect ended up inside some declared
-    region, against how much non-effect volume came with it. The ideal trial
-    sits at the bottom right and the dotted rule marks where a trial's false
-    volume equals the whole effect it was looking for.
+    One marker is one trial, meaning one seed at one effect strength, and both
+    of its coordinates aggregate over every region that trial declared. The x
+    is how much of the planted effect ended up inside some declared region. The
+    y is how much of the whole sweep's false volume that single trial
+    contributed, so a panel's markers sum to 100% and the axis answers "which
+    trials are the false volume" rather than "how bad is this trial". The
+    dotted rule is the share a trial would carry if every trial carried the
+    same.
 
-    What the sweep curves cannot show is the shape of the cloud. A mean
+    Because the y pools both error mechanisms, the marker shape separates them,
+    which is the thing a share axis would otherwise hide: a trial can
+    over-include on a region that hit the effect and, in the same trial, also
+    declare a region that missed it entirely.
+
+    What this adds over the sweep curves is the shape of the cloud. A mean
     sensitivity and a mean PPV at one effect strength are consistent with a
     tight cluster, with a smooth arc, or with two clumps at opposite corners,
     and the three call for different fixes. Colour carries effect strength, so
-    the same panel also shows which way the cloud travels as the effect grows.
+    the panel also shows which way the cloud travels as the effect grows.
 
     Args:
         df: a tidy_pred_decomp frame.
@@ -1001,49 +1039,72 @@ def fig_recovery_scatter(df, out, *, arm: str = REPORTED_GLOW_LABEL,
         stem (str): output filename stem.
     """
     d = _decomp_cols(df, arm=arm)
-    d = _numeric(d, ['sens', 'vol_fp', 'effect_llr'])
+    d = _numeric(d, ['sens', 'fp', 'effect_llr'])
     if d.empty:
         print(f'  (no {arm} rows to scatter - skipping {stem})')
         return
+    d['mech'] = _mech(d)
     sources = _sources(d)
     norm = LogNorm(vmin=d['effect_llr'].min(), vmax=d['effect_llr'].max())
 
-    fig, axes = _grid(1, sources, height=3.4)
-    sc = None
+    fig, axes = _grid(1, sources, height=3.6)
     for j, src in enumerate(sources):
         ax = axes[0, j]
-        # weakest effects last: they are the fewest points and the palest, so
-        # drawing them on top is what keeps them findable. seed breaks the
-        # ties, so which marker overlaps which is fixed by the data and not by
-        # the row order the frame happened to arrive in (the markers are
-        # semi-transparent, so that order is visible in the output).
-        g = d[d['source'] == src].sort_values(['effect_llr', 'seed'],
-                                              ascending=[False, True])
-        sc = ax.scatter(100 * g['sens'], 100 * g['vol_fp'],
-                        c=g['effect_llr'], cmap=_LLR_CMAP, norm=norm,
-                        s=15, alpha=0.8, linewidths=0.3,
-                        edgecolors='#3a3a3a', zorder=3)
-        ax.axhline(100, ls=':', lw=0.8, color='#999999', zorder=1)
+        # a trial that discovered nothing has fp = 0, so it is already absent
+        # from the numerator and cannot change this total
+        g = d[d['source'] == src]
+        total = g['fp'].sum()
+
+        for label, marker, filled in _MECH_STYLE:
+            # weakest effects last within a shape: they are the fewest points
+            # and the palest. seed breaks the ties, so which marker overlaps
+            # which is fixed by the data and not by the frame's row order
+            sub = g[g['mech'] == label].sort_values(
+                ['effect_llr', 'seed'], ascending=[False, True])
+            if sub.empty:
+                continue
+            x, y = 100 * sub['sens'], 100 * sub['fp'] / total
+            if filled:
+                ax.scatter(x, y, c=sub['effect_llr'], cmap=_LLR_CMAP,
+                           norm=norm, marker=marker, s=16, alpha=0.8,
+                           linewidths=0.3, edgecolors='#3a3a3a', zorder=3)
+            else:
+                # an empty ring for a trial with no false volume at all: it has
+                # an effect strength but no mechanism, so the colour moves to
+                # the edge rather than the face
+                ax.scatter(x, y, marker=marker, s=30, facecolors='none',
+                           linewidths=1.0, zorder=2,
+                           edgecolors=_LLR_CMAP(norm(sub['effect_llr'])))
+
+        ax.axhline(100 / len(g), ls=':', lw=0.8, color='#999999', zorder=1)
         ax.set_xlim(-3, 103)
-        ax.set_yscale('symlog', linthresh=1, linscale=0.4)
-        ax.set_ylim(0, 1500)
-        ax.set_yticks([0, 1, 10, 100, 1000])
+        ax.set_yscale('symlog', linthresh=1e-4, linscale=0.5)
+        ax.set_ylim(0, 5)
+        ax.set_yticks([0, 1e-3, 1e-2, 1e-1, 1])
         ax.yaxis.set_minor_locator(plt.NullLocator())
-        # the panel is a subset (a trial that discovered nothing has no
-        # operating point), so it says how much of the sweep it is showing
+        # the y is a share, so the panel names what it is a share of, and how
+        # much of the sweep it is showing
         n_all = len(df[(df['source'] == src) & (df['label'] == arm)])
-        ax.text(0.03, 0.05, f'{len(g)} of {n_all} trials detected',
-                transform=ax.transAxes, fontsize=8, color='#555555',
+        ax.text(0.03, 0.955,
+                f'{len(g)} of {n_all} trials detected\n'
+                f'share of {total / 1e3:.0f}k false voxels',
+                transform=ax.transAxes, va='top', fontsize=8, color='#555555',
                 zorder=4, bbox=dict(facecolor=_TINT.get(src, 'white'),
                                     edgecolor='none', alpha=0.85, pad=1.5))
 
     _dress(axes, sources, x='sens_pct', log_x=False,
-           row_labels=['false volume (% of effect volume)'])
-    cbar = fig.colorbar(sc, ax=axes.ravel().tolist(), pad=0.015, aspect=26,
+           row_labels=['share of all false volume (%)'])
+    sm = ScalarMappable(norm=norm, cmap=_LLR_CMAP)
+    cbar = fig.colorbar(sm, ax=axes.ravel().tolist(), pad=0.015, aspect=26,
                         ticks=[0.003, 0.01, 0.03, 0.1, 0.3])
     cbar.set_label(_X_LABEL['effect_llr'])
     cbar.ax.set_yticklabels(['0.003', '0.01', '0.03', '0.1', '0.3'])
     cbar.ax.minorticks_off()
+    # shape is the mechanism, so the proxies are colourless on purpose
+    _legend(fig, [Line2D([], [], ls='none', marker=m, ms=5.5,
+                         color='#555555',
+                         markerfacecolor='#555555' if f else 'none',
+                         label=lab) for lab, m, f in _MECH_STYLE], ncol=4)
     _save(fig, out, stem)
 
 
