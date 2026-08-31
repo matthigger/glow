@@ -1013,8 +1013,12 @@ def fig_recovery_scatter(df, out, *, arm: str = REPORTED_GLOW_LABEL,
     for j, src in enumerate(sources):
         ax = axes[0, j]
         # weakest effects last: they are the fewest points and the palest, so
-        # drawing them on top is what keeps them findable
-        g = d[d['source'] == src].sort_values('effect_llr', ascending=False)
+        # drawing them on top is what keeps them findable. seed breaks the
+        # ties, so which marker overlaps which is fixed by the data and not by
+        # the row order the frame happened to arrive in (the markers are
+        # semi-transparent, so that order is visible in the output).
+        g = d[d['source'] == src].sort_values(['effect_llr', 'seed'],
+                                              ascending=[False, True])
         sc = ax.scatter(100 * g['sens'], 100 * g['vol_fp'],
                         c=g['effect_llr'], cmap=_LLR_CMAP, norm=norm,
                         s=15, alpha=0.8, linewidths=0.3,
