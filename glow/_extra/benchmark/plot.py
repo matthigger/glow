@@ -61,6 +61,7 @@ With no arguments the CLI plots every cache in the catalogue; passing names
 restricts it.
 """
 import colorsys
+import re
 import warnings
 
 import matplotlib.pyplot as plt
@@ -458,6 +459,77 @@ def tidy_run_ana(raw):
 
     # dice/sens/ppv/spec from the four counts (glow.mask is the source)
     return add_metric_cols(out)
+
+
+def tidy_pred_decomp(raw):
+    """Split each trial's false-positive volume by where it came from.
+
+    A region-inference method can be wrong two ways, and the two carry
+    different diagnoses. It can declare a region that touches no effect voxel
+    at all (spurious: the effect is invented), or declare a region that does
+    hit the effect and drag the non-effect voxels around it in with it
+    (leaked: the effect is real but its extent is over-stated, which is the
+    price of a region rather than a voxel being the unit of inference).
+
+    The two partition fp exactly, because the discovered regions are disjoint:
+    GLOW's are an antichain of the tree by construction (prune_by_rule) and
+    the baselines' are connected components (Analysis.discover_mask). With n_r
+    the voxel count of discovered region r and o_r how many of its voxels land
+    in the planted effect (score_effects records both, per region):
+
+        spurious = sum of n_r over regions with o_r == 0
+        leaked   = sum of (n_r - o_r) over regions with o_r > 0
+
+    Args:
+        raw: the provenance DataFrame tidy_run_ana consumes, with its
+            run_ana.out.score.pred.<i>.{num_vox,target} block intact (the wide
+            per-region columns, which tidy_run_ana itself drops).
+
+    Returns:
+        a tidy_run_ana frame with four columns added: spurious and leaked
+        (voxels), frags (regions that hit the effect) and n_spur (regions that
+        missed it). All four are NaN when raw carries no per-region block, so
+        a caller handed the wrong frame draws nothing rather than reading a
+        silent zero as "no spurious volume".
+    """
+    out = tidy_run_ana(raw)
+    if out.empty:
+        return out
+
+    def block(field):
+        """Return the per-region field as an (n_row, n_reg) float array."""
+        pat = re.compile(rf'\.pred\.(\d+)\.{field}$')
+        cols = sorted(((int(m.group(1)), c) for c in raw.columns
+                       if (m := pat.search(c))))
+        if not cols:
+            return None
+        return raw[[c for _, c in cols]].to_numpy(dtype='float64')
+
+    n_r, o_r = block('num_vox'), block('target')
+    if n_r is None or o_r is None:
+        for c in ('spurious', 'leaked', 'frags', 'n_spur'):
+            out[c] = np.nan
+        return out
+
+    # a region index past the trial's region count is absent, not empty
+    seen = ~np.isnan(n_r)
+    n_r = np.where(seen, n_r, 0.0)
+    o_r = np.where(seen & ~np.isnan(o_r), o_r, 0.0)
+    hit = seen & (o_r > 0)
+    miss = seen & (o_r == 0)
+
+    out['spurious'] = np.where(miss, n_r, 0.0).sum(axis=1)
+    out['leaked'] = np.where(hit, n_r - o_r, 0.0).sum(axis=1)
+    out['frags'] = hit.sum(axis=1)
+    out['n_spur'] = miss.sum(axis=1)
+
+    # the partition is guaranteed by disjointness, so a mismatch means the
+    # region records and the confusion counts came from different scorings
+    bad = ~np.isclose(out['spurious'] + out['leaked'], out['fp'])
+    if bad.any():
+        warnings.warn(f'pred decomposition: spurious + leaked != fp on '
+                      f'{int(bad.sum())} of {len(out)} rows')
+    return out
 
 
 def _infer_x(df) -> str:

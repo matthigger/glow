@@ -92,6 +92,73 @@ def test_tidy_run_ana_columns_and_source():
     assert {'dice', 'sens', 'ppv', 'spec'}.issubset(df.columns)
 
 
+def _pred(region_list, n_slot=3):
+    """Build the recursed run_ana.out.score.pred.<i>.* columns for one row.
+
+    score_effects stores one dict per discovered region, so flatten_to_df
+    gives a column per (region index, field) and a trial with fewer regions
+    than the widest row leaves the tail slots empty.
+
+    Args:
+        region_list (list): (num_vox, target) per discovered region.
+        n_slot (int): width of the block, padded with NaN past the regions.
+    """
+    base = 'run_ana.out.score.pred'
+    out = {}
+    for i in range(n_slot):
+        n_vox, target = (region_list[i] if i < len(region_list)
+                         else (np.nan, np.nan))
+        out[f'{base}.{i}.num_vox'] = n_vox
+        out[f'{base}.{i}.target'] = target
+    return out
+
+
+def test_tidy_pred_decomp_partitions_false_volume():
+    """spurious and leaked split fp by whether the region hit the effect."""
+    raw = pd.DataFrame([
+        # a region over-including 10 voxels, a wholly spurious one, an exact
+        # one: tp = 60, fp = 10 leaked + 30 spurious
+        {**_wgn_row(GLOW_LABEL, seed=0, effect_llr=0.03,
+                    score=_score(60, 40, 900, 0)),
+         **_pred([(50, 40), (30, 0), (20, 20)])},
+        {**_wgn_row(VBA_LABEL, seed=0, effect_llr=0.03,
+                    score=_score(25, 0, 900, 75)),
+         **_pred([(25, 25)])},
+    ])
+    df = plot.tidy_pred_decomp(raw)
+
+    glow = df[df['label'] == GLOW_LABEL].iloc[0]
+    assert glow['leaked'] == 10
+    assert glow['spurious'] == 30
+    assert glow['frags'] == 2
+    assert glow['n_spur'] == 1
+
+    # the partition is exact, region records against confusion counts
+    assert (df['leaked'] + df['spurious'] == df['fp']).all()
+    # an unused region slot is absent, not an empty region
+    vba = df[df['label'] == VBA_LABEL].iloc[0]
+    assert (vba['frags'], vba['n_spur'], vba['leaked']) == (1, 0, 0)
+
+
+def test_tidy_pred_decomp_without_a_region_block():
+    """A frame carrying no per-region columns decomposes to NaN, not zero."""
+    raw = pd.DataFrame([_wgn_row(GLOW_LABEL, seed=0, effect_llr=0.03,
+                                 score=_score(60, 40, 900, 0))])
+    df = plot.tidy_pred_decomp(raw)
+    assert df[['spurious', 'leaked', 'frags', 'n_spur']].isna().all().all()
+
+
+def test_tidy_pred_decomp_warns_when_the_partition_fails():
+    """Region records disagreeing with the confusion counts warn."""
+    raw = pd.DataFrame([
+        {**_wgn_row(GLOW_LABEL, seed=0, effect_llr=0.03,
+                    score=_score(60, 999, 900, 0)),
+         **_pred([(50, 40), (30, 0), (20, 20)])},
+    ])
+    with pytest.warns(UserWarning, match='pred decomposition'):
+        plot.tidy_pred_decomp(raw)
+
+
 def test_infer_x():
     """_infer_x returns None for the null path, else the swept axis."""
     null = pd.DataFrame({'effect_llr': [np.nan, np.nan],
