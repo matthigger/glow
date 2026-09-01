@@ -216,8 +216,9 @@ def _score_regions(reg_mask_list, mask_target_list, mask_active) -> dict:
         mask_active (np.array): (X, Y, Z) bool, the analyzed voxels.
 
     Returns:
-        {n_selected, tp, fp, tn, fn}: the output-region count plus the
-            per-effect counts (suffixed by effect index when more than one).
+        {n_selected, tp, fp, tn, fn, pred}: the output-region count, the
+            per-effect counts (suffixed by effect index when more than one),
+            and the per-region pred block (_pred_records).
     """
     mask_pred = np.zeros(mask_active.shape, dtype=bool)
     for _, mask in reg_mask_list:
@@ -230,7 +231,47 @@ def _score_regions(reg_mask_list, mask_target_list, mask_active) -> dict:
             mask_active=mask_active)
         suffix = '' if single else str(i)
         out.update({f'{k}{suffix}': v for k, v in counts.items()})
+    out['pred'] = _pred_records(reg_mask_list, mask_target_list, mask_active)
     return out
+
+
+def _pred_records(reg_mask_list, mask_target_list, mask_active) -> list:
+    """Record each output region's size and its overlap with the plant.
+
+    The confusion counts union the output regions before scoring, which
+    discards how the predicted volume was divided up. Keeping the per-region
+    pair lets the structural scores (homogeneity and completeness, Rosenberg
+    & Hirschberg 2007) be derived downstream off the records instead of a
+    re-fit: with one planted effect, region r holds target voxels of the
+    effect and num_vox - target of the null, which is the whole contingency
+    table between the output regions and the true labels.
+
+    Same record shape score_effects writes, less the pval that a pruning
+    rule's selection has no per-region equivalent of.
+
+    Args:
+        reg_mask_list (list): (reg_idx, mask) per output region, in output
+            order; reg_idx is the Ward region index or None.
+        mask_target_list (list): the planted supports, one (X, Y, Z) bool
+            mask each.
+        mask_active (np.array): (X, Y, Z) bool, the analyzed voxels.
+
+    Returns:
+        one {reg_idx, num_vox, target} dict per region, target being the
+        overlap with the union of the planted supports, plus target0..N when
+        more than one effect is planted.
+    """
+    target_union = _union(mask_target_list, mask_active.shape)
+    pred = []
+    for reg_idx, mask in reg_mask_list:
+        rec = {'reg_idx': None if reg_idx is None else int(reg_idx),
+               'num_vox': int((mask & mask_active).sum()),
+               'target': int((mask & target_union & mask_active).sum())}
+        if len(mask_target_list) > 1:
+            for i, tm in enumerate(mask_target_list):
+                rec[f'target{i}'] = int((mask & tm & mask_active).sum())
+        pred.append(rec)
+    return pred
 
 
 def score_prune(reg_out_list, children, mask_idx, mask_target_list,

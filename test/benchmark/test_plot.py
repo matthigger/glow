@@ -92,18 +92,19 @@ def test_tidy_run_ana_columns_and_source():
     assert {'dice', 'sens', 'ppv', 'spec'}.issubset(df.columns)
 
 
-def _pred(region_list, n_slot=3):
-    """Build the recursed run_ana.out.score.pred.<i>.* columns for one row.
+def _pred(region_list, n_slot=3, leaf='run_ana'):
+    """Build the recursed <leaf>.out.score.pred.<i>.* columns for one row.
 
-    score_effects stores one dict per discovered region, so flatten_to_df
-    gives a column per (region index, field) and a trial with fewer regions
-    than the widest row leaves the tail slots empty.
+    score_effects and score_prune both store one dict per output region, so
+    flatten_to_df gives a column per (region index, field) and a trial with
+    fewer regions than the widest row leaves the tail slots empty.
 
     Args:
-        region_list (list): (num_vox, target) per discovered region.
+        region_list (list): (num_vox, target) per output region.
         n_slot (int): width of the block, padded with NaN past the regions.
+        leaf (str): the recording leaf, run_ana or run_prune.
     """
-    base = 'run_ana.out.score.pred'
+    base = f'{leaf}.out.score.pred'
     out = {}
     for i in range(n_slot):
         n_vox, target = (region_list[i] if i < len(region_list)
@@ -846,13 +847,150 @@ def test_plot_metric_grid_writes_figure(tmp_path):
     assert (tmp_path / 'segment.pdf').exists()
 
 
+def test_hom_com_matches_worked_cases():
+    """The structural pair reproduces the hand-computed reference cases.
+
+    One planted effect, regions written as (num_vox, target). A is a clean
+    hit beside a wholly spurious region and B one region that swallowed an
+    equal volume of null: same PPV, and only homogeneity separates them.
+    """
+    n_r = np.array([[100, 100, np.nan],
+                    [200, np.nan, np.nan],
+                    [50, 50, 20],
+                    [100, 100, np.nan],
+                    [60, 60, np.nan]])
+    o_r = np.array([[100, 0, np.nan],
+                    [100, np.nan, np.nan],
+                    [50, 50, 0],
+                    [90, 10, np.nan],
+                    [50, 50, np.nan]])
+    hom, com = plot._hom_com(n_r, o_r)
+    assert hom == pytest.approx([1.0, 0.0, 1.0, 0.531, 0.0], abs=1e-3)
+    assert com == pytest.approx([1.0, 1.0, 0.438, 0.531, 0.0], abs=1e-3)
+
+
+def test_hom_com_undefined_without_a_true_voxel():
+    """A trial detecting nothing, or nothing true, scores NaN not a perfect 1.
+
+    H(T) is zero for want of an effect rather than for purity, which the
+    Rosenberg-Hirschberg convention would score 1; PPV reports that case.
+    """
+    n_r = np.array([[np.nan, np.nan], [100, np.nan], [100, np.nan]])
+    o_r = np.array([[np.nan, np.nan], [0, np.nan], [100, np.nan]])
+    hom, com = plot._hom_com(n_r, o_r)
+    assert np.isnan(hom[:2]).all() and np.isnan(com[:2]).all()
+    assert (hom[2], com[2]) == (1.0, 1.0)
+
+
+def test_add_hom_com_without_a_pred_block_is_nan():
+    """A frame with no per-region block gets NaN, never a silent 1.0."""
+    raw = pd.DataFrame([_wgn_row(GLOW_LABEL, seed=0, effect_llr=0.03,
+                                 score=_score(60, 40, 900, 0))])
+    out = plot.tidy_pred_decomp(raw)
+    assert out['hom'].isna().all() and out['com'].isna().all()
+
+
+def test_tidy_pred_decomp_carries_the_structural_pair():
+    """A run_ana frame with a pred block scores hom / com off the records."""
+    raw = pd.DataFrame([
+        # one region that is the effect exactly, one wholly spurious: pure
+        # regions, and the effect is whole
+        {**_wgn_row(GLOW_LABEL, seed=0, effect_llr=0.03,
+                    score=_score(100, 100, 800, 0)),
+         **_pred([(100, 100), (100, 0)])},
+        # one region holding the effect and an equal volume of null
+        {**_wgn_row(GLOW_LABEL, seed=1, effect_llr=0.03,
+                    score=_score(100, 100, 800, 0)),
+         **_pred([(200, 100)])},
+    ])
+    out = plot.tidy_pred_decomp(raw)
+    assert out['hom'].tolist() == pytest.approx([1.0, 0.0], abs=1e-9)
+    assert out['com'].tolist() == pytest.approx([1.0, 1.0], abs=1e-9)
+
+
+def test_tidy_prune_carries_the_structural_pair():
+    """score_prune's pred block reaches the tidy frame as hom / com.
+
+    The prune leaf records the same per-region pairs, so the pruning rules
+    are scored on fragmentation without a re-fit.
+    """
+    rows = [
+        {**_prune_row('greedy', 0, 0.03, 100, 100, 800, 0),
+         **_pred([(200, 100)], leaf='run_prune')},
+        {**_prune_row('dp', 0, 0.03, 100, 0, 900, 0),
+         **_pred([(50, 50), (50, 50)], leaf='run_prune')},
+    ]
+    out = plot.tidy_prune(pd.DataFrame(rows))
+    by_rule = dict(zip(out['label'], zip(out['hom'], out['com'])))
+    # greedy leaked half its volume: impure, but the effect is in one piece
+    assert by_rule['GLOW-greedy'] == pytest.approx((0.0, 1.0), abs=1e-9)
+    # dp split a clean effect in two: pure, but incomplete
+    assert by_rule['GLOW-dp'][0] == pytest.approx(1.0)
+    assert by_rule['GLOW-dp'][1] == pytest.approx(0.0)
+
+
+def test_prune_grid_reports_the_structural_pair(tmp_path, monkeypatch):
+    """plot_prune's grid ends on completeness and homogeneity, 0..1 clamped.
+
+    The count column it used to end on said how many regions a rule handed
+    back; completeness says the same thing on the scale the other panels use
+    and against the plant rather than against one.
+    """
+    rows = []
+    for rule, regions in (('greedy', [(200, 100)]),
+                          ('dp', [(50, 50), (50, 50)])):
+        for source in ('wgn', 'hcp'):
+            for effect_llr in (0.003, 0.03, 0.3):
+                for seed in range(3):
+                    rows.append({
+                        **_prune_row(rule, seed, effect_llr, 80, 10, 890, 20,
+                                     source=source),
+                        **_pred(regions, leaf='run_prune')})
+    df = plot.tidy_prune(pd.DataFrame(rows))
+
+    monkeypatch.setattr(plot.plt, 'close', lambda *args, **kwargs: None)
+    plot.plot_metric_grid('prune_Focus', df, tmp_path,
+                          metrics=plot._PRUNE_METRICS)
+    axes = np.array(plt.gcf().axes).reshape(2, len(plot._PRUNE_METRICS))
+
+    titles = [ax.get_title() for ax in axes[0]]
+    assert titles[-2:] == ['Completeness', 'Homogeneity']
+    assert 'Regions selected' not in titles
+    for ax in axes[0, -2:]:
+        assert ax.get_yscale() == 'linear'
+        assert ax.get_ylim() == (0, 1)
+
+
+def test_plot_structure_page_writes_and_skips(tmp_path):
+    """The structural page is drawn off a pred block and skipped without one."""
+    rows = []
+    for row_fn in (_wgn_row, _hcp_row):
+        for effect_llr in (0.003, 0.03, 0.3):
+            for seed in range(3):
+                rows.append({
+                    **row_fn(GLOW_LABEL, seed=seed, effect_llr=effect_llr,
+                             score=_score(80, 10, 890, 20)),
+                    **_pred([(60, 50), (30, 30)])})
+    df = plot.tidy_pred_decomp(pd.DataFrame(rows))
+    plot._plot_structure_page('sweep_llr_b1', df, x='effect_llr', out=tmp_path)
+    assert (tmp_path / 'sweep_llr_b1_structure.pdf').exists()
+
+    bare = df.copy()
+    bare['hom'] = np.nan
+    bare['com'] = np.nan
+    plot._plot_structure_page('bare', bare, x='effect_llr', out=tmp_path)
+    assert not (tmp_path / 'bare_structure.pdf').exists()
+
+
 def test_plot_metric_grid_gives_a_count_column_its_own_axis(tmp_path,
                                                             monkeypatch):
     """A count panel beside the scores takes a log y, unclamped, with a ref.
 
-    plot_prune's grid mixes n_selected in with the three scores, so the panel
-    has to escape the 0..1 clamp the scores share and pick up the one-region
-    reference the count figures draw.
+    A grid mixing n_selected in with the three scores has to let that panel
+    escape the 0..1 clamp the scores share and pick up the one-region
+    reference the count figures draw. plot_prune's own grid reports the
+    structural pair instead (see the test below), but plot_prune_regions still
+    draws counts, so the behaviour stays under test here.
     """
     rows = []
     for rule, n_selected in (('greedy', 2), ('dp', 400)):
@@ -867,7 +1005,7 @@ def test_plot_metric_grid_gives_a_count_column_its_own_axis(tmp_path,
     # the plotter closes what it saves, so hold the figure open to read it
     monkeypatch.setattr(plot.plt, 'close', lambda *args, **kwargs: None)
     plot.plot_metric_grid('prune_Focus', df, tmp_path,
-                          metrics=plot._PRUNE_METRICS)
+                          metrics=('dice', 'sens', 'ppv', 'n_selected'))
     axes = np.array(plt.gcf().axes).reshape(2, 4)
 
     assert axes[0, -1].get_title() == 'Regions selected'

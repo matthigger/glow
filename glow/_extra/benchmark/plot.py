@@ -333,7 +333,16 @@ _METRIC_TITLES = {
     # (_ONE_REGION) since the caches plant a single effect.
     'n_selected': 'Regions selected',
     'n_pred': 'Regions detected',
+    # structural scores: not how much of the plant was recovered but how the
+    # recovered volume was divided up (_hom_com)
+    'com': 'Completeness',
+    'hom': 'Homogeneity',
 }
+
+# the structural pair, drawn on their own page rather than as two more columns
+# of the score grid: they answer a different question from dice / sens / ppv
+# and a five-wide grid shrinks the headline panels to pay for it.
+_STRUCTURE_METRICS = ('com', 'hom')
 
 # the count figures' reference line: the caches plant one effect, so a rule
 # that returns one region is size-matched to the plant and anything above it
@@ -469,6 +478,124 @@ def tidy_run_ana(raw):
     return add_metric_cols(out)
 
 
+def _pred_block(raw, field: str):
+    """Read one per-region score field out of the wide provenance columns.
+
+    Both leaves that record a region list write one column per region per
+    field (.pred.<i>.<field>), which the tidy frames drop. This gathers a
+    field back into a rectangle, region index ascending, NaN where a trial
+    has fewer regions than the widest one.
+
+    Args:
+        raw: the provenance DataFrame, with its per-region block intact.
+        field (str): the record field to gather (num_vox, target, pval).
+
+    Returns:
+        (n_row, n_reg) float array, or None when raw carries no such block.
+    """
+    pat = re.compile(rf'\.pred\.(\d+)\.{field}$')
+    cols = sorted(((int(m.group(1)), c) for c in raw.columns
+                   if (m := pat.search(c))))
+    if not cols:
+        return None
+    return raw[[c for _, c in cols]].to_numpy(dtype='float64')
+
+
+def _xlogy(w, q):
+    """Return w * log(q) elementwise, zero wherever w is, for 0 log 0 = 0."""
+    return np.where(w > 0, w * np.log(np.where(q > 0, q, 1.0)), 0.0)
+
+
+def _hom_com(n_r, o_r):
+    """Score region purity and effect wholeness per trial.
+
+    Homogeneity and completeness (Rosenberg & Hirschberg 2007) between the
+    output regions R and the true label T, computed over
+    the detected voxels alone (those in some output region). With one planted
+    effect, region r holds o_r voxels at T=1 and n_r - o_r at T=0, so the
+    region sizes and their overlaps are the whole contingency table:
+
+        homogeneity  = 1 - H(T|R) / H(T)
+        completeness = 1 - H(R|T) / H(R)
+
+    Homogeneity falls when a region mixes classes, which is undersegmentation:
+    a region straddling the support boundary, or one swallowing two effects.
+    Completeness falls when one class is spread over regions, which is
+    oversegmentation. Their numerators are the two halves of the variation of
+    information (Meila 2007), so this is the normalised split-VI.
+
+    Purity is scored against the base rate, H(T) being the entropy of the
+    class mix inside the detected volume. Homogeneity is 0 when the regions
+    are no purer than their own union, not when they are dirty outright, so
+    it measures what the region structure bought over reporting one blob.
+
+    Both are NaN for a trial whose detected volume holds no effect voxel at
+    all. H(T) is zero there for want of an effect rather than for purity, and
+    the Rosenberg-Hirschberg convention would score that a perfect 1; PPV
+    already reports it, and NaN keeps the degenerate 1 out of a mean.
+
+    Args:
+        n_r (np.array): (n_row, n_reg) voxels per output region, NaN past a
+            trial's own region count.
+        o_r (np.array): (n_row, n_reg) how many of those fall in the plant.
+
+    Returns:
+        hom (np.array): (n_row,) homogeneity
+        com (np.array): (n_row,) completeness
+    """
+    seen = ~np.isnan(n_r)
+    n_r = np.where(seen, n_r, 0.0)
+    o_r = np.where(seen & ~np.isnan(o_r), o_r, 0.0)
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        n_cov = n_r.sum(axis=1, keepdims=True)
+        p_r = n_r / n_cov
+        p1 = o_r / n_cov
+        p0 = (n_r - o_r) / n_cov
+        p_t1 = p1.sum(axis=1, keepdims=True)
+        p_t0 = p0.sum(axis=1, keepdims=True)
+
+        h_t = -(_xlogy(p_t1, p_t1) + _xlogy(p_t0, p_t0)).sum(axis=1)
+        h_r = -_xlogy(p_r, p_r).sum(axis=1)
+        h_t_g_r = -(_xlogy(p1, p1 / p_r) + _xlogy(p0, p0 / p_r)).sum(axis=1)
+        h_r_g_t = -(_xlogy(p1, p1 / p_t1)
+                    + _xlogy(p0, p0 / p_t0)).sum(axis=1)
+
+        hom = np.where(h_t > 0, 1 - h_t_g_r / h_t, 1.0)
+        com = np.where(h_r > 0, 1 - h_r_g_t / h_r, 1.0)
+
+    undefined = (n_cov[:, 0] == 0) | (o_r.sum(axis=1) == 0)
+    return (np.where(undefined, np.nan, hom),
+            np.where(undefined, np.nan, com))
+
+
+def add_hom_com(out, raw):
+    """Add the homogeneity / completeness columns to a tidy frame.
+
+    Both derive from the per-region block (_pred_block) the tidy frames drop,
+    so they read off the records rather than a re-fit. Indexed through raw's
+    index, so a tidy frame holding a subset of raw's rows still lines up. Both
+    columns are NaN when raw carries no per-region block, so a caller handed a
+    frame without one draws nothing rather than reading a 1.0 as perfection.
+
+    Args:
+        out: the tidy frame to add the columns to, modified in place.
+        raw: the provenance DataFrame it was built from.
+
+    Returns:
+        out, carrying hom and com.
+    """
+    n_r, o_r = _pred_block(raw, 'num_vox'), _pred_block(raw, 'target')
+    if n_r is None or o_r is None:
+        out['hom'] = np.nan
+        out['com'] = np.nan
+        return out
+    hom, com = _hom_com(n_r, o_r)
+    out['hom'] = pd.Series(hom, index=raw.index).reindex(out.index)
+    out['com'] = pd.Series(com, index=raw.index).reindex(out.index)
+    return out
+
+
 def tidy_pred_decomp(raw):
     """Split each trial's false-positive volume by where it came from.
 
@@ -494,30 +621,22 @@ def tidy_pred_decomp(raw):
             per-region columns, which tidy_run_ana itself drops).
 
     Returns:
-        a tidy_run_ana frame with four columns added: spurious and leaked
-        (voxels), frags (regions that hit the effect) and n_spur (regions that
-        missed it). All four are NaN when raw carries no per-region block, so
-        a caller handed the wrong frame draws nothing rather than reading a
-        silent zero as "no spurious volume".
+        a tidy_run_ana frame with six columns added: spurious and leaked
+        (voxels), frags (regions that hit the effect), n_spur (regions that
+        missed it), and the structural pair hom / com (add_hom_com). The first
+        four are NaN when raw carries no per-region block, so a caller handed
+        the wrong frame draws nothing rather than reading a silent zero as
+        "no spurious volume".
     """
     out = tidy_run_ana(raw)
     if out.empty:
         return out
 
-    def block(field):
-        """Return the per-region field as an (n_row, n_reg) float array."""
-        pat = re.compile(rf'\.pred\.(\d+)\.{field}$')
-        cols = sorted(((int(m.group(1)), c) for c in raw.columns
-                       if (m := pat.search(c))))
-        if not cols:
-            return None
-        return raw[[c for _, c in cols]].to_numpy(dtype='float64')
-
-    n_r, o_r = block('num_vox'), block('target')
+    n_r, o_r = _pred_block(raw, 'num_vox'), _pred_block(raw, 'target')
     if n_r is None or o_r is None:
         for c in ('spurious', 'leaked', 'frags', 'n_spur'):
             out[c] = np.nan
-        return out
+        return add_hom_com(out, raw)
 
     # a region index past the trial's region count is absent, not empty
     seen = ~np.isnan(n_r)
@@ -537,7 +656,7 @@ def tidy_pred_decomp(raw):
     if bad.any():
         warnings.warn(f'pred decomposition: spurious + leaked != fp on '
                       f'{int(bad.sum())} of {len(out)} rows')
-    return out
+    return add_hom_com(out, raw)
 
 
 def _infer_x(df) -> str:
@@ -1733,7 +1852,8 @@ def tidy_prune(raw):
 
     Returns:
         a tidy_flat_cache frame (label = GLOW-<rule>) plus a cluster_mode
-        column (the Ward-mode string); empty in, empty out.
+        column (the Ward-mode string) and the structural pair hom / com
+        (add_hom_com); empty in, empty out.
     """
     if raw.empty:
         return raw
@@ -1743,7 +1863,7 @@ def tidy_prune(raw):
     mode = (raw[mode_col] if mode_col in raw.columns
             else pd.Series(np.nan, index=raw.index))
     out['cluster_mode'] = mode.reindex(out.index).fillna(str(ClusterMode.FOCUS))
-    return out
+    return add_hom_com(out, raw)
 
 
 def _draw_metric_errbar(ax, df, x: str, metric: str, style: dict, *,
@@ -2112,7 +2232,7 @@ _REPORTED_PRUNE_LABEL = (
 # the prune grid's columns: the three scores plus what the rule selected, the
 # count being half of what a rule is judged on (a Dice bought by handing back
 # the support in pieces is not the same result as one region)
-_PRUNE_METRICS = ('dice', 'sens', 'ppv', 'n_selected')
+_PRUNE_METRICS = ('dice', 'sens', 'ppv', 'com', 'hom')
 
 
 def plot_prune_regions(label: str, df, out, *, x: str = 'effect_llr',
@@ -2198,9 +2318,11 @@ def plot_prune(label: str, df, out) -> None:
     so the clusterings are compared side by side rather than on one axis. The
     diagnostic single_max rule is dropped (_PRUNE_LABELS_SKIP).
 
-    The grid's fourth column is how many regions the rule hands back
-    (_PRUNE_METRICS): what separates two rules that score the same Dice, read
-    beside the score it bought. Both modes' counts also go out on one page of
+    The grid's last two columns are the structural pair, completeness and
+    homogeneity (_PRUNE_METRICS): what separates two rules that score the same
+    Dice, read beside the score it bought. A rule that wins Dice by returning
+    the support in pieces gives the completeness back, which the overlap
+    metrics cannot see. The raw counts behind that still go out on one page of
     their own (plot_prune_regions), where the two clusterings share a y-axis.
     Each mode's numbers, counts included, go out as text beside its grid
     (write_table_txt).
@@ -2520,6 +2642,30 @@ def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0,
 # Per-cache dispatch + CLI
 # ---------------------------------------------------------------------------
 
+def _plot_structure_page(label: str, df, *, x: str, out) -> None:
+    """Draw the structural pair on their own page, when the frame carries it.
+
+    Completeness and homogeneity (_STRUCTURE_METRICS) against the same swept
+    x as the score grid, in the same layout, written as {label}_structure.pdf
+    plus its numbers as text. A no-op on a frame whose per-region block was
+    missing, which leaves both columns all-NaN (add_hom_com) -- an older cache
+    predating the block draws its scores and simply skips this page.
+
+    Args:
+        label (str): the figure stem the score grid used; this page suffixes
+            _structure onto it.
+        df: the cache's tidy frame, carrying hom / com.
+        x (str): the swept x-axis column.
+        out (pathlib.Path): directory the figure is written into.
+    """
+    metrics = list(_STRUCTURE_METRICS)
+    if not set(metrics).issubset(df.columns) or df[metrics].isna().all().any():
+        return
+    stem = f'{label}_structure'
+    plot_source_grid(stem, df, x=x, metrics=metrics, out=out)
+    write_table_txt(stem, df, x=x, out=out, metrics=metrics)
+
+
 def plot_cache(label: str, df, out,
                metrics: list = ['dice', 'sens', 'ppv']) -> None:
     """Write one run_ana cache's figure, dispatching on its swept axis.
@@ -2554,6 +2700,7 @@ def plot_cache(label: str, df, out,
     for sub_label, sub in _split_by_secondary(label, df, x):
         plot_source_grid(sub_label, sub, x=x, metrics=metrics, out=out)
         write_table_txt(sub_label, sub, x=x, out=out, metrics=metrics)
+        _plot_structure_page(sub_label, sub, x=x, out=out)
 
     # one discovery-threshold table for the whole cache, a column per secondary
     # (b in the llr sweep); absolute effect_llr per method (threshold_table)
@@ -2664,7 +2811,7 @@ def main(argv=None) -> None:
             plot_runtime(name, df, _cache_dir(out, name))
             n_plotted += 1
         elif name in detect_names:
-            df = tidy_run_ana(make_csv.write_config_csv(name))
+            df = tidy_pred_decomp(make_csv.write_config_csv(name))
             if df.empty:
                 print(f'  (no records for {name} — skipping)')
                 continue

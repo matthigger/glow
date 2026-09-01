@@ -366,7 +366,11 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
 
     Returns:
         score (dict): the prune counts (see score.score_prune):
-            {n_selected, tp, fp, tn, fn}.
+            {n_selected, tp, fp, tn, fn, pred}. The pred block is one
+            {reg_idx, num_vox, target} record per selected region, which is
+            what lets a rule be scored on how it divided the volume up
+            (completeness / homogeneity) and not only on how much of it
+            overlapped.
 
     Raises:
         ValueError: if rule is not 'greedy' / 'dp' / 'single_max' / 'oracle'.
