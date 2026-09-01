@@ -21,8 +21,7 @@ grayscale print.
 
 Figures are sized to the manuscript's 17.8 cm textwidth (_TEXTWIDTH_IN) so
 they are included unscaled and the point sizes here are the ones a reader
-sees. This module owns its drawing outright; plot.py stays the draft view,
-stamps and all.
+sees. This module owns its drawing outright; plot.py stays the draft view.
 
 See publications/submissions/2026_glow/notes/figure_style.md for the
 rationale, the attention devices, and the main-text / appendix split these
@@ -31,10 +30,13 @@ figures implement.
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import LinearSegmentedColormap, LogNorm
 from matplotlib.lines import Line2D
 
 from .config import REPORTED_GLOW_LABEL
-from .plot import (_binom_ci, tidy_prune, tidy_run_ana, tidy_runtime,
+from .plot import (_ARM_LABEL, _binom_ci, tidy_pred_decomp,
+                   tidy_prune, tidy_run_ana, tidy_runtime,
                    tidy_segment)
 
 
@@ -90,6 +92,8 @@ _X_LABEL = {
     'b': 'imaging features $b$',
     'num_img': 'subjects $N$',
     'num_vox': 'voxels analyzed',
+    'seed_rank': 'seed, ranked by false volume',
+    'sens_pct': 'effect recovered (% of effect volume)',
 }
 
 
@@ -310,8 +314,12 @@ def _band(ax, df, x: str, metric: str, st: dict, *, ci: int = 95,
                         alpha=0.13, lw=0, zorder=1)
     if errbar:
         xv = mean.index.values * (1 + dodge)
-        ax.errorbar(xv, mean.values,
-                    yerr=[mean.values - lo.values, hi.values - mean.values],
+        # the bar is the percentile interval, so it is centred on that
+        # interval rather than on the mean: a mean can sit outside [lo, hi]
+        # (a skewed series, or a float sliver where the two coincide), which
+        # errorbar rejects outright as a negative yerr
+        ax.errorbar(xv, (lo.values + hi.values) / 2,
+                    yerr=(hi.values - lo.values) / 2,
                     fmt='none', ecolor=st['color'], elinewidth=0.9,
                     capsize=2, alpha=0.7, zorder=2)
     ax.plot(mean.index, mean.values, color=st['color'], ls=st['ls'],
@@ -648,6 +656,457 @@ def _diff_band(ax, dsrc, x: str, metric: str, glow: str, others: list,
     ax.set_ylim(-0.6, 0.6)
 
 
+# The two ways a region method can be wrong, one colour each, held across
+# every panel of the three precision figures: over-inclusion takes the
+# ladder's darkest rung and spurious a light one, both plainly GLOW's teal.
+_COLOR_LEAK = TEAL_LADDER[0]
+_COLOR_SPUR = TEAL_LADDER[2]
+
+# A false-volume ratio spans four decades and is exactly zero whenever a trial
+# makes that error not at all, which a log axis cannot draw. The volume rows
+# are symlog with this linear threshold, so zero is a plotted value and not a
+# gap: a trial that leaks nothing is a result, not missing data. The threshold
+# sits below one voxel of a planted effect.
+_VOL_LINTHRESH = 1e-3
+
+# Below this a trial is called a precision failure rather than a soft one.
+# Arbitrary, and only ever used to count how many seeds land there.
+_PPV_FLOOR = 0.5
+
+
+def _decomp_cols(df, arm: str = None):
+    """Add the precision quantities the false-volume figures share.
+
+    Keeps the detecting trials only (a trial that discovered nothing has no
+    PPV to explain), then derives the two counterfactual precisions: what PPV
+    would have been had each error source contributed nothing. Whichever
+    counterfactual recovers the deficit names the mechanism.
+
+    Args:
+        df: a tidy_pred_decomp frame.
+        arm (str | None): keep this method's rows alone; None keeps all.
+
+    Returns:
+        the frame with pred_vol, true_vol, vol_leak / vol_spur / vol_fp (each
+        as a multiple of the planted effect volume), ppv_noleak and ppv_nospur.
+    """
+    d = _numeric(df, ['tp', 'fp', 'fn', 'leaked', 'spurious'])
+    if arm is not None:
+        d = d[d['label'] == arm]
+    d = d[d['tp'] + d['fp'] > 0].copy()
+
+    d['pred_vol'] = d['tp'] + d['fp']
+    d['true_vol'] = d['tp'] + d['fn']
+    for name, num in (('vol_leak', d['leaked']), ('vol_spur', d['spurious']),
+                      ('vol_fp', d['fp'])):
+        d[name] = num / d['true_vol']
+    # each counterfactual zeroes one error source and keeps the other
+    d['ppv_noleak'] = d['tp'] / (d['tp'] + d['spurious'])
+    d['ppv_nospur'] = d['tp'] / (d['tp'] + d['leaked'])
+    return d
+
+
+def _vol_axis(ax) -> None:
+    """Scale one false-volume row: symlog, decade ticks, the parity rule.
+
+    The dotted rule at 1 is where a method's false volume equals the volume of
+    the effect it found, which is the reading the row exists to support.
+    """
+    ax.set_yscale('symlog', linthresh=_VOL_LINTHRESH, linscale=0.4)
+    ax.set_ylim(0, 20)
+    ax.set_yticks([0, 1e-3, 1e-2, 1e-1, 1, 10])
+    ax.yaxis.set_minor_locator(plt.NullLocator())
+    ax.axhline(1.0, ls=':', lw=0.8, color='#999999', zorder=0)
+
+
+def _rate_line(ax, df, x: str, mask, st: dict) -> None:
+    """Draw the percentage of trials satisfying mask against x.
+
+    Args:
+        ax: the Axes to draw into.
+        df: rows for one (source, series).
+        x (str): the swept column.
+        mask: a boolean Series aligned to df.
+        st (dict): {'color', 'ls', 'lw'} and optionally 'marker'.
+    """
+    rate = 100 * mask.groupby(df[x]).mean()
+    ax.plot(rate.index, rate.values, color=st['color'], ls=st['ls'],
+            lw=st['lw'], marker=st.get('marker'), ms=st.get('ms', 3.6),
+            zorder=3)
+
+
+def fig_ppv_decomp(df, out, *, x: str = 'effect_llr',
+                   arm: str = REPORTED_GLOW_LABEL,
+                   stem: str = 'ppv_decomp') -> None:
+    """Attribute GLOW's false volume to invention or to over-inclusion.
+
+    The PPV panel of the headline sweep says GLOW is the least precise arm; it
+    does not say why, and the two candidate reasons call for different fixes.
+    Either GLOW declares regions that miss the effect entirely (invention, a
+    testing failure) or it declares regions that hit the effect and carry
+    their non-effect surroundings along (over-inclusion, the cost of a region
+    being the unit of inference, addressable by the selection rule).
+
+    Three rows answer it three ways, so no single summary carries the claim:
+    the counterfactual precisions (row 1) say which source, if removed, would
+    close the gap; the volumes (row 2) say how much of each there is against
+    the size of the planted effect; and the incidence (row 3) separates a
+    mechanism that fires on nearly every trial from one that fires rarely and
+    expensively. A baseline is drawn in row 1 as the reference the deficit is
+    measured against.
+
+    Args:
+        df: a tidy_pred_decomp frame.
+        out (pathlib.Path): directory to write into.
+        x (str): the swept column.
+        arm (str): the GLOW recipe label to decompose.
+        stem (str): output filename stem.
+    """
+    d = _decomp_cols(df, arm=None)
+    if d.empty or arm not in set(d['label']):
+        print(f'  (no {arm} rows to decompose - skipping {stem})')
+        return
+    sources = _sources(d)
+
+    ref = next((c for c in _BASELINE_ORDER if c in set(d['label'])), None)
+    st_glow = {'color': COLOR_METHOD['GLOW'], 'ls': '-', 'lw': _LW_LEAD,
+               'marker': _MARKERS[0]}
+    # rows 2 and 3 mark their points, so a reader can tell a value at the
+    # symlog zero from a line passing through it
+    st_leak = {'color': _COLOR_LEAK, 'ls': '-', 'lw': _LW_BASE,
+               'marker': _MARKERS[0], 'ms': 3.0}
+    st_spur = {'color': _COLOR_SPUR, 'ls': '-', 'lw': _LW_BASE,
+               'marker': _MARKERS[1], 'ms': 3.0}
+    st_ref = (dict(method_style([ref])[ref], marker=_MARKERS[1])
+              if ref else None)
+
+    fig, axes = _grid(3, sources, height=5.9)
+    for j, src in enumerate(sources):
+        g = d[(d['source'] == src) & (d['label'] == arm)]
+
+        # row 1: observed PPV, then the same trials with one error zeroed
+        _band(axes[0, j], g, x, 'ppv', st_glow, band=False)
+        for metric, st in (('ppv_noleak', st_leak), ('ppv_nospur', st_spur)):
+            _band(axes[0, j], g, x, metric,
+                  dict(st, ls='--', lw=1.8, marker=None), band=False)
+        if ref is not None:
+            _band(axes[0, j], d[(d['source'] == src) & (d['label'] == ref)],
+                  x, 'ppv', st_ref, band=False)
+        axes[0, j].set_ylim(0, 1.03)
+
+        # row 2: how much of each, in units of the planted effect's volume
+        for metric, st in (('vol_leak', st_leak), ('vol_spur', st_spur)):
+            _band(axes[1, j], g, x, metric, st, band=False)
+        _vol_axis(axes[1, j])
+
+        # row 3: how often each fires at all, which the means above hide
+        _rate_line(axes[2, j], g, x, g['leaked'] > 0, st_leak)
+        _rate_line(axes[2, j], g, x, g['spurious'] > 0, st_spur)
+        axes[2, j].set_ylim(0, 103)
+
+    _dress(axes, sources, x=x, mark_default=True,
+           row_labels=['PPV', 'false volume\n($\\times$ effect volume)',
+                       'trials affected (%)'])
+    handles = [_proxy(f'{_ARM_LABEL.get(arm, "GLOW")}, observed', st_glow),
+               _proxy('over-inclusion onto a true region', st_leak),
+               _proxy('spurious region, no effect voxels', st_spur),
+               _proxy('dashed: PPV with that source removed',
+                      {'color': '#777777', 'ls': '--', 'lw': 1.8})]
+    if ref is not None:
+        handles.append(_proxy(f'{ref} (reference)', st_ref))
+    _legend(fig, handles, ncol=2)
+    _save(fig, out, stem)
+
+
+def fig_ppv_seed(df, out, *, x: str = 'effect_llr',
+                 arm: str = REPORTED_GLOW_LABEL,
+                 stem: str = 'ppv_seed') -> None:
+    """Draw precision one seed at a time, against the mean that hides them.
+
+    A seed fixes the planted extent, so a per-seed line is one geometry
+    followed across effect strength. The mean and its percentile band imply a
+    single population being shifted; if instead a minority of geometries fail
+    badly and the rest are near-perfect, the mean is describing neither, and
+    what needs fixing is whatever those geometries have in common rather than
+    the method's operating point.
+
+    Rows 1 and 2 draw GLOW alone (one thin line per seed, the across-seed
+    median heavy). Row 3 counts the seeds below a precision floor for every
+    method, which is where a bimodal spread shows up as a number and where a
+    baseline's absence from the failure mode is visible.
+
+    Args:
+        df: a tidy_pred_decomp frame.
+        out (pathlib.Path): directory to write into.
+        x (str): the swept column.
+        arm (str): the GLOW recipe label whose seeds are drawn.
+        stem (str): output filename stem.
+    """
+    d = _decomp_cols(df, arm=None)
+    if d.empty or arm not in set(d['label']):
+        print(f'  (no {arm} rows to decompose - skipping {stem})')
+        return
+    sources = _sources(d)
+    teal = COLOR_METHOD['GLOW']
+
+    others = [c for c in _BASELINE_ORDER if c in set(d['label'])]
+    style = method_style([arm] + others)
+    style[arm].update(marker=_MARKERS[0])
+    for i, lab in enumerate(others):
+        style[lab]['marker'] = _MARKERS[(i + 1) % len(_MARKERS)]
+
+    fig, axes = _grid(3, sources, height=5.9)
+    for j, src in enumerate(sources):
+        g = d[(d['source'] == src) & (d['label'] == arm)]
+        # every seed is drawn on the full swept grid, so a seed that detected
+        # nothing at some x breaks its line there rather than having a segment
+        # drawn straight across the strengths it missed
+        grid = np.sort(g[x].unique())
+        for i, metric in enumerate(('ppv', 'vol_fp')):
+            for _, sub in g.groupby('seed'):
+                s = sub.groupby(x)[metric].mean().reindex(grid)
+                axes[i, j].plot(grid, s.values, color=teal, lw=0.5,
+                                alpha=0.3, zorder=2)
+            med = g.groupby(x)[metric].median()
+            axes[i, j].plot(med.index, med.values, color=teal, lw=_LW_LEAD,
+                            zorder=4)
+        axes[0, j].set_ylim(0, 1.03)
+        _vol_axis(axes[1, j])
+
+        for lab in [arm] + others:
+            sub = d[(d['source'] == src) & (d['label'] == lab)]
+            if len(sub):
+                _rate_line(axes[2, j], sub, x, sub['ppv'] < _PPV_FLOOR,
+                           style[lab])
+        axes[2, j].set_ylim(0, 103)
+
+    _dress(axes, sources, x=x, mark_default=True,
+           row_labels=['PPV\n(per seed, median heavy)',
+                       'false volume\n($\\times$ effect volume)',
+                       f'trials at PPV $<$ {_PPV_FLOOR:g} (%)'])
+    handles = [Line2D([], [], color=teal, lw=0.7, alpha=0.5,
+                      label='GLOW, one seed'),
+               _proxy('GLOW', dict(style[arm], marker=None))]
+    handles += [_proxy(lab, style[lab]) for lab in others]
+    _legend(fig, handles, ncol=len(handles))
+    _save(fig, out, stem)
+
+
+def fig_seed_pareto(df, out, *, arm: str = REPORTED_GLOW_LABEL,
+                    llr_min: float = None,
+                    stem: str = 'seed_pareto') -> None:
+    """Rank the seeds by the false volume each contributes, and split it.
+
+    Answers how concentrated the precision failure is. Every seed's whole
+    sweep is pooled into one bar, given as its share of the source's total
+    false volume so both panels read on one scale, and the bar is split by the
+    mechanism of the two the volume came from. The cumulative share on the
+    right axis is the same data as a Lorenz curve: a diagonal would mean every
+    geometry is equally hard, and a steep rise means a handful of planted
+    extents are the whole result.
+
+    Args:
+        df: a tidy_pred_decomp frame.
+        out (pathlib.Path): directory to write into.
+        arm (str): the GLOW recipe label to rank.
+        llr_min (float | None): restrict to effects at least this strong;
+            None pools the whole sweep.
+        stem (str): output filename stem.
+    """
+    d = _decomp_cols(df, arm=arm)
+    if llr_min is not None:
+        d = d[pd.to_numeric(d['effect_llr'], errors='coerce') >= llr_min]
+    if d.empty:
+        print(f'  (no {arm} rows to rank - skipping {stem})')
+        return
+    sources = _sources(d)
+
+    fig, axes = _grid(1, sources, height=3.0)
+    for j, src in enumerate(sources):
+        ax = axes[0, j]
+        t = (d[d['source'] == src].groupby('seed')[['leaked', 'spurious']]
+             .sum())
+        t['fp'] = t['leaked'] + t['spurious']
+        t = t.sort_values('fp', ascending=False)
+        pct = 100 * t / t['fp'].sum()
+        rank = np.arange(1, len(t) + 1)
+
+        ax.bar(rank, pct['leaked'], width=0.86, color=_COLOR_LEAK, lw=0,
+               zorder=2)
+        ax.bar(rank, pct['spurious'], width=0.86, bottom=pct['leaked'],
+               color=_COLOR_SPUR, lw=0, zorder=2)
+
+        cum = ax.twinx()
+        cum.patch.set_visible(False)
+        cum.plot(rank, pct['fp'].cumsum(), color='#555555', lw=1.2, zorder=3)
+        cum.set_ylim(0, 101)
+        cum.spines['right'].set_visible(True)
+        cum.spines['top'].set_visible(False)
+        if j == len(sources) - 1:
+            cum.set_ylabel('cumulative (%)')
+        else:
+            cum.set_yticklabels([])
+
+        # a rule against the cumulative curve, not the bars, so it is drawn
+        # on the rank axis the two share rather than on either y
+        n_half = int((pct['fp'].cumsum() < 50).sum()) + 1
+        ax.axvline(n_half, ls=':', lw=0.8, color='#999999', zorder=1)
+        ax.set_xlim(0.3, len(t) + 0.7)
+        # the share is scale-free, so name the volume it is a share of
+        ax.text(0.97, 0.72, f'{n_half} of {len(t)} seeds carry half\n'
+                            f"of {t['fp'].sum() / 1e3:.0f}k false voxels",
+                transform=ax.transAxes, ha='right', va='top', fontsize=8,
+                color='#555555')
+
+    _dress(axes, sources, x='seed_rank', log_x=False,
+           row_labels=['share of all false volume (%)'])
+    _legend(fig, [_proxy('over-inclusion onto a true region',
+                         {'color': _COLOR_LEAK, 'ls': '-', 'lw': 4}),
+                  _proxy('spurious region, no effect voxels',
+                         {'color': _COLOR_SPUR, 'ls': '-', 'lw': 4}),
+                  _proxy('cumulative share',
+                         {'color': '#555555', 'ls': '-', 'lw': 1.2})])
+    _save(fig, out, stem)
+
+
+# Effect strength is the one quantitative variable the paper maps to colour,
+# and it does so in a figure that draws GLOW alone, where no method needs
+# telling from another and the hue channel is therefore free. The ramp is the
+# summary.tex teal ladder with a dark end added, so darker still reads as
+# "more GLOW" rather than as a second method.
+_LLR_CMAP = LinearSegmentedColormap.from_list(
+    'glow_llr', ['#B8DEDE', '#7FBBBB', '#4DA6A6', '#2B7A78', '#123C3B'])
+
+
+# Which of the two mechanisms a trial's false volume came from, as a marker
+# shape: fp = spurious + leaked exactly, so a trial shows up with either, with
+# both, or with neither. Colour is spent on effect strength in this figure, so
+# shape is the free channel and carries a meaning rather than repeating one.
+# (label, marker, filled)
+_MECH_STYLE = (
+    ('no false volume', 'o', False),
+    ('over-inclusion only', 'o', True),
+    ('spurious only', '^', True),
+    ('both', 's', True),
+)
+
+
+def _mech(d):
+    """Label each trial by which error mechanisms its false volume contains.
+
+    Args:
+        d: a _decomp_cols frame (needs fp, leaked, spurious).
+
+    Returns:
+        a Series of _MECH_STYLE labels, one per row.
+    """
+    leak, spur = d['leaked'] > 0, d['spurious'] > 0
+    return pd.Series(
+        np.select([~leak & ~spur, leak & ~spur, ~leak & spur],
+                  [_MECH_STYLE[0][0], _MECH_STYLE[1][0], _MECH_STYLE[2][0]],
+                  default=_MECH_STYLE[3][0]), index=d.index)
+
+
+def fig_recovery_scatter(df, out, *, arm: str = REPORTED_GLOW_LABEL,
+                         stem: str = 'recovery_scatter') -> None:
+    """Plot one trial as a point: effect recovered against false volume share.
+
+    One marker is one trial, meaning one seed at one effect strength, and both
+    of its coordinates aggregate over every region that trial declared. The x
+    is how much of the planted effect ended up inside some declared region. The
+    y is how much of the whole sweep's false volume that single trial
+    contributed, so a panel's markers sum to 100% and the axis answers "which
+    trials are the false volume" rather than "how bad is this trial". The
+    dotted rule is the share a trial would carry if every trial carried the
+    same.
+
+    Because the y pools both error mechanisms, the marker shape separates them,
+    which is the thing a share axis would otherwise hide: a trial can
+    over-include on a region that hit the effect and, in the same trial, also
+    declare a region that missed it entirely.
+
+    What this adds over the sweep curves is the shape of the cloud. A mean
+    sensitivity and a mean PPV at one effect strength are consistent with a
+    tight cluster, with a smooth arc, or with two clumps at opposite corners,
+    and the three call for different fixes. Colour carries effect strength, so
+    the panel also shows which way the cloud travels as the effect grows.
+
+    Args:
+        df: a tidy_pred_decomp frame.
+        out (pathlib.Path): directory to write into.
+        arm (str): the GLOW recipe label whose trials are drawn.
+        stem (str): output filename stem.
+    """
+    d = _decomp_cols(df, arm=arm)
+    d = _numeric(d, ['sens', 'fp', 'effect_llr'])
+    if d.empty:
+        print(f'  (no {arm} rows to scatter - skipping {stem})')
+        return
+    d['mech'] = _mech(d)
+    sources = _sources(d)
+    norm = LogNorm(vmin=d['effect_llr'].min(), vmax=d['effect_llr'].max())
+
+    fig, axes = _grid(1, sources, height=3.6)
+    for j, src in enumerate(sources):
+        ax = axes[0, j]
+        # a trial that discovered nothing has fp = 0, so it is already absent
+        # from the numerator and cannot change this total
+        g = d[d['source'] == src]
+        total = g['fp'].sum()
+
+        for label, marker, filled in _MECH_STYLE:
+            # weakest effects last within a shape: they are the fewest points
+            # and the palest. seed breaks the ties, so which marker overlaps
+            # which is fixed by the data and not by the frame's row order
+            sub = g[g['mech'] == label].sort_values(
+                ['effect_llr', 'seed'], ascending=[False, True])
+            if sub.empty:
+                continue
+            x, y = 100 * sub['sens'], 100 * sub['fp'] / total
+            if filled:
+                ax.scatter(x, y, c=sub['effect_llr'], cmap=_LLR_CMAP,
+                           norm=norm, marker=marker, s=16, alpha=0.8,
+                           linewidths=0.3, edgecolors='#3a3a3a', zorder=3)
+            else:
+                # an empty ring for a trial with no false volume at all: it has
+                # an effect strength but no mechanism, so the colour moves to
+                # the edge rather than the face
+                ax.scatter(x, y, marker=marker, s=30, facecolors='none',
+                           linewidths=1.0, zorder=2,
+                           edgecolors=_LLR_CMAP(norm(sub['effect_llr'])))
+
+        ax.axhline(100 / len(g), ls=':', lw=0.8, color='#999999', zorder=1)
+        ax.set_xlim(-3, 103)
+        ax.set_yscale('symlog', linthresh=1e-4, linscale=0.5)
+        ax.set_ylim(0, 5)
+        ax.set_yticks([0, 1e-3, 1e-2, 1e-1, 1])
+        ax.yaxis.set_minor_locator(plt.NullLocator())
+        # the y is a share, so the panel names what it is a share of, and how
+        # much of the sweep it is showing
+        n_all = len(df[(df['source'] == src) & (df['label'] == arm)])
+        ax.text(0.03, 0.955,
+                f'{len(g)} of {n_all} trials detected\n'
+                f'share of {total / 1e3:.0f}k false voxels',
+                transform=ax.transAxes, va='top', fontsize=8, color='#555555',
+                zorder=4, bbox=dict(facecolor=_TINT.get(src, 'white'),
+                                    edgecolor='none', alpha=0.85, pad=1.5))
+
+    _dress(axes, sources, x='sens_pct', log_x=False,
+           row_labels=['share of all false volume (%)'])
+    sm = ScalarMappable(norm=norm, cmap=_LLR_CMAP)
+    cbar = fig.colorbar(sm, ax=axes.ravel().tolist(), pad=0.015, aspect=26,
+                        ticks=[0.003, 0.01, 0.03, 0.1, 0.3])
+    cbar.set_label(_X_LABEL['effect_llr'])
+    cbar.ax.set_yticklabels(['0.003', '0.01', '0.03', '0.1', '0.3'])
+    cbar.ax.minorticks_off()
+    # shape is the mechanism, so the proxies are colourless on purpose
+    _legend(fig, [Line2D([], [], ls='none', marker=m, ms=5.5,
+                         color='#555555',
+                         markerfacecolor='#555555' if f else 'none',
+                         label=lab) for lab, m, f in _MECH_STYLE], ncol=4)
+    _save(fig, out, stem)
+
+
 def fig_runtime(df, out, *, fit_decades: float = 1.0) -> None:
     """Draw wall time against voxel count, annotating each method's slope.
 
@@ -798,13 +1257,15 @@ def main(argv=None) -> None:
 
         # a sweep whose x is a handful of integers reads as points with bars,
         # not as a band over a continuum
+        llr_raw = None
         for cache, stem, x, metrics, diff in (
                 ('sweep_llr', 'sweep_llr', 'effect_llr',
                  ('dice', 'sens', 'ppv'), 'dice'),
                 ('sweep_b', 'sweep_b', 'b', ('dice',), None),
                 ('sweep_extent', 'sweep_extent', 'effect_perc',
                  ('dice',), None)):
-            df = tidy_run_ana(make_csv.write_config_csv(cache))
+            raw = make_csv.write_config_csv(cache)
+            df = tidy_run_ana(raw)
             if df.empty:
                 print(f'  (no records for {cache} - skipping)')
                 continue
@@ -813,10 +1274,23 @@ def main(argv=None) -> None:
             # headline is b=1 and the rest is the sweep_b figure's job
             if cache == 'sweep_llr' and 'b' in df.columns:
                 df = df[pd.to_numeric(df['b'], errors='coerce') == 1]
+                llr_raw = raw
             discrete = x == 'b'
             fig_detection(df, out, stem, x=x, metrics=metrics,
                           diff_metric=diff, log_x=not discrete,
                           errbar=discrete, int_x=discrete)
+
+        # the precision figures re-tidy the headline sweep's records: they
+        # need the wide per-region block tidy_run_ana drops, and they explain
+        # the PPV row that sweep_llr just drew
+        if llr_raw is not None:
+            print('\n=== precision decomposition ===')
+            dec = tidy_pred_decomp(llr_raw)
+            dec = dec[pd.to_numeric(dec['b'], errors='coerce') == 1]
+            fig_ppv_decomp(dec, out)
+            fig_ppv_seed(dec, out)
+            fig_seed_pareto(dec, out)
+            fig_recovery_scatter(dec, out)
 
         print('\n=== runtime ===')
         rt = tidy_runtime('runtime_num_vox',

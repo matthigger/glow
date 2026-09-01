@@ -38,7 +38,8 @@ against the reported arm.
 The runtime family is plotted apart (tidy_runtime / plot_runtime): those caches
 hold detection fixed and sweep one cost knob, so the signal is the leaf wall
 time (RECORDER time_sec), not a score. Each is one time-vs-knob curve per
-method on log axes.
+method, minutes on a log y-axis, and where the knob spans a decade or more it
+is log too and each curve carries its fitted exponent (_loglog_slope).
 
 The segment and prune caches share a flatter path (tidy_segment / tidy_prune /
 plot_metric_grid): their leaves return a flat {tp, fp, tn, fn} score, not
@@ -61,6 +62,7 @@ With no arguments the CLI plots every cache in the catalogue; passing names
 restricts it.
 """
 import colorsys
+import re
 import warnings
 
 import matplotlib.pyplot as plt
@@ -178,6 +180,13 @@ _ZT_PRETTY = {'raw': 'raw', 'z': 'z-scored'}
 _STAT_ORDER = list(stat_dict)
 _STAT_PRETTY = {'llr': 'LLR', 'wilks': 'Wilks', 'pillai': 'Pillai',
                 'hotel_tr': 'Hotelling', 'roys_root': 'Roy'}
+
+# Methods whose raw block stat_dice.tex bolds entire rather than at its
+# argmax. With one contrast column rank(H) = 1, so the five stats are strictly
+# increasing functions of a single eigenvalue, and CET rejects on their
+# ordering alone (a quantile cluster-forming threshold, integer cluster sizes,
+# a rank-count p-value). No raw cell is a win over the others.
+_STAT_BOLD_RAW_ROW = frozenset({'CET'})
 
 
 def _stat_method_zt(ana):
@@ -460,6 +469,77 @@ def tidy_run_ana(raw):
     return add_metric_cols(out)
 
 
+def tidy_pred_decomp(raw):
+    """Split each trial's false-positive volume by where it came from.
+
+    A region-inference method can be wrong two ways, and the two carry
+    different diagnoses. It can declare a region that touches no effect voxel
+    at all (spurious: the effect is invented), or declare a region that does
+    hit the effect and drag the non-effect voxels around it in with it
+    (leaked: the effect is real but its extent is over-stated, which is the
+    price of a region rather than a voxel being the unit of inference).
+
+    The two partition fp exactly, because the discovered regions are disjoint:
+    GLOW's are an antichain of the tree by construction (prune_by_rule) and
+    the baselines' are connected components (Analysis.discover_mask). With n_r
+    the voxel count of discovered region r and o_r how many of its voxels land
+    in the planted effect (score_effects records both, per region):
+
+        spurious = sum of n_r over regions with o_r == 0
+        leaked   = sum of (n_r - o_r) over regions with o_r > 0
+
+    Args:
+        raw: the provenance DataFrame tidy_run_ana consumes, with its
+            run_ana.out.score.pred.<i>.{num_vox,target} block intact (the wide
+            per-region columns, which tidy_run_ana itself drops).
+
+    Returns:
+        a tidy_run_ana frame with four columns added: spurious and leaked
+        (voxels), frags (regions that hit the effect) and n_spur (regions that
+        missed it). All four are NaN when raw carries no per-region block, so
+        a caller handed the wrong frame draws nothing rather than reading a
+        silent zero as "no spurious volume".
+    """
+    out = tidy_run_ana(raw)
+    if out.empty:
+        return out
+
+    def block(field):
+        """Return the per-region field as an (n_row, n_reg) float array."""
+        pat = re.compile(rf'\.pred\.(\d+)\.{field}$')
+        cols = sorted(((int(m.group(1)), c) for c in raw.columns
+                       if (m := pat.search(c))))
+        if not cols:
+            return None
+        return raw[[c for _, c in cols]].to_numpy(dtype='float64')
+
+    n_r, o_r = block('num_vox'), block('target')
+    if n_r is None or o_r is None:
+        for c in ('spurious', 'leaked', 'frags', 'n_spur'):
+            out[c] = np.nan
+        return out
+
+    # a region index past the trial's region count is absent, not empty
+    seen = ~np.isnan(n_r)
+    n_r = np.where(seen, n_r, 0.0)
+    o_r = np.where(seen & ~np.isnan(o_r), o_r, 0.0)
+    hit = seen & (o_r > 0)
+    miss = seen & (o_r == 0)
+
+    out['spurious'] = np.where(miss, n_r, 0.0).sum(axis=1)
+    out['leaked'] = np.where(hit, n_r - o_r, 0.0).sum(axis=1)
+    out['frags'] = hit.sum(axis=1)
+    out['n_spur'] = miss.sum(axis=1)
+
+    # the partition is guaranteed by disjointness, so a mismatch means the
+    # region records and the confusion counts came from different scorings
+    bad = ~np.isclose(out['spurious'] + out['leaked'], out['fp'])
+    if bad.any():
+        warnings.warn(f'pred decomposition: spurious + leaked != fp on '
+                      f'{int(bad.sum())} of {len(out)} rows')
+    return out
+
+
 def _infer_x(df) -> str:
     """Infer the swept x-axis column from what varies in a tidy frame.
 
@@ -656,7 +736,6 @@ def _plot_calibration_faceted(label: str, df, out,
         if k == 0:
             ax.set_ylabel('empirical rejection rate')
     axes[0, 0].legend(frameon=False, fontsize=8, loc='lower right')
-    _stamp(fig, f'{label} — FWER calibration')
     fig.tight_layout()
     path = out / f'{label}_calibration.pdf'
     fig.savefig(path, bbox_inches='tight')
@@ -667,22 +746,6 @@ def _plot_calibration_faceted(label: str, df, out,
 # ---------------------------------------------------------------------------
 # Metric sweeps (one stacked figure: an HCP block over a WGN block)
 # ---------------------------------------------------------------------------
-
-def _stamp(fig, text: str, fontsize: int = 13) -> None:
-    """Title a figure with the cache and cut it was drawn from.
-
-    Every family draws the same panels for a different cache, so a page read
-    on its own -- or beside five others in a draft -- has to say which one it
-    is: the filename does not travel with the figure.
-
-    Args:
-        fig: the matplotlib Figure to title.
-        text (str): the cache label, plus whatever cut the page holds.
-        fontsize (int): point size; a figure with its own section banners
-            wants this above theirs.
-    """
-    fig.suptitle(text, fontsize=fontsize, fontweight='bold')
-
 
 def _draw_metric_band(ax, df, x: str, metric: str, style: dict, *,
                       ci: int = 95, hue: str = 'label') -> None:
@@ -855,9 +918,6 @@ def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
                      layout='constrained')
     subfigs = np.atleast_1d(fig.subfigures(len(sources), 1,
                                            height_ratios=nrow_src))
-
-    # above the per-source banners, so the page names the cache first
-    _stamp(fig, label, fontsize=15)
 
     diff_rows = []
     for si, (subfig, src, nrows) in enumerate(zip(subfigs, sources,
@@ -1473,7 +1533,8 @@ def write_stat_tables(label: str, df, out) -> None:
     stat is scored on the same trials (stat_tables warns otherwise).
 
     stat_dice.tex is one row per method, its five stat means banded under raw
-    and again under z-scored, bolding the method's best of the ten.
+    and again under z-scored, bolding the method's best of the ten (or its
+    whole raw block, for a _STAT_BOLD_RAW_ROW method).
     stat_matters.tex is one row per arm: the all-tie / decisive fractions and
     the mean / median per-trial Dice range. Two narrow tables rather than one
     wide, to fit a paper column. Each file is a bare booktabs tabular; the
@@ -1505,16 +1566,17 @@ def write_stat_tables(label: str, df, out) -> None:
     def dice_row(method):
         """Render a method's row: the five stats raw, then the five z-scored.
 
-        Whether the bolded win means anything is stat_matters.tex's job -- the
-        bold marks the max, not a margin.
+        The bold marks the max, not a margin, except over the raw block of a
+        _STAT_BOLD_RAW_ROW method, where it marks the tie.
         """
         cells = [method]
         for zt in _ZT_ORDER:
             row = t2.loc[(method, zt)]
             for s in _STAT_ORDER:
                 v = f'{row[s]:.3f}'
-                cells.append(f'\\textbf{{{v}}}'
-                             if best_cell[method] == (zt, s) else v)
+                bold = (best_cell[method] == (zt, s)
+                        or (zt == 'raw' and method in _STAT_BOLD_RAW_ROW))
+                cells.append(f'\\textbf{{{v}}}' if bold else v)
         return cells
 
     n_stat = len(_STAT_ORDER)
@@ -1859,7 +1921,6 @@ def plot_metric_grid(label: str, df, out, *, x: str = 'effect_llr',
                            title=_HUE_TITLES[hue], title_fontsize=8)
     else:
         axes[0, 0].legend(frameon=False, fontsize=8)
-    _stamp(fig, label)
     fig.tight_layout()
     path = out / f'{label}.pdf'
     fig.savefig(path, bbox_inches='tight')
@@ -1933,7 +1994,7 @@ _COMPARE_SOURCE_ORDER = ('WGN', 'HCP')
 
 
 def _compare_page_fig(df, metrics, *, x: str = 'effect_llr',
-                      dodge: float = 0.03, suptitle: str = None):
+                      dodge: float = 0.03):
     """Build one comparison page: a metric x source grid, WGN left, HCP right.
 
     The transpose of plot_metric_grid's layout, for a page that holds one thing
@@ -1949,8 +2010,6 @@ def _compare_page_fig(df, metrics, *, x: str = 'effect_llr',
         metrics (iterable): the metric columns, one panel row each.
         x (str): the swept x-axis column.
         dodge (float): fractional multiplicative x-dodge between methods.
-        suptitle (str | None): the figure title naming what the page holds
-            fixed; None (default) leaves it off.
 
     Returns:
         fig | None: the page, or None when no row carries a source.
@@ -1989,8 +2048,6 @@ def _compare_page_fig(df, metrics, *, x: str = 'effect_llr',
         axes[i, 0].set_ylabel(f'{_METRIC_TITLES.get(metric, metric)}\n'
                               'mean (95% CI)')
     axes[0, 0].legend(frameon=False, fontsize=8)
-    if suptitle is not None:
-        _stamp(fig, suptitle)
     fig.tight_layout()
     return fig
 
@@ -2030,10 +2087,8 @@ def plot_segment_compare(label: str, df, out,
     drawn = []
     with PdfPages(path) as pdf:
         for frac in fracs:
-            fig = _compare_page_fig(
-                df[df['frac_segment'] == frac], metrics,
-                suptitle=f'{label} — segmentation fold: '
-                         f'{frac:.0%} of the images')
+            fig = _compare_page_fig(df[df['frac_segment'] == frac],
+                                    metrics)
             if fig is None:
                 continue
             pdf.savefig(fig, bbox_inches='tight')
@@ -2127,7 +2182,6 @@ def plot_prune_regions(label: str, df, out, *, x: str = 'effect_llr',
                               f'{_METRIC_TITLES.get(count, count)} '
                               '(mean, 95% CI)')
     axes[0, 0].legend(frameon=False, fontsize=8)
-    _stamp(fig, f'{label} — {_METRIC_TITLES.get(count, count)}')
     fig.tight_layout()
     path = out / f'{label}_regions.pdf'
     fig.savefig(path, bbox_inches='tight')
@@ -2295,7 +2349,6 @@ def plot_inner_perm(label: str, df, out) -> None:
     axes[0][-1].legend(frameon=False, fontsize=8, loc='upper left')
     axes[0][0].legend(frameon=False, fontsize=8,
                       title=_HUE_TITLES['effect_llr'], title_fontsize=8)
-    _stamp(fig, f'{label} — max-z region')
     fig.tight_layout()
     path = out / f'{label}_max_z.pdf'
     fig.savefig(path, bbox_inches='tight')
@@ -2373,15 +2426,46 @@ def tidy_runtime(name: str, raw):
     return out
 
 
-def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0) -> None:
+def _loglog_slope(x, y, fit_decades: float = 1.0) -> float:
+    """Fit the power-law exponent of y against x over the top decades of x.
+
+    Args:
+        x (np.array): (n,) swept-axis values
+        y (np.array): (n,) the timed median at each x
+        fit_decades (float): decades of x, counted down from the largest, the
+            fit is restricted to
+
+    Returns:
+        slope (float): least-squares slope of log10(y) on log10(x) over that
+            tail, so 1 is linear growth and 2 quadratic; nan where the tail
+            holds fewer than two positive points
+    """
+    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+    keep = (x > 0) & (y > 0) & (x >= x.max() / 10 ** fit_decades)
+    if keep.sum() < 2:
+        return float('nan')
+    return float(np.polyfit(np.log10(x[keep]), np.log10(y[keep]), 1)[0])
+
+
+def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0,
+                 fit_decades: float = 1.0) -> None:
     """Plot wall time vs the swept knob, one curve per method, on log axes.
 
     The runtime family's single plotter: the seed replicates collapse to a
-    median line per method with a min-max band, wall time on a log y-axis and
-    the swept knob on a log x-axis when it spans at least log_x_ratio (so the
-    num_vox / permutation scaling reads as a slope; the small b sweep stays
-    linear). Methods use the shared palette (COLOR_ANALYSIS), with a seaborn
-    fallback for any label outside it (get_cmap_dict).
+    median line per method with a min-max band, wall time in minutes on a log
+    y-axis and the swept knob on a log x-axis when it spans at least
+    log_x_ratio (so the num_vox / permutation scaling reads as a slope; the
+    small b sweep stays linear). Methods use the shared palette
+    (COLOR_ANALYSIS), with a seaborn fallback for any label outside it
+    (get_cmap_dict).
+
+    Where both axes come out log the reader's question is the exponent, so
+    each method's slope is fitted (_loglog_slope) and printed in its legend
+    entry rather than left to be eyeballed. The fit takes the largest
+    fit_decades of the swept axis only: at the small end a fixed startup cost
+    dominates and flattens the curve, so a whole-range fit understates the
+    asymptotic scaling the claim is about. The legend title names that range,
+    since the number means nothing without it.
 
     Args:
         name (str): cache name; used in the output filename.
@@ -2389,6 +2473,8 @@ def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0) -> None:
         out (pathlib.Path): directory the figure is written into.
         log_x_ratio (float): x max/min ratio at or above which the x-axis is
             log-scaled.
+        fit_decades (float): decades of x, counted down from the largest, each
+            slope is fitted over.
     """
     df = _select_glow_arm(df.dropna(subset=['x', 'time_sec', 'label']))
     if df.empty:
@@ -2398,24 +2484,31 @@ def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0) -> None:
     x_name = df['x_name'].iloc[0]
     labels = sorted(df['label'].unique().tolist())
     palette = get_cmap_dict(labels)
+    log_x = df['x'].max() / max(df['x'].min(), 1) >= log_x_ratio
 
     fig, ax = plt.subplots(figsize=(6, 4.5))
     for label in labels:
         g = df[df['label'] == label].groupby('x')['time_sec']
-        med, lo, hi = g.median(), g.min(), g.max()
+        med, lo, hi = g.median() / 60, g.min() / 60, g.max() / 60
+        legend = label
+        if log_x:
+            slope = _loglog_slope(med.index.values, med.values, fit_decades)
+            legend = f'{label}  (slope {slope:.2f})'
         ax.plot(med.index, med.values, marker='o', ms=5, lw=2,
-                color=palette[label], label=label)
+                color=palette[label], label=legend)
         ax.fill_between(med.index, lo.values, hi.values,
                         color=palette[label], alpha=0.15)
 
-    if df['x'].max() / max(df['x'].min(), 1) >= log_x_ratio:
+    if log_x:
         ax.set_xscale('log')
     ax.set_yscale('log')
     ax.set_xlabel(_X_PARAM_LABELS.get(x_name, x_name))
-    ax.set_ylabel('wall time (s)')
-    ax.legend(frameon=False)
+    ax.set_ylabel('wall time (min)')
+    ax.legend(frameon=False,
+              title=(f'slope over top {fit_decades:g} decade of x'
+                     if log_x else None),
+              title_fontsize=9)
     ax.grid(True, which='both', alpha=0.3)
-    _stamp(fig, f'{name} — wall time')
     fig.tight_layout()
     path = out / f'{name}_runtime.pdf'
     fig.savefig(path, bbox_inches='tight')

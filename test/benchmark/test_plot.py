@@ -92,6 +92,73 @@ def test_tidy_run_ana_columns_and_source():
     assert {'dice', 'sens', 'ppv', 'spec'}.issubset(df.columns)
 
 
+def _pred(region_list, n_slot=3):
+    """Build the recursed run_ana.out.score.pred.<i>.* columns for one row.
+
+    score_effects stores one dict per discovered region, so flatten_to_df
+    gives a column per (region index, field) and a trial with fewer regions
+    than the widest row leaves the tail slots empty.
+
+    Args:
+        region_list (list): (num_vox, target) per discovered region.
+        n_slot (int): width of the block, padded with NaN past the regions.
+    """
+    base = 'run_ana.out.score.pred'
+    out = {}
+    for i in range(n_slot):
+        n_vox, target = (region_list[i] if i < len(region_list)
+                         else (np.nan, np.nan))
+        out[f'{base}.{i}.num_vox'] = n_vox
+        out[f'{base}.{i}.target'] = target
+    return out
+
+
+def test_tidy_pred_decomp_partitions_false_volume():
+    """spurious and leaked split fp by whether the region hit the effect."""
+    raw = pd.DataFrame([
+        # a region over-including 10 voxels, a wholly spurious one, an exact
+        # one: tp = 60, fp = 10 leaked + 30 spurious
+        {**_wgn_row(GLOW_LABEL, seed=0, effect_llr=0.03,
+                    score=_score(60, 40, 900, 0)),
+         **_pred([(50, 40), (30, 0), (20, 20)])},
+        {**_wgn_row(VBA_LABEL, seed=0, effect_llr=0.03,
+                    score=_score(25, 0, 900, 75)),
+         **_pred([(25, 25)])},
+    ])
+    df = plot.tidy_pred_decomp(raw)
+
+    glow = df[df['label'] == GLOW_LABEL].iloc[0]
+    assert glow['leaked'] == 10
+    assert glow['spurious'] == 30
+    assert glow['frags'] == 2
+    assert glow['n_spur'] == 1
+
+    # the partition is exact, region records against confusion counts
+    assert (df['leaked'] + df['spurious'] == df['fp']).all()
+    # an unused region slot is absent, not an empty region
+    vba = df[df['label'] == VBA_LABEL].iloc[0]
+    assert (vba['frags'], vba['n_spur'], vba['leaked']) == (1, 0, 0)
+
+
+def test_tidy_pred_decomp_without_a_region_block():
+    """A frame carrying no per-region columns decomposes to NaN, not zero."""
+    raw = pd.DataFrame([_wgn_row(GLOW_LABEL, seed=0, effect_llr=0.03,
+                                 score=_score(60, 40, 900, 0))])
+    df = plot.tidy_pred_decomp(raw)
+    assert df[['spurious', 'leaked', 'frags', 'n_spur']].isna().all().all()
+
+
+def test_tidy_pred_decomp_warns_when_the_partition_fails():
+    """Region records disagreeing with the confusion counts warn."""
+    raw = pd.DataFrame([
+        {**_wgn_row(GLOW_LABEL, seed=0, effect_llr=0.03,
+                    score=_score(60, 999, 900, 0)),
+         **_pred([(50, 40), (30, 0), (20, 20)])},
+    ])
+    with pytest.warns(UserWarning, match='pred decomposition'):
+        plot.tidy_pred_decomp(raw)
+
+
 def test_infer_x():
     """_infer_x returns None for the null path, else the swept axis."""
     null = pd.DataFrame({'effect_llr': [np.nan, np.nan],
@@ -496,7 +563,11 @@ def test_stat_tables_balanced_panel_and_range():
 
 
 def test_write_stat_tables_bolds_one_cell_even_when_near_tied(tmp_path):
-    """A method's one bold lands on its max, however close the rest print."""
+    """A near-tie stays plain: the bold lands on the max, not the neighbourhood.
+
+    Holds for every method the statistic can actually move, i.e. every one
+    outside _STAT_BOLD_RAW_ROW.
+    """
     # z-scored wilks wins; pillai trails by 0.002 and roys_root by 0.0004
     # (which prints 0.600 too); the raw arm sits 0.1 below throughout
     win = {('VBA-TFCE', 'wilks', 'z'): 0.6, ('VBA-TFCE', 'pillai', 'z'): 0.598,
@@ -508,12 +579,31 @@ def test_write_stat_tables_bolds_one_cell_even_when_near_tied(tmp_path):
 
     dice = (tmp_path / 'stat_dice.tex').read_text()
     rows = [r.split(' & ') for r in _tex_body(dice)]
-    assert dice.count('\\textbf') == len(plot._STAT_METHOD_ORDER)
+    assert dice.count('\\textbf') == _n_bold(dice)
     # the bold sits in the z-scored half on wilks -- the raw block runs columns
     # 2-6, so z-scored wilks is column 8 -- and near-tied roys_root stays plain
     tfce = next(c for c in rows if c[0] == 'VBA-TFCE')
     assert tfce[7] == '\\textbf{0.600}'
     assert '\\textbf{0.598}' not in dice and '\\textbf{0.500}' not in dice
+
+
+def test_write_stat_tables_bolds_a_stat_invariant_raw_block(tmp_path):
+    """A _STAT_BOLD_RAW_ROW method's raw block is bolded entire, its z arm not.
+
+    CET rejects on the statistic's ordering alone, so with a rank-1 hypothesis
+    matrix no raw cell is a win over the others (see _STAT_BOLD_RAW_ROW). The
+    z-scored arm is scored per voxel on the statistic's own scale, so it is
+    marked at its argmax like any other.
+    """
+    assert 'CET' in plot._STAT_BOLD_RAW_ROW
+    df = plot.tidy_stat(pd.DataFrame(_stat_rows('cellA')))
+    plot.write_stat_tables('stat', df, tmp_path)
+
+    dice = (tmp_path / 'stat_dice.tex').read_text()
+    cet = next(r.split(' & ') for r in _tex_body(dice) if r.startswith('CET'))
+    # the raw block is columns 1-5 of the row, the z-scored block 6-10
+    assert all('\\textbf' in c for c in cet[1:6])
+    assert not any('\\textbf' in c for c in cet[6:11])
 
 
 def test_stat_tables_max_range_is_the_worst_trial():
@@ -562,6 +652,20 @@ def _tex_body(tex):
             if ln.strip().split(' &')[0] in plot._STAT_METHOD_ORDER]
 
 
+def _n_bold_row(method):
+    """Bolds expected in one stat_dice row: the argmax, or a whole raw block.
+
+    Assumes the fixture leaves a _STAT_BOLD_RAW_ROW method's cells flat, so
+    its argmax falls inside the raw block it already bolds entire.
+    """
+    return len(plot._STAT_ORDER) if method in plot._STAT_BOLD_RAW_ROW else 1
+
+
+def _n_bold(tex):
+    """Bolds expected across a whole stat_dice tabular."""
+    return sum(_n_bold_row(m) for m in plot._STAT_METHOD_ORDER)
+
+
 def test_write_stat_tables_writes_bare_tabular(tmp_path):
     """write_stat_tables emits two bare booktabs tabulars, one per table."""
     win = {(m, s, zt): 0.6 for m in ['VBA-TFCE'] for zt in ['raw', 'z']
@@ -593,9 +697,11 @@ def test_write_stat_tables_writes_bare_tabular(tmp_path):
     assert [r.split(' & ')[1] for r in matters_rows] == ['raw', 'z'] * 3
     assert all(r.count('&') == 5 for r in matters_rows)
     assert '\\cmidrule' not in matters
-    # one bold per method: its best (scaling, stat) cell of the ten
-    assert dice.count('\\textbf') == len(plot._STAT_METHOD_ORDER)
-    assert all(r.count('\\textbf') == 1 for r in dice_rows)
+    # one bold per method (its best (scaling, stat) cell of the ten), bar a
+    # _STAT_BOLD_RAW_ROW method, whose raw block is bolded entire
+    assert dice.count('\\textbf') == _n_bold(dice)
+    assert all(r.count('\\textbf') == _n_bold_row(r.split(' &')[0])
+               for r in dice_rows)
     assert '\\textbf{0.600}' in dice
     # sizing a win is the matters table's job, and max range is not in it
     assert 'Gap' not in dice
@@ -958,11 +1064,11 @@ def test_compare_page_puts_the_cohorts_side_by_side():
                                              frac_segment=0.5))
     df = plot.tidy_segment(pd.DataFrame(rows), perc=True)
 
-    fig = plot._compare_page_fig(df, ('dice',), suptitle='half the images')
+    fig = plot._compare_page_fig(df, ('dice',))
     axes = fig.get_axes()
     assert [ax.get_title() for ax in axes] == ['WGN', 'HCP']
     assert axes[0].get_ylabel().startswith('Dice')
-    assert fig._suptitle.get_text() == 'half the images'
+    assert fig._suptitle is None
     plt.close(fig)
 
 
