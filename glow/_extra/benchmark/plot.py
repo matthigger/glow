@@ -986,19 +986,21 @@ def _has_diff(df, hue: str = 'label') -> bool:
 def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
                      one_label: str = _DIFF_DEFAULT, ci: int = 95,
                      thresh_metric: str = 'dice', level: float = 0.5) -> None:
-    """Plot the stacked per-source detection figure: a block per source.
+    """Plot the per-source detection figure: one metric per row.
 
-    One SubFigure per source (its banner the source name), stacked HCP over
-    WGN; within each a len(metrics)-wide grid whose top row is the mean score +
-    central ci% percentile band per method (_draw_metric_band) and whose second
-    row is one_label (the headline GLOW arm) minus the best non-GLOW
-    alternative (_draw_diff),
-    with the metrics (dice / sens / ppv) across the columns. That second row is
-    drawn only for a source that has a non-GLOW method to diff against
-    (_has_diff): a cache of GLOW arms alone is one row per source. A dashed
-    line marks the threshold level on the thresh_metric (Dice) panel, where the
-    discovery thresholds (write_threshold_table, plotted once per cache) are
-    read.
+    One SubFigure per source (its banner the source name), HCP beside WGN;
+    within each the metrics run down the rows, the first column the mean score
+    plus a central ci% percentile band per method (_draw_metric_band) and the
+    second one_label (the headline GLOW arm) minus the best non-GLOW
+    alternative (_draw_diff). That second column is drawn only for a source
+    with a non-GLOW method to diff against (_has_diff): a cache of GLOW arms
+    alone is one column per source. A dashed line marks the threshold level on
+    the thresh_metric (Dice) row, where the discovery thresholds
+    (write_threshold_table, plotted once per cache) are read.
+
+    Metrics go down rather than across because there are now five of them: a
+    row apiece gives a portrait page whose panels stay legible at textwidth,
+    where five columns would shrink each to a thumbnail.
 
     Writes {label}.pdf and the companion {label}_diff.csv (one block per GLOW
     variant; see _write_diff_csv).
@@ -1008,7 +1010,7 @@ def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
         df: the cache's tidy_run_ana results (needs source / label / seed / x /
             the metric columns)
         x (str): the swept x-axis column
-        metrics (list): metric columns, one panel column each
+        metrics (list): metric columns, one panel row each
         out (pathlib.Path): directory the figure and CSV are written into
         one_label (str): the method the diff row draws against the field
         ci (int): central percentile-interval width for the top-row band
@@ -1029,45 +1031,49 @@ def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
 
     style = _method_style(df['label'].dropna().unique().tolist())
     log_x = pd.notnull(df[x].min()) and df[x].min() > 0
-    ncols = len(metrics)
+    nrows = len(metrics)
 
-    # a source's block is the band row plus a diff row, or the band row alone
-    nrow_src = [1 + _has_diff(df[df['source'] == src]) for src in sources]
-    fig = plt.figure(figsize=(4.2 * ncols, 2.3 * sum(nrow_src)),
+    # a source's block is the band column plus a diff column, or band alone
+    ncol_src = [1 + _has_diff(df[df['source'] == src]) for src in sources]
+    fig = plt.figure(figsize=(3.2 * sum(ncol_src), 3.0 * nrows),
                      layout='constrained')
-    subfigs = np.atleast_1d(fig.subfigures(len(sources), 1,
-                                           height_ratios=nrow_src))
+    subfigs = np.atleast_1d(fig.subfigures(1, len(sources),
+                                           width_ratios=ncol_src))
 
     diff_rows = []
-    for si, (subfig, src, nrows) in enumerate(zip(subfigs, sources,
-                                                 nrow_src)):
+    for si, (subfig, src, ncols) in enumerate(zip(subfigs, sources,
+                                                  ncol_src)):
         subfig.suptitle(src, fontsize=14, fontweight='bold')
         axes = subfig.subplots(nrows, ncols, sharex=True, squeeze=False)
         dsrc = df[df['source'] == src]
-        for j, metric in enumerate(metrics):
-            _draw_metric_band(axes[0, j], dsrc, x, metric, style, ci=ci)
-            axes[0, j].set_title(_METRIC_TITLES.get(metric, metric))
-            axes[0, j].set_ylim(0, 1)
-            axes[0, j].grid(True, alpha=0.3)
+        for i, metric in enumerate(metrics):
+            _draw_metric_band(axes[i, 0], dsrc, x, metric, style, ci=ci)
+            axes[i, 0].set_ylim(0, 1)
+            axes[i, 0].grid(True, alpha=0.3)
             # the discovery-threshold level, read as a table below
             if metric == thresh_metric:
-                axes[0, j].axhline(level, ls='--', lw=0.8, color='grey',
+                axes[i, 0].axhline(level, ls='--', lw=0.8, color='grey',
                                    alpha=0.7)
+            # the metric names the row, once across the page
+            if si == 0:
+                axes[i, 0].set_ylabel(_METRIC_TITLES.get(metric, metric),
+                                      fontsize=11)
 
-            if nrows == 2:
-                rows = _draw_diff(axes[1, j], dsrc, x, metric,
+            if ncols == 2:
+                rows = _draw_diff(axes[i, 1], dsrc, x, metric,
                                   one_label=one_label)
                 for r in rows:
                     r['source'] = src
                 diff_rows += rows
-            axes[-1, j].set_xlabel(_X_PARAM_LABELS.get(x, x))
             if log_x:
-                for ax in axes[:, j]:
+                for ax in axes[i, :]:
                     ax.set_xscale('log')
 
-        axes[0, 0].set_ylabel(f'score (mean, {ci}% band)')
-        if nrows == 2:
-            axes[1, 0].set_ylabel(f'{one_label} − best')
+        axes[0, 0].set_title(f'mean ({ci}% band)', fontsize=10)
+        if ncols == 2:
+            axes[0, 1].set_title(f'{one_label} − best', fontsize=10)
+        for j in range(ncols):
+            axes[-1, j].set_xlabel(_X_PARAM_LABELS.get(x, x))
         # one legend for the figure, on the first block's top-left panel
         if si == 0:
             axes[0, 0].legend(frameon=False, fontsize=8, loc='upper left')
