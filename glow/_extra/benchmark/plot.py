@@ -2642,28 +2642,26 @@ def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0,
 # Per-cache dispatch + CLI
 # ---------------------------------------------------------------------------
 
-def _plot_structure_page(label: str, df, *, x: str, out) -> None:
-    """Draw the structural pair on their own page, when the frame carries it.
+def _with_structure(df, metrics: list) -> list:
+    """Append the structural pair to a metric list, where the frame has it.
 
-    Completeness and homogeneity (_STRUCTURE_METRICS) against the same swept
-    x as the score grid, in the same layout, written as {label}_structure.pdf
-    plus its numbers as text. A no-op on a frame whose per-region block was
-    missing, which leaves both columns all-NaN (add_hom_com) -- an older cache
-    predating the block draws its scores and simply skips this page.
+    Completeness and homogeneity ride as two more columns of the score grid,
+    so a reader compares them against the overlap metrics on one page rather
+    than across two. A frame whose per-region block was missing carries both
+    columns all-NaN (add_hom_com) and is returned unchanged, so an older cache
+    predating that block draws its three score columns as before.
 
     Args:
-        label (str): the figure stem the score grid used; this page suffixes
-            _structure onto it.
-        df: the cache's tidy frame, carrying hom / com.
-        x (str): the swept x-axis column.
-        out (pathlib.Path): directory the figure is written into.
+        df: the cache's tidy frame.
+        metrics (list): the score columns the grid would otherwise hold.
+
+    Returns:
+        metrics, plus com and hom where the frame carries them.
     """
-    metrics = list(_STRUCTURE_METRICS)
-    if not set(metrics).issubset(df.columns) or df[metrics].isna().all().any():
-        return
-    stem = f'{label}_structure'
-    plot_source_grid(stem, df, x=x, metrics=metrics, out=out)
-    write_table_txt(stem, df, x=x, out=out, metrics=metrics)
+    extra = list(_STRUCTURE_METRICS)
+    if not set(extra).issubset(df.columns) or df[extra].isna().all().any():
+        return list(metrics)
+    return list(metrics) + extra
 
 
 def plot_cache(label: str, df, out,
@@ -2675,7 +2673,9 @@ def plot_cache(label: str, df, out,
     (plot_source_grid: an HCP block over a WGN block, each a mean-band row and
     a GLOW diff row across the metric columns), that figure's numbers as text
     (write_table_txt) plus one cache-level discovery-threshold table
-    (write_threshold_table). The x-axis is inferred
+    (write_threshold_table). Completeness and homogeneity join the metric
+    columns wherever the cache records them (_with_structure). The x-axis is
+    inferred
     from the data (_infer_x), so no config plot spec is needed. A cache that
     also varies a structural axis besides x (the llr sweep varies b) is drawn
     one figure per value of it (_split_by_secondary), each suffixed into the
@@ -2698,9 +2698,9 @@ def plot_cache(label: str, df, out,
         return
 
     for sub_label, sub in _split_by_secondary(label, df, x):
-        plot_source_grid(sub_label, sub, x=x, metrics=metrics, out=out)
-        write_table_txt(sub_label, sub, x=x, out=out, metrics=metrics)
-        _plot_structure_page(sub_label, sub, x=x, out=out)
+        cols = _with_structure(sub, metrics)
+        plot_source_grid(sub_label, sub, x=x, metrics=cols, out=out)
+        write_table_txt(sub_label, sub, x=x, out=out, metrics=cols)
 
     # one discovery-threshold table for the whole cache, a column per secondary
     # (b in the llr sweep); absolute effect_llr per method (threshold_table)

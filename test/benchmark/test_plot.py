@@ -961,8 +961,13 @@ def test_prune_grid_reports_the_structural_pair(tmp_path, monkeypatch):
         assert ax.get_ylim() == (0, 1)
 
 
-def test_plot_structure_page_writes_and_skips(tmp_path):
-    """The structural page is drawn off a pred block and skipped without one."""
+def test_with_structure_extends_metrics_only_when_recorded():
+    """com / hom join the grid columns off a pred block, and never all-NaN.
+
+    A cache predating the per-region block carries both columns all-NaN
+    (add_hom_com), and must draw its three score columns rather than two
+    empty panels.
+    """
     rows = []
     for row_fn in (_wgn_row, _hcp_row):
         for effect_llr in (0.003, 0.03, 0.3):
@@ -972,14 +977,33 @@ def test_plot_structure_page_writes_and_skips(tmp_path):
                              score=_score(80, 10, 890, 20)),
                     **_pred([(60, 50), (30, 30)])})
     df = plot.tidy_pred_decomp(pd.DataFrame(rows))
-    plot._plot_structure_page('sweep_llr_b1', df, x='effect_llr', out=tmp_path)
-    assert (tmp_path / 'sweep_llr_b1_structure.pdf').exists()
+    base = ['dice', 'sens', 'ppv']
+    assert plot._with_structure(df, base) == base + ['com', 'hom']
 
     bare = df.copy()
     bare['hom'] = np.nan
     bare['com'] = np.nan
-    plot._plot_structure_page('bare', bare, x='effect_llr', out=tmp_path)
-    assert not (tmp_path / 'bare_structure.pdf').exists()
+    assert plot._with_structure(bare, base) == base
+    assert plot._with_structure(df.drop(columns=['com', 'hom']), base) == base
+
+
+def test_plot_cache_draws_the_structural_columns(tmp_path):
+    """A run_ana cache with a pred block writes one grid holding all five."""
+    rows = []
+    for row_fn in (_wgn_row, _hcp_row):
+        for effect_llr in (0.003, 0.03, 0.3):
+            for seed in range(3):
+                rows.append({
+                    **row_fn(GLOW_LABEL, seed=seed, effect_llr=effect_llr,
+                             score=_score(80, 10, 890, 20)),
+                    **_pred([(60, 50), (30, 30)])})
+    df = plot.tidy_pred_decomp(pd.DataFrame(rows))
+    plot.plot_cache('sweep_llr', df, tmp_path)
+    assert (tmp_path / 'sweep_llr.pdf').exists()
+    # the pair rides in the one grid, not a page of its own
+    assert not (tmp_path / 'sweep_llr_structure.pdf').exists()
+    txt = (tmp_path / 'sweep_llr_tables.txt').read_text()
+    assert 'Completeness' in txt and 'Homogeneity' in txt
 
 
 def test_plot_metric_grid_gives_a_count_column_its_own_axis(tmp_path,
