@@ -32,6 +32,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from matplotlib.lines import Line2D
 
 from glow._extra.benchmark.file import get_path_cache
 from glow._extra.benchmark.make_csv import config_results_df
@@ -256,22 +257,41 @@ def greedy_points():
 
 
 def plot(df, out: pathlib.Path) -> None:
-    """Draw mean PPV against region budget, one line per effect strength."""
+    """Draw mean PPV against region budget, one line per effect strength.
+
+    Two legends rather than one: colour carries the effect strength, and the
+    line-against-marker distinction carries which curve is the bound and which
+    is GLOW, so a reader does not have to infer the second from the caption.
+    """
     sns.set_theme(style='whitegrid', context='paper')
     ramp = plt.get_cmap('viridis')(np.linspace(0, 0.88, df.llr.nunique()))
     greedy = greedy_points()
-    fig, ax = plt.subplots(figsize=(5.2, 3.6), constrained_layout=True)
+
+    # 0.7 of the 17.8cm text block, so the figure needs no font rescaling
+    fig, ax = plt.subplots(figsize=(4.9, 3.4), constrained_layout=True)
+    handle_list = []
     for llr, colour in zip(sorted(df.llr.unique()), ramp):
         curve = df[df.llr == llr].groupby('k').ppv.mean()
-        ax.plot(curve.index, curve.values, color=colour, marker='.',
-                label=f'{llr:.3g}')
+        ax.plot(curve.index, curve.values, color=colour, marker='.')
         near = greedy.index[np.argmin(np.abs(greedy.index - llr))]
-        ax.plot(greedy.n_reg[near], greedy.ppv[near], marker='*', ms=15,
-                color=colour, mec='0.2', mew=0.6, ls='none', zorder=5)
+        ax.plot(greedy.n_reg[near], greedy.ppv[near], marker='o', ms=8,
+                color=colour, mec='0.2', mew=0.7, ls='none', zorder=5)
+        handle_list.append(Line2D([], [], color=colour, marker='.',
+                                  label=f'{llr:.3g}'))
+    mark_list = [Line2D([], [], color='0.35', marker='.',
+                        label='Oracle, best $k$ regions'),
+                 Line2D([], [], color='0.35', marker='o', ms=8, ls='none',
+                        mec='0.2', mew=0.7, label='GLOW, greedy prune')]
+
     ax.set_xlabel('regions output')
     ax.set_ylabel('PPV')
-    ax.set_ylim(0.5, 1.02)
-    ax.legend(title='LLR / |r|', loc='lower right', frameon=True)
+    # floor well below the weakest curve, so the lower-left legend
+    # sits in empty space rather than over the k = 1 point
+    ax.set_ylim(0.44, 1.02)
+    ax.add_artist(ax.legend(handles=mark_list, loc='lower left',
+                            frameon=True, handlelength=1.6))
+    ax.legend(handles=handle_list, title='LLR / |r|', loc='lower right',
+              frameon=True, handlelength=1.6)
     fig.savefig(out)
     print(f'saved: {out}')
 
