@@ -866,16 +866,28 @@ def _plot_calibration_faceted(label: str, df, out,
 # Metric sweeps (one stacked figure: an HCP block over a WGN block)
 # ---------------------------------------------------------------------------
 
+# normal quantiles for the confidence levels the band is drawn at; 1.96 is
+# the multiplier _draw_metric_errbar uses, so the two families agree.
+_CI_Z = {80: 1.282, 90: 1.645, 95: 1.960, 99: 2.576}
+
+
 def _draw_metric_band(ax, df, x: str, metric: str, style: dict, *,
                       ci: int = 95, hue: str = 'label') -> None:
-    """Draw a mean line plus a central ci% percentile band per method into ax.
+    """Draw a mean line plus its ci% confidence interval per method into ax.
 
     One curve per method (hue) in catalogue order (_ordered_methods, so the
-    legend reads in the tables' order), the band spanning the (100-ci)/2 ..
-    (100+ci)/2 percentiles of the seed replicates at each x (so the default
-    ci=95 shades the 2.5th-97.5th percentile). PPV is undefined for trials
-    with no detections (nan; glow.mask.stats_from_counts) and drops out of
-    both.
+    legend reads in the tables' order), ribboned by the confidence interval of
+    that mean (z * SEM, SEM = std / sqrt(n_seed), z from _CI_Z). PPV is
+    undefined for trials with no detections (nan;
+    glow.mask.stats_from_counts) and drops out of both.
+
+    The ribbon is the precision of the mean, not the spread across seeds, and
+    the distinction matters here rather than being a house style. Completeness
+    and homogeneity are near-binary per trial, a run returning an effect whole
+    or in pieces, so a central percentile interval on them spans the whole
+    axis whatever its width: four of those overlaid is a grey block carrying
+    no information. The seed mean of a near-binary metric is a success rate,
+    and this is the interval for one.
 
     Args:
         ax: matplotlib Axes to draw into
@@ -883,17 +895,17 @@ def _draw_metric_band(ax, df, x: str, metric: str, style: dict, *,
         x (str): the swept x-axis column
         metric (str): the metric column plotted on the y-axis
         style (dict): label -> {'color', 'ls'} (_method_style)
-        ci (int): central percentile-interval width for the band
+        ci (int): confidence level in percent for the mean's interval
         hue (str): the method-label column
     """
-    lo_q, hi_q = (1 - ci / 100) / 2, (1 + ci / 100) / 2
+    z = _CI_Z.get(ci, _CI_Z[95])
     for label in _ordered_methods(df[hue].dropna().unique().tolist()):
         g = df[df[hue] == label].groupby(x)[metric]
-        mean, lo, hi = g.mean(), g.quantile(lo_q), g.quantile(hi_q)
+        mean, sem = g.mean(), g.std() / np.sqrt(g.count())
         ax.plot(mean.index, mean.values, lw=2, color=style[label]['color'],
                 ls=style[label]['ls'], label=label)
-        ax.fill_between(mean.index, lo.values, hi.values,
-                        color=style[label]['color'], alpha=0.15)
+        ax.fill_between(mean.index, mean - z * sem, mean + z * sem,
+                        color=style[label]['color'], alpha=0.25, lw=0)
 
 
 def _draw_diff(ax, df, x: str, metric: str, *,
@@ -990,7 +1002,7 @@ def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
 
     One SubFigure per source (its banner the source name), HCP beside WGN;
     within each the metrics run down the rows, the first column the mean score
-    plus a central ci% percentile band per method (_draw_metric_band) and the
+    plus the ci% confidence interval of that mean (_draw_metric_band) and the
     second one_label (the headline GLOW arm) minus the best non-GLOW
     alternative (_draw_diff). That second column is drawn only for a source
     with a non-GLOW method to diff against (_has_diff): a cache of GLOW arms
@@ -1013,7 +1025,7 @@ def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
         metrics (list): metric columns, one panel row each
         out (pathlib.Path): directory the figure and CSV are written into
         one_label (str): the method the diff row draws against the field
-        ci (int): central percentile-interval width for the top-row band
+        ci (int): confidence level in percent for the score column's ribbon
         thresh_metric (str): the metric whose level line is drawn (Dice)
         level (float): the threshold level line (0.5 = half-maximal Dice)
     """
@@ -1069,7 +1081,7 @@ def plot_source_grid(label: str, df, *, x: str, metrics: list, out,
                 for ax in axes[i, :]:
                     ax.set_xscale('log')
 
-        axes[0, 0].set_title(f'mean ({ci}% band)', fontsize=10)
+        axes[0, 0].set_title(f'mean ({ci}% CI)', fontsize=10)
         if ncols == 2:
             axes[0, 1].set_title(f'{one_label} − best', fontsize=10)
         for j in range(ncols):
