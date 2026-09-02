@@ -48,6 +48,12 @@ LAM_LIST = np.linspace(0.10, 0.995, 24)
 
 GLOW_ARM = 'cluster_mode=Focus, prune_rule=greedy'
 
+SOURCE_LIST = ['HCP', 'WGN']
+
+# inches the figure is included at, the manuscript's 17.8cm text
+# block, so it needs no font rescaling
+FIG_W = 7.0
+
 
 def _n_feat(value) -> int:
     """Count imaging features in one hcp_feats cell.
@@ -60,20 +66,32 @@ def _n_feat(value) -> int:
     return len(value)
 
 
-def load_cells(llr_list):
-    """Select the HCP b=1 cells at each effect strength, one row per seed.
+def _b1_cells(source: str):
+    """Select one source's b = 1 rows out of the sweep_llr provenance frame."""
+    df = config_results_df('sweep_llr')
+    if source == 'HCP':
+        df = df[df['data_factory_hcp.out.exp'].notna()]
+        df = df[df['data_factory_hcp.in.hcp_feats'].map(_n_feat) == 1]
+        seed = df['data_factory_hcp.in.seed']
+    else:
+        df = df[df['data_factory_wgn.out.exp'].notna()]
+        df = df[df['data_factory_wgn.in.b'] == 1]
+        seed = df['data_factory_wgn.in.seed']
+    return df.assign(seed=seed.astype(int), source=source,
+                     llr=df['effect_factory_single.in.effect_llr'])
+
+
+def load_cells(llr_list, source: str):
+    """Select one source's b=1 cells at each effect strength, one per seed.
 
     Args:
         llr_list (list): effect_llr values to keep, matched to within 1e-9.
+        source (str): HCP or WGN.
 
     Returns:
         pandas.DataFrame: columns {llr, seed, eff_hash}, one row per cell.
     """
-    df = config_results_df('sweep_llr')
-    df = df[df['data_factory_hcp.out.exp'].notna()]
-    df = df[df['data_factory_hcp.in.hcp_feats'].map(_n_feat) == 1]
-    df = df.assign(seed=df['data_factory_hcp.in.seed'].astype(int),
-                   llr=df['effect_factory_single.in.effect_llr'])
+    df = _b1_cells(source)
     df = df[df.llr.map(lambda v: any(abs(v - t) < 1e-9 for t in llr_list))]
     df = df.rename(columns={'effect_factory_single.hash': 'eff_hash'})
     return df.groupby(['llr', 'seed']).first().reset_index()
@@ -216,48 +234,55 @@ def oracle_curve(children, num_vox, plant, k_max: int, lam_list):
 
 
 def compute(k_max: int):
-    """Run every cell and return the per-trial curves.
+    """Run every cell of both sources and return the per-trial curves.
 
     Returns:
-        pandas.DataFrame: one row per (llr, seed, k)
+        pandas.DataFrame: one row per (source, llr, seed, k)
     """
     row_list = []
-    for _, cell in load_cells(LLR_LIST).iterrows():
-        sec = time.time()
-        exp, mask = load_effect_cell(cell.eff_hash)
-        plant = np.zeros(exp.y.shape[2], dtype=bool)
-        plant[exp.mask_idx[mask]] = True
-        children = cluster(exp, mode=ClusterMode.FOCUS)
-        for rec in oracle_curve(children, exp.y.shape[2], plant, k_max,
-                                LAM_LIST):
-            row_list.append(dict(llr=cell.llr, seed=cell.seed, **rec))
-        print(f'llr {cell.llr:.4f} seed {cell.seed:2d} '
-              f'[{time.time() - sec:.1f}s]', flush=True)
+    for source in SOURCE_LIST:
+        for _, cell in load_cells(LLR_LIST, source).iterrows():
+            sec = time.time()
+            exp, mask = load_effect_cell(cell.eff_hash)
+            plant = np.zeros(exp.y.shape[2], dtype=bool)
+            plant[exp.mask_idx[mask]] = True
+            children = cluster(exp, mode=ClusterMode.FOCUS)
+            for rec in oracle_curve(children, exp.y.shape[2], plant, k_max,
+                                    LAM_LIST):
+                row_list.append(dict(source=source, llr=cell.llr,
+                                     seed=cell.seed, **rec))
+            print(f'{source} llr {cell.llr:.4f} seed {cell.seed:2d} '
+                  f'[{time.time() - sec:.1f}s]', flush=True)
     return pd.DataFrame(row_list)
 
 
-def greedy_points():
+def greedy_points(source: str):
     """Read GLOW's own operating point per effect strength off the cache.
+
+    Args:
+        source (str): HCP or WGN.
 
     Returns:
         pandas.DataFrame: indexed by llr, columns {n_reg, ppv}, both means
             over the seeds of that cell
     """
-    df = config_results_df('sweep_llr')
-    df = df[df['data_factory_hcp.out.exp'].notna()]
-    df = df[df['data_factory_hcp.in.hcp_feats'].map(_n_feat) == 1]
+    df = _b1_cells(source)
     df = df[df['run_ana.in.ana'].str.contains(GLOW_ARM, regex=False)]
-    df = df.assign(llr=df['effect_factory_single.in.effect_llr'])
     df = df[df.llr.map(lambda v: any(abs(v - t) < 1e-9 for t in LLR_LIST))]
     tp = df['run_ana.out.score.target.tp']
     fp = df['run_ana.out.score.target.fp']
     df = df.assign(ppv=np.where(tp + fp > 0, tp / (tp + fp), np.nan),
                    n_reg=df['run_ana.out.score.n_pred'])
+
+    # PPV is undefined on a trial that discovered nothing, so the region count
+    # is averaged over the same trials rather than over all of them; on WGN
+    # most weak-effect trials find nothing and would drag the marker to zero.
+    df = df[tp + fp > 0]
     return df.groupby('llr').agg(n_reg=('n_reg', 'mean'), ppv=('ppv', 'mean'))
 
 
 def plot(df, out: pathlib.Path) -> None:
-    """Draw mean PPV against region budget, one line per effect strength.
+    """Draw mean PPV against region budget, one panel per image source.
 
     Two legends rather than one: colour carries the effect strength, and the
     line-against-marker distinction carries which curve is the bound and which
@@ -265,17 +290,26 @@ def plot(df, out: pathlib.Path) -> None:
     """
     sns.set_theme(style='whitegrid', context='paper')
     ramp = plt.get_cmap('viridis')(np.linspace(0, 0.88, df.llr.nunique()))
-    greedy = greedy_points()
+    source_list = [s for s in SOURCE_LIST if s in set(df.source)]
 
-    # 0.7 of the 17.8cm text block, so the figure needs no font rescaling
-    fig, ax = plt.subplots(figsize=(4.9, 3.4), constrained_layout=True)
+    # the full 17.8cm text block, as the paper's other multi-panel figures
+    # take, so the figure is included 1:1 with no font rescaling
+    fig, axes = plt.subplots(1, len(source_list), figsize=(FIG_W, 0.47 * FIG_W),
+                             sharey=True, squeeze=False,
+                             constrained_layout=True)
     handle_list = []
+    for ax, source in zip(axes[0], source_list):
+        sub = df[df.source == source]
+        greedy = greedy_points(source)
+        for llr, colour in zip(sorted(df.llr.unique()), ramp):
+            curve = sub[sub.llr == llr].groupby('k').ppv.mean()
+            ax.plot(curve.index, curve.values, color=colour, marker='.')
+            near = greedy.index[np.argmin(np.abs(greedy.index - llr))]
+            ax.plot(greedy.n_reg[near], greedy.ppv[near], marker='o', ms=8,
+                    color=colour, mec='0.2', mew=0.7, ls='none', zorder=5)
+        ax.set_title(source)
+        ax.set_xlabel('regions output')
     for llr, colour in zip(sorted(df.llr.unique()), ramp):
-        curve = df[df.llr == llr].groupby('k').ppv.mean()
-        ax.plot(curve.index, curve.values, color=colour, marker='.')
-        near = greedy.index[np.argmin(np.abs(greedy.index - llr))]
-        ax.plot(greedy.n_reg[near], greedy.ppv[near], marker='o', ms=8,
-                color=colour, mec='0.2', mew=0.7, ls='none', zorder=5)
         handle_list.append(Line2D([], [], color=colour, marker='.',
                                   label=f'{llr:.3g}'))
     mark_list = [Line2D([], [], color='0.35', marker='.',
@@ -283,15 +317,15 @@ def plot(df, out: pathlib.Path) -> None:
                  Line2D([], [], color='0.35', marker='o', ms=8, ls='none',
                         mec='0.2', mew=0.7, label='GLOW, greedy prune')]
 
-    ax.set_xlabel('regions output')
-    ax.set_ylabel('PPV')
-    # floor well below the weakest curve, so the lower-left legend
-    # sits in empty space rather than over the k = 1 point
-    ax.set_ylim(0.44, 1.02)
-    ax.add_artist(ax.legend(handles=mark_list, loc='lower left',
-                            frameon=True, handlelength=1.6))
-    ax.legend(handles=handle_list, title='LLR / |r|', loc='lower right',
-              frameon=True, handlelength=1.6)
+    axes[0][0].set_ylabel('PPV')
+    # floor well below the weakest curve, so the legends sit in empty space
+    # rather than over the k = 1 points the surrounding argument turns on
+    axes[0][0].set_ylim(0.28, 1.04)
+    axes[0][-1].add_artist(axes[0][-1].legend(
+        handles=handle_list, title='LLR / |r|', loc='lower right',
+        frameon=True, handlelength=1.6, fontsize='small'))
+    axes[0][0].legend(handles=mark_list, loc='lower right', frameon=True,
+                      handlelength=1.6, fontsize='small')
     fig.savefig(out)
     print(f'saved: {out}')
 
