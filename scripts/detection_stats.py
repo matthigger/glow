@@ -11,13 +11,17 @@ draw, recomputed from the cached records so a reader can check any of it:
     spurious regions, weighted per false voxel so no purity cut-off is needed
   - completeness read as the rate at which a trial returns one region, and
     the region purities that drive the structural pair apart
+  - the split of the precision gap between the prune rule, the permutation
+    test and the segmentation, each measured against its own oracle
 
     python scripts/detection_stats.py
 
-Reads the sweep_llr and prune caches through the recorder; no fit, no CSV.
+Reads the sweep_llr and prune caches through the recorder, and
+oracle_vs_k.py's cached curves for the candidate-pool block; no fit.
 """
 
 import argparse
+import pathlib
 
 import numpy as np
 import pandas as pd
@@ -204,16 +208,98 @@ def report_prune() -> None:
         print('    ' + piv.round(3).to_string().replace('\n', '\n    '))
 
 
+def _greedy_trials(source: str):
+    """Read greedy's per-trial operating point off the prune cache (Focus).
+
+    Returns:
+        pandas.DataFrame: {llr, seed, n_sel, ppv}, one row per trial in which
+            greedy discovered something. PPV is undefined on a trial that
+            discovered nothing, so those are dropped rather than scored zero.
+    """
+    raw = config_results_df('prune')
+    raw = raw[(raw['run_prune.in.cluster_mode'].astype(str) == 'Focus')
+              & (raw['run_prune.in.rule'] == 'greedy')]
+    if source == 'HCP':
+        raw = raw[raw['data_factory_hcp.out.exp'].notna()]
+        seed = raw['data_factory_hcp.in.seed']
+    else:
+        raw = raw[raw['data_factory_wgn.out.exp'].notna()]
+        seed = raw['data_factory_wgn.in.seed']
+    tp, fp = raw['run_prune.out.score.tp'], raw['run_prune.out.score.fp']
+    out = pd.DataFrame({'llr': raw['effect_factory_single.in.effect_llr'],
+                        'seed': seed.astype(int),
+                        'n_sel': raw['run_prune.out.score.n_selected'],
+                        'ppv': tp / (tp + fp).replace(0, np.nan)})
+    return out[out.ppv.notna()]
+
+
+def report_oracle_pool(df, csv_path: pathlib.Path) -> None:
+    """Split GLOW's precision gap between its prune rule, the test and the tree.
+
+    Reads oracle_vs_k.py's per-trial curves and tabulates, at that run's
+    largest region budget, the PPV and Dice of the best-Dice selection out of
+    the FWER-significant regions and out of the whole Ward tree, beside
+    greedy's own PPV and each voxel-wise arm's. Every quantity is averaged over the trials
+    in which greedy discovered something, so the three rises partition the gap
+    from greedy up to the best arm: the ranking's, the permutation test's, and
+    the segmentation's.
+
+    Args:
+        df (pandas.DataFrame): load_sweep's per-trial frame
+        csv_path (pathlib.Path): oracle_vs_k.py's cached per-trial curves
+    """
+    curve = pd.read_csv(csv_path)
+    k = int(curve.k.max())
+    curve = curve[curve.k == k]
+    print(f'\n== PPV by candidate pool, budget k = {k} (Focus, the trials in '
+          'which greedy discovered) ==')
+    for source in ('HCP', 'WGN'):
+        found = _greedy_trials(source)
+        sweep = df[(df.source == source) & (df.b == 1)]
+        col_dict = {}
+        for llr in LLR_REPORT:
+            near = found[np.isclose(found.llr, llr)]
+            seed_set = set(near.seed)
+            col = {'greedy': near.ppv.mean(), 'greedy n_sel': near.n_sel.mean(),
+                   'n trial': float(len(near))}
+            sub = curve[(curve.source == source) & np.isclose(curve.llr, llr)
+                        & curve.seed.isin(seed_set)]
+            for pool in ('sig', 'tree'):
+                col[f'oracle {pool}'] = sub[sub.pool == pool].ppv.mean()
+                col[f'oracle {pool} dice'] = sub[sub.pool == pool].dice.mean()
+            arm = sweep[np.isclose(sweep.llr, llr) & sweep.seed.isin(seed_set)]
+            for name in ('VBA', 'VBA-TFCE', 'CET'):
+                col[name] = arm[arm.m == name].ppv.mean()
+            col_dict[round(llr, 4)] = col
+        tab = pd.DataFrame(col_dict)
+        print(f'  {source}:')
+        print('    ' + tab.round(3).to_string().replace('\n', '\n    '))
+
+        best = tab.loc[['VBA', 'VBA-TFCE', 'CET']].max()
+        share = pd.DataFrame(
+            {'rule': tab.loc['oracle sig'] - tab.loc['greedy'],
+             'test': tab.loc['oracle tree'] - tab.loc['oracle sig'],
+             'segmentation': best - tab.loc['oracle tree']}).T
+        print(f'    rises summing to best arm minus greedy '
+              f'({(best - tab.loc["greedy"]).round(3).to_dict()}):')
+        print('    ' + (share / (best - tab.loc['greedy'])).round(3)
+              .to_string().replace('\n', '\n    '))
+
+
 def main(argv=None) -> None:
     """Print every block."""
-    argparse.ArgumentParser(description=__doc__.splitlines()[0]).parse_args(
-        argv)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument('--oracle-csv', type=pathlib.Path,
+                        default=pathlib.Path('oracle_vs_k.csv'),
+                        help="oracle_vs_k.py's cached per-trial curves")
+    args = parser.parse_args(argv)
     df, n_r, o_r = load_sweep()
     report_dice(df)
     report_trade(df)
     report_false_volume(df, n_r, o_r)
     report_structure(df, n_r, o_r)
     report_prune()
+    report_oracle_pool(df, args.oracle_csv)
 
 
 if __name__ == '__main__':
