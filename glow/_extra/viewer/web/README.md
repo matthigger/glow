@@ -99,14 +99,21 @@ Two context filters matter and are easy to get wrong:
   default that imports `.gitignore`, and `pickles/` is gitignored — the
   bundles would be dropped and the deployed viewer would list nothing.
 
-## Deploy: HuggingFace Spaces (needs a paid plan)
+## The HuggingFace Space
 
-Gradio and Docker Spaces require PRO for personal accounts; only Static
-Spaces are free, and a static host cannot run Dash. If you have PRO,
-`deploy_hf.sh` still works — it prepends `hf_space_card.md` (the Space's
-YAML front matter) to this README and pushes the deployable subset.
+The Space is a **static** landing page that links to the Cloud Run demo,
+not the viewer itself: a Dash app needs a live Python process, which only
+a Docker Space provides, and those require a paid HF plan. Static Spaces
+are free, so the Space keeps the discoverability and Cloud Run does the
+serving.
+
+`deploy_hf.sh` writes exactly two files — `hf_space_card.md` (the Space's
+YAML front matter) as `README.md`, and `hf_index.html` with the demo URL
+substituted in. It clears the checkout first, so a Space left over from
+the old Docker deploy sheds the package and bundles it used to carry.
 
 ```bash
-python -m glow._extra.viewer.web.check_space   # do this first
-glow/_extra/viewer/web/deploy_hf.sh --user <hf-username>
+glow/_extra/viewer/web/deploy_hf.sh --user <hf-username> \
+    --url "$(gcloud run services describe glow-viewer \
+             --region us-central1 --format 'value(status.url)')"
 ```

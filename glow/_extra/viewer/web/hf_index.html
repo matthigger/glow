@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GLOW Viewer</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px;
+         margin: 4rem auto; padding: 0 1.25rem; line-height: 1.6;
+         color: #222; }
+  h1 { margin-bottom: 0.25rem; font-size: 1.8rem; }
+  p.lede { color: #555; margin-top: 0; }
+  a.cta { display: inline-block; margin: 1.5rem 0 0.5rem;
+          padding: 0.75rem 1.4rem; background: #0066cc; color: #fff;
+          border-radius: 6px; text-decoration: none; font-weight: 600; }
+  a.cta:hover { background: #0052a3; }
+  .note { color: #777; font-size: 0.9em; }
+  ul { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  a { color: #0066cc; }
+  footer { color: #888; font-size: 0.85em; margin-top: 3rem; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #111; color: #eee; }
+    p.lede { color: #aaa; }
+    .note { color: #999; }
+  }
+</style>
+</head>
+<body>
+<h1>🧠 GLOW Viewer</h1>
+<p class="lede">General Linear models Optimized with Ward's method —
+hierarchical, region-based effect discovery in imaging data.</p>
+
+<p>The interactive viewer runs on Google Cloud Run. It needs a live Python
+process (Dash), which a static page cannot host, so this Space points at
+it rather than serving it.</p>
+
+<a class="cta" href="__DEMO_URL__">Open the interactive demo &rarr;</a>
+<p class="note">The demo scales to zero between visitors, so the first
+load after a quiet spell takes a few seconds to wake up.</p>
+
+<h2>What is in it</h2>
+<p>One fitted GLOW analysis per link, each a cell of the benchmark the
+paper reports, grouped by the axis it sits on: effect strength, the null
+case, feature count, effect extent, Ward projection, selection rule, and
+analysis volume. Each one opens a region scatter, a volume overlay, a
+per-region regression, and — where the draws were kept — a permutation
+histogram.</p>
+
+<ul>
+  <li><a href="https://github.com/matthigger/glow">Source code</a></li>
+</ul>
+
+<footer>
+Questions or feedback:
+<a href="mailto:mhigger@ccs.neu.edu">mhigger@ccs.neu.edu</a>
+</footer>
+</body>
+</html>
