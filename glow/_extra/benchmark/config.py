@@ -45,7 +45,7 @@ what settles N_PERM_INNER.
 Runtime. Five caches measure time, not detection, and run locally only. They
 answer two different questions and must not be read as one: runtime_num_vox is
 the wall clock a user waits, every method given this machine's cores and card
-(run_ana_time); the four runtime_1perm_* are one-at-a-time growth rates on a
+(run_ana_time); the five runtime_1perm_* are one-at-a-time growth rates on a
 single pinned core, one permutation deep (run_ana_time_1perm). See the runtime
 section below.
 
@@ -419,8 +419,10 @@ RUNTIME_NUM_VOX_GRID = [1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000,
 # The 1perm permutation-count axes. n_perm_fwer starts at the family's own
 # baseline of 1 and doubles: the intercept (observed pass + synthesis) does not
 # shrink with the count, so the slope is only readable against a point that is
-# almost all intercept. n_perm_fwer is the only permutation axis: one tree
-# means one draw matrix, so cost is linear in it alone.
+# almost all intercept. The inner count is the second axis, and the one the
+# cost model leans on: it multiplies the per-region walk inside every outer
+# draw. It reuses N_PERM_INNER_GRID, so the cost of a count is read on the
+# same x as the inner cache that settles N_PERM_INNER.
 ONE_PERM_N_PERM_FWER_GRID = [1, 2, 4, 8, 16]
 
 # per-cache seed offsets, clear of each other, so no two runtime caches share a
@@ -430,6 +432,7 @@ RUNTIME_SEED_OFFSET = {
     'runtime_num_vox': 200_000,
     'runtime_1perm_num_vox': 210_000,
     'runtime_1perm_n_perm_fwer': 220_000,
+    'runtime_1perm_n_perm_inner': 230_000,
     'runtime_1perm_b': 240_000,
     'runtime_1perm_nimg': 250_000,
 }
@@ -481,6 +484,8 @@ ONE_PERM_ANA = ana_kwargs_dict[REPORTED_GLOW_LABEL]
 RUN_1PERM_LIST = [dict(ana=ONE_PERM_ANA)]
 RUN_1PERM_FWER_LIST = [dict(ana=ONE_PERM_ANA, n_perm_fwer=n)
                        for n in ONE_PERM_N_PERM_FWER_GRID]
+RUN_1PERM_INNER_LIST = [dict(ana=ONE_PERM_ANA, n_perm_inner=n)
+                        for n in N_PERM_INNER_GRID]
 # num_img rides the leaf, not the data grid: see run.run_ana_time_1perm for why
 # HCP is not given a subject-subset axis.
 RUN_1PERM_NIMG_LIST = [dict(ana=ONE_PERM_ANA, num_img=n) for n in NIMG_GRID]
@@ -605,7 +610,7 @@ CONFIG = {
             crop_n_vox_list=RUNTIME_NUM_VOX_GRID),
         effect_grid(),
         RUN_ANA_TIME_LIST, run_ana_time),
-    # Runtime (cost): four one-at-a-time sweeps around the shared centre --
+    # Runtime (cost): five one-at-a-time sweeps around the shared centre --
     # b=1, the whole cohort, CROP_N_VOX voxels, the moderate effect, one
     # permutation -- each on one core with no device
     # and BLAS pinned (run_ana_time_1perm), GLOW only. One axis moves per
@@ -628,6 +633,15 @@ CONFIG = {
             crop_n_vox_list=[CROP_N_VOX]),
         effect_grid(),
         RUN_1PERM_FWER_LIST, run_ana_time_1perm),
+    # n_perm_inner over N_PERM_INNER_GRID: the count multiplying the
+    # per-region walk inside one outer permutation, which is the term that
+    # separates GLOW's wall time from a voxel-wise test's.
+    'runtime_1perm_n_perm_inner': (
+        runtime_data_grid(
+            seed_offset=RUNTIME_SEED_OFFSET['runtime_1perm_n_perm_inner'],
+            crop_n_vox_list=[CROP_N_VOX]),
+        effect_grid(),
+        RUN_1PERM_INNER_LIST, run_ana_time_1perm),
     # b = 1..6, the paper's b-quadratic claim; b rides the data grid.
     'runtime_1perm_b': (
         runtime_data_grid(

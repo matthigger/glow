@@ -390,6 +390,7 @@ _RUNTIME_SPEC = {
     'runtime_num_vox':            ('run_ana_time',       'num_vox'),
     'runtime_1perm_num_vox':      ('run_ana_time_1perm', 'num_vox'),
     'runtime_1perm_n_perm_fwer':  ('run_ana_time_1perm', 'n_perm_fwer'),
+    'runtime_1perm_n_perm_inner': ('run_ana_time_1perm', 'n_perm_inner'),
     'runtime_1perm_b':            ('run_ana_time_1perm', 'b'),
     'runtime_1perm_nimg':         ('run_ana_time_1perm', 'num_img'),
 }
@@ -2604,8 +2605,8 @@ def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0,
     entry rather than left to be eyeballed. The fit takes the largest
     fit_decades of the swept axis only: at the small end a fixed startup cost
     dominates and flattens the curve, so a whole-range fit understates the
-    asymptotic scaling the claim is about. The legend title names that range,
-    since the number means nothing without it.
+    asymptotic scaling the claim is about. The legend gives the slope alone,
+    so whatever reports the figure has to name the range it was fitted over.
 
     Args:
         name (str): cache name; used in the output filename.
@@ -2644,10 +2645,7 @@ def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0,
     ax.set_yscale('log')
     ax.set_xlabel(_X_PARAM_LABELS.get(x_name, x_name))
     ax.set_ylabel('wall time (min)')
-    ax.legend(frameon=False,
-              title=(f'slope over top {fit_decades:g} decade of x'
-                     if log_x else None),
-              title_fontsize=9)
+    ax.legend(frameon=False)
     ax.grid(True, which='both', alpha=0.3)
     fig.tight_layout()
     path = out / f'{name}_runtime.pdf'

@@ -746,6 +746,7 @@ def _take_img(exp: Experiment, num_img: int) -> Experiment:
 @RECORDER(output_name='num_vox', ignore=LEAF_IGNORE)
 def run_ana_time_1perm(exp: Experiment, mask_target_list, ana: Analysis, *,
                        parent_uid: str, n_perm_fwer: int = 1,
+                       n_perm_inner: int = None,
                        num_img: int = None) -> int:
     """Time one method's fit on a single core, one permutation deep.
 
@@ -761,6 +762,11 @@ def run_ana_time_1perm(exp: Experiment, mask_target_list, ana: Analysis, *,
     full run costing n_perm_fwer times that per-permutation term. The separate
     n_perm_fwer sweep is what splits that slope from the fixed intercept (the
     observed pass, synthesis and pruning) rather than assuming the split.
+
+    n_perm_inner is the count inside that permutation: every region of every
+    outer draw is standardized against its own inner draws, so it multiplies
+    the per-region walk rather than the tree build. Left at the recipe's own
+    value unless swept.
 
     Unlike run_ana_time this leaf takes no fit_params: the serial contract is
     the measurement. Every swept knob rides as an explicit argument so that it
@@ -782,6 +788,8 @@ def run_ana_time_1perm(exp: Experiment, mask_target_list, ana: Analysis, *,
             permutation counts are overridden, so the caller's is untouched.
         n_perm_fwer (int): permutations to time, the observed pass on
             top. 1 (default) is the per-permutation cost.
+        n_perm_inner (int | None): inner draws standardizing each region.
+            None (default) keeps the recipe's own count.
         num_img (int | None): subjects to keep, the leading num_img of them.
             None (default) is the whole cohort.
 
@@ -791,9 +799,15 @@ def run_ana_time_1perm(exp: Experiment, mask_target_list, ana: Analysis, *,
 
     Raises:
         ValueError: num_img larger than the cohort (a silently short curve).
+        ValueError: n_perm_inner given for a recipe without that knob, which
+            would otherwise time an unswept fit under a swept label.
     """
     ana = copy.deepcopy(ana)
     ana.n_perm_fwer = n_perm_fwer
+    if n_perm_inner is not None:
+        if not hasattr(ana, 'n_perm_inner'):
+            raise ValueError(f'{type(ana).__name__} has no n_perm_inner')
+        ana.n_perm_inner = n_perm_inner
     if num_img is not None:
         exp = _take_img(exp, num_img)
 
