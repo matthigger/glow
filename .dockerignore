@@ -18,6 +18,7 @@ dist
 # Repo content the image never imports
 test
 docs
+glow/_extra/benchmark
 .claude
 .github
 .venv

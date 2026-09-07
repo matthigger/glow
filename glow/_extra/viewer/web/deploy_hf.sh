@@ -7,8 +7,8 @@
 #   3. Rsyncs the deployable subset into the Space checkout:
 #        glow/                       <-  src/glow/
 #        Dockerfile                  <-  src/glow/_extra/viewer/web/Dockerfile
-#        README.md                   <-  src/glow/_extra/viewer/web/README.md
-#        .dockerignore               <-  src/glow/_extra/viewer/web/.dockerignore
+#        README.md                   <-  hf_space_card.md + README.md
+#        .dockerignore               <-  src/.dockerignore
 #   4. Writes a Space-specific .gitignore (does NOT exclude pickles)
 #   5. Commits and pushes
 #
@@ -151,8 +151,12 @@ rm -f "$SPACE_DIR/glow/_extra/viewer/web/.gitignore"
 
 # top-level deploy files
 cp "$SCRIPT_DIR/Dockerfile"     "$SPACE_DIR/Dockerfile"
-cp "$SCRIPT_DIR/README.md"      "$SPACE_DIR/README.md"
-cp "$SCRIPT_DIR/.dockerignore"  "$SPACE_DIR/.dockerignore"
+# a Space is configured by YAML front matter on its README, which
+# only means anything to HF -- so it is kept out of the repo README
+# and prepended here.
+cat "$SCRIPT_DIR/hf_space_card.md" "$SCRIPT_DIR/README.md" \
+    > "$SPACE_DIR/README.md"
+cp "$PROJECT_ROOT/.dockerignore" "$SPACE_DIR/.dockerignore"
 
 # Space-specific .gitignore: pickles live outside git (uploaded via Xet)
 cat > "$SPACE_DIR/.gitignore" <<'EOF'

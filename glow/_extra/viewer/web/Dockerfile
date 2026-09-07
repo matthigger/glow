@@ -1,7 +1,7 @@
-# Multi-demo viewer image for HuggingFace Spaces (Docker SDK).
+# Multi-demo viewer image, for Google Cloud Run or any Docker host.
 #
-# Build context must be the project root (src/), not glow/_extra/viewer/web/, so the
-# whole glow/ package is reachable.  Build with:
+# Build context must be the project root (src/), not glow/_extra/viewer/web/,
+# so the whole glow/ package is reachable.  Build with:
 #
 #     # from src/
 #     docker build -t glow-viewer-web -f glow/_extra/viewer/web/Dockerfile .
@@ -22,10 +22,13 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 COPY glow ./glow
 
 ENV PYTHONPATH=/app
+# The default for a local run; Cloud Run overrides PORT at start-up and
+# the container has to bind whatever it is handed, hence the shell-form
+# CMD below (exec form would pass the string "$PORT" to gunicorn).
 ENV PORT=7860
 EXPOSE 7860
 
-# Set as an HF Space "Variable" to retune without a rebuild:
+# Set as an env var to retune without a rebuild:
 #   GLOW_VIEWER_MAX_MOUNTS  live viewers before LRU eviction
 
 # ONE worker, several threads: the mount table lives in-process, so a second
@@ -33,12 +36,12 @@ EXPOSE 7860
 # that memory and keep slow Dash callbacks (3D slicer, regression) from
 # blocking each other.  --max-requests recycles the worker periodically to
 # reclaim memory from evicted mounts.
-CMD ["gunicorn", "glow._extra.viewer.web.server:application", \
-     "--bind", "0.0.0.0:7860", \
-     "--workers", "1", \
-     "--threads", "4", \
-     "--worker-class", "gthread", \
-     "--timeout", "120", \
-     "--max-requests", "400", \
-     "--max-requests-jitter", "50", \
-     "--access-logfile", "-"]
+CMD exec gunicorn glow._extra.viewer.web.server:application \
+    --bind "0.0.0.0:${PORT}" \
+    --workers 1 \
+    --threads 4 \
+    --worker-class gthread \
+    --timeout 120 \
+    --max-requests 400 \
+    --max-requests-jitter 50 \
+    --access-logfile -

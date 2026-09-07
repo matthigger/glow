@@ -167,3 +167,45 @@ def test_boot_does_not_import_benchmark():
     out = subprocess.run([sys.executable, '-c', code], capture_output=True,
                          text=True, check=True)
     assert out.stdout.strip().endswith('[]'), out.stdout
+
+
+def test_direct_view_url_self_mounts(client):
+    """A /view/<key>/ URL works even when nothing is mounted yet.
+
+    The host scales to zero between visits, so a bookmarked or shared
+    link routinely lands on a process that holds no mount.
+    """
+    c, app = client
+    assert list(app.app.mounter.mounted_) == []
+    r = c.get('/view/llr_moderate/')
+    assert r.status_code == 302
+    assert r.headers['Location'].endswith('/view/llr_moderate/')
+    assert list(app.app.mounter.mounted_) == ['llr_moderate']
+    assert c.get('/view/llr_moderate/_dash-layout').status_code == 200
+
+
+def test_direct_view_url_unknown_key_404(client):
+    """A /view/ URL naming no bundle 404s rather than mounting."""
+    c, _ = client
+    assert c.get('/view/not-a-real-bundle/').status_code == 404
+
+
+def test_large_tree_is_capped(pickle_dir, monkeypatch):
+    """A tree over max_regions is cut before the viewer is built.
+
+    launch() resolves this ceiling for a local caller; the server has to
+    do it itself, or a full-brain bundle scatters every region and the
+    layout payload grows with it.
+    """
+    seen = {}
+    real = server._resolve_min_vox
+
+    def spy(ana, min_vox, max_regions):
+        seen['max_regions'] = max_regions
+        return real(ana, min_vox, max_regions)
+
+    monkeypatch.setattr(server, '_resolve_min_vox', spy)
+    app = server.build_application(pickle_dir=pickle_dir)
+    app.app.mounter.max_regions = 4
+    Client(app).get('/load/llr_moderate')
+    assert seen['max_regions'] == 4

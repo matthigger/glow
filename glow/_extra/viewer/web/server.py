@@ -20,11 +20,14 @@ Bundles are trusted by construction: they are the ones baked into this
 image, never user-supplied bytes, so pickle.load's arbitrary-code-
 execution risk does not apply here.
 
+A /view/<key>/ request that finds nothing mounted mounts it and
+redirects, so a bookmarked link survives the host scaling to zero.
+
 Run locally:
     python -m glow._extra.viewer.web.server            # dev, port 7860
     PORT=8080 python -m glow._extra.viewer.web.server  # custom port
 
-Run under gunicorn (Docker / HF Spaces):
+Run under gunicorn (Docker / Cloud Run):
     gunicorn glow._extra.viewer.web.server:application \\
         --bind 0.0.0.0:7860 --workers 1
 """
@@ -44,15 +47,22 @@ from typing import Dict, List, Optional
 from flask import Flask, abort, redirect
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
 
-from glow._extra.viewer.app import _create_app
+from glow._extra.viewer.app import _create_app, _resolve_min_vox
 from glow._extra.viewer.web import MANIFEST_NAME
 
 
 _PICKLE_DIR = pathlib.Path(__file__).parent / 'pickles'
 
 # Live viewers before the least-recently-used one is dropped. Overridable
-# by env so the Space is tuned without a rebuild.
+# by env so the deployment is tuned without a rebuild.
 DEFAULT_MAX_MOUNTS = 8
+
+# Region ceiling per viewer, the same default launch() applies. A
+# full-brain tree is hundreds of thousands of regions, which is a scatter
+# no browser draws smoothly and a layout payload to match; over the
+# ceiling the tree is cut to its largest regions. launch() resolves this
+# for a local caller, and nothing did it here.
+DEFAULT_MAX_REGIONS = 10_000
 
 # cache -> the question that cache's axis answers, for the landing page
 _CACHE_HEADINGS = {
@@ -121,6 +131,7 @@ class LocalMounter:
     Operation parameters (set at __init__):
         pickle_dir (pathlib.Path): directory of baked bundles.
         max_mounts (int): live viewer cap before LRU eviction.
+        max_regions (int): region ceiling handed to each viewer.
 
     Runtime state:
         application (DispatcherMiddleware | None): set by
@@ -130,9 +141,11 @@ class LocalMounter:
         mounted_ (OrderedDict): key -> mount prefix, in LRU order.
     """
 
-    def __init__(self, pickle_dir, *, max_mounts: int = DEFAULT_MAX_MOUNTS):
+    def __init__(self, pickle_dir, *, max_mounts: int = DEFAULT_MAX_MOUNTS,
+                 max_regions: int = DEFAULT_MAX_REGIONS):
         self.pickle_dir = pathlib.Path(pickle_dir)
         self.max_mounts = max_mounts
+        self.max_regions = max_regions
         self.application: Optional[DispatcherMiddleware] = None
         self.manifest = read_manifest(self.pickle_dir)
 
@@ -168,7 +181,9 @@ class LocalMounter:
                 ana, exp, mask_target = _extract(pickle.load(f))
 
             mount_key = f'/view/{key}'
+            min_vox = _resolve_min_vox(ana, None, self.max_regions)
             app = _create_app(ana, exp, mask_target=mask_target,
+                              min_vox=min_vox,
                               routes_pathname_prefix='/',
                               requests_pathname_prefix=f'{mount_key}/')
             self.application.mounts[mount_key] = app.server
@@ -261,7 +276,9 @@ def build_server(pickle_dir=_PICKLE_DIR) -> Flask:
     mounter = LocalMounter(
         pickle_dir,
         max_mounts=int(os.environ.get('GLOW_VIEWER_MAX_MOUNTS',
-                                      DEFAULT_MAX_MOUNTS)))
+                                      DEFAULT_MAX_MOUNTS)),
+        max_regions=int(os.environ.get('GLOW_VIEWER_MAX_REGIONS',
+                                       DEFAULT_MAX_REGIONS)))
     print(f'{len(mounter.manifest)} bundle(s) available from {pickle_dir}')
 
     server = Flask('glow_viewer_web')
@@ -285,6 +302,23 @@ def build_server(pickle_dir=_PICKLE_DIR) -> Flask:
         except KeyError:
             abort(404)
         return redirect(prefix, code=302)
+
+    @server.route('/view/<key>/')
+    def view(key):
+        """Mount a viewer asked for directly, then hand it the request.
+
+        Only reached when the key is NOT mounted -- the dispatcher serves
+        a mounted one before Flask sees it. That happens to a bookmarked
+        or shared /view/<key>/ URL whenever the process holding the mount
+        is gone: the host scales to zero between visits, the worker
+        recycled, or the LRU evicted this key. Without this the link
+        would 404 on a cold instance.
+        """
+        try:
+            mounter.ensure_mounted(key)
+        except KeyError:
+            abort(404)
+        return redirect(f'/view/{key}/', code=302)
 
     return server
 
