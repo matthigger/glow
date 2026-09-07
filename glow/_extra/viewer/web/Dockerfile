@@ -36,6 +36,12 @@ EXPOSE 7860
 # that memory and keep slow Dash callbacks (3D slicer, regression) from
 # blocking each other.  --max-requests recycles the worker periodically to
 # reclaim memory from evicted mounts.
+#
+# BuildKit warns JSONArgsRecommended here, about a shell-form CMD leaving
+# /bin/sh as PID 1 and swallowing SIGTERM.  `exec` is what answers that:
+# it replaces the shell, so gunicorn IS PID 1 and shuts down cleanly when
+# the host scales the instance away.  Do not switch this to JSON form --
+# that would pass gunicorn the literal string "$PORT".
 CMD exec gunicorn glow._extra.viewer.web.server:application \
     --bind "0.0.0.0:${PORT}" \
     --workers 1 \

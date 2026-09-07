@@ -18,6 +18,12 @@
 #   glow/_extra/viewer/web/deploy_cloud_run.sh --project P --region us-east1
 #   glow/_extra/viewer/web/deploy_cloud_run.sh --project P --yes
 #   glow/_extra/viewer/web/deploy_cloud_run.sh --project P --build-only
+#   glow/_extra/viewer/web/deploy_cloud_run.sh --project P --python PY
+#
+# The interpreter:
+#   check_space runs in $PYTHON (default python3), which must be the one
+#   glow is installed into -- a bare python3 is often not.
+#     PYTHON=~/venv_glow/bin/python deploy_cloud_run.sh --project P
 #
 # Auth:
 #   `gcloud auth login` once, and a project with billing enabled. The
@@ -35,6 +41,7 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+PYTHON="${PYTHON:-python3}"
 PROJECT="${GCP_PROJECT:-}"
 REGION="${GCP_REGION:-us-central1}"
 SERVICE="${CLOUD_RUN_SERVICE:-glow-viewer}"
@@ -45,6 +52,7 @@ BUILD_ONLY=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --project)    PROJECT="$2"; shift 2 ;;
+        --python)     PYTHON="$2"; shift 2 ;;
         --region)     REGION="$2"; shift 2 ;;
         --service)    SERVICE="$2"; shift 2 ;;
         --repo)       AR_REPO="$2"; shift 2 ;;
@@ -93,7 +101,13 @@ BUNDLE_SIZE=$(du -sh "$PICKLE_DIR" | cut -f1)
 echo -e "  Bundles: ${GREEN}${BUNDLES} files, ${BUNDLE_SIZE}${NC}"
 
 echo -e "${BLUE}Checking the image would boot ...${NC}"
-python3 -m glow._extra.viewer.web.check_space
+if ! "$PYTHON" -c 'import glow' 2>/dev/null; then
+    echo -e "${RED}✗ '${PYTHON}' cannot import glow${NC}"
+    echo -e "${YELLOW}  set PYTHON=<interpreter glow is installed into>"
+    echo -e "  or pass --python <path>${NC}"
+    exit 1
+fi
+"$PYTHON" -m glow._extra.viewer.web.check_space
 
 # ---------------------------------------------------------------------
 # 2. Tooling
