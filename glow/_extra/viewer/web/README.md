@@ -26,6 +26,9 @@ sweeps.
   an LRU.
 - `play.py` loads a single bundle through the unmodified single-analysis
   `launch()` for local round-trip checks.
+- `check_space.py` boots the server with only `requirements.txt` available
+  and `benchmark/` excluded, which is what the image actually has. Run it
+  before a deploy — a dev checkout satisfies imports the Space cannot.
 
 Loading lazily is what keeps boot cheap: one Dash app per bundle built at
 import would pay the whole set's unpickle and per-region DataFrame before
@@ -76,6 +79,9 @@ python -m glow._extra.viewer.web.play llr_moderate
 
 # run the multi-demo server on port 7860
 python -m glow._extra.viewer.web.server
+
+# confirm the image would boot (blocks torch, numba-if-unlisted, benchmark)
+python -m glow._extra.viewer.web.check_space
 ```
 
 ## Docker / HF Spaces
@@ -87,5 +93,6 @@ docker build -t glow-viewer-web -f glow/_extra/viewer/web/Dockerfile .
 docker run --rm -p 7860:7860 glow-viewer-web
 
 # or push the deployable subset to a Space
+python -m glow._extra.viewer.web.check_space   # do this first
 glow/_extra/viewer/web/deploy_hf.sh --user <hf-username>
 ```
