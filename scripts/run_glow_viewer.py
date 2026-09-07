@@ -1,7 +1,7 @@
 """Fit GLOW on one synthetic experiment and open it in the viewer.
 
 A single cell of the benchmark grid, start to finish: build the images,
-plant an effect, fit AnalysisGLOWSplit, launch the dashboard on the result.
+plant an effect, fit AnalysisGLOW, launch the dashboard on the result.
 Every knob is a constant below -- edit and run.
 
     python scripts/run_glow_viewer.py
@@ -27,7 +27,7 @@ import time
 
 from glow._extra.benchmark.data import (DATA_FACTORY, EFFECT_FACTORY,
                                         data_recipe)
-from glow.analysis import AnalysisGLOWSplit
+from glow.analysis import AnalysisGLOW
 from glow.analysis.cluster import ClusterMode
 from glow.effect.extent import ExtenterMinVar, ExtenterSphere
 
@@ -38,7 +38,8 @@ from glow.effect.extent import ExtenterMinVar, ExtenterSphere
 SOURCE = 'wgn'
 # voxels analysed: one connected sphere cropped out of the volume.
 NUM_VOX = 25_000
-# subjects. Half go to the segmentation fold, half carry the statistics.
+# subjects. Every one reaches both the tree and the statistics: the tree is
+# rebuilt inside each outer permutation rather than on a held-out fold.
 NUM_IMG = 100
 # imaging features per voxel (the multivariate response dimension).
 B = 1
@@ -53,16 +54,18 @@ EFFECT_N_VOX_FRAC = 0.1
 
 # ---- the analysis -----------------------------------------------------
 N_PERM_FWER = 5000
+# inner Freedman-Lane draws standardizing each outer perm's own tree. It
+# caps every z at n_perm_inner / sqrt(n_perm_inner + 1), so it is a
+# resolution floor as much as a cost knob.
+N_PERM_INNER = 250
 ALPHA_FWER = 0.05
 # smallest region admitted to the FWER family. Pre-specify it; tuning it
-# against results reintroduces the selection the split is there to remove.
+# against results reintroduces the selection the permutation test is
+# there to remove.
 MIN_VOX = 1
 # FOCUS clusters on the contrast subspace, GLM_ERROR on the whole design
-# space, NAIVE on raw y. GLM_ERROR is the arm the paper reports.
-CLUSTER_MODE = ClusterMode.GLM_ERROR
-# share of the subjects the Ward tree is built on.
-FRAC_SEGMENT = 0.5
-SPLIT_SEED = 0
+# space, NAIVE on raw y. FOCUS is the arm the paper reports.
+CLUSTER_MODE = ClusterMode.FOCUS
 
 # ---- debug mode -------------------------------------------------------
 # True fits with keep_stat=True, which adds the viewer's PERMUTATION
@@ -147,11 +150,10 @@ def build_exp():
 
 
 def fit_glow(exp):
-    """Fit AnalysisGLOWSplit on exp with the parameters above."""
-    ana = AnalysisGLOWSplit(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER,
-                            min_vox=MIN_VOX, cluster_mode=CLUSTER_MODE,
-                            frac_segment=FRAC_SEGMENT,
-                            split_seed=SPLIT_SEED, keep_stat=DEBUG)
+    """Fit AnalysisGLOW on exp with the parameters above."""
+    ana = AnalysisGLOW(n_perm_fwer=N_PERM_FWER, n_perm_inner=N_PERM_INNER,
+                       alpha_fwer=ALPHA_FWER, min_vox=MIN_VOX,
+                       cluster_mode=CLUSTER_MODE, keep_stat=DEBUG)
     print(f'fitting {ana!r} ...')
     t0 = time.time()
     ana.fit(exp, gpu=GPU, verbose=VERBOSE)

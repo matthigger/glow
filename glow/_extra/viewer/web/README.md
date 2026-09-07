@@ -10,59 +10,69 @@ pinned: false
 
 # GLOW Viewer (web demo)
 
-Interactive demos of the GLOW hierarchical-segmentation viewer.
+Interactive viewer for a representative set of the paper's benchmark cells:
+one fitted GLOW analysis per link, each a point on an axis some figure
+sweeps.
 
 ## Architecture
 
-- `bake_demos.py` builds a curated set of `AnalysisGLOWSplit` pickles from the
-  builders in `glow._extra.viewer.__main__`, written to `pickles/`.
-- `server.py` boots a single Flask server (wrapped in a
-  `DispatcherMiddleware`), mounts one `glow._extra.viewer` Dash app per baked pickle
-  at `/{key}/`, and serves a small landing page at `/`.
-- `zenodo.py` fetches individual pickles from one published Zenodo record.
-- `play.py` loads a single pickle through the unmodified single-analysis
+- `bake_demos.py` builds each entry in its `DEMOS` list — a cell of
+  `glow._extra.benchmark.config.CONFIG` — fits the reported GLOW recipe on
+  it, and writes `{ana, exp, mask_target, demo}` to `pickles/<key>.p.gz`
+  plus a `manifest.json` describing the set.
+- `server.py` boots one Flask server (wrapped in a `DispatcherMiddleware`),
+  serves a landing page read from `manifest.json` alone, and mounts a
+  `glow._extra.viewer` Dash app per bundle **on first request**, bounded by
+  an LRU.
+- `play.py` loads a single bundle through the unmodified single-analysis
   `launch()` for local round-trip checks.
 
-## Zenodo browser (load any published experiment)
-
-The full benchmark is too large to host or load on a Space (tens-to-hundreds
-of GB; a Space has ≤32 GB RAM). Instead, the heavy precomputed experiments
-live on **Zenodo** (durable, DOI'd) and the Space loads **one at a time** on
-demand: `/zenodo/` lists the configured record's files; picking one downloads
-just that pickle (size-capped, MD5-verified, cached), mounts a fresh viewer
-under `/zenodo/view/<slug>/`, and redirects there. An LRU keeps at most
-`GLOW_ZENODO_MAX_MOUNTS` viewers live.
-
-**Security:** only files of the configured record id are ever fetched and
-unpickled — the record id is an allowlist. The server never unpickles
-user-uploaded bytes (`pickle.load` on untrusted input is arbitrary code
-execution), which is why this fetches by record id rather than accepting an
-upload.
-
-Configure via env (HF Space **Variables**, not Secrets):
+Loading lazily is what keeps boot cheap: one Dash app per bundle built at
+import would pay the whole set's unpickle and per-region DataFrame before
+the port opens.
 
 | var | meaning |
 |-----|---------|
-| `GLOW_ZENODO_RECORD_ID` | record to browse; unset = browser disabled |
-| `GLOW_ZENODO_API_BASE`  | `https://sandbox.zenodo.org/api` to test on Sandbox |
-| `GLOW_ZENODO_MAX_MB`    | per-file download cap (default 64) |
-| `GLOW_ZENODO_MAX_MOUNTS`| live viewers before LRU eviction (default 6) |
+| `GLOW_VIEWER_MAX_MOUNTS` | live viewers before LRU eviction |
 
-```bash
-# test locally against a Zenodo Sandbox deposit before a real DOI exists
-GLOW_ZENODO_API_BASE=https://sandbox.zenodo.org/api \
-GLOW_ZENODO_RECORD_ID=123456 \
-python -m glow._extra.viewer.web.server
-```
+## What is baked
+
+`DEMOS` reads every axis value off `benchmark.config`, so an entry is the
+same cell the corresponding figure reports and moves with the paper's grid.
+The analysis is the shipped recipe (`config.REPORTED_GLOW_LABEL` — the
+per-perm arm on the Focus projection, greedy selection) with only the knob
+a given entry varies overridden.
+
+The set covers effect strength, the null, feature count, effect extent,
+Ward projection, selection rule, and analysis volume. The moderate-effect
+Focus fit is the hub the other entries sit one step away from.
+
+**HCP entries are gated behind `--hcp` and must not be published.** The
+maps are DUA-restricted, so an HCP-derived bundle is fine to view locally
+and not fine to host. WGN entries carry no such restriction.
+
+## Hosting
+
+A Dash app needs compute, so this is a Docker Space. Docker Spaces require
+a paid plan (PRO for personal accounts); only Static Spaces are free. On
+the free **CPU Basic** hardware a Space gets 16 GB RAM, 2 vCPU and 50 GB of
+ephemeral disk, which the set above does not come close to filling — the
+binding constraint is editorial, not technical.
 
 ## Local development
 
 ```bash
-# bake the curated demo set (~1 min)
+# see the plan without building anything
+python -m glow._extra.viewer.web.bake_demos --list
+
+# bake the set (WGN only; add --hcp for the gated entries)
 python -m glow._extra.viewer.web.bake_demos
 
-# spot-check one pickle through the existing single-analysis viewer
-python -m glow._extra.viewer.web.play wgn2d_b1_medium_s0
+# bake or refit one entry
+python -m glow._extra.viewer.web.bake_demos --only llr_moderate --force
+
+# spot-check one bundle through the single-analysis viewer
+python -m glow._extra.viewer.web.play llr_moderate
 
 # run the multi-demo server on port 7860
 python -m glow._extra.viewer.web.server
@@ -72,12 +82,10 @@ python -m glow._extra.viewer.web.server
 
 ```bash
 # from src/ (project root)
-python -m glow._extra.viewer.web.bake_demos          # pickles are baked into the image
+python -m glow._extra.viewer.web.bake_demos   # bundles go into the image
 docker build -t glow-viewer-web -f glow/_extra/viewer/web/Dockerfile .
 docker run --rm -p 7860:7860 glow-viewer-web
+
+# or push the deployable subset to a Space
+glow/_extra/viewer/web/deploy_hf.sh --user <hf-username>
 ```
-
-## Curated demos
-
-The combo list lives in `bake_demos.py::COMBOS`. To grow or shrink the
-demo library, edit that list and re-bake.
