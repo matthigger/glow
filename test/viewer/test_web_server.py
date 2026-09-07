@@ -146,10 +146,15 @@ def test_unknown_key_404(client):
     assert c.get('/load/not-a-real-bundle').status_code == 404
 
 
-def test_healthz(client):
-    """The liveness probe answers without loading anything."""
+def test_health(client):
+    """The liveness probe answers without loading anything.
+
+    /health, not /healthz: Cloud Run's frontend answers /healthz itself
+    and never forwards it to the container.
+    """
     c, _ = client
-    assert c.get('/healthz').status_code == 200
+    assert c.get('/health').status_code == 200
+    assert c.get('/healthz').status_code == 404
 
 
 def test_boot_does_not_import_benchmark():

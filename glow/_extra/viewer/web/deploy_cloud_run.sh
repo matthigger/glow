@@ -129,6 +129,13 @@ fi
 # ---------------------------------------------------------------------
 if [ "$BUILD_ONLY" = false ]; then
     echo ""
+    echo -e "${BLUE}Ensuring APIs are enabled ...${NC}"
+    # idempotent, and a no-op once they are on; a fresh project has
+    # neither, and the repo create below is what would fail first
+    gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
+        --project "$PROJECT"
+
+    echo ""
     echo -e "${BLUE}Ensuring Artifact Registry repo ...${NC}"
     gcloud artifacts repositories describe "$AR_REPO" \
         --project "$PROJECT" --location "$REGION" >/dev/null 2>&1 || \
@@ -137,7 +144,16 @@ if [ "$BUILD_ONLY" = false ]; then
         --repository-format docker \
         --description "glow container images"
 
-    gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+    # Log in with a short-lived token rather than relying on
+    # `gcloud auth configure-docker`. That registers a credential helper
+    # in ~/.docker/config.json, which the docker SNAP never reads -- it
+    # keeps its own config under ~/snap/docker/<rev>/.docker/ and cannot
+    # execute the helper out of its confinement, so the push goes out
+    # anonymous and Artifact Registry rejects it. A token login writes
+    # wherever this docker actually looks.
+    gcloud auth print-access-token --project "$PROJECT" \
+        | docker login -u oauth2accesstoken --password-stdin \
+            "https://${REGION}-docker.pkg.dev"
 fi
 
 echo ""

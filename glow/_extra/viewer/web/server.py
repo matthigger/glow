@@ -289,9 +289,14 @@ def build_server(pickle_dir=_PICKLE_DIR) -> Flask:
         """Serve the landing page."""
         return _landing_html(mounter)
 
-    @server.route('/healthz')
-    def healthz():
-        """Serve the liveness probe."""
+    @server.route('/health')
+    def health():
+        """Serve the liveness probe.
+
+        Not /healthz: Cloud Run's frontend answers that path itself with
+        its own 404 and never forwards it, so the conventional name is
+        the one name that cannot work behind it.
+        """
         return 'ok', 200
 
     @server.route('/load/<key>')
