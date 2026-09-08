@@ -42,6 +42,7 @@ import pickle
 import sys
 import threading
 from collections import OrderedDict
+from string import Template
 from typing import Dict, List, Optional
 
 from flask import Flask, abort, redirect
@@ -70,7 +71,8 @@ GATED_PER_IMAGE_SOURCES = frozenset({'hcp'})
 # for a local caller, and nothing did it here.
 DEFAULT_MAX_REGIONS = 10_000
 
-# cache -> the question that cache's axis answers, for the landing page
+# cache -> the question that cache's axis answers. Also the picker's
+# figure order, so the detection sweeps come before the diagnostics.
 _CACHE_HEADINGS = {
     'sweep_llr': 'Effect strength',
     'null': 'No effect',
@@ -79,6 +81,57 @@ _CACHE_HEADINGS = {
     'segment': 'Ward projection',
     'prune': 'Selection rule',
     'runtime_num_vox': 'Volume',
+}
+
+# cache -> what a reader is looking at once they pick it.
+_CACHE_BLURBS = {
+    'sweep_llr': 'Detection against planted effect strength: the power '
+                 'curve, from the weakest effect on the grid to the '
+                 'strongest.',
+    'null': 'Nothing planted. What the test reports when there is no '
+            'effect to find, which is what calibrates it.',
+    'sweep_b': 'Detection against the number of imaging features the '
+               'response carries.',
+    'sweep_extent': 'Detection against how much of the analysis volume '
+                    'the planted effect covers.',
+    'segment': 'What the Ward tree is built on, with the permutation '
+               'test held fixed.',
+    'prune': 'How the significant set is read out of one shared fit, so '
+             'the comparison isolates the rule.',
+    'runtime_num_vox': 'Volume, from a small crop up to the full brain.',
+}
+
+# The parameters the picker offers, in the order it shows them. The kind
+# decides only how a value is rendered: 'enum' is looked up in
+# _VALUE_LABELS, 'int' takes thousands separators, 'num' prints as it
+# arrives.
+_PARAM_SPEC = [
+    ('source', 'Image source', 'enum'),
+    ('effect_llr', 'Effect strength (LLR)', 'num'),
+    ('n_vox_frac', 'Effect extent', 'num'),
+    ('b', 'Imaging features (b)', 'int'),
+    ('num_img', 'Subjects', 'int'),
+    ('num_vox', 'Voxels', 'int'),
+    ('cluster_mode', 'Ward projection', 'enum'),
+    ('prune_rule', 'Selection rule', 'enum'),
+    ('keep_stat', 'Permutation histogram', 'enum'),
+]
+
+# Values a reader should not have to decode. Anything absent renders by
+# its kind, so only the codes need an entry here. The keys are the
+# javascript String() of the value, hence 'true' and 'null'.
+_VALUE_LABELS = {
+    'source': {'wgn': 'White Gaussian noise',
+               'hcp': 'HCP diffusion maps'},
+    'cluster_mode': {'NAIVE': 'Naive (raw y)',
+                     'GLM_ERROR': 'GLM Error',
+                     'FOCUS': 'Focus'},
+    'prune_rule': {'greedy': 'Greedy max-LLR set',
+                   'single_max': 'Single max-LLR region',
+                   'dp': 'Dynamic-programming cut'},
+    'keep_stat': {'true': 'included', 'false': 'not included'},
+    'effect_llr': {'null': 'none (null case)'},
+    'n_vox_frac': {'null': 'n/a'},
 }
 
 
@@ -231,10 +284,74 @@ class LocalMounter:
             return self.mounted_[key]
 
 
-def _landing_html(mounter: LocalMounter) -> str:
-    """Render the landing page: every baked bundle, grouped by its axis."""
+def _json_for_script(obj) -> str:
+    """Serialise obj for embedding in an inline script element.
+
+    Args:
+        obj: any json-serialisable value.
+
+    Returns:
+        str: its json, with the one sequence that could close the script
+            element early neutralised.
+    """
+    return json.dumps(obj, separators=(',', ':')).replace('</', r'<\/')
+
+
+def _figure_list(manifest: List[dict]) -> List[dict]:
+    """Order the figures the baked set covers, for the picker.
+
+    Args:
+        manifest (list[dict]): the baked set.
+
+    Returns:
+        list[dict]: {cache, heading, blurb} per figure, those named in
+            _CACHE_HEADINGS first and in its order, unrecognised caches
+            after them alphabetically.
+    """
+    present = set()
+    for entry in manifest:
+        present.update(entry.get('caches') or [entry.get('cache', '')])
+    present.discard('')
+
+    ordered = [c for c in _CACHE_HEADINGS if c in present]
+    ordered += sorted(present.difference(ordered))
+    return [{'cache': c, 'heading': _CACHE_HEADINGS.get(c, c),
+             'blurb': _CACHE_BLURBS.get(c, '')} for c in ordered]
+
+
+def _picker_demos(manifest: List[dict]) -> List[dict]:
+    """Reduce the manifest to the fields the picker's script reads.
+
+    Args:
+        manifest (list[dict]): the baked set, every entry carrying params.
+
+    Returns:
+        list[dict]: {key, blurb, mb, caches, p} per bundle, where p is
+            the parameter dict the dropdowns are built from.
+    """
+    return [{'key': e['key'],
+             'blurb': e.get('blurb', ''),
+             'mb': round(e.get('size_bytes', 0) / (1024 ** 2), 1),
+             'caches': e.get('caches') or [e.get('cache', '')],
+             'p': e['params']}
+            for e in manifest]
+
+
+def _bundle_list_html(manifest: List[dict]) -> str:
+    """Render every bundle as a plain load link, grouped by its cache.
+
+    The picker replaces this for anyone running javascript; it stays as
+    the noscript body, and as the whole page for a set whose manifest
+    carries no parameters to pick over.
+
+    Args:
+        manifest (list[dict]): the baked set.
+
+    Returns:
+        str: the html, or a stand-in when nothing is baked.
+    """
     by_cache: 'OrderedDict[str, list]' = OrderedDict()
-    for entry in mounter.manifest:
+    for entry in manifest:
         by_cache.setdefault(entry.get('cache', ''), []).append(entry)
 
     blocks = []
@@ -251,45 +368,258 @@ def _landing_html(mounter: LocalMounter) -> str:
         blocks.append(f'<h2>{html.escape(heading)}</h2>\n'
                       f'<ul>\n{chr(10).join(rows)}\n</ul>')
 
-    body = ('\n'.join(blocks)
+    return ('\n'.join(blocks)
             or '<p><em>no bundles baked into this build</em></p>')
 
-    return f"""<!doctype html>
+
+def _picker_html(figures: List[dict]) -> str:
+    """Render the picker's static shell; its script fills the rest.
+
+    Args:
+        figures (list[dict]): the figure list from _figure_list.
+
+    Returns:
+        str: the html for the figure select and the empty containers the
+            script populates.
+    """
+    options = '\n'.join(
+        f'    <option value="{html.escape(f["cache"])}">'
+        f'{html.escape(f["heading"])} '
+        f'({html.escape(f["cache"])})</option>'
+        for f in figures)
+    return ('<div class="picker">\n'
+            '  <div class="row">\n'
+            '    <span class="tag">Paper figure</span>\n'
+            '    <select id="figure">\n'
+            f'{options}\n'
+            '    </select>\n'
+            '  </div>\n'
+            '  <p id="figure-blurb" class="blurb"></p>\n'
+            '  <div id="params"></div>\n'
+            '  <p id="chosen" class="chosen"></p>\n'
+            '  <a id="open" class="open">Open viewer</a>\n'
+            '</div>')
+
+
+# The picker runs client-side over the whole manifest rather than asking
+# the server per choice: the set is a few kB of json, so a round trip per
+# dropdown would buy nothing, and a page that needs no origin behind it
+# survives the CDN caching it.
+#
+# Each dropdown offers only the values reachable given the OTHER choices
+# already made, so no combination the picker can reach is one the baked
+# set is missing. A parameter the chosen figure holds fixed renders as
+# text rather than as a dropdown with one option.
+_PICKER_JS = Template("""
+const DEMOS = $demos;
+const FIGURES = $figures;
+const SPEC = $spec;
+const LABELS = $labels;
+
+const figSel = document.getElementById('figure');
+const figBlurb = document.getElementById('figure-blurb');
+const paramBox = document.getElementById('params');
+const openBtn = document.getElementById('open');
+const chosen = document.getElementById('chosen');
+let sel = {};
+
+function show(name, raw) {
+  const map = LABELS[name] || {};
+  const key = String(raw);
+  if (Object.prototype.hasOwnProperty.call(map, key)) return map[key];
+  if (raw === null) return 'n/a';
+  const spec = SPEC.filter(function (s) { return s[0] === name; })[0];
+  const kind = spec ? spec[2] : '';
+  if (kind === 'int') return Number(raw).toLocaleString();
+  // a grid built by logspace lands on 0.030000000000000013, and three
+  // significant figures is the precision the axis was specified to
+  if (kind === 'num') return String(parseFloat(Number(raw).toPrecision(3)));
+  return String(raw);
+}
+
+function pool() {
+  const fig = figSel.value;
+  return DEMOS.filter(function (d) { return d.caches.indexOf(fig) >= 0; });
+}
+
+function fits(d, skip) {
+  for (const k in sel) {
+    if (k === skip) continue;
+    if (String(d.p[k]) !== sel[k]) return false;
+  }
+  return true;
+}
+
+function render() {
+  const here = pool();
+  for (const s of SPEC) {
+    const n = s[0];
+    if (sel[n] === undefined) continue;
+    const live = here.some(function (d) { return String(d.p[n]) === sel[n]; });
+    if (!live) delete sel[n];
+  }
+
+  paramBox.innerHTML = '';
+  for (const s of SPEC) {
+    const name = s[0];
+    const vals = [];
+    const seen = Object.create(null);
+    for (const d of here) {
+      if (!fits(d, name)) continue;
+      const k = String(d.p[name]);
+      if (seen[k] === undefined) { seen[k] = 1; vals.push(d.p[name]); }
+    }
+    if (!vals.length) continue;
+    vals.sort(function (a, b) {
+      if (typeof a === 'number' && typeof b === 'number') return a - b;
+      return String(a).localeCompare(String(b));
+    });
+
+    const row = document.createElement('div');
+    row.className = 'row';
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = s[1];
+    row.appendChild(tag);
+
+    if (vals.length === 1) {
+      const fixed = document.createElement('span');
+      fixed.className = 'fixed';
+      fixed.textContent = show(name, vals[0]);
+      row.appendChild(fixed);
+    } else {
+      const box = document.createElement('select');
+      for (const raw of vals) {
+        const opt = document.createElement('option');
+        opt.value = String(raw);
+        opt.textContent = show(name, raw);
+        if (sel[name] === String(raw)) opt.selected = true;
+        box.appendChild(opt);
+      }
+      if (sel[name] === undefined) sel[name] = box.value;
+      box.addEventListener('change', function () {
+        sel[name] = box.value;
+        render();
+      });
+      row.appendChild(box);
+    }
+    paramBox.appendChild(row);
+  }
+
+  const hit = here.filter(function (d) { return fits(d, null); });
+  if (hit.length) {
+    openBtn.href = '/load/' + encodeURIComponent(hit[0].key);
+    openBtn.classList.remove('off');
+    chosen.textContent = hit[0].blurb
+      + ' (' + hit[0].key + ', ' + hit[0].mb + ' MB)';
+  } else {
+    openBtn.removeAttribute('href');
+    openBtn.classList.add('off');
+    chosen.textContent = 'nothing baked for that combination';
+  }
+}
+
+function pickFigure() {
+  sel = {};
+  const f = FIGURES.filter(function (x) {
+    return x.cache === figSel.value;
+  })[0];
+  figBlurb.textContent = f ? f.blurb : '';
+  render();
+}
+
+figSel.addEventListener('change', pickFigure);
+pickFigure();
+""")
+
+
+_LANDING_TEMPLATE = Template("""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GLOW Viewer</title>
 <style>
-  body {{ font-family: system-ui, sans-serif; max-width: 720px;
-         margin: 3rem auto; padding: 0 1rem; line-height: 1.5; color: #222; }}
-  h1 {{ margin-bottom: 0.25rem; }}
-  h2 {{ font-size: 1.05rem; margin: 1.6rem 0 0.3rem; color: #444; }}
-  p.lede {{ color: #555; margin-top: 0; }}
-  ul {{ padding-left: 1.25rem; margin: 0.2rem 0; }}
-  li {{ margin: 0.3rem 0; }}
-  a {{ color: #0066cc; text-decoration: none; }}
-  a:hover {{ text-decoration: underline; }}
-  .key {{ color: #999; font-family: monospace; font-size: 0.85em; }}
-  footer {{ color: #888; font-size: 0.85em; margin-top: 3rem; }}
+  body { font-family: system-ui, sans-serif; max-width: 720px;
+         margin: 3rem auto; padding: 0 1rem; line-height: 1.5; color: #222; }
+  h1 { margin-bottom: 0.25rem; }
+  h2 { font-size: 1.05rem; margin: 1.6rem 0 0.3rem; color: #444; }
+  p.lede { color: #555; margin-top: 0; }
+  ul { padding-left: 1.25rem; margin: 0.2rem 0; }
+  li { margin: 0.3rem 0; }
+  a { color: #0066cc; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .key { color: #999; font-family: monospace; font-size: 0.85em; }
+  .picker { border: 1px solid #e2e2e2; border-radius: 8px;
+            padding: 1.1rem 1.3rem 1.3rem; background: #fbfbfb;
+            margin-top: 1.5rem; }
+  .row { display: flex; align-items: baseline; gap: 0.75rem;
+         margin: 0.45rem 0; }
+  .tag { flex: 0 0 12.5rem; color: #444; font-size: 0.92rem; }
+  .picker select { flex: 1 1 auto; max-width: 22rem; padding: 0.3rem 0.4rem;
+                   font: inherit; font-size: 0.92rem; border: 1px solid #ccc;
+                   border-radius: 4px; background: #fff; }
+  .fixed { color: #666; font-size: 0.92rem; }
+  .blurb { color: #555; font-size: 0.92rem; margin: 0.7rem 0 1.1rem; }
+  .chosen { color: #777; font-family: monospace; font-size: 0.82rem;
+            margin: 1.1rem 0 0.9rem; }
+  a.open { display: inline-block; background: #0066cc; color: #fff;
+           padding: 0.5rem 1.1rem; border-radius: 5px; font-size: 0.95rem; }
+  a.open:hover { background: #0055aa; text-decoration: none; }
+  a.open.off { background: #bbb; pointer-events: none; }
+  footer { color: #888; font-size: 0.85em; margin-top: 3rem; }
 </style>
 </head>
 <body>
 <h1>GLOW Viewer</h1>
-<p class="lede">One fitted analysis per link, each a cell of the benchmark
-the paper reports, grouped by the axis it sits on. Pick one to explore the
-region scatter, the volume overlay, the per-region regression and the
-permutation histogram. The first click on a bundle loads it, which takes a
+<p class="lede">Every entry is one cell of the benchmark the paper
+reports, fitted with the arm it reports. Pick the figure you want, then
+the point on its axis, and the viewer opens on the region scatter, the
+volume overlay, the per-region regression and, where the fit kept its
+draws, the permutation histogram. The first load of a bundle takes a
 moment.</p>
 
-{body}
+$body
 
 <footer>
 GLOW: General Linear models Optimized with Ward's method.<br>
 Questions or feedback:
 <a href="mailto:mhigger@ccs.neu.edu">mhigger@ccs.neu.edu</a>
 </footer>
+$script
 </body>
-</html>"""
+</html>""")
+
+
+def _landing_html(mounter: LocalMounter) -> str:
+    """Render the landing page: a figure picker over the baked set.
+
+    Degrades to the plain grouped list of load links whenever the picker
+    cannot be built or run -- a manifest with no parameters (a bundle
+    dropped in by hand has none), and any browser without javascript.
+    Neither may leave a baked bundle unreachable.
+
+    Args:
+        mounter (LocalMounter): holds the manifest to render.
+
+    Returns:
+        str: the whole page.
+    """
+    manifest = mounter.manifest
+    listing = _bundle_list_html(manifest)
+    if not manifest or not all('params' in e for e in manifest):
+        return _LANDING_TEMPLATE.substitute(body=listing, script='')
+
+    figures = _figure_list(manifest)
+    script = _PICKER_JS.substitute(
+        demos=_json_for_script(_picker_demos(manifest)),
+        figures=_json_for_script(figures),
+        spec=_json_for_script(_PARAM_SPEC),
+        labels=_json_for_script(_VALUE_LABELS))
+
+    body = f'{_picker_html(figures)}\n<noscript>\n{listing}\n</noscript>'
+    return _LANDING_TEMPLATE.substitute(
+        body=body, script=f'<script>{script}</script>')
 
 
 def build_server(pickle_dir=_PICKLE_DIR) -> Flask:

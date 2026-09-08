@@ -348,3 +348,89 @@ def test_per_image_off_refuses_any_image_index():
     assert _resolve_image_idx('mean', per_image=True) is None
     assert _resolve_image_idx(None, per_image=True) is None
     assert _resolve_image_idx('7', per_image=True) == 7
+
+
+@pytest.fixture
+def picker_dir(tmp_path, bundle):
+    """Write a three-bundle set whose manifest carries picker parameters.
+
+    The moderate cell is filed under two figures at once, which is what
+    the hub cell does in the real baked set.
+    """
+    entries = []
+    for key, caches, params in (
+            ('llr_weak', ['sweep_llr'], dict(effect_llr=0.003)),
+            ('llr_moderate', ['sweep_llr', 'prune'],
+             dict(effect_llr=0.03, prune_rule='greedy')),
+            ('prune_dp', ['prune'], dict(prune_rule='dp'))):
+        with gzip.open(tmp_path / f'{key}.p.gz', 'wb') as f:
+            pickle.dump(bundle, f, protocol=pickle.HIGHEST_PROTOCOL)
+        full = dict(source='wgn', b=1, num_img=20, num_vox=125,
+                    effect_llr=0.03, n_vox_frac=0.1, cluster_mode='FOCUS',
+                    prune_rule='greedy', keep_stat=False)
+        full.update(params)
+        entries.append({
+            'key': key, 'blurb': f'blurb for {key}', 'cache': caches[0],
+            'caches': caches, 'source': 'wgn', 'params': full,
+            'size_bytes': (tmp_path / f'{key}.p.gz').stat().st_size})
+    (tmp_path / server.MANIFEST_NAME).write_text(
+        json.dumps({'demos': entries}))
+    return tmp_path
+
+
+def test_landing_builds_a_picker_from_params(picker_dir):
+    """A manifest carrying params renders the figure picker."""
+    c = Client(server.build_application(pickle_dir=picker_dir))
+    body = c.get('/').get_data(as_text=True)
+    assert '<select id="figure">' in body
+    assert 'value="sweep_llr"' in body
+    assert 'value="prune"' in body
+
+
+def test_picker_files_the_hub_cell_under_every_figure(picker_dir):
+    """A cell on several axes is offered by each figure it sits on.
+
+    The moderate fit is the point the prune sweep varies the rule away
+    from, so a picker that filed it under sweep_llr alone would offer
+    the prune figure no greedy option at all.
+    """
+    manifest = server.read_manifest(picker_dir)
+    demos = server._picker_demos(manifest)
+    hub = [d for d in demos if d['key'] == 'llr_moderate'][0]
+    assert set(hub['caches']) == {'sweep_llr', 'prune'}
+
+    for cache in ('sweep_llr', 'prune'):
+        reachable = [d['key'] for d in demos if cache in d['caches']]
+        assert 'llr_moderate' in reachable
+
+
+def test_figure_list_orders_by_heading(picker_dir):
+    """Figures come out in _CACHE_HEADINGS order, not manifest order."""
+    figures = server._figure_list(server.read_manifest(picker_dir))
+    caches = [f['cache'] for f in figures]
+    assert caches == ['sweep_llr', 'prune']
+    assert all(f['heading'] and f['blurb'] for f in figures)
+
+
+def test_picker_keeps_a_noscript_link_to_every_bundle(picker_dir):
+    """Every bundle stays reachable without javascript."""
+    c = Client(server.build_application(pickle_dir=picker_dir))
+    body = c.get('/').get_data(as_text=True)
+    assert '<noscript>' in body
+    for key in ('llr_weak', 'llr_moderate', 'prune_dp'):
+        assert f'/load/{key}' in body
+
+
+def test_landing_falls_back_when_params_are_absent(client):
+    """A manifest with no params renders the plain list, no picker."""
+    c, _ = client
+    body = c.get('/').get_data(as_text=True)
+    assert '<select id="figure">' not in body
+    assert '/load/llr_moderate' in body
+
+
+def test_json_for_script_cannot_close_the_script_element(picker_dir):
+    """An embedded value carrying </script> is neutralised."""
+    blob = server._json_for_script({'k': '</script><b>'})
+    assert '</script>' not in blob
+    assert '<\\/script>' in blob

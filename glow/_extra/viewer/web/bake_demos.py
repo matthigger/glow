@@ -72,6 +72,10 @@ class Demo:
         blurb (str): one-line reader-facing label for the landing page.
         cache (str): the CONFIG cache whose axis this cell sits on, for
             the landing page to group by.
+        also (tuple): further caches this same cell sits on. The hub cell
+            is a point on several figures' axes at once, and a picker
+            that filed it under one of them would offer the others no
+            value for it.
         data (dict): config.DATA_AXES overrides, each a single-value list
             so the grid it builds holds exactly one cell.
         effect (dict): config.EFFECT_AXES overrides; llr_list=None is the
@@ -82,6 +86,7 @@ class Demo:
     key: str
     blurb: str
     cache: str
+    also: tuple = ()
     data: dict = dataclasses.field(default_factory=dict)
     effect: dict = dataclasses.field(default_factory=dict)
     ana: dict = dataclasses.field(default_factory=dict)
@@ -106,6 +111,8 @@ DEMOS = [
          blurb='Weakest effect on the strength grid',
          effect=dict(llr_list=[_LLR_WEAK])),
     Demo(key='llr_moderate', cache='sweep_llr',
+         also=('sweep_b', 'sweep_extent', 'segment', 'prune',
+               'runtime_num_vox'),
          blurb='Moderate effect -- the anchor the other sweeps plant',
          effect=dict(llr_list=[_LLR_MODERATE])),
     Demo(key='llr_strong', cache='sweep_llr',
@@ -257,11 +264,59 @@ def build_demo(demo: Demo, *, verbose: bool = True):
     return ana, exp, mask_target
 
 
+def demo_params(demo: Demo) -> dict:
+    """Describe one demo by the parameter values that name its cell.
+
+    Reads the same grids build_demo does, so a value is the cell's own
+    rather than a restatement of the override that produced it -- a demo
+    that overrides nothing still reports the axis default it inherited,
+    which is what a picker has to offer. Builds nothing: a grid cell is
+    kwargs until a factory is called on it.
+
+    Args:
+        demo (Demo): the entry to describe.
+
+    Returns:
+        dict: {source, b, num_img, num_vox, effect_llr, n_vox_frac,
+            cluster_mode, prune_rule, keep_stat, n_perm_fwer,
+            n_perm_inner}. effect_llr and n_vox_frac are None on the
+            null path, where nothing is planted.
+    """
+    data_over = {k: v for k, v in demo.data.items() if k != 'sources'}
+    kwargs_data = config.data_grid(seeds=[0], sources=[demo.source],
+                                   **data_over)[0]
+    kwargs_effect = config.effect_grid(**demo.effect)[0]
+    ana = paper_ana(**demo.ana)
+
+    # an HCP cell names its features instead of carrying b, and draws the
+    # whole cohort rather than a chosen num_img
+    if demo.source == 'hcp':
+        b, num_img = len(kwargs_data['hcp_feats']), config.HCP_NUM_IMG
+    else:
+        b, num_img = kwargs_data['b'], kwargs_data['num_img']
+
+    planted = kwargs_effect or {}
+    return dict(
+        source=demo.source,
+        b=int(b),
+        num_img=int(num_img),
+        num_vox=int(kwargs_data['extenter'].n_vox),
+        effect_llr=(float(planted['effect_llr']) if planted else None),
+        n_vox_frac=(float(planted['n_vox_frac']) if planted else None),
+        cluster_mode=ana.cluster_mode.name,
+        prune_rule=str(ana.prune_rule),
+        keep_stat=bool(getattr(ana, 'keep_stat', False)),
+        n_perm_fwer=int(ana.n_perm_fwer),
+        n_perm_inner=int(ana.n_perm_inner))
+
+
 def write_manifest(out_dir: pathlib.Path) -> None:
     """Write manifest.json describing every bundle present in out_dir.
 
     The server reads this at boot so the landing page can name the set
-    without unpickling it; a bundle with no file on disk is left out.
+    and build its picker without unpickling it; a bundle with no file on
+    disk is left out. Each entry carries demo_params, which is what the
+    picker's dropdowns are built from.
 
     Args:
         out_dir (pathlib.Path): the bundle directory.
@@ -272,8 +327,11 @@ def write_manifest(out_dir: pathlib.Path) -> None:
         if not path.exists():
             continue
         entries.append({'key': demo.key, 'blurb': demo.blurb,
-                        'cache': demo.cache, 'source': demo.source,
-                        'size_bytes': path.stat().st_size})
+                        'cache': demo.cache,
+                        'caches': [demo.cache, *demo.also],
+                        'source': demo.source,
+                        'size_bytes': path.stat().st_size,
+                        'params': demo_params(demo)})
     (out_dir / MANIFEST_NAME).write_text(
         json.dumps({'demos': entries}, indent=2) + '\n')
     print(f'wrote {MANIFEST_NAME} ({len(entries)} bundle(s))')
