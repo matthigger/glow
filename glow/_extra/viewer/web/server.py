@@ -120,6 +120,29 @@ def _extract(payload):
     return payload, None, None
 
 
+def _no_store_on_error(response):
+    """Stop the CDN from reusing anything that is not a success.
+
+    Firebase Hosting gives a rewritten response that carries no
+    Cache-Control of its own a ten-minute edge lifetime. Two of this
+    server's replies are transient by construction and wrong to reuse:
+    the 404 for a bundle whose viewer is not mounted yet, and the
+    /view/<key>/ self-redirect, which points at itself and turns into a
+    redirect loop as soon as the edge answers it instead of the process
+    that would have mounted it. Both clear on the next request that
+    reaches the origin, so only a 2xx may be cached.
+
+    Args:
+        response: the outgoing Flask response.
+
+    Returns:
+        response: the same response, marked no-store unless it succeeded.
+    """
+    if not 200 <= response.status_code < 300:
+        response.headers.setdefault('Cache-Control', 'no-store')
+    return response
+
+
 class LocalMounter:
     """Mount per-bundle viewers on a dispatcher, bounded by an LRU.
 
@@ -186,6 +209,7 @@ class LocalMounter:
                               min_vox=min_vox,
                               routes_pathname_prefix='/',
                               requests_pathname_prefix=f'{mount_key}/')
+            app.server.after_request(_no_store_on_error)
             self.application.mounts[mount_key] = app.server
             self.mounted_[key] = f'{mount_key}/'
 
@@ -283,6 +307,7 @@ def build_server(pickle_dir=_PICKLE_DIR) -> Flask:
 
     server = Flask('glow_viewer_web')
     server.mounter = mounter
+    server.after_request(_no_store_on_error)
 
     @server.route('/')
     def index():

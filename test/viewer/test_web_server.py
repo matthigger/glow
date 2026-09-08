@@ -243,3 +243,52 @@ def test_dash_apps_compress_when_flask_compress_is_present():
     finally:
         viewer_app.Dash = real
     assert seen.get('compress') is True
+
+
+def test_error_responses_are_not_cacheable(client):
+    """A 404 is marked no-store so the CDN cannot pin it.
+
+    Firebase Hosting caches a rewritten response with no Cache-Control
+    for ten minutes, which would hold a 404 for a bundle that is merely
+    unmounted long after the mount exists.
+    """
+    c, _ = client
+    r = c.get('/load/not-a-real-bundle')
+    assert r.status_code == 404
+    assert r.headers['Cache-Control'] == 'no-store'
+
+
+def test_self_redirect_is_not_cacheable(client):
+    """The /view/ self-redirect is no-store, or it loops.
+
+    It redirects to its own URL, so an edge-cached copy would answer the
+    request that was supposed to reach the process and mount the bundle,
+    sending the browser back to the same cached redirect.
+    """
+    c, _ = client
+    r = c.get('/view/llr_moderate/')
+    assert r.status_code == 302
+    assert r.headers['Cache-Control'] == 'no-store'
+
+
+def test_success_stays_cacheable(client):
+    """A 2xx is left alone, so the edge can still serve it."""
+    c, _ = client
+    r = c.get('/')
+    assert r.status_code == 200
+    assert 'no-store' not in r.headers.get('Cache-Control', '')
+
+
+def test_mounted_viewer_errors_are_not_cacheable(client):
+    """A 404 from inside a mounted viewer is no-store too.
+
+    The dispatcher hands these to the Dash app's own Flask server, which
+    never sees the outer server's after_request hook. A missing asset is
+    the error Dash does raise: it answers an unknown page route with the
+    app index, to leave client-side routing to the callbacks.
+    """
+    c, _ = client
+    c.get('/load/llr_moderate')
+    r = c.get('/view/llr_moderate/assets/no-such-file.js')
+    assert r.status_code == 404
+    assert r.headers['Cache-Control'] == 'no-store'
