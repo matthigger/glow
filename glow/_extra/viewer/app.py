@@ -30,6 +30,17 @@ from ._port import _check_port
 from .layout import (_make_layout_2d, _make_layout_3d,
                      _detail_panels)
 
+# Gzip is worth a lot here -- the region DataFrame reaches the browser as
+# one JSON blob and the component bundles are large -- but Dash raises
+# without flask-compress rather than degrading, so it is switched on by
+# presence. The deployed image installs it (web/requirements.txt); a bare
+# checkout serves uncompressed instead of failing to start.
+try:
+    import flask_compress  # noqa: F401
+    _HAS_COMPRESS = True
+except ImportError:
+    _HAS_COMPRESS = False
+
 
 # ---------------------------------------------------------------------------
 # App factory
@@ -93,7 +104,7 @@ def _create_app(ana_glow, exp, mask_target=None, y_features=None,
         target_stats = compute_target_stats(exp, mask_target)
         target_vox = mask_idx[mask_target & (mask_idx >= 0)]
 
-    dash_kw = {'update_title': None}
+    dash_kw = {'update_title': None, 'compress': _HAS_COMPRESS}
     if (routes_pathname_prefix is not None
             or requests_pathname_prefix is not None):
         dash_kw['routes_pathname_prefix'] = routes_pathname_prefix

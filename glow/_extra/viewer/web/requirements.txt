@@ -13,6 +13,8 @@ numba>=0.59
 
 # viewer
 dash>=2.17
+# gzip for Dash's responses; app.py enables compression only if present
+flask-compress>=1.14
 dash-daq>=0.6
 dash-slicer>=0.3
 plotly>=5.24

@@ -214,3 +214,32 @@ def test_large_tree_is_capped(pickle_dir, monkeypatch):
     app.app.mounter.max_regions = 4
     Client(app).get('/load/llr_moderate')
     assert seen['max_regions'] == 4
+
+
+def test_dash_apps_compress_when_flask_compress_is_present():
+    """Responses are gzipped, which is most of what the page weighs.
+
+    Dash raises rather than degrades if compress=True without
+    flask-compress, so app.py switches on presence; this pins that the
+    switch reaches Dash instead of silently staying off.
+    """
+    from glow._extra.viewer import app as viewer_app
+    if not viewer_app._HAS_COMPRESS:
+        pytest.skip('flask-compress not installed')
+
+    seen = {}
+    real = viewer_app.Dash
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    viewer_app.Dash = spy
+    try:
+        exp = Experiment.from_gauss(b=1, num_img=20, shape=(5, 5, 5),
+                                    seed=0, a=2)
+        ana = AnalysisGLOW(n_perm_fwer=5, n_perm_inner=5).fit(exp)
+        viewer_app._create_app(ana, exp)
+    finally:
+        viewer_app.Dash = real
+    assert seen.get('compress') is True
