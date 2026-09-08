@@ -1,4 +1,11 @@
+# syntax=docker/dockerfile:1.7-labs
 # Multi-demo viewer image, for Google Cloud Run or any Docker host.
+#
+# The syntax line above must stay the first line of the file -- a parser
+# directive is only read before any other content -- and pins a BuildKit
+# frontend new enough for COPY --exclude, which docker pulls on its own.
+# BuildKit is the default builder; a build forced onto the legacy one
+# (DOCKER_BUILDKIT=0) ignores the directive and fails on --exclude.
 #
 # Build context must be the project root (src/), not glow/_extra/viewer/web/,
 # so the whole glow/ package is reachable.  Build with:
@@ -18,8 +25,19 @@ WORKDIR /app
 COPY glow/_extra/viewer/web/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-# --- glow package + baked bundles ----------------------------------------
-COPY glow ./glow
+# --- baked demo bundles --------------------------------------------------
+# Deliberately its own layer, and deliberately above the package: the
+# bundles are the bulk of the image and are rebaked once in a blue moon,
+# while the code beside them changes every commit.  A layer is invalidated
+# by every layer before it, so the rarely-changing half has to come first
+# for `docker push` to skip re-uploading it after a code edit.  Do not fold
+# these two COPYs back into one.
+COPY glow/_extra/viewer/web/pickles ./glow/_extra/viewer/web/pickles
+
+# --- glow package --------------------------------------------------------
+# --exclude keeps the bundles out of this layer; its pattern is relative to
+# the COPY source (glow/), not to the build context.
+COPY --exclude=_extra/viewer/web/pickles glow ./glow
 
 ENV PYTHONPATH=/app
 # The default for a local run; Cloud Run overrides PORT at start-up and
