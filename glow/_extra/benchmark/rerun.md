@@ -13,7 +13,7 @@ in the paper is drawn from it.
 |---|---|---|
 | input | this repository | [github.com/matthigger/glow](https://github.com/matthigger/glow), at `25f528c` |
 | input | HCP-YA imaging data, 100 subjects x 6 maps | [Zenodo 20736221](https://zenodo.org/records/20736221) |
-| output | provenance records, 58,116 JSON / 360 MB | Zenodo `TBD-RECORDS-DOI` |
+| output | provenance records, 58,116 JSON / 360 MB | [Zenodo 10.5281/zenodo.22664286](https://doi.org/10.5281/zenodo.22664286) |
 
 You do not have to generate the output to read it. Ours is published, so the
 figures redraw from it with no compute and without the imaging data -- see
@@ -125,7 +125,7 @@ Output lands in `~/.local/share/glow/results/_latest/<cache>/`.
 
 ## Using our records
 
-Download the record tree from Zenodo `TBD-RECORDS-DOI`, unpack it into
+Download the record tree from [Zenodo 10.5281/zenodo.22664286](https://doi.org/10.5281/zenodo.22664286), unpack it into
 `~/.local/share/glow/records/`, then
 `python -m glow._extra.benchmark.plot` redraws the paper's figures with no
 compute and without the imaging data. With them in place a benchmark run also
