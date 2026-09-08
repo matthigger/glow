@@ -489,3 +489,75 @@ def test_reported_arm_leads_its_dropdown():
     """Each ordered axis opens on the value the paper reports."""
     assert server._VALUE_ORDER['cluster_mode'][0] == 'FOCUS'
     assert server._VALUE_ORDER['prune_rule'][0] == 'greedy'
+
+
+def test_shortcuts_group_by_source():
+    """Both source groups render when both are baked."""
+    manifest = [{'key': 'llr_strong'}, {'key': 'hcp_llr_strong'}]
+    out = server._shortcuts_html(manifest)
+    assert 'Synthetic images (WGN)' in out
+    assert 'Real diffusion maps (HCP)' in out
+    assert '/load/hcp_llr_strong' in out
+
+
+def test_shortcuts_drop_an_empty_group(picker_dir):
+    """A WGN-only build shows no empty HCP heading."""
+    out = server._shortcuts_html(server.read_manifest(picker_dir))
+    assert 'Synthetic images (WGN)' in out
+    assert 'HCP' not in out
+
+
+def test_picker_carries_the_stats():
+    """A bundle's scores reach the picker's script as its s field."""
+    manifest = [{'key': 'k', 'cache': 'sweep_llr', 'size_bytes': 1,
+                 'params': {}, 'stats': {'n_pred': 1, 'dice': 0.5}}]
+    assert server._picker_demos(manifest)[0]['s'] == {'n_pred': 1,
+                                                      'dice': 0.5}
+
+
+def test_picker_tolerates_a_bundle_with_no_stats():
+    """An unscored bundle gets an empty stats dict, not a KeyError."""
+    manifest = [{'key': 'k', 'cache': 'sweep_llr', 'size_bytes': 1,
+                 'params': {}}]
+    assert server._picker_demos(manifest)[0]['s'] == {}
+
+
+def test_demo_stats_scores_a_planted_fit(bundle):
+    """demo_stats reports the figures' own metrics for a planted cell."""
+    bake = pytest.importorskip('glow._extra.viewer.web.bake_demos')
+    stats = bake.demo_stats(bundle['ana'], bundle['mask_target'],
+                            bundle['exp'].mask_idx > -1)
+    assert set(stats) >= {'n_pred', 'min_pval', 'dice', 'sens', 'ppv',
+                          'hom', 'com'}
+    for key in ('dice', 'sens', 'ppv', 'hom', 'com'):
+        assert stats[key] is None or 0.0 <= stats[key] <= 1.0
+
+
+def test_demo_stats_omits_overlap_on_the_null_path(bundle):
+    """With nothing planted there is no overlap worth reporting.
+
+    Reporting dice 0 there would read as a failure to find something,
+    when there was nothing to find.
+    """
+    bake = pytest.importorskip('glow._extra.viewer.web.bake_demos')
+    stats = bake.demo_stats(bundle['ana'], None,
+                            bundle['exp'].mask_idx > -1)
+    assert 'dice' not in stats
+    assert 'hom' not in stats
+    assert stats['n_pred'] >= 0
+
+
+def test_detail_panel_names_the_image_source(bundle):
+    """The experiment detail panel says which dataset the images are."""
+    from glow._extra.viewer import layout
+    rendered = str(layout._detail_panels(bundle['ana'], bundle['exp'],
+                                         source='hcp'))
+    assert 'image source' in rendered
+    assert layout.SOURCE_LABELS['hcp'] in rendered
+
+
+def test_detail_panel_omits_an_unknown_source(bundle):
+    """An unlabelled experiment gets no row, rather than one reading None."""
+    from glow._extra.viewer import layout
+    rendered = str(layout._detail_panels(bundle['ana'], bundle['exp']))
+    assert 'image source' not in rendered

@@ -131,16 +131,25 @@ _PARAM_SPEC = [
 ]
 
 # The few things a reader almost always wants to see first, one click
-# each, in the order they answer "does this method work?". A shortcut
-# naming a bundle this build did not bake is dropped rather than shown
-# broken.
+# each, in the order they answer "does this method work?", and split by
+# source because the honest answer differs between synthetic noise and
+# real images. A shortcut naming a bundle this build did not bake is
+# dropped rather than shown broken.
 _SHORTCUTS = [
-    ('llr_strong', 'A strong effect, found'),
-    ('llr_weak', 'A weak effect, missed'),
-    ('null', 'No effect planted at all'),
-    ('hcp_llr_moderate', 'Real HCP diffusion maps'),
-    ('vox_1k', 'With the permutation histogram'),
-    ('vox_full_brain', 'A whole brain'),
+    ('Synthetic images (WGN)', [
+        ('llr_strong', 'A strong effect, found'),
+        ('llr_moderate', 'A moderate effect'),
+        ('llr_weak', 'A weak effect, missed'),
+        ('null', 'No effect planted at all'),
+        ('vox_1k', 'With the permutation histogram'),
+        ('vox_full_brain', 'A whole brain'),
+    ]),
+    ('Real diffusion maps (HCP)', [
+        ('hcp_llr_strong', 'A strong effect, found'),
+        ('hcp_llr_moderate', 'A moderate effect'),
+        ('hcp_llr_weak', 'A weak effect, missed'),
+        ('hcp_null', 'No effect planted at all'),
+    ]),
 ]
 
 # Values a reader should not have to decode. Anything absent renders by
@@ -305,6 +314,7 @@ class LocalMounter:
                               min_vox=min_vox,
                               per_image=(source not in
                                          GATED_PER_IMAGE_SOURCES),
+                              source=source,
                               routes_pathname_prefix='/',
                               requests_pathname_prefix=f'{mount_key}/')
             app.server.after_request(_no_store_on_error)
@@ -386,12 +396,16 @@ def _picker_demos(manifest: List[dict]) -> List[dict]:
              'blurb': e.get('blurb', ''),
              'mb': round(e.get('size_bytes', 0) / (1024 ** 2), 1),
              'caches': e.get('caches') or [e.get('cache', '')],
-             'p': e['params']}
+             'p': e['params'],
+             's': e.get('stats') or {}}
             for e in manifest]
 
 
 def _shortcuts_html(manifest: List[dict]) -> str:
     """Render the one-click entry points, skipping any not baked.
+
+    A group whose bundles are all absent is dropped with them, so a
+    WGN-only build shows no empty HCP heading.
 
     Args:
         manifest (list[dict]): the baked set.
@@ -400,12 +414,16 @@ def _shortcuts_html(manifest: List[dict]) -> str:
         str: the html, or '' when this build baked none of them.
     """
     have = {e['key'] for e in manifest}
-    links = [f'<a href="/load/{html.escape(key)}">{html.escape(label)}</a>'
-             for key, label in _SHORTCUTS if key in have]
-    if not links:
-        return ''
-    return ('<h2 class="sc">Start here</h2>\n'
-            f'<div class="shortcuts">{"".join(links)}</div>')
+    blocks = []
+    for group, entries in _SHORTCUTS:
+        links = [f'<a href="/load/{html.escape(key)}">'
+                 f'{html.escape(label)}</a>'
+                 for key, label in entries if key in have]
+        if links:
+            blocks.append(f'<h2 class="sc">Start here -- '
+                          f'{html.escape(group)}</h2>\n'
+                          f'<div class="shortcuts">{"".join(links)}</div>')
+    return '\n'.join(blocks)
 
 
 def _bundle_list_html(manifest: List[dict]) -> str:
@@ -466,6 +484,7 @@ def _picker_html(figures: List[dict]) -> str:
             '  </div>\n'
             '  <p id="figure-blurb" class="blurb"></p>\n'
             '  <div id="params"></div>\n'
+            '  <p id="stats" class="stats"></p>\n'
             '  <p id="chosen" class="chosen"></p>\n'
             '  <a id="open" class="open">Open viewer</a>\n'
             '</div>')
@@ -491,6 +510,7 @@ const figSel = document.getElementById('figure');
 const figBlurb = document.getElementById('figure-blurb');
 const paramBox = document.getElementById('params');
 const openBtn = document.getElementById('open');
+const statBox = document.getElementById('stats');
 const chosen = document.getElementById('chosen');
 let sel = {};
 
@@ -506,6 +526,34 @@ function show(name, raw) {
   // significant figures is the precision the axis was specified to
   if (kind === 'num') return String(parseFloat(Number(raw).toPrecision(3)));
   return String(raw);
+}
+
+function num(v, places) {
+  return (v === null || v === undefined) ? '--' : Number(v).toFixed(places);
+}
+
+// How the fit scored, in the figures' own metrics, so a reader can step
+// the seed and watch a cell go from found to missed. Absent overlap
+// scores mean nothing was planted, where an overlap says nothing.
+function statLine(d) {
+  const s = d.s || {};
+  if (s.n_pred === undefined) return '';
+  const bits = [];
+  if (s.dice === undefined) {
+    bits.push('nothing planted');
+  } else {
+    bits.push('Dice ' + num(s.dice, 2));
+    bits.push('Sens ' + num(s.sens, 2));
+    bits.push('PPV ' + num(s.ppv, 2));
+    bits.push('Homogeneity ' + num(s.hom, 2));
+    bits.push('Completeness ' + num(s.com, 2));
+  }
+  bits.push(s.n_pred + (s.n_pred === 1 ? ' region' : ' regions'));
+  let p = 'min p ' + num(s.min_pval, 3);
+  const alpha = d.p.alpha_fwer;
+  if (alpha !== undefined && alpha !== null) p += ' vs alpha ' + alpha;
+  bits.push(p);
+  return bits.join('   \u00b7   ');
 }
 
 function pool() {
@@ -588,11 +636,13 @@ function render() {
   if (hit.length) {
     openBtn.href = '/load/' + encodeURIComponent(hit[0].key);
     openBtn.classList.remove('off');
+    statBox.textContent = statLine(hit[0]);
     chosen.textContent = hit[0].blurb
       + ' (' + hit[0].key + ', ' + hit[0].mb + ' MB)';
   } else {
     openBtn.removeAttribute('href');
     openBtn.classList.add('off');
+    statBox.textContent = '';
     chosen.textContent = 'nothing baked for that combination';
   }
 }
@@ -645,6 +695,8 @@ _LANDING_TEMPLATE = Template("""<!doctype html>
                    font: inherit; font-size: 0.92rem; border: 1px solid #ccc;
                    border-radius: 4px; background: #fff; }
   .fixed { color: #666; font-size: 0.92rem; }
+  .stats { color: #8a8a8a; font-size: 0.82rem; margin: 0.85rem 0 0;
+           padding-left: 13.25rem; line-height: 1.45; }
   .blurb { color: #555; font-size: 0.92rem; margin: 0.7rem 0 1.1rem; }
   .chosen { color: #777; font-family: monospace; font-size: 0.82rem;
             margin: 1.1rem 0 0.9rem; }

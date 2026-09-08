@@ -42,9 +42,17 @@ import re
 import sys
 import time
 
+import numpy as np
+
+import glow.mask
 from glow._extra.benchmark import config
 from glow._extra.benchmark.data import data_factory, data_recipe
 from glow._extra.benchmark.data import effect_factory
+from glow._extra.benchmark.score import score_effects
+# the split-VI pair is private to plot, and importing it is still right:
+# the alternative is a second copy of a definition the figures own, free
+# to drift from them.
+from glow._extra.benchmark.plot import _hom_com
 from glow._extra.viewer.web import MANIFEST_NAME
 from glow.analysis import AnalysisGLOW
 from glow.analysis.cluster import ClusterMode
@@ -343,9 +351,9 @@ def demo_params(demo: Demo, seed: int = 0) -> dict:
 
     Returns:
         dict: {source, seed, b, num_img, num_vox, effect_llr, n_vox_frac,
-            cluster_mode, prune_rule, keep_stat, n_perm_fwer,
-            n_perm_inner}. effect_llr and n_vox_frac are None on the
-            null path, where nothing is planted.
+            cluster_mode, prune_rule, keep_stat, alpha_fwer,
+            n_perm_fwer, n_perm_inner}. effect_llr and n_vox_frac are
+            None on the null path, where nothing is planted.
     """
     data_over = {k: v for k, v in demo.data.items() if k != 'sources'}
     kwargs_data = config.data_grid(seeds=[seed], sources=[demo.source],
@@ -372,8 +380,70 @@ def demo_params(demo: Demo, seed: int = 0) -> dict:
         cluster_mode=ana.cluster_mode.name,
         prune_rule=str(ana.prune_rule),
         keep_stat=bool(getattr(ana, 'keep_stat', False)),
+        alpha_fwer=float(ana.alpha_fwer),
         n_perm_fwer=int(ana.n_perm_fwer),
         n_perm_inner=int(ana.n_perm_inner))
+
+
+def demo_stats(ana, mask_target, mask_active) -> dict:
+    """Score one baked fit the way the paper's figures score it.
+
+    Runs the catalogue's own score_effects and reduces it to what a
+    reader can hold at once: the overlap trio from
+    glow.mask.stats_from_counts and the structural pair from plot's
+    split-VI (Rosenberg & Hirschberg 2007). Both come from the figures'
+    own definitions, so a demo's numbers cannot drift from the figure's.
+
+    Args:
+        ana: the fitted analysis.
+        mask_target (np.array | None): (X, Y, Z) bool planted support,
+            None on the null path.
+        mask_active (np.array): (X, Y, Z) bool, the analyzed voxels.
+
+    Returns:
+        dict: {n_pred, min_pval, dice, sens, ppv, hom, com}. The five
+            scores are absent on the null path, where an overlap with an
+            empty target would report 0 for having nothing to find. A
+            score that is undefined rather than absent is None.
+    """
+    target_list = [] if mask_target is None else [mask_target]
+    score = score_effects(ana, target_list, mask_active)
+
+    def clean(x):
+        """Return a json-safe float, NaN becoming None."""
+        return None if x is None or not np.isfinite(x) else float(x)
+
+    out = {'n_pred': int(score['n_pred']),
+           'min_pval': clean(score['min_pval'])}
+    if not target_list:
+        return out
+
+    counts = {k: np.array([score['target'][k]])
+              for k in ('tp', 'fp', 'tn', 'fn')}
+    overlap = glow.mask.stats_from_counts(**counts)
+    out.update({k: clean(overlap[k][0]) for k in ('dice', 'sens', 'ppv')})
+
+    n_r = np.array([[r['num_vox'] for r in score['pred']]], dtype=float)
+    o_r = np.array([[r['target'] for r in score['pred']]], dtype=float)
+    hom, com = _hom_com(n_r.reshape(1, -1), o_r.reshape(1, -1))
+    out['hom'] = clean(hom[0])
+    out['com'] = clean(com[0])
+    return out
+
+
+def score_bundle(path: pathlib.Path) -> dict:
+    """Unpickle one baked bundle and score it.
+
+    Args:
+        path (pathlib.Path): the .p.gz bundle.
+
+    Returns:
+        dict: demo_stats for the fit it holds.
+    """
+    with gzip.open(path, 'rb') as f:
+        payload = pickle.load(f)
+    return demo_stats(payload['ana'], payload.get('mask_target'),
+                      payload['exp'].mask_idx > -1)
 
 
 def write_manifest(out_dir: pathlib.Path) -> None:
@@ -384,11 +454,23 @@ def write_manifest(out_dir: pathlib.Path) -> None:
     adding one seed does not drop the seeds already baked. The server
     reads it at boot so the landing page can name the set and build its
     picker without unpickling it. Each entry carries demo_params, which
-    is what the dropdowns are built from.
+    the dropdowns are built from, and demo_stats, which the picker shows
+    under them.
+
+    Scoring is the one part that has to open a bundle, so the manifest
+    already on disk is reused as its own cache, keyed by name and size:
+    only a bundle that is new or refit is unpickled. Delete the manifest
+    to force a full rescore.
 
     Args:
         out_dir (pathlib.Path): the bundle directory.
     """
+    prior = {}
+    manifest_path = out_dir / MANIFEST_NAME
+    if manifest_path.exists():
+        for old in json.loads(manifest_path.read_text()).get('demos', []):
+            if 'stats' in old:
+                prior[(old['key'], old.get('size_bytes'))] = old['stats']
     order = {d.key: i for i, d in enumerate(DEMOS)}
     found = []
     for path in out_dir.glob('*.p.gz'):
@@ -398,14 +480,22 @@ def write_manifest(out_dir: pathlib.Path) -> None:
 
     entries = []
     for _, seed, path, demo, _ in sorted(found, key=lambda r: r[:2]):
+        key = path.name.removesuffix('.p.gz')
+        size = path.stat().st_size
         blurb = demo.blurb if seed == 0 else f'{demo.blurb} -- seed {seed}'
-        entries.append({'key': path.name.removesuffix('.p.gz'),
+        stats = prior.get((key, size))
+        if stats is None:
+            print(f'  scoring {key} ...')
+            sys.stdout.flush()
+            stats = score_bundle(path)
+        entries.append({'key': key,
                         'blurb': blurb,
                         'cache': demo.cache,
                         'caches': [demo.cache, *demo.also],
                         'source': demo.source,
-                        'size_bytes': path.stat().st_size,
-                        'params': demo_params(demo, seed)})
+                        'size_bytes': size,
+                        'params': demo_params(demo, seed),
+                        'stats': stats})
     (out_dir / MANIFEST_NAME).write_text(
         json.dumps({'demos': entries}, indent=2) + '\n')
     print(f'wrote {MANIFEST_NAME} ({len(entries)} bundle(s))')

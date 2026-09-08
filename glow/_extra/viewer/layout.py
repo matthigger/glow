@@ -288,11 +288,24 @@ def _render_value(key, val, depth=0):
     return _kv_row(key, s)
 
 
-def _detail_panels(ana_glow, exp):
+# source code -> what a reader calls it. An Experiment does not carry
+# which dataset it came from, so the caller that loaded it says.
+SOURCE_LABELS = {'wgn': 'WGN (white Gaussian noise, synthetic)',
+                 'hcp': 'HCP (diffusion maps, real subjects)'}
+
+
+def _detail_panels(ana_glow, exp, source=None):
     """Build the experiment + analysis detail <details> panels.
 
     Both are collapsed by default. Values are pulled directly from ana_glow
     and exp at layout time, with no callbacks.
+
+    Args:
+        ana_glow (AnalysisGLOWBase): the fitted analysis.
+        exp (Experiment): the experiment it was fit on.
+        source (str | None): the dataset the images came from, keying
+            SOURCE_LABELS. None omits the row rather than printing one
+            that reads 'None', which would suggest a value went missing.
     """
     meta = getattr(exp, 'meta', {}) or {}
 
@@ -319,6 +332,9 @@ def _detail_panels(ana_glow, exp):
                 + (f'(first: {subjects[0]})' if subjects else '')),
         _kv_row('features', features),
     ]
+    if source is not None:
+        exp_rows.insert(0, _kv_row('image source',
+                                   SOURCE_LABELS.get(source, source)))
     if 'affine' in meta and meta['affine'] is not None:
         exp_rows.append(_render_value('affine', meta['affine']))
 

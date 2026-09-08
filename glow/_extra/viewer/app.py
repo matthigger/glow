@@ -50,7 +50,7 @@ def _create_app(ana_glow, exp, mask_target=None, y_features=None,
                 subject_names=None, extra_df=None, min_vox=None,
                 url_base_pathname=None, server=None,
                 routes_pathname_prefix=None, requests_pathname_prefix=None,
-                per_image=True):
+                per_image=True, source=None):
     """Create and wire up the Dash app.
 
     Args:
@@ -69,6 +69,8 @@ def _create_app(ana_glow, exp, mask_target=None, y_features=None,
             should resolve it via launch(). No prompting happens here, so
             this stays safe for the headless multi-demo web server.
         per_image (bool): offer the individual images in the IMAGE view.
+        source (str | None): dataset the images came from, named in the
+            experiment detail panel (see layout.SOURCE_LABELS).
             False locks it to the group mean, both in the layout and in
             the callbacks that serve it, so a request naming an image
             index still gets the mean. The hosted demos set this for
@@ -127,13 +129,15 @@ def _create_app(ana_glow, exp, mask_target=None, y_features=None,
                   generic_cols, sig_cols, prune_cols, mask_cols,
                   y_features=y_features, subject_names=subject_names,
                   target_stats=target_stats, target_vox=target_vox,
-                  min_vox=min_vox, per_image=per_image)
+                  min_vox=min_vox, per_image=per_image,
+                  source=source)
     else:
         _setup_2d(app, ana_glow, exp, df,
                   generic_cols, sig_cols, prune_cols, mask_cols,
                   y_features=y_features, subject_names=subject_names,
                   target_stats=target_stats, target_vox=target_vox,
-                  min_vox=min_vox, per_image=per_image)
+                  min_vox=min_vox, per_image=per_image,
+                  source=source)
 
     return app
 
@@ -173,7 +177,7 @@ def _setup_3d(app, ana_glow, exp, df,
               generic_cols, sig_cols, prune_cols, mask_cols,
               y_features=None, subject_names=None,
               target_stats=None, target_vox=None, min_vox=0,
-              per_image=True):
+              per_image=True, source=None):
     """Set up the app for 3D data using dash-slicer."""
     from dash_slicer import VolumeSlicer
 
@@ -220,7 +224,8 @@ def _setup_3d(app, ana_glow, exp, df,
                                  subject_names=subject_names,
                                  has_stat=_has_stat(ana_glow),
                                  per_image=per_image)
-    app.layout.children.append(_detail_panels(ana_glow, exp))
+    app.layout.children.append(_detail_panels(ana_glow, exp,
+                                              source=source))
 
     # pre-compute target mask in image space for overlays
     mask_target_img = None
@@ -386,7 +391,7 @@ def _setup_2d(app, ana_glow, exp, df,
               generic_cols, sig_cols, prune_cols, mask_cols,
               y_features=None, subject_names=None,
               target_stats=None, target_vox=None, min_vox=0,
-              per_image=True):
+              per_image=True, source=None):
     """Set up the app for 2D data using Plotly go.Image."""
     mask_idx = exp.mask_idx
     bg_dict = compute_backgrounds(exp, y_features=y_features)
@@ -407,7 +412,8 @@ def _setup_2d(app, ana_glow, exp, df,
                                  subject_names=subject_names,
                                  has_stat=_has_stat(ana_glow),
                                  per_image=per_image)
-    app.layout.children.append(_detail_panels(ana_glow, exp))
+    app.layout.children.append(_detail_panels(ana_glow, exp,
+                                              source=source))
 
     # pre-compute target mask in image space for overlays
     mask_target_img = None
@@ -864,6 +870,8 @@ def _suggest_min_vox(size, max_regions):
 
     Args:
         size (np.array): (num_reg,) int voxel count per region.
+        source (str | None): dataset the images came from, named in the
+            experiment detail panel (see layout.SOURCE_LABELS).
         per_image (bool): offer the individual images in the IMAGE
             view. False locks it to the group mean; see _create_app.
         max_regions (int): target ceiling on the number of displayed regions.
@@ -921,7 +929,7 @@ def _resolve_min_vox(ana_glow, min_vox, max_regions):
 def launch(ana_glow, exp, mask_target=None, port=8050, debug=False,
            y_features=None, subject_names=None,
            extra_df=None, quiet=True, min_vox=None, max_regions=10_000,
-           per_image=True):
+           per_image=True, source=None):
     """Launch the glow viewer dashboard.
 
     Args:
@@ -977,7 +985,7 @@ def launch(ana_glow, exp, mask_target=None, port=8050, debug=False,
     app = _create_app(ana_glow, exp, mask_target=mask_target,
                       y_features=y_features, subject_names=subject_names,
                       extra_df=extra_df, min_vox=min_vox,
-                      per_image=per_image)
+                      per_image=per_image, source=source)
 
     # clean shutdown on Ctrl+C (and SIGTERM on Unix)
     def _shutdown(signum, frame):
