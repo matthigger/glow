@@ -13,7 +13,7 @@ in the paper is drawn from it.
 |---|---|---|
 | input | this repository | [github.com/matthigger/glow](https://github.com/matthigger/glow), at `25f528c` |
 | input | HCP-YA imaging data, 100 subjects x 6 maps | [Zenodo 20736221](https://zenodo.org/records/20736221) |
-| output | provenance records, 58,116 JSON / 360 MB | [Zenodo 10.5281/zenodo.22664286](https://doi.org/10.5281/zenodo.22664286) |
+| output | provenance records | [Zenodo 10.5281/zenodo.22664286](https://doi.org/10.5281/zenodo.22664286) |
 
 You do not have to generate the output to read it. Ours is published, so the
 figures redraw from it with no compute and without the imaging data -- see
@@ -68,25 +68,22 @@ The cache is disposable and the records are not;
 
 ## The configs the paper reads
 
-| config | leaves | CPU-h | backs |
-|---|---|---|---|
-| `sweep_llr` | 9,328 | 701.9 | detection vs effect strength |
-| `sweep_extent` | 6,204 | 451.7 | detection vs effect extent |
-| `vba_stat` | 16,500 | 185.6 | MANCOVA-statistic table |
-| `sweep_b` | 1,672 | 147.0 | detection vs feature count |
-| `null` | 2,102 | 29.8 | FWER calibration |
-| `sweep_n_perm_inner` | 1,050 | 5.8 | settles `N_PERM_INNER` |
-| `prune` | 8,800 | 0.5 | pruning-rule selection |
-| `segment` | 6,864 | 0.2 | segmentation quality |
-| `runtime_num_vox` | 108 | 1.3 | wall clock vs volume |
-| `runtime_1perm_*` (5) | 96 | 0.1 | per-permutation cost |
+| config | CPU-h | backs |
+|---|---|---|
+| `sweep_llr` | 701.9 | detection vs effect strength |
+| `sweep_extent` | 451.7 | detection vs effect extent |
+| `vba_stat` | 185.6 | MANCOVA-statistic table |
+| `sweep_b` | 147.0 | detection vs feature count |
+| `null` | 29.8 | FWER calibration |
+| `sweep_n_perm_inner` | 5.8 | settles `N_PERM_INNER` |
+| `prune` | 0.5 | pruning-rule selection |
+| `segment` | 0.2 | segmentation quality |
+| `runtime_num_vox` | 1.3 | wall clock vs volume |
+| `runtime_1perm_*` (5) | 0.1 | per-permutation cost |
 
-51,740 distinct leaf records (the caches sharing the `run_ana` grid share
-leaves, so the column sums higher) plus 6,376 build records. The CPU-hours
-are what the records recorded, which understates a cold run: three heavy
-intermediates are memoised but not recorded, the largest being
-`glow_fit_for_prune` (2,200 shared GLOW fits, 1.7 GB). Disk: the joblib cache
-reached 104 GB.
+The CPU-hours are what the records recorded, which understates a cold run:
+three heavy intermediates are memoised but not recorded, the largest being
+`glow_fit_for_prune`. Disk: the joblib cache reached 104 GB.
 
 ## Running
 
