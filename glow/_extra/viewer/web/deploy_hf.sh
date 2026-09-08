@@ -147,7 +147,7 @@ if [ "$ASSUME_YES" = false ]; then
         exit 1 ;; esac
 fi
 
-git commit -m "link to the Cloud Run demo"
+git commit -m "link to the hosted demo"
 echo ""
 echo -e "${BLUE}Pushing to ${SPACE_URL} ...${NC}"
 git push
