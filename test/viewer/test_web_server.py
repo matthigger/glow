@@ -404,12 +404,50 @@ def test_picker_files_the_hub_cell_under_every_figure(picker_dir):
         assert 'llr_moderate' in reachable
 
 
-def test_figure_list_orders_by_heading(picker_dir):
-    """Figures come out in _CACHE_HEADINGS order, not manifest order."""
+def test_figure_list_orders_by_paper_figure(picker_dir):
+    """Figures come out in the paper's numbering, not manifest order."""
     figures = server._figure_list(server.read_manifest(picker_dir))
-    caches = [f['cache'] for f in figures]
-    assert caches == ['sweep_llr', 'prune']
+    assert [f['cache'] for f in figures] == ['prune', 'sweep_llr']
     assert all(f['heading'] and f['blurb'] for f in figures)
+
+
+def test_figure_label_carries_the_paper_index(picker_dir):
+    """A cache the paper reports is labelled with its figure number."""
+    figures = server._figure_list(server.read_manifest(picker_dir))
+    label = {f['cache']: f['label'] for f in figures}
+    assert label['prune'].startswith('Figure 8 --')
+    assert label['sweep_llr'].startswith('Figure 10 --')
+    assert 'sweep_llr' in label['sweep_llr']
+
+
+def test_figure_label_says_when_it_is_not_in_the_paper():
+    """A catalogue cache no figure reports says so, rather than looking
+    like an omission. sweep_extent is one: CONFIG builds it and the
+    paper's figures do not read it."""
+    manifest = [{'key': 'k', 'cache': 'sweep_extent', 'size_bytes': 1,
+                 'params': {}}]
+    label = server._figure_list(manifest)[0]['label']
+    assert label.endswith('not in the paper')
+    assert 'Figure' not in label
+
+
+def test_shortcuts_skip_what_was_not_baked(picker_dir):
+    """A shortcut naming an absent bundle is dropped, not shown broken."""
+    manifest = server.read_manifest(picker_dir)
+    shortcuts = server._shortcuts_html(manifest)
+    assert '/load/llr_weak"' in shortcuts
+    assert 'llr_strong' not in shortcuts
+    assert 'vox_full_brain' not in shortcuts
+
+
+def test_shortcuts_absent_when_none_are_baked():
+    """A set holding none of the shortcut bundles renders no row."""
+    assert server._shortcuts_html([{'key': 'nothing_named_this'}]) == ''
+
+
+def test_seed_is_a_picker_axis():
+    """The seed a bundle was built at is offered like any other axis."""
+    assert 'seed' in [name for name, _, _ in server._PARAM_SPEC]
 
 
 def test_picker_keeps_a_noscript_link_to_every_bundle(picker_dir):
@@ -434,3 +472,20 @@ def test_json_for_script_cannot_close_the_script_element(picker_dir):
     blob = server._json_for_script({'k': '</script><b>'})
     assert '</script>' not in blob
     assert '<\\/script>' in blob
+
+
+def test_value_order_covers_every_labelled_code():
+    """An ordered parameter lists every code it has a label for.
+
+    The script ranks by index, so a code the order forgot would fall to
+    the end -- correct, but silent. Nothing should reach that path.
+    """
+    for name, order in server._VALUE_ORDER.items():
+        labelled = set(server._VALUE_LABELS.get(name, {}))
+        assert labelled.issubset(set(order)), name
+
+
+def test_reported_arm_leads_its_dropdown():
+    """Each ordered axis opens on the value the paper reports."""
+    assert server._VALUE_ORDER['cluster_mode'][0] == 'FOCUS'
+    assert server._VALUE_ORDER['prune_rule'][0] == 'greedy'

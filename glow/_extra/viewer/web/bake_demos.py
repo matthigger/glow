@@ -38,6 +38,7 @@ import inspect
 import json
 import pathlib
 import pickle
+import re
 import sys
 import time
 
@@ -76,6 +77,9 @@ class Demo:
             is a point on several figures' axes at once, and a picker
             that filed it under one of them would offer the others no
             value for it.
+        seed_axis (bool): whether --seeds may bake this cell at more than
+            one seed. Off for the cells whose bundle or fit is too big to
+            hold a seed axis at a hosted set's size; those stay at seed 0.
         data (dict): config.DATA_AXES overrides, each a single-value list
             so the grid it builds holds exactly one cell.
         effect (dict): config.EFFECT_AXES overrides; llr_list=None is the
@@ -87,6 +91,7 @@ class Demo:
     blurb: str
     cache: str
     also: tuple = ()
+    seed_axis: bool = True
     data: dict = dataclasses.field(default_factory=dict)
     effect: dict = dataclasses.field(default_factory=dict)
     ana: dict = dataclasses.field(default_factory=dict)
@@ -125,10 +130,10 @@ DEMOS = [
          effect=dict(llr_list=None)),
 
     # --- feature count (sweep_b) -------------------------------------
-    Demo(key='b2', cache='sweep_b',
+    Demo(key='b2', cache='sweep_b', seed_axis=False,
          blurb='Two imaging features, moderate effect',
          data=dict(b_list=[2])),
-    Demo(key='b4', cache='sweep_b',
+    Demo(key='b4', cache='sweep_b', seed_axis=False,
          blurb='Four imaging features, moderate effect',
          data=dict(b_list=[4])),
 
@@ -166,7 +171,7 @@ DEMOS = [
          blurb='Small volume, with the permutation-draw histogram',
          data=dict(crop_n_vox=config.RUNTIME_NUM_VOX_GRID[0]),
          ana=dict(keep_stat=True)),
-    Demo(key='vox_full_brain', cache='runtime_num_vox',
+    Demo(key='vox_full_brain', cache='runtime_num_vox', seed_axis=False,
          blurb='Full-brain volume, the top of the runtime sweep',
          data=dict(crop_n_vox=config.RUNTIME_NUM_VOX_GRID[-1])),
 
@@ -180,7 +185,63 @@ DEMOS = [
     Demo(key='hcp_llr_strong', cache='sweep_llr',
          blurb='HCP diffusion maps, strongest effect',
          data=dict(sources=['hcp']), effect=dict(llr_list=[_LLR_STRONG])),
+    Demo(key='hcp_null', cache='null',
+         blurb='HCP diffusion maps, no planted effect',
+         data=dict(sources=['hcp']), effect=dict(llr_list=None)),
 ]
+
+_DEMO_BY_KEY = {d.key: d for d in DEMOS}
+
+
+def demo_key(demo: Demo, seed: int) -> str:
+    """Name the bundle for one demo at one seed.
+
+    Seed 0 keeps the bare key: it is the seed the set has always baked,
+    and suffixing it would break every link already shared.
+
+    Args:
+        demo (Demo): the entry.
+        seed (int): the data seed it was built at.
+
+    Returns:
+        str: the filename stem and URL segment.
+    """
+    return demo.key if seed == 0 else f'{demo.key}_s{seed}'
+
+
+def parse_bundle_name(stem: str):
+    """Recover (demo, seed) from a bundle's filename stem.
+
+    Args:
+        stem (str): a bundle filename with its .p.gz suffix removed.
+
+    Returns:
+        tuple | None: (Demo, seed), or None when the stem names no entry
+            in DEMOS -- a bundle from an older set, or dropped in by hand.
+    """
+    match = re.fullmatch(r'(.+)_s(\d+)', stem)
+    if match and match.group(1) in _DEMO_BY_KEY:
+        return _DEMO_BY_KEY[match.group(1)], int(match.group(2))
+    if stem in _DEMO_BY_KEY:
+        return _DEMO_BY_KEY[stem], 0
+    return None
+
+
+def bake_plan(demo_list, seeds) -> list:
+    """Expand demos across seeds, holding the opted-out cells at seed 0.
+
+    Args:
+        demo_list (list[Demo]): the entries to bake.
+        seeds (list[int]): the seeds asked for.
+
+    Returns:
+        list[tuple]: (demo, seed) pairs in demo order, seeds ascending.
+    """
+    plan = []
+    for demo in demo_list:
+        want = list(dict.fromkeys(seeds)) if demo.seed_axis else [0]
+        plan.extend((demo, seed) for seed in sorted(want))
+    return plan
 
 
 def call_uncached(fnc, *args, **kwargs):
@@ -225,11 +286,14 @@ def paper_ana(**override) -> AnalysisGLOW:
     return AnalysisGLOW(**kwargs)
 
 
-def build_demo(demo: Demo, *, verbose: bool = True):
+def build_demo(demo: Demo, *, seed: int = 0, verbose: bool = True):
     """Build one demo's cell and fit the paper's recipe on it.
 
     Args:
         demo (Demo): the entry to build.
+        seed (int): the data seed. The effect extenter seeds from the
+            experiment, so this redraws the plant along with the images,
+            which is the paper's own notion of a random seed.
         verbose (bool): forward progress to the analysis fit.
 
     Returns:
@@ -241,7 +305,7 @@ def build_demo(demo: Demo, *, verbose: bool = True):
     # one seed and one source, so the grid each call builds holds exactly
     # the cell this demo names
     data_over = {k: v for k, v in demo.data.items() if k != 'sources'}
-    kwargs_data = config.data_grid(seeds=[0], sources=[demo.source],
+    kwargs_data = config.data_grid(seeds=[seed], sources=[demo.source],
                                    **data_over)[0]
     kwargs_effect = config.effect_grid(**demo.effect)[0]
 
@@ -264,7 +328,7 @@ def build_demo(demo: Demo, *, verbose: bool = True):
     return ana, exp, mask_target
 
 
-def demo_params(demo: Demo) -> dict:
+def demo_params(demo: Demo, seed: int = 0) -> dict:
     """Describe one demo by the parameter values that name its cell.
 
     Reads the same grids build_demo does, so a value is the cell's own
@@ -275,15 +339,16 @@ def demo_params(demo: Demo) -> dict:
 
     Args:
         demo (Demo): the entry to describe.
+        seed (int): the data seed the bundle was built at.
 
     Returns:
-        dict: {source, b, num_img, num_vox, effect_llr, n_vox_frac,
+        dict: {source, seed, b, num_img, num_vox, effect_llr, n_vox_frac,
             cluster_mode, prune_rule, keep_stat, n_perm_fwer,
             n_perm_inner}. effect_llr and n_vox_frac are None on the
             null path, where nothing is planted.
     """
     data_over = {k: v for k, v in demo.data.items() if k != 'sources'}
-    kwargs_data = config.data_grid(seeds=[0], sources=[demo.source],
+    kwargs_data = config.data_grid(seeds=[seed], sources=[demo.source],
                                    **data_over)[0]
     kwargs_effect = config.effect_grid(**demo.effect)[0]
     ana = paper_ana(**demo.ana)
@@ -298,6 +363,7 @@ def demo_params(demo: Demo) -> dict:
     planted = kwargs_effect or {}
     return dict(
         source=demo.source,
+        seed=int(seed),
         b=int(b),
         num_img=int(num_img),
         num_vox=int(kwargs_data['extenter'].n_vox),
@@ -313,25 +379,33 @@ def demo_params(demo: Demo) -> dict:
 def write_manifest(out_dir: pathlib.Path) -> None:
     """Write manifest.json describing every bundle present in out_dir.
 
-    The server reads this at boot so the landing page can name the set
-    and build its picker without unpickling it; a bundle with no file on
-    disk is left out. Each entry carries demo_params, which is what the
-    picker's dropdowns are built from.
+    Reads the directory rather than the bake plan, so the manifest
+    describes whatever is on disk however it got there -- a later run
+    adding one seed does not drop the seeds already baked. The server
+    reads it at boot so the landing page can name the set and build its
+    picker without unpickling it. Each entry carries demo_params, which
+    is what the dropdowns are built from.
 
     Args:
         out_dir (pathlib.Path): the bundle directory.
     """
+    order = {d.key: i for i, d in enumerate(DEMOS)}
+    found = []
+    for path in out_dir.glob('*.p.gz'):
+        named = parse_bundle_name(path.name.removesuffix('.p.gz'))
+        if named is not None:
+            found.append((order[named[0].key], named[1], path, *named))
+
     entries = []
-    for demo in DEMOS:
-        path = out_dir / f'{demo.key}.p.gz'
-        if not path.exists():
-            continue
-        entries.append({'key': demo.key, 'blurb': demo.blurb,
+    for _, seed, path, demo, _ in sorted(found, key=lambda r: r[:2]):
+        blurb = demo.blurb if seed == 0 else f'{demo.blurb} -- seed {seed}'
+        entries.append({'key': path.name.removesuffix('.p.gz'),
+                        'blurb': blurb,
                         'cache': demo.cache,
                         'caches': [demo.cache, *demo.also],
                         'source': demo.source,
                         'size_bytes': path.stat().st_size,
-                        'params': demo_params(demo)})
+                        'params': demo_params(demo, seed)})
     (out_dir / MANIFEST_NAME).write_text(
         json.dumps({'demos': entries}, indent=2) + '\n')
     print(f'wrote {MANIFEST_NAME} ({len(entries)} bundle(s))')
@@ -351,6 +425,10 @@ def main():
         '--only', action='append', default=None, metavar='KEY',
         help='bake just this entry (repeatable)')
     parser.add_argument(
+        '--seeds', type=int, nargs='+', default=[0], metavar='N',
+        help='data seeds to bake (default 0). A cell whose seed_axis is '
+             'off ignores this and stays at seed 0.')
+    parser.add_argument(
         '--hcp', action='store_true',
         help='include the HCP entries (DUA-restricted; do not publish)')
     parser.add_argument(
@@ -366,19 +444,23 @@ def main():
             parser.error(f'unknown --only key(s): {sorted(unknown)}')
         demo_list = [d for d in DEMOS if d.key in wanted]
 
+    plan = bake_plan(demo_list, args.seeds)
+
     if args.list:
-        for demo in demo_list:
-            print(f'{demo.key:<20} {demo.cache:<18} {demo.blurb}')
-        print(f'{len(demo_list)} entr(ies)')
+        for demo, seed in plan:
+            print(f'{demo_key(demo, seed):<24} {demo.cache:<18} '
+                  f'{demo.blurb}')
+        print(f'{len(plan)} entr(ies)')
         return 0
 
     args.out.mkdir(parents=True, exist_ok=True)
-    print(f'baking {len(demo_list)} demo(s) into {args.out}')
+    print(f'baking {len(plan)} demo(s) into {args.out}')
 
     total_t0 = time.time()
-    for i, demo in enumerate(demo_list, 1):
-        out = args.out / f'{demo.key}.p.gz'
-        head = f'[{i}/{len(demo_list)}] {demo.key}'
+    for i, (demo, seed) in enumerate(plan, 1):
+        key = demo_key(demo, seed)
+        out = args.out / f'{key}.p.gz'
+        head = f'[{i}/{len(plan)}] {key}'
 
         if out.exists() and not args.force:
             size_mb = out.stat().st_size / (1024 ** 2)
@@ -387,12 +469,12 @@ def main():
 
         print(f'{head}: {demo.blurb}')
         t0 = time.time()
-        ana, exp, mask_target = build_demo(demo)
+        ana, exp, mask_target = build_demo(demo, seed=seed)
         build_s = time.time() - t0
 
         with gzip.open(out, 'wb') as f:
             pickle.dump({'ana': ana, 'exp': exp, 'mask_target': mask_target,
-                         'demo': dataclasses.asdict(demo)}, f,
+                         'demo': dataclasses.asdict(demo), 'seed': seed}, f,
                         protocol=pickle.HIGHEST_PROTOCOL)
 
         size_mb = out.stat().st_size / (1024 ** 2)

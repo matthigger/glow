@@ -71,8 +71,20 @@ GATED_PER_IMAGE_SOURCES = frozenset({'hcp'})
 # for a local caller, and nothing did it here.
 DEFAULT_MAX_REGIONS = 10_000
 
-# cache -> the question that cache's axis answers. Also the picker's
-# figure order, so the detection sweeps come before the diagnostics.
+# cache -> where the paper reports it. Counted off the order of the
+# figure environments in publications/submissions/2026_glow.tex, so it
+# needs rechecking whenever a figure is added or moved. sweep_b and
+# sweep_extent are deliberately absent: the catalogue builds them and no
+# current figure reads them.
+_CACHE_FIGURES = {
+    'segment': 7,
+    'prune': 8,
+    'null': 9,
+    'sweep_llr': 10,
+    'runtime_num_vox': 12,
+}
+
+# cache -> the question that cache's axis answers.
 _CACHE_HEADINGS = {
     'sweep_llr': 'Effect strength',
     'null': 'No effect',
@@ -115,6 +127,20 @@ _PARAM_SPEC = [
     ('cluster_mode', 'Ward projection', 'enum'),
     ('prune_rule', 'Selection rule', 'enum'),
     ('keep_stat', 'Permutation histogram', 'enum'),
+    ('seed', 'Random seed', 'int'),
+]
+
+# The few things a reader almost always wants to see first, one click
+# each, in the order they answer "does this method work?". A shortcut
+# naming a bundle this build did not bake is dropped rather than shown
+# broken.
+_SHORTCUTS = [
+    ('llr_strong', 'A strong effect, found'),
+    ('llr_weak', 'A weak effect, missed'),
+    ('null', 'No effect planted at all'),
+    ('hcp_llr_moderate', 'Real HCP diffusion maps'),
+    ('vox_1k', 'With the permutation histogram'),
+    ('vox_full_brain', 'A whole brain'),
 ]
 
 # Values a reader should not have to decode. Anything absent renders by
@@ -132,6 +158,16 @@ _VALUE_LABELS = {
     'keep_stat': {'true': 'included', 'false': 'not included'},
     'effect_llr': {'null': 'none (null case)'},
     'n_vox_frac': {'null': 'n/a'},
+}
+
+# Where a code's alphabetical order is not the order to read it in. The
+# first value of each dropdown is also its default, so these put the arm
+# the paper reports in front: sorting prune_rule as text would open on
+# dp, and source on hcp. Anything unlisted sorts numerically or by text.
+_VALUE_ORDER = {
+    'source': ['wgn', 'hcp'],
+    'cluster_mode': ['FOCUS', 'GLM_ERROR', 'NAIVE'],
+    'prune_rule': ['greedy', 'single_max', 'dp'],
 }
 
 
@@ -303,20 +339,37 @@ def _figure_list(manifest: List[dict]) -> List[dict]:
     Args:
         manifest (list[dict]): the baked set.
 
+    Ordered by the paper's own figure numbering, so a reader who came
+    looking for a figure finds it where they expect. The caches no
+    figure reports come last, said plainly rather than left to look like
+    an omission.
+
+    Args:
+        manifest (list[dict]): the baked set.
+
     Returns:
-        list[dict]: {cache, heading, blurb} per figure, those named in
-            _CACHE_HEADINGS first and in its order, unrecognised caches
-            after them alphabetically.
+        list[dict]: {cache, heading, blurb, label} per figure, label
+            being what the dropdown shows.
     """
     present = set()
     for entry in manifest:
         present.update(entry.get('caches') or [entry.get('cache', '')])
     present.discard('')
 
-    ordered = [c for c in _CACHE_HEADINGS if c in present]
-    ordered += sorted(present.difference(ordered))
-    return [{'cache': c, 'heading': _CACHE_HEADINGS.get(c, c),
-             'blurb': _CACHE_BLURBS.get(c, '')} for c in ordered]
+    def rank(cache):
+        return (_CACHE_FIGURES.get(cache, 10 ** 6), cache)
+
+    figures = []
+    for cache in sorted(present, key=rank):
+        heading = _CACHE_HEADINGS.get(cache, cache)
+        num = _CACHE_FIGURES.get(cache)
+        named = f'{heading} ({cache})'
+        figures.append({
+            'cache': cache, 'heading': heading,
+            'blurb': _CACHE_BLURBS.get(cache, ''),
+            'label': (f'Figure {num} -- {named}' if num
+                      else f'{named} -- not in the paper')})
+    return figures
 
 
 def _picker_demos(manifest: List[dict]) -> List[dict]:
@@ -335,6 +388,24 @@ def _picker_demos(manifest: List[dict]) -> List[dict]:
              'caches': e.get('caches') or [e.get('cache', '')],
              'p': e['params']}
             for e in manifest]
+
+
+def _shortcuts_html(manifest: List[dict]) -> str:
+    """Render the one-click entry points, skipping any not baked.
+
+    Args:
+        manifest (list[dict]): the baked set.
+
+    Returns:
+        str: the html, or '' when this build baked none of them.
+    """
+    have = {e['key'] for e in manifest}
+    links = [f'<a href="/load/{html.escape(key)}">{html.escape(label)}</a>'
+             for key, label in _SHORTCUTS if key in have]
+    if not links:
+        return ''
+    return ('<h2 class="sc">Start here</h2>\n'
+            f'<div class="shortcuts">{"".join(links)}</div>')
 
 
 def _bundle_list_html(manifest: List[dict]) -> str:
@@ -384,8 +455,7 @@ def _picker_html(figures: List[dict]) -> str:
     """
     options = '\n'.join(
         f'    <option value="{html.escape(f["cache"])}">'
-        f'{html.escape(f["heading"])} '
-        f'({html.escape(f["cache"])})</option>'
+        f'{html.escape(f["label"])}</option>'
         for f in figures)
     return ('<div class="picker">\n'
             '  <div class="row">\n'
@@ -415,6 +485,7 @@ const DEMOS = $demos;
 const FIGURES = $figures;
 const SPEC = $spec;
 const LABELS = $labels;
+const ORDER = $order;
 
 const figSel = document.getElementById('figure');
 const figBlurb = document.getElementById('figure-blurb');
@@ -470,7 +541,14 @@ function render() {
       if (seen[k] === undefined) { seen[k] = 1; vals.push(d.p[name]); }
     }
     if (!vals.length) continue;
+    const rank = ORDER[name];
+    function at(v) {
+      const i = rank.indexOf(String(v));
+      // a value the order forgot sorts last, never silently first
+      return i < 0 ? 1e9 : i;
+    }
     vals.sort(function (a, b) {
+      if (rank) return at(a) - at(b);
       if (typeof a === 'number' && typeof b === 'number') return a - b;
       return String(a).localeCompare(String(b));
     });
@@ -550,6 +628,13 @@ _LANDING_TEMPLATE = Template("""<!doctype html>
   a { color: #0066cc; text-decoration: none; }
   a:hover { text-decoration: underline; }
   .key { color: #999; font-family: monospace; font-size: 0.85em; }
+  h2.sc { font-size: 0.78rem; text-transform: uppercase; color: #999;
+          letter-spacing: 0.05em; margin: 1.9rem 0 0.6rem; }
+  .shortcuts { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .shortcuts a { border: 1px solid #cfe0f5; background: #f2f7fd;
+                 color: #0a58a6; padding: 0.32rem 0.8rem;
+                 border-radius: 999px; font-size: 0.88rem; }
+  .shortcuts a:hover { background: #e3eefb; text-decoration: none; }
   .picker { border: 1px solid #e2e2e2; border-radius: 8px;
             padding: 1.1rem 1.3rem 1.3rem; background: #fbfbfb;
             margin-top: 1.5rem; }
@@ -573,11 +658,11 @@ _LANDING_TEMPLATE = Template("""<!doctype html>
 <body>
 <h1>GLOW Viewer</h1>
 <p class="lede">Every entry is one cell of the benchmark the paper
-reports, fitted with the arm it reports. Pick the figure you want, then
-the point on its axis, and the viewer opens on the region scatter, the
-volume overlay, the per-region regression and, where the fit kept its
-draws, the permutation histogram. The first load of a bundle takes a
-moment.</p>
+reports, fitted with the arm it reports. Take a shortcut, or pick the
+figure you want and then the point on its axis. Either way the viewer
+opens on the region scatter, the volume overlay, the per-region
+regression and, where the fit kept its draws, the permutation histogram.
+The first load of a bundle takes a moment.</p>
 
 $body
 
@@ -615,9 +700,13 @@ def _landing_html(mounter: LocalMounter) -> str:
         demos=_json_for_script(_picker_demos(manifest)),
         figures=_json_for_script(figures),
         spec=_json_for_script(_PARAM_SPEC),
-        labels=_json_for_script(_VALUE_LABELS))
+        labels=_json_for_script(_VALUE_LABELS),
+        order=_json_for_script(_VALUE_ORDER))
 
-    body = f'{_picker_html(figures)}\n<noscript>\n{listing}\n</noscript>'
+    body = (f'{_shortcuts_html(manifest)}\n'
+            f'<h2 class="sc">Or pick a cell</h2>\n'
+            f'{_picker_html(figures)}\n'
+            f'<noscript>\n{listing}\n</noscript>')
     return _LANDING_TEMPLATE.substitute(
         body=body, script=f'<script>{script}</script>')
 
