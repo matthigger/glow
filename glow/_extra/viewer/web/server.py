@@ -133,8 +133,10 @@ _PARAM_SPEC = [
 # The few things a reader almost always wants to see first, one click
 # each, in the order they answer "does this method work?", and split by
 # source because the honest answer differs between synthetic noise and
-# real images. A shortcut naming a bundle this build did not bake is
-# dropped rather than shown broken.
+# real images. Only the HCP entry is a brain: its WGN counterpart is
+# noise at the same voxel count, and is named for the scale it tests.
+# A shortcut naming a bundle this build did not bake is dropped rather
+# than shown broken.
 _SHORTCUTS = [
     ('Synthetic images (WGN)', [
         ('llr_strong', 'A strong effect, found'),
@@ -142,13 +144,15 @@ _SHORTCUTS = [
         ('llr_weak', 'A weak effect, missed'),
         ('null', 'No effect planted at all'),
         ('vox_1k', 'With the permutation histogram'),
-        ('vox_full_brain', 'A whole brain'),
+        ('vox_full_brain', 'Whole-brain scale (225k vox)'),
     ]),
     ('Real diffusion maps (HCP)', [
         ('hcp_llr_strong', 'A strong effect, found'),
         ('hcp_llr_moderate', 'A moderate effect'),
         ('hcp_llr_weak', 'A weak effect, missed'),
         ('hcp_null', 'No effect planted at all'),
+        ('hcp_vox_1k', 'With the permutation histogram'),
+        ('hcp_vox_full_brain', 'A whole brain'),
     ]),
 ]
 

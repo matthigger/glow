@@ -561,3 +561,25 @@ def test_detail_panel_omits_an_unknown_source(bundle):
     from glow._extra.viewer import layout
     rendered = str(layout._detail_panels(bundle['ana'], bundle['exp']))
     assert 'image source' not in rendered
+
+
+def test_only_the_hcp_shortcut_calls_itself_a_brain():
+    """The WGN cell at 225k voxels is noise at that scale, not a brain.
+
+    Both cells exist so a reader can compare them, and naming the
+    synthetic one "a whole brain" would be the one place the set claims
+    to show real anatomy when it does not.
+    """
+    labels = {key: label
+              for _, entries in server._SHORTCUTS for key, label in entries}
+    assert labels['vox_full_brain'] == 'Whole-brain scale (225k vox)'
+    assert labels['hcp_vox_full_brain'] == 'A whole brain'
+
+
+def test_hcp_group_offers_the_volume_shortcuts():
+    """The histogram and whole-brain entry points exist for HCP too."""
+    manifest = [{'key': 'hcp_vox_1k'}, {'key': 'hcp_vox_full_brain'}]
+    out = server._shortcuts_html(manifest)
+    assert '/load/hcp_vox_1k' in out
+    assert '/load/hcp_vox_full_brain' in out
+    assert 'Synthetic images (WGN)' not in out

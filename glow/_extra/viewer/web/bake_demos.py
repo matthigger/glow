@@ -88,6 +88,10 @@ class Demo:
         seed_axis (bool): whether --seeds may bake this cell at more than
             one seed. Off for the cells whose bundle or fit is too big to
             hold a seed axis at a hosted set's size; those stay at seed 0.
+        fit (dict): GLOW_FIT_PARAMS overrides for this cell -- how the fit
+            runs, never what it computes, so an override cannot change the
+            result. Only the largest volumes need one, to stay inside the
+            box's RAM.
         data (dict): config.DATA_AXES overrides, each a single-value list
             so the grid it builds holds exactly one cell.
         effect (dict): config.EFFECT_AXES overrides; llr_list=None is the
@@ -100,6 +104,7 @@ class Demo:
     cache: str
     also: tuple = ()
     seed_axis: bool = True
+    fit: dict = dataclasses.field(default_factory=dict)
     data: dict = dataclasses.field(default_factory=dict)
     effect: dict = dataclasses.field(default_factory=dict)
     ana: dict = dataclasses.field(default_factory=dict)
@@ -188,6 +193,7 @@ DEMOS = [
          blurb='HCP diffusion maps, weakest effect',
          data=dict(sources=['hcp']), effect=dict(llr_list=[_LLR_WEAK])),
     Demo(key='hcp_llr_moderate', cache='sweep_llr',
+         also=('runtime_num_vox',),
          blurb='HCP diffusion maps, moderate effect',
          data=dict(sources=['hcp']), effect=dict(llr_list=[_LLR_MODERATE])),
     Demo(key='hcp_llr_strong', cache='sweep_llr',
@@ -196,6 +202,23 @@ DEMOS = [
     Demo(key='hcp_null', cache='null',
          blurb='HCP diffusion maps, no planted effect',
          data=dict(sources=['hcp']), effect=dict(llr_list=None)),
+
+    # --- HCP mirrors of the volume axis (--hcp) ----------------------
+    # The runtime sweep is HCP in the catalogue, so these are the cells
+    # the figure actually reports; the WGN pair beside them is the
+    # synthetic comparison, not the other way round.
+    Demo(key='hcp_vox_1k', cache='runtime_num_vox',
+         blurb='HCP diffusion maps, small volume, with the histogram',
+         data=dict(sources=['hcp'],
+                   crop_n_vox=config.RUNTIME_NUM_VOX_GRID[0]),
+         ana=dict(keep_stat=True)),
+    # n_jobs is cut here alone: at the full HCP support each worker holds
+    # its own tail fold, and the shared count exhausts this box's RAM.
+    Demo(key='hcp_vox_full_brain', cache='runtime_num_vox',
+         seed_axis=False, fit=dict(n_jobs=6),
+         blurb='HCP diffusion maps, the whole brain',
+         data=dict(sources=['hcp'],
+                   crop_n_vox=config.RUNTIME_NUM_VOX_GRID[-1])),
 ]
 
 _DEMO_BY_KEY = {d.key: d for d in DEMOS}
@@ -330,8 +353,9 @@ def build_demo(demo: Demo, *, seed: int = 0, verbose: bool = True):
         print(f'    planted {int(mask_target.sum())} voxels')
 
     ana = paper_ana(**demo.ana)
+    fit_params = {**config.GLOW_FIT_PARAMS, **demo.fit}
     print(f'    fitting {ana!r}')
-    ana.fit(exp, verbose=verbose, **config.GLOW_FIT_PARAMS)
+    ana.fit(exp, verbose=verbose, **fit_params)
     print(f'    {len(ana.effect_list)} effect(s) discovered')
     return ana, exp, mask_target
 
