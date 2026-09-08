@@ -49,7 +49,8 @@ except ImportError:
 def _create_app(ana_glow, exp, mask_target=None, y_features=None,
                 subject_names=None, extra_df=None, min_vox=None,
                 url_base_pathname=None, server=None,
-                routes_pathname_prefix=None, requests_pathname_prefix=None):
+                routes_pathname_prefix=None, requests_pathname_prefix=None,
+                per_image=True):
     """Create and wire up the Dash app.
 
     Args:
@@ -67,6 +68,12 @@ def _create_app(ana_glow, exp, mask_target=None, y_features=None,
             every region -- callers wanting the gentle large-tree default
             should resolve it via launch(). No prompting happens here, so
             this stays safe for the headless multi-demo web server.
+        per_image (bool): offer the individual images in the IMAGE view.
+            False locks it to the group mean, both in the layout and in
+            the callbacks that serve it, so a request naming an image
+            index still gets the mean. The hosted demos set this for
+            sources whose data use terms let the derived maps be shared
+            only with recipients bound by those same terms.
         url_base_pathname (str | None): when serving under a path prefix on
             a shared Flask server (e.g. "/wgn2d/"). Default None serves at
             the root.
@@ -120,13 +127,13 @@ def _create_app(ana_glow, exp, mask_target=None, y_features=None,
                   generic_cols, sig_cols, prune_cols, mask_cols,
                   y_features=y_features, subject_names=subject_names,
                   target_stats=target_stats, target_vox=target_vox,
-                  min_vox=min_vox)
+                  min_vox=min_vox, per_image=per_image)
     else:
         _setup_2d(app, ana_glow, exp, df,
                   generic_cols, sig_cols, prune_cols, mask_cols,
                   y_features=y_features, subject_names=subject_names,
                   target_stats=target_stats, target_vox=target_vox,
-                  min_vox=min_vox)
+                  min_vox=min_vox, per_image=per_image)
 
     return app
 
@@ -165,7 +172,8 @@ def _display_region_ids(ana_glow, exp, min_vox):
 def _setup_3d(app, ana_glow, exp, df,
               generic_cols, sig_cols, prune_cols, mask_cols,
               y_features=None, subject_names=None,
-              target_stats=None, target_vox=None, min_vox=0):
+              target_stats=None, target_vox=None, min_vox=0,
+              per_image=True):
     """Set up the app for 3D data using dash-slicer."""
     from dash_slicer import VolumeSlicer
 
@@ -210,7 +218,8 @@ def _setup_3d(app, ana_glow, exp, df,
                                  default_reg_x=default_reg_x,
                                  num_img=num_img, feat_names=feat_names,
                                  subject_names=subject_names,
-                                 has_stat=_has_stat(ana_glow))
+                                 has_stat=_has_stat(ana_glow),
+                                 per_image=per_image)
     app.layout.children.append(_detail_panels(ana_glow, exp))
 
     # pre-compute target mask in image space for overlays
@@ -235,7 +244,8 @@ def _setup_3d(app, ana_glow, exp, df,
                                   y_features=y_features,
                                   subject_names=subject_names,
                                   target_vox=target_vox)
-    _register_regression_click_callback(app, 'dd-image-3d')
+    if per_image:
+        _register_regression_click_callback(app, 'dd-image-3d')
 
     # --- setpos store: dash-slicer picks this up automatically ---
     setpos_store = dcc.Store(
@@ -320,7 +330,7 @@ def _setup_3d(app, ana_glow, exp, df,
     def update_bg_volume(feat_val, img_val, st0, st1, st2):
         """Swap the slicer background volume on feature/image change."""
         feat_idx = int(feat_val) if feat_val is not None else 0
-        img_idx = None if img_val in (None, 'mean') else int(img_val)
+        img_idx = _resolve_image_idx(img_val, per_image)
         new_vol = compute_bg_volume(exp,feature_idx=feat_idx,
                                     image_idx=img_idx)
         for s in (slicer0, slicer1, slicer2):
@@ -375,7 +385,8 @@ def _build_overlay(slicer, label_map, visible_list, color_map,
 def _setup_2d(app, ana_glow, exp, df,
               generic_cols, sig_cols, prune_cols, mask_cols,
               y_features=None, subject_names=None,
-              target_stats=None, target_vox=None, min_vox=0):
+              target_stats=None, target_vox=None, min_vox=0,
+              per_image=True):
     """Set up the app for 2D data using Plotly go.Image."""
     mask_idx = exp.mask_idx
     bg_dict = compute_backgrounds(exp, y_features=y_features)
@@ -394,7 +405,8 @@ def _setup_2d(app, ana_glow, exp, df,
                                  default_reg_x=default_reg_x,
                                  num_img=num_img,
                                  subject_names=subject_names,
-                                 has_stat=_has_stat(ana_glow))
+                                 has_stat=_has_stat(ana_glow),
+                                 per_image=per_image)
     app.layout.children.append(_detail_panels(ana_glow, exp))
 
     # pre-compute target mask in image space for overlays
@@ -418,7 +430,8 @@ def _setup_2d(app, ana_glow, exp, df,
                                   y_features=y_features,
                                   subject_names=subject_names,
                                   target_vox=target_vox)
-    _register_regression_click_callback(app, 'dd-image')
+    if per_image:
+        _register_regression_click_callback(app, 'dd-image')
 
     # --- image callback: regions + hover + background + image -> figure ---
     @app.callback(
@@ -440,11 +453,12 @@ def _setup_2d(app, ana_glow, exp, df,
             show_list.append(hover_reg)
         show_list = [r for r in show_list if _valid_reg(r, ana_glow, exp)]
 
-        # resolve background: precomputed mean or single-image on-the-fly
-        if image_sel is not None and image_sel != 'mean':
+        # resolve background: precomputed mean or single-image
+        # on-the-fly
+        _img_idx = _resolve_image_idx(image_sel, per_image)
+        if _img_idx is not None:
             active_bg = compute_backgrounds(
-                exp, y_features=y_features,
-                image_idx=int(image_sel))
+                exp, y_features=y_features, image_idx=_img_idx)
         else:
             active_bg = bg_dict
 
@@ -788,6 +802,26 @@ def _register_regression_callback(app, ana_glow, exp, df, y_features=None,
         )
 
 
+def _resolve_image_idx(img_val, per_image):
+    """Resolve the IMAGE selector's value to an image index.
+
+    Returns None, the group mean, whenever per_image is off, however the
+    value arrived. The selector's value reaches the server from the
+    client, so a disabled dropdown withholds nothing by itself and this
+    is the refusal that holds.
+
+    Args:
+        img_val: the selector's value: None, 'mean', or an index as str.
+        per_image (bool): whether individual images may be served.
+
+    Returns:
+        image_idx (int | None): the image to render, None for the mean.
+    """
+    if not per_image or img_val in (None, 'mean'):
+        return None
+    return int(img_val)
+
+
 def _register_regression_click_callback(app, image_dd_id):
     """Switch the Image dropdown on a regression data-point click.
 
@@ -830,6 +864,8 @@ def _suggest_min_vox(size, max_regions):
 
     Args:
         size (np.array): (num_reg,) int voxel count per region.
+        per_image (bool): offer the individual images in the IMAGE
+            view. False locks it to the group mean; see _create_app.
         max_regions (int): target ceiling on the number of displayed regions.
 
     Returns:
@@ -884,7 +920,8 @@ def _resolve_min_vox(ana_glow, min_vox, max_regions):
 
 def launch(ana_glow, exp, mask_target=None, port=8050, debug=False,
            y_features=None, subject_names=None,
-           extra_df=None, quiet=True, min_vox=None, max_regions=10_000):
+           extra_df=None, quiet=True, min_vox=None, max_regions=10_000,
+           per_image=True):
     """Launch the glow viewer dashboard.
 
     Args:
@@ -939,7 +976,8 @@ def launch(ana_glow, exp, mask_target=None, port=8050, debug=False,
 
     app = _create_app(ana_glow, exp, mask_target=mask_target,
                       y_features=y_features, subject_names=subject_names,
-                      extra_df=extra_df, min_vox=min_vox)
+                      extra_df=extra_df, min_vox=min_vox,
+                      per_image=per_image)
 
     # clean shutdown on Ctrl+C (and SIGTERM on Unix)
     def _shutdown(signum, frame):

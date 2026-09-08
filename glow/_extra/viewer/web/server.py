@@ -57,6 +57,12 @@ _PICKLE_DIR = pathlib.Path(__file__).parent / 'pickles'
 # by env so the deployment is tuned without a rebuild.
 DEFAULT_MAX_MOUNTS = 8
 
+# Sources whose data use terms let the derived maps be shared only with
+# recipients bound by those same terms. An anonymous visitor is not, so
+# their viewers serve the group mean and withhold the per-subject images
+# (see _create_app's per_image). The statistics are unaffected.
+GATED_PER_IMAGE_SOURCES = frozenset({'hcp'})
+
 # Region ceiling per viewer, the same default launch() applies. A
 # full-brain tree is hundreds of thousands of regions, which is a scatter
 # no browser draws smoothly and a layout payload to match; over the
@@ -205,8 +211,11 @@ class LocalMounter:
 
             mount_key = f'/view/{key}'
             min_vox = _resolve_min_vox(ana, None, self.max_regions)
+            source = self._by_key[key].get('source')
             app = _create_app(ana, exp, mask_target=mask_target,
                               min_vox=min_vox,
+                              per_image=(source not in
+                                         GATED_PER_IMAGE_SOURCES),
                               routes_pathname_prefix='/',
                               requests_pathname_prefix=f'{mount_key}/')
             app.server.after_request(_no_store_on_error)

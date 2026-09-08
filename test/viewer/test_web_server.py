@@ -292,3 +292,59 @@ def test_mounted_viewer_errors_are_not_cacheable(client):
     r = c.get('/view/llr_moderate/assets/no-such-file.js')
     assert r.status_code == 404
     assert r.headers['Cache-Control'] == 'no-store'
+
+
+def test_hcp_source_withholds_per_image(pickle_dir, monkeypatch):
+    """A gated source is mounted with per_image off.
+
+    The HCP data use terms let the derived maps be shared only with
+    recipients bound by those same terms, which a public visitor is not,
+    so the hosted viewer serves the group mean.
+    """
+    manifest = json.loads((pickle_dir / server.MANIFEST_NAME).read_text())
+    for entry in manifest['demos']:
+        entry['source'] = 'hcp'
+    path = pickle_dir / server.MANIFEST_NAME
+    original = path.read_text()
+    path.write_text(json.dumps(manifest))
+
+    seen = {}
+    real = server._create_app
+
+    def spy(*args, **kwargs):
+        seen['per_image'] = kwargs.get('per_image')
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(server, '_create_app', spy)
+    try:
+        app = server.build_application(pickle_dir=pickle_dir)
+        Client(app).get('/load/llr_moderate')
+    finally:
+        path.write_text(original)
+    assert seen['per_image'] is False
+
+
+def test_wgn_source_keeps_per_image(client):
+    """An ungated source still offers the individual images."""
+    c, app = client
+    assert 'wgn' not in server.GATED_PER_IMAGE_SOURCES
+    c.get('/load/llr_moderate')
+    layout = c.get('/view/llr_moderate/_dash-layout').get_data(as_text=True)
+    assert 'mean only' not in layout
+
+
+def test_per_image_off_refuses_any_image_index():
+    """Asking for a subject's volume by index still resolves to the mean.
+
+    The dropdown is only a control; its value reaches the server from the
+    client, so disabling it withholds nothing on its own. This pins the
+    refusal in the resolver both background callbacks go through.
+    """
+    from glow._extra.viewer.app import _resolve_image_idx
+
+    for val in ('0', '7', 0, 7, 'mean', None):
+        assert _resolve_image_idx(val, per_image=False) is None, val
+
+    assert _resolve_image_idx('mean', per_image=True) is None
+    assert _resolve_image_idx(None, per_image=True) is None
+    assert _resolve_image_idx('7', per_image=True) == 7

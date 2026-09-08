@@ -424,23 +424,52 @@ def _defaults(generic_cols, sig_cols, prune_cols, mask_cols):
     return all_cols, default_x, default_y, log_y_default, default_color
 
 
+# Shown in place of the per-subject list where those images are
+# withheld. Some sources' data use terms permit sharing derived data only
+# with recipients bound by those same terms, which an anonymous visitor
+# is not; the group mean is no single subject's image, so it still shows.
+NO_PER_IMAGE_NOTE = ('Per-subject imaging is not available on the web. '
+                     'Showing the group mean.')
+
+
+def _image_options(num_img, subject_names, per_image=True):
+    """List the options for the Image selector.
+
+    Args:
+        num_img (int): images in the experiment.
+        subject_names (list[str] | None): per-image names, when known.
+        per_image (bool): when False, offer the mean alone.
+
+    Returns:
+        options (list[dict]): dropdown options, the mean first.
+    """
+    options = [{'label': 'Mean', 'value': 'mean'}]
+    if not per_image:
+        return options
+    if subject_names and len(subject_names) == num_img:
+        options += [{'label': subject_names[i], 'value': str(i)}
+                    for i in range(num_img)]
+    else:
+        options += [{'label': f'Image {i}', 'value': str(i)}
+                    for i in range(num_img)]
+    return options
+
+
 def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                     slicer0, slicer1, slicer2,
                     x_names=None, y_names=None, region_ids=None,
                     default_reg_x=0, num_img=0, feat_names=None,
-                    subject_names=None, has_stat=False):
-    """Build layout for 3D data (with dash-slicer ortho views)."""
+                    subject_names=None, has_stat=False, per_image=True):
+    """Build layout for 3D data (with dash-slicer ortho views).
+
+    per_image False locks the Image selector to the group mean; see
+    NO_PER_IMAGE_NOTE.
+    """
     all_cols, default_x, default_y, log_val, default_color = _defaults(
         generic_cols, sig_cols, prune_cols, mask_cols)
 
     feat_names = feat_names or []
-    image_options = [{'label': 'Mean', 'value': 'mean'}]
-    if subject_names and len(subject_names) == num_img:
-        image_options += [{'label': subject_names[i], 'value': str(i)}
-                          for i in range(num_img)]
-    else:
-        image_options += [{'label': f'Image {i}', 'value': str(i)}
-                          for i in range(num_img)]
+    image_options = _image_options(num_img, subject_names, per_image)
     feat_options = [{'label': n, 'value': str(i)}
                     for i, n in enumerate(feat_names)]
 
@@ -463,14 +492,17 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
         image_dd_children.append(
             dcc.Store(id='dd-feature-3d', data='0'))
     image_dd_children.append(html.Div([
-        html.Label('Image', style=_dd_label),
+        html.Label('Image' if per_image else 'Image (mean only)',
+                   style=_dd_label),
         dcc.Dropdown(
             id='dd-image-3d',
             options=image_options,
             value='mean',
             clearable=False,
+            disabled=not per_image,
             style={'width': '100%', 'fontSize': '12px'}),
-    ], style={'flex': '1'}))
+    ], style={'flex': '1'},
+        title=None if per_image else NO_PER_IMAGE_NOTE))
 
     return html.Div([
         # --- APP HEADER ---
@@ -558,20 +590,18 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
 def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
                     x_names=None, y_names=None, region_ids=None,
                     default_reg_x=0, num_img=0, subject_names=None,
-                    has_stat=False):
-    """Build layout for 2D data (single go.Image view)."""
+                    has_stat=False, per_image=True):
+    """Build layout for 2D data (single go.Image view).
+
+    per_image False locks the Image selector to the group mean; see
+    NO_PER_IMAGE_NOTE.
+    """
     all_cols, default_x, default_y, log_val, default_color = _defaults(
         generic_cols, sig_cols, prune_cols, mask_cols)
 
     bg_default = ('RGB' if 'RGB' in bg_names
                   else bg_names[0] if bg_names else '__none__')
-    image_options = [{'label': 'Mean', 'value': 'mean'}]
-    if subject_names and len(subject_names) == num_img:
-        image_options += [{'label': subject_names[i], 'value': str(i)}
-                          for i in range(num_img)]
-    else:
-        image_options += [{'label': f'Image {i}', 'value': str(i)}
-                          for i in range(num_img)]
+    image_options = _image_options(num_img, subject_names, per_image)
 
     _dd_label = {'fontSize': '11px', 'fontWeight': 'bold',
                  'marginBottom': '2px'}
@@ -620,14 +650,19 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
                                 style={'width': '100%', 'fontSize': '12px'}),
                         ], style={'flex': '1', 'marginRight': '6px'}),
                         html.Div([
-                            html.Label('Image', style=_dd_label),
+                            html.Label(
+                                'Image' if per_image else 'Image (mean only)',
+                                style=_dd_label),
                             dcc.Dropdown(
                                 id='dd-image',
                                 options=image_options,
                                 value='mean',
                                 clearable=False,
+                                disabled=not per_image,
                                 style={'width': '100%', 'fontSize': '12px'}),
-                        ], style={'flex': '1'}),
+                        ], style={'flex': '1'},
+                            title=(None if per_image
+                                   else NO_PER_IMAGE_NOTE)),
                     ], style={'display': 'flex', 'marginBottom': '4px'}),
                     dcc.Graph(id='image-viewer',
                               config={'scrollZoom': True},
