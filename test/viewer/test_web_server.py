@@ -697,3 +697,14 @@ def test_landing_stays_quiet_for_an_ungated_set(picker_dir):
     c = Client(server.build_application(pickle_dir=picker_dir))
     body = c.get('/').get_data(as_text=True)
     assert 'Data Use Terms' not in body
+
+
+def test_the_cookie_is_named_for_what_the_cdn_forwards():
+    """Firebase Hosting strips every request cookie except __session.
+
+    Under any other name the cookie never reaches Cloud Run, so an
+    accepted visitor is asked again on every click -- which is what
+    happened, and only showed up through the CDN, never against the
+    origin.
+    """
+    assert server.TERMS_COOKIE == '__session'

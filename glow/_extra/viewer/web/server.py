@@ -250,9 +250,15 @@ HCP_REGISTER_URL = 'https://db.humanconnectome.org'
 
 # Carried by a visitor who has accepted. This records an affirmation,
 # which is what the terms ask for; it is not an access control and is
-# not treated as one -- what it guards is a set of group-mean maps, and
-# the per-subject images stay withheld either way.
-TERMS_COOKIE = 'glow_hcp_terms'
+# not treated as one.
+#
+# The name is not a choice: Firebase Hosting strips every cookie except
+# __session from a request before it reaches the backend, so any other
+# name arrives empty at Cloud Run and the gate re-asks a visitor who has
+# already accepted. It costs nothing here, there being one thing to
+# remember, but a second piece of state would have to share this key.
+TERMS_COOKIE = '__session'
+TERMS_COOKIE_VALUE = 'hcp-terms-accepted'
 TERMS_COOKIE_MAX_AGE = 60 * 60 * 24 * 365
 
 
@@ -265,7 +271,7 @@ def terms_accepted(req) -> bool:
     Returns:
         bool: True when this visitor has accepted.
     """
-    return req.cookies.get(TERMS_COOKIE) == 'accepted'
+    return req.cookies.get(TERMS_COOKIE) == TERMS_COOKIE_VALUE
 
 
 def _safe_next(target: Optional[str]) -> str:
@@ -988,9 +994,15 @@ def build_server(pickle_dir=_PICKLE_DIR) -> Flask:
         if request.method == 'GET':
             return _terms_html(_safe_next(request.args.get('next')))
         response = redirect(_safe_next(request.form.get('next')), code=302)
-        response.set_cookie(TERMS_COOKIE, 'accepted',
+        # Cloud Run terminates TLS ahead of the app, so the scheme it
+        # sees is http; the forwarded header is what says how the
+        # visitor actually arrived. Marking the cookie secure on a
+        # plain-http dev server would stop it coming back at all.
+        proto = request.headers.get('X-Forwarded-Proto', request.scheme)
+        response.set_cookie(TERMS_COOKIE, TERMS_COOKIE_VALUE,
                             max_age=TERMS_COOKIE_MAX_AGE,
-                            samesite='Lax', httponly=True)
+                            samesite='Lax', httponly=True,
+                            secure=proto == 'https')
         return response
 
     @server.route('/load/<key>')
