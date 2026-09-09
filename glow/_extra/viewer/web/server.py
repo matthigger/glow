@@ -355,8 +355,8 @@ _TERMS_TEMPLATE = Template("""<!doctype html>
 <body>
 <h1>These demos are fit on Human Connectome Project data</h1>
 <p class="lede">DKI and NODDI scalar parameter maps derived from the
-WU-Minn HCP Young Adult Open Access diffusion data, resampled to MNI
-space.</p>
+Open Access release of the WU-Minn HCP Young Adult 100 unrelated
+subjects, resampled to MNI space.</p>
 
 <p>The Data Use Terms allow for redistribution of the images, provided
 recipients also agree to the Data Use Terms. Because GLOW's viewer

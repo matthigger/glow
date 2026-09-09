@@ -49,6 +49,7 @@ from PIL import Image
 
 import glow.mask
 from glow._extra.benchmark import config
+from glow._extra.benchmark.data import DATA_FACTORY, EFFECT_FACTORY
 from glow._extra.benchmark.data import data_factory, data_recipe
 from glow._extra.benchmark.data import effect_factory
 from glow._extra.benchmark.score import score_effects
@@ -85,6 +86,22 @@ def mandrill_num_vox() -> int:
         return img.size[0] * img.size[1]
 
 
+def mandrill_subjects() -> list:
+    """Return a name per resampled image.
+
+    Every draw is the same photograph, so the label bootstrap_img
+    carries through is one string repeated. The viewer keys its image
+    picker on these, and would otherwise offer num_img entries a reader
+    cannot tell apart.
+
+    Returns:
+        list[str]: num_img names, numbered from 0 and zero-padded to a
+            fixed width so they sort as a reader reads them.
+    """
+    width = len(str(MANDRILL_NUM_IMG - 1))
+    return [f'mandrill_{i:0{width}d}' for i in range(MANDRILL_NUM_IMG)]
+
+
 def mandrill_cohort(seed: int):
     """Resample the mandrill photograph into a cohort with a design.
 
@@ -99,14 +116,17 @@ def mandrill_cohort(seed: int):
 
     Returns:
         exp (Experiment): (b, num_img, num_vox) y over the photograph's
-            pixels, against a one-regressor design plus bias.
+            pixels, against a one-regressor design plus bias. Its images
+            are numbered, per mandrill_subjects.
     """
     img_only = ExperimentImageOnly.from_paths(
         {'mandrill': {'rgb': str(MANDRILL_PNG)}},
         channel_names={'rgb': MANDRILL_CHANNELS})
     img_only = img_only.bootstrap_img(MANDRILL_NUM_IMG, seed=seed,
                                       noise_scale=MANDRILL_NOISE_SCALE)
-    return img_only.sample_x(a=1, seed=seed, add_bias=True)
+    exp = img_only.sample_x(a=1, seed=seed, add_bias=True)
+    exp.meta['subjects'] = mandrill_subjects()
+    return exp
 
 
 # the recipe every demo starts from: the arm the paper reports.
@@ -351,6 +371,13 @@ def bake_plan(demo_list, seeds) -> list:
     return plan
 
 
+# The plain dispatchers in benchmark.data: what each selects its
+# builder on, the table it selects from, and the default its own
+# signature declares (data_factory requires a source, so it has none).
+_DISPATCH = {data_factory: ('source', DATA_FACTORY, None),
+             effect_factory: ('kind', EFFECT_FACTORY, 'single')}
+
+
 def call_uncached(fnc, *args, **kwargs):
     """Call a benchmark builder with its cache and recorder peeled off.
 
@@ -359,13 +386,24 @@ def call_uncached(fnc, *args, **kwargs):
     which does the same build in memory alone. See the module docstring
     for why a bake must not write either.
 
+    data_factory and effect_factory carry no decorator of their own --
+    they dispatch, and the builder they pick is still wrapped -- so
+    unwrapping one is a no-op. Resolve the dispatch first. Left
+    unresolved, a plant returns from a cache keyed on parent_uid with
+    exp ignored, which is a stale answer for any cohort that has
+    changed since that uid was first seen.
+
     Args:
-        fnc: a decorated builder (data_factory / effect_factory reaches
-            one by dispatching on source / kind).
+        fnc: a decorated builder, or a dispatcher that reaches one.
 
     Returns:
         whatever the raw builder returns.
     """
+    dispatch = _DISPATCH.get(fnc)
+    if dispatch is not None:
+        key, table, default = dispatch
+        kwargs = dict(kwargs)
+        fnc = table[kwargs.pop(key, default)]
     return inspect.unwrap(fnc)(*args, **kwargs)
 
 

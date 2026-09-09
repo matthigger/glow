@@ -8,6 +8,7 @@ exercised on the arm it actually serves.
 """
 
 import gzip
+import inspect
 import json
 import pickle
 import subprocess
@@ -761,3 +762,44 @@ def test_the_top_dropdown_is_not_only_paper_figures():
                                 'blurb': '', 'label': 'x'}])
     assert 'Analysis set' in out
     assert 'Paper figure' not in out
+
+
+def test_terms_page_names_the_cohort(gated_dir):
+    """A reader should know which HCP release these maps come from."""
+    c = Client(server.build_application(pickle_dir=gated_dir))
+    body = c.get('/terms').get_data(as_text=True)
+    assert 'Open Access' in body
+    assert '100 unrelated' in body
+
+
+def test_mandrill_images_are_numbered():
+    """Every draw is the same photograph, so the labels need indices.
+
+    bootstrap_img carries the one source label through to every image,
+    which leaves the viewer's picker offering num_img entries a reader
+    cannot tell apart.
+    """
+    bake = pytest.importorskip('glow._extra.viewer.web.bake_demos')
+    names = bake.mandrill_subjects()
+    assert len(names) == bake.MANDRILL_NUM_IMG
+    assert len(set(names)) == len(names)
+    assert all(n.startswith('mandrill_') for n in names)
+
+
+def test_call_uncached_reaches_past_the_dispatchers():
+    """data_factory and effect_factory dispatch; they are not wrapped.
+
+    Unwrapping a dispatcher is a no-op and the builder it selects still
+    carries @MEMORY.cache(ignore=['exp']) -- keyed on parent_uid with
+    the experiment ignored -- so an unresolved dispatch answers a
+    changed cohort out of the cache built for the old one.
+    """
+    bake = pytest.importorskip('glow._extra.viewer.web.bake_demos')
+    data = pytest.importorskip('glow._extra.benchmark.data')
+
+    assert set(bake._DISPATCH) == {data.data_factory, data.effect_factory}
+    for dispatcher, (_, table, _default) in bake._DISPATCH.items():
+        assert inspect.unwrap(dispatcher) is dispatcher
+        assert table
+        for builder in table.values():
+            assert inspect.unwrap(builder) is not builder
