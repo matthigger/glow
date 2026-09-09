@@ -675,7 +675,7 @@ def test_terms_page_links_the_consortium_document(gated_dir):
     c = Client(server.build_application(pickle_dir=gated_dir))
     body = c.get('/terms?next=/load/hcp_llr_moderate').get_data(as_text=True)
     assert server.HCP_TERMS_URL in body
-    assert server.HCP_TERMS_PDF in body
+    assert body.count('humanconnectome.org') == 1
     assert '/load/hcp_llr_moderate' in body
 
     # one source of truth: the page points at the document and does not
@@ -708,3 +708,56 @@ def test_the_cookie_is_named_for_what_the_cdn_forwards():
     origin.
     """
     assert server.TERMS_COOKIE == '__session'
+
+
+def test_the_mandrill_set_is_not_gated():
+    """The terms page promises this set is reachable without accepting.
+
+    It says a visitor can see the Gaussian noise and mandrill examples
+    without agreeing to anything, so gating either one would make the
+    page lie about what it is asking for.
+    """
+    from glow._extra.viewer import web
+    assert 'mandrill' not in web.GATED_SOURCES
+    assert 'wgn' not in web.GATED_SOURCES
+
+
+def test_mandrill_mirrors_the_strength_sweep():
+    """The photograph set differs from sweep_llr in its images alone."""
+    bake = pytest.importorskip('glow._extra.viewer.web.bake_demos')
+    llr = {d.key: d for d in bake.DEMOS if d.cache == 'sweep_llr'
+           and d.source == 'wgn'}
+    mand = {d.key.removeprefix('mandrill_'): d for d in bake.DEMOS
+            if d.cache == 'mandrill'}
+    assert mand and set(mand) == set(llr)
+    for key, demo in mand.items():
+        assert demo.source == 'mandrill'
+        assert demo.effect == llr[key].effect
+        assert demo.ana == llr[key].ana
+
+
+def test_mandrill_params_describe_the_photograph():
+    """Its axes report the image's own shape, not a benchmark cell's."""
+    bake = pytest.importorskip('glow._extra.viewer.web.bake_demos')
+    p = bake.demo_params(bake._DEMO_BY_KEY['mandrill_llr_moderate'], 0)
+    wgn = bake.demo_params(bake._DEMO_BY_KEY['llr_moderate'], 0)
+    assert p['b'] == len(bake.MANDRILL_CHANNELS)
+    assert p['num_vox'] == bake.mandrill_num_vox()
+    assert p['num_img'] == wgn['num_img']
+    assert p['effect_llr'] == wgn['effect_llr']
+
+
+def test_every_baked_cache_has_a_heading():
+    """A set with no heading falls back to its bare cache name."""
+    bake = pytest.importorskip('glow._extra.viewer.web.bake_demos')
+    caches = {c for d in bake.DEMOS for c in (d.cache, *d.also)}
+    assert caches <= set(server._CACHE_HEADINGS)
+    assert caches <= set(server._CACHE_BLURBS)
+
+
+def test_the_top_dropdown_is_not_only_paper_figures():
+    """It carries sets the paper never reports, so it says so."""
+    out = server._picker_html([{'cache': 'mandrill', 'heading': 'x',
+                                'blurb': '', 'label': 'x'}])
+    assert 'Analysis set' in out
+    assert 'Paper figure' not in out

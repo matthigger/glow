@@ -88,6 +88,7 @@ _CACHE_HEADINGS = {
     'segment': 'Ward projection',
     'prune': 'Selection rule',
     'runtime_num_vox': 'Volume',
+    'mandrill': 'Mandrill photograph',
 }
 
 # cache -> what a reader is looking at once they pick it.
@@ -106,6 +107,9 @@ _CACHE_BLURBS = {
     'prune': 'How the significant set is read out of one shared fit, so '
              'the comparison isolates the rule.',
     'runtime_num_vox': 'Volume, from a small crop up to the full brain.',
+    'mandrill': 'The strength sweep again, with the noise field swapped '
+                'for a resampled photograph. Structure you can see by '
+                'eye, so what the segmentation did to it is legible.',
 }
 
 # The parameters the picker offers, in the order it shows them. The kind
@@ -148,7 +152,8 @@ _SHORTCUTS = [
 # javascript String() of the value, hence 'true' and 'null'.
 _VALUE_LABELS = {
     'source': {'wgn': 'White Gaussian noise',
-               'hcp': 'HCP diffusion maps'},
+               'hcp': 'HCP diffusion maps',
+               'mandrill': 'Mandrill photograph'},
     'cluster_mode': {'NAIVE': 'Naive (raw y)',
                      'GLM_ERROR': 'GLM Error',
                      'FOCUS': 'Focus'},
@@ -165,7 +170,7 @@ _VALUE_LABELS = {
 # the paper reports in front: sorting prune_rule as text would open on
 # dp, and source on hcp. Anything unlisted sorts numerically or by text.
 _VALUE_ORDER = {
-    'source': ['wgn', 'hcp'],
+    'source': ['wgn', 'hcp', 'mandrill'],
     'cluster_mode': ['FOCUS', 'GLM_ERROR', 'NAIVE'],
     'prune_rule': ['greedy', 'single_max', 'dp'],
 }
@@ -238,15 +243,12 @@ def _no_store_on_error(response):
     return response
 
 
-# Where the terms the gated sources are shared under actually live. The
-# consortium's own page and the signed PDF it links, so a reader accepts
-# the document itself and not this project's paraphrase of it.
+# Where the terms the gated sources are shared under actually live, so
+# a reader accepts the consortium's document and not a paraphrase of it.
+# One link and no others: a PDF of one revision, or the database sign-up,
+# each suggest something slightly different from the terms themselves.
 HCP_TERMS_URL = ('https://www.humanconnectome.org/study/hcp-young-adult/'
                  'data-use-terms')
-HCP_TERMS_PDF = ('https://www.humanconnectome.org/storage/app/media/'
-                 'data_use_terms/'
-                 'DataUseTerms-HCP-Open-Access-26Apr2013.pdf')
-HCP_REGISTER_URL = 'https://db.humanconnectome.org'
 
 # Carried by a visitor who has accepted. This records an affirmation,
 # which is what the terms ask for; it is not an access control and is
@@ -342,10 +344,11 @@ _TERMS_TEMPLATE = Template("""<!doctype html>
   a { color: #0066cc; }
   .box { border: 1px solid #e2e2e2; border-radius: 8px; background: #fbfbfb;
          padding: 1rem 1.2rem; margin: 1.4rem 0; }
-  button { background: #0066cc; color: #fff; border: 0; font: inherit;
-           padding: 0.55rem 1.15rem; border-radius: 5px; cursor: pointer; }
-  button:hover { background: #0055aa; }
-  .decline { margin-left: 1rem; font-size: 0.9rem; }
+  .choice { display: inline-block; background: #f4f4f4; color: #222;
+            border: 1px solid #c8c8c8; font: inherit; text-align: center;
+            padding: 0.55rem 1.15rem; border-radius: 5px; cursor: pointer;
+            text-decoration: none; margin-right: 0.6rem; }
+  .choice:hover { background: #e9e9e9; text-decoration: none; }
   footer { color: #888; font-size: 0.85em; margin-top: 2.5rem; }
 </style>
 </head>
@@ -355,25 +358,23 @@ _TERMS_TEMPLATE = Template("""<!doctype html>
 WU-Minn HCP Young Adult Open Access diffusion data, resampled to MNI
 space.</p>
 
-<p>What you may do with these maps, including redistributing them, is
-governed by the HCP Open Access Data Use Terms. Read them before you
-continue. They are the only authority here: this page deliberately does
-not summarise, restate or narrow them.</p>
+<p>The Data Use Terms allow for redistribution of the images, provided
+recipients also agree to the Data Use Terms. Because GLOW's viewer
+visualizes the images alongside the segmentation and GLM models, we
+require that you agree to the Data Use Terms before proceeding. Note that
+you can access the Gaussian Noise and Mandrill example without agreeing
+to Data Use Terms, if you'd like.</p>
 
 <div class="box">
   <a href="$terms_url" target="_blank" rel="noopener noreferrer">HCP Open
-  Access Data Use Terms</a> &middot;
-  <a href="$pdf_url" target="_blank" rel="noopener noreferrer">signed
-  PDF</a> &middot;
-  <a href="$register_url" target="_blank"
-     rel="noopener noreferrer">ConnectomeDB</a>
+  Access Data Use Terms</a>
 </div>
 
 <form method="post" action="/terms">
   <input type="hidden" name="next" value="$next">
-  <button type="submit">I have read and accept the HCP Open Access Data
-  Use Terms</button>
-  <a class="decline" href="/">No thanks, show the synthetic demos</a>
+  <button class="choice" type="submit">I have read and accept the HCP
+  Open Access Data Use Terms</button>
+  <a class="choice" href="/">Go back</a>
 </form>
 
 <footer>
@@ -395,8 +396,8 @@ def _terms_html(next_url: str) -> str:
         str: the whole page.
     """
     return _TERMS_TEMPLATE.substitute(
-        terms_url=HCP_TERMS_URL, pdf_url=HCP_TERMS_PDF,
-        register_url=HCP_REGISTER_URL, next=html.escape(next_url, quote=True))
+        terms_url=HCP_TERMS_URL,
+        next=html.escape(next_url, quote=True))
 
 
 class LocalMounter:
@@ -655,7 +656,7 @@ def _picker_html(figures: List[dict]) -> str:
         for f in figures)
     return ('<div class="picker">\n'
             '  <div class="row">\n'
-            '    <span class="tag">Paper figure</span>\n'
+            '    <span class="tag">Analysis set</span>\n'
             '    <select id="figure">\n'
             f'{options}\n'
             '    </select>\n'
@@ -847,7 +848,7 @@ _LANDING_TEMPLATE = Template("""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GLOW Viewer</title>
+<title>GLOW viewer</title>
 <style>
   body { font-family: system-ui, sans-serif; max-width: 720px;
          margin: 3rem auto; padding: 0 1rem; line-height: 1.5; color: #222; }
@@ -886,22 +887,24 @@ _LANDING_TEMPLATE = Template("""<!doctype html>
            padding: 0.5rem 1.1rem; border-radius: 5px; font-size: 0.95rem; }
   a.open:hover { background: #0055aa; text-decoration: none; }
   a.open.off { background: #bbb; pointer-events: none; }
+  .todo { background: #fff3cd; border: 1px dashed #d9a406; color: #8a6100;
+          font-family: monospace; font-size: 0.9em; padding: 0 0.3em;
+          border-radius: 3px; }
   footer { color: #888; font-size: 0.85em; margin-top: 3rem; }
 </style>
 </head>
 <body>
-<h1>GLOW Viewer</h1>
-<p class="lede">Every entry is one cell of the benchmark the paper
-reports, fitted with the arm it reports. Take a shortcut, or pick the
-figure you want and then the point on its axis. Either way the viewer
-opens on the region scatter, the volume overlay, the per-region
-regression and, where the fit kept its draws, the permutation histogram.
-The first load of a bundle takes a moment.</p>
+<h1>GLOW viewer</h1>
+<p class="lede">This is a web-hosted viewer of a completed General Linear
+models Optimized with Ward's Method (GLOW) analysis. The same viewer, and
+the analysis software itself, are available at
+<a href="https://github.com/matthigger/glow" target="_blank"
+   rel="noopener noreferrer">github.com/matthigger/glow</a>. Please see
+<span class="todo">todo: arxiv</span> for technical details.</p>
 
 $body
 
 <footer>
-GLOW: General Linear models Optimized with Ward's method.<br>
 Questions or feedback:
 <a href="mailto:mhigger@ccs.neu.edu">mhigger@ccs.neu.edu</a>
 </footer>

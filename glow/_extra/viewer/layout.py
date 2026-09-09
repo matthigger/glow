@@ -291,7 +291,8 @@ def _render_value(key, val, depth=0):
 # source code -> what a reader calls it. An Experiment does not carry
 # which dataset it came from, so the caller that loaded it says.
 SOURCE_LABELS = {'wgn': 'WGN (white Gaussian noise, synthetic)',
-                 'hcp': 'HCP (diffusion maps, real subjects)'}
+                 'hcp': 'HCP (diffusion maps, real subjects)',
+                 'mandrill': 'Mandrill (photograph, resampled)'}
 
 
 def _detail_panels(ana_glow, exp, source=None):

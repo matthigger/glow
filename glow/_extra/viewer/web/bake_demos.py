@@ -23,9 +23,10 @@ record is filed: an ad-hoc build landing on a catalogue cell's key would
 rewrite that record with a fresh exp hash and drop every finished leaf
 that consumed the old one out of config_results_df.
 
-WGN only by default; --hcp adds the HCP entries. Those are shared under
-the HCP Open Access Data Use Terms, which the server asks a visitor to
-accept before it opens one.
+Synthetic and photographic cells by default; --hcp adds the HCP
+entries. Those are shared under the HCP Open Access Data Use Terms,
+which the server asks a visitor to accept before it opens one, so
+nothing gated may end up in a set the terms page calls free to view.
 
 The run also writes manifest.json, which the server reads at boot so the
 landing page can list the set without unpickling any of it.
@@ -33,6 +34,7 @@ landing page can list the set without unpickling any of it.
 
 import argparse
 import dataclasses
+import functools
 import gzip
 import inspect
 import json
@@ -43,6 +45,7 @@ import sys
 import time
 
 import numpy as np
+from PIL import Image
 
 import glow.mask
 from glow._extra.benchmark import config
@@ -56,6 +59,55 @@ from glow._extra.benchmark.plot import _hom_com
 from glow._extra.viewer.web import MANIFEST_NAME
 from glow.analysis import AnalysisGLOW
 from glow.analysis.cluster import ClusterMode
+from glow.experiment.exper import ExperimentImageOnly
+
+# A photograph, as an image set nobody needs terms to look at: its
+# structure is obvious to the eye, so what the segmentation made of it
+# is legible in a way a noise field never is.
+MANDRILL_PNG = (pathlib.Path(__file__).resolve().parents[4]
+                / 'test' / 'data' / 'mandrill_small.png')
+MANDRILL_CHANNELS = ['red', 'green', 'blue']
+
+# read off the strength sweep's own grid, so this set differs from
+# sweep_llr in its images and in nothing else
+MANDRILL_NUM_IMG = config.data_grid(seeds=[0],
+                                    sources=['wgn'])[0]['num_img']
+
+# scales the resample noise by the image's own sample covariance, so it
+# is relative to its contrast rather than an absolute grey level
+MANDRILL_NOISE_SCALE = 0.3
+
+
+@functools.cache
+def mandrill_num_vox() -> int:
+    """Return the pixel count of the mandrill image."""
+    with Image.open(MANDRILL_PNG) as img:
+        return img.size[0] * img.size[1]
+
+
+def mandrill_cohort(seed: int):
+    """Resample the mandrill photograph into a cohort with a design.
+
+    Goes through the public image path -- from_paths, bootstrap_img,
+    sample_x -- rather than a benchmark data_factory, which knows only
+    how to synthesize a field or read HCP off disk. It stands in for
+    data_factory in build_demo and nothing else changes, so this set
+    differs from the strength sweep in its images alone.
+
+    Args:
+        seed (int): resample and design seed.
+
+    Returns:
+        exp (Experiment): (b, num_img, num_vox) y over the photograph's
+            pixels, against a one-regressor design plus bias.
+    """
+    img_only = ExperimentImageOnly.from_paths(
+        {'mandrill': {'rgb': str(MANDRILL_PNG)}},
+        channel_names={'rgb': MANDRILL_CHANNELS})
+    img_only = img_only.bootstrap_img(MANDRILL_NUM_IMG, seed=seed,
+                                      noise_scale=MANDRILL_NOISE_SCALE)
+    return img_only.sample_x(a=1, seed=seed, add_bias=True)
+
 
 # the recipe every demo starts from: the arm the paper reports.
 _PAPER_ANA = config.ana_kwargs_dict[config.REPORTED_GLOW_LABEL]
@@ -115,7 +167,8 @@ class Demo:
         return self.data.get('sources', ['wgn'])[0]
 
 
-def _llr_demos(source: str, also_mid: tuple = ()) -> list:
+def _llr_demos(source: str, also_mid: tuple = (),
+               cache: str = 'sweep_llr') -> list:
     """Build one demo per point on the effect-strength grid.
 
     The whole grid, so the power curve can be walked rather than
@@ -128,6 +181,7 @@ def _llr_demos(source: str, also_mid: tuple = ()) -> list:
         also_mid (tuple): further caches the midpoint cell sits on. Only
             the midpoint is a hub -- it is the anchor the other sweeps
             plant.
+        cache (str): the set these cells belong to.
 
     Returns:
         list[Demo]: one entry per config.EFFECT_LLR_GRID value.
@@ -138,11 +192,12 @@ def _llr_demos(source: str, also_mid: tuple = ()) -> list:
     told = {0: 'weakest effect on the grid',
             mid: 'moderate effect, the anchor the other sweeps plant',
             n - 1: 'strongest effect on the grid'}
-    head = 'Synthetic images' if source == 'wgn' else 'HCP diffusion maps'
+    head = {'wgn': 'Synthetic images', 'hcp': 'HCP diffusion maps',
+            'mandrill': 'Mandrill photograph'}[source]
     prefix = '' if source == 'wgn' else f'{source}_'
 
     return [Demo(key=f'{prefix}{named.get(i, f"llr_{i:02d}")}',
-                 cache='sweep_llr',
+                 cache=cache,
                  also=also_mid if i == mid else (),
                  blurb=f'{head}, '
                        f'{told.get(i, f"effect strength {i + 1} of {n}")}',
@@ -220,6 +275,9 @@ DEMOS = [
     Demo(key='hcp_null', cache='null',
          blurb='HCP diffusion maps, no planted effect',
          data=dict(sources=['hcp']), effect=dict(llr_list=None)),
+
+    # --- the same strength axis on a photograph ----------------------
+    *_llr_demos('mandrill', cache='mandrill'),
 
     # --- HCP mirrors of the volume axis (--hcp) ----------------------
     # The runtime sweep is HCP in the catalogue, so these are the cells
@@ -351,14 +409,19 @@ def build_demo(demo: Demo, *, seed: int = 0, verbose: bool = True):
         mask_target (np.array | None): the realized (X, Y, Z) bool
             support, or None on the null path.
     """
-    # one seed and one source, so the grid each call builds holds exactly
-    # the cell this demo names
-    data_over = {k: v for k, v in demo.data.items() if k != 'sources'}
-    kwargs_data = config.data_grid(seeds=[seed], sources=[demo.source],
-                                   **data_over)[0]
     kwargs_effect = config.effect_grid(**demo.effect)[0]
 
-    exp = call_uncached(data_factory, **kwargs_data)
+    if demo.source == 'mandrill':
+        exp = mandrill_cohort(seed)
+        parent_uid = f'mandrill-seed{seed}'
+    else:
+        # one seed and one source, so the grid each call builds holds
+        # exactly the cell this demo names
+        data_over = {k: v for k, v in demo.data.items() if k != 'sources'}
+        kwargs_data = config.data_grid(seeds=[seed], sources=[demo.source],
+                                       **data_over)[0]
+        exp = call_uncached(data_factory, **kwargs_data)
+        parent_uid = data_recipe(kwargs_data).uid
     print(f'    y={exp.y.shape} x={exp.x.shape}')
 
     mask_target = None
@@ -366,7 +429,7 @@ def build_demo(demo: Demo, *, seed: int = 0, verbose: bool = True):
         kwargs = {k: v for k, v in kwargs_effect.items() if k != 'kind'}
         exp, mask_target_list = call_uncached(
             effect_factory, exp, kind=kwargs_effect['kind'],
-            parent_uid=data_recipe(kwargs_data).uid, **kwargs)
+            parent_uid=parent_uid, **kwargs)
         mask_target = mask_target_list[0]
         print(f'    planted {int(mask_target.sum())} voxels')
 
@@ -397,18 +460,24 @@ def demo_params(demo: Demo, seed: int = 0) -> dict:
             n_perm_fwer, n_perm_inner}. effect_llr and n_vox_frac are
             None on the null path, where nothing is planted.
     """
-    data_over = {k: v for k, v in demo.data.items() if k != 'sources'}
-    kwargs_data = config.data_grid(seeds=[seed], sources=[demo.source],
-                                   **data_over)[0]
     kwargs_effect = config.effect_grid(**demo.effect)[0]
     ana = paper_ana(**demo.ana)
 
-    # an HCP cell names its features instead of carrying b, and draws the
-    # whole cohort rather than a chosen num_img
-    if demo.source == 'hcp':
-        b, num_img = len(kwargs_data['hcp_feats']), config.HCP_NUM_IMG
+    if demo.source == 'mandrill':
+        b, num_img = len(MANDRILL_CHANNELS), MANDRILL_NUM_IMG
+        num_vox = mandrill_num_vox()
     else:
-        b, num_img = kwargs_data['b'], kwargs_data['num_img']
+        data_over = {k: v for k, v in demo.data.items() if k != 'sources'}
+        kwargs_data = config.data_grid(seeds=[seed], sources=[demo.source],
+                                       **data_over)[0]
+        num_vox = kwargs_data['extenter'].n_vox
+
+        # an HCP cell names its features instead of carrying b, and draws
+        # the whole cohort rather than a chosen num_img
+        if demo.source == 'hcp':
+            b, num_img = len(kwargs_data['hcp_feats']), config.HCP_NUM_IMG
+        else:
+            b, num_img = kwargs_data['b'], kwargs_data['num_img']
 
     planted = kwargs_effect or {}
     return dict(
@@ -416,7 +485,7 @@ def demo_params(demo: Demo, seed: int = 0) -> dict:
         seed=int(seed),
         b=int(b),
         num_img=int(num_img),
-        num_vox=int(kwargs_data['extenter'].n_vox),
+        num_vox=int(num_vox),
         effect_llr=(float(planted['effect_llr']) if planted else None),
         n_vox_frac=(float(planted['n_vox_frac']) if planted else None),
         cluster_mode=ana.cluster_mode.name,
