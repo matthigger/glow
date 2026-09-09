@@ -43,13 +43,14 @@ import sys
 import threading
 from collections import OrderedDict
 from string import Template
+from urllib.parse import quote
 from typing import Dict, List, Optional
 
-from flask import Flask, abort, redirect
+from flask import Flask, abort, redirect, request
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
 
 from glow._extra.viewer.app import _create_app, _resolve_min_vox
-from glow._extra.viewer.web import MANIFEST_NAME
+from glow._extra.viewer.web import GATED_SOURCES, MANIFEST_NAME
 
 
 _PICKLE_DIR = pathlib.Path(__file__).parent / 'pickles'
@@ -57,12 +58,6 @@ _PICKLE_DIR = pathlib.Path(__file__).parent / 'pickles'
 # Live viewers before the least-recently-used one is dropped. Overridable
 # by env so the deployment is tuned without a rebuild.
 DEFAULT_MAX_MOUNTS = 8
-
-# Sources whose data use terms let the derived maps be shared only with
-# recipients bound by those same terms. An anonymous visitor is not, so
-# their viewers serve the group mean and withhold the per-subject images
-# (see _create_app's per_image). The statistics are unaffected.
-GATED_PER_IMAGE_SOURCES = frozenset({'hcp'})
 
 # Region ceiling per viewer, the same default launch() applies. A
 # full-brain tree is hundreds of thousands of regions, which is a scatter
@@ -133,19 +128,11 @@ _PARAM_SPEC = [
 # The few things a reader almost always wants to see first, one click
 # each, in the order they answer "does this method work?", and split by
 # source because the honest answer differs between synthetic noise and
-# real images. Only the HCP entry is a brain: its WGN counterpart is
-# noise at the same voxel count, and is named for the scale it tests.
-# A shortcut naming a bundle this build did not bake is dropped rather
-# than shown broken.
+# real images. Only HCP is offered here: a reader arriving cold wants to
+# see the method on real data, and the synthetic cells are one dropdown
+# away in the picker below. A shortcut naming a bundle this build did
+# not bake is dropped rather than shown broken.
 _SHORTCUTS = [
-    ('Synthetic images (WGN)', [
-        ('llr_strong', 'A strong effect, found'),
-        ('llr_moderate', 'A moderate effect'),
-        ('llr_weak', 'A weak effect, missed'),
-        ('null', 'No effect planted at all'),
-        ('vox_1k', 'With the permutation histogram'),
-        ('vox_full_brain', 'Whole-brain scale (225k vox)'),
-    ]),
     ('Real diffusion maps (HCP)', [
         ('hcp_llr_strong', 'A strong effect, found'),
         ('hcp_llr_moderate', 'A moderate effect'),
@@ -251,6 +238,171 @@ def _no_store_on_error(response):
     return response
 
 
+# Where the terms the gated sources are shared under actually live. The
+# consortium's own page and the signed PDF it links, so a reader accepts
+# the document itself and not this project's paraphrase of it.
+HCP_TERMS_URL = ('https://www.humanconnectome.org/study/hcp-young-adult/'
+                 'data-use-terms')
+HCP_TERMS_PDF = ('https://www.humanconnectome.org/storage/app/media/'
+                 'data_use_terms/'
+                 'DataUseTerms-HCP-Open-Access-26Apr2013.pdf')
+HCP_REGISTER_URL = 'https://db.humanconnectome.org'
+
+# Carried by a visitor who has accepted. This records an affirmation,
+# which is what the terms ask for; it is not an access control and is
+# not treated as one -- what it guards is a set of group-mean maps, and
+# the per-subject images stay withheld either way.
+TERMS_COOKIE = 'glow_hcp_terms'
+TERMS_COOKIE_MAX_AGE = 60 * 60 * 24 * 365
+
+
+def terms_accepted(req) -> bool:
+    """Report whether a request carries the acceptance cookie.
+
+    Args:
+        req: the incoming Flask request.
+
+    Returns:
+        bool: True when this visitor has accepted.
+    """
+    return req.cookies.get(TERMS_COOKIE) == 'accepted'
+
+
+def _safe_next(target: Optional[str]) -> str:
+    """Reduce a next-url parameter to a path on this site.
+
+    Anything that could leave the site becomes the landing page: the
+    parameter reaches us from the query string, so a link could
+    otherwise carry a visitor somewhere else through our own redirect.
+
+    Args:
+        target (str | None): the requested next url.
+
+    Returns:
+        str: a path beginning with a single slash.
+    """
+    if not target or not target.startswith('/') or target.startswith('//'):
+        return '/'
+    return target
+
+
+def _no_store(response):
+    """Keep a gated viewer out of every shared cache.
+
+    Its responses turn on a cookie the CDN does not vary by, so one
+    edge copy would answer the next visitor's request whether or not
+    they had accepted anything.
+
+    Args:
+        response: the outgoing Flask response.
+
+    Returns:
+        response: the same response, marked no-store.
+    """
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+def _require_terms():
+    """Send a visitor who has not accepted to the screen that asks.
+
+    Registered on a gated bundle's own Dash server, because the
+    dispatcher hands a mounted viewer the request before the outer
+    Flask app ever sees it -- a check on the /view route alone would
+    only ever fire on a cold mount.
+
+    Returns:
+        None to let the request proceed, else a redirect response.
+    """
+    if terms_accepted(request):
+        return None
+    here = f'{request.script_root}{request.path}'
+    return redirect(f'/terms?next={quote(here, safe="/")}', code=302)
+
+
+_TERMS_TEMPLATE = Template("""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HCP Data Use Terms</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px;
+         margin: 3rem auto; padding: 0 1rem; line-height: 1.55; color: #222; }
+  h1 { font-size: 1.35rem; margin-bottom: 0.3rem; }
+  p.lede { color: #555; margin-top: 0; }
+  ul { padding-left: 1.15rem; }
+  li { margin: 0.35rem 0; }
+  a { color: #0066cc; }
+  .box { border: 1px solid #e2e2e2; border-radius: 8px; background: #fbfbfb;
+         padding: 1rem 1.2rem; margin: 1.4rem 0; }
+  button { background: #0066cc; color: #fff; border: 0; font: inherit;
+           padding: 0.55rem 1.15rem; border-radius: 5px; cursor: pointer; }
+  button:hover { background: #0055aa; }
+  .decline { margin-left: 1rem; font-size: 0.9rem; }
+  footer { color: #888; font-size: 0.85em; margin-top: 2.5rem; }
+</style>
+</head>
+<body>
+<h1>These demos are fit on Human Connectome Project data</h1>
+<p class="lede">Specifically, on DKI and NODDI scalar parameter maps
+derived from the WU-Minn HCP Young Adult Open Access diffusion data and
+resampled to MNI space.</p>
+
+<p>The HCP Open Access Data Use Terms permit redistributing derived data
+only to recipients who accept those same terms. That is what this screen
+is for.</p>
+
+<div class="box">
+  <p style="margin-top:0"><strong>Read the terms:</strong><br>
+  <a href="$terms_url" target="_blank" rel="noopener noreferrer">HCP Open
+  Access Data Use Terms</a> &middot;
+  <a href="$pdf_url" target="_blank" rel="noopener noreferrer">signed PDF</a>
+  &middot;
+  <a href="$register_url" target="_blank"
+     rel="noopener noreferrer">ConnectomeDB</a></p>
+  <p style="margin-bottom:0">Among other things, they ask that you not
+  attempt to identify or contact any participant, that you follow your
+  own institution's rules, that you acknowledge the HCP and cite its
+  methods papers in any publication, that you not name the consortium as
+  an author, and that you pass these same terms on to anyone you
+  redistribute the data to.</p>
+</div>
+
+<p>What this viewer shows you is the group mean across the cohort. No
+individual subject's images are served, whether or not you accept, and
+the subject identifiers are replaced before a bundle is built.</p>
+
+<form method="post" action="/terms">
+  <input type="hidden" name="next" value="$next">
+  <button type="submit">I have read and accept the HCP Open Access Data
+  Use Terms</button>
+  <a class="decline" href="/">No thanks, show the synthetic demos</a>
+</form>
+
+<footer>
+This records your acceptance in a cookie on this browser. It does not
+verify it, and it is not a substitute for registering with ConnectomeDB
+if you intend to work with the data itself.
+</footer>
+</body>
+</html>""")
+
+
+def _terms_html(next_url: str) -> str:
+    """Render the acceptance screen.
+
+    Args:
+        next_url (str): where to send the visitor once they accept.
+
+    Returns:
+        str: the whole page.
+    """
+    return _TERMS_TEMPLATE.substitute(
+        terms_url=HCP_TERMS_URL, pdf_url=HCP_TERMS_PDF,
+        register_url=HCP_REGISTER_URL, next=html.escape(next_url, quote=True))
+
+
 class LocalMounter:
     """Mount per-bundle viewers on a dispatcher, bounded by an LRU.
 
@@ -284,6 +436,18 @@ class LocalMounter:
         self._by_key: Dict[str, dict] = {e['key']: e for e in self.manifest}
         self.mounted_: 'OrderedDict[str, str]' = OrderedDict()
 
+    def source_of(self, key: str) -> Optional[str]:
+        """Return a bundle's image source, or None if it names none.
+
+        Args:
+            key (str): a bundle key from the manifest.
+
+        Returns:
+            str | None: the source, or None for an unknown bundle.
+        """
+        entry = self._by_key.get(key)
+        return None if entry is None else entry.get('source')
+
     def ensure_mounted(self, key: str) -> str:
         """Load, build, and mount the viewer for one bundle; return its path.
 
@@ -316,12 +480,15 @@ class LocalMounter:
             source = self._by_key[key].get('source')
             app = _create_app(ana, exp, mask_target=mask_target,
                               min_vox=min_vox,
-                              per_image=(source not in
-                                         GATED_PER_IMAGE_SOURCES),
+                              per_image=source not in GATED_SOURCES,
                               source=source,
                               routes_pathname_prefix='/',
                               requests_pathname_prefix=f'{mount_key}/')
-            app.server.after_request(_no_store_on_error)
+            if source in GATED_SOURCES:
+                app.server.before_request(_require_terms)
+                app.server.after_request(_no_store)
+            else:
+                app.server.after_request(_no_store_on_error)
             self.application.mounts[mount_key] = app.server
             self.mounted_[key] = f'{mount_key}/'
 
@@ -417,16 +584,25 @@ def _shortcuts_html(manifest: List[dict]) -> str:
     Returns:
         str: the html, or '' when this build baked none of them.
     """
-    have = {e['key'] for e in manifest}
+    by_key = {e['key']: e for e in manifest}
     blocks = []
     for group, entries in _SHORTCUTS:
+        keys = [key for key, _ in entries if key in by_key]
         links = [f'<a href="/load/{html.escape(key)}">'
                  f'{html.escape(label)}</a>'
-                 for key, label in entries if key in have]
-        if links:
-            blocks.append(f'<h2 class="sc">Start here -- '
-                          f'{html.escape(group)}</h2>\n'
-                          f'<div class="shortcuts">{"".join(links)}</div>')
+                 for key, label in entries if key in by_key]
+        if not links:
+            continue
+        note = ''
+        if any(by_key[k].get('source') in GATED_SOURCES for k in keys):
+            note = ('\n<p class="note">These are real subject data. The '
+                    'first one you open asks you to accept the '
+                    f'<a href="{HCP_TERMS_URL}" target="_blank" '
+                    'rel="noopener noreferrer">HCP Open Access Data Use '
+                    'Terms</a> that they are shared under.</p>')
+        blocks.append(f'<h2 class="sc">Start here -- '
+                      f'{html.escape(group)}</h2>\n'
+                      f'<div class="shortcuts">{"".join(links)}</div>{note}')
     return '\n'.join(blocks)
 
 
@@ -509,6 +685,7 @@ const FIGURES = $figures;
 const SPEC = $spec;
 const LABELS = $labels;
 const ORDER = $order;
+const GATED = $gated;
 
 const figSel = document.getElementById('figure');
 const figBlurb = document.getElementById('figure-blurb');
@@ -642,7 +819,9 @@ function render() {
     openBtn.classList.remove('off');
     statBox.textContent = statLine(hit[0]);
     chosen.textContent = hit[0].blurb
-      + ' (' + hit[0].key + ', ' + hit[0].mb + ' MB)';
+      + ' (' + hit[0].key + ', ' + hit[0].mb + ' MB)'
+      + (GATED.indexOf(hit[0].p.source) >= 0
+         ? '   ·   asks you to accept the HCP terms first' : '');
   } else {
     openBtn.removeAttribute('href');
     openBtn.classList.add('off');
@@ -699,6 +878,7 @@ _LANDING_TEMPLATE = Template("""<!doctype html>
                    font: inherit; font-size: 0.92rem; border: 1px solid #ccc;
                    border-radius: 4px; background: #fff; }
   .fixed { color: #666; font-size: 0.92rem; }
+  .note { color: #777; font-size: 0.85rem; margin: 0.55rem 0 0; }
   .stats { color: #8a8a8a; font-size: 0.82rem; margin: 0.85rem 0 0;
            padding-left: 13.25rem; line-height: 1.45; }
   .blurb { color: #555; font-size: 0.92rem; margin: 0.7rem 0 1.1rem; }
@@ -757,7 +937,8 @@ def _landing_html(mounter: LocalMounter) -> str:
         figures=_json_for_script(figures),
         spec=_json_for_script(_PARAM_SPEC),
         labels=_json_for_script(_VALUE_LABELS),
-        order=_json_for_script(_VALUE_ORDER))
+        order=_json_for_script(_VALUE_ORDER),
+        gated=_json_for_script(sorted(GATED_SOURCES)))
 
     body = (f'{_shortcuts_html(manifest)}\n'
             f'<h2 class="sc">Or pick a cell</h2>\n'
@@ -808,14 +989,27 @@ def build_server(pickle_dir=_PICKLE_DIR) -> Flask:
         """
         return 'ok', 200
 
+    @server.route('/terms', methods=['GET', 'POST'])
+    def terms():
+        """Show the terms a gated source is shared under, and record
+        that a visitor accepted them."""
+        if request.method == 'GET':
+            return _terms_html(_safe_next(request.args.get('next')))
+        response = redirect(_safe_next(request.form.get('next')), code=302)
+        response.set_cookie(TERMS_COOKIE, 'accepted',
+                            max_age=TERMS_COOKIE_MAX_AGE,
+                            samesite='Lax', httponly=True)
+        return response
+
     @server.route('/load/<key>')
     def load(key):
         """Mount the viewer for one bundle and redirect to it."""
-        try:
-            prefix = mounter.ensure_mounted(key)
-        except KeyError:
+        source = mounter.source_of(key)
+        if source is None:
             abort(404)
-        return redirect(prefix, code=302)
+        if source in GATED_SOURCES and not terms_accepted(request):
+            return redirect(f'/terms?next=/load/{quote(key)}', code=302)
+        return redirect(mounter.ensure_mounted(key), code=302)
 
     @server.route('/view/<key>/')
     def view(key):
@@ -828,10 +1022,12 @@ def build_server(pickle_dir=_PICKLE_DIR) -> Flask:
         recycled, or the LRU evicted this key. Without this the link
         would 404 on a cold instance.
         """
-        try:
-            mounter.ensure_mounted(key)
-        except KeyError:
+        source = mounter.source_of(key)
+        if source is None:
             abort(404)
+        if source in GATED_SOURCES and not terms_accepted(request):
+            return redirect(f'/terms?next=/view/{quote(key)}/', code=302)
+        mounter.ensure_mounted(key)
         return redirect(f'/view/{key}/', code=302)
 
     return server

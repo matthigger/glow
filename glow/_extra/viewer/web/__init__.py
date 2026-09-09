@@ -10,3 +10,11 @@ subpackage the deployed image leaves out (see deploy_hf.sh).
 """
 
 MANIFEST_NAME = 'manifest.json'
+
+# Sources whose data use terms let the derived maps be shared only with
+# recipients bound by those same terms, which an anonymous visitor is
+# not. Two things follow, at different points: bake_demos strips the
+# real subject identifiers out of the bundle, and server withholds the
+# per-subject images from the viewer it mounts. The statistics are
+# unaffected by either.
+GATED_SOURCES = frozenset({'hcp'})

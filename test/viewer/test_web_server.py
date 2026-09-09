@@ -318,7 +318,9 @@ def test_hcp_source_withholds_per_image(pickle_dir, monkeypatch):
     monkeypatch.setattr(server, '_create_app', spy)
     try:
         app = server.build_application(pickle_dir=pickle_dir)
-        Client(app).get('/load/llr_moderate')
+        c = Client(app)
+        c.post('/terms', data={'next': '/'})
+        c.get('/load/llr_moderate')
     finally:
         path.write_text(original)
     assert seen['per_image'] is False
@@ -327,7 +329,7 @@ def test_hcp_source_withholds_per_image(pickle_dir, monkeypatch):
 def test_wgn_source_keeps_per_image(client):
     """An ungated source still offers the individual images."""
     c, app = client
-    assert 'wgn' not in server.GATED_PER_IMAGE_SOURCES
+    assert 'wgn' not in server.GATED_SOURCES
     c.get('/load/llr_moderate')
     layout = c.get('/view/llr_moderate/_dash-layout').get_data(as_text=True)
     assert 'mean only' not in layout
@@ -431,13 +433,13 @@ def test_figure_label_says_when_it_is_not_in_the_paper():
     assert 'Figure' not in label
 
 
-def test_shortcuts_skip_what_was_not_baked(picker_dir):
+def test_shortcuts_skip_what_was_not_baked():
     """A shortcut naming an absent bundle is dropped, not shown broken."""
-    manifest = server.read_manifest(picker_dir)
+    manifest = [{'key': 'hcp_llr_strong', 'source': 'hcp'}]
     shortcuts = server._shortcuts_html(manifest)
-    assert '/load/llr_weak"' in shortcuts
-    assert 'llr_strong' not in shortcuts
-    assert 'vox_full_brain' not in shortcuts
+    assert '/load/hcp_llr_strong"' in shortcuts
+    assert 'hcp_null' not in shortcuts
+    assert 'hcp_vox_full_brain' not in shortcuts
 
 
 def test_shortcuts_absent_when_none_are_baked():
@@ -491,20 +493,23 @@ def test_reported_arm_leads_its_dropdown():
     assert server._VALUE_ORDER['prune_rule'][0] == 'greedy'
 
 
-def test_shortcuts_group_by_source():
-    """Both source groups render when both are baked."""
-    manifest = [{'key': 'llr_strong'}, {'key': 'hcp_llr_strong'}]
+def test_shortcuts_offer_hcp_only():
+    """The synthetic cells are reached through the picker, not here.
+
+    Someone arriving cold wants to see the method on real images; the
+    WGN cells answer a different question and stay one dropdown away.
+    """
+    manifest = [{'key': 'llr_strong', 'source': 'wgn'},
+                {'key': 'hcp_llr_strong', 'source': 'hcp'}]
     out = server._shortcuts_html(manifest)
-    assert 'Synthetic images (WGN)' in out
     assert 'Real diffusion maps (HCP)' in out
     assert '/load/hcp_llr_strong' in out
+    assert '/load/llr_strong"' not in out
 
 
 def test_shortcuts_drop_an_empty_group(picker_dir):
-    """A WGN-only build shows no empty HCP heading."""
-    out = server._shortcuts_html(server.read_manifest(picker_dir))
-    assert 'Synthetic images (WGN)' in out
-    assert 'HCP' not in out
+    """A WGN-only build shows no shortcut row at all."""
+    assert server._shortcuts_html(server.read_manifest(picker_dir)) == ''
 
 
 def test_picker_carries_the_stats():
@@ -563,17 +568,11 @@ def test_detail_panel_omits_an_unknown_source(bundle):
     assert 'image source' not in rendered
 
 
-def test_only_the_hcp_shortcut_calls_itself_a_brain():
-    """The WGN cell at 225k voxels is noise at that scale, not a brain.
-
-    Both cells exist so a reader can compare them, and naming the
-    synthetic one "a whole brain" would be the one place the set claims
-    to show real anatomy when it does not.
-    """
-    labels = {key: label
-              for _, entries in server._SHORTCUTS for key, label in entries}
-    assert labels['vox_full_brain'] == 'Whole-brain scale (225k vox)'
-    assert labels['hcp_vox_full_brain'] == 'A whole brain'
+def test_every_shortcut_is_a_gated_source():
+    """Only real-data entry points are offered up front."""
+    keys = [key for _, entries in server._SHORTCUTS for key, _ in entries]
+    assert keys
+    assert all(k.startswith('hcp_') for k in keys)
 
 
 def test_hcp_group_offers_the_volume_shortcuts():
@@ -583,3 +582,111 @@ def test_hcp_group_offers_the_volume_shortcuts():
     assert '/load/hcp_vox_1k' in out
     assert '/load/hcp_vox_full_brain' in out
     assert 'Synthetic images (WGN)' not in out
+
+
+@pytest.fixture
+def gated_dir(tmp_path, bundle):
+    """A one-bundle set whose manifest calls its source gated."""
+    with gzip.open(tmp_path / 'hcp_llr_moderate.p.gz', 'wb') as f:
+        pickle.dump(bundle, f, protocol=pickle.HIGHEST_PROTOCOL)
+    (tmp_path / server.MANIFEST_NAME).write_text(json.dumps({'demos': [
+        {'key': 'hcp_llr_moderate', 'blurb': 'gated', 'cache': 'sweep_llr',
+         'source': 'hcp', 'size_bytes': 1, 'params': {'source': 'hcp'},
+         'stats': {'n_pred': 0}}]}))
+    return tmp_path
+
+
+def test_gated_load_asks_for_the_terms_first(gated_dir):
+    """A gated bundle is not even unpickled before its terms are met."""
+    app = server.build_application(pickle_dir=gated_dir)
+    response = Client(app).get('/load/hcp_llr_moderate')
+    assert response.status_code == 302
+    assert '/terms' in response.headers['Location']
+    assert list(app.app.mounter.mounted_) == []
+
+
+def test_gated_load_proceeds_once_accepted(gated_dir):
+    """Accepting lets the same request through to the viewer."""
+    c = Client(server.build_application(pickle_dir=gated_dir))
+    c.post('/terms', data={'next': '/'})
+    response = c.get('/load/hcp_llr_moderate')
+    assert response.status_code == 302
+    assert response.headers['Location'].endswith('/view/hcp_llr_moderate/')
+
+
+def test_ungated_load_needs_no_terms(client):
+    """A synthetic bundle is nobody's data and asks for nothing."""
+    c, _ = client
+    response = c.get('/load/llr_moderate')
+    assert response.status_code == 302
+    assert '/terms' not in response.headers['Location']
+
+
+def test_terms_post_records_the_acceptance(gated_dir):
+    """Accepting sets the cookie and returns the visitor where they were."""
+    c = Client(server.build_application(pickle_dir=gated_dir))
+    response = c.post('/terms', data={'next': '/load/hcp_llr_moderate'})
+    assert response.status_code == 302
+    assert response.headers['Location'].endswith('/load/hcp_llr_moderate')
+    assert server.TERMS_COOKIE in response.headers.get('Set-Cookie', '')
+
+
+def test_terms_refuses_to_redirect_off_site():
+    """next arrives from the query string, so a crafted link could
+    otherwise carry a visitor elsewhere through our own redirect."""
+    for bad in ('https://example.com/x', '//example.com/x', 'evil', ''):
+        assert server._safe_next(bad) == '/'
+    assert server._safe_next('/load/k') == '/load/k'
+
+
+def test_a_mounted_gated_viewer_still_asks(gated_dir):
+    """The check has to live on the mount, not only on the route.
+
+    The dispatcher hands a mounted viewer the request before the outer
+    Flask app sees it, so a guard on /view alone would fire on a cold
+    mount and never again.
+    """
+    app = server.build_application(pickle_dir=gated_dir)
+    accepted = Client(app)
+    accepted.post('/terms', data={'next': '/'})
+    accepted.get('/load/hcp_llr_moderate')
+    assert 'hcp_llr_moderate' in app.app.mounter.mounted_
+
+    stranger = Client(app)
+    response = stranger.get('/view/hcp_llr_moderate/')
+    assert response.status_code == 302
+    assert '/terms' in response.headers['Location']
+
+
+def test_gated_viewer_is_never_shared_cached(gated_dir):
+    """Its responses turn on a cookie the CDN does not vary by."""
+    c = Client(server.build_application(pickle_dir=gated_dir))
+    c.post('/terms', data={'next': '/'})
+    c.get('/load/hcp_llr_moderate')
+    response = c.get('/view/hcp_llr_moderate/')
+    assert response.status_code == 200
+    assert response.headers['Cache-Control'] == 'no-store'
+
+
+def test_terms_page_links_the_consortium_document(gated_dir):
+    """A reader accepts the HCP document, not this project's summary."""
+    c = Client(server.build_application(pickle_dir=gated_dir))
+    body = c.get('/terms?next=/load/hcp_llr_moderate').get_data(as_text=True)
+    assert server.HCP_TERMS_URL in body
+    assert server.HCP_TERMS_PDF in body
+    assert '/load/hcp_llr_moderate' in body
+
+
+def test_landing_says_the_terms_are_coming(gated_dir):
+    """A reader learns the terms are ahead before they click, not after."""
+    c = Client(server.build_application(pickle_dir=gated_dir))
+    body = c.get('/').get_data(as_text=True)
+    assert 'Data Use Terms' in body
+    assert server.HCP_TERMS_URL in body
+
+
+def test_landing_stays_quiet_for_an_ungated_set(picker_dir):
+    """A synthetic-only build mentions no terms at all."""
+    c = Client(server.build_application(pickle_dir=picker_dir))
+    body = c.get('/').get_data(as_text=True)
+    assert 'Data Use Terms' not in body

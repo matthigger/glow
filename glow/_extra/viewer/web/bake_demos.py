@@ -23,9 +23,10 @@ record is filed: an ad-hoc build landing on a catalogue cell's key would
 rewrite that record with a fresh exp hash and drop every finished leaf
 that consumed the old one out of config_results_df.
 
-WGN only by default. HCP entries are gated behind --hcp: the maps are
-DUA-restricted, so an HCP-derived bundle is fine to view locally and not
-fine to publish. See docs/notes for the resampling that would lift that.
+WGN only by default; --hcp adds the HCP entries. Those carry two
+protections a hosted set needs, since the HCP terms bind a recipient
+this one cannot: the real subject identifiers are replaced here
+(anonymize_subjects), and the server serves them their group mean alone.
 
 The run also writes manifest.json, which the server reads at boot so the
 landing page can list the set without unpickling any of it.
@@ -41,6 +42,7 @@ import pickle
 import re
 import sys
 import time
+import uuid
 
 import numpy as np
 
@@ -53,7 +55,7 @@ from glow._extra.benchmark.score import score_effects
 # the alternative is a second copy of a definition the figures own, free
 # to drift from them.
 from glow._extra.benchmark.plot import _hom_com
-from glow._extra.viewer.web import MANIFEST_NAME
+from glow._extra.viewer.web import GATED_SOURCES, MANIFEST_NAME
 from glow.analysis import AnalysisGLOW
 from glow.analysis.cluster import ClusterMode
 
@@ -115,6 +117,67 @@ class Demo:
         return self.data.get('sources', ['wgn'])[0]
 
 
+def anonymize_subjects(exp, source: str) -> None:
+    """Replace a gated source's subject identifiers with opaque names.
+
+    An HCP bundle arrives carrying ConnectomeDB subject IDs, which the
+    viewer's experiment detail panel prints. Rewrites exp.meta subjects
+    in place to img_<8 hex>, drawn fresh per bundle.
+
+    This drops an identifier the viewer has no use for. It is not
+    de-identification: image order is the sorted cohort, and that
+    ordering is public, so the mapping is recoverable by index. What
+    holds the per-subject data back is the server's group-mean gate and
+    the terms screen in front of it. A no-op for an ungated source,
+    whose names are synthetic already.
+
+    Args:
+        exp (Experiment): the experiment to rewrite, in place.
+        source (str): the dataset it came from.
+    """
+    meta = getattr(exp, 'meta', None)
+    if source not in GATED_SOURCES or not meta or not meta.get('subjects'):
+        return
+    meta['subjects'] = [f'img_{uuid.uuid4().hex[:8]}'
+                        for _ in meta['subjects']]
+
+
+def _llr_demos(source: str, also_mid: tuple = ()) -> list:
+    """Build one demo per point on the effect-strength grid.
+
+    The whole grid, so the power curve can be walked rather than
+    sampled at its ends. The three points other sweeps and the
+    shortcuts name by key keep those keys and the rest are numbered by
+    grid index, so a demo already baked is never renamed.
+
+    Args:
+        source (str): 'wgn' or 'hcp'.
+        also_mid (tuple): further caches the midpoint cell sits on. Only
+            the midpoint is a hub -- it is the anchor the other sweeps
+            plant.
+
+    Returns:
+        list[Demo]: one entry per config.EFFECT_LLR_GRID value.
+    """
+    n = len(config.EFFECT_LLR_GRID)
+    mid = n // 2
+    named = {0: 'llr_weak', mid: 'llr_moderate', n - 1: 'llr_strong'}
+    told = {0: 'weakest effect on the grid',
+            mid: 'moderate effect, the anchor the other sweeps plant',
+            n - 1: 'strongest effect on the grid'}
+    head = 'Synthetic images' if source == 'wgn' else 'HCP diffusion maps'
+    prefix = '' if source == 'wgn' else f'{source}_'
+
+    return [Demo(key=f'{prefix}{named.get(i, f"llr_{i:02d}")}',
+                 cache='sweep_llr',
+                 also=also_mid if i == mid else (),
+                 blurb=f'{head}, '
+                       f'{told.get(i, f"effect strength {i + 1} of {n}")}',
+                 data={} if source == 'wgn' else dict(sources=[source]),
+                 effect=dict(llr_list=[float(llr)]))
+            for i, llr in enumerate(config.EFFECT_LLR_GRID)]
+
+
 # One entry per axis a reader would want to move, not one per cell the
 # catalogue holds: the paper's grids run to thousands of cells, and a
 # hosted set is read by clicking through it. Every entry is WGN at the
@@ -125,17 +188,8 @@ class Demo:
 # mind and see what one axis does.
 DEMOS = [
     # --- the power curve (sweep_llr, b=1) ----------------------------
-    Demo(key='llr_weak', cache='sweep_llr',
-         blurb='Weakest effect on the strength grid',
-         effect=dict(llr_list=[_LLR_WEAK])),
-    Demo(key='llr_moderate', cache='sweep_llr',
-         also=('sweep_b', 'sweep_extent', 'segment', 'prune',
-               'runtime_num_vox'),
-         blurb='Moderate effect -- the anchor the other sweeps plant',
-         effect=dict(llr_list=[_LLR_MODERATE])),
-    Demo(key='llr_strong', cache='sweep_llr',
-         blurb='Strongest effect on the strength grid',
-         effect=dict(llr_list=[_LLR_STRONG])),
+    *_llr_demos('wgn', also_mid=('sweep_b', 'sweep_extent', 'segment',
+                                 'prune', 'runtime_num_vox')),
 
     # --- no effect (null) --------------------------------------------
     Demo(key='null', cache='null',
@@ -188,17 +242,8 @@ DEMOS = [
          blurb='Full-brain volume, the top of the runtime sweep',
          data=dict(crop_n_vox=config.RUNTIME_NUM_VOX_GRID[-1])),
 
-    # --- HCP mirrors of the power curve (--hcp; not publishable) -----
-    Demo(key='hcp_llr_weak', cache='sweep_llr',
-         blurb='HCP diffusion maps, weakest effect',
-         data=dict(sources=['hcp']), effect=dict(llr_list=[_LLR_WEAK])),
-    Demo(key='hcp_llr_moderate', cache='sweep_llr',
-         also=('runtime_num_vox',),
-         blurb='HCP diffusion maps, moderate effect',
-         data=dict(sources=['hcp']), effect=dict(llr_list=[_LLR_MODERATE])),
-    Demo(key='hcp_llr_strong', cache='sweep_llr',
-         blurb='HCP diffusion maps, strongest effect',
-         data=dict(sources=['hcp']), effect=dict(llr_list=[_LLR_STRONG])),
+    # --- HCP mirrors of the power curve (--hcp) ----------------------
+    *_llr_demos('hcp', also_mid=('runtime_num_vox',)),
     Demo(key='hcp_null', cache='null',
          blurb='HCP diffusion maps, no planted effect',
          data=dict(sources=['hcp']), effect=dict(llr_list=None)),
@@ -351,6 +396,8 @@ def build_demo(demo: Demo, *, seed: int = 0, verbose: bool = True):
             parent_uid=data_recipe(kwargs_data).uid, **kwargs)
         mask_target = mask_target_list[0]
         print(f'    planted {int(mask_target.sum())} voxels')
+
+    anonymize_subjects(exp, demo.source)
 
     ana = paper_ana(**demo.ana)
     fit_params = {**config.GLOW_FIT_PARAMS, **demo.fit}
