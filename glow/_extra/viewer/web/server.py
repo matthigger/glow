@@ -46,7 +46,7 @@ from string import Template
 from urllib.parse import quote
 from typing import Dict, List, Optional
 
-from flask import Flask, abort, redirect, request
+from flask import Flask, Response, abort, redirect, request
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
 
 from glow._extra.viewer.app import _create_app, _resolve_min_vox
@@ -1036,6 +1036,43 @@ def build_server(pickle_dir=_PICKLE_DIR) -> Flask:
             return redirect(f'/terms?next=/view/{quote(key)}/', code=302)
         mounter.ensure_mounted(key)
         return redirect(f'/view/{key}/', code=302)
+
+    @server.route('/view/<key>/<path:rest>', methods=['GET', 'POST'])
+    def view_asset(key, rest):
+        """Serve one of a viewer's own sub-paths, re-mounting if needed.
+
+        The dispatcher answers a mounted viewer before Flask sees it, so
+        arriving here means the mount is gone while a browser still has
+        the page open: the LRU evicted it, the worker recycled, or the
+        host scaled to zero. Its callbacks POST to
+        _dash-update-component, and without this they 404 -- the figures
+        stop responding while plotly's own hover text, drawn in the
+        page, keeps working, so the viewer looks alive and is not.
+
+        Redirecting the way view() does would not do: a redirected POST
+        is retried as a GET and the callback is lost. The request is
+        handed to the freshly mounted app in this same pass instead,
+        addressed the way the dispatcher would have addressed it.
+
+        Args:
+            key (str): a bundle key from the manifest.
+            rest (str): the path below the viewer's mount point.
+
+        Returns:
+            Response: whatever the mounted viewer returns.
+        """
+        source = mounter.source_of(key)
+        if source is None:
+            abort(404)
+        if source in GATED_SOURCES and not terms_accepted(request):
+            abort(403)
+
+        prefix = mounter.ensure_mounted(key).rstrip('/')
+        app = mounter.application.mounts[prefix]
+        environ = dict(request.environ)
+        environ['SCRIPT_NAME'] = environ.get('SCRIPT_NAME', '') + prefix
+        environ['PATH_INFO'] = f'/{rest}'
+        return Response.from_app(app, environ)
 
     return server
 

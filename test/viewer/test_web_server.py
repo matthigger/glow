@@ -803,3 +803,48 @@ def test_call_uncached_reaches_past_the_dispatchers():
         assert table
         for builder in table.values():
             assert inspect.unwrap(builder) is not builder
+
+
+def test_dash_subpaths_survive_a_lost_mount(client):
+    """A viewer's own URLs must work when the mount is gone.
+
+    Only /view/<key>/ used to self-mount, so once the LRU evicted a
+    viewer -- or the worker recycled, or the host scaled to zero -- an
+    open page kept drawing plotly's client-side hover text while every
+    callback POST 404'd behind it.
+    """
+    c, app = client
+    c.get('/load/llr_moderate')
+    assert list(app.app.mounter.mounted_) == ['llr_moderate']
+
+    app.app.mounter.mounted_.clear()
+    app.mounts.clear()
+
+    assert c.get('/view/llr_moderate/_dash-dependencies').status_code == 200
+    assert list(app.app.mounter.mounted_) == ['llr_moderate']
+
+
+def test_a_callback_post_is_never_redirected(client):
+    """A redirected POST is retried as a GET, losing the callback."""
+    c, app = client
+    c.get('/load/llr_moderate')
+    app.app.mounter.mounted_.clear()
+    app.mounts.clear()
+
+    r = c.post('/view/llr_moderate/_dash-update-component',
+               json={'output': 'nope.figure', 'outputs': [], 'inputs': [],
+                     'changedPropIds': []})
+    assert r.status_code not in (301, 302, 307, 308, 404, 405)
+
+
+def test_view_subpath_unknown_key_404(client):
+    """A sub-path of a bundle this build never baked is still a 404."""
+    c, _ = client
+    assert c.get('/view/nope/_dash-layout').status_code == 404
+
+
+def test_gated_subpath_refuses_before_the_terms(gated_dir):
+    """The gate covers a viewer's callbacks, not just its page."""
+    c = Client(server.build_application(pickle_dir=gated_dir))
+    r = c.get('/view/hcp_llr_moderate/_dash-layout')
+    assert r.status_code == 403

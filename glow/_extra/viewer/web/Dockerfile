@@ -55,6 +55,12 @@ EXPOSE 7860
 # blocking each other.  --max-requests recycles the worker periodically to
 # reclaim memory from evicted mounts.
 #
+# That ceiling is high because a recycle empties the mount table, and one
+# hovered point is one callback POST: at a few hundred requests a reader
+# moving the mouse across the scatter would recycle the worker mid-session
+# and pay a re-unpickle.  The LRU already bounds live mounts, so this is
+# only a backstop against slow leaks.
+#
 # BuildKit warns JSONArgsRecommended here, about a shell-form CMD leaving
 # /bin/sh as PID 1 and swallowing SIGTERM.  `exec` is what answers that:
 # it replaces the shell, so gunicorn IS PID 1 and shuts down cleanly when
@@ -66,6 +72,6 @@ CMD exec gunicorn glow._extra.viewer.web.server:application \
     --threads 4 \
     --worker-class gthread \
     --timeout 120 \
-    --max-requests 400 \
-    --max-requests-jitter 50 \
+    --max-requests 10000 \
+    --max-requests-jitter 1000 \
     --access-logfile -
