@@ -12,7 +12,7 @@ in the paper is drawn from it.
 | | artifact | where |
 |---|---|---|
 | input | this repository | [github.com/matthigger/glow](https://github.com/matthigger/glow), at `25f528c` |
-| input | HCP-YA imaging data, 100 subjects x 6 maps | [Zenodo 20736221](https://zenodo.org/records/20736221) |
+| input | HCP-YA imaging data, 100 subjects x 6 maps | [Zenodo 10.5281/zenodo.20736221](https://doi.org/10.5281/zenodo.20736221) |
 | output | provenance records | [Zenodo 10.5281/zenodo.22664286](https://doi.org/10.5281/zenodo.22664286) |
 
 You do not have to generate the output to read it. Ours is published, so the
@@ -44,9 +44,10 @@ python -c "from glow._extra.benchmark import hcp; hcp.ensure_hcp_data()"
 Prints the WU-Minn HCP Open Access Data Use Terms and waits for you to type `I
 agree to the WU-Minn HCP Open Access Data Use Terms`; only then does it
 download and MD5-verify
-[Zenodo 20736221](https://zenodo.org/records/20736221). It never accepts on
-your behalf, and it refuses rather than blocks when stdin is not a terminal,
-so run it interactively. Already have the zip? Extract it to
+[Zenodo 10.5281/zenodo.20736221](https://doi.org/10.5281/zenodo.20736221).
+It never accepts on your behalf, and it refuses rather than blocks when stdin
+is not a terminal, so run it interactively. Already have the zip? Extract it
+to
 `~/.local/share/glow/hcp100_dki_noddi_mni` and the call is a no-op. The WGN
 arm needs no data.
 
@@ -122,8 +123,9 @@ Output lands in `~/.local/share/glow/results/_latest/<cache>/`.
 
 ## Using our records
 
-Download the record tree from [Zenodo 10.5281/zenodo.22664286](https://doi.org/10.5281/zenodo.22664286), unpack it into
-`~/.local/share/glow/records/`, then
+Download the record tree from
+[Zenodo 10.5281/zenodo.22664286](https://doi.org/10.5281/zenodo.22664286),
+unpack it into `~/.local/share/glow/records/`, then
 `python -m glow._extra.benchmark.plot` redraws the paper's figures with no
 compute and without the imaging data. With them in place a benchmark run also
 skips every cell they cover, which is how to recompute a subset and diff it
