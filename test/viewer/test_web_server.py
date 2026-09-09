@@ -294,12 +294,12 @@ def test_mounted_viewer_errors_are_not_cacheable(client):
     assert r.headers['Cache-Control'] == 'no-store'
 
 
-def test_hcp_source_withholds_per_image(pickle_dir, monkeypatch):
-    """A gated source is mounted with per_image off.
+def test_gated_source_serves_per_image_once_accepted(pickle_dir,
+                                                     monkeypatch):
+    """Nothing is withheld behind the terms screen.
 
-    The HCP data use terms let the derived maps be shared only with
-    recipients bound by those same terms, which a public visitor is not,
-    so the hosted viewer serves the group mean.
+    The screen is the condition the HCP redistribution clause sets, so a
+    visitor past it gets the individual images like any other viewer.
     """
     manifest = json.loads((pickle_dir / server.MANIFEST_NAME).read_text())
     for entry in manifest['demos']:
@@ -312,7 +312,8 @@ def test_hcp_source_withholds_per_image(pickle_dir, monkeypatch):
     real = server._create_app
 
     def spy(*args, **kwargs):
-        seen['per_image'] = kwargs.get('per_image')
+        seen['per_image'] = kwargs.get('per_image', True)
+        seen['source'] = kwargs.get('source')
         return real(*args, **kwargs)
 
     monkeypatch.setattr(server, '_create_app', spy)
@@ -323,7 +324,8 @@ def test_hcp_source_withholds_per_image(pickle_dir, monkeypatch):
         c.get('/load/llr_moderate')
     finally:
         path.write_text(original)
-    assert seen['per_image'] is False
+    assert seen['per_image'] is True
+    assert seen['source'] == 'hcp'
 
 
 def test_wgn_source_keeps_per_image(client):
@@ -675,6 +677,11 @@ def test_terms_page_links_the_consortium_document(gated_dir):
     assert server.HCP_TERMS_URL in body
     assert server.HCP_TERMS_PDF in body
     assert '/load/hcp_llr_moderate' in body
+
+    # one source of truth: the page points at the document and does not
+    # paraphrase it, so our wording cannot drift from the consortium's
+    for restated in ('identify or contact', 'acknowledge', 'cite'):
+        assert restated not in body
 
 
 def test_landing_says_the_terms_are_coming(gated_dir):

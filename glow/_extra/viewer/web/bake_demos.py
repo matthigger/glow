@@ -23,10 +23,9 @@ record is filed: an ad-hoc build landing on a catalogue cell's key would
 rewrite that record with a fresh exp hash and drop every finished leaf
 that consumed the old one out of config_results_df.
 
-WGN only by default; --hcp adds the HCP entries. Those carry two
-protections a hosted set needs, since the HCP terms bind a recipient
-this one cannot: the real subject identifiers are replaced here
-(anonymize_subjects), and the server serves them their group mean alone.
+WGN only by default; --hcp adds the HCP entries. Those are shared under
+the HCP Open Access Data Use Terms, which the server asks a visitor to
+accept before it opens one.
 
 The run also writes manifest.json, which the server reads at boot so the
 landing page can list the set without unpickling any of it.
@@ -42,7 +41,6 @@ import pickle
 import re
 import sys
 import time
-import uuid
 
 import numpy as np
 
@@ -55,7 +53,7 @@ from glow._extra.benchmark.score import score_effects
 # the alternative is a second copy of a definition the figures own, free
 # to drift from them.
 from glow._extra.benchmark.plot import _hom_com
-from glow._extra.viewer.web import GATED_SOURCES, MANIFEST_NAME
+from glow._extra.viewer.web import MANIFEST_NAME
 from glow.analysis import AnalysisGLOW
 from glow.analysis.cluster import ClusterMode
 
@@ -115,31 +113,6 @@ class Demo:
     def source(self) -> str:
         """Return the demo's image source ('wgn' or 'hcp')."""
         return self.data.get('sources', ['wgn'])[0]
-
-
-def anonymize_subjects(exp, source: str) -> None:
-    """Replace a gated source's subject identifiers with opaque names.
-
-    An HCP bundle arrives carrying ConnectomeDB subject IDs, which the
-    viewer's experiment detail panel prints. Rewrites exp.meta subjects
-    in place to img_<8 hex>, drawn fresh per bundle.
-
-    This drops an identifier the viewer has no use for. It is not
-    de-identification: image order is the sorted cohort, and that
-    ordering is public, so the mapping is recoverable by index. What
-    holds the per-subject data back is the server's group-mean gate and
-    the terms screen in front of it. A no-op for an ungated source,
-    whose names are synthetic already.
-
-    Args:
-        exp (Experiment): the experiment to rewrite, in place.
-        source (str): the dataset it came from.
-    """
-    meta = getattr(exp, 'meta', None)
-    if source not in GATED_SOURCES or not meta or not meta.get('subjects'):
-        return
-    meta['subjects'] = [f'img_{uuid.uuid4().hex[:8]}'
-                        for _ in meta['subjects']]
 
 
 def _llr_demos(source: str, also_mid: tuple = ()) -> list:
@@ -396,8 +369,6 @@ def build_demo(demo: Demo, *, seed: int = 0, verbose: bool = True):
             parent_uid=data_recipe(kwargs_data).uid, **kwargs)
         mask_target = mask_target_list[0]
         print(f'    planted {int(mask_target.sum())} voxels')
-
-    anonymize_subjects(exp, demo.source)
 
     ana = paper_ana(**demo.ana)
     fit_params = {**config.GLOW_FIT_PARAMS, **demo.fit}

@@ -345,33 +345,23 @@ _TERMS_TEMPLATE = Template("""<!doctype html>
 </head>
 <body>
 <h1>These demos are fit on Human Connectome Project data</h1>
-<p class="lede">Specifically, on DKI and NODDI scalar parameter maps
-derived from the WU-Minn HCP Young Adult Open Access diffusion data and
-resampled to MNI space.</p>
+<p class="lede">DKI and NODDI scalar parameter maps derived from the
+WU-Minn HCP Young Adult Open Access diffusion data, resampled to MNI
+space.</p>
 
-<p>The HCP Open Access Data Use Terms permit redistributing derived data
-only to recipients who accept those same terms. That is what this screen
-is for.</p>
+<p>What you may do with these maps, including redistributing them, is
+governed by the HCP Open Access Data Use Terms. Read them before you
+continue. They are the only authority here: this page deliberately does
+not summarise, restate or narrow them.</p>
 
 <div class="box">
-  <p style="margin-top:0"><strong>Read the terms:</strong><br>
   <a href="$terms_url" target="_blank" rel="noopener noreferrer">HCP Open
   Access Data Use Terms</a> &middot;
-  <a href="$pdf_url" target="_blank" rel="noopener noreferrer">signed PDF</a>
-  &middot;
+  <a href="$pdf_url" target="_blank" rel="noopener noreferrer">signed
+  PDF</a> &middot;
   <a href="$register_url" target="_blank"
-     rel="noopener noreferrer">ConnectomeDB</a></p>
-  <p style="margin-bottom:0">Among other things, they ask that you not
-  attempt to identify or contact any participant, that you follow your
-  own institution's rules, that you acknowledge the HCP and cite its
-  methods papers in any publication, that you not name the consortium as
-  an author, and that you pass these same terms on to anyone you
-  redistribute the data to.</p>
+     rel="noopener noreferrer">ConnectomeDB</a>
 </div>
-
-<p>What this viewer shows you is the group mean across the cohort. No
-individual subject's images are served, whether or not you accept, and
-the subject identifiers are replaced before a bundle is built.</p>
 
 <form method="post" action="/terms">
   <input type="hidden" name="next" value="$next">
@@ -382,8 +372,8 @@ the subject identifiers are replaced before a bundle is built.</p>
 
 <footer>
 This records your acceptance in a cookie on this browser. It does not
-verify it, and it is not a substitute for registering with ConnectomeDB
-if you intend to work with the data itself.
+verify it, and it is no substitute for registering with ConnectomeDB if
+you intend to work with the data itself.
 </footer>
 </body>
 </html>""")
@@ -477,10 +467,12 @@ class LocalMounter:
 
             mount_key = f'/view/{key}'
             min_vox = _resolve_min_vox(ana, None, self.max_regions)
+            # Nothing is withheld from a gated bundle here. Reaching
+            # one at all means its terms were accepted (_require_terms),
+            # which is what their redistribution clause asks for.
             source = self._by_key[key].get('source')
             app = _create_app(ana, exp, mask_target=mask_target,
                               min_vox=min_vox,
-                              per_image=source not in GATED_SOURCES,
                               source=source,
                               routes_pathname_prefix='/',
                               requests_pathname_prefix=f'{mount_key}/')
