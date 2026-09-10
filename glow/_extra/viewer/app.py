@@ -15,13 +15,13 @@ import os
 
 import numpy as np
 import plotly.graph_objects as go
-from dash import Dash, html, dcc, callback_context, no_update
+from dash import Dash, Patch, html, dcc, callback_context, no_update
 from dash.dependencies import Input, Output, State
 
 from .data import (prep_df, get_feature_columns, compute_backgrounds,
                     compute_bg_ranges, compute_target_stats)
 from .hist import build_hist, build_empty_hist
-from .scatter import build_scatter
+from .scatter import build_scatter, selection_style, visible_regions
 from .image import (build_label_map, compute_bg_volume, get_region_color,
                     compute_region_center)
 from .regression import (build_regression_figure, build_empty_regression,
@@ -506,6 +506,22 @@ def _setup_2d(app, ana_glow, exp, df,
 # Shared callbacks
 # ---------------------------------------------------------------------------
 
+def _point_region(point):
+    """Return the region a clicked or hovered scatter point names.
+
+    Every clickable scatter trace carries the region in text -- see the
+    scatter module docstring for why not customdata.
+
+    Args:
+        point (dict): one entry of plotly's clickData / hoverData.
+
+    Returns:
+        the region index as a string, 'target', or None when the point
+            carries no text (a legend proxy or a tree edge).
+    """
+    return point.get('text')
+
+
 def _valid_reg(reg_idx, ana_glow, exp):
     """Return True if reg_idx is in range for this analysis tree."""
     if reg_idx == 'target':
@@ -516,24 +532,50 @@ def _valid_reg(reg_idx, ana_glow, exp):
 
 def _register_scatter_callback(app, df, ana_glow, exp, target_stats=None,
                                min_vox=0):
-    """Scatter plot updates when axes change or selection changes."""
+    """Rebuild the scatter on an axis change; restyle it on a click.
+
+    Selection is deliberately not an Input here. The figure is megabytes
+    once a tree has thousands of regions, and rebuilding it to move an
+    outline sends all of that again on every click; the second callback
+    patches the marker styling instead, which is a few kB.
+    """
     @app.callback(
         Output('scatter-plot', 'figure'),
         [Input('dd-x', 'value'),
          Input('dd-y', 'value'),
          Input('dd-color', 'value'),
-         Input('store-selected', 'data'),
          Input('log-y-switch', 'value')],
+        [State('store-selected', 'data')],
     )
-    def update_scatter(x_feat, y_feat, color_feat, selected_json, log_y_val):
-        """Rebuild the scatter on axis, colour, selection, or log-y change."""
+    def update_scatter(x_feat, y_feat, color_feat, log_y_val, selected_json):
+        """Rebuild the scatter on an axis, colour, or log-y change."""
         log_y = 'on' in (log_y_val or [])
-        selected = set(json.loads(selected_json))
+        selected = set(json.loads(selected_json or '[]'))
         return build_scatter(df, ana_glow, exp, x_feat, y_feat, color_feat,
                              selected_reg=selected,
                              log_y=log_y,
                              target_stats=target_stats,
                              min_vox=min_vox)
+
+    @app.callback(
+        Output('scatter-plot', 'figure', allow_duplicate=True),
+        [Input('store-selected', 'data')],
+        [State('dd-y', 'value'),
+         State('log-y-switch', 'value')],
+        prevent_initial_call=True,
+    )
+    def restyle_selection(selected_json, y_feat, log_y_val):
+        """Move the selection outline without resending the figure."""
+        selected = set(json.loads(selected_json or '[]'))
+        log_y = 'on' in (log_y_val or [])
+        patch = Patch()
+        for trace, state, reg_idx in visible_regions(
+                df, ana_glow, exp, y_feat, log_y=log_y, min_vox=min_vox):
+            size, width, color = selection_style(reg_idx, selected, state)
+            patch['data'][trace]['marker']['size'] = size
+            patch['data'][trace]['marker']['line']['width'] = width
+            patch['data'][trace]['marker']['line']['color'] = color
+        return patch
 
 
 def _register_hist_callbacks(app, ana_glow, exp, df):
@@ -628,7 +670,7 @@ def _register_selection_callback(app, ana_glow, exp, mask_target_img=None):
             return no_update, no_update, no_update
 
         point = click_data['points'][0]
-        reg_idx = point.get('customdata')
+        reg_idx = _point_region(point)
         if reg_idx is None:
             return no_update, no_update, no_update
 
@@ -729,7 +771,7 @@ def _register_hover_callback(app, ana_glow, exp, mask_target_img=None):
             return 'null', no_update, [{'label': label, 'value': 'on'}]
 
         point = hover_data['points'][0]
-        reg_idx = point.get('customdata')
+        reg_idx = _point_region(point)
         if reg_idx is None:
             label = ' Preview on hover'
             return 'null', no_update, [{'label': label, 'value': 'on'}]

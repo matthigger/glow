@@ -10,6 +10,7 @@ import json
 import numpy as np
 import pytest
 
+from glow._extra.viewer.app import _point_region
 from glow._extra.viewer.data import prep_df, compute_target_stats
 from glow._extra.viewer.scatter import build_scatter
 from glow._extra.viewer.regression import build_regression_figure
@@ -29,7 +30,7 @@ class TestToggleRegionLogic:
             return None, None
 
         point = click_data['points'][0]
-        reg_idx = point.get('customdata')
+        reg_idx = _point_region(point)
         if reg_idx is None:
             return None, None
 
@@ -44,41 +45,41 @@ class TestToggleRegionLogic:
         return json.dumps(selected), reg_idx
 
     def test_add_region(self):
-        click = {'points': [{'customdata': 42}]}
+        click = {'points': [{'text': '42'}]}
         result, reg = self._toggle(click, '[]')
         assert json.loads(result) == [42]
         assert reg == 42
 
     def test_remove_region(self):
-        click = {'points': [{'customdata': 42}]}
+        click = {'points': [{'text': '42'}]}
         result, reg = self._toggle(click, '[42]')
         assert json.loads(result) == []
         assert reg == 42
 
     def test_add_target(self):
-        click = {'points': [{'customdata': 'target'}]}
+        click = {'points': [{'text': 'target'}]}
         result, reg = self._toggle(click, '[]')
         assert json.loads(result) == ['target']
         assert reg == 'target'
 
     def test_remove_target(self):
-        click = {'points': [{'customdata': 'target'}]}
+        click = {'points': [{'text': 'target'}]}
         result, reg = self._toggle(click, '["target"]')
         assert json.loads(result) == []
 
     def test_add_multiple(self):
-        click1 = {'points': [{'customdata': 10}]}
-        click2 = {'points': [{'customdata': 20}]}
+        click1 = {'points': [{'text': '10'}]}
+        click2 = {'points': [{'text': '20'}]}
         result, _ = self._toggle(click1, '[]')
         result, _ = self._toggle(click2, result)
         assert json.loads(result) == [10, 20]
 
     def test_target_with_existing_regions(self):
-        click = {'points': [{'customdata': 'target'}]}
+        click = {'points': [{'text': 'target'}]}
         result, _ = self._toggle(click, '[42, 100]')
         assert json.loads(result) == [42, 100, 'target']
 
-    def test_none_customdata_ignored(self):
+    def test_none_text_ignored(self):
         click = {'points': [{}]}
         result, reg = self._toggle(click, '[42]')
         assert result is None
@@ -89,17 +90,18 @@ class TestToggleRegionLogic:
 
 
 class TestTargetStarClickable:
-    """Verify the target star trace has the right customdata for clicks."""
+    """Verify the target star names itself the way clicks expect."""
 
-    def test_target_customdata_is_string(self, df_with_target, ana, exp,
-                                         target_stats):
+    def test_target_text_is_the_target_string(self, df_with_target, ana,
+                                              exp, target_stats):
         fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr',
                             '__none__', target_stats=target_stats)
         star = [t for t in fig.data
-                if getattr(t, 'customdata', None) is not None
-                and 'target' in list(t.customdata)]
+                if getattr(t, 'text', None) is not None
+                and 'target' in list(t.text)]
         assert len(star) == 1
-        assert star[0].customdata[0] == 'target'
+        assert star[0].text[0] == 'target'
+        assert _point_region({'text': star[0].text[0]}) == 'target'
 
 
 class TestScatterCallbackIntegration:
@@ -131,13 +133,16 @@ class TestScatterCallbackIntegration:
         reg = int(df_with_target['region_idx'].iloc[5])
         fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr_z',
                             '__none__', selected_reg={reg})
-        main = [t for t in fig.data
-                if t.mode == 'markers' and t.showlegend is False
-                and getattr(t, 'customdata', None) is not None
-                and 'target' not in list(t.customdata)][0]
-        idx = list(main.customdata).index(reg)
-        sizes = np.array(main.marker.size)
-        assert sizes[idx] == sizes.max(), \
+        sizes, picked = [], None
+        for t in fig.data:
+            cd = getattr(t, 'customdata', None)
+            if cd is None or np.ndim(cd) != 2:
+                continue
+            for i, s_reg in enumerate(t.text):
+                sizes.append(t.marker.size[i])
+                if int(s_reg) == reg:
+                    picked = t.marker.size[i]
+        assert picked == max(sizes), \
             'selected region should have the largest marker'
 
 

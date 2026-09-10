@@ -14,14 +14,23 @@ def _no_input(*args, **kwargs):
     raise AssertionError('the viewer must not prompt for min_vox')
 
 
-def _main_marker_trace(fig):
-    """Return the clickable region scatter trace (not the target star)."""
-    main = [t for t in fig.data
-            if t.mode == 'markers' and t.showlegend is False
-            and getattr(t, 'customdata', None) is not None
-            and 'target' not in list(t.customdata)]
-    assert len(main) == 1
-    return main[0]
+def _region_traces(fig):
+    """Marker traces carrying a customdata row per region."""
+    return [t for t in fig.data
+            if getattr(t, 'customdata', None) is not None
+            and np.ndim(t.customdata) == 2]
+
+
+def _star_traces(fig):
+    """The target-mask star, which names itself 'target' in text."""
+    return [t for t in fig.data
+            if getattr(t, 'text', None) is not None
+            and 'target' in list(t.text)]
+
+
+def _marker_regions(fig):
+    """Region indices the scatter draws, over all its marker traces."""
+    return [int(s) for t in _region_traces(fig) for s in t.text]
 
 
 def _find_component(component, target_id, depth=20):
@@ -51,13 +60,13 @@ class TestBuildScatterMinVox:
         num_reg = len(df_with_target)
         fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr',
                             '__none__', min_vox=0)
-        assert len(_main_marker_trace(fig).customdata) == num_reg
+        assert len(_marker_regions(fig)) == num_reg
 
     def test_cut_excludes_small_regions(self, df_with_target, ana, exp):
         min_vox = 3
         fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr',
                             '__none__', min_vox=min_vox)
-        shown = list(_main_marker_trace(fig).customdata)
+        shown = _marker_regions(fig)
         size_by_reg = dict(zip(df_with_target['region_idx'],
                                df_with_target['n_voxel']))
         assert all(size_by_reg[r] >= min_vox for r in shown)
@@ -66,12 +75,12 @@ class TestBuildScatterMinVox:
         assert len(shown) == expected
 
     def test_cut_reduces_point_count(self, df_with_target, ana, exp):
-        n_all = len(_main_marker_trace(
+        n_all = len(_marker_regions(
             build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr',
-                          '__none__', min_vox=0)).customdata)
-        n_cut = len(_main_marker_trace(
+                          '__none__', min_vox=0)))
+        n_cut = len(_marker_regions(
             build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr',
-                          '__none__', min_vox=2)).customdata)
+                          '__none__', min_vox=2)))
         # the tree has many size-1 leaves, so a cut at 2 must shrink it
         assert n_cut < n_all
 
