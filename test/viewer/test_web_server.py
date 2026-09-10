@@ -10,6 +10,7 @@ exercised on the arm it actually serves.
 import gzip
 import inspect
 import json
+import pathlib
 import pickle
 import subprocess
 import sys
@@ -848,3 +849,25 @@ def test_gated_subpath_refuses_before_the_terms(gated_dir):
     c = Client(server.build_application(pickle_dir=gated_dir))
     r = c.get('/view/hcp_llr_moderate/_dash-layout')
     assert r.status_code == 403
+
+
+def test_dash_is_held_below_the_version_that_breaks_the_slicer():
+    """dash 4.2 breaks dash-slicer's clientside update_state.
+
+    It reads figure.layout.xaxis.range[0], undefined from 4.2 on, and
+    the throw stops the renderer dispatching: the page still draws and
+    plotly's own hover text still works while nothing else responds,
+    and nothing reaches the server to say so. Only the image's pin
+    stands between the viewer and that, so the pin is the test.
+    """
+    import dash
+    from packaging.requirements import Requirement
+    from packaging.version import Version
+
+    req = (pathlib.Path(server.__file__).parent / 'requirements.txt')
+    line = next(ln for ln in req.read_text().splitlines()
+                if ln.strip().startswith('dash') and '-' not in ln)
+    spec = Requirement(line.strip()).specifier
+    assert Version('4.2.0') not in spec, line
+    assert Version('4.1.0') in spec, line
+    assert Version(dash.__version__) in spec, dash.__version__

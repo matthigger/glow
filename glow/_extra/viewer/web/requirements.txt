@@ -12,7 +12,15 @@ platformdirs>=4.4
 numba>=0.59
 
 # viewer
-dash>=2.17
+# Upper bound is load-bearing: dash 4.2 broke dash-slicer's
+# clientside update_state, which reads figure.layout.xaxis.range[0]
+# -- undefined from 4.2 on. The throw stops the renderer
+# dispatching, so the page still draws and plotly's own hover text
+# still works while nothing else in the viewer responds, and no
+# error reaches the server. dash-slicer 0.3.1 is its last release,
+# so this is fixed here or not at all. Verified 4.1.0 good, 4.2.0
+# bad, against the built image.
+dash>=2.17,<4.2
 # gzip for Dash's responses; app.py enables compression only if present
 flask-compress>=1.14
 dash-daq>=0.6
