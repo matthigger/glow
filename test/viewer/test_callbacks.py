@@ -314,8 +314,45 @@ class TestHoverIsAnsweredInTheBrowser:
             'centring went back to the server; slices now cost three hops'
 
 
-class TestHoverCenters:
-    """The centre table the clientside hover reads."""
+class TestClickIsAnsweredInTheBrowser:
+    """A click must not cost a server round trip either.
+
+    The overlays, the regression and the histogram all key off the
+    checklist, which keys off the selection. A server hop in either
+    put the whole picture two round trips behind the click.
+    """
+
+    @staticmethod
+    def _callback_for(app, input_id, input_prop):
+        for spec in app._callback_list:
+            for inp in spec.get('inputs', []):
+                if (inp.get('id') == input_id
+                        and inp.get('property') == input_prop):
+                    return spec
+        return None
+
+    def test_toggling_a_region_is_clientside(self, ana, exp, mask_target):
+        app = _create_app(ana, exp, mask_target=mask_target)
+        spec = self._callback_for(app, 'scatter-plot', 'clickData')
+        assert spec is not None, 'nothing listens to clickData'
+        assert spec['clientside_function'] is not None, \
+            'a click went back to the server; the picture now waits on it'
+
+    def test_the_checklist_sync_is_clientside(self, ana, exp, mask_target):
+        app = _create_app(ana, exp, mask_target=mask_target)
+        spec = self._callback_for(app, 'store-selected', 'data')
+        assert spec is not None
+        chain = [s for s in app._callback_list
+                 for i in s.get('inputs', [])
+                 if i.get('id') == 'store-selected'
+                 and 'region-checklist' in str(s['output'])]
+        assert chain, 'nothing syncs the checklist'
+        assert all(s['clientside_function'] is not None for s in chain), \
+            'the checklist sync went back to the server'
+
+
+class TestRegionInfo:
+    """The region table the clientside hover and click read."""
 
     def test_matches_compute_region_center(self, ana, exp):
         from glow._extra.viewer.image import (compute_region_center,
@@ -326,17 +363,66 @@ class TestHoverCenters:
             ref = compute_region_center(reg, exp, ana)
             assert np.allclose(ref, centers[reg]), reg
 
-    def test_every_drawn_region_has_a_centre(self, df_with_target, ana, exp,
-                                             target_stats, mask_target):
-        """A drawn region with no centre hovers without moving the view."""
-        from glow._extra.viewer.app import _hover_centers
+    def test_every_drawn_region_is_in_the_table(self, df_with_target, ana,
+                                                exp, target_stats,
+                                                mask_target):
+        """A drawn region missing here cannot be hovered or clicked."""
+        from glow._extra.viewer.app import _region_info
 
         for min_vox in (0, 2, 4):
             fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr',
                                 '__none__', target_stats=target_stats,
                                 min_vox=min_vox)
-            centers = _hover_centers(df_with_target, ana, exp, min_vox,
-                                     mask_target)
+            info = _region_info(df_with_target, ana, exp, min_vox,
+                                mask_target)
             drawn = {s for t in fig.data
                      if getattr(t, 'text', None) is not None for s in t.text}
-            assert drawn <= set(centers), (min_vox, drawn - set(centers))
+            assert drawn <= set(info), (min_vox, drawn - set(info))
+
+    def test_table_carries_the_voxel_count(self, df_with_target, ana, exp,
+                                           mask_target):
+        """The checklist labels its regions from this, not from the server."""
+        from glow._extra.viewer.app import _region_info
+
+        info = _region_info(df_with_target, ana, exp, 0, mask_target)
+        for reg, n_vox in zip(df_with_target['region_idx'],
+                              df_with_target['n_voxel']):
+            row = info.get(str(reg))
+            assert row is not None and len(row) == 4, reg
+            assert row[3] == int(n_vox), reg
+        assert info['target'][3] == int(mask_target.sum())
+
+
+class TestClientsideSignatures:
+    """Each clientside function must take exactly what it is handed.
+
+    A clientside callback that reads an argument it was never passed
+    throws, and a throw leaves the Dash renderer refusing to dispatch:
+    hover and click go dead while the page still looks fine.
+    """
+
+    def test_arity_matches_inputs_plus_state(self, ana, exp, mask_target):
+        import re
+
+        app = _create_app(ana, exp, mask_target=mask_target)
+        scripts = '\n'.join(app._inline_scripts)
+        checked = 0
+        for spec in app._callback_list:
+            fn = spec['clientside_function']
+            if fn is None:
+                continue
+            name = (fn.get('function_name') if isinstance(fn, dict)
+                    else getattr(fn, 'function_name', None))
+            if not name:
+                continue
+            m = re.search(r'ns\["' + re.escape(name)
+                          + r'"\]\s*=\s*function\s*\(([^)]*)\)', scripts)
+            if m is None:
+                continue
+            params = [a for a in m.group(1).split(',') if a.strip()]
+            want = len(spec['inputs']) + len(spec.get('state') or [])
+            assert len(params) == want, (
+                f'{spec["output"]}: js takes {len(params)} args, '
+                f'dash passes {want}')
+            checked += 1
+        assert checked, 'no clientside functions were matched'

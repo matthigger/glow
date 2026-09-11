@@ -15,7 +15,7 @@ import os
 
 import numpy as np
 import plotly.graph_objects as go
-from dash import Dash, Patch, html, dcc, callback_context, no_update
+from dash import Dash, Patch, dcc, no_update
 from dash.dependencies import Input, Output, State
 
 from .data import (prep_df, get_feature_columns, compute_backgrounds,
@@ -23,7 +23,7 @@ from .data import (prep_df, get_feature_columns, compute_backgrounds,
 from .hist import build_hist, build_empty_hist
 from .scatter import build_scatter, selection_style, visible_regions
 from .image import (build_label_map, compute_bg_volume, get_region_color,
-                    compute_region_center, region_centers)
+                    region_centers)
 from .regression import (build_regression_figure, build_empty_regression,
                          get_x_labels, get_y_labels)
 from ._port import _check_port
@@ -239,10 +239,8 @@ def _setup_3d(app, ana_glow, exp, df,
     _register_scatter_callback(app, df, ana_glow, exp,
                                target_stats=target_stats, min_vox=min_vox)
     _register_hist_callbacks(app, ana_glow, exp, df)
-    _register_selection_callback(app, ana_glow, exp,
-                                 mask_target_img=mask_target_img)
-    _register_checklist_sync_callback(app, df,
-                                      target_stats=target_stats)
+    _register_selection_callback(app)
+    _register_checklist_sync_callback(app)
     _register_hover_callback(app, df, ana_glow, exp, min_vox=min_vox,
                              mask_target_img=mask_target_img)
     _register_regression_callback(app, ana_glow, exp, df,
@@ -434,10 +432,8 @@ def _setup_2d(app, ana_glow, exp, df,
     _register_scatter_callback(app, df, ana_glow, exp,
                                target_stats=target_stats, min_vox=min_vox)
     _register_hist_callbacks(app, ana_glow, exp, df)
-    _register_selection_callback(app, ana_glow, exp,
-                                 mask_target_img=mask_target_img)
-    _register_checklist_sync_callback(app, df,
-                                      target_stats=target_stats)
+    _register_selection_callback(app)
+    _register_checklist_sync_callback(app)
     _register_hover_callback(app, df, ana_glow, exp, min_vox=min_vox,
                              mask_target_img=mask_target_img)
     _register_regression_callback(app, ana_glow, exp, df,
@@ -639,128 +635,141 @@ def _register_hist_callbacks(app, ana_glow, exp, df):
             df=df)
 
 
-def _register_selection_callback(app, ana_glow, exp, mask_target_img=None):
-    """Update store-selected on scatter click, clear, or lookup pick."""
-    @app.callback(
+def _register_selection_callback(app):
+    """Update store-selected on scatter click, clear, or lookup pick.
+
+    Clientside: the overlays, the regression and the histogram all key
+    off the selection, so a server hop here makes every one of them
+    wait a round trip before it can even start. The region table in the
+    page (see _region_info) carries the centre and the size this needs,
+    and a point names its region in text, so nothing here needs the
+    analysis.
+    """
+    app.clientside_callback(
+        """
+        function (clickData, clearClicks, lookupVal, selectedJson, info) {
+            var nu = window.dash_clientside.no_update;
+            var ctx = window.dash_clientside.callback_context;
+            var trig = (ctx && ctx.triggered && ctx.triggered.length)
+                ? ctx.triggered[0].prop_id.split('.')[0] : null;
+            if (!trig) { return [nu, nu, nu]; }
+            if (trig === 'btn-clear') { return ['[]', 'null', null]; }
+
+            var lookup = trig === 'dd-region-lookup';
+            var name = null;
+            if (lookup) {
+                if (lookupVal === null || lookupVal === undefined) {
+                    return [nu, nu, nu];
+                }
+                name = String(lookupVal);
+            } else {
+                if (!clickData || !clickData.points
+                        || !clickData.points.length) {
+                    return [nu, nu, nu];
+                }
+                var t = clickData.points[0].text;
+                if (t === undefined || t === null) { return [nu, nu, nu]; }
+                name = t;
+            }
+
+            var row = (info || {})[name];
+            if (row === undefined) { return [nu, nu, nu]; }
+            var center = JSON.stringify(row.slice(0, 3));
+            var reg = name === 'target' ? 'target' : parseInt(name, 10);
+
+            var selected = JSON.parse(selectedJson || '[]');
+            var at = selected.indexOf(reg);
+            if (lookup) {
+                if (at === -1) { selected.push(reg); }
+                return [JSON.stringify(selected), center, null];
+            }
+            if (at !== -1) {
+                selected.splice(at, 1);
+                return [JSON.stringify(selected), nu, nu];
+            }
+            selected.push(reg);
+            return [JSON.stringify(selected), center, nu];
+        }
+        """,
         [Output('store-selected', 'data'),
          Output('store-center', 'data'),
          Output('dd-region-lookup', 'value')],
         [Input('scatter-plot', 'clickData'),
          Input('btn-clear', 'n_clicks'),
          Input('dd-region-lookup', 'value')],
-        [State('store-selected', 'data')],
+        [State('store-selected', 'data'),
+         State('store-region-info', 'data')],
+        prevent_initial_call=True,
     )
-    def toggle_region(click_data, clear_clicks, lookup_val, selected_json):
-        """Add/remove the triggering region and centre the slicers on it."""
-        ctx = callback_context
-        if not ctx.triggered:
-            return no_update, no_update, no_update
-
-        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-
-        if trigger_id == 'btn-clear':
-            return '[]', 'null', None
-
-        if trigger_id == 'dd-region-lookup':
-            if lookup_val is None:
-                return no_update, no_update, no_update
-            reg_idx = int(lookup_val)
-            if not _valid_reg(reg_idx, ana_glow, exp):
-                return no_update, no_update, no_update
-            selected = json.loads(selected_json)
-            if reg_idx not in selected:
-                selected.append(reg_idx)
-            center = compute_region_center(reg_idx, exp, ana_glow)
-            center_json = json.dumps(center) if center else 'null'
-            return json.dumps(selected), center_json, None
-
-        if click_data is None:
-            return no_update, no_update, no_update
-
-        point = click_data['points'][0]
-        reg_idx = _point_region(point)
-        if reg_idx is None:
-            return no_update, no_update, no_update
-
-        # keep 'target' as a string; everything else becomes int
-        if reg_idx != 'target':
-            reg_idx = int(reg_idx)
-
-        if not _valid_reg(reg_idx, ana_glow, exp):
-            return no_update, no_update, no_update
-
-        selected = json.loads(selected_json)
-        if reg_idx in selected:
-            selected.remove(reg_idx)
-            return json.dumps(selected), no_update, no_update
-        else:
-            selected.append(reg_idx)
-            if reg_idx == 'target' and mask_target_img is not None:
-                coords = np.argwhere(mask_target_img)
-                center = coords.mean(axis=0).tolist() if len(coords) else None
-            else:
-                center = compute_region_center(reg_idx, exp, ana_glow)
-            center_json = json.dumps(center) if center else 'null'
-            return json.dumps(selected), center_json, no_update
 
 
-def _register_checklist_sync_callback(app, df, target_stats=None):
+def _register_checklist_sync_callback(app):
     """Sync the checklist options/value when store-selected changes.
 
-    New regions default to visible (checked).  Previously unchecked
-    regions stay unchecked.
+    Clientside, so the figures that key off the checklist leave in the
+    same wave as the click that changed it rather than a round trip
+    later. New regions default to visible; regions the reader unchecked
+    stay unchecked. Sizes come from the region table (see _region_info),
+    and the swatch palette is get_region_color's, passed in as data.
     """
-    n_target_vox = (int(target_stats['n_voxel'])
-                    if target_stats is not None else 0)
+    app.clientside_callback(
+        """
+        function (selectedJson, prevOptions, prevValue, info, palette) {
+            var selected = JSON.parse(selectedJson || '[]');
+            prevOptions = prevOptions || [];
+            prevValue = prevValue || [];
 
-    @app.callback(
+            var prevSet = prevOptions.map(function (o) { return o.value; });
+            var options = [];
+            for (var i = 0; i < selected.length; i++) {
+                var reg = selected[i];
+                var rgb = palette[i % palette.length];
+                var row = (info || {})[String(reg)];
+                var nVox = row === undefined ? 0 : row[3];
+                var text = reg === 'target'
+                    ? 'Target mask  (' + nVox + ' vox)'
+                    : 'Region ' + reg + '  (' + nVox + ' vox)';
+                options.push({value: reg, label: {
+                    namespace: 'dash_html_components', type: 'Span',
+                    props: {children: [
+                        {namespace: 'dash_html_components', type: 'Span',
+                         props: {children: '\u25A0 ', style: {
+                             color: 'rgb(' + rgb.join(',') + ')',
+                             fontSize: '16px'}}},
+                        text]}}});
+            }
+
+            var value = selected.filter(function (r) {
+                return prevSet.indexOf(r) === -1
+                    || prevValue.indexOf(r) !== -1;
+            });
+            return [options, value];
+        }
+        """,
         [Output('region-checklist', 'options'),
          Output('region-checklist', 'value')],
         [Input('store-selected', 'data')],
         [State('region-checklist', 'options'),
-         State('region-checklist', 'value')],
+         State('region-checklist', 'value'),
+         State('store-region-info', 'data'),
+         State('store-region-palette', 'data')],
     )
-    def sync_checklist(selected_json, prev_options, prev_value):
-        """Mirror store-selected into the checklist; new regions visible."""
-        selected = json.loads(selected_json)
-        prev_options = prev_options or []
-        prev_value = prev_value or []
-
-        # which regions existed before?
-        prev_set = {o['value'] for o in prev_options}
-        prev_visible = set(prev_value)
-
-        # build new options with coloured labels
-        new_options = []
-        for idx, reg_idx in enumerate(selected):
-            r, g, b = get_region_color(idx)
-            if reg_idx == 'target':
-                display = f'Target mask  ({n_target_vox} vox)'
-            else:
-                rows = df.loc[df['region_idx'] == reg_idx, 'n_voxel']
-                size = int(rows.values[0]) if len(rows) else 0
-                display = f'Region {reg_idx}  ({size} vox)'
-            label = html.Span([
-                html.Span('\u25A0 ',
-                          style={'color': f'rgb({r},{g},{b})',
-                                 'fontSize': '16px'}),
-                display,
-            ])
-            new_options.append({'label': label, 'value': reg_idx})
-
-        # new value: keep previously visible that still exist,
-        # plus any newly added regions (default visible)
-        new_regs = set(selected) - prev_set
-        new_value = [r for r in selected
-                     if r in new_regs or r in prev_visible]
-
-        return new_options, new_value
+    app.layout.children.append(
+        dcc.Store(id='store-region-palette', data=PALETTE))
 
 
 # how long the mouse must hold still before a hover previews, and how
 # often the browser checks. A reader crossing the cloud passes over
 # hundreds of regions; previewing each one queues hundreds of overlay
 # renders on a one-core service, which is slower than no preview at all.
+# get_region_color's palette, handed to the browser so the
+# checklist swatches match the overlays
+PALETTE = [
+    (31, 119, 180), (255, 127, 14), (44, 160, 44), (214, 39, 40), (148,
+    103, 189), (140, 86, 75), (227, 119, 194), (127, 127, 127), (188,
+    189, 34), (23, 190, 207),
+]
+
 _HOVER_SETTLE_MS = 150
 _HOVER_POLL_MS = 50
 
@@ -774,15 +783,16 @@ def _register_hover_callback(app, df, ana_glow, exp, min_vox=0,
     this callback's outputs, so a server round trip here puts all of
     that a second round trip behind the mouse. Answering in the browser
     lets every one of them leave in the same wave. The price is a table
-    of region centres in the page; see _hover_centers.
+    of region centres in the page; see _region_info.
 
     The region label follows the mouse, but the preview waits for it to
     settle: see _HOVER_SETTLE_MS. The wait is spent in the browser, so
     it costs a reader nothing that the queue would not have cost them.
     """
-    centers = _hover_centers(df, ana_glow, exp, min_vox, mask_target_img)
     app.layout.children.extend([
-        dcc.Store(id='store-region-centers', data=centers),
+        dcc.Store(id='store-region-info',
+                  data=_region_info(df, ana_glow, exp, min_vox,
+                                    mask_target_img)),
         dcc.Interval(id='hover-timer', interval=_HOVER_POLL_MS,
                      disabled=True),
     ])
@@ -790,7 +800,7 @@ def _register_hover_callback(app, df, ana_glow, exp, min_vox=0,
     # name the region under the mouse at once, and start the clock
     app.clientside_callback(
         """
-        function (hoverData, centers) {
+        function (hoverData, info) {
             var idle = [{label: ' Preview on hover', value: 'on'}];
             var st = window.__glowHover = window.__glowHover || {};
             st.at = window.performance.now();
@@ -800,7 +810,7 @@ def _register_hover_callback(app, df, ana_glow, exp, min_vox=0,
             if (hoverData && hoverData.points && hoverData.points.length) {
                 var t = hoverData.points[0].text;
                 if (t !== undefined && t !== null
-                        && (centers || {})[t] !== undefined) {
+                        && (info || {})[t] !== undefined) {
                     name = t;
                 }
             }
@@ -814,14 +824,14 @@ def _register_hover_callback(app, df, ana_glow, exp, min_vox=0,
         [Output('toggle-hover-preview', 'options'),
          Output('hover-timer', 'disabled')],
         [Input('scatter-plot', 'hoverData')],
-        [State('store-region-centers', 'data')],
+        [State('store-region-info', 'data')],
         prevent_initial_call=True,
     )
 
     # once it has held still, publish -- and stop the clock
     app.clientside_callback(
         """
-        function (nIntervals, toggle, centers) {
+        function (nIntervals, toggle, info) {
             var nu = window.dash_clientside.no_update;
             var st = window.__glowHover;
             if (!st || st.settled) { return [nu, nu, true]; }
@@ -837,10 +847,11 @@ def _register_hover_callback(app, df, ana_glow, exp, min_vox=0,
             if (!toggle || toggle.indexOf('on') === -1) {
                 return ['null', nu, true];
             }
-            var center = (centers || {})[name];
-            if (center === undefined) { return ['null', nu, true]; }
+            var row = (info || {})[name];
+            if (row === undefined) { return ['null', nu, true]; }
             var reg = name === 'target' ? 'target' : parseInt(name, 10);
-            return [JSON.stringify(reg), JSON.stringify(center), true];
+            return [JSON.stringify(reg),
+                    JSON.stringify(row.slice(0, 3)), true];
         }
         """ % _HOVER_SETTLE_MS,
         [Output('store-hover', 'data'),
@@ -848,18 +859,18 @@ def _register_hover_callback(app, df, ana_glow, exp, min_vox=0,
          Output('hover-timer', 'disabled', allow_duplicate=True)],
         [Input('hover-timer', 'n_intervals')],
         [State('toggle-hover-preview', 'value'),
-         State('store-region-centers', 'data')],
+         State('store-region-info', 'data')],
         prevent_initial_call=True,
     )
 
 
-def _hover_centers(df, ana_glow, exp, min_vox, mask_target_img):
-    """Build the region -> centre table the clientside hover reads.
+def _region_info(df, ana_glow, exp, min_vox, mask_target_img=None):
+    """Build the region table the browser answers interactions from.
 
-    Keyed by the string a marker carries in text, so the browser can
-    look a hovered point up without parsing anything. Only regions the
-    scatter draws are included: nothing else can be hovered, and the
-    table ships with the page.
+    Keyed by the string a scatter marker carries in text, so a hovered
+    or clicked point can be looked up without parsing anything. Only
+    regions the scatter draws are included -- nothing else can be
+    hovered or clicked, and the table ships with the page.
 
     Args:
         df (pd.DataFrame): one row per region, with n_voxel.
@@ -869,18 +880,25 @@ def _hover_centers(df, ana_glow, exp, min_vox, mask_target_img):
         mask_target_img: optional boolean target mask, keyed 'target'.
 
     Returns:
-        centers (dict): 'region index' | 'target' -> [i, j, k], rounded
-            to a tenth of a voxel, which is finer than a slice.
+        info (dict): 'region index' | 'target' -> [i, j, k, n_voxel].
+            The centre is rounded to a tenth of a voxel, which is finer
+            than a slice.
     """
-    shown = df.loc[df['n_voxel'] >= max(min_vox, 1), 'region_idx']
-    centers = {str(r): [round(c, 1) for c in xyz] for r, xyz
-               in region_centers(exp, ana_glow, shown).items()}
+    sized = df.loc[df['n_voxel'] >= max(min_vox, 1), ['region_idx',
+                                                      'n_voxel']]
+    centers = region_centers(exp, ana_glow, sized['region_idx'])
+    info = {}
+    for reg, n_vox in zip(sized['region_idx'], sized['n_voxel']):
+        xyz = centers.get(int(reg))
+        if xyz is not None:
+            info[str(reg)] = [round(c, 1) for c in xyz] + [int(n_vox)]
     if mask_target_img is not None:
         coords = np.argwhere(mask_target_img)
         if len(coords):
-            centers['target'] = [round(float(c), 1)
-                                 for c in coords.mean(axis=0)]
-    return centers
+            info['target'] = ([round(float(c), 1)
+                               for c in coords.mean(axis=0)]
+                              + [int(mask_target_img.sum())])
+    return info
 
 
 def _register_regression_callback(app, ana_glow, exp, df, y_features=None,
