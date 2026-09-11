@@ -23,7 +23,7 @@ from .data import (prep_df, get_feature_columns, compute_backgrounds,
 from .hist import build_hist, build_empty_hist
 from .scatter import build_scatter, selection_style, visible_regions
 from .image import (build_label_map, compute_bg_volume, get_region_color,
-                    compute_region_center)
+                    compute_region_center, region_centers)
 from .regression import (build_regression_figure, build_empty_regression,
                          get_x_labels, get_y_labels)
 from ._port import _check_port
@@ -243,7 +243,7 @@ def _setup_3d(app, ana_glow, exp, df,
                                  mask_target_img=mask_target_img)
     _register_checklist_sync_callback(app, df,
                                       target_stats=target_stats)
-    _register_hover_callback(app, ana_glow, exp,
+    _register_hover_callback(app, df, ana_glow, exp, min_vox=min_vox,
                              mask_target_img=mask_target_img)
     _register_regression_callback(app, ana_glow, exp, df,
                                   y_features=y_features,
@@ -259,19 +259,27 @@ def _setup_3d(app, ana_glow, exp, df,
     )
     app.layout.children.append(setpos_store)
 
-    @app.callback(
+    # clientside so a hover's slice fetch leaves in the same wave as its
+    # overlays, rather than a round trip behind them
+    app.clientside_callback(
+        """
+        function (centerJson) {
+            if (!centerJson || centerJson === 'null') {
+                return window.dash_clientside.no_update;
+            }
+            var c = JSON.parse(centerJson);
+            if (!c || c.length < 3) {
+                return window.dash_clientside.no_update;
+            }
+            // c is [i, j, k] in numpy order; setpos wants (x, y, z)
+            return [c[2], c[1], c[0]];
+        }
+        """,
         Output({'context': 'viewer-center', 'scene': scene_id,
                 'name': 'setpos'}, 'data'),
         [Input('store-center', 'data')],
         prevent_initial_call=True,
     )
-    def center_slicers(center_json):
-        """Convert a stored centre to dash-slicer setpos coordinates."""
-        if not center_json or center_json == 'null':
-            return no_update
-        # center is [i, j, k] in numpy order; setpos wants reversed (x, y, z)
-        center = json.loads(center_json)
-        return [center[2], center[1], center[0]]
 
     # --- overlay callback: visible regions + hover -> slicer overlay ---
     @app.callback(
@@ -430,7 +438,7 @@ def _setup_2d(app, ana_glow, exp, df,
                                  mask_target_img=mask_target_img)
     _register_checklist_sync_callback(app, df,
                                       target_stats=target_stats)
-    _register_hover_callback(app, ana_glow, exp,
+    _register_hover_callback(app, df, ana_glow, exp, min_vox=min_vox,
                              mask_target_img=mask_target_img)
     _register_regression_callback(app, ana_glow, exp, df,
                                   y_features=y_features,
@@ -749,54 +757,87 @@ def _register_checklist_sync_callback(app, df, target_stats=None):
         return new_options, new_value
 
 
-def _register_hover_callback(app, ana_glow, exp, mask_target_img=None):
-    """Hover over scatter -> update store-hover (+ center slicers).
+def _register_hover_callback(app, df, ana_glow, exp, min_vox=0,
+                             mask_target_img=None):
+    """Hover over scatter -> update store-hover (+ centre the slicers).
 
-    Also updates the hover toggle label to show the hovered region index.
+    Clientside, and deliberately so. Every preview a hover triggers --
+    the overlays, the regression, the histogram, the slices -- waits on
+    this callback's outputs, so a server round trip here puts all of
+    that a second round trip behind the mouse. Answering in the browser
+    lets every one of them leave in the same wave. The price is a table
+    of region centres in the page; see _hover_centers.
+
+    Also updates the hover toggle label to show the hovered region.
     """
-    @app.callback(
+    centers = _hover_centers(df, ana_glow, exp, min_vox, mask_target_img)
+    app.layout.children.append(
+        dcc.Store(id='store-region-centers', data=centers))
+
+    app.clientside_callback(
+        """
+        function (hoverData, toggle, centers) {
+            var nu = window.dash_clientside.no_update;
+            var idle = [{label: ' Preview on hover', value: 'on'}];
+            if (!hoverData || !hoverData.points
+                    || !hoverData.points.length) {
+                return ['null', nu, idle];
+            }
+            var name = hoverData.points[0].text;
+            if (name === undefined || name === null) {
+                return ['null', nu, idle];
+            }
+            var center = (centers || {})[name];
+            if (center === undefined) { return ['null', nu, idle]; }
+
+            var label = name === 'target' ? ' Target mask'
+                                          : ' Region ' + name;
+            var options = [{label: label, value: 'on'}];
+            if (!toggle || toggle.indexOf('on') === -1) {
+                return ['null', nu, options];
+            }
+            var reg = name === 'target' ? 'target' : parseInt(name, 10);
+            return [JSON.stringify(reg), JSON.stringify(center), options];
+        }
+        """,
         [Output('store-hover', 'data'),
          Output('store-center', 'data', allow_duplicate=True),
          Output('toggle-hover-preview', 'options')],
         [Input('scatter-plot', 'hoverData')],
-        [State('toggle-hover-preview', 'value')],
+        [State('toggle-hover-preview', 'value'),
+         State('store-region-centers', 'data')],
         prevent_initial_call=True,
     )
-    def update_hover(hover_data, toggle):
-        """Track the hovered region: store it, centre slicers, label toggle."""
-        if hover_data is None:
-            label = ' Preview on hover'
-            if 'on' not in (toggle or []):
-                return 'null', no_update, [{'label': label, 'value': 'on'}]
-            return 'null', no_update, [{'label': label, 'value': 'on'}]
 
-        point = hover_data['points'][0]
-        reg_idx = _point_region(point)
-        if reg_idx is None:
-            label = ' Preview on hover'
-            return 'null', no_update, [{'label': label, 'value': 'on'}]
 
-        if reg_idx != 'target':
-            reg_idx = int(reg_idx)
-        if not _valid_reg(reg_idx, ana_glow, exp):
-            return 'null', no_update, no_update
+def _hover_centers(df, ana_glow, exp, min_vox, mask_target_img):
+    """Build the region -> centre table the clientside hover reads.
 
-        if reg_idx == 'target':
-            label = ' Target mask'
-        else:
-            label = f' Region {reg_idx}'
-        new_options = [{'label': label, 'value': 'on'}]
+    Keyed by the string a marker carries in text, so the browser can
+    look a hovered point up without parsing anything. Only regions the
+    scatter draws are included: nothing else can be hovered, and the
+    table ships with the page.
 
-        if 'on' not in (toggle or []):
-            return 'null', no_update, new_options
+    Args:
+        df (pd.DataFrame): one row per region, with n_voxel.
+        ana_glow (AnalysisGLOWBase): completed analysis (tree)
+        exp (Experiment): the experiment the analysis was fit on
+        min_vox (int): the scatter's region-size floor.
+        mask_target_img: optional boolean target mask, keyed 'target'.
 
-        if reg_idx == 'target' and mask_target_img is not None:
-            coords = np.argwhere(mask_target_img)
-            center = coords.mean(axis=0).tolist() if len(coords) else None
-        else:
-            center = compute_region_center(reg_idx, exp, ana_glow)
-        center_json = json.dumps(center) if center else 'null'
-        return json.dumps(reg_idx), center_json, new_options
+    Returns:
+        centers (dict): 'region index' | 'target' -> [i, j, k], rounded
+            to a tenth of a voxel, which is finer than a slice.
+    """
+    shown = df.loc[df['n_voxel'] >= max(min_vox, 1), 'region_idx']
+    centers = {str(r): [round(c, 1) for c in xyz] for r, xyz
+               in region_centers(exp, ana_glow, shown).items()}
+    if mask_target_img is not None:
+        coords = np.argwhere(mask_target_img)
+        if len(coords):
+            centers['target'] = [round(float(c), 1)
+                                 for c in coords.mean(axis=0)]
+    return centers
 
 
 def _register_regression_callback(app, ana_glow, exp, df, y_features=None,

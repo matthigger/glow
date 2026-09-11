@@ -54,6 +54,41 @@ def compute_region_center(reg_idx, exp, ana_glow):
     return coords.mean(axis=0).tolist()
 
 
+def region_centers(exp, ana_glow, reg_idx_list=None):
+    """Compute centres of mass for many regions in one tree pass.
+
+    A region's centre is the size-weighted mean of its two children's,
+    so the whole tree costs one sweep -- compute_region_center builds a
+    label map per region, which does not scale to every region at once.
+
+    Args:
+        exp (Experiment): the experiment the analysis was fit on (mask_idx)
+        ana_glow (AnalysisGLOWBase): completed analysis (tree)
+        reg_idx_list (list[int] | None): regions to return, all when None
+
+    Returns:
+        centers (dict): region index (int) -> [i, j, k] voxel coordinates
+    """
+    mask_idx = exp.mask_idx
+    children = ana_glow.children
+    num_vox = exp.y.shape[2]
+    num_reg = num_vox + children.shape[0]
+
+    center = np.zeros((num_reg, mask_idx.ndim))
+    size = np.ones(num_reg, dtype=np.int64)
+    center[mask_idx[mask_idx >= 0]] = np.argwhere(mask_idx >= 0)
+    for i, (c0, c1) in enumerate(children):
+        r = num_vox + i
+        size[r] = size[c0] + size[c1]
+        center[r] = (center[c0] * size[c0]
+                     + center[c1] * size[c1]) / size[r]
+
+    if reg_idx_list is None:
+        reg_idx_list = range(num_reg)
+    return {int(r): center[r].tolist() for r in reg_idx_list
+            if 0 <= int(r) < num_reg}
+
+
 def build_label_map(reg_idx_list, exp, ana_glow):
     """Build a spatial label map for a list of region indices.
 

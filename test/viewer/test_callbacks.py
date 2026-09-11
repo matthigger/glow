@@ -10,7 +10,7 @@ import json
 import numpy as np
 import pytest
 
-from glow._extra.viewer.app import _point_region
+from glow._extra.viewer.app import _create_app, _point_region
 from glow._extra.viewer.data import prep_df, compute_target_stats
 from glow._extra.viewer.scatter import build_scatter
 from glow._extra.viewer.regression import build_regression_figure
@@ -258,3 +258,66 @@ class TestRegressionFoldMarkers:
         assert len(traces) == 1
         assert traces[0].marker.symbol == 'circle'
         assert list(traces[0].customdata) == list(range(exp.y.shape[1]))
+
+
+class TestHoverIsAnsweredInTheBrowser:
+    """Hover must not cost a server round trip.
+
+    Every preview a hover triggers waits on store-hover and store-center,
+    so a server callback in front of them puts the overlays, the
+    regression and the slices a whole round trip behind the mouse.
+    """
+
+    @staticmethod
+    def _callback_for(app, input_id, input_prop):
+        """Return the callback spec fed by one input property."""
+        for spec in app._callback_list:
+            for inp in spec.get('inputs', []):
+                if (inp.get('id') == input_id
+                        and inp.get('property') == input_prop):
+                    return spec
+        return None
+
+    def test_hover_callback_is_clientside(self, ana, exp, mask_target):
+        app = _create_app(ana, exp, mask_target=mask_target)
+        spec = self._callback_for(app, 'scatter-plot', 'hoverData')
+        assert spec is not None, 'nothing listens to hoverData'
+        assert spec['clientside_function'] is not None, \
+            'hover went back to the server; previews now cost two hops'
+
+    def test_centering_the_slicers_is_clientside(self, ana, exp,
+                                                 mask_target):
+        """store-center -> setpos must not add a hop before the slices."""
+        app = _create_app(ana, exp, mask_target=mask_target)
+        spec = self._callback_for(app, 'store-center', 'data')
+        assert spec is not None, 'nothing listens to store-center'
+        assert spec['clientside_function'] is not None, \
+            'centring went back to the server; slices now cost three hops'
+
+
+class TestHoverCenters:
+    """The centre table the clientside hover reads."""
+
+    def test_matches_compute_region_center(self, ana, exp):
+        from glow._extra.viewer.image import (compute_region_center,
+                                              region_centers)
+        centers = region_centers(exp, ana)
+        num_reg = exp.y.shape[2] + ana.children.shape[0]
+        for reg in (0, num_reg // 3, num_reg - 1):
+            ref = compute_region_center(reg, exp, ana)
+            assert np.allclose(ref, centers[reg]), reg
+
+    def test_every_drawn_region_has_a_centre(self, df_with_target, ana, exp,
+                                             target_stats, mask_target):
+        """A drawn region with no centre hovers without moving the view."""
+        from glow._extra.viewer.app import _hover_centers
+
+        for min_vox in (0, 2, 4):
+            fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr',
+                                '__none__', target_stats=target_stats,
+                                min_vox=min_vox)
+            centers = _hover_centers(df_with_target, ana, exp, min_vox,
+                                     mask_target)
+            drawn = {s for t in fig.data
+                     if getattr(t, 'text', None) is not None for s in t.text}
+            assert drawn <= set(centers), (min_vox, drawn - set(centers))
