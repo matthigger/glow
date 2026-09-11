@@ -757,6 +757,14 @@ def _register_checklist_sync_callback(app, df, target_stats=None):
         return new_options, new_value
 
 
+# how long the mouse must hold still before a hover previews, and how
+# often the browser checks. A reader crossing the cloud passes over
+# hundreds of regions; previewing each one queues hundreds of overlay
+# renders on a one-core service, which is slower than no preview at all.
+_HOVER_SETTLE_MS = 150
+_HOVER_POLL_MS = 50
+
+
 def _register_hover_callback(app, df, ana_glow, exp, min_vox=0,
                              mask_target_img=None):
     """Hover over scatter -> update store-hover (+ centre the slicers).
@@ -768,42 +776,77 @@ def _register_hover_callback(app, df, ana_glow, exp, min_vox=0,
     lets every one of them leave in the same wave. The price is a table
     of region centres in the page; see _hover_centers.
 
-    Also updates the hover toggle label to show the hovered region.
+    The region label follows the mouse, but the preview waits for it to
+    settle: see _HOVER_SETTLE_MS. The wait is spent in the browser, so
+    it costs a reader nothing that the queue would not have cost them.
     """
     centers = _hover_centers(df, ana_glow, exp, min_vox, mask_target_img)
-    app.layout.children.append(
-        dcc.Store(id='store-region-centers', data=centers))
+    app.layout.children.extend([
+        dcc.Store(id='store-region-centers', data=centers),
+        dcc.Interval(id='hover-timer', interval=_HOVER_POLL_MS,
+                     disabled=True),
+    ])
 
+    # name the region under the mouse at once, and start the clock
     app.clientside_callback(
         """
-        function (hoverData, toggle, centers) {
-            var nu = window.dash_clientside.no_update;
+        function (hoverData, centers) {
             var idle = [{label: ' Preview on hover', value: 'on'}];
-            if (!hoverData || !hoverData.points
-                    || !hoverData.points.length) {
-                return ['null', nu, idle];
-            }
-            var name = hoverData.points[0].text;
-            if (name === undefined || name === null) {
-                return ['null', nu, idle];
-            }
-            var center = (centers || {})[name];
-            if (center === undefined) { return ['null', nu, idle]; }
+            var st = window.__glowHover = window.__glowHover || {};
+            st.at = window.performance.now();
+            st.settled = false;
 
+            var name = null;
+            if (hoverData && hoverData.points && hoverData.points.length) {
+                var t = hoverData.points[0].text;
+                if (t !== undefined && t !== null
+                        && (centers || {})[t] !== undefined) {
+                    name = t;
+                }
+            }
+            st.pending = name;
+            if (name === null) { return [idle, false]; }
             var label = name === 'target' ? ' Target mask'
                                           : ' Region ' + name;
-            var options = [{label: label, value: 'on'}];
-            if (!toggle || toggle.indexOf('on') === -1) {
-                return ['null', nu, options];
-            }
-            var reg = name === 'target' ? 'target' : parseInt(name, 10);
-            return [JSON.stringify(reg), JSON.stringify(center), options];
+            return [[{label: label, value: 'on'}], false];
         }
         """,
+        [Output('toggle-hover-preview', 'options'),
+         Output('hover-timer', 'disabled')],
+        [Input('scatter-plot', 'hoverData')],
+        [State('store-region-centers', 'data')],
+        prevent_initial_call=True,
+    )
+
+    # once it has held still, publish -- and stop the clock
+    app.clientside_callback(
+        """
+        function (nIntervals, toggle, centers) {
+            var nu = window.dash_clientside.no_update;
+            var st = window.__glowHover;
+            if (!st || st.settled) { return [nu, nu, true]; }
+            if (window.performance.now() - st.at < %d) {
+                return [nu, nu, nu];
+            }
+            st.settled = true;
+
+            var name = st.pending;
+            if (name === null || name === undefined) {
+                return ['null', nu, true];
+            }
+            if (!toggle || toggle.indexOf('on') === -1) {
+                return ['null', nu, true];
+            }
+            var center = (centers || {})[name];
+            if (center === undefined) { return ['null', nu, true]; }
+            var reg = name === 'target' ? 'target' : parseInt(name, 10);
+            return [JSON.stringify(reg), JSON.stringify(center), true];
+        }
+        """ % _HOVER_SETTLE_MS,
         [Output('store-hover', 'data'),
          Output('store-center', 'data', allow_duplicate=True),
-         Output('toggle-hover-preview', 'options')],
-        [Input('scatter-plot', 'hoverData')],
+         Output('hover-timer', 'disabled', allow_duplicate=True)],
+        [Input('hover-timer', 'n_intervals')],
         [State('toggle-hover-preview', 'value'),
          State('store-region-centers', 'data')],
         prevent_initial_call=True,

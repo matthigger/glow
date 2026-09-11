@@ -285,6 +285,25 @@ class TestHoverIsAnsweredInTheBrowser:
         assert spec['clientside_function'] is not None, \
             'hover went back to the server; previews now cost two hops'
 
+    def test_the_preview_waits_for_the_mouse_to_settle(self, ana, exp,
+                                                       mask_target):
+        """hoverData must not reach store-hover directly.
+
+        A reader crossing the cloud passes over hundreds of regions. If
+        each one published, each would queue an overlay render, and the
+        previews would arrive seconds after the mouse stopped.
+        """
+        app = _create_app(ana, exp, mask_target=mask_target)
+        spec = self._callback_for(app, 'scatter-plot', 'hoverData')
+        outs = str(spec['output'])
+        assert 'store-hover' not in outs, \
+            'every point the mouse crosses now queues a preview'
+
+        timed = self._callback_for(app, 'hover-timer', 'n_intervals')
+        assert timed is not None, 'nothing publishes the settled hover'
+        assert 'store-hover' in str(timed['output'])
+        assert timed['clientside_function'] is not None
+
     def test_centering_the_slicers_is_clientside(self, ana, exp,
                                                  mask_target):
         """store-center -> setpos must not add a hop before the slices."""
