@@ -294,6 +294,35 @@ def _safe_next(target: Optional[str]) -> str:
     return target
 
 
+# A component suite's bytes are fixed by the package installed in the
+# image, so an edge copy only goes stale when the image is rebuilt. An
+# hour bounds that, and is long enough for the CDN rather than this
+# container to answer the 4.3 MB plotly bundle for most visitors.
+_SUITE_MAX_AGE = 3600
+
+
+def _cache_component_suites(response):
+    """Let a shared cache keep Dash's component suites.
+
+    Dash serves them as Cache-Control: private, which forbids the CDN
+    from storing them, so every visitor fetched the whole set -- plotly
+    included -- from this container. They are library code, never
+    anything a bundle's terms cover, so caching them is safe even for a
+    gated viewer.
+
+    Args:
+        response: the outgoing Flask response.
+
+    Returns:
+        response: the same response, cacheable if it is a suite.
+    """
+    if (response.status_code == 200
+            and request.path.startswith('/_dash-component-suites/')):
+        response.headers['Cache-Control'] = (
+            f'public, max-age={_SUITE_MAX_AGE}')
+    return response
+
+
 def _no_store(response):
     """Keep a gated viewer out of every shared cache.
 
@@ -483,6 +512,10 @@ class LocalMounter:
                               source=source,
                               routes_pathname_prefix='/',
                               requests_pathname_prefix=f'{mount_key}/')
+            # registered first so Flask, which runs after_request
+            # hooks in reverse, runs it last: its header has to
+            # survive _no_store
+            app.server.after_request(_cache_component_suites)
             if source in GATED_SOURCES:
                 app.server.before_request(_require_terms)
                 app.server.after_request(_no_store)

@@ -12,6 +12,7 @@ import inspect
 import json
 import pathlib
 import pickle
+import re
 import subprocess
 import sys
 
@@ -871,3 +872,40 @@ def test_dash_is_held_below_the_version_that_breaks_the_slicer():
     assert Version('4.2.0') not in spec, line
     assert Version('4.1.0') in spec, line
     assert Version(dash.__version__) in spec, dash.__version__
+
+
+def _suite_path(client, key):
+    """Fetch a viewer's page and return one component-suite URL from it."""
+    body = client.get(f'/view/{key}/', follow_redirects=True).get_data(
+        as_text=True)
+    m = re.search(r'/view/' + key + r'(/_dash-component-suites/[^"\']+)',
+                  body)
+    return m.group(1) if m else None
+
+
+def test_component_suites_may_be_cached_by_the_cdn(pickle_dir):
+    """Dash marks them private, so every visitor refetched plotly."""
+    c = Client(server.build_application(pickle_dir=pickle_dir))
+    c.get('/load/llr_moderate', follow_redirects=True)
+    path = _suite_path(c, 'llr_moderate')
+    assert path, 'no component suite referenced by the page'
+    r = c.get(f'/view/llr_moderate{path}')
+    assert r.status_code == 200
+    assert 'public' in r.headers['Cache-Control']
+    assert 'max-age=' in r.headers['Cache-Control']
+
+
+def test_a_gated_viewers_data_is_still_never_cached(gated_dir):
+    """Only library code is cacheable; the bundle's own replies are not."""
+    c = Client(server.build_application(pickle_dir=gated_dir))
+    c.set_cookie(server.TERMS_COOKIE, server.TERMS_COOKIE_VALUE,
+                 domain='localhost')
+    c.get('/load/hcp_llr_moderate', follow_redirects=True)
+    lay = c.get('/view/hcp_llr_moderate/_dash-layout')
+    assert lay.status_code == 200
+    assert lay.headers['Cache-Control'] == 'no-store'
+
+    path = _suite_path(c, 'hcp_llr_moderate')
+    if path:
+        suite = c.get(f'/view/hcp_llr_moderate{path}')
+        assert 'public' in suite.headers['Cache-Control']
