@@ -33,7 +33,7 @@ _ADJ_COL = 'llr_z'
 # estimate_state -> (plotly symbol, default color, legend label)
 _STATE_STYLE = {
     'no_effect':   ('circle',  'steelblue', 'no effect'),
-    'has_effect':  ('diamond', 'green',     'contains effect(s)'),
+    'has_effect':  ('diamond', 'green',     'contains (one) effect'),
 }
 _STATE_ORDER = ['no_effect', 'has_effect']
 
