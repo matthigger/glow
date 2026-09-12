@@ -14,7 +14,7 @@ draw, recomputed from the cached records so a reader can check any of it:
   - the split of the precision gap between the prune rule, the permutation
     test and the segmentation, each measured against its own oracle
 
-    python scripts/detection_stats.py
+    python -m glow._extra.benchmark.scripts.detection_stats
 
 Reads the sweep_llr and prune caches through the recorder, and
 oracle_vs_k.py's cached curves for the candidate-pool block; no fit.

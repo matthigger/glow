@@ -9,7 +9,10 @@ results recovers which of its leaves each figure's cache owns, make_csv
 exports them as one tidy CSV per figure, and plot draws them. file holds the
 on-disk paths, hcp the reference dataset.
 
-Run it with python -m glow._extra.benchmark (see __main__).
+Run it with python -m glow._extra.benchmark (see __main__); scripts holds
+the command-line harnesses that sit around a sweep, exporting its figures'
+CSVs, quoting its derived numbers, and probing what of it reproduces bit
+for bit.
 """
 from .file import *
 from .recorder import Recorder

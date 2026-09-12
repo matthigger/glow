@@ -4,8 +4,9 @@ The catalogue's cells are declared, seeded and portable by identity (see
 glow._extra.benchmark.recipe), which makes a cell's NAME the same on any
 machine. This harness asks the other half of the question -- whether the
 BYTES are -- by perturbing exactly the things a second machine changes and
-diffing a cell end to end. Findings and the fixes they argue for are in
-docs/notes/reproducibility_audit.md.
+diffing a cell end to end. What these probes found, and the fixes they
+argued for, is written up in ../rerun.md under 'Why it is not bitwise
+reproducible'.
 
 Four probes, each isolating one candidate cause:
 
@@ -24,8 +25,8 @@ Nothing here writes: the builders are called unwrapped, so neither the
 joblib cache nor the records dir is touched (a plain call would rewrite a
 record under a new exp hash and orphan finished leaves).
 
-    python scripts/repro_probe.py blas
-    python scripts/repro_probe.py jitter --n-seed 5
+    python -m glow._extra.benchmark.scripts.repro_probe blas
+    python -m glow._extra.benchmark.scripts.repro_probe jitter --n-seed 5
 """
 import argparse
 import copy

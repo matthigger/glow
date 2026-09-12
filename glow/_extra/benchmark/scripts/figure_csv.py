@@ -2,8 +2,8 @@
 
 The reproduction artifact for a reader who wants the numbers rather than the
 pipeline: every data-backed figure and table in the paper, one CSV each,
-carrying the rows that figure actually draws. See
-glow/_extra/benchmark/rerun.md for the figure table these fill.
+carrying the rows that figure actually draws. See the rerun guide beside
+this package (../rerun.md) for the figure table these fill.
 
 Each export reuses the plot layer's own tidy function and its own row
 filtering (plot._select_glow_arm, plot._split_by_secondary), so a CSV is the
@@ -29,7 +29,7 @@ rather than having to be remembered separately. The recorder globs *.json
 non-recursively, so the subdirectory is invisible to it. --no-records-copy
 skips the second write.
 
-    python scripts/figure_csv.py --out-dir figure_csv
+    python -m glow._extra.benchmark.scripts.figure_csv --out-dir figure_csv
 """
 import argparse
 import pathlib
@@ -238,7 +238,8 @@ def main(argv=None) -> None:
            len(oracle.columns) if oracle is not None else 0)
     summary.insert(4, row)
     if oracle is None:
-        print('NOTE: no oracle_vs_k.csv found; run scripts/oracle_vs_k.py')
+        print('NOTE: no oracle_vs_k.csv found; run the oracle_vs_k '
+              'module')
 
     width = max(len(name) for name, *_ in summary)
     print(f'\n{"csv".ljust(width)}  {"rows":>6s} {"cols":>4s}  backs')

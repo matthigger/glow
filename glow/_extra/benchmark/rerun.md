@@ -137,7 +137,7 @@ enough for the figures, not enough to resume a fit.
 ## One CSV per figure
 
 ```bash
-python scripts/figure_csv.py --out-dir figure_csv
+python -m glow._extra.benchmark.scripts.figure_csv --out-dir figure_csv
 ```
 
 It writes twice: to `--out-dir`, and to `figure_csv/` inside the records
@@ -174,7 +174,7 @@ a Ward tree or a significant set needs more. Only `oracle_vs_k` (Fig. 11)
 does.
 
 ```bash
-python scripts/oracle_vs_k.py --out fig11.pdf
+python -m glow._extra.benchmark.scripts.oracle_vs_k --out fig11.pdf
 ```
 
 It reads the per-trial curves cached in `oracle_vs_k.csv` beside the output

@@ -209,7 +209,8 @@ REPORTED_GLOW_LABEL_LIST = (REPORTED_GLOW_LABEL,)
 # fixed (the LLR is formed by the determinant lemma and the per-draw region
 # sums scan in float64), leaving a drift that moves no decision at the shapes
 # this catalogue runs -- 0 p-value flips of ~50k regions at b=1..4 and at both
-# inner counts, supports identical. scripts/fp32_drift.py is the check.
+# inner counts, supports identical.
+# glow._extra.benchmark.scripts.fp32_drift is the check.
 # Both knobs multiply against the sweep's own -j; driver.check_fit_params
 # refuses the products that would oversubscribe.
 GLOW_FIT_N_JOBS = 10

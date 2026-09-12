@@ -13,7 +13,7 @@ differ only in what they may choose from:
     permutation test withheld; what still separates tree from a voxel-wise
     method's precision is the segmentation's own.
 
-    python scripts/oracle_vs_k.py --out fig.pdf
+    python -m glow._extra.benchmark.scripts.oracle_vs_k --out fig.pdf
 
 Dice is a ratio of linear functions of (overlap, volume), so it is maximized
 parametrically (Dinkelbach 1967): at a fixed lam the surrogate 2*tp - lam*vol

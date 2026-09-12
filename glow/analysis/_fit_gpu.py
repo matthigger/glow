@@ -55,8 +55,8 @@ class GpuConfig:
         acc_dtype (type): device hot-loop dtype. float64 reproduces a CPU
             fit's p-values exactly; float32 is ~1.6x faster and perturbs
             fwer.max_stat without moving a decision at benchmark shapes
-            (scripts/fp32_drift.py is the check, and the module docstring
-            says which cancellations make that true).
+            (glow._extra.benchmark.scripts.fp32_drift is the check, and the
+            module docstring says which cancellations make that true).
     """
 
     device: str = 'cuda'
