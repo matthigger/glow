@@ -473,11 +473,14 @@ def _image_options(num_img, subject_names, per_image=True):
 
 
 def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
-                    slicer0, slicer1, slicer2,
+                    slicer_panels,
                     x_names=None, y_names=None, region_ids=None,
                     default_reg_x=0, num_img=0, feat_names=None,
                     subject_names=None, has_stat=False, per_image=True):
     """Build layout for 3D data (with dash-slicer ortho views).
+
+    slicer_panels is a list of (caption, VolumeSlicer) in left-to-right
+    display order; see image.display_panel_axes.
 
     per_image False locks the Image selector to the group mean; see
     NO_PER_IMAGE_NOTE.
@@ -492,6 +495,8 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
 
     _dd_label = {'fontSize': '11px', 'fontWeight': 'bold',
                  'marginBottom': '2px'}
+    _view_caption = {'fontSize': '10px', 'color': '#777',
+                     'letterSpacing': '1px', 'textAlign': 'center'}
 
     # dropdowns below IMAGE title: Feature (only when b > 1) + Image
     image_dd_children = []
@@ -561,23 +566,12 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
                         'gap': '4px',
                     }, children=[
                         html.Div([
-                            slicer0.graph,
-                            html.Div([slicer0.slider],
+                            html.Div(caption, style=_view_caption),
+                            slicer.graph,
+                            html.Div([slicer.slider],
                                      style={'marginTop': '2px'}),
-                            *slicer0.stores,
-                        ]),
-                        html.Div([
-                            slicer1.graph,
-                            html.Div([slicer1.slider],
-                                     style={'marginTop': '2px'}),
-                            *slicer1.stores,
-                        ]),
-                        html.Div([
-                            slicer2.graph,
-                            html.Div([slicer2.slider],
-                                     style={'marginTop': '2px'}),
-                            *slicer2.stores,
-                        ]),
+                            *slicer.stores,
+                        ]) for caption, slicer in slicer_panels
                     ]),
                 ], style={'flex': '1', 'padding': '10px'}),
             ], style={'flex': '1', 'minWidth': '0',

@@ -22,8 +22,9 @@ from .data import (prep_df, get_feature_columns, compute_backgrounds,
                     compute_bg_ranges, compute_target_stats)
 from .hist import build_hist, build_empty_hist
 from .scatter import build_scatter, selection_style, visible_regions
-from .image import (build_label_map, compute_bg_volume, get_region_color,
-                    region_centers)
+from .image import (build_label_map, compute_bg_volume, display_edge_labels,
+                    display_panel_axes, display_view_name, get_region_color,
+                    region_centers, reorient_display)
 from .regression import (build_regression_figure, build_empty_regression,
                          get_x_labels, get_y_labels)
 from ._port import _check_port
@@ -181,6 +182,8 @@ def _setup_3d(app, ana_glow, exp, df,
     """Set up the app for 3D data using dash-slicer."""
     from dash_slicer import VolumeSlicer
 
+    exp, oriented = reorient_display(exp)
+
     bg_vol = compute_bg_volume(exp, feature_idx=0)
 
     # Per-feature clim across all images so colour scale is stable when
@@ -204,6 +207,15 @@ def _setup_3d(app, ana_glow, exp, df,
     for s in (slicer0, slicer1, slicer2):
         s.graph.config['scrollZoom'] = False
         s.graph.style = {'height': '280px'}
+        if oriented:
+            _annotate_orientation(s)
+
+    # left to right: sagittal, coronal, axial, each captioned. Synthetic
+    # images have no anatomical frame, so they keep the raw axis order.
+    axes = display_panel_axes() if oriented else (0, 1, 2)
+    slicers = (slicer0, slicer1, slicer2)
+    slicer_panels = [(display_view_name(a) if oriented else f'axis {a}',
+                      slicers[a]) for a in axes]
 
     _, x_names, default_reg_x = get_x_labels(exp)
     y_names = get_y_labels(exp, y_features=y_features)
@@ -216,7 +228,7 @@ def _setup_3d(app, ana_glow, exp, df,
     else:
         feat_names = list(y_features)
     app.layout = _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
-                                 slicer0, slicer1, slicer2,
+                                 slicer_panels,
                                  x_names=x_names, y_names=y_names,
                                  region_ids=region_ids,
                                  default_reg_x=default_reg_x,
@@ -357,6 +369,23 @@ def _setup_3d(app, ana_glow, exp, df,
             {**st2, 'index_changed': True, '_vt': t},
             clim, clim, clim,
         )
+
+
+def _annotate_orientation(slicer):
+    """Mark a slicer panel's left and top edge with its anatomical pole.
+
+    Pinned to the panel (paper coordinates), so the letters stay put
+    while the view is panned. dash-slicer replaces only figure.data when
+    it redraws, which is what lets these survive.
+    """
+    left, top = display_edge_labels(slicer.axis)
+    font = {'size': 11, 'color': '#888'}
+    slicer.graph.figure.add_annotation(
+        text=left, x=0.01, y=0.5, xref='paper', yref='paper',
+        xanchor='left', yanchor='middle', showarrow=False, font=font)
+    slicer.graph.figure.add_annotation(
+        text=top, x=0.5, y=0.99, xref='paper', yref='paper',
+        xanchor='center', yanchor='top', showarrow=False, font=font)
 
 
 def _build_overlay(slicer, label_map, visible_list, color_map,
