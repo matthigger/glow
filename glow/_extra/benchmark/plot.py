@@ -378,6 +378,25 @@ _HUE_TITLES = {
     'effect_llr': 'LLR / |r|',
 }
 
+# the manuscript's textwidth (imag-ms-template.cls sets \textwidth 17.8 cm).
+# A grid figure sized to it and saved untrimmed includes at 1:1, so the point
+# sizes below are the ones the reader gets. plot_paper carries its own copy of
+# this width; importing it here would be circular.
+_TEXTWIDTH_IN = 17.8 / 2.54
+
+# point sizes for the multi-panel runtime figure. A per-cache figure is drawn
+# at matplotlib's defaults and read on screen; the grid ships in the paper,
+# where two panels across a textwidth leave each one half as wide.
+_GRID_RC = {
+    'font.size': 9,
+    'axes.labelsize': 9.5,
+    'axes.titlesize': 9.5,
+    'xtick.labelsize': 8.5,
+    'ytick.labelsize': 8.5,
+    'legend.fontsize': 8.5,
+    'pdf.fonttype': 42,
+}
+
 # runtime caches: name -> (leaf column prefix, swept x-axis column). The
 # runtime family plots time (leaf.time_sec) against one swept cost knob;
 # unlike the detection sweeps the x is not inferred (time is the signal, the
@@ -394,6 +413,13 @@ _RUNTIME_SPEC = {
     'runtime_1perm_b':            ('run_ana_time_1perm', 'b'),
     'runtime_1perm_nimg':         ('run_ana_time_1perm', 'num_img'),
 }
+
+# the 1perm caches that share one panel grid (plot_runtime_grid), in reading
+# order. runtime_1perm_n_perm_fwer is left out: it recovers the outer loop's
+# linear multiplier, which the schedule already states, so it is drawn on its
+# own rather than spending a panel.
+_RUNTIME_GRID = ('runtime_1perm_num_vox', 'runtime_1perm_n_perm_inner',
+                 'runtime_1perm_b', 'runtime_1perm_nimg')
 
 
 # ---------------------------------------------------------------------------
@@ -2588,25 +2614,74 @@ def _loglog_slope(x, y, fit_decades: float = 1.0) -> float:
     return float(np.polyfit(np.log10(x[keep]), np.log10(y[keep]), 1)[0])
 
 
+def _draw_runtime(ax, df, *, log_x_ratio: float = 10.0,
+                  fit_decades: float = 1.0, legend: bool = True) -> dict:
+    """Draw one runtime cache's time-vs-knob curves on the given axes.
+
+    The seed replicates collapse to a median line per method with a min-max
+    band, wall time in minutes on a log y-axis and the swept knob on a log
+    x-axis when it spans at least log_x_ratio (so the num_vox / permutation
+    scaling reads as a slope; the small b sweep stays linear). Methods use the
+    shared palette (COLOR_ANALYSIS), with a seaborn fallback for any label
+    outside it (get_cmap_dict).
+
+    Where both axes come out log the reader's question is the exponent, so
+    each method's slope is fitted (_loglog_slope) rather than left to be
+    eyeballed. The fit takes the largest fit_decades of the swept axis only:
+    at the small end a fixed startup cost dominates and flattens the curve, so
+    a whole-range fit understates the asymptotic scaling the claim is about.
+    The slope is reported bare, so whatever draws the figure has to name the
+    range it was fitted over.
+
+    Args:
+        ax: the matplotlib axes to draw into.
+        df: the cache's tidy_runtime results, already filtered to one arm.
+        log_x_ratio (float): x max/min ratio at or above which the x-axis is
+            log-scaled.
+        fit_decades (float): decades of x, counted down from the largest, each
+            slope is fitted over.
+        legend (bool): draw the per-method legend, each entry carrying that
+            method's slope.
+
+    Returns:
+        slope (dict): method label -> fitted log-log slope, nan where the
+            x-axis stayed linear and no fit was made.
+    """
+    x_name = df['x_name'].iloc[0]
+    labels = sorted(df['label'].unique().tolist())
+    palette = get_cmap_dict(labels)
+    log_x = df['x'].max() / max(df['x'].min(), 1) >= log_x_ratio
+
+    slope = {}
+    for label in labels:
+        g = df[df['label'] == label].groupby('x')['time_sec']
+        med, lo, hi = g.median() / 60, g.min() / 60, g.max() / 60
+        slope[label] = (_loglog_slope(med.index.values, med.values,
+                                      fit_decades) if log_x
+                        else float('nan'))
+        entry = label if not log_x else f'{label}  (slope {slope[label]:.2f})'
+        ax.plot(med.index, med.values, marker='o', ms=5, lw=2,
+                color=palette[label], label=entry)
+        ax.fill_between(med.index, lo.values, hi.values,
+                        color=palette[label], alpha=0.15)
+
+    if log_x:
+        ax.set_xscale('log')
+    ax.set_yscale('log')
+    ax.set_xlabel(_X_PARAM_LABELS.get(x_name, x_name))
+    ax.set_ylabel('wall time (min)')
+    if legend:
+        ax.legend(frameon=False)
+    ax.grid(True, which='both', alpha=0.3)
+    return slope
+
+
 def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0,
                  fit_decades: float = 1.0) -> None:
     """Plot wall time vs the swept knob, one curve per method, on log axes.
 
-    The runtime family's single plotter: the seed replicates collapse to a
-    median line per method with a min-max band, wall time in minutes on a log
-    y-axis and the swept knob on a log x-axis when it spans at least
-    log_x_ratio (so the num_vox / permutation scaling reads as a slope; the
-    small b sweep stays linear). Methods use the shared palette
-    (COLOR_ANALYSIS), with a seaborn fallback for any label outside it
-    (get_cmap_dict).
-
-    Where both axes come out log the reader's question is the exponent, so
-    each method's slope is fitted (_loglog_slope) and printed in its legend
-    entry rather than left to be eyeballed. The fit takes the largest
-    fit_decades of the swept axis only: at the small end a fixed startup cost
-    dominates and flattens the curve, so a whole-range fit understates the
-    asymptotic scaling the claim is about. The legend gives the slope alone,
-    so whatever reports the figure has to name the range it was fitted over.
+    The runtime family's per-cache plotter: one figure holding that cache's
+    curves (_draw_runtime, which documents the axes and the slope fit).
 
     Args:
         name (str): cache name; used in the output filename.
@@ -2622,34 +2697,70 @@ def plot_runtime(name: str, df, out, log_x_ratio: float = 10.0,
         print(f'  (no timed rows for {name} — skipping)')
         return
 
-    x_name = df['x_name'].iloc[0]
-    labels = sorted(df['label'].unique().tolist())
-    palette = get_cmap_dict(labels)
-    log_x = df['x'].max() / max(df['x'].min(), 1) >= log_x_ratio
-
     fig, ax = plt.subplots(figsize=(6, 4.5))
-    for label in labels:
-        g = df[df['label'] == label].groupby('x')['time_sec']
-        med, lo, hi = g.median() / 60, g.min() / 60, g.max() / 60
-        legend = label
-        if log_x:
-            slope = _loglog_slope(med.index.values, med.values, fit_decades)
-            legend = f'{label}  (slope {slope:.2f})'
-        ax.plot(med.index, med.values, marker='o', ms=5, lw=2,
-                color=palette[label], label=legend)
-        ax.fill_between(med.index, lo.values, hi.values,
-                        color=palette[label], alpha=0.15)
-
-    if log_x:
-        ax.set_xscale('log')
-    ax.set_yscale('log')
-    ax.set_xlabel(_X_PARAM_LABELS.get(x_name, x_name))
-    ax.set_ylabel('wall time (min)')
-    ax.legend(frameon=False)
-    ax.grid(True, which='both', alpha=0.3)
+    _draw_runtime(ax, df, log_x_ratio=log_x_ratio, fit_decades=fit_decades)
     fig.tight_layout()
     path = out / f'{name}_runtime.pdf'
     fig.savefig(path, bbox_inches='tight')
+    plt.close('all')
+    print(f'saved: {path}')
+
+
+def plot_runtime_grid(df_dict: dict, out, name: str = 'runtime_1perm_grid',
+                      ncol: int = 2, log_x_ratio: float = 10.0,
+                      fit_decades: float = 1.0) -> None:
+    """Plot several runtime caches as one panel grid, sized to the textwidth.
+
+    The paper's per-permutation cost figure: a panel per swept knob, ncol
+    wide, drawn at _TEXTWIDTH_IN and saved untrimmed so the page includes it
+    at 1:1 and the panels keep the _GRID_RC point sizes. Four per-cache
+    figures shrunk into a row of subfigures instead land near a quarter size.
+
+    Wall time is shared across the panels (one log y-axis, labelled on the
+    left column), so a glance compares what each knob costs rather than only
+    the exponent within a panel: a knob time hardly moves in reads flat.
+    Panels are lettered for the caption, and where a panel holds a lone method
+    its slope goes in that letter's title and the legend is dropped, the
+    method being the whole figure's subject.
+
+    Args:
+        df_dict (dict): cache name -> tidy_runtime frame, in panel order.
+        out (pathlib.Path): directory the figure is written into.
+        name (str): output filename stem.
+        ncol (int): panels per row.
+        log_x_ratio (float): as plot_runtime.
+        fit_decades (float): as plot_runtime.
+    """
+    panels = [(n, _select_glow_arm(df.dropna(subset=['x', 'time_sec',
+                                                     'label'])))
+              for n, df in df_dict.items()]
+    panels = [(n, df) for n, df in panels if not df.empty]
+    if not panels:
+        print(f'  (no timed rows for {name} — skipping)')
+        return
+
+    nrow = -(-len(panels) // ncol)
+    with plt.rc_context(_GRID_RC):
+        fig, axes = plt.subplots(nrow, ncol, sharey=True, squeeze=False,
+                                 layout='constrained',
+                                 figsize=(_TEXTWIDTH_IN,
+                                          _TEXTWIDTH_IN * 0.33 * nrow))
+        for idx, ax in enumerate(axes.ravel()):
+            if idx >= len(panels):
+                ax.set_visible(False)
+                continue
+            _, df = panels[idx]
+            slope = _draw_runtime(ax, df, log_x_ratio=log_x_ratio,
+                                  fit_decades=fit_decades,
+                                  legend=len(df['label'].unique()) > 1)
+            title = f'({chr(ord("a") + idx)})'
+            if len(slope) == 1 and np.isfinite(list(slope.values())[0]):
+                title += f'  slope {list(slope.values())[0]:.2f}'
+            ax.set_title(title, loc='left')
+            if idx % ncol:
+                ax.set_ylabel('')
+        path = out / f'{name}.pdf'
+        fig.savefig(path)
     plt.close('all')
     print(f'saved: {path}')
 
@@ -2817,6 +2928,7 @@ def main(argv=None) -> None:
     out.mkdir(exist_ok=True)
 
     n_plotted = 0
+    grid_df = {}
     for name in names:
         if name in _RUNTIME_SPEC:
             df = tidy_runtime(name, make_csv.write_config_csv(name))
@@ -2825,6 +2937,7 @@ def main(argv=None) -> None:
                 continue
             print(f'\n=== {name}: {len(df)} runtime rows ===')
             plot_runtime(name, df, _cache_dir(out, name))
+            grid_df[name] = df
             n_plotted += 1
         elif name in detect_names:
             df = tidy_pred_decomp(make_csv.write_config_csv(name))
@@ -2881,6 +2994,13 @@ def main(argv=None) -> None:
             n_plotted += 1
         else:
             print(f'  ({name} is not a detection or runtime cache — skipping)')
+
+    # the 1perm panel grid needs every panel's cache, so it is drawn once the
+    # walk is done and only when this run covered all of them
+    if all(n in grid_df for n in _RUNTIME_GRID):
+        print('\n=== runtime_1perm: panel grid ===')
+        plot_runtime_grid({n: grid_df[n] for n in _RUNTIME_GRID},
+                          _cache_dir(out, 'runtime_1perm'))
 
     if n_plotted == 0:
         print(f'no results found under {out.parent}')
