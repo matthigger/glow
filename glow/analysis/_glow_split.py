@@ -1,8 +1,9 @@
 """Split-fold GLOW: one Ward tree, on a fold the statistics never see.
 
-The arm with strong FWER control, and the one to report. Its counterpart,
-AnalysisGLOW in glow.analysis._glow, segments inside every permutation
-instead.
+A secondary arm, kept for the test suite and for anyone who needs a fixed
+comparison set. AnalysisGLOW in glow.analysis._glow is the shipped arm and
+the one the benchmark and the paper report; it segments inside every
+permutation, so every image reaches both the tree and the statistics.
 """
 
 import glow.graph
