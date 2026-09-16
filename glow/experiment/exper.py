@@ -763,6 +763,15 @@ class ExperimentScaled(Experiment):
 
     y_out = pre_scale @ (y_in - mean_orig)
 
+    The transform is fit once, by from_exp, and carried from there on: a
+    copy, a crop or a screen keeps the transform its values were produced
+    with (see __init__). Both coefficients are constant across images and
+    across voxels, so the transform commutes with anything acting on the
+    voxel axis alone, and applies to voxels it was not fit on.
+
+    A source reads the images, which are not pre-processed, so what it
+    returns has to go through prep before it lines up with y.
+
     Attributes:
         y (np.array): (b, num_img, num_vox) pre-processed image intensities
         mask_idx (np.array): voxel index array (-1 outside analysis)
@@ -772,16 +781,73 @@ class ExperimentScaled(Experiment):
         pre_scale (np.array): (b, b) pre-processing matrix
     """
 
-    @classmethod
-    def from_exp(cls, exp):
-        """Build an ExperimentScaled from an existing Experiment.
-
-        Idempotent: an exp that is already an ExperimentScaled is returned
-        unchanged (never re-scaled), so each Analysis.fit can pass whatever
-        it was handed -- raw or already-scaled -- through this one call.
+    @staticmethod
+    def fit_pre_scale(y):
+        """Fit the pre-processing transform on y.
 
         Args:
-            exp: source Experiment (provides y, mask_idx, x, contrast, meta)
+            y (np.array): (b, num_img, num_vox) raw image intensities
+
+        Returns:
+            pre_scale (np.array): (b, b) pre-processing matrix
+            mean_orig (np.array): (b, 1, 1) grand mean, one per feature
+
+        Raises:
+            ValueError: if any feature has zero variance
+        """
+        # np.cov / eigh / mean return float64 whatever they are given, so
+        # cast back at the end or prep(y) promotes y
+        y_dtype = y.dtype
+
+        # zero mean, accumulated in float64 then cast back to y.dtype
+        mean_orig = y.mean(axis=(1, 2))[:, np.newaxis, np.newaxis]
+        mean_orig = mean_orig.astype(y_dtype, copy=False)
+
+        b = y.shape[0]
+        cov = np.cov(y.reshape((b, -1), order='F'))
+        cov = np.atleast_2d(cov)
+        variances = np.diag(cov)
+        if np.any(variances == 0):
+            zero_feats = np.where(variances == 0)[0]
+            raise ValueError(
+                f'zero-variance feature(s) at index {zero_feats.tolist()}. '
+                f'ExperimentScaled requires all features to have non-zero '
+                f'variance. Remove constant features before analysis.'
+            )
+        pre_scale = np.diag(1 / variances ** .5)
+
+        cov_scale = pre_scale @ cov @ pre_scale.T
+        evals, evecs = np.linalg.eigh(cov_scale)
+        pre_scale = (evecs.T @ pre_scale).astype(y_dtype, copy=False)
+
+        return pre_scale, mean_orig
+
+    @staticmethod
+    def apply_pre_scale(y, pre_scale, mean_orig):
+        """Apply a fitted transform: y_out = pre_scale @ (y - mean_orig).
+
+        Args:
+            y (np.array): (b, num_img, num_vox) raw image intensities
+            pre_scale (np.array): (b, b) pre-processing matrix
+            mean_orig (np.array): (b, 1, 1) grand mean, one per feature
+
+        Returns:
+            y (np.array): (b, num_img, num_vox) pre-processed intensities
+        """
+        return np.einsum('ij,jkl->ikl', pre_scale, y - mean_orig)
+
+    @classmethod
+    def from_exp(cls, exp):
+        """Fit the pre-processing on exp and return the scaled experiment.
+
+        The one place the transform is fit.  Idempotent: an exp that is
+        already an ExperimentScaled is returned unchanged (never
+        re-scaled), so each Analysis.fit can pass whatever it was handed --
+        raw or already-scaled -- through this one call.
+
+        Args:
+            exp: source Experiment (provides y, mask_idx, x, contrast,
+                source, meta)
 
         Returns:
             ExperimentScaled with pre-processing applied to exp.y, or exp
@@ -789,10 +855,33 @@ class ExperimentScaled(Experiment):
         """
         if isinstance(exp, cls):
             return exp
-        return cls(y=exp.y, mask_idx=exp.mask_idx, x=exp.x,
-                   contrast=exp.contrast,
+
+        pre_scale, mean_orig = cls.fit_pre_scale(exp.y)
+        return cls(y=cls.apply_pre_scale(exp.y, pre_scale, mean_orig),
+                   pre_scale=pre_scale, mean_orig=mean_orig,
+                   mask_idx=exp.mask_idx, x=exp.x, contrast=exp.contrast,
                    mask_dead=getattr(exp, 'mask_dead', None),
+                   source=getattr(exp, 'source', None),
                    meta=dict(exp.meta) if getattr(exp, 'meta', None) else None)
+
+    def __init__(self, *, pre_scale, mean_orig, **kwargs):
+        """Carry a fitted transform and the pre-processed y it produced.
+
+        Fitting belongs to from_exp alone. This is what _copy_with rebuilds
+        through, so every crop, screen and offset downstream of a scaling
+        arrives here: a transform refit on the voxels that happen to be
+        left would rotate the features differently and pre-process values
+        that already are.
+
+        Args:
+            pre_scale (np.array): (b, b) pre-processing matrix
+            mean_orig (np.array): (b, 1, 1) grand mean, one per feature
+            **kwargs: Experiment's arguments, y among them and already
+                pre-processed
+        """
+        super().__init__(**kwargs)
+        self.pre_scale = pre_scale
+        self.mean_orig = mean_orig
 
     def split_img(self, *args, **kwargs):
         """Refuse the split: pre-scaling was fit on every image.
@@ -811,7 +900,7 @@ class ExperimentScaled(Experiment):
                         'choose. Split the Experiment, then scale each fold.')
 
     def prep(self, y):
-        """Apply pre-processing: y_out = pre_scale @ (y - mean_orig).
+        """Apply this experiment's pre-processing to y.
 
         Args:
             y (np.array): (b, num_img, num_vox) raw image intensities
@@ -819,9 +908,7 @@ class ExperimentScaled(Experiment):
         Returns:
             y (np.array): (b, num_img, num_vox) pre-processed intensities
         """
-        return np.einsum('ij,jkl->ikl',
-                         self.pre_scale,
-                         y - self.mean_orig)
+        return self.apply_pre_scale(y, self.pre_scale, self.mean_orig)
 
     def prep_inv(self, y):
         """Invert pre-processing: y_out = pre_scale^-1 @ y + mean_orig.
@@ -835,39 +922,3 @@ class ExperimentScaled(Experiment):
         return np.einsum('ij,jkl->ikl',
                          np.linalg.inv(self.pre_scale),
                          y) + self.mean_orig
-
-    def __init__(self, y, **kwargs):
-        """Fit the pre-processing transform on y, then store the scaled y.
-
-        Args:
-            y (np.array): (b, num_img, num_vox) raw image intensities
-
-        Raises:
-            ValueError: if any feature has zero variance
-        """
-        # np.cov / eigh / mean return float64 whatever they are given, so
-        # cast back at the end or prep(y) promotes y
-        y_dtype = y.dtype
-
-        # zero mean, accumulated in float64 then cast back to y.dtype
-        self.mean_orig = y.mean(axis=(1, 2))[:, np.newaxis, np.newaxis]
-        self.mean_orig = self.mean_orig.astype(y_dtype, copy=False)
-
-        b, num_img, num_vox = y.shape
-        cov = np.cov(y.reshape((b, -1), order='F'))
-        cov = np.atleast_2d(cov)
-        variances = np.diag(cov)
-        if np.any(variances == 0):
-            zero_feats = np.where(variances == 0)[0]
-            raise ValueError(
-                f'zero-variance feature(s) at index {zero_feats.tolist()}. '
-                f'ExperimentScaled requires all features to have non-zero '
-                f'variance. Remove constant features before analysis.'
-            )
-        self.pre_scale = np.diag(1 / variances ** .5)
-
-        cov_scale = self.pre_scale @ cov @ self.pre_scale.T
-        evals, evecs = np.linalg.eigh(cov_scale)
-        self.pre_scale = (evecs.T @ self.pre_scale).astype(y_dtype, copy=False)
-
-        super().__init__(y=self.prep(y), **kwargs)

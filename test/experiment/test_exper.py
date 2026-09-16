@@ -249,6 +249,68 @@ class TestExperimentScaled:
                                rtol=1e-4, atol=1e-5)
 
 
+class TestExperimentScaledIsCarried:
+    """A scaled experiment keeps the transform it was scaled with.
+
+    _copy_with rebuilds through __init__, so every crop, screen and offset
+    downstream of a scaling lands there. Refitting instead would rotate the
+    features differently and pre-process values that already are, and
+    because a refit renormalises to unit variance the result looks
+    entirely plausible.
+    """
+
+    @staticmethod
+    def _scaled():
+        """Return a scaled b=3 experiment (b>1 so the rotation can move)."""
+        exp = Experiment.from_gauss(shape=(6, 6, 6), seed=0, b=3, num_img=20)
+        return ExperimentScaled.from_exp(exp)
+
+    @staticmethod
+    def _half():
+        """Return a boolean mask over half the (6, 6, 6) grid."""
+        mask = np.zeros((6, 6, 6), dtype=bool)
+        mask[:4, :4, :4] = True
+        return mask
+
+    def test_crop_keeps_the_transform(self):
+        """apply_mask carries pre_scale and mean_orig, and preps nothing."""
+        scaled = self._scaled()
+        crop = scaled.apply_mask(self._half())
+
+        assert np.array_equal(crop.pre_scale, scaled.pre_scale)
+        assert np.array_equal(crop.mean_orig, scaled.mean_orig)
+        # the values are the parent's columns, untouched
+        idx = scaled.mask_idx[self._half()]
+        assert np.array_equal(crop.y, scaled.y[:, :, idx])
+
+    def test_screen_keeps_the_transform(self):
+        """drop_constant_vox carries it too (it only drops voxels)."""
+        scaled = self._scaled()
+        out = scaled.drop_constant_vox()
+        assert np.array_equal(out.pre_scale, scaled.pre_scale)
+        assert np.array_equal(out.mean_orig, scaled.mean_orig)
+        assert np.array_equal(out.y, scaled.y)
+
+    def test_offset_keeps_the_transform(self):
+        """An offset added after scaling is not itself re-scaled."""
+        scaled = self._scaled()
+        offset = np.ones((3, 20), dtype=scaled.y.dtype)
+        out = scaled.add_offset(offset, mask=self._half())
+
+        assert np.array_equal(out.pre_scale, scaled.pre_scale)
+        idx = scaled.mask_idx[self._half()]
+        assert np.allclose(out.y[:, :, idx],
+                           scaled.y[:, :, idx] + offset[..., np.newaxis])
+
+    def test_from_exp_carries_the_source(self):
+        """The images are still readable after scaling, raw as they are."""
+        scaled = self._scaled()
+        assert scaled.source is not None
+        # what the source returns is the images, so prep lines it up with y
+        assert np.allclose(scaled.prep(scaled.source.load()), scaled.y,
+                           atol=1e-5)
+
+
 class TestExperimentScaledZeroVariance:
     """ExperimentScaled should raise on zero-variance features"""
 
