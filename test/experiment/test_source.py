@@ -14,6 +14,7 @@ from glow.experiment import ExperimentImageOnly
 from glow.experiment.source import SourceGauss, SourceNifti
 
 SHAPE = (4, 5, 6)
+CONST_VOX = (3, 4, 5)
 
 
 def _checkerboard(shape=SHAPE):
@@ -48,8 +49,11 @@ def nii_paths(tmp_path):
     paths = {}
     for sbj in ('sbj0', 'sbj1'):
         for feat in ('featA', 'featB'):
+            arr = rng.standard_normal(SHAPE)
+            # one voxel constant across images, for drop_constant_vox
+            arr[CONST_VOX] = 7.0
             path = tmp_path / f'{sbj}_{feat}.nii.gz'
-            _write_nii(path, rng.standard_normal(SHAPE), affine)
+            _write_nii(path, arr, affine)
             paths.setdefault(sbj, {})[feat] = path
 
     mask = np.ones(SHAPE, dtype=bool)
@@ -174,23 +178,182 @@ class TestSourceIsCarried:
         assert exp.apply_mask(_checkerboard()).source is exp.source
         assert exp.drop_constant_vox().source is exp.source
 
-    @pytest.mark.parametrize('op', ['take_img', 'bootstrap', 'offset',
+    def test_kept_by_an_offset_which_is_recorded(self):
+        """An offset is replayable, so it is recorded rather than refused."""
+        exp = self._exp()
+        offset = np.ones((1, 6), dtype=exp.y.dtype)
+        out = exp.add_offset(offset, mask=_checkerboard())
+
+        assert out.source is exp.source
+        assert len(out.patch_list) == 1
+        assert np.array_equal(out.patch_list[0]['offset'], offset)
+        assert not exp.patch_list
+
+    @pytest.mark.parametrize('op', ['take_img', 'bootstrap', 'sigma',
                                     'permute'])
     def test_dropped_where_it_cannot_be_replayed(self, op):
-        """Image selection, an offset and a permutation each drop it.
+        """Image selection, a sigma stretch and a permutation each drop it.
 
         A source reloads the images as they were: in the original order,
-        with no planted offset, unpermuted. None of those can be brought
-        into line with the columns already held, so the source goes rather
-        than lie about what a reload would return.
+        unpermuted. Neither that nor a stretch of the deviations from a
+        support's own voxel mean can be brought into line with the columns
+        already held, so the source goes rather than lie about what a
+        reload would return.
         """
         exp = self._exp()
         if op == 'take_img':
             out = exp.split_img(seed=0)[0]
         elif op == 'bootstrap':
             out = exp.bootstrap_img(n=4, seed=0)
-        elif op == 'offset':
-            out = exp.add_offset(np.ones((1, 6)), mask=_checkerboard())
+        elif op == 'sigma':
+            out = exp.add_offset(np.zeros((1, 6)), mask=_checkerboard(),
+                                 sigma_scale=2.0)
         else:
             out = exp.permute(1)
         assert out.source is None
+
+
+class TestInflate:
+    """Growing an experiment back, and getting the same one when cropped."""
+
+    @staticmethod
+    def _core(shape=SHAPE):
+        """Return a small interior block, well inside any halo."""
+        mask = np.zeros(shape, dtype=bool)
+        mask[1:3, 1:3, 1:3] = True
+        return mask
+
+    def _gauss(self):
+        """Return a Gaussian experiment cropped to the interior block."""
+        exp = ExperimentImageOnly.from_gauss(b=2, num_img=5, shape=SHAPE,
+                                             seed=0)
+        return exp.sample_x(a=1, seed=0, add_bias=True).apply_mask(
+            self._core())
+
+    def test_round_trip_is_exact(self):
+        """Inflating then cropping back returns the experiment it started as.
+
+        The single strongest statement about a source: the numbering comes
+        back identical (get_mask_idx is a function of the mask) and so does
+        every value, so a fit that inflates internally tests exactly the
+        voxels it was handed.
+        """
+        crop = self._gauss()
+        back = crop.inflate(halo_vox=2).apply_mask(crop.mask_idx > -1)
+        assert np.array_equal(back.mask_idx, crop.mask_idx)
+        assert np.array_equal(back.y, crop.y)
+
+    def test_added_voxels_come_from_the_source(self):
+        """The halo holds what the source reads there, nothing invented."""
+        crop = self._gauss()
+        wide = crop.inflate(halo_vox=1)
+        mask_add = (wide.mask_idx > -1) & (crop.mask_idx == -1)
+
+        assert mask_add.any()
+        assert np.array_equal(wide.y[:, :, wide.mask_idx[mask_add]],
+                              crop.source.load(mask_add))
+
+    def test_growth_stops_at_the_source_support(self, nii_paths):
+        """A halo reaches as far as the images do and no further."""
+        df, mask_path, _ = nii_paths
+        exp = ExperimentImageOnly.from_paths(df, mask=mask_path)
+        crop = exp.apply_mask(self._core())
+
+        wide = crop.inflate(halo_vox=10)
+        assert np.array_equal(wide.mask_idx > -1, exp.source.mask)
+        assert not (wide.mask_idx > -1)[0, 0, 0]
+
+    def test_screened_voxels_come_back_as_context(self, nii_paths):
+        """A voxel drop_constant_vox removed returns as context, not data.
+
+        A filter reading the parent images sees it, so the halo has to as
+        well; mask_dead still names it, so cropping to what was analysed
+        leaves it behind again.
+        """
+        df, mask_path, _ = nii_paths
+        exp = ExperimentImageOnly.from_paths(df, mask=mask_path)
+        with pytest.warns(UserWarning, match='constant across images'):
+            screened = exp.drop_constant_vox()
+
+        assert screened.mask_dead[CONST_VOX]
+        assert screened.mask_idx[CONST_VOX] == -1
+
+        wide = screened.inflate(halo_vox=1)
+        assert wide.mask_idx[CONST_VOX] > -1
+        assert np.allclose(wide.y[:, :, wide.mask_idx[CONST_VOX]], 7.0)
+        back = wide.apply_mask(screened.mask_idx > -1)
+        assert back.mask_idx[CONST_VOX] == -1
+
+    def test_a_planted_offset_is_replayed(self):
+        """An offset recorded by add_offset lands on the voxels it covers."""
+        crop = self._gauss()
+        support = self._core().copy()
+        support[2, 1:3, 1:3] = False
+        offset = np.arange(2 * 5, dtype=np.float32).reshape(2, 5)
+        plant = crop.add_offset(offset, mask=support)
+
+        # the round trip still holds with a plant in the way
+        back = plant.inflate(halo_vox=2).apply_mask(crop.mask_idx > -1)
+        assert np.array_equal(back.y, plant.y)
+
+        # and the halo is unplanted, because the support does not reach it
+        wide = plant.inflate(halo_vox=1)
+        mask_add = (wide.mask_idx > -1) & (crop.mask_idx == -1)
+        assert np.array_equal(wide.y[:, :, wide.mask_idx[mask_add]],
+                              crop.source.load(mask_add))
+
+    def test_a_patch_records_what_was_applied(self):
+        """A support reaching past the crop is recorded clipped to it.
+
+        add_offset reaches only voxels the experiment holds, so that is
+        what the patch says: an inflate replays the act, it does not
+        extrapolate the intent.
+        """
+        crop = self._gauss()
+        offset = np.zeros((2, 5), dtype=np.float32)
+        plant = crop.add_offset(offset, mask=np.ones(SHAPE, dtype=bool))
+        assert np.array_equal(plant.patch_list[0]['mask'],
+                              crop.mask_idx > -1)
+
+    def test_scaled_inflate_preps_what_it_loads(self):
+        """A scaled experiment grows in its own space, transform frozen."""
+        from glow.experiment.exper import ExperimentScaled
+
+        crop = self._gauss()
+        offset = np.arange(2 * 5, dtype=np.float32).reshape(2, 5)
+        scaled = ExperimentScaled.from_exp(crop.add_offset(
+            offset, mask=self._core()))
+
+        wide = scaled.inflate(halo_vox=1)
+        assert np.array_equal(wide.pre_scale, scaled.pre_scale)
+
+        mask_add = (wide.mask_idx > -1) & (crop.mask_idx == -1)
+        assert np.allclose(wide.y[:, :, wide.mask_idx[mask_add]],
+                           scaled.prep(crop.source.load(mask_add)))
+
+        back = wide.apply_mask(scaled.mask_idx > -1)
+        assert np.array_equal(back.y, scaled.y)
+
+    def test_no_source_raises(self):
+        """An experiment that cannot read its images refuses to grow."""
+        crop = self._gauss()
+        with pytest.raises(ValueError, match='no source'):
+            crop.permute(1).inflate(halo_vox=1)
+
+    def test_halo_xor_mask(self):
+        """Exactly one of halo_vox and mask says how far to grow."""
+        crop = self._gauss()
+        with pytest.raises(AssertionError, match='xor'):
+            crop.inflate()
+        with pytest.raises(AssertionError, match='xor'):
+            crop.inflate(halo_vox=1, mask=np.ones(SHAPE, dtype=bool))
+
+    def test_an_explicit_mask_keeps_what_is_held(self):
+        """Growing to a mask never drops a voxel already held."""
+        crop = self._gauss()
+        elsewhere = np.zeros(SHAPE, dtype=bool)
+        elsewhere[0, 0, 1] = True
+
+        wide = crop.inflate(mask=elsewhere)
+        assert np.array_equal(wide.mask_idx > -1,
+                              (crop.mask_idx > -1) | elsewhere)

@@ -18,6 +18,7 @@ from copy import deepcopy
 
 import numpy as np
 import pandas as pd
+import scipy.ndimage
 
 import glow.effect
 import glow.mask
@@ -55,12 +56,18 @@ class ExperimentImageOnly:
             again, either because the factory attaches no source or
             because an operation since then cannot be replayed onto
             freshly loaded voxels.
+        patch_list (list): what has been added to y since it was loaded,
+            as records {offset (b, num_img), mask (X, Y, Z) bool}, one per
+            add_offset call. inflate replays them onto the voxels it
+            loads, so a planted experiment can still grow. Offsets are in
+            y's own space, which for an ExperimentScaled means scaled.
         meta (dict): optional metadata (subjects, features, affine, etc.)
             not used by analysis — propagated for export / display
     """
 
     def __init__(self, *, y, mask_idx, mask_dead=None, source=None,
-                 meta: dict = None, dtype=None, **kwargs):
+                 patch_list: list = None, meta: dict = None, dtype=None,
+                 **kwargs):
         """Store imaging data, optionally casting y to a target dtype.
 
         Args:
@@ -71,6 +78,8 @@ class ExperimentImageOnly:
                 survives _copy_with, which rebuilds through __init__.
             source (ImageSource): the images' source, or None; named
                 here for the same reason as mask_dead
+            patch_list (list): offsets added to y since it was loaded
+                (see the class Attributes); None is none
             meta (dict): optional metadata
             dtype: if not None and y.dtype differs, cast y to dtype (no
                 copy when already matching).  Default None preserves
@@ -83,6 +92,7 @@ class ExperimentImageOnly:
         self.mask_idx = mask_idx
         self.mask_dead = mask_dead
         self.source = source
+        self.patch_list = list(patch_list) if patch_list else []
         self.meta = meta if meta is not None else {}
 
     @property
@@ -365,6 +375,7 @@ class ExperimentImageOnly:
             meta['subjects'] = [subjects[i] for i in img_idx]
 
         overrides.setdefault('source', None)
+        overrides.setdefault('patch_list', None)
         return self._copy_with(y=self.y[:, img_idx, :], meta=meta,
                                **overrides)
 
@@ -490,7 +501,8 @@ class ExperimentImageOnly:
 
         return Experiment(x=x, contrast=contrast, y=self.y,
                           mask_idx=self.mask_idx, mask_dead=self.mask_dead,
-                          source=self.source, meta=self.meta, **kwargs)
+                          source=self.source, patch_list=self.patch_list,
+                          meta=self.meta, **kwargs)
 
     def _copy_with(self, **overrides):
         """Return a deep copy of this experiment with attributes overridden.
@@ -518,6 +530,87 @@ class ExperimentImageOnly:
         y = self.y[:, :, self.mask_idx[mask]]
 
         return self._copy_with(mask_idx=mask_idx, y=y)
+
+    def _prep_from_source(self, y):
+        """Return freshly loaded images in the space this y is in.
+
+        The identity here, where y is the images themselves;
+        ExperimentScaled overrides it, since a source reads raw images and
+        its y is pre-processed.
+
+        Args:
+            y (np.array): (b, num_img, num_vox) images from the source
+
+        Returns:
+            y (np.array): (b, num_img, num_vox) in self.y's space
+        """
+        return y
+
+    def inflate(self, halo_vox: int = None, mask=None):
+        """Return a copy grown to more voxels, reloaded from the source.
+
+        The voxels already held keep their values; the added ones are read
+        from the source and carry every offset recorded since the load
+        (see patch_list in the class Attributes). Growth is bounded by the
+        source's own support, so a support against the brain's edge simply
+        gets a thinner ring: that is all the context there is.
+
+        Voxels drop_constant_vox screened come back as context, which is
+        what a filter reading the parent images would see there; the screen
+        is not re-run, and mask_dead still names them, so a later
+        apply_mask over what was analysed leaves them behind again.
+
+        Args:
+            halo_vox (int): grow by this many voxels along each axis, xor
+                mask. A box rather than a ball, because a separable kernel
+                reads the cube of its radius (glow.experiment.smooth).
+            mask (np.array): (X, Y, Z) boolean to grow to, xor halo_vox.
+                Voxels already held are kept whether or not it names them.
+
+        Returns:
+            exp: a new experiment over the union, this one untouched
+
+        Raises:
+            ValueError: this experiment has no source, so its images
+                cannot be read again
+        """
+        assert (halo_vox is None) != (mask is None), \
+            'halo_vox xor mask required'
+        if self.source is None:
+            raise ValueError(
+                'cannot inflate an experiment with no source: either it '
+                'was built without one, or an operation since then cannot '
+                'be replayed onto freshly loaded voxels (image selection, '
+                'a sigma stretch, a permutation). Inflate before those, or '
+                'rebuild from the source.')
+
+        mask_held = self.mask_idx > -1
+        if halo_vox is not None:
+            mask = scipy.ndimage.maximum_filter(
+                mask_held, size=2 * int(halo_vox) + 1, mode='constant')
+        mask_out = (np.asarray(mask, dtype=bool) | mask_held)
+        mask_out &= self.source.mask
+        mask_add = mask_out & ~mask_held
+
+        mask_idx_out = get_mask_idx(mask_out)
+        y = np.empty((*self.y.shape[:2], int(mask_out.sum())),
+                     dtype=self.y.dtype, order='F')
+        # gather through both index arrays rather than assuming either is
+        # numbered canonically, so a caller's own numbering survives
+        y[:, :, mask_idx_out[mask_held]] = self.y[:, :, self.mask_idx[
+            mask_held]]
+
+        if mask_add.any():
+            y_add = self._prep_from_source(self.source.load(mask_add))
+            mask_idx_add = get_mask_idx(mask_add)
+            for patch in self.patch_list:
+                sel = patch['mask'] & mask_add
+                if sel.any():
+                    y_add[:, :, mask_idx_add[sel]] += \
+                        patch['offset'][..., np.newaxis]
+            y[:, :, mask_idx_out[mask_add]] = y_add
+
+        return self._copy_with(y=y, mask_idx=mask_idx_out)
 
     @property
     def num_vox_dropped(self) -> int:
@@ -589,15 +682,23 @@ class ExperimentImageOnly:
             sigma_scale (float): optional sigma stretch factor
 
         Returns:
-            new experiment with offset applied, carrying no source: what
-                a source reloads is the images, which do not have this
-                offset in them (see glow.experiment.source).
+            new experiment with offset applied, and the offset recorded in
+                patch_list so an inflate replays it (see the class
+                Attributes). A sigma stretch cannot be replayed -- it
+                rescales deviations from the support's own voxel mean, so
+                it does not act on one voxel at a time -- and drops the
+                source instead.
         """
         assert (mask is None) != (vox_idx is None), \
             'either mask xor vox_idx required'
 
-        if vox_idx is None:
-            vox_idx = self.mask_idx[mask]
+        if mask is None:
+            mask = np.isin(self.mask_idx, vox_idx) & (self.mask_idx > -1)
+        else:
+            # what was applied, not what was asked for: the offset reaches
+            # only voxels this experiment holds, and a patch records the act
+            mask = np.asarray(mask, dtype=bool) & (self.mask_idx > -1)
+        vox_idx = self.mask_idx[mask]
 
         y = deepcopy(self.y)
         y[:, :, vox_idx] += offset[..., np.newaxis]
@@ -605,8 +706,10 @@ class ExperimentImageOnly:
         if sigma_scale is not None:
             y[:, :, vox_idx] = stretch_sigma(y=y[:, :, vox_idx],
                                              scale=sigma_scale)
+            return self._copy_with(y=y, source=None)
 
-        return self._copy_with(y=y, source=None)
+        patch_list = self.patch_list + [{'offset': offset, 'mask': mask}]
+        return self._copy_with(y=y, patch_list=patch_list)
 
 
 class Experiment(ExperimentImageOnly):
@@ -857,11 +960,20 @@ class ExperimentScaled(Experiment):
             return exp
 
         pre_scale, mean_orig = cls.fit_pre_scale(exp.y)
+
+        # an offset recorded in raw space becomes pre_scale @ offset here:
+        # prep is affine, so prep(y + offset) == prep(y) + pre_scale @ offset,
+        # which keeps every patch in the space of the y beside it
+        patch_list = [{'offset': pre_scale @ patch['offset'],
+                       'mask': patch['mask']}
+                      for patch in getattr(exp, 'patch_list', None) or ()]
+
         return cls(y=cls.apply_pre_scale(exp.y, pre_scale, mean_orig),
                    pre_scale=pre_scale, mean_orig=mean_orig,
                    mask_idx=exp.mask_idx, x=exp.x, contrast=exp.contrast,
                    mask_dead=getattr(exp, 'mask_dead', None),
                    source=getattr(exp, 'source', None),
+                   patch_list=patch_list,
                    meta=dict(exp.meta) if getattr(exp, 'meta', None) else None)
 
     def __init__(self, *, pre_scale, mean_orig, **kwargs):
@@ -898,6 +1010,17 @@ class ExperimentScaled(Experiment):
                         'pre_scale on every image, so both folds of a later '
                         'split share a transform the test fold helped '
                         'choose. Split the Experiment, then scale each fold.')
+
+    def _prep_from_source(self, y):
+        """Pre-process images the source read, so they join a scaled y.
+
+        Args:
+            y (np.array): (b, num_img, num_vox) images from the source
+
+        Returns:
+            y (np.array): (b, num_img, num_vox) pre-processed
+        """
+        return self.prep(y)
 
     def prep(self, y):
         """Apply this experiment's pre-processing to y.
