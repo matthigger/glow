@@ -239,9 +239,10 @@ class Recorder:
 
         Pass exactly one of output_name (the whole return under one name) or
         output_name_list (a tuple/list return unpacked onto those names).
-        recurse_out_list is top-level metadata, never part of the key: it names
-        outputs whose nested dict/list flatten_to_df expands per key-path into
-        out.<name>.<path> columns (e.g. out.score.target.tp) not one cell.
+        recurse_list is top-level metadata, never part of the key: it names
+        inputs or outputs whose nested dict/list flatten_to_df expands per
+        key-path into <side>.<name>.<path> columns (out.score.target.tp,
+        in.kwargs_data.source) rather than one opaque cell.
 
         Args:
             output_name (str | None): single name for the whole return.

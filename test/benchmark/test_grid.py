@@ -144,22 +144,22 @@ class TestEffectList:
         assert [c['n_vox_frac'] for c in cells] == [0.05, 0.1, 0.2] * 2
 
     def test_cells_carry_the_support_ingredients(self):
-        # effect_factory_single builds the support from these, not from a
-        # pre-made mask, and carries no seed: the builder derives the
-        # placement from the cell's declared uid
+        # plant_effect builds the support from these, not from a pre-made
+        # mask, and the cell carries no seed: the placement is derived from
+        # the declared uid of the cell's data half
         cell, = grid.get_kwargs_effect_list(llr_list=[0.03],
                                             n_vox_frac_list=[0.1])
         assert cell['kind'] == 'single'
         assert cell['extenter_cls'] is ExtenterMinVar
-        assert not {'seed', 'seed_from_exp', 'seed_from_parent'} & set(cell)
+        assert not [k for k in cell if 'seed' in k]
 
     def test_null_returns_single_none(self):
         assert grid.get_kwargs_effect_list(
             llr_list=None, n_vox_frac_list=[0.1]) == [None]
 
     def test_values_are_plain_floats(self):
-        # a numpy scalar would hash differently from effect_factory's
-        # float(effect_llr) cast, forking the cache entry
+        # a numpy scalar would hash differently from a plain float, forking
+        # the cache entry for what is one declared strength
         cell, = grid.get_kwargs_effect_list(
             llr_list=np.array([0.03]), n_vox_frac_list=np.array([0.1]))
         assert type(cell['effect_llr']) is float

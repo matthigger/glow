@@ -7,10 +7,9 @@ id on any machine: no pickle, no array bytes, no float payload. That is what
 makes a cache key and a provenance edge portable across a heterogeneous fleet,
 where the same computation lands last-bit-different results.
 
-    uid_data = recipe_id('data_factory_wgn', kwargs_data)
-    uid_eff = recipe_id('effect_factory_single', kwargs_effect,
-                        parents=[uid_data])
-    uid_leaf = recipe_id('run_stat', kwargs_fnc, parents=[uid_eff])
+    uid_cell = recipe_id('get_exp_effect', {'kwargs_data': kwargs_data,
+                                            'kwargs_effect': kwargs_effect})
+    uid_leaf = recipe_id('run_stat', kwargs_fnc, parents=[uid_cell])
 
 Canonical form (canon): a dict renders key-sorted, a tuple / set as a list, a
 numpy scalar as its Python value, a class as module.qualname, an object with a

@@ -42,24 +42,43 @@ def _score(tp, fp, tn, fn, min_pval=0.5, n_pred=1):
             f'{base}.target.tn': tn, f'{base}.target.fn': fn}
 
 
+def _cell_cols(seed, effect_llr=None, *, source='wgn', b=1, num_img=None,
+               hcp_feats=('od',)):
+    """Build the recursed get_exp_effect.in.kwargs_* columns for one row.
+
+    get_exp_effect declares recurse_list=['kwargs_data', 'kwargs_effect'], so
+    flatten_to_df gives every declared knob its own column; the fixtures
+    mirror that flat layout. Which knobs a cell declares is what separates
+    the two sources: b and num_img are WGN's, hcp_feats is HCP's. An
+    effect_llr of None is the null path, which declares no effect.
+    """
+    base = 'get_exp_effect.in.kwargs'
+    out = {f'{base}_data.source': source, f'{base}_data.seed': seed}
+    if source == 'hcp':
+        out[f'{base}_data.hcp_feats'] = list(hcp_feats)
+    else:
+        out[f'{base}_data.b'] = b
+        if num_img is not None:
+            out[f'{base}_data.num_img'] = num_img
+    if effect_llr is not None:
+        out.update({f'{base}_effect.effect_llr': effect_llr,
+                    f'{base}_effect.n_vox_frac': 0.1})
+    return out
+
+
 def _wgn_row(label, seed, effect_llr, score, b=1, num_img=100):
-    """Build one WGN provenance row (run_ana leaf + its ancestors)."""
+    """Build one WGN provenance row (run_ana leaf + the cell it measured)."""
     return {'run_ana.in.ana': repr(ana_kwargs_dict[label]),
             'run_ana.time_sec': 1.0, **score,
-            'data_factory_wgn.in.b': b, 'data_factory_wgn.in.num_img': num_img,
-            'data_factory_wgn.in.seed': seed,
-            'effect_factory_single.in.effect_llr': effect_llr,
-            'effect_factory_single.in.n_vox_frac': 0.1}
+            **_cell_cols(seed, effect_llr, b=b, num_img=num_img)}
 
 
 def _hcp_row(label, seed, effect_llr, score, hcp_feats=('od',)):
-    """Build one HCP provenance row (run_ana leaf + its ancestors)."""
+    """Build one HCP provenance row (run_ana leaf + the cell it measured)."""
     return {'run_ana.in.ana': repr(ana_kwargs_dict[label]),
             'run_ana.time_sec': 1.0, **score,
-            'data_factory_hcp.in.hcp_feats': list(hcp_feats),
-            'data_factory_hcp.in.seed': seed,
-            'effect_factory_single.in.effect_llr': effect_llr,
-            'effect_factory_single.in.n_vox_frac': 0.1}
+            **_cell_cols(seed, effect_llr, source='hcp',
+                         hcp_feats=hcp_feats)}
 
 
 def test_tidy_run_ana_empty():
@@ -77,8 +96,8 @@ def test_tidy_run_ana_columns_and_source():
     ])
     df = plot.tidy_run_ana(raw)
 
-    # source read off which data_factory produced the row; HCP b is the
-    # feature-subset length, and HCP carries no num_img
+    # source is a declared knob of the cell; HCP b is the feature-subset
+    # length, and HCP carries no num_img
     assert list(df['source']) == ['WGN', 'HCP']
     assert list(df['b']) == [1, 2]
     assert df.loc[df['source'] == 'HCP', 'num_img'].isna().all()
@@ -402,8 +421,7 @@ def _runtime_ana_row(label, seed, num_vox, time_sec, hcp_feats=('od',),
     return {f'{leaf}.in.ana': repr(ana_kwargs_dict[label]),
             f'{leaf}.time_sec': time_sec,
             f'{leaf}.out.num_vox': num_vox,
-            'data_factory_hcp.in.hcp_feats': list(hcp_feats),
-            'data_factory_hcp.in.seed': seed}
+            **_cell_cols(seed, source='hcp', hcp_feats=hcp_feats)}
 
 
 def _runtime_1perm_row(label, seed, time_sec, num_vox=1000,
@@ -737,34 +755,21 @@ def _segment_row(mode, seed, effect_llr, tp, fp, tn, fn, source='wgn',
     whole-cohort leaf, which records no such input at all.
     """
     row = {'run_segment.in.cluster_mode': mode,
-           'effect_factory_single.in.effect_llr': effect_llr,
-           **_flat_score('run_segment', tp, fp, tn, fn)}
+           **_flat_score('run_segment', tp, fp, tn, fn),
+           **_cell_cols(seed, effect_llr, source=source)}
     if frac_segment is not None:
         row['run_segment.in.frac_segment'] = frac_segment
-    if source == 'wgn':
-        row.update({'data_factory_wgn.in.b': 1,
-                    'data_factory_wgn.in.seed': seed})
-    else:
-        row.update({'data_factory_hcp.in.hcp_feats': ['od'],
-                    'data_factory_hcp.in.seed': seed})
     return row
 
 
 def _prune_row(rule, seed, effect_llr, tp, fp, tn, fn, source='wgn',
                cluster_mode='Focus', n_selected=1):
     """Build one prune provenance row (run_prune leaf + its ancestors)."""
-    row = {'run_prune.in.rule': rule,
-           'run_prune.in.cluster_mode': cluster_mode,
-           'effect_factory_single.in.effect_llr': effect_llr,
-           **_flat_score('run_prune', tp, fp, tn, fn,
-                         extra={'n_selected': n_selected})}
-    if source == 'wgn':
-        row.update({'data_factory_wgn.in.b': 1,
-                    'data_factory_wgn.in.seed': seed})
-    else:
-        row.update({'data_factory_hcp.in.hcp_feats': ['od'],
-                    'data_factory_hcp.in.seed': seed})
-    return row
+    return {'run_prune.in.rule': rule,
+            'run_prune.in.cluster_mode': cluster_mode,
+            **_flat_score('run_prune', tp, fp, tn, fn,
+                          extra={'n_selected': n_selected}),
+            **_cell_cols(seed, effect_llr, source=source)}
 
 
 def test_tidy_segment_empty():
@@ -773,7 +778,7 @@ def test_tidy_segment_empty():
 
 
 def test_tidy_segment_label_source_and_metrics():
-    """tidy_segment reads the Ward mode as-is and the source off data_factory."""
+    """tidy_segment reads the Ward mode as-is and the cell's own source."""
     df = plot.tidy_segment(pd.DataFrame([
         _segment_row('Focus', 0, 0.03, 80, 10, 890, 20, source='wgn'),
         _segment_row('GLM Error', 1, 0.03, 40, 30, 870, 60, source='hcp'),
@@ -1062,24 +1067,17 @@ def _inner_row(n_perm_inner, seed, effect_llr, tp, fp, tn, fn, *,
                max_z_reg_idx=7, max_z_z=5.0, source='hcp'):
     """Build one inner-draw provenance row (run_inner_perm + its ancestors)."""
     leaf = 'run_inner_perm'
-    row = {f'{leaf}.in.n_perm_inner': n_perm_inner,
-           f'{leaf}.in.cluster_mode': 'Focus',
-           'effect_factory_single.in.effect_llr': effect_llr,
-           **_flat_score(leaf, tp, fp, tn, fn,
-                         extra={'n_selected': 1, 'n_sig': 3,
-                                'min_pval': 0.002,
-                                'max_z.reg_idx': max_z_reg_idx,
-                                'max_z.num_vox': 90,
-                                'max_z.z': max_z_z,
-                                'max_z.tp': tp, 'max_z.fp': fp,
-                                'max_z.tn': tn, 'max_z.fn': fn})}
-    if source == 'wgn':
-        row.update({'data_factory_wgn.in.b': 1,
-                    'data_factory_wgn.in.seed': seed})
-    else:
-        row.update({'data_factory_hcp.in.hcp_feats': ['od'],
-                    'data_factory_hcp.in.seed': seed})
-    return row
+    return {f'{leaf}.in.n_perm_inner': n_perm_inner,
+            f'{leaf}.in.cluster_mode': 'Focus',
+            **_flat_score(leaf, tp, fp, tn, fn,
+                          extra={'n_selected': 1, 'n_sig': 3,
+                                 'min_pval': 0.002,
+                                 'max_z.reg_idx': max_z_reg_idx,
+                                 'max_z.num_vox': 90,
+                                 'max_z.z': max_z_z,
+                                 'max_z.tp': tp, 'max_z.fp': fp,
+                                 'max_z.tn': tn, 'max_z.fn': fn}),
+            **_cell_cols(seed, effect_llr, source=source)}
 
 
 def test_tidy_inner_perm_empty():

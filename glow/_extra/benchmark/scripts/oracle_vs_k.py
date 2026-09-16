@@ -41,6 +41,7 @@ import pandas as pd
 import seaborn as sns
 from matplotlib.lines import Line2D
 
+from glow._extra.benchmark.cell import build_cell
 from glow._extra.benchmark.config import (ALPHA_FWER, N_PERM_FWER,
                                           N_PERM_INNER)
 from glow._extra.benchmark.file import get_path_cache
@@ -98,44 +99,53 @@ def _pool_df(source: str):
     """
     df = _records()
     df = df[df['run_prune.in.cluster_mode'].astype(str) == 'Focus']
+    df = df[df['get_exp_effect.in.kwargs_data.source'].astype(str)
+            == source.lower()]
     if source == 'HCP':
-        df = df[df['data_factory_hcp.out.exp'].notna()]
-        df = df[df['data_factory_hcp.in.hcp_feats'].map(_n_feat) == 1]
-        seed = df['data_factory_hcp.in.seed']
+        df = df[df['get_exp_effect.in.kwargs_data.hcp_feats']
+                .map(_n_feat) == 1]
     else:
-        df = df[df['data_factory_wgn.out.exp'].notna()]
-        df = df[df['data_factory_wgn.in.b'] == 1]
-        seed = df['data_factory_wgn.in.seed']
-    df = df[df['effect_factory_single.in.effect_llr'].map(
-        lambda v: any(abs(v - t) < 1e-9 for t in LLR_LIST))]
-    return df.assign(seed=seed.astype(int), source=source,
-                     llr=df['effect_factory_single.in.effect_llr'])
+        df = df[df['get_exp_effect.in.kwargs_data.b'] == 1]
+    llr = df['get_exp_effect.in.kwargs_effect.effect_llr']
+    df = df[llr.map(lambda v: any(abs(v - t) < 1e-9 for t in LLR_LIST))]
+    return df.assign(
+        seed=df['get_exp_effect.in.kwargs_data.seed'].astype(int),
+        source=source,
+        llr=df['get_exp_effect.in.kwargs_effect.effect_llr'])
 
 
 def load_cells(source: str):
     """Select one source's cells at each effect strength, one per seed.
 
     Returns:
-        pandas.DataFrame: columns {llr, seed, uid, eff_hash}, one row per
-            cell; uid keys the shared GLOW fit, eff_hash the planted extent.
+        pandas.DataFrame: columns {llr, seed, uid, cell_hash}, one row per
+            cell; uid keys the shared GLOW fit, cell_hash the stored payload.
     """
     df = _pool_df(source).rename(
-        columns={'effect_factory_single.hash': 'eff_hash',
+        columns={'get_exp_effect.hash': 'cell_hash',
                  'run_prune.in.parent_uid': 'uid'})
     return df.groupby(['llr', 'seed']).first().reset_index()
 
 
-def load_effect_cell(eff_hash: str):
-    """Load one cached effect_factory_single output by its args hash.
+def load_effect_cell(cell_hash: str):
+    """Rebuild one cached cell's experiment, by the hash it is stored under.
+
+    Reads the payload straight out of joblib's cache dir rather than calling
+    get_exp_effect, so a cell that is not already stored raises instead of
+    being realized here (see load_fit for the same rule on the fit).
+
+    Args:
+        cell_hash (str): joblib's args hash for the cell, which names its
+            directory in the cache (the get_exp_effect.hash column).
 
     Returns:
-        exp (Experiment): the perturbed experiment
+        exp (Experiment): the cell's experiment, its plant applied
         mask (np.array): (X, Y, Z) boolean, the planted support
     """
-    path = (get_path_cache() / 'glow' / '_extra' / 'benchmark' / 'data'
-            / 'effect_factory_single' / eff_hash / 'output.pkl')
-    exp, mask_list = joblib.load(path)
-    return exp, mask_list[0]
+    path = (get_path_cache() / 'glow' / '_extra' / 'benchmark' / 'cell'
+            / 'get_exp_effect' / cell_hash / 'output.pkl')
+    cell = joblib.load(path)
+    return build_cell(cell), cell.mask_target_list[0]
 
 
 def load_fit(uid: str):
@@ -326,7 +336,7 @@ def cell_curves(cell, k_max: int):
     """Score both candidate pools on one cell.
 
     Args:
-        cell (pandas.Series): a load_cells row (uid, eff_hash)
+        cell (pandas.Series): a load_cells row (uid, cell_hash)
         k_max (int): the largest region budget to solve
 
     Returns:
@@ -334,7 +344,7 @@ def cell_curves(cell, k_max: int):
             A pool with no region reaching the plant scores 0 at every budget,
             with n_vox NaN (see the body).
     """
-    exp, mask = load_effect_cell(cell.eff_hash)
+    exp, mask = load_effect_cell(cell.cell_hash)
     num_vox = exp.y.shape[2]
     children, sig_reg_list = load_fit(cell.uid)
 

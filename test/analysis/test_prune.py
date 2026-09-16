@@ -657,8 +657,8 @@ def _plant(exp_img, seed: int):
     from glow._extra.benchmark.data import _sample_x_and_crop
     from glow.effect import EffectSynthetic, ExtenterMinVar, ExtenterSphere
 
-    # the benchmark's data_factory / effect_factory are memoised and recorded;
-    # these call the builders underneath so the test writes no cache or records
+    # get_exp_effect is memoised and recorded; these call the builders
+    # underneath it, so the test writes no cache entry and no record
     exp = _sample_x_and_crop(
         exp_img, a=1, contrast=None, has_bias=True, seed=seed,
         extenter=ExtenterSphere(n_vox=_CROP_N_VOX, connected=True,

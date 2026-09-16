@@ -16,8 +16,8 @@ axes), so they hold for whatever the catalogue declares. Every case here is
 parametrized off config.CONFIG itself, so a cache added tomorrow is covered
 without touching this file.
 
-The stages (data_factory / effect_factory / run_ana) and the sweep are covered
-by test_data / test_run / test_driver.
+The stages (get_exp_effect / run_ana) and the sweep are covered by
+test_cell / test_run / test_driver.
 """
 import inspect
 

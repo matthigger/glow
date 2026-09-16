@@ -400,24 +400,52 @@ _RUNTIME_SPEC = {
 # Normalise the provenance frame to one tidy row per (trial, recipe)
 # ---------------------------------------------------------------------------
 
+# where a cell's declared knobs land in a flattened record: get_exp_effect
+# recurses both its kwargs dicts, so each knob is its own column.
+_CELL_IN = 'get_exp_effect.in'
+
+
+def _add_cell_cols(out, col) -> None:
+    """Add the swept cell axes to a tidy frame, in place.
+
+    Every tidier reads the same four, since one op declares a cell and all
+    its leaves hang off it: source is a declared knob, and b is the feature
+    count either way (WGN declares it; HCP's is the length of the feature
+    subset it asked for). effect_llr is NaN on the null path, which declares
+    no effect at all.
+
+    Args:
+        out: the tidy DataFrame being built
+        col (Callable): name -> that column of the provenance frame, or an
+            all-NaN column when the frame lacks it
+    """
+    out['source'] = col(f'{_CELL_IN}.kwargs_data.source').map(
+        {'wgn': 'WGN', 'hcp': 'HCP'})
+    out['seed'] = pd.to_numeric(col(f'{_CELL_IN}.kwargs_data.seed'),
+                                errors='coerce')
+    hcp_b = col(f'{_CELL_IN}.kwargs_data.hcp_feats').map(
+        lambda v: len(v) if isinstance(v, (list, tuple)) else np.nan)
+    out['b'] = pd.to_numeric(col(f'{_CELL_IN}.kwargs_data.b'),
+                             errors='coerce').fillna(hcp_b)
+    out['effect_llr'] = pd.to_numeric(
+        col(f'{_CELL_IN}.kwargs_effect.effect_llr'), errors='coerce')
+
+
 def tidy_run_ana(raw):
     """Normalise a run_ana provenance frame to a tidy per-trial results frame.
 
     Collapses the wide, function-namespaced frame from
-    make_csv.write_config_csv (run_ana leaf + its data_factory /
-    effect_factory ancestors) into the flat schema the plotters consume. The
-    source is read off which data_factory produced the row (wgn / hcp), the
-    swept axes off the relevant ancestor inputs, and the metrics off the
-    recursed score columns
+    make_csv.write_config_csv (run_ana leaf + the cell it measured) into the
+    flat schema the plotters consume: the swept axes off the cell's declared
+    knobs (_add_cell_cols), the metrics off the recursed score columns
     (run_ana.out.score.target.{tp,fp,tn,fn}; glow.mask.stats_from_counts via
     add_metric_cols).
 
     Args:
         raw: the provenance DataFrame (one row per run_ana leaf), with
             run_ana.in.ana (mapped to the method label via _LABEL_OF_ANA), the
-            recursed run_ana.out.score.* columns, data_factory_{wgn,hcp}.in.*
-            and (when an effect was planted) effect_factory_single.in.* columns
-            (the recorded builder, not the effect_factory dispatcher).
+            recursed run_ana.out.score.* columns, and the cell's recursed
+            get_exp_effect.in.kwargs_{data,effect}.* columns.
 
     Returns:
         a tidy DataFrame, one row per (trial, recipe), with columns label,
@@ -435,29 +463,12 @@ def tidy_run_ana(raw):
             return raw[name]
         return pd.Series(np.nan, index=raw.index)
 
-    wgn_seed = pd.to_numeric(col('data_factory_wgn.in.seed'), errors='coerce')
-    hcp_seed = pd.to_numeric(col('data_factory_hcp.in.seed'), errors='coerce')
-
     out = pd.DataFrame(index=raw.index)
     out['label'] = col('run_ana.in.ana').map(_LABEL_OF_ANA)
-    # the row's source is whichever data_factory produced its clean experiment
-    out['source'] = np.where(hcp_seed.notna(), 'HCP', 'WGN')
-    out['seed'] = wgn_seed.fillna(hcp_seed)
-
-    # b: WGN carries it directly; HCP is the length of its feature subset
-    hcp_b = col('data_factory_hcp.in.hcp_feats').map(
-        lambda v: len(v) if isinstance(v, (list, tuple)) else np.nan)
-    out['b'] = pd.to_numeric(col('data_factory_wgn.in.b'),
-                             errors='coerce').fillna(hcp_b)
+    _add_cell_cols(out, col)
     # num_img is a WGN axis only (HCP's N is its cohort), so HCP rows stay NaN
-    out['num_img'] = pd.to_numeric(col('data_factory_wgn.in.num_img'),
+    out['num_img'] = pd.to_numeric(col(f'{_CELL_IN}.kwargs_data.num_img'),
                                    errors='coerce')
-    # the RECORDER logs the concrete builder effect_factory dispatches to
-    # (single / split), not the dispatcher, so the column is prefixed by it
-    out['effect_llr'] = pd.to_numeric(
-        col('effect_factory_single.in.effect_llr'), errors='coerce').fillna(
-        pd.to_numeric(col('effect_factory_split.in.effect_llr'),
-                      errors='coerce'))
     out['time_sec'] = pd.to_numeric(col('run_ana.time_sec'), errors='coerce')
 
     # run_ana recurses 'score', so flatten_to_df expands the dict into
@@ -1782,23 +1793,13 @@ def _tidy_flat_cache(raw, leaf: str, label_col: str, label_fn=None):
             return raw[name]
         return pd.Series(np.nan, index=raw.index)
 
-    hcp_seed = pd.to_numeric(col('data_factory_hcp.in.seed'), errors='coerce')
-    wgn_seed = pd.to_numeric(col('data_factory_wgn.in.seed'), errors='coerce')
-
     label = col(label_col)
     if label_fn is not None:
         label = label.map(lambda v: label_fn(v) if isinstance(v, str) else v)
 
     out = pd.DataFrame(index=raw.index)
     out['label'] = label
-    out['source'] = np.where(hcp_seed.notna(), 'HCP', 'WGN')
-    out['seed'] = wgn_seed.fillna(hcp_seed)
-    hcp_b = col('data_factory_hcp.in.hcp_feats').map(
-        lambda v: len(v) if isinstance(v, (list, tuple)) else np.nan)
-    out['b'] = pd.to_numeric(col('data_factory_wgn.in.b'),
-                             errors='coerce').fillna(hcp_b)
-    out['effect_llr'] = pd.to_numeric(
-        col('effect_factory_single.in.effect_llr'), errors='coerce')
+    _add_cell_cols(out, col)
     for cnt in ('tp', 'fp', 'tn', 'fn'):
         out[cnt] = pd.to_numeric(col(f'{leaf}.out.score.{cnt}'),
                                  errors='coerce')
@@ -2551,7 +2552,7 @@ def tidy_runtime(name: str, raw):
 
     out = pd.DataFrame(index=raw.index)
     out['time_sec'] = pd.to_numeric(col(f'{leaf}.time_sec'), errors='coerce')
-    out['seed'] = pd.to_numeric(col('data_factory_hcp.in.seed'),
+    out['seed'] = pd.to_numeric(col(f'{_CELL_IN}.kwargs_data.seed'),
                                 errors='coerce')
     out['label'] = col(f'{leaf}.in.ana').map(_LABEL_OF_ANA)
     out['num_vox'] = pd.to_numeric(col(f'{leaf}.out.num_vox'), errors='coerce')
@@ -2559,7 +2560,7 @@ def tidy_runtime(name: str, raw):
     if x_name == 'num_vox':
         out['x'] = out['num_vox']
     elif x_name == 'b':
-        out['x'] = col('data_factory_hcp.in.hcp_feats').map(
+        out['x'] = col(f'{_CELL_IN}.kwargs_data.hcp_feats').map(
             lambda v: len(v) if isinstance(v, (list, tuple)) else np.nan)
     else:
         out['x'] = pd.to_numeric(col(f'{leaf}.in.{x_name}'), errors='coerce')

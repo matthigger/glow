@@ -81,17 +81,18 @@ def load_sweep():
     raw = config_results_df('sweep_llr')
     n_r, o_r = _pred_block(raw, 'num_vox'), _pred_block(raw, 'target')
     hom, com = _hom_com(n_r, o_r)
-    hcp = raw['data_factory_hcp.out.exp'].notna()
+    hcp = (raw['get_exp_effect.in.kwargs_data.source'].astype(str)
+           == 'hcp')
     counts = {k: raw[f'run_ana.out.score.target.{k}']
               for k in ('tp', 'fp', 'tn', 'fn')}
     df = pd.DataFrame({
         'm': raw['run_ana.in.ana'].map(_arm),
         'source': np.where(hcp, 'HCP', 'WGN'),
-        'b': np.where(hcp, raw['data_factory_hcp.in.hcp_feats']
-                      .map(_n_feat), raw['data_factory_wgn.in.b']),
-        'llr': raw['effect_factory_single.in.effect_llr'],
-        'seed': raw['data_factory_hcp.in.seed'].fillna(
-            raw['data_factory_wgn.in.seed']),
+        'b': np.where(hcp, raw['get_exp_effect.in.kwargs_data.hcp_feats']
+                      .map(_n_feat),
+                      raw['get_exp_effect.in.kwargs_data.b']),
+        'llr': raw['get_exp_effect.in.kwargs_effect.effect_llr'],
+        'seed': raw['get_exp_effect.in.kwargs_data.seed'],
         'n_reg': raw['run_ana.out.score.n_pred'],
         'hom': hom, 'com': com, **counts,
         **stats_from_counts(**counts)})
@@ -194,9 +195,10 @@ def report_prune() -> None:
     df = pd.DataFrame({
         'rule': raw['run_prune.in.rule'],
         'mode': raw['run_prune.in.cluster_mode'],
-        'source': np.where(raw['data_factory_hcp.out.exp'].notna(),
-                           'HCP', 'WGN'),
-        'llr': raw['effect_factory_single.in.effect_llr'],
+        'source': np.where(
+            raw['get_exp_effect.in.kwargs_data.source'].astype(str) == 'hcp',
+            'HCP', 'WGN'),
+        'llr': raw['get_exp_effect.in.kwargs_effect.effect_llr'],
         'n_sel': raw['run_prune.out.score.n_selected'],
         **stats_from_counts(**counts)})
     df = df[(df['mode'] == 'Focus') & (df.source == 'HCP')]
@@ -219,15 +221,13 @@ def _greedy_trials(source: str):
     raw = config_results_df('prune')
     raw = raw[(raw['run_prune.in.cluster_mode'].astype(str) == 'Focus')
               & (raw['run_prune.in.rule'] == 'greedy')]
-    if source == 'HCP':
-        raw = raw[raw['data_factory_hcp.out.exp'].notna()]
-        seed = raw['data_factory_hcp.in.seed']
-    else:
-        raw = raw[raw['data_factory_wgn.out.exp'].notna()]
-        seed = raw['data_factory_wgn.in.seed']
+    raw = raw[raw['get_exp_effect.in.kwargs_data.source'].astype(str)
+              == source.lower()]
     tp, fp = raw['run_prune.out.score.tp'], raw['run_prune.out.score.fp']
-    out = pd.DataFrame({'llr': raw['effect_factory_single.in.effect_llr'],
-                        'seed': seed.astype(int),
+    out = pd.DataFrame({'llr': raw['get_exp_effect.in.kwargs_effect'
+                                   '.effect_llr'],
+                        'seed': raw['get_exp_effect.in.kwargs_data.seed']
+                        .astype(int),
                         'n_sel': raw['run_prune.out.score.n_selected'],
                         'ppv': tp / (tp + fp).replace(0, np.nan)})
     return out[out.ppv.notna()]
