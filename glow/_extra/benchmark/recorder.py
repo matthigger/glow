@@ -111,8 +111,9 @@ def _cell(value):
 def _recurse_cell(value, base, sep='.') -> dict:
     """Expand a nested cell value into a flat {column: scalar} by key-path.
 
-    The opt-in counterpart to _cell, for outputs in a record's recurse list
-    (see Recorder): one column per scalar leaf, named by its path. A dict
+    The opt-in counterpart to _cell, for the inputs and outputs in a
+    record's recurse list (see Recorder): one column per scalar leaf, named
+    by its path. A dict
     descends per key (base.key), a list/tuple per index (base.0, base.1) so
     the row count holds and the structure widens, a scalar ends as
     {base: value}. An empty dict/list yields no column. value is the _cell
@@ -137,25 +138,26 @@ def _flatten_record(record, prefix, sep='.') -> dict:
     prefix is the record's role (its short function name, e.g. fit). Each
     column -- the hash/function/time_sec metadata and one in.<name> /
     out.<name> per input/output -- is namespaced by it (fit.time_sec), so a
-    leaf and its ancestors never collide. Values go through _cell, except an
-    output in the recurse list, which _recurse_cell expands into per-key-path
-    columns under out.<name> (e.g. run_ana.out.score.target.tp); lists widen
-    via index suffixes, so ragged lists NaN-fill.
+    leaf and its ancestors never collide. Values go through _cell, except a
+    name in the recurse list, which _recurse_cell expands into per-key-path
+    columns under its own base (out.score.target.tp for a score dict,
+    in.kwargs_data.source for a cell spec); lists widen via index suffixes,
+    so ragged lists NaN-fill.
     """
     flat = {
         f'{prefix}{sep}hash': record['hash'],
         f'{prefix}{sep}function': record['function'],
         f'{prefix}{sep}time_sec': record.get('time_sec'),
     }
-    for name, value in record.get('inputs', {}).items():
-        flat[f'{prefix}{sep}in.{name}'] = _cell(value)
     recurse = record.get('recurse', [])
-    for name, value in record.get('outputs', {}).items():
-        base = f'{prefix}{sep}out.{name}'
-        if name in recurse:
-            flat.update(_recurse_cell(_cell(value), base, sep))
-        else:
-            flat[base] = _cell(value)
+    for side, values in (('in', record.get('inputs', {})),
+                         ('out', record.get('outputs', {}))):
+        for name, value in values.items():
+            base = f'{prefix}{sep}{side}.{name}'
+            if name in recurse:
+                flat.update(_recurse_cell(_cell(value), base, sep))
+            else:
+                flat[base] = _cell(value)
     return flat
 
 
@@ -232,7 +234,7 @@ class Recorder:
         return joblib.hash(filter_args(fnc, list(ignore), args, kwargs))
 
     def __call__(self, output_name=None, output_name_list=None,
-                 recurse_out_list=None, ignore=()):
+                 recurse_list=None, ignore=()):
         """Build a decorator that records calls under one or more output names.
 
         Pass exactly one of output_name (the whole return under one name) or
@@ -245,8 +247,9 @@ class Recorder:
             output_name (str | None): single name for the whole return.
             output_name_list (tuple | list | None): names for an unpacked
                 tuple/list return; non-empty, no duplicates.
-            recurse_out_list (tuple | list | None): output names to expand per
-                key-path; each must be a declared output. None recurses none.
+            recurse_list (tuple | list | None): input or output names to
+                expand per key-path (see _flatten_record); each must name a
+                parameter or a declared output. None recurses none.
             ignore (tuple | list): parameter names to drop from both the
                 record key and the recipe kwargs -- the non-declarative
                 arguments (a payload, an array companion, a label). Must be
@@ -259,9 +262,10 @@ class Recorder:
 
         Raises:
             ValueError: neither or both output args given, duplicate
-                output_name_list names, or a recurse name not declared.
+                output_name_list names, or a recurse name naming neither a
+                parameter nor an output.
             TypeError: a name is not a str, output_name_list is empty, or
-                recurse_out_list is not a tuple/list of str.
+                recurse_list is not a tuple/list of str.
         """
         # require exactly one of output_name / output_name_list
         if (output_name is None) == (output_name_list is None):
@@ -282,20 +286,15 @@ class Recorder:
             if len(set(output_name_list)) != len(output_name_list):
                 raise ValueError("output_name_list has duplicate names")
 
-        # recurse_out_list must name declared outputs (so a typo cannot
-        # silently recurse nothing); normalise None -> () for the record
-        recurse = (tuple(recurse_out_list)
-                   if recurse_out_list is not None else ())
+        # normalise None -> () for the record; the names are checked
+        # against the signature below, where it is known
+        recurse = tuple(recurse_list) if recurse_list is not None else ()
         if (not isinstance(recurse, tuple)
                 or not all(isinstance(n, str) for n in recurse)):
             raise TypeError(
-                "recurse_out_list must be a tuple/list of str output names")
-        declared = ({output_name} if output_name is not None
-                    else set(output_name_list))
-        unknown = [n for n in recurse if n not in declared]
-        if unknown:
-            raise ValueError(
-                f"recurse_out_list names not declared outputs: {unknown}")
+                "recurse_list must be a tuple/list of str names")
+        out_names = ({output_name} if output_name is not None
+                     else set(output_name_list))
 
         ignore_names = tuple(ignore)
         if not all(isinstance(n, str) for n in ignore_names):
@@ -304,6 +303,15 @@ class Recorder:
         def decorator(fnc):
             """Wrap fnc so each successful call records under its args hash."""
             sig = inspect.signature(fnc)
+
+            # a recurse name must be a parameter or an output, so a typo
+            # cannot silently recurse nothing
+            unknown = [n for n in recurse
+                       if n not in out_names and n not in sig.parameters]
+            if unknown:
+                raise ValueError(
+                    f"recurse_list names neither a parameter nor a declared "
+                    f"output: {unknown}")
 
             # a bound method's signature excludes self, so capture the receiver
             # from __self__ as the 'self' input -- no passthrough needed

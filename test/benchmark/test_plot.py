@@ -31,7 +31,7 @@ GLOW_FIGURE = plot._ARM_LABEL[REPORTED_GLOW_LABEL]
 def _score(tp, fp, tn, fn, min_pval=0.5, n_pred=1):
     """Build the recursed run_ana.out.score.* columns for one row.
 
-    run_ana declares recurse_out_list=['score'], so flatten_to_df expands the
+    run_ana declares recurse_list=['score'], so flatten_to_df expands the
     score dict into one out.score.<path> column per scalar leaf; the fixtures
     mirror that flat layout rather than a single dict cell.
     """

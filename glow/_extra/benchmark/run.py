@@ -89,7 +89,7 @@ FIT_IGNORE = [*LEAF_IGNORE, 'fit_params']
 
 
 @MEMORY.cache(ignore=FIT_IGNORE)
-@RECORDER(output_name='score', recurse_out_list=['score'],
+@RECORDER(output_name='score', recurse_list=['score'],
           ignore=FIT_IGNORE)
 def run_ana(exp: Experiment, ana: Analysis, mask_target_list, *,
             parent_uid: str, fit_params=None):
@@ -138,7 +138,7 @@ def run_ana(exp: Experiment, ana: Analysis, mask_target_list, *,
 
 
 @MEMORY.cache(ignore=LEAF_IGNORE)
-@RECORDER(output_name='score', recurse_out_list=['score'],
+@RECORDER(output_name='score', recurse_list=['score'],
           ignore=LEAF_IGNORE)
 def run_segment(exp: Experiment, mask_target_list, cluster_mode, *,
                 parent_uid: str, frac_segment: float = None):
@@ -252,7 +252,7 @@ def voxel_stat_walk(exp, n_perm_fwer: int, *, parent_uid: str) -> dict:
 
 
 @MEMORY.cache(ignore=LEAF_IGNORE)
-@RECORDER(output_name='score', recurse_out_list=['score'],
+@RECORDER(output_name='score', recurse_list=['score'],
           ignore=LEAF_IGNORE)
 def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name, *,
              parent_uid: str):
@@ -329,7 +329,7 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
 
 
 @MEMORY.cache(ignore=FIT_IGNORE)
-@RECORDER(output_name='score', recurse_out_list=['score'],
+@RECORDER(output_name='score', recurse_list=['score'],
           ignore=FIT_IGNORE)
 def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
               n_perm_fwer: int, n_perm_inner: int, alpha_fwer: float,
@@ -570,7 +570,7 @@ INNER_IGNORE = [*FIT_IGNORE, 'n_perm_inner_grid']
 
 
 @MEMORY.cache(ignore=INNER_IGNORE)
-@RECORDER(output_name='score', recurse_out_list=['score'],
+@RECORDER(output_name='score', recurse_list=['score'],
           ignore=INNER_IGNORE)
 def run_inner_perm(exp: Experiment, mask_target_list, *, parent_uid: str,
                    n_perm_inner: int, n_perm_fwer: int, alpha_fwer: float,

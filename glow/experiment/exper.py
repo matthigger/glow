@@ -157,9 +157,8 @@ class ExperimentImageOnly:
                              mu=mu, cov=cov, dtype=dtype)
 
         meta = kwargs.pop('meta', {})
-        meta.setdefault('features', list(source.features))
-        meta.setdefault('subjects',
-                        [f'subject_{i:03d}' for i in range(num_img)])
+        for name, value in source.get_meta().items():
+            meta.setdefault(name, value)
         return cls(y=source.load(),
                    mask_idx=get_mask_idx(np.ones(shape)),
                    source=source, meta=meta, **kwargs)

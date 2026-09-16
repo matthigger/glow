@@ -24,7 +24,7 @@ from glow.experiment import ExperimentImageOnly
 
 from . import hcp
 from .file import get_path_cache, get_path_records
-from .recipe import recipe_for_call, seed_from_uid
+from .recipe import raw_fnc, recipe_for_call, seed_from_uid
 from .recorder import Recorder
 
 # disk memoisation of the experiment builds, keyed on the build inputs, so a
@@ -126,6 +126,83 @@ def data_factory_hcp(*, hcp_feats: tuple = hcp.HCP_FEATS, a: int = 1,
     exp_img = hcp.build_exp_img_from_bundle(hcp_feats)
     return _sample_x_and_crop(exp_img, a=a, contrast=contrast,
                               has_bias=has_bias, extenter=extenter, seed=seed)
+
+
+def build_clean(kwargs_data):
+    """Build one clean (effect-free) Experiment from a data cell.
+
+    The uncached half of a cell's realization: the clean Experiment is an
+    intermediate that no longer earns a cache entry of its own, since the
+    cell payload that replaces it is three orders of magnitude smaller
+    (.cell).
+
+    Args:
+        kwargs_data (dict): one data cell, e.g. {'source': 'wgn', ...}; the
+            source key selects the builder, the rest are its kwargs.
+
+    Returns:
+        exp: the clean Experiment, cropped and screened.
+    """
+    kwargs = {k: v for k, v in kwargs_data.items() if k != 'source'}
+    # the builder's own body, not its memoised wrapper
+    return raw_fnc(DATA_FACTORY[kwargs_data['source']])(**kwargs)
+
+
+def plant_effect(exp, *, seed: int, kind: str = 'single', effect_llr,
+                 extenter_cls, n_vox_frac=0.1, angle=None):
+    """Plant one effect cell's synthetic effect(s) on a clean Experiment.
+
+    The one implementation of the plant, shared by every caller. The support
+    extenter is built here from extenter_cls, the resolved n_vox (n_vox_frac
+    of the analysis volume) and the placement seed, so a caller passes
+    ingredients rather than a constructed Extenter.
+
+    kind 'single' grows one support and imposes the effect along the
+    direction the data already carries. kind 'split' grows one support,
+    bisects it spectrally (ExtenterSplit), and imposes an effect on each half
+    at angles 0 and angle, so the two differ only in orientation -- the
+    cleaving setup, whose halves may differ in size because a data-driven
+    Fiedler cut is not perfectly even. One seed drives the placement and the
+    direction pair both.
+
+    Args:
+        exp: clean Experiment (a build_clean output) to add the effect(s) to.
+        seed (int): support placement (and, for a split, direction) seed.
+        kind (str): 'single' (one effect) or 'split' (two adjacent effects).
+        effect_llr (float): per-voxel (size-normalized) LLR target per
+            effect; the whole-region LLR observed is ~ effect_llr * n_vox
+            (see glow.effect.impose).
+        extenter_cls (type[Extenter]): Extenter subclass sampling the
+            support, built as extenter_cls(n_vox=n_vox, seed=seed).
+        n_vox_frac (float): support size as a fraction of the analysis
+            volume (the count of mask_idx > -1), resolved to
+            round(n_vox_frac * num_vox). For a split it is the combined
+            size, cut into halves.
+        angle (float): feature-direction angle between a split's two
+            effects, in degrees. Required by kind 'split', unused otherwise.
+
+    Returns:
+        exp: the Experiment with the effect(s) added.
+        mask_target_list (list): the realized (X, Y, Z) bool supports, one
+            per planted effect, in plant order.
+
+    Raises:
+        ValueError: kind is neither 'single' nor 'split'.
+    """
+    n_vox = round(n_vox_frac * int((exp.mask_idx > -1).sum()))
+    if kind == 'single':
+        extenter = extenter_cls(n_vox=n_vox, seed=seed)
+        exp, mask = EffectSynthetic(extenter=extenter,
+                                    effect_llr=effect_llr).fit(exp)
+        return exp, [mask]
+    if kind == 'split':
+        splitter = ExtenterSplit(base=extenter_cls(n_vox=n_vox, seed=seed))
+        mask0, mask1 = splitter.fit(mask_idx=exp.mask_idx, y=exp.y)
+        for mask, ang in ((mask0, 0.0), (mask1, float(angle))):
+            exp = EffectSynthetic(mask=mask, effect_llr=effect_llr,
+                                  angle=ang, seed=seed).fit(exp)[0]
+        return exp, [mask0, mask1]
+    raise ValueError(f"kind must be 'single' or 'split', got {kind!r}")
 
 
 def data_factory(source: str, **kwargs):
@@ -246,12 +323,9 @@ def effect_factory_single(exp, *, parent_uid: str, effect_llr, extenter_cls,
         mask_target_list (list): the single realized (X, Y, Z) bool support,
             as a one-element list.
     """
-    seed = seed_from_uid(parent_uid)
-    n_vox = round(n_vox_frac * int((exp.mask_idx > -1).sum()))
-    extenter = extenter_cls(n_vox=n_vox, seed=seed)
-    exp, mask = EffectSynthetic(
-        extenter=extenter, effect_llr=effect_llr).fit(exp)
-    return exp, [mask]
+    return plant_effect(exp, seed=seed_from_uid(parent_uid), kind='single',
+                        effect_llr=effect_llr, extenter_cls=extenter_cls,
+                        n_vox_frac=n_vox_frac)
 
 
 @MEMORY.cache(ignore=['exp'])
@@ -293,16 +367,9 @@ def effect_factory_split(exp, *, parent_uid: str, effect_llr, extenter_cls,
         mask_target_list (list): the two realized half-supports [mask0, mask1]
             (mask0 | mask1 is the grown extent, the two disjoint).
     """
-    seed = seed_from_uid(parent_uid)
-    n_vox = round(n_vox_frac * int((exp.mask_idx > -1).sum()))
-    splitter = ExtenterSplit(base=extenter_cls(n_vox=n_vox, seed=seed))
-    mask0, mask1 = splitter.fit(mask_idx=exp.mask_idx, y=exp.y)
-    e0 = EffectSynthetic(mask=mask0, effect_llr=effect_llr, angle=0.0,
-                         seed=seed)
-    e1 = EffectSynthetic(mask=mask1, effect_llr=effect_llr, angle=float(angle),
-                         seed=seed)
-    exp = e1.fit(e0.fit(exp)[0])[0]
-    return exp, [mask0, mask1]
+    return plant_effect(exp, seed=seed_from_uid(parent_uid), kind='split',
+                        effect_llr=effect_llr, extenter_cls=extenter_cls,
+                        n_vox_frac=n_vox_frac, angle=angle)
 
 
 # the dispatch tables data_factory / effect_factory select a builder from, and

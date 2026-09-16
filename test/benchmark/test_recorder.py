@@ -564,10 +564,10 @@ def test_flatten_to_df_records_without_a_recipe_are_lone_leaves(rec):
     assert df.iloc[0]['fn.function'] == 'old.fn'
 
 
-# --- recurse_out_list: flatten a nested output into per-path columns ---------
+# --- recurse_list: flatten a nested value into per-path columns -------------
 
 # the score dict from a real run_ana fit: scalars, a 'pred' list of dicts, and a
-# 'target' confusion dict -- the structure recurse_out_list is meant to flatten.
+# 'target' confusion dict -- the structure recurse_list is meant to flatten.
 SCORE = {
     'num_vox': 1000, 'min_pval': 0.007968127490039834, 'n_pred': 3,
     'pred': [
@@ -579,10 +579,10 @@ SCORE = {
 }
 
 
-def test_recurse_out_list_recorded_top_level(rec):
+def test_recurse_list_recorded_top_level(rec):
     # the recurse list lands as a top-level record field (read at flatten time),
     # not nested under inputs
-    @rec(output_name='score', recurse_out_list=['score'])
+    @rec(output_name='score', recurse_list=['score'])
     def run_ana(seed):
         return dict(SCORE)
 
@@ -592,7 +592,7 @@ def test_recurse_out_list_recorded_top_level(rec):
     assert 'recurse' not in record['inputs']
 
 
-def test_recurse_out_list_absent_when_not_given(rec):
+def test_recurse_list_absent_when_not_given(rec):
     @rec(output_name='score')
     def run_ana(seed):
         return dict(SCORE)
@@ -601,26 +601,39 @@ def test_recurse_out_list_absent_when_not_given(rec):
     assert 'recurse' not in _only(rec.records)
 
 
-def test_recurse_out_list_must_name_a_declared_output(rec):
-    with pytest.raises(ValueError, match='not declared outputs'):
-        @rec(output_name='score', recurse_out_list=['typo'])
+def test_recurse_list_must_name_a_parameter_or_an_output(rec):
+    with pytest.raises(ValueError, match='neither a parameter'):
+        @rec(output_name='score', recurse_list=['typo'])
         def run_ana(seed):
             return {}
 
 
-def test_recurse_out_list_entries_must_be_str(rec):
-    with pytest.raises(TypeError, match='recurse_out_list'):
-        @rec(output_name='score', recurse_out_list=[123])
+def test_recurse_list_expands_an_input(rec):
+    # a cell spec arrives as one dict argument; recursing it gives the
+    # flattened row one column per declared knob
+    @rec(output_name='out', recurse_list=['kwargs_data'])
+    def build(kwargs_data):
+        return 1
+
+    build(dict(source='wgn', seed=3))
+    row = rec.flatten_to_df().iloc[0]
+    assert row['build.in.kwargs_data.source'] == 'wgn'
+    assert row['build.in.kwargs_data.seed'] == 3
+
+
+def test_recurse_list_entries_must_be_str(rec):
+    with pytest.raises(TypeError, match='recurse_list'):
+        @rec(output_name='score', recurse_list=[123])
         def run_ana(seed):
             return {}
 
 
-def test_recurse_out_list_not_part_of_key():
+def test_recurse_list_not_part_of_key():
     # recurse is metadata: it does not enter the args hash, so two functions
     # with the same filtered args still collide (overwrite + warn)
     rec = Recorder()
 
-    @rec(output_name='out', recurse_out_list=['out'])
+    @rec(output_name='out', recurse_list=['out'])
     def f(a):
         return {}
 
@@ -637,7 +650,7 @@ def test_recurse_out_list_not_part_of_key():
 def test_flatten_recurses_score_into_path_columns(rec):
     # the headline case: a 'score' output flattens by key-path into one column
     # per scalar leaf, dicts spreading and lists index-suffixed
-    @rec(output_name='score', recurse_out_list=['score'])
+    @rec(output_name='score', recurse_list=['score'])
     def run_ana(seed):
         return dict(SCORE)
 
@@ -662,7 +675,7 @@ def test_flatten_recurses_score_into_path_columns(rec):
 
 def test_flatten_recurse_replaces_whole_dict_cell(rec):
     # the single whole-structure cell is replaced by the path columns, not kept
-    @rec(output_name='score', recurse_out_list=['score'])
+    @rec(output_name='score', recurse_list=['score'])
     def run_ana(seed):
         return dict(SCORE)
 
@@ -673,8 +686,8 @@ def test_flatten_recurse_replaces_whole_dict_cell(rec):
 
 
 def test_flatten_non_recursed_output_stays_a_cell(rec):
-    # only outputs named in recurse_out_list flatten; the others keep one cell
-    @rec(output_name_list=('score', 'recipe'), recurse_out_list=['score'])
+    # only outputs named in recurse_list flatten; the others keep one cell
+    @rec(output_name_list=('score', 'recipe'), recurse_list=['score'])
     def run_ana(seed):
         return dict(SCORE), {'kind': 'GLOW'}
 
@@ -687,7 +700,7 @@ def test_flatten_non_recursed_output_stays_a_cell(rec):
 def test_flatten_recurse_ragged_lists_nan_fill(rec):
     # two leaves whose recursed list differs in length: the shorter leaves its
     # high-index columns NaN (the row count is unchanged -- one row per leaf)
-    @rec(output_name='score', recurse_out_list=['score'])
+    @rec(output_name='score', recurse_list=['score'])
     def run_ana(seed):
         return {'pred': [{'pval': 0.1}] * seed}            # seed entries
 
@@ -823,7 +836,7 @@ def test_memoised_wrapper_body_is_fixed():
     def one(x):
         return x
 
-    @rec(output_name_list=['a', 'b'], recurse_out_list=['a'], ignore=('y',))
+    @rec(output_name_list=['a', 'b'], recurse_list=['a'], ignore=('y',))
     def two(x, y):
         return x, y
 

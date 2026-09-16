@@ -247,7 +247,7 @@ class TestProvenanceDAG:
         assert len(df) == 1
         (row,) = df.to_dict('records')
         assert row['run_ana.function'] == 'run_ana'
-        # run_ana declares recurse_out_list=['score'], so the score dict is
+        # run_ana declares recurse_list=['score'], so the score dict is
         # expanded into out.score.<path> columns, not kept as one dict cell
         assert 'run_ana.out.score' not in row
         assert row['run_ana.out.score.num_vox'] == int((exp.mask_idx > -1).sum())

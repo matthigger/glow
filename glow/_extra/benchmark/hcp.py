@@ -263,6 +263,11 @@ class SourceBundle(ImageSource):
         return self.feats
 
     @property
+    def subjects(self) -> tuple:
+        """Return the cohort's subject ids, in the bundle's column order."""
+        return tuple(json.loads(bundle_meta_path().read_text())['subjects'])
+
+    @property
     def mask(self):
         """Return the bundle's (X, Y, Z) boolean brain mask."""
         return np.load(bundle_mask_path())
@@ -324,14 +329,9 @@ def build_exp_img_from_bundle(feats):
     ensure_hcp_bundle(feats)
 
     source = SourceBundle(feats)
-    mask_idx = get_mask_idx(source.mask)
-    subjects = json.loads(bundle_meta_path().read_text())['subjects']
-
-    # mirror from_paths' meta exactly (key order included) so the hash matches
-    meta = {'subjects': subjects, 'features': list(feats),
-            'affine': source.affine}
-    return ExperimentImageOnly(y=source.load(), mask_idx=mask_idx,
-                               source=source, meta=meta)
+    return ExperimentImageOnly(y=source.load(),
+                               mask_idx=get_mask_idx(source.mask),
+                               source=source, meta=source.get_meta())
 
 
 def _accept_dua() -> bool:

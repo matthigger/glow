@@ -33,11 +33,30 @@ class ImageSource(ABC):
         mask (np.array): (X, Y, Z) boolean, the source's whole support.
             An inflate can reach no further than this.
         features (tuple): feature names, in the order load stacks them
+        subjects (tuple): image names, in the order load stacks them along
+            the image axis
         affine (np.array): (4, 4) voxel-to-mm transform, or None where the
             images carry none
     """
 
     affine = None
+
+    def get_meta(self) -> dict:
+        """Return the experiment metadata this source knows.
+
+        An experiment's meta describes the images, so a source that can read
+        them again can answer it: one place builds it, and a rebuilt
+        experiment cannot disagree with the one it was cut from.
+
+        Returns:
+            meta (dict): {subjects (list), features (list), affine?}; affine
+                is absent where the images carry none
+        """
+        meta = {'subjects': list(self.subjects),
+                'features': list(self.features)}
+        if self.affine is not None:
+            meta['affine'] = self.affine
+        return meta
 
     def __deepcopy__(self, memo):
         """Return self: a source is immutable metadata, so a copy is it.
@@ -179,6 +198,11 @@ class SourceGauss(ImageSource):
         """Return the feature names from_gauss labels the draw with."""
         return tuple(f'feat_{i}' for i in range(self.b))
 
+    @property
+    def subjects(self) -> tuple:
+        """Return the synthetic image names, numbered in draw order."""
+        return tuple(f'subject_{i:03d}' for i in range(self.num_img))
+
     def load(self, mask=None):
         """Redraw the box and gather mask's voxels (see ImageSource.load)."""
         mask = self._as_subset(mask)
@@ -206,6 +230,7 @@ class SourceNifti(ImageSource):
 
     Attributes:
         paths (pd.DataFrame): index=subject, columns=feature, values=paths
+            (the index sorted is the image order load stacks)
         mask (np.array): (X, Y, Z) boolean support, as the loader realized
             it (an explicit brain mask, or the every-image-nonzero rule
             load_image_nii falls back to)
@@ -237,6 +262,11 @@ class SourceNifti(ImageSource):
     def features(self) -> tuple:
         """Return the feature names, in the path table's column order."""
         return tuple(self.paths.columns)
+
+    @property
+    def subjects(self) -> tuple:
+        """Return the subject ids, sorted, as load stacks them."""
+        return tuple(str(sbj) for sbj in sorted(self.paths.index))
 
     def load(self, mask=None):
         """Read each volume and gather mask (see ImageSource.load)."""
