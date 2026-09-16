@@ -22,7 +22,7 @@ import random
 
 import pytest
 
-from glow._extra.benchmark import config, data, results
+from glow._extra.benchmark import config, results, store
 from glow._extra.benchmark.driver import drive
 from glow._extra.benchmark.run import run_ana
 from glow.analysis import AnalysisVBA
@@ -32,8 +32,8 @@ from glow.effect import ExtenterSphere
 @pytest.fixture(autouse=True)
 def _records_to_tmp(monkeypatch, tmp_path):
     """Mirror the shared recorder to a tmp dir and start from empty records."""
-    monkeypatch.setattr(data.RECORDER, 'folder', tmp_path)
-    data.RECORDER.records.clear()
+    monkeypatch.setattr(store.RECORDER, 'folder', tmp_path)
+    store.RECORDER.records.clear()
 
 
 def _data_cell(seed):
@@ -78,7 +78,7 @@ def test_config_leaf_keys_selects_a_caches_leaves(small_config):
     keys = results.config_leaf_keys('cacheA')
     assert len(keys) == 1 * 2
     for key in keys:
-        assert data.RECORDER.records[key]['function'] == 'run_ana'
+        assert store.RECORDER.records[key]['function'] == 'run_ana'
 
 
 def test_shared_cell_appears_in_both_caches(small_config):
@@ -100,7 +100,7 @@ def test_planted_cache_matches_via_effect_cell(small_config):
     # the plant reached run_ana: every leaf's target is the planted support
     # (n_vox_frac=0.1 of the 5x5x5=125-voxel volume -> round(12.5)=12 voxels)
     for key in keys:
-        target = data.RECORDER.records[key]['outputs']['score']['target']
+        target = store.RECORDER.records[key]['outputs']['score']['target']
         assert target['tp'] + target['fn'] == 12
 
 
@@ -232,7 +232,7 @@ def test_divergent_experiment_leaf_still_completes_its_cell(monkeypatch):
     # reference untouched: exactly the asymmetry a second CPU's planting
     # creates, where the local record says it produced exp A and the shipped
     # leaves consume exp B. The legacy join has nothing to match on.
-    for rec in data.RECORDER.records.values():
+    for rec in store.RECORDER.records.values():
         rec['output_hashes'] = {name: (h and f'divergent-{h}') for name, h
                                 in rec.get('output_hashes', {}).items()}
 
@@ -244,8 +244,8 @@ def test_divergent_experiment_leaf_still_completes_its_cell(monkeypatch):
     # the legacy join is left and the finished cell reads unrun (the loop)
     stripped = {key: {k: v for k, v in rec.items()
                       if k not in ('uid', 'parents')}
-                for key, rec in data.RECORDER.records.items()}
-    monkeypatch.setattr(data.RECORDER, 'records', stripped)
+                for key, rec in store.RECORDER.records.items()}
+    monkeypatch.setattr(store.RECORDER, 'records', stripped)
     assert results.incomplete_cell_indices('c') == [0]
     monkeypatch.undo()
 
@@ -283,6 +283,6 @@ def test_leaf_todo_owes_a_leaf_whose_uid_is_absent(monkeypatch):
     # still owed -- the skip errs safe rather than trusting a legacy record
     cell, ana_grid = _data_cell(random.randrange(2 ** 31)), _ana_grid()
     drive([cell], [None], ana_grid, run_ana)
-    for rec in data.RECORDER.records.values():
+    for rec in store.RECORDER.records.values():
         rec.pop('uid', None)
     assert results.get_leaf_todo(ana_grid, run_ana)(cell, None) == ana_grid

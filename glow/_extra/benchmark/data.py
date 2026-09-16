@@ -1,41 +1,20 @@
-"""Build benchmark Experiments: clean data, then a planted synthetic effect.
+"""Realize a benchmark cell's Experiment: clean data, then a planted effect.
 
-data_factory_wgn / data_factory_hcp each build an image-only Experiment,
-sample a design matrix x onto it, and crop it to an Extenter's support -- the
-clean (effect-free) data; data_factory dispatches to them on source.
-effect_factory then plants synthetic effect(s) on a clean Experiment, returning
-the planted Experiment and the list of realized supports; like data_factory it
-is a dispatcher (on kind) over the recorded builders effect_factory_single (one
-effect) / effect_factory_split (two adjacent effects for the cleaving figure),
-which share one (exp, mask_target_list) contract so the driver threads the
-support list into the leaf whatever the effect count. (Raw, effect-free runs
-skip the effect stage and feed a clean Experiment straight to an Analysis.)
+build_clean builds an image-only Experiment, samples a design matrix x onto
+it, and crops it to an Extenter's support -- the clean (effect-free) data, per
+source (build_clean_wgn / build_clean_hcp). plant_effect then adds synthetic
+effect(s) to a clean Experiment, returning it and the list of realized
+supports, one for a single effect and two for a split (the cleaving figure).
 
-Every build is memoised on disk (MEMORY) with the recorder nested inside the
-cache, so only a real (cache-miss) build is recorded, keyed by joblib's own
-args hash -- a record lines up one-to-one with its cached artifact. All
-builders share MEMORY / RECORDER, so a clean build and the plant that consumes
-it link into one provenance DAG.
+Neither is cached. They are the two halves of realizing one cell, whose small
+payload is what gets stored instead of the Experiment they produce (see
+.cell), and a clean Experiment costs less to rebuild than to unpickle.
 """
-import joblib
 
 from glow.effect import EffectSynthetic, Extenter, ExtenterSplit
 from glow.experiment import ExperimentImageOnly
 
 from . import hcp
-from .file import get_path_cache, get_path_records
-from .recipe import raw_fnc, recipe_for_call, seed_from_uid
-from .recorder import Recorder
-
-# disk memoisation of the experiment builds, keyed on the build inputs, so a
-# repeated (source, ...) cell is loaded rather than rebuilt across runs.
-MEMORY = joblib.Memory(get_path_cache(), verbose=0)
-
-# captures each build's inputs / output / timing for provenance (see Recorder).
-# Keyed by joblib's args hash, mirrored to the records dir beside the cache.
-# Every edge is declared: a consumer is passed its parent's uid, so nothing
-# here hashes an array to discover lineage (see Recorder).
-RECORDER = Recorder(folder=get_path_records())
 
 
 def _sample_x_and_crop(exp_img, *, a: int, contrast, has_bias: bool,
@@ -69,12 +48,10 @@ def _sample_x_and_crop(exp_img, *, a: int, contrast, has_bias: bool,
     return exp.drop_constant_vox()
 
 
-@MEMORY.cache
-@RECORDER(output_name='exp')
-def data_factory_wgn(*, shape: tuple = (5, 5, 5), b: int = 2,
-                     num_img: int = 100, a: int = 1, contrast=None,
-                     has_bias: bool = True, extenter: Extenter = None,
-                     seed: int = 0):
+def build_clean_wgn(*, shape: tuple = (5, 5, 5), b: int = 2,
+                    num_img: int = 100, a: int = 1, contrast=None,
+                    has_bias: bool = True, extenter: Extenter = None,
+                    seed: int = 0):
     """Build a white-Gaussian-noise Experiment (no planted effect).
 
     Args:
@@ -97,11 +74,9 @@ def data_factory_wgn(*, shape: tuple = (5, 5, 5), b: int = 2,
                               has_bias=has_bias, extenter=extenter, seed=seed)
 
 
-@MEMORY.cache
-@RECORDER(output_name='exp')
-def data_factory_hcp(*, hcp_feats: tuple = hcp.HCP_FEATS, a: int = 1,
-                     contrast=None, has_bias: bool = True,
-                     extenter: Extenter = None, seed: int = 0):
+def build_clean_hcp(*, hcp_feats: tuple = hcp.HCP_FEATS, a: int = 1,
+                    contrast=None, has_bias: bool = True,
+                    extenter: Extenter = None, seed: int = 0):
     """Build an HCP-YA diffusion-microstructure Experiment (no planted effect).
 
     Args:
@@ -142,10 +117,15 @@ def build_clean(kwargs_data):
 
     Returns:
         exp: the clean Experiment, cropped and screened.
+
+    Raises:
+        ValueError: source is neither 'wgn' nor 'hcp'.
     """
+    source = kwargs_data['source']
+    if source not in CLEAN_BUILDER:
+        raise ValueError(f"source must be 'wgn' or 'hcp', got {source!r}")
     kwargs = {k: v for k, v in kwargs_data.items() if k != 'source'}
-    # the builder's own body, not its memoised wrapper
-    return raw_fnc(DATA_FACTORY[kwargs_data['source']])(**kwargs)
+    return CLEAN_BUILDER[source](**kwargs)
 
 
 def plant_effect(exp, *, seed: int, kind: str = 'single', effect_llr,
@@ -205,177 +185,6 @@ def plant_effect(exp, *, seed: int, kind: str = 'single', effect_llr,
     raise ValueError(f"kind must be 'single' or 'split', got {kind!r}")
 
 
-def data_factory(source: str, **kwargs):
-    """Build a clean Experiment from 'wgn' or 'hcp' (forwards kwargs).
-
-    Args:
-        source (str): 'wgn' or 'hcp', selecting the builder kwargs go to.
-
-    Returns:
-        the selected builder's Experiment.
-
-    Raises:
-        ValueError: if source is neither 'wgn' nor 'hcp'.
-    """
-    if source not in DATA_FACTORY:
-        raise ValueError(f"source must be 'wgn' or 'hcp', got {source!r}")
-    return DATA_FACTORY[source](**kwargs)
-
-
-# Each planting builder takes parent_uid as its first keyword-only parameter,
-# ahead of the defaulted ones: joblib's filter_args resolves an omitted default
-# by indexing from the end of the signature, so a required parameter after a
-# defaulted one makes every call raise (see the note in run.py).
-def data_recipe(kwargs_data):
-    """Return the recipe of one data cell, building nothing.
-
-    Args:
-        kwargs_data (dict): one data_factory cell, e.g. {'source': 'wgn', ...}.
-
-    Returns:
-        recipe (Recipe): the clean exp's declared identity; its uid is the
-            parent_uid every consumer of that exp is passed.
-    """
-    kwargs = {k: v for k, v in kwargs_data.items() if k != 'source'}
-    return recipe_for_call(DATA_FACTORY[kwargs_data['source']], kwargs)
-
-
-def effect_recipe(kwargs_effect, parent_uid: str):
-    """Return the recipe of one effect cell planted on a given clean exp.
-
-    Args:
-        kwargs_effect (dict): one effect_factory cell, e.g. {'kind': 'single',
-            ...}.
-        parent_uid (str): the clean exp's uid (data_recipe(...).uid).
-
-    Returns:
-        recipe (Recipe): the planted exp's declared identity.
-    """
-    kwargs = {k: v for k, v in kwargs_effect.items() if k != 'kind'}
-    return recipe_for_call(EFFECT_FACTORY[kwargs_effect.get('kind', 'single')],
-                           kwargs, parents=(parent_uid,))
-
-
-def effect_factory(exp, *, kind: str = 'single', **kwargs):
-    """Plant synthetic effect(s) on a clean Experiment (dispatches on kind).
-
-    A thin dispatcher (the recorded work is in the per-kind builders, so a
-    record names the concrete builder -- mirrors data_factory dispatching to
-    data_factory_wgn / data_factory_hcp). Every builder shares one contract,
-    (exp, **kwargs) -> (exp_eff, mask_target_list): the planted Experiment and
-    the list of realized supports (one entry for 'single', two for 'split'), so
-    the driver threads mask_target_list into the leaf as-is.
-
-    Args:
-        exp: clean Experiment (a data_factory output) to add the effect(s) to.
-        kind (str): 'single' (effect_factory_single) or 'split' (two adjacent
-            effects, effect_factory_split).
-        **kwargs: forwarded to the selected builder, including the parent_uid
-            it requires (the clean exp's uid; see data_recipe).
-
-    Returns:
-        exp: the Experiment with the effect(s) added.
-        mask_target_list (list): the realized (X, Y, Z) bool supports, one per
-            planted effect (in plant order).
-
-    Raises:
-        ValueError: if kind is neither 'single' nor 'split'.
-    """
-    if kind not in EFFECT_FACTORY:
-        raise ValueError(f"kind must be 'single' or 'split', got {kind!r}")
-    return EFFECT_FACTORY[kind](exp, **kwargs)
-
-
-@MEMORY.cache(ignore=['exp'])
-@RECORDER(output_name_list=['exp', 'mask_target_list'], ignore=['exp'])
-def effect_factory_single(exp, *, parent_uid: str, effect_llr, extenter_cls,
-                          n_vox_frac=0.1):
-    """Plant one synthetic effect on a clean Experiment.
-
-    The support extenter is built here from extenter_cls + the resolved
-    n_vox (n_vox_frac of the analysis volume) + a placement seed derived from
-    parent_uid, so the caller passes ingredients, not a constructed Extenter.
-    The whole effect is encapsulated here; the analysis crop (a separate
-    extenter in data_factory) is untouched.
-
-    The placement seed comes from the parent's declared uid, so each data
-    realization plants somewhere of its own, constant across the effect_llr
-    grid that shares one clean exp, and fixed by a declaration rather than by
-    any array's bytes.
-
-    Args:
-        exp: clean Experiment (a data_factory output) to add the effect to.
-        effect_llr (float): per-voxel (size-normalized) LLR target; the
-            whole-region LLR observed is ~ effect_llr * n_vox, where n_vox is
-            n_vox_frac of the analysis volume (see glow.effect.impose).
-        extenter_cls (type[Extenter]): Extenter subclass sampling the support,
-            built as extenter_cls(n_vox=n_vox, seed=...) (e.g. ExtenterMinVar).
-        n_vox_frac (float): support size as a fraction of the analysis volume
-            (num_vox = count of mask_idx > -1); resolved to
-            round(n_vox_frac * num_vox).
-        parent_uid (str): the clean exp's declared uid. Required: exp is
-            ignored by the cache, so this is what distinguishes one clean
-            experiment's planting from another's, and it seeds the
-            placement.
-
-    Returns:
-        exp: the Experiment with the effect added.
-        mask_target_list (list): the single realized (X, Y, Z) bool support,
-            as a one-element list.
-    """
-    return plant_effect(exp, seed=seed_from_uid(parent_uid), kind='single',
-                        effect_llr=effect_llr, extenter_cls=extenter_cls,
-                        n_vox_frac=n_vox_frac)
-
-
-@MEMORY.cache(ignore=['exp'])
-@RECORDER(output_name_list=['exp', 'mask_target_list'], ignore=['exp'])
-def effect_factory_split(exp, *, parent_uid: str, effect_llr, extenter_cls,
-                         angle, n_vox_frac=0.1):
-    """Plant two adjacent equal-LLR effects at a controlled direction angle.
-
-    The cleaving setup: an extenter_cls extent of n_vox voxels (n_vox_frac of
-    the analysis volume) is grown from its own seeded start and spectrally
-    bisected (ExtenterSplit) into two contiguous halves, with one effect
-    planted on each -- same effect_llr,
-    feature directions angle degrees apart (angles 0 and angle), so the two
-    effects differ only in orientation. score_effects then scores the union and
-    each half in turn (target0 / target1; the merge-cost signal).
-
-    The base extent is placed by the extenter from the seed parent_uid
-    derives, as effect_factory_single seeds its own, and that one seed drives
-    both the placement and the direction pair. A data-driven Fiedler cut is not
-    perfectly even, so the halves may differ in size (visible in
-    target0 / target1's voxel counts).
-
-    Args:
-        exp: clean Experiment (a data_factory output) to add the effects to.
-        effect_llr (float): per-voxel LLR target for each effect.
-        extenter_cls (type[Extenter]): Extenter subclass grown then bisected,
-            built as extenter_cls(n_vox=n_vox, seed=...) (e.g. ExtenterMinVar).
-        n_vox_frac (float): combined two-effect support as a fraction of the
-            analysis volume (split into halves); resolved to
-            round(n_vox_frac * num_vox).
-        angle (float): feature-direction angle between the two effects (deg).
-        parent_uid (str): the clean exp's declared uid. Required: exp is
-            ignored by the cache, so this is what distinguishes one clean
-            experiment's planting from another's, and it seeds the
-            placement.
-
-    Returns:
-        exp: the Experiment with both effects added.
-        mask_target_list (list): the two realized half-supports [mask0, mask1]
-            (mask0 | mask1 is the grown extent, the two disjoint).
-    """
-    return plant_effect(exp, seed=seed_from_uid(parent_uid), kind='split',
-                        effect_llr=effect_llr, extenter_cls=extenter_cls,
-                        n_vox_frac=n_vox_frac, angle=angle)
-
-
-# the dispatch tables data_factory / effect_factory select a builder from, and
-# the one place a source / kind name maps to its op -- data_recipe and
-# effect_recipe name a cell's uid off the same tables, so a reader and a runner
-# cannot disagree about which builder a cell means.
-DATA_FACTORY = {'wgn': data_factory_wgn, 'hcp': data_factory_hcp}
-EFFECT_FACTORY = {'single': effect_factory_single,
-                  'split': effect_factory_split}
+# the one place a source name maps to the builder that realizes it, so a
+# reader and a runner cannot disagree about what a cell means.
+CLEAN_BUILDER = {'wgn': build_clean_wgn, 'hcp': build_clean_hcp}

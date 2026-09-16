@@ -1,37 +1,39 @@
-"""Benchmark leaf functions: measure one Experiment and score it.
+"""Benchmark leaf functions: measure one cell and score it.
 
-Each leaf is one fnc(exp, mask_target_list=..., **kwargs) the driver runs on a
-(data, effect) cell. run_ana is the canonical one -- fit an unfitted Analysis
-recipe on an already-built Experiment and score the discovered effects against
-the planted target(s), no data building and no planting. run_segment is a
-sibling measuring segmentation quality (no fit); run_stat fits one VBA / CET
-MANCOVA-stat variant off a shared voxel-stat walk; run_prune scores one pruning
-rule on a shared GLOW fit; run_inner_perm scores GLOW at one inner-draw count
-off a shared per-cell capture.
+Each leaf is one fnc(cell, **kwargs) the driver runs on a (data, effect)
+cell. run_ana is the canonical one -- rebuild the cell's Experiment, fit an
+unfitted Analysis recipe on it, and score the discovered effects against the
+planted target(s). run_segment is a sibling measuring segmentation quality
+(no fit); run_stat fits one VBA / CET MANCOVA-stat variant off a shared
+voxel-stat walk; run_prune scores one pruning rule on a shared GLOW fit;
+run_inner_perm scores GLOW at one inner-draw count off a shared per-cell
+capture.
+
+A leaf is handed an ExpEffect payload, not an Experiment, and rebuilds
+through build_cell -- so a cache hit costs nothing (the images are never
+read) and a cell's leaves share the one rebuild between them (.cell).
 
 All are @MEMORY.cache'd (so a record's key equals its cache id) and share
-data.py's MEMORY / RECORDER, so a leaf joins the same provenance DAG: its exp
-input links to the build that produced it and RECORDER.flatten_to_df chains
-data -> (plant ->) score into one row. The method name (GLOW-Focus-greedy,
-VBA-TFCE-Wilks-z, ...) is not passed or recorded but recovered from the recipe
-at read time (config.ana_kwargs_dict).
+data.py's MEMORY / RECORDER, so a leaf joins the same provenance DAG:
+RECORDER.flatten_to_df chains cell -> score into one row. The method name
+(GLOW-Focus-greedy, VBA-TFCE-Wilks-z, ...) is not passed or recorded but
+recovered from the recipe at read time (config.ana_kwargs_dict).
 
-Every leaf requires parent_uid, the declared uid of the Experiment it measures
-(.recipe): exp itself is kept out of the key, so a leaf's identity is the same
-on any machine where the exp's bytes would not be. Two leaves given one
-parent_uid claim to measure the same experiment, so a caller must never reuse
-one across distinct experiments.
+Every leaf requires parent_uid, the declared uid of the cell it measures
+(.cell): the payload itself is kept out of the key, so a leaf's identity is
+the same on any machine. Two leaves given one parent_uid claim to measure
+the same cell, so a caller must never reuse one across distinct cells.
 
-A leaf may lean on a shared heavy intermediate rather than a driver stage:
-run_stat reads voxel_stat_walk (every MANCOVA stat for one exp), run_prune
-reads glow_fit_for_prune (one GLOW fit's children / per-region LLR /
+A leaf may lean on a shared heavy intermediate: run_stat reads
+voxel_stat_walk (every MANCOVA stat for one exp), run_prune reads
+glow_fit_for_prune (one GLOW fit's children / per-region LLR /
 FWER-significant set) and run_inner_perm reads glow_inner_capture (one GLOW
 walk's test inputs at every inner-draw count), so the first of a cell's
-variants computes it and the rest reuse it. None is a recorded DAG node -- its
-output is not an Experiment, and the leaf already links to the build via exp.
-glow_fit_for_prune is memoised to disk, its triple being light; a
-voxel_stat_walk matrix and a capture are too big to keep for a whole grid and
-are shared in memory only.
+variants computes it and the rest reuse it. None is a recorded DAG node --
+its output is not a cell, and the leaf already declares the cell as its
+parent. glow_fit_for_prune is memoised to disk, its triple being light; a
+voxel_stat_walk matrix and a capture are too big to keep for a whole grid
+and are shared in memory only.
 
 Scoring is inlined rather than a separate recorded step: the fitted Analysis is
 the heavy object, used as a local and discarded, so only the small score dict
@@ -56,25 +58,25 @@ from glow.analysis.mancova import decompose, stat_dict, stat_dict_inv
 from glow.analysis.prune import prune_by_rule, prune_oracle
 from glow.experiment.exper import Experiment, ExperimentScaled
 
-# share the data.py builders' disk cache + recorder, so a fit is memoised
-# beside the builds and run_ana joins their provenance DAG (see module docs).
-from .data import MEMORY, RECORDER
+from .cell import build_cell, ExpEffect
 from .score import (score_effects, score_max_z_region, score_oracle_tree,
                     score_prune)
+# the suite's shared cache + recorder, so a fit is memoised beside the cell
+# it measures and both join one provenance DAG (see .store).
+from .store import MEMORY, RECORDER
 
-# Neither exp nor its mask_target_list companion is an identity: exp is named
-# by the parent_uid every leaf requires, and the masks are determined by that
-# same parent. Keeping both out of every cache key and recipe is what makes a
-# leaf's id portable -- and cheap, since a key no longer digests a (b, num_img,
-# num_vox) array (see glow._extra.benchmark.recipe).
-LEAF_IGNORE = ['exp', 'mask_target_list']
+# The cell payload is not an identity: it is named by the parent_uid every
+# leaf requires, which is the cell's own declared uid. Keeping it out of every
+# cache key and recipe is what makes a leaf's id portable -- and cheap, since
+# a key digests no array at all (see glow._extra.benchmark.recipe).
+LEAF_IGNORE = ['cell']
 
 # The same list goes to @MEMORY.cache and @RECORDER: the recorder keys a record
 # by joblib's args hash, so it must filter exactly what joblib filters or the
 # record stops naming its own cache entry.
 #
 # fit_params (the kwargs a leaf forwards to Analysis.fit -- n_jobs, gpu) is an
-# execution knob, not a recipe knob, so it is filtered like exp: the same cell
+# execution knob, not a recipe knob, so it is filtered like cell: the same cell
 # fit on 32 CPU workers or on the GPU is one artifact. That holds only while
 # fit_params carries no numerical knob -- a GpuConfig(acc_dtype=float32) does
 # perturb fwer.max_stat, which is why gpu=True does not select it and a config
@@ -91,36 +93,33 @@ FIT_IGNORE = [*LEAF_IGNORE, 'fit_params']
 @MEMORY.cache(ignore=FIT_IGNORE)
 @RECORDER(output_name='score', recurse_list=['score'],
           ignore=FIT_IGNORE)
-def run_ana(exp: Experiment, ana: Analysis, mask_target_list, *,
-            parent_uid: str, fit_params=None):
-    """Fit ana on exp and score it against the planted target(s).
+def run_ana(cell: ExpEffect, ana: Analysis, *, parent_uid: str,
+            fit_params=None):
+    """Fit ana on one cell and score it against the planted target(s).
 
-    Calls ana.fit(exp, **fit_params), then scores the discovered effects
-    against the planted supports with score_effects -- the uniform detection
-    score every method is compared on, whatever its concrete type.
+    Rebuilds the cell's Experiment (build_cell), calls
+    ana.fit(exp, **fit_params), then scores the discovered effects against
+    the planted supports with score_effects -- the uniform detection score
+    every method is compared on, whatever its concrete type.
 
     Memoised on disk with the recorder nested inside the cache, so a repeat
-    is served from the cache and only a real run is recorded. Two distinct
-    recipes hash distinctly. mask_target_list is a deterministic function of
-    exp, so it adds no cache-key axis; it is there because score_effects
-    needs the realized supports, which exp does not carry.
+    is served from the cache and only a real run is recorded, and a hit does
+    not rebuild. Two distinct recipes hash distinctly.
 
     ana is never mutated -- fit runs on a private copy, leaving the caller's
     recipe (and so its hash) untouched. That is what makes the cache key
     stable when the same recipe object is reused, and the result
-    deterministic in (exp, ana, mask_target_list). The fitted copy (and its
-    heavy per-method arrays) is discarded; only the score dict is returned,
-    cached, and recorded.
+    deterministic in (cell, ana). The fitted copy (and its heavy per-method
+    arrays) is discarded; only the score dict is returned, cached, and
+    recorded.
 
     Args:
-        exp (Experiment): the experiment to analyze (raw or already
-            scaled; fit idempotently scales it).
+        cell (ExpEffect): the cell to measure; its Experiment is rebuilt
+            here, already scaled.
         ana (Analysis): an unfitted analysis recipe (its __init__ config
             knobs only -- the experiment is not stored on it).
-        mask_target_list (list): the planted effect supports, one (X, Y, Z)
-            bool mask per EffectSynthetic (effect_factory's mask output);
-            empty for the null / FWER-calibration path.
-        parent_uid (str): the exp's declared uid (see the module docstring).
+        parent_uid (str): the cell's declared uid (see the module
+            docstring).
         fit_params (dict | None): kwargs forwarded to ana.fit -- how the
             fit runs (n_jobs, gpu), never what it computes. Filtered from
             the cache key and the record (FIT_IGNORE), so the same cell run
@@ -132,25 +131,28 @@ def run_ana(exp: Experiment, ana: Analysis, mask_target_list, *,
             global num_vox / min_pval / n_pred, a per-region pred list, and
             the target (+ per-effect target0..N) confusion blocks.
     """
+    exp = build_cell(cell)
     ana = copy.deepcopy(ana)
     ana.fit(exp, **(fit_params or {}))
-    return score_effects(ana, mask_target_list, mask_active=exp.mask_idx > -1)
+    return score_effects(ana, cell.mask_target_list,
+                         mask_active=exp.mask_idx > -1)
 
 
 @MEMORY.cache(ignore=LEAF_IGNORE)
 @RECORDER(output_name='score', recurse_list=['score'],
           ignore=LEAF_IGNORE)
-def run_segment(exp: Experiment, mask_target_list, cluster_mode, *,
-                parent_uid: str, frac_segment: float = None):
-    """Segment exp in one Ward mode and score the oracle best-Dice region.
+def run_segment(cell: ExpEffect, cluster_mode, *, parent_uid: str,
+                frac_segment: float = None):
+    """Segment one cell in a Ward mode and score its best-Dice region.
 
     The segmentation-quality leaf: build the Ward tree in cluster_mode and
     return the confusion counts of the region whose Dice against the planted
     support is largest (score_oracle_tree) -- no significance test or pruning,
     swept across modes (Naive / GLM Error / Focus) by the config's fnc grid.
-    exp is scaled (ExperimentScaled.from_exp) before clustering so the tree
-    matches the one a GLOW fit builds (GLM_ERROR / FOCUS project y through the
-    design). Memoised + recorded like run_ana.
+    The experiment is scaled before clustering so the tree matches the one a
+    GLOW fit builds (GLM_ERROR / FOCUS project y through the design), and
+    after any split, since a fitted transform refuses to be split.
+    Memoised + recorded like run_ana.
 
     frac_segment is the second axis (the segment_perc cache): the share of the
     images the tree is built on. The whole cohort segments by default; a
@@ -164,11 +166,9 @@ def run_segment(exp: Experiment, mask_target_list, cluster_mode, *,
     not an independent draw per point.
 
     Args:
-        exp (Experiment): the experiment to segment (raw or scaled; raw when
-            frac_segment is set -- ExperimentScaled refuses to split).
-        mask_target_list (list): planted (X, Y, Z) bool supports; their union
-            is the target scored (empty -> all-background counts).
-        parent_uid (str): the exp's declared uid (see the module docstring).
+        cell (ExpEffect): the cell to segment; its planted supports are the
+            target scored (their union; none -> all-background counts).
+        parent_uid (str): the cell's declared uid (see the module docstring).
         cluster_mode (ClusterMode | str): the Ward projection to segment with.
         frac_segment (float | None): share of the images to build the tree on,
             in (0, 1); None (default) segments the whole cohort.
@@ -176,8 +176,9 @@ def run_segment(exp: Experiment, mask_target_list, cluster_mode, *,
     Returns:
         {tp, fp, tn, fn}: the counts of the best-matching tree region.
     """
+    exp = build_cell(cell)
     mask_target = np.zeros(exp.mask_idx.shape, dtype=bool)
-    for m in mask_target_list:
+    for m in cell.mask_target_list:
         mask_target |= m
     if frac_segment is not None:
         exp, _ = exp.split_img(frac_segment=frac_segment, seed=0)
@@ -224,8 +225,9 @@ def voxel_stat_walk(exp, n_perm_fwer: int, *, parent_uid: str) -> dict:
 
     Args:
         exp (Experiment): the experiment to walk (scaled here).
-        parent_uid (str): the exp's declared uid (see the module docstring);
-            what identifies the walk, since exp is out of the key.
+        parent_uid (str): the cell's declared uid (see the module
+            docstring); what identifies the walk, since exp is out of the
+            key.
         n_perm_fwer (int): number of FWER permutations (the walk has n+1 rows,
             row 0 observed).
 
@@ -254,7 +256,7 @@ def voxel_stat_walk(exp, n_perm_fwer: int, *, parent_uid: str) -> dict:
 @MEMORY.cache(ignore=LEAF_IGNORE)
 @RECORDER(output_name='score', recurse_list=['score'],
           ignore=LEAF_IGNORE)
-def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name, *,
+def run_stat(cell: ExpEffect, ana: Analysis, stat_name, *,
              parent_uid: str):
     """Fit one VBA / CET MANCOVA-stat variant (reading the shared walk), score.
 
@@ -265,12 +267,13 @@ def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name, *,
     to a standalone ana.fit(exp) (the walk reproduces the matrix fit would
     build), then scored with score_effects like run_ana. GLOW is excluded from
     this bake-off by design (it uses the LLR throughout), so this leaf is
-    VBA / CET only. Memoised + recorded, keyed by (exp, ana, stat_name).
+    VBA / CET only. Memoised + recorded, keyed by (cell, ana, stat_name).
 
     Args:
-        exp (Experiment): the experiment to analyze (raw or scaled).
-        mask_target_list (list): the planted effect supports (score target).
-        parent_uid (str): the exp's declared uid (see the module docstring).
+        cell (ExpEffect): the cell to measure; its Experiment is rebuilt
+            here.
+        parent_uid (str): the cell's declared uid (see the module
+            docstring).
         ana (Analysis): an unfitted AnalysisVBA / AnalysisCET recipe; its
             n_perm_fwer sizes the walk and its get_stat picks the stat.
         stat_name (str): the stat_dict key picking which walk matrix to inject
@@ -279,10 +282,12 @@ def run_stat(exp: Experiment, mask_target_list, ana: Analysis, stat_name, *,
     Returns:
         score (dict): the detection score (see score.score_effects).
     """
+    exp = build_cell(cell)
     walk = voxel_stat_walk(exp, ana.n_perm_fwer, parent_uid=parent_uid)
     ana = copy.deepcopy(ana)
     ana.fit(exp, _stat=walk[stat_name].copy())
-    return score_effects(ana, mask_target_list, mask_active=exp.mask_idx > -1)
+    return score_effects(ana, cell.mask_target_list,
+                         mask_active=exp.mask_idx > -1)
 
 
 @MEMORY.cache(ignore=['exp', 'fit_params'])
@@ -302,8 +307,9 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
 
     Args:
         exp (Experiment): the experiment to fit (raw or scaled).
-        parent_uid (str): the exp's declared uid (see the module docstring);
-            what identifies the fit, since exp is out of the key.
+        parent_uid (str): the cell's declared uid (see the module
+            docstring); what identifies the fit, since exp is out of the
+            key.
         n_perm_fwer (int): outer FL perms feeding the max-z null.
         n_perm_inner (int): inner FL draws standardizing each outer perm's
             own tree.
@@ -331,7 +337,7 @@ def glow_fit_for_prune(exp, *, parent_uid: str, n_perm_fwer: int,
 @MEMORY.cache(ignore=FIT_IGNORE)
 @RECORDER(output_name='score', recurse_list=['score'],
           ignore=FIT_IGNORE)
-def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
+def run_prune(cell: ExpEffect, rule, *, parent_uid: str,
               n_perm_fwer: int, n_perm_inner: int, alpha_fwer: float,
               cluster_mode=ClusterMode.FOCUS, fit_params=None):
     """Score one pruning rule's selection on a shared GLOW fit.
@@ -348,14 +354,14 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
         (prune_oracle). Not a method -- it is handed the target the others
         are scored against, so it draws the headroom the rules leave: the
         Dice this fit's significant set still has in it.
-    All four prune the same fit, isolating the rule from the permutation test.
-    Memoised + recorded, keyed by (exp, rule, the GLOW fit knobs).
+    All four prune the same fit, isolating the rule from the permutation
+    test. Memoised + recorded, keyed by (cell, rule, the GLOW fit knobs).
 
     Args:
-        exp (Experiment): the experiment to analyze (raw or scaled).
-        mask_target_list (list): the planted effect supports (score target,
-            and the oracle rule's input).
-        parent_uid (str): the exp's declared uid (see the module docstring).
+        cell (ExpEffect): the cell to measure; its Experiment is rebuilt
+            here.
+        parent_uid (str): the cell's declared uid (see the module
+            docstring).
         rule (str): 'greedy', 'dp', 'single_max', or 'oracle'.
         n_perm_fwer (int): outer FL perms (the shared fit's).
         n_perm_inner (int): inner FL draws per outer perm (the shared fit's).
@@ -375,6 +381,7 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
     Raises:
         ValueError: if rule is not 'greedy' / 'dp' / 'single_max' / 'oracle'.
     """
+    exp = build_cell(cell)
     children, llr, sig_reg_list = glow_fit_for_prune(
         exp, parent_uid=parent_uid, n_perm_fwer=n_perm_fwer,
         n_perm_inner=n_perm_inner, alpha_fwer=alpha_fwer,
@@ -384,7 +391,7 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
         # scored against the union of the planted supports, as
         # score_prune scores every rule's output
         mask_target = np.zeros(exp.mask_idx.shape, dtype=bool)
-        for mask in mask_target_list:
+        for mask in cell.mask_target_list:
             mask_target |= mask
         reg_out_list, _ = prune_oracle(sig_reg_list=sig_reg_list,
                                        children=children,
@@ -394,8 +401,9 @@ def run_prune(exp: Experiment, mask_target_list, rule, *, parent_uid: str,
         reg_out_list, _ = prune_by_rule(rule, sig_reg_list=sig_reg_list,
                                         children=children, stat=llr)
 
-    return score_prune(reg_out_list, children=children, mask_idx=exp.mask_idx,
-                       mask_target_list=mask_target_list,
+    return score_prune(reg_out_list, children=children,
+                       mask_idx=exp.mask_idx,
+                       mask_target_list=cell.mask_target_list,
                        mask_active=exp.mask_idx > -1)
 
 
@@ -506,7 +514,7 @@ def glow_inner_capture(exp, *, parent_uid: str, n_perm_fwer: int,
 
     Args:
         exp (Experiment): the experiment to fit (scaled here).
-        parent_uid (str): the exp's declared uid (see the module
+        parent_uid (str): the cell's declared uid (see the module
             docstring); what identifies the capture, since exp is out of
             the key.
         n_perm_fwer (int): outer FL perms feeding the max-z null.
@@ -562,7 +570,7 @@ def glow_inner_capture(exp, *, parent_uid: str, n_perm_fwer: int,
     return capture
 
 
-# n_perm_inner_grid is ignored like exp: it says which prefixes the shared
+# n_perm_inner_grid is ignored like cell: it says which prefixes the shared
 # capture snapshots, not what this leaf computes. A prefix is the same draws
 # whatever depth was sampled around it, so one n_perm_inner is one artifact
 # however the grid it was captured with is widened or narrowed.
@@ -572,7 +580,7 @@ INNER_IGNORE = [*FIT_IGNORE, 'n_perm_inner_grid']
 @MEMORY.cache(ignore=INNER_IGNORE)
 @RECORDER(output_name='score', recurse_list=['score'],
           ignore=INNER_IGNORE)
-def run_inner_perm(exp: Experiment, mask_target_list, *, parent_uid: str,
+def run_inner_perm(cell: ExpEffect, *, parent_uid: str,
                    n_perm_inner: int, n_perm_fwer: int, alpha_fwer: float,
                    n_perm_inner_grid, cluster_mode=ClusterMode.FOCUS,
                    prune_rule: str = 'greedy', min_vox: int = 1,
@@ -593,9 +601,10 @@ def run_inner_perm(exp: Experiment, mask_target_list, *, parent_uid: str,
     is high enough only once it has stopped moving.
 
     Args:
-        exp (Experiment): the experiment to analyze (raw or scaled).
-        mask_target_list (list): the planted (X, Y, Z) bool supports.
-        parent_uid (str): the exp's declared uid (see the module docstring).
+        cell (ExpEffect): the cell to measure; its Experiment is rebuilt
+            here.
+        parent_uid (str): the cell's declared uid (see the module
+            docstring).
         n_perm_inner (int): the inner count to report; must be on
             n_perm_inner_grid.
         n_perm_fwer (int): outer FL perms feeding the max-z null.
@@ -618,6 +627,7 @@ def run_inner_perm(exp: Experiment, mask_target_list, *, parent_uid: str,
     Raises:
         ValueError: n_perm_inner is not on n_perm_inner_grid.
     """
+    exp = build_cell(cell)
     capture = glow_inner_capture(
         exp, parent_uid=parent_uid, n_perm_fwer=n_perm_fwer,
         n_perm_inner_grid=n_perm_inner_grid, cluster_mode=cluster_mode,
@@ -644,14 +654,14 @@ def run_inner_perm(exp: Experiment, mask_target_list, *, parent_uid: str,
 
     score = score_prune(reg_out_list, children=children,
                         mask_idx=exp.mask_idx,
-                        mask_target_list=mask_target_list,
+                        mask_target_list=cell.mask_target_list,
                         mask_active=exp.mask_idx > -1)
     score['n_sig'] = len(sig_reg_list)
     score['min_pval'] = (float(np.nanmin(fwer.pval))
                          if np.isfinite(fwer.pval).any() else float('nan'))
     score['max_z'] = score_max_z_region(
         z_obs, reg_active=reg_active, size=size, children=children,
-        mask_idx=exp.mask_idx, mask_target_list=mask_target_list,
+        mask_idx=exp.mask_idx, mask_target_list=cell.mask_target_list,
         mask_active=exp.mask_idx > -1)
     return score
 
@@ -663,8 +673,8 @@ def run_inner_perm(exp: Experiment, mask_target_list, *, parent_uid: str,
 # straight from the records. They differ only in what they hold fixed:
 # run_ana_time takes every core and any device (wall clock as experienced),
 # run_ana_time_1perm pins one core and one permutation (work, near enough to
-# read a growth rate off). mask_target_list rides the uniform leaf contract but
-# is unused (the effect is planted only to keep the run realistic; timing is
+# read a growth rate off). A cell's planted supports go unused here (the
+# effect is planted only to keep the run realistic; timing is
 # effect-independent).
 
 
@@ -677,11 +687,12 @@ def _default_time_fit_params() -> dict:
 
 @MEMORY.cache(ignore=FIT_IGNORE)
 @RECORDER(output_name='num_vox', ignore=FIT_IGNORE)
-def run_ana_time(exp: Experiment, mask_target_list, ana: Analysis, *,
-                 parent_uid: str, fit_params=None) -> int:
+def run_ana_time(cell: ExpEffect, ana: Analysis, *, parent_uid: str,
+                 fit_params=None) -> int:
     """Time one method's fit at full local parallelism (runtime leaf).
 
-    The cross-method runtime sweep's leaf: fit ana on exp with n_jobs=-1 and
+    The cross-method runtime sweep's leaf: fit ana on the cell with
+    n_jobs=-1 and
     record wall time only, no scoring. Every method parallelises its
     permutation walk, so -1 is the wall time a user on an N-core machine
     waits;
@@ -697,10 +708,10 @@ def run_ana_time(exp: Experiment, mask_target_list, ana: Analysis, *,
     time_sec isolates fit alone.
 
     Args:
-        exp (Experiment): the experiment to analyze (raw or scaled; fit scales
-            it idempotently).
-        mask_target_list (list): planted supports; unused (uniform contract).
-        parent_uid (str): the exp's declared uid (see the module docstring).
+        cell (ExpEffect): the cell to time; its Experiment is rebuilt here,
+            outside the timed call.
+        parent_uid (str): the cell's declared uid (see the module
+            docstring).
         ana (Analysis): an unfitted analysis recipe (config knobs only).
         fit_params (dict | None): kwargs forwarded to ana.fit; None
             (default) times it at n_jobs=-1 on the CPU.
@@ -709,6 +720,7 @@ def run_ana_time(exp: Experiment, mask_target_list, ana: Analysis, *,
         num_vox (int): analyzed voxel count, recorded beside time_sec as
             the sweep's x-axis.
     """
+    exp = build_cell(cell)
     ana = copy.deepcopy(ana)
     ana.fit(exp, **(fit_params if fit_params is not None
                     else _default_time_fit_params()))
@@ -720,9 +732,9 @@ def _take_img(exp: Experiment, num_img: int) -> Experiment:
 
     Both y and the design x lose the same columns, so the result is shaped
     like an experiment of that many subjects. y is copied, not sliced into a
-    view: the analysis path expects the F-contiguous layout the builders
-    produce (data._with_canonical_y), and timing a strided view would measure
-    the stride rather than the size.
+    view: the analysis path is written for the F-contiguous layout a build
+    produces, and timing a strided view would measure the stride rather than
+    the size.
 
     Args:
         exp (Experiment): the experiment to cut.
@@ -744,7 +756,7 @@ def _take_img(exp: Experiment, num_img: int) -> Experiment:
 
 @MEMORY.cache(ignore=LEAF_IGNORE)
 @RECORDER(output_name='num_vox', ignore=LEAF_IGNORE)
-def run_ana_time_1perm(exp: Experiment, mask_target_list, ana: Analysis, *,
+def run_ana_time_1perm(cell: ExpEffect, ana: Analysis, *,
                        parent_uid: str, n_perm_fwer: int = 1,
                        n_perm_inner: int = None,
                        num_img: int = None) -> int:
@@ -773,17 +785,17 @@ def run_ana_time_1perm(exp: Experiment, mask_target_list, ana: Analysis, *,
     keys the cache (fit_params would not) and lands in the record as its own
     in.<name> column, leaving in.ana to name the method.
 
-    num_img is swept here rather than by building a smaller experiment: the HCP
-    cohort is the sample, and giving data_factory_hcp a subject-subset axis
-    would put num_img in every HCP cell's declared recipe and rehash the whole
-    catalogue. Timing is a function of the array shapes, not of which subjects
-    fill them.
+    num_img is swept here rather than by building a smaller experiment: the
+    HCP cohort is the sample, and giving a data cell a subject-subset axis
+    would put num_img in every HCP cell's declared recipe and rehash the
+    whole catalogue. Timing is a function of the array shapes, not of which
+    subjects fill them.
 
     Args:
-        exp (Experiment): the experiment to analyze (raw or scaled; fit scales
-            it idempotently).
-        mask_target_list (list): planted supports; unused (uniform contract).
-        parent_uid (str): the exp's declared uid (see the module docstring).
+        cell (ExpEffect): the cell to time; its Experiment is rebuilt here,
+            outside the timed call.
+        parent_uid (str): the cell's declared uid (see the module
+            docstring).
         ana (Analysis): an unfitted analysis recipe; deep-copied before its
             permutation counts are overridden, so the caller's is untouched.
         n_perm_fwer (int): permutations to time, the observed pass on
@@ -802,6 +814,7 @@ def run_ana_time_1perm(exp: Experiment, mask_target_list, ana: Analysis, *,
         ValueError: n_perm_inner given for a recipe without that knob, which
             would otherwise time an unswept fit under a swept label.
     """
+    exp = build_cell(cell)
     ana = copy.deepcopy(ana)
     ana.n_perm_fwer = n_perm_fwer
     if n_perm_inner is not None:

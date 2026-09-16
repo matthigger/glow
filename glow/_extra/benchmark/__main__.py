@@ -120,7 +120,7 @@ def run(names=None, n_jobs: int = 1, verbose: bool = True,
 
     from .config import CONFIG, ana_kwargs_dict
     from .grid import filter_ana_list, strip_gpu
-    from .data import RECORDER
+    from .store import RECORDER
     from .driver import drive
     from .hcp import ensure_hcp_data
 

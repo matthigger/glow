@@ -12,7 +12,7 @@ import joblib
 import numpy as np
 import pytest
 
-from glow._extra.benchmark import cell as cell_mod
+from glow._extra.benchmark import cell as cell_mod, store
 from glow._extra.benchmark import data
 from glow._extra.benchmark.cell import (ExpEffect, build_cell,
                                         exp_effect_recipe, get_exp_effect)
@@ -40,7 +40,7 @@ def _kwargs_effect(**kwargs) -> dict:
 @pytest.fixture(autouse=True)
 def _records_to_tmp(monkeypatch, tmp_path):
     """Mirror the recorder's per-hash files to a tmp dir, not the real one."""
-    monkeypatch.setattr(data.RECORDER, 'folder', tmp_path)
+    monkeypatch.setattr(store.RECORDER, 'folder', tmp_path)
 
 
 @pytest.fixture(autouse=True)
@@ -112,16 +112,20 @@ class TestRebuild:
         exp, _ = data.plant_effect(
             exp, seed=cell_mod.seed_from_uid(cell_mod.data_uid(kwargs_data)),
             **kwargs_effect)
-        want = ExperimentScaled.from_exp(exp)
+        want = exp
 
         got = cell.build()
         np.testing.assert_array_equal(got.mask_idx, want.mask_idx)
         np.testing.assert_array_equal(got.y, want.y)
         np.testing.assert_array_equal(got.x, want.x)
 
-    def test_returns_a_scaled_experiment_carrying_its_source(self):
-        exp = get_exp_effect(_kwargs_data(), _kwargs_effect()).build()
-        assert isinstance(exp, ExperimentScaled)
+    def test_carries_its_source_and_stays_raw(self):
+        cell = get_exp_effect(_kwargs_data(), _kwargs_effect())
+        exp = build_cell(cell)
+        # raw: every Analysis.fit scales on the way in, and one of them has
+        # to split the images first, which a fitted transform refuses
+        assert not isinstance(exp, ExperimentScaled)
+        assert ExperimentScaled.from_exp(exp) is not exp
         # the source survives, so a kernel can still borrow context
         assert exp.source is not None
         assert exp.meta['features'] == ['feat_0', 'feat_1']
@@ -202,11 +206,11 @@ class TestIdentity:
         assert cell.uid == uid
 
     def test_the_record_is_filed_under_that_uid(self):
-        data.RECORDER.records.clear()
+        store.RECORDER.records.clear()
         kwargs_data, kwargs_effect = _kwargs_data(), _kwargs_effect()
         get_exp_effect(kwargs_data, kwargs_effect)
 
-        record, = data.RECORDER.records.values()
+        record, = store.RECORDER.records.values()
         assert record['uid'] == exp_effect_recipe(kwargs_data,
                                                   kwargs_effect).uid
         assert record['op'].endswith('get_exp_effect')
@@ -214,11 +218,11 @@ class TestIdentity:
 
     def test_the_declared_knobs_flatten_to_one_column_each(self):
         # what the figures group by: recurse_list expands each cell spec
-        data.RECORDER.records.clear()
+        store.RECORDER.records.clear()
         kwargs_data = _kwargs_data(seed=7)
         get_exp_effect(kwargs_data, _kwargs_effect())
 
-        row = data.RECORDER.flatten_to_df().iloc[0]
+        row = store.RECORDER.flatten_to_df().iloc[0]
         assert row['get_exp_effect.in.kwargs_data.source'] == 'wgn'
         assert row['get_exp_effect.in.kwargs_data.seed'] == 7
         assert row['get_exp_effect.in.kwargs_effect.effect_llr'] == 0.1

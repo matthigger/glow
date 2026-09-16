@@ -90,7 +90,7 @@ EFFECT_LLR_GRID = np.logspace(np.log10(0.003), np.log10(0.3), 11)
 # (not typing 0.03, which misses grid[5] == 0.030000000000000013) is what makes
 # the llr sweep's b=1 midpoint hash equal to the default-effect anchor the
 # other caches plant. float() for a clean python-float hash matching
-# effect_factory's float(effect_llr) cast; a single midpoint needs an
+# the grid's float(effect_llr) cast; a single midpoint needs an
 # odd-length grid.
 if len(EFFECT_LLR_GRID) % 2 == 0:
     warnings.warn('EFFECT_LLR_GRID is even-length; it has no single midpoint')
@@ -284,7 +284,7 @@ RUN_INNER_PERM_LIST = [
 # tree needs is not one number -- z scales with the effect, and the inner count
 # caps z -- so the knee is read at three strengths rather than at the anchor
 # alone. Every value is on EFFECT_LLR_GRID, so each plant is a cell sweep_llr
-# has already built. float() for the clean python-float hash effect_factory
+# has already built. float() for the clean python-float hash a cell
 # casts to (see MODERATE_EFFECT_LLR).
 _LLR_MID = len(EFFECT_LLR_GRID) // 2
 INNER_EFFECT_LLR = tuple(float(EFFECT_LLR_GRID[i])
@@ -372,7 +372,7 @@ def data_grid(**kwargs):
         **kwargs: any DATA_AXES key, overriding the paper's value for it.
 
     Returns:
-        list[dict]: kwargs for data_factory, one per cell.
+        list[dict]: kwargs for one data cell.
     """
     return grid.get_kwargs_data_list(**{**DATA_AXES, **kwargs})
 
@@ -385,7 +385,7 @@ def effect_grid(**kwargs):
             llr_list=None is the null path (plant nothing).
 
     Returns:
-        list[dict | None]: kwargs for effect_factory, or [None] for the null.
+        list[dict | None]: kwargs for one effect cell, or [None] for the null.
     """
     return grid.get_kwargs_effect_list(**{**EFFECT_AXES, **kwargs})
 
@@ -448,7 +448,7 @@ def runtime_data_grid(**kwargs):
             crop_n_vox_list are required.
 
     Returns:
-        list[dict]: kwargs for data_factory, one per cell.
+        list[dict]: kwargs for one data cell.
     """
     return grid.get_kwargs_data_runtime(n_seed=RUNTIME_N_SEED, **kwargs)
 
@@ -495,8 +495,8 @@ RUN_1PERM_NIMG_LIST = [dict(ana=ONE_PERM_ANA, num_img=n) for n in NIMG_GRID]
 
 # ---------- catalogue: name -> (data, effect, fnc kwargs, fnc) ---------------
 # Building the grids runs no experiments and reads no data -- the cells are
-# just kwargs (the Extenters are built later, in effect_factory /
-# data_factory).
+# just kwargs (the Extenters are built later, in plant_effect /
+# build_clean).
 CONFIG = {
     # A. Type I error: no effect, many seeds, both sources (null path).
     #    GLOW alone (RUN_ANA_GLOW_LIST), which is what the calibration figure
@@ -545,7 +545,7 @@ CONFIG = {
     # Detection vs subject count, shelved: the paper reports three
     # detection sweeps (llr, b, extent) and none of them is this one, so the
     # cache costs a full WGN grid that nothing reads. Uncomment to restore.
-    # WGN only: HCP's N is its fixed cohort, and data_factory_hcp has no
+    # WGN only: HCP's N is its fixed cohort, and build_clean_hcp has no
     # subject-subset axis to build a smaller one with (see
     # run.run_ana_time_1perm, which cuts the cohort at analysis time for the
     # timing curve instead).

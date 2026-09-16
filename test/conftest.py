@@ -18,7 +18,7 @@ if _FSL_DIR.is_dir():
 def _cache_to_tmp(monkeypatch, tmp_path):
     """Redirect the benchmark's shared joblib cache to a tmp dir, every test.
 
-    glow._extra.benchmark.data.MEMORY points at the user's real cache and the
+    glow._extra.benchmark.store.MEMORY points at the user's real cache and the
     tests call the memoised builders and leaves directly, so without this the
     suite reads and writes tens of GB of production artifacts. Worse, joblib
     stores each memoised function's source and clears that function's whole
@@ -31,9 +31,9 @@ def _cache_to_tmp(monkeypatch, tmp_path):
     MemorizedFuncs hold. Imported inside the fixture to keep collection of the
     unrelated suites free of the benchmark import chain.
     """
-    from glow._extra.benchmark import data
+    from glow._extra.benchmark import store
 
-    monkeypatch.setattr(data.MEMORY.store_backend, 'location', str(tmp_path))
+    monkeypatch.setattr(store.MEMORY.store_backend, 'location', str(tmp_path))
 
 
 def pytest_addoption(parser):

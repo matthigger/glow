@@ -101,7 +101,7 @@ def test_canon_rejects_a_computed_array():
 
 def test_recipe_id_never_hashes_an_array(no_array_hashing):
     """Building a uid touches joblib's array hasher not at all."""
-    uid = recipe_id('data_factory_wgn',
+    uid = recipe_id('get_exp_effect',
                     {'shape': (30, 30, 30), 'contrast': np.array([True]),
                      'extenter': ExtenterSphere(seed=1, n_vox=10)})
     assert len(uid) == recipe.UID_LEN
@@ -149,20 +149,19 @@ def test_impl_version_bump_invalidates_ids(monkeypatch):
 
 def test_recipe_chains_parents_and_reports_its_record_form():
     """Recipe.child threads the parent uid; as_dict is the record payload."""
-    data = Recipe('data_factory_wgn', {'seed': 36})
-    effect = data.child('effect_factory_single', {'effect_llr': 0.03})
-    leaf = effect.child('run_stat', {'stat_name': 'wilks'})
-    assert effect.parents == (data.uid,)
-    assert leaf.parents == (effect.uid,)
+    cell = Recipe('get_exp_effect', {'kwargs_data': {'seed': 36},
+                                     'kwargs_effect': {'effect_llr': 0.03}})
+    leaf = cell.child('run_stat', {'stat_name': 'wilks'})
+    assert cell.parents == ()
+    assert leaf.parents == (cell.uid,)
     assert leaf.uid == recipe_id('run_stat', {'stat_name': 'wilks'},
-                                 parents=[effect.uid])
-    as_dict = effect.as_dict()
-    assert as_dict['uid'] == effect.uid
-    assert as_dict['op'] == 'effect_factory_single'
-    assert as_dict['kwargs'] == {'effect_llr': 0.03}
-    assert as_dict['parents'] == [data.uid]
-    assert as_dict['impl_version'] == recipe.IMPL_VERSION[
-        'effect_factory_single']
+                                 parents=[cell.uid])
+    as_dict = leaf.as_dict()
+    assert as_dict['uid'] == leaf.uid
+    assert as_dict['op'] == 'run_stat'
+    assert as_dict['kwargs'] == {'stat_name': 'wilks'}
+    assert as_dict['parents'] == [cell.uid]
+    assert as_dict['impl_version'] == recipe.IMPL_VERSION['run_stat']
     assert Recipe('op', {'a': 1}) == Recipe('op', {'a': 1})
     assert len({Recipe('op', {'a': 1}), Recipe('op', {'a': 1})}) == 1
 

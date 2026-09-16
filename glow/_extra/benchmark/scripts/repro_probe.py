@@ -31,7 +31,6 @@ record under a new exp hash and orphan finished leaves).
 import argparse
 import copy
 import hashlib
-import inspect
 import math
 import os
 import pickle
@@ -40,8 +39,9 @@ import sys
 
 import numpy as np
 
-from glow._extra.benchmark.data import (DATA_FACTORY, EFFECT_FACTORY,
-                                        data_recipe)
+from glow._extra.benchmark.cell import data_uid
+from glow._extra.benchmark.data import build_clean, plant_effect
+from glow._extra.benchmark.recipe import seed_from_uid
 from glow._extra.benchmark.score import score_effects
 from glow.analysis import AnalysisGLOW
 from glow.analysis._fit_gpu import GpuConfig
@@ -87,10 +87,9 @@ def build_cell(seed: int, effect_llr: float, b: int = 2, num_img: int = 100):
         source='wgn', shape=(side,) * 3, b=b, num_img=num_img, seed=seed,
         extenter=ExtenterSphere(n_vox=CROP_N_VOX, connected=True,
                                 contiguous=True, seed=seed))
-    kwargs_build = {k: v for k, v in kwargs_data.items() if k != 'source'}
-    exp_clean = inspect.unwrap(DATA_FACTORY['wgn'])(**kwargs_build)
-    exp, mask_target_list = inspect.unwrap(EFFECT_FACTORY['single'])(
-        exp_clean, parent_uid=data_recipe(kwargs_data).uid,
+    exp_clean = build_clean(kwargs_data)
+    exp, mask_target_list = plant_effect(
+        exp_clean, seed=seed_from_uid(data_uid(kwargs_data)),
         effect_llr=effect_llr, extenter_cls=ExtenterMinVar, n_vox_frac=0.1)
     return exp_clean, exp, mask_target_list
 

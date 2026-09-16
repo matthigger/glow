@@ -14,7 +14,8 @@ import random
 import numpy as np
 import pytest
 
-from glow._extra.benchmark import data, run
+from glow._extra.benchmark import run, store
+from glow._extra.benchmark.cell import build_cell, get_exp_effect
 from glow._extra.benchmark.run import (glow_fit_for_prune, glow_inner_capture,
                                        run_ana, run_ana_time_1perm,
                                        run_inner_perm, run_prune, run_segment,
@@ -34,45 +35,32 @@ def _fresh_seed() -> int:
 @pytest.fixture(autouse=True)
 def _records_to_tmp(monkeypatch, tmp_path):
     """Mirror the shared recorder's per-hash files to a tmp dir, not the real one."""
-    monkeypatch.setattr(data.RECORDER, 'folder', tmp_path)
+    monkeypatch.setattr(store.RECORDER, 'folder', tmp_path)
 
 
-def _exp(shape=(5, 5, 5), num_img=20, seed=None):
-    """Build a small clean WGN experiment and name it.
+def _cell(shape=(5, 5, 5), num_img=20, seed=None):
+    """Realize a small effect-free WGN cell.
 
-    Returns (exp, parent_uid): every leaf requires its exp's declared uid, and
-    the driver names it from the cell's kwargs -- so do the same here rather
-    than inventing one, or two distinct experiments could share a cache entry
-    (exp itself is ignored by the key; see glow._extra.benchmark.recipe).
-
-    A fresh seed by default, so a leaf call misses the on-disk cache.
+    Every leaf takes a cell and is passed its declared uid, so a test does
+    the same rather than inventing either. A fresh seed by default, so a leaf
+    call misses the on-disk cache.
     """
-    kwargs = dict(source='wgn', shape=shape, b=2, num_img=num_img, a=2,
-                  seed=_fresh_seed() if seed is None else seed)
-    return data.data_factory(**kwargs), data.data_recipe(kwargs).uid
+    return get_exp_effect(
+        dict(source='wgn', shape=shape, b=2, num_img=num_img, a=2,
+             seed=_fresh_seed() if seed is None else seed))
 
 
 def _planted_cell(kwargs_data, kwargs_effect):
-    """Build one (data, effect) cell; return (exp, mask, parent_uid).
-
-    The driver's chain in miniature: name the data cell, plant on it with that
-    uid as the parent, and hand back the planted exp's own uid for the leaf.
+    """Realize one (data, effect) cell, as the driver would.
 
     Args:
-        kwargs_data (dict): one data_factory cell (including its source).
-        kwargs_effect (dict): one effect_factory cell (kind defaults to
-            'single').
+        kwargs_data (dict): the data half (including its source).
+        kwargs_effect (dict): the effect half (kind defaults to 'single').
 
     Returns:
-        exp: the planted Experiment.
-        mask (np.array): (X, Y, Z) bool, its single realized support.
-        parent_uid (str): the planted exp's declared uid.
+        cell (ExpEffect): the realized cell.
     """
-    uid_data = data.data_recipe(kwargs_data).uid
-    exp = data.data_factory(**kwargs_data)
-    exp_eff, (mask,) = data.effect_factory(exp, parent_uid=uid_data,
-                                           **kwargs_effect)
-    return exp_eff, mask, data.effect_recipe(kwargs_effect, uid_data).uid
+    return get_exp_effect(kwargs_data, kwargs_effect)
 
 
 _SCORE_KEYS = {'num_vox', 'min_pval', 'n_pred', 'pred', 'target'}
@@ -100,26 +88,26 @@ class _SpyVBA(AnalysisVBA):
 
 class TestContract:
     def test_vba_returns_score_dict(self):
-        exp, uid = _exp()
-        score = run_ana(exp, AnalysisVBA(n_perm_fwer=15), [], parent_uid=uid)
+        cell = _cell()
+        score = run_ana(cell, AnalysisVBA(n_perm_fwer=15), parent_uid=cell.uid)
         assert _SCORE_KEYS <= set(score)
         # null target ([]) -> everything is background; num_vox is the volume
-        assert score['num_vox'] == exp.y.shape[2]
+        assert score['num_vox'] == int(cell.mask_ana.sum())
         assert score['target']['fn'] == 0  # no target voxels to miss
 
     def test_glow_returns_score_dict(self):
-        exp, uid = _exp(shape=(4, 4, 4), num_img=16)
-        score = run_ana(exp, AnalysisGLOWSplit(n_perm_fwer=8), [],
-                        parent_uid=uid)
+        cell = _cell(shape=(4, 4, 4), num_img=16)
+        score = run_ana(cell, AnalysisGLOWSplit(n_perm_fwer=8),
+                        parent_uid=cell.uid)
         assert _SCORE_KEYS <= set(score)
-        assert score['num_vox'] == exp.y.shape[2]
+        assert score['num_vox'] == int(cell.mask_ana.sum())
 
     def test_does_not_mutate_caller_recipe(self):
         # fit runs on a private copy: the caller's recipe stays un-fitted, which
         # is what keeps its joblib hash (the cache key) stable on reuse.
-        exp, uid = _exp()
+        cell = _cell()
         ana = AnalysisVBA(n_perm_fwer=15)
-        run_ana(exp, ana, [], parent_uid=uid)
+        run_ana(cell, ana, parent_uid=cell.uid)
         assert ana.fwer is None
         assert ana.effect_list is None
 
@@ -130,36 +118,37 @@ class TestContract:
 
 class TestCacheKeyedOnRecipe:
     def test_miss_then_hit_on_reused_recipe(self):
-        exp, uid = _exp()
+        cell = _cell()
         ana = AnalysisVBA(n_perm_fwer=15)
-        assert not run_ana.check_call_in_cache(exp, ana, [], parent_uid=uid)
-        run_ana(exp, ana, [], parent_uid=uid)
+        assert not run_ana.check_call_in_cache(cell, ana, parent_uid=cell.uid)
+        run_ana(cell, ana, parent_uid=cell.uid)
         # the recipe is un-mutated, so the same object still hashes the same ->
         # the second call is a hit (the copy-fit fix; a mutating fit would miss)
-        assert run_ana.check_call_in_cache(exp, ana, [], parent_uid=uid)
+        assert run_ana.check_call_in_cache(cell, ana, parent_uid=cell.uid)
 
     def test_distinct_recipe_is_a_distinct_key(self):
-        exp, uid = _exp()
-        run_ana(exp, AnalysisVBA(n_perm_fwer=15), [], parent_uid=uid)
+        cell = _cell()
+        run_ana(cell, AnalysisVBA(n_perm_fwer=15), parent_uid=cell.uid)
         # a different recipe is not served by the first's cache entry
         assert not run_ana.check_call_in_cache(
-            exp, AnalysisVBA(n_perm_fwer=16), [], parent_uid=uid)
+            cell, AnalysisVBA(n_perm_fwer=16), parent_uid=cell.uid)
 
     def test_distinct_parent_is_a_distinct_key(self):
-        # exp is ignored by the key, so parent_uid is what keeps two clean
-        # experiments' fits apart -- the whole contract of ignoring exp
-        exp0, uid0 = _exp()
-        exp1, uid1 = _exp()
+        # the payload is ignored by the key, so parent_uid is what keeps two
+        # cells' fits apart -- the whole contract of ignoring the payload
+        cell0 = _cell()
+        cell1 = _cell()
         ana = AnalysisVBA(n_perm_fwer=15)
-        assert uid0 != uid1
-        run_ana(exp0, ana, [], parent_uid=uid0)
-        assert not run_ana.check_call_in_cache(exp1, ana, [], parent_uid=uid1)
+        assert cell0.uid != cell1.uid
+        run_ana(cell0, ana, parent_uid=cell0.uid)
+        assert not run_ana.check_call_in_cache(cell1, ana,
+                                               parent_uid=cell1.uid)
 
     def test_cached_result_matches_compute(self):
-        exp, uid = _exp()
+        cell = _cell()
         ana = AnalysisVBA(n_perm_fwer=15)
-        s0 = run_ana(exp, ana, [], parent_uid=uid)   # computed
-        s1 = run_ana(exp, ana, [], parent_uid=uid)   # served from cache
+        s0 = run_ana(cell, ana, parent_uid=cell.uid)   # computed
+        s1 = run_ana(cell, ana, parent_uid=cell.uid)   # served from cache
         assert s0 == s1
 
 
@@ -176,18 +165,18 @@ class TestFitParams:
     """
 
     def test_forwarded_to_fit(self):
-        exp, uid = _exp()
-        run_ana(exp, _SpyVBA(n_perm_fwer=15), [], parent_uid=uid,
+        cell = _cell()
+        run_ana(cell, _SpyVBA(n_perm_fwer=15), parent_uid=cell.uid,
                 fit_params=dict(n_jobs=2, gpu='auto'))
         assert _SpyVBA.seen == dict(n_jobs=2, gpu='auto')
 
     def test_does_not_key_the_cache(self):
-        exp, uid = _exp()
+        cell = _cell()
         ana = AnalysisVBA(n_perm_fwer=15)
-        run_ana(exp, ana, [], parent_uid=uid, fit_params=dict(n_jobs=1))
+        run_ana(cell, ana, parent_uid=cell.uid, fit_params=dict(n_jobs=1))
         # a different fit_params (and none at all) hits the same entry
-        assert run_ana.check_call_in_cache(exp, ana, [], parent_uid=uid)
-        assert run_ana.check_call_in_cache(exp, ana, [], parent_uid=uid,
+        assert run_ana.check_call_in_cache(cell, ana, parent_uid=cell.uid)
+        assert run_ana.check_call_in_cache(cell, ana, parent_uid=cell.uid,
                                            fit_params=dict(n_jobs=2))
 
     def test_recorded_but_outside_the_identity(self):
@@ -197,17 +186,17 @@ class TestFitParams:
         # would claim
         from glow._extra.benchmark.recipe import recipe_for_call
 
-        exp, uid = _exp()
+        cell = _cell()
         ana = AnalysisVBA(n_perm_fwer=15)
-        data.RECORDER.records.clear()
-        run_ana(exp, ana, [], parent_uid=uid,
+        store.RECORDER.records.clear()
+        run_ana(cell, ana, parent_uid=cell.uid,
                 fit_params=dict(n_jobs=1, gpu=False))
 
-        rec, = [r for r in data.RECORDER.records.values()
+        rec, = [r for r in store.RECORDER.records.values()
                 if r['function'] == 'run_ana']
         assert rec['inputs']['fit_params'] == {'n_jobs': 1, 'gpu': False}
         assert rec['uid'] == recipe_for_call(run_ana, dict(ana=ana),
-                                             parents=(uid,)).uid
+                                             parents=(cell.uid,)).uid
 
     def test_leaf_uid_is_unchanged_by_it(self):
         # the uid names what a cell will produce; an execution knob must not
@@ -222,8 +211,8 @@ class TestFitParams:
         assert bare.uid == with_fp.uid
 
     def test_none_means_fit_defaults(self):
-        exp, uid = _exp()
-        score = run_ana(exp, AnalysisVBA(n_perm_fwer=15), [], parent_uid=uid,
+        cell = _cell()
+        score = run_ana(cell, AnalysisVBA(n_perm_fwer=15), parent_uid=cell.uid,
                         fit_params=None)
         assert _SCORE_KEYS <= set(score)
 
@@ -237,36 +226,36 @@ class TestProvenanceDAG:
         # a fresh seed so the build is a cache miss and therefore records (a hit
         # would not, leaving run_ana an ancestor-less leaf)
         seed = _fresh_seed()
-        data.RECORDER.records.clear()
-        exp, uid = _exp(seed=seed)
-        run_ana(exp, AnalysisVBA(n_perm_fwer=15), [], parent_uid=uid)
+        store.RECORDER.records.clear()
+        cell = _cell(seed=seed)
+        run_ana(cell, AnalysisVBA(n_perm_fwer=15), parent_uid=cell.uid)
 
-        df = data.RECORDER.flatten_to_df()
-        # one leaf -- the run_ana call; the build feeds its exp, so the build is
-        # an ancestor, not a leaf
+        df = store.RECORDER.flatten_to_df()
+        # one leaf -- the run_ana call; the cell it measures is its declared
+        # ancestor, not a leaf
         assert len(df) == 1
         (row,) = df.to_dict('records')
         assert row['run_ana.function'] == 'run_ana'
         # run_ana declares recurse_list=['score'], so the score dict is
         # expanded into out.score.<path> columns, not kept as one dict cell
         assert 'run_ana.out.score' not in row
-        assert row['run_ana.out.score.num_vox'] == int((exp.mask_idx > -1).sum())
+        assert row['run_ana.out.score.num_vox'] == int(cell.mask_ana.sum())
         assert {'run_ana.out.score.target.tp',
                 'run_ana.out.score.min_pval'} <= set(row)
-        # the build chained in (only possible via the shared-exp DAG edge),
+        # the cell chained in by the uid run_ana declared as its parent,
         # carrying the swept seed onto the run_ana row
-        assert row['data_factory_wgn.function'] == 'data_factory_wgn'
-        assert row['data_factory_wgn.in.seed'] == seed
+        assert row['get_exp_effect.function'] == 'get_exp_effect'
+        assert row['get_exp_effect.in.kwargs_data.seed'] == seed
 
     def test_recipe_recorded_as_input_column(self):
         # the recipe is recorded as the in.ana column (its address-free repr) --
         # the key results / plot recover the method label from (no label stored)
         seed = _fresh_seed()
-        data.RECORDER.records.clear()
+        store.RECORDER.records.clear()
         ana = AnalysisVBA(n_perm_fwer=15)
-        exp, uid = _exp(seed=seed)
-        run_ana(exp, ana, [], parent_uid=uid)
-        row = data.RECORDER.flatten_to_df().iloc[0]
+        cell = _cell(seed=seed)
+        run_ana(cell, ana, parent_uid=cell.uid)
+        row = store.RECORDER.flatten_to_df().iloc[0]
         assert row['run_ana.in.ana'] == repr(ana)
 
 
@@ -277,23 +266,24 @@ class TestProvenanceDAG:
 class TestIdentityNeverHashesArrays:
     """Naming a leaf's cache entry touches no array (the recipe invariant)."""
 
-    def test_cache_key_ignores_exp_and_masks(self, no_array_hashing):
-        # exp and mask_target_list are ignored, so the key is built from
-        # parent_uid + the recipe alone -- stand-ins prove neither is hashed
-        run_ana.check_call_in_cache(object(), AnalysisVBA(n_perm_fwer=6),
-                                    [np.ones((8, 8, 8), dtype=bool)],
+    def test_cache_key_ignores_the_payload(self, no_array_hashing):
+        # the cell payload is ignored, so the key is built from parent_uid +
+        # the recipe alone -- a stand-in full of arrays proves it is not
+        # hashed
+        run_ana.check_call_in_cache(np.ones((8, 8, 8), dtype=bool),
+                                    AnalysisVBA(n_perm_fwer=6),
                                     parent_uid='u0')
 
     def test_distinct_parents_give_distinct_keys(self):
         # ...and the key still separates two parents, which is what makes
         # ignoring exp safe
         ana = AnalysisVBA(n_perm_fwer=6)
-        args_a = run_ana._get_args_id(object(), ana, [], parent_uid='u0')
-        args_b = run_ana._get_args_id(object(), ana, [], parent_uid='u1')
+        args_a = run_ana._get_args_id(object(), ana, parent_uid='u0')
+        args_b = run_ana._get_args_id(object(), ana, parent_uid='u1')
         assert args_a != args_b
-        # while the ignored arguments cannot change it
+        # while the ignored payload cannot change it
         assert args_a == run_ana._get_args_id(
-            object(), ana, [np.ones(4)], parent_uid='u0')
+            np.ones(4096), ana, parent_uid='u0')
 
 
 class TestRunSegment:
@@ -305,31 +295,31 @@ class TestRunSegment:
             dict(effect_llr=0.1, extenter_cls=ExtenterMinVar, n_vox_frac=0.1))
 
     def test_returns_oracle_confusion_counts(self):
-        exp, mask, uid = self._planted()
-        score = run_segment(exp, [mask], ClusterMode.FOCUS, parent_uid=uid)
+        cell = self._planted()
+        score = run_segment(cell, ClusterMode.FOCUS, parent_uid=cell.uid)
         assert set(score) == {'tp', 'fp', 'tn', 'fn'}
         # the best region's counts vs the planted support: tp + fn is exactly
         # the support size (every target voxel is hit or missed)
-        assert score['tp'] + score['fn'] == int(mask.sum())
+        assert score['tp'] + score['fn'] == int(cell.mask_target_list[0].sum())
 
     def test_cluster_mode_is_a_cache_axis(self):
-        exp, mask, uid = self._planted()
-        run_segment(exp, [mask], ClusterMode.FOCUS, parent_uid=uid)
+        cell = self._planted()
+        run_segment(cell, ClusterMode.FOCUS, parent_uid=cell.uid)
         # a different Ward mode is its own segmentation -> distinct cache entry
         assert not run_segment.check_call_in_cache(
-            exp, [mask], ClusterMode.NAIVE, parent_uid=uid)
+            cell, ClusterMode.NAIVE, parent_uid=cell.uid)
 
     def test_frac_segment_is_a_cache_axis(self):
-        exp, mask, uid = self._planted()
-        run_segment(exp, [mask], ClusterMode.FOCUS, parent_uid=uid,
+        cell = self._planted()
+        run_segment(cell, ClusterMode.FOCUS, parent_uid=cell.uid,
                     frac_segment=0.5)
         # segmenting the whole cohort is a different measurement, so the
         # segment and segment_perc caches never share an entry
         assert not run_segment.check_call_in_cache(
-            exp, [mask], ClusterMode.FOCUS, parent_uid=uid)
+            cell, ClusterMode.FOCUS, parent_uid=cell.uid)
 
     def test_frac_segment_clusters_that_share_of_the_images(self, monkeypatch):
-        exp, mask, uid = self._planted()
+        cell = self._planted()
         num_img = []
         cluster = run.cluster
 
@@ -339,18 +329,18 @@ class TestRunSegment:
             return cluster(exp, **kwargs)
 
         monkeypatch.setattr(run, 'cluster', spy)
-        run_segment(exp, [mask], ClusterMode.FOCUS, parent_uid=uid,
+        run_segment(cell, ClusterMode.FOCUS, parent_uid=cell.uid,
                     frac_segment=0.5)
         # the tree saw half of the cell's 20 images, the segmentation fold
         assert num_img == [10]
 
     def test_frac_segment_scores_the_whole_target(self):
-        exp, mask, uid = self._planted()
-        score = run_segment(exp, [mask], ClusterMode.FOCUS, parent_uid=uid,
+        cell = self._planted()
+        score = run_segment(cell, ClusterMode.FOCUS, parent_uid=cell.uid,
                             frac_segment=0.5)
         # the folds are voxel-identical, so a tree built on one of them is
         # still scored against every planted voxel
-        assert score['tp'] + score['fn'] == int(mask.sum())
+        assert score['tp'] + score['fn'] == int(cell.mask_target_list[0].sum())
 
 
 # ---------------------------------------------------------------------------
@@ -368,40 +358,40 @@ class TestRunStat:
     def test_matches_standalone_fit(self):
         # the shared walk is just a precompute of the same stat matrix, so a
         # variant reading it equals the standalone run_ana fit of that recipe
-        exp, mask, uid = self._planted()
+        cell = self._planted()
         ana = AnalysisVBA(get_stat=get_wilks, n_perm_fwer=15, z_flag=True)
-        assert run_stat(exp, [mask], ana, stat_dict_inv[get_wilks],
-                        parent_uid=uid) == run_ana(exp, ana, [mask],
-                                                   parent_uid=uid)
+        assert run_stat(cell, ana, stat_dict_inv[get_wilks],
+                        parent_uid=cell.uid) == run_ana(cell, ana,
+                                                   parent_uid=cell.uid)
 
     def test_variants_share_one_walk(self):
         # the first variant computes the walk, the rest read the same object
         # back from the memo (nothing re-walks the permutations)
-        exp, mask, uid = self._planted()
-        walk = voxel_stat_walk(exp, 15, parent_uid=uid)
-        run_stat(exp, [mask], AnalysisVBA(get_stat=get_wilks, n_perm_fwer=15),
-                 stat_dict_inv[get_wilks], parent_uid=uid)
-        assert voxel_stat_walk(exp, 15, parent_uid=uid) is walk
+        cell = self._planted()
+        walk = voxel_stat_walk(build_cell(cell), 15, parent_uid=cell.uid)
+        run_stat(cell, AnalysisVBA(get_stat=get_wilks, n_perm_fwer=15),
+                 stat_dict_inv[get_wilks], parent_uid=cell.uid)
+        assert voxel_stat_walk(build_cell(cell), 15, parent_uid=cell.uid) is walk
 
     def test_walk_is_never_persisted(self):
         # the walk is ~250 MB a cell, so it stays in memory: no cache dir of
         # its own, and the memo holds one cell (the previous one is dropped)
-        exp_a, _, uid_a = self._planted()
-        exp_b, _, uid_b = self._planted()
+        cell_a = self._planted()
+        cell_b = self._planted()
         assert not hasattr(voxel_stat_walk, 'check_call_in_cache')
-        walk_a = voxel_stat_walk(exp_a, 15, parent_uid=uid_a)
-        voxel_stat_walk(exp_b, 15, parent_uid=uid_b)
+        walk_a = voxel_stat_walk(build_cell(cell_a), 15, parent_uid=cell_a.uid)
+        voxel_stat_walk(build_cell(cell_b), 15, parent_uid=cell_b.uid)
         assert len(run._WALK_MEMO) == 1
-        assert voxel_stat_walk(exp_a, 15, parent_uid=uid_a) is not walk_a
+        assert voxel_stat_walk(build_cell(cell_a), 15, parent_uid=cell_a.uid) is not walk_a
 
     def test_recipe_is_a_cache_axis(self):
-        exp, mask, uid = self._planted()
+        cell = self._planted()
         ana = AnalysisVBA(get_stat=get_wilks, n_perm_fwer=15)
-        run_stat(exp, [mask], ana, stat_dict_inv[get_wilks], parent_uid=uid)
+        run_stat(cell, ana, stat_dict_inv[get_wilks], parent_uid=cell.uid)
         # a different stat is a different variant -> distinct cache entry
         other = AnalysisVBA(get_stat=get_hotel_tr, n_perm_fwer=15)
         assert not run_stat.check_call_in_cache(
-            exp, [mask], other, stat_dict_inv[get_hotel_tr], parent_uid=uid)
+            cell, other, stat_dict_inv[get_hotel_tr], parent_uid=cell.uid)
 
 
 # ---------------------------------------------------------------------------
@@ -418,32 +408,32 @@ class TestRunPrune:
             dict(effect_llr=0.2, extenter_cls=ExtenterMinVar, n_vox_frac=0.1))
 
     def test_returns_prune_score(self):
-        exp, mask, uid = self._planted()
-        score = run_prune(exp, [mask], 'single_max', parent_uid=uid,
+        cell = self._planted()
+        score = run_prune(cell, 'single_max', parent_uid=cell.uid,
                           **self._GLOW)
         # per-effect confusion counts plus the output-region count
         assert {'n_selected', 'tp', 'fp', 'tn', 'fn'} <= set(score)
 
     def test_rules_share_one_fit(self):
         # the first rule fits GLOW; the other rules are glow_fit_for_prune hits
-        exp, mask, uid = self._planted()
+        cell = self._planted()
         assert not glow_fit_for_prune.check_call_in_cache(
-            exp, parent_uid=uid, cluster_mode=ClusterMode.FOCUS, **self._GLOW)
-        run_prune(exp, [mask], 'greedy', parent_uid=uid, **self._GLOW)
+            cell, parent_uid=cell.uid, cluster_mode=ClusterMode.FOCUS, **self._GLOW)
+        run_prune(cell, 'greedy', parent_uid=cell.uid, **self._GLOW)
         assert glow_fit_for_prune.check_call_in_cache(
-            exp, parent_uid=uid, cluster_mode=ClusterMode.FOCUS, **self._GLOW)
+            cell, parent_uid=cell.uid, cluster_mode=ClusterMode.FOCUS, **self._GLOW)
 
     def test_rule_is_a_cache_axis(self):
-        exp, mask, uid = self._planted()
-        run_prune(exp, [mask], 'greedy', parent_uid=uid, **self._GLOW)
+        cell = self._planted()
+        run_prune(cell, 'greedy', parent_uid=cell.uid, **self._GLOW)
         # a different rule is its own selection -> distinct cache entry
         assert not run_prune.check_call_in_cache(
-            exp, [mask], 'dp', parent_uid=uid, **self._GLOW)
+            cell, 'dp', parent_uid=cell.uid, **self._GLOW)
 
     def test_bad_rule_raises(self):
-        exp, mask, uid = self._planted()
+        cell = self._planted()
         with pytest.raises(ValueError):
-            run_prune(exp, [mask], 'nope', parent_uid=uid, **self._GLOW)
+            run_prune(cell, 'nope', parent_uid=cell.uid, **self._GLOW)
 
     def test_oracle_is_the_ceiling_of_the_llr_rules(self):
         """The oracle rule scores at least as well as every LLR ranking.
@@ -452,10 +442,10 @@ class TestRunPrune:
         a rule beating it would mean the maximization is wrong. Dice is
         derived here the way the results layer derives it, from the counts.
         """
-        exp, mask, uid = self._planted()
+        cell = self._planted()
         dice = {}
         for rule in ('single_max', 'greedy', 'dp', 'oracle'):
-            score = run_prune(exp, [mask], rule, parent_uid=uid, **self._GLOW)
+            score = run_prune(cell, rule, parent_uid=cell.uid, **self._GLOW)
             dice[rule] = glow.mask.stats_from_counts(
                 **{k: np.array([score[k]])
                    for k in ('tp', 'fp', 'tn', 'fn')})['dice'][0]
@@ -492,8 +482,8 @@ class TestRunInnerPerm:
             dict(effect_llr=0.2, extenter_cls=ExtenterMinVar, n_vox_frac=0.1))
 
     def test_returns_the_selection_and_the_max_z_region(self):
-        exp, mask, uid = self._planted()
-        score = run_inner_perm(exp, [mask], parent_uid=uid, n_perm_inner=5,
+        cell = self._planted()
+        score = run_inner_perm(cell, parent_uid=cell.uid, n_perm_inner=5,
                                **self._KNOBS)
         assert {'n_selected', 'tp', 'fp', 'tn', 'fn', 'n_sig',
                 'min_pval', 'max_z'} <= set(score)
@@ -502,14 +492,14 @@ class TestRunInnerPerm:
 
     def test_prefix_reproduces_a_real_fit(self):
         """Each captured count equals a standalone fit at that count."""
-        exp, mask, uid = self._planted()
-        capture = glow_inner_capture(exp, parent_uid=uid, **self._CAPTURE)
+        cell = self._planted()
+        capture = glow_inner_capture(build_cell(cell), parent_uid=cell.uid, **self._CAPTURE)
         for j, n_perm_inner in enumerate(self._GRID):
             ana = AnalysisGLOW(n_perm_inner=n_perm_inner,
                                n_perm_fwer=self._KNOBS['n_perm_fwer'],
                                alpha_fwer=self._KNOBS['alpha_fwer'],
                                cluster_mode=self._KNOBS['cluster_mode'])
-            ana.fit(exp)
+            ana.fit(build_cell(cell))
             close = dict(rtol=1e-8, atol=1e-8, equal_nan=True)
             assert np.array_equal(capture['children'], ana.children)
             assert np.allclose(capture['llr'], ana.llr, **close)
@@ -519,9 +509,9 @@ class TestRunInnerPerm:
 
     def test_max_z_region_carries_the_observed_max(self):
         """The argmax region's z is the observed perm's entry in the null."""
-        exp, mask, uid = self._planted()
-        capture = glow_inner_capture(exp, parent_uid=uid, **self._CAPTURE)
-        score = run_inner_perm(exp, [mask], parent_uid=uid, n_perm_inner=5,
+        cell = self._planted()
+        capture = glow_inner_capture(build_cell(cell), parent_uid=cell.uid, **self._CAPTURE)
+        score = run_inner_perm(cell, parent_uid=cell.uid, n_perm_inner=5,
                                **self._KNOBS)
         j = self._GRID.index(5)
         assert score['max_z']['z'] == pytest.approx(
@@ -529,36 +519,36 @@ class TestRunInnerPerm:
 
     def test_counts_share_one_capture(self):
         """A cell's second count reads the first's capture, not a new walk."""
-        exp, mask, uid = self._planted()
+        cell = self._planted()
         run._INNER_MEMO.clear()
-        run_inner_perm(exp, [mask], parent_uid=uid, n_perm_inner=2,
+        run_inner_perm(cell, parent_uid=cell.uid, n_perm_inner=2,
                        **self._KNOBS)
         assert len(run._INNER_MEMO) == 1
         key_list = list(run._INNER_MEMO)
-        run_inner_perm(exp, [mask], parent_uid=uid, n_perm_inner=5,
+        run_inner_perm(cell, parent_uid=cell.uid, n_perm_inner=5,
                        **self._KNOBS)
         assert list(run._INNER_MEMO) == key_list
 
     def test_n_perm_inner_is_a_cache_axis(self):
-        exp, mask, uid = self._planted()
-        run_inner_perm(exp, [mask], parent_uid=uid, n_perm_inner=2,
+        cell = self._planted()
+        run_inner_perm(cell, parent_uid=cell.uid, n_perm_inner=2,
                        **self._KNOBS)
         assert not run_inner_perm.check_call_in_cache(
-            exp, [mask], parent_uid=uid, n_perm_inner=5, **self._KNOBS)
+            cell, parent_uid=cell.uid, n_perm_inner=5, **self._KNOBS)
 
     def test_the_captured_grid_is_not_a_cache_axis(self):
         """A count is one artifact however deep the capture around it went."""
-        exp, mask, uid = self._planted()
-        run_inner_perm(exp, [mask], parent_uid=uid, n_perm_inner=2,
+        cell = self._planted()
+        run_inner_perm(cell, parent_uid=cell.uid, n_perm_inner=2,
                        **self._KNOBS)
         knobs = dict(self._KNOBS, n_perm_inner_grid=(2, 3, 5))
         assert run_inner_perm.check_call_in_cache(
-            exp, [mask], parent_uid=uid, n_perm_inner=2, **knobs)
+            cell, parent_uid=cell.uid, n_perm_inner=2, **knobs)
 
     def test_a_count_off_the_grid_raises(self):
-        exp, mask, uid = self._planted()
+        cell = self._planted()
         with pytest.raises(ValueError):
-            run_inner_perm(exp, [mask], parent_uid=uid, n_perm_inner=4,
+            run_inner_perm(cell, parent_uid=cell.uid, n_perm_inner=4,
                            **self._KNOBS)
 
 
@@ -587,62 +577,63 @@ class TestRuntimeLeaves:
     def test_returns_num_vox(self):
         # the recorded measurement is time_sec; the return is the analyzed
         # voxel count, the sweep's size context
-        exp, mask, uid = self._planted()
-        num_vox = run_ana_time_1perm(exp, [mask], self._glow(),
-                                     parent_uid=uid)
-        assert num_vox == int((exp.mask_idx > -1).sum())
+        cell = self._planted()
+        num_vox = run_ana_time_1perm(cell, self._glow(),
+                                     parent_uid=cell.uid)
+        assert num_vox == int(cell.mask_ana.sum())
 
     def test_n_perm_fwer_is_a_cache_axis(self):
-        exp, mask, uid = self._planted()
+        cell = self._planted()
         ana = self._glow()
-        run_ana_time_1perm(exp, [mask], ana, parent_uid=uid)
+        run_ana_time_1perm(cell, ana, parent_uid=cell.uid)
         # a different count is its own timing -> its own cache entry
         assert not run_ana_time_1perm.check_call_in_cache(
-            exp, [mask], ana, n_perm_fwer=2, parent_uid=uid)
+            cell, ana, n_perm_fwer=2, parent_uid=cell.uid)
 
     def test_the_callers_recipe_is_untouched(self):
         # the counts are overridden on a private copy: the caller's recipe is
         # what identifies the method everywhere else, cache key included
-        exp, mask, uid = self._planted()
+        cell = self._planted()
         ana = self._glow()
-        run_ana_time_1perm(exp, [mask], ana, n_perm_fwer=4, parent_uid=uid)
+        run_ana_time_1perm(cell, ana, n_perm_fwer=4, parent_uid=cell.uid)
         assert ana.n_perm_fwer == 500
         assert ana.effect_list is None
 
     def test_one_perm_is_the_default(self):
-        exp, mask, uid = self._planted()
+        cell = self._planted()
         ana = self._glow()
         # explicit 1 and the default are one measurement, not two
-        run_ana_time_1perm(exp, [mask], ana, parent_uid=uid)
+        run_ana_time_1perm(cell, ana, parent_uid=cell.uid)
         assert run_ana_time_1perm.check_call_in_cache(
-            exp, [mask], ana, n_perm_fwer=1, parent_uid=uid)
+            cell, ana, n_perm_fwer=1, parent_uid=cell.uid)
 
     def test_num_img_cuts_the_cohort(self):
-        exp, mask, uid = self._planted()
-        run_ana_time_1perm(exp, [mask], self._glow(), num_img=8,
-                           parent_uid=uid)
+        cell = self._planted()
+        run_ana_time_1perm(cell, self._glow(), num_img=8,
+                           parent_uid=cell.uid)
         # the cut is the leaf's own, so the caller's exp keeps its subjects
-        assert exp.y.shape[1] == 20
+        assert cell.x.shape[1] == 20
 
     def test_num_img_is_a_cache_axis(self):
-        exp, mask, uid = self._planted()
+        cell = self._planted()
         ana = self._glow()
-        run_ana_time_1perm(exp, [mask], ana, num_img=8, parent_uid=uid)
+        run_ana_time_1perm(cell, ana, num_img=8, parent_uid=cell.uid)
         assert not run_ana_time_1perm.check_call_in_cache(
-            exp, [mask], ana, num_img=12, parent_uid=uid)
+            cell, ana, num_img=12, parent_uid=cell.uid)
 
     def test_num_img_past_the_cohort_raises(self):
         # a silently short curve is worse than a failure: the sweep would
         # plot a flat tail wherever it ran past the sample
-        exp, mask, uid = self._planted()
+        cell = self._planted()
         with pytest.raises(ValueError, match='cohort'):
-            run_ana_time_1perm(exp, [mask], self._glow(), num_img=21,
-                               parent_uid=uid)
+            run_ana_time_1perm(cell, self._glow(), num_img=21,
+                               parent_uid=cell.uid)
 
     def test_the_cut_keeps_the_analysed_layout(self):
         # a strided view would make the timing measure the stride, not the
         # size -- the analysis path is written for F-contiguous y
-        exp, _, _ = self._planted()
+        cell = self._planted()
+        exp = build_cell(cell)
         cut = run._take_img(exp, 8)
         assert cut.y.shape == (exp.y.shape[0], 8, exp.y.shape[2])
         assert cut.x.shape == (exp.x.shape[0], 8)

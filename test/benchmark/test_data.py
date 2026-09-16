@@ -1,9 +1,11 @@
-"""Tests for glow._extra.benchmark.data: the data_factory builders.
+"""Tests for glow._extra.benchmark.data: realizing one cell's Experiment.
 
-Exercises the WGN builder end to end and the HCP builder with its two heavy
-dependencies (the dataset download and the NIfTI search) mocked, then checks
-the two decorators wrapping both builders: the joblib.Memory disk cache and
-the Recorder. No test touches the network.
+build_clean and plant_effect are the two uncached halves of a cell's
+realization. Neither is memoised or recorded -- the small payload that
+replaces their Experiment is what gets stored (see test_cell) -- so what is
+covered here is what they compute: the shapes and design a build produces,
+the crop and the screen it applies, and where a plant lands and how big it
+is.
 """
 import random
 
@@ -11,31 +13,24 @@ import numpy as np
 import pytest
 
 from glow._extra.benchmark import data, hcp
-from glow._extra.benchmark.recipe import raw_fnc
 from glow.effect import ExtenterMinVar, ExtenterSphere
 from glow.experiment import ExperimentImageOnly
 from glow.experiment.exper import NoBiasTermWarning
 
 
 def _fresh_seed() -> int:
-    """A seed unlikely to already be in the on-disk cache, so a call misses."""
+    """A seed no other test shares, so no build can be confused with one."""
     return random.randrange(2 ** 31)
 
 
-@pytest.fixture(autouse=True)
-def _records_to_tmp(monkeypatch, tmp_path):
-    """Mirror the module recorder's per-hash files to a tmp dir, not the real one."""
-    monkeypatch.setattr(data.RECORDER, 'folder', tmp_path)
-
-
 # ---------------------------------------------------------------------------
-# WGN builder
+# the clean (effect-free) build
 # ---------------------------------------------------------------------------
 
-class TestDataFactoryWGN:
+class TestBuildCleanWGN:
     def test_shapes_and_bias(self):
-        exp = data.data_factory_wgn(shape=(6, 6, 6), b=3, num_img=40, a=2,
-                                    has_bias=True, seed=_fresh_seed())
+        exp = data.build_clean_wgn(shape=(6, 6, 6), b=3, num_img=40, a=2,
+                                   has_bias=True, seed=_fresh_seed())
         # b channels, num_img images, 6*6*6 voxels; x is the a rows + 1 bias
         assert exp.y.shape == (3, 40, 216)
         assert exp.x.shape == (3, 40)
@@ -45,118 +40,53 @@ class TestDataFactoryWGN:
     def test_contrast_arg_sets_a(self):
         # has_bias=False -> no all-ones row, which warns (regression at origin)
         with pytest.warns(NoBiasTermWarning):
-            exp = data.data_factory_wgn(contrast=np.array([False, True]),
-                                        has_bias=False, b=2, num_img=20,
-                                        seed=_fresh_seed())
+            exp = data.build_clean_wgn(contrast=np.array([False, True]),
+                                       has_bias=False, b=2, num_img=20,
+                                       seed=_fresh_seed())
         assert exp.x.shape == (2, 20)
         assert exp.contrast.tolist() == [False, True]
 
     def test_extenter_crops_to_support(self):
         ext = ExtenterSphere(n_vox=20, connected=True, seed=0, contiguous=True)
-        exp = data.data_factory_wgn(shape=(8, 8, 8), b=2, num_img=30,
-                                    extenter=ext, seed=_fresh_seed())
+        exp = data.build_clean_wgn(shape=(8, 8, 8), b=2, num_img=30,
+                                   extenter=ext, seed=_fresh_seed())
         assert (exp.mask_idx > -1).sum() == 20
         assert exp.y.shape == (2, 30, 20)
 
     def test_deterministic_for_a_seed(self):
         kw = dict(shape=(5, 5, 5), b=2, num_img=20, a=1, seed=_fresh_seed())
-        e0 = data.data_factory_wgn(**kw)
-        e1 = data.data_factory_wgn(**kw)
+        e0 = data.build_clean_wgn(**kw)
+        e1 = data.build_clean_wgn(**kw)
         assert np.array_equal(e0.y, e1.y)
         assert np.array_equal(e0.x, e1.x)
 
+    def test_carries_a_source_so_it_can_grow_back(self):
+        # what lets a kernel read past the crop (glow.experiment.source)
+        exp = data.build_clean_wgn(shape=(6, 6, 6), b=2, num_img=20,
+                                   extenter=ExtenterSphere(radius=2, seed=0),
+                                   seed=_fresh_seed())
+        assert exp.source is not None
+        assert exp.source.mask.shape == (6, 6, 6)
 
-# ---------------------------------------------------------------------------
-# dispatcher
-# ---------------------------------------------------------------------------
 
-class TestDataFactoryDispatch:
-    def test_wgn_routes_to_builder(self):
+class TestBuildCleanDispatch:
+    def test_wgn_routes_to_its_builder(self):
         kw = dict(shape=(4, 4, 4), b=2, num_img=10, a=1, seed=_fresh_seed())
-        assert np.array_equal(data.data_factory('wgn', **kw).y,
-                              data.data_factory_wgn(**kw).y)
+        assert np.array_equal(
+            data.build_clean({'source': 'wgn', **kw}).y,
+            data.build_clean_wgn(**kw).y)
 
     def test_bad_source_raises(self):
         with pytest.raises(ValueError, match="'wgn' or 'hcp'"):
-            data.data_factory('nope')
+            data.build_clean({'source': 'nope'})
 
 
-# ---------------------------------------------------------------------------
-# joblib.Memory cache decorator
-# ---------------------------------------------------------------------------
-
-class TestCacheDecorator:
-    def test_miss_then_hit(self):
-        # cache is outermost, so data_factory_wgn is itself the MemorizedFunc
-        mf = data.data_factory_wgn
-        assert hasattr(mf, 'check_call_in_cache')
-
-        kw = dict(shape=(4, 4, 4), b=2, num_img=10, a=1, seed=_fresh_seed())
-        assert not mf.check_call_in_cache(**kw)  # fresh seed -> not cached
-        data.data_factory_wgn(**kw)              # compute + store
-        assert mf.check_call_in_cache(**kw)      # now cached
-
-    def test_cached_result_matches_compute(self):
-        kw = dict(shape=(4, 4, 4), b=2, num_img=10, a=1, seed=_fresh_seed())
-        first = data.data_factory_wgn(**kw)      # computed
-        second = data.data_factory_wgn(**kw)     # served from cache
-        assert np.array_equal(first.y, second.y)
-        assert np.array_equal(first.x, second.x)
-
-
-# ---------------------------------------------------------------------------
-# Recorder decorator
-# ---------------------------------------------------------------------------
-
-class TestRecorderDecorator:
-    def test_records_under_joblib_hash_on_miss(self):
-        kw = dict(shape=(4, 4, 4), b=2, num_img=10, a=1, seed=_fresh_seed())
-        # the args hash joblib keys the cache entry by
-        args_id = data.data_factory_wgn._get_args_id(**kw)
-
-        data.RECORDER.records.clear()
-        data.data_factory_wgn(**kw)              # fresh seed -> miss -> records
-
-        assert len(data.RECORDER.records) == 1
-        # the record is keyed by joblib's args hash, so it lines up one-to-one
-        # with the cached artifact on disk
-        rec = data.RECORDER.records[args_id]
-        assert rec['function'] == 'data_factory_wgn'
-        assert set(rec['outputs']) == {'exp'}
-        # inputs carry every (defaulted) build axis, including the seed key
-        assert rec['inputs']['seed'] == kw['seed']
-        assert rec['inputs']['b'] == 2
-        assert 'time_sec' in rec
-        assert rec['hash'] == args_id
-
-    def test_cache_hit_does_not_record(self):
-        # recorder nested inside the cache -> a hit returns without recording
-        kw = dict(shape=(4, 4, 4), b=2, num_img=10, a=1, seed=_fresh_seed())
-        data.data_factory_wgn(**kw)              # miss -> builds + records
-        data.RECORDER.records.clear()
-        data.data_factory_wgn(**kw)              # hit -> no build, no record
-        assert data.RECORDER.records == {}
-
-    def test_args_hash_reproduces_cache_key(self):
-        # the recorder's key re-derives joblib's own cache key from the raw fn
-        from glow._extra.benchmark.recorder import Recorder
-        kw = dict(shape=(4, 4, 4), b=2, num_img=10, a=1, seed=_fresh_seed())
-        mf = data.data_factory_wgn               # MemorizedFunc
-        raw = mf.func.__wrapped__                # raw build fn the recorder wraps
-        assert Recorder._args_hash(raw, (), kw) == mf._get_args_id(**kw)
-
-
-# ---------------------------------------------------------------------------
-# HCP builder (download + NIfTI search mocked)
-# ---------------------------------------------------------------------------
-
-class TestDataFactoryHCP:
-    def test_builds_and_records_via_mocked_loader(self, monkeypatch, tmp_path):
+class TestBuildCleanHCP:
+    def test_builds_through_the_bundle_loader(self, monkeypatch):
         feats = ('fa', 'md')
         # the image-only experiment the mocked bundle loader stands in for
         img = ExperimentImageOnly.from_gauss(shape=(4, 4, 4), b=len(feats),
                                              num_img=10, seed=0)
-
         seen = {}
 
         def fake_build(hcp_feats):
@@ -165,42 +95,30 @@ class TestDataFactoryHCP:
 
         # mock the single HCP loader (the bundle glue)
         monkeypatch.setattr(hcp, 'build_exp_img_from_bundle', fake_build)
-
-        data.RECORDER.records.clear()
-        exp = data.data_factory_hcp(hcp_feats=feats, a=1, seed=_fresh_seed())
+        exp = data.build_clean_hcp(hcp_feats=feats, a=1, seed=_fresh_seed())
 
         # the requested features reached the loader; x was sampled (a=1 + bias)
         assert seen['feats'] == feats
         assert exp.y.shape[0] == len(feats)
         assert exp.x.shape == (2, 10)
 
-        # the call was recorded under the hcp builder's name
-        assert len(data.RECORDER.records) == 1
-        (rec,) = data.RECORDER.records.values()
-        assert rec['function'] == 'data_factory_hcp'
-
 
 # ---------------------------------------------------------------------------
-# effect planter (shares data_factory's MEMORY / RECORDER, tested above)
+# the plant
 # ---------------------------------------------------------------------------
 
-class TestEffectFactory:
-    def _clean_exp(self):
-        """A fresh clean exp and its declared uid (the plant's parent_uid).
-
-        Returned as a pair because exp is ignored by the cache key: two clean
-        experiments sharing a parent_uid would share one plant's cache entry.
-        """
-        kwargs = dict(source='wgn', shape=(6, 6, 6), b=2, num_img=20, a=1,
-                      seed=_fresh_seed())
-        return data.data_factory(**kwargs), data.data_recipe(kwargs).uid
+class TestPlantEffect:
+    def _clean(self, shape=(6, 6, 6), b=2):
+        """A fresh clean experiment to plant on."""
+        return data.build_clean_wgn(shape=shape, b=b, num_img=20, a=1,
+                                    seed=_fresh_seed())
 
     def test_plants_effect_on_support(self):
-        exp, uid = self._clean_exp()
-        # the effect stage returns the supports as a list (one for 'single')
-        exp_eff, (mask,) = data.effect_factory(
-            exp, parent_uid=uid, effect_llr=0.05,
-            extenter_cls=ExtenterMinVar, n_vox_frac=0.1)
+        exp = self._clean()
+        # the plant returns the supports as a list (one for 'single')
+        exp_eff, (mask,) = data.plant_effect(
+            exp, seed=0, effect_llr=0.05, extenter_cls=ExtenterMinVar,
+            n_vox_frac=0.1)
         # effect added in place: same shapes, mask over the spatial grid, y
         # changed, and the extenter grew n_vox_frac of the analysis volume
         support = int((exp.mask_idx > -1).sum())
@@ -209,88 +127,42 @@ class TestEffectFactory:
         assert int(mask.sum()) == round(0.1 * support)
         assert not np.array_equal(exp.y, exp_eff.y)
 
-    def test_placement_comes_from_the_parent_uid(self):
-        # the support seed is derived from the parent's declared uid, so a
-        # fixed config plants in a different place on different data...
-        kw = dict(effect_llr=0.05, extenter_cls=ExtenterMinVar,
-                  n_vox_frac=0.1)
-        exp0, uid0 = self._clean_exp()
-        exp1, uid1 = self._clean_exp()
-        _, (mask0,) = data.effect_factory(exp0, parent_uid=uid0, **kw)
-        _, (mask1,) = data.effect_factory(exp1, parent_uid=uid1, **kw)
-        assert uid0 != uid1
-        assert not np.array_equal(mask0, mask1)
-        # ...and is fixed across effect strengths for one experiment, which
-        # share a clean exp (only the imposed offset changes)
-        exp, uid = self._clean_exp()
-        _, (m_weak,) = data.effect_factory(exp, parent_uid=uid, **kw)
-        _, (m_strong,) = data.effect_factory(exp, parent_uid=uid,
-                                             **{**kw, 'effect_llr': 0.3})
-        np.testing.assert_array_equal(m_weak, m_strong)
+    def test_the_offset_is_recorded_as_a_patch(self):
+        # what lets an inflate replay the plant onto voxels loaded later
+        exp = self._clean()
+        exp_eff, (mask,) = data.plant_effect(
+            exp, seed=0, effect_llr=0.05, extenter_cls=ExtenterMinVar,
+            n_vox_frac=0.1)
+        patch, = exp_eff.patch_list
+        np.testing.assert_array_equal(patch['mask'], mask)
+        assert patch['offset'].shape == exp.y.shape[:2]
 
-    def test_placement_ignores_the_experiment_bytes(self):
-        # nothing hashes the exp any more: the same parent_uid plants the same
-        # support even on data whose values differ
+    def test_the_seed_places_the_support(self):
         kw = dict(effect_llr=0.05, extenter_cls=ExtenterMinVar,
                   n_vox_frac=0.1)
-        exp, uid = self._clean_exp()
-        other = exp._copy_with(y=exp.y * 3.0)
-        _, (mask,) = data.effect_factory(exp, parent_uid=uid, **kw)
-        _, (mask_other,) = data.effect_factory(other, parent_uid=uid, **kw)
-        np.testing.assert_array_equal(mask, mask_other)
+        exp = self._clean()
+        _, (one,) = data.plant_effect(exp, seed=1, **kw)
+        _, (two,) = data.plant_effect(exp, seed=2, **kw)
+        assert not np.array_equal(one, two)
+        # and one seed is one place, whatever the strength asked for
+        _, (weak,) = data.plant_effect(exp, seed=1, **kw)
+        _, (strong,) = data.plant_effect(exp, seed=1,
+                                         **{**kw, 'effect_llr': 0.3})
+        np.testing.assert_array_equal(one, weak)
+        np.testing.assert_array_equal(weak, strong)
 
     def test_bad_kind_raises(self):
-        # the dispatcher only knows 'single' / 'split'
-        exp, uid = self._clean_exp()
-        with pytest.raises(ValueError):
-            data.effect_factory(exp, kind='nope', parent_uid=uid,
-                                effect_llr=0.05, extenter_cls=ExtenterMinVar,
-                                n_vox_frac=0.1)
+        with pytest.raises(ValueError, match="'single' or 'split'"):
+            data.plant_effect(self._clean(), seed=0, kind='nope',
+                              effect_llr=0.05, extenter_cls=ExtenterMinVar,
+                              n_vox_frac=0.1)
 
-    def test_records_outputs_under_joblib_hash(self):
-        exp, uid = self._clean_exp()
-        kw = dict(parent_uid=uid, effect_llr=0.05,
-                  extenter_cls=ExtenterMinVar, n_vox_frac=0.1)
-        # the cache + record live on the per-kind builder, not the dispatcher
-        args_id = data.effect_factory_single._get_args_id(exp, **kw)
-
-        data.RECORDER.records.clear()          # drop the clean-build record
-        data.effect_factory_single(exp, **kw)  # fresh exp -> miss -> records
-
-        assert len(data.RECORDER.records) == 1
-        rec = data.RECORDER.records[args_id]
-        assert rec['function'] == 'effect_factory_single'
-        # output_name_list unpacks the (exp, mask_target_list) return
-        assert set(rec['outputs']) == {'exp', 'mask_target_list'}
-        # and the plant declares its lineage: the clean exp's uid
-        assert rec['parents'] == [uid]
-        assert rec['uid'] == data.effect_recipe(
-            {k: v for k, v in kw.items() if k != 'parent_uid'}, uid).uid
-
-    def test_miss_then_hit(self):
-        exp, uid = self._clean_exp()
-        kw = dict(parent_uid=uid, effect_llr=0.05,
-                  extenter_cls=ExtenterMinVar, n_vox_frac=0.1)
-        assert not data.effect_factory_single.check_call_in_cache(exp, **kw)
-        data.effect_factory_single(exp, **kw)
-        assert data.effect_factory_single.check_call_in_cache(exp, **kw)
-
-
-class TestEffectFactorySplit:
-    """The two-effect (cleaving) plant: a MinVar region cut into two halves."""
-
-    def _clean_exp(self):
-        """A fresh clean exp and its declared uid (see TestEffectFactory)."""
-        kwargs = dict(source='wgn', shape=(8, 8, 8), b=3, num_img=24, a=1,
-                      seed=_fresh_seed())
-        return data.data_factory(**kwargs), data.data_recipe(kwargs).uid
-
-    def test_plants_two_disjoint_halves(self):
+    def test_split_plants_two_disjoint_halves(self):
         # the cleaving base: a data-driven ExtenterMinVar extent grown from
         # its own seeded start, bisected into two disjoint halves
-        exp, uid = self._clean_exp()
-        exp_eff, mask_target_list = data.effect_factory(
-            exp, kind='split', parent_uid=uid, effect_llr=0.1,
+        exp = self._clean(shape=(8, 8, 8), b=3)
+        exp_eff, mask_target_list = data.plant_effect(
+            exp, seed=0, kind='split', effect_llr=0.1,
             extenter_cls=ExtenterMinVar, n_vox_frac=0.1, angle=45.0)
         support = int((exp.mask_idx > -1).sum())
         assert len(mask_target_list) == 2
@@ -299,30 +171,22 @@ class TestEffectFactorySplit:
         assert int((mask0 | mask1).sum()) == round(0.1 * support)
         assert not np.array_equal(exp.y, exp_eff.y)
 
-    def test_placement_varies_per_realization(self):
-        # like effect_factory_single, the support is seeded from the experiment
-        kw = dict(effect_llr=0.1, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
-                  angle=30.0)
-        exp0, uid0 = self._clean_exp()
-        exp1, uid1 = self._clean_exp()
-        _, (m0a, _) = data.effect_factory_split(exp0, parent_uid=uid0, **kw)
-        _, (m0b, _) = data.effect_factory_split(exp1, parent_uid=uid1, **kw)
-        assert not np.array_equal(m0a, m0b)
+    def test_split_records_a_patch_per_half(self):
+        exp = self._clean(shape=(8, 8, 8), b=3)
+        exp_eff, masks = data.plant_effect(
+            exp, seed=0, kind='split', effect_llr=0.1,
+            extenter_cls=ExtenterMinVar, n_vox_frac=0.1, angle=30.0)
+        assert len(exp_eff.patch_list) == 2
+        for patch, mask in zip(exp_eff.patch_list, masks):
+            np.testing.assert_array_equal(patch['mask'], mask)
 
-    def test_records_under_split_builder_name(self):
-        exp, uid = self._clean_exp()
-        kw = dict(parent_uid=uid, effect_llr=0.1,
-                  extenter_cls=ExtenterMinVar, n_vox_frac=0.1, angle=30.0)
-        args_id = data.effect_factory_split._get_args_id(exp, **kw)
-        data.RECORDER.records.clear()
-        data.effect_factory_split(exp, **kw)
-        rec = data.RECORDER.records[args_id]
-        assert rec['function'] == 'effect_factory_split'
-        assert set(rec['outputs']) == {'exp', 'mask_target_list'}
 
+# ---------------------------------------------------------------------------
+# the constant-voxel screen
+# ---------------------------------------------------------------------------
 
 class TestDropsConstantVox:
-    """Every builder screens its experiment before handing it over.
+    """Every build screens its experiment before handing it over.
 
     The screen runs in _sample_x_and_crop, shared by both builders, so
     one place decides which voxels exist and every recipe in the sweep
@@ -332,8 +196,8 @@ class TestDropsConstantVox:
 
     @staticmethod
     def build(**kwargs):
-        """Build through the undecorated builder (no cache, no record)."""
-        return raw_fnc(data.data_factory_wgn)(**kwargs)
+        """Build one clean WGN experiment."""
+        return data.build_clean_wgn(**kwargs)
 
     def test_wgn_experiment_is_screened(self):
         """The builder's output carries mask_dead, not None."""
@@ -353,20 +217,3 @@ class TestDropsConstantVox:
                          extenter=ExtenterSphere(radius=2, seed=0))
         assert exp.mask_dead.sum() == exp.num_vox_dropped
         assert exp.y.shape[2] == int((exp.mask_idx > -1).sum())
-
-    def test_count_reaches_the_record(self):
-        """The built experiment's record carries what the screen cost.
-
-        The recorder stores an opaque output as its repr, so the count
-        rides the exp repr into outputs.exp -- recorded once, on the
-        experiment the drop happened to, rather than copied onto every
-        leaf that later reads it.
-        """
-        kw = dict(shape=(4, 4, 4), b=2, num_img=10, a=1, seed=_fresh_seed())
-        args_id = data.data_factory_wgn._get_args_id(**kw)
-
-        data.RECORDER.records.clear()
-        data.data_factory_wgn(**kw)
-
-        exp_cell = data.RECORDER.records[args_id]['outputs']['exp']
-        assert 'num_vox_dropped=0' in exp_cell

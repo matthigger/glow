@@ -47,10 +47,7 @@ MAX_CANON_SIZE = 1024
 # entry when the op's numerics or semantics change without its kwargs changing;
 # an op absent here is version 0.
 IMPL_VERSION = {
-    'data_factory_wgn': 1,
-    'data_factory_hcp': 1,
-    'effect_factory_single': 1,
-    'effect_factory_split': 1,
+    'get_exp_effect': 1,
     'run_ana': 1,
     'run_stat': 1,
     'run_prune': 1,

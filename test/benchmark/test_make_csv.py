@@ -15,7 +15,7 @@ import random
 import pandas as pd
 import pytest
 
-from glow._extra.benchmark import config, data, make_csv
+from glow._extra.benchmark import config, make_csv, store
 from glow._extra.benchmark.driver import drive
 from glow._extra.benchmark.run import run_ana
 from glow.analysis import AnalysisVBA
@@ -24,8 +24,8 @@ from glow.analysis import AnalysisVBA
 @pytest.fixture(autouse=True)
 def _records_to_tmp(monkeypatch, tmp_path):
     """Mirror the shared recorder to a tmp dir and start from empty records."""
-    monkeypatch.setattr(data.RECORDER, 'folder', tmp_path)
-    data.RECORDER.records.clear()
+    monkeypatch.setattr(store.RECORDER, 'folder', tmp_path)
+    store.RECORDER.records.clear()
 
 
 def _data_cell(seed):

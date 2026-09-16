@@ -212,8 +212,8 @@ class TestFitParams:
 class TestCellsBindToStages:
     """Every cell is valid kwargs for the stage the driver feeds it to."""
 
-    _SIG_DATA = {'wgn': inspect.signature(data.data_factory_wgn),
-                 'hcp': inspect.signature(data.data_factory_hcp)}
+    _SIG_DATA = {'wgn': inspect.signature(data.build_clean_wgn),
+                 'hcp': inspect.signature(data.build_clean_hcp)}
 
     @pytest.mark.parametrize('label', LABELS)
     def test_data_cells_bind(self, label):
@@ -222,25 +222,20 @@ class TestCellsBindToStages:
             sig = self._SIG_DATA[cell['source']]
             sig.bind(**{k: v for k, v in cell.items() if k != 'source'})
 
-    _SIG_EFFECT = {'single': inspect.signature(data.effect_factory_single),
-                   'split': inspect.signature(data.effect_factory_split)}
-
     @pytest.mark.parametrize('label', LABELS)
     def test_effect_cells_bind(self, label):
-        # kind selects the builder (effect_factory dispatches on it); exp and
-        # its parent_uid are supplied by the driver; a None cell is the
-        # no-plant null path
+        # plant_effect dispatches on kind; exp and the placement seed are
+        # supplied by the cell; a None cell is the no-plant null path
+        sig = inspect.signature(data.plant_effect)
         for cell in config.CONFIG[label][1]:
             if cell is None:
                 continue
-            sig = self._SIG_EFFECT[cell['kind']]
-            sig.bind(exp=None, parent_uid='',
-                     **{k: v for k, v in cell.items() if k != 'kind'})
+            sig.bind(None, seed=0, **cell)
 
     @pytest.mark.parametrize('label', LABELS)
     def test_fnc_cells_bind(self, label):
-        # exp / mask_target_list / parent_uid are supplied by the driver
+        # the cell and its parent_uid are supplied by the driver
         _, _, fnc_kwargs, fnc = config.CONFIG[label]
         sig = inspect.signature(fnc)
         for cell in fnc_kwargs:
-            sig.bind(exp=None, mask_target_list=[], parent_uid='', **cell)
+            sig.bind(None, parent_uid='', **cell)

@@ -15,8 +15,8 @@ import random
 
 import pytest
 
-from glow._extra.benchmark import __main__ as cli
-from glow._extra.benchmark import config, data, hcp, make_csv
+from glow._extra.benchmark import __main__ as cli, store
+from glow._extra.benchmark import config, hcp, make_csv
 from glow._extra.benchmark.run import run_ana
 from glow.analysis import AnalysisVBA
 from glow.effect import ExtenterSphere
@@ -44,8 +44,8 @@ def _tiny_entry():
 @pytest.fixture(autouse=True)
 def _records_to_tmp(monkeypatch, tmp_path):
     """Isolate the shared recorder: tmp folder, empty in-memory records."""
-    monkeypatch.setattr(data.RECORDER, 'folder', tmp_path)
-    data.RECORDER.records.clear()
+    monkeypatch.setattr(store.RECORDER, 'folder', tmp_path)
+    store.RECORDER.records.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ class TestRun:
     def test_run_records_the_swept_cache(self, _tiny):
         assert cli.run(names=['tiny'], verbose=False) == ['tiny']
         # one data x effect x fnc cell -> one recorded run_ana leaf
-        assert len([r for r in data.RECORDER.records.values()
+        assert len([r for r in store.RECORDER.records.values()
                     if r['function'] == 'run_ana']) == 1
         # the HCP dataset was ensured once up front
         assert _tiny == [1]
@@ -163,7 +163,7 @@ class TestRun:
     def _ana_reprs(self):
         """The recipes the recorded run_ana leaves were fit under."""
         return [rec['inputs']['ana']
-                for rec in data.RECORDER.records.values()
+                for rec in store.RECORDER.records.values()
                 if rec['function'] == 'run_ana']
 
     def test_methods_runs_only_the_named_recipe(self, _two_recipes):

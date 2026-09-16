@@ -1,14 +1,13 @@
 """Tests for glow._extra.benchmark.driver: the data x effect x analysis sweep.
 
-The stage functions (data_factory / effect_factory / run_ana) and the shared
-cache + recorder machinery are covered by test_data.py / test_run.py /
-test_recorder.py, so these cover only what is novel to ``drive``: that it runs
+The stage functions (get_exp_effect / run_ana) and the shared cache +
+recorder machinery are covered by test_cell.py / test_run.py /
+test_recorder.py, so these cover only what is novel to drive: that it runs
 the full cartesian product of its two upstream grids fanned across the fnc's
-kwargs grid (one score per cell), that it threads each stage's output into the
-next (the clean exp into the plant, the planted exp + its mask into fnc as the
-target), that every cell lands in the shared provenance DAG as a complete
-data -> plant -> score chain, and that skip_recorded drops exactly the cells
-the records already hold in full.
+kwargs grid (one score per cell), that it threads each cell into the leaf
+(the realized cell and its planted support as fnc's target), that every cell
+lands in the shared provenance DAG as a complete cell -> score chain, and
+that skip_recorded drops exactly the cells the records already hold in full.
 
 Fresh seeds keep every cell a cache miss, so each really runs and records (a hit
 would neither recompute nor record); the grids are tiny WGN + cheap VBA so the
@@ -20,7 +19,8 @@ import random
 import pytest
 from joblib import parallel_config
 
-from glow._extra.benchmark import data
+from glow._extra.benchmark import store
+from glow._extra.benchmark.cell import get_exp_effect
 from glow._extra.benchmark.grid import strip_gpu
 from glow._extra.benchmark.driver import check_fit_params, drive
 from glow._extra.benchmark.run import run_ana
@@ -36,7 +36,7 @@ def _fresh_seed() -> int:
 @pytest.fixture(autouse=True)
 def _records_to_tmp(monkeypatch, tmp_path):
     """Mirror the shared recorder's per-hash files to a tmp dir, not the real one."""
-    monkeypatch.setattr(data.RECORDER, 'folder', tmp_path)
+    monkeypatch.setattr(store.RECORDER, 'folder', tmp_path)
 
 
 # the effect grids plant this fraction of the (uncropped, 5**3-voxel) WGN
@@ -91,8 +91,8 @@ class TestContract:
 
 class TestWiring:
     def test_planted_mask_reaches_run_ana_as_target(self):
-        # the effect_factory mask is passed as run_ana's target, so every cell's
-        # target accounts for exactly the planted support (tp hit + fn missed).
+        # the cell's planted support is passed as run_ana's target, so every
+        # cell's target accounts for it exactly (tp hit + fn missed).
         scores = drive(_data_grid(2), _effect_grid(1), _ana_grid(1), run_ana)
         for s in scores:
             t = s['target']
@@ -114,45 +114,46 @@ class TestNullEffectCell:
         for s in scores:
             assert s['target']['tp'] == 0 and s['target']['fn'] == 0
 
-    def test_none_effect_records_no_plant_node(self):
-        # the null row chains run_ana straight to the build -- the effect stage
-        # is skipped entirely, so it records nothing
-        data.RECORDER.records.clear()
+    def test_none_effect_is_a_cell_of_its_own(self):
+        # the null path is not a missing stage: it is one more cell, realized
+        # and recorded like any other, declaring no effect
+        store.RECORDER.records.clear()
         drive(_data_grid(2), [None], _ana_grid(1), run_ana)
-        fns = [r['function'] for r in data.RECORDER.records.values()]
-        assert fns.count('effect_factory_single') == 0
+
+        recs = list(store.RECORDER.records.values())
+        fns = [r['function'] for r in recs]
+        assert fns.count('get_exp_effect') == 2
         assert fns.count('run_ana') == 2
+        cells = [r for r in recs if r['function'] == 'get_exp_effect']
+        assert all(r['inputs']['kwargs_effect'] is None for r in cells)
 
 
 class TestProvenanceDAG:
     def test_one_full_chain_row_per_cell(self):
-        data.RECORDER.records.clear()
+        store.RECORDER.records.clear()
         data_grid = _data_grid(2)
         drive(data_grid, _effect_grid(2), _ana_grid(2), run_ana)
 
-        df = data.RECORDER.flatten_to_df()
-        # one run_ana leaf per cell; the build + plant feed each, so they are
-        # ancestors (not leaves) and every row carries the whole chain
+        df = store.RECORDER.flatten_to_df()
+        # one run_ana leaf per cell; the cell it measures feeds it, so the
+        # cell is an ancestor (not a leaf) and every row carries the chain
         assert len(df) == 2 * 2 * 2
         assert (df['run_ana.function'] == 'run_ana').all()
-        assert (df['effect_factory_single.function']
-                == 'effect_factory_single').all()
-        assert (df['data_factory_wgn.function'] == 'data_factory_wgn').all()
-        # the swept data seeds chain onto the run_ana rows (only via shared-exp
-        # DAG edges), so both data cells are represented
-        assert set(df['data_factory_wgn.in.seed']) == {
+        assert (df['get_exp_effect.function'] == 'get_exp_effect').all()
+        # the cell's declared kwargs recurse into their own columns, so the
+        # swept data seeds land on the run_ana rows
+        assert set(df['get_exp_effect.in.kwargs_data.seed']) == {
             d['seed'] for d in data_grid}
 
     def test_each_stage_recorded_per_distinct_cell(self):
         # with fresh seeds every cell misses, so the record count per stage is
-        # exactly its grid: data once per data cell, the plant once per
-        # (data, effect), the fit once per (data, effect, analysis).
-        data.RECORDER.records.clear()
+        # exactly its grid: the cell once per (data, effect), the fit once per
+        # (data, effect, analysis).
+        store.RECORDER.records.clear()
         drive(_data_grid(2), _effect_grid(2), _ana_grid(2), run_ana)
 
-        fns = [r['function'] for r in data.RECORDER.records.values()]
-        assert fns.count('data_factory_wgn') == 2
-        assert fns.count('effect_factory_single') == 2 * 2
+        fns = [r['function'] for r in store.RECORDER.records.values()]
+        assert fns.count('get_exp_effect') == 2 * 2
         assert fns.count('run_ana') == 2 * 2 * 2
 
 
@@ -176,18 +177,18 @@ class TestParallel:
 
     def test_parallel_records_full_chain(self):
         # every parallel cell still lands in the shared DAG: one full
-        # data -> plant -> run_ana row per (data, effect, analysis) cell.
-        data.RECORDER.records.clear()
+        # cell -> run_ana row per (data, effect, analysis) cell.
+        store.RECORDER.records.clear()
         grid = _data_grid(3)
         with parallel_config(backend='threading'):
             drive(grid, _effect_grid(2), _ana_grid(2), run_ana, n_jobs=2)
 
-        df = data.RECORDER.flatten_to_df()
+        df = store.RECORDER.flatten_to_df()
         assert len(df) == 3 * 2 * 2
         assert (df['run_ana.function'] == 'run_ana').all()
-        assert (df['effect_factory_single.function']
-                == 'effect_factory_single').all()
-        assert set(df['data_factory_wgn.in.seed']) == {d['seed'] for d in grid}
+        assert (df['get_exp_effect.function'] == 'get_exp_effect').all()
+        assert set(df['get_exp_effect.in.kwargs_data.seed']) == {
+            d['seed'] for d in grid}
 
     def test_parallel_task_payload_stays_small(self):
         # regression: the leaf fnc is pickled into each task by value. Because the
@@ -199,9 +200,10 @@ class TestParallel:
 
         from glow._extra.benchmark.driver import _run_data_cell
 
-        # parks a record in the shared recorder (an 829 KB array -> a snapshot)
-        data.data_factory_wgn(shape=(12, 12, 12), b=3, num_img=40, a=2,
-                              seed=_fresh_seed())
+        # parks a record in the shared recorder, from a cell big enough that
+        # pinning anything it read would show up in the payload below
+        get_exp_effect(dict(source='wgn', shape=(12, 12, 12), b=3, num_img=40,
+                            a=2, seed=_fresh_seed()))
         payload = cloudpickle.dumps(delayed(_run_data_cell)(
             dict(source='wgn', shape=(5, 5, 5), b=2, num_img=16, a=2, seed=0),
             [(None, _ana_grid(1))], run_ana))

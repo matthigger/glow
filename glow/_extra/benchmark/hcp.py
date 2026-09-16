@@ -118,7 +118,7 @@ def ensure_hcp_data() -> pathlib.Path:
 # and the experiment hashes the same whether built from the niftis or the
 # bundle.
 #
-# It is the single HCP build path: data_factory_hcp builds from the bundle,
+# It is the single HCP build path: build_clean_hcp builds from the bundle,
 # converting it from the niftis on first use. Once it exists a run needs
 # neither the niftis nor the DUA gate, and the per-feature split means only the
 # features a cell uses are read.

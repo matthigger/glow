@@ -19,8 +19,9 @@ in each. Reading only uids means a leaf computed on another machine counts for
 its cell, and a missing intermediate record hides nothing below it.
 """
 from . import config
-from .data import RECORDER, data_recipe, effect_recipe
+from .cell import exp_effect_recipe
 from .recipe import recipe_for_call
+from .store import RECORDER
 
 
 def config_leaf_keys(name: str) -> list:
@@ -75,23 +76,20 @@ def planted_cells(name: str) -> list:
 
 
 def cell_parent_uid(kwargs_data, kwargs_effect) -> str:
-    """Return the uid of the Experiment one planted cell's leaves measure.
+    """Return the uid of the cell one set of leaves measures.
 
-    Named from the cell's kwargs alone -- nothing is built and no record is
-    read. A None effect cell is the null path, whose parent is the clean exp
-    itself.
+    Named from the cell's kwargs alone -- nothing is realized and no record
+    is read.
 
     Args:
-        kwargs_data (dict): one data_factory cell.
-        kwargs_effect (dict | None): one effect_factory cell, or None.
+        kwargs_data (dict): the data half of a cell.
+        kwargs_effect (dict | None): the effect half, or None for the null
+            path.
 
     Returns:
         uid (str): the parent uid the cell's leaves are passed.
     """
-    uid_data = data_recipe(kwargs_data).uid
-    if kwargs_effect is None:
-        return uid_data
-    return effect_recipe(kwargs_effect, uid_data).uid
+    return exp_effect_recipe(kwargs_data, kwargs_effect).uid
 
 
 def cell_leaf_uids(kwargs_data, kwargs_effect, kwargs_fnc_list, fnc) -> list:
@@ -102,8 +100,8 @@ def cell_leaf_uids(kwargs_data, kwargs_effect, kwargs_fnc_list, fnc) -> list:
     without building an Experiment, reading a record, or comparing any array.
 
     Args:
-        kwargs_data (dict): one data_factory cell.
-        kwargs_effect (dict | None): one effect_factory cell, or None.
+        kwargs_data (dict): the data half of a cell.
+        kwargs_effect (dict | None): the effect half, or None.
         kwargs_fnc_list (list[dict]): the fnc-kwargs grid.
         fnc (Callable): the leaf measurement (memoised + recorded).
 

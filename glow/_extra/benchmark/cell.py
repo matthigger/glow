@@ -24,11 +24,11 @@ import numpy as np
 
 from glow.analysis.mancova import get_llr, get_mancova
 from glow.experiment import Experiment
-from glow.experiment.exper import ExperimentScaled
 from glow.mask import get_mask_idx
 
-from .data import MEMORY, RECORDER, build_clean, plant_effect
+from .data import build_clean, plant_effect
 from .recipe import recipe_for_call, seed_from_uid
+from .store import MEMORY, RECORDER
 
 # how close a rebuilt plant's per-voxel LLR must come to its target. Loose
 # enough to survive a change of summation order (a different BLAS or thread
@@ -85,9 +85,14 @@ class ExpEffect:
         self.y_hash = y_hash
 
     def __repr__(self):
-        """A compact identity string: the uid, the volume, the plant count."""
+        """A compact identity string, which is what a record stores.
+
+        The screen's cost rides in it (num_vox_dropped), recorded once on the
+        cell it happened to rather than copied onto every leaf below.
+        """
         return (f'{type(self).__name__}(uid={self.uid[:8]}, '
                 f'num_vox={int(self.mask_ana.sum())}, '
+                f'num_vox_dropped={int(self.mask_dead.sum())}, '
                 f'num_effect={len(self.effect_list)})')
 
     @property
@@ -96,21 +101,22 @@ class ExpEffect:
         return [effect['mask'] for effect in self.effect_list]
 
     def build(self):
-        """Rebuild this cell's Experiment, validating what comes back.
+        """Rebuild this cell's raw Experiment, validating what comes back.
 
-        Reads the images over mask_ana, attaches the stored design, adds each
-        plant's offset back over its own support, and scales. The offsets are
-        added through add_offset, so they land in patch_list too and an
-        inflate can replay them onto voxels loaded later (a smoothing kernel's
-        halo).
+        Reads the images over mask_ana, attaches the stored design, and adds
+        each plant's offset back over its own support. The offsets go on
+        through add_offset, so they land in patch_list too and an inflate can
+        replay them onto voxels loaded later (a smoothing kernel's halo).
 
-        Every experiment is scaled: GLOW needs the pre-processing and the
-        voxel-wise arms are compared against it on the same footing.
-        from_exp is idempotent, so a leaf may hand this straight to
-        Analysis.fit.
+        Raw, not scaled. This is the experiment the cell realized, in the
+        space the offset was solved in, and it is what every Analysis.fit
+        wants: each scales on the way in (ExperimentScaled.from_exp,
+        idempotent), and one of them has to split the images first, which a
+        fitted transform refuses -- a tree built on one fold would have seen
+        the other fold's mean and covariance.
 
         Returns:
-            exp (ExperimentScaled): the cell's experiment
+            exp (Experiment): the cell's experiment, offsets applied
 
         Raises:
             ValueError: the images are not the ones this cell was realized
@@ -131,7 +137,7 @@ class ExpEffect:
             exp = exp.add_offset(effect['offset'], mask=effect['mask'])
         self._check_effects(exp)
 
-        return ExperimentScaled.from_exp(exp)
+        return exp
 
     def _check_effects(self, exp) -> None:
         """Re-measure each plant's per-voxel LLR against its target.
@@ -251,7 +257,7 @@ def get_exp_effect(kwargs_data, kwargs_effect=None) -> ExpEffect:
 
 
 def build_cell(cell: ExpEffect):
-    """Return cell's Experiment, reusing the last one built.
+    """Return cell's raw Experiment, reusing the last one built.
 
     What a leaf calls instead of ExpEffect.build: a cell's leaves all measure
     one Experiment and the driver runs them back to back, so the first builds
@@ -261,7 +267,8 @@ def build_cell(cell: ExpEffect):
         cell (ExpEffect): the cell to build.
 
     Returns:
-        exp (ExperimentScaled): the cell's experiment.
+        exp (Experiment): the cell's experiment (see ExpEffect.build for why
+            it is raw).
     """
     if cell.uid not in _BUILD_MEMO:
         _BUILD_MEMO.clear()

@@ -1,46 +1,45 @@
-"""Drive the benchmark: data_factory -> effect_factory -> fnc, as a grid.
+"""Drive the benchmark: get_exp_effect -> fnc, as a grid.
 
-drive sweeps the cartesian product of two upstream kwargs grids -- the data
-and effect stages -- and runs a leaf function fnc on each planted cell, once
-per kwargs dict in kwargs_fnc_list, as nested loops:
+drive sweeps the cartesian product of two kwargs grids -- the data and effect
+halves of a cell -- and runs a leaf function fnc on each cell, once per
+kwargs dict in kwargs_fnc_list, as nested loops:
 
-    for kw_data  in kwargs_data_list:    exp        = data_factory(...)
-      for kw_eff in kwargs_effect_list:  exp, mask  = effect_factory(exp, ...)
-        for kw   in kwargs_fnc_list:     score      = fnc(exp, ...)
+    for kw_data  in kwargs_data_list:
+      for kw_eff in kwargs_effect_list:  cell  = get_exp_effect(...)
+        for kw   in kwargs_fnc_list:     score = fnc(cell, ...)
 
-Nested rather than one flat product so each upstream stage's output feeds the
-stage below: a clean exp is built once per data cell and a planted exp once
-per (data, effect) cell, then shared by every fnc run under it. Every stage is
-disk-memoised and recorded (see .data / .run), so a repeated cell is a cache
-hit and a resumed sweep reuses the stored artifacts.
+Nested rather than one flat product so a data cell's effect cells are
+realized back to back, which is what lets them share one clean build in
+memory (.cell). Both stages are disk-memoised and recorded (see .cell /
+.run), so a repeated cell is a cache hit and a resumed sweep reuses the
+stored artifacts.
 
 skip_recorded exists because that memoisation reaches only the joblib cache,
 which is the half that gets archived or pruned for space (mv_cache) while the
 records stay. It drops any (data, effect) cell whose whole leaf set is already
-recorded (results.get_cell_complete), so a rerun never builds an exp it has no
-work for, and within a cell it keeps only the leaves still missing
+recorded (results.get_cell_complete), so a rerun never realizes a cell it has
+no work for, and within a cell it keeps only the leaves still missing
 (results.get_leaf_todo) -- a cell short one leaf owes that leaf, not its whole
 grid.
 
-fnc is the leaf measurement, swept over its own kwargs grid so one (data,
-effect) cell can be measured several ways at once. It is called
-fnc(exp, mask_target_list=..., **kwargs) and, to join the provenance DAG, must
-be memoised + recorded with exp as a linked input -- the shape of run_ana. The
-driver knows nothing fnc-specific; the config layer supplies it.
+fnc is the leaf measurement, swept over its own kwargs grid so one cell can
+be measured several ways at once. It is called fnc(cell, **kwargs) and, to
+join the provenance DAG, must be memoised + recorded and take the cell's uid
+as its parent_uid -- the shape of run_ana. The driver knows nothing
+fnc-specific; the config layer supplies it.
 
-A None effect cell is the null / FWER-calibration path: it plants nothing and
-runs fnc on the clean exp against an empty target, skipping effect_factory
-(EffectSynthetic has no no-op), so its provenance chains straight to the build.
+A None effect cell is the null / FWER-calibration path: the cell plants
+nothing and its leaves score against an empty target.
 
 drive returns the innermost scores, but the richer output is the provenance DAG
 every call writes to: RECORDER.flatten_to_df yields one row per fnc leaf
-carrying the data / effect inputs that produced it. Which CONFIG cache a leaf
-belongs to is recomputed at read time by walking the records forward (see
-.results), so the driver keeps no per-sweep bookkeeping.
+carrying the cell spec that produced it. Which CONFIG cache a leaf belongs to
+is recomputed at read time from the declared uids (see .results), so the
+driver keeps no per-sweep bookkeeping.
 
 Parallelism (n_jobs != 1) splits the sweep by data cell: each whole
-data_factory -> effect_factory* -> fnc* subtree is one joblib task, so a build
-has exactly one owner and no two workers race to write its cache or record.
+get_exp_effect* -> fnc* subtree is one joblib task, so a cell has exactly one
+owner and no two workers race to write its cache or record.
 That is the right split while the data grids satiate the pool. A leaf may also
 parallelise its own fit (run_ana's fit_params), which multiplies against
 n_jobs rather than sharing it, so check_fit_params refuses the combinations
@@ -58,8 +57,8 @@ import os
 
 from tqdm import tqdm
 
-from .data import (RECORDER, data_factory, data_recipe, effect_factory,
-                   effect_recipe)
+from .cell import get_exp_effect
+from .store import RECORDER
 
 # How far a sweep may oversubscribe the CPU before check_fit_params stops it:
 # drive's own n_jobs times the worst leaf's, against this many times the core
@@ -141,23 +140,22 @@ def check_fit_params(kwargs_fnc_list, n_jobs: int) -> None:
 
 
 def _run_data_cell(kwargs_data, effect_plan, fnc, bar=None):
-    """Build one data cell, run its effect x fnc subtree, return its scores.
+    """Realize one data cell's cells, run their fnc grid, return the scores.
 
-    The per-data-cell unit of work, shared by the serial loop and the parallel
-    tasks: build the clean exp once (then reuse it across the effect / fnc
-    loops below), plant each effect (or skip it for a None cell), and run fnc
-    over that effect's kwargs grid.
+    The per-data-cell unit of work, shared by the serial loop and the
+    parallel tasks: realize each of the data cell's (data, effect) cells --
+    which share one clean build in memory -- and run fnc over that cell's
+    kwargs grid.
 
     Each effect carries its own fnc grid rather than sharing one, which is what
     lets the caller hand a cell only the leaves it still owes (see drive).
 
     Args:
-        kwargs_data (dict): kwargs for one data_factory call.
+        kwargs_data (dict): the data half of a cell (see .cell).
         effect_plan (list[tuple]): (kwargs_effect, kwargs_fnc_list) pairs --
             the effect cells to plant, each with the fnc kwargs grid to run on
             it. A None kwargs_effect plants nothing (the null path).
-        fnc (Callable): the leaf measurement,
-            fnc(exp, mask_target_list=..., **kwargs).
+        fnc (Callable): the leaf measurement, fnc(cell, **kwargs).
         bar (tqdm | None): progress bar to advance one step per fnc leaf, or
             None to advance nothing (the parallel path, where a worker cannot
             reach the caller's bar -- it ticks per returned cell instead).
@@ -165,28 +163,14 @@ def _run_data_cell(kwargs_data, effect_plan, fnc, bar=None):
     Returns:
         list[dict]: this cell's fnc scores, in (effect, fnc-kwargs) order.
     """
-    # the cell's uid chain, named from the kwargs before anything is built:
-    # each stage is told its parent's uid, so provenance is declared on the way
-    # down rather than rediscovered afterwards from array content hashes (see
-    # glow._extra.benchmark.recipe).
-    uid_data = data_recipe(kwargs_data).uid
-    exp = data_factory(**kwargs_data)
     score_list = []
     for kwargs_effect, kwargs_fnc_list in effect_plan:
-        if kwargs_effect is None:
-            # null / FWER-calibration cell: no effect, empty target, so the
-            # leaf hangs off the clean exp itself
-            exp_eff, mask_target_list = exp, []
-            uid_parent = uid_data
-        else:
-            # effect_factory returns the realized supports as a list (one
-            # entry for a single effect, two for a split), threaded as-is
-            exp_eff, mask_target_list = effect_factory(
-                exp, parent_uid=uid_data, **kwargs_effect)
-            uid_parent = effect_recipe(kwargs_effect, uid_data).uid
+        # a cell carries its own declared uid, which its leaves are passed as
+        # their parent: provenance is declared on the way down rather than
+        # rediscovered afterwards from array content hashes (see .recipe)
+        cell = get_exp_effect(kwargs_data, kwargs_effect)
         for kwargs in kwargs_fnc_list:
-            score = fnc(exp_eff, mask_target_list=mask_target_list,
-                        parent_uid=uid_parent, **kwargs)
+            score = fnc(cell, parent_uid=cell.uid, **kwargs)
             score_list.append(score)
             if bar is not None:
                 bar.update(1)
@@ -197,20 +181,18 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
           n_jobs=1, verbose=False, skip_recorded=False):
     """Sweep data x effect, run fnc per cell over its kwargs, return scores.
 
-    The two upstream lists are kwargs grids for the data and effect stages;
-    the driver runs their cartesian product, threading each stage's output
-    into the next -- the clean exp into effect_factory, then the planted exp
-    and the realized supports into fnc as mask_target_list (one entry for a
-    single effect, two for a split). Every stage is memoised + recorded, so
-    this only forwards kwargs.
+    The two upstream lists are kwargs grids for the data and effect halves
+    of a cell; the driver runs their cartesian product, realizing each cell
+    and handing it to fnc. Both stages are memoised + recorded, so this only
+    forwards kwargs.
 
     kwargs_effect_list and kwargs_fnc_list are pulled into lists up front,
     being re-iterated per cell, so one-shot generators are fine;
     kwargs_data_list is iterated once and stays lazy.
 
     skip_recorded drops the (data, effect) cells the records already hold in
-    full, which also skips building their exp -- the expensive part. A cell
-    holding only some of its leaves is built, but runs just the leaves it
+    full, which also skips realizing them -- the expensive part. A cell
+    holding only some of its leaves is realized, but runs just the leaves it
     lacks: its recorded siblings are not recomputed, which matters wherever
     only their records were merged and the joblib cache cannot answer for them
     (see the module docstring for why the records, not the cache, are the
@@ -218,28 +200,25 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
 
     With n_jobs != 1 the sweep runs over joblib, one task per data cell. A
     leaf that parallelises its own fit multiplies against that n_jobs, so
-    check_fit_params runs before any cell is built and refuses a sweep whose
+    check_fit_params runs before any cell is realized and refuses a sweep whose
     product would oversubscribe the CPU or put several fits on one GPU.
 
     A verbose sweep needs len(data) for its bar, so it pulls
     kwargs_data_list into a list up front; otherwise that stays lazy.
 
     Args:
-        kwargs_data_list (iterable[dict]): one kwargs dict per data_factory
+        kwargs_data_list (iterable[dict]): one kwargs dict per data
             call, e.g. {'source': 'wgn', 'shape': (5, 5, 5), 'seed': 0}.
         kwargs_effect_list (iterable[dict | None]): one kwargs dict per
-            effect_factory call (exp is supplied by the driver), e.g.
-            {'kind': 'single', 'effect_llr': 0.05, 'extenter_cls':
-            ExtenterMinVar, 'n_vox_frac': 0.1}; a None
-            cell
-            plants no effect (the null / FWER-calibration path, run on the
-            clean exp with an empty target).
-        kwargs_fnc_list (iterable[dict]): one kwargs dict per fnc call on each
-            planted cell (exp and mask_target_list are supplied by the driver),
-            e.g. [{'ana': AnalysisGLOW(n_perm_fwer=250)}].
-        fnc (Callable): the leaf measurement, called
-            fnc(exp, mask_target_list=..., **kwargs) and memoised + recorded
-            with exp linked (see module docstring), e.g. run_ana.
+            effect half, e.g. {'kind': 'single', 'effect_llr': 0.05,
+            'extenter_cls': ExtenterMinVar, 'n_vox_frac': 0.1}; a None cell
+            plants no effect (the null / FWER-calibration path, scored
+            against an empty target).
+        kwargs_fnc_list (iterable[dict]): one kwargs dict per fnc call on
+            each cell (the cell and its parent_uid are supplied by the
+            driver), e.g. [{'ana': AnalysisGLOW(n_perm_fwer=250)}].
+        fnc (Callable): the leaf measurement, called fnc(cell, **kwargs) and
+            memoised + recorded (see module docstring), e.g. run_ana.
         n_jobs (int): 1 (default) runs serially in-process; otherwise the data
             cells run in parallel over joblib.Parallel(n_jobs=n_jobs).
         verbose (bool): False (default) runs silently; True shows a tqdm bar

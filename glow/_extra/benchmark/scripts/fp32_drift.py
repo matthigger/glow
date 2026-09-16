@@ -24,7 +24,6 @@ the worst case, which is what a decision to ship float32 has to rest on.
     python -m glow._extra.benchmark.scripts.fp32_drift --n-cell 6 --out d.json
 """
 import argparse
-import inspect
 import json
 import time
 
@@ -32,8 +31,9 @@ import numpy as np
 
 from glow._extra.benchmark import config
 from glow._extra.benchmark.config import CONFIG
-from glow._extra.benchmark.data import (DATA_FACTORY, EFFECT_FACTORY,
-                                        data_recipe)
+from glow._extra.benchmark.cell import data_uid
+from glow._extra.benchmark.data import build_clean, plant_effect
+from glow._extra.benchmark.recipe import seed_from_uid
 from glow.analysis import AnalysisGLOW
 from glow.analysis._fit_gpu import GpuConfig
 
@@ -51,11 +51,9 @@ def build_cell(idx_data: int = 0, idx_effect: int = 1):
     kd, ke, _, _ = CONFIG['sweep_n_perm_inner']
     kwargs_data = list(kd)[idx_data]
     kwargs_effect = dict(list(ke)[idx_effect])
-    kb = {k: v for k, v in kwargs_data.items() if k != 'source'}
-    exp = inspect.unwrap(DATA_FACTORY[kwargs_data['source']])(**kb)
-    kind = kwargs_effect.pop('kind', 'single')
-    exp, _ = inspect.unwrap(EFFECT_FACTORY[kind])(
-        exp, parent_uid=data_recipe(kwargs_data).uid, **kwargs_effect)
+    exp = build_clean(kwargs_data)
+    exp, _ = plant_effect(exp, seed=seed_from_uid(data_uid(kwargs_data)),
+                          **kwargs_effect)
     return exp
 
 

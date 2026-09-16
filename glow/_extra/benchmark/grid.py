@@ -32,7 +32,7 @@ from . import hcp
 # ---------- upstream grids ---------------------------------------------------
 def get_kwargs_data_list(*, sources, seeds, crop_n_vox, b_list=(1,),
                          num_img_list=(100,)):
-    """Return the list of data_factory kwargs dicts over the swept axes.
+    """Return the list of data-cell kwargs dicts over the swept axes.
 
     The cartesian product of (source, b, seed); WGN additionally sweeps num_img
     (HCP's N is its cohort, so its cells omit it and never duplicate). The
@@ -49,7 +49,7 @@ def get_kwargs_data_list(*, sources, seeds, crop_n_vox, b_list=(1,),
         num_img_list (iterable[int]): subject counts (WGN only).
 
     Returns:
-        list[dict]: kwargs for data_factory, one per cell (source selects
+        list[dict]: kwargs for one data cell (source selects
             wgn / hcp).
     """
     wgn_side = math.ceil(crop_n_vox ** (1 / 3))
@@ -77,14 +77,14 @@ def get_kwargs_data_list(*, sources, seeds, crop_n_vox, b_list=(1,),
 
 
 def get_kwargs_effect_list(*, llr_list, n_vox_frac_list):
-    """Return the list of effect_factory kwargs dicts over the swept axes.
+    """Return the list of effect-cell kwargs dicts over the swept axes.
 
     The cartesian product of (effect_llr, n_vox_frac): a per-voxel strength and
     a support size as a fraction of each cell's analysis volume. Each cell
-    carries kind='single' and the ingredients effect_factory_single builds
-    the support from: the ExtenterMinVar class and n_vox_frac. The placement
-    seed is not among them -- the builder derives it from the cell's declared
-    uid (see config's module docstring).
+    carries kind='single' and the ingredients plant_effect builds the
+    support from: the ExtenterMinVar class and n_vox_frac. The placement seed
+    is not among them -- a cell derives it from its declared uid (see
+    config's module docstring).
     llr_list=None is the null / FWER-calibration path -- the list [None] (plant
     nothing).
 
@@ -95,8 +95,7 @@ def get_kwargs_effect_list(*, llr_list, n_vox_frac_list):
             fraction of the analysis volume.
 
     Returns:
-        list[dict | None]: kwargs for effect_factory (exp is supplied by the
-            driver), or [None] for the null path.
+        list[dict | None]: kwargs for one effect cell, or [None] for the null path.
     """
     if llr_list is None:
         return [None]
@@ -110,13 +109,13 @@ def get_kwargs_effect_list(*, llr_list, n_vox_frac_list):
 
 def get_kwargs_two_effect_list(*, llr_list, angle_list, n_vox_frac,
                                extenter_cls=ExtenterMinVar):
-    """Build a cleaving grid: effect_factory_split kwargs over (llr, angle).
+    """Build a cleaving grid: split-effect kwargs over (llr, angle).
 
     Two adjacent equal-LLR effects planted on the spectral halves of one n_vox
     extent, their feature directions angle degrees apart. Each cell carries
     kind='split'; the support placement and the direction pair share one seed
     the builder derives from the cell's declared uid (see
-    effect_factory_split). The angle sweep at fixed llr is the cleaving /
+    plant_effect). The angle sweep at fixed llr is the cleaving /
     merge-cost curve.
 
     No CONFIG cache declares this grid; it is the entry point for adding one
@@ -137,7 +136,7 @@ def get_kwargs_two_effect_list(*, llr_list, angle_list, n_vox_frac,
         extenter_cls (type): the split base extenter class.
 
     Returns:
-        list[dict]: kwargs for effect_factory (kind='split'), one per
+        list[dict]: kwargs for one effect cell (kind='split'), one per
             (llr, angle) cell.
     """
     return [dict(kind='split', effect_llr=float(llr),
@@ -157,7 +156,7 @@ def get_kwargs_data_runtime(*, seed_offset, crop_n_vox_list, n_seed,
     timings) distinct.
 
     HCP by default, the paper's real data. The num_img sweep passes
-    sources=['wgn'] instead, because HCP's N is its fixed cohort: data_factory
+    sources=['wgn'] instead, because HCP's N is its fixed cohort: a data cell
     has no subject-subset axis, and adding one would rehash every HCP cell of
     every cache. Timing is a function of the (b, num_img, num_vox) shapes, not
     of what filled the array, so WGN measures the num_img slope faithfully.
@@ -173,7 +172,7 @@ def get_kwargs_data_runtime(*, seed_offset, crop_n_vox_list, n_seed,
         num_img_list (iterable[int]): subject counts (WGN only).
 
     Returns:
-        list[dict]: kwargs for data_factory, one per cell.
+        list[dict]: kwargs for one data cell.
     """
     seeds = range(seed_offset, seed_offset + n_seed)
     kwargs_data_list = []
