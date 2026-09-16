@@ -390,6 +390,61 @@ class TestAnalysisScaling:
         np.testing.assert_array_equal(ana_raw.fwer.pval, ana_scaled.fwer.pval)
 
 
+class TestSmoothingArm:
+    """The kernel as a knob of the voxel-wise arms.
+
+    Smoothing is what gives a voxel-wise test the spatial pooling GLOW
+    takes from the Ward tree, so it belongs to the arm rather than to the
+    data: what GLOW is handed on the same cell must be untouched.
+    """
+
+    @staticmethod
+    def _crop():
+        """Return an interior crop of a Gaussian experiment, with a source."""
+        exp = Experiment.from_gauss(a=1, b=1, shape=(12, 12, 12),
+                                    num_img=20, seed=0)
+        mask = np.zeros((12, 12, 12), dtype=bool)
+        mask[4:8, 4:8, 4:8] = True
+        return exp.apply_mask(mask)
+
+    @pytest.mark.parametrize('AnalysisCls', [AnalysisVBA, AnalysisCET])
+    def test_fwhm_reaches_the_recipe(self, AnalysisCls):
+        """The kernel width renders in the repr a record is filed under."""
+        assert 'fwhm=8.0' in repr(AnalysisCls(n_perm_fwer=10, fwhm=8.0))
+        assert 'fwhm=None' in repr(AnalysisCls(n_perm_fwer=10))
+
+    @pytest.mark.parametrize('AnalysisCls', [AnalysisVBA, AnalysisCET])
+    def test_a_kernel_tests_the_same_voxels(self, AnalysisCls):
+        """The context is borrowed and dropped, so the family is unmoved.
+
+        A halo left in would hand the max-stat family several times the
+        comparison set the unsmoothed arm gets, and quietly make the
+        sweep's own baseline stricter than the arms it is a baseline for.
+        """
+        crop = self._crop()
+        plain = AnalysisCls(n_perm_fwer=20).fit(crop)
+        smooth = AnalysisCls(n_perm_fwer=20, fwhm=4.0).fit(crop)
+
+        assert smooth.stat.shape == plain.stat.shape
+        assert smooth.fwer.pval.shape == plain.fwer.pval.shape
+        # and it did something
+        assert not np.allclose(smooth.stat, plain.stat)
+
+    @pytest.mark.parametrize('AnalysisCls', [AnalysisVBA, AnalysisCET])
+    def test_no_kernel_changes_nothing(self, AnalysisCls):
+        """fwhm=None is the unsmoothed arm, to the last bit."""
+        crop = self._crop()
+        want = AnalysisCls(n_perm_fwer=20).fit(crop).stat
+        got = AnalysisCls(n_perm_fwer=20, fwhm=None).fit(crop).stat
+        assert np.array_equal(got, want)
+
+    def test_without_context_it_refuses(self):
+        """An experiment that cannot read its images cannot be smoothed."""
+        crop = self._crop().permute(1)
+        with pytest.raises(ValueError, match='no source'):
+            AnalysisVBA(n_perm_fwer=10, fwhm=4.0).fit(crop)
+
+
 class TestDiscoverMask:
     """Analysis.discover_mask splits a mask into connected-component effects."""
 

@@ -6,6 +6,7 @@ import numpy as np
 from scipy.ndimage import label
 
 from glow.experiment.exper import ExperimentScaled
+from glow.experiment.smooth import smooth_with_context
 from .._base import AnalysisVoxel, reject_gpu
 from ..fwer import MaxStatPerm
 from ..mancova import get_hotel_tr
@@ -33,6 +34,8 @@ class AnalysisCET(AnalysisVoxel):
         cft_pval (float): tail probability defining the cluster-forming
             threshold from the permutation null
         z_flag (bool): whether stats are z-scored before thresholding
+        fwhm (float): spatial smoothing kernel applied in fit, full width
+            at half maximum in mm; None does not smooth
         cft (float): cluster-forming threshold in stat units
             (populated by fit)
         stat (np.array): (n_perm_fwer+1, num_vox) stats (populated by fit)
@@ -42,11 +45,11 @@ class AnalysisCET(AnalysisVoxel):
     """
 
     RECORD_FIELDS = ('get_stat', 'n_perm_fwer', 'alpha_fwer', 'cft_pval',
-                     'z_flag')
+                     'z_flag', 'fwhm')
 
     def __init__(self, n_perm_fwer: int, alpha_fwer: float = .05,
                  cft_pval: float = DEFAULT_CET_CFT_PVAL, z_flag: bool = False,
-                 get_stat: Callable = None):
+                 get_stat: Callable = None, fwhm: float = None):
         """Configure a cluster-extent thresholding analysis.
 
         Args:
@@ -57,6 +60,10 @@ class AnalysisCET(AnalysisVoxel):
             z_flag (bool): z-score voxel-wise before thresholding
             get_stat (Callable): per-region stat function (e, h, n);
                 defaults to the Hotelling-Lawley trace.
+            fwhm (float): spatial smoothing kernel applied before the
+                walk, full width at half maximum in mm; None (default)
+                does not smooth. See AnalysisVBA for why a kernel is a
+                knob of the method rather than of the data.
         """
         if get_stat is None:
             get_stat = get_hotel_tr
@@ -65,6 +72,7 @@ class AnalysisCET(AnalysisVoxel):
         self.alpha_fwer = alpha_fwer
         self.cft_pval = cft_pval
         self.z_flag = z_flag
+        self.fwhm = fwhm
         self.cft = None
 
     def fit(self, exp, _stat=None, *, n_jobs: int = 1, gpu=False):
@@ -88,6 +96,7 @@ class AnalysisCET(AnalysisVoxel):
             self
         """
         reject_gpu(gpu, type(self).__name__)
+        exp = smooth_with_context(exp, self.fwhm)
         exp = ExperimentScaled.from_exp(exp)
         self.stat = self.build_stat_matrix(exp, _stat, n_jobs=n_jobs)
         if self.z_flag:

@@ -7,6 +7,7 @@ from joblib import Parallel, delayed, effective_n_jobs
 from tqdm import tqdm
 
 from glow.experiment.exper import ExperimentScaled
+from glow.experiment.smooth import smooth_with_context
 from .._base import AnalysisVoxel, reject_gpu
 from ..fwer import MaxStatPerm
 from ..mancova import get_hotel_tr, get_wilks
@@ -30,6 +31,8 @@ class AnalysisVBA(AnalysisVoxel):
         alpha_fwer (float): family-wise error rate
         tfce_flag (bool): whether TFCE enhancement is applied
         z_flag (bool): whether stats are z-scored before TFCE
+        fwhm (float): spatial smoothing kernel applied in fit, full width
+            at half maximum in mm; None does not smooth
         verbose (bool): whether progress is printed
         stat (np.array): (n_perm_fwer+1, num_vox) stats (populated by fit)
         fwer (MaxStatPerm): the max-stat test over the voxels, every
@@ -37,11 +40,12 @@ class AnalysisVBA(AnalysisVoxel):
     """
 
     RECORD_FIELDS = ('get_stat', 'n_perm_fwer', 'alpha_fwer', 'tfce_flag',
-                     'z_flag')
+                     'z_flag', 'fwhm')
 
     def __init__(self, n_perm_fwer: int, alpha_fwer: float = .05,
                  verbose: bool = False, tfce_flag: bool = False,
-                 z_flag: bool = None, get_stat: Callable = None):
+                 z_flag: bool = None, get_stat: Callable = None,
+                 fwhm: float = None):
         """Configure a voxel-based analysis.
 
         Args:
@@ -57,6 +61,16 @@ class AnalysisVBA(AnalysisVoxel):
             get_stat (Callable): per-region stat function (e, h, n);
                 None takes the arm's default: 1 - Wilks lambda under
                 TFCE, the Hotelling-Lawley trace otherwise.
+            fwhm (float): spatial smoothing kernel applied to the images
+                before the walk, full width at half maximum in mm. None
+                or 0 (default) does not smooth. A kernel is what gives a
+                voxel-wise test the spatial pooling GLOW takes from the
+                Ward tree, so it is a knob of the method rather than of
+                the data: GLOW on the same experiment is unaffected. The
+                context the kernel reads at the crop edge is borrowed
+                from the experiment's source and dropped again, so the
+                same voxels are tested either way (see
+                glow.experiment.smooth.smooth_with_context).
         """
         if get_stat is None:
             get_stat = get_wilks if tfce_flag else get_hotel_tr
@@ -67,6 +81,7 @@ class AnalysisVBA(AnalysisVoxel):
         self.alpha_fwer = alpha_fwer
         self.tfce_flag = tfce_flag
         self.z_flag = z_flag
+        self.fwhm = fwhm
         self.verbose = verbose
 
     def fit(self, exp, _stat=None, *, n_jobs: int = 1, gpu=False,
@@ -93,6 +108,7 @@ class AnalysisVBA(AnalysisVoxel):
             self
         """
         reject_gpu(gpu, type(self).__name__)
+        exp = smooth_with_context(exp, self.fwhm)
         exp = ExperimentScaled.from_exp(exp)
         self.stat = self.build_stat_matrix(exp, _stat, n_jobs=n_jobs,
                                            verbose=self.verbose)
