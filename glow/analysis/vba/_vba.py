@@ -7,7 +7,6 @@ from joblib import Parallel, delayed, effective_n_jobs
 from tqdm import tqdm
 
 from glow.experiment.exper import ExperimentScaled
-from glow.experiment.smooth import smooth_with_context
 from .._base import AnalysisVoxel, reject_gpu
 from ..fwer import MaxStatPerm
 from ..mancova import get_hotel_tr, get_wilks
@@ -70,7 +69,7 @@ class AnalysisVBA(AnalysisVoxel):
                 context the kernel reads at the crop edge is borrowed
                 from the experiment's source and dropped again, so the
                 same voxels are tested either way (see
-                glow.experiment.smooth.smooth_with_context).
+                ExperimentImageOnly.smooth).
         """
         if get_stat is None:
             get_stat = get_wilks if tfce_flag else get_hotel_tr
@@ -108,7 +107,7 @@ class AnalysisVBA(AnalysisVoxel):
             self
         """
         reject_gpu(gpu, type(self).__name__)
-        exp = smooth_with_context(exp, self.fwhm)
+        exp = exp.smooth(self.fwhm)
         exp = ExperimentScaled.from_exp(exp)
         self.stat = self.build_stat_matrix(exp, _stat, n_jobs=n_jobs,
                                            verbose=self.verbose)

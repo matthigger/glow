@@ -3,6 +3,10 @@
 The claim under test is that borrowing context is exact: smoothing a crop
 with a halo as deep as the kernel's own truncation radius gives what
 smoothing the whole volume and then cropping gives, value for value.
+
+Experiment.smooth is the entry point, so the reference here is the same
+method on an experiment holding every voxel its source has, where the
+inflate adds nothing and the kernel runs over the whole volume.
 """
 
 import numpy as np
@@ -11,8 +15,7 @@ import pytest
 from glow.experiment import ExperimentImageOnly
 from glow.experiment.exper import ExperimentScaled
 from glow.experiment.smooth import (TRUNCATE, get_sigma_vox,
-                                    halo_vox_needed, smooth_exp,
-                                    smooth_volume, smooth_with_context,
+                                    halo_vox_needed, smooth_volume,
                                     smooth_y)
 
 SHAPE = (16, 17, 18)
@@ -83,8 +86,8 @@ class TestSmoothWithContext:
         """
         exp = _exp()
         core = _core()
-        want = smooth_exp(exp, fwhm).apply_mask(core)
-        got = smooth_with_context(exp.apply_mask(core), fwhm)
+        want = exp.smooth(fwhm).apply_mask(core)
+        got = exp.apply_mask(core).smooth(fwhm)
 
         assert np.array_equal(got.mask_idx, want.mask_idx)
         assert np.allclose(got.y, want.y, rtol=0, atol=1e-7)
@@ -96,17 +99,20 @@ class TestSmoothWithContext:
         (a kernel too narrow to reach the crop edge at all).
         """
         exp, core, fwhm = _exp(), _core(), 4.0
-        want = smooth_exp(exp, fwhm).apply_mask(core)
+        want = exp.smooth(fwhm).apply_mask(core)
 
+        # smooth_y, not the method: the point is a halo the method would
+        # never cut, one voxel short of the kernel's reach
         thin = exp.apply_mask(core).inflate(
             halo_vox=halo_vox_needed(fwhm) - 1)
-        got = smooth_exp(thin, fwhm).apply_mask(core)
-        assert not np.allclose(got.y, want.y, rtol=0, atol=1e-7)
+        y = smooth_y(thin.y, mask_idx=thin.mask_idx, fwhm=fwhm)
+        got = y[:, :, thin.mask_idx[core]]
+        assert not np.allclose(got, want.y, rtol=0, atol=1e-7)
 
     def test_returns_the_voxels_it_was_given(self):
         """The context is dropped again, numbering included."""
         crop = _exp().apply_mask(_core())
-        out = smooth_with_context(crop, 4.0)
+        out = crop.smooth(4.0)
         assert np.array_equal(out.mask_idx, crop.mask_idx)
         assert out.y.shape == crop.y.shape
 
@@ -114,20 +120,19 @@ class TestSmoothWithContext:
     def test_no_kernel_is_the_identity(self, fwhm):
         """fwhm of 0 or None hands back the experiment untouched."""
         crop = _exp().apply_mask(_core())
-        assert smooth_with_context(crop, fwhm) is crop
+        assert crop.smooth(fwhm) is crop
 
     def test_no_source_raises(self):
         """Without a source there is no context to read, so it refuses."""
         crop = _exp().apply_mask(_core()).permute(1)
         with pytest.raises(ValueError, match='no source'):
-            smooth_with_context(crop, 4.0)
+            crop.smooth(4.0)
 
     def test_the_affine_sets_the_kernel(self):
         """fwhm is in mm, so the same fwhm on a 2 mm grid smooths less."""
         core = _core()
-        fine = smooth_with_context(_exp().apply_mask(core), 4.0)
-        coarse = smooth_with_context(
-            _exp(affine=AFFINE_2MM).apply_mask(core), 4.0)
+        fine = _exp().apply_mask(core).smooth(4.0)
+        coarse = _exp(affine=AFFINE_2MM).apply_mask(core).smooth(4.0)
         # same draw, so a narrower kernel leaves more of the variance
         assert coarse.y.std() > fine.y.std()
 
@@ -157,9 +162,9 @@ class TestNormalization:
         scaled = ExperimentScaled.from_exp(crop)
 
         # scale first, then smooth
-        got = smooth_with_context(scaled, 4.0)
+        got = scaled.smooth(4.0)
         # smooth first, then scale with the same frozen transform
-        want = scaled.prep(smooth_with_context(crop, 4.0).y)
+        want = scaled.prep(crop.smooth(4.0).y)
 
         assert np.allclose(got.y, want, rtol=0, atol=1e-6)
         assert np.array_equal(got.pre_scale, scaled.pre_scale)
@@ -201,8 +206,8 @@ class TestBrainEdge:
         core = np.zeros(shape, dtype=bool)
         core[3:6, 4:8, 4:8] = True
 
-        want = smooth_exp(exp, 4.0).apply_mask(core)
-        got = smooth_with_context(exp.apply_mask(core), 4.0)
+        want = exp.smooth(4.0).apply_mask(core)
+        got = exp.apply_mask(core).smooth(4.0)
         assert np.allclose(got.y, want.y, rtol=0, atol=1e-7)
 
 

@@ -25,6 +25,7 @@ import glow.mask
 from .load_image import load_image_color, load_image_nii
 from .permute import get_freed_lane
 from .sigma import stretch_sigma
+from .smooth import halo_vox_needed, smooth_y
 from .source import SourceGauss, SourceNifti
 from ..mask import get_mask_idx
 
@@ -531,12 +532,13 @@ class ExperimentImageOnly:
 
         return self._copy_with(mask_idx=mask_idx, y=y)
 
-    def _prep_from_source(self, y):
-        """Return freshly loaded images in the space this y is in.
+    def _to_y_space(self, y):
+        """Return images the source read, in the space this y is in.
 
-        The identity here, where y is the images themselves;
+        The identity here, where y is the images themselves.
         ExperimentScaled overrides it, since a source reads raw images and
-        its y is pre-processed.
+        its own y is pre-processed. This is the only thing inflate needs
+        to know about what a subclass did to y.
 
         Args:
             y (np.array): (b, num_img, num_vox) images from the source
@@ -601,7 +603,7 @@ class ExperimentImageOnly:
             mask_held]]
 
         if mask_add.any():
-            y_add = self._prep_from_source(self.source.load(mask_add))
+            y_add = self._to_y_space(self.source.load(mask_add))
             mask_idx_add = get_mask_idx(mask_add)
             for patch in self.patch_list:
                 sel = patch['mask'] & mask_add
@@ -611,6 +613,50 @@ class ExperimentImageOnly:
             y[:, :, mask_idx_out[mask_add]] = y_add
 
         return self._copy_with(y=y, mask_idx=mask_idx_out)
+
+    def smooth(self, fwhm: float):
+        """Return a copy Gaussian-smoothed against its real neighbours.
+
+        A kernel reads past the voxels it is given, so smoothing a crop on
+        its own would dilute its whole edge against nothing. Context is
+        borrowed from the source for the kernel and dropped again: what
+        comes back holds exactly the voxels that went in, in the same
+        numbering, so a smoothed fit tests what an unsmoothed one does and
+        costs the same.
+
+        Exact, not approximate. The halo is as deep as the kernel's own
+        truncation radius, so within the kernel's reach of any voxel held
+        here the mask is the one a whole-volume smooth would see there,
+        numerator and denominator alike.
+
+        The voxel size comes from meta['affine'] when there is one, so
+        fwhm is in mm; without one the kernel is sized in voxels.
+
+        Args:
+            fwhm (float): kernel full width at half maximum, in mm. 0 or
+                None returns this experiment untouched.
+
+        Returns:
+            exp: a new experiment over these voxels, smoothed
+
+        Raises:
+            ValueError: fwhm is set and there is no source to read the
+                context from (see inflate)
+        """
+        if not fwhm:
+            return self
+
+        affine = self.meta.get('affine')
+        exp = self.inflate(halo_vox=halo_vox_needed(fwhm, affine=affine))
+        y = smooth_y(exp.y, mask_idx=exp.mask_idx, fwhm=fwhm, affine=affine)
+
+        # gather the voxels held here back out of the halo, into the
+        # numbering they already had rather than a fresh canonical one, so
+        # a caller's own voxel order survives a smooth
+        mask_held = self.mask_idx > -1
+        col = np.empty(self.y.shape[2], dtype=int)
+        col[self.mask_idx[mask_held]] = exp.mask_idx[mask_held]
+        return self._copy_with(y=np.asfortranarray(y[:, :, col]))
 
     @property
     def num_vox_dropped(self) -> int:
@@ -1011,7 +1057,7 @@ class ExperimentScaled(Experiment):
                         'split share a transform the test fold helped '
                         'choose. Split the Experiment, then scale each fold.')
 
-    def _prep_from_source(self, y):
+    def _to_y_space(self, y):
         """Pre-process images the source read, so they join a scaled y.
 
         Args:

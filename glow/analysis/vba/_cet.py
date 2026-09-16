@@ -6,7 +6,6 @@ import numpy as np
 from scipy.ndimage import label
 
 from glow.experiment.exper import ExperimentScaled
-from glow.experiment.smooth import smooth_with_context
 from .._base import AnalysisVoxel, reject_gpu
 from ..fwer import MaxStatPerm
 from ..mancova import get_hotel_tr
@@ -96,7 +95,7 @@ class AnalysisCET(AnalysisVoxel):
             self
         """
         reject_gpu(gpu, type(self).__name__)
-        exp = smooth_with_context(exp, self.fwhm)
+        exp = exp.smooth(self.fwhm)
         exp = ExperimentScaled.from_exp(exp)
         self.stat = self.build_stat_matrix(exp, _stat, n_jobs=n_jobs)
         if self.z_flag:

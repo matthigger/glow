@@ -18,8 +18,9 @@ which the MANCOVA statistics divide out. What it buys is that a constant
 stays constant, and so a pre-scaling commutes with the kernel exactly (see
 ExperimentScaled).
 
-A kernel reads past whatever it is handed, so smooth_with_context inflates
-the experiment first and crops back after.
+Everything here smooths exactly the voxels it is handed, diluting the edge
+of the mask against whatever sits outside it. Experiment.smooth is the
+entry point that borrows the context to make that edge honest.
 """
 
 import numpy as np
@@ -190,63 +191,3 @@ def smooth_y(y, mask_idx, fwhm: float, affine=None):
     vol[:, :, sel] /= weight[sel]
 
     return _from_volume(vol, mask_idx)
-
-
-def smooth_exp(exp, fwhm: float):
-    """Return exp with its imaging data Gaussian-smoothed.
-
-    The voxel size is read from exp.meta['affine'] when there is one, so
-    fwhm is in mm; without one the kernel is sized in voxels.
-
-    Args:
-        exp (Experiment): experiment whose y is smoothed
-        fwhm (float): kernel full width at half maximum, in mm. 0 or None
-            returns exp unchanged.
-
-    Returns:
-        exp (Experiment): a new experiment over the same voxels, smoothed
-    """
-    if not fwhm:
-        return exp
-
-    y = smooth_y(exp.y, mask_idx=exp.mask_idx, fwhm=fwhm,
-                 affine=exp.meta.get('affine'))
-    return exp._copy_with(y=y)
-
-
-def smooth_with_context(exp, fwhm: float):
-    """Smooth exp reading real neighbours, and return its own voxels.
-
-    A kernel reads past the voxels under study, so smoothing a crop on its
-    own would dilute its whole edge against nothing. The context is
-    borrowed for the kernel and dropped again: what comes back holds
-    exactly the voxels that went in, in the same order, so a smoothed fit
-    tests what an unsmoothed one does and costs the same.
-
-    Exact, not approximate. The halo is as deep as the kernel's own
-    truncation radius, so within the kernel's reach of any voxel under
-    study the mask seen here is the one a whole-volume smooth would see
-    there, numerator and denominator alike.
-
-    Args:
-        exp (Experiment): experiment to smooth. Raw or pre-scaled: the
-            transform is constant across voxels, so it commutes with the
-            kernel (see ExperimentScaled).
-        fwhm (float): kernel full width at half maximum, in mm. 0 or None
-            returns exp unchanged.
-
-    Returns:
-        exp (Experiment): smoothed, over the voxels it was handed
-
-    Raises:
-        ValueError: fwhm is set and exp has no source to read context
-            from (see ExperimentImageOnly.inflate)
-    """
-    if not fwhm:
-        return exp
-
-    mask_study = exp.mask_idx > -1
-    halo_vox = halo_vox_needed(fwhm, affine=exp.meta.get('affine'))
-    exp = exp.inflate(halo_vox=halo_vox)
-    exp = smooth_exp(exp, fwhm)
-    return exp.apply_mask(mask_study)
