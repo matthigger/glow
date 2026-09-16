@@ -55,7 +55,10 @@ def _cell_cols(seed, effect_llr=None, *, source='wgn', b=1, num_img=None,
     base = 'get_exp_effect.in.kwargs'
     out = {f'{base}_data.source': source, f'{base}_data.seed': seed}
     if source == 'hcp':
-        out[f'{base}_data.hcp_feats'] = list(hcp_feats)
+        # a tuple recurses to one column per element, so a row declaring
+        # two features has hcp_feats.0 and .1 and b is read off the count
+        out.update({f'{base}_data.hcp_feats.{i}': feat
+                    for i, feat in enumerate(hcp_feats)})
     else:
         out[f'{base}_data.b'] = b
         if num_img is not None:

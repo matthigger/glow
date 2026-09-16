@@ -289,7 +289,7 @@ class SourceBundle(ImageSource):
 
         Returns:
             y (np.array): (b, num_img, num_vox) float32 intensities,
-                voxels in get_mask_idx order over mask
+                F-contiguous, voxels in get_mask_idx order over mask
         """
         ensure_hcp_bundle(self.feats)
         mask_src = self.mask
@@ -301,7 +301,7 @@ class SourceBundle(ImageSource):
             arr = np.load(bundle_feat_path(feat), mmap_mode='r')
             if y is None:
                 y = np.empty((len(self.feats), arr.shape[0], cols.size),
-                             dtype=arr.dtype)
+                             dtype=arr.dtype, order='F')
             y[feat_idx] = arr[:, cols]
         return y
 

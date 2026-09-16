@@ -73,13 +73,20 @@ class ImageSource(ABC):
     def load(self, mask=None):
         """Read the images over mask into a y array.
 
+        Fortran order, which is the layout the statistics read: get_mancova
+        reshapes y to (b, num_img * num_vox) in that order, a view of an
+        F-contiguous array and a copy of anything else. Experiment.inflate
+        and smooth_y allocate the same way, so a y passing between them is
+        never quietly re-laid-out.
+
         Args:
             mask (np.array): (X, Y, Z) boolean subset of self.mask, or
                 None for the whole support
 
         Returns:
-            y (np.array): (b, num_img, num_vox) intensities, voxels
-                ordered as glow.mask.get_mask_idx numbers them over mask
+            y (np.array): (b, num_img, num_vox) intensities, F-contiguous,
+                voxels ordered as glow.mask.get_mask_idx numbers them over
+                mask
         """
 
     def _as_subset(self, mask):
@@ -209,11 +216,11 @@ class SourceGauss(ImageSource):
         y = sample_gauss(b=self.b, num_img=self.num_img, shape=self.shape,
                          seed=self.seed, mu=self.mu, cov=self.cov,
                          dtype=self.dtype)
-        if mask.all():
-            return y
-        # mask.ravel() is C order and so is the drawn voxel axis, which is
-        # the order get_mask_idx numbers a mask in
-        return y[:, :, mask.ravel()]
+        if not mask.all():
+            # mask.ravel() is C order and so is the drawn voxel axis, which
+            # is the order get_mask_idx numbers a mask in
+            y = y[:, :, mask.ravel()]
+        return np.asfortranarray(y)
 
 
 class SourceNifti(ImageSource):
@@ -274,7 +281,7 @@ class SourceNifti(ImageSource):
         subjects = sorted(self.paths.index)
         num_vox = int(mask.sum())
         y = np.empty((len(self.features), len(subjects), num_vox),
-                     dtype=self.dtype)
+                     dtype=self.dtype, order='F')
         for feat_idx, feat in enumerate(self.features):
             for sbj_idx, sbj in enumerate(subjects):
                 img = nib.load(self.paths.loc[sbj, feat])

@@ -405,28 +405,69 @@ _RUNTIME_SPEC = {
 _CELL_IN = 'get_exp_effect.in'
 
 
-def _add_cell_cols(out, col) -> None:
+def _col_fnc(raw):
+    """Return a name -> column reader over raw, NaN where a name is absent.
+
+    A cache holds only the columns its own cells declared, so a tidier that
+    reads an axis another source sweeps has to tolerate the column not
+    being there at all.
+
+    Args:
+        raw: the provenance DataFrame
+
+    Returns:
+        col (Callable): name -> raw[name], or an all-NaN column
+    """
+    def col(name):
+        """Return raw[name], or an all-NaN column when absent."""
+        if name in raw.columns:
+            return raw[name]
+        return pd.Series(np.nan, index=raw.index)
+
+    return col
+
+
+def _hcp_b(raw):
+    """Return each HCP row's feature count, NaN on a row that is not HCP.
+
+    hcp_feats is a tuple, so the record recursion gives it one column per
+    feature (hcp_feats.0, .1, ...) rather than one holding the tuple; b is
+    how many of them a row declared.
+
+    Args:
+        raw: the provenance DataFrame
+
+    Returns:
+        b (pd.Series): float feature count per row
+    """
+    prefix = f'{_CELL_IN}.kwargs_data.hcp_feats.'
+    feat_cols = [c for c in raw.columns if c.startswith(prefix)]
+    if not feat_cols:
+        return pd.Series(np.nan, index=raw.index)
+    n_feat = raw[feat_cols].notna().sum(axis=1)
+    return n_feat.where(n_feat > 0).astype(float)
+
+
+def _add_cell_cols(out, raw) -> None:
     """Add the swept cell axes to a tidy frame, in place.
 
     Every tidier reads the same four, since one op declares a cell and all
     its leaves hang off it: source is a declared knob, and b is the feature
-    count either way (WGN declares it; HCP's is the length of the feature
-    subset it asked for). effect_llr is NaN on the null path, which declares
-    no effect at all.
+    count either way (WGN declares it, HCP declares the features themselves
+    -- see _hcp_b). effect_llr is NaN on the null path, which declares no
+    effect at all.
 
     Args:
         out: the tidy DataFrame being built
-        col (Callable): name -> that column of the provenance frame, or an
-            all-NaN column when the frame lacks it
+        raw: the provenance DataFrame it is being built from
     """
+    col = _col_fnc(raw)
     out['source'] = col(f'{_CELL_IN}.kwargs_data.source').map(
         {'wgn': 'WGN', 'hcp': 'HCP'})
     out['seed'] = pd.to_numeric(col(f'{_CELL_IN}.kwargs_data.seed'),
                                 errors='coerce')
-    hcp_b = col(f'{_CELL_IN}.kwargs_data.hcp_feats').map(
-        lambda v: len(v) if isinstance(v, (list, tuple)) else np.nan)
     out['b'] = pd.to_numeric(col(f'{_CELL_IN}.kwargs_data.b'),
-                             errors='coerce').fillna(hcp_b)
+                             errors='coerce').fillna(_hcp_b(raw))
     out['effect_llr'] = pd.to_numeric(
         col(f'{_CELL_IN}.kwargs_effect.effect_llr'), errors='coerce')
 
@@ -457,15 +498,11 @@ def tidy_run_ana(raw):
     if raw.empty:
         return raw
 
-    def col(name):
-        """Return raw[name], or an all-NaN column when absent."""
-        if name in raw.columns:
-            return raw[name]
-        return pd.Series(np.nan, index=raw.index)
+    col = _col_fnc(raw)
 
     out = pd.DataFrame(index=raw.index)
     out['label'] = col('run_ana.in.ana').map(_LABEL_OF_ANA)
-    _add_cell_cols(out, col)
+    _add_cell_cols(out, raw)
     # num_img is a WGN axis only (HCP's N is its cohort), so HCP rows stay NaN
     out['num_img'] = pd.to_numeric(col(f'{_CELL_IN}.kwargs_data.num_img'),
                                    errors='coerce')
@@ -1787,11 +1824,7 @@ def _tidy_flat_cache(raw, leaf: str, label_col: str, label_fn=None):
         n_selected (the leaf's own region count, nan for a leaf that returns
         none) and the derived dice/sens/ppv/spec (empty in, empty out).
     """
-    def col(name):
-        """Return raw[name], or an all-NaN column when absent."""
-        if name in raw.columns:
-            return raw[name]
-        return pd.Series(np.nan, index=raw.index)
+    col = _col_fnc(raw)
 
     label = col(label_col)
     if label_fn is not None:
@@ -1799,7 +1832,7 @@ def _tidy_flat_cache(raw, leaf: str, label_col: str, label_fn=None):
 
     out = pd.DataFrame(index=raw.index)
     out['label'] = label
-    _add_cell_cols(out, col)
+    _add_cell_cols(out, raw)
     for cnt in ('tp', 'fp', 'tn', 'fn'):
         out[cnt] = pd.to_numeric(col(f'{leaf}.out.score.{cnt}'),
                                  errors='coerce')
@@ -2544,11 +2577,7 @@ def tidy_runtime(name: str, raw):
 
     leaf, x_name = _RUNTIME_SPEC[name]
 
-    def col(c):
-        """Return raw[c], or an all-NaN column when absent."""
-        if c in raw.columns:
-            return raw[c]
-        return pd.Series(np.nan, index=raw.index)
+    col = _col_fnc(raw)
 
     out = pd.DataFrame(index=raw.index)
     out['time_sec'] = pd.to_numeric(col(f'{leaf}.time_sec'), errors='coerce')
@@ -2560,8 +2589,7 @@ def tidy_runtime(name: str, raw):
     if x_name == 'num_vox':
         out['x'] = out['num_vox']
     elif x_name == 'b':
-        out['x'] = col(f'{_CELL_IN}.kwargs_data.hcp_feats').map(
-            lambda v: len(v) if isinstance(v, (list, tuple)) else np.nan)
+        out['x'] = _hcp_b(raw)
     else:
         out['x'] = pd.to_numeric(col(f'{leaf}.in.{x_name}'), errors='coerce')
     out['x_name'] = x_name

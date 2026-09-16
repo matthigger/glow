@@ -39,6 +39,25 @@ from .store import MEMORY, RECORDER
 # magnitude.
 LLR_RTOL = 1e-3
 
+
+def y_value_hash(y) -> str:
+    """Return a hash of y's values, whatever memory layout they are in.
+
+    What a rebuild can honestly promise is the same intensities in the same
+    voxel order, not the same bytes: a crop's layout is whatever numpy's
+    advanced indexing hands back, which varies with the shape it was given,
+    while a source loads in one fixed order. Canonicalizing to C order
+    before hashing compares the images rather than their arrangement.
+
+    Args:
+        y (np.array): (b, num_img, num_vox) intensities
+
+    Returns:
+        hash (str): joblib.hash of y in C order
+    """
+    return joblib.hash(np.ascontiguousarray(y))
+
+
 # the last cell built, as {uid: Experiment}. A cell's leaves each need the
 # same Experiment, and the driver runs them back to back, so the first leaf
 # builds it and its siblings read it here. One entry: the next cell drops it,
@@ -65,8 +84,8 @@ class ExpEffect:
             path.
         x (np.array): (a, num_img) design matrix, bias row included
         contrast (np.array): (a,) boolean, True for features of interest
-        y_hash (str): joblib.hash of the clean y over mask_ana, before any
-            effect was planted
+        y_hash (str): the clean y's value hash over mask_ana, before any
+            effect was planted (see y_value_hash)
     """
 
     def __init__(self, *, uid: str, kwargs_data: dict, kwargs_effect,
@@ -123,10 +142,11 @@ class ExpEffect:
                 from, or a plant does not re-measure to its effect_llr
         """
         y = self.source.load(self.mask_ana)
-        if joblib.hash(y) != self.y_hash:
+        got = y_value_hash(y)
+        if got != self.y_hash:
             raise ValueError(
                 f'{self.source!r} no longer reads the images this cell was '
-                f'built from: y hashes {joblib.hash(y)}, the cell recorded '
+                f'built from: y hashes {got}, the cell recorded '
                 f'{self.y_hash}')
 
         exp = Experiment(y=y, mask_idx=get_mask_idx(self.mask_ana),
@@ -237,7 +257,7 @@ def get_exp_effect(kwargs_data, kwargs_effect=None) -> ExpEffect:
 
     # the clean images as loaded, which is what a rebuild reads back and what
     # the effect was solved against
-    y_hash = joblib.hash(exp.y)
+    hash_y = y_value_hash(exp.y)
     mask_ana = exp.mask_idx > -1
 
     if kwargs_effect is not None:
@@ -253,7 +273,7 @@ def get_exp_effect(kwargs_data, kwargs_effect=None) -> ExpEffect:
                      kwargs_effect=kwargs_effect, source=exp.source,
                      mask_ana=mask_ana, mask_dead=exp.mask_dead,
                      effect_list=effect_list, x=exp.x, contrast=exp.contrast,
-                     y_hash=y_hash)
+                     y_hash=hash_y)
 
 
 def build_cell(cell: ExpEffect):

@@ -16,7 +16,7 @@ from glow._extra.benchmark import cell as cell_mod, store
 from glow._extra.benchmark import data
 from glow._extra.benchmark.cell import (ExpEffect, build_cell,
                                         exp_effect_recipe, get_exp_effect)
-from glow.effect import ExtenterMinVar
+from glow.effect import ExtenterMinVar, ExtenterSphere
 from glow.experiment.exper import ExperimentScaled
 
 
@@ -138,6 +138,19 @@ class TestRebuild:
         assert len(exp.patch_list) == 1
         np.testing.assert_array_equal(exp.patch_list[0]['mask'],
                                       cell.mask_target_list[0])
+
+    @pytest.mark.parametrize('b', [1, 2])
+    def test_rebuilds_a_cropped_cell(self, b):
+        # a crop's memory layout is whatever numpy's advanced indexing hands
+        # back -- not what a source loads, and different again at each b --
+        # so what the rebuild is checked against has to be the images and
+        # not their arrangement (see cell.y_value_hash)
+        cell = get_exp_effect(
+            _kwargs_data(b=b, extenter=ExtenterSphere(radius=2, seed=0)),
+            _kwargs_effect())
+        exp = cell.build()
+        assert exp.y.shape[2] == int(cell.mask_ana.sum())
+        assert exp.y.shape[2] < 7 ** 3
 
     def test_builds_the_null_path_too(self):
         exp = get_exp_effect(_kwargs_data()).build()
@@ -272,6 +285,15 @@ class TestSplitCell:
         cell.effect_list[1]['offset'] = cell.effect_list[1]['offset'] * 2
         with pytest.raises(ValueError, match='effect 1'):
             cell.build()
+
+
+def test_the_value_hash_ignores_memory_layout():
+    """One layout or the other, the same images hash the same."""
+    y = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    assert (cell_mod.y_value_hash(np.ascontiguousarray(y))
+            == cell_mod.y_value_hash(np.asfortranarray(y)))
+    # and it is still a hash of the values
+    assert cell_mod.y_value_hash(y) != cell_mod.y_value_hash(y + 1)
 
 
 def test_the_payload_is_an_exp_effect():

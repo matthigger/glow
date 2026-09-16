@@ -162,6 +162,39 @@ class TestSourceNifti:
         assert np.array_equal(exp.source.load(), exp.y)
 
 
+class TestLayout:
+    """Every source loads in the layout the statistics read.
+
+    get_mancova reshapes y to (b, num_img * num_vox) in Fortran order --
+    a view of an F-contiguous array, a copy of anything else -- and
+    Experiment.inflate and smooth_y allocate the same way, so the layout
+    is part of the contract rather than whatever the last gather produced.
+    """
+
+    def test_gauss_loads_fortran_order(self):
+        """Whole support or a subset, the gather comes back F-contiguous."""
+        exp = ExperimentImageOnly.from_gauss(b=2, num_img=3, shape=SHAPE,
+                                             seed=0)
+        assert exp.source.load().flags['F_CONTIGUOUS']
+        assert exp.source.load(_checkerboard()).flags['F_CONTIGUOUS']
+
+    def test_nifti_loads_fortran_order(self, nii_paths):
+        """The NIfTI reader allocates in that layout too."""
+        df, mask_path, _ = nii_paths
+        exp = ExperimentImageOnly.from_paths(df, mask=mask_path)
+        assert exp.source.load().flags['F_CONTIGUOUS']
+        subset = _checkerboard() & exp.source.mask
+        assert exp.source.load(subset).flags['F_CONTIGUOUS']
+
+    def test_the_reshape_the_statistics_make_is_a_view(self):
+        """What the layout is for: no copy of y on the way into a fit."""
+        exp = ExperimentImageOnly.from_gauss(b=2, num_img=3, shape=SHAPE,
+                                             seed=0)
+        y = exp.source.load()
+        flat = y.reshape((y.shape[0], -1), order='F')
+        assert np.shares_memory(flat, y)
+
+
 class TestSourceIsCarried:
     """Which operations keep a source, and which cannot honour one."""
 
