@@ -5,6 +5,10 @@ factories that build it (from Gaussian samples, from a folder search, or
 from an explicit path map).  Experiment adds a design matrix x and a
 contrast, plus Freedman-Lane permutation.  ExperimentScaled pre-processes
 y (zero-mean, variance-normalise, PCA) before analysis.
+
+Each factory also attaches the source its images came from
+(glow.experiment.source), so an experiment cropped down to its analysis
+support can read voxels outside it again.
 """
 
 import pathlib
@@ -14,13 +18,13 @@ from copy import deepcopy
 
 import numpy as np
 import pandas as pd
-import scipy.linalg
 
 import glow.effect
 import glow.mask
 from .load_image import load_image_color, load_image_nii
 from .permute import get_freed_lane
 from .sigma import stretch_sigma
+from .source import SourceGauss, SourceNifti
 from ..mask import get_mask_idx
 
 
@@ -45,12 +49,18 @@ class ExperimentImageOnly:
             Image-space, like every other mask here (an effect's support,
             an analysis's mask_active), so it stays readable after
             mask_idx renumbers the voxels that remain.
+        source (ImageSource | None): where the images came from, able to
+            read voxels this experiment no longer holds
+            (glow.experiment.source). None where they cannot be read
+            again, either because the factory attaches no source or
+            because an operation since then cannot be replayed onto
+            freshly loaded voxels.
         meta (dict): optional metadata (subjects, features, affine, etc.)
             not used by analysis — propagated for export / display
     """
 
-    def __init__(self, *, y, mask_idx, mask_dead=None, meta: dict = None,
-                 dtype=None, **kwargs):
+    def __init__(self, *, y, mask_idx, mask_dead=None, source=None,
+                 meta: dict = None, dtype=None, **kwargs):
         """Store imaging data, optionally casting y to a target dtype.
 
         Args:
@@ -59,6 +69,8 @@ class ExperimentImageOnly:
             mask_dead (np.array): (X, Y, Z) boolean of dropped voxels, or
                 None. Named here rather than swept into kwargs so it
                 survives _copy_with, which rebuilds through __init__.
+            source (ImageSource): the images' source, or None; named
+                here for the same reason as mask_dead
             meta (dict): optional metadata
             dtype: if not None and y.dtype differs, cast y to dtype (no
                 copy when already matching).  Default None preserves
@@ -70,6 +82,7 @@ class ExperimentImageOnly:
         self.y = y
         self.mask_idx = mask_idx
         self.mask_dead = mask_dead
+        self.source = source
         self.meta = meta if meta is not None else {}
 
     @property
@@ -118,7 +131,8 @@ class ExperimentImageOnly:
                 compute_llr_batched hot loop in float32.
 
         Returns:
-            ExperimentImageOnly with sampled y
+            ExperimentImageOnly with sampled y, drawn through the
+            SourceGauss it carries (so an inflate redraws the same box)
         """
         if b is None:
             if mu is not None:
@@ -128,33 +142,16 @@ class ExperimentImageOnly:
             else:
                 b = 1
 
-        num_vox = np.prod(shape)
-        rng = np.random.default_rng(seed=seed)
-        y = rng.multivariate_normal(np.zeros(b), np.eye(b), num_img * num_vox)
-
-        y = y.reshape((b, num_img, num_vox))
-        y = y - y.mean(axis=(1, 2))[:, np.newaxis, np.newaxis]
-        y = y.reshape((b, -1))
-
-        if cov is not None:
-            # project to proper covariance
-            _cov = y @ y.T / (num_img * num_vox - 1)
-            p = np.linalg.inv(scipy.linalg.sqrtm(_cov))
-            p = scipy.linalg.sqrtm(cov) @ p
-            y = p @ y
-
-        if mu is not None:
-            # add to proper mean
-            y = y + mu[:, np.newaxis]
+        source = SourceGauss(shape=shape, b=b, num_img=num_img, seed=seed,
+                             mu=mu, cov=cov, dtype=dtype)
 
         meta = kwargs.pop('meta', {})
-        meta.setdefault('features', [f'feat_{i}' for i in range(b)])
+        meta.setdefault('features', list(source.features))
         meta.setdefault('subjects',
                         [f'subject_{i:03d}' for i in range(num_img)])
-        y = y.reshape((b, num_img, num_vox)).astype(dtype, copy=False)
-        return cls(y=y,
+        return cls(y=source.load(),
                    mask_idx=get_mask_idx(np.ones(shape)),
-                   meta=meta, **kwargs)
+                   source=source, meta=meta, **kwargs)
 
     @classmethod
     def _search_files(cls, folder, sbj_regex: str, img_glob_dict: dict):
@@ -265,11 +262,16 @@ class ExperimentImageOnly:
 
         nii_in_file = ['.nii' in str(file) for file in df.values.flatten()]
         affine = None
+        source = None
         subjects = sorted(df.index)
         if all(nii_in_file):
             # NIfTI path streams to y directly, holding no per-image dict
             y, y_names, mask_idx, affine = load_image_nii(
                 df, dtype=dtype, mask=mask)
+            # the realized support, not the mask argument: it may have been
+            # inferred here, and a source has to know what it holds
+            source = SourceNifti(df, mask=mask_idx > -1, dtype=dtype,
+                                 affine=affine)
         elif not any(nii_in_file):
             assert mask is None, 'explicit mask only supported for NIfTI'
             feat_sbj_img, mask_idx = load_image_color(
@@ -303,7 +305,8 @@ class ExperimentImageOnly:
         if affine is not None:
             meta.setdefault('affine', affine)
 
-        return cls(y=y, mask_idx=mask_idx, meta=meta, **kwargs)
+        return cls(y=y, mask_idx=mask_idx, source=source, meta=meta,
+                   **kwargs)
 
     def bootstrap_img(self, n: int, seed: int = None,
                       noise_scale: float = 0):
@@ -351,13 +354,17 @@ class ExperimentImageOnly:
             **overrides: further attributes for _copy_with
 
         Returns:
-            exp: a new experiment over those images, same voxels
+            exp: a new experiment over those images, same voxels. It
+                carries no source: a source reloads the images it was
+                given, so it would hand back the full set in the original
+                order, not this subset (see glow.experiment.source).
         """
         meta = deepcopy(self.meta)
         subjects = meta.get('subjects')
         if subjects is not None and len(subjects) == self.y.shape[1]:
             meta['subjects'] = [subjects[i] for i in img_idx]
 
+        overrides.setdefault('source', None)
         return self._copy_with(y=self.y[:, img_idx, :], meta=meta,
                                **overrides)
 
@@ -483,7 +490,7 @@ class ExperimentImageOnly:
 
         return Experiment(x=x, contrast=contrast, y=self.y,
                           mask_idx=self.mask_idx, mask_dead=self.mask_dead,
-                          meta=self.meta, **kwargs)
+                          source=self.source, meta=self.meta, **kwargs)
 
     def _copy_with(self, **overrides):
         """Return a deep copy of this experiment with attributes overridden.
@@ -582,7 +589,9 @@ class ExperimentImageOnly:
             sigma_scale (float): optional sigma stretch factor
 
         Returns:
-            new experiment with offset applied
+            new experiment with offset applied, carrying no source: what
+                a source reloads is the images, which do not have this
+                offset in them (see glow.experiment.source).
         """
         assert (mask is None) != (vox_idx is None), \
             'either mask xor vox_idx required'
@@ -597,7 +606,7 @@ class ExperimentImageOnly:
             y[:, :, vox_idx] = stretch_sigma(y=y[:, :, vox_idx],
                                              scale=sigma_scale)
 
-        return self._copy_with(y=y)
+        return self._copy_with(y=y, source=None)
 
 
 class Experiment(ExperimentImageOnly):
@@ -741,6 +750,9 @@ class Experiment(ExperimentImageOnly):
                 freed_lane = freed_lane.astype(self.y.dtype, copy=False)
             y = np.einsum('abc,bd->adc', self.y, freed_lane, optimize=True)
 
+        # no source: it reloads the images unpermuted, and the permutation
+        # mixes them, so freshly loaded voxels could not be brought into
+        # line with the ones already here
         return Experiment(x=self.x, y=y, contrast=self.contrast,
                           mask_idx=self.mask_idx, mask_dead=self.mask_dead,
                           meta=deepcopy(self.meta))

@@ -7,9 +7,11 @@ the real QSIRecon dwimap maps.
 import io
 import json
 
+import numpy as np
 import pytest
 
 from glow._extra.benchmark import hcp
+from glow.mask import get_mask_idx
 
 
 # ---------------------------------------------------------------------------
@@ -231,3 +233,85 @@ class TestWriteAtomic:
         hcp._write_atomic(dest, _record)
         assert staged[0] != staged[1]
         assert dest.read_bytes() == b'x'
+
+
+# ---------------------------------------------------------------------------
+# SourceBundle / build_exp_img_from_bundle
+# ---------------------------------------------------------------------------
+
+def _lay_down_bundle(monkeypatch, tmp_path, feats=('fa', 'md'), shape=(2, 3, 4),
+                     num_img=3):
+    """Write a synthetic npy bundle under tmp_path and point hcp at it.
+
+    Every path helper goes through bundle_dir, so patching that one moves
+    the whole bundle. Feature arrays hold distinct ramps, so a stack in
+    the wrong feature order, or a gather in the wrong voxel order, cannot
+    pass for the right one.
+
+    Returns:
+        mask (np.array): (X, Y, Z) boolean support, one voxel off
+        y_feat (dict): feat -> (num_img, num_vox) array as written
+    """
+    monkeypatch.setattr(hcp, 'bundle_dir', lambda: tmp_path)
+    (tmp_path / 'feat').mkdir(parents=True, exist_ok=True)
+
+    mask = np.ones(shape, dtype=bool)
+    mask[0, 0, 0] = False
+    num_vox = int(mask.sum())
+    np.save(hcp.bundle_mask_path(), mask)
+    np.save(hcp.bundle_affine_path(), np.diag([2.0, 2.0, 2.0, 1.0]))
+    hcp.bundle_meta_path().write_text(json.dumps(
+        {'subjects': [f'sbj{i}' for i in range(num_img)]}))
+
+    y_feat = {}
+    for feat_idx, feat in enumerate(feats):
+        y = (np.arange(num_img * num_vox, dtype=np.float32)
+             .reshape((num_img, num_vox)) + 1000 * feat_idx)
+        np.save(hcp.bundle_feat_path(feat), y)
+        y_feat[feat] = y
+    return mask, y_feat
+
+
+class TestSourceBundle:
+    """The bundle reads back through a source, in the order it was asked."""
+
+    def test_load_stacks_the_features_asked_for(self, monkeypatch, tmp_path):
+        """y's feature axis follows the feats argument, not the bundle."""
+        _, y_feat = _lay_down_bundle(monkeypatch, tmp_path)
+        source = hcp.SourceBundle(('md', 'fa'))
+        y = source.load()
+        assert source.features == ('md', 'fa')
+        assert np.array_equal(y[0], y_feat['md'])
+        assert np.array_equal(y[1], y_feat['fa'])
+
+    def test_subset_matches_the_columns_it_stands_for(self, monkeypatch,
+                                                      tmp_path):
+        """A gather returns the mask's columns in get_mask_idx order."""
+        mask, _ = _lay_down_bundle(monkeypatch, tmp_path)
+        source = hcp.SourceBundle(('fa',))
+        y_all = source.load()
+
+        sub = mask.copy()
+        sub.ravel()[1::2] = False
+        want = y_all[:, :, get_mask_idx(mask)[sub]]
+        assert np.array_equal(source.load(sub), want)
+
+    def test_reaching_past_the_brain_raises(self, monkeypatch, tmp_path):
+        """The brain mask is the ceiling; asking past it is refused."""
+        mask, _ = _lay_down_bundle(monkeypatch, tmp_path)
+        source = hcp.SourceBundle(('fa',))
+        with pytest.raises(ValueError, match='outside the source support'):
+            source.load(np.ones(mask.shape, dtype=bool))
+
+    def test_the_loader_reads_through_the_source(self, monkeypatch, tmp_path):
+        """build_exp_img_from_bundle returns the source's own y, and it."""
+        mask, y_feat = _lay_down_bundle(monkeypatch, tmp_path)
+        exp = hcp.build_exp_img_from_bundle(('fa', 'md'))
+
+        assert isinstance(exp.source, hcp.SourceBundle)
+        assert np.array_equal(exp.y, exp.source.load())
+        assert np.array_equal(exp.y[0], y_feat['fa'])
+        assert np.array_equal(exp.mask_idx, get_mask_idx(mask))
+        assert exp.meta['features'] == ['fa', 'md']
+        assert exp.meta['subjects'] == ['sbj0', 'sbj1', 'sbj2']
+        assert list(exp.meta) == ['subjects', 'features', 'affine']

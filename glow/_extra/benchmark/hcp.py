@@ -30,6 +30,8 @@ import zipfile
 import numpy as np
 
 from glow._extra.benchmark import file
+from glow.experiment.source import ImageSource
+from glow.mask import get_mask_idx
 
 
 ZENODO_RECORD_ID = '20736221'
@@ -234,6 +236,71 @@ def _dump_bundle(exp_img) -> None:
                       lambda h, y=exp_img.y[feat_idx]: np.save(h, y))
 
 
+class SourceBundle(ImageSource):
+    """The npy bundle, read back as one column gather per feature.
+
+    build_exp_img_from_bundle loads through this, so the two cannot
+    disagree about feature order or dtype. A voxel subset is a gather over
+    a memory-mapped read, so an inflate pays for the voxels it asks for
+    rather than for the whole brain, and the page cache shares those pages
+    with every other process on the box.
+
+    Attributes:
+        feats (tuple[str]): the features to stack, in y's feature order
+    """
+
+    def __init__(self, feats):
+        """Store the feature tuple (see the class Attributes)."""
+        self.feats = tuple(feats)
+
+    def __repr__(self):
+        """A compact identity string: the features this reads."""
+        return f'{type(self).__name__}(feats={self.feats})'
+
+    @property
+    def features(self) -> tuple:
+        """Return the features, in y's feature order."""
+        return self.feats
+
+    @property
+    def mask(self):
+        """Return the bundle's (X, Y, Z) boolean brain mask."""
+        return np.load(bundle_mask_path())
+
+    @property
+    def affine(self):
+        """Return the maps' (4, 4) voxel-to-mm affine."""
+        return np.load(bundle_affine_path())
+
+    def load(self, mask=None):
+        """Gather mask's columns out of each feature array.
+
+        Ensures the bundle first, so a worker inflating an experiment
+        stages what it needs exactly as a build would.
+
+        Args:
+            mask (np.array): (X, Y, Z) boolean subset of the brain mask,
+                or None for the whole brain
+
+        Returns:
+            y (np.array): (b, num_img, num_vox) float32 intensities,
+                voxels in get_mask_idx order over mask
+        """
+        ensure_hcp_bundle(self.feats)
+        mask_src = self.mask
+        mask = mask_src if mask is None else self._as_subset(mask)
+        cols = get_mask_idx(mask_src)[mask]
+
+        y = None
+        for feat_idx, feat in enumerate(self.feats):
+            arr = np.load(bundle_feat_path(feat), mmap_mode='r')
+            if y is None:
+                y = np.empty((len(self.feats), arr.shape[0], cols.size),
+                             dtype=arr.dtype)
+            y[feat_idx] = arr[:, cols]
+        return y
+
+
 def build_exp_img_from_bundle(feats):
     """Glue the bundle into an ExperimentImageOnly for a feature subset.
 
@@ -251,25 +318,20 @@ def build_exp_img_from_bundle(feats):
     Returns:
         ExperimentImageOnly with y of shape (b, num_img, num_vox) float32.
     """
-    import glow.mask
     from glow.experiment import ExperimentImageOnly
 
     feats = tuple(feats)
     ensure_hcp_bundle(feats)
 
-    mask_idx = glow.mask.get_mask_idx(np.load(bundle_mask_path()))
-    affine = np.load(bundle_affine_path())
+    source = SourceBundle(feats)
+    mask_idx = get_mask_idx(source.mask)
     subjects = json.loads(bundle_meta_path().read_text())['subjects']
 
-    y0 = np.load(bundle_feat_path(feats[0]))
-    y = np.empty((len(feats), *y0.shape), dtype=y0.dtype)
-    y[0] = y0
-    for feat_idx, feat in enumerate(feats[1:], start=1):
-        y[feat_idx] = np.load(bundle_feat_path(feat))
-
     # mirror from_paths' meta exactly (key order included) so the hash matches
-    meta = {'subjects': subjects, 'features': list(feats), 'affine': affine}
-    return ExperimentImageOnly(y=y, mask_idx=mask_idx, meta=meta)
+    meta = {'subjects': subjects, 'features': list(feats),
+            'affine': source.affine}
+    return ExperimentImageOnly(y=source.load(), mask_idx=mask_idx,
+                               source=source, meta=meta)
 
 
 def _accept_dua() -> bool:
