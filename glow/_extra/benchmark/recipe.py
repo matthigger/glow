@@ -262,10 +262,10 @@ def recipe_for_call(fnc, kwargs, parents=(), ignore=None) -> Recipe:
 def seed_from_uid(uid: str, bits: int = 32) -> int:
     """Derive a reproducible RNG seed from a uid.
 
-    The declared replacement for seeding off joblib.hash(exp): same intent (a
-    placement that varies per data realization but is fixed across the effect
-    grid), now a function of the declaration rather than of the array bytes, so
-    it cannot drift with a BLAS kernel.
+    How a sampler that needs a seed gets one: a placement that varies per
+    data realization but is fixed across the effect grid above it, and a
+    function of the declaration rather than of any array's bytes, so it
+    cannot drift with a BLAS kernel.
 
     Args:
         uid (str): the parent artifact's uid.

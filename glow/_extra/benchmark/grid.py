@@ -81,10 +81,10 @@ def get_kwargs_effect_list(*, llr_list, n_vox_frac_list):
 
     The cartesian product of (effect_llr, n_vox_frac): a per-voxel strength and
     a support size as a fraction of each cell's analysis volume. Each cell
-    carries kind='single' and the ingredients effect_factory_single builds the
-    support from -- the ExtenterMinVar class, n_vox_frac, and
-    seed_from_exp=True so the placement is derived from the experiment (see
-    config's module docstring).
+    carries kind='single' and the ingredients effect_factory_single builds
+    the support from: the ExtenterMinVar class and n_vox_frac. The placement
+    seed is not among them -- the builder derives it from the cell's declared
+    uid (see config's module docstring).
     llr_list=None is the null / FWER-calibration path -- the list [None] (plant
     nothing).
 
@@ -104,7 +104,7 @@ def get_kwargs_effect_list(*, llr_list, n_vox_frac_list):
     for llr, frac in itertools.product(llr_list, n_vox_frac_list):
         kwargs_effect_list.append(dict(
             kind='single', effect_llr=float(llr), extenter_cls=ExtenterMinVar,
-            n_vox_frac=float(frac), seed_from_exp=True))
+            n_vox_frac=float(frac)))
     return kwargs_effect_list
 
 
@@ -114,9 +114,10 @@ def get_kwargs_two_effect_list(*, llr_list, angle_list, n_vox_frac,
 
     Two adjacent equal-LLR effects planted on the spectral halves of one n_vox
     extent, their feature directions angle degrees apart. Each cell carries
-    kind='split' and seed_from_exp=True, so both the support placement and the
-    direction pair are derived from the experiment (see effect_factory_split).
-    The angle sweep at fixed llr is the cleaving / merge-cost curve.
+    kind='split'; the support placement and the direction pair share one seed
+    the builder derives from the cell's declared uid (see
+    effect_factory_split). The angle sweep at fixed llr is the cleaving /
+    merge-cost curve.
 
     No CONFIG cache declares this grid; it is the entry point for adding one
     (the split effect stage it feeds stays wired up and tested). b=3 or more
@@ -141,7 +142,7 @@ def get_kwargs_two_effect_list(*, llr_list, angle_list, n_vox_frac,
     """
     return [dict(kind='split', effect_llr=float(llr),
                  extenter_cls=extenter_cls, n_vox_frac=float(n_vox_frac),
-                 angle=float(angle), seed_from_exp=True)
+                 angle=float(angle))
             for llr, angle in itertools.product(llr_list, angle_list)]
 
 

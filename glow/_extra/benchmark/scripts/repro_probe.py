@@ -91,8 +91,7 @@ def build_cell(seed: int, effect_llr: float, b: int = 2, num_img: int = 100):
     exp_clean = inspect.unwrap(DATA_FACTORY['wgn'])(**kwargs_build)
     exp, mask_target_list = inspect.unwrap(EFFECT_FACTORY['single'])(
         exp_clean, parent_uid=data_recipe(kwargs_data).uid,
-        effect_llr=effect_llr, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
-        seed_from_exp=True)
+        effect_llr=effect_llr, extenter_cls=ExtenterMinVar, n_vox_frac=0.1)
     return exp_clean, exp, mask_target_list
 
 

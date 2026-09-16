@@ -302,8 +302,7 @@ class TestRunSegment:
         return _planted_cell(
             dict(source='wgn', shape=(7, 7, 7), b=2, num_img=20, a=1,
                  seed=_fresh_seed()),
-            dict(effect_llr=0.1, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
-                 seed=0))
+            dict(effect_llr=0.1, extenter_cls=ExtenterMinVar, n_vox_frac=0.1))
 
     def test_returns_oracle_confusion_counts(self):
         exp, mask, uid = self._planted()
@@ -364,8 +363,7 @@ class TestRunStat:
         return _planted_cell(
             dict(source='wgn', shape=(6, 6, 6), b=2, num_img=24, a=1,
                  seed=_fresh_seed() if seed is None else seed),
-            dict(effect_llr=0.15, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
-                 seed=0))
+            dict(effect_llr=0.15, extenter_cls=ExtenterMinVar, n_vox_frac=0.1))
 
     def test_matches_standalone_fit(self):
         # the shared walk is just a precompute of the same stat matrix, so a
@@ -417,8 +415,7 @@ class TestRunPrune:
         return _planted_cell(
             dict(source='wgn', shape=(6, 6, 6), b=2, num_img=24, a=1,
                  seed=_fresh_seed()),
-            dict(effect_llr=0.2, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
-                 seed=0))
+            dict(effect_llr=0.2, extenter_cls=ExtenterMinVar, n_vox_frac=0.1))
 
     def test_returns_prune_score(self):
         exp, mask, uid = self._planted()
@@ -492,8 +489,7 @@ class TestRunInnerPerm:
         return _planted_cell(
             dict(source='wgn', shape=(6, 6, 6), b=2, num_img=24, a=1,
                  seed=_fresh_seed()),
-            dict(effect_llr=0.2, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
-                 seed=0))
+            dict(effect_llr=0.2, extenter_cls=ExtenterMinVar, n_vox_frac=0.1))
 
     def test_returns_the_selection_and_the_max_z_region(self):
         exp, mask, uid = self._planted()
@@ -583,8 +579,7 @@ class TestRuntimeLeaves:
         return _planted_cell(
             dict(source='wgn', shape=(6, 6, 6), b=2, num_img=20, a=1,
                  seed=_fresh_seed()),
-            dict(effect_llr=0.1, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
-                 seed=0))
+            dict(effect_llr=0.1, extenter_cls=ExtenterMinVar, n_vox_frac=0.1))
 
     def _glow(self):
         return AnalysisGLOWSplit(n_perm_fwer=500)

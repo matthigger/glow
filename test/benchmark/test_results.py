@@ -47,8 +47,7 @@ def _ana_grid():
 
 
 def _effect_cell():
-    return dict(effect_llr=0.05, extenter_cls=ExtenterSphere, n_vox_frac=0.1,
-                seed=0)
+    return dict(effect_llr=0.05, extenter_cls=ExtenterSphere, n_vox_frac=0.1)
 
 
 @pytest.fixture

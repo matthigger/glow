@@ -55,7 +55,7 @@ def _data_grid(n):
 def _effect_grid(n):
     """n effect cells (distinct llr), each a fixed-size sphere plant."""
     return [dict(effect_llr=0.05 + i, extenter_cls=ExtenterSphere,
-                 n_vox_frac=_N_VOX_FRAC, seed=0)
+                 n_vox_frac=_N_VOX_FRAC)
             for i in range(n)]
 
 

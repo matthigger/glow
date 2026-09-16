@@ -16,9 +16,10 @@ the realized HCP feature subset), so the catalogue is what runs.
 
 Seeding. A data cell's seed drives its whole realization -- the WGN draw / HCP
 feature subset, the x design, the analysis crop. The effect grid is shared
-across data cells and carries no per-data seed, so the support is placed with
-seed_from_exp: effect_factory derives its placement seed from a hash of the
-experiment, giving each realization its own reproducible location.
+across data cells and carries no per-data seed, so the support is placed from
+the cell's declared uid (recipe.seed_from_uid), giving each realization its own
+location, constant across the effect grid above it and fixed by a declaration
+rather than by any array's bytes.
 
 Effect strength. effect_llr is the per-voxel (size-normalized) target, so the
 whole-region LLR is ~ effect_llr * n_vox (see glow.effect.impose). Sweeps hold

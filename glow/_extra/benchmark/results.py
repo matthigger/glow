@@ -7,153 +7,29 @@ exports) and its planted cells not yet fully recorded
 (incomplete_cell_indices, the rerun skip).
 
 Membership is recomputed from the current CONFIG at read time (not read off a
-stored tag) by walking the recorded provenance DAG forward from the cache's
-declared cells:
-
-  - Anchor at the data records. A data cell's kwargs are pure (no upstream
-    object), so its record key is joblib's args hash of the dispatched builder
-    (_data_record_key), found with no experiment rebuilt; a cell never run has
-    no record and drops out.
-  - Step forward to the effect records. Every record already stores the
-    link-type (Experiment) hashes of its inputs and outputs, so an effect
-    record that consumed an anchor's exp is one forward edge away; keep those
-    whose stored inputs match one of the cache's effect cells. A None effect
-    cell is the null path -- no effect record, the leaf hangs off the clean
-    exp -- so the anchor itself is the frontier.
-  - Step forward to the leaves. Take the fnc records off the frontier that
-    carry the cache's leaf function (a cache runs its whole fnc grid, and a
-    shared cell's other caches use a different leaf function).
+stored tag) by naming what the cache's cells produce and taking the records
+filed under those names: a cell's uid chain is a pure function of its declared
+kwargs (cell_leaf_uids), so a leaf can be named without building an
+Experiment, reading an upstream record, or comparing any array. A cell never
+run simply has no record and drops out.
 
 Deriving membership from the current CONFIG means an edited cache is reflected
 at once, with nothing stale to prune, and a cell shared by several caches lands
-in each. The walk reads only the records, never the experiment cache, so it is
-cheap; its one fragility is that a missing intermediate (effect) record drops
-the leaves below it.
+in each. Reading only uids means a leaf computed on another machine counts for
+its cell, and a missing intermediate record hides nothing below it.
 """
-import inspect
-from collections import defaultdict
-
 from . import config
-from .data import (DATA_FACTORY, EFFECT_FACTORY, RECORDER, data_recipe,
-                   effect_recipe)
-from .recipe import declared_ignore, recipe_for_call
-from .recorder import _cell
-
-# the builders a cell's 'source' / 'kind' key selects, shared with the runner
-# (data.py) rather than mirrored here, so a reader and a runner cannot disagree
-# about which builder a cell means.
-_DATA_FACTORY = DATA_FACTORY
-_EFFECT_FACTORY = EFFECT_FACTORY
-
-
-def _raw(fnc):
-    """Return the undecorated function under a memoised+recorded callable.
-
-    Peels joblib.Memory's .func then the recorder wrapper (inspect.unwrap), so
-    its signature / qualname / args hash match what the recorder filed the
-    record under (see recorder.Recorder._args_hash).
-    """
-    return inspect.unwrap(getattr(fnc, 'func', fnc))
-
-
-def _data_record_key(kwargs_data) -> str:
-    """Return the record key of the data_factory call for one data cell.
-
-    Dispatches on the cell's source like data_factory, then computes joblib's
-    args hash of the dispatched builder over the cell's remaining kwargs -- the
-    same key the recorder filed the build under -- so the data record is found
-    with nothing rebuilt (the extenter is content-hashed, so a freshly built
-    one matches the recorded call).
-
-    Args:
-        kwargs_data (dict): one data_factory cell, e.g. {'source': 'wgn', ...}.
-
-    Returns:
-        str: the args-hash record key (present in the records iff the cell ran).
-    """
-    kwargs = {k: v for k, v in kwargs_data.items() if k != 'source'}
-    return RECORDER._args_hash(_raw(_DATA_FACTORY[kwargs_data['source']]),
-                               (), kwargs)
-
-
-def _expected_inputs(fnc, kwargs, drop=()) -> dict:
-    """Return the celled inputs a recorded call to fnc(**kwargs) would store.
-
-    Binds kwargs to fnc's signature and applies its defaults (as the recorder
-    does at record time), then cells each value the same way, so the result
-    compares equal to the matching record's stored inputs. drop names inputs to
-    omit -- the driver-supplied / link-type args (exp) a config cell omits.
-
-    Args:
-        fnc (Callable): the recorded builder whose signature to bind against.
-        kwargs (dict): the config cell's kwargs (dispatch keys already removed).
-        drop (tuple[str]): input names to leave out of the comparison.
-
-    Returns:
-        dict: {input name: celled value} for the cell's own (non-dropped) args.
-    """
-    bound = inspect.signature(_raw(fnc)).bind_partial(**kwargs)
-    bound.apply_defaults()
-    return {k: _cell(v) for k, v in bound.arguments.items() if k not in drop}
-
-
-def _optional_inputs(fnc, kwargs, drop=()) -> set:
-    """Return the expected-input names that come from fnc's defaults.
-
-    A cell specifies some of a builder's parameters and leaves the rest at their
-    defaults. Only the specified ones must appear in a record: a parameter added
-    to the builder since a record was written is absent from it, and its absence
-    means the default (see _inputs_match).
-
-    Args:
-        fnc (Callable): the recorded builder.
-        kwargs (dict): the config cell's kwargs (dispatch keys removed).
-        drop (tuple[str]): input names left out of the comparison.
-
-    Returns:
-        set[str]: expected names the cell did not specify.
-    """
-    return set(_expected_inputs(fnc, kwargs, drop=drop)) - set(kwargs)
-
-
-def _inputs_match(record, expected, optional=()) -> bool:
-    """True if the record's inputs equal expected on every expected key.
-
-    A name in optional may be missing from the record -- it comes from a builder
-    default, and a record written before that parameter existed stored nothing
-    for it, so requiring it would drop every older record of that builder. A
-    name the record does carry must still match.
-
-    Args:
-        record (dict): the stored record.
-        expected (dict): {input name: celled value} to match (_expected_inputs).
-        optional (iterable[str]): expected names allowed to be absent
-            (_optional_inputs).
-
-    Returns:
-        bool: True if the record matches on every required key.
-    """
-    inputs = record.get('inputs', {})
-    for name, value in expected.items():
-        if name not in inputs:
-            if name in optional:
-                continue
-            return False
-        if inputs[name] != value:
-            return False
-    return True
+from .data import RECORDER, data_recipe, effect_recipe
+from .recipe import recipe_for_call
 
 
 def config_leaf_keys(name: str) -> list:
-    """Return the record keys of CONFIG cache name's leaves (forward walk).
+    """Return the record keys of CONFIG cache name's leaves.
 
-    Walks the recorded provenance DAG forward from the cache's declared cells:
-    anchor at the data records (_data_record_key), step to the effect records
-    whose stored inputs match a cache effect cell (or, for a None cell, take the
-    data record as the frontier -- the null path has no effect record), then
-    take the fnc records off that frontier with the cache's leaf function.
-    Membership is thus derived from the current CONFIG, so a dropped / changed
-    cell simply stops matching (see the module docstring).
+    Names every leaf uid this cache's cells produce (cell_leaf_uids) and takes
+    the records filed under them, so membership is derived from the current
+    CONFIG and independent of any array's bytes: a dropped or changed cell
+    stops matching, and a leaf computed on another machine is found here.
 
     Reads the in-memory records; call RECORDER.load() first to fold in what a
     parallel run left on disk.
@@ -166,68 +42,14 @@ def config_leaf_keys(name: str) -> list:
     """
     kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc = \
         config.CONFIG[name]
-    records = RECORDER.records
 
-    # the declared path: name every leaf uid this cache's cells produce and
-    # take the records filed under them. Independent of any array's bytes, so a
-    # leaf computed on another machine is found here.
     want = set()
     for kwargs_data in kwargs_data_list:
         for kwargs_effect in kwargs_effect_list:
             want |= set(cell_leaf_uids(kwargs_data, kwargs_effect,
                                        kwargs_fnc_list, fnc))
-    declared = {key for key, rec in records.items()
-                if rec.get('uid') in want}
-
-    # forward edges: an output link-hash -> the records consuming it as input
-    consumers_of = defaultdict(set)
-    for key, rec in records.items():
-        for h in rec.get('input_hashes', {}).values():
-            if h is not None:
-                consumers_of[h].add(key)
-
-    def children_of(key):
-        """The records consuming any of this record's link outputs (no self)."""
-        kids = set()
-        for h in records[key].get('output_hashes', {}).values():
-            if h is not None:
-                kids |= consumers_of.get(h, set())
-        kids.discard(key)
-        return kids
-
-    # anchor at the data records (a cell never run has no record, so drops out)
-    anchors = {k for k in map(_data_record_key, kwargs_data_list)
-               if k in records}
-
-    # effect frontier: the leaves' parents. A None cell is the null path (no
-    # effect record; the leaf hangs off the clean exp), so the anchor is the
-    # frontier; a planted cell's parents are the effect records off an anchor
-    # whose stored inputs match the cell.
-    parents = set()
-    for kwargs_effect in kwargs_effect_list:
-        if kwargs_effect is None:
-            parents |= anchors
-            continue
-        kind = kwargs_effect.get('kind', 'single')
-        cell = {k: v for k, v in kwargs_effect.items() if k != 'kind'}
-        expected = _expected_inputs(_EFFECT_FACTORY[kind], cell, drop=('exp',))
-        optional = _optional_inputs(_EFFECT_FACTORY[kind], cell, drop=('exp',))
-        for a in anchors:
-            parents |= {c for c in children_of(a)
-                        if _inputs_match(records[c], expected, optional)}
-
-    # leaves: the fnc records off the frontier. A cache runs its whole fnc grid,
-    # and a cache sharing a (data, effect) cell runs a different leaf function
-    # (run_ana vs run_segment / run_stat / ...), so the recorded function name
-    # alone selects this cache's leaves; the recipe within the grid is recovered
-    # downstream (see benchmark.plot).
-    fnc_name = _raw(fnc).__qualname__
-    leaves = set()
-    for p in parents:
-        for c in children_of(p):
-            if records[c]['function'] == fnc_name:
-                leaves.add(c)
-    return list(declared | leaves)
+    return [key for key, rec in RECORDER.records.items()
+            if rec.get('uid') in want]
 
 
 def planted_cells(name: str) -> list:
@@ -303,86 +125,31 @@ def get_cell_complete(kwargs_fnc_list, fnc):
     A cell's leaf uids come straight from the CONFIG (cell_leaf_uids), so
     completeness is set membership against the recorded uids: nothing is
     rebuilt and the answer does not depend on any array's bytes, which is what
-    lets a leaf computed on another machine count for its cell.
+    lets a leaf computed on another machine count for its cell. The recorded
+    uid index is built once and closed over; call RECORDER.load() first to
+    fold in what other writers left on disk.
 
-    A cell whose uids are not all present falls back to the hash walk -- anchor
-    at the data record, match the effect record off it by its stored inputs,
-    then require one recorded leaf per fnc-kwargs cell -- so cells recorded
-    before the recipe fields still read complete. Both indexes are built once
-    and closed over. Call RECORDER.load() first to fold in what other writers
-    left on disk.
-
-    Either way it errs safe: a cell that cannot be shown complete is rerun.
+    It errs safe: a cell that cannot be shown complete is rerun.
 
     Args:
         kwargs_fnc_list (list[dict]): the fnc-kwargs grid; a cell counts as
             complete only with one recorded leaf per entry.
-        fnc (Callable): the leaf measurement (memoised + recorded); names the
-            cell's leaf uids, and its recorded name selects them on the legacy
-            path.
+        fnc (Callable): the leaf measurement (memoised + recorded), which
+            names the cell's leaf uids.
 
     Returns:
         cell_complete (Callable): cell_complete(kwargs_data, kwargs_effect)
             -> bool, True when the cell's whole leaf set is recorded. A None
-            kwargs_effect is the null path, whose parent is the data record.
+            kwargs_effect is the null path, whose parent is the clean exp.
     """
-    records = RECORDER.records
-    recorded_uids = {rec['uid'] for rec in records.values() if rec.get('uid')}
-
-    # forward edges: an output link-hash -> the records consuming it as input
-    consumers_of = defaultdict(set)
-    for key, rec in records.items():
-        for h in rec.get('input_hashes', {}).values():
-            if h is not None:
-                consumers_of[h].add(key)
-
-    def children_of(key):
-        """The records consuming any of this record's link outputs (no self)."""
-        kids = set()
-        for h in records[key].get('output_hashes', {}).values():
-            if h is not None:
-                kids |= consumers_of.get(h, set())
-        kids.discard(key)
-        return kids
-
-    fnc_name = _raw(fnc).__qualname__
-    # one input fingerprint per fnc-kwargs cell, over the names that identify
-    # a leaf. The ignore list drops the driver-supplied inputs and execution
-    # knobs: a record stores them as provenance, not identity, so a cell that
-    # ran under different ones still has to match. Read off the decorator, as
-    # recipe_for_call does, so the two stay in step.
-    drop = ('exp', 'mask_target_list', *declared_ignore(fnc))
-    fnc_expected = [(_expected_inputs(fnc, kwargs, drop=drop),
-                     _optional_inputs(fnc, kwargs, drop=drop))
-                    for kwargs in kwargs_fnc_list]
+    recorded_uids = {rec['uid'] for rec in RECORDER.records.values()
+                     if rec.get('uid')}
 
     def cell_complete(kwargs_data, kwargs_effect) -> bool:
         """True if every fnc-kwargs leaf of this cell is recorded."""
-        want = cell_leaf_uids(kwargs_data, kwargs_effect, kwargs_fnc_list, fnc)
-        if want and recorded_uids.issuperset(want):
-            return True
-        anchor = _data_record_key(kwargs_data)
-        if anchor not in records:
-            return False
-        # the effect frontier: the anchor itself on the null path, else the
-        # effect record(s) off it whose stored inputs match the effect cell
-        if kwargs_effect is None:
-            frontier = {anchor}
-        else:
-            kind = kwargs_effect.get('kind', 'single')
-            cell = {k: v for k, v in kwargs_effect.items() if k != 'kind'}
-            builder = _EFFECT_FACTORY[kind]
-            expected = _expected_inputs(builder, cell, drop=('exp',))
-            optional = _optional_inputs(builder, cell, drop=('exp',))
-            frontier = {c for c in children_of(anchor)
-                        if _inputs_match(records[c], expected, optional)}
-            if not frontier:
-                return False
-        leaves = [records[c] for p in frontier for c in children_of(p)
-                  if records[c]['function'] == fnc_name]
-        return all(any(_inputs_match(rec, expected, optional)
-                       for rec in leaves)
-                   for expected, optional in fnc_expected)
+        want = cell_leaf_uids(kwargs_data, kwargs_effect, kwargs_fnc_list,
+                              fnc)
+        return bool(want) and recorded_uids.issuperset(want)
 
     return cell_complete
 
@@ -459,19 +226,15 @@ def incomplete_cell_indices(name: str, kwargs_fnc_list=None) -> list:
 def stat_cell_df():
     """Return the vba_stat cache's run_stat leaves, keyed by planted cell.
 
-    Part of the stat bake-off is recorded as run_stat leaves without their
-    data_factory / effect_factory ancestors, so the forward DAG walk
-    (config_leaf_keys) can attach neither source nor effect_llr and drops those
-    leaves. The stat comparison is within a planted cell (the five stats fit on
-    one experiment), so this reads the run_stat records directly and tags each
-    with its planted-exp link hash -- the cell id every variant of a cell
-    shares -- sidestepping the missing ancestors. Source / effect_llr are not
-    recovered (they live in the absent ancestors); the comparison does not
-    need them.
+    The stat comparison is within a planted cell (the five stats fit on one
+    experiment), so this reads the run_stat records directly and groups them
+    by the parent uid each declares -- the cell id every variant of a cell
+    shares. Source / effect_llr are not recovered (they live in the parent
+    record); the comparison does not need them.
 
     Returns:
         pandas.DataFrame: one row per run_stat leaf, columns cell (the planted
-            exp hash), ana (recipe repr), stat_name, and the score confusion
+            exp uid), ana (recipe repr), stat_name, and the score confusion
             counts num_vox / tp / fp / tn / fn (NaN where a leaf lacks them).
     """
     import pandas as pd
@@ -485,7 +248,7 @@ def stat_cell_df():
         score = (rec.get('outputs') or {}).get('score') or {}
         target = score.get('target') or {}
         rows.append({
-            'cell': rec.get('input_hashes', {}).get('exp', key),
+            'cell': (rec.get('parents') or [key])[0],
             'ana': inp.get('ana'),
             'stat_name': inp.get('stat_name'),
             'num_vox': score.get('num_vox'),

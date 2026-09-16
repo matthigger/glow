@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from glow._extra.benchmark import data, hcp
-from glow._extra.benchmark.results import _raw
+from glow._extra.benchmark.recipe import raw_fnc
 from glow.effect import ExtenterMinVar, ExtenterSphere
 from glow.experiment import ExperimentImageOnly
 from glow.experiment.exper import NoBiasTermWarning
@@ -200,7 +200,7 @@ class TestEffectFactory:
         # the effect stage returns the supports as a list (one for 'single')
         exp_eff, (mask,) = data.effect_factory(
             exp, parent_uid=uid, effect_llr=0.05,
-            extenter_cls=ExtenterMinVar, n_vox_frac=0.1, seed=0)
+            extenter_cls=ExtenterMinVar, n_vox_frac=0.1)
         # effect added in place: same shapes, mask over the spatial grid, y
         # changed, and the extenter grew n_vox_frac of the analysis volume
         support = int((exp.mask_idx > -1).sum())
@@ -209,53 +209,35 @@ class TestEffectFactory:
         assert int(mask.sum()) == round(0.1 * support)
         assert not np.array_equal(exp.y, exp_eff.y)
 
-    def test_seed_from_exp_places_per_realization(self):
-        # seed_from_exp derives the support seed from a hash of exp, so a fixed
-        # config plants in a different place on different data...
-        kw = dict(effect_llr=0.05, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
-                  seed_from_exp=True)
+    def test_placement_comes_from_the_parent_uid(self):
+        # the support seed is derived from the parent's declared uid, so a
+        # fixed config plants in a different place on different data...
+        kw = dict(effect_llr=0.05, extenter_cls=ExtenterMinVar,
+                  n_vox_frac=0.1)
         exp0, uid0 = self._clean_exp()
         exp1, uid1 = self._clean_exp()
         _, (mask0,) = data.effect_factory(exp0, parent_uid=uid0, **kw)
         _, (mask1,) = data.effect_factory(exp1, parent_uid=uid1, **kw)
+        assert uid0 != uid1
         assert not np.array_equal(mask0, mask1)
-        # ...but it's a pure function of the data: identical across effect
-        # strengths for one experiment (only the imposed offset changes)
+        # ...and is fixed across effect strengths for one experiment, which
+        # share a clean exp (only the imposed offset changes)
         exp, uid = self._clean_exp()
         _, (m_weak,) = data.effect_factory(exp, parent_uid=uid, **kw)
         _, (m_strong,) = data.effect_factory(exp, parent_uid=uid,
                                              **{**kw, 'effect_llr': 0.3})
         np.testing.assert_array_equal(m_weak, m_strong)
 
-    def test_seed_from_parent_places_per_realization(self):
-        # the declared seed source: same contract as seed_from_exp (a placement
-        # per data realization, fixed across effect strengths) but derived from
-        # the parent's uid, so it cannot drift with the exp's bytes
-        kw = dict(effect_llr=0.05, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
-                  seed_from_parent=True)
-        exp0, uid0 = self._clean_exp()
-        exp1, uid1 = self._clean_exp()
-        _, (mask0,) = data.effect_factory(exp0, parent_uid=uid0, **kw)
-        _, (mask1,) = data.effect_factory(exp1, parent_uid=uid1, **kw)
-        assert not np.array_equal(mask0, mask1)
+    def test_placement_ignores_the_experiment_bytes(self):
+        # nothing hashes the exp any more: the same parent_uid plants the same
+        # support even on data whose values differ
+        kw = dict(effect_llr=0.05, extenter_cls=ExtenterMinVar,
+                  n_vox_frac=0.1)
         exp, uid = self._clean_exp()
-        _, (m_weak,) = data.effect_factory(exp, parent_uid=uid, **kw)
-        _, (m_strong,) = data.effect_factory(exp, parent_uid=uid,
-                                             **{**kw, 'effect_llr': 0.3})
-        np.testing.assert_array_equal(m_weak, m_strong)
-
-    def test_requires_exactly_one_seed_spec(self):
-        # exactly one of seed / seed_from_exp / seed_from_parent
-        exp, uid = self._clean_exp()
-        base = dict(parent_uid=uid, effect_llr=0.05,
-                    extenter_cls=ExtenterMinVar, n_vox_frac=0.1)
-        with pytest.raises(ValueError):
-            data.effect_factory(exp, **base)                       # none
-        with pytest.raises(ValueError):
-            data.effect_factory(exp, seed=0, seed_from_exp=True, **base)  # two
-        with pytest.raises(ValueError):
-            data.effect_factory(exp, seed_from_exp=True,
-                                seed_from_parent=True, **base)      # two
+        other = exp._copy_with(y=exp.y * 3.0)
+        _, (mask,) = data.effect_factory(exp, parent_uid=uid, **kw)
+        _, (mask_other,) = data.effect_factory(other, parent_uid=uid, **kw)
+        np.testing.assert_array_equal(mask, mask_other)
 
     def test_bad_kind_raises(self):
         # the dispatcher only knows 'single' / 'split'
@@ -263,12 +245,12 @@ class TestEffectFactory:
         with pytest.raises(ValueError):
             data.effect_factory(exp, kind='nope', parent_uid=uid,
                                 effect_llr=0.05, extenter_cls=ExtenterMinVar,
-                                n_vox_frac=0.1, seed=0)
+                                n_vox_frac=0.1)
 
     def test_records_outputs_under_joblib_hash(self):
         exp, uid = self._clean_exp()
         kw = dict(parent_uid=uid, effect_llr=0.05,
-                  extenter_cls=ExtenterMinVar, n_vox_frac=0.1, seed=0)
+                  extenter_cls=ExtenterMinVar, n_vox_frac=0.1)
         # the cache + record live on the per-kind builder, not the dispatcher
         args_id = data.effect_factory_single._get_args_id(exp, **kw)
 
@@ -288,7 +270,7 @@ class TestEffectFactory:
     def test_miss_then_hit(self):
         exp, uid = self._clean_exp()
         kw = dict(parent_uid=uid, effect_llr=0.05,
-                  extenter_cls=ExtenterMinVar, n_vox_frac=0.1, seed=0)
+                  extenter_cls=ExtenterMinVar, n_vox_frac=0.1)
         assert not data.effect_factory_single.check_call_in_cache(exp, **kw)
         data.effect_factory_single(exp, **kw)
         assert data.effect_factory_single.check_call_in_cache(exp, **kw)
@@ -309,7 +291,7 @@ class TestEffectFactorySplit:
         exp, uid = self._clean_exp()
         exp_eff, mask_target_list = data.effect_factory(
             exp, kind='split', parent_uid=uid, effect_llr=0.1,
-            extenter_cls=ExtenterMinVar, n_vox_frac=0.1, angle=45.0, seed=0)
+            extenter_cls=ExtenterMinVar, n_vox_frac=0.1, angle=45.0)
         support = int((exp.mask_idx > -1).sum())
         assert len(mask_target_list) == 2
         mask0, mask1 = mask_target_list
@@ -320,7 +302,7 @@ class TestEffectFactorySplit:
     def test_placement_varies_per_realization(self):
         # like effect_factory_single, the support is seeded from the experiment
         kw = dict(effect_llr=0.1, extenter_cls=ExtenterMinVar, n_vox_frac=0.1,
-                  angle=30.0, seed_from_exp=True)
+                  angle=30.0)
         exp0, uid0 = self._clean_exp()
         exp1, uid1 = self._clean_exp()
         _, (m0a, _) = data.effect_factory_split(exp0, parent_uid=uid0, **kw)
@@ -330,8 +312,7 @@ class TestEffectFactorySplit:
     def test_records_under_split_builder_name(self):
         exp, uid = self._clean_exp()
         kw = dict(parent_uid=uid, effect_llr=0.1,
-                  extenter_cls=ExtenterMinVar, n_vox_frac=0.1, angle=30.0,
-                  seed=0)
+                  extenter_cls=ExtenterMinVar, n_vox_frac=0.1, angle=30.0)
         args_id = data.effect_factory_split._get_args_id(exp, **kw)
         data.RECORDER.records.clear()
         data.effect_factory_split(exp, **kw)
@@ -352,7 +333,7 @@ class TestDropsConstantVox:
     @staticmethod
     def build(**kwargs):
         """Build through the undecorated builder (no cache, no record)."""
-        return _raw(data.data_factory_wgn)(**kwargs)
+        return raw_fnc(data.data_factory_wgn)(**kwargs)
 
     def test_wgn_experiment_is_screened(self):
         """The builder's output carries mask_dead, not None."""

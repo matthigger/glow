@@ -36,7 +36,7 @@ def _tiny_entry():
     data_list = [dict(source='wgn', shape=(5, 5, 5), b=2, num_img=16, a=2,
                       seed=_fresh_seed())]
     effect_list = [dict(effect_llr=0.05, extenter_cls=ExtenterSphere,
-                        n_vox_frac=0.1, seed=0)]
+                        n_vox_frac=0.1)]
     fnc_list = [dict(ana=AnalysisVBA(n_perm_fwer=15))]
     return (data_list, effect_list, fnc_list, run_ana)
 

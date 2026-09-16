@@ -230,7 +230,7 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
         kwargs_effect_list (iterable[dict | None]): one kwargs dict per
             effect_factory call (exp is supplied by the driver), e.g.
             {'kind': 'single', 'effect_llr': 0.05, 'extenter_cls':
-            ExtenterMinVar, 'n_vox_frac': 0.1, 'seed_from_exp': True}; a None
+            ExtenterMinVar, 'n_vox_frac': 0.1}; a None
             cell
             plants no effect (the null / FWER-calibration path, run on the
             clean exp with an empty target).

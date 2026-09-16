@@ -2,8 +2,8 @@
 
 A Recorder decorates a function so every successful call stores one record:
 
-    {hash, cache_key, function, inputs, outputs, input_hashes, output_hashes,
-     time_sec, uid?, op?, kwargs?, parents?, impl_version?, recurse?}
+    {hash, cache_key, function, inputs, outputs, time_sec, uid, op,
+     kwargs, parents, impl_version, recurse?}
 
 The key is joblib.hash(filter_args(fnc, [], args, kwargs)) -- the key
 joblib.Memory files the result under, also stored as cache_key so the cache
@@ -19,21 +19,15 @@ parallel workers never contend); load() reads them back.
 Declared identity: uid / op / kwargs / parents / impl_version hold the call's
 recipe (see glow._extra.benchmark.recipe) -- a portable id built from the
 declaration rather than from any array's bytes, and lineage the consumer
-declares rather than a reader rediscovering it. A call whose parent cannot be
-named (it takes a link_types input but no parent_uid) records no recipe
-fields, so a uid is never a guess. Pass ignore to keep a non-declarative
-parameter (an array companion) out of the recipe, mirroring the ignore list
-given to @MEMORY.cache.
+declares rather than a reader rediscovering it. A consumer is passed its
+parent's uid, so nothing here hashes a computed value to find an edge. Pass
+ignore to keep a non-declarative parameter (a payload, an array companion)
+out of the recipe, mirroring the ignore list given to @MEMORY.cache.
 
 Provenance DAG: an edge is declared -- B depends on A when B lists A's uid in
 parents -- so it holds on any machine. flatten_to_df walks it to one row per
 leaf carrying its ancestors' fields, so a trial's setup, fit and score land in
 one row.
-
-input_hashes/output_hashes are the fallback edge: joblib.hash of the inputs
-and outputs whose type is in link_types (e.g. (Experiment,)), matched by
-equality. They are read for any record lacking a recipe; being hashes of
-computed arrays they are not portable across machines.
 """
 
 import functools
@@ -43,7 +37,7 @@ import os
 import tempfile
 import time
 import warnings
-from collections import defaultdict, deque
+from collections import deque
 from pathlib import Path
 from typing import NamedTuple
 
@@ -197,39 +191,23 @@ class Recorder:
     Attributes:
         records (dict): hash -> record dict, one per executed decorated call;
             its fields are the record layout in the module docstring.
-            inputs/outputs are _cell snapshots, not live objects;
-            input_hashes/output_hashes hash only link_types values (the DAG
-            edges). A repeat hash overwrites and warns.
+            inputs/outputs are _cell snapshots, not live objects. A repeat
+            hash overwrites and warns.
         folder (Path | None): directory the records mirror to (one <hash>.json
             each), made on construction, or None for in-memory only.
-        link_types (tuple[type]): classes whose values are content-hashed into
-            DAG edges (e.g. (Experiment,)); narrowing to a few domain types
-            keeps trivial values (a scalar 2, a shared mask) from forging
-            spurious edges. Empty (default) links nothing. Values must be
-            joblib-hashable or recording raises.
     """
 
-    def __init__(self, folder=None, link_types=()):
+    def __init__(self, folder=None):
         """Set up the records map and optional mirror folder.
 
         Args:
             folder: directory to mirror records to as folder/<hash>.json
                 (made if absent), or None for in-memory only.
-            link_types (tuple[type]): classes content-hashed into DAG edges;
-                see the class Attributes.
-
-        Raises:
-            TypeError: if any link_types entry is not a class.
         """
         self.records = {}
         self.folder = Path(folder) if folder is not None else None
         if self.folder is not None:
             self.folder.mkdir(parents=True, exist_ok=True)
-        self.link_types = tuple(link_types)
-        if not all(isinstance(t, type) for t in self.link_types):
-            raise TypeError(
-                "link_types must be classes (a value is linked when "
-                "isinstance(value, link_types))")
 
     @staticmethod
     def _args_hash(fnc, args, kwargs, ignore=()) -> str:
@@ -271,11 +249,10 @@ class Recorder:
                 key-path; each must be a declared output. None recurses none.
             ignore (tuple | list): parameter names to drop from both the
                 record key and the recipe kwargs -- the non-declarative
-                arguments (the linked Experiment, an array companion, a label).
-                Must be the same list given to @MEMORY.cache: the key is
-                joblib's args hash, so filtering anything different would name
-                a cache entry that does not exist. link_types inputs and
-                parent_uid leave the recipe regardless.
+                arguments (a payload, an array companion, a label). Must be
+                the same list given to @MEMORY.cache: the key is joblib's args
+                hash, so filtering anything different would name a cache entry
+                that does not exist. parent_uid leaves the recipe regardless.
 
         Returns:
             a decorator that wraps a function for recording.
@@ -428,30 +405,16 @@ class Recorder:
                 )
             outputs = dict(zip(spec.output_name_list, out))
 
-        # content-hash the link_types inputs/outputs from the live values
-        # (before the snapshot): the legacy edge, matched by equality. See the
-        # module docstring for why the declared edge below supersedes it.
-        input_hashes = {n: joblib.hash(v) for n, v in inputs.items()
-                        if isinstance(v, self.link_types)}
-        output_hashes = {n: joblib.hash(v) for n, v in outputs.items()
-                         if isinstance(v, self.link_types)}
-
-        # the declared identity of this call (see the module docstring). A call
-        # that consumes a linked input without being told its parent_uid cannot
-        # name its lineage, so it records no recipe rather than a uid claiming
-        # to be a root.
+        # the declared identity of this call (see the module docstring). A
+        # consumer is told its parent's uid, and every leaf requires one, so a
+        # missing parent is a TypeError at the call rather than a record
+        # claiming to be a root.
         parent_uid = inputs.get('parent_uid')
-        consumes_link = any(isinstance(v, self.link_types)
-                            for v in inputs.values())
-        recipe_fields = {}
-        if parent_uid is not None or not consumes_link:
-            recipe_kwargs = {
-                n: v for n, v in inputs.items()
-                if n not in spec.ignore and n != 'parent_uid'
-                and not isinstance(v, self.link_types)}
-            recipe_fields = Recipe(
-                fnc.__qualname__, recipe_kwargs,
-                parents=(parent_uid,) if parent_uid else ()).as_dict()
+        recipe_kwargs = {n: v for n, v in inputs.items()
+                         if n not in spec.ignore and n != 'parent_uid'}
+        recipe_fields = Recipe(
+            fnc.__qualname__, recipe_kwargs,
+            parents=(parent_uid,) if parent_uid else ()).as_dict()
 
         # snapshot to _cell form now, so the record keeps no live reference to
         # the (heavy) call values -- they can be collected once the call
@@ -470,8 +433,6 @@ class Recorder:
             **({"recurse": list(spec.recurse)} if spec.recurse else {}),
             "inputs": inputs,
             "outputs": outputs,
-            "input_hashes": input_hashes,
-            "output_hashes": output_hashes,
             "time_sec": time_sec,
         })
         return out
@@ -525,9 +486,8 @@ class Recorder:
     def flatten_to_df(self, prefix_sep='.', leaf_keys=None):
         """Flatten the records into a leaf-per-row provenance DataFrame.
 
-        Reads records as a DAG: B depends on A when B declares A's uid among
-        its parents, or (lacking a recipe) when B's input_hash equals A's
-        output_hash. Each leaf -- one no other record feeds -- becomes one row
+        Reads records as a DAG: B depends on A when B declares A's uid
+        among its parents. Each leaf -- one no other record feeds -- one row
         carrying its own fields plus every ancestor's, so a benchmark row holds
         a whole trial: swept axes (setup), recipe and timing (fit), result
         (score).
@@ -562,57 +522,23 @@ class Recorder:
         key_of_uid = {rec['uid']: key for key, rec in records.items()
                       if rec.get('uid')}
 
-        # output content hash -> the record that produced it, for the legacy
-        # edges. A collision (two calls emitting an equal value) keeps the last
-        # writer; in practice the heavy domain objects are unique per trial.
-        # Hashes are always joblib.hash digests, so the is-not-None guards
-        # below are defensive.
-        producer_of = {}
-        for key, rec in records.items():
-            for h in rec.get('output_hashes', {}).values():
-                if h is not None:
-                    producer_of[h] = key
-
         def parents_of(key):
-            """Records that produced this record's inputs (no self-edge).
-
-            The union of both edge kinds: the declared parents (naming their
-            producers by uid, an edge that holds on any machine) and the legacy
-            content-hash join. Taking both keeps a mixed record set linked -- a
-            new leaf whose ancestor predates the recipe fields, or an old leaf
-            under a rebuilt ancestor -- and neither kind can invent an edge the
-            other would deny.
-            """
+            """Records this record declares as its parents (no self-edge)."""
             rec = records[key]
             ps = {key_of_uid[uid] for uid in (rec.get('parents') or ())
                   if uid in key_of_uid}
-            ps |= {producer_of[h]
-                   for h in rec.get('input_hashes', {}).values()
-                   if producer_of.get(h) is not None}
             return ps - {key}
 
         if leaf_keys is not None:
             # caller-chosen leaves; skip keys with no record (stale/dead-end)
             leaves = [key for key in leaf_keys if key in records]
         else:
-            # a leaf feeds no other record by either edge kind: no record names
-            # its uid as a parent, and none of its output hashes is another's
-            # input (the self-exclusion keeps an identity call a leaf, and a
-            # None hash never disqualifies one). Both must hold, so a record
-            # consumed only through the legacy edge is not mistaken for a leaf.
+            # a leaf feeds no other record: no record names its uid among
+            # its parents
             claimed = {uid for rec in records.values()
                        for uid in (rec.get('parents') or ())}
-            consumers_of = defaultdict(set)
-            for key, rec in records.items():
-                for h in rec.get('input_hashes', {}).values():
-                    if h is not None:
-                        consumers_of[h].add(key)
-            leaves = [
-                key for key, rec in records.items()
-                if rec.get('uid') not in claimed
-                and all(not (consumers_of[h] - {key})
-                        for h in rec.get('output_hashes', {}).values()
-                        if h is not None)]
+            leaves = [key for key, rec in records.items()
+                      if rec.get('uid') not in claimed]
 
         rows = []
         for leaf in leaves:

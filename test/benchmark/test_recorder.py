@@ -42,12 +42,6 @@ class _Thing:
         return self.k + x
 
 
-class _Link:
-    """Stand-in for a link_types domain object (an Experiment)."""
-    def __init__(self, tag='x'):
-        self.tag = tag
-
-
 class _A:
     def go(self):
         return 1
@@ -79,21 +73,18 @@ def test_single_output_and_defaults(rec):
 
 
 def test_inputs_outputs_are_snapshotted_not_live(rec):
-    # inputs/outputs are stored as their serialised snapshot (ndarray -> content
-    # hash, opaque object -> repr), never the live object, so the record stays
-    # light. The link-type DAG hashes are still taken from the live values.
-    rec.link_types = (np.ndarray,)
-
-    @rec(output_name='out')
+    # inputs/outputs are stored as their serialised snapshot (ndarray ->
+    # content hash, opaque object -> repr), never the live object, so the
+    # record stays light
+    @rec(output_name='out', ignore=('arr',))
     def f(arr):
         return arr * 2
 
     arr = np.arange(3)
     f(arr)
     record = _only(rec.records)
-    assert record['inputs']['arr'] == joblib.hash(arr)        # snapshot, not arr
+    assert record['inputs']['arr'] == joblib.hash(arr)   # snapshot, not arr
     assert record['outputs']['out'] == joblib.hash(arr * 2)
-    assert record['input_hashes']['arr'] == joblib.hash(arr)  # edge still present
 
 
 def test_recorder_does_not_retain_live_objects(rec):
@@ -465,49 +456,39 @@ def test_in_memory_recorder_writes_no_files(rec):
     assert len(rec.records) == 1
 
 
-# --- provenance DAG: link_types hashing + flatten_to_df ---------------------
+# --- provenance DAG: declared parents + flatten_to_df -----------------------
 
 def _chain(rec):
-    """Record a 3-step make -> use -> final ndarray chain; return final's array.
+    """Record a 3-step make -> use -> final chain; return final's array.
 
-    Each step consumes the previous step's ndarray output, so (with ndarray in
-    link_types) the records form a make -> use -> final line whose only leaf is
-    `final`.
+    Each step is told the uid of the one above it, so the records form a
+    make -> use -> final line whose only leaf is `final`.
     """
     @rec(output_name='a')
     def make(seed):
         return np.arange(seed, seed + 3)
 
     @rec(output_name='b')
-    def use(a):
-        return a * 2
+    def use(k, *, parent_uid):
+        return np.arange(k, k + 3) * 2
 
     @rec(output_name='c')
-    def final(b):
-        return b + 1
+    def final(k, *, parent_uid):
+        return np.arange(k, k + 3) + 1
 
-    return final(use(make(10)))
+    def uid_of(name):
+        """The declared uid of the one recorded call of this function."""
+        return next(r['uid'] for r in rec.records.values()
+                    if r['function'].endswith(name))
 
-
-def test_only_link_types_are_hashed():
-    # input_hashes / output_hashes hold only the values whose type is linked;
-    # the scalar int is omitted, so it can never forge a trivial edge
-    rec = Recorder(link_types=(np.ndarray,))
-
-    @rec(output_name='out')
-    def f(a, n):
-        return a + n
-
-    arr = np.arange(3)
-    f(arr, 5)
-    record = _only(rec.records)
-    assert record['input_hashes'] == {'a': joblib.hash(arr)}      # 'n' omitted
-    assert record['output_hashes'] == {'out': joblib.hash(arr + 5)}
+    make(10)
+    use(10, parent_uid=uid_of('make'))
+    return final(10, parent_uid=uid_of('use'))
 
 
-def test_unlinked_types_form_no_edges():
-    # with nothing linked (the default), two calls sharing the scalar 2 stay
-    # independent -- no spurious producer->consumer edge on a trivial value
+def test_a_shared_value_forges_no_edge():
+    # an edge is declared, never inferred, so two calls passing the same
+    # scalar 2 stay independent
     rec = Recorder()
 
     @rec(output_name='out')
@@ -524,13 +505,8 @@ def test_unlinked_types_form_no_edges():
     assert len(df) == 2
 
 
-def test_link_types_must_be_classes():
-    with pytest.raises(TypeError):
-        Recorder(link_types=(42,))
-
-
 def test_flatten_to_df_chains_leaf_with_ancestors():
-    rec = Recorder(link_types=(np.ndarray,))
+    rec = Recorder()
     final_arr = _chain(rec)
 
     df = rec.flatten_to_df()
@@ -543,16 +519,14 @@ def test_flatten_to_df_chains_leaf_with_ancestors():
     # both ancestors are appended under their own function names
     assert row['use.function'].endswith('use')
     assert row['make.function'].endswith('make')
-    # a non-linked input still appears as a column (linking only gates edges)
+    # an ancestor's inputs come along as columns
     assert row['make.in.seed'] == 10
-    # the join holds: final's input b is use's output b (same content hash)
-    assert row['final.in.b'] == row['use.out.b']
 
 
 def test_flatten_to_df_one_row_per_leaf():
-    # two independent calls (neither consumes the other) -> two ancestor-less
-    # leaves, one row each
-    rec = Recorder(link_types=(np.ndarray,))
+    # two independent calls (neither declares the other) -> two
+    # ancestor-less leaves, one row each
+    rec = Recorder()
 
     @rec(output_name='out')
     def f(a):
@@ -565,10 +539,9 @@ def test_flatten_to_df_one_row_per_leaf():
 
 
 def test_flatten_to_df_survives_disk_round_trip(tmp_path):
-    # the DAG is rebuilt from the persisted hash maps, so a fresh reader over
-    # the folder reconstructs the same leaf-with-ancestors row -- and needs no
-    # link_types itself, the hashes are already stored
-    _chain(Recorder(folder=tmp_path, link_types=(np.ndarray,)))
+    # the DAG is rebuilt from the persisted uids, so a fresh reader over the
+    # folder reconstructs the same leaf-with-ancestors row
+    _chain(Recorder(folder=tmp_path))
 
     reader = Recorder(folder=tmp_path)
     reader.load()
@@ -579,8 +552,8 @@ def test_flatten_to_df_survives_disk_round_trip(tmp_path):
     assert row['make.in.seed'] == 10
 
 
-def test_flatten_to_df_records_without_hashes_are_lone_leaves(rec):
-    # a record predating the hash maps contributes no edges -> it is its own
+def test_flatten_to_df_records_without_a_recipe_are_lone_leaves(rec):
+    # a record carrying no recipe declares no parent -> it is its own
     # ancestor-less leaf (graceful, no crash)
     rec.records['legacy'] = {
         'hash': 'legacy', 'function': 'old.fn', 'time_sec': 0.0,
@@ -745,7 +718,7 @@ def test_flatten_to_df_leaf_keys_restricts_rows(rec):
 
 def test_flatten_to_df_leaf_keys_still_walk_ancestors():
     # a chosen leaf still carries its ancestors (the walk-up is unchanged)
-    rec = Recorder(link_types=(np.ndarray,))
+    rec = Recorder()
     _chain(rec)
     leaf = next(k for k, r in rec.records.items()
                 if r['function'].endswith('final'))
@@ -769,7 +742,7 @@ def test_flatten_to_df_leaf_keys_skips_unknown(rec):
 # --- declared identity (recipe fields) --------------------------------------
 
 def test_root_call_records_its_recipe(rec):
-    # a call consuming no linked input is a root: its recipe needs no parent
+    # a call told no parent_uid is a root: its recipe needs no parent
     @rec(output_name='out')
     def build(seed, scale=2.0):
         return seed * scale
@@ -785,46 +758,31 @@ def test_root_call_records_its_recipe(rec):
     assert record['cache_key'] == record['hash']
 
 
-def test_linked_call_without_parent_uid_records_no_recipe():
-    # lineage cannot be named, so no uid is invented for it
-    rec = Recorder(link_types=(_Link,))
-
-    @rec(output_name='out')
-    def consume(link, k):
-        return k
-
-    consume(_Link(), 1)
-    record = _only(rec.records)
-    assert 'uid' not in record
-    assert 'parents' not in record
-    assert record['input_hashes']                    # legacy edge still there
-
-
 def test_parent_uid_declares_the_edge():
-    # given its parent's uid, a linked call records a full recipe
-    rec = Recorder(link_types=(_Link,))
+    # given its parent's uid, a consumer records a full recipe
+    rec = Recorder()
 
-    @rec(output_name='out')
-    def consume(link, k, *, parent_uid):
+    @rec(output_name='out', ignore=('payload',))
+    def consume(payload, k, *, parent_uid):
         return k
 
-    consume(_Link(), 1, parent_uid='PARENT')
+    consume('PAYLOAD', 1, parent_uid='PARENT')
     record = _only(rec.records)
     assert record['parents'] == ['PARENT']
-    assert record['kwargs'] == {'k': 1}             # link dropped, uid dropped
+    assert record['kwargs'] == {'k': 1}        # payload dropped, uid dropped
     assert record['uid'] == recipe_id(record['op'], {'k': 1},
                                       parents=['PARENT'])
 
 
 def test_ignore_keeps_a_companion_out_of_the_recipe():
     # an array companion is not declarative, so it changes no uid
-    rec = Recorder(link_types=(_Link,))
+    rec = Recorder()
 
     @rec(output_name='out', ignore=('mask_target_list',))
-    def consume(link, mask_target_list, k, *, parent_uid):
+    def consume(mask_target_list, k, *, parent_uid):
         return k
 
-    consume(_Link(), [np.ones(4096)], 1, parent_uid='P')
+    consume([np.ones(4096)], 1, parent_uid='P')
     record = _only(rec.records)
     assert record['kwargs'] == {'k': 1}
     assert record['uid'] == recipe_id(record['op'], {'k': 1}, parents=['P'])
@@ -832,14 +790,14 @@ def test_ignore_keeps_a_companion_out_of_the_recipe():
 
 def test_recipe_kwargs_reject_a_computed_array():
     # a big array left out of ignore is a computed payload: it must not key
-    rec = Recorder(link_types=(_Link,))
+    rec = Recorder()
 
     @rec(output_name='out')
-    def consume(link, payload, *, parent_uid):
+    def consume(payload, *, parent_uid):
         return 1
 
     with pytest.raises(ComputedArrayError):
-        consume(_Link(), np.zeros(4096), parent_uid='P')
+        consume(np.zeros(4096), parent_uid='P')
     assert rec.records == {}
 
 
@@ -874,5 +832,5 @@ def test_memoised_wrapper_body_is_fixed():
     assert code_one == code_two
     assert '_record_call' in code_one
     # the rules live in _record_call, not here
-    for rule in ('input_hashes', 'Recipe', 'perf_counter', '_store'):
+    for rule in ('Recipe', 'perf_counter', '_store'):
         assert rule not in code_one

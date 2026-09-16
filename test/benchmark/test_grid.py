@@ -145,12 +145,13 @@ class TestEffectList:
 
     def test_cells_carry_the_support_ingredients(self):
         # effect_factory_single builds the support from these, not from a
-        # pre-made mask; seed_from_exp places it per realization
+        # pre-made mask, and carries no seed: the builder derives the
+        # placement from the cell's declared uid
         cell, = grid.get_kwargs_effect_list(llr_list=[0.03],
                                             n_vox_frac_list=[0.1])
         assert cell['kind'] == 'single'
         assert cell['extenter_cls'] is ExtenterMinVar
-        assert cell['seed_from_exp'] is True
+        assert not {'seed', 'seed_from_exp', 'seed_from_parent'} & set(cell)
 
     def test_null_returns_single_none(self):
         assert grid.get_kwargs_effect_list(
