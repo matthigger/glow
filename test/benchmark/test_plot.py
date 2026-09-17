@@ -1505,6 +1505,49 @@ def test_tune_best_picks_the_joint_argmax_not_a_sequential_one():
                for b in best.values())
 
 
+def test_tune_best_keeps_the_declared_stat_when_everything_ties():
+    # the case the derivation predicts: rank(H) = 1 makes every stat give VBA
+    # and CET one rejection set, so the whole pool ties. Taking that argmax at
+    # face value would move an arm between two statistics that cannot differ
+    # and re-key every leaf it has, so the declared choice has to survive.
+    df = plot.tidy_tune(_tune_raw())
+    best = plot.tune_best(df)
+    for method in SMOOTH_LABEL_LIST:
+        want = plot._declared(method)
+        assert best[method]['stat'] == want['stat']
+        assert best[method]['zt'] == want['zt']
+    # and the degeneracy is reported rather than hidden inside the argmax
+    assert all(w == len(RUN_TUNE_LIST) // len(SMOOTH_LABEL_LIST)
+               for w in plot.tune_tie_width(df).values())
+
+
+def test_tune_best_takes_a_real_win_over_the_declared_choice():
+    # a tie is deferred to the declaration, a genuine difference is not
+    df = plot.tidy_tune(_tune_raw(dice_of={('VBA', 'z', 'pillai', 8.0): 95}))
+    assert plot.tune_best(df)['VBA'] == dict(zt='z', stat='pillai', fwhm=8.0)
+    assert plot.tune_tie_width(df)['VBA'] == 1
+
+
+def test_tune_best_breaks_a_width_tie_toward_the_narrowest():
+    # when the declared choice is not among the winners there is nothing to
+    # defer to, and a width that cannot be told from no width should not be
+    # claimed. VBA declares raw/hotel_tr, so a z/pillai sweep that ties across
+    # every width leaves only the narrowest to justify.
+    df = plot.tidy_tune(_tune_raw(dice_of={('VBA', 'z', 'pillai', None): 95}))
+    best = plot.tune_best(df)['VBA']
+    assert (best['zt'], best['stat']) == ('z', 'pillai')
+    assert best['fwhm'] == 0.0
+
+
+def test_tune_best_keeps_a_declared_width_that_is_among_the_winners():
+    # the anti-re-key rule outranks the narrowest-kernel rule: if the arm's
+    # own declaration ties for the maximum, it survives, because moving it
+    # would re-key every leaf to buy a difference the tie says is not there
+    declared = plot._declared('CET')
+    df = plot.tidy_tune(_tune_raw(dice_of={('CET', None, None, None): 95}))
+    assert plot.tune_best(df)['CET'] == declared
+
+
 def test_tune_fwhm_slice_keeps_one_statistic_per_arm():
     # the width curve is only interpretable along one stat, so the slice has
     # to leave exactly the width axis for each arm

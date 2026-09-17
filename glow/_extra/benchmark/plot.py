@@ -76,7 +76,7 @@ import glow._extra.benchmark
 import glow.mask
 from glow.analysis import AnalysisGLOWBase
 from glow.analysis.cluster import ClusterMode
-from glow.analysis.mancova import stat_dict
+from glow.analysis.mancova import stat_dict, stat_dict_inv
 from .config import (ana_kwargs_dict, REPORTED_GLOW_LABEL,
                      REPORTED_GLOW_LABEL_LIST, RUN_STAT_LIST, RUN_TUNE_LIST,
                      SMOOTH_LABEL_LIST)
@@ -1760,25 +1760,87 @@ def tidy_tune(raw):
     return out.dropna(subset=['method'])
 
 
-def tune_best(df) -> dict:
+def _declared(method) -> dict:
+    """Return the (zt, stat, fwhm) ana_kwargs_dict declares for an arm."""
+    ana = ana_kwargs_dict[method]
+    return dict(zt=('z' if getattr(ana, 'z_flag', False) else 'raw'),
+                stat=stat_dict_inv[ana.get_stat],
+                fwhm=float(getattr(ana, 'fwhm', None) or 0.0))
+
+
+def _pick_tied(method, tied) -> dict:
+    """Choose among equally-scoring variants, preferring the declared one.
+
+    A tie here is usually not luck: with one column of interest rank(H) = 1,
+    so VBA and CET reject on the statistic's ordering alone and every stat in
+    the pool gives them the same rejection set at every width (see
+    grid.get_run_stat_list). An argmax over that is a coin toss, and taking it
+    at face value would re-key every leaf of an arm to move it between two
+    statistics that cannot differ. So the arm keeps what it declares whenever
+    that is among the winners, and otherwise the narrowest kernel wins, which
+    is the least intervention a tie can justify.
+
+    Args:
+        method (str): the arm's ana_kwargs_dict label.
+        tied (list): the tied (method, zt, stat, fwhm) keys.
+
+    Returns:
+        dict: {zt, stat, fwhm} for the chosen variant.
+    """
+    cand = [dict(zt=zt, stat=stat, fwhm=float(fwhm))
+            for _, zt, stat, fwhm in tied]
+    if len(cand) == 1:
+        return cand[0]
+    want = _declared(method)
+    for key in (('zt', 'stat', 'fwhm'), ('zt', 'stat'), ('zt',)):
+        match = [c for c in cand if all(c[k] == want[k] for k in key)]
+        if match:
+            cand = match
+            break
+    return min(cand, key=lambda c: (c['fwhm'], _STAT_ORDER.index(c['stat'])))
+
+
+def tune_best(df, *, atol: float = 1e-12) -> dict:
     """Return each arm's jointly best (z-scoring, stat, kernel width).
 
     The selection config.ana_kwargs_dict declares. Joint rather than one knob
     at a time: choosing the stat unsmoothed and the width at that stat assumes
-    each answer to find the other (see config.RUN_TUNE_LIST).
+    each answer to find the other (see config.RUN_TUNE_LIST). Ties are
+    resolved rather than taken as found (_pick_tied).
 
     Args:
         df: a tidy_tune frame.
+        atol (float): how close to the maximum still counts as tied. The ties
+            this exists for are exact (one rejection set scored twice), so
+            this only absorbs the last bits of a float mean.
 
     Returns:
         dict: method label -> {zt, stat, fwhm}, fwhm in mm.
     """
     mean = df.groupby(['method', 'zt', 'stat', 'fwhm'])['dice'].mean()
     out = {}
-    for method, sub in mean.groupby(level=0):
-        _, zt, stat, fwhm = sub.idxmax()
-        out[method] = dict(zt=zt, stat=stat, fwhm=float(fwhm))
+    for method, grp in mean.groupby(level=0):
+        tied = [k for k, v in grp.items() if v >= grp.max() - atol]
+        out[method] = _pick_tied(method, tied)
     return out
+
+
+def tune_tie_width(df, *, atol: float = 1e-12) -> dict:
+    """Return how many variants tie for each arm's maximum.
+
+    What tells a reader whether a selection was a measurement or a coin toss.
+    Reported beside the table rather than hidden inside the argmax.
+
+    Args:
+        df: a tidy_tune frame.
+        atol (float): see tune_best.
+
+    Returns:
+        dict: method label -> number of variants within atol of its maximum.
+    """
+    mean = df.groupby(['method', 'zt', 'stat', 'fwhm'])['dice'].mean()
+    return {m: int((grp >= grp.max() - atol).sum())
+            for m, grp in mean.groupby(level=0)}
 
 
 def tune_fwhm_slice(df):
@@ -1880,6 +1942,7 @@ def write_fwhm_table(label: str, df, out) -> None:
         print(f'  (no rows for {label} -- skipping)')
         return
     joint = tune_best(df)
+    df_all = df
     df = tune_fwhm_slice(df)
     grid = sorted(df['fwhm'].unique())
     method_list = [m for m in ('VBA', 'VBA-TFCE', 'CET')
@@ -1911,6 +1974,7 @@ def write_fwhm_table(label: str, df, out) -> None:
         note=note)
     print(f'saved: {out / "fwhm_dice.tex"}')
     print(f'  joint best per arm (stat, z, width): {joint}')
+    print(f'  variants tied for that maximum: {tune_tie_width(df_all)}')
     print(f'  best FWHM per arm (pooled): {fwhm_best(df)}')
     drift = fwhm_best_by_llr(df)
     if not drift.empty:
