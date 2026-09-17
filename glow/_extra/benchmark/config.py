@@ -423,10 +423,18 @@ RUN_STAT_LIST = grid.get_run_stat_list(
 # multiplier: run.voxel_stat_walk computes every stat in one permutation walk,
 # and the kernel keys that walk, so the whole grid costs one walk per
 # (cell, width) and a rank count per leaf.
+#
+# GOTCHA: that costing is a property of this list's ORDER, not just its
+# contents. run._WALK_MEMO holds one walk (they run to hundreds of MB), and
+# drive's leaf grid is its innermost loop, so a leaf reuses the previous
+# leaf's walk only while the width has not changed. Width outermost therefore
+# pays one walk per (cell, width); stat outermost would change the width on
+# every consecutive leaf and pay one per LEAF, which is the whole grid's cost
+# rather than a fifth of it. A test pins the order for that reason.
 RUN_TUNE_LIST = [dict(ana=_ana_at(spec['ana'], fwhm),
                       stat_name=spec['stat_name'])
-                 for spec in RUN_STAT_LIST
-                 for fwhm in SMOOTH_FWHM_GRID]
+                 for fwhm in SMOOTH_FWHM_GRID
+                 for spec in RUN_STAT_LIST]
 
 # the prune cache's leaf grid: four rules (greedy / DP / the single max-LLR
 # region / the max-Dice oracle) crossed with the two Ward clustering modes

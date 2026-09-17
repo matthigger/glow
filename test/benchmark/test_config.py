@@ -102,6 +102,15 @@ class TestCatalogueShape:
         widths = {f or None for f in config.SMOOTH_FWHM_GRID}
         assert seen == {(cls, tf, w) for cls, tf in shapes for w in widths}
 
+    def test_tune_grid_runs_one_width_at_a_time(self):
+        # the cache's cost is a property of this order. run._WALK_MEMO holds
+        # one walk and drive's leaf grid is its innermost loop, so leaves
+        # share a walk only while the width holds: width-major pays one walk
+        # per (cell, width), stat-major would pay one per leaf.
+        widths = [c['ana'].fwhm for c in config.RUN_TUNE_LIST]
+        changes = sum(a != b for a, b in zip(widths, widths[1:]))
+        assert changes == len(config.SMOOTH_FWHM_GRID) - 1
+
     def test_tune_grid_zero_width_reaches_fit_as_none(self):
         # fwhm 0 has to arrive as None rather than 0.0, since that is the one
         # value Experiment.smooth returns self for; 0.0 would key a second,
