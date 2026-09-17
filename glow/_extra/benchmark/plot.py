@@ -62,6 +62,7 @@ With no arguments the CLI plots every cache in the catalogue; passing names
 restricts it.
 """
 import colorsys
+import copy
 import re
 import warnings
 
@@ -77,7 +78,8 @@ from glow.analysis import AnalysisGLOWBase
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import stat_dict
 from .config import (ana_kwargs_dict, REPORTED_GLOW_LABEL,
-                     REPORTED_GLOW_LABEL_LIST, RUN_STAT_LIST)
+                     REPORTED_GLOW_LABEL_LIST, RUN_ANA_SMOOTH_LIST,
+                     RUN_STAT_LIST)
 from .file import add_metric_cols
 
 
@@ -1716,6 +1718,168 @@ def _latex_table(path, colspec: str, header: list, rows: list,
     path.write_text('\n'.join(lines))
 
 
+def _fwhm_variant() -> dict:
+    """Map each smoothing recipe's repr to its (method, fwhm) variant.
+
+    Built off config.RUN_ANA_SMOOTH_LIST rather than typed out, so the
+    catalogue stays the one place the grid is declared. The repr is the join
+    key because it is what a record stores (see benchmark.recipe).
+
+    Returns:
+        dict: repr(ana) -> (method label, fwhm in mm).
+    """
+    label_of = {repr(v): k for k, v in ana_kwargs_dict.items()}
+    out = {}
+    for leaf in RUN_ANA_SMOOTH_LIST:
+        ana = leaf['ana']
+        fwhm = ana.fwhm or 0.0
+        # an unsmoothed recipe reprs as the paper's own arm, which is how its
+        # label is recovered; a smoothed one carries fwhm in the repr, so
+        # strip it to find the arm it is a width of
+        bare = copy.copy(ana)
+        bare.fwhm = None
+        out[repr(ana)] = (label_of[repr(bare)], float(fwhm))
+    return out
+
+
+def tidy_fwhm(raw):
+    """Normalise the smoothing cache's leaves to a tidy per-variant frame.
+
+    Args:
+        raw: the sweep_fwhm provenance frame (make_csv.write_config_csv).
+
+    Returns:
+        a DataFrame with cell, method, fwhm, effect_llr, dice, sens, ppv --
+        one row per (cell, arm, width). Rows whose recipe is not a smoothing
+        variant drop out.
+    """
+    if raw.empty:
+        return raw
+    var = _fwhm_variant()
+    hit = [var.get(a) for a in raw['run_ana.in.ana']]
+    out = pd.DataFrame({'cell': raw.index.values})
+    out['method'] = [v[0] if v else None for v in hit]
+    out['fwhm'] = [v[1] if v else np.nan for v in hit]
+    llr = f'{_CELL_IN}.kwargs_effect.effect_llr'
+    if llr in raw:
+        out['effect_llr'] = pd.to_numeric(raw[llr], errors='coerce').values
+    tp, fp, fn = (pd.to_numeric(raw[f'run_ana.out.score.target.{c}'],
+                                errors='coerce').values
+                  for c in ('tp', 'fp', 'fn'))
+    denom = 2 * tp + fp + fn
+    out['dice'] = np.where(denom > 0, 2 * tp / denom, np.nan)
+    out['sens'] = np.where(tp + fn > 0, tp / (tp + fn), np.nan)
+    out['ppv'] = np.where(tp + fp > 0, tp / (tp + fp), np.nan)
+    return out.dropna(subset=['method'])
+
+
+def fwhm_best(df) -> dict:
+    """Return the kernel width maximising each arm's mean Dice.
+
+    The selection the paper's appendix reports and config.SMOOTH_FWHM_BEST
+    pins. Ties, and a maximum at the edge of the swept grid, are the
+    caller's to notice -- fwhm_note flags the latter.
+
+    Args:
+        df: a tidy_fwhm frame.
+
+    Returns:
+        dict: method label -> the winning fwhm in mm.
+    """
+    mean = df.groupby(['method', 'fwhm'])['dice'].mean()
+    return {m: float(sub.idxmax()[1]) for m, sub in mean.groupby(level=0)}
+
+
+def fwhm_best_by_llr(df):
+    """Return each arm's winning width at each effect strength.
+
+    Whether the optimum drifts along the detection curve is why the tuning
+    spans strengths rather than one: smoothing buys sensitivity with PPV,
+    and which of the two binds moves with the effect.
+
+    Args:
+        df: a tidy_fwhm frame carrying an effect_llr column.
+
+    Returns:
+        a DataFrame indexed by effect_llr, one column per method, holding
+        the width maximising that cell's mean Dice. Empty if the frame
+        carries no effect_llr.
+    """
+    if 'effect_llr' not in df:
+        return pd.DataFrame()
+    mean = df.groupby(['effect_llr', 'method', 'fwhm'])['dice'].mean()
+    best = mean.groupby(level=[0, 1]).idxmax().map(lambda k: k[2])
+    return best.unstack()
+
+
+def fwhm_note(df) -> list:
+    """Return the caveats a reader of the selection needs, as text lines.
+
+    Args:
+        df: a tidy_fwhm frame.
+
+    Returns:
+        list[str]: one line per arm whose optimum sits at the edge of the
+            swept grid, where the true optimum may lie outside it.
+    """
+    grid = sorted(df['fwhm'].unique())
+    return [f'{m}: optimum at the grid edge ({best} mm); the true optimum '
+            f'may lie outside the swept range'
+            for m, best in fwhm_best(df).items()
+            if grid and best in (grid[0], grid[-1]) and best != 0.0]
+
+
+def write_fwhm_table(label: str, df, out) -> None:
+    """Write (and print) the kernel-width tuning table as .tex.
+
+    fwhm_dice.tex is one row per voxel-wise arm, one column per width on the
+    swept grid, each cell that arm's mean Dice over the cache's cells, with
+    the arm's best bolded -- the width it is run at above. A bare booktabs
+    tabular, like the stat bake-off's tables: the paper owns the float and
+    the prose.
+
+    Args:
+        label (str): cache name, for the printed header.
+        df: a tidy_fwhm frame.
+        out (pathlib.Path): directory the .tex file is written into.
+    """
+    if df.empty:
+        print(f'  (no rows for {label} -- skipping)')
+        return
+    grid = sorted(df['fwhm'].unique())
+    method_list = [m for m in ('VBA', 'VBA-TFCE', 'CET')
+                   if m in set(df['method'])]
+    mean = df.groupby(['method', 'fwhm'])['dice'].mean()
+    n_cell = df.groupby(['method', 'fwhm'])['cell'].nunique()
+
+    rows = []
+    for method in method_list:
+        best = mean[method].idxmax()
+        cells = [f'\\textbf{{{mean[method][f]:.3f}}}' if f == best
+                 else f'{mean[method][f]:.3f}' for f in grid]
+        rows.append([method.replace('_', '\\_')] + cells)
+
+    note = [f'{label}: mean Dice per (arm, FWHM); '
+            f'{int(n_cell.min())}-{int(n_cell.max())} cells per entry',
+            'bold marks the width each arm is run at (config.'
+            'SMOOTH_FWHM_BEST)'] + fwhm_note(df)
+    _latex_table(
+        out / 'fwhm_dice.tex',
+        'l' + 'r' * len(grid),
+        ['Method'] + [f'{f:g}' for f in grid],
+        rows,
+        group_header=[('', 1, 'l'), ('FWHM (mm)', len(grid), 'c')],
+        note=note)
+    print(f'saved: {out / "fwhm_dice.tex"}')
+    print(f'  best FWHM per arm (pooled): {fwhm_best(df)}')
+    drift = fwhm_best_by_llr(df)
+    if not drift.empty:
+        print('  best FWHM per arm at each effect strength:')
+        print(drift.to_string())
+    for line in fwhm_note(df):
+        print(f'  NOTE {line}')
+
+
 def write_stat_tables(label: str, df, out) -> None:
     """Write (and print) the stat bake-off's two paper tables as .tex.
 
@@ -2827,8 +2991,15 @@ def main(argv=None) -> None:
     # function (CONFIG values are (data, effect, fnc_kwargs, fnc)) into the
     # run_ana detection caches this layer draws and the others it skips.
     runtime_names = [n for n in CONFIG if n in _RUNTIME_SPEC]
+    # the smoothing sweep is a run_ana cache but not a detection sweep: its
+    # axis is the kernel width, not effect strength, so it reads as a tuning
+    # table like the stat bake-off. Keyed on the leaf grid by identity, the
+    # same way the catalogue declares it.
+    fwhm_names = [n for n, cfg in CONFIG.items()
+                  if cfg[2] is RUN_ANA_SMOOTH_LIST]
     detect_names = [n for n, cfg in CONFIG.items()
-                    if cfg[3] is run_ana and n not in _RUNTIME_SPEC]
+                    if cfg[3] is run_ana and n not in _RUNTIME_SPEC
+                    and n not in fwhm_names]
     stat_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_stat]
     segment_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_segment]
     prune_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_prune]
@@ -2844,7 +3015,7 @@ def main(argv=None) -> None:
                 parser.error(f'no cache names match: {pattern}')
             names += [n for n in matches if n not in names]
     else:
-        names = (detect_names + runtime_names + stat_names
+        names = (detect_names + runtime_names + stat_names + fwhm_names
                  + segment_names + prune_names + inner_names)
 
     out = glow._extra.benchmark.get_path_result() / '_latest'
@@ -2867,6 +3038,15 @@ def main(argv=None) -> None:
                 continue
             print(f'\n=== {name}: {len(df)} run_ana rows ===')
             plot_cache(name, df, _cache_dir(out, name))
+            n_plotted += 1
+        elif name in fwhm_names:
+            df = tidy_fwhm(make_csv.write_config_csv(name))
+            if df.empty:
+                print(f'  (no records for {name} — skipping)')
+                continue
+            print(f'\n=== {name}: {df["cell"].nunique()} cells, '
+                  f'{len(df)} variant rows ===')
+            write_fwhm_table(name, df, _cache_dir(out, name))
             n_plotted += 1
         elif name in stat_names:
             df = tidy_stat(results.stat_cell_df())

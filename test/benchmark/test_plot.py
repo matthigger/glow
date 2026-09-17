@@ -11,7 +11,9 @@ import pytest
 from glow._extra.benchmark import plot
 from glow._extra.benchmark.config import (ana_kwargs_dict, CONFIG,
                                           REPORTED_GLOW_LABEL,
-                                          RUN_STAT_LIST)
+                                          RUN_ANA_SMOOTH_LIST, RUN_STAT_LIST,
+                                          SMOOTH_FWHM_GRID,
+                                          SMOOTH_LABEL_LIST)
 from glow.analysis import AnalysisVBA
 
 
@@ -1431,3 +1433,85 @@ def test_cache_dir_is_one_directory_per_cache(tmp_path):
     # idempotent: a second cache leaves the first alone
     plot._cache_dir(tmp_path, 'sweep_llr')
     assert sorted(p.name for p in tmp_path.iterdir()) == ['prune', 'sweep_llr']
+
+
+# ---------------------------------------------------------------------------
+# Smoothing sweep: the kernel-width tuning table
+# ---------------------------------------------------------------------------
+
+def _fwhm_row(ana, seed, effect_llr, tp, fp, tn, fn):
+    """Build one sweep_fwhm row: a run_ana leaf at one arm and width."""
+    return {'run_ana.in.ana': repr(ana),
+            **_score(tp, fp, tn, fn),
+            **_cell_cols(seed, effect_llr, source='hcp')}
+
+
+def _fwhm_raw(dice_of=None):
+    """One row per smoothing variant, optionally scoring a chosen Dice.
+
+    dice_of maps (method, fwhm) -> tp, every other variant taking a
+    baseline tp, so a test can name which width should win.
+    """
+    rows = []
+    for idx, leaf in enumerate(RUN_ANA_SMOOTH_LIST):
+        ana = leaf['ana']
+        key = (None, ana.fwhm or 0.0)
+        tp = 40 if dice_of is None else dice_of.get(key, 40)
+        rows.append(_fwhm_row(ana, seed=idx, effect_llr=0.03,
+                              tp=tp, fp=10, tn=890, fn=100 - tp))
+    return pd.DataFrame(rows)
+
+
+def test_tidy_fwhm_empty():
+    """An empty frame in gives an empty frame out."""
+    assert plot.tidy_fwhm(pd.DataFrame()).empty
+
+
+def test_tidy_fwhm_reads_each_leaf_as_an_arm_and_a_width():
+    # the join is on the recipe repr, which is what a record stores, so
+    # every declared variant has to resolve -- including fwhm=0, whose repr
+    # is the paper's own unsmoothed arm
+    df = plot.tidy_fwhm(_fwhm_raw())
+    assert len(df) == len(RUN_ANA_SMOOTH_LIST)
+    assert set(df['method']) == set(SMOOTH_LABEL_LIST)
+    assert set(df['fwhm']) == set(SMOOTH_FWHM_GRID)
+    assert df['dice'].iloc[0] == pytest.approx(2 * 40 / (2 * 40 + 10 + 60))
+
+
+def test_tidy_fwhm_drops_a_recipe_that_is_not_a_width():
+    # GLOW takes no kernel, so a GLOW row is not a smoothing variant
+    raw = pd.DataFrame([_fwhm_row(ana_kwargs_dict[GLOW_LABEL], seed=0,
+                                  effect_llr=0.03, tp=80, fp=10, tn=890,
+                                  fn=20)])
+    assert plot.tidy_fwhm(raw).empty
+
+
+def test_fwhm_best_picks_each_arm_max_mean_dice():
+    # 4 mm made the best of it for every arm here
+    df = plot.tidy_fwhm(_fwhm_raw(dice_of={(None, 4.0): 90}))
+    best = plot.fwhm_best(df)
+    assert set(best) == set(SMOOTH_LABEL_LIST)
+    assert set(best.values()) == {4.0}
+
+
+def test_fwhm_note_flags_an_optimum_at_the_grid_edge():
+    # the widest width winning means the true optimum may sit outside the
+    # swept range, which a reader of the selection has to be told
+    edge = max(SMOOTH_FWHM_GRID)
+    df = plot.tidy_fwhm(_fwhm_raw(dice_of={(None, edge): 90}))
+    note = plot.fwhm_note(df)
+    assert len(note) == len(SMOOTH_LABEL_LIST)
+    assert all('grid edge' in line for line in note)
+    # an interior optimum needs no caveat
+    interior = plot.tidy_fwhm(_fwhm_raw(dice_of={(None, 4.0): 90}))
+    assert plot.fwhm_note(interior) == []
+
+
+def test_write_fwhm_table_writes_the_tex(tmp_path):
+    df = plot.tidy_fwhm(_fwhm_raw(dice_of={(None, 4.0): 90}))
+    plot.write_fwhm_table('sweep_fwhm', df, tmp_path)
+    tex = (tmp_path / 'fwhm_dice.tex').read_text()
+    # one row per arm, one column per width, the winner bolded
+    assert all(m in tex for m in SMOOTH_LABEL_LIST)
+    assert 'FWHM (mm)' in tex
+    assert tex.count(chr(92) + 'textbf') == len(SMOOTH_LABEL_LIST)

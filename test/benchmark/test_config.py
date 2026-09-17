@@ -26,6 +26,7 @@ import pytest
 from glow._extra.benchmark import config, data
 from glow.analysis import (Analysis, AnalysisCET, AnalysisGLOWBase,
                            AnalysisOracleSegment, AnalysisVBA)
+from glow.analysis.mancova import stat_dict
 
 
 # every catalogue entry; the shape / bind checks cover all of them
@@ -38,6 +39,11 @@ RUN_ANA_LABELS = [label for label in LABELS
 # the run_ana caches taking the GLOW-only grid: the null path, whose
 # calibration figure reads no voxel-wise arm
 GLOW_ONLY_LABELS = ['null']
+
+# the run_ana caches carrying their own recipe grid rather than a shared
+# singleton: the smoothing sweep, which is the voxel-wise arms crossed with a
+# kernel width and so cannot be shared with anything
+OWN_GRID_LABELS = ['sweep_fwhm']
 
 
 class TestCatalogueShape:
@@ -58,7 +64,8 @@ class TestCatalogueShape:
         assert isinstance(data_grid, list)
         assert isinstance(effect_grid, list)
 
-    @pytest.mark.parametrize('label', RUN_ANA_LABELS)
+    @pytest.mark.parametrize('label', [x for x in RUN_ANA_LABELS
+                                       if x not in OWN_GRID_LABELS])
     def test_run_ana_caches_share_the_recipe_grid(self, label):
         # the detection sweeps all fit/score over the one shared recipe grid,
         # by identity: strip_gpu / filter_ana_list rebuild cells rather than
@@ -67,6 +74,56 @@ class TestCatalogueShape:
         expect = (config.RUN_ANA_GLOW_LIST if label in GLOW_ONLY_LABELS
                   else config.RUN_ANA_LIST)
         assert config.CONFIG[label][2] is expect
+
+    def test_smooth_grid_is_the_voxel_arms_crossed_with_the_kernel(self):
+        # one leaf per (voxel-wise arm, width), GLOW absent: it takes no
+        # kernel, so it enters the figure as its own caches' flat reference.
+        # Oracle-RBA absent too: it is handed the segmentation a kernel only
+        # approximates, so a width would not mean anything on it.
+        grid = config.RUN_ANA_SMOOTH_LIST
+        assert len(grid) == (len(config.SMOOTH_LABEL_LIST)
+                             * len(config.SMOOTH_FWHM_GRID))
+        assert not any(isinstance(c['ana'], AnalysisGLOWBase) for c in grid)
+        assert not any(isinstance(c['ana'], AnalysisOracleSegment)
+                       for c in grid)
+        assert {c['ana'].fwhm for c in grid} == {
+            f or None for f in config.SMOOTH_FWHM_GRID}
+
+    def test_smooth_grid_leaves_the_unsmoothed_recipes_alone(self):
+        # fwhm 0 must reach fit as None, so the baseline arm's repr -- and so
+        # every artifact keyed on it -- is the paper's own, which is what
+        # makes the unsmoothed leaf the very leaf the detection caches run
+        unsmoothed = {repr(c['ana']) for c in config.RUN_ANA_SMOOTH_LIST
+                      if c['ana'].fwhm is None}
+        assert unsmoothed == {repr(config.ana_kwargs_dict[m])
+                              for m in config.SMOOTH_LABEL_LIST}
+
+    def test_tuning_strengths_are_cells_the_reported_caches_plant(self):
+        # taken off EFFECT_LLR_GRID rather than typed, so a tuning cell is a
+        # reported cell and a leaf the two share is computed once. Float
+        # identity is the whole point here.
+        assert len(config.TUNE_LLR_GRID) == 5
+        assert set(config.TUNE_LLR_GRID) <= set(config.EFFECT_LLR_GRID)
+
+    @pytest.mark.parametrize('label', ['sweep_fwhm', 'vba_stat'])
+    def test_tuning_caches_span_the_tuning_axis(self, label):
+        # a tuning cache reports a mean over cells, so it spans five
+        # strengths where a reported cache spans eleven
+        llr = {c['effect_llr'] for c in config.CONFIG[label][1]}
+        assert llr == {float(v) for v in config.TUNE_LLR_GRID}
+
+    def test_stat_pool_is_the_full_cross(self):
+        # every arm carries every stat, which is what makes the appendix's
+        # table a balanced panel: VBA's and CET's ties across the pool are
+        # the derivation's own prediction (rank(H) = 1), so they are printed
+        # rather than assumed. The width is free -- one voxel_stat_walk per
+        # cell computes every stat (see grid.get_run_stat_list).
+        assert len(config.RUN_STAT_LIST) == len(stat_dict) * 2 * 3
+        per_stat = {}
+        for spec in config.RUN_STAT_LIST:
+            per_stat.setdefault(spec['stat_name'], []).append(spec)
+        assert set(per_stat) == set(stat_dict)
+        assert {len(v) for v in per_stat.values()} == {6}
 
     def test_recipes_are_analyses(self):
         assert config.RUN_ANA_LIST

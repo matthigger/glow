@@ -204,12 +204,31 @@ def get_run_stat_list(*, n_perm_fwer: int, alpha_fwer: float,
                       cft_pval: float):
     """Build the vba_stat cache's leaf grid (one run_stat call per variant).
 
-    The bake-off among the voxel-wise methods: VBA / VBA-TFCE / CET x the
-    stat pool x {raw, z}. GLOW is excluded by design (it uses the LLR
-    throughout), so this is VBA / CET only. Each cell pairs a recipe (its
-    class / tfce_flag / z_flag identify the variant) with the stat_dict key
-    naming the shared-walk matrix run_stat injects as _stat; the method name
-    (e.g. VBA-TFCE-Wilks-z) is recovered from those at read time.
+    The bake-off among the voxel-wise methods, crossed with {raw, z}. Each
+    cell pairs a recipe (its class / tfce_flag / z_flag identify the
+    variant) with the stat_dict key naming the shared-walk matrix run_stat
+    injects as _stat; the method name (e.g. VBA-TFCE-Wilks-z) is recovered
+    from those at read time. GLOW is excluded by design, using the LLR
+    throughout.
+
+    Every arm is crossed with the whole pool, and for VBA and CET the
+    result is a tie by derivation rather than a measurement: the design
+    carries one column of interest, so rank(H) = 1, and a rank-one
+    hypothesis matrix leaves E^-1 H a single nonzero eigenvalue lam of which
+    each of these statistics is a strictly increasing function
+    (hotel_tr = roys_root = lam, 1 - wilks = pillai = lam / (1 + lam),
+    llr = log1p(lam) / 2). VBA and CET read only the ordering -- a
+    cluster-forming threshold is a quantile of the pooled null, cluster
+    sizes are integers, and a max-stat p-value is a rank count -- so their
+    rejection sets cannot move. Printing that tie is the point: it is what
+    the appendix's derivation predicts. TFCE integrates the statistic's
+    magnitude over heights, so it is the one arm the choice reaches.
+    Separating the classical four would need rank(H) >= 2, i.e. two
+    regressors of interest.
+
+    The pool is free either way: run.voxel_stat_walk computes every stat in
+    one permutation walk per cell, so the grid's width costs a rank count
+    per leaf and not a walk.
 
     Args:
         n_perm_fwer (int): outer permutations per recipe.
