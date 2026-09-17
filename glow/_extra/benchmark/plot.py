@@ -85,7 +85,8 @@ from .file import add_metric_cols
 # Consistent paper colour palette
 # ---------------------------------------------------------------------------
 # Base: teal from Fig. 3 (#4DA6A6), H=180 deg S=0.37 L=0.48 in HLS.
-# Analysis methods: 4 hues evenly spaced (90 deg apart), same S/L.
+# Analysis methods: 4 hues evenly spaced (90 deg apart), same S/L. The oracle
+# bound takes no hue at all (see COLOR_ANALYSIS).
 _H, _L, _S = 0.500, 0.476, 0.366  # HLS of #4DA6A6
 
 
@@ -104,6 +105,10 @@ COLOR_ANALYSIS = {
     'VBA':        _hls_hex(2/4 + _H),
     # olive (90 deg)
     'CET':        _hls_hex(3/4 + _H),
+    # grey: the oracle is a bound, not a method, so it spends no hue on a
+    # grammar where hue is the method. At the palette's own lightness, so it
+    # reads at the same weight as the curves it bounds.
+    'Oracle-RBA': _hls_hex(0, s=0.0),
 }
 
 # recover a run_ana leaf's method name from its recorded recipe: config's

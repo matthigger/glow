@@ -25,7 +25,7 @@ import pytest
 
 from glow._extra.benchmark import config, data
 from glow.analysis import (Analysis, AnalysisCET, AnalysisGLOWBase,
-                           AnalysisVBA)
+                           AnalysisOracleSegment, AnalysisVBA)
 
 
 # every catalogue entry; the shape / bind checks cover all of them
@@ -80,15 +80,15 @@ class TestCatalogueShape:
         assert all(isinstance(c['ana'], AnalysisGLOWBase)
                    for c in config.RUN_ANA_GLOW_LIST)
 
-    def test_voxelwise_arms_match_the_recipe_defaults(self):
+    def test_spelled_out_arms_match_the_recipe_defaults(self):
         """The catalogue's spelled-out stats equal the arm defaults.
 
-        config writes get_stat / z_flag out for VBA, VBA-TFCE and CET
-        rather than leaning on the recipe defaults, so the paper's arms
-        read off the catalogue -- and states in a comment that the two
-        agree. Nothing else checks that claim, so an edit to either side
-        alone would silently split them, changing published numbers or
-        invalidating records depending on which moved.
+        config writes get_stat / z_flag out for VBA, VBA-TFCE, CET and
+        Oracle-RBA rather than leaning on the recipe defaults, so the
+        paper's arms read off the catalogue -- and states in a comment
+        that the two agree. Nothing else checks that claim, so an edit to
+        either side alone would silently split them, changing published
+        numbers or invalidating records depending on which moved.
 
         This is the one place the catalogue's VALUES are pinned (cf. the
         module docstring): the stats are not a tuning knob but a finding,
@@ -96,7 +96,9 @@ class TestCatalogueShape:
         """
         for label, cls, tfce_flag in [('VBA', AnalysisVBA, False),
                                       ('VBA-TFCE', AnalysisVBA, True),
-                                      ('CET', AnalysisCET, False)]:
+                                      ('CET', AnalysisCET, False),
+                                      ('Oracle-RBA', AnalysisOracleSegment,
+                                       False)]:
             ana = config.ana_kwargs_dict[label]
             kwargs = dict(n_perm_fwer=ana.n_perm_fwer)
             if cls is AnalysisVBA:
