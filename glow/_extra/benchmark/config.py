@@ -293,6 +293,23 @@ GLOW_FIT_PARAMS = dict(n_jobs=GLOW_FIT_N_JOBS, gpu=GLOW_FIT_GPU)
 #
 # This grid is shared by five caches, so an entry here costs a per-perm fit in
 # each of them.
+def _ana_at(ana, fwhm: float):
+    """Return a copy of ana carrying one kernel width.
+
+    Args:
+        ana (Analysis): a voxel-wise recipe taking an fwhm.
+        fwhm (float): kernel width in mm; 0 becomes None, the one value
+            Experiment.smooth returns self for, so an unsmoothed leaf reprs
+            one way rather than two.
+
+    Returns:
+        ana (Analysis): the copy, with fwhm set.
+    """
+    out = copy.copy(ana)
+    out.fwhm = fwhm or None
+    return out
+
+
 def _run_ana(label: str) -> dict:
     """The run_ana leaf kwargs for one catalogue label."""
     ana = ana_kwargs_dict[label]
@@ -311,36 +328,11 @@ RUN_ANA_LIST = [_run_ana(label) for label in ana_kwargs_dict
 RUN_ANA_GLOW_LIST = [_run_ana(label) for label in REPORTED_GLOW_LABEL_LIST]
 
 
-# the sweep_fwhm cache's leaf grid: every voxel-wise arm at every kernel
-# width. GLOW is absent by design -- it takes no kernel, so it enters the
-# figure as the flat reference its own caches already measured, not as a
-# curve re-run here. Oracle-RBA likewise: it is handed the segmentation a
-# kernel is a crude substitute for. fwhm=0 is on the grid so the sweep
-# carries its own baseline, and that leaf is sweep_llr's own (see
-# TUNE_LLR_GRID).
+# The voxel-wise arms a kernel applies to. GLOW is absent by design -- it
+# takes no kernel, so it enters a smoothing figure as the flat reference its
+# own caches already measured, not as a curve re-run there. Oracle-RBA
+# likewise: it is handed the segmentation a kernel is a crude substitute for.
 SMOOTH_LABEL_LIST = ('VBA', 'VBA-TFCE', 'CET')
-
-
-def _run_ana_smooth(label: str, fwhm: float) -> dict:
-    """Return the run_ana leaf kwargs for one arm at one kernel width.
-
-    Args:
-        label (str): an ana_kwargs_dict key naming a voxel-wise arm.
-        fwhm (float): kernel width in mm; 0 must reach fit as None so the
-            unsmoothed leaf's recipe is the paper's arm exactly, and so its
-            fit is the one the detection caches already ran.
-
-    Returns:
-        kwargs (dict): one run_ana call's kwargs.
-    """
-    ana = copy.copy(ana_kwargs_dict[label])
-    ana.fwhm = fwhm or None
-    return dict(ana=ana, fit_params=None)
-
-
-RUN_ANA_SMOOTH_LIST = [_run_ana_smooth(label, fwhm)
-                       for label in SMOOTH_LABEL_LIST
-                       for fwhm in SMOOTH_FWHM_GRID]
 
 
 # the sweep_n_perm_inner cache's leaf grid: the reported GLOW variant at every
@@ -413,6 +405,28 @@ RUN_SEGMENT_PERC_LIST = [dict(cluster_mode=mode, frac_segment=frac)
 RUN_STAT_LIST = grid.get_run_stat_list(
     n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER,
     cft_pval=DEFAULT_CET_CFT_PVAL)
+
+
+# The vba_tune cache's leaf grid: the stat bake-off crossed with the kernel
+# width, which is what lets the comparators be tuned on both knobs at once.
+#
+# Tuning them one at a time is circular. Picking the statistic at fwhm=0 and
+# then the width at that statistic assumes each answer to find the other, and
+# never visits the corner where both move. Most of the grid cannot actually
+# turn on it (with one column of interest rank(H) = 1 at every width, so
+# VBA's and CET's rejection sets are invariant to the stat by the derivation
+# in get_run_stat_list, smoothing or not), but TFCE integrates the statistic's
+# magnitude, so its choice and the kernel do interact and nothing in a
+# sequential sweep would show it.
+#
+# The cross is affordable because the width, not the stat, is the only real
+# multiplier: run.voxel_stat_walk computes every stat in one permutation walk,
+# and the kernel keys that walk, so the whole grid costs one walk per
+# (cell, width) and a rank count per leaf.
+RUN_TUNE_LIST = [dict(ana=_ana_at(spec['ana'], fwhm),
+                      stat_name=spec['stat_name'])
+                 for spec in RUN_STAT_LIST
+                 for fwhm in SMOOTH_FWHM_GRID]
 
 # the prune cache's leaf grid: four rules (greedy / DP / the single max-LLR
 # region / the max-Dice oracle) crossed with the two Ward clustering modes
@@ -633,21 +647,6 @@ CONFIG = {
         data_grid(sources=['hcp']),
         effect_grid(llr_list=INNER_EFFECT_LLR),
         RUN_INNER_PERM_LIST, run_inner_perm),
-    # What a spatial kernel is worth to the voxel-wise arms: each of them at
-    # every width on SMOOTH_FWHM_GRID, over the b=1 HCP cells the other
-    # caches plant. HCP only -- the question is what a real pipeline's
-    # preprocessing buys on real images, and WGN has no anatomy for a kernel
-    # to respect. A cell carries only the voxels it analyses; the context the
-    # kernel needs is borrowed from the source inside Experiment.smooth, so
-    # these are sweep_llr's builds rather than builds of their own.
-    #
-    # This is a tuning cache: it settles SMOOTH_FWHM_BEST, which has to be
-    # read before the detection caches run (see the GOTCHA there), and it
-    # spans TUNE_LLR_GRID rather than the reported grid.
-    'sweep_fwhm': (
-        data_grid(sources=['hcp']),
-        effect_grid(llr_list=TUNE_LLR_GRID),
-        RUN_ANA_SMOOTH_LIST, run_ana),
     # D. Detection vs effect extent (fixed per-voxel effect_llr).
     'sweep_extent': (
         data_grid(),
@@ -714,6 +713,27 @@ CONFIG = {
         data_grid(sources=['hcp'], b_list=[2]),
         effect_grid(llr_list=TUNE_LLR_GRID),
         RUN_STAT_LIST, run_stat),
+    # The comparators' parameters, chosen jointly: the stat bake-off crossed
+    # with the kernel width (RUN_TUNE_LIST), which is what settles both the
+    # get_stat / z_flag and the fwhm every voxel-wise arm in ana_kwargs_dict
+    # declares. Tuning the two in sequence is circular, and the corner where
+    # both move is the only place TFCE's interaction between them can show --
+    # see RUN_TUNE_LIST for why the rest of the grid provably cannot turn on
+    # it, and SMOOTH_FWHM_BEST for the GOTCHA about reading this before the
+    # detection caches run.
+    #
+    # b=1 HCP, unlike vba_stat's b=2: these are the cells the reported arms
+    # are compared on (DATA_AXES), and a width wired from anywhere else is a
+    # width measured off the figures it is used in. HCP only -- the question
+    # is what a real pipeline's preprocessing buys on real images, and WGN has
+    # no anatomy for a kernel to respect. A cell carries only the voxels it
+    # analyses; the context the kernel needs is borrowed from the source
+    # inside Experiment.smooth, so these are sweep_llr's builds rather than
+    # builds of their own.
+    'vba_tune': (
+        data_grid(sources=['hcp']),
+        effect_grid(llr_list=TUNE_LLR_GRID),
+        RUN_TUNE_LIST, run_stat),
     # H. Pruning rule: greedy max-LLR vs DP max-likelihood cut vs the single
     #    max-LLR region, scored on one shared GLOW fit per (cell, Ward mode) so
     #    the comparison isolates the rule, not the permutation test. Crossed

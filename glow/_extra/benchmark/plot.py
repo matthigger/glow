@@ -78,8 +78,8 @@ from glow.analysis import AnalysisGLOWBase
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import stat_dict
 from .config import (ana_kwargs_dict, REPORTED_GLOW_LABEL,
-                     REPORTED_GLOW_LABEL_LIST, RUN_ANA_SMOOTH_LIST,
-                     RUN_STAT_LIST, SMOOTH_LABEL_LIST)
+                     REPORTED_GLOW_LABEL_LIST, RUN_STAT_LIST, RUN_TUNE_LIST,
+                     SMOOTH_LABEL_LIST)
 from .file import add_metric_cols
 
 
@@ -209,6 +209,12 @@ def _stat_method_zt(ana):
 _STAT_VARIANT = {(repr(s['ana']), s['stat_name']):
                  (*_stat_method_zt(s['ana']), s['stat_name'])
                  for s in RUN_STAT_LIST}
+
+# the same, for the joint tuning grid, carrying the kernel as a fourth field
+_TUNE_VARIANT = {(repr(s['ana']), s['stat_name']):
+                 (*_stat_method_zt(s['ana']), s['stat_name'],
+                  float(s['ana'].fwhm or 0.0))
+                 for s in RUN_TUNE_LIST}
 
 
 def get_cmap_dict(label_list) -> dict:
@@ -1718,55 +1724,33 @@ def _latex_table(path, colspec: str, header: list, rows: list,
     path.write_text('\n'.join(lines))
 
 
-def _fwhm_variant() -> dict:
-    """Map each smoothing recipe's repr to its (method, fwhm) variant.
-
-    Built off config.RUN_ANA_SMOOTH_LIST rather than typed out, so the
-    catalogue stays the one place the grid is declared. The repr is the join
-    key because it is what a record stores (see benchmark.recipe).
-
-    Returns:
-        dict: repr(ana) -> (method label, fwhm in mm).
-    """
-    # the join is on the arm modulo its width: every leaf here, and every
-    # catalogue arm, carries an fwhm in its repr, so both sides are keyed with
-    # that one field blanked
-    def bare_repr(ana) -> str:
-        bare = copy.copy(ana)
-        bare.fwhm = None
-        return repr(bare)
-
-    label_of = {bare_repr(ana_kwargs_dict[label]): label
-                for label in SMOOTH_LABEL_LIST}
-    out = {}
-    for leaf in RUN_ANA_SMOOTH_LIST:
-        ana = leaf['ana']
-        out[repr(ana)] = (label_of[bare_repr(ana)], float(ana.fwhm or 0.0))
-    return out
-
-
-def tidy_fwhm(raw):
-    """Normalise the smoothing cache's leaves to a tidy per-variant frame.
+def tidy_tune(raw):
+    """Normalise the joint tuning cache's leaves to a tidy per-variant frame.
 
     Args:
-        raw: the sweep_fwhm provenance frame (make_csv.write_config_csv).
+        raw: the vba_tune provenance frame (make_csv.write_config_csv). Read
+            per cache rather than off every run_stat record, because an
+            unsmoothed recipe reprs identically in the stat bake-off (see
+            results.stat_cell_df).
 
     Returns:
-        a DataFrame with cell, method, fwhm, effect_llr, dice, sens, ppv --
-        one row per (cell, arm, width). Rows whose recipe is not a smoothing
-        variant drop out.
+        a DataFrame with cell, method, zt, stat, fwhm, effect_llr, dice, sens,
+        ppv -- one row per (cell, arm, z-scoring, stat, width). Rows whose
+        recipe is not a tuning variant drop out.
     """
     if raw.empty:
         return raw
-    var = _fwhm_variant()
-    hit = [var.get(a) for a in raw['run_ana.in.ana']]
+    keys = zip(raw['run_stat.in.ana'], raw['run_stat.in.stat_name'])
+    hit = [_TUNE_VARIANT.get(k) for k in keys]
     out = pd.DataFrame({'cell': raw.index.values})
     out['method'] = [v[0] if v else None for v in hit]
-    out['fwhm'] = [v[1] if v else np.nan for v in hit]
+    out['zt'] = [v[1] if v else None for v in hit]
+    out['stat'] = [v[2] if v else None for v in hit]
+    out['fwhm'] = [v[3] if v else np.nan for v in hit]
     llr = f'{_CELL_IN}.kwargs_effect.effect_llr'
     if llr in raw:
         out['effect_llr'] = pd.to_numeric(raw[llr], errors='coerce').values
-    tp, fp, fn = (pd.to_numeric(raw[f'run_ana.out.score.target.{c}'],
+    tp, fp, fn = (pd.to_numeric(raw[f'run_stat.out.score.target.{c}'],
                                 errors='coerce').values
                   for c in ('tp', 'fp', 'fn'))
     denom = 2 * tp + fp + fn
@@ -1774,6 +1758,48 @@ def tidy_fwhm(raw):
     out['sens'] = np.where(tp + fn > 0, tp / (tp + fn), np.nan)
     out['ppv'] = np.where(tp + fp > 0, tp / (tp + fp), np.nan)
     return out.dropna(subset=['method'])
+
+
+def tune_best(df) -> dict:
+    """Return each arm's jointly best (z-scoring, stat, kernel width).
+
+    The selection config.ana_kwargs_dict declares. Joint rather than one knob
+    at a time: choosing the stat unsmoothed and the width at that stat assumes
+    each answer to find the other (see config.RUN_TUNE_LIST).
+
+    Args:
+        df: a tidy_tune frame.
+
+    Returns:
+        dict: method label -> {zt, stat, fwhm}, fwhm in mm.
+    """
+    mean = df.groupby(['method', 'zt', 'stat', 'fwhm'])['dice'].mean()
+    out = {}
+    for method, sub in mean.groupby(level=0):
+        _, zt, stat, fwhm = sub.idxmax()
+        out[method] = dict(zt=zt, stat=stat, fwhm=float(fwhm))
+    return out
+
+
+def tune_fwhm_slice(df):
+    """Restrict a tune frame to each arm's best stat, leaving the width axis.
+
+    What the width table and the drift table read: the kernel curve is only
+    interpretable along one statistic, and the one worth drawing is the one
+    that arm is run at.
+
+    Args:
+        df: a tidy_tune frame.
+
+    Returns:
+        a DataFrame, the rows of df at each arm's tune_best (zt, stat).
+    """
+    best = tune_best(df)
+    keep = pd.Series(False, index=df.index)
+    for method, sel in best.items():
+        keep |= ((df['method'] == method) & (df['zt'] == sel['zt'])
+                 & (df['stat'] == sel['stat']))
+    return df[keep]
 
 
 def fwhm_best(df) -> dict:
@@ -1784,7 +1810,7 @@ def fwhm_best(df) -> dict:
     caller's to notice -- fwhm_note flags the latter.
 
     Args:
-        df: a tidy_fwhm frame.
+        df: a tune_fwhm_slice frame (one statistic per arm).
 
     Returns:
         dict: method label -> the winning fwhm in mm.
@@ -1801,7 +1827,7 @@ def fwhm_best_by_llr(df):
     and which of the two binds moves with the effect.
 
     Args:
-        df: a tidy_fwhm frame carrying an effect_llr column.
+        df: a tune_fwhm_slice frame carrying an effect_llr column.
 
     Returns:
         a DataFrame indexed by effect_llr, one column per method, holding
@@ -1819,7 +1845,7 @@ def fwhm_note(df) -> list:
     """Return the caveats a reader of the selection needs, as text lines.
 
     Args:
-        df: a tidy_fwhm frame.
+        df: a tune_fwhm_slice frame.
 
     Returns:
         list[str]: one line per arm whose optimum sits at the edge of the
@@ -1841,14 +1867,20 @@ def write_fwhm_table(label: str, df, out) -> None:
     tabular, like the stat bake-off's tables: the paper owns the float and
     the prose.
 
+    The width curve is read along each arm's own statistic (tune_fwhm_slice),
+    and which statistic that is comes from the same joint argmax, so the
+    table's note carries it rather than leaving it implicit.
+
     Args:
         label (str): cache name, for the printed header.
-        df: a tidy_fwhm frame.
+        df: a tidy_tune frame (sliced here).
         out (pathlib.Path): directory the .tex file is written into.
     """
     if df.empty:
         print(f'  (no rows for {label} -- skipping)')
         return
+    joint = tune_best(df)
+    df = tune_fwhm_slice(df)
     grid = sorted(df['fwhm'].unique())
     method_list = [m for m in ('VBA', 'VBA-TFCE', 'CET')
                    if m in set(df['method'])]
@@ -1862,10 +1894,14 @@ def write_fwhm_table(label: str, df, out) -> None:
                  else f'{mean[method][f]:.3f}' for f in grid]
         rows.append([method.replace('_', '\\_')] + cells)
 
+    chosen = ', '.join(f'{m} {joint[m]["stat"]}/{joint[m]["zt"]}'
+                       for m in method_list if m in joint)
     note = [f'{label}: mean Dice per (arm, FWHM); '
             f'{int(n_cell.min())}-{int(n_cell.max())} cells per entry',
             'bold marks the width each arm is run at (config.'
-            'SMOOTH_FWHM_BEST)'] + fwhm_note(df)
+            'SMOOTH_FWHM_BEST)',
+            f'read at each arm\'s jointly chosen statistic: {chosen}'
+            ] + fwhm_note(df)
     _latex_table(
         out / 'fwhm_dice.tex',
         'l' + 'r' * len(grid),
@@ -1874,6 +1910,7 @@ def write_fwhm_table(label: str, df, out) -> None:
         group_header=[('', 1, 'l'), ('FWHM (mm)', len(grid), 'c')],
         note=note)
     print(f'saved: {out / "fwhm_dice.tex"}')
+    print(f'  joint best per arm (stat, z, width): {joint}')
     print(f'  best FWHM per arm (pooled): {fwhm_best(df)}')
     drift = fwhm_best_by_llr(df)
     if not drift.empty:
@@ -2994,16 +3031,16 @@ def main(argv=None) -> None:
     # function (CONFIG values are (data, effect, fnc_kwargs, fnc)) into the
     # run_ana detection caches this layer draws and the others it skips.
     runtime_names = [n for n in CONFIG if n in _RUNTIME_SPEC]
-    # the smoothing sweep is a run_ana cache but not a detection sweep: its
-    # axis is the kernel width, not effect strength, so it reads as a tuning
-    # table like the stat bake-off. Keyed on the leaf grid by identity, the
-    # same way the catalogue declares it.
-    fwhm_names = [n for n, cfg in CONFIG.items()
-                  if cfg[2] is RUN_ANA_SMOOTH_LIST]
+    # the joint tuning cache is a run_stat cache, like the stat bake-off, but
+    # its extra axis is the kernel, so it reads as a width table rather than a
+    # stat table. Keyed on the leaf grid by identity, the same way the
+    # catalogue declares it.
+    fwhm_names = [n for n, cfg in CONFIG.items() if cfg[2] is RUN_TUNE_LIST]
     detect_names = [n for n, cfg in CONFIG.items()
                     if cfg[3] is run_ana and n not in _RUNTIME_SPEC
                     and n not in fwhm_names]
-    stat_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_stat]
+    stat_names = [n for n, cfg in CONFIG.items()
+                  if cfg[3] is run_stat and n not in fwhm_names]
     segment_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_segment]
     prune_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_prune]
     inner_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_inner_perm]
@@ -3043,7 +3080,7 @@ def main(argv=None) -> None:
             plot_cache(name, df, _cache_dir(out, name))
             n_plotted += 1
         elif name in fwhm_names:
-            df = tidy_fwhm(make_csv.write_config_csv(name))
+            df = tidy_tune(make_csv.write_config_csv(name))
             if df.empty:
                 print(f'  (no records for {name} — skipping)')
                 continue
@@ -3052,7 +3089,7 @@ def main(argv=None) -> None:
             write_fwhm_table(name, df, _cache_dir(out, name))
             n_plotted += 1
         elif name in stat_names:
-            df = tidy_stat(results.stat_cell_df())
+            df = tidy_stat(results.stat_cell_df(name))
             if df.empty:
                 print(f'  (no records for {name} — skipping)')
                 continue

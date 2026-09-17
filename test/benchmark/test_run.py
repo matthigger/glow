@@ -355,14 +355,39 @@ class TestRunStat:
                  seed=_fresh_seed() if seed is None else seed),
             dict(effect_llr=0.15, extenter_cls=ExtenterMinVar, n_vox_frac=0.1))
 
-    def test_matches_standalone_fit(self):
+    @pytest.mark.parametrize('fwhm', [None, 2.0])
+    def test_matches_standalone_fit(self, fwhm):
         # the shared walk is just a precompute of the same stat matrix, so a
-        # variant reading it equals the standalone run_ana fit of that recipe
+        # variant reading it equals the standalone run_ana fit of that recipe.
+        # Parametrized over the kernel because the walk smooths on its own
+        # (voxel_stat_walk) -- if it smoothed differently from fit, or not at
+        # all, the injected matrix would silently answer a different question.
         cell = self._planted()
-        ana = AnalysisVBA(get_stat=get_wilks, n_perm_fwer=15, z_flag=True)
+        ana = AnalysisVBA(get_stat=get_wilks, n_perm_fwer=15, z_flag=True,
+                          fwhm=fwhm)
         assert run_stat(cell, ana, stat_dict_inv[get_wilks],
                         parent_uid=cell.uid) == run_ana(cell, ana,
                                                    parent_uid=cell.uid)
+
+    def test_kernel_keys_the_walk(self):
+        # the kernel changes what is walked, so it has to key the memo: a
+        # smoothed arm reading the unsmoothed walk is a wrong answer, not an
+        # error, which is the one failure this mechanism cannot surface
+        cell = self._planted()
+        exp = build_cell(cell)
+        raw = voxel_stat_walk(exp, 15, parent_uid=cell.uid)
+        sm = voxel_stat_walk(exp, 15, parent_uid=cell.uid, fwhm=2.0)
+        assert sm is not raw
+        assert not np.allclose(sm[stat_dict_inv[get_wilks]],
+                               raw[stat_dict_inv[get_wilks]])
+
+    def test_kernel_is_a_cache_axis(self):
+        cell = self._planted()
+        ana = AnalysisVBA(get_stat=get_wilks, n_perm_fwer=15)
+        run_stat(cell, ana, stat_dict_inv[get_wilks], parent_uid=cell.uid)
+        smooth = AnalysisVBA(get_stat=get_wilks, n_perm_fwer=15, fwhm=2.0)
+        assert not run_stat.check_call_in_cache(
+            cell, smooth, stat_dict_inv[get_wilks], parent_uid=cell.uid)
 
     def test_variants_share_one_walk(self):
         # the first variant computes the walk, the rest read the same object

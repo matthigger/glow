@@ -11,7 +11,7 @@ import pytest
 from glow._extra.benchmark import plot
 from glow._extra.benchmark.config import (ana_kwargs_dict, CONFIG,
                                           REPORTED_GLOW_LABEL,
-                                          RUN_ANA_SMOOTH_LIST, RUN_STAT_LIST,
+                                          RUN_STAT_LIST, RUN_TUNE_LIST,
                                           SMOOTH_FWHM_GRID,
                                           SMOOTH_LABEL_LIST)
 from glow.analysis import AnalysisVBA
@@ -1439,57 +1439,86 @@ def test_cache_dir_is_one_directory_per_cache(tmp_path):
 # Smoothing sweep: the kernel-width tuning table
 # ---------------------------------------------------------------------------
 
-def _fwhm_row(ana, seed, effect_llr, tp, fp, tn, fn):
-    """Build one sweep_fwhm row: a run_ana leaf at one arm and width."""
-    return {'run_ana.in.ana': repr(ana),
-            **_score(tp, fp, tn, fn),
+def _tune_row(ana, stat_name, seed, effect_llr, tp, fp, tn, fn):
+    """Build one vba_tune row: a run_stat leaf at one variant and width."""
+    return {'run_stat.in.ana': repr(ana), 'run_stat.in.stat_name': stat_name,
+            **{k.replace('run_ana.', 'run_stat.'): v
+               for k, v in _score(tp, fp, tn, fn).items()},
             **_cell_cols(seed, effect_llr, source='hcp')}
 
 
-def _fwhm_raw(dice_of=None):
-    """One row per smoothing variant, optionally scoring a chosen Dice.
+def _tune_raw(dice_of=None, effect_llr=0.03):
+    """One row per joint tuning variant, optionally scoring a chosen Dice.
 
-    dice_of maps (method, fwhm) -> tp, every other variant taking a
-    baseline tp, so a test can name which width should win.
+    dice_of maps (method, zt, stat, fwhm) -> tp with None as a wildcard in
+    any field, every other variant taking a baseline tp, so a test can name
+    which corner of the grid should win.
     """
     rows = []
-    for idx, leaf in enumerate(RUN_ANA_SMOOTH_LIST):
-        ana = leaf['ana']
-        key = (None, ana.fwhm or 0.0)
-        tp = 40 if dice_of is None else dice_of.get(key, 40)
-        rows.append(_fwhm_row(ana, seed=idx, effect_llr=0.03,
+    for idx, leaf in enumerate(RUN_TUNE_LIST):
+        ana, stat = leaf['ana'], leaf['stat_name']
+        method, zt = plot._stat_method_zt(ana)
+        tp = 40
+        for key, val in (dice_of or {}).items():
+            want = (method, zt, stat, ana.fwhm or 0.0)
+            if all(k is None or k == w for k, w in zip(key, want)):
+                tp = val
+        rows.append(_tune_row(ana, stat, seed=idx % 10,
+                              effect_llr=effect_llr,
                               tp=tp, fp=10, tn=890, fn=100 - tp))
     return pd.DataFrame(rows)
 
 
-def test_tidy_fwhm_empty():
+def test_tidy_tune_empty():
     """An empty frame in gives an empty frame out."""
-    assert plot.tidy_fwhm(pd.DataFrame()).empty
+    assert plot.tidy_tune(pd.DataFrame()).empty
 
 
-def test_tidy_fwhm_reads_each_leaf_as_an_arm_and_a_width():
-    # the join is on the recipe repr, which is what a record stores, so
-    # every declared variant has to resolve -- including fwhm=0, whose repr
-    # is the paper's own unsmoothed arm
-    df = plot.tidy_fwhm(_fwhm_raw())
-    assert len(df) == len(RUN_ANA_SMOOTH_LIST)
+def test_tidy_tune_reads_every_leaf_as_a_variant_and_a_width():
+    # the join is on (recipe repr, stat_name), which is what a record stores,
+    # so every declared variant has to resolve -- including fwhm=0, whose
+    # repr is the bake-off's own unsmoothed recipe
+    df = plot.tidy_tune(_tune_raw())
+    assert len(df) == len(RUN_TUNE_LIST)
     assert set(df['method']) == set(SMOOTH_LABEL_LIST)
     assert set(df['fwhm']) == set(SMOOTH_FWHM_GRID)
+    assert set(df['zt']) == {'raw', 'z'}
     assert df['dice'].iloc[0] == pytest.approx(2 * 40 / (2 * 40 + 10 + 60))
 
 
-def test_tidy_fwhm_drops_a_recipe_that_is_not_a_width():
-    # GLOW takes no kernel, so a GLOW row is not a smoothing variant
-    raw = pd.DataFrame([_fwhm_row(ana_kwargs_dict[GLOW_LABEL], seed=0,
+def test_tidy_tune_drops_a_recipe_that_is_not_a_variant():
+    # GLOW takes no kernel and no stat choice, so a GLOW row is not a variant
+    raw = pd.DataFrame([_tune_row(ana_kwargs_dict[GLOW_LABEL], 'llr', seed=0,
                                   effect_llr=0.03, tp=80, fp=10, tn=890,
                                   fn=20)])
-    assert plot.tidy_fwhm(raw).empty
+    assert plot.tidy_tune(raw).empty
+
+
+def test_tune_best_picks_the_joint_argmax_not_a_sequential_one():
+    # the whole reason the cache exists: a corner that is optimal only when
+    # both knobs move has to win. Here every arm's best is (z, wilks, 8 mm),
+    # which no sweep holding one knob at its unsmoothed choice would find.
+    df = plot.tidy_tune(_tune_raw(dice_of={(None, 'z', 'wilks', 8.0): 95}))
+    best = plot.tune_best(df)
+    assert set(best) == set(SMOOTH_LABEL_LIST)
+    assert all(b == dict(zt='z', stat='wilks', fwhm=8.0)
+               for b in best.values())
+
+
+def test_tune_fwhm_slice_keeps_one_statistic_per_arm():
+    # the width curve is only interpretable along one stat, so the slice has
+    # to leave exactly the width axis for each arm
+    df = plot.tidy_tune(_tune_raw(dice_of={(None, 'z', 'wilks', 8.0): 95}))
+    sl = plot.tune_fwhm_slice(df)
+    assert set(sl['zt']) == {'z'}
+    assert set(sl['stat']) == {'wilks'}
+    assert len(sl) == len(SMOOTH_LABEL_LIST) * len(SMOOTH_FWHM_GRID)
 
 
 def test_fwhm_best_picks_each_arm_max_mean_dice():
     # 4 mm made the best of it for every arm here
-    df = plot.tidy_fwhm(_fwhm_raw(dice_of={(None, 4.0): 90}))
-    best = plot.fwhm_best(df)
+    df = plot.tidy_tune(_tune_raw(dice_of={(None, None, None, 4.0): 90}))
+    best = plot.fwhm_best(plot.tune_fwhm_slice(df))
     assert set(best) == set(SMOOTH_LABEL_LIST)
     assert set(best.values()) == {4.0}
 
@@ -1498,20 +1527,22 @@ def test_fwhm_note_flags_an_optimum_at_the_grid_edge():
     # the widest width winning means the true optimum may sit outside the
     # swept range, which a reader of the selection has to be told
     edge = max(SMOOTH_FWHM_GRID)
-    df = plot.tidy_fwhm(_fwhm_raw(dice_of={(None, edge): 90}))
-    note = plot.fwhm_note(df)
+    df = plot.tidy_tune(_tune_raw(dice_of={(None, None, None, edge): 90}))
+    note = plot.fwhm_note(plot.tune_fwhm_slice(df))
     assert len(note) == len(SMOOTH_LABEL_LIST)
     assert all('grid edge' in line for line in note)
     # an interior optimum needs no caveat
-    interior = plot.tidy_fwhm(_fwhm_raw(dice_of={(None, 4.0): 90}))
-    assert plot.fwhm_note(interior) == []
+    interior = plot.tidy_tune(_tune_raw(dice_of={(None, None, None, 4.0): 90}))
+    assert plot.fwhm_note(plot.tune_fwhm_slice(interior)) == []
 
 
 def test_write_fwhm_table_writes_the_tex(tmp_path):
-    df = plot.tidy_fwhm(_fwhm_raw(dice_of={(None, 4.0): 90}))
-    plot.write_fwhm_table('sweep_fwhm', df, tmp_path)
+    df = plot.tidy_tune(_tune_raw(dice_of={(None, None, None, 4.0): 90}))
+    plot.write_fwhm_table('vba_tune', df, tmp_path)
     tex = (tmp_path / 'fwhm_dice.tex').read_text()
     # one row per arm, one column per width, the winner bolded
     assert all(m in tex for m in SMOOTH_LABEL_LIST)
     assert 'FWHM (mm)' in tex
     assert tex.count(chr(92) + 'textbf') == len(SMOOTH_LABEL_LIST)
+    # the note names the statistic each width curve is read along
+    assert 'jointly chosen statistic' in tex

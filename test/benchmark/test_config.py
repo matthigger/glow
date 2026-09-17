@@ -26,7 +26,7 @@ import pytest
 from glow._extra.benchmark import config, data
 from glow.analysis import (Analysis, AnalysisCET, AnalysisGLOWBase,
                            AnalysisOracleSegment, AnalysisVBA)
-from glow.analysis.mancova import stat_dict
+from glow.analysis.mancova import stat_dict, stat_dict_inv
 
 
 # every catalogue entry; the shape / bind checks cover all of them
@@ -40,10 +40,10 @@ RUN_ANA_LABELS = [label for label in LABELS
 # calibration figure reads no voxel-wise arm
 GLOW_ONLY_LABELS = ['null']
 
-# the run_ana caches carrying their own recipe grid rather than a shared
-# singleton: the smoothing sweep, which is the voxel-wise arms crossed with a
-# kernel width and so cannot be shared with anything
-OWN_GRID_LABELS = ['sweep_fwhm']
+# the caches carrying their own recipe grid rather than a shared singleton:
+# the joint tuning cache, which is the stat bake-off crossed with a kernel
+# width and so cannot be shared with anything
+OWN_GRID_LABELS = ['vba_tune']
 
 
 class TestCatalogueShape:
@@ -75,39 +75,50 @@ class TestCatalogueShape:
                   else config.RUN_ANA_LIST)
         assert config.CONFIG[label][2] is expect
 
-    def test_smooth_grid_is_the_voxel_arms_crossed_with_the_kernel(self):
-        # one leaf per (voxel-wise arm, width), GLOW absent: it takes no
-        # kernel, so it enters the figure as its own caches' flat reference.
-        # Oracle-RBA absent too: it is handed the segmentation a kernel only
-        # approximates, so a width would not mean anything on it.
-        grid = config.RUN_ANA_SMOOTH_LIST
-        assert len(grid) == (len(config.SMOOTH_LABEL_LIST)
+    def test_tune_grid_is_the_stat_pool_crossed_with_the_kernel(self):
+        # the whole point of the cache: both knobs move together, so the grid
+        # is the bake-off's recipes times the width grid. GLOW absent (it
+        # takes no kernel and uses the LLR throughout) and Oracle-RBA absent
+        # (it is handed the segmentation a kernel only approximates).
+        grid = config.RUN_TUNE_LIST
+        assert len(grid) == (len(config.RUN_STAT_LIST)
                              * len(config.SMOOTH_FWHM_GRID))
+        assert len({repr(c['ana']) for c in grid}) == len(grid)
         assert not any(isinstance(c['ana'], AnalysisGLOWBase) for c in grid)
         assert not any(isinstance(c['ana'], AnalysisOracleSegment)
                        for c in grid)
         assert {c['ana'].fwhm for c in grid} == {
             f or None for f in config.SMOOTH_FWHM_GRID}
 
-    def test_smooth_grid_zero_width_reaches_fit_as_none(self):
+    def test_tune_grid_spans_every_arm_at_every_width(self):
+        # no hole in the cross: each arm shape has to appear at each width,
+        # or the joint argmax is taken over a ragged grid
+        seen = {(type(c['ana']).__name__, getattr(c['ana'], 'tfce_flag',
+                                                  False), c['ana'].fwhm)
+                for c in config.RUN_TUNE_LIST}
+        shapes = {(type(c['ana']).__name__, getattr(c['ana'], 'tfce_flag',
+                                                    False))
+                  for c in config.RUN_STAT_LIST}
+        widths = {f or None for f in config.SMOOTH_FWHM_GRID}
+        assert seen == {(cls, tf, w) for cls, tf in shapes for w in widths}
+
+    def test_tune_grid_zero_width_reaches_fit_as_none(self):
         # fwhm 0 has to arrive as None rather than 0.0, since that is the one
         # value Experiment.smooth returns self for; 0.0 would key a second,
         # identical artifact under a different repr
-        widths = {c['ana'].fwhm for c in config.RUN_ANA_SMOOTH_LIST}
+        widths = {c['ana'].fwhm for c in config.RUN_TUNE_LIST}
         assert 0.0 not in widths
         assert None in widths
 
-    def test_smooth_grid_contains_the_reported_arms(self):
-        # the arms declare their tuned width, so each one IS a leaf of this
-        # sweep -- which is what lets the kernel sweep and the detection
-        # caches share it rather than fit it twice
-        swept = {repr(c['ana']) for c in config.RUN_ANA_SMOOTH_LIST}
-        assert all(repr(config.ana_kwargs_dict[m]) in swept
-                   for m in config.SMOOTH_LABEL_LIST)
+    def test_tune_grid_stat_name_matches_the_recipe(self):
+        # run_stat injects walk[stat_name] into ana, so a mismatch would score
+        # one statistic under another's name
+        for cell in config.RUN_TUNE_LIST:
+            assert stat_dict_inv[cell['ana'].get_stat] == cell['stat_name']
 
     def test_reported_arms_run_at_their_measured_best_width(self):
         # ana_kwargs_dict writes the widths out literally so the arms read as
-        # arms; SMOOTH_FWHM_BEST is what sweep_fwhm measured. They must agree,
+        # arms; SMOOTH_FWHM_BEST is what vba_tune measured. They must agree,
         # or the paper compares against an arm nothing tuned.
         assert set(config.SMOOTH_FWHM_BEST) == set(config.SMOOTH_LABEL_LIST)
         for label, fwhm in config.SMOOTH_FWHM_BEST.items():
@@ -121,7 +132,7 @@ class TestCatalogueShape:
         assert len(config.TUNE_LLR_GRID) == 5
         assert set(config.TUNE_LLR_GRID) <= set(config.EFFECT_LLR_GRID)
 
-    @pytest.mark.parametrize('label', ['sweep_fwhm', 'vba_stat'])
+    @pytest.mark.parametrize('label', ['vba_tune', 'vba_stat'])
     def test_tuning_caches_span_the_tuning_axis(self, label):
         # a tuning cache reports a mean over cells, so it spans five
         # strengths where a reported cache spans eleven

@@ -221,14 +221,21 @@ def incomplete_cell_indices(name: str, kwargs_fnc_list=None) -> list:
             if not cell_complete(kwargs_data, kwargs_effect)]
 
 
-def stat_cell_df():
-    """Return the vba_stat cache's run_stat leaves, keyed by planted cell.
+def stat_cell_df(name: str = None):
+    """Return a run_stat cache's leaves, keyed by planted cell.
 
     The stat comparison is within a planted cell (the five stats fit on one
     experiment), so this reads the run_stat records directly and groups them
     by the parent uid each declares -- the cell id every variant of a cell
     shares. Source / effect_llr are not recovered (they live in the parent
     record); the comparison does not need them.
+
+    Args:
+        name (str | None): a CONFIG cache name to restrict to. Required
+            whenever more than one run_stat cache has run: an unsmoothed
+            recipe reprs the same in each of them, so only the cell it was fit
+            on tells the caches apart, and that is what config_leaf_keys
+            resolves. None reads every run_stat record.
 
     Returns:
         pandas.DataFrame: one row per run_stat leaf, columns cell (the planted
@@ -238,9 +245,12 @@ def stat_cell_df():
     import pandas as pd
 
     RECORDER.load()
+    keep = None if name is None else set(config_leaf_keys(name))
     rows = []
     for key, rec in RECORDER.records.items():
         if rec.get('function') != 'run_stat':
+            continue
+        if keep is not None and key not in keep:
             continue
         inp = rec.get('inputs', {})
         score = (rec.get('outputs') or {}).get('score') or {}

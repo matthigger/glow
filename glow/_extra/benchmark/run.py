@@ -194,12 +194,14 @@ def run_segment(cell: ExpEffect, cluster_mode, *, parent_uid: str,
 
 
 
-# The current cell's stat walk, {(parent_uid, n_perm_fwer): walk}, holding one
-# entry (see voxel_stat_walk for why it is memory-only and bounded to one).
+# The current cell's stat walk, {(parent_uid, n_perm_fwer, fwhm): walk},
+# holding one entry (see voxel_stat_walk for why it is memory-only and bounded
+# to one).
 _WALK_MEMO = {}
 
 
-def voxel_stat_walk(exp, n_perm_fwer: int, *, parent_uid: str) -> dict:
+def voxel_stat_walk(exp, n_perm_fwer: int, *, parent_uid: str,
+                    fwhm: float = None) -> dict:
     """Compute the (n_perm+1, num_vox) matrix of every stat for one exp.
 
     The stat cache's shared heavy intermediate: one Freedman-Lane permutation
@@ -210,11 +212,13 @@ def voxel_stat_walk(exp, n_perm_fwer: int, *, parent_uid: str) -> dict:
     {VBA, VBA-TFCE, CET} pays the walk once. Not a recorded DAG node (see the
     module docstring).
 
-    exp is scaled (ExperimentScaled.from_exp) before the walk, so the matrix is
-    byte-identical to the one AnalysisVoxel.fit would build (fit scales, then
-    build_stat_matrix runs the same get_stat_perm on the scaled exp) -- that
-    equivalence is what lets run_stat inject this as _stat and get exactly the
-    standalone fit's result.
+    exp is smoothed and then scaled exactly as AnalysisVoxel.fit does it
+    (fit smooths, scales, then runs the same get_stat_perm on the result), so
+    the matrix is byte-identical to the one fit would build -- that equivalence
+    is what lets run_stat inject this as _stat and get exactly the standalone
+    fit's result. The kernel is therefore part of the walk, not of the leaf
+    reading it, and it keys the memo: a smoothed arm handed an unsmoothed walk
+    would return a wrong answer rather than an error.
 
     The sharing is in memory, not on disk: one walk runs to hundreds of MB,
     which persisted over a whole stat grid would dwarf every other cache.
@@ -230,14 +234,17 @@ def voxel_stat_walk(exp, n_perm_fwer: int, *, parent_uid: str) -> dict:
             key.
         n_perm_fwer (int): number of FWER permutations (the walk has n+1 rows,
             row 0 observed).
+        fwhm (float): smoothing kernel applied before the walk, full width at
+            half maximum in mm. None or 0 walks the images as loaded.
 
     Returns:
         {stat_name: (n_perm_fwer+1, num_vox) array}: row 0 observed, rows 1:
             the Freedman-Lane nulls.
     """
-    key = (parent_uid, n_perm_fwer)
+    key = (parent_uid, n_perm_fwer, fwhm)
     if key in _WALK_MEMO:
         return _WALK_MEMO[key]
+    exp = exp.smooth(fwhm)
     exp = ExperimentScaled.from_exp(exp)
     num_vox = exp.y.shape[2]
     stat_fns = list(stat_dict.values())
@@ -275,7 +282,8 @@ def run_stat(cell: ExpEffect, ana: Analysis, stat_name, *,
         parent_uid (str): the cell's declared uid (see the module
             docstring).
         ana (Analysis): an unfitted AnalysisVBA / AnalysisCET recipe; its
-            n_perm_fwer sizes the walk and its get_stat picks the stat.
+            n_perm_fwer sizes the walk, its fwhm smooths what the walk sees,
+            and its get_stat picks the stat.
         stat_name (str): the stat_dict key picking which walk matrix to inject
             (must match ana.get_stat's stat).
 
@@ -283,7 +291,8 @@ def run_stat(cell: ExpEffect, ana: Analysis, stat_name, *,
         score (dict): the detection score (see score.score_effects).
     """
     exp = build_cell(cell)
-    walk = voxel_stat_walk(exp, ana.n_perm_fwer, parent_uid=parent_uid)
+    walk = voxel_stat_walk(exp, ana.n_perm_fwer, parent_uid=parent_uid,
+                           fwhm=ana.fwhm)
     ana = copy.deepcopy(ana)
     ana.fit(exp, _stat=walk[stat_name].copy())
     return score_effects(ana, cell.mask_target_list,
