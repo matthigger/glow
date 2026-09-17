@@ -1760,6 +1760,15 @@ def tidy_tune(raw):
     return out.dropna(subset=['method'])
 
 
+# The arm whose statistic is decidable, which is the one the others defer
+# to. TFCE integrates the statistic's magnitude over heights, so a monotone
+# change of statistic moves its enhanced image and its rejection set; VBA and
+# CET read only the ordering, which under rank(H) = 1 no statistic in the pool
+# changes (grid.get_run_stat_list). Found by the flag, not by the label.
+_TFCE_METHOD = next((m for m in SMOOTH_LABEL_LIST
+                     if getattr(ana_kwargs_dict[m], 'tfce_flag', False)), None)
+
+
 def _declared(method) -> dict:
     """Return the (zt, stat, fwhm) ana_kwargs_dict declares for an arm."""
     ana = ana_kwargs_dict[method]
@@ -1768,21 +1777,25 @@ def _declared(method) -> dict:
                 fwhm=float(getattr(ana, 'fwhm', None) or 0.0))
 
 
-def _pick_tied(method, tied) -> dict:
-    """Choose among equally-scoring variants, preferring the declared one.
+def _pick_tied(tied, ref_stat) -> dict:
+    """Choose among equally-scoring variants, deferring to TFCE's statistic.
 
-    A tie here is usually not luck: with one column of interest rank(H) = 1,
-    so VBA and CET reject on the statistic's ordering alone and every stat in
-    the pool gives them the same rejection set at every width (see
-    grid.get_run_stat_list). An argmax over that is a coin toss, and taking it
-    at face value would re-key every leaf of an arm to move it between two
-    statistics that cannot differ. So the arm keeps what it declares whenever
-    that is among the winners, and otherwise the narrowest kernel wins, which
-    is the least intervention a tie can justify.
+    A tie here is not luck. With one column of interest rank(H) = 1, so VBA
+    and CET reject on the statistic's ordering alone and every statistic in
+    the pool gives them the same rejection set at every width (the derivation
+    is in grid.get_run_stat_list). An argmax over that is a coin toss.
+
+    So a tied arm takes the statistic of the arm that can tell them apart:
+    TFCE integrates the statistic's magnitude, so its choice is a measurement
+    rather than an artifact, and adopting it leaves the comparator family
+    reading one statistic instead of three chosen by sort order. What remains
+    is broken toward the narrowest kernel, then by a fixed order, so the
+    selection never depends on how the frame happened to be grouped.
 
     Args:
-        method (str): the arm's ana_kwargs_dict label.
         tied (list): the tied (method, zt, stat, fwhm) keys.
+        ref_stat (str | None): the statistic to prefer, or None to skip that
+            step (which is how TFCE's own tie, if it ever has one, resolves).
 
     Returns:
         dict: {zt, stat, fwhm} for the chosen variant.
@@ -1791,13 +1804,12 @@ def _pick_tied(method, tied) -> dict:
             for _, zt, stat, fwhm in tied]
     if len(cand) == 1:
         return cand[0]
-    want = _declared(method)
-    for key in (('zt', 'stat', 'fwhm'), ('zt', 'stat'), ('zt',)):
-        match = [c for c in cand if all(c[k] == want[k] for k in key)]
+    if ref_stat is not None:
+        match = [c for c in cand if c['stat'] == ref_stat]
         if match:
             cand = match
-            break
-    return min(cand, key=lambda c: (c['fwhm'], _STAT_ORDER.index(c['stat'])))
+    return min(cand, key=lambda c: (c['fwhm'], _STAT_ORDER.index(c['stat']),
+                                    c['zt'] != 'raw'))
 
 
 def tune_best(df, *, atol: float = 1e-12) -> dict:
@@ -1806,7 +1818,8 @@ def tune_best(df, *, atol: float = 1e-12) -> dict:
     The selection config.ana_kwargs_dict declares. Joint rather than one knob
     at a time: choosing the stat unsmoothed and the width at that stat assumes
     each answer to find the other (see config.RUN_TUNE_LIST). Ties are
-    resolved rather than taken as found (_pick_tied).
+    resolved rather than taken as found (_pick_tied), which is why TFCE is
+    settled first: the arms that cannot choose a statistic adopt its.
 
     Args:
         df: a tidy_tune frame.
@@ -1818,11 +1831,11 @@ def tune_best(df, *, atol: float = 1e-12) -> dict:
         dict: method label -> {zt, stat, fwhm}, fwhm in mm.
     """
     mean = df.groupby(['method', 'zt', 'stat', 'fwhm'])['dice'].mean()
-    out = {}
-    for method, grp in mean.groupby(level=0):
-        tied = [k for k, v in grp.items() if v >= grp.max() - atol]
-        out[method] = _pick_tied(method, tied)
-    return out
+    tied = {method: [k for k, v in grp.items() if v >= grp.max() - atol]
+            for method, grp in mean.groupby(level=0)}
+    ref = (_pick_tied(tied[_TFCE_METHOD], None)['stat']
+           if _TFCE_METHOD in tied else None)
+    return {method: _pick_tied(keys, ref) for method, keys in tied.items()}
 
 
 def tune_tie_width(df, *, atol: float = 1e-12) -> dict:
@@ -1975,6 +1988,9 @@ def write_fwhm_table(label: str, df, out) -> None:
     print(f'saved: {out / "fwhm_dice.tex"}')
     print(f'  joint best per arm (stat, z, width): {joint}')
     print(f'  variants tied for that maximum: {tune_tie_width(df_all)}')
+    moved = {m: (_declared(m), joint[m]) for m in joint
+             if _declared(m) != joint[m]}
+    print(f'  arms this moves off ana_kwargs_dict: {moved or "none"}')
     print(f'  best FWHM per arm (pooled): {fwhm_best(df)}')
     drift = fwhm_best_by_llr(df)
     if not drift.empty:

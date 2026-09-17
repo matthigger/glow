@@ -1505,47 +1505,52 @@ def test_tune_best_picks_the_joint_argmax_not_a_sequential_one():
                for b in best.values())
 
 
-def test_tune_best_keeps_the_declared_stat_when_everything_ties():
-    # the case the derivation predicts: rank(H) = 1 makes every stat give VBA
-    # and CET one rejection set, so the whole pool ties. Taking that argmax at
-    # face value would move an arm between two statistics that cannot differ
-    # and re-key every leaf it has, so the declared choice has to survive.
-    df = plot.tidy_tune(_tune_raw())
+def test_tune_best_gives_a_tied_arm_the_tfce_statistic():
+    # the case the derivation predicts: rank(H) = 1 makes every statistic give
+    # VBA and CET one rejection set, so their whole pool ties and an argmax
+    # over it is a coin toss. TFCE integrates magnitude, so it is the one arm
+    # whose choice is a measurement -- the tied arms take it, and the family
+    # reads one statistic rather than three chosen by sort order.
+    df = plot.tidy_tune(_tune_raw(
+        dice_of={('VBA-TFCE', 'z', 'pillai', 4.0): 95}))
     best = plot.tune_best(df)
-    for method in SMOOTH_LABEL_LIST:
-        want = plot._declared(method)
-        assert best[method]['stat'] == want['stat']
-        assert best[method]['zt'] == want['zt']
+    assert best['VBA-TFCE'] == dict(zt='z', stat='pillai', fwhm=4.0)
+    for method in ('VBA', 'CET'):
+        assert best[method]['stat'] == 'pillai'
     # and the degeneracy is reported rather than hidden inside the argmax
-    assert all(w == len(RUN_TUNE_LIST) // len(SMOOTH_LABEL_LIST)
-               for w in plot.tune_tie_width(df).values())
+    assert plot.tune_tie_width(df)['VBA-TFCE'] == 1
+    assert plot.tune_tie_width(df)['VBA'] > 1
 
 
-def test_tune_best_takes_a_real_win_over_the_declared_choice():
-    # a tie is deferred to the declaration, a genuine difference is not
-    df = plot.tidy_tune(_tune_raw(dice_of={('VBA', 'z', 'pillai', 8.0): 95}))
-    assert plot.tune_best(df)['VBA'] == dict(zt='z', stat='pillai', fwhm=8.0)
+def test_tune_best_takes_a_real_win_over_the_tfce_statistic():
+    # deference applies among equals, never over them: an arm with a genuine
+    # winner keeps it even when TFCE chose something else
+    df = plot.tidy_tune(_tune_raw(dice_of={
+        ('VBA-TFCE', 'z', 'pillai', 4.0): 95,
+        ('VBA', 'z', 'roys_root', 8.0): 97}))
+    best = plot.tune_best(df)
+    assert best['VBA'] == dict(zt='z', stat='roys_root', fwhm=8.0)
+    assert best['VBA-TFCE']['stat'] == 'pillai'
     assert plot.tune_tie_width(df)['VBA'] == 1
 
 
 def test_tune_best_breaks_a_width_tie_toward_the_narrowest():
-    # when the declared choice is not among the winners there is nothing to
-    # defer to, and a width that cannot be told from no width should not be
-    # claimed. VBA declares raw/hotel_tr, so a z/pillai sweep that ties across
-    # every width leaves only the narrowest to justify.
-    df = plot.tidy_tune(_tune_raw(dice_of={('VBA', 'z', 'pillai', None): 95}))
-    best = plot.tune_best(df)['VBA']
-    assert (best['zt'], best['stat']) == ('z', 'pillai')
-    assert best['fwhm'] == 0.0
+    # once the statistic is settled, a width that cannot be told from no width
+    # should not be claimed
+    df = plot.tidy_tune(_tune_raw(
+        dice_of={('VBA-TFCE', 'z', 'pillai', None): 95}))
+    assert plot.tune_best(df)['VBA-TFCE'] == dict(zt='z', stat='pillai',
+                                                  fwhm=0.0)
 
 
-def test_tune_best_keeps_a_declared_width_that_is_among_the_winners():
-    # the anti-re-key rule outranks the narrowest-kernel rule: if the arm's
-    # own declaration ties for the maximum, it survives, because moving it
-    # would re-key every leaf to buy a difference the tie says is not there
-    declared = plot._declared('CET')
-    df = plot.tidy_tune(_tune_raw(dice_of={('CET', None, None, None): 95}))
-    assert plot.tune_best(df)['CET'] == declared
+def test_tune_best_is_independent_of_row_order():
+    # the whole point of resolving ties explicitly: the answer cannot depend
+    # on how the frame happened to be grouped
+    raw = _tune_raw(dice_of={('VBA-TFCE', 'z', 'pillai', 4.0): 95})
+    a = plot.tune_best(plot.tidy_tune(raw))
+    b = plot.tune_best(plot.tidy_tune(
+        raw.iloc[::-1].reset_index(drop=True)))
+    assert a == b
 
 
 def test_tune_fwhm_slice_keeps_one_statistic_per_arm():
