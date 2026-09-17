@@ -15,6 +15,35 @@ in the paper is drawn from it.
 | input | HCP-YA imaging data, 100 subjects x 6 maps | [Zenodo 10.5281/zenodo.20736221](https://doi.org/10.5281/zenodo.20736221) |
 | output | provenance records | [Zenodo 10.5281/zenodo.22664285](https://doi.org/10.5281/zenodo.22664285) |
 
+### The corpus being generated now
+
+The published records above came from `25f528c`, on the three-function cache
+(`data_factory` / `effect_factory` / `run_*`) that keyed artifacts partly on
+an Experiment's bytes. That layer is gone: a cell is now declared, stored as
+a small payload and rebuilt per leaf (`glow/_extra/benchmark/cell.py`), so
+every key changed and no artifact of the old corpus is addressable from the
+new one. The old cache and records were moved aside rather than deleted, and
+the corpus is being rebuilt from scratch.
+
+A file cannot name its own commit, so what is pinned here is the last commit
+that changes what the benchmark computes. Commits on top of it (this table
+among them) are documentation and move no number.
+
+| | |
+|---|---|
+| computation pinned at | `2985c019e81351764a44192250611de090146ffe` |
+| branch | `main` |
+| started | 2026-09-17 |
+| first stage | `vba_stat`, `sweep_fwhm` at `GLOW_BENCH_N_SEED=10` |
+| old cache | `~/.local/share/glow/cache.bak_prepayload_20260917` |
+| old records | `~/.local/share/glow/records.bak_prepayload_20260917` |
+
+The tuning caches run first, and that ordering is load-bearing rather than a
+preference: `config.SMOOTH_FWHM_BEST` is read off `sweep_fwhm`, and wiring a
+kernel width into an arm changes that arm's repr, which is its recipe
+identity, so every leaf it had already recorded would re-key. Tune before the
+reported caches run, not after.
+
 You do not have to generate the output to read it. Ours is published, so the
 figures redraw from it with no compute and without the imaging data -- see
 [Using our records](#using-our-records), or [One CSV per
