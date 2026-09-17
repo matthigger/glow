@@ -89,14 +89,30 @@ class TestCatalogueShape:
         assert {c['ana'].fwhm for c in grid} == {
             f or None for f in config.SMOOTH_FWHM_GRID}
 
-    def test_smooth_grid_leaves_the_unsmoothed_recipes_alone(self):
-        # fwhm 0 must reach fit as None, so the baseline arm's repr -- and so
-        # every artifact keyed on it -- is the paper's own, which is what
-        # makes the unsmoothed leaf the very leaf the detection caches run
-        unsmoothed = {repr(c['ana']) for c in config.RUN_ANA_SMOOTH_LIST
-                      if c['ana'].fwhm is None}
-        assert unsmoothed == {repr(config.ana_kwargs_dict[m])
-                              for m in config.SMOOTH_LABEL_LIST}
+    def test_smooth_grid_zero_width_reaches_fit_as_none(self):
+        # fwhm 0 has to arrive as None rather than 0.0, since that is the one
+        # value Experiment.smooth returns self for; 0.0 would key a second,
+        # identical artifact under a different repr
+        widths = {c['ana'].fwhm for c in config.RUN_ANA_SMOOTH_LIST}
+        assert 0.0 not in widths
+        assert None in widths
+
+    def test_smooth_grid_contains_the_reported_arms(self):
+        # the arms declare their tuned width, so each one IS a leaf of this
+        # sweep -- which is what lets the kernel sweep and the detection
+        # caches share it rather than fit it twice
+        swept = {repr(c['ana']) for c in config.RUN_ANA_SMOOTH_LIST}
+        assert all(repr(config.ana_kwargs_dict[m]) in swept
+                   for m in config.SMOOTH_LABEL_LIST)
+
+    def test_reported_arms_run_at_their_measured_best_width(self):
+        # ana_kwargs_dict writes the widths out literally so the arms read as
+        # arms; SMOOTH_FWHM_BEST is what sweep_fwhm measured. They must agree,
+        # or the paper compares against an arm nothing tuned.
+        assert set(config.SMOOTH_FWHM_BEST) == set(config.SMOOTH_LABEL_LIST)
+        for label, fwhm in config.SMOOTH_FWHM_BEST.items():
+            assert config.ana_kwargs_dict[label].fwhm == fwhm
+            assert fwhm in config.SMOOTH_FWHM_GRID
 
     def test_tuning_strengths_are_cells_the_reported_caches_plant(self):
         # taken off EFFECT_LLR_GRID rather than typed, so a tuning cell is a

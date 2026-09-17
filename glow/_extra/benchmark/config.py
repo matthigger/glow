@@ -154,8 +154,10 @@ SWEEP_NIMG_GRID = list(range(10, HCP_NUM_IMG + 1, 10))
 # voxel-wise arm takes the stat / z-scoring it wins the vba_stat bake-off with:
 # the raw Hotelling-Lawley trace for VBA and CET, the z-scored 1 - Wilks for
 # TFCE (z-scoring is what TFCE's single height grid needs to mean the same
-# thing at every voxel). Written out rather than left to the recipe defaults,
-# which agree -- the paper's arms should be readable here.
+# thing at every voxel), and the kernel width it wins sweep_fwhm with, 2 mm
+# for all three (SMOOTH_FWHM_BEST, which a test holds these to). Written out
+# rather than left to the recipe defaults, which agree on the stat and would
+# leave the arms unsmoothed -- the paper's arms should be readable here.
 #
 # The one GLOW entry is the greedy arm on the Focus projection (Ward on the
 # contrast subspace). Neither of its two knobs is a recipe axis here. The
@@ -181,10 +183,11 @@ ana_kwargs_dict = {
     'GLOW-Focus-greedy': AnalysisGLOW(cluster_mode=ClusterMode.FOCUS,
                                       prune_rule='greedy', **kwargs),
     'VBA':        AnalysisVBA(z_flag=False, tfce_flag=False,
-                              get_stat=get_hotel_tr, **kwargs_voxel),
+                              get_stat=get_hotel_tr, fwhm=2.0,
+                              **kwargs_voxel),
     'VBA-TFCE':   AnalysisVBA(z_flag=True, tfce_flag=True,
-                              get_stat=get_wilks, **kwargs_voxel),
-    'CET':        AnalysisCET(z_flag=False, get_stat=get_hotel_tr,
+                              get_stat=get_wilks, fwhm=2.0, **kwargs_voxel),
+    'CET':        AnalysisCET(z_flag=False, get_stat=get_hotel_tr, fwhm=2.0,
                               **kwargs_voxel),
     'Oracle-RBA': AnalysisOracleSegment(z_flag=True, get_stat=get_hotel_tr,
                                         **kwargs_voxel),
@@ -233,15 +236,23 @@ SMOOTH_FWHM_GRID = (0.0, 2.0, 4.0, 8.0, 12.0)
 # compared against.
 TUNE_LLR_GRID = EFFECT_LLR_GRID[[0, 2, 5, 8, 10]]
 
-# The width each arm is run at: the one maximising its mean Dice over the
-# sweep_fwhm cache, read off with plot.fwhm_best rather than judged by eye,
-# and pinned here so the paper's arms are readable in one place. Empty until
-# that cache has run against this corpus.
+# The width each arm is run at, as measured: the one maximising its mean Dice
+# over the sweep_fwhm cache, read off with plot.fwhm_best rather than judged by
+# eye. ana_kwargs_dict declares these literally, so the arms read as arms; this
+# is what they are held to (test_config).
 #
-# GOTCHA: wiring a width in here changes that arm's repr, which is its recipe
-# identity, so every recorded VBA / CET / VBA-TFCE leaf in every detection
-# cache re-keys and must be re-run. Tune before those caches run, not after.
-SMOOTH_FWHM_BEST = {}
+# One width per arm is the most a method can carry, and it is not the most any
+# arm could score: the optimum falls monotonically as the effect strengthens
+# (8-12 mm at the weakest strength on the tuning grid, 0 at the strongest), so
+# a pooled argmax is nobody's best and 2 mm is conservative at the weak end.
+# Choosing per strength would make the arm a function of the truth, which is an
+# oracle rather than a comparator, so the drift is reported as its own result
+# (benchmark.plot.fwhm_note) instead of being tuned away.
+#
+# GOTCHA: a width here changes that arm's repr, which is its recipe identity,
+# so every recorded VBA / CET / VBA-TFCE leaf in every detection cache re-keys
+# and must be re-run. Tune before those caches run, not after.
+SMOOTH_FWHM_BEST = {'VBA': 2.0, 'VBA-TFCE': 2.0, 'CET': 2.0}
 
 # ---------- how a leaf's fit runs (never what it computes) -------------------
 # fit_params is forwarded to Analysis.fit by the leaf and filtered out of the

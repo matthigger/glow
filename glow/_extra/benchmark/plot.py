@@ -79,7 +79,7 @@ from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import stat_dict
 from .config import (ana_kwargs_dict, REPORTED_GLOW_LABEL,
                      REPORTED_GLOW_LABEL_LIST, RUN_ANA_SMOOTH_LIST,
-                     RUN_STAT_LIST)
+                     RUN_STAT_LIST, SMOOTH_LABEL_LIST)
 from .file import add_metric_cols
 
 
@@ -1728,17 +1728,20 @@ def _fwhm_variant() -> dict:
     Returns:
         dict: repr(ana) -> (method label, fwhm in mm).
     """
-    label_of = {repr(v): k for k, v in ana_kwargs_dict.items()}
+    # the join is on the arm modulo its width: every leaf here, and every
+    # catalogue arm, carries an fwhm in its repr, so both sides are keyed with
+    # that one field blanked
+    def bare_repr(ana) -> str:
+        bare = copy.copy(ana)
+        bare.fwhm = None
+        return repr(bare)
+
+    label_of = {bare_repr(ana_kwargs_dict[label]): label
+                for label in SMOOTH_LABEL_LIST}
     out = {}
     for leaf in RUN_ANA_SMOOTH_LIST:
         ana = leaf['ana']
-        fwhm = ana.fwhm or 0.0
-        # an unsmoothed recipe reprs as the paper's own arm, which is how its
-        # label is recovered; a smoothed one carries fwhm in the repr, so
-        # strip it to find the arm it is a width of
-        bare = copy.copy(ana)
-        bare.fwhm = None
-        out[repr(ana)] = (label_of[repr(bare)], float(fwhm))
+        out[repr(ana)] = (label_of[bare_repr(ana)], float(ana.fwhm or 0.0))
     return out
 
 
