@@ -1439,9 +1439,15 @@ def test_cache_dir_is_one_directory_per_cache(tmp_path):
 # Smoothing sweep: the kernel-width tuning table
 # ---------------------------------------------------------------------------
 
-def _tune_row(ana, stat_name, seed, effect_llr, tp, fp, tn, fn):
-    """Build one vba_tune row: a run_stat leaf at one variant and width."""
+def _tune_row(ana, stat_name, seed, effect_llr, tp, fp, tn, fn, cell=None):
+    """Build one vba_tune row: a run_stat leaf at one variant and width.
+
+    cell is the planted cell's uid, which every variant of a cell shares --
+    what tune_balanced counts, so a fixture that gave each leaf its own would
+    make every cell look partial.
+    """
     return {'run_stat.in.ana': repr(ana), 'run_stat.in.stat_name': stat_name,
+            'run_stat.in.parent_uid': f'cell{seed}' if cell is None else cell,
             **{k.replace('run_ana.', 'run_stat.'): v
                for k, v in _score(tp, fp, tn, fn).items()},
             **_cell_cols(seed, effect_llr, source='hcp')}
@@ -1455,7 +1461,7 @@ def _tune_raw(dice_of=None, effect_llr=0.03):
     which corner of the grid should win.
     """
     rows = []
-    for idx, leaf in enumerate(RUN_TUNE_LIST):
+    for leaf in RUN_TUNE_LIST:
         ana, stat = leaf['ana'], leaf['stat_name']
         method, zt = plot._stat_method_zt(ana)
         tp = 40
@@ -1463,8 +1469,8 @@ def _tune_raw(dice_of=None, effect_llr=0.03):
             want = (method, zt, stat, ana.fwhm or 0.0)
             if all(k is None or k == w for k, w in zip(key, want)):
                 tp = val
-        rows.append(_tune_row(ana, stat, seed=idx % 10,
-                              effect_llr=effect_llr,
+        # one cell carrying the whole grid, so the panel is balanced
+        rows.append(_tune_row(ana, stat, seed=0, effect_llr=effect_llr,
                               tp=tp, fp=10, tn=890, fn=100 - tp))
     return pd.DataFrame(rows)
 
@@ -1484,6 +1490,27 @@ def test_tidy_tune_reads_every_leaf_as_a_variant_and_a_width():
     assert set(df['fwhm']) == set(SMOOTH_FWHM_GRID)
     assert set(df['zt']) == {'raw', 'z'}
     assert df['dice'].iloc[0] == pytest.approx(2 * 40 / (2 * 40 + 10 + 60))
+
+
+def test_tune_balanced_drops_a_part_finished_cell():
+    # a selection over a part-finished cache is biased, not just noisy: the
+    # grid finishes cell by cell, so the completed cells are a prefix of the
+    # effect-strength axis and the kernel optimum moves along it
+    full = _tune_raw()
+    partial = full.iloc[:10].copy()
+    partial['run_stat.in.parent_uid'] = 'cell_partial'
+    df = plot.tidy_tune(pd.concat([full, partial], ignore_index=True))
+    kept, n_cells, n_drop = plot.tune_balanced(df)
+    assert (n_cells, n_drop) == (1, 1)
+    assert set(kept['cell']) == {'cell0'}
+
+
+def test_write_fwhm_table_skips_a_cache_with_no_complete_cell(tmp_path):
+    # better to write nothing than a table whose entries average different
+    # cells
+    df = plot.tidy_tune(_tune_raw().iloc[:10])
+    plot.write_fwhm_table('vba_tune', df, tmp_path)
+    assert not (tmp_path / 'fwhm_dice.tex').exists()
 
 
 def test_tidy_tune_drops_a_recipe_that_is_not_a_variant():

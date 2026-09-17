@@ -1735,14 +1735,17 @@ def tidy_tune(raw):
 
     Returns:
         a DataFrame with cell, method, zt, stat, fwhm, effect_llr, dice, sens,
-        ppv -- one row per (cell, arm, z-scoring, stat, width). Rows whose
-        recipe is not a tuning variant drop out.
+        ppv -- one row per (cell, arm, z-scoring, stat, width), cell being the
+        planted cell's uid. Rows whose recipe is not a tuning variant drop
+        out.
     """
     if raw.empty:
         return raw
     keys = zip(raw['run_stat.in.ana'], raw['run_stat.in.stat_name'])
     hit = [_TUNE_VARIANT.get(k) for k in keys]
-    out = pd.DataFrame({'cell': raw.index.values})
+    # the cell, not the leaf: every variant of a cell shares its parent uid,
+    # which is what makes a balanced panel checkable (tune_balanced)
+    out = pd.DataFrame({'cell': raw['run_stat.in.parent_uid'].values})
     out['method'] = [v[0] if v else None for v in hit]
     out['zt'] = [v[1] if v else None for v in hit]
     out['stat'] = [v[2] if v else None for v in hit]
@@ -1810,6 +1813,28 @@ def _pick_tied(tied, ref_stat) -> dict:
             cand = match
     return min(cand, key=lambda c: (c['fwhm'], _STAT_ORDER.index(c['stat']),
                                     c['zt'] != 'raw'))
+
+
+def tune_balanced(df):
+    """Keep only cells recorded with the full variant grid (balanced N).
+
+    A selection over a part-finished cache is not just noisy, it is biased:
+    the grid runs cell by cell, so the cells that have finished are a prefix
+    of the effect-strength axis rather than a sample of it, and the kernel's
+    optimum moves along that axis (see the drift the width table reports).
+    Restricting to complete cells makes every variant's mean an average over
+    the same cells.
+
+    Args:
+        df: a tidy_tune frame.
+
+    Returns:
+        (DataFrame, int, int): the filtered frame, kept cell count, dropped.
+    """
+    per_cell = df.groupby('cell')['dice'].size()
+    full = per_cell.index[per_cell == len(RUN_TUNE_LIST)]
+    return (df[df['cell'].isin(full)], len(full),
+            df['cell'].nunique() - len(full))
 
 
 def tune_best(df, *, atol: float = 1e-12) -> dict:
@@ -1954,6 +1979,11 @@ def write_fwhm_table(label: str, df, out) -> None:
     if df.empty:
         print(f'  (no rows for {label} -- skipping)')
         return
+    df, n_cells, n_drop = tune_balanced(df)
+    if df.empty:
+        print(f'  ({label}: no cell has the full variant grid yet -- '
+              f'{n_drop} partial, skipping)')
+        return
     joint = tune_best(df)
     df_all = df
     df = tune_fwhm_slice(df)
@@ -1974,6 +2004,8 @@ def write_fwhm_table(label: str, df, out) -> None:
                        for m in method_list if m in joint)
     note = [f'{label}: mean Dice per (arm, FWHM); '
             f'{int(n_cell.min())}-{int(n_cell.max())} cells per entry',
+            f'balanced panel: {n_cells} complete cells'
+            + (f', {n_drop} partial dropped' if n_drop else ''),
             'bold marks the width each arm is run at (config.'
             'SMOOTH_FWHM_BEST)',
             f'read at each arm\'s jointly chosen statistic: {chosen}'
