@@ -1957,13 +1957,16 @@ def oracle_stat_balanced(df):
 
 
 def oracle_stat_best(df, *, atol: float = 1e-12) -> dict:
-    """Return the oracle's best (statistic, z-scoring).
+    """Return the highest-scoring (statistic, z-scoring) over the pool.
 
-    Measured, not inherited: the oracle tests k+1 regions of unequal size
-    where the voxel-wise arms test one-voxel regions, so a statistic chosen
-    on theirs says nothing about its. A tie still defers to the arm that can
-    decide one, which is TFCE (_pick_tied), so a degenerate oracle joins the
-    family rather than picking by sort order.
+    The pool's argmax, which is NOT what the arm is run at and is reported
+    beside it rather than wired. Raw scores higher here for a reason that
+    does not recommend it: the effect-free remainder is 9x the planted
+    region, so its statistic is diluted below the max-stat threshold the
+    small region sets and it cannot be rejected at all. That is the largest
+    hypothesis in the family being untestable, not safe, which is what
+    AnalysisOracleSegment.fit z-scores to avoid. Under z the whole pool ties
+    and the choice defers to TFCE (_pick_tied).
 
     Args:
         df: a tidy_oracle_stat frame.
@@ -2003,6 +2006,7 @@ def write_oracle_stat_table(label: str, df, out) -> None:
               f'{n_drop} partial, skipping)')
         return
     best = oracle_stat_best(df)
+    run_at = _declared('Oracle-RBA')
     mean = df.groupby(['zt', 'stat'])['dice'].mean()
     stat_list = [s for s in _STAT_ORDER if s in set(df['stat'])]
 
@@ -2011,7 +2015,7 @@ def write_oracle_stat_table(label: str, df, out) -> None:
         if zt not in mean.index.get_level_values(0):
             continue
         cells = [f'\\textbf{{{mean[zt][s]:.3f}}}'
-                 if (zt == best['zt'] and s == best['stat'])
+                 if (zt == run_at['zt'] and s == run_at['stat'])
                  else f'{mean[zt][s]:.3f}' for s in stat_list]
         rows.append([_ZT_PRETTY[zt]] + cells)
 
@@ -2023,6 +2027,13 @@ def write_oracle_stat_table(label: str, df, out) -> None:
             'spread across the pool: '
             + ', '.join(f'{_ZT_PRETTY[z]} {v:.6f}' for z, v in
                         spread.items())]
+    if (best['zt'], best['stat']) != (run_at['zt'], run_at['stat']):
+        note.append(
+            f'the pool maximum is {_ZT_PRETTY[best["zt"]]} '
+            f'{_STAT_PRETTY[best["stat"]]} and is not taken: unstandardized, '
+            f'the effect-free remainder is diluted below the threshold the '
+            f'planted region sets, so the largest hypothesis in the family '
+            f'is untestable rather than safe')
     _latex_table(
         out / 'oracle_stat_dice.tex',
         'l' + 'r' * len(stat_list),
@@ -2034,10 +2045,9 @@ def write_oracle_stat_table(label: str, df, out) -> None:
     print(f'  oracle best (stat, z): {best}')
     print(f'  variants tied for it: {oracle_stat_tie_width(df)} of '
           f'{len(RUN_ORACLE_STAT_LIST)}')
-    declared = _declared('Oracle-RBA')
-    if (declared['stat'], declared['zt']) != (best['stat'], best['zt']):
-        print(f'  MOVES the arm: declared {declared["stat"]}/'
-              f'{declared["zt"]}')
+    if (best['stat'], best['zt']) != (run_at['stat'], run_at['zt']):
+        print(f'  the arm runs at {run_at["stat"]}/{run_at["zt"]}; the pool '
+              f'maximum is not taken (see oracle_stat_best)')
     else:
         print('  matches ana_kwargs_dict')
 
