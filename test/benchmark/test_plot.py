@@ -11,10 +11,12 @@ import pytest
 from glow._extra.benchmark import plot
 from glow._extra.benchmark.config import (ana_kwargs_dict, CONFIG,
                                           REPORTED_GLOW_LABEL,
+                                          RUN_ORACLE_STAT_LIST,
                                           RUN_STAT_LIST, RUN_TUNE_LIST,
                                           SMOOTH_FWHM_GRID,
                                           SMOOTH_LABEL_LIST)
 from glow.analysis import AnalysisVBA
+from glow.analysis.mancova import stat_dict, stat_dict_inv
 
 
 # The catalogue's method names, taken by role rather than spelled out: a
@@ -1473,6 +1475,84 @@ def _tune_raw(dice_of=None, effect_llr=0.03):
         rows.append(_tune_row(ana, stat, seed=0, effect_llr=effect_llr,
                               tp=tp, fp=10, tn=890, fn=100 - tp))
     return pd.DataFrame(rows)
+
+
+def _oracle_row(ana, seed, effect_llr, tp, fp, tn, fn):
+    """Build one oracle_stat row: a run_ana leaf at one (stat, z) variant."""
+    return {'run_ana.in.ana': repr(ana),
+            'run_ana.in.parent_uid': f'cell{seed}',
+            **_score(tp, fp, tn, fn),
+            **_cell_cols(seed, effect_llr, source='hcp')}
+
+
+def _oracle_raw(dice_of=None, effect_llr=0.03):
+    """One row per oracle variant, optionally scoring a chosen Dice.
+
+    dice_of maps (zt, stat) -> tp, None a wildcard in either field.
+    """
+    rows = []
+    for leaf in RUN_ORACLE_STAT_LIST:
+        ana = leaf['ana']
+        zt = 'z' if ana.z_flag else 'raw'
+        stat = stat_dict_inv[ana.get_stat]
+        tp = 40
+        for key, val in (dice_of or {}).items():
+            if all(k is None or k == w for k, w in zip(key, (zt, stat))):
+                tp = val
+        rows.append(_oracle_row(ana, seed=0, effect_llr=effect_llr,
+                                tp=tp, fp=10, tn=890, fn=100 - tp))
+    return pd.DataFrame(rows)
+
+
+def test_tidy_oracle_stat_reads_every_variant():
+    # one row per (statistic, z-scoring); the join is on the recipe repr,
+    # which is what a record stores
+    df = plot.tidy_oracle_stat(_oracle_raw())
+    assert len(df) == len(RUN_ORACLE_STAT_LIST)
+    assert set(df['zt']) == {'raw', 'z'}
+    assert set(df['stat']) == set(stat_dict)
+
+
+def test_tidy_oracle_stat_drops_a_voxel_wise_recipe():
+    # a VBA row is not an oracle variant, whatever statistic it carries
+    raw = pd.DataFrame([_oracle_row(ana_kwargs_dict['VBA'], seed=0,
+                                    effect_llr=0.03, tp=80, fp=10, tn=890,
+                                    fn=20)])
+    assert plot.tidy_oracle_stat(raw).empty
+
+
+def test_oracle_stat_best_is_measured_not_inherited():
+    # the whole point of the cache: the oracle can land somewhere the
+    # voxel-wise family did not, because its regions are not theirs
+    df = plot.tidy_oracle_stat(
+        _oracle_raw(dice_of={('z', 'roys_root'): 95}))
+    assert plot.oracle_stat_best(df) == dict(zt='z', stat='roys_root')
+    assert plot.oracle_stat_tie_width(df) == 1
+
+
+def test_oracle_stat_best_defers_to_the_family_when_it_ties():
+    # if the oracle cannot choose either, it joins the family rather than
+    # picking by sort order
+    df = plot.tidy_oracle_stat(_oracle_raw())
+    best = plot.oracle_stat_best(df)
+    assert best['stat'] == plot._declared(plot._TFCE_METHOD)['stat']
+    assert plot.oracle_stat_tie_width(df) == len(RUN_ORACLE_STAT_LIST)
+
+
+def test_write_oracle_stat_table_writes_the_tex(tmp_path):
+    df = plot.tidy_oracle_stat(
+        _oracle_raw(dice_of={('z', 'roys_root'): 95}))
+    plot.write_oracle_stat_table('oracle_stat', df, tmp_path)
+    tex = (tmp_path / 'oracle_stat_dice.tex').read_text()
+    assert 'Statistic' in tex
+    assert tex.count(chr(92) + 'textbf') == 1
+    assert 'spread across the pool' in tex
+
+
+def test_write_oracle_stat_table_skips_a_partial_cache(tmp_path):
+    df = plot.tidy_oracle_stat(_oracle_raw().iloc[:3])
+    plot.write_oracle_stat_table('oracle_stat', df, tmp_path)
+    assert not (tmp_path / 'oracle_stat_dice.tex').exists()
 
 
 def test_tidy_tune_empty():

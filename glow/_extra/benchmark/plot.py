@@ -78,8 +78,8 @@ from glow.analysis import AnalysisGLOWBase
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import stat_dict, stat_dict_inv
 from .config import (ana_kwargs_dict, REPORTED_GLOW_LABEL,
-                     REPORTED_GLOW_LABEL_LIST, RUN_STAT_LIST, RUN_TUNE_LIST,
-                     SMOOTH_LABEL_LIST)
+                     REPORTED_GLOW_LABEL_LIST, RUN_ORACLE_STAT_LIST,
+                     RUN_STAT_LIST, RUN_TUNE_LIST, SMOOTH_LABEL_LIST)
 from .file import add_metric_cols
 
 
@@ -215,6 +215,15 @@ _TUNE_VARIANT = {(repr(s['ana']), s['stat_name']):
                  (*_stat_method_zt(s['ana']), s['stat_name'],
                   float(s['ana'].fwhm or 0.0))
                  for s in RUN_TUNE_LIST}
+
+
+# repr(ana) -> (stat, zt) for the oracle's own bake-off. Keyed on the repr
+# alone, unlike _STAT_VARIANT: these are run_ana leaves, so nothing injects a
+# stat matrix and the recipe names the statistic by itself.
+_ORACLE_VARIANT = {repr(c['ana']):
+                   (stat_dict_inv[c['ana'].get_stat],
+                    'z' if c['ana'].z_flag else 'raw')
+                   for c in RUN_ORACLE_STAT_LIST}
 
 
 def get_cmap_dict(label_list) -> dict:
@@ -1902,6 +1911,137 @@ def tune_fwhm_slice(df):
     return df[keep]
 
 
+def tidy_oracle_stat(raw):
+    """Normalise the oracle's stat bake-off to a tidy per-variant frame.
+
+    Args:
+        raw: the oracle_stat provenance frame (make_csv.write_config_csv).
+
+    Returns:
+        a DataFrame with cell, stat, zt, effect_llr, dice, sens, ppv -- one
+        row per (cell, statistic, z-scoring). Rows whose recipe is not an
+        oracle variant drop out.
+    """
+    if raw.empty:
+        return raw
+    hit = [_ORACLE_VARIANT.get(a) for a in raw['run_ana.in.ana']]
+    out = pd.DataFrame({'cell': raw['run_ana.in.parent_uid'].values})
+    out['stat'] = [v[0] if v else None for v in hit]
+    out['zt'] = [v[1] if v else None for v in hit]
+    llr = f'{_CELL_IN}.kwargs_effect.effect_llr'
+    if llr in raw:
+        out['effect_llr'] = pd.to_numeric(raw[llr], errors='coerce').values
+    tp, fp, fn = (pd.to_numeric(raw[f'run_ana.out.score.target.{c}'],
+                                errors='coerce').values
+                  for c in ('tp', 'fp', 'fn'))
+    denom = 2 * tp + fp + fn
+    out['dice'] = np.where(denom > 0, 2 * tp / denom, np.nan)
+    out['sens'] = np.where(tp + fn > 0, tp / (tp + fn), np.nan)
+    out['ppv'] = np.where(tp + fp > 0, tp / (tp + fp), np.nan)
+    return out.dropna(subset=['stat'])
+
+
+def oracle_stat_balanced(df):
+    """Keep only cells recorded with the full variant grid (balanced N).
+
+    Args:
+        df: a tidy_oracle_stat frame.
+
+    Returns:
+        (DataFrame, int, int): the filtered frame, kept cell count, dropped.
+    """
+    per_cell = df.groupby('cell')['dice'].size()
+    full = per_cell.index[per_cell == len(RUN_ORACLE_STAT_LIST)]
+    return (df[df['cell'].isin(full)], len(full),
+            df['cell'].nunique() - len(full))
+
+
+def oracle_stat_best(df, *, atol: float = 1e-12) -> dict:
+    """Return the oracle's best (statistic, z-scoring).
+
+    Measured, not inherited: the oracle tests k+1 regions of unequal size
+    where the voxel-wise arms test one-voxel regions, so a statistic chosen
+    on theirs says nothing about its. A tie still defers to the arm that can
+    decide one, which is TFCE (_pick_tied), so a degenerate oracle joins the
+    family rather than picking by sort order.
+
+    Args:
+        df: a tidy_oracle_stat frame.
+        atol (float): how close to the maximum still counts as tied.
+
+    Returns:
+        dict: {zt, stat}.
+    """
+    mean = df.groupby(['zt', 'stat'])['dice'].mean()
+    tied = [('oracle', zt, stat, 0.0) for (zt, stat), v in mean.items()
+            if v >= mean.max() - atol]
+    ref = _declared(_TFCE_METHOD)['stat'] if _TFCE_METHOD else None
+    pick = _pick_tied(tied, ref)
+    return dict(zt=pick['zt'], stat=pick['stat'])
+
+
+def oracle_stat_tie_width(df, *, atol: float = 1e-12) -> int:
+    """Return how many of the oracle's variants tie for its maximum."""
+    mean = df.groupby(['zt', 'stat'])['dice'].mean()
+    return int((mean >= mean.max() - atol).sum())
+
+
+def write_oracle_stat_table(label: str, df, out) -> None:
+    """Write (and print) the oracle's stat bake-off table as .tex.
+
+    oracle_stat_dice.tex is one row per z-scoring, one column per statistic,
+    each cell the mean Dice over the cache's cells, with the best bolded.
+
+    Args:
+        label (str): cache name, for the printed header.
+        df: a tidy_oracle_stat frame.
+        out (pathlib.Path): directory the .tex file is written into.
+    """
+    df, n_cells, n_drop = oracle_stat_balanced(df)
+    if df.empty:
+        print(f'  ({label}: no cell has the full variant grid yet -- '
+              f'{n_drop} partial, skipping)')
+        return
+    best = oracle_stat_best(df)
+    mean = df.groupby(['zt', 'stat'])['dice'].mean()
+    stat_list = [s for s in _STAT_ORDER if s in set(df['stat'])]
+
+    rows = []
+    for zt in _ZT_ORDER:
+        if zt not in mean.index.get_level_values(0):
+            continue
+        cells = [f'\\textbf{{{mean[zt][s]:.3f}}}'
+                 if (zt == best['zt'] and s == best['stat'])
+                 else f'{mean[zt][s]:.3f}' for s in stat_list]
+        rows.append([_ZT_PRETTY[zt]] + cells)
+
+    spread = mean.groupby(level=0).agg(lambda s: s.max() - s.min())
+    note = [f'{label}: Oracle-RBA mean Dice per (z-scoring, statistic); '
+            f'{n_cells} complete cells'
+            + (f', {n_drop} partial dropped' if n_drop else ''),
+            'bold marks the pair the arm is run at (config.ana_kwargs_dict)',
+            'spread across the pool: '
+            + ', '.join(f'{_ZT_PRETTY[z]} {v:.6f}' for z, v in
+                        spread.items())]
+    _latex_table(
+        out / 'oracle_stat_dice.tex',
+        'l' + 'r' * len(stat_list),
+        ['z-scoring'] + [_STAT_PRETTY[s] for s in stat_list],
+        rows,
+        group_header=[('', 1, 'l'), ('Statistic', len(stat_list), 'c')],
+        note=note)
+    print(f'saved: {out / "oracle_stat_dice.tex"}')
+    print(f'  oracle best (stat, z): {best}')
+    print(f'  variants tied for it: {oracle_stat_tie_width(df)} of '
+          f'{len(RUN_ORACLE_STAT_LIST)}')
+    declared = _declared('Oracle-RBA')
+    if (declared['stat'], declared['zt']) != (best['stat'], best['zt']):
+        print(f'  MOVES the arm: declared {declared["stat"]}/'
+              f'{declared["zt"]}')
+    else:
+        print('  matches ana_kwargs_dict')
+
+
 def fwhm_best(df) -> dict:
     """Return the kernel width maximising each arm's mean Dice.
 
@@ -3148,9 +3288,13 @@ def main(argv=None) -> None:
     # stat table. Keyed on the leaf grid by identity, the same way the
     # catalogue declares it.
     fwhm_names = [n for n, cfg in CONFIG.items() if cfg[2] is RUN_TUNE_LIST]
+    # the oracle's bake-off is a run_ana cache whose axis is the statistic,
+    # not effect strength, so it reads as a tuning table rather than a curve
+    oracle_names = [n for n, cfg in CONFIG.items()
+                    if cfg[2] is RUN_ORACLE_STAT_LIST]
     detect_names = [n for n, cfg in CONFIG.items()
                     if cfg[3] is run_ana and n not in _RUNTIME_SPEC
-                    and n not in fwhm_names]
+                    and n not in fwhm_names and n not in oracle_names]
     stat_names = [n for n, cfg in CONFIG.items()
                   if cfg[3] is run_stat and n not in fwhm_names]
     segment_names = [n for n, cfg in CONFIG.items() if cfg[3] is run_segment]
@@ -3168,7 +3312,7 @@ def main(argv=None) -> None:
             names += [n for n in matches if n not in names]
     else:
         names = (detect_names + runtime_names + stat_names + fwhm_names
-                 + segment_names + prune_names + inner_names)
+                 + oracle_names + segment_names + prune_names + inner_names)
 
     out = glow._extra.benchmark.get_path_result() / '_latest'
     out.mkdir(exist_ok=True)
@@ -3190,6 +3334,15 @@ def main(argv=None) -> None:
                 continue
             print(f'\n=== {name}: {len(df)} run_ana rows ===')
             plot_cache(name, df, _cache_dir(out, name))
+            n_plotted += 1
+        elif name in oracle_names:
+            df = tidy_oracle_stat(make_csv.write_config_csv(name))
+            if df.empty:
+                print(f'  (no records for {name} — skipping)')
+                continue
+            print(f'\n=== {name}: {df["cell"].nunique()} cells, '
+                  f'{len(df)} variant rows ===')
+            write_oracle_stat_table(name, df, _cache_dir(out, name))
             n_plotted += 1
         elif name in fwhm_names:
             df = tidy_tune(make_csv.write_config_csv(name))

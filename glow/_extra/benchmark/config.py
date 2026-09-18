@@ -62,7 +62,7 @@ from glow.analysis import (AnalysisCET, AnalysisGLOW, AnalysisGLOWBase,
                            DEFAULT_CET_CFT_PVAL, draws_gpu)
 from glow.analysis._fit_gpu import GpuConfig
 from glow.analysis.cluster import ClusterMode
-from glow.analysis.mancova import get_hotel_tr, get_wilks
+from glow.analysis.mancova import get_hotel_tr, get_wilks, stat_dict
 
 from . import grid, hcp
 from .run import (run_ana, run_ana_time, run_ana_time_1perm, run_inner_perm,
@@ -416,6 +416,28 @@ RUN_STAT_LIST = grid.get_run_stat_list(
     cft_pval=DEFAULT_CET_CFT_PVAL)
 
 
+# The oracle_stat cache's leaf grid: Oracle-RBA over the whole pool, the
+# four classical MANCOVA statistics and the LLR, crossed with {raw, z}.
+#
+# The oracle gets its own bake-off rather than inheriting the voxel-wise
+# arms'. Its regions are not theirs: it tests k+1 regions of very different
+# size, pooling each region's voxels as observations, where they test 25k
+# regions of one voxel. So rank(H) = 1 makes its raw arm degenerate for the
+# same reason theirs is, but z-scoring is the axis it actually runs on (see
+# AnalysisOracleSegment.fit on why a max-stat family over unequal regions has
+# to be standardized), and z-scoring is exactly where the degeneracy breaks.
+# Nothing carries a statistic chosen on one-voxel regions over to that.
+#
+# No kernel here: a smoothing width is a crude stand-in for the segmentation
+# this arm is handed, so there is nothing for it to trade against.
+RUN_ORACLE_STAT_LIST = [
+    dict(ana=AnalysisOracleSegment(z_flag=z_flag, get_stat=fn,
+                                   **kwargs_voxel),
+         fit_params=None)
+    for fn in stat_dict.values()
+    for z_flag in (False, True)]
+
+
 # The vba_tune cache's leaf grid: the stat bake-off crossed with the kernel
 # width, which is what lets the comparators be tuned on both knobs at once.
 #
@@ -751,6 +773,16 @@ CONFIG = {
         data_grid(sources=['hcp']),
         effect_grid(llr_list=TUNE_LLR_GRID),
         RUN_TUNE_LIST, run_stat),
+    # The oracle's statistic, measured rather than inherited: Oracle-RBA over
+    # the same pool and both z-scorings (RUN_ORACLE_STAT_LIST). Its cells are
+    # vba_tune's, so the two selections are read off one panel and its builds
+    # are hits. A leaf here is cheap where a voxel-wise one is not -- the
+    # permutation walk covers k+1 regions rather than 25k voxels -- so this
+    # cache needs no shared intermediate and runs as plain run_ana leaves.
+    'oracle_stat': (
+        data_grid(sources=['hcp']),
+        effect_grid(llr_list=TUNE_LLR_GRID),
+        RUN_ORACLE_STAT_LIST, run_ana),
     # H. Pruning rule: greedy max-LLR vs DP max-likelihood cut vs the single
     #    max-LLR region, scored on one shared GLOW fit per (cell, Ward mode) so
     #    the comparison isolates the rule, not the permutation test. Crossed

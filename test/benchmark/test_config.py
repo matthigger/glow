@@ -41,9 +41,9 @@ RUN_ANA_LABELS = [label for label in LABELS
 GLOW_ONLY_LABELS = ['null']
 
 # the caches carrying their own recipe grid rather than a shared singleton:
-# the joint tuning cache, which is the stat bake-off crossed with a kernel
-# width and so cannot be shared with anything
-OWN_GRID_LABELS = ['vba_tune']
+# the joint tuning cache (the stat bake-off crossed with a kernel width) and
+# the oracle's own bake-off, neither of which can be shared with anything
+OWN_GRID_LABELS = ['vba_tune', 'oracle_stat']
 
 
 class TestCatalogueShape:
@@ -141,7 +141,8 @@ class TestCatalogueShape:
         assert len(config.TUNE_LLR_GRID) == 5
         assert set(config.TUNE_LLR_GRID) <= set(config.EFFECT_LLR_GRID)
 
-    @pytest.mark.parametrize('label', ['vba_tune', 'vba_stat'])
+    @pytest.mark.parametrize('label',
+                             ['vba_tune', 'vba_stat', 'oracle_stat'])
     def test_tuning_caches_span_the_tuning_axis(self, label):
         # a tuning cache reports a mean over cells, so it spans five
         # strengths where a reported cache spans eleven
@@ -197,6 +198,32 @@ class TestCatalogueShape:
             f'{ {k: v.__name__ for k, v in stats.items()} }')
         # and it is the one the arm that can tell them apart chose
         assert stats['VBA'] is config.ana_kwargs_dict['VBA-TFCE'].get_stat
+
+    def test_oracle_bakeoff_is_the_whole_pool_crossed_with_z(self):
+        """The oracle is measured over every statistic and both z-scorings.
+
+        Its regions are not the voxel-wise arms': k+1 regions of very
+        different size, each pooling its voxels as observations, against
+        their 25k regions of one voxel. rank(H) = 1 makes its raw arm
+        degenerate for the same reason theirs is, but z-scoring is the axis
+        it runs on, and that is where the degeneracy breaks -- so a
+        statistic chosen on one-voxel regions does not carry over and the
+        grid has to span the pool.
+        """
+        grid = config.RUN_ORACLE_STAT_LIST
+        assert len(grid) == 2 * len(stat_dict)
+        assert len({repr(c['ana']) for c in grid}) == len(grid)
+        assert all(isinstance(c['ana'], AnalysisOracleSegment)
+                   for c in grid)
+        assert ({(stat_dict_inv[c['ana'].get_stat], c['ana'].z_flag)
+                 for c in grid}
+                == {(name, z) for name in stat_dict for z in (False, True)})
+
+    def test_oracle_bakeoff_takes_no_kernel(self):
+        # a width is a crude stand-in for the segmentation this arm is
+        # handed, so it has nothing to trade against
+        assert all(getattr(c['ana'], 'fwhm', None) is None
+                   for c in config.RUN_ORACLE_STAT_LIST)
 
     def test_z_scoring_is_per_arm_and_not_the_familys(self):
         """z-scoring is measured per arm, unlike the statistic.
