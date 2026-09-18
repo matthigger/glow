@@ -181,11 +181,11 @@ SWEEP_NIMG_GRID = list(range(10, HCP_NUM_IMG + 1, 10))
 # Oracle-RBA is the last entry and is not a method: it is handed the planted
 # supports as its regions (AnalysisOracleSegment), so a detection curve reads
 # what a region-based test reaches once segmentation is free and the family is
-# k+1 hypotheses. It takes the statistic the voxel-wise arms take, which is
-# the whole point of it -- the gap to it has to be the search and not the
-# statistic, so it follows them wherever tuning puts them rather than being
-# tuned on its own. It z-scores where they do not, because its regions differ
-# in size and theirs are all one voxel (see AnalysisOracleSegment).
+# k+1 hypotheses. Its statistic is measured on its own regions rather than
+# borrowed from theirs (oracle_stat), and it lands on the same one, so the gap
+# to it is still the search and not the statistic. It z-scores where they do
+# not, because its regions differ in size and theirs are all one voxel (see
+# AnalysisOracleSegment, and RUN_ORACLE_STAT_LIST for what that costs it).
 kwargs_voxel = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
 kwargs = dict(n_perm_inner=N_PERM_INNER, **kwargs_voxel)
 GLOW_LABEL_LIST = ('GLOW-Focus-greedy',)
@@ -422,11 +422,23 @@ RUN_STAT_LIST = grid.get_run_stat_list(
 # The oracle gets its own bake-off rather than inheriting the voxel-wise
 # arms'. Its regions are not theirs: it tests k+1 regions of very different
 # size, pooling each region's voxels as observations, where they test 25k
-# regions of one voxel. So rank(H) = 1 makes its raw arm degenerate for the
-# same reason theirs is, but z-scoring is the axis it actually runs on (see
-# AnalysisOracleSegment.fit on why a max-stat family over unequal regions has
-# to be standardized), and z-scoring is exactly where the degeneracy breaks.
-# Nothing carries a statistic chosen on one-voxel regions over to that.
+# regions of one voxel.
+#
+# Measured, the degeneracy lands the opposite way round from theirs. Under
+# z-scoring all five statistics tie exactly, because standardizing each
+# region against its own permutation null removes every scale the pool could
+# differ on. Raw does not tie: get_llr carries n, so it is the one statistic
+# here that is not a function of the eigenvalue alone, and across regions
+# differing tenfold in size that matters. So the pool has to be crossed with
+# both z-scorings rather than read off one.
+#
+# What the cross settles is not which arm scores best. Raw scores better
+# against the planted support (PPV 1.000 against 0.816) and it should not be
+# taken: the remainder's raw statistic is diluted across 22500 voxels to
+# below the max-stat threshold the 2500-voxel plant sets, so that region is
+# untestable under raw rather than merely safe. AnalysisOracleSegment.fit
+# already says why a max-stat family over unequal regions has to be
+# standardized, and this is that argument measured.
 #
 # No kernel here: a smoothing width is a crude stand-in for the segmentation
 # this arm is handed, so there is nothing for it to trade against.

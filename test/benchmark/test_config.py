@@ -204,10 +204,11 @@ class TestCatalogueShape:
 
         Its regions are not the voxel-wise arms': k+1 regions of very
         different size, each pooling its voxels as observations, against
-        their 25k regions of one voxel. rank(H) = 1 makes its raw arm
-        degenerate for the same reason theirs is, but z-scoring is the axis
-        it runs on, and that is where the degeneracy breaks -- so a
-        statistic chosen on one-voxel regions does not carry over and the
+        their 25k regions of one voxel. The degeneracy lands the other way
+        round as a result -- z-scoring ties every statistic here, while raw
+        does not, because get_llr carries n and so is not a function of the
+        eigenvalue alone across regions of different size. Either way a
+        statistic chosen on one-voxel regions does not carry over, so the
         grid has to span the pool.
         """
         grid = config.RUN_ORACLE_STAT_LIST
