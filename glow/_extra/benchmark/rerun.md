@@ -31,7 +31,7 @@ among them) are documentation and move no number.
 
 | | |
 |---|---|
-| computation pinned at | `9c1f2ad` (the jointly tuned comparators) |
+| computation pinned at | `d7ca049` (the jointly tuned comparators) |
 | branch | `main` |
 | started | 2026-09-17 |
 | first stage | `vba_stat`, `sweep_fwhm` at `GLOW_BENCH_N_SEED=10` |
