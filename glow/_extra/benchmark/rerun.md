@@ -31,11 +31,11 @@ among them) are documentation and move no number.
 
 | | |
 |---|---|
-| computation pinned at | `a176882` (the tuned kernel widths) |
+| computation pinned at | `9c1f2ad` (the jointly tuned comparators) |
 | branch | `main` |
 | started | 2026-09-17 |
 | first stage | `vba_stat`, `sweep_fwhm` at `GLOW_BENCH_N_SEED=10` |
-| tuned | `SMOOTH_FWHM_BEST` = 2 mm for VBA, VBA-TFCE and CET |
+| tuned | 1 - Wilks at 2 mm for VBA, VBA-TFCE, CET (and the oracle) |
 | old cache | `~/.local/share/glow/cache.bak_prepayload_20260917` |
 | old records | `~/.local/share/glow/records.bak_prepayload_20260917` |
 
@@ -43,9 +43,16 @@ The tuning caches ran first, and that ordering was load-bearing rather than a
 preference: `config.SMOOTH_FWHM_BEST` is read off `sweep_fwhm`, and wiring a
 kernel width into an arm changes that arm's repr, which is its recipe
 identity, so every leaf it had already recorded would re-key. Tune before the
-reported caches run, not after. Both tuning caches are done, and the widths
-they chose are wired, which is what the pin above marks: every voxel-wise
-leaf in a reported cache is computed at those widths.
+reported caches run, not after. Both tuning caches are done and their
+choices are wired, which is what the pin above marks: every voxel-wise leaf
+in a reported cache is computed at them.
+
+`vba_tune` chooses the statistic, the z-scoring and the width together, since
+choosing one at a time is circular (each sweep would assume the other's
+answer). All three arms came out on 1 - Wilks at 2 mm, and only VBA-TFCE
+chose it: rank(H) = 1 leaves VBA's and CET's rejection sets invariant to the
+statistic, so they tie across the pool and adopt the choice of the one arm
+that can tell the statistics apart.
 
 You do not have to generate the output to read it. Ours is published, so the
 figures redraw from it with no compute and without the imaging data -- see

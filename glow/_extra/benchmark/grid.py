@@ -217,14 +217,22 @@ def get_run_stat_list(*, n_perm_fwer: int, alpha_fwer: float,
     hypothesis matrix leaves E^-1 H a single nonzero eigenvalue lam of which
     each of these statistics is a strictly increasing function
     (hotel_tr = roys_root = lam, 1 - wilks = pillai = lam / (1 + lam),
-    llr = log1p(lam) / 2). VBA and CET read only the ordering -- a
-    cluster-forming threshold is a quantile of the pooled null, cluster
-    sizes are integers, and a max-stat p-value is a rank count -- so their
+    llr = log1p(lam) / 2). VBA and CET read only the ordering -- cluster
+    sizes are integers and a max-stat p-value is a rank count -- so their
     rejection sets cannot move. Printing that tie is the point: it is what
     the appendix's derivation predicts. TFCE integrates the statistic's
-    magnitude over heights, so it is the one arm the choice reaches.
+    magnitude over heights, so it is the one arm the choice reaches, and it
+    is the arm the others defer to when they tie (plot._pick_tied).
     Separating the classical four would need rank(H) >= 2, i.e. two
     regressors of interest.
+
+    VBA's invariance is exact, CET's is exact only up to its threshold. A
+    cluster-forming threshold is an interpolated quantile of the pooled null,
+    and quantile(g(lam)) is not g(quantile(lam)) for a nonlinear g, so a
+    monotone change of statistic can move the threshold between two order
+    statistics and a boundary voxel with it. Measured on the vba_tune panel:
+    VBA raw spreads 0.000000000 of mean Dice across the pool, CET raw
+    7.7e-6, against 0.074 for TFCE raw.
 
     The pool is free either way: run.voxel_stat_walk computes every stat in
     one permutation walk per cell, so the grid's width costs a rank count

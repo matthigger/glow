@@ -151,13 +151,22 @@ SWEEP_NIMG_GRID = list(range(10, HCP_NUM_IMG + 1, 10))
 # passed the label -- see run.py / benchmark.plot). GLOW is the per-perm arm
 # (AnalysisGLOW) throughout: it rebuilds the Ward tree inside every outer
 # permutation, so every image reaches both the tree and the statistics. Each
-# voxel-wise arm takes the stat / z-scoring it wins the vba_stat bake-off with:
-# the raw Hotelling-Lawley trace for VBA and CET, the z-scored 1 - Wilks for
-# TFCE (z-scoring is what TFCE's single height grid needs to mean the same
-# thing at every voxel), and the kernel width it wins sweep_fwhm with, 2 mm
-# for all three (SMOOTH_FWHM_BEST, which a test holds these to). Written out
-# rather than left to the recipe defaults, which agree on the stat and would
-# leave the arms unsmoothed -- the paper's arms should be readable here.
+# voxel-wise arm takes what it wins the vba_tune grid with, which chooses the
+# statistic, the z-scoring and the kernel width together rather than one after
+# another (see RUN_TUNE_LIST for why in sequence is circular).
+#
+# They all read 1 - Wilks, and only one of them chose it. With one column of
+# interest rank(H) = 1, so VBA's and CET's rejection sets do not depend on
+# which statistic in the pool they are handed, and an argmax over their pool
+# is a coin toss; TFCE integrates the statistic's magnitude, so its choice is
+# a measurement, and the tied arms take it (plot._pick_tied). That leaves the
+# comparators reading one statistic instead of three settled by sort order.
+# The z-scoring is per arm and is measured: TFCE needs it for its single
+# height grid to mean the same thing at every voxel, VBA and CET do better
+# without it. The width is 2 mm for all three (SMOOTH_FWHM_BEST, which a test
+# holds these to). Written out rather than left to the recipe defaults, which
+# would leave the arms unsmoothed -- the paper's arms should be readable
+# here.
 #
 # The one GLOW entry is the greedy arm on the Focus projection (Ward on the
 # contrast subspace). Neither of its two knobs is a recipe axis here. The
@@ -172,10 +181,11 @@ SWEEP_NIMG_GRID = list(range(10, HCP_NUM_IMG + 1, 10))
 # Oracle-RBA is the last entry and is not a method: it is handed the planted
 # supports as its regions (AnalysisOracleSegment), so a detection curve reads
 # what a region-based test reaches once segmentation is free and the family is
-# k+1 hypotheses. It takes the stat the voxel-wise arms take, so the gap to it
-# is the search rather than the statistic; it z-scores where they do not,
-# because its regions differ in size and theirs are all one voxel (see
-# AnalysisOracleSegment).
+# k+1 hypotheses. It takes the statistic the voxel-wise arms take, which is
+# the whole point of it -- the gap to it has to be the search and not the
+# statistic, so it follows them wherever tuning puts them rather than being
+# tuned on its own. It z-scores where they do not, because its regions differ
+# in size and theirs are all one voxel (see AnalysisOracleSegment).
 kwargs_voxel = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
 kwargs = dict(n_perm_inner=N_PERM_INNER, **kwargs_voxel)
 GLOW_LABEL_LIST = ('GLOW-Focus-greedy',)
@@ -183,13 +193,12 @@ ana_kwargs_dict = {
     'GLOW-Focus-greedy': AnalysisGLOW(cluster_mode=ClusterMode.FOCUS,
                                       prune_rule='greedy', **kwargs),
     'VBA':        AnalysisVBA(z_flag=False, tfce_flag=False,
-                              get_stat=get_hotel_tr, fwhm=2.0,
-                              **kwargs_voxel),
+                              get_stat=get_wilks, fwhm=2.0, **kwargs_voxel),
     'VBA-TFCE':   AnalysisVBA(z_flag=True, tfce_flag=True,
                               get_stat=get_wilks, fwhm=2.0, **kwargs_voxel),
-    'CET':        AnalysisCET(z_flag=False, get_stat=get_hotel_tr, fwhm=2.0,
+    'CET':        AnalysisCET(z_flag=False, get_stat=get_wilks, fwhm=2.0,
                               **kwargs_voxel),
-    'Oracle-RBA': AnalysisOracleSegment(z_flag=True, get_stat=get_hotel_tr,
+    'Oracle-RBA': AnalysisOracleSegment(z_flag=True, get_stat=get_wilks,
                                         **kwargs_voxel),
 }
 
@@ -237,9 +246,9 @@ SMOOTH_FWHM_GRID = (0.0, 2.0, 4.0, 8.0, 12.0)
 TUNE_LLR_GRID = EFFECT_LLR_GRID[[0, 2, 5, 8, 10]]
 
 # The width each arm is run at, as measured: the one maximising its mean Dice
-# over the sweep_fwhm cache, read off with plot.fwhm_best rather than judged by
-# eye. ana_kwargs_dict declares these literally, so the arms read as arms; this
-# is what they are held to (test_config).
+# over the vba_tune cache, read off with plot.fwhm_best rather than judged by
+# eye. ana_kwargs_dict declares these literally, so the arms read as arms;
+# this is what they are held to (test_config).
 #
 # One width per arm is the most a method can carry, and it is not the most any
 # arm could score: the optimum falls monotonically as the effect strengthens

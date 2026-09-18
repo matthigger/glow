@@ -173,37 +173,45 @@ class TestCatalogueShape:
         assert all(isinstance(c['ana'], AnalysisGLOWBase)
                    for c in config.RUN_ANA_GLOW_LIST)
 
-    def test_spelled_out_arms_match_the_recipe_defaults(self):
-        """The catalogue's spelled-out stats equal the arm defaults.
+    def test_the_comparator_family_reads_one_statistic(self):
+        """Every voxel-wise arm, and the oracle, take the same statistic.
 
-        config writes get_stat / z_flag out for VBA, VBA-TFCE, CET and
-        Oracle-RBA rather than leaning on the recipe defaults, so the
-        paper's arms read off the catalogue -- and states in a comment
-        that the two agree. Nothing else checks that claim, so an edit to
-        either side alone would silently split them, changing published
-        numbers or invalidating records depending on which moved.
+        Not a style rule. VBA and CET cannot choose a statistic at all --
+        rank(H) = 1 makes their rejection sets invariant to it -- so any
+        difference between their choices would be an artifact of whichever
+        sorted first in a tie. TFCE can choose, and they adopt its choice
+        (plot._pick_tied), which is what makes the family's statistic one
+        measurement instead of three. Oracle-RBA follows for its own
+        reason: the gap to it has to isolate the search, not the statistic.
 
-        This is the one place the catalogue's VALUES are pinned (cf. the
-        module docstring): the stats are not a tuning knob but a finding,
-        and the agreement is an invariant rather than a chosen grid size.
+        This is one of the few places the catalogue's VALUES are pinned
+        (cf. the module docstring), because the agreement is an invariant
+        of how the choice is made rather than a grid size someone may
+        widen.
         """
-        for label, cls, tfce_flag in [('VBA', AnalysisVBA, False),
-                                      ('VBA-TFCE', AnalysisVBA, True),
-                                      ('CET', AnalysisCET, False),
-                                      ('Oracle-RBA', AnalysisOracleSegment,
-                                       False)]:
-            ana = config.ana_kwargs_dict[label]
-            kwargs = dict(n_perm_fwer=ana.n_perm_fwer)
-            if cls is AnalysisVBA:
-                kwargs['tfce_flag'] = tfce_flag
-            default = cls(**kwargs)
+        family = ['VBA', 'VBA-TFCE', 'CET', 'Oracle-RBA']
+        stats = {label: config.ana_kwargs_dict[label].get_stat
+                 for label in family}
+        assert len(set(stats.values())) == 1, (
+            f'the family split its statistic: '
+            f'{ {k: v.__name__ for k, v in stats.items()} }')
+        # and it is the one the arm that can tell them apart chose
+        assert stats['VBA'] is config.ana_kwargs_dict['VBA-TFCE'].get_stat
 
-            assert ana.get_stat is default.get_stat, (
-                f'{label}: catalogue stat {ana.get_stat.__name__} != '
-                f'recipe default {default.get_stat.__name__}')
-            assert ana.z_flag == default.z_flag, (
-                f'{label}: catalogue z_flag {ana.z_flag} != '
-                f'recipe default {default.z_flag}')
+    def test_z_scoring_is_per_arm_and_not_the_familys(self):
+        """z-scoring is measured per arm, unlike the statistic.
+
+        The statistic is shared because two of the arms cannot choose one.
+        z-scoring they can: it is applied per voxel across permutations, so
+        it does not commute with a monotone change of statistic and each arm
+        wins or loses on it separately. TFCE needs it for its single height
+        grid to mean the same thing everywhere; VBA and CET measured better
+        without it. A catalogue where these agreed would mean the axis had
+        stopped being measured.
+        """
+        assert config.ana_kwargs_dict['VBA-TFCE'].z_flag is True
+        assert config.ana_kwargs_dict['VBA'].z_flag is False
+        assert config.ana_kwargs_dict['CET'].z_flag is False
 
     def test_run_ana_cells_carry_the_recipe_and_how_to_run_it(self):
         # each leaf cell carries its ana and its fit_params, nothing else: the
