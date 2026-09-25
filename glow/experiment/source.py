@@ -177,10 +177,13 @@ class SourceGauss(ImageSource):
         mu (np.array): (b,) target sample mean, or None
         cov (np.array): (b, b) target sample covariance, or None
         dtype: numpy dtype of the drawn y
+        affine (np.array): (4, 4) isotropic vox_mm grid, or None (a
+            kernel is then sized in voxels, see smooth.get_vox_mm)
     """
 
     def __init__(self, *, shape: tuple, b: int, num_img: int,
-                 seed: int = None, mu=None, cov=None, dtype=np.float32):
+                 seed: int = None, mu=None, cov=None, dtype=np.float32,
+                 vox_mm: float = None):
         """Store the draw parameters (see the class Attributes)."""
         self.shape = tuple(int(n) for n in shape)
         self.b = int(b)
@@ -189,6 +192,8 @@ class SourceGauss(ImageSource):
         self.mu = mu
         self.cov = cov
         self.dtype = dtype
+        if vox_mm is not None:
+            self.affine = np.diag([float(vox_mm)] * 3 + [1.0])
 
     def __repr__(self):
         """A compact identity string: the draw parameters."""

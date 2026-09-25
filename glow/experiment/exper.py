@@ -127,7 +127,8 @@ class ExperimentImageOnly:
     @classmethod
     def from_gauss(cls, b: int = None, num_img: int = 10,
                    shape: tuple = (2, 3, 4), seed: int = None,
-                   mu=None, cov=None, dtype=np.float32, **kwargs):
+                   mu=None, cov=None, dtype=np.float32,
+                   vox_mm: float = None, **kwargs):
         """Generate Gaussian imaging data with prescribed mean and covariance.
 
         Args:
@@ -140,6 +141,9 @@ class ExperimentImageOnly:
             dtype: numpy dtype for the generated y array.  Default
                 np.float32 matches the HCP loader and keeps the
                 compute_llr_batched hot loop in float32.
+            vox_mm (float): isotropic voxel edge in mm, carried as
+                meta['affine'] so a smoothing fwhm is in mm; None leaves
+                no affine and a kernel sized in voxels
 
         Returns:
             ExperimentImageOnly with sampled y, drawn through the
@@ -154,7 +158,7 @@ class ExperimentImageOnly:
                 b = 1
 
         source = SourceGauss(shape=shape, b=b, num_img=num_img, seed=seed,
-                             mu=mu, cov=cov, dtype=dtype)
+                             mu=mu, cov=cov, dtype=dtype, vox_mm=vox_mm)
 
         meta = kwargs.pop('meta', {})
         for name, value in source.get_meta().items():

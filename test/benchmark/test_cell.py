@@ -129,6 +129,9 @@ class TestRebuild:
         # the source survives, so a kernel can still borrow context
         assert exp.source is not None
         assert exp.meta['features'] == ['feat_0', 'feat_1']
+        # and its grid, which sizes a smoothing kernel in mm
+        np.testing.assert_array_equal(
+            exp.meta['affine'], np.diag([data.WGN_VOX_MM] * 3 + [1.0]))
 
     def test_the_plant_is_replayable(self):
         # the offsets go on through add_offset, so they land in patch_list

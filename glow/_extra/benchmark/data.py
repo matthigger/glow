@@ -16,6 +16,11 @@ from glow.experiment import ExperimentImageOnly
 
 from . import hcp
 
+# WGN's voxel edge in mm: HCP's grid (hcp.py bundle affine), so an fwhm in mm
+# is one kernel in voxels on both sources. Not a kwargs_data knob, since only
+# smoothing reads it and GLOW's WGN cells are identical either way.
+WGN_VOX_MM = 2.0
+
 
 def _sample_x_and_crop(exp_img, *, a: int, contrast, has_bias: bool,
                        extenter: Extenter, seed: int):
@@ -66,10 +71,10 @@ def build_clean_wgn(*, shape: tuple = (5, 5, 5), b: int = 2,
 
     Returns:
         Experiment with y of shape (b, num_img, num_vox), x, and contrast,
-        cropped to the extenter support when set.
+        cropped to the extenter support when set, on a WGN_VOX_MM grid.
     """
     exp_img = ExperimentImageOnly.from_gauss(
-        shape=shape, b=b, num_img=num_img, seed=seed)
+        shape=shape, b=b, num_img=num_img, seed=seed, vox_mm=WGN_VOX_MM)
     return _sample_x_and_crop(exp_img, a=a, contrast=contrast,
                               has_bias=has_bias, extenter=extenter, seed=seed)
 

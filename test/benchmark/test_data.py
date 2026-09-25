@@ -16,6 +16,7 @@ from glow._extra.benchmark import data, hcp
 from glow.effect import ExtenterMinVar, ExtenterSphere
 from glow.experiment import ExperimentImageOnly
 from glow.experiment.exper import NoBiasTermWarning
+from glow.experiment.smooth import get_sigma_vox
 
 
 def _fresh_seed() -> int:
@@ -52,6 +53,15 @@ class TestBuildCleanWGN:
                                    extenter=ext, seed=_fresh_seed())
         assert (exp.mask_idx > -1).sum() == 20
         assert exp.y.shape == (2, 30, 20)
+
+    def test_sits_on_the_hcp_grid(self):
+        # one fwhm in mm is one kernel in voxels on both sources
+        exp = data.build_clean_wgn(shape=(5, 5, 5), b=1, num_img=20,
+                                   seed=_fresh_seed())
+        hcp_affine = np.diag([-2.0, -2.0, 2.0, 1.0])
+        np.testing.assert_allclose(get_sigma_vox(2.0, exp.meta['affine']),
+                                   get_sigma_vox(2.0, hcp_affine))
+        assert data.WGN_VOX_MM == 2.0
 
     def test_deterministic_for_a_seed(self):
         kw = dict(shape=(5, 5, 5), b=2, num_img=20, a=1, seed=_fresh_seed())

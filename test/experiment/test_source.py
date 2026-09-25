@@ -109,6 +109,16 @@ class TestSourceGauss:
         with pytest.raises(ValueError, match='does not match'):
             exp.source.load(np.ones((2, 2, 2), dtype=bool))
 
+    def test_vox_mm_sets_the_affine(self):
+        """vox_mm reaches meta['affine']; without it there is none."""
+        exp = ExperimentImageOnly.from_gauss(shape=SHAPE, seed=0, vox_mm=2.0)
+        want = np.diag([2.0, 2.0, 2.0, 1.0])
+        np.testing.assert_array_equal(exp.source.affine, want)
+        np.testing.assert_array_equal(exp.meta['affine'], want)
+        bare = ExperimentImageOnly.from_gauss(shape=SHAPE, seed=0)
+        assert bare.source.affine is None
+        assert 'affine' not in bare.meta
+
 
 class TestSourceNifti:
     """A NIfTI source reads each volume again and gathers from it."""
