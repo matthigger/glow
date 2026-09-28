@@ -265,7 +265,7 @@ def build_regression_figure(ana_glow, exp, region_list, x_feat_idx, y_feat_idx,
                             stat_parts.append(f'{c}: {v:.4g}')
                 est = row.get('estimate_state', '')
                 if est == 'has_effect':
-                    stat_parts.append(f'<b>contains effect(s)</b>')
+                    stat_parts.append('<b>contains (one) effect</b>')
 
         # hover text per image
         region_name = 'Target mask' if is_target else f'Region {reg_idx}'

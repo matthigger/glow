@@ -6,10 +6,10 @@ experiment/analysis detail panels (_detail_panels), and the smaller
 panel and key/value helpers they compose. app.py imports the page
 builders and registers callbacks separately.
 
-Both page layouts stack the same three rows: the segmentation scatter
-under its axis controls, then a per-region detail row (the region
-checklist, REGRESSION, and PERMUTATION when the fit kept its draws),
-then IMAGE on a row of its own.
+Both page layouts stack the same rows: the segmentation scatter under
+its axis controls, then a per-region detail row (the region checklist,
+IMAGE and REGRESSION), then PERMUTATION on a row of its own when the fit
+kept its draws.
 """
 
 import numpy as np
@@ -72,13 +72,13 @@ def _controls_column(generic_cols, sig_cols, prune_cols, mask_cols,
 def _permutation_panel():
     """Build the permutation-draw histogram panel.
 
-    Shares the detail row, and its shape, with the regression panel: both
-    are per-region views of whatever the scatter has selected. Where the
-    scatter puts a region's observed LLR at a point, this puts the whole
-    column of draws that point was scored against.
+    A per-region view of whatever the scatter has selected, like the
+    regression panel: where the scatter puts a region's observed LLR at a
+    point, this puts the whole column of draws that point was scored
+    against.
 
-    Built only for a fit with keep_stat=True; otherwise REGRESSION takes the
-    width back.
+    Built only for a fit with keep_stat=True, and given a row of its own,
+    so an ordinary fit costs the page nothing.
 
     Three knobs, one per way the overlay stops being readable: the unit (raw
     LLR separates regions by size, z puts them on the FWER comparison's own
@@ -120,8 +120,7 @@ def _permutation_panel():
         dcc.Graph(id='hist-plot',
                   config={'scrollZoom': True},
                   style={'width': '100%'}),
-    ], style={'flex': '1', 'minWidth': '0', 'padding': '10px',
-              'borderLeft': '1px solid #ddd'})
+    ], style={'flex': '1', 'minWidth': '0', 'padding': '10px'})
 
 
 def _region_panel(region_ids):
@@ -289,11 +288,25 @@ def _render_value(key, val, depth=0):
     return _kv_row(key, s)
 
 
-def _detail_panels(ana_glow, exp):
+# source code -> what a reader calls it. An Experiment does not carry
+# which dataset it came from, so the caller that loaded it says.
+SOURCE_LABELS = {'wgn': 'WGN (white Gaussian noise, synthetic)',
+                 'hcp': 'HCP (diffusion maps, real subjects)',
+                 'mandrill': 'Mandrill (photograph, resampled)'}
+
+
+def _detail_panels(ana_glow, exp, source=None):
     """Build the experiment + analysis detail <details> panels.
 
     Both are collapsed by default. Values are pulled directly from ana_glow
     and exp at layout time, with no callbacks.
+
+    Args:
+        ana_glow (AnalysisGLOWBase): the fitted analysis.
+        exp (Experiment): the experiment it was fit on.
+        source (str | None): the dataset the images came from, keying
+            SOURCE_LABELS. None omits the row rather than printing one
+            that reads 'None', which would suggest a value went missing.
     """
     meta = getattr(exp, 'meta', {}) or {}
 
@@ -320,6 +333,9 @@ def _detail_panels(ana_glow, exp):
                 + (f'(first: {subjects[0]})' if subjects else '')),
         _kv_row('features', features),
     ]
+    if source is not None:
+        exp_rows.insert(0, _kv_row('image source',
+                                   SOURCE_LABELS.get(source, source)))
     if 'affine' in meta and meta['affine'] is not None:
         exp_rows.append(_render_value('affine', meta['affine']))
 
@@ -425,28 +441,62 @@ def _defaults(generic_cols, sig_cols, prune_cols, mask_cols):
     return all_cols, default_x, default_y, log_y_default, default_color
 
 
+# Shown in place of the per-subject list where those images are
+# withheld. Some sources' data use terms permit sharing derived data only
+# with recipients bound by those same terms, which an anonymous visitor
+# is not; the group mean is no single subject's image, so it still shows.
+NO_PER_IMAGE_NOTE = ('Per-subject imaging is not available on the web. '
+                     'Showing the group mean.')
+
+
+def _image_options(num_img, subject_names, per_image=True):
+    """List the options for the Image selector.
+
+    Args:
+        num_img (int): images in the experiment.
+        subject_names (list[str] | None): per-image names, when known.
+        per_image (bool): when False, offer the mean alone.
+
+    Returns:
+        options (list[dict]): dropdown options, the mean first.
+    """
+    options = [{'label': 'Mean', 'value': 'mean'}]
+    if not per_image:
+        return options
+    if subject_names and len(subject_names) == num_img:
+        options += [{'label': subject_names[i], 'value': str(i)}
+                    for i in range(num_img)]
+    else:
+        options += [{'label': f'Image {i}', 'value': str(i)}
+                    for i in range(num_img)]
+    return options
+
+
 def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
-                    slicer0, slicer1, slicer2,
+                    slicer_panels,
                     x_names=None, y_names=None, region_ids=None,
                     default_reg_x=0, num_img=0, feat_names=None,
-                    subject_names=None, has_stat=False):
-    """Build layout for 3D data (with dash-slicer ortho views)."""
+                    subject_names=None, has_stat=False, per_image=True):
+    """Build layout for 3D data (with dash-slicer ortho views).
+
+    slicer_panels is a list of (caption, VolumeSlicer) in left-to-right
+    display order; see image.display_panel_axes.
+
+    per_image False locks the Image selector to the group mean; see
+    NO_PER_IMAGE_NOTE.
+    """
     all_cols, default_x, default_y, log_val, default_color = _defaults(
         generic_cols, sig_cols, prune_cols, mask_cols)
 
     feat_names = feat_names or []
-    image_options = [{'label': 'Mean', 'value': 'mean'}]
-    if subject_names and len(subject_names) == num_img:
-        image_options += [{'label': subject_names[i], 'value': str(i)}
-                          for i in range(num_img)]
-    else:
-        image_options += [{'label': f'Image {i}', 'value': str(i)}
-                          for i in range(num_img)]
+    image_options = _image_options(num_img, subject_names, per_image)
     feat_options = [{'label': n, 'value': str(i)}
                     for i, n in enumerate(feat_names)]
 
     _dd_label = {'fontSize': '11px', 'fontWeight': 'bold',
                  'marginBottom': '2px'}
+    _view_caption = {'fontSize': '10px', 'color': '#777',
+                     'letterSpacing': '1px', 'textAlign': 'center'}
 
     # dropdowns below IMAGE title: Feature (only when b > 1) + Image
     image_dd_children = []
@@ -464,14 +514,17 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
         image_dd_children.append(
             dcc.Store(id='dd-feature-3d', data='0'))
     image_dd_children.append(html.Div([
-        html.Label('Image', style=_dd_label),
+        html.Label('Image' if per_image else 'Image (mean only)',
+                   style=_dd_label),
         dcc.Dropdown(
             id='dd-image-3d',
             options=image_options,
             value='mean',
             clearable=False,
+            disabled=not per_image,
             style={'width': '100%', 'fontSize': '12px'}),
-    ], style={'flex': '1'}))
+    ], style={'flex': '1'},
+        title=None if per_image else NO_PER_IMAGE_NOTE))
 
     return html.Div([
         # --- APP HEADER ---
@@ -494,54 +547,48 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
             ], style={'flex': '1', 'padding': '0'}),
         ], style={'display': 'flex', 'padding': '0 20px'}),
 
-        # --- REGRESSION + PERMUTATION (the per-region detail row) ---
+        # --- the per-region detail row: regions, IMAGE, REGRESSION ---
         html.Div(id='detail-panel', children=[
             _region_panel(region_ids),
+            html.Div(id='image-panel', children=[
+                # three linked ortho slicers
+                html.Div([
+                    html.H4('IMAGE', style={
+                        'margin': '0', 'fontSize': '14px',
+                        'letterSpacing': '1px', 'color': '#555',
+                        'marginBottom': '4px'}),
+                    html.Div(image_dd_children,
+                             style={'display': 'flex',
+                                    'marginBottom': '4px'}),
+                    html.Div(style={
+                        'display': 'grid',
+                        'gridTemplateColumns': '1fr 1fr 1fr',
+                        'gap': '4px',
+                    }, children=[
+                        html.Div([
+                            html.Div(caption, style=_view_caption),
+                            slicer.graph,
+                            html.Div([slicer.slider],
+                                     style={'marginTop': '2px'}),
+                            *slicer.stores,
+                        ]) for caption, slicer in slicer_panels
+                    ]),
+                ], style={'flex': '1', 'padding': '10px'}),
+            ], style={'flex': '1', 'minWidth': '0',
+                      'display': 'flex'}),
             _regression_panel(x_names or [], y_names or [],
                               default_x=default_reg_x),
-            # present only when the fit kept its draws
-            *([_permutation_panel()] if has_stat else []),
-        ], style={'display': 'flex', 'padding': '0 20px',
-                  'borderTop': '2px solid #ccc', 'marginTop': '6px'}),
-
-        # --- IMAGE (a row of its own) ---
-        html.Div(id='image-panel', children=[
-            # three linked ortho slicers
-            html.Div([
-                html.H4('IMAGE', style={
-                    'margin': '0', 'fontSize': '14px',
-                    'letterSpacing': '1px', 'color': '#555',
-                    'marginBottom': '4px'}),
-                html.Div(image_dd_children,
-                         style={'display': 'flex',
-                                'marginBottom': '4px'}),
-                html.Div(style={
-                    'display': 'grid',
-                    'gridTemplateColumns': '1fr 1fr 1fr',
-                    'gap': '4px',
-                }, children=[
-                    html.Div([
-                        slicer0.graph,
-                        html.Div([slicer0.slider],
-                                 style={'marginTop': '2px'}),
-                        *slicer0.stores,
-                    ]),
-                    html.Div([
-                        slicer1.graph,
-                        html.Div([slicer1.slider],
-                                 style={'marginTop': '2px'}),
-                        *slicer1.stores,
-                    ]),
-                    html.Div([
-                        slicer2.graph,
-                        html.Div([slicer2.slider],
-                                 style={'marginTop': '2px'}),
-                        *slicer2.stores,
-                    ]),
-                ]),
-            ], style={'flex': '1', 'padding': '10px'}),
         ], style={'display': 'flex', 'padding': '0 20px 20px 20px',
                   'borderTop': '2px solid #ccc', 'marginTop': '6px'}),
+
+        # --- PERMUTATION (its own row, and only for a fit that kept
+        #     its draws; see _permutation_panel) ---
+        *([html.Div(id='permutation-panel',
+                    children=[_permutation_panel()],
+                    style={'display': 'flex',
+                           'padding': '0 20px 20px 20px',
+                           'borderTop': '2px solid #ccc',
+                           'marginTop': '6px'})] if has_stat else []),
 
         # --- HIDDEN STORES ---
         dcc.Store(id='store-selected', data='[]'),
@@ -554,20 +601,18 @@ def _make_layout_3d(generic_cols, sig_cols, prune_cols, mask_cols,
 def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
                     x_names=None, y_names=None, region_ids=None,
                     default_reg_x=0, num_img=0, subject_names=None,
-                    has_stat=False):
-    """Build layout for 2D data (single go.Image view)."""
+                    has_stat=False, per_image=True):
+    """Build layout for 2D data (single go.Image view).
+
+    per_image False locks the Image selector to the group mean; see
+    NO_PER_IMAGE_NOTE.
+    """
     all_cols, default_x, default_y, log_val, default_color = _defaults(
         generic_cols, sig_cols, prune_cols, mask_cols)
 
     bg_default = ('RGB' if 'RGB' in bg_names
                   else bg_names[0] if bg_names else '__none__')
-    image_options = [{'label': 'Mean', 'value': 'mean'}]
-    if subject_names and len(subject_names) == num_img:
-        image_options += [{'label': subject_names[i], 'value': str(i)}
-                          for i in range(num_img)]
-    else:
-        image_options += [{'label': f'Image {i}', 'value': str(i)}
-                          for i in range(num_img)]
+    image_options = _image_options(num_img, subject_names, per_image)
 
     _dd_label = {'fontSize': '11px', 'fontWeight': 'bold',
                  'marginBottom': '2px'}
@@ -593,52 +638,62 @@ def _make_layout_2d(generic_cols, sig_cols, prune_cols, mask_cols, bg_names,
             ], style={'flex': '1', 'padding': '0'}),
         ], style={'display': 'flex', 'padding': '0 20px'}),
 
-        # --- REGRESSION + PERMUTATION (the per-region detail row) ---
+        # --- the per-region detail row: regions, IMAGE, REGRESSION ---
         html.Div(id='detail-panel', children=[
             # region selection, aligned with the controls column above
             _region_panel(region_ids),
+            html.Div(id='image-panel', children=[
+                # IMAGE with dropdowns below title
+                html.Div([
+                    html.H4('IMAGE', style={
+                        'margin': '0', 'fontSize': '14px',
+                        'letterSpacing': '1px', 'color': '#555',
+                        'marginBottom': '4px'}),
+                    html.Div([
+                        html.Div([
+                            html.Label('Background', style=_dd_label),
+                            dcc.Dropdown(
+                                id='dd-bg',
+                                options=[{'label': n, 'value': n}
+                                         for n in bg_names],
+                                value=bg_default,
+                                clearable=False,
+                                style={'width': '100%', 'fontSize': '12px'}),
+                        ], style={'flex': '1', 'marginRight': '6px'}),
+                        html.Div([
+                            html.Label(
+                                'Image' if per_image else 'Image (mean only)',
+                                style=_dd_label),
+                            dcc.Dropdown(
+                                id='dd-image',
+                                options=image_options,
+                                value='mean',
+                                clearable=False,
+                                disabled=not per_image,
+                                style={'width': '100%', 'fontSize': '12px'}),
+                        ], style={'flex': '1'},
+                            title=(None if per_image
+                                   else NO_PER_IMAGE_NOTE)),
+                    ], style={'display': 'flex', 'marginBottom': '4px'}),
+                    dcc.Graph(id='image-viewer',
+                              config={'scrollZoom': True},
+                              style={'width': '100%', 'height': '340px'}),
+                ], style={'flex': '1', 'padding': '10px'}),
+            ], style={'flex': '1', 'minWidth': '0',
+                      'display': 'flex'}),
             _regression_panel(x_names or [], y_names or [],
                               default_x=default_reg_x),
-            # present only when the fit kept its draws
-            *([_permutation_panel()] if has_stat else []),
-        ], style={'display': 'flex', 'padding': '0 20px',
-                  'borderTop': '2px solid #ccc', 'marginTop': '6px'}),
-
-        # --- IMAGE (a row of its own) ---
-        html.Div(id='image-panel', children=[
-            # IMAGE with dropdowns below title
-            html.Div([
-                html.H4('IMAGE', style={
-                    'margin': '0', 'fontSize': '14px',
-                    'letterSpacing': '1px', 'color': '#555',
-                    'marginBottom': '4px'}),
-                html.Div([
-                    html.Div([
-                        html.Label('Background', style=_dd_label),
-                        dcc.Dropdown(
-                            id='dd-bg',
-                            options=[{'label': n, 'value': n}
-                                     for n in bg_names],
-                            value=bg_default,
-                            clearable=False,
-                            style={'width': '100%', 'fontSize': '12px'}),
-                    ], style={'flex': '1', 'marginRight': '6px'}),
-                    html.Div([
-                        html.Label('Image', style=_dd_label),
-                        dcc.Dropdown(
-                            id='dd-image',
-                            options=image_options,
-                            value='mean',
-                            clearable=False,
-                            style={'width': '100%', 'fontSize': '12px'}),
-                    ], style={'flex': '1'}),
-                ], style={'display': 'flex', 'marginBottom': '4px'}),
-                dcc.Graph(id='image-viewer',
-                          config={'scrollZoom': True},
-                          style={'width': '100%', 'height': '340px'}),
-            ], style={'flex': '1', 'padding': '10px'}),
         ], style={'display': 'flex', 'padding': '0 20px 20px 20px',
                   'borderTop': '2px solid #ccc', 'marginTop': '6px'}),
+
+        # --- PERMUTATION (its own row, and only for a fit that kept
+        #     its draws; see _permutation_panel) ---
+        *([html.Div(id='permutation-panel',
+                    children=[_permutation_panel()],
+                    style={'display': 'flex',
+                           'padding': '0 20px 20px 20px',
+                           'borderTop': '2px solid #ccc',
+                           'marginTop': '6px'})] if has_stat else []),
 
         # --- HIDDEN STORES ---
         dcc.Store(id='store-selected', data='[]'),

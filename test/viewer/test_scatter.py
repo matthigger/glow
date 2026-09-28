@@ -56,6 +56,25 @@ class TestBuildScatterBasic:
             f'range span {log_hi - log_lo} is unreasonably large'
 
 
+def _region_traces(fig):
+    """Marker traces carrying a customdata row per region."""
+    return [t for t in fig.data
+            if getattr(t, 'customdata', None) is not None
+            and np.ndim(t.customdata) == 2]
+
+
+def _star_traces(fig):
+    """The target-mask star, which names itself 'target' in text."""
+    return [t for t in fig.data
+            if getattr(t, 'text', None) is not None
+            and 'target' in list(t.text)]
+
+
+def _marker_regions(fig):
+    """Region indices the scatter draws, over all its marker traces."""
+    return [int(s) for t in _region_traces(fig) for s in t.text]
+
+
 class TestBuildScatterTraces:
     """Verify trace structure and content."""
 
@@ -70,34 +89,25 @@ class TestBuildScatterTraces:
 
     def test_target_star_present(self, df_with_target, ana, exp, target_stats):
         fig = self._build(df_with_target, ana, exp, target_stats=target_stats)
-        star_traces = [t for t in fig.data
-                       if getattr(t, 'customdata', None) is not None
-                       and 'target' in list(t.customdata)]
-        assert len(star_traces) == 1, 'target star trace missing'
+        assert len(_star_traces(fig)) == 1, 'target star missing'
 
     def test_target_star_on_top_of_scatter(self, df_with_target, ana, exp,
                                            target_stats):
         """Target star must render after the main scatter for clickability."""
         fig = self._build(df_with_target, ana, exp, target_stats=target_stats)
-        main_idx = None
-        star_idx = None
-        for i, t in enumerate(fig.data):
-            cd = getattr(t, 'customdata', None)
-            if cd is not None and t.mode == 'markers' and 'target' not in list(cd):
-                main_idx = i
-            if cd is not None and 'target' in list(cd):
-                star_idx = i
-        assert main_idx is not None, 'main scatter trace not found'
-        assert star_idx is not None, 'target star trace not found'
+        region = _region_traces(fig)
+        star = _star_traces(fig)
+        assert region, 'no region marker trace found'
+        assert len(star) == 1, 'target star trace not found'
+        main_idx = max(list(fig.data).index(t) for t in region)
+        star_idx = list(fig.data).index(star[0])
         assert star_idx > main_idx, \
-            f'target star (trace {star_idx}) must be after main scatter (trace {main_idx})'
+            f'the star (trace {star_idx}) must come after the markers ' \
+            f'(trace {main_idx}) to stay clickable'
 
     def test_target_star_absent_without_stats(self, df_with_target, ana, exp):
         fig = self._build(df_with_target, ana, exp, target_stats=None)
-        star_traces = [t for t in fig.data
-                       if getattr(t, 'customdata', None) is not None
-                       and 'target' in list(t.customdata)]
-        assert len(star_traces) == 0
+        assert len(_star_traces(fig)) == 0
 
     def test_tree_edges_present(self, df_with_target, ana, exp):
         fig = self._build(df_with_target, ana, exp, plot_tree=True)
@@ -111,16 +121,18 @@ class TestBuildScatterTraces:
                        and getattr(t.line, 'color', None) == 'lightgrey']
         assert len(line_traces) == 0
 
-    def test_customdata_ints(self, df_with_target, ana, exp):
+    def test_every_region_names_itself_in_text(self, df_with_target, ana,
+                                                exp):
+        """The click callback reads text, so every marker must carry it.
+
+        customdata ships as float32 and never reaches the callback, so
+        a region missing from text is a region that cannot be selected.
+        """
         fig = self._build(df_with_target, ana, exp)
-        main = [t for t in fig.data
-                if t.mode == 'markers' and t.showlegend is False
-                and getattr(t, 'customdata', None) is not None
-                and 'target' not in list(t.customdata)]
-        assert len(main) == 1
-        for val in main[0].customdata:
-            assert isinstance(val, (int, np.integer)), \
-                f'customdata should be int, got {type(val)}'
+        for t in _region_traces(fig):
+            assert len(t.text) == len(t.x)
+        assert (sorted(_marker_regions(fig))
+                == sorted(df_with_target['region_idx']))
 
 
 class TestMinVoxLine:
@@ -169,13 +181,14 @@ class TestBuildScatterSelection:
         reg0 = int(df_with_target['region_idx'].iloc[0])
         fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr_z',
                             '__none__', selected_reg={reg0})
-        main = [t for t in fig.data
-                if t.mode == 'markers' and t.showlegend is False
-                and getattr(t, 'customdata', None) is not None
-                and 'target' not in list(t.customdata)][0]
-        sizes = np.array(main.marker.size)
-        idx_in_trace = list(main.customdata).index(reg0)
-        assert sizes[idx_in_trace] > sizes.min()
+        sizes, picked = [], None
+        for t in _region_traces(fig):
+            for i, s_reg in enumerate(t.text):
+                sizes.append(t.marker.size[i])
+                if int(s_reg) == reg0:
+                    picked = t.marker.size[i]
+        assert picked is not None, 'the selected region was not drawn'
+        assert picked > min(sizes)
 
 
 class TestHoverText:
@@ -184,26 +197,19 @@ class TestHoverText:
     def test_hover_has_parent_children(self, df_with_target, ana, exp):
         fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr_z',
                             '__none__')
-        main = [t for t in fig.data
-                if t.mode == 'markers' and t.showlegend is False
-                and getattr(t, 'customdata', None) is not None
-                and 'target' not in list(t.customdata)][0]
-        for text in main.text:
-            assert 'parent:' in text, f'missing parent in hover: {text}'
-            assert 'children:' in text, f'missing children in hover: {text}'
+        for t in _region_traces(fig):
+            tpl = t.hovertemplate
+            assert 'parent:' in tpl, f'missing parent in hover: {tpl}'
+            assert 'children:' in tpl, f'missing children in hover: {tpl}'
 
     def test_leaf_hover_says_none(self, df_with_target, ana, exp):
         """Leaf nodes should show 'children: none (leaf)'."""
         num_vox = exp.y.shape[2]
         fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr_z',
                             '__none__')
-        main = [t for t in fig.data
-                if t.mode == 'markers' and t.showlegend is False
-                and getattr(t, 'customdata', None) is not None
-                and 'target' not in list(t.customdata)][0]
-        for i, reg_idx in enumerate(main.customdata):
-            if reg_idx < num_vox:
-                assert 'none (leaf)' in main.text[i]
+        for t in _region_traces(fig):
+            if any(int(s) < num_vox for s in t.text):
+                assert 'none (leaf)' in t.hovertemplate
                 break
         else:
             pytest.skip('no leaf nodes visible')
@@ -217,13 +223,9 @@ class TestHoverText:
 
         fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr_z',
                             '__none__')
-        main = [t for t in fig.data
-                if t.mode == 'markers' and t.showlegend is False
-                and getattr(t, 'customdata', None) is not None
-                and 'target' not in list(t.customdata)][0]
-        for i, reg_idx in enumerate(main.customdata):
-            if reg_idx in roots:
-                assert 'none (root)' in main.text[i]
+        for t in _region_traces(fig):
+            if any(int(s) in roots for s in t.text):
+                assert 'none (root)' in t.hovertemplate
                 break
         else:
             pytest.skip('root node not visible')
@@ -236,3 +238,53 @@ class TestModelOverlay:
         fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr',
                             '__none__')
         assert isinstance(fig, go.Figure)
+
+
+class TestPatchableSelection:
+    """The restyle path must address the same points the figure drew."""
+
+    def test_visible_regions_matches_the_built_traces(self, df_with_target,
+                                                      ana, exp):
+        """A click patches traces by index, never rebuilding the figure.
+
+        If the split it assumes drifts from the split build_scatter made,
+        a click silently outlines the wrong regions, so the two are
+        pinned together here.
+        """
+        from glow._extra.viewer.scatter import visible_regions
+
+        for log_y, min_vox in ((False, 0), (True, 0), (False, 3)):
+            fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr',
+                                '__none__', log_y=log_y, min_vox=min_vox)
+            groups = visible_regions(df_with_target, ana, exp, 'llr',
+                                     log_y=log_y, min_vox=min_vox)
+            assert len(groups) == len(_region_traces(fig))
+            for trace_idx, state, reg in groups:
+                drawn = [int(s) for s in fig.data[trace_idx].text]
+                assert drawn == list(reg), (log_y, min_vox, state)
+
+    def test_no_per_point_hover_strings(self, df_with_target, ana, exp):
+        """Hover text is a template per trace, not a string per region.
+
+        text still carries one entry per point, but it is the bare
+        region index the click callback reads -- not a rendered label.
+        """
+        fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr',
+                            '__none__')
+        traces = _region_traces(fig)
+        assert traces
+        for t in traces:
+            assert t.hovertemplate
+            assert t.hovertext is None
+            assert all(s.isdigit() for s in t.text)
+
+    def test_selection_style_marks_only_the_selected(self, df_with_target,
+                                                     ana, exp):
+        """selection_style is what both the build and the patch call."""
+        from glow._extra.viewer.scatter import selection_style
+
+        reg = np.array([3, 4, 5])
+        size, width, color = selection_style(reg, {4}, 'no_effect')
+        assert size[1] > size[0] and size[1] > size[2]
+        assert width[1] > width[0]
+        assert color[1] == 'black'

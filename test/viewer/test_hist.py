@@ -298,23 +298,21 @@ class TestLayoutWithDraws:
         assert _find(layout, 'scatter-plot') is not None
         assert _find(layout_plain, 'scatter-plot') is not None
 
-    def test_panel_ends_the_detail_row(self, layout):
-        """Last column of the detail row -- right of REGRESSION."""
-        row = _find(layout, 'detail-panel').children
-        assert len(row) == 3
-        assert TestLayout2D._find_component(row[1],
-                                            'regression-plot') is not None
-        assert TestLayout2D._find_component(row[-1], 'hist-plot') is not None
+    def test_panel_gets_its_own_row(self, layout):
+        """Below the detail row, not a fourth column inside it."""
+        assert _find(layout, 'permutation-panel') is not None
+        detail = _find(layout, 'detail-panel')
+        assert TestLayout2D._find_component(detail, 'hist-plot') is None
 
-    def test_detail_row_loses_the_column_without_draws(self, layout_plain):
-        """REGRESSION takes the width back when there are no draws."""
-        assert len(_find(layout_plain, 'detail-panel').children) == 2
+    def test_no_row_at_all_without_draws(self, layout_plain):
+        """An ordinary fit costs the page no empty row."""
+        assert _find(layout_plain, 'permutation-panel') is None
 
-    def test_panel_shares_the_row_with_regression(self, layout):
-        """Side by side in one row, so the two split its width evenly."""
-        row = _find(layout, 'detail-panel').children
-        assert row[-1].style['flex'] == '1'
-        assert row[1].style['flex'] == '1'
+    def test_detail_row_is_unchanged_by_the_draws(self, layout,
+                                                  layout_plain):
+        """The detail row is regions/IMAGE/REGRESSION either way."""
+        assert len(_find(layout, 'detail-panel').children) == 3
+        assert len(_find(layout_plain, 'detail-panel').children) == 3
 
     def test_unit_defaults_to_llr(self, layout):
         assert _find(layout, 'hist-unit').value == 'llr'

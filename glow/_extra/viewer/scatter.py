@@ -3,6 +3,13 @@
 Builds on the existing scatter_plotly() in glow/plot.py but designed for
 interactive use in the Dash viewer: clickable points, swappable axes,
 and threshold reference lines.
+
+Every clickable trace names its region in text -- the region index as a
+string, or 'target' for the star. Dash forwards only a point's scalar
+properties, and it recovers customdata by indexing the trace as the
+browser holds it; plotly ships a float array there in binary, so that
+index yields nothing and a numeric customdata row never reaches the
+callback. customdata therefore carries the hover numbers alone.
 """
 
 import numpy as np
@@ -26,7 +33,7 @@ _ADJ_COL = 'llr_z'
 # estimate_state -> (plotly symbol, default color, legend label)
 _STATE_STYLE = {
     'no_effect':   ('circle',  'steelblue', 'no effect'),
-    'has_effect':  ('diamond', 'green',     'contains effect(s)'),
+    'has_effect':  ('diamond', 'green',     'contains (one) effect'),
 }
 _STATE_ORDER = ['no_effect', 'has_effect']
 
@@ -107,16 +114,7 @@ def build_scatter(df, ana_glow, exp, x_feat, y_feat, color_feat,
     color = None if no_color else _df[color_feat].values
     states = _df['estimate_state'].values
 
-    # in log mode, hide regions with non-positive y values
-    if log_y:
-        vis = np.isfinite(y) & (y > 0)
-    else:
-        vis = np.ones(len(y), dtype=bool)
-
-    # size gate: drop regions below min_vox (aligned to _df, which is sorted
-    # by region_idx) so large trees stay responsive
-    if min_vox and min_vox > 1:
-        vis &= _df['n_voxel'].values >= min_vox
+    vis = _visible(_df, y, log_y, min_vox)
 
     fig = go.Figure()
 
@@ -143,88 +141,70 @@ def build_scatter(df, ana_glow, exp, x_feat, y_feat, color_feat,
     color_v = None if color is None else color[vis]
     states_v = states[vis]
 
-    # --- per-point symbols from estimate_state ---
-    symbols = np.array([_STATE_STYLE[s][0] for s in states_v])
-
-    # --- build hover text ---
-    hover_cols = ['region_idx', 'n_voxel', 'llr', 'llr_z',
-                  'pval_fwer']
+    # --- one trace per hover-wording group ---------------------------
+    # Everything that used to vary per point in the hover string --
+    # the estimate label, whether a region has a parent, whether it has
+    # children -- is constant inside a group, so the figure carries one
+    # template per group instead of one rendered string per region.
+    hover_cols = ['n_voxel', 'llr', 'llr_z', 'pval_fwer']
     for c in ('dice', 'sens', 'ppv', 'spec', 'vox_in_target',
               'vox_out_target', 'llr_mu_h0', 'llr_std_h0'):
         if c in _df.columns and not _df[c].isna().all():
             hover_cols.append(c)
-    hover_text = []
-    for _, row in _df[vis].iterrows():
-        parts = []
-        for c in hover_cols:
-            v = row[c]
-            if c == 'region_idx':
-                parts.append(f'Region {int(v)}')
-            elif isinstance(v, str):
-                parts.append(f'{c}: {v}')
-            elif isinstance(v, (int, np.integer)):
-                parts.append(f'{c}: {v}')
-            elif np.isnan(v):
-                continue
-            else:
-                parts.append(f'{c}: {v:.4g}')
-        state = row['estimate_state']
-        if state != 'no_effect':
-            label = _STATE_STYLE[state][2]
-            parts.append(f'<b>{label}</b>')
-        reg_idx = int(row['region_idx'])
-        p = parent[reg_idx]
-        parts.append(f'parent: {p}' if p != -1 else 'parent: none (root)')
-        if reg_idx >= num_vox:
-            c0, c1 = children[reg_idx - num_vox]
-            parts.append(f'children: {c0}, {c1}')
+
+    int_cols = {c for c in hover_cols
+                if np.issubdtype(_df[c].dtype, np.integer)}
+    col_v = {c: _df[c].values[vis] for c in hover_cols}
+    reg_v = _df['region_idx'].values[vis].astype(np.int64)
+    parent_v = parent[reg_v]
+
+    cmin = cmax = None
+    if color_v is not None and np.isfinite(color_v).any():
+        cmin = float(np.nanmin(color_v))
+        cmax = float(np.nanmax(color_v))
+
+    shown_scale = False
+    for grp in _marker_groups(states_v, reg_v, parent_v, num_vox):
+        pos = grp['pos']
+        cols = list(hover_cols)
+        stack = [col_v[c][pos] for c in hover_cols]
+        if grp['has_parent']:
+            cols.append('parent')
+            stack.append(parent_v[pos])
+        if grp['has_children']:
+            cols += ['child0', 'child1']
+            kids = children[reg_v[pos] - num_vox]
+            stack += [kids[:, 0], kids[:, 1]]
+
+        # float32 so plotly ships the block as binary rather than as
+        # json numbers; every field is shown to 4 significant digits and
+        # the indices are far below float32's exact-integer ceiling
+        customdata = np.column_stack(stack).astype(np.float32)
+
+        size, line_width, line_color = selection_style(
+            reg_v[pos], selected_reg, grp['state'])
+        marker = dict(size=size, symbol=_STATE_STYLE[grp['state']][0],
+                      line=dict(width=line_width, color=line_color))
+        if color_v is None:
+            marker['color'] = _STATE_STYLE[grp['state']][1]
+            marker['showscale'] = False
         else:
-            parts.append('children: none (leaf)')
-        hover_text.append('<br>'.join(parts))
+            marker.update(color=color_v[pos], colorscale='Viridis',
+                          cmin=cmin, cmax=cmax, showscale=not shown_scale)
+            if not shown_scale:
+                marker['colorbar'] = dict(title=color_feat, x=1.02, len=0.5,
+                                          y=0.15, yanchor='bottom')
+                shown_scale = True
 
-    # --- marker sizing: larger when selected; diamonds always get a border ---
-    reg_indices = _df['region_idx'].values[vis]
-    is_selected = np.isin(reg_indices, list(selected_reg))
-    is_diamond = np.array([s == 'has_effect' for s in states_v])
-    marker_size = np.where(is_selected, 14,
-                           np.where(is_diamond, 10, 7))
-    marker_line_width = np.where(is_selected, 2,
-                                 np.where(is_diamond, 1.5, 0))
-    marker_line_color = np.where(is_selected, 'black',
-                                 np.where(is_diamond, 'black',
-                                          'rgba(0,0,0,0)'))
-
-    # --- main scatter ---
-    if no_color:
-        pt_colors = np.array([_STATE_STYLE[s][1] for s in states_v])
-        marker_kwargs = dict(
-            size=marker_size,
-            symbol=symbols,
-            color=pt_colors,
-            showscale=False,
-            line=dict(width=marker_line_width, color=marker_line_color),
-        )
-    else:
-        marker_kwargs = dict(
-            size=marker_size,
-            symbol=symbols,
-            color=color_v,
-            colorscale='Viridis',
-            colorbar=dict(title=color_feat, x=1.02, len=0.5, y=0.15,
-                         yanchor='bottom'),
-            showscale=True,
-            line=dict(width=marker_line_width, color=marker_line_color),
-        )
-
-    fig.add_trace(go.Scatter(
-        x=x_v, y=y_v,
-        mode='markers',
-        marker=marker_kwargs,
-        customdata=reg_indices.tolist(),
-        text=hover_text,
-        hoverinfo='text',
-        showlegend=False,
-    ))
+        fig.add_trace(go.Scatter(
+            x=x_v[pos], y=y_v[pos],
+            mode='markers',
+            marker=marker,
+            customdata=customdata,
+            text=[str(r) for r in reg_v[pos]],
+            hovertemplate=_hover_template(cols, int_cols, grp),
+            showlegend=False,
+        ))
 
     # --- target mask star marker (on top of scatter for clickability) ---
     _add_target_star(fig, target_stats, x_feat, y_feat, log_y=log_y)
@@ -275,6 +255,154 @@ def build_scatter(df, ana_glow, exp, x_feat, y_feat, color_feat,
     return fig
 
 
+# Selected regions are drawn larger and outlined; a diamond keeps a thin
+# outline so its shape reads against the colour scale.
+_SIZE_SELECTED, _SIZE_DIAMOND, _SIZE_PLAIN = 14, 10, 7
+
+
+def selection_style(reg_idx, selected_reg, state):
+    """Return the marker size and outline for one trace's points.
+
+    Shared by the figure builder and the callback that restyles a
+    selection, so a click cannot drift from a rebuild.
+
+    Args:
+        reg_idx (np.array): (n,) int region index per point.
+        selected_reg (set): region indices currently selected.
+        state (str): the group's estimate_state, which fixes the symbol.
+
+    Returns:
+        size (list): (n,) marker size.
+        line_width (list): (n,) outline width.
+        line_color (list): (n,) outline colour.
+    """
+    sel = np.isin(reg_idx, list(selected_reg))
+    diamond = state == 'has_effect'
+    size = np.where(sel, _SIZE_SELECTED,
+                    _SIZE_DIAMOND if diamond else _SIZE_PLAIN)
+    width = np.where(sel, 2, 1.5 if diamond else 0)
+    color = np.where(sel, 'black', 'black' if diamond else 'rgba(0,0,0,0)')
+    return size.tolist(), width.tolist(), color.tolist()
+
+
+def _marker_groups(states_v, reg_v, parent_v, num_vox):
+    """Split visible regions into groups that share a hover wording.
+
+    Args:
+        states_v (np.array): (n,) estimate_state per visible region.
+        reg_v (np.array): (n,) int region index per visible region.
+        parent_v (np.array): (n,) parent index, -1 at the root.
+        num_vox (int): leaves below this index have no children.
+
+    Yields:
+        dict: {state, has_parent, has_children, pos}, pos being the
+            positions into the visible arrays, in trace order.
+    """
+    has_par = parent_v != -1
+    has_kid = reg_v >= num_vox
+    for state in _STATE_ORDER:
+        for hp in (True, False):
+            for hk in (True, False):
+                pos = np.flatnonzero((states_v == state)
+                                     & (has_par == hp) & (has_kid == hk))
+                if len(pos):
+                    yield {'state': state, 'has_parent': hp,
+                           'has_children': hk, 'pos': pos}
+
+
+def _hover_template(cols, int_cols, grp):
+    """Build one hovertemplate for a group of regions.
+
+    The region index comes from the trace's text array, not customdata;
+    see the module docstring.
+
+    Args:
+        cols (list[str]): the customdata columns, in order.
+        int_cols (set): columns to print without a float format.
+        grp (dict): a _marker_groups entry.
+
+    Returns:
+        str: the plotly hovertemplate, its trailing box suppressed.
+    """
+    parts = ['Region %{text}']
+    for i, c in enumerate(cols):
+        if c in ('parent', 'child0', 'child1'):
+            continue
+        if c in int_cols:
+            parts.append(f'{c}: %{{customdata[{i}]}}')
+        else:
+            parts.append(f'{c}: %{{customdata[{i}]:.4g}}')
+
+    if grp['state'] != 'no_effect':
+        parts.append(f'<b>{_STATE_STYLE[grp["state"]][2]}</b>')
+
+    if grp['has_parent']:
+        parts.append(f'parent: %{{customdata[{cols.index("parent")}]}}')
+    else:
+        parts.append('parent: none (root)')
+    if grp['has_children']:
+        i0, i1 = cols.index('child0'), cols.index('child1')
+        parts.append(f'children: %{{customdata[{i0}]}}, '
+                     f'%{{customdata[{i1}]}}')
+    else:
+        parts.append('children: none (leaf)')
+
+    return '<br>'.join(parts) + '<extra></extra>'
+
+
+def visible_regions(df, ana_glow, exp, y_feat, log_y=False, min_vox=0,
+                    plot_tree=True):
+    """Return the region indices each marker trace of build_scatter holds.
+
+    The selection restyle patches traces by index, so it has to reproduce
+    the split build_scatter made without rebuilding the figure. Both go
+    through _marker_groups, so the two cannot disagree.
+
+    Args:
+        df (pd.DataFrame): region DataFrame, as build_scatter takes it.
+        ana_glow (AnalysisGLOWBase): completed analysis (tree shape).
+        exp (Experiment): the experiment it was fit on (num_vox).
+        y_feat (str): y column, which decides what log_y hides.
+        log_y (bool): y on a log scale, hiding non-positive values.
+        min_vox (int): size cut, as build_scatter applies it.
+        plot_tree (bool): whether the edge trace occupies index 0.
+
+    Returns:
+        list[tuple]: (trace_idx, state, reg_idx) per marker trace.
+    """
+    num_vox = exp.y.shape[2]
+    parent = get_parent(ana_glow.children, num_vox)
+    _df = df.sort_values('region_idx')
+    vis = _visible(_df, _df[y_feat].values, log_y, min_vox)
+
+    reg_v = _df['region_idx'].values[vis].astype(np.int64)
+    states_v = _df['estimate_state'].values[vis]
+    first = 1 if plot_tree else 0
+    return [(first + i, g['state'], reg_v[g['pos']])
+            for i, g in enumerate(
+                _marker_groups(states_v, reg_v, parent[reg_v], num_vox))]
+
+
+def _visible(_df, y, log_y, min_vox):
+    """Return the boolean mask of regions the scatter draws.
+
+    Args:
+        _df (pd.DataFrame): region frame sorted by region_idx.
+        y (np.array): (num_reg,) the y column's values.
+        log_y (bool): drop non-positive y, which a log axis cannot show.
+        min_vox (int): drop regions below this size; 0 keeps every one.
+
+    Returns:
+        np.array: (num_reg,) bool.
+    """
+    if log_y:
+        vis = np.isfinite(y) & (y > 0)
+    else:
+        vis = np.ones(len(y), dtype=bool)
+    if min_vox and min_vox > 1:
+        vis &= _df['n_voxel'].values >= min_vox
+    return vis
+
 def _log_y_range(y_v, ana_glow, y_feat, target_stats):
     """Compute an explicit [log10_min, log10_max] range for log-y mode.
 
@@ -316,7 +444,7 @@ def _log_y_range(y_v, ana_glow, y_feat, target_stats):
 def _add_target_star(fig, target_stats, x_feat, y_feat, log_y=False):
     """Add an open-star outline at the full target mask's position.
 
-    Clickable (customdata='target') so it behaves like any other region.
+    Clickable (text='target') so it behaves like any other region.
     Added before the main scatter so it renders behind region markers.
     Only drawn when both axis features have finite values.
     """
@@ -351,9 +479,8 @@ def _add_target_star(fig, target_stats, x_feat, y_feat, log_y=False):
             color='black',
             line=dict(width=2, color='black'),
         ),
-        customdata=['target'],
-        text=[hover_text],
-        hoverinfo='text',
+        text=['target'],
+        hovertemplate=hover_text + '<extra></extra>',
         showlegend=True,
         name='target mask',
         legendgroup='target',

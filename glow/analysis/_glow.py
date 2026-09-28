@@ -334,10 +334,21 @@ class AnalysisGLOW(AnalysisGLOWBase):
     is one entry of the FWER null, the observed data being perm 0 (Westfall
     & Young 1993; Phipson & Smyth 2010).
 
-    Weak FWER control only: the observed tree bears the effect while every
-    null tree is noise, so the observed draw meets an easier null. A fit
-    here is a segmentation to inspect and compare; for a reported p-value
-    use AnalysisGLOWSplit.
+    This is the shipped arm, and the one the benchmark and the paper report.
+    Every image reaches both the tree and the statistics, which is exactly
+    what a held-out segmentation fold gives up.
+
+    Its FWER guarantee is against the global null, where no region carries
+    an effect. There the segmentation and the inner calibration are applied
+    identically on every outer draw, the observed draw included, so the
+    per-draw maxima are exchangeable and the bound is exact (Westfall &
+    Young 1993; Lehmann & Romano Thm 15.2.1; Hemerik & Goeman 2018). It does
+    not extend to the case of an effect present elsewhere in the volume:
+    Westfall-Young needs subset pivotality for that, and a family rebuilt
+    inside every permutation does not satisfy it by construction, the
+    observed tree being organized around whatever effect the data holds
+    while every null tree is organized around noise. Read a p-value here as
+    a global-null p-value.
 
     Operation parameters (set at __init__), beyond AnalysisGLOWBase's:
         n_perm_inner (int): inner FL draws standardizing each outer perm's

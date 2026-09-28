@@ -10,6 +10,7 @@ import json
 import numpy as np
 import pytest
 
+from glow._extra.viewer.app import _create_app, _point_region
 from glow._extra.viewer.data import prep_df, compute_target_stats
 from glow._extra.viewer.scatter import build_scatter
 from glow._extra.viewer.regression import build_regression_figure
@@ -29,7 +30,7 @@ class TestToggleRegionLogic:
             return None, None
 
         point = click_data['points'][0]
-        reg_idx = point.get('customdata')
+        reg_idx = _point_region(point)
         if reg_idx is None:
             return None, None
 
@@ -44,41 +45,41 @@ class TestToggleRegionLogic:
         return json.dumps(selected), reg_idx
 
     def test_add_region(self):
-        click = {'points': [{'customdata': 42}]}
+        click = {'points': [{'text': '42'}]}
         result, reg = self._toggle(click, '[]')
         assert json.loads(result) == [42]
         assert reg == 42
 
     def test_remove_region(self):
-        click = {'points': [{'customdata': 42}]}
+        click = {'points': [{'text': '42'}]}
         result, reg = self._toggle(click, '[42]')
         assert json.loads(result) == []
         assert reg == 42
 
     def test_add_target(self):
-        click = {'points': [{'customdata': 'target'}]}
+        click = {'points': [{'text': 'target'}]}
         result, reg = self._toggle(click, '[]')
         assert json.loads(result) == ['target']
         assert reg == 'target'
 
     def test_remove_target(self):
-        click = {'points': [{'customdata': 'target'}]}
+        click = {'points': [{'text': 'target'}]}
         result, reg = self._toggle(click, '["target"]')
         assert json.loads(result) == []
 
     def test_add_multiple(self):
-        click1 = {'points': [{'customdata': 10}]}
-        click2 = {'points': [{'customdata': 20}]}
+        click1 = {'points': [{'text': '10'}]}
+        click2 = {'points': [{'text': '20'}]}
         result, _ = self._toggle(click1, '[]')
         result, _ = self._toggle(click2, result)
         assert json.loads(result) == [10, 20]
 
     def test_target_with_existing_regions(self):
-        click = {'points': [{'customdata': 'target'}]}
+        click = {'points': [{'text': 'target'}]}
         result, _ = self._toggle(click, '[42, 100]')
         assert json.loads(result) == [42, 100, 'target']
 
-    def test_none_customdata_ignored(self):
+    def test_none_text_ignored(self):
         click = {'points': [{}]}
         result, reg = self._toggle(click, '[42]')
         assert result is None
@@ -89,17 +90,18 @@ class TestToggleRegionLogic:
 
 
 class TestTargetStarClickable:
-    """Verify the target star trace has the right customdata for clicks."""
+    """Verify the target star names itself the way clicks expect."""
 
-    def test_target_customdata_is_string(self, df_with_target, ana, exp,
-                                         target_stats):
+    def test_target_text_is_the_target_string(self, df_with_target, ana,
+                                              exp, target_stats):
         fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr',
                             '__none__', target_stats=target_stats)
         star = [t for t in fig.data
-                if getattr(t, 'customdata', None) is not None
-                and 'target' in list(t.customdata)]
+                if getattr(t, 'text', None) is not None
+                and 'target' in list(t.text)]
         assert len(star) == 1
-        assert star[0].customdata[0] == 'target'
+        assert star[0].text[0] == 'target'
+        assert _point_region({'text': star[0].text[0]}) == 'target'
 
 
 class TestScatterCallbackIntegration:
@@ -131,13 +133,16 @@ class TestScatterCallbackIntegration:
         reg = int(df_with_target['region_idx'].iloc[5])
         fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr_z',
                             '__none__', selected_reg={reg})
-        main = [t for t in fig.data
-                if t.mode == 'markers' and t.showlegend is False
-                and getattr(t, 'customdata', None) is not None
-                and 'target' not in list(t.customdata)][0]
-        idx = list(main.customdata).index(reg)
-        sizes = np.array(main.marker.size)
-        assert sizes[idx] == sizes.max(), \
+        sizes, picked = [], None
+        for t in fig.data:
+            cd = getattr(t, 'customdata', None)
+            if cd is None or np.ndim(cd) != 2:
+                continue
+            for i, s_reg in enumerate(t.text):
+                sizes.append(t.marker.size[i])
+                if int(s_reg) == reg:
+                    picked = t.marker.size[i]
+        assert picked == max(sizes), \
             'selected region should have the largest marker'
 
 
@@ -253,3 +258,171 @@ class TestRegressionFoldMarkers:
         assert len(traces) == 1
         assert traces[0].marker.symbol == 'circle'
         assert list(traces[0].customdata) == list(range(exp.y.shape[1]))
+
+
+class TestHoverIsAnsweredInTheBrowser:
+    """Hover must not cost a server round trip.
+
+    Every preview a hover triggers waits on store-hover and store-center,
+    so a server callback in front of them puts the overlays, the
+    regression and the slices a whole round trip behind the mouse.
+    """
+
+    @staticmethod
+    def _callback_for(app, input_id, input_prop):
+        """Return the callback spec fed by one input property."""
+        for spec in app._callback_list:
+            for inp in spec.get('inputs', []):
+                if (inp.get('id') == input_id
+                        and inp.get('property') == input_prop):
+                    return spec
+        return None
+
+    def test_hover_callback_is_clientside(self, ana, exp, mask_target):
+        app = _create_app(ana, exp, mask_target=mask_target)
+        spec = self._callback_for(app, 'scatter-plot', 'hoverData')
+        assert spec is not None, 'nothing listens to hoverData'
+        assert spec['clientside_function'] is not None, \
+            'hover went back to the server; previews now cost two hops'
+
+    def test_the_preview_waits_for_the_mouse_to_settle(self, ana, exp,
+                                                       mask_target):
+        """hoverData must not reach store-hover directly.
+
+        A reader crossing the cloud passes over hundreds of regions. If
+        each one published, each would queue an overlay render, and the
+        previews would arrive seconds after the mouse stopped.
+        """
+        app = _create_app(ana, exp, mask_target=mask_target)
+        spec = self._callback_for(app, 'scatter-plot', 'hoverData')
+        outs = str(spec['output'])
+        assert 'store-hover' not in outs, \
+            'every point the mouse crosses now queues a preview'
+
+        timed = self._callback_for(app, 'hover-timer', 'n_intervals')
+        assert timed is not None, 'nothing publishes the settled hover'
+        assert 'store-hover' in str(timed['output'])
+        assert timed['clientside_function'] is not None
+
+    def test_centering_the_slicers_is_clientside(self, ana, exp,
+                                                 mask_target):
+        """store-center -> setpos must not add a hop before the slices."""
+        app = _create_app(ana, exp, mask_target=mask_target)
+        spec = self._callback_for(app, 'store-center', 'data')
+        assert spec is not None, 'nothing listens to store-center'
+        assert spec['clientside_function'] is not None, \
+            'centring went back to the server; slices now cost three hops'
+
+
+class TestClickIsAnsweredInTheBrowser:
+    """A click must not cost a server round trip either.
+
+    The overlays, the regression and the histogram all key off the
+    checklist, which keys off the selection. A server hop in either
+    put the whole picture two round trips behind the click.
+    """
+
+    @staticmethod
+    def _callback_for(app, input_id, input_prop):
+        for spec in app._callback_list:
+            for inp in spec.get('inputs', []):
+                if (inp.get('id') == input_id
+                        and inp.get('property') == input_prop):
+                    return spec
+        return None
+
+    def test_toggling_a_region_is_clientside(self, ana, exp, mask_target):
+        app = _create_app(ana, exp, mask_target=mask_target)
+        spec = self._callback_for(app, 'scatter-plot', 'clickData')
+        assert spec is not None, 'nothing listens to clickData'
+        assert spec['clientside_function'] is not None, \
+            'a click went back to the server; the picture now waits on it'
+
+    def test_the_checklist_sync_is_clientside(self, ana, exp, mask_target):
+        app = _create_app(ana, exp, mask_target=mask_target)
+        spec = self._callback_for(app, 'store-selected', 'data')
+        assert spec is not None
+        chain = [s for s in app._callback_list
+                 for i in s.get('inputs', [])
+                 if i.get('id') == 'store-selected'
+                 and 'region-checklist' in str(s['output'])]
+        assert chain, 'nothing syncs the checklist'
+        assert all(s['clientside_function'] is not None for s in chain), \
+            'the checklist sync went back to the server'
+
+
+class TestRegionInfo:
+    """The region table the clientside hover and click read."""
+
+    def test_matches_compute_region_center(self, ana, exp):
+        from glow._extra.viewer.image import (compute_region_center,
+                                              region_centers)
+        centers = region_centers(exp, ana)
+        num_reg = exp.y.shape[2] + ana.children.shape[0]
+        for reg in (0, num_reg // 3, num_reg - 1):
+            ref = compute_region_center(reg, exp, ana)
+            assert np.allclose(ref, centers[reg]), reg
+
+    def test_every_drawn_region_is_in_the_table(self, df_with_target, ana,
+                                                exp, target_stats,
+                                                mask_target):
+        """A drawn region missing here cannot be hovered or clicked."""
+        from glow._extra.viewer.app import _region_info
+
+        for min_vox in (0, 2, 4):
+            fig = build_scatter(df_with_target, ana, exp, 'n_voxel', 'llr',
+                                '__none__', target_stats=target_stats,
+                                min_vox=min_vox)
+            info = _region_info(df_with_target, ana, exp, min_vox,
+                                mask_target)
+            drawn = {s for t in fig.data
+                     if getattr(t, 'text', None) is not None for s in t.text}
+            assert drawn <= set(info), (min_vox, drawn - set(info))
+
+    def test_table_carries_the_voxel_count(self, df_with_target, ana, exp,
+                                           mask_target):
+        """The checklist labels its regions from this, not from the server."""
+        from glow._extra.viewer.app import _region_info
+
+        info = _region_info(df_with_target, ana, exp, 0, mask_target)
+        for reg, n_vox in zip(df_with_target['region_idx'],
+                              df_with_target['n_voxel']):
+            row = info.get(str(reg))
+            assert row is not None and len(row) == 4, reg
+            assert row[3] == int(n_vox), reg
+        assert info['target'][3] == int(mask_target.sum())
+
+
+class TestClientsideSignatures:
+    """Each clientside function must take exactly what it is handed.
+
+    A clientside callback that reads an argument it was never passed
+    throws, and a throw leaves the Dash renderer refusing to dispatch:
+    hover and click go dead while the page still looks fine.
+    """
+
+    def test_arity_matches_inputs_plus_state(self, ana, exp, mask_target):
+        import re
+
+        app = _create_app(ana, exp, mask_target=mask_target)
+        scripts = '\n'.join(app._inline_scripts)
+        checked = 0
+        for spec in app._callback_list:
+            fn = spec['clientside_function']
+            if fn is None:
+                continue
+            name = (fn.get('function_name') if isinstance(fn, dict)
+                    else getattr(fn, 'function_name', None))
+            if not name:
+                continue
+            m = re.search(r'ns\["' + re.escape(name)
+                          + r'"\]\s*=\s*function\s*\(([^)]*)\)', scripts)
+            if m is None:
+                continue
+            params = [a for a in m.group(1).split(',') if a.strip()]
+            want = len(spec['inputs']) + len(spec.get('state') or [])
+            assert len(params) == want, (
+                f'{spec["output"]}: js takes {len(params)} args, '
+                f'dash passes {want}')
+            checked += 1
+        assert checked, 'no clientside functions were matched'

@@ -165,18 +165,24 @@ _EFFECT_MAP = {
 }
 
 
+# inner Freedman-Lane draws per outer permutation. Below the shipped
+# setting (see benchmark.config): these demos are small and interactive,
+# and the count multiplies every outer draw.
+_N_PERM_INNER = 100
+
+
 def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
-    """Optionally impose an effect and run AnalysisGLOWSplit.
+    """Optionally impose an effect and run AnalysisGLOW.
 
     Returns:
-        ana (AnalysisGLOWSplit): the fitted analysis.
+        ana (AnalysisGLOW): the fitted analysis.
         exp_eff (Experiment): the experiment it was fit on (the analysis no
             longer stores it; the viewer needs it).
         mask_target (np.array | None): planted target mask, same shape as
             exp.mask_idx; None when no effect imposed.
     """
     from glow.effect.extent import ExtenterMinVar
-    from glow.analysis import AnalysisGLOWSplit
+    from glow.analysis import AnalysisGLOW
 
     if effect_llr > 0:
         from glow.effect import EffectSynthetic
@@ -207,8 +213,9 @@ def _impose_and_run(exp, effect_llr, mask_target=None, seed=42):
         exp_eff = exp
         print('  no effect imposed')
 
-    print('  running AnalysisGLOWSplit (n_perm_fwer=200) ...')
-    ana = AnalysisGLOWSplit(n_perm_fwer=200).fit(exp_eff, verbose=True)
+    print('  running AnalysisGLOW (n_perm_fwer=200) ...')
+    ana = AnalysisGLOW(n_perm_fwer=200,
+                       n_perm_inner=_N_PERM_INNER).fit(exp_eff, verbose=True)
     n_eff = len(ana.effect_list)
     print(f'  found {n_eff} effect{"s" if n_eff != 1 else ""}')
     return ana, exp_eff, mask_target

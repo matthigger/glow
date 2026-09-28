@@ -1,0 +1,32 @@
+# Upload filter for `gcloud` (Cloud Build / Cloud Run source deploys).
+#
+# This file has to exist. Without it gcloud generates a default that
+# imports .gitignore, and the viewer's baked bundles
+# (glow/_extra/viewer/web/pickles/) are gitignored -- they would be
+# dropped from the build context and the deployed image would serve an
+# empty landing page. Keep this list in step with .dockerignore, which
+# filters the same context for the docker build itself.
+.git
+.gitignore
+.gcloudignore
+.dockerignore
+
+# Python caches / build artifacts
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+build
+dist
+
+# Repo content the image never imports
+test
+docs
+.claude
+.github
+.venv
+venv*
+*.ipynb
+figure_csv
