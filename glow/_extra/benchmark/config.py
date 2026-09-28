@@ -177,15 +177,6 @@ SWEEP_NIMG_GRID = list(range(10, HCP_NUM_IMG + 1, 10))
 # permutation test (AnalysisGLOWBase._discover), so the prune cache settles it
 # by re-selecting one shared fit per (cell, projection) rather than by fitting
 # a recipe per rule.
-#
-# Oracle-RBA is the last entry and is not a method: it is handed the planted
-# supports as its regions (AnalysisOracleSegment), so a detection curve reads
-# what a region-based test reaches once segmentation is free and the family is
-# k+1 hypotheses. Its statistic is measured on its own regions rather than
-# borrowed from theirs (oracle_stat), and it lands on the same one, so the gap
-# to it is still the search and not the statistic. It z-scores where they do
-# not, because its regions differ in size and theirs are all one voxel (see
-# AnalysisOracleSegment, and RUN_ORACLE_STAT_LIST for what that costs it).
 kwargs_voxel = dict(n_perm_fwer=N_PERM_FWER, alpha_fwer=ALPHA_FWER)
 kwargs = dict(n_perm_inner=N_PERM_INNER, **kwargs_voxel)
 GLOW_LABEL_LIST = ('GLOW-Focus-greedy',)
@@ -198,8 +189,6 @@ ana_kwargs_dict = {
                               get_stat=get_wilks, fwhm=2.0, **kwargs_voxel),
     'CET':        AnalysisCET(z_flag=False, get_stat=get_wilks, fwhm=2.0,
                               **kwargs_voxel),
-    'Oracle-RBA': AnalysisOracleSegment(z_flag=True, get_stat=get_wilks,
-                                        **kwargs_voxel),
 }
 
 # The headline GLOW variant: the arm the prose reports, the one the
@@ -339,8 +328,7 @@ RUN_ANA_GLOW_LIST = [_run_ana(label) for label in REPORTED_GLOW_LABEL_LIST]
 
 # The voxel-wise arms a kernel applies to. GLOW is absent by design -- it
 # takes no kernel, so it enters a smoothing figure as the flat reference its
-# own caches already measured, not as a curve re-run there. Oracle-RBA
-# likewise: it is handed the segmentation a kernel is a crude substitute for.
+# own caches already measured, not as a curve re-run there.
 SMOOTH_LABEL_LIST = ('VBA', 'VBA-TFCE', 'CET')
 
 
@@ -631,15 +619,11 @@ def runtime_data_grid(**kwargs):
 # not key a leaf (run.FIT_IGNORE), so a timing is cached as whatever hardware
 # reached it first: re-timing on another box, or with the card pulled, means
 # clearing the entry rather than just re-running.
-#
-# Oracle-RBA sits out: this cache asks what a user waits for, and no user can
-# run an arm that is handed the answer.
 RUN_ANA_TIME_LIST = [dict(ana=ana, fit_params=grid.fit_params_for(
                               ana, GLOW_FIT_PARAMS))
                      for label, ana in ana_kwargs_dict.items()
-                     if not isinstance(ana, AnalysisOracleSegment)
-                     and (not isinstance(ana, AnalysisGLOWBase)
-                          or label == REPORTED_GLOW_LABEL)]
+                     if not isinstance(ana, AnalysisGLOWBase)
+                     or label == REPORTED_GLOW_LABEL]
 
 # The runtime_1perm leaf grids. GLOW alone: the cost model these caches back
 # is GLOW's, and the voxel-wise arms are compared on the wall clock

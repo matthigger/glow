@@ -1539,22 +1539,20 @@ def test_oracle_stat_best_defers_to_the_family_when_it_ties():
     assert plot.oracle_stat_tie_width(df) == len(RUN_ORACLE_STAT_LIST)
 
 
-def test_write_oracle_stat_table_bolds_what_the_arm_runs_at(tmp_path):
-    # the bold marks the declared pair, not the pool argmax: raw can score
-    # higher by being unable to test the remainder at all, so the table has
-    # to show what is run rather than what won
+def test_write_oracle_stat_table_bolds_the_pool_maximum(tmp_path):
+    # no arm ships the oracle any more, so there is no declared pair to mark
+    # against: the table reports the pool on its own terms and bolds its
+    # maximum
     df = plot.tidy_oracle_stat(_oracle_raw(dice_of={('raw', 'wilks'): 95}))
     plot.write_oracle_stat_table('oracle_stat', df, tmp_path)
     tex = (tmp_path / 'oracle_stat_dice.tex').read_text()
     assert 'Statistic' in tex
     assert tex.count(chr(92) + 'textbf') == 1
     assert 'spread across the pool' in tex
-    # and it says the maximum was passed over, with the reason
-    assert 'is not taken' in tex
-    assert 'untestable' in tex
-    run_at = plot._declared('Oracle-RBA')
+    assert 'bold marks the pool maximum' in tex
+    best = plot.oracle_stat_best(plot.oracle_stat_balanced(df)[0])
     row = [ln for ln in tex.splitlines()
-           if ln.strip().startswith(plot._ZT_PRETTY[run_at['zt']])]
+           if ln.strip().startswith(plot._ZT_PRETTY[best['zt']])]
     assert row and chr(92) + 'textbf' in row[0]
 
 

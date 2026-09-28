@@ -333,3 +333,37 @@ class TestCheckFitParams:
         with pytest.raises(ValueError, match='asks for a GPU'):
             drive([dict(source='no-such-source')], [None], leaf, run_ana,
                   n_jobs=2)
+
+
+# ---------------------------------------------------------------------------
+# a cell that will not build costs that cell, not the sweep
+# ---------------------------------------------------------------------------
+
+class TestFailingCellIsSkipped:
+    def test_the_sweep_finishes_and_says_what_it_dropped(self, capsys):
+        # the whole point: a deterministic build failure would otherwise stop
+        # this grid at the same index on every rerun, leaving every later
+        # cell permanently unrun
+        grid = _data_grid(2) + [dict(source='no-such-source')]
+        scores = drive(grid, _effect_grid(1), _ana_grid(2), run_ana)
+        assert len(scores) == 2 * 1 * 2
+        out = capsys.readouterr().out
+        assert '1 cell(s) failed and were skipped' in out
+        assert 'no-such-source' in out
+
+    def test_the_good_cells_still_record(self):
+        store.RECORDER.records.clear()
+        grid = _data_grid(2) + [dict(source='no-such-source')]
+        drive(grid, _effect_grid(1), _ana_grid(1), run_ana)
+        df = store.RECORDER.flatten_to_df()
+        assert len(df) == 2
+        assert set(df['get_exp_effect.in.kwargs_data.seed']) == {
+            d['seed'] for d in grid[:2]}
+
+    def test_it_holds_in_parallel(self, capsys):
+        grid = _data_grid(2) + [dict(source='no-such-source')]
+        with parallel_config(backend='threading'):
+            scores = drive(grid, _effect_grid(1), _ana_grid(1), run_ana,
+                           n_jobs=2)
+        assert len(scores) == 2
+        assert 'failed and were skipped' in capsys.readouterr().out

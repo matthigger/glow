@@ -175,22 +175,21 @@ class TestCatalogueShape:
                    for c in config.RUN_ANA_GLOW_LIST)
 
     def test_the_comparator_family_reads_one_statistic(self):
-        """Every voxel-wise arm, and the oracle, take the same statistic.
+        """Every voxel-wise arm takes the same statistic.
 
         Not a style rule. VBA and CET cannot choose a statistic at all --
         rank(H) = 1 makes their rejection sets invariant to it -- so any
         difference between their choices would be an artifact of whichever
         sorted first in a tie. TFCE can choose, and they adopt its choice
         (plot._pick_tied), which is what makes the family's statistic one
-        measurement instead of three. Oracle-RBA follows for its own
-        reason: the gap to it has to isolate the search, not the statistic.
+        measurement instead of three.
 
         This is one of the few places the catalogue's VALUES are pinned
         (cf. the module docstring), because the agreement is an invariant
         of how the choice is made rather than a grid size someone may
         widen.
         """
-        family = ['VBA', 'VBA-TFCE', 'CET', 'Oracle-RBA']
+        family = ['VBA', 'VBA-TFCE', 'CET']
         stats = {label: config.ana_kwargs_dict[label].get_stat
                  for label in family}
         assert len(set(stats.values())) == 1, (

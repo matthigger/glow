@@ -110,7 +110,6 @@ COLOR_ANALYSIS = {
     # grey: the oracle is a bound, not a method, so it spends no hue on a
     # grammar where hue is the method. At the palette's own lightness, so it
     # reads at the same weight as the curves it bounds.
-    'Oracle-RBA': _hls_hex(0, s=0.0),
 }
 
 # recover a run_ana leaf's method name from its recorded recipe: config's
@@ -2006,7 +2005,6 @@ def write_oracle_stat_table(label: str, df, out) -> None:
               f'{n_drop} partial, skipping)')
         return
     best = oracle_stat_best(df)
-    run_at = _declared('Oracle-RBA')
     mean = df.groupby(['zt', 'stat'])['dice'].mean()
     stat_list = [s for s in _STAT_ORDER if s in set(df['stat'])]
 
@@ -2015,7 +2013,7 @@ def write_oracle_stat_table(label: str, df, out) -> None:
         if zt not in mean.index.get_level_values(0):
             continue
         cells = [f'\\textbf{{{mean[zt][s]:.3f}}}'
-                 if (zt == run_at['zt'] and s == run_at['stat'])
+                 if (zt == best['zt'] and s == best['stat'])
                  else f'{mean[zt][s]:.3f}' for s in stat_list]
         rows.append([_ZT_PRETTY[zt]] + cells)
 
@@ -2023,17 +2021,10 @@ def write_oracle_stat_table(label: str, df, out) -> None:
     note = [f'{label}: Oracle-RBA mean Dice per (z-scoring, statistic); '
             f'{n_cells} complete cells'
             + (f', {n_drop} partial dropped' if n_drop else ''),
-            'bold marks the pair the arm is run at (config.ana_kwargs_dict)',
+            'bold marks the pool maximum',
             'spread across the pool: '
             + ', '.join(f'{_ZT_PRETTY[z]} {v:.6f}' for z, v in
                         spread.items())]
-    if (best['zt'], best['stat']) != (run_at['zt'], run_at['stat']):
-        note.append(
-            f'the pool maximum is {_ZT_PRETTY[best["zt"]]} '
-            f'{_STAT_PRETTY[best["stat"]]} and is not taken: unstandardized, '
-            f'the effect-free remainder is diluted below the threshold the '
-            f'planted region sets, so the largest hypothesis in the family '
-            f'is untestable rather than safe')
     _latex_table(
         out / 'oracle_stat_dice.tex',
         'l' + 'r' * len(stat_list),
@@ -2045,11 +2036,6 @@ def write_oracle_stat_table(label: str, df, out) -> None:
     print(f'  oracle best (stat, z): {best}')
     print(f'  variants tied for it: {oracle_stat_tie_width(df)} of '
           f'{len(RUN_ORACLE_STAT_LIST)}')
-    if (best['stat'], best['zt']) != (run_at['stat'], run_at['zt']):
-        print(f'  the arm runs at {run_at["stat"]}/{run_at["zt"]}; the pool '
-              f'maximum is not taken (see oracle_stat_best)')
-    else:
-        print('  matches ana_kwargs_dict')
 
 
 def fwhm_best(df) -> dict:

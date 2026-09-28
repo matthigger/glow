@@ -139,6 +139,26 @@ def check_fit_params(kwargs_fnc_list, n_jobs: int) -> None:
             f'copy of y per worker (~1 GB at full-brain num_vox).')
 
 
+def _report_failed(fail_list) -> None:
+    """Print the cells a sweep skipped, or nothing when none were.
+
+    Loud on purpose: a skipped cell leaves a hole the seed accounting will
+    later report as an unfinished seed, and the only other trace is its
+    absence from the records.
+
+    Args:
+        fail_list (list[dict]): the failure records _run_data_cell returned.
+    """
+    if not fail_list:
+        return
+    print(f'\n[drive] {len(fail_list)} cell(s) failed and were skipped; '
+          f'{sum(f["n_leaf"] for f in fail_list)} leaf/leaves unrun')
+    for f in fail_list:
+        print(f'  {f["error"]}')
+        print(f'    data:   {f["kwargs_data"]}')
+        print(f'    effect: {f["kwargs_effect"]}')
+
+
 def _run_data_cell(kwargs_data, effect_plan, fnc, bar=None):
     """Realize one data cell's cells, run their fnc grid, return the scores.
 
@@ -161,20 +181,42 @@ def _run_data_cell(kwargs_data, effect_plan, fnc, bar=None):
             reach the caller's bar -- it ticks per returned cell instead).
 
     Returns:
-        list[dict]: this cell's fnc scores, in (effect, fnc-kwargs) order.
+        tuple[list[dict], list[dict]]: this cell's fnc scores in (effect,
+            fnc-kwargs) order, and one failure record per (data, effect) cell
+            that raised (see drive for the schema).
     """
-    score_list = []
+    score_list, fail_list = [], []
     for kwargs_effect, kwargs_fnc_list in effect_plan:
-        # a cell carries its own declared uid, which its leaves are passed as
-        # their parent: provenance is declared on the way down rather than
-        # rediscovered afterwards from array content hashes (see .recipe)
-        cell = get_exp_effect(kwargs_data, kwargs_effect)
-        for kwargs in kwargs_fnc_list:
-            score = fnc(cell, parent_uid=cell.uid, **kwargs)
-            score_list.append(score)
+        n_done = 0
+        try:
+            # a cell carries its own declared uid, which its leaves are passed
+            # as their parent: provenance is declared on the way down rather
+            # than rediscovered afterwards from array content hashes
+            # (see .recipe)
+            cell = get_exp_effect(kwargs_data, kwargs_effect)
+            for kwargs in kwargs_fnc_list:
+                score = fnc(cell, parent_uid=cell.uid, **kwargs)
+                score_list.append(score)
+                n_done += 1
+                if bar is not None:
+                    bar.update(1)
+        except Exception as exc:
+            # One cell that will not build is one cell, not the sweep. A plant
+            # that re-measures off its target (cell.LLR_RTOL) is deterministic,
+            # so raising here would stop this grid at the same place on every
+            # rerun and leave every later cell permanently unrun.
+            fail = dict(kwargs_data=str(kwargs_data),
+                        kwargs_effect=str(kwargs_effect),
+                        n_leaf=len(kwargs_fnc_list) - n_done,
+                        error=f'{type(exc).__name__}: {exc}')
+            fail_list.append(fail)
+            # at once, not only in the end-of-sweep tally: a cache takes
+            # hours, and a silent hole is what the seed accounting trips
+            # over long afterwards
+            print(f'\n[drive] skipping cell: {fail["error"]}', flush=True)
             if bar is not None:
-                bar.update(1)
-    return score_list
+                bar.update(len(kwargs_fnc_list) - n_done)
+    return score_list, fail_list
 
 
 def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
@@ -229,10 +271,16 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
             the rest, the individual leaves already recorded -- which
             materialises kwargs_data_list (the walk needs it up front).
 
+    A (data, effect) cell that raises is skipped, not fatal: the sweep goes
+    on and _report_failed prints what was dropped at the end. A cell that
+    cannot build fails the same way on every rerun, so raising would stop
+    the grid at the same index forever and leave every later cell unrun.
+
     Returns:
         list[dict]: the fnc score dicts, one per (data, effect, fnc-kwargs)
             cell in data-cell order (effect then fnc-kwargs within a cell),
-            covering only the leaves that ran under skip_recorded. See
+            covering only the leaves that ran under skip_recorded, less any
+            the skip above dropped. See
             glow._extra.benchmark.score.score_effects for the schema; the
             per-cell provenance is on the shared recorder, not here.
     """
@@ -299,11 +347,14 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
                 for kwargs_data in kwargs_data_list)
 
     if n_jobs == 1:
-        score_list = []
+        score_list, fail_list = [], []
         with tqdm(total=total, desc='drive', disable=not verbose) as bar:
             for kwargs_data, effect_plan in plan:
-                score_list.extend(_run_data_cell(
-                    kwargs_data, effect_plan, fnc, bar=bar))
+                scores, fails = _run_data_cell(
+                    kwargs_data, effect_plan, fnc, bar=bar)
+                score_list.extend(scores)
+                fail_list.extend(fails)
+        _report_failed(fail_list)
         return score_list
 
     # parallel: one task per data cell, so each build has a single owner -- no
@@ -317,11 +368,13 @@ def drive(kwargs_data_list, kwargs_effect_list, kwargs_fnc_list, fnc, *,
         delayed(_run_data_cell)(kwargs_data, effect_plan, fnc)
         for kwargs_data, effect_plan in plan)
 
-    cell_scores = []
+    cell_scores, fail_list = [], []
     with tqdm(total=total, desc='drive', disable=not verbose) as bar:
-        for scores in results:
+        for scores, fails in results:
             cell_scores.append(scores)
-            bar.update(len(scores))
+            fail_list.extend(fails)
+            bar.update(len(scores) + sum(f['n_leaf'] for f in fails))
+    _report_failed(fail_list)
 
     # workers wrote their per-hash record files to the shared folder in their
     # own processes; fold them into this process's recorder so flatten_to_df
