@@ -15,35 +15,69 @@ in the paper is drawn from it.
 | input | HCP-YA imaging data, 100 subjects x 6 maps | [Zenodo 10.5281/zenodo.20736221](https://doi.org/10.5281/zenodo.20736221) |
 | output | provenance records | [Zenodo 10.5281/zenodo.22664285](https://doi.org/10.5281/zenodo.22664285) |
 
-### The corpus being generated now
+### The corpus in `~/.local/share/glow`
 
 The published records above came from `25f528c`, on the three-function cache
 (`data_factory` / `effect_factory` / `run_*`) that keyed artifacts partly on
 an Experiment's bytes. That layer is gone: a cell is now declared, stored as
 a small payload and rebuilt per leaf (`glow/_extra/benchmark/cell.py`), so
 every key changed and no artifact of the old corpus is addressable from the
-new one. The old cache and records were moved aside rather than deleted, and
-the corpus is being rebuilt from scratch.
+new one. The corpus was rebuilt from scratch, and its plants are drawn from
+different seeds than the published ones: seed 7 there is not seed 7 here.
 
-A file cannot name its own commit, so what is pinned here is the last commit
-that changes what the benchmark computes. Commits on top of it (this table
-among them) are documentation and move no number.
+A record does not name the commit that computed it, so the commit is pinned
+here. A file cannot name its own commit either, so what is pinned is the last
+commit that changes what the reported caches compute. Commits on top of it
+are documentation or add caches, and move no recorded number.
 
 | | |
 |---|---|
-| computation pinned at | `d7ca049` (the jointly tuned comparators) |
+| computation pinned at | `cc7e53e` (the tree the 50-seed corpus ran from) |
 | branch | `main` |
-| started | 2026-09-17 |
-| first stage | `vba_stat`, `sweep_fwhm` at `GLOW_BENCH_N_SEED=10` |
-| tuned | 1 - Wilks at 2 mm for VBA, VBA-TFCE, CET (and the oracle) |
+| seeds | 50 (`null` 1000; `vba_tune`, `oracle_stat` 10) |
+| tuned | 1 - Wilks at 2 mm for VBA, VBA-TFCE, CET; z for TFCE only |
+| holes | 22 HCP b=1 cells (seeds 12, 15) fail the plant check (`cell.LLR_RTOL`) and are skipped |
+| not yet run | `sweep_llr_wgn_sphere` (added at `d3cfce8`) |
 | old cache | `~/.local/share/glow/cache.bak_prepayload_20260917` |
 | old records | `~/.local/share/glow/records.bak_prepayload_20260917` |
 
+The leaves were computed in stages at different commits. Each stage is
+equivalent to `cc7e53e` for the leaves it left in the store:
+
+| leaves | computed | at | why it matches `cc7e53e` |
+|---|---|---|---|
+| seeds 0-9, every cache | 2026-09-17 to 09-19 | `8880bf8` to `21c3fe4` | only benchmark declarations changed in that range, and a leaf is keyed on its declared recipe, so a stale one is unreferenced rather than read |
+| `vba_tune` | 2026-09-17 | `1151296` | the width and statistic it chose are what `d7ca049` wired in |
+| seeds 10-49 | 2026-09-19 to 09-25 | `21c3fe4`, then `21c3fe4` + the `cc7e53e` diff | `cc7e53e` drops Oracle-RBA and skips unbuildable cells; neither moves another arm's number |
+| WGN VBA, VBA-TFCE, CET, every seed | 2026-09-25 to 09-26 | `cc7e53e`'s tree | recomputed after `5c15b8e` put WGN on a 2 mm grid; the 2-voxel-kernel leaves are in `~/.local/share/glow/old/wgn_affine_20260925/` |
+
+`5c15b8e` touches only the affine, which only `Experiment.smooth` reads, so
+GLOW and every HCP leaf are unaffected by it. The cached WGN cell payloads
+were patched in place to carry the affine (masks and offsets unchanged;
+originals in the same `old/` directory).
+
+To check a tree against the store, count each cache's incomplete cells under
+that tree; `cc7e53e` and later report only the holes above:
+
+```bash
+GLOW_BENCH_N_SEED=50 python -c "
+from glow._extra.benchmark import results, store
+store.RECORDER.load()
+for n in ['sweep_llr', 'sweep_extent', 'sweep_b', 'null', 'segment', 'prune']:
+    print(n, len(results.incomplete_cell_indices(n)))"
+```
+
+That check sees every change to a declared recipe or cell. It cannot see a
+change to code that runs underneath one without entering its identity (the
+affine was such a change); that needs a leaf recomputed and its score
+compared.
+
 The tuning caches ran first, and that ordering was load-bearing rather than a
-preference: `config.SMOOTH_FWHM_BEST` is read off `sweep_fwhm`, and wiring a
+preference: `config.SMOOTH_FWHM_BEST` is read off `vba_tune`, and wiring a
 kernel width into an arm changes that arm's repr, which is its recipe
 identity, so every leaf it had already recorded would re-key. Tune before the
-reported caches run, not after. Both tuning caches are done and their
+reported caches run, not after. Both tuning caches (`vba_stat`, `vba_tune`)
+are done and their
 choices are wired, which is what the pin above marks: every voxel-wise leaf
 in a reported cache is computed at them.
 
