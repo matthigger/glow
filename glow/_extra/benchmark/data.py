@@ -134,13 +134,14 @@ def build_clean(kwargs_data):
 
 
 def plant_effect(exp, *, seed: int, kind: str = 'single', effect_llr,
-                 extenter_cls, n_vox_frac=0.1, angle=None):
+                 extenter_cls, n_vox_frac=0.1, angle=None,
+                 extenter_kwargs=None):
     """Plant one effect cell's synthetic effect(s) on a clean Experiment.
 
     The one implementation of the plant, shared by every caller. The support
     extenter is built here from extenter_cls, the resolved n_vox (n_vox_frac
-    of the analysis volume) and the placement seed, so a caller passes
-    ingredients rather than a constructed Extenter.
+    of the analysis volume), the placement seed and any extenter_kwargs, so a
+    caller passes ingredients rather than a constructed Extenter.
 
     kind 'single' grows one support and imposes the effect along the
     direction the data already carries. kind 'split' grows one support,
@@ -165,6 +166,11 @@ def plant_effect(exp, *, seed: int, kind: str = 'single', effect_llr,
             size, cut into halves.
         angle (float): feature-direction angle between a split's two
             effects, in degrees. Required by kind 'split', unused otherwise.
+        extenter_kwargs (dict | None): extra keywords for the extenter
+            constructor, e.g. {'vox_init': 'center'} to plant a geometric
+            support concentric with the analysis crop rather than wherever
+            the seed lands (a 10% support in a spherical crop is clipped by
+            the crop boundary from most uniformly drawn seed voxels).
 
     Returns:
         exp: the Experiment with the effect(s) added.
@@ -175,13 +181,14 @@ def plant_effect(exp, *, seed: int, kind: str = 'single', effect_llr,
         ValueError: kind is neither 'single' nor 'split'.
     """
     n_vox = round(n_vox_frac * int((exp.mask_idx > -1).sum()))
+    kwargs_ext = dict(n_vox=n_vox, seed=seed, **(extenter_kwargs or {}))
     if kind == 'single':
-        extenter = extenter_cls(n_vox=n_vox, seed=seed)
+        extenter = extenter_cls(**kwargs_ext)
         exp, mask = EffectSynthetic(extenter=extenter,
                                     effect_llr=effect_llr).fit(exp)
         return exp, [mask]
     if kind == 'split':
-        splitter = ExtenterSplit(base=extenter_cls(n_vox=n_vox, seed=seed))
+        splitter = ExtenterSplit(base=extenter_cls(**kwargs_ext))
         mask0, mask1 = splitter.fit(mask_idx=exp.mask_idx, y=exp.y)
         for mask, ang in ((mask0, 0.0), (mask1, float(angle))):
             exp = EffectSynthetic(mask=mask, effect_llr=effect_llr,

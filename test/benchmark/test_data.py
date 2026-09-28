@@ -161,6 +161,16 @@ class TestPlantEffect:
         np.testing.assert_array_equal(one, weak)
         np.testing.assert_array_equal(weak, strong)
 
+    def test_extenter_kwargs_reach_the_extenter(self):
+        # a centred sphere lands at one place whatever the seed
+        kw = dict(effect_llr=0.05, extenter_cls=ExtenterSphere,
+                  n_vox_frac=0.1, extenter_kwargs={'vox_init': 'center'})
+        exp = self._clean()
+        _, (one,) = data.plant_effect(exp, seed=1, **kw)
+        _, (two,) = data.plant_effect(exp, seed=2, **kw)
+        assert int(one.sum()) == round(0.1 * int((exp.mask_idx > -1).sum()))
+        np.testing.assert_array_equal(one, two)
+
     def test_bad_kind_raises(self):
         with pytest.raises(ValueError, match="'single' or 'split'"):
             data.plant_effect(self._clean(), seed=0, kind='nope',

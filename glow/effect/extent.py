@@ -37,18 +37,51 @@ class Extenter(ABC):
 
     Attributes:
         seed (int | None): RNG seed for reproducibility (None draws fresh).
-        vox_init (int | None): seed voxel index; drawn from seed when None.
+        vox_init (int | str | None): seed voxel index; drawn from seed when
+            None. The string 'center' defers the choice to the analysis
+            mask, taking the in-mask voxel nearest its centroid, which keeps
+            a geometric extent clear of the mask boundary.
         contiguous (bool): resample until the mask is a single connected
             component (face-connectivity), up to max_iter tries.
         max_iter (int): maximum resample attempts when contiguous is True.
     """
 
+    CENTER = 'center'
+
     def __init__(self, *, seed=None, vox_init=None, contiguous=False,
                  max_iter=100):
         self.seed = None if seed is None else int(seed)
-        self.vox_init = None if vox_init is None else int(vox_init)
+        if vox_init is None or vox_init == self.CENTER:
+            self.vox_init = vox_init
+        else:
+            self.vox_init = int(vox_init)
         self.contiguous = bool(contiguous)
         self.max_iter = int(max_iter)
+
+    def _resolve_vox_init(self, mask_idx, rng=None):
+        """Return the concrete seed voxel index for one draw.
+
+        An int vox_init passes through, 'center' resolves against the mask,
+        and None draws uniformly from the mask when an rng is given.
+
+        Args:
+            mask_idx (np.array): voxel index array (-1 outside analysis)
+            rng (np.random.Generator): draws the voxel when vox_init is
+                None; None returns None instead, leaving that to the caller.
+
+        Returns:
+            vox_init (int | None): a value held in mask_idx, or None.
+        """
+        mask_bool = mask_idx > -1
+        if self.vox_init == self.CENTER:
+            ijk = np.argwhere(mask_bool)
+            dist_sq = ((ijk - ijk.mean(axis=0)) ** 2).sum(axis=1)
+            return int(mask_idx[tuple(ijk[dist_sq.argmin()])])
+        if self.vox_init is not None:
+            return int(self.vox_init)
+        if rng is None:
+            return None
+        return rng.choice(mask_idx[mask_bool])
 
     def __repr__(self):
         """Class name + each public, set (non-None) attribute.
@@ -116,6 +149,11 @@ class ExtenterSphere(Extenter):
     dilation ball of that many steps; with n_vox, the region grows until it
     holds n_vox voxels (trimming the outer shell to hit the count exactly).
 
+    Growth is repeated face-connectivity dilation, so the ball is the L1
+    one and the extent is an octahedron: it fills a sixth of its bounding
+    box where a Euclidean ball fills pi/6. Sphere here means sphere under
+    the metric the voxel connectivity induces.
+
     Attributes:
         radius (int | None): dilation radius in voxels, XOR with n_vox
         n_vox (int | None): target voxel count, XOR with radius
@@ -137,7 +175,7 @@ class ExtenterSphere(Extenter):
 
     def _sample(self, *, mask_idx, y=None, seed=None, verbose=False):
         rng = np.random.default_rng(seed=seed)
-        vox_init = self.vox_init
+        vox_init = self._resolve_vox_init(mask_idx)
         mask_bool = mask_idx > -1
         structure = (CONNECTIVITY_3D if mask_idx.ndim == 3
                      else generate_binary_structure(2, 1))
@@ -242,11 +280,8 @@ class ExtenterMinVar(Extenter):
         assert y is not None, 'ExtenterMinVar requires y'
 
         # choose a random initial voxel
-        vox_init = self.vox_init
-        if vox_init is None:
-            rng = np.random.default_rng(seed=seed)
-            mask_bool = mask_idx > -1
-            vox_init = rng.choice(mask_idx[mask_bool])
+        vox_init = self._resolve_vox_init(
+            mask_idx, rng=np.random.default_rng(seed=seed))
         mask = mask_idx == vox_init
         assert mask.sum(), 'vox_init not in mask_idx'
 

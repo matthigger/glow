@@ -65,7 +65,8 @@ LANE1_JOBS=$(( $(nproc) - GLOW_CORES ))
 
 # the caches sharing config.RUN_ANA_LIST: the reported GLOW variants plus the
 # voxel-wise arms, so they are the caches with a per-method axis to split on.
-SHARED_GRID_CACHES=(null sweep_llr sweep_extent sweep_b smoke)
+SHARED_GRID_CACHES=(null sweep_llr sweep_llr_wgn_sphere sweep_extent sweep_b
+                    smoke)
 
 # the GLOW variants on that shared grid -- every name in
 # config.REPORTED_GLOW_LABEL_LIST. Leaving one out is what silently leaves

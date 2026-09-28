@@ -76,13 +76,15 @@ def get_kwargs_data_list(*, sources, seeds, crop_n_vox, b_list=(1,),
     return kwargs_data_list
 
 
-def get_kwargs_effect_list(*, llr_list, n_vox_frac_list):
+def get_kwargs_effect_list(*, llr_list, n_vox_frac_list,
+                           extenter_cls=ExtenterMinVar, extenter_kwargs=None):
     """Return the list of effect-cell kwargs dicts over the swept axes.
 
     The cartesian product of (effect_llr, n_vox_frac): a per-voxel strength and
     a support size as a fraction of each cell's analysis volume. Each cell
     carries kind='single' and the ingredients plant_effect builds the
-    support from: the ExtenterMinVar class and n_vox_frac. The placement seed
+    support from: the extenter class (ExtenterMinVar by default), any
+    extenter_kwargs, and n_vox_frac. The placement seed
     is not among them -- a cell derives it from its declared uid (see
     config's module docstring).
     llr_list=None is the null / FWER-calibration path -- the list [None] (plant
@@ -93,6 +95,10 @@ def get_kwargs_effect_list(*, llr_list, n_vox_frac_list):
             the null path.
         n_vox_frac_list (iterable[float]): effect support sizes, each a
             fraction of the analysis volume.
+        extenter_cls (type): the Extenter subclass that grows the support.
+        extenter_kwargs (dict | None): extra extenter constructor keywords,
+            e.g. {'vox_init': 'center'}. Omitted from the cell when None, so
+            a MinVar cell keeps the uid it had before the knob existed.
 
     Returns:
         list[dict | None]: kwargs for one effect cell, or [None] for the null path.
@@ -101,9 +107,11 @@ def get_kwargs_effect_list(*, llr_list, n_vox_frac_list):
         return [None]
     kwargs_effect_list = []
     for llr, frac in itertools.product(llr_list, n_vox_frac_list):
-        kwargs_effect_list.append(dict(
-            kind='single', effect_llr=float(llr), extenter_cls=ExtenterMinVar,
-            n_vox_frac=float(frac)))
+        cell = dict(kind='single', effect_llr=float(llr),
+                    extenter_cls=extenter_cls, n_vox_frac=float(frac))
+        if extenter_kwargs is not None:
+            cell['extenter_kwargs'] = dict(extenter_kwargs)
+        kwargs_effect_list.append(cell)
     return kwargs_effect_list
 
 

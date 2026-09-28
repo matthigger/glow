@@ -27,14 +27,16 @@ effect_llr fixed, which across a structural axis (b, num_img) is a clean power
 curve and across the extent sweep grows the whole-region LLR with the region.
 
 WGN and HCP share each cache and face apart on the recorded source column
-downstream. HCP has no num_img axis -- its N is the cohort -- so a subject
+downstream, bar sweep_llr_wgn_sphere, which reruns sweep_llr's WGN half on a
+sphere-shaped support. HCP has no num_img axis -- its N is the cohort -- so a subject
 sweep cuts that cohort down at analysis time (run.run_ana_time_1perm).
 
 Every cache here backs a figure, table or quantitative claim in the paper, bar
 smoke (an end-to-end pipeline check).
 
-Scope. Four caches share the run_ana leaf over the one recipe grid (fit + score
-one Analysis per cell): null, sweep_llr, sweep_extent, sweep_b. Four swap in
+Scope. Five caches share the run_ana leaf over the one recipe grid (fit + score
+one Analysis per cell): null, sweep_llr, sweep_llr_wgn_sphere, sweep_extent,
+sweep_b. Four swap in
 their own leaf over much the same grids: segment (run_segment, a Ward-mode
 oracle, no fit), vba_stat (run_stat, a VBA / CET variant reading a shared
 voxel-stat walk; HCP only, b=2), prune (run_prune, three pruning rules plus the
@@ -63,6 +65,7 @@ from glow.analysis import (AnalysisCET, AnalysisGLOW, AnalysisGLOWBase,
 from glow.analysis._fit_gpu import GpuConfig
 from glow.analysis.cluster import ClusterMode
 from glow.analysis.mancova import get_hotel_tr, get_wilks, stat_dict
+from glow.effect.extent import ExtenterSphere
 
 from . import grid, hcp
 from .run import (run_ana, run_ana_time, run_ana_time_1perm, run_inner_perm,
@@ -532,7 +535,8 @@ def effect_grid(**kwargs):
     """Build an effect grid on the paper's axes, with per-cache overrides.
 
     Args:
-        **kwargs: any EFFECT_AXES key, overriding the paper's value for it.
+        **kwargs: any EFFECT_AXES key, overriding the paper's value for it,
+            or grid.get_kwargs_effect_list's extenter_cls / extenter_kwargs.
             llr_list=None is the null path (plant nothing).
 
     Returns:
@@ -667,6 +671,19 @@ CONFIG = {
     'sweep_llr': (
         data_grid(b_list=B_LLR_SWEEP),
         effect_grid(llr_list=EFFECT_LLR_GRID),
+        RUN_ANA_LIST, run_ana),
+    # B'. sweep_llr on WGN with a centred sphere as the planted support, kept
+    #    beside the MinVar cache rather than in place of it. WGN has no region
+    #    of near-constant model, so MinVar there grows a one-voxel-thick
+    #    dendrite spanning the crop: a shape nothing motivates, and the one
+    #    cluster-extent methods are least equipped to find. The sphere is
+    #    centred because a 10% support is clipped by the crop boundary from
+    #    most seed voxels, so it sits at one place for every seed and only the
+    #    noise varies. It is the L1 ball (see ExtenterSphere).
+    'sweep_llr_wgn_sphere': (
+        data_grid(sources=['wgn'], b_list=B_LLR_SWEEP),
+        effect_grid(llr_list=EFFECT_LLR_GRID, extenter_cls=ExtenterSphere,
+                    extenter_kwargs={'vox_init': 'center'}),
         RUN_ANA_LIST, run_ana),
     # How many inner draws GLOW needs: the reported variant read at every
     # count on N_PERM_INNER_GRID, at three effect strengths, which is what

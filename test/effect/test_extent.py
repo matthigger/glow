@@ -137,6 +137,34 @@ class TestExtenterSphere:
             extenter(mask_idx=mask_idx)
 
 
+class TestCenterVoxInit:
+    def _mask_idx(self):
+        mask = np.zeros((9, 9, 9), dtype=bool)
+        mask[1:8, 1:8, 1:8] = True
+        return get_mask_idx(mask)
+
+    def test_sphere_grows_from_the_mask_centroid(self):
+        mask_idx = self._mask_idx()
+        # 7 voxels is the centre plus its six face neighbours
+        mask = ExtenterSphere(n_vox=7, vox_init='center')(mask_idx)
+        assert mask.sum() == 7
+        assert tuple(np.argwhere(mask).mean(axis=0)) == (4, 4, 4)
+
+    def test_centre_ignores_the_seed(self):
+        # the placement is the mask's, so the draws differ only in the noise
+        mask_idx = self._mask_idx()
+        one = ExtenterSphere(n_vox=40, seed=1, vox_init='center')(mask_idx)
+        two = ExtenterSphere(n_vox=40, seed=2, vox_init='center')(mask_idx)
+        assert one.sum() == 40
+        np.testing.assert_array_equal(one, two)
+
+    def test_int_vox_init_still_passes_through(self):
+        mask_idx = self._mask_idx()
+        vox = int(mask_idx[2, 3, 4])
+        mask = ExtenterSphere(n_vox=7, vox_init=vox)(mask_idx)
+        assert tuple(np.argwhere(mask).mean(axis=0)) == (2, 3, 4)
+
+
 class TestExtenterMinVar:
     def test_call(self):
         mask = np.array([[0., 0., 0., 0., 0., 0., 0.],

@@ -153,6 +153,22 @@ class TestEffectList:
         assert cell['extenter_cls'] is ExtenterMinVar
         assert not [k for k in cell if 'seed' in k]
 
+    def test_default_cell_has_no_extenter_kwargs_key(self):
+        # the key is absent rather than None: a MinVar cell declared before
+        # the knob existed must keep its uid and so its recorded work
+        cell, = grid.get_kwargs_effect_list(llr_list=[0.03],
+                                            n_vox_frac_list=[0.1])
+        assert set(cell) == {'kind', 'effect_llr', 'extenter_cls',
+                             'n_vox_frac'}
+
+    def test_extenter_is_a_knob(self):
+        cell, = grid.get_kwargs_effect_list(
+            llr_list=[0.03], n_vox_frac_list=[0.1],
+            extenter_cls=ExtenterSphere,
+            extenter_kwargs={'vox_init': 'center'})
+        assert cell['extenter_cls'] is ExtenterSphere
+        assert cell['extenter_kwargs'] == {'vox_init': 'center'}
+
     def test_null_returns_single_none(self):
         assert grid.get_kwargs_effect_list(
             llr_list=None, n_vox_frac_list=[0.1]) == [None]

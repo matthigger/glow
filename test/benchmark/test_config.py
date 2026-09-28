@@ -27,6 +27,7 @@ from glow._extra.benchmark import config, data
 from glow.analysis import (Analysis, AnalysisCET, AnalysisGLOWBase,
                            AnalysisOracleSegment, AnalysisVBA)
 from glow.analysis.mancova import stat_dict, stat_dict_inv
+from glow.effect.extent import ExtenterMinVar, ExtenterSphere
 
 
 # every catalogue entry; the shape / bind checks cover all of them
@@ -309,6 +310,31 @@ class TestPaperAxes:
         # sit alongside the real one and silently leave the default in place
         with pytest.raises(TypeError, match='unexpected keyword argument'):
             getattr(config, wrapper)(**kwargs)
+
+
+class TestWgnSphereCache:
+    NAME = 'sweep_llr_wgn_sphere'
+
+    def test_it_is_sweep_llr_on_wgn_with_a_centred_sphere(self):
+        data_list, effect_list, fnc_list, fnc = config.CONFIG[self.NAME]
+        llr_data, llr_effect, llr_fnc, llr_run = config.CONFIG['sweep_llr']
+        assert {c['source'] for c in data_list} == {'wgn'}
+        # compared by repr, which is what a cell's uid is declared from: the
+        # clean WGN builds are sweep_llr's own, so they are cache hits
+        assert list(map(repr, data_list)) == [
+            repr(c) for c in llr_data if c['source'] == 'wgn']
+        assert fnc_list is llr_fnc and fnc is llr_run
+        assert [c['effect_llr'] for c in effect_list] == [
+            c['effect_llr'] for c in llr_effect]
+        for cell in effect_list:
+            assert cell['extenter_cls'] is ExtenterSphere
+            assert cell['extenter_kwargs'] == {'vox_init': 'center'}
+
+    def test_sweep_llr_keeps_its_minvar_cells(self):
+        # the sphere is a cache beside sweep_llr, not a swap inside it
+        for cell in config.CONFIG['sweep_llr'][1]:
+            assert cell['extenter_cls'] is ExtenterMinVar
+            assert 'extenter_kwargs' not in cell
 
 
 class TestFitParams:
