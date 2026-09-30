@@ -115,9 +115,11 @@ lane2=$!
 
 wait "$lane1" "$lane2"
 
-# Lane 3: no per-method axis, no device -- full parallelism.
+# Lane 3: no per-method axis, no device -- full parallelism. vba_tune is the
+# joint statistic x kernel tuning the voxel-wise arms' declared settings come
+# from; it runs here so the catalogue carries the table that justifies them.
 run_step lane3 "${PIN_BLAS[@]}" "${BENCH[@]}" -j -1 \
-    segment vba_stat
+    segment vba_stat vba_tune
 
 # Lane 4: every timing cache, on an undisturbed machine.
 run_step lane4 "${BENCH[@]}" runtime_num_vox 'runtime_1perm_*'

@@ -63,6 +63,7 @@ restricts it.
 """
 import colorsys
 import copy
+import os
 import re
 import warnings
 
@@ -787,26 +788,50 @@ def _infer_x(df) -> str:
 _SECONDARY_AXES = ('b', 'num_img')
 
 
-def _split_by_secondary(label: str, df, x: str):
+def _declared_axis_values(cache: str, axis: str) -> set:
+    """Return the values CONFIG cache declares for one data axis.
+
+    HCP declares its features rather than b, so b is their count there.
+    Empty for a name not in CONFIG or an axis no data cell declares.
+    """
+    from .config import CONFIG
+    if cache not in CONFIG:
+        return set()
+    out = set()
+    for kwargs_data in CONFIG[cache][0]:
+        if axis == 'b' and 'hcp_feats' in kwargs_data:
+            out.add(len(kwargs_data['hcp_feats']))
+        elif axis in kwargs_data:
+            out.add(kwargs_data[axis])
+    return out
+
+
+def _split_by_secondary(label: str, df, x: str, cache: str = None):
     """Yield (sub_label, sub_df) per value of a secondary axis that varies.
 
     _infer_x gives the swept x; a cache that also varies a structural axis
     (b / num_img) besides it is split so every drawn figure holds that axis
-    fixed -- the combined llr sweep yields sweep_llr_b1 / _b2 / _b3, matching
-    the per-b figures the separate caches used to produce. With nothing else
+    fixed -- the combined llr sweep yields sweep_llr_b1 / _b2 / _b3. An axis
+    splits when the cache declares several values of it, not only when the
+    records hold several, so a record set carrying one slice (the published
+    b = 1 leaves of sweep_llr) still draws sweep_llr_b1. With nothing else
     varying, yields (label, df) unchanged.
 
     Args:
-        label (str): the cache name; the sub-label's prefix
+        label (str): the figure stem; the sub-label's prefix
         df: a tidy_run_ana frame
         x (str): the swept x-axis column (never split on)
+        cache (str | None): the CONFIG cache df came from, whose declared
+            grid decides the split; None decides from df alone
 
     Yields:
         (str, DataFrame): a label suffixed with the held value (e.g.
             sweep_llr_b1) and the matching sub-frame.
     """
     extra = [a for a in _SECONDARY_AXES
-             if a != x and a in df.columns and df[a].dropna().nunique() > 1]
+             if a != x and a in df.columns
+             and (df[a].dropna().nunique() > 1
+                  or len(_declared_axis_values(cache, a)) > 1)]
     if not extra:
         yield label, df
         return
@@ -2878,12 +2903,14 @@ def plot_prune(label: str, df, out) -> None:
     df = df[~df['label'].isin(_PRUNE_LABELS_SKIP)]
     for mode, df_mode in df.groupby('cluster_mode'):
         stem = f'{label}_{_mode_slug(mode)}'
-        for sub_label, sub in _split_by_secondary(stem, df_mode, 'effect_llr'):
+        for sub_label, sub in _split_by_secondary(stem, df_mode, 'effect_llr',
+                                                  cache=label):
             plot_metric_grid(sub_label, sub, out, metrics=_PRUNE_METRICS)
             write_table_txt(sub_label, sub, x='effect_llr', out=out,
                             metrics=list(_PRUNE_METRICS),
                             one_label=_REPORTED_PRUNE_LABEL)
-    for sub_label, sub in _split_by_secondary(label, df, 'effect_llr'):
+    for sub_label, sub in _split_by_secondary(label, df, 'effect_llr',
+                                              cache=label):
         plot_prune_regions(sub_label, sub, out)
 
 
@@ -3310,7 +3337,7 @@ def plot_cache(label: str, df, out,
         _plot_calibration_faceted(label, df, out)
         return
 
-    for sub_label, sub in _split_by_secondary(label, df, x):
+    for sub_label, sub in _split_by_secondary(label, df, x, cache=label):
         cols = _with_structure(sub, metrics)
         plot_source_grid(sub_label, sub, x=x, metrics=cols, out=out)
         write_table_txt(sub_label, sub, x=x, out=out, metrics=cols)
@@ -3420,6 +3447,13 @@ def main(argv=None) -> None:
     else:
         names = (detect_names + runtime_names + stat_names + fwhm_names
                  + oracle_names + segment_names + prune_names + inner_names)
+
+    if os.environ.get('GLOW_BENCH_N_SEED'):
+        # the cap narrows null's 1000 seeds too, so a capped plot redraws the
+        # calibration figure off a fraction of the trials the paper reports
+        print(f'WARNING: GLOW_BENCH_N_SEED={os.environ["GLOW_BENCH_N_SEED"]} '
+              'caps every seed grid, null included; unset it to draw the '
+              "paper's figures")
 
     out = glow._extra.benchmark.get_path_result() / '_latest'
     out.mkdir(exist_ok=True)

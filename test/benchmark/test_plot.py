@@ -239,13 +239,15 @@ def test_plot_cache_sweep_writes_grid_and_diff_csv(tmp_path):
     assert plot._infer_x(df) == 'effect_llr'
 
     plot.plot_cache('sweep_llr', df, tmp_path)
-    # one stacked figure (HCP over WGN) plus the companion diff CSV
-    assert (tmp_path / 'sweep_llr.pdf').exists()
-    assert (tmp_path / 'sweep_llr_diff.csv').exists()
+    # one stacked figure (HCP over WGN) plus the companion diff CSV, named
+    # for b = 1 although these rows hold no other b: sweep_llr declares
+    # b in {1, 2}, and the declared grid is what decides the split
+    assert (tmp_path / 'sweep_llr_b1.pdf').exists()
+    assert (tmp_path / 'sweep_llr_b1_diff.csv').exists()
 
     # the diff CSV carries one block per GLOW variant vs the best
     # alternative; the llr sweep reports one variant, relabelled GLOW
-    diff = pd.read_csv(tmp_path / 'sweep_llr_diff.csv')
+    diff = pd.read_csv(tmp_path / 'sweep_llr_b1_diff.csv')
     assert set(diff['method'].unique()) == {GLOW_FIGURE}
     assert {'source', 'effect_llr', 'dice_diff', 'dice_win'}.issubset(
         diff.columns)
@@ -1011,10 +1013,10 @@ def test_plot_cache_draws_the_structural_columns(tmp_path):
                     **_pred([(60, 50), (30, 30)])})
     df = plot.tidy_pred_decomp(pd.DataFrame(rows))
     plot.plot_cache('sweep_llr', df, tmp_path)
-    assert (tmp_path / 'sweep_llr.pdf').exists()
+    assert (tmp_path / 'sweep_llr_b1.pdf').exists()
     # the pair rides in the one grid, not a page of its own
-    assert not (tmp_path / 'sweep_llr_structure.pdf').exists()
-    txt = (tmp_path / 'sweep_llr_tables.txt').read_text()
+    assert not (tmp_path / 'sweep_llr_b1_structure.pdf').exists()
+    txt = (tmp_path / 'sweep_llr_b1_tables.txt').read_text()
     assert 'Completeness' in txt and 'Homogeneity' in txt
 
 

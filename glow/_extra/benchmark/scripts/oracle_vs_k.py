@@ -46,6 +46,7 @@ from glow._extra.benchmark.config import (ALPHA_FWER, N_PERM_FWER,
                                           N_PERM_INNER)
 from glow._extra.benchmark.file import get_path_cache
 from glow._extra.benchmark.make_csv import config_results_df
+from glow._extra.benchmark.plot import _hcp_b
 from glow._extra.benchmark.run import glow_fit_for_prune
 from glow.analysis.cluster import ClusterMode
 
@@ -80,17 +81,6 @@ def _records():
     return config_results_df('prune')
 
 
-def _n_feat(value) -> int:
-    """Count imaging features in one hcp_feats cell.
-
-    The recorder hands back the tuple it stored, while the same column read
-    from a written CSV arrives as its repr, so both are accepted.
-    """
-    if isinstance(value, str):
-        value = eval(value)
-    return len(value)
-
-
 def _pool_df(source: str):
     """Select one source's Focus-mode rows out of the prune frame.
 
@@ -102,8 +92,7 @@ def _pool_df(source: str):
     df = df[df['get_exp_effect.in.kwargs_data.source'].astype(str)
             == source.lower()]
     if source == 'HCP':
-        df = df[df['get_exp_effect.in.kwargs_data.hcp_feats']
-                .map(_n_feat) == 1]
+        df = df[_hcp_b(df) == 1]
     else:
         df = df[df['get_exp_effect.in.kwargs_data.b'] == 1]
     llr = df['get_exp_effect.in.kwargs_effect.effect_llr']

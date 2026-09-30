@@ -27,44 +27,31 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
+from glow._extra.benchmark.config import (REPORTED_GLOW_LABEL,
+                                          ana_kwargs_dict)
 from glow._extra.benchmark.make_csv import config_results_df
-from glow._extra.benchmark.plot import _hom_com, _pred_block
+from glow._extra.benchmark.plot import _hcp_b, _hom_com, _pred_block
 from glow.mask import stats_from_counts
 
-# the manuscript's four arms, keyed by the substring identifying each recipe
-ARM_DICT = {'GLOW': 'cluster_mode=Focus, prune_rule=greedy',
-            'VBA': 'get_hotel_tr, n_perm_fwer=500, alpha_fwer=0.05, '
-                   'tfce_flag=False',
-            'VBA-TFCE': 'get_wilks, n_perm_fwer=500, alpha_fwer=0.05, '
-                        'tfce_flag=True',
-            'CET': 'AnalysisCET'}
+# the manuscript's four arms, keyed by the exact recipe repr the records hold,
+# read off the catalogue so a retuned arm cannot silently drop out
+ARM_DICT = {('GLOW' if label == REPORTED_GLOW_LABEL else label): repr(ana)
+            for label, ana in ana_kwargs_dict.items()
+            if label in ('VBA', 'VBA-TFCE', 'CET', REPORTED_GLOW_LABEL)}
 
-# the crossover: GLOW leads at or below the first, trails at or above it
-LLR_WEAK_MAX = 0.031
-LLR_STRONG_MIN = 0.047
+# the crossover: GLOW leads on HCP at or below the first, trails at or above
+# the second
+LLR_WEAK_MAX = 0.02
+LLR_STRONG_MIN = 0.029
 
 # the three effect strengths tabulated per source
 LLR_REPORT = [0.0189287203344057, 0.0475467957738334, 0.2999999999999999]
 
 
-def _n_feat(value):
-    """Count imaging features in one hcp_feats cell, NaN off the HCP path.
-
-    The recorder hands back the tuple it stored, while the same column read
-    from a written CSV arrives as its repr, so both are accepted.
-    """
-    if isinstance(value, str):
-        value = eval(value)
-    try:
-        return len(value)
-    except TypeError:
-        return np.nan
-
-
 def _arm(value) -> str:
     """Name the arm one ana repr belongs to, or an empty string for none."""
     for name, key in ARM_DICT.items():
-        if key in str(value):
+        if str(value) == key:
             return name
     return ''
 
@@ -88,8 +75,7 @@ def load_sweep():
     df = pd.DataFrame({
         'm': raw['run_ana.in.ana'].map(_arm),
         'source': np.where(hcp, 'HCP', 'WGN'),
-        'b': np.where(hcp, raw['get_exp_effect.in.kwargs_data.hcp_feats']
-                      .map(_n_feat),
+        'b': np.where(hcp, _hcp_b(raw),
                       raw['get_exp_effect.in.kwargs_data.b']),
         'llr': raw['get_exp_effect.in.kwargs_effect.effect_llr'],
         'seed': raw['get_exp_effect.in.kwargs_data.seed'],

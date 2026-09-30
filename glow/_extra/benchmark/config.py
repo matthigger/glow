@@ -77,6 +77,8 @@ SOURCES = ['wgn', 'hcp']
 
 N_SEED = 50
 N_SEED_NULL = 1000
+# the tuning caches' seeds (vba_tune, oracle_stat), as the published tables ran
+N_SEED_TUNE = 10
 
 # Seed ceiling for a staged run. GLOW_BENCH_N_SEED caps every seed grid below,
 # so the catalogue can be run in stages that each widen the seed axis and, being
@@ -89,6 +91,7 @@ _N_SEED_CAP = int(os.environ.get('GLOW_BENCH_N_SEED', 0))
 if _N_SEED_CAP:
     N_SEED = min(N_SEED, _N_SEED_CAP)
     N_SEED_NULL = min(N_SEED_NULL, _N_SEED_CAP)
+    N_SEED_TUNE = min(N_SEED_TUNE, _N_SEED_CAP)
 
 EFFECT_LLR_GRID = np.logspace(np.log10(0.003), np.log10(0.3), 11)
 # the sweeps' shared centre: the grid's middle element. Taking it off the grid
@@ -783,7 +786,7 @@ CONFIG = {
     # inside Experiment.smooth, so these are sweep_llr's builds rather than
     # builds of their own.
     'vba_tune': (
-        data_grid(sources=['hcp']),
+        data_grid(sources=['hcp'], seeds=range(N_SEED_TUNE)),
         effect_grid(llr_list=TUNE_LLR_GRID),
         RUN_TUNE_LIST, run_stat),
     # The oracle's statistic, measured rather than inherited: Oracle-RBA over
@@ -793,7 +796,7 @@ CONFIG = {
     # permutation walk covers k+1 regions rather than 25k voxels -- so this
     # cache needs no shared intermediate and runs as plain run_ana leaves.
     'oracle_stat': (
-        data_grid(sources=['hcp']),
+        data_grid(sources=['hcp'], seeds=range(N_SEED_TUNE)),
         effect_grid(llr_list=TUNE_LLR_GRID),
         RUN_ORACLE_STAT_LIST, run_ana),
     # H. Pruning rule: greedy max-LLR vs DP max-likelihood cut vs the single

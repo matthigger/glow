@@ -21,7 +21,7 @@ Two figures are excluded and one needs help:
     tabular data (they are drawings and image panels).
   - oracle_vs_k reads a fitted Ward tree, which the records do not store; its
     own script caches the curves it computes to a CSV, and this module copies
-    that sidecar in when it is present (see the rerun guide).
+    that sidecar in as fig11 (--oracle-csv; see the rerun guide).
 
 Written twice: to --out-dir, and to a figure_csv/ directory inside the
 records tree, so the CSVs travel with the records they were derived from
@@ -90,14 +90,9 @@ def drawn_rows(df):
         return df
     return df[df['label'].notna()]
 
-# Where oracle_vs_k.py leaves the curves it computed, checked in the order a
-# reader is likely to have them: beside this checkout, then the manuscript's
-# own image directory.
-ORACLE_CSV_CANDIDATES = (
-    pathlib.Path('oracle_vs_k.csv'),
-    pathlib.Path('../../publications/submissions/2026_glow/image/'
-                 'oracle_vs_k.csv'),
-)
+# the name Fig. 11's curves take in an export, and so in a published records
+# tree, where a reader finds them without oracle_vs_k.py's fits
+ORACLE_CSV_NAME = 'fig11_oracle_vs_k.csv'
 
 
 def fig_segment():
@@ -137,7 +132,8 @@ def fig_sweep_llr_b1():
     if df.empty:
         return df
     x = plot._infer_x(df)
-    for sub_label, sub in plot._split_by_secondary('sweep_llr', df, x):
+    for sub_label, sub in plot._split_by_secondary('sweep_llr', df, x,
+                                                   cache='sweep_llr'):
         if sub_label.endswith('_b1'):
             return drawn_rows(sub)
     return drawn_rows(df)
@@ -148,15 +144,25 @@ def _fig_runtime(name: str):
     return drawn_rows(plot.tidy_runtime(name, config_results_df(name)))
 
 
+def tab_fwhm_dice():
+    """Return Tab. 2's frame: one row per vba_tune leaf.
+
+    Each row is one (cell, arm, statistic, z-scoring, kernel width) variant,
+    so the table's mean Dice per arm and width, and the per-strength optimum
+    the appendix quotes, recompute from it.
+    """
+    return plot.tidy_tune(config_results_df('vba_tune'))
+
+
 def tab_stat_dice():
-    """Return Tab. 2's frame: one row per (cell, stat variant) run_stat leaf.
+    """Return Tab. 3's frame: one row per (cell, stat variant) run_stat leaf.
 
     Per-cell, not the published means: the table is a mean Dice over the
     cells, so the counts behind it are what a reader needs to recompute it.
-    Read via results.stat_cell_df, which reaches the run_stat leaves directly
-    (their build ancestors are absent, so the forward DAG walk drops them).
+    Read via results.stat_cell_df, scoped to vba_stat: vba_tune's unsmoothed
+    leaves repr identically, and only the cell tells the two caches apart.
     """
-    return results.stat_cell_df()
+    return results.stat_cell_df('vba_stat')
 
 
 # figure id -> (filename stem, what it backs, builder). Ordered as the
@@ -180,29 +186,33 @@ EXPORT = {
     'fig13d': ('fig13d_runtime_1perm_nimg',
                'Fig. 13d per-perm cost vs num_img',
                lambda: _fig_runtime('runtime_1perm_nimg')),
-    'tab02': ('tab02_stat_dice', 'Tab. 2 MANCOVA-statistic bake-off',
+    'tab02': ('tab02_fwhm_dice', 'Tab. 2 kernel-width tuning',
+              tab_fwhm_dice),
+    'tab03': ('tab03_stat_dice', 'Tab. 3 MANCOVA-statistic check (b=2)',
               tab_stat_dice),
 }
 
 
-def copy_oracle_csv(out_dir: pathlib.Path):
+def copy_oracle_csv(src, out_dir: pathlib.Path):
     """Copy oracle_vs_k's cached curves in as Fig. 11, if they are on hand.
 
     Args:
+        src (pathlib.Path | None): oracle_vs_k.py's CSV; None looks for a
+            previous export beside the records.
         out_dir (pathlib.Path): destination directory.
 
     Returns:
         pandas.DataFrame | None: the copied frame, or None when no sidecar
             was found (the figure then needs oracle_vs_k.py).
     """
-    here = pathlib.Path(__file__).resolve().parent
-    for cand in ORACLE_CSV_CANDIDATES:
-        path = cand if cand.is_absolute() else (here / cand).resolve()
-        if path.is_file():
-            dest = out_dir / 'fig11_oracle_vs_k.csv'
-            shutil.copyfile(path, dest)
-            return pd.read_csv(dest)
-    return None
+    if src is None:
+        src = get_path_records() / 'figure_csv' / ORACLE_CSV_NAME
+    if not src.is_file():
+        return None
+    dest = out_dir / ORACLE_CSV_NAME
+    if src.resolve() != dest.resolve():
+        shutil.copyfile(src, dest)
+    return pd.read_csv(dest)
 
 
 def main(argv=None) -> None:
@@ -213,6 +223,9 @@ def main(argv=None) -> None:
                         help='destination directory (created if missing)')
     parser.add_argument('--no-records-copy', action='store_true',
                         help='do not also write beside the records')
+    parser.add_argument('--oracle-csv', type=pathlib.Path, default=None,
+                        help="oracle_vs_k.py's CSV, copied in as fig11; "
+                             'default: the one already beside the records')
     args = parser.parse_args(argv)
 
     out_dir_list = [args.out_dir]
@@ -232,7 +245,7 @@ def main(argv=None) -> None:
 
     oracle = None
     for out_dir in out_dir_list:
-        oracle = copy_oracle_csv(out_dir)
+        oracle = copy_oracle_csv(args.oracle_csv, out_dir)
     row = ('fig11_oracle_vs_k.csv', 'Fig. 11 region-budget oracle',
            len(oracle) if oracle is not None else 0,
            len(oracle.columns) if oracle is not None else 0)
