@@ -1,7 +1,7 @@
-"""Bake a representative set of the paper's cells for the hosted viewer.
+"""Bake a representative set of the paper's HCP cells for the hosted viewer.
 
 Each entry in DEMOS names one cell of the benchmark catalogue -- a point on
-an axis some paper figure sweeps -- and this module builds it, fits the
+an axis some paper figure sweeps -- and this module realizes it, fits the
 paper's GLOW recipe on it, and writes {ana, exp, mask_target, demo} to a
 gzipped pickle. exp is bundled because the analysis does not store it and
 the viewer needs it (see glow.analysis._glow's __getstate__).
@@ -17,16 +17,12 @@ retyped, so a demo is the same cell the corresponding figure reports and
 moves with the paper's grid. The analysis is the shipped recipe
 (config.REPORTED_GLOW_LABEL) with only the knob a demo varies overridden.
 
-Cells are built through the undecorated factories (call_uncached), so the
-shared benchmark cache is neither read nor written and no provenance
-record is filed: an ad-hoc build landing on a catalogue cell's key would
-rewrite that record with a fresh exp hash and drop every finished leaf
-that consumed the old one out of config_results_df.
+A cell the corpus already realized is read back from the benchmark store,
+so the plant a demo shows is the one the figures scored; any other is
+realized in memory alone (realize_cell). Nothing is written to the store.
 
-Synthetic and photographic cells by default; --hcp adds the HCP
-entries. Those are shared under the HCP Open Access Data Use Terms,
-which the server asks a visitor to accept before it opens one, so
-nothing gated may end up in a set the terms page calls free to view.
+Every entry is HCP, shared under the HCP Open Access Data Use Terms, which
+the server asks a visitor to accept before it opens one.
 
 The run also writes manifest.json, which the server reads at boot so the
 landing page can list the set without unpickling any of it.
@@ -34,7 +30,6 @@ landing page can list the set without unpickling any of it.
 
 import argparse
 import dataclasses
-import functools
 import gzip
 import inspect
 import json
@@ -45,13 +40,10 @@ import sys
 import time
 
 import numpy as np
-from PIL import Image
 
 import glow.mask
 from glow._extra.benchmark import config
-from glow._extra.benchmark.data import DATA_FACTORY, EFFECT_FACTORY
-from glow._extra.benchmark.data import data_factory, data_recipe
-from glow._extra.benchmark.data import effect_factory
+from glow._extra.benchmark.cell import get_exp_effect
 from glow._extra.benchmark.score import score_effects
 # the split-VI pair is private to plot, and importing it is still right:
 # the alternative is a second copy of a definition the figures own, free
@@ -60,83 +52,12 @@ from glow._extra.benchmark.plot import _hom_com
 from glow._extra.viewer.web import MANIFEST_NAME
 from glow.analysis import AnalysisGLOW
 from glow.analysis.cluster import ClusterMode
-from glow.experiment.exper import ExperimentImageOnly
 
-# A photograph, as an image set nobody needs terms to look at: its
-# structure is obvious to the eye, so what the segmentation made of it
-# is legible in a way a noise field never is.
-MANDRILL_PNG = (pathlib.Path(__file__).resolve().parents[4]
-                / 'test' / 'data' / 'mandrill_small.png')
-MANDRILL_CHANNELS = ['red', 'green', 'blue']
-
-# read off the strength sweep's own grid, so this set differs from
-# sweep_llr in its images and in nothing else
-MANDRILL_NUM_IMG = config.data_grid(seeds=[0],
-                                    sources=['wgn'])[0]['num_img']
-
-# scales the resample noise by the image's own sample covariance, so it
-# is relative to its contrast rather than an absolute grey level
-MANDRILL_NOISE_SCALE = 0.3
-
-
-@functools.cache
-def mandrill_num_vox() -> int:
-    """Return the pixel count of the mandrill image."""
-    with Image.open(MANDRILL_PNG) as img:
-        return img.size[0] * img.size[1]
-
-
-def mandrill_subjects() -> list:
-    """Return a name per resampled image.
-
-    Every draw is the same photograph, so the label bootstrap_img
-    carries through is one string repeated. The viewer keys its image
-    picker on these, and would otherwise offer num_img entries a reader
-    cannot tell apart.
-
-    Returns:
-        list[str]: num_img names, numbered from 0 and zero-padded to a
-            fixed width so they sort as a reader reads them.
-    """
-    width = len(str(MANDRILL_NUM_IMG - 1))
-    return [f'mandrill_{i:0{width}d}' for i in range(MANDRILL_NUM_IMG)]
-
-
-def mandrill_cohort(seed: int):
-    """Resample the mandrill photograph into a cohort with a design.
-
-    Goes through the public image path -- from_paths, bootstrap_img,
-    sample_x -- rather than a benchmark data_factory, which knows only
-    how to synthesize a field or read HCP off disk. It stands in for
-    data_factory in build_demo and nothing else changes, so this set
-    differs from the strength sweep in its images alone.
-
-    Args:
-        seed (int): resample and design seed.
-
-    Returns:
-        exp (Experiment): (b, num_img, num_vox) y over the photograph's
-            pixels, against a one-regressor design plus bias. Its images
-            are numbered, per mandrill_subjects.
-    """
-    img_only = ExperimentImageOnly.from_paths(
-        {'mandrill': {'rgb': str(MANDRILL_PNG)}},
-        channel_names={'rgb': MANDRILL_CHANNELS})
-    img_only = img_only.bootstrap_img(MANDRILL_NUM_IMG, seed=seed,
-                                      noise_scale=MANDRILL_NOISE_SCALE)
-    exp = img_only.sample_x(a=1, seed=seed, add_bias=True)
-    exp.meta['subjects'] = mandrill_subjects()
-    return exp
-
+# the one image source the set is drawn from
+SOURCE = 'hcp'
 
 # the recipe every demo starts from: the arm the paper reports.
 _PAPER_ANA = config.ana_kwargs_dict[config.REPORTED_GLOW_LABEL]
-
-# the effect-strength axis, by the name a reader uses for it. The endpoints
-# and midpoint of the sweep the power curve is read off.
-_LLR_WEAK = float(config.EFFECT_LLR_GRID[0])
-_LLR_MODERATE = config.MODERATE_EFFECT_LLR
-_LLR_STRONG = float(config.EFFECT_LLR_GRID[-1])
 
 # the extent axis endpoints: the narrowest support on the grid and the whole
 # analysis volume.
@@ -152,20 +73,22 @@ class Demo:
         key (str): filename stem and URL segment; stable across rebuilds.
         blurb (str): one-line reader-facing label for the landing page.
         cache (str): the CONFIG cache whose axis this cell sits on, for
-            the landing page to group by.
+            the landing page to group by. A runtime_num_vox entry is drawn
+            from that cache's own seed range (demo_cell).
         also (tuple): further caches this same cell sits on. The hub cell
             is a point on several figures' axes at once, and a picker
             that filed it under one of them would offer the others no
             value for it.
         seed_axis (bool): whether --seeds may bake this cell at more than
-            one seed. Off for the cells whose bundle or fit is too big to
-            hold a seed axis at a hosted set's size; those stay at seed 0.
+            one seed. Off for the cell whose bundle and fit are too big to
+            hold a seed axis; it stays at seed 0.
         fit (dict): GLOW_FIT_PARAMS overrides for this cell -- how the fit
             runs, never what it computes, so an override cannot change the
-            result. Only the largest volumes need one, to stay inside the
+            result. Only the largest volume needs one, to stay inside the
             box's RAM.
         data (dict): config.DATA_AXES overrides, each a single-value list
-            so the grid it builds holds exactly one cell.
+            so the grid it builds holds exactly one cell (crop_n_vox is a
+            scalar).
         effect (dict): config.EFFECT_AXES overrides; llr_list=None is the
             null path.
         ana (dict): AnalysisGLOW knob overrides on the reported recipe.
@@ -181,27 +104,19 @@ class Demo:
     effect: dict = dataclasses.field(default_factory=dict)
     ana: dict = dataclasses.field(default_factory=dict)
 
-    @property
-    def source(self) -> str:
-        """Return the demo's image source ('wgn' or 'hcp')."""
-        return self.data.get('sources', ['wgn'])[0]
 
-
-def _llr_demos(source: str, also_mid: tuple = (),
-               cache: str = 'sweep_llr') -> list:
+def _llr_demos(also_mid: tuple = ()) -> list:
     """Build one demo per point on the effect-strength grid.
 
     The whole grid, so the power curve can be walked rather than
-    sampled at its ends. The three points other sweeps and the
-    shortcuts name by key keep those keys and the rest are numbered by
-    grid index, so a demo already baked is never renamed.
+    sampled at its ends. The three points the shortcuts name by key keep
+    those keys and the rest are numbered by grid index, so a demo already
+    linked is never renamed.
 
     Args:
-        source (str): 'wgn' or 'hcp'.
         also_mid (tuple): further caches the midpoint cell sits on. Only
             the midpoint is a hub -- it is the anchor the other sweeps
             plant.
-        cache (str): the set these cells belong to.
 
     Returns:
         list[Demo]: one entry per config.EFFECT_LLR_GRID value.
@@ -209,72 +124,69 @@ def _llr_demos(source: str, also_mid: tuple = (),
     n = len(config.EFFECT_LLR_GRID)
     mid = n // 2
     named = {0: 'llr_weak', mid: 'llr_moderate', n - 1: 'llr_strong'}
-    told = {0: 'weakest effect on the grid',
-            mid: 'moderate effect, the anchor the other sweeps plant',
-            n - 1: 'strongest effect on the grid'}
-    head = {'wgn': 'Synthetic images', 'hcp': 'HCP diffusion maps',
-            'mandrill': 'Mandrill photograph'}[source]
-    prefix = '' if source == 'wgn' else f'{source}_'
+    told = {0: 'Weakest effect on the grid',
+            mid: 'Moderate effect, the anchor the other sweeps plant',
+            n - 1: 'Strongest effect on the grid'}
 
-    return [Demo(key=f'{prefix}{named.get(i, f"llr_{i:02d}")}',
-                 cache=cache,
+    return [Demo(key=f'hcp_{named.get(i, f"llr_{i:02d}")}',
+                 cache='sweep_llr',
                  also=also_mid if i == mid else (),
-                 blurb=f'{head}, '
-                       f'{told.get(i, f"effect strength {i + 1} of {n}")}',
-                 data={} if source == 'wgn' else dict(sources=[source]),
+                 blurb=told.get(i, f'Effect strength {i + 1} of {n}'),
                  effect=dict(llr_list=[float(llr)]))
             for i, llr in enumerate(config.EFFECT_LLR_GRID)]
 
 
 # One entry per axis a reader would want to move, not one per cell the
 # catalogue holds: the paper's grids run to thousands of cells, and a
-# hosted set is read by clicking through it. Every entry is WGN at the
+# hosted set is read by clicking through it. Every entry is at the
 # catalogue's default geometry unless it is the entry that varies that.
 #
-# The moderate-effect Focus fit is the hub: the llr, extent, projection
-# and prune entries are all one step off it, so a reader can hold it in
-# mind and see what one axis does.
+# The moderate-effect Focus fit is the hub: the b, extent, projection and
+# prune entries are all one step off it, so a reader can hold it in mind
+# and see what one axis does.
 DEMOS = [
     # --- the power curve (sweep_llr, b=1) ----------------------------
-    *_llr_demos('wgn', also_mid=('sweep_b', 'sweep_extent', 'segment',
-                                 'prune', 'runtime_num_vox')),
+    *_llr_demos(also_mid=('sweep_b', 'sweep_extent', 'segment', 'prune',
+                          'runtime_num_vox')),
 
     # --- no effect (null) --------------------------------------------
-    Demo(key='null', cache='null',
+    Demo(key='hcp_null', cache='null',
          blurb='No planted effect -- the FWER calibration case',
          effect=dict(llr_list=None)),
 
     # --- feature count (sweep_b) -------------------------------------
-    Demo(key='b2', cache='sweep_b', seed_axis=False,
+    # each seed draws its own feature subset (grid.get_kwargs_data_list)
+    Demo(key='hcp_b2', cache='sweep_b',
          blurb='Two imaging features, moderate effect',
          data=dict(b_list=[2])),
-    Demo(key='b4', cache='sweep_b', seed_axis=False,
+    Demo(key='hcp_b4', cache='sweep_b',
          blurb='Four imaging features, moderate effect',
          data=dict(b_list=[4])),
 
     # --- effect extent (sweep_extent) --------------------------------
-    Demo(key='extent_narrow', cache='sweep_extent',
+    Demo(key='hcp_extent_narrow', cache='sweep_extent',
          blurb='Narrowest support on the extent grid',
          effect=dict(n_vox_frac_list=[_EXTENT_NARROW])),
-    Demo(key='extent_whole', cache='sweep_extent',
+    Demo(key='hcp_extent_whole', cache='sweep_extent',
          blurb='Effect covering the whole analysis volume',
          effect=dict(n_vox_frac_list=[_EXTENT_WHOLE])),
 
     # --- Ward projection (segment) -----------------------------------
-    # the third mode, Focus, is llr_moderate above.
-    Demo(key='ward_naive', cache='segment',
+    # the third mode, Focus, is hcp_llr_moderate above.
+    Demo(key='hcp_ward_naive', cache='segment',
          blurb='Ward on raw y (Naive projection)',
          ana=dict(cluster_mode=ClusterMode.NAIVE)),
-    Demo(key='ward_glm_error', cache='segment',
+    Demo(key='hcp_ward_glm_error', cache='segment',
          blurb='Ward on the whole design space (GLM Error projection)',
          ana=dict(cluster_mode=ClusterMode.GLM_ERROR)),
 
     # --- selection rule (prune) --------------------------------------
-    # the same permutation test as llr_moderate, read out by another rule.
-    Demo(key='prune_single_max', cache='prune',
+    # the same permutation test as hcp_llr_moderate, read out by another
+    # rule.
+    Demo(key='hcp_prune_single_max', cache='prune',
          blurb='Single max-LLR region instead of the greedy set',
          ana=dict(prune_rule='single_max')),
-    Demo(key='prune_dp', cache='prune',
+    Demo(key='hcp_prune_dp', cache='prune',
          blurb='Dynamic-programming cut instead of the greedy set',
          ana=dict(prune_rule='dp')),
 
@@ -282,39 +194,16 @@ DEMOS = [
     # the one entry fit with keep_stat, which adds the viewer's
     # PERMUTATION panel: the draw matrix is (n_perm_fwer + 1) x num_reg,
     # so only the smallest volume can afford to carry it in a bundle.
-    Demo(key='vox_1k', cache='runtime_num_vox',
+    Demo(key='hcp_vox_1k', cache='runtime_num_vox',
          blurb='Small volume, with the permutation-draw histogram',
          data=dict(crop_n_vox=config.RUNTIME_NUM_VOX_GRID[0]),
-         ana=dict(keep_stat=True)),
-    Demo(key='vox_full_brain', cache='runtime_num_vox', seed_axis=False,
-         blurb='Full-brain volume, the top of the runtime sweep',
-         data=dict(crop_n_vox=config.RUNTIME_NUM_VOX_GRID[-1])),
-
-    # --- HCP mirrors of the power curve (--hcp) ----------------------
-    *_llr_demos('hcp', also_mid=('runtime_num_vox',)),
-    Demo(key='hcp_null', cache='null',
-         blurb='HCP diffusion maps, no planted effect',
-         data=dict(sources=['hcp']), effect=dict(llr_list=None)),
-
-    # --- the same strength axis on a photograph ----------------------
-    *_llr_demos('mandrill', cache='mandrill'),
-
-    # --- HCP mirrors of the volume axis (--hcp) ----------------------
-    # The runtime sweep is HCP in the catalogue, so these are the cells
-    # the figure actually reports; the WGN pair beside them is the
-    # synthetic comparison, not the other way round.
-    Demo(key='hcp_vox_1k', cache='runtime_num_vox',
-         blurb='HCP diffusion maps, small volume, with the histogram',
-         data=dict(sources=['hcp'],
-                   crop_n_vox=config.RUNTIME_NUM_VOX_GRID[0]),
          ana=dict(keep_stat=True)),
     # n_jobs is cut here alone: at the full HCP support each worker holds
     # its own tail fold, and the shared count exhausts this box's RAM.
     Demo(key='hcp_vox_full_brain', cache='runtime_num_vox',
          seed_axis=False, fit=dict(n_jobs=6),
-         blurb='HCP diffusion maps, the whole brain',
-         data=dict(sources=['hcp'],
-                   crop_n_vox=config.RUNTIME_NUM_VOX_GRID[-1])),
+         blurb='The whole brain, the top of the runtime sweep',
+         data=dict(crop_n_vox=config.RUNTIME_NUM_VOX_GRID[-1])),
 ]
 
 _DEMO_BY_KEY = {d.key: d for d in DEMOS}
@@ -371,40 +260,58 @@ def bake_plan(demo_list, seeds) -> list:
     return plan
 
 
-# The plain dispatchers in benchmark.data: what each selects its
-# builder on, the table it selects from, and the default its own
-# signature declares (data_factory requires a source, so it has none).
-_DISPATCH = {data_factory: ('source', DATA_FACTORY, None),
-             effect_factory: ('kind', EFFECT_FACTORY, 'single')}
+def demo_cell(demo: Demo, seed: int):
+    """Return the declared kwargs naming one demo's cell at one seed.
 
-
-def call_uncached(fnc, *args, **kwargs):
-    """Call a benchmark builder with its cache and recorder peeled off.
-
-    The builders in glow._extra.benchmark.data are wrapped @MEMORY.cache
-    over @RECORDER; inspect.unwrap walks past both to the raw function,
-    which does the same build in memory alone. See the module docstring
-    for why a bake must not write either.
-
-    data_factory and effect_factory carry no decorator of their own --
-    they dispatch, and the builder they pick is still wrapped -- so
-    unwrapping one is a no-op. Resolve the dispatch first. Left
-    unresolved, a plant returns from a cache keyed on parent_uid with
-    exp ignored, which is a stale answer for any cohort that has
-    changed since that uid was first seen.
+    A runtime_num_vox entry takes its data cell from that cache's grid,
+    whose seeds start at the cache's own offset, so seed indexes into it
+    and the cell is the one the runtime figure timed.
 
     Args:
-        fnc: a decorated builder, or a dispatcher that reaches one.
+        demo (Demo): the entry.
+        seed (int): the data seed, 0-based.
 
     Returns:
-        whatever the raw builder returns.
+        kwargs_data (dict): one data cell (see benchmark.data.build_clean).
+        kwargs_effect (dict | None): one effect cell, None on the null path.
+
+    Raises:
+        ValueError: seed is past the runtime cache's seed range.
     """
-    dispatch = _DISPATCH.get(fnc)
-    if dispatch is not None:
-        key, table, default = dispatch
-        kwargs = dict(kwargs)
-        fnc = table[kwargs.pop(key, default)]
-    return inspect.unwrap(fnc)(*args, **kwargs)
+    kwargs_effect = config.effect_grid(**demo.effect)[0]
+    if demo.cache != 'runtime_num_vox':
+        kwargs_data = config.data_grid(seeds=[seed], sources=[SOURCE],
+                                       **demo.data)[0]
+        return kwargs_data, kwargs_effect
+
+    offset = config.RUNTIME_SEED_OFFSET[demo.cache]
+    cells = config.runtime_data_grid(
+        seed_offset=offset, crop_n_vox_list=[demo.data['crop_n_vox']])
+    hit = [kwargs for kwargs in cells if kwargs['seed'] == offset + seed]
+    if not hit:
+        raise ValueError(f'{demo.key}: {demo.cache} runs seeds '
+                         f'0..{len(cells) - 1}, not {seed}')
+    return hit[0], kwargs_effect
+
+
+def realize_cell(kwargs_data, kwargs_effect):
+    """Return one cell's realization without writing to the store.
+
+    A cell already in the store is read back, so its plant is the one the
+    figures scored. Any other runs get_exp_effect's raw function, unwrapped
+    past its cache and recorder: a fresh call would file a provenance
+    record for a cell no cache declared.
+
+    Args:
+        kwargs_data (dict): one data cell.
+        kwargs_effect (dict | None): one effect cell, or None.
+
+    Returns:
+        cell (ExpEffect): the realized cell.
+    """
+    if get_exp_effect.check_call_in_cache(kwargs_data, kwargs_effect):
+        return get_exp_effect(kwargs_data, kwargs_effect)
+    return inspect.unwrap(get_exp_effect)(kwargs_data, kwargs_effect)
 
 
 def paper_ana(**override) -> AnalysisGLOW:
@@ -434,41 +341,31 @@ def paper_ana(**override) -> AnalysisGLOW:
 def build_demo(demo: Demo, *, seed: int = 0, verbose: bool = True):
     """Build one demo's cell and fit the paper's recipe on it.
 
+    The fit is benchmark.run.run_ana's: the rebuilt raw experiment, with
+    the analysis scaling it on the way in.
+
     Args:
         demo (Demo): the entry to build.
-        seed (int): the data seed. The effect extenter seeds from the
-            experiment, so this redraws the plant along with the images,
-            which is the paper's own notion of a random seed.
+        seed (int): the data seed. The effect placement seeds from the
+            data cell, so this redraws the plant along with the design
+            (and, for HCP, the feature subset), which is the paper's own
+            notion of a random seed.
         verbose (bool): forward progress to the analysis fit.
 
     Returns:
         ana (AnalysisGLOW): the fitted analysis.
-        exp: the Experiment it was fit on, effect included.
+        exp (Experiment): the experiment it was fit on, effect included,
+            with no source attached.
         mask_target (np.array | None): the realized (X, Y, Z) bool
             support, or None on the null path.
     """
-    kwargs_effect = config.effect_grid(**demo.effect)[0]
-
-    if demo.source == 'mandrill':
-        exp = mandrill_cohort(seed)
-        parent_uid = f'mandrill-seed{seed}'
-    else:
-        # one seed and one source, so the grid each call builds holds
-        # exactly the cell this demo names
-        data_over = {k: v for k, v in demo.data.items() if k != 'sources'}
-        kwargs_data = config.data_grid(seeds=[seed], sources=[demo.source],
-                                       **data_over)[0]
-        exp = call_uncached(data_factory, **kwargs_data)
-        parent_uid = data_recipe(kwargs_data).uid
+    cell = realize_cell(*demo_cell(demo, seed))
+    exp = cell.build()
     print(f'    y={exp.y.shape} x={exp.x.shape}')
 
     mask_target = None
-    if kwargs_effect is not None:
-        kwargs = {k: v for k, v in kwargs_effect.items() if k != 'kind'}
-        exp, mask_target_list = call_uncached(
-            effect_factory, exp, kind=kwargs_effect['kind'],
-            parent_uid=parent_uid, **kwargs)
-        mask_target = mask_target_list[0]
+    if cell.effect_list:
+        mask_target = cell.mask_target_list[0]
         print(f'    planted {int(mask_target.sum())} voxels')
 
     ana = paper_ana(**demo.ana)
@@ -476,6 +373,11 @@ def build_demo(demo: Demo, *, seed: int = 0, verbose: bool = True):
     print(f'    fitting {ana!r}')
     ana.fit(exp, verbose=verbose, **fit_params)
     print(f'    {len(ana.effect_list)} effect(s) discovered')
+
+    # the source's class lives in glow._extra.benchmark, which the image
+    # leaves out, so a bundle carrying it would not unpickle there; the
+    # viewer never reads images back.
+    exp.source = None
     return ana, exp, mask_target
 
 
@@ -498,32 +400,17 @@ def demo_params(demo: Demo, seed: int = 0) -> dict:
             n_perm_fwer, n_perm_inner}. effect_llr and n_vox_frac are
             None on the null path, where nothing is planted.
     """
-    kwargs_effect = config.effect_grid(**demo.effect)[0]
+    kwargs_data, kwargs_effect = demo_cell(demo, seed)
     ana = paper_ana(**demo.ana)
-
-    if demo.source == 'mandrill':
-        b, num_img = len(MANDRILL_CHANNELS), MANDRILL_NUM_IMG
-        num_vox = mandrill_num_vox()
-    else:
-        data_over = {k: v for k, v in demo.data.items() if k != 'sources'}
-        kwargs_data = config.data_grid(seeds=[seed], sources=[demo.source],
-                                       **data_over)[0]
-        num_vox = kwargs_data['extenter'].n_vox
-
-        # an HCP cell names its features instead of carrying b, and draws
-        # the whole cohort rather than a chosen num_img
-        if demo.source == 'hcp':
-            b, num_img = len(kwargs_data['hcp_feats']), config.HCP_NUM_IMG
-        else:
-            b, num_img = kwargs_data['b'], kwargs_data['num_img']
-
     planted = kwargs_effect or {}
+    # an HCP cell names its features instead of carrying b, and draws the
+    # whole cohort rather than a chosen num_img
     return dict(
-        source=demo.source,
+        source=SOURCE,
         seed=int(seed),
-        b=int(b),
-        num_img=int(num_img),
-        num_vox=int(num_vox),
+        b=len(kwargs_data['hcp_feats']),
+        num_img=int(config.HCP_NUM_IMG),
+        num_vox=int(kwargs_data['extenter'].n_vox),
         effect_llr=(float(planted['effect_llr']) if planted else None),
         n_vox_frac=(float(planted['n_vox_frac']) if planted else None),
         cluster_mode=ana.cluster_mode.name,
@@ -641,7 +528,7 @@ def write_manifest(out_dir: pathlib.Path) -> None:
                         'blurb': blurb,
                         'cache': demo.cache,
                         'caches': [demo.cache, *demo.also],
-                        'source': demo.source,
+                        'source': SOURCE,
                         'size_bytes': size,
                         'params': demo_params(demo, seed),
                         'stats': stats})
@@ -668,17 +555,14 @@ def main():
         help='data seeds to bake (default 0). A cell whose seed_axis is '
              'off ignores this and stays at seed 0.')
     parser.add_argument(
-        '--hcp', action='store_true',
-        help='include the HCP entries (DUA-restricted; do not publish)')
-    parser.add_argument(
         '--list', action='store_true',
         help='print the plan and exit without building')
     args = parser.parse_args()
 
-    demo_list = [d for d in DEMOS if args.hcp or d.source != 'hcp']
+    demo_list = DEMOS
     if args.only:
         wanted = set(args.only)
-        unknown = wanted - {d.key for d in DEMOS}
+        unknown = wanted - set(_DEMO_BY_KEY)
         if unknown:
             parser.error(f'unknown --only key(s): {sorted(unknown)}')
         demo_list = [d for d in DEMOS if d.key in wanted]
@@ -687,7 +571,7 @@ def main():
 
     if args.list:
         for demo, seed in plan:
-            print(f'{demo_key(demo, seed):<24} {demo.cache:<18} '
+            print(f'{demo_key(demo, seed):<26} {demo.cache:<18} '
                   f'{demo.blurb}')
         print(f'{len(plan)} entr(ies)')
         return 0
