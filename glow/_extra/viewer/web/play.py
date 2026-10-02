@@ -5,7 +5,7 @@ through the full Dash app, as the interactive python -m glow._extra.viewer
 --demo flow does. Spot-check a bundle before deploying it.
 
 Usage:
-    python -m glow._extra.viewer.web.play llr_moderate
+    python -m glow._extra.viewer.web.play hcp_llr_moderate
     python -m glow._extra.viewer.web.play --list
     python -m glow._extra.viewer.web.play path/to/some.p.gz
 """
@@ -25,7 +25,7 @@ def _resolve(arg: str, pickle_dir: pathlib.Path) -> pathlib.Path:
     """Resolve a bundle key or path to a baked bundle path.
 
     Args:
-        arg (str): a bundle key (e.g. 'llr_moderate') or a file path.
+        arg (str): a bundle key (e.g. 'hcp_llr_moderate') or a file path.
         pickle_dir (pathlib.Path): directory keys are looked up in.
 
     Returns:

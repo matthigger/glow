@@ -1,15 +1,16 @@
 # GLOW Viewer (web demo)
 
-Interactive viewer for a representative set of the paper's benchmark cells:
-one fitted GLOW analysis per link, each a point on an axis some figure
-sweeps.
+Interactive viewer for a representative set of the paper's HCP benchmark
+cells: one fitted GLOW analysis per link, each a point on an axis some
+figure sweeps.
 
 ## Architecture
 
-- `bake_demos.py` builds each entry in its `DEMOS` list — a cell of
-  `glow._extra.benchmark.config.CONFIG` — fits the reported GLOW recipe on
-  it, and writes `{ana, exp, mask_target, demo}` to `pickles/<key>.p.gz`
-  plus a `manifest.json` describing the set.
+- `bake_demos.py` realizes each entry in its `DEMOS` list — a cell of
+  `glow._extra.benchmark.config.CONFIG`, read back from the benchmark
+  store when the corpus already realized it — fits the reported GLOW
+  recipe on it, and writes `{ana, exp, mask_target, demo}` to
+  `pickles/<key>.p.gz` plus a `manifest.json` describing the set.
 - `server.py` boots one Flask server (wrapped in a `DispatcherMiddleware`),
   serves a landing page read from `manifest.json` alone, and mounts a
   `glow._extra.viewer` Dash app per bundle **on first request**, bounded by
@@ -39,12 +40,14 @@ per-perm arm on the Focus projection, greedy selection) with only the knob
 a given entry varies overridden.
 
 The set covers effect strength, the null, feature count, effect extent,
-Ward projection, selection rule, and analysis volume. The moderate-effect
-Focus fit is the hub the other entries sit one step away from.
+Ward projection, selection rule, and analysis volume, each at seeds 0-2
+(`--seeds 0 1 2`; the full-brain fit stays at seed 0). The
+moderate-effect Focus fit is the hub the other entries sit one step away
+from.
 
-**HCP entries are gated behind `--hcp` and must not be published.** The
-maps are DUA-restricted, so an HCP-derived bundle is fine to view locally
-and not fine to host. WGN entries carry no such restriction.
+Every entry is HCP. The maps are shared under the HCP Open Access Data
+Use Terms, so the server asks a visitor to accept them before it opens
+a bundle (a cookie, not an access control).
 
 ## Local development
 
@@ -52,14 +55,14 @@ and not fine to host. WGN entries carry no such restriction.
 # see the plan without building anything
 python -m glow._extra.viewer.web.bake_demos --list
 
-# bake the set (WGN only; add --hcp for the gated entries)
-python -m glow._extra.viewer.web.bake_demos
+# bake the set
+python -m glow._extra.viewer.web.bake_demos --seeds 0 1 2
 
 # bake or refit one entry
-python -m glow._extra.viewer.web.bake_demos --only llr_moderate --force
+python -m glow._extra.viewer.web.bake_demos --only hcp_llr_moderate --force
 
 # spot-check one bundle through the single-analysis viewer
-python -m glow._extra.viewer.web.play llr_moderate
+python -m glow._extra.viewer.web.play hcp_llr_moderate
 
 # run the multi-demo server on port 7860
 python -m glow._extra.viewer.web.server
@@ -79,7 +82,7 @@ A GCP project with billing enabled is still required to exist.
 
 ```bash
 # from src/ (project root)
-python -m glow._extra.viewer.web.bake_demos     # bundles go in the image
+python -m glow._extra.viewer.web.bake_demos --seeds 0 1 2  # into the image
 glow/_extra/viewer/web/deploy_cloud_run.sh --project <gcp-project-id>
 
 # build the image without pushing, to run it locally first

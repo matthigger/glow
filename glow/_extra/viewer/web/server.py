@@ -88,7 +88,6 @@ _CACHE_HEADINGS = {
     'segment': 'Ward projection',
     'prune': 'Selection rule',
     'runtime_num_vox': 'Volume',
-    'mandrill': 'Mandrill photograph',
 }
 
 # cache -> what a reader is looking at once they pick it.
@@ -107,9 +106,6 @@ _CACHE_BLURBS = {
     'prune': 'How the significant set is read out of one shared fit, so '
              'the comparison isolates the rule.',
     'runtime_num_vox': 'Volume, from a small crop up to the full brain.',
-    'mandrill': 'The strength sweep again, with the noise field swapped '
-                'for a resampled photograph. Structure you can see by '
-                'eye, so what the segmentation did to it is legible.',
 }
 
 # The parameters the picker offers, in the order it shows them. The kind
@@ -130,12 +126,9 @@ _PARAM_SPEC = [
 ]
 
 # The few things a reader almost always wants to see first, one click
-# each, in the order they answer "does this method work?", and split by
-# source because the honest answer differs between synthetic noise and
-# real images. Only HCP is offered here: a reader arriving cold wants to
-# see the method on real data, and the synthetic cells are one dropdown
-# away in the picker below. A shortcut naming a bundle this build did
-# not bake is dropped rather than shown broken.
+# each, in the order they answer "does this method work?". A shortcut
+# naming a bundle this build did not bake is dropped rather than shown
+# broken.
 _SHORTCUTS = [
     ('Real diffusion maps (HCP)', [
         ('hcp_llr_strong', 'A strong effect, found'),
@@ -390,9 +383,7 @@ subjects, resampled to MNI space.</p>
 <p>The Data Use Terms allow for redistribution of the images, provided
 recipients also agree to the Data Use Terms. Because GLOW's viewer
 visualizes the images alongside the segmentation and GLM models, we
-require that you agree to the Data Use Terms before proceeding. Note that
-you can access the Gaussian Noise and Mandrill example without agreeing
-to Data Use Terms, if you'd like.</p>
+require that you agree to the Data Use Terms before proceeding.</p>
 
 <div class="box">
   <a href="$terms_url" target="_blank" rel="noopener noreferrer">HCP Open

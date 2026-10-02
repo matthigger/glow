@@ -713,43 +713,6 @@ def test_the_cookie_is_named_for_what_the_cdn_forwards():
     assert server.TERMS_COOKIE == '__session'
 
 
-def test_the_mandrill_set_is_not_gated():
-    """The terms page promises this set is reachable without accepting.
-
-    It says a visitor can see the Gaussian noise and mandrill examples
-    without agreeing to anything, so gating either one would make the
-    page lie about what it is asking for.
-    """
-    from glow._extra.viewer import web
-    assert 'mandrill' not in web.GATED_SOURCES
-    assert 'wgn' not in web.GATED_SOURCES
-
-
-def test_mandrill_mirrors_the_strength_sweep():
-    """The photograph set differs from sweep_llr in its images alone."""
-    bake = pytest.importorskip('glow._extra.viewer.web.bake_demos')
-    llr = {d.key: d for d in bake.DEMOS if d.cache == 'sweep_llr'
-           and d.source == 'wgn'}
-    mand = {d.key.removeprefix('mandrill_'): d for d in bake.DEMOS
-            if d.cache == 'mandrill'}
-    assert mand and set(mand) == set(llr)
-    for key, demo in mand.items():
-        assert demo.source == 'mandrill'
-        assert demo.effect == llr[key].effect
-        assert demo.ana == llr[key].ana
-
-
-def test_mandrill_params_describe_the_photograph():
-    """Its axes report the image's own shape, not a benchmark cell's."""
-    bake = pytest.importorskip('glow._extra.viewer.web.bake_demos')
-    p = bake.demo_params(bake._DEMO_BY_KEY['mandrill_llr_moderate'], 0)
-    wgn = bake.demo_params(bake._DEMO_BY_KEY['llr_moderate'], 0)
-    assert p['b'] == len(bake.MANDRILL_CHANNELS)
-    assert p['num_vox'] == bake.mandrill_num_vox()
-    assert p['num_img'] == wgn['num_img']
-    assert p['effect_llr'] == wgn['effect_llr']
-
-
 def test_every_baked_cache_has_a_heading():
     """A set with no heading falls back to its bare cache name."""
     bake = pytest.importorskip('glow._extra.viewer.web.bake_demos')
@@ -774,37 +737,38 @@ def test_terms_page_names_the_cohort(gated_dir):
     assert '100 unrelated' in body
 
 
-def test_mandrill_images_are_numbered():
-    """Every draw is the same photograph, so the labels need indices.
-
-    bootstrap_img carries the one source label through to every image,
-    which leaves the viewer's picker offering num_img entries a reader
-    cannot tell apart.
-    """
+def test_every_demo_is_an_hcp_catalogue_cell():
+    """Each entry names a cell the benchmark grids build, on HCP alone."""
     bake = pytest.importorskip('glow._extra.viewer.web.bake_demos')
-    names = bake.mandrill_subjects()
-    assert len(names) == bake.MANDRILL_NUM_IMG
-    assert len(set(names)) == len(names)
-    assert all(n.startswith('mandrill_') for n in names)
+    for demo in bake.DEMOS:
+        kwargs_data, _ = bake.demo_cell(demo, 0)
+        assert kwargs_data['source'] == 'hcp'
+        assert bake.demo_params(demo, 0)['source'] == 'hcp'
 
 
-def test_call_uncached_reaches_past_the_dispatchers():
-    """data_factory and effect_factory dispatch; they are not wrapped.
-
-    Unwrapping a dispatcher is a no-op and the builder it selects still
-    carries @MEMORY.cache(ignore=['exp']) -- keyed on parent_uid with
-    the experiment ignored -- so an unresolved dispatch answers a
-    changed cohort out of the cache built for the old one.
-    """
+def test_a_runtime_demo_takes_its_cache_seeds():
+    """A volume demo is the cell the runtime figure timed, not a new one."""
     bake = pytest.importorskip('glow._extra.viewer.web.bake_demos')
-    data = pytest.importorskip('glow._extra.benchmark.data')
+    config = pytest.importorskip('glow._extra.benchmark.config')
+    demo = bake._DEMO_BY_KEY['hcp_vox_1k']
+    offset = config.RUNTIME_SEED_OFFSET['runtime_num_vox']
+    for seed in range(config.RUNTIME_N_SEED):
+        kwargs_data, _ = bake.demo_cell(demo, seed)
+        assert kwargs_data['seed'] == offset + seed
+        assert (kwargs_data['extenter'].n_vox
+                == config.RUNTIME_NUM_VOX_GRID[0])
+    with pytest.raises(ValueError):
+        bake.demo_cell(demo, config.RUNTIME_N_SEED)
 
-    assert set(bake._DISPATCH) == {data.data_factory, data.effect_factory}
-    for dispatcher, (_, table, _default) in bake._DISPATCH.items():
-        assert inspect.unwrap(dispatcher) is dispatcher
-        assert table
-        for builder in table.values():
-            assert inspect.unwrap(builder) is not builder
+
+def test_realize_cell_reaches_past_the_cache():
+    """A miss must run the raw builder, which files no record."""
+    pytest.importorskip('glow._extra.viewer.web.bake_demos')
+    cell = pytest.importorskip('glow._extra.benchmark.cell')
+    raw = inspect.unwrap(cell.get_exp_effect)
+    assert raw is not cell.get_exp_effect
+    assert not hasattr(raw, 'check_call_in_cache')
+    assert not hasattr(raw, '__wrapped__')
 
 
 def test_dash_subpaths_survive_a_lost_mount(client):
