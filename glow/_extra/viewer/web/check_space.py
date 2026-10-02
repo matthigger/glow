@@ -72,6 +72,8 @@ if not manifest:
     sys.exit(0)
 
 key = manifest[0]['key']
+# accept the terms a visitor would, or a gated bundle answers 403
+client.post('/terms', data={'next': '/load/' + key})
 client.get('/load/' + key)
 layout = client.get('/view/' + key + '/_dash-layout')
 if layout.status_code != 200:
