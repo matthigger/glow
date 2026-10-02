@@ -11,50 +11,30 @@ in the paper is drawn from it.
 
 | | artifact | where |
 |---|---|---|
-| input | this repository | [github.com/matthigger/glow](https://github.com/matthigger/glow); computation at `cc7e53e`, read with the tree this file ships in |
+| input | this repository | [github.com/matthigger/glow](https://github.com/matthigger/glow) at commit `2f0c04e` |
 | input | HCP-YA imaging data, 100 subjects x 6 maps | [Zenodo 10.5281/zenodo.20736221](https://doi.org/10.5281/zenodo.20736221) |
 | output | provenance records, version 2 | [Zenodo 10.5281/zenodo.22664285](https://doi.org/10.5281/zenodo.22664285) |
 
-Version 1 of the records DOI holds an earlier corpus, computed at `25f528c`
-on a cache layer that keyed artifacts partly on an Experiment's bytes. That
-layer is gone: a cell is now declared, stored as a small payload and rebuilt
-per leaf (`glow/_extra/benchmark/cell.py`), so no record of version 1 is
-addressable from this code, and its plants were drawn from different seeds
-(seed 7 there is not seed 7 here). Version 2 is the corpus the paper reports.
+Version 2 is the corpus the paper reports. Version 1 holds an earlier corpus,
+on a cache layer this code no longer reads, with its plants drawn from
+different seeds.
 
-### The corpus in `~/.local/share/glow`
-
-A record does not name the commit that computed it, so the commit is pinned
-here. A file cannot name its own commit either, so what is pinned is the last
-commit that changes what the reported caches compute. Commits on top of it
-are documentation, add caches, or change how records are read, and move no
-recorded number.
+### The corpus
 
 | | |
 |---|---|
-| computation pinned at | `cc7e53e` (the tree the 50-seed corpus ran from) |
-| branch | `main` |
+| commit | `2f0c04e` on `main` |
 | seeds | 50 (`null` 1000; `vba_tune`, `oracle_stat` 10) |
 | tuned | 1 - Wilks at 2 mm for VBA, VBA-TFCE, CET; z for VBA-TFCE only |
 | holes | 22 HCP b=1 cells (seeds 12, 15) fail the plant check (`cell.LLR_RTOL`) and are skipped |
-| not in the paper | `sweep_llr_wgn_sphere` (declared at `d3cfce8`), `sweep_extent`, `sweep_b`, `sweep_n_perm_inner`, `oracle_stat`, `smoke`, `runtime_1perm_n_perm_fwer` |
-| old cache | `~/.local/share/glow/cache.bak_prepayload_20260917` |
-| old records | `~/.local/share/glow/records.bak_prepayload_20260917` |
+| not in the paper | `sweep_llr_wgn_sphere`, `sweep_extent`, `sweep_b`, `sweep_n_perm_inner`, `oracle_stat`, `smoke`, `runtime_1perm_n_perm_fwer` |
 
-The leaves were computed in stages at different commits. Each stage is
-equivalent to `cc7e53e` for the leaves it left in the store:
-
-| leaves | computed | at | why it matches `cc7e53e` |
-|---|---|---|---|
-| seeds 0-9, every cache | 2026-09-17 to 09-19 | `8880bf8` to `21c3fe4` | only benchmark declarations changed in that range, and a leaf is keyed on its declared recipe, so a stale one is unreferenced rather than read |
-| `vba_tune` | 2026-09-17 | `1151296` | the width and statistic it chose are what `d7ca049` wired in |
-| seeds 10-49 | 2026-09-19 to 09-25 | `21c3fe4`, then `21c3fe4` + the `cc7e53e` diff | `cc7e53e` drops Oracle-RBA and skips unbuildable cells; neither moves another arm's number |
-| WGN VBA, VBA-TFCE, CET, every seed | 2026-09-25 to 09-26 | `cc7e53e`'s tree | recomputed after `5c15b8e` put WGN on a 2 mm grid; the 2-voxel-kernel leaves are in `~/.local/share/glow/old/wgn_affine_20260925/` |
-
-`5c15b8e` touches only the affine, which only `Experiment.smooth` reads, so
-GLOW and every HCP leaf are unaffected by it. The cached WGN cell payloads
-were patched in place to carry the affine (masks and offsets unchanged;
-originals in the same `old/` directory).
+A record does not name the commit that computed it. The records are
+consistent with `2f0c04e`: there, every paper cache's declared cells resolve
+to recorded leaves bar the holes, recomputed leaves reproduce their records
+bit for bit ([Checking our records](#checking-our-records)), and `plot`
+redraws every paper figure and table from the records alone. Later commits
+on `main` change no recorded number unless this file says so.
 
 To check a tree against the store, count each cache's incomplete cells under
 that tree, with no seed cap:
@@ -68,16 +48,11 @@ for n in ['sweep_llr', 'sweep_extent', 'sweep_b', 'null', 'segment', 'prune',
     print(n, len(results.incomplete_cell_indices(n)))"
 ```
 
-`cc7e53e` and later report only the holes: sweep_llr 11, sweep_extent 12,
+A consistent tree reports only the holes: sweep_llr 11, sweep_extent 12,
 sweep_b 1, segment 11, prune 11, sweep_n_perm_inner 3, and 0 for null,
-vba_stat and vba_tune -- 22 distinct cells in all.
-
-That check sees every change to a declared recipe or cell. It cannot see a
-change to code that runs underneath one without entering its identity (the
-affine was such a change); that needs a leaf recomputed and its score
-compared. Three voxel-wise `sweep_llr` leaves (WGN VBA, WGN CET, HCP
-VBA-TFCE) re-fit on CPU at this tree reproduce their recorded confusion
-counts, minimum p-value and region count exactly.
+vba_stat and vba_tune, 22 distinct cells in all. That check sees every
+change to a declared recipe or cell, not a change to code running underneath
+one; recomputing leaves (`validate_records`) is what sees that.
 
 The tuning caches ran first, and that ordering was load-bearing rather than a
 preference: `config.SMOOTH_FWHM_BEST` is read off `vba_tune`, and wiring a
