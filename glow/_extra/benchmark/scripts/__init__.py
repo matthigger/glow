@@ -11,6 +11,9 @@ are the steps around them, each runnable as its own module:
   - repro_probe and fp32_drift are the evidence behind rerun.md's account of
     what does and does not reproduce bit for bit: the first perturbs what a
     second machine changes, the second prices the device dtype.
+  - paper_records exports the deposit; validate_records recomputes a seeded
+    random sample of it within a time budget and diffs each leaf against its
+    record.
 
 Each takes --help, and none of them writes to the cache or the records (the
 builders are called unwrapped), so an ad-hoc run cannot rewrite a benchmark

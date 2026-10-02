@@ -40,12 +40,11 @@ PAPER_CACHES = {
 }
 
 
-def _cell_b(rec: dict) -> int:
-    """Return the feature count a get_exp_effect record declares.
+def kwargs_data_b(kwargs_data: dict) -> int:
+    """Return the feature count a data cell declares.
 
     WGN declares b; HCP declares its features, and b is how many.
     """
-    kwargs_data = rec['inputs']['kwargs_data']
     if kwargs_data.get('source') == 'hcp':
         return len(kwargs_data['hcp_feats'])
     return kwargs_data['b']
@@ -74,10 +73,11 @@ def select(cache_dict: dict) -> dict:
     for name, b in cache_dict.items():
         leaf_list = results.config_leaf_keys(name)
         if b is not None:
-            leaf_list = [key for key in leaf_list
-                         if all(_cell_b(records[p]) == b
-                                for p in parent_keys(key)
-                                if records[p]['function'] == 'get_exp_effect')]
+            leaf_list = [
+                key for key in leaf_list
+                if all(kwargs_data_b(records[p]['inputs']['kwargs_data']) == b
+                       for p in parent_keys(key)
+                       if records[p]['function'] == 'get_exp_effect')]
         todo = list(leaf_list)
         while todo:
             key = todo.pop()

@@ -252,10 +252,32 @@ neither is in the paper.) Every table this draws is byte-identical
 to ours and every figure identical to ours in its text and pixels. The
 deposit's `manifest.json` counts its records per cache.
 
-With them in place a benchmark run also skips every cell they cover, which is
-how to recompute a subset and diff it against ours. The records and the
-joblib cache are independent halves: the records are enough for the figures,
-not enough to resume a fit.
+With them in place a benchmark run also skips every cell they cover. The
+records and the joblib cache are independent halves: the records are enough
+for the figures, not enough to resume a fit.
+
+## Checking our records
+
+To check that a record is what its recipe computes, recompute it. This draws
+the deposit's leaves in a seeded random order and recomputes as many as fit
+in a wall-clock budget, each cell realized from scratch and each leaf refit,
+then diffs every output against its record:
+
+```bash
+python -m glow._extra.benchmark.scripts.validate_records \
+    --seed 0 --runtime 2h --records glow-paper-records.zip
+```
+
+The paper caches take turns, so even a short budget reaches every figure;
+`--cache` and `--source wgn` narrow the draw (WGN needs no imaging data), and
+`--dry-run` prices each cache without running anything. It never touches the
+cache or the records. Each leaf comes back `identical`, `close` (counts
+equal, floats within `--rtol`) or `differs`, logged one JSON line per leaf
+under `~/.local/share/glow/results/validate_records/`; the exit status is 1
+if any differs or fails. On our machine every leaf should be `identical`; on
+another, expect the drift [below](#why-it-is-not-bitwise-reproducible). The
+timing leaves are judged on their voxel count, and their time ratio is
+logged.
 
 ## One CSV per figure
 
