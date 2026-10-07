@@ -32,9 +32,11 @@ different seeds.
 A record does not name the commit that computed it. The records are
 consistent with `2f0c04e`: there, every paper cache's declared cells resolve
 to recorded leaves bar the holes, recomputed leaves reproduce their records
-bit for bit ([Checking our records](#checking-our-records)), and `plot`
-redraws every paper figure and table from the records alone. Later commits
-on `main` change no recorded number unless this file says so.
+bit for bit (16,439 of the 16,444 we recomputed; see [How we checked
+ours](#how-we-checked-ours)), and `plot` redraws every paper figure and
+table from the records alone, bar one table whose generator is not on
+`main`. Later commits on `main` change no recorded number unless this file
+says so.
 
 To check a tree against the store, count each cache's incomplete cells under
 that tree, with no seed cap:
@@ -249,12 +251,66 @@ The paper caches take turns, so even a short budget reaches every figure;
 cache or the records. Each leaf comes back `identical`, `close` (counts
 equal, floats within `--rtol`) or `differs`, logged one JSON line per leaf
 under `~/.local/share/glow/results/validate_records/`; the exit status is 1
-if any differs or fails. At `2f0c04e` on our machine every leaf should be
-`identical`; on another machine, or at a later commit (see [Two seeds that
-missed their plant](#two-seeds-that-missed-their-plant)), expect the drift
+if any differs or fails. At `2f0c04e` on our machine expect `identical`
+bar the few leaves [below](#how-we-checked-ours); on another machine, or at
+a later commit (see [Two seeds that missed their
+plant](#two-seeds-that-missed-their-plant)), expect the drift
 [below](#why-it-is-not-bitwise-reproducible). The
 timing leaves are judged on their voxel count, and their time ratio is
 logged.
+
+### How we checked ours
+
+Before publishing version 2 we ran this check against the zip as deposited
+(md5 `38c7c80a3b4bee994c419deabe5b5ad1`), on the machine that computed the
+records. The code under test was a `git archive` of `2f0c04e` on
+`PYTHONPATH`, so no working-tree edit could reach it. Ten lanes, each a
+`validate_records` loop over its own `--seed` and `--cache`, ran for 63 hours
+from 2026-10-02. Separately, the paper was redrawn from the zip alone in a
+fresh `XDG_DATA_HOME` and compared with the manuscript's copies.
+
+| cache | leaves | recomputed | identical | differs |
+|---|---:|---:|---:|---:|
+| `null` | 2,000 | 322 | 322 | 0 |
+| `prune` | 8,712 | 5,128 | 5,128 | 0 |
+| `segment` | 3,267 | 1,925 | 1,925 | 0 |
+| `sweep_llr` | 4,356 | 369 | 368 | 1 |
+| `vba_stat` | 7,500 | 6,870 | 6,866 | 4 |
+| `vba_tune` | 7,500 | 1,641 | 1,641 | 0 |
+| the five runtime caches | 189 | 189 | 189 | 0 |
+| **all** | **33,524** | **16,444 (49%)** | **16,439** | **5** |
+
+Counts are distinct leaves. 3,283 were recomputed more than once and gave
+the same verdict every time; none came back `close` or failed. What came up:
+
+- **Five leaves differ, all one variant**: VBA-TFCE on z-scored Wilks'
+  Lambda, which is also Fig. 10's VBA-TFCE arm. In each, one null draw
+  crosses the observed peak. Four move `min_pval` by exactly 1/501, in both
+  directions; the fifth (`9d6f0586c54f`) drops one false-positive voxel near
+  p = 0.05 (fp 4 -> 3). Every other statistic variant replayed identically,
+  LLR and Pillai on the same walks included. Our leading explanation, not
+  proven since the old library is gone: the records predate the host's
+  2026-09-30 move to glibc 2.43; Wilks passes through `np.expm1`, which here
+  is glibc's and not correctly rounded; and FSL's float32 TFCE height step
+  turns that 1-ulp change into a jump in one draw's maximum. No paper number
+  moves. No figure or table draws `min_pval` outside the GLOW null cache,
+  and the deposit patched with the replayed scores of the two leaves under
+  a paper figure or count (`257e0ebe2154` in `sweep_llr`, `9d6f0586c54f` in
+  `vba_stat`) redraws Fig. 10 pixel-identical and `stat_dice.tex`
+  byte-identical.
+- **One table does not redraw at `2f0c04e`.** 21 of the redraw's 22 checks
+  pass: every figure pixel-identical, every figure CSV and `detection_stats`
+  byte-identical. The exception is the paper's kernel width by effect
+  strength table (`vba_tune/fwhm_llr_dice.tex`), whose generator is commit
+  `b078418`, not on `main`. Plotting `vba_tune` from the deposit at
+  `b078418` reproduces it byte-identical. The leaf verdicts above stand,
+  since no lane imports the plot layer.
+- **`vba_tune` recomputes slowly.** The validator visits a cell's sibling
+  leaves in random order, but a `vba_tune` cell's 150 leaves span five
+  kernel widths, each its own voxel walk of about ten minutes, and only one
+  walk is memoised. Nearly every leaf pays for a walk (about 7 leaves an
+  hour per lane), which is why its coverage trails. Give it several
+  single-thread lanes, as we did, or expect days.
 
 ## One CSV per figure
 
