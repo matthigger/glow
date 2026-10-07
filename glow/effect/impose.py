@@ -34,6 +34,11 @@ def compute_offset(x, y, contrast, effect_llr: float):
         offset (np.array): (b, num_img) constant offset across voxels
         sigma_scale (float | None): always None (kept for API compatibility)
     """
+    # Solve in float64 whatever y arrives as. sigma_orig is a raw sum of
+    # squares less num_vox * mean^2, so float32 rounding in the sum is
+    # amplified by (mean / sd)^2; on a high-mean region (NODDI icvf
+    # saturating at its 0.99 ceiling) that lands the plant ~0.3% off target.
+    y = np.asarray(y, dtype=np.float64)
     b, num_img, num_vox = y.shape
 
     q = decompose(x, contrast)
@@ -282,6 +287,9 @@ def impose_effect(x, y, contrast, *, beta_direction, effect_llr: float,
     Returns:
         offset (np.array): (b, num_img) constant offset across voxels
     """
+    # float64 for the same reason as compute_offset: e is an uncentred
+    # scatter, which float32 cannot resolve on a high-mean region
+    y = np.asarray(y, dtype=np.float64)
     b, num_img, num_vox = y.shape
     contrast = np.asarray(contrast)
     a1 = int(contrast.sum())

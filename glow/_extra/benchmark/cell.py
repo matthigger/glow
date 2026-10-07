@@ -33,10 +33,9 @@ from .store import MEMORY, RECORDER
 # how close a rebuilt plant's per-voxel LLR must come to its target. Loose
 # enough to survive a change of summation order (a different BLAS or thread
 # count moves the measured LLR by ~1e-4 relative at the weakest effect on the
-# grid, wider than the float32 gap between the target and what the solver
-# realized), tight enough that every way a rebuild can go wrong -- the wrong
+# grid), tight enough that every way a rebuild can go wrong -- the wrong
 # mask, a mis-ordered cohort, a missing offset -- moves it by orders of
-# magnitude.
+# magnitude. The measurement runs in float64 (see ExpEffect._check_effects).
 LLR_RTOL = 1e-3
 
 
@@ -168,6 +167,11 @@ class ExpEffect:
         runs on the raw experiment, before scaling, since that is the space
         the offset was solved in.
 
+        Measured in float64, as the offset is solved (see
+        glow.effect.impose.compute_offset): get_mancova's uncentred scatter
+        loses up to ~1e-3 relative in float32 on a high-mean region, which is
+        the whole tolerance.
+
         Args:
             exp: the rebuilt raw Experiment, offsets applied
 
@@ -180,8 +184,8 @@ class ExpEffect:
         want = self.kwargs_effect['effect_llr']
         for idx, effect in enumerate(self.effect_list):
             vox_idx = exp.mask_idx[effect['mask']]
-            e, h, _ = get_mancova(x=exp.x, y=exp.y[:, :, vox_idx],
-                                  contrast=exp.contrast)
+            y = exp.y[:, :, vox_idx].astype(np.float64)
+            e, h, _ = get_mancova(x=exp.x, y=y, contrast=exp.contrast)
             got = get_llr(e, h, n=1)
             if not np.isclose(got, want, rtol=LLR_RTOL, atol=0):
                 raise ValueError(

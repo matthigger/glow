@@ -26,7 +26,7 @@ different seeds.
 | commit | `2f0c04e` on `main` |
 | seeds | 50 (`null` 1000; `vba_tune`, `oracle_stat` 10) |
 | tuned | 1 - Wilks at 2 mm for VBA, VBA-TFCE, CET; z for VBA-TFCE only |
-| holes | 22 HCP b=1 cells (seeds 12, 15) fail the plant check (`cell.LLR_RTOL`) and are skipped |
+| holes | 22 HCP b=1 cells (seeds 12, 15) fail the plant check (`cell.LLR_RTOL`) and are skipped; see [Two seeds that missed their plant](#two-seeds-that-missed-their-plant) |
 | not in the paper | `sweep_llr_wgn_sphere`, `sweep_extent`, `sweep_b`, `sweep_n_perm_inner`, `oracle_stat`, `smoke`, `runtime_1perm_n_perm_fwer` |
 
 A record does not name the commit that computed it. The records are
@@ -249,8 +249,10 @@ The paper caches take turns, so even a short budget reaches every figure;
 cache or the records. Each leaf comes back `identical`, `close` (counts
 equal, floats within `--rtol`) or `differs`, logged one JSON line per leaf
 under `~/.local/share/glow/results/validate_records/`; the exit status is 1
-if any differs or fails. On our machine every leaf should be `identical`; on
-another, expect the drift [below](#why-it-is-not-bitwise-reproducible). The
+if any differs or fails. At `2f0c04e` on our machine every leaf should be
+`identical`; on another machine, or at a later commit (see [Two seeds that
+missed their plant](#two-seeds-that-missed-their-plant)), expect the drift
+[below](#why-it-is-not-bitwise-reproducible). The
 timing leaves are judged on their voxel count, and their time ratio is
 logged.
 
@@ -349,3 +351,70 @@ What is not:
 4. Smaller: LAPACK eigenvector signs are not fixed by the standard, and
    `Recorder.load` reads its JSON unsorted, so raw CSV row order follows your
    filesystem.
+
+## Two seeds that missed their plant
+
+Every rebuild re-measures its plant (`cell.ExpEffect._check_effects`), and
+a cell whose per-voxel LLR misses its target by more than `cell.LLR_RTOL`
+(0.1%) is skipped. At `2f0c04e`, 22 HCP b = 1 cells miss and have no
+records: 20 of seed 12 (every `sweep_llr` strength, plus `sweep_extent`) and
+2 of seed 15 (`sweep_extent` only). Among the paper's caches that drops
+seed 12 from `sweep_llr`, `segment` and `prune`, which report 49 HCP seeds;
+seed 15 is in none of them.
+
+Those plants really were 0.1-0.8% off target, and the cause is float32
+arithmetic, not the solver (which meets its own constraint to ~1e-15).
+`compute_offset` forms the region's scatter as a raw sum of squares less
+num_vox * mean^2, so float32 rounding in that sum is amplified by
+(mean / sd)^2:
+
+- **Seed 12** draws `icvf`, and its support lies in white matter saturated
+  at the NODDI ceiling: mean 0.92, mean / sd ~ 14, 19% of its values exactly
+  0.99. Summing that many identical values biases the float32 total one way,
+  and the plant lands 0.2-0.3% weak at every strength.
+- **Seed 15**'s region mean is nearly orthogonal to the interest regressor,
+  so the solve scales that projection ~600x, its float32 rounding included.
+
+The current code solves (`compute_offset`, `impose_effect`) and checks in
+float64, which plants both seeds within 1e-6 of target; `2f0c04e` did both in
+float32. What that difference touches:
+
+- **An existing store.** A cell's payload holds its solved offset, so a cell
+  already realized keeps it: no recorded number changes, and every cached
+  cell passes the float64 check (all 3,944 of ours re-measured; largest miss
+  8.0e-4).
+- **A run from scratch.** A fresh cell solves a slightly different offset
+  (~1e-6 of the intensity scale), which moves the float32 bytes of most
+  planted voxels, so recomputed leaves drift from the version 2 records as
+  they do [across machines](#why-it-is-not-bitwise-reproducible).
+  `validate_records` reproduces those records bit for bit only at `2f0c04e`.
+
+To fill the holes, move the 22 cells' cache entries aside, so every one is
+re-solved in float64, then rerun the paper caches; `drive` re-realizes a
+cell whose entry is gone, and a re-realized cell overwrites its record:
+
+```bash
+python -c "
+import shutil
+from glow._extra.benchmark.config import CONFIG
+from glow._extra.benchmark.cell import exp_effect_recipe, get_exp_effect
+from glow._extra.benchmark.file import get_path_cache
+from glow._extra.benchmark.recorder import Recorder
+HOLES = {'a1eb5daf', '36320490', '8b74cfac', '488f0a61', 'ab115e4c',
+         '2c56928a', 'e80bab4c', '08a8ff14', 'ff6b54e2', '260cb237',
+         '16756818', 'e2840594', '8f088f73', '34e90b2a', '55225a14',
+         'babd096d', 'ae8cbf31', '3dc1e4fd', '9f2d9e67', 'b401a95e',
+         'f5e7623c', '9371ca97'}
+src = get_path_cache() / 'glow/_extra/benchmark/cell/get_exp_effect'
+dst = get_path_cache().parent / 'old/plant_holes_float32'
+dst.mkdir(parents=True, exist_ok=True)
+for data_grid, effect_grid, *_ in CONFIG.values():
+    for kd in data_grid:
+        for ke in effect_grid:
+            if ke is None or exp_effect_recipe(kd, ke).uid[:8] not in HOLES:
+                continue
+            key = Recorder._args_hash(get_exp_effect.func, (kd, ke), {})
+            if (src / key).is_dir():
+                shutil.move(src / key, dst / key)"
+python -m glow._extra.benchmark sweep_llr segment prune
+```

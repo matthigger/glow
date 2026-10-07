@@ -87,6 +87,27 @@ def test_compute_offset_near_orthogonal_mean(effect_llr):
     assert np.isclose(get_llr(e, h, n=1), effect_llr, rtol=1e-4, atol=1e-8)
 
 
+def test_compute_offset_float32_saturated_region():
+    """Offset hits its target on a float32, high-mean, ceiling-clipped region.
+
+    Regression for HCP seed 12: icvf near its 0.99 ceiling (mean / sd ~ 14,
+    ~15% of values exactly at the ceiling). Solved in float32, the uncentred
+    scatter's rounding, amplified by (mean / sd)^2, left the plant ~3e-3 weak.
+    """
+    rng = np.random.default_rng(0)
+    num_img, num_vox = 100, 2500
+    x = np.vstack([np.ones(num_img), rng.standard_normal(num_img)])
+    contrast = np.array([False, True])
+    y = np.minimum(0.92 + 0.065 * rng.standard_normal((1, num_img, num_vox)),
+                   0.99).astype(np.float32)
+
+    offset, _ = compute_offset(x=x, y=y, contrast=contrast, effect_llr=0.03)
+
+    y_eff = y.astype(np.float64) + offset[..., np.newaxis]
+    e, h, _ = get_mancova(x=x, y=y_eff, contrast=contrast)
+    assert np.isclose(get_llr(e, h, n=1), 0.03, rtol=1e-6, atol=0)
+
+
 def _fro_angle_deg(a, b):
     """Angle (degrees) between two arrays under the Frobenius inner product."""
     a, b = a.ravel(), b.ravel()
